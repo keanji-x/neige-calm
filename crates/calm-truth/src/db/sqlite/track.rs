@@ -14,95 +14,36 @@ use super::track_tree::MAX_TREE_TASK_BUDGET;
 use super::track_workspace::track_workspace_write_tx;
 use crate::db::rows::TRACK_SELECT_COLUMNS;
 
-/// Issue #1147 S2 — how a freshly minted track gets its workspace.
-///
-/// The `NewTrack.cwd` field can only ever describe an *attached* workspace: it
-/// is a path the caller already knows, i.e. a directory somebody else created.
-/// A managed workspace's path is derived from the track id, which does not
-/// exist until this function mints it, so the caller hands in the root and
-/// the derivation happens here — there is no point at which both the id and
-/// the caller are in scope outside this function.
+/// How a freshly minted track gets its workspace. A managed path is derived
+/// from the track id, which only exists inside `track_create_tx`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TrackWorkspacePlan {
-    /// Use `NewTrack.cwd` verbatim, `kind = Attached`, frozen at creation.
-    ///
-    /// Frozen because `attached → *` is not a legal transition (design D6), so
-    /// an unfrozen attached row has no legal use — and it is exactly the row a
-    /// future PATCH branch that forgot to check `kind` would relocate, i.e.
-    /// would move a real user repository (D9).
+    /// Use `NewTrack.cwd` verbatim, `kind = Attached`, frozen at creation
+    /// (`attached → *` is not a legal transition).
     AttachedFromCwd,
-    /// Derive `<root>/<area_id>/<track_id>`, `kind = Managed`, **not** frozen.
-    ///
-    /// Unfrozen is the point: design §2.3 makes the workspace a *default* —
-    /// re-assignable until work actually happens (S3's PATCH). `NewTrack.cwd`
-    /// is ignored on this branch.
+    /// Derive `<root>/<area_id>/<track_id>`, `kind = Managed`, **not** frozen: a
+    /// default, re-assignable until work happens. `NewTrack.cwd` is ignored.
     ManagedUnder(std::path::PathBuf),
     /// Derive `<root>/<area_id>/<track_id>`, `kind = Managed`, **frozen at
-    /// creation**. The child-track path (design D7).
-    ///
-    /// Same derivation as [`Self::ManagedUnder`], opposite freeze decision, and
-    /// the difference is the whole point of S4: a child track is machine-created
-    /// inside a running planner, so the first thing that happens to it is a
-    /// harness bootstrap at this exact path. Design §"更换与冻结" requires the
-    /// freeze *before* any non-re-anchorable cwd consumer exists, and child
-    /// creation is named there explicitly.
-    ///
-    /// This variant REPLACED an `InheritFrozen(TrackWorkspace)` that copied the
-    /// parent's kind AND path, whichever they were. That one had to go, not
-    /// just stop being called: while it existed, "two track rows, one *managed*
-    /// directory" stayed a constructible state, and S5 recycles by
-    /// `kind = managed` + path — so any future caller of it would re-arm
-    /// "deleting the child deletes the parent's repository" (issue #1147 N11).
+    /// creation**: a child track's first event is a harness bootstrap at this path.
     ManagedFrozenUnder(std::path::PathBuf),
-    /// Point at an existing **attached** path, `kind = Attached`, frozen at
-    /// creation. The child of an attached parent (design D7, S4 amendment).
-    ///
-    /// Deliberately NOT the same variant as the managed sibling above, and
-    /// deliberately not `AttachedFromCwd` reading `NewTrack.cwd`: this is the
-    /// one place in the codebase where inheriting another track's path is
-    /// correct, so it says so in its own name and carries the path itself. A
-    /// caller cannot reach it by accident, and a reader looking for "who can
-    /// still share a directory" finds exactly this variant.
-    ///
-    /// Sharing is safe here for one reason only, and it is a property of S5:
-    /// recycling touches `kind = managed` directories exclusively, so an
-    /// attached path is never created, moved or deleted by the server no
-    /// matter how many rows point at it. Multiple tracks on one attached
-    /// repository is also a pre-existing, legal production state — the same
-    /// checkout is routinely opened by several tracks.
-    ///
-    /// The payload is [`AttachedInheritedPath`], not a bare `String`, because
-    /// that reasoning has one hole and the constructor closes it — see there.
+    /// Point at an existing **attached** path, `kind = Attached`, frozen. The one
+    /// place inheriting another track's path is correct: recycling touches
+    /// `kind = managed` directories only, so an attached path is never created,
+    /// moved or deleted by the server however many rows point at it.
     InheritAttachedFrozen(AttachedInheritedPath),
 }
 
-/// A path that may be inherited as an `attached` workspace: **proven to be
-/// outside the managed workspace root**.
-///
-/// The check exists because "attached rows are never recycled" is a statement
-/// about the ROW, and S5 recycles by DIRECTORY. An attached row whose path sits
-/// under `<workspace-root>` — say `<root>/<area>/<some-managed-track>` — is
-/// removed as collateral when that managed track is deleted, and the attached
-/// track silently loses its workspace. Nothing in the tree can produce that
-/// today (the only caller feeds an attached parent's own path, and an attached
-/// path under the root is itself an invariant violation caught by
-/// `every_managed_track_lives_under_the_workspace_root`'s sibling), but this
-/// enum is `pub` and constructible from any crate, so the guard lives in the
-/// type rather than in a comment about who calls it.
-///
-/// Constructing this is the only way to reach
-/// [`TrackWorkspacePlan::InheritAttachedFrozen`], so the check cannot be
-/// skipped by a future caller.
+/// A path that may be inherited as an `attached` workspace, **proven to be
+/// outside the managed workspace root**: recycling is by DIRECTORY, so an
+/// attached row under `<workspace-root>` would be removed as collateral.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AttachedInheritedPath(String);
 
 impl AttachedInheritedPath {
-    /// `Err` if `path` resolves inside `workspace_root`.
-    ///
-    /// Both a lexical and a canonicalized comparison, because they fail in
-    /// opposite directions: the lexical one misses a symlink pointing into the
-    /// root, and the canonical one is unavailable when the path does not exist
-    /// yet. Either verdict of "inside" refuses.
+    /// `Err` if `path` resolves inside `workspace_root`. Both a lexical and a
+    /// canonicalized check: the lexical one misses a symlink into the root, the
+    /// canonical one is unavailable for a path that does not exist yet.
     pub fn new(path: String, workspace_root: &std::path::Path) -> Result<Self> {
         let candidate = std::path::Path::new(&path);
         let lexically_inside = candidate.starts_with(workspace_root);
@@ -130,38 +71,14 @@ impl AttachedInheritedPath {
     }
 }
 
-/// #1292 S3 — which user recipe, at which revision, a track is being built
-/// from.
-///
-/// One parameter carrying both halves, rather than two fields on [`NewTrack`],
-/// for two reasons.
-///
-/// It is server-owned. [`NewTrack`] is the caller-supplied shape; `purpose` and
-/// `workspace_plan` are already parameters for exactly this reason. Provenance
-/// is read out of the `track_recipes` row inside the creating transaction, never
-/// taken from a request body — a client that could name its own origin could
-/// claim any origin.
-///
-/// And it makes the pair indivisible for writers that go through
-/// [`track_create_tx`]'s parameter: two `Option` fields admit two states the
-/// system has no reading for, one `Option<Self>` admits neither.
-///
-/// That is strictly narrower than what migration 0085's cross-column CHECK
-/// does, and the two are not interchangeable. The CHECK binds every writer of
-/// the `tracks` row. This type binds only this parameter — [`TrackRow`] and
-/// [`Track`] each carry two independent `Option`s and copy them straight
-/// through, so a half-pair already in the database would flow out through
-/// `GET /api/tracks/{id}` unvalidated. The database is the layer that keeps
-/// one from getting there.
-///
-/// [`TrackRow`]: crate::db::rows::TrackRow
-/// [`Track`]: crate::model::Track
+/// Which user recipe, at which revision, a track is being built from.
+/// Server-owned: read from the `track_recipes` row inside the creating
+/// transaction, never from a request body. One `Option<Self>` keeps the pair
+/// indivisible.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrackRecipeOrigin {
     pub recipe_id: String,
-    /// The recipe's `revision` as read in this transaction. Frozen on the track
-    /// from here on: later edits bump the recipe's own revision and leave this
-    /// value alone, which is what makes it name a version rather than a row.
+    /// The recipe's `revision` as read in this transaction, frozen on the track from here on.
     pub revision: i64,
 }
 
@@ -190,38 +107,12 @@ pub async fn track_create_tx(
     };
     let now = now_ms();
     let id = new_id();
-    // Issue #145 — new tracks seed at `lifecycle = 'draft'`. The DB
-    // DEFAULT in migration 0012 also pins this, but stamping it
-    // explicitly here matches the "required field, no Option" model:
-    // every track-create path declares the seed lifecycle in code so a
-    // future change to the seed value can't be reached by skipping
-    // the column from the INSERT list.
     let lifecycle = crate::model::TrackLifecycle::Draft;
-    // Issue #250 PR 2 — the route layer (`POST /api/tracks`) already validated
-    // absolute-path shape + area-folder ownership; this writer stays
-    // mechanical.
-    //
-    // Issue #1147 S1 — the workspace is not part of this INSERT. It is written
-    // a few lines down by `track_workspace_write_tx` in this same transaction,
-    // so kind/path/frozen_at are always decided together.
-    //
-    // `terminal_at` is `NULL` on every fresh track (Draft is non-terminal
-    // by construction; `TrackLifecycle::is_terminal` returns false for it).
-    // Issue #985 slice 6 PR-B — `tree_task_budget` is stamped NULL by every
-    // track-create path, the same "declare it in code, never reach it by
-    // omitting the column" rule as `lifecycle` above. It matters more here:
-    // the budget is single-source, meaningful only on a tree root, and the
-    // `child-track` operation creates children through this very function. A
-    // child that inherited a budget of its own (which a DB DEFAULT would have
-    // given it) would hand each sub-track a fresh tree budget and make the
-    // whole-tree bound vacuous.
-    //
-    // #1292 S3 — `recipe_id` / `recipe_revision` are stamped from
-    // [`TrackRecipeOrigin`], which is `None` for every creation source other
-    // than "instantiate a user recipe". They are written here, in the same
-    // statement as the row they describe, because instantiation is a value
-    // copy: after this the recipe can be edited or deleted and nothing else
-    // remembers where the track came from.
+    // The workspace is written by `track_workspace_write_tx` below in this same
+    // transaction. `tree_task_budget` is stamped NULL by every create path: it is
+    // meaningful only on a tree root, and a DB DEFAULT would hand each child a
+    // fresh budget. `recipe_id` / `recipe_revision` are a value copy: the recipe
+    // can later be edited or deleted.
     sqlx::query(
         r#"INSERT INTO tracks
            (id, area_id, title, sort, archived_at, pinned_at, lifecycle, template_id, plugin_scope, purpose, template_input, terminal_at, tree_task_budget, recipe_id, recipe_revision, created_at, updated_at)
@@ -242,11 +133,6 @@ pub async fn track_create_tx(
     .bind(now)
     .execute(&mut **tx)
     .await?;
-    // Issue #1147 S2 — the caller declares the workspace shape; the derivation
-    // of a managed path needs the track id, which only exists here. See
-    // [`TrackWorkspacePlan`] for why each variant freezes (or does not).
-    // The launchpad track does not come through this function at all; it is the
-    // documented D9 exception — see `routes/today.rs::launchpad_workspace`.
     let workspace = match workspace_plan {
         TrackWorkspacePlan::AttachedFromCwd => TrackWorkspace {
             kind: TrackWorkspaceKind::Attached,
@@ -278,10 +164,7 @@ pub async fn track_create_tx(
         },
     };
     track_workspace_write_tx(tx, &id, &workspace).await?;
-    // #234 — write-through into the track→area cache. Same semantics as
-    // the `card_role_cache` write-through in `card_create_with_id_tx`: a
-    // follow-up emit inside the same `write_with_event` closure can
-    // see the freshly-minted binding via `enforce_role`'s lookup.
+    // Write-through so a follow-up emit inside the same closure sees the fresh binding.
     let track_id: TrackId = id.clone().into();
     track_area_cache.insert(track_id.clone(), p.area_id.clone());
     Ok(Track {
@@ -301,8 +184,8 @@ pub async fn track_create_tx(
         recipe_id: recipe_origin.map(|o| o.recipe_id.clone()),
         recipe_revision: recipe_origin.map(|o| o.revision),
         workspace,
-        // #1704 S2 — every track-create path stamps NULL: the policy is a
-        // user PATCH on a tree root, never inherited by a child row.
+        // Every track-create path stamps NULL: the policy is a user PATCH on a tree
+        // root, never inherited by a child row.
         claude_permissions_policy: None,
         created_at: now,
         updated_at: now,
@@ -335,25 +218,10 @@ pub async fn track_update_tx(
     if let Some(v) = p.pinned_at {
         w.pinned_at = v;
     }
-    // Issue #145 — `TrackPatch.lifecycle` is applied here, but the
-    // transition is validated by `validate_transition` at the call
-    // site (REST handler / MCP tool), *outside* the DB layer. Routing
-    // the validator through the route boundary (rather than this
-    // function) keeps `track_update_tx` a pure mechanical row write
-    // and avoids threading `ActorId` through every call site that
-    // patches the row. Production code paths that mutate
-    // `lifecycle` must call `validate_transition` first.
-    //
-    // Issue #250 PR 2 — `terminal_at` rides on the lifecycle column:
-    // when this patch advances the track into a terminal state we
-    // stamp the current time; when it reopens or resumes a terminal track
-    // (terminal → planning / working) we clear `terminal_at` back to NULL. A
-    // patch that doesn't touch
-    // `lifecycle` leaves `terminal_at` alone — that matches the
-    // archive precedent (changing `title` doesn't bump `archived_at`).
-    // The stamp happens inside the same transaction as the track row
-    // update and the caller's `TrackLifecycleChanged` event, so a
-    // mid-tx crash leaves none of them behind.
+    // The transition is validated by `validate_transition` at the call site, not
+    // here; production paths that mutate `lifecycle` must call it first.
+    // `terminal_at` rides on the lifecycle column: stamped on entering a terminal
+    // state, cleared on reopen, untouched by patches that don't name `lifecycle`.
     if let Some(new_lifecycle) = p.lifecycle {
         if w.lifecycle.is_terminal() && !new_lifecycle.is_terminal() {
             let parent: Option<(String, String)> =
@@ -371,25 +239,17 @@ pub async fn track_update_tx(
             if new_lifecycle.is_terminal() {
                 w.terminal_at = Some(now_ms());
             } else if w.lifecycle.is_terminal() {
-                // Reopen / resume (terminal → non-terminal). The legal edges
-                // here are user-driven terminal → planning / working, gated by
-                // `validate_transition`. Clearing
-                // the stamp ensures a reopened track doesn't render
-                // with a stale terminal date on the calendar.
+                // Reopen / resume: clear the stamp so a reopened track doesn't render with a
+                // stale terminal date.
                 w.terminal_at = None;
             }
         }
         w.lifecycle = new_lifecycle;
     }
-    // #1704 S2 — the Claude Code permission policy is tree-root-only, and the
-    // rule is enforced HERE for the same reason as `tree_task_budget` below:
-    // this in-tx helper is the single writer every entry point shares. Every
-    // ceiling read resolves the tree root, so a value on a child row would be
-    // a second, unreachable source of truth. The column is written ONLY when
-    // the patch names it (a targeted UPDATE, the `tree_task_budget` shape),
-    // never re-serialized from the row read above: the row decode is lenient
-    // about unknown keys, so a title patch by an older binary would otherwise
-    // strip what a newer one stored.
+    // Tree-root-only, enforced in this single shared writer. Written ONLY when the
+    // patch names it, never re-serialized from the row read above: the row decode
+    // is lenient about unknown keys, so a title patch by an older binary would
+    // otherwise strip what a newer one stored.
     if let Some(policy) = p.claude_permissions_policy {
         let parent: Option<(String,)> = sqlx::query_as(
             "SELECT parent_track_id FROM tracks WHERE id = ?1 AND parent_track_id IS NOT NULL",
@@ -431,31 +291,16 @@ pub async fn track_update_tx(
     .execute(&mut **tx)
     .await?;
 
-    // #1147 S3 — freeze point 3 of 4 (design §更换与冻结): "the track leaves
-    // Draft". Draft is the state in which nothing has been dispatched, so it
-    // is the last moment at which the workspace is provably free of durable
-    // consumers. The instant the track starts planning/executing, the
-    // scheduler, the forge and every worker take the path as a given.
-    //
-    // The condition is `w.lifecycle != Draft`, not `p.lifecycle == Some(x)`:
-    // an already-non-Draft track being patched for any other reason is *also*
-    // past the point of no return, and a predicate that only fires on the
-    // transition would leave every track whose transition happened before this
-    // slice unfrozen forever. The freeze is idempotent and monotonic, so
-    // re-asserting it on every non-Draft patch costs one no-op UPDATE.
-    //
-    // This is the low-level entry: `routes/tracks.rs::update_track`, the MCP
-    // tool and `track_lifecycle.rs` all funnel through here.
+    // Freeze point: the track leaves Draft, the last moment the workspace is
+    // provably free of durable consumers. The condition is `w.lifecycle != Draft`,
+    // not the transition, so tracks that left Draft earlier freeze too; the
+    // freeze is idempotent.
     if w.lifecycle != TrackLifecycle::Draft {
         super::track_workspace::track_workspace_freeze_tx(tx, w.id.as_str(), w.updated_at).await?;
     }
 
-    // Issue #644 — scheduler budget + gate policy (migration 0041).
-    // These columns deliberately do NOT live on the `Track` struct while
-    // the plan is inert (PR-A): keeping them off the struct leaves every
-    // `SELECT` column list, the `TrackUpdated` wire payload, and the
-    // ts-rs export untouched. Targeted single-column writes here are the
-    // whole PATCH surface; the PR-B scheduler reads the columns by SQL.
+    // These columns deliberately do NOT live on the `Track` struct; targeted
+    // single-column writes are the whole PATCH surface.
     if let Some(budget) = p.task_budget {
         sqlx::query("UPDATE tracks SET task_budget = ?1 WHERE id = ?2")
             .bind(budget)
@@ -484,11 +329,8 @@ pub async fn track_update_tx(
             .execute(&mut **tx)
             .await?;
     }
-    // Issue #985 slice 6 PR-B — root-only, enforced HERE rather than at the
-    // route: this in-tx helper is the single writer every entry point shares,
-    // and a route-only guard is exactly the shape §7 #17/#20 caught twice. The
-    // budget divides across the tree's tracks, so a child carrying its own value
-    // would be a second, unreachable source of truth.
+    // Root-only, enforced in this single shared writer: the budget divides across
+    // the tree, so a child carrying its own value would be a second source of truth.
     if let Some(budget) = p.tree_task_budget {
         if let Some(budget) = budget
             && !(0..=MAX_TREE_TASK_BUDGET).contains(&budget)
@@ -544,9 +386,8 @@ pub async fn track_require_candidate_verification_settled_tx(
     Ok(())
 }
 
-/// Refuse deletion while a direct child exists. This is the authoritative
-/// guard for every deletion entry point, including direct repository calls
-/// that bypass the HTTP route's best-effort preflight.
+/// Refuse deletion while a direct child exists; authoritative for every
+/// deletion entry point, including callers that bypass the route's preflight.
 pub async fn track_require_leaf_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<()> {
     if let Some((child_id,)) =
         sqlx::query_as::<_, (String,)>("SELECT id FROM tracks WHERE parent_track_id = ?1 LIMIT 1")
@@ -574,9 +415,7 @@ async fn track_delete_leaf_tx(
         .bind(id)
         .execute(&mut **tx)
         .await?;
-    // #644 — `tasks.track_id` has no FK to `tracks` (events-outlive-rows
-    // convention, design §2), so plan rows must be deleted explicitly
-    // alongside the other no-FK track-owned tables above.
+    // `tasks.track_id` has no FK to `tracks`, so plan rows are deleted explicitly.
     sqlx::query(
         "DELETE FROM task_ref_index WHERE task_id IN (SELECT id FROM tasks WHERE track_id = ?1)",
     )
@@ -587,7 +426,6 @@ async fn track_delete_leaf_tx(
         .bind(id)
         .execute(&mut **tx)
         .await?;
-    // Explicit domain deletion removes allocation metadata after execution rows.
     sqlx::query("DELETE FROM task_attempt_allocations WHERE track_id = ?1")
         .bind(id)
         .execute(&mut **tx)
@@ -610,26 +448,14 @@ async fn track_delete_leaf_tx(
     if res.rows_affected() == 0 {
         return Err(CalmError::NotFound(format!("track {id}")));
     }
-    // #234 — keep the track→area cache in lockstep with the table. Mirror
-    // of the card-delete-side write-through in `card_delete_tx`.
     track_area_cache.remove(&TrackId::from(id));
     Ok(())
 }
 
-/// #1434 — the request identity stored beside what one
-/// `(area_id, Idempotency-Key)` pair minted.
-///
-/// Version 0 is not represented by missing optional fields. It is a named
-/// migration state for rows written before request fingerprints existed; the
-/// route fails those rows closed because their original request cannot be
-/// reconstructed reliably.
-///
-/// #1426 added [`Self::V2MessageLess`] for a create that bound a key while
-/// carrying no `first_message`. It is a distinct variant rather than a `V1`
-/// with an absent message digest because the *presence* of a message is part
-/// of request identity and `create_request_sha256` does not cover it: the two
-/// create shapes hash the same value, so only the variant can tell them apart.
-/// The route refuses a shape mismatch in both directions.
+/// The request identity stored beside what one `(area_id, Idempotency-Key)`
+/// pair minted. `LegacyUnknown` is a named state for pre-fingerprint rows (the
+/// route fails them closed). `V2MessageLess` is its own variant because message
+/// presence is part of request identity and the digest does not cover it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TrackCreateRequestFingerprint {
     LegacyUnknown,
@@ -642,16 +468,9 @@ pub enum TrackCreateRequestFingerprint {
     },
 }
 
-/// #1384 / #1434 — what one `(area_id, Idempotency-Key)` pair already minted,
-/// together with the request that was allowed to mint it.
-///
-/// Three ids, not one. `resume_prior_attempt` needs the planner and report
-/// card ids to resubmit the harness start, and in the variant-4 shape (the
-/// daemon refused before `insert_operation` ran) there is no operation payload
-/// to read them from. A role query would be well-defined —
-/// `idx_cards_one_planner_per_track` and `idx_cards_one_report_per_track` make
-/// both single-valued — but re-deriving a value the mint already knew is a
-/// second source of truth for it.
+/// What one `(area_id, Idempotency-Key)` pair already minted. Three ids, not
+/// one: `resume_prior_attempt` needs the card ids and may have no operation
+/// payload to read them from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrackCreateBinding {
     pub track_id: String,
@@ -660,14 +479,9 @@ pub struct TrackCreateBinding {
     pub request_fingerprint: TrackCreateRequestFingerprint,
 }
 
-/// A new binding claim. Unlike the versioned read model, the create-request
-/// digest is a required field: production code cannot construct a
-/// legacy-unknown row.
-///
-/// `first_message_sha256` is `Option` for exactly one reason — a #1426
-/// message-less create has no message to digest — and that `None` is what
-/// selects fingerprint version 2 on write. It is not "the digest was not
-/// computed"; it is "there was no message", which is a fact about the request.
+/// A new binding claim; the create-request digest is required so production
+/// code cannot construct a legacy-unknown row. `first_message_sha256: None`
+/// means "there was no message" and selects fingerprint version 2.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrackCreateBindingClaim {
     pub track_id: String,
@@ -677,31 +491,18 @@ pub struct TrackCreateBindingClaim {
     pub first_message_sha256: Option<String>,
 }
 
-/// Claim `(area_id, idempotency_key)` for a track, **inside the transaction
-/// that minted it**.
-///
-/// Takes `&mut Transaction` rather than `&self` for the one reason this whole
-/// mechanism exists: written on a pooled connection it would commit at some
-/// point after the track row, and the interval between the two commits is
-/// exactly the window in which a retry sees a track it cannot find the binding
-/// for and mints a second one. Composed into `create_track_structure`'s closure
-/// there is no such interval — the id and the fact of who owns it are one
-/// commit.
-///
-/// A duplicate `(area_id, idempotency_key)` violates the primary key and
-/// surfaces as an error that rolls the whole create back. That is the intended
-/// answer: the route maps it fail-closed rather than letting a second track
-/// commit behind a 409.
+/// Claim `(area_id, idempotency_key)` **inside the transaction that minted the
+/// track**: written after the track commit, the interval between the two
+/// commits is exactly where a retry mints a second track. A duplicate key
+/// violates the primary key and rolls the whole create back.
 pub async fn track_create_idempotency_claim_tx(
     tx: &mut Transaction<'_, Sqlite>,
     area_id: &str,
     idempotency_key: &str,
     binding: &TrackCreateBindingClaim,
 ) -> Result<()> {
-    // #1426 — the version is derived from the claim, not passed in: a caller
-    // that could choose the version separately from the digests could write a
-    // version 1 row with no message digest, which the CHECK constraint refuses
-    // anyway but only after the transaction is already open.
+    // The version is derived from the claim, not passed in, so a caller cannot
+    // write a version 1 row with no message digest.
     let version: i64 = if binding.first_message_sha256.is_some() {
         1
     } else {
@@ -729,12 +530,9 @@ pub async fn track_create_idempotency_claim_tx(
 
 type TrackCreateBindingRow = (String, String, String, i64, Option<String>, Option<String>);
 
-/// The read side: one primary-key hit, on a pooled connection.
-///
-/// This is the new authority for "does a track already exist for this key".
-/// The `operations` row is not, and cannot be: it is written after
-/// `adapter.validate` and so is absent for the whole class of failures that
-/// refuse there.
+/// The authority for "does a track already exist for this key". The
+/// `operations` row cannot be: it is written after `adapter.validate` and is
+/// absent for the failures that refuse there.
 pub async fn track_create_idempotency_get_pool(
     pool: &sqlx::SqlitePool,
     area_id: &str,
@@ -767,9 +565,7 @@ pub async fn track_create_idempotency_get_pool(
                         first_message_sha256,
                     }
                 }
-                // #1426 — a keyed create that carried no `first_message`. The
-                // absent digest is the shape, so it is decoded as its own
-                // variant and never as "V1 with something missing".
+                // The absent digest is the shape: its own variant, never "V1 with something missing".
                 (2, Some(create_request_sha256), None) => {
                     TrackCreateRequestFingerprint::V2MessageLess {
                         create_request_sha256,

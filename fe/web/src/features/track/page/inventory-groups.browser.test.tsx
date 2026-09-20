@@ -14,8 +14,7 @@ const task = (blockId: string, status: string, kind: NonNullable<ReportTaskRow['
   blockId, key: blockId, state: 'ready', declaration: null, status, statusDetail: null,
   kind, workerCardId: `card-${blockId}`, pendingReason: null,
 });
-/** These cases are about layout, so every worker the fixture names is drawable
- *  and each task row keeps its kind control (#1722 S2b r5). */
+/** These cases are about layout, so every worker the fixture names is drawable and each task row keeps its kind control. */
 const derive = (input: { cards: readonly CardWire[]; tasks: readonly ReportTaskRow[] }) =>
   deriveTrackPageView({ ...input, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(input.cards, input.tasks) });
 

@@ -1,10 +1,6 @@
 /**
- * Dependencies that must be present before a dev or browser-test page starts.
- *
- * Vite otherwise discovers these late imports mid-run, rebuilds its optimizer
- * graph, and reloads the page that is importing a test. Browser projects are
- * isolated configs and do not inherit the root list, so every consumer imports
- * this one frozen roster instead of maintaining a partial copy.
+ * Dependencies pre-optimized before a dev or browser-test page starts; otherwise Vite discovers them
+ * mid-run and reloads the page importing a test. Browser projects do not inherit the root list.
  */
 export const OPTIMIZED_DEPENDENCIES = Object.freeze([
   '@tanstack/react-query',

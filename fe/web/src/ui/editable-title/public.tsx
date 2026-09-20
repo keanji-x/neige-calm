@@ -1,11 +1,4 @@
-// INV-DUP-008 — the one click-or-F2-to-rename title.
-//
-// Both the area header and the track header rename in place, and the area one
-// carried a synthesized-click suppressor (#288): committing with Enter fires
-// keyup on the freshly-restored title element, which browsers turn into a
-// `click` — that reopened the editor and, on the next commit, PATCHed the
-// stale name back. The suppressor must survive any merge; it is not area-
-// specific, it is a property of "Enter commits and returns focus".
+// The one click-or-F2-to-rename title. Committing with Enter fires keyup on the restored title element, which browsers turn into a `click` that would reopen the editor; the suppressor guards that.
 
 import { useCallback, useEffect, useRef, type ReactNode } from 'react';
 
@@ -14,58 +7,17 @@ import { OperationFeedback, useOperationFeedback } from '../operation-feedback/p
 import styles from './editable-title.module.css';
 
 export type EditableTitleProps = Readonly<{
-  /**
-   * The stored name, verbatim — the **edit** carrier.
-   *
-   * `begin()` seeds the draft from it and `commit()` compares against it, so a
-   * blank name opens a blank box. What read mode *shows* for a blank name is
-   * `placeholder`, and the split is the point: while there was one `value`
-   * doing both jobs, a caller that handed in a display fallback handed it to
-   * the editor too — the track page passed `trackDisplayTitle(track.title)`, so
-   * opening the editor on an unnamed track put `Untitled track` in the box and
-   * the reader had to delete it before typing. (It could not be *stored*: the
-   * `next === value` arm below made re-submitting it a no-op. The defect was
-   * the text in the box, not a write.)
-   */
+  /** The stored name, verbatim — the edit carrier. Read mode shows `placeholder` for a blank name; the box opens blank. */
   value: string;
-  /**
-   * What read mode shows while `value` is blank — display only. It never seeds
-   * the draft, and there is no path by which it can be committed.
-   */
+  /** What read mode shows while `value` is blank — display only; it never seeds the draft. */
   placeholder?: string;
-  /**
-   * What committing an empty box means, and it is per-caller because the two
-   * callers do not have the same answer.
-   *
-   * `'cancel'` (the default) is the historical behaviour and stays the
-   * default: clearing the field and pressing Enter leaves edit mode and writes
-   * nothing. That is right where nothing else can supply a name — an area is
-   * named by its owner and by no one else, so an empty area name is a name the
-   * product cannot recover from.
-   *
-   * `'clear'` makes the empty commit a real request: write the empty name.
-   * A track has a second namer — the planner agent's `calm.track.rename` succeeds
-   * only while the title is empty (#1211 S3) — so clearing the name is how a
-   * reader hands naming back to it, and swallowing that keystroke would leave
-   * "I cleared it, pressed Enter, and nothing happened".
-   */
+  /** `'cancel'` (default) writes nothing for an empty commit; `'clear'` writes the empty name, which is how a track hands naming back to the planner agent. */
   emptyCommit?: 'cancel' | 'clear';
   onCommit: (next: string) => void | Promise<void>;
-  /** Accessible name for the read-mode button, e.g. "Rename area". */
   editLabel: string;
-  /** Accessible name for the input, e.g. "Area name". */
   inputLabel: string;
   className?: string;
-  /**
-   * Marks this as the route's single page-title element (§6.4). Two routes
-   * rename in place, so their title *is* this control — there is no separate
-   * heading to carry the marker, and CR-8 focuses it after a delete.
-   *
-   * No `tabIndex={-1}` here. §5.2 adds that only because an `<h1>` is not
-   * otherwise focusable; taking a rename control out of the Tab order to
-   * satisfy the letter of that rule would delete the keyboard path to renaming.
-   * `base.css` already suppresses the ring for programmatic focus.
-   */
+  /** Marks this as the route's single page-title element. No `tabIndex={-1}`: taking a rename control out of the Tab order would delete the keyboard path to renaming. */
   isPageTitle?: boolean;
   titleRef?: React.RefObject<HTMLButtonElement | null>;
   /** Custom read mode, with the same rename and post-commit click guard. */
@@ -75,7 +27,7 @@ export type EditableTitleProps = Readonly<{
   }>) => ReactNode;
 }>;
 
-/** How long after an Enter commit a synthesized click is ignored (#288). */
+/** How long after an Enter commit a synthesized click is ignored. */
 const CLICK_SUPPRESS_MS = 300;
 
 export function EditableTitle({
@@ -103,14 +55,7 @@ export function EditableTitle({
     if (pending.current) return;
     const next = draft.trim();
     if (restoreFocus) suppressClickUntil.current = Date.now() + CLICK_SUPPRESS_MS;
-    /*
-     * Two different reasons not to write, and only the second one is a policy.
-     *
-     * `next === value` is arithmetic: the name on screen is already the name
-     * being asked for, so there is no state change to request. It holds under
-     * `'clear'` too — an already-blank title committed blank is still nothing
-     * happening — which is why the empty case is not simply "always send".
-     */
+    /* `next === value` is arithmetic, not policy: it holds under `'clear'` too, so an already-blank title committed blank writes nothing. */
     if (next === value || (next === '' && emptyCommit === 'cancel')) {
       setEditing(false);
       if (restoreFocus) restoreTitleFocus();
@@ -134,8 +79,7 @@ export function EditableTitle({
 
   if (!editing) {
     if (readView !== undefined) return <span data-nc-title-read-view="" onClickCapture={(event) => {
-      // Custom read controls can navigate or open a menu. Enter's trailing
-      // synthesized click must not activate those either (INV-DUP-008).
+      // Enter's trailing synthesized click must not activate custom read controls either.
       if (Date.now() < suppressClickUntil.current) { event.preventDefault(); event.stopPropagation(); }
     }}>{readView({ beginEditing: begin, titleRef: attachTitle })}</span>;
     return (
@@ -148,13 +92,9 @@ export function EditableTitle({
         aria-label={editLabel}
         onClick={begin}
         onKeyDown={(event) => {
-          // F2 is the platform rename key; Enter/Space already activate the
-          // button, so only F2 needs handling here.
           if (event.key === 'F2') { event.preventDefault(); begin(); }
         }}
       >
-        {/* The display carrier. `placeholder` stands in for a blank name and
-            goes no further than this line — the editor below reads `value`. */}
         {value.trim() === '' && placeholder !== undefined ? placeholder : value}
       </button>
     );

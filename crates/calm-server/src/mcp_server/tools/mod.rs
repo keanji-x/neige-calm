@@ -1,11 +1,5 @@
-//! Per-tool handlers for the kernel-as-MCP-server. PR7a (#136),
-//! extended in PR7b with track-state tools.
-//!
-//! Each submodule defines one or more
-//! [`crate::mcp_server::registry::ToolHandler`]s plus their tools/list
-//! descriptors. The single public entry point is
-//! [`register_default_tools`], which the boot path calls once to
-//! populate the [`ToolRegistry`].
+//! Per-tool handlers for the kernel-as-MCP-server; [`register_default_tools`] is the single
+//! entry point the boot path calls to populate the [`ToolRegistry`].
 
 use crate::mcp_server::registry::ToolRegistry;
 
@@ -28,14 +22,7 @@ pub(crate) mod track_report_hydrate;
 pub mod track_state;
 pub mod user_notify;
 
-/// Register every default tool onto a fresh registry. Callers build
-/// the final `Arc<ToolRegistry>` from the result.
-///
-/// The default set covers emit tools, track-state reads, verdict writes,
-/// track-report tools, and read-only track-file views.
-///
-/// #293 cutover: the old `calm.wait_for_events` long-poll tool is gone —
-/// planner agents are driven by pushed turn inputs, not polling.
+/// Register every default tool onto a fresh registry.
 pub fn register_default_tools(registry: &mut ToolRegistry) {
     terminal::register_into(registry);
     emit::register_into(registry);
@@ -66,24 +53,13 @@ mod tests {
     use std::collections::BTreeSet;
     use std::path::Path;
 
-    /// Whole-surface pin of the default MCP tool registry (#1635 S1d): every
-    /// registered descriptor — hidden drill-ins and deprecated aliases
-    /// included — sorted by name, with the protocol fields (`name`,
-    /// `input_schema`, `annotations`, `visible_to_roles`) verbatim and the
-    /// description as `description_sha256`. The wording itself lives in
-    /// `prompts/tools/<tool>.md`, where a change is reviewable as a diff of
-    /// that file; the hash here proves the registry serves the file bytes
-    /// minus the single final newline (the structural test
-    /// `prompt_files_cover_exactly_the_non_alias_tools` pins that equality)
-    /// and, for the aliases, exactly the `format!`ed protocol string —
-    /// without copying 90 KB of prose into a second file.
-    /// Regenerate with `REGEN_MCP_TOOL_REGISTRY_GOLDEN=1`, then hand-verify
-    /// the diff.
+    /// Whole-surface pin of the default MCP tool registry, sorted by name, with the description
+    /// as `description_sha256` (the wording lives in `prompts/tools/<tool>.md`).
+    /// Regenerate with `REGEN_MCP_TOOL_REGISTRY_GOLDEN=1`, then hand-verify the diff.
     const MCP_TOOL_REGISTRY_GOLDEN: &str =
         include_str!("../../../tests/goldens/mcp_tool_registry.json");
 
-    /// Anti-vacuity floor for the golden: an empty registry rendered against
-    /// an empty `[]` golden must not pass.
+    /// Anti-vacuity floor: an empty registry rendered against an empty `[]` golden must not pass.
     const MIN_GOLDEN_ROWS: usize = 30;
 
     #[derive(Serialize)]
@@ -92,14 +68,11 @@ mod tests {
         /// Lowercase hex SHA-256 of the description's UTF-8 bytes.
         description_sha256: String,
         input_schema: &'a Value,
-        /// Presence-encoded like the wire (`transport.rs` omits the
-        /// `annotations` key for `None`): a descriptor with `None` has no
-        /// `annotations` key in its row, `Some(Value::Null)` renders
-        /// `"annotations": null`.
+        /// Presence-encoded like the wire: `None` has no `annotations` key, `Some(Value::Null)`
+        /// renders `"annotations": null`.
         #[serde(skip_serializing_if = "Option::is_none")]
         annotations: Option<&'a Value>,
-        /// Serde strings of `CardRole` (`"planner"`, `"worker"`, …), not the
-        /// Rust variant names.
+        /// Serde strings of `CardRole`, not the Rust variant names.
         visible_to_roles: &'a [CardRole],
     }
 
@@ -118,8 +91,7 @@ mod tests {
         }
     }
 
-    /// Pretty JSON array of one row per descriptor, in the given order, plus
-    /// one trailing newline.
+    /// Pretty JSON array of one row per descriptor, plus one trailing newline.
     fn render_golden_rows(descriptors: &[ToolDescriptor]) -> String {
         let rows: Vec<GoldenRow<'_>> = descriptors.iter().map(golden_row).collect();
         let mut rendered =
@@ -189,9 +161,7 @@ mod tests {
         );
     }
 
-    /// The golden must tell `annotations: None` (wire: key absent) apart from
-    /// `Some(Value::Null)` (wire: `"annotations": null`); a plain
-    /// `Option<Value>` serialisation renders both as `null`.
+    /// A plain `Option<Value>` serialisation would render `None` and `Some(Value::Null)` both as `null`.
     #[test]
     fn golden_row_encodes_annotations_presence_like_the_wire() {
         let descriptor = |annotations: Option<Value>| ToolDescriptor {
@@ -225,14 +195,9 @@ mod tests {
         assert_eq!(absent_row[0], null_without_key);
     }
 
-    /// #1635 S1d: every non-alias tool's description is the file
-    /// `prompts/tools/<tool name>.md` (embedded with `include_str!` and
-    /// `trim_end()`), and there is no such file without a tool. The
-    /// directory is read at test time, so a stray, renamed or orphaned file
-    /// fails here rather than silently going unused. The byte rules make
-    /// `trim_end()` strip exactly the repository newline and nothing else:
-    /// with trailing whitespace before that newline, the embedded description
-    /// would differ from the file's visible content.
+    /// Every non-alias tool's description is `prompts/tools/<tool name>.md` (`include_str!` +
+    /// `trim_end()`), and there is no such file without a tool. Trailing whitespace before the
+    /// final newline would make the embedded description differ from the file's visible content.
     #[test]
     fn prompt_files_cover_exactly_the_non_alias_tools() {
         let registry = build_default_registry();

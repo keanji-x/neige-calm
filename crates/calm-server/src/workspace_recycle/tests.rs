@@ -1,11 +1,4 @@
-//! #1147 S5 unit coverage for the recycle guards and the trash GC.
-//!
-//! These tests exercise the *mechanism* (does the guard hold, does the rename
-//! land where it should, does GC date entries the way it claims). The tests
-//! that prove the mechanism is actually wired into deletion — and that a
-//! refusal really means "the bytes are still there, byte for byte" — live in
-//! `crates/calm-server/tests/cases/track_workspace_recycle.rs`, driven through
-//! the real REST routes.
+//! Unit coverage for the recycle guards and the trash GC.
 
 use std::path::{Path, PathBuf};
 
@@ -15,22 +8,11 @@ use crate::workspace_materialize::materialize_managed_workspace;
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 
-// --------------------------------------------------------------------------
-// R22 test seam
-// --------------------------------------------------------------------------
-
 type PreRenameHook = Box<dyn Fn(&Path)>;
 
 thread_local! {
-    /// Runs inside `move_into_trash`, after the trash root is canonicalized and
-    /// before the `rename` — the exact window R22 exploits.
-    ///
-    /// Thread-local, not a global: recycling is synchronous and runs on the
-    /// calling thread, so a hook installed by one test cannot leak into another
-    /// test running in parallel in the same binary. Deterministic injection
-    /// beats a threaded hammer here — the red team needed 2 of 200 attempts to
-    /// hit this window by racing, which is exactly the flakiness profile a
-    /// regression test must not have.
+    /// Runs inside `move_into_trash` between the trash-root canonicalize and the `rename`. Thread-local: recycling
+    /// is synchronous on the calling thread, so a hook cannot leak into a parallel test.
     static PRE_RENAME_HOOK: std::cell::RefCell<Option<PreRenameHook>> =
         const { std::cell::RefCell::new(None) };
 }
@@ -43,7 +25,6 @@ pub(super) fn fire_pre_rename_hook(trash_root: &Path) {
     });
 }
 
-/// Installs `hook` for the duration of `body`, then clears it.
 fn with_pre_rename_hook<T>(hook: impl Fn(&Path) + 'static, body: impl FnOnce() -> T) -> T {
     PRE_RENAME_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
     let result = body();
@@ -64,9 +45,7 @@ impl Fixture {
         Fixture { _tmp: tmp, root }
     }
 
-    /// A real managed workspace, built by the *production* materializer — so
-    /// the ownership marker under test is the one production writes, not a
-    /// re-implementation that could drift away from it.
+    /// Built by the production materializer, so the marker under test is the one production writes.
     fn managed(&self, area_id: &str, track_id: &str) -> PathBuf {
         let path =
             crate::workspace_materialize::managed_workspace_path(&self.root, area_id, track_id);
@@ -110,7 +89,6 @@ fn a_managed_workspace_moves_into_the_trash_and_is_not_deleted() {
         !path.exists(),
         "the workspace must be gone from its old path"
     );
-    // The whole point of rename-over-delete: the bytes are still readable.
     assert_eq!(std::fs::read(to.join("work.txt")).unwrap(), b"precious");
     assert!(to.join(".git").is_dir(), "the repository moved intact");
     assert_eq!(
@@ -128,9 +106,7 @@ fn a_managed_workspace_moves_into_the_trash_and_is_not_deleted() {
 #[test]
 fn an_attached_workspace_is_refused() {
     let f = Fixture::new();
-    // Deliberately *inside* the root and carrying a valid marker: the only
-    // thing making this refuse is the typed kind. That is the design's point —
-    // deletion permission comes from the column, never from the path.
+    // Inside the root with a valid marker: only the typed kind makes this refuse.
     let path = f.managed("area-1", "track-1");
     let decision = f.recycle(
         "track-1",
@@ -205,9 +181,6 @@ fn a_marker_naming_another_track_is_refused() {
 #[test]
 fn a_symlink_that_resolves_outside_the_root_is_refused() {
     let f = Fixture::new();
-    // A real repository outside the managed root, with a *matching* marker —
-    // so the only guard standing between it and deletion is the canonical
-    // containment check.
     let outside = f._tmp.path().join("elsewhere").join("track-1");
     std::fs::create_dir_all(&outside).unwrap();
     std::fs::create_dir_all(outside.join(".git")).unwrap();
@@ -218,7 +191,6 @@ fn a_symlink_that_resolves_outside_the_root_is_refused() {
     std::fs::create_dir_all(&area_dir).unwrap();
     let link = area_dir.join("track-1");
     std::os::unix::fs::symlink(&outside, &link).unwrap();
-    // Lexically the stored path is squarely under the root.
     assert!(link.starts_with(&f.root));
 
     let decision = f.recycle(
@@ -238,8 +210,6 @@ fn a_symlink_that_resolves_outside_the_root_is_refused() {
 #[test]
 fn a_symlinked_parent_that_resolves_outside_the_root_is_refused() {
     let f = Fixture::new();
-    // The subtler shape of the same bug: the *area* level is the link, so the
-    // track directory itself is a perfectly ordinary directory.
     let outside_area = f._tmp.path().join("elsewhere-area");
     std::fs::create_dir_all(outside_area.join("track-1").join(".git")).unwrap();
     std::fs::write(
@@ -264,22 +234,12 @@ fn a_symlinked_parent_that_resolves_outside_the_root_is_refused() {
     assert!(outside_area.join("track-1").join(".git").is_dir());
 }
 
-// --------------------------------------------------------------------------
-// Guard 2, depth — red team R1/R2
-// --------------------------------------------------------------------------
-
-/// A valid ownership marker on the **area layer** must not make the area
-/// directory recyclable: renaming it takes every sibling track's repository
-/// with it. Executable, not a decision assertion — the sibling's bytes are
-/// what the test reads.
 #[test]
 fn a_marker_on_the_area_layer_does_not_take_the_siblings_with_it() {
     let f = Fixture::new();
     let sibling = f.managed("area-1", "track-2");
     std::fs::write(sibling.join("sibling-work.txt"), b"do not lose me").unwrap();
 
-    // Someone (a restore, a future PATCH writing an arbitrary path, a bug)
-    // leaves our marker one level up and points a track row at it.
     let area_dir = f.root.join("area-1");
     std::fs::create_dir_all(area_dir.join(".git")).unwrap();
     std::fs::write(area_dir.join(".git").join("neige-workspace"), "track-1\n").unwrap();
@@ -300,8 +260,6 @@ fn a_marker_on_the_area_layer_does_not_take_the_siblings_with_it() {
     );
 }
 
-/// The same rule from below: a marked directory *deeper* than
-/// `<root>/<area_id>/<track_id>` is not a workspace either.
 #[test]
 fn a_marker_deeper_than_a_track_directory_is_refused() {
     let f = Fixture::new();
@@ -321,9 +279,6 @@ fn a_marker_deeper_than_a_track_directory_is_refused() {
     assert!(nested.is_dir());
 }
 
-/// The `.trash` exclusion branch of guard 2, which otherwise has no test:
-/// recycling something already in the trash would nest trash inside trash and
-/// make the entry undateable by [`gc_trash`].
 #[test]
 fn a_path_already_inside_the_trash_is_refused() {
     let f = Fixture::new();
@@ -333,8 +288,6 @@ fn a_path_already_inside_the_trash_is_refused() {
         &Fixture::workspace(&path, TrackWorkspaceKind::Managed),
     );
     let trashed = decision.trashed_path().unwrap().to_path_buf();
-    // The trashed copy still carries a valid marker for this track, so guards 1,
-    // 3 and 4 all hold; only "not already in the trash" refuses.
     let again = f.recycle(
         "track-1",
         &Fixture::workspace(&trashed, TrackWorkspaceKind::Managed),
@@ -353,14 +306,6 @@ fn a_path_already_inside_the_trash_is_refused() {
     );
 }
 
-// --------------------------------------------------------------------------
-// The destination is validated too — red team R6/R11
-// --------------------------------------------------------------------------
-
-/// `.trash` as a symlink out of the root. `create_dir_all` follows it, so the
-/// workspace would land outside the managed tree and [`gc_trash`] — which
-/// canonicalizes — could never see it again: a silent, permanent leak reported
-/// as a successful recycle.
 #[test]
 fn a_symlinked_trash_directory_is_a_hard_error_not_a_silent_leak() {
     let f = Fixture::new();
@@ -389,16 +334,12 @@ fn a_symlinked_trash_directory_is_a_hard_error_not_a_silent_leak() {
     );
 }
 
-/// `track_id` is interpolated into the trash entry name. An id that is not a
-/// single path segment must not be able to steer the `rename` above the root.
-/// Closed by coincidence today (ids are uuid-simple); this pins it.
 #[test]
 fn a_track_id_that_escapes_its_path_segment_is_a_hard_error() {
     let f = Fixture::new();
     let escaping_id = "../escaped";
     let path = f.managed("area-1", "track-1");
-    // Marker must match the (hostile) id, so guard 3 holds and the destination
-    // check is the only thing left.
+    // The marker must match the hostile id so guard 3 holds and only the destination check can refuse.
     std::fs::write(
         path.join(".git").join("neige-workspace"),
         format!("{escaping_id}\n"),
@@ -418,7 +359,6 @@ fn a_track_id_that_escapes_its_path_segment_is_a_hard_error() {
         "{error}"
     );
     assert!(path.join(".git").is_dir());
-    // And nothing landed above the root.
     let stray: Vec<_> = std::fs::read_dir(f._tmp.path())
         .unwrap()
         .map(|e| e.unwrap().file_name())
@@ -430,19 +370,8 @@ fn a_track_id_that_escapes_its_path_segment_is_a_hard_error() {
     );
 }
 
-/// Red team R22 — the static `.trash` check cannot cover the window between
-/// itself and the `rename`. Swap `.trash` for a symlink in that window and the
-/// kernel re-resolves the candidate at rename time: the workspace lands outside
-/// the managed root while the function reports
-/// `Trashed { to: <root>/.trash/… }`.
-///
-/// The red team hit this by racing (2 of 200 attempts). Reproduced here by
-/// deterministic injection instead — a threaded hammer would make this test
-/// flaky in exactly the way a regression test must not be.
-///
-/// The fix is detection, not prevention (prevention is `renameat`, registered
-/// as N16). What must never happen is the *lie*: reporting success while the
-/// bytes are somewhere the GC can never see.
+/// Swapping `.trash` for a symlink between the canonicalize and the `rename` makes the kernel re-resolve the
+/// candidate at rename time. Reproduced by deterministic injection; racing hit it 2 of 200 attempts.
 #[test]
 fn a_trash_swapped_between_canonicalize_and_rename_is_not_reported_as_success() {
     let f = Fixture::new();
@@ -454,8 +383,7 @@ fn a_trash_swapped_between_canonicalize_and_rename_is_not_reported_as_success() 
     let swap_target = elsewhere.clone();
     let result = with_pre_rename_hook(
         move |trash_root| {
-            // Only fire once: after the swap `trash_root` is a symlink, and
-            // `remove_dir` on it would fail.
+            // Only fire once: after the swap `trash_root` is a symlink and `remove_dir` on it would fail.
             if trash_root.is_symlink() {
                 return;
             }
@@ -482,8 +410,6 @@ fn a_trash_swapped_between_canonicalize_and_rename_is_not_reported_as_success() 
         message.contains("is not the trash directory"),
         "unexpected error: {message}"
     );
-    // Best-effort restore: same filesystem here, so it must have worked, and the
-    // error must say so.
     assert!(
         message.contains("has been moved back"),
         "the error must state which of the two recovery states applies: {message}"
@@ -548,7 +474,6 @@ fn recycling_the_same_track_twice_does_not_clobber_the_first_entry() {
     assert_ne!(a, b, "the same millisecond must not reuse a trash slot");
     assert_eq!(std::fs::read(a.join("gen.txt")).unwrap(), b"one");
     assert_eq!(std::fs::read(b.join("gen.txt")).unwrap(), b"two");
-    // Both names still parse, which is what keeps the GC able to date them.
     assert!(trash_entry_timestamp(a).is_some());
     assert!(trash_entry_timestamp(b).is_some());
 }
@@ -561,7 +486,6 @@ fn the_area_directory_is_removed_only_once_it_is_empty() {
     let ws_one = Fixture::workspace(&one, TrackWorkspaceKind::Managed);
     let ws_two = Fixture::workspace(&two, TrackWorkspaceKind::Managed);
 
-    // Only one of the two recycled: the area layer must survive.
     let mut partial = recycle_area_workspaces(
         &f.root,
         "area-1",
@@ -657,10 +581,6 @@ fn a_late_area_recycle_error_restores_every_earlier_workspace() {
     assert!(second.join(".git").is_dir(), "the failing target was moved");
 }
 
-// --------------------------------------------------------------------------
-// Trash GC
-// --------------------------------------------------------------------------
-
 fn seed_trash_entry(root: &Path, name: &str) -> PathBuf {
     let path = root.join(TRASH_DIR_NAME).join(name);
     std::fs::create_dir_all(&path).unwrap();
@@ -687,15 +607,10 @@ fn gc_removes_entries_past_the_retention_window_and_keeps_the_rest() {
 
 #[test]
 fn gc_dates_entries_by_name_not_by_mtime() {
-    // The mtime of a renamed directory is whenever its contents last changed,
-    // which for a workspace is typically long before it was trashed. An
-    // mtime-based sweep would therefore delete a just-recycled workspace
-    // immediately — no retention window at all, for exactly the repositories
-    // most worth keeping.
+    // `rename` preserves mtime, so an mtime-based sweep would delete a just-recycled workspace immediately.
     let f = Fixture::new();
     let now = 100 * DAY_MS;
     let entry = seed_trash_entry(&f.root, &format!("track-1-{now}"));
-    // 1970-01-01 + 1000s, i.e. as stale as an mtime gets.
     let status = std::process::Command::new("touch")
         .args(["-d", "@1000"])
         .arg(&entry)

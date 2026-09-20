@@ -1,6 +1,4 @@
-// Area: the workspace grouping a track belongs to. Wire decode + the pure
-// helpers every end shares. Platform-independent by construction — the
-// transport is injected at the call site (core/api/client.ts).
+// Area: the workspace grouping a track belongs to. Wire decode + the pure helpers every end shares.
 
 import { z } from 'zod';
 
@@ -9,12 +7,7 @@ import type { ApiOperation } from '../api/types.js';
 export const areaKindSchema = z.enum(['user', 'system']);
 export type AreaKind = z.infer<typeof areaKindSchema>;
 
-/**
- * `kind` is absent from the OpenAPI `required` set because the kernel emits it
- * with `#[serde(default)]` for pre-#175 event-log replays. The default belongs
- * to the decoder, not to every reader: the decoded `Area` keeps `kind`
- * required so no consumer has to re-derive it.
- */
+/** The default belongs to the decoder: the decoded `Area` keeps `kind` required so no consumer re-derives it. */
 export const areaWireSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -22,8 +15,6 @@ export const areaWireSchema = z.object({
   sort: z.number(),
   kind: areaKindSchema.default('user'),
   // Historical `area.updated` payloads predate both creation preferences.
-  // Current API snapshots emit explicit nulls; the decoder owns replay
-  // compatibility so every domain consumer still sees required fields.
   default_template_id: z.string().nullable().default(null),
   default_cwd: z.string().nullable().default(null),
   created_at: z.number(),
@@ -58,13 +49,8 @@ export function toArea(wire: AreaWire): Area {
 }
 
 /**
- * Chooses the newest authoritative snapshot of one Area.
- *
- * Current server writes advance `updatedAt` strictly, so a lower version can
- * never replace a higher one when the HTTP response and event stream race.
- * Equal versions deliberately accept the incoming carrier: historical event
- * logs can contain multiple same-millisecond updates and replay order remains
- * their only tie-breaker.
+ * Chooses the newest authoritative snapshot of one Area. Equal versions deliberately accept
+ * the incoming carrier: historical event logs can contain same-millisecond updates.
  */
 export function newestArea(current: Area, incoming: Area): Area {
   return current.updatedAt > incoming.updatedAt ? current : incoming;
@@ -74,13 +60,7 @@ export function areaListOperation(): ApiOperation<AreaWire[]> {
   return { method: 'GET', path: '/api/areas', responseSchema: z.array(areaWireSchema) };
 }
 
-/**
- * E2E-INV-SHELL-003 — the system area hosting the default Today terminal must
- * never reach a user-visible surface. `GET /api/areas` already filters it
- * server-side; this is the second layer of defence (#175) so a future
- * `?include_system=true` call site, or a replayed payload, cannot leak kernel
- * scaffolding into the sidebar or into Today's fan-out.
- */
+/** The system area must never reach a user-visible surface; this is the client-side half of the server filter. */
 export function visibleAreas(areas: readonly Area[]): Area[] {
   return areas.filter((area) => area.kind === 'user');
 }
@@ -132,14 +112,7 @@ export function deleteAreaOperation(areaId: string): ApiOperation<undefined> {
   return { method: 'DELETE', path: `/api/areas/${encodeURIComponent(areaId)}`, responseSchema: z.undefined() };
 }
 
-/**
- * A folder an area has claimed. The kernel's `area_folders` mapping, decoded.
- *
- * `id` is an autoincrement integer here rather than the usual uuid-shaped TEXT
- * because the row never enters the sync engine's event log — that is the
- * kernel's reason (see `AreaFolder` in `core/api/generated/wire.ts`), repeated
- * here only so a reader does not "fix" the type.
- */
+/** `id` is an autoincrement integer, not a uuid, because the row never enters the sync engine's event log. */
 export const areaFolderWireSchema = z.object({
   id: z.number(),
   area_id: z.string(),
@@ -172,10 +145,7 @@ export function areaFoldersOperation(areaId: string): ApiOperation<AreaFolderWir
   };
 }
 
-/**
- * `path` ascending, ties broken by `id`. The kernel returns insertion order,
- * which is neither stable across a re-claim nor a useful display order.
- */
+/** `path` ascending, ties broken by `id`; the kernel returns insertion order. */
 export function sortedAreaFolders(folders: readonly AreaFolder[]): AreaFolder[] {
   return [...folders].sort((left, right) => (left.path !== right.path
     ? (left.path < right.path ? -1 : 1)
@@ -183,12 +153,8 @@ export function sortedAreaFolders(folders: readonly AreaFolder[]): AreaFolder[] 
 }
 
 /**
- * The structured body `POST /api/tracks` answers a folder clash with (#275,
- * `area_folder_claim.rs`). It carries **no `error` key**, so the generic
- * failure normaliser in `core/api/client.ts` can only report the bare status
- * text — "Conflict" — and the reader is left with no idea which path or which
- * area is in the way. Decoding it is therefore not a nicety: it is the only
- * way this failure says anything at all.
+ * The folder-clash body of `POST /api/tracks`. It carries no `error` key, so the generic failure
+ * normaliser only reports "Conflict".
  */
 export const folderConflictSchema = z.object({
   folder_id: z.number().int().safe().positive(),
@@ -205,15 +171,8 @@ export function asFolderConflict(body: unknown): FolderConflict | null {
 }
 
 /**
- * The sentence a human can act on. `areaName` is `null` when the conflicting
- * area is not in the reader's area list — it may have been created in another
- * tab, or deleted between the conflict and this render — and the phrasing then
- * degrades to "another area" rather than printing a uuid.
- *
- * The three kinds are three different problems and get three different
- * remedies: `descendant` means somebody already owns this path, `ancestor`
- * means claiming it would silently widen a narrower claim underneath it, and
- * `equal` means this exact path is already claimed.
+ * `areaName` is `null` when the conflicting area is not in the reader's list; the phrasing then
+ * degrades to "another area".
  */
 export function folderConflictMessage(conflict: FolderConflict, areaName: string | null): string {
   const owner = areaName === null ? 'another area' : `area “${areaName}”`;
@@ -229,20 +188,10 @@ export function folderConflictMessage(conflict: FolderConflict, areaName: string
   }
 }
 
-/** The eight identity slots. An area's colour is a slot, never a free hex (§6.2). */
+/** The eight identity slots. An area's colour is a slot, never a free hex. */
 export const AREA_SLOT_COUNT = 8;
 
-/**
- * §6.2 — an area's identity dot is a stable hash of its id, mod 8, not the
- * kernel's `color` field. Two consequences the design leans on: the same area
- * is the same colour on every surface and across reloads, and the palette stays
- * inside the token set, so the eight hues can be re-tuned (or cut to six) in
- * `tokens.css` without touching a component.
- *
- * It lives in core rather than beside AREA_PALETTE because three separate
- * surfaces need it and `features/**` may not import a sibling feature domain —
- * and because "which slot is this area" is domain logic, not a palette value.
- */
+/** An area's identity dot is a stable hash of its id, mod 8, not the kernel's `color` field. */
 export function areaSlotVar(areaId: string): string {
   let hash = 0;
   for (let index = 0; index < areaId.length; index += 1) {

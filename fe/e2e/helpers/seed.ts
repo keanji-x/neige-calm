@@ -23,17 +23,8 @@ export async function createTrack(
   areaId: string,
   title = `FE e2e track ${Date.now()}`,
 ): Promise<SeededTrack> {
-  // #1147 S3 — no `cwd`. Omitting it is the *managed workspace* branch:
-  // the kernel derives `<workspace-root>/<area>/<track>` and creates the
-  // git repository itself, so the seed works in every environment (docker
-  // stack or native server) without the test having to own a directory.
-  // It is also exactly what the new FE's default create sends (see
-  // `track-create.spec.ts`, which pins "no cwd on the wire"), so the seed
-  // stays representative. Sending an explicit `cwd` is the *attached*
-  // branch, and since S3 the kernel requires that path to already exist
-  // and be inside a git work tree — an invented `/tmp/...` path is a 400,
-  // and before S3 it was worse: the track was created but every worker on
-  // it died in `git_repo_root_for_track_cwd`.
+  // No `cwd`: the managed-workspace branch, so the kernel creates the repository itself. An
+  // explicit `cwd` must already exist inside a git work tree, so an invented `/tmp/...` path is a 400.
   const response = await request.post('/api/tracks', {
     data: {
       area_id: areaId,

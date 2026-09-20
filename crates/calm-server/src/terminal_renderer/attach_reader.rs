@@ -26,7 +26,6 @@ impl Drop for ObservationSource {
     }
 }
 
-// Copied from crates/calm-session/src/bin/daemon.rs::spawn_supervisor_attach_reader as part of #388 Phase 3a lift. Daemon binary retires in 3c; until then we live with duplication.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_supervisor_attach_reader(
     mut attach_conn: UnixStream,
@@ -39,10 +38,8 @@ pub fn spawn_supervisor_attach_reader(
     repo: Option<Arc<dyn RouteRepo>>,
     terminal_id: String,
     task_hook: Option<Arc<crate::scheduler::TerminalTaskHook>>,
-    // Flipped to `true` once — and only once — the whole `Exited` arm below
-    // has run (#993 R3-A). Teardown waits on *this*, never on the task handle:
-    // the loop also ends on an attach-stream read error, which persists
-    // nothing, so "the task finished" is not evidence that the exit landed.
+    // Flipped to `true` once the whole `Exited` arm below has run. Teardown waits on this, never
+    // on the task handle: the loop also ends on a read error, which persists nothing.
     exit_persisted_tx: watch::Sender<bool>,
     output_capture: SharedTerminalOutputCapture,
 ) -> JoinHandle<()> {
@@ -146,13 +143,8 @@ pub fn spawn_supervisor_attach_reader(
                             );
                         }
                     }
-                    // Issue #644 M2 (live path) — if this terminal backs
-                    // a plan task, run the shared guarded completion tx
-                    // (row flip + kernel task.completed/failed). Runs
-                    // AFTER terminal_set_exit so a concurrent sweep that
-                    // loses the row-flip race still observed a persisted
-                    // exit. Errors are contained inside the hook; the
-                    // sweep's running-terminal arm is the retry.
+                    // Runs AFTER terminal_set_exit so a concurrent sweep that loses the row-flip race still
+                    // observed a persisted exit. Errors are contained inside the hook.
                     if let Some(hook) = task_hook.as_ref() {
                         hook.on_terminal_exit(
                             &terminal_id,
@@ -163,12 +155,7 @@ pub fn spawn_supervisor_attach_reader(
                         )
                         .await;
                     }
-                    // Sent last, after every persistence step above, so the
-                    // signal means "the exit was written" rather than "Exited
-                    // was seen". When no repo is wired there is nothing to
-                    // write and the signal degenerates to "the exit arm ran to
-                    // completion", which is exactly what teardown needs to
-                    // know before it aborts this task.
+                    // Sent last, after every persistence step above, so the signal means "the exit was written".
                     let _ = exit_persisted_tx.send(true);
                     break;
                 }

@@ -15,23 +15,15 @@ pub enum CommitExitOutcome {
     Absorbed,
 }
 
-/// #741-4 (DR-4) — a track the reaper's dead-root scan has identified as having
-/// a POSITIVELY-dead root, eligible for `Draft|Planning → Failed` convergence.
-///
-/// The candidate set is computed entirely in SQL ([`SessionRepo::dead_root_candidates`])
-/// so the soundness predicate lives in one auditable place: a candidate is
-/// emitted ONLY on a positive dead signal (a failed start-op for a `Draft`
-/// track, or a NULL/terminal root for a `Planning` track) AND only when NO
-/// active planner-contract session exists for the track (the mid-respawn
-/// exclusion). A live or merely just-created track is never a candidate.
+/// A track whose root the reaper's scan found POSITIVELY dead, eligible for
+/// `Draft|Planning → Failed` convergence. Computed entirely in SQL; a live or
+/// merely just-created track is never a candidate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeadRootCandidate {
     pub track_id: TrackId,
     pub area_id: AreaId,
-    /// The current lifecycle — always [`TrackLifecycle::Draft`] (failed-start)
-    /// or [`TrackLifecycle::Planning`] (lost-root). The reaper drives the
-    /// matching `from → Failed` edge and treats a current != from read as a
-    /// race-loss.
+    /// Always `Draft` (failed-start) or `Planning` (lost-root); the reaper treats
+    /// a current != from read as a race-loss.
     pub lifecycle: TrackLifecycle,
 }
 
@@ -54,9 +46,8 @@ pub trait SessionRepo: Send + Sync {
         probed_at_ms: i64,
     ) -> Result<Option<WorkerSession>>;
 
-    /// T2 durable codex worker-liveness feeder (#741 §1.3). Stamps the push-fed
-    /// `last_activity_ms` / `last_thread_status` columns on an *active* session
-    /// without touching `updated_at_ms`. Benign no-op on a terminal/missing row.
+    /// Stamps the push-fed liveness columns on an *active* session without
+    /// touching `updated_at_ms`. Benign no-op on a terminal/missing row.
     async fn session_record_activity(
         &self,
         id: &WorkerSessionId,
@@ -64,13 +55,10 @@ pub trait SessionRepo: Send + Sync {
         last_thread_status: &str,
     ) -> Result<()>;
 
-    /// T2 durable codex worker-liveness feeder (#741 §1.3), keyed by codex
-    /// `thread_id`. The durable notification subscriber only sees thread ids,
-    /// so it writes through this. Pinned to `provider='codex'`, never touches
-    /// `updated_at_ms`, and is a benign no-op on a terminal/missing row.
-    /// `turn_completed_ms` is `Some(at)` only for a `turn/completed` with
-    /// `status = completed`; it raises `last_turn_completed_ms` monotonically
-    /// in the same UPDATE (#1722 §4.2.1).
+    /// Keyed by codex `thread_id` (the notification subscriber only sees thread
+    /// ids); pinned to `provider='codex'`, never touches `updated_at_ms`.
+    /// `turn_completed_ms` is `Some` only for a `turn/completed` with
+    /// `status = completed` and raises `last_turn_completed_ms` monotonically.
     async fn session_record_activity_by_thread(
         &self,
         thread_id: &str,
@@ -97,17 +85,8 @@ pub trait SessionRepo: Send + Sync {
 
     async fn session_list_by_track(&self, track_id: &TrackId) -> Result<Vec<WorkerSession>>;
 
-    /// #741-4 (DR-4) — scan for tracks whose ROOT is POSITIVELY dead, scoped to
-    /// the DR-1 terminal edges (`Draft`, `Planning` only). The CARDINAL SAFETY
-    /// RULE — never converge a live or merely just-created track — is enforced
-    /// inside the SQL: a `Draft` track is a candidate only if its
-    /// `planner-harness-start` operation resolved to `phase='failed'` (a
-    /// pending/succeeded/absent start-op ⇒ NOT dead); a `Planning` track only if
-    /// its root session is NULL or terminal/missing. BOTH arms additionally
-    /// require that NO active planner-contract `worker_session`
-    /// (state ∈ starting/running/idle/turn_pending) exists for the track — the
-    /// mid-respawn exclusion, which also keeps a still-alive codex root (whose
-    /// session is `is_active_authority`) from ever being declared dead on a
-    /// bare PTY-`Exited`. Boot-gating is the caller's responsibility (§DR-5).
+    /// Tracks whose ROOT is POSITIVELY dead (`Draft` with a failed start-op,
+    /// `Planning` with a NULL/terminal root), and with NO active planner-contract
+    /// session — never a live or just-created track. Boot-gating is the caller's.
     async fn dead_root_candidates(&self) -> Result<Vec<DeadRootCandidate>>;
 }

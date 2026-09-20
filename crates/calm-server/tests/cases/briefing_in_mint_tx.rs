@@ -1,31 +1,6 @@
-//! #1343 + #1314 — the launchpad opening briefing is computed INSIDE the mint
-//! transaction of `PlannerHarnessStartAdapter::prepare_tx`, and this is the
-//! wall-clocked proof that doing so does not deadlock.
-//!
-//! **This test exists because the placement is load-bearing and nothing else
-//! in the tree scans for it.** The briefing's two reads
-//! (`is_launchpad_track` -> `track_get_launchpad`, and `ACTIVITY_QUERY`'s
-//! `events ⋈ tracks ⋈ areas`) are single autocommit statements off the pool —
-//! a different connection from the transaction. Issued BEFORE the
-//! transaction's first write they can always be granted their shared lock and
-//! can never be the waiter in a cycle. Issued AFTER it, the same reads wedge:
-//! that variant was measured going red on the very first contended round,
-//! consuming the whole bound.
-//!
-//! **The hazardous table is `events`, not `tracks`.** The mint transaction's
-//! write set is `cards` + `events`; `tracks` is not in it. A reader reasoning
-//! from a `tracks`-centric story concludes the read is harmless wherever it
-//! sits, and is wrong.
-//!
-//! Shape borrowed from
-//! `claude_card_endpoint::post_claude_restart_does_not_deadlock_on_the_workspace_freeze`:
-//! an explicit wall clock, so a deadlock is a RED test rather than a wedged
-//! job. Contention borrowed from `deferred_read_tx_deadlock_repro`: the
-//! concurrent party is the real `DELETE /api/tracks/:id` writer sequence.
-//!
-//! The host track is made the launchpad on purpose, so the briefing takes its
-//! full lock footprint (both reads) rather than short-circuiting after the
-//! first.
+//! Wall-clocked proof that computing the launchpad opening briefing INSIDE the mint transaction does not
+//! deadlock: its reads are autocommit statements on another pool connection and must be issued BEFORE the
+//! transaction's first write (the hazardous table is `events`, not `tracks`).
 
 #![cfg(unix)]
 
@@ -52,14 +27,10 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
-/// Wall clock for one contended round. The uncontended round takes tens of
-/// milliseconds; a shared-cache deadlock never returns at all.
+/// The uncontended round takes tens of milliseconds; a shared-cache deadlock never returns at all.
 const ROUND_BOUND: Duration = Duration::from_secs(8);
 
-/// Rounds per test invocation. Each round is a fresh in-memory database, so a
-/// round is an independent draw on the interleaving. In-memory shared-cache is
-/// harsher than production WAL, which is the point: it is where a lock cycle
-/// shows up first.
+/// Each round is a fresh in-memory database; shared-cache is harsher than production WAL, which is the point.
 const ROUNDS: usize = 8;
 
 struct Boot {
@@ -178,13 +149,7 @@ impl Boot {
         body["id"].as_str().unwrap().to_string()
     }
 
-    /// Rows the briefing's `ACTIVITY_QUERY` actually counts, so the read is not
-    /// a trivially-empty scan: an `events` row in today's window, scoped to a
-    /// track in a `kind = 'user'` area, of an allowlisted kind.
-    ///
-    /// Without these the query still takes the same locks, but a fixture whose
-    /// premise is "the read returns nothing" is a weaker experiment than one
-    /// where the join walks rows in all three tables.
+    /// Rows the briefing's `ACTIVITY_QUERY` actually counts, so the join walks rows in all three tables.
     async fn seed_activity(&self, track_id: &str, n: usize) {
         for _ in 0..n {
             sqlx::query(
@@ -199,13 +164,7 @@ impl Boot {
         }
     }
 
-    /// Make this track the launchpad, which is what makes the create actually
-    /// render a briefing — and therefore what makes the transaction take the
-    /// briefing's full lock footprint. Written directly rather than through
-    /// `ensure_today_launchpad`, which would mint a workspace and wait on its
-    /// own `planner-harness-start` and add a second writer this experiment did
-    /// not ask for. The predicate `track_get_launchpad` reads is exactly this
-    /// column.
+    /// Written directly rather than through `ensure_today_launchpad`, which would add a second writer.
     async fn make_launchpad(&self, track_id: &str) {
         sqlx::query("UPDATE tracks SET purpose = 'launchpad' WHERE id = ?1")
             .bind(track_id)
@@ -227,12 +186,8 @@ impl Boot {
     }
 }
 
-/// One contended round: the mint transaction (carrying the briefing's reads at
-/// its top) races a `DELETE /api/tracks/:id` — an IMMEDIATE writer — and a
+/// One contended round: the mint transaction races a `DELETE /api/tracks/:id` (an IMMEDIATE writer) and a
 /// second conversation create on the same track.
-///
-/// Returns the three outcomes so the caller can assert on them, or panics on
-/// the wall clock.
 async fn one_round(round: usize) -> (StatusCode, StatusCode, StatusCode) {
     let b = boot().await;
     let host = b.create_track(&format!("host-{round}")).await;

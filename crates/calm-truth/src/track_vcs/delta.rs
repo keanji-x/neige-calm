@@ -219,9 +219,8 @@ async fn apply_run_key_delta_tx(
 
     for key in run_keys {
         if track_fs_view::is_reserved_run_key(&key) {
-            // See `insert_run_entries`: VCS skips the reserved-key projection
-            // to keep unrelated event writes commit-able, so this pathological
-            // state deliberately diverges from live `track_file` byte parity.
+            // VCS skips the reserved-key projection to keep unrelated event writes
+            // commit-able, so this state deliberately diverges from live `track_file` parity.
             tracing::error!(
                 target: "track_vcs",
                 idempotency_key = %key,
@@ -401,9 +400,8 @@ pub(super) fn paths_changed_by_event(event: &Event, track_id: &TrackId) -> PathD
         | Event::TaskFailed {
             idempotency_key, ..
         }
-        // Issue #644 PR-B — the scheduler's claim record is the
-        // requested-record fallback for the runs views (§5.6), so it
-        // dirties the same run paths a `*.worker_requested` would.
+        // The scheduler's claim record is the requested-record fallback for the runs
+        // views, so it dirties the same run paths a `*.worker_requested` would.
         | Event::TaskDispatched {
             idempotency_key, ..
         } => {
@@ -425,27 +423,16 @@ pub(super) fn paths_changed_by_event(event: &Event, track_id: &TrackId) -> PathD
         | Event::TerminalDeleted { .. }
         | Event::PluginState { .. }
         | Event::PluginToolRegistered { .. } => {}
-        // Issue #644 — the task plan has no track-fs view yet (a
-        // `plan/index.json` projection is a stated follow-up, design
-        // §4.3); plan revisions therefore change no tracked path.
+        // The task plan has no track-fs view; plan revisions change no tracked path.
         Event::PlanUpdated { .. } => {}
-        // Issue #644 PR-C (PR #685 F9) — `runs/<key>` renders from the
-        // worker cards + [`*.worker_requested`, `task.dispatched`,
-        // `task.completed`, `task.failed`] events only
-        // (`track_fs_view::runs_for_track`); a gate verdict changes no
-        // tracked bytes today. Re-add a run-key dirty arm here when the
-        // runs projection starts consuming `task.gate_result`.
+        // `runs/<key>` does not consume gate verdicts today; add a run-key dirty arm
+        // here when it starts consuming `task.gate_result`.
         Event::TaskGateResult { .. }
         | Event::TaskContextFrozen { .. }
         | Event::TaskContextAdvanced { .. }
         | Event::TaskExecutionSettled { .. } | Event::TaskCandidateVerificationSettled { .. } | Event::TaskFilePublicationSettled { .. } => {}
-        // Issue #760 slice 1: workspace leases are operational history.
-        // They are persisted and replayable, but they do not change the
-        // track filesystem projection in this slice.
+        // Operational history: persisted and replayable, no track-fs projection.
         Event::WorkspaceLeased { .. } | Event::WorkspaceReleased { .. } => {}
-        // Issue #760 slice ③-a: forge/worktree events are operational
-        // history for the git/forge toolset substrate. No track-fs
-        // projection consumes them in this pass.
         Event::ForgePrMerged { .. }
         | Event::ReviewRound { .. }
         | Event::RatifyRequested { .. }
@@ -459,8 +446,6 @@ pub(super) fn paths_changed_by_event(event: &Event, track_id: &TrackId) -> PathD
         | Event::WorktreeProvisioned { .. }
         | Event::WorktreeCommitted { .. }
         | Event::WorktreeRemoved { .. } => {}
-        // Historical proposal lifecycle events are adjudication history
-        // and do not change tracked track-fs bytes.
         Event::ProposalSubmitted { .. } | Event::ProposalResolved { .. } => {}
     }
     delta
@@ -478,11 +463,9 @@ fn add_card_payload_path(delta: &mut PathDelta, card_id: &str) {
 }
 
 fn add_card_runtime_paths(delta: &mut PathDelta, card_id: &str) {
-    // Post-#618 payload rendering is runtime-independent. Re-rendering this
-    // path on runtime events is byte-stable for current-schema blobs, and it
-    // heals pre-#618 manifests whose HEAD payload blobs still contain
-    // projected runtime fields: the first runtime event rewrites them to raw,
-    // producing a one-time `edited` entry.
+    // Payload rendering is runtime-independent, so re-rendering on runtime events
+    // is byte-stable; it also heals old manifests whose blobs still carry
+    // projected runtime fields (a one-time `edited` entry).
     delta.add(format!("cards/{card_id}/.payload.json"));
     delta.add(format!("cards/{card_id}/runtime.json"));
 }
@@ -501,7 +484,6 @@ mod tests {
 
     #[tokio::test]
     async fn report_path_disappears_when_report_card_kind_changes() {
-        // Intentionally pins pre-existing rendering behavior now unreachable through the API.
         let repo = SqlxRepo::open("sqlite::memory:")
             .await
             .expect("open sqlite repo");

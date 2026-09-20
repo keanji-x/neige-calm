@@ -25,14 +25,7 @@ const anchorPositionShapes = [
   ['ts-template-comment.ts', ['templateCommentAnchor'], { templateCommentAnchor: [] }],
 ] as const;
 
-/**
- * Anchor-class fixtures that must stay silent: the branch under test anchors, or refuses to anchor.
- *
- * The last three are guard fixtures (#1148 review): each names a threshold, not a branch. Relaxing the
- * threshold — DISPLAY_COPY_MINIMUM 6 → 3, BACKTICK_WORD_MINIMUM 4 → 2, dropping the CJK veto — admits a
- * candidate that occurs in no cited file, so the fixture turns red. Without them the four guard values were
- * unpinned: every one of them could be loosened with the whole anchor-class suite still green.
- */
+/** Anchor-class fixtures that must stay silent. The last three are guard fixtures: each names a threshold, and relaxing it turns the fixture red. */
 const anchorClassGreen = [
   'display-copy-with-identifier', 'display-copy-placeholder', 'display-copy-case-insensitive',
   'display-copy-typography-split', 'backtick-path-in-range', 'backtick-word-in-range',
@@ -45,9 +38,7 @@ const anchorClassRed = [
   ['display-copy-range-miss', 'range-miss', 'INV-TEST-010'],
   ['backtick-path-range-miss', 'range-miss', 'INV-TEST-015'],
   ['backtick-word-range-miss', 'range-miss', 'INV-TEST-017'],
-  // Guard fixture for the matching layer, not the extraction layer: the statement says `cardId` and the
-  // cited line declares `CardId`. Making identifier matching case-insensitive — the way display copy
-  // matches — would silently green this, so the red is the pin.
+  // Guard for the matching layer: case-insensitive identifier matching would silently green this.
   ['identifier-case-sensitive-miss', 'not-in-file', 'INV-TEST-023'],
 ] as const;
 
@@ -152,13 +143,8 @@ describe('oracle rule fixtures', () => {
     });
   }
 
-  // ── Anchor classes (#1148) ────────────────────────────────────────────────────────────────────────
-  //
-  // Each directory under `source-anchor/anchor-classes/` holds exactly ONE entry, so a case that expects a
-  // violation pins its own extraction branch: delete that branch and the statement yields no identifier at
-  // all, the `identifiers.length === 0` shortcut returns green, and only this case reds. The green cases
-  // pin the opposite direction — the branch must not manufacture a failure — and the two stop-word cases
-  // pin the exclusion list, where deleting the guard turns a word that is in no cited file into a red.
+  // Each anchor-class directory holds exactly ONE entry, so a red case pins its own extraction branch
+  // and a green case pins that the branch must not manufacture a failure.
   const anchorClass = (name: string) => validateOracle({
     repoRoot: fixtures,
     oracleDir: resolve(fixtures, 'source-anchor/anchor-classes', name),
@@ -241,9 +227,7 @@ describe('oracle rule fixtures', () => {
     );
   });
 
-  // anchor-pending.json is the temporary #1170 holding list, not a second baseline. Every branch of every
-  // rule gets its own single-violation fixture, so deleting that branch alone from validator.ts reds
-  // exactly its own case; a fixture that violates two branches at once would pin neither.
+  // anchor-pending.json is a temporary holding list, not a second baseline; each branch gets its own single-violation fixture.
   const FIXTURE_PENDING_IDS = ['INV-TEST-003', 'INV-TEST-004', 'INV-TEST-005'];
   const withPending = (
     pendingFile: string, baselineFile: string,
@@ -285,8 +269,7 @@ describe('oracle rule fixtures', () => {
     expect(violations[0]?.message).toContain('pending list may only shrink: declared 2, maximum 1');
   });
 
-  // The load-bearing shrink-only rule: the count cap alone would let a fixed row be traded for a
-  // brand-new failure at an unchanged count. Narrowing the frozen set is the same shape as that trade.
+  // The count cap alone would let a fixed row be traded for a brand-new failure at an unchanged count.
   it('pending list may only shrink: an id outside the frozen set is rejected however well-formed', () => {
     const violations = withPending('pending-unfrozen-id.json', 'pending-baseline.json',
       { ids: ['INV-TEST-003', 'INV-TEST-004'] });

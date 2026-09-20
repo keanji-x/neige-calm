@@ -1,29 +1,10 @@
-// Zod schemas for WS `/api/events` payloads. The source of truth on the
-// frontend for what the kernel can emit. Mirrors
-// `crates/calm-server/src/event.rs`'s `Event` enum (serde-tagged
-// `{ ev, data }`) and `crates/calm-server/src/model.rs`'s entity types.
-//
-// On parse failure, callers should log + skip dispatch — never throw — so a
-// new event variant added server-side doesn't crash the UI. The runtime
-// check exists to catch *unexpected* payload shapes (schema drift, partial
-// rollouts, broken proxies) rather than to police every field.
-//
+// Zod schemas for WS `/api/events` payloads, mirroring the kernel's `Event` enum and entity types.
+// On parse failure, callers log and skip dispatch — never throw.
 import { z } from 'zod';
 
 import type { ApiDecodeFailure } from './types.js';
 
-// ---------------- Entity schemas (mirror model.rs) ----------------
-
-/**
- * Issue #175 — `model::AreaKind`. Marks whether an area is part of the
- * user-visible workspace (`'user'`) or is the kernel-owned singleton that
- * hosts the default Today terminal's track (`'system'`). The kernel already
- * filters `kind='system'` out of `GET /api/areas` by default, so this
- * frontend schema's main job is to type the field for the optional
- * belt-and-suspenders `.filter(c => c.kind === 'user')` in CalmApp /
- * router. Defaults to `'user'` so pre-#175 wire payloads (event-log
- * replay, legacy fixtures) round-trip without forcing a fixture rewrite.
- */
+/** `model::AreaKind`. Defaults to `'user'` so legacy wire payloads parse. */
 export const areaKindSchema = z.enum(['user', 'system']).default('user');
 export type AreaKind = z.infer<typeof areaKindSchema>;
 
@@ -41,17 +22,8 @@ export const areaSchema = z.object({
 });
 
 /**
- * Issue #145 — `model::TrackLifecycle`. Single source of truth for the
- * lifecycle state machine the Planner Agent drives. Wire values are
- * lowercase (`#[serde(rename_all = "lowercase")]` on the Rust enum).
- * `archived` is intentionally NOT a lifecycle state — archive is
- * orthogonal visibility on `track.archived_at`.
- *
- * Defaults to `'draft'` for any pre-#145 wire payload (replay
- * fixtures, legacy event logs) — matches the DB DEFAULT in
- * migration 0012 and the `#[serde(default)]` on the Rust struct
- * field. Forces track payloads emitted *before* the lifecycle column
- * existed to parse without a fixture rewrite.
+ * `model::TrackLifecycle`. `archived` is intentionally NOT a lifecycle state; defaults to `'draft'`
+ * for legacy payloads.
  */
 export const trackLifecycleSchema = z
   .enum([
@@ -68,26 +40,10 @@ export const trackLifecycleSchema = z
   .default('draft');
 export type TrackLifecycle = z.infer<typeof trackLifecycleSchema>;
 
-/** `model::Track` — track metadata row. `archived_at` is `Option<i64>` server-side. */
 /**
- * #1209 PR-2 — one-way read compatibility for the pre-rename track keys.
- *
- * `track.updated` rows already on disk (and REST responses replayed from them)
- * spell the template fields `workflow_id` / `workflow_input`. `trackObjectSchema`
- * only knows the new spelling and defaults both to `null`, so a mechanical
- * rename here would have made every historical row hydrate as
- * `template_id: null` — silently, with no parse error. That fail-open is the
- * whole reason this function exists; it mirrors the deserialize-only
- * `#[serde(alias = "workflow_id")]` on `calm_types::Track`.
- *
- * Deliberately a preprocess step and NOT an optional field on the schema:
- * making the old key part of the schema would give the shape two writeable
- * spellings again, which is exactly what #1209 removes. The old keys are
- * dropped, and only copied over when the new key is absent.
- *
- * Each of the three zod readers in this repo carries its own copy of this
- * function on purpose. A shared helper would make "the third reader was never
- * wired up" a green regression.
+ * One-way read compatibility for the pre-rename track keys (`workflow_id` / `workflow_input`).
+ * Deliberately a preprocess step and NOT an optional field on the schema, and deliberately
+ * not shared with the other zod readers.
  */
 function normalizeLegacyTemplateKeys(raw: unknown): unknown {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return raw;
@@ -105,11 +61,7 @@ function normalizeLegacyTemplateKeys(raw: unknown): unknown {
   };
 }
 
-/**
- * `claude_permissions::ClaudePermissionsScope` (#1704) — a Claude Code
- * permission scope: `edit` globs relative to the terminal cwd, `bash` command
- * prefixes, `deny` prefixes. Absent lists stay absent on the wire.
- */
+/** A Claude Code permission scope: `edit` globs relative to the terminal cwd, `bash` prefixes, `deny` prefixes. */
 export const claudePermissionsScopeSchema = z.object({
   edit: z.array(z.string()).optional(),
   bash: z.array(z.string()).optional(),
@@ -124,98 +76,30 @@ const trackObjectSchema = z.object({
   sort: z.number(),
   archived_at: z.number().nullable(),
   pinned_at: z.number().nullable().default(null),
-  /**
-   * Issue #145 — the track's lifecycle state. Defaulted at the schema
-   * layer to `'draft'` so a missing field on pre-#145 wire payloads
-   * (event-log replay fixtures) parses cleanly. The kernel always
-   * stamps a value on fresh writes.
-   */
   lifecycle: trackLifecycleSchema,
-  /**
-   * Issue #250 PR 2 — track's working directory (planner-daemon cwd).
-   * Defaulted to `""` at the schema layer for symmetry with the
-   * server-side `#[serde(default)]` on `Track.cwd`: pre-#250 event-log
-   * replay fixtures (no `cwd` key on `TrackUpdated`) parse cleanly.
-   * Production rows always carry an absolute path.
-   */
+  /** Defaulted to `""` for legacy replay payloads; production rows always carry an absolute path. */
   cwd: z.string().default(''),
-  /**
-   * Issue #760 slice 4a — optional template descriptor backing this track.
-   * Defaulted to `null` for replay of event-log rows written before the
-   * field existed; fresh rows serialize the field explicitly.
-   */
   template_id: z.string().nullable().default(null),
-  /**
-   * #1110 S4 — owning plugin id copied at create. Defaulted to `null` so
-   * pre-S4 `track.updated` replays (no key) parse; mirrors
-   * `#[serde(default)]` on `Track.plugin_scope`.
-   */
   plugin_scope: z.string().nullable().default(null),
   purpose: z.string().nullable().default(null),
-  /**
-   * Issue #891 — opaque bound-template input JSON (kernel validates at
-   * create time; the frontend never interprets it). `z.unknown()` mirrors
-   * the `#[ts(type = "unknown")]` override on the Rust side (same pattern
-   * as `Card.payload`). Defaulted to `null` for pre-#891 replay payloads
-   * that omit the key — mirrors the server-side `#[serde(default)]`.
-   */
+  /** Opaque bound-template input JSON; the frontend never interprets it. */
   template_input: z.unknown().default(null),
-  /**
-   * Issue #250 PR 2 — unix-ms stamp the track most recently entered a
-   * terminal lifecycle state (Done / Canceled / Failed), or `null`
-   * while non-terminal. Defaulted to `null` so pre-#250 wire payloads
-   * (no key on the event) parse without churn.
-   */
+  /** Unix-ms stamp the track most recently entered a terminal lifecycle state, or `null` while non-terminal. */
   terminal_at: z.number().nullable().default(null),
-  /**
-   * #1292 S3 — the user recipe this track was instantiated from, and that
-   * recipe's `revision` at create time. Server-owned provenance: the kernel
-   * reads both from the `track_recipes` row inside the create tx, never from
-   * the request body. Both are `null` together for tracks that came from
-   * anywhere else; the DB CHECK in migration 0085 makes half a provenance
-   * unrepresentable, so the pair is effectively all-or-nothing even though
-   * the two zod fields are independent.
-   *
-   * Defaulted to `null` for the same reason `template_id` above is: pre-#1292
-   * `track.updated` replays carry no key, and mirrors `#[serde(default)]` on
-   * `Track.recipe_id` / `Track.recipe_revision`.
-   */
+  /** Server-owned provenance; both are `null` together for tracks that came from anywhere else. */
   recipe_id: z.string().nullable().default(null),
   recipe_revision: z.number().nullable().default(null),
-  /**
-   * #1147 S1 (design D1) — the typed workspace. `cwd` above is a projection
-   * of `workspace.path`; the kernel writes both from one value.
-   *
-   * Defaulted at the schema layer for symmetry with `#[serde(default)]` on
-   * `Track.workspace`: pre-#1147 `track.updated` replay payloads carry no
-   * `workspace` key. NOTE the zod trap this repo has hit before — an
-   * undeclared field is silently *stripped*, so the server having the field
-   * proves nothing about the client seeing it; it has to be declared here.
-   */
+  /** The typed workspace; `cwd` above is a projection of `workspace.path`. */
   workspace: z
     .object({
-      // No per-field defaults, deliberately. The default belongs on the
-      // *object*: a missing `workspace` key is a pre-#1147 replay payload and
-      // must parse, but a `workspace` that is present and incomplete is a
-      // server regression or a half-finished deploy, and filling it in with
-      // `attached` / `''` would hide exactly that. This matches serde, which
-      // rejects `{"workspace": {}}` because none of the three fields carries
-      // `#[serde(default)]`. (OpenAPI lists only `kind` and `path` as
-      // required — that is utoipa's blanket "Option ⇒ not required" rule for
-      // `frozen_at`, the same as `Track.archived_at`; serde is the stricter and
-      // truer contract, so the client follows serde.)
+      // No per-field defaults, deliberately: a missing `workspace` key must parse, but a
+      // present-and-incomplete one is a server regression. Matches serde, not OpenAPI.
       kind: z.enum(['managed', 'attached']),
       path: z.string(),
       frozen_at: z.number().nullable(),
     })
     .default({ kind: 'attached', path: '', frozen_at: null }),
-  /**
-   * #1704 S2 — the user-set Claude Code permission policy of the track's
-   * TREE, stored on the tree root only: a child track shows `null` here even
-   * when its root carries one (every ceiling read resolves the root
-   * server-side). Defaulted to `null` so pre-S2 `track.updated` replays (no
-   * key) parse; mirrors `#[serde(default)]` on `Track.claude_permissions_policy`.
-   */
+  /** Stored on the tree root only: a child track shows `null` here even when its root carries one. */
   claude_permissions_policy: claudePermissionsScopeSchema.nullable().default(null),
   created_at: z.number(),
   updated_at: z.number(),
@@ -255,9 +139,7 @@ export const cardRuntimeViewSchema = z.object({
   session_id: z.string().optional(),
   source: z.string().optional(),
   thread_status: z.string().optional(),
-  // #1722 S1b — when the card's last non-interrupted turn ended. Optional
-  // like `updated_at_ms`: persisted Card snapshots and cards without a
-  // completed turn omit it.
+  // Persisted Card snapshots and cards without a completed turn omit it.
   last_turn_completed_ms: z.number().optional(),
 });
 export type CardRuntimeView = z.infer<typeof cardRuntimeViewSchema>;
@@ -273,15 +155,7 @@ export const cardSchema = z.object({
   // serde_json::Value on the wire: arbitrary JSON. Kernel never inspects.
   payload: z.unknown(),
   runtime: cardRuntimeViewSchema.optional(),
-  // Issue #229 PR A — system-card guard bit. Kernel default = true
-  // (matches the migration's `INTEGER NOT NULL DEFAULT 1`); the `#[serde(default
-  // = "default_deletable")]` on the Rust struct means wire payloads
-  // from pre-#229 servers / event-log replays may omit the field, and
-  // zod surfaces that as `undefined`. The OpenAPI emitter renders the
-  // field as optional too — matching `Card.deletable?: boolean` on the
-  // generated TS. We `.default(true)` here so all downstream consumers
-  // see a populated bool after parse, while still tolerating wire
-  // omissions on the input side.
+  // Wire payloads from older servers may omit the field; `.default(true)` mirrors the kernel default.
   deletable: z.boolean().default(true),
   created_at: z.number(),
   updated_at: z.number(),
@@ -298,8 +172,6 @@ export const overlaySchema = z.object({
   payload: z.unknown(),
   updated_at: z.number(),
 });
-
-// ---------------- Event schemas (mirror event.rs) ----------------
 
 export const areaUpdatedSchema = z.object({
   ev: z.literal('area.updated'),
@@ -326,13 +198,7 @@ export const trackDeletedSchema = z.object({
   data: z.object({ id: z.string(), area_id: z.string() }),
 });
 
-/**
- * Issue #145 — `Event::TrackLifecycleChanged`. Emitted exactly once per
- * validated `from → to` transition. Reducers downstream can subscribe to
- * `kind = track.lifecycle_changed` directly without inspecting every
- * `track.updated` for a possibly-unchanged `lifecycle` field. Track-scoped
- * (routes to `track:<id>` and `area:<area>` topics).
- */
+/** Emitted exactly once per validated `from → to` transition. */
 export const trackLifecycleChangedSchema = z.object({
   ev: z.literal('track.lifecycle_changed'),
   data: z.object({
@@ -432,13 +298,8 @@ export const harnessTranscriptClearedSchema = z.object({
     worker_session_id: z.string(),
     card_id: z.string(),
     track_id: z.string(),
-    // #1252 S0-2 — the reset hard-deletes the transcript, so these are the
-    // only surviving record of its size and the card's age at reset.
-    // #1252 R1/F1 — nullable, and null is NOT the same as 0: rows written
-    // before the telemetry existed carry no measurement at all, and the
-    // Rust side keeps them replayable rather than dropping them from WS
-    // replay. The keys are always present on the wire (serde emits
-    // `null` for `None`), so these stay required-but-nullable.
+    // Nullable, and null is NOT the same as 0: rows written before the telemetry
+    // existed carry no measurement. The keys are always present on the wire.
     cleared_item_count: z.number().nullable(),
     cleared_params_bytes: z.number().nullable(),
     card_age_ms_at_clear: z.number().nullable(),
@@ -456,15 +317,8 @@ export const harnessUserMessageEnqueuedSchema = z.object({
 });
 
 /**
- * `ActorId`, mirrored from `wire.ts`.
- *
- * Rust spells it `#[serde(tag = "kind", content = "id")]`, so the three
- * id-less actors are a bare `{kind}` object and the rest carry `id`. The
- * `toEqualTypeOf` contract test is what keeps this union in step with the
- * generated type; it is written out rather than collapsed to
- * `z.object({kind: z.string(), id: z.string().optional()})` because that
- * looser shape would parse `{kind: "User", id: "anything"}` and would no
- * longer be the same type.
+ * `ActorId`: the three id-less actors are a bare `{kind}` object and the rest carry `id`.
+ * Written out rather than collapsed to a looser shape so it stays the same type as the generated one.
  */
 export const actorIdSchema = z.union([
   z.object({ kind: z.literal('User') }),
@@ -480,19 +334,8 @@ export const actorIdSchema = z.union([
 ]);
 
 /**
- * #1505 PR2 — `Event::HarnessQueueChanged`. One addressable entry in a planner
- * card's pending queue was rewritten, removed, delivered by a steer, or
- * discarded by the kernel.
- *
- * `steered` is emitted by the run loop once codex takes a queued entry into
- * the running turn (#1625 P3); `restored` when that entry goes back to the
- * queue — codex refused or never answered the steer, or the turn ended
- * before codex recorded the input (its review round 1). `dropped` is emitted
- * by the kernel's load-time queue truncation (#1505 PR2b) and is the only
- * announcement an entry discarded that way ever gets.
- *
- * `actor` is here rather than read off the envelope because the websocket
- * frame is `{ev, data}` and carries no envelope actor at all.
+ * One addressable entry in a planner card's pending queue changed. `actor` is here because the WS
+ * frame carries no envelope actor.
  */
 export const harnessQueueChangedSchema = z.object({
   ev: z.literal('harness.queue.changed'),
@@ -512,31 +355,7 @@ export const harnessQueueChangedSchema = z.object({
   }),
 });
 
-/**
- * Issue #247 PR2 — `Event::TrackReportEdited`. Structured edit-log
- * companion to `card.updated` emitted from every track-report write.
- * `card.updated` stays the generic "row changed, re-fetch" signal
- * existing frontend subscribers consume; `track.report_edited` is the
- * *additional* timeline entry the new edit-history UI (PR4) and the
- * planner agent's user-edit notifier (PR5) read.
- *
- * `author` discriminates who produced the edit. PR2 only emits
- * `'planner'`; PR3 introduces `'user'` for REST-driven edits; `'assistant'`
- * is #1189's track-scoped assistant conversation (no emitter until S2);
- * `'kernel'`
- * is reserved for future server-internal rewrites; `'plugin'` is
- * reserved for historical proposal-channel events, with no emitter
- * today. Attribution is carried in the sibling optional
- * `author_plugin_id` (absent for every other author — old rows replay
- * with the field missing).
- *
- * `edit_id` is a fresh UUID v4 per call so the UI can collapse
- * adjacent retries or correlate timeline entries with a future
- * REST-side request id without parsing the `_id` envelope field.
- *
- * Card-scoped on the persisted events row (`scope_track = track_id`,
- * `scope_card = card_id`).
- */
+/** Structured edit-log companion to `card.updated`. `author_plugin_id` is absent for every author but `'plugin'`. */
 export const trackReportEditedSchema = z.object({
   ev: z.literal('track.report_edited'),
   data: z.object({
@@ -568,15 +387,7 @@ export const overlayDeletedSchema = z.object({
   }),
 });
 
-/**
- * `Event::TerminalDeleted` — emitted by the orphan-terminal sweeper
- * (`crates/calm-server/src/terminal_sweeper.rs`) when a terminal row is
- * reaped because no card payload references it anymore. Actor is
- * `"kernel"` on the events-table row. Topic: `terminal:<id>`. The UI
- * doesn't currently subscribe to per-terminal topics, but the schema is
- * carried here so the runtime validator accepts the frame on the
- * firehose (`*`) subscription without dispatch-mismatch warnings.
- */
+/** Emitted by the orphan-terminal sweeper; carried so the firehose subscription accepts the frame. */
 export const terminalDeletedSchema = z.object({
   ev: z.literal('terminal.deleted'),
   data: z.object({
@@ -585,13 +396,7 @@ export const terminalDeletedSchema = z.object({
   }),
 });
 
-/**
- * `Event::PluginState` — emitted by the plugin host on lifecycle transitions.
- * `state` is a free-form string (e.g. `"Spawning"`, `"Running"`, `"Crashed"`)
- * matching the Rust `PluginState` enum's `Display`. `last_error` is `None`
- * for healthy transitions and `Some(msg)` on crash / init-rejected paths
- * (skipped from serialization when `None`, so the field is optional here).
- */
+/** `state` matches the Rust `PluginState` enum's `Display`; `last_error` is skipped when `None`. */
 export const pluginStateSchema = z.object({
   ev: z.literal('plugin.state'),
   data: z.object({
@@ -601,11 +406,7 @@ export const pluginStateSchema = z.object({
   }),
 });
 
-/**
- * `Event::PluginToolRegistered` — boot-time announcement for one
- * manifest-declared plugin MCP tool that is currently running and exposed
- * through the kernel MCP server as `plugin.<plugin_id>.<tool_name>`.
- */
+/** Boot-time announcement of a plugin MCP tool exposed as `plugin.<plugin_id>.<tool_name>`. */
 export const pluginToolRegisteredSchema = z.object({
   ev: z.literal('plugin.tool.registered'),
   data: z.object({
@@ -614,13 +415,7 @@ export const pluginToolRegisteredSchema = z.object({
   }),
 });
 
-/**
- * `Event::CodexHook` — passthrough of one codex-CLI hook firing
- * (PreToolUse / PostToolUse / Stop / ...). `kind` carries a snake-case
- * discriminator (`hook.codex.<event>`) so callers can pattern-match
- * without typing every codex payload field. `payload` is the raw codex
- * JSON, kept opaque.
- */
+/** Passthrough of one codex-CLI hook firing; `kind` is `hook.codex.<event>`, `payload` is the raw codex JSON. */
 export const codexHookSchema = z.object({
   ev: z.literal('codex.hook'),
   data: z.object({
@@ -631,10 +426,7 @@ export const codexHookSchema = z.object({
   }),
 });
 
-/**
- * `Event::ClaudeHook` — passthrough of one Claude hook firing.
- * Mirrors `codexHookSchema`; `payload` stays opaque to the web layer.
- */
+/** Passthrough of one Claude hook firing; mirrors `codexHookSchema`. */
 export const claudeHookSchema = z.object({
   ev: z.literal('claude.hook'),
   data: z.object({
@@ -645,28 +437,7 @@ export const claudeHookSchema = z.object({
   }),
 });
 
-// ---------------- PR4 of #136: dispatcher + task-lifecycle variants ----
-//
-// Schema-only PR — no kernel emitters today. PR5 (Dispatcher) wires them.
-// The four schemas below pin the wire shape the kernel will start emitting
-// once PR5 lands, so the runtime validator at the WS boundary doesn't drop
-// frames on the floor.
-//
-// `ArtifactRef` is a transparent newtype on the server (#129 placeholder);
-// ts-rs emits `export type ArtifactRef = string;` so on the wire each
-// element of `task.completed.artifacts[]` is a bare string.
-
-/**
- * `Event::CodexWorkerRequested` — planner/worker card asks the kernel
- * dispatcher to spawn a codex worker card. PR5's `Dispatcher` consumes
- * via `EventBus::subscribe(kinds=["*.requested"])` and correlates the
- * eventual `task.completed` / `task.failed` back to the requester via
- * `idempotency_key`.
- *
- * `context` is opaque `serde_json::Value` (working-dir hints, prior turn
- * history, model preference) — kernel never inspects, dispatcher
- * forwards verbatim into the spawned worker's card payload.
- */
+/** A card asks the dispatcher to spawn a codex worker card; `context` is opaque and forwarded verbatim. */
 export const codexWorkerRequestedSchema = z.object({
   ev: z.literal('codex.worker_requested'),
   data: z.object({
@@ -679,9 +450,8 @@ export const codexWorkerRequestedSchema = z.object({
 });
 
 /**
- * `Event::TerminalWorkerRequested` — planner card asks the dispatcher to spawn
- * a terminal worker card. `cwd` is `None` when the planner card defers to
- * the track/area default working directory.
+ * A planner card asks the dispatcher to spawn a terminal worker card; `cwd` is absent when
+ * deferring to the track/area default.
  */
 export const terminalWorkerRequestedSchema = z.object({
   ev: z.literal('terminal.worker_requested'),
@@ -693,16 +463,7 @@ export const terminalWorkerRequestedSchema = z.object({
   }),
 });
 
-/**
- * `Event::TaskCompleted` — worker card reports task completion.
- * `idempotency_key` echoes the matching `*.worker_requested` key so the
- * planner can correlate without parsing the worker card's identity.
- *
- * `artifacts` is `Vec<ArtifactRef>` server-side; `ArtifactRef` is a
- * transparent newtype around `String`, so each element is a bare string
- * on the wire. #129 will expand the type with hash / content-type /
- * storage-uri — at that point this schema will tighten alongside.
- */
+/** Worker reports task completion; `idempotency_key` echoes the matching `*.worker_requested` key. */
 export const taskCompletedSchema = z.object({
   ev: z.literal('task.completed'),
   data: z.object({
@@ -713,13 +474,7 @@ export const taskCompletedSchema = z.object({
   }),
 });
 
-/**
- * `Event::TaskFailed` — worker card reports task failure. `reason` is a
- * free-form failure string; the kernel never parses it but persists it
- * on the events table so audit-log replay can surface the rationale the
- * worker gave its planner. `details` carries optional structured evidence,
- * including terminal PTY output.
- */
+/** Worker reports task failure; `details` carries optional structured evidence, including terminal PTY output. */
 export const taskFailedSchema = z.object({
   ev: z.literal('task.failed'),
   data: z.object({
@@ -749,14 +504,7 @@ export const taskExecutionSettledSchema = z.object({
   }),
 });
 
-/**
- * `Event::PlanUpdated` — issue #644: the planner revised the track's task
- * plan via `calm.plan.upsert` / `calm.plan.cancel`. Track-scoped audit
- * record; `changed_keys` lists the task keys whose rows were
- * created/updated/canceled by the call (`unchanged` upserts are not
- * listed). The PR-B scheduler subscribes to this kind as its primary
- * trigger; no web query consumes the tasks table yet.
- */
+/** The planner revised the track's task plan; `changed_keys` omits `unchanged` upserts. */
 export const planUpdatedSchema = z.object({
   ev: z.literal('plan.updated'),
   data: z.object({
@@ -766,15 +514,7 @@ export const planUpdatedSchema = z.object({
   }),
 });
 
-/**
- * `Event::TaskDispatched` — issue #644 PR-B: the kernel scheduler
- * claimed a plan task (`pending → dispatched`), appended inside the
- * claim tx. `idempotency_key` is the task id (`"{track_id}:{key}"`);
- * `kind` is the worker kind (`"codex"` / `"terminal"` — a plain string
- * so a future worker kind is not a wire break). Kernel-only (actor
- * `KernelDispatcher`); the runs views treat it as the requested-record
- * fallback for scheduler-dispatched tasks.
- */
+/** The kernel scheduler claimed a plan task; `idempotency_key` is the task id (`"{track_id}:{key}"`). */
 export const taskDispatchedSchema = z.object({
   ev: z.literal('task.dispatched'),
   data: z.object({
@@ -784,9 +524,8 @@ export const taskDispatchedSchema = z.object({
   }),
 });
 
-// These fields are required here although Rust uses `serde(default)` for
-// historical storage: the WS outlet reserializes the Rust Event enum instead
-// of forwarding raw persisted payloads (pinned by the min-golden canonical case).
+// Required here although Rust uses `serde(default)` for historical storage: the WS
+// outlet reserializes the Rust Event enum instead of forwarding raw persisted payloads.
 export const taskContextFrozenSchema = z.object({
   ev: z.literal('task.context_frozen'),
   data: z.object({
@@ -825,10 +564,7 @@ export const taskContextAdvancedSchema = z.object({
   }),
 });
 
-/**
- * `Event::WorkspaceLeased` — issue #760 slice 1: the kernel created an
- * isolated workspace directory for a Codex worker card.
- */
+/** The kernel created an isolated workspace directory for a Codex worker card. */
 export const workspaceLeasedSchema = z.object({
   ev: z.literal('workspace.leased'),
   data: z.object({
@@ -839,10 +575,7 @@ export const workspaceLeasedSchema = z.object({
   }),
 });
 
-/**
- * `Event::WorkspaceReleased` — issue #760 slice 1: the kernel released the
- * durable workspace lease after completion, compensation, or boot reclaim.
- */
+/** The kernel released the durable workspace lease after completion, compensation, or boot reclaim. */
 export const workspaceReleasedSchema = z.object({
   ev: z.literal('workspace.released'),
   data: z.object({
@@ -871,10 +604,7 @@ export const channelVerdictSchema = z.object({
 
 export const ratifyDecisionSchema = z.enum(['grant', 'deny']);
 
-/**
- * `Event::ForgePrMerged` — issue #760 slice 6: the forge action adapter
- * observed a PR merge and atomically completed the parked operation.
- */
+/** The forge action adapter observed a PR merge and completed the parked operation. */
 export const forgePrMergedSchema = z.object({
   ev: z.literal('forge.pr.merged'),
   data: z.object({
@@ -885,10 +615,7 @@ export const forgePrMergedSchema = z.object({
   }),
 });
 
-/**
- * `Event::ReviewRound` — issue #760 slice ⑤-b-i: the planner recorded one
- * dual-review convergence round for a logical review subject.
- */
+/** The planner recorded one dual-review convergence round for a review subject. */
 export const reviewRoundSchema = z.object({
   ev: z.literal('review.round'),
   data: z.object({
@@ -921,11 +648,8 @@ export const ratifyResolvedSchema = z.object({
 });
 
 /**
- * `ProposalOp` / `ProposalAnchor` mirrors (#955 §5.2.1) — the typed op
- * vocabulary carried on `proposal.submitted`. Anchor is externally
- * tagged: bare `'at_start'` / `'at_end'` strings, or an
- * `{ after_block_id }` object (which may reference an in-batch
- * `temp:<temp_id>` block).
+ * Anchor is externally tagged: bare `'at_start'` / `'at_end'`, or `{ after_block_id }` (may
+ * reference an in-batch `temp:<temp_id>` block).
  */
 export const proposalAnchorSchema = z.union([
   z.literal('at_start'),
@@ -963,11 +687,7 @@ export const proposalDecisionSchema = z.enum([
   'withdrawn',
 ]);
 
-/**
- * `Event::ProposalSubmitted` — issue #955 §5: a plugin proposed report
- * edits through the ④ channel. Actor is the submitting plugin;
- * adjudication is human (see `proposal.resolved`).
- */
+/** A plugin proposed report edits; adjudication is human (see `proposal.resolved`). */
 export const proposalSubmittedSchema = z.object({
   ev: z.literal('proposal.submitted'),
   data: z.object({
@@ -982,11 +702,7 @@ export const proposalSubmittedSchema = z.object({
   }),
 });
 
-/**
- * `Event::ProposalResolved` — issue #955 §5.6: a pending proposal
- * reached one of its four terminal decisions. `plugin_id` is the
- * submitter (role-gate ownership field), not the resolver.
- */
+/** A pending proposal reached a terminal decision; `plugin_id` is the submitter, not the resolver. */
 export const proposalResolvedSchema = z.object({
   ev: z.literal('proposal.resolved'),
   data: z.object({
@@ -1079,15 +795,7 @@ export const worktreeRemovedSchema = z.object({
   }),
 });
 
-/**
- * `Event::TaskGateResult` — issue #644 PR-C: the kernel gate runner
- * finished one `task-verify` attempt; appended in the same tx as the
- * `verifying → done|failed` tasks-row flip. `task_id` and
- * `idempotency_key` both carry the task id (`"{track_id}:{key}"`).
- * Kernel-only (actor `KernelDispatcher`). `failing_step` / `exit_code`
- * are absent on the wire for verdicts that don't carry them (skip-if-
- * none serde on the Rust side).
- */
+/** One `task-verify` attempt finished; `failing_step` / `exit_code` are absent for verdicts that don't carry them. */
 export const taskGateResultSchema = z.object({
   ev: z.literal('task.gate_result'),
   data: z.object({
@@ -1103,19 +811,7 @@ export const taskGateResultSchema = z.object({
   }),
 });
 
-// ---------------- EventScope (mirror event.rs) ----------------
-
-/**
- * `EventScope` — the event's "home scope" in the area → track → card
- * hierarchy. PR2 of #136 adds this to every persisted event so future
- * MCP subscribers / dispatcher routes can filter without re-parsing
- * the payload. Tagged `{kind, id}` shape via `#[serde(tag, content)]`
- * on the Rust side.
- *
- * `System` is the catch-all for events that genuinely don't belong to
- * a single area/track/card (`plugin.state`, area-create, the pre-PR2
- * NULL-fallback). Pre-PR2 history rows replay as `System`.
- */
+/** The event's home scope in the area → track → card hierarchy; `System` is the catch-all. */
 export const eventScopeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('System') }),
   z.object({ kind: z.literal('Area'), id: z.object({ area: z.string() }) }),
@@ -1131,13 +827,7 @@ export const eventScopeSchema = z.discriminatedUnion('kind', [
 
 export type EventScope = z.infer<typeof eventScopeSchema>;
 
-// ---------------- Discriminated union ----------------
-
-/**
- * The complete set of events the kernel can push on `/api/events`. Keep this
- * 1:1 with `event::Event` in calm-server; the WS handler runtime-validates
- * each frame through this schema and skips dispatch on mismatch.
- */
+/** Keep this 1:1 with `event::Event` in calm-server. */
 export const wireEventSchema = z.discriminatedUnion('ev', [
   areaUpdatedSchema,
   areaDeletedSchema,
@@ -1193,11 +883,6 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   worktreeRemovedSchema,
   taskGateResultSchema,
 ]);
-
-// ---------------- Inferred types ----------------
-//
-// Available for consumers that want a stronger type than `WireEvent` from
-// `wire.ts`. Not migrated yet — the two coexist by design until a sweep.
 
 export type Area = z.infer<typeof areaSchema>;
 export type Track = z.infer<typeof trackSchema>;

@@ -163,9 +163,6 @@ class CollectorTests(unittest.TestCase):
         wait.assert_not_called()
 
     def test_real_control_actions_and_result_shapes_remain_collectable(self):
-        # terminal_interaction::control: action is a string; detach returns
-        # the #1618 identity receipt (older servers: {detached:true}), while
-        # claim/release return connection/control IDs.
         for action, result in (("claim", {"terminal_id": "t1", "connection_id": "c1", "control_id": "owner1"}),
                                ("release", {"terminal_id": "t1", "connection_id": "c1", "control_id": None}),
                                ("detach", {"detached": True}),
@@ -181,8 +178,6 @@ class CollectorTests(unittest.TestCase):
                 self.assertEqual(errors, [])
 
     def test_change_wait_outcomes_are_read_from_returned_observations_only(self):
-        # Request side: wait_for=change on observe, and on an observe=true
-        # input readback. Outcome side: the observation's own wait block.
         def wait(outcome, settled=True):
             return {"wait": {"mode": "change", "outcome": outcome, "waited_ms": 812, "settled": settled},
                     "changed_since_previous_observation": outcome == "changed"}
@@ -201,12 +196,10 @@ class CollectorTests(unittest.TestCase):
             "observation_id_used": "obs-3", "output_since_observation": False,
             "observation": {"status": "available", "state": state}}}
         calls.append(readback)
-        # Refused change wait: a request, but no observation and no outcome.
         refused = row(5)
         refused["params"]["item"]["arguments"]["wait_for"] = "change"
         refused["params"]["item"]["status"], refused["params"]["item"]["error"] = "failed", {"message": "wait_ms out of range"}
         calls.append(refused)
-        # Unavailable readback with wait_for=change: a request without an observation.
         unavailable = row(6, "calm.terminal.input")
         unavailable["params"]["item"]["arguments"].update({"action": {"type": "key", "key": "Enter"},
                                                             "observe": True, "wait_for": "change"})
@@ -224,13 +217,10 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(result["readback_available"], 1)
         self.assertEqual(result["tool_errors"], 1)
         self.assertEqual(calls, original)
-        # Existing definitions are untouched by the new fields.
         self.assertEqual(result["terminal_tool_calls"], 6)
         self.assertEqual(result["observation_refusals"], 0)
 
     def test_change_wait_only_counts_calls_that_produce_an_observation(self):
-        # wait_for=change on a control call without observe=true requests no
-        # readback, so it is neither a change nor an elapsed wait request.
         control = row(1, "calm.terminal.control")
         control["params"]["item"]["arguments"].update({"action": "claim", "wait_for": "change"})
         control["params"]["item"]["result"] = {"structuredContent": {
@@ -259,7 +249,6 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(result["unmeasured_wait_observations"], 0)
 
     def test_observation_without_wait_field_is_unmeasured_not_a_crash(self):
-        # Pre-#1618 server: no wait block on observe results or readback states.
         plain = row(1)
         requested = row(2)
         requested["params"]["item"]["arguments"]["wait_for"] = "change"
@@ -334,9 +323,7 @@ class CollectorTests(unittest.TestCase):
             input_call(2, True, {"output_since_observation": False}),
             input_call(3, None, {"output_since_observation": False}),
             input_call(4, False, {"output_since_observation": True}),
-            # Refused: the flag was requested, but no receipt reports drift.
             input_call(5, True, {"output_since_observation": True}, failed=True),
-            # Older server: receipt has no drift field at all; nothing is inferred.
             input_call(6, True, {}),
         ]
         result = ux.metrics(calls)
@@ -376,7 +363,6 @@ class CollectorTests(unittest.TestCase):
                          + ux.OPEN_REPLACE_SUMMARY_METRIC_KEYS + ux.TEXT_CONDITION_METRIC_KEYS
                          + ux.HISTORY_SEARCH_METRIC_KEYS)
 
-    # #1666 round-trip counters.
     def test_text_wait_requests_and_outcomes_are_read_from_arguments_and_observations(self):
         def text_state(outcome):
             state = row(1)["params"]["item"]["result"]["structuredContent"]
@@ -397,15 +383,12 @@ class CollectorTests(unittest.TestCase):
         readback["params"]["item"]["result"] = {"structuredContent": {
             "terminal_id": "t1", "request_id": "r3", "outcome": "written", "application_result": "unverified",
             "observation": {"status": "available", "state": text_state("matched")}}}
-        # Refused: a request, no observation, no outcome.
         refused = row(4)
         refused["params"]["item"]["arguments"].update({"wait_for": "text"})
         refused["params"]["item"]["status"], refused["params"]["item"]["error"] = "failed", {"message": "wait_for=text requires wait_text"}
-        # wait_for=text on a control call without observe=true requests nothing.
         control = row(5, "calm.terminal.control")
         control["params"]["item"]["arguments"].update({"action": "claim", "wait_for": "text", "wait_text": ["x"]})
         control["params"]["item"]["result"] = {"structuredContent": {"terminal_id": "t1", "connection_id": "c1", "control_id": "o1"}}
-        # A change wait that happens to carry a text-shaped result stays in the change tally.
         change = row(6)
         change["params"]["item"]["arguments"]["wait_for"] = "change"
         change["params"]["item"]["result"]["structuredContent"] = text_state("matched")
@@ -418,7 +401,6 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(result["signal_wait_requests"], 0)
         self.assertEqual(result["tool_errors"], 1)
         self.assertEqual(calls, original)
-        # Pre-#1666 server: a request without a wait block is unmeasured.
         older = row(7)
         older["params"]["item"]["arguments"].update({"wait_for": "text", "wait_text": ["x"]})
         result = ux.metrics([older])
@@ -442,19 +424,14 @@ class CollectorTests(unittest.TestCase):
         calls = [
             input_call(1, {"action": edit, "claim": True},
                        {"steps": 3, "claim": {"status": "claimed", "control_id": "o1"}, "control_id": "o1"}),
-            # A refused sequence is still a request with its steps.
             input_call(2, {"action": {"type": "sequence", "steps": [{"type": "text", "text": "x"}]}}, failed=True),
-            # A malformed steps field adds no steps.
             input_call(3, {"action": {"type": "sequence", "steps": "Left"}}, failed=True),
             input_call(4, {"action": {"type": "text", "text": "hello"}, "allow_output_below_cursor": True},
                        {"output_since_observation": True,
                         "observation_drift": {"observed_revision": 7, "input_revision": 9, "tolerance": "below_cursor",
                                               "rows_changed_below_cursor": [3], "rows_changed_total": 1, "truncated": False}}),
-            # Requested but not needed: the revision had not moved.
             input_call(5, {"action": {"type": "text", "text": "x"}, "allow_output_below_cursor": True},
                        {"output_since_observation": False}),
-            # Admitted by the wider flag: its own tolerance in the drift (#1684),
-            # which is not a below-cursor admission.
             input_call(6, {"action": {"type": "text", "text": "x"}, "allow_output_below_cursor": True,
                            "allow_output_since_observation": True},
                        {"output_since_observation": True,
@@ -466,7 +443,6 @@ class CollectorTests(unittest.TestCase):
                                               "truncated": False}}),
             input_call(7, {"action": {"type": "submit", "text": "bye"}, "release": True, "claim": False},
                        {"release": {"status": "released"}}),
-            # String flags are not true.
             input_call(8, {"action": {"type": "submit", "text": "x"}, "claim": "true", "release": "true"}),
         ]
         original = copy.deepcopy(calls)
@@ -481,7 +457,6 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(result["drift_observed_inputs"], 2)
         self.assertEqual(result["tool_errors"], 2)
         self.assertEqual(calls, original)
-        # A tolerated write on a failed call is not counted.
         failed = input_call(9, {"action": {"type": "text", "text": "x"}, "allow_output_below_cursor": True},
                             {"observation_drift": {"tolerance": "below_cursor"}}, failed=True)
         self.assertEqual(ux.metrics([failed])["below_cursor_tolerated_inputs"], 0)
@@ -498,14 +473,12 @@ class CollectorTests(unittest.TestCase):
             "observation": {"status": "available", "state": row(1, text=("7219",))["params"]["item"]["result"]["structuredContent"]}}}
         _, evidence = ux.check_scenario("edit", [edited], None)
         self.assertEqual(evidence["status"], "review_required")
-        # Movement alone is not a correction, in a sequence or on its own.
         moved = copy.deepcopy(edited)
         moved["params"]["item"]["arguments"]["action"]["steps"] = [{"type": "key", "key": "Left", "repeat": 5},
                                                                    {"type": "text", "text": "9"}]
         with self.assertRaises(ux.EvidenceError):
             ux.check_scenario("edit", [moved], None)
 
-    # #1677 counters: open waits, replace, receipt summary.
     def test_open_wait_requests_and_outcomes_are_read_from_arguments_and_results(self):
         def wait(mode, outcome):
             return {"wait": {"mode": mode, "outcome": outcome, "waited_ms": 812, "settled": outcome != "unmatched"},
@@ -518,19 +491,15 @@ class CollectorTests(unittest.TestCase):
         change = row(2, "calm.terminal.open")
         change["params"]["item"]["arguments"] = {"request_id": "o2", "wait_for": "change", "wait_ms": 300}
         change["params"]["item"]["result"]["structuredContent"].update(wait("change", "unchanged"))
-        # wait_ms alone is a wait argument (elapsed).
         elapsed = row(3, "calm.terminal.open")
         elapsed["params"]["item"]["arguments"] = {"request_id": "o3", "wait_ms": 500}
         elapsed["params"]["item"]["result"]["structuredContent"].update(wait("elapsed", "elapsed"))
-        # No wait argument: an ordinary open with its immediate read.
         plain = row(4, "calm.terminal.open")
         plain["params"]["item"]["arguments"] = {"request_id": "o4", "claim": True}
         plain["params"]["item"]["result"]["structuredContent"].update(wait("elapsed", "elapsed"))
-        # Refused wait: a request without a result.
         refused = row(5, "calm.terminal.open")
         refused["params"]["item"]["arguments"] = {"request_id": "o5", "wait_for": "text"}
         refused["params"]["item"]["status"], refused["params"]["item"]["error"] = "failed", {"message": "wait_for=text requires wait_text"}
-        # Older server: a wait argument whose result carries no wait block.
         older = row(6, "calm.terminal.open")
         older["params"]["item"]["arguments"] = {"request_id": "o6", "wait_for": "text", "wait_text": ["x"]}
         calls = [text, change, elapsed, plain, refused, older]
@@ -538,8 +507,6 @@ class CollectorTests(unittest.TestCase):
         result = ux.metrics(calls)
         self.assertEqual(result["open_with_wait"], 5)
         self.assertEqual(result["open_wait_outcomes"], {"elapsed": 1, "matched": 1, "unchanged": 1})
-        # The open's wait is a wait like any other carrier's (#1677): the
-        # refused request counts as a request, the older result as unmeasured.
         self.assertEqual(result["text_wait_requests"], 3)
         self.assertEqual(result["text_wait_outcomes"], {"matched": 1})
         self.assertEqual(result["change_wait_requests"], 1)
@@ -576,12 +543,9 @@ class CollectorTests(unittest.TestCase):
         detach["params"]["item"]["result"] = {"structuredContent": {"detached": True, "had_client": True, "terminal_id": "t1"}}
         calls = [
             input_call(1, {"type": "replace", "from": "11", "to": "19"}, {"replace": plan, "summary": summary}),
-            # Refused: a request, no receipt.
             input_call(2, {"type": "replace", "from": "11", "to": "19"}, failed=True),
-            # Stale: a replace request whose receipt is not a write.
             input_call(3, {"type": "replace", "from": "11", "to": "19"},
                        {"outcome": "stale_observation", "summary": {**summary, "action": "stale_observation"}}),
-            # An older server: a written receipt without a summary.
             input_call(4, {"type": "text", "text": "x"}),
             control, detach,
         ]
@@ -593,7 +557,6 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(result["tool_errors"], 1)
         self.assertEqual(result["observation_refusals"], 1)
         self.assertEqual(calls, original)
-        # A summary that is not an object is not counted.
         odd = input_call(8, {"type": "text", "text": "x"}, {"summary": "written"})
         self.assertEqual(ux.metrics([odd])["summary_present"], 0)
 
@@ -607,13 +570,11 @@ class CollectorTests(unittest.TestCase):
             "observation": {"status": "available", "state": row(1, text=("7219",))["params"]["item"]["result"]["structuredContent"]}}}
         _, evidence = ux.check_scenario("edit", [edited], None)
         self.assertEqual(evidence["status"], "review_required")
-        # A plain text action is still no correction.
         typed = copy.deepcopy(edited)
         typed["params"]["item"]["arguments"]["action"] = {"type": "text", "text": "19"}
         with self.assertRaises(ux.EvidenceError):
             ux.check_scenario("edit", [typed], None)
 
-    # #1677 r16 text conditions on signal waits.
     def test_text_condition_requests_and_outcomes_are_read_from_arguments_and_results(self):
         def signal_state(repaint, conditions):
             state = row(1)["params"]["item"]["result"]["structuredContent"]
@@ -639,29 +600,22 @@ class CollectorTests(unittest.TestCase):
             readback(1, absent, signal_state("settled", {"present": None, "absent": True})),
             readback(2, absent, signal_state("unsettled", {"present": None, "absent": False})),
             readback(3, {"wait_text": ["❯"], **absent}, signal_state("settled", {"present": True, "absent": True})),
-            # Present held, absent did not: not held.
             readback(4, {"wait_text": ["❯"], **absent}, signal_state("unsettled", {"present": True, "absent": False})),
-            # No conditions asked: not a condition request.
             readback(5, {}, signal_state("already", {"present": None, "absent": None})),
-            # Older server: no conditions block, no outcome.
             readback(6, absent, signal_state("settled", None)),
-            # Unavailable readback: a request without an outcome.
             readback(7, absent, {}),
         ]
         calls[6]["params"]["item"]["result"]["structuredContent"]["observation"] = {"status": "unavailable", "reason": "gone"}
-        # Refused: a request, no result.
         refused = row(8)
         refused["params"]["item"]["arguments"].update({"wait_for": "signal", "wait_text_absent": []})
         refused["params"]["item"]["status"], refused["params"]["item"]["error"] = "failed", {"message": "wait_text must list 1..8 patterns"}
         calls.append(refused)
-        # Text mode with an absent condition is a text wait, not a signal condition request.
         text = row(9)
         text["params"]["item"]["arguments"].update({"wait_for": "text", "wait_text_absent": ["busy"]})
         text["params"]["item"]["result"]["structuredContent"].update({
             "wait": {"mode": "text", "outcome": "matched", "waited_ms": 12, "settled": True, "text": None,
                      "conditions": {"present": None, "absent": True}}})
         calls.append(text)
-        # An open with a signal wait and conditions counts too.
         opened = row(10, "calm.terminal.open")
         opened["params"]["item"]["arguments"] = {"request_id": "o1", "wait_for": "signal", "wait_text_absent": ["busy"]}
         opened["params"]["item"]["result"]["structuredContent"] = signal_state("settled", {"present": None, "absent": True})
@@ -675,13 +629,9 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(result["text_wait_requests"], 1)
         self.assertEqual(result["tool_errors"], 1)
         self.assertEqual(calls, original)
-        # A malformed conditions block is rejected, never guessed.
         bad = readback(11, absent, signal_state("settled", {"present": "yes", "absent": True}))
         with self.assertRaises(ux.EvidenceError):
             ux.metrics([bad])
-        # Review r1 H: a skipped repaint (repaint_ms 0, the exact shape an
-        # older server produced) or an asked side that came back null was
-        # never tested: `untested`, never `held`.
         skipped = readback(12, {**absent, "repaint_ms": 0},
                            signal_state("skipped", {"present": None, "absent": None}))
         skipped["params"]["item"]["result"]["structuredContent"]["observation"]["state"]["wait"]["repaint"]["waited_ms"] = 0
@@ -691,7 +641,6 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(result["text_condition_requests"], 2)
         self.assertEqual(result["signal_condition_outcomes"], {"settled/untested": 1, "skipped/untested": 1})
 
-    # #1710 history search counters.
     def test_history_search_requests_and_found_are_read_from_arguments_and_results(self):
         def search(identifier, pattern, scroll_to, occurrence=None):
             call = row(identifier)
@@ -708,18 +657,14 @@ class CollectorTests(unittest.TestCase):
             search(1, "MARK", found),
             search(2, "MARK", missing, "earliest"),
             search(3, "MARK", dict(found, row_absolute=45, row=5), "latest"),
-            # Older server: no block, a request without a verdict.
             search(4, "MARK", None),
-            # No search asked: neither counter.
             row(5),
         ]
-        # Refused (scroll_offset 4): a request, no result.
         refused = search(6, "MARK", None)
         refused["params"]["item"]["arguments"]["scroll_offset"] = 4
         refused["params"]["item"]["status"], refused["params"]["item"]["error"] = "failed", {
             "message": "scroll_to_text needs scroll_offset 0"}
         calls.append(refused)
-        # An open or a readback never searches: the argument is ignored there.
         opened = row(7, "calm.terminal.open")
         opened["params"]["item"]["arguments"] = {"request_id": "o1", "scroll_to_text": "MARK"}
         opened["params"]["item"]["result"]["structuredContent"]["scroll_to"] = found
@@ -730,11 +675,9 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(result["history_search_found"], 2)
         self.assertEqual(result["tool_errors"], 1)
         self.assertEqual(calls, original)
-        # A malformed block is rejected, never guessed.
         with self.assertRaises(ux.EvidenceError):
             ux.metrics([search(8, "MARK", "found")])
 
-    # #1620 hook-signal counters.
     @staticmethod
     def signals(hooks_seen=True, events=()):
         return {"hooks_seen": hooks_seen, "last_seq": 7, "since_previous_observation": [
@@ -764,13 +707,11 @@ class CollectorTests(unittest.TestCase):
                  signal_call(2, {"outcome": "already", "waited_ms": 0}),
                  signal_call(3, {"outcome": "none", "waited_ms": 1500}),
                  signal_call(4, {"outcome": "settled", "waited_ms": 512}),
-                 signal_call(5, ...),   # pre-#1628 server: no block, tolerated
-                 signal_call(6, None)]  # null: no signal-shaped repaint verdict
-        # A budget-ended signal wait (#1692: `no_signal`) carries no repaint block and no tally.
+                 signal_call(5, ...),
+                 signal_call(6, None)]
         budget = row(7)
         budget["params"]["item"]["arguments"]["wait_for"] = "signal"
         budget["params"]["item"]["result"]["structuredContent"] = self.signal_wait_state("no_signal")
-        # A change wait never contributes, whatever its result carries.
         change = row(8)
         change["params"]["item"]["arguments"]["wait_for"] = "change"
         state = self.signal_wait_state()
@@ -798,15 +739,12 @@ class CollectorTests(unittest.TestCase):
         readback["params"]["item"]["result"] = {"structuredContent": {
             "terminal_id": "t1", "request_id": "r3", "outcome": "written", "application_result": "unverified",
             "observation": {"status": "available", "state": self.signal_wait_state()}}}
-        # Refused signal wait: a request, but no observation and no outcome.
         refused = row(4)
         refused["params"]["item"]["arguments"]["wait_for"] = "signal"
         refused["params"]["item"]["status"], refused["params"]["item"]["error"] = "failed", {"message": "unsupported"}
-        # wait_for=signal on a control call without observe=true requests no observation.
         control = row(5, "calm.terminal.control")
         control["params"]["item"]["arguments"].update({"action": "claim", "wait_for": "signal"})
         control["params"]["item"]["result"] = {"structuredContent": {"terminal_id": "t1", "connection_id": "c1", "control_id": "o1"}}
-        # A change wait that happens to observe a signal outcome stays in the change tally only.
         change = row(6)
         change["params"]["item"]["arguments"]["wait_for"] = "change"
         change["params"]["item"]["result"]["structuredContent"] = self.signal_wait_state("changed")
@@ -822,7 +760,6 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(result["tool_errors"], 1)
         self.assertEqual(result["unmeasured_signal_observations"], 0)
         self.assertEqual(calls, original)
-        # Missing wait_for: neither a request nor an outcome, even with a signal-shaped result.
         plain = row(7)
         plain["params"]["item"]["result"]["structuredContent"] = self.signal_wait_state()
         result = ux.metrics([plain])
@@ -874,8 +811,6 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(result["terminal_tool_calls"], 5)
         self.assertEqual(result["tool_errors"], 0)
 
-    # #1704: an open request that carries `claude_permissions`, whatever its
-    # value or outcome, is counted from its own arguments.
     def test_open_with_permissions_counts_requests_carrying_the_argument(self):
         calls = []
         scope = {"edit": ["**"], "bash": ["python3 -m unittest"], "deny": ["git push"]}
@@ -906,10 +841,7 @@ class CollectorTests(unittest.TestCase):
         readback["params"]["item"]["result"] = {"structuredContent": {
             "terminal_id": "t1", "request_id": "r3", "outcome": "written", "application_result": "unverified",
             "observation": {"status": "available", "state": state}}}
-        # Pre-#1620 server: no signals block is unmeasured, never inferred.
         older = row(4)
-        # An open result is an observation (#1677: its wait is its final
-        # observation); an unavailable readback is not.
         opened = row(5, "calm.terminal.open")
         opened["params"]["item"]["result"]["structuredContent"]["signals"] = self.signals(True, ("Stop",))
         unavailable = row(6, "calm.terminal.input")
@@ -921,8 +853,7 @@ class CollectorTests(unittest.TestCase):
         original = copy.deepcopy(calls)
         result = ux.metrics(calls)
         self.assertEqual(result["hooks_seen_observations"], 3)
-        self.assertEqual(result["signals_observed"], 5)  # 3 + 0 + 1 + 1 events over 4 measured observations
-        # #1704: the same entries tallied by event; the total is signals_observed.
+        self.assertEqual(result["signals_observed"], 5)
         self.assertEqual(result["signal_events_observed"],
                          {"Notification": 1, "PreToolUse": 1, "Stop": 2, "UserPromptSubmit": 1})
         self.assertEqual(sum(result["signal_events_observed"].values()), result["signals_observed"])
@@ -973,7 +904,6 @@ class CollectorTests(unittest.TestCase):
             with self.subTest(name=name):
                 _, evidence = ux.check_scenario(name, [row(1, text=[answer]), submit, correction], None)
                 self.assertEqual(evidence["status"], "review_required")
-        # A submit of other text is not a rewind; a submit without text is tolerated but is not one either.
         for action in ({"type": "submit", "text": "/help"}, {"type": "submit"}):
             other = row(2, "calm.terminal.input")
             other["params"]["item"]["arguments"]["action"] = action
@@ -1009,8 +939,6 @@ class CollectorTests(unittest.TestCase):
         other_tool = row(2, "calm.track.cat")
         other_tool["params"]["item"]["error"] = {"message": "observation expired; observe again"}
         success = row(3, "calm.terminal.input")
-        # A successful kernel result carries JSON metadata, even when some
-        # returned text happens to quote a refusal message.
         data = {"terminal_id": "t1", "outcome": "written", "next": "terminal changed since observation; observe again"}
         success["params"]["item"]["result"] = {"isError": False, "structuredContent": data, "content": [
             {"type": "text", "text": json.dumps(data)}]}
@@ -1040,8 +968,6 @@ class CollectorTests(unittest.TestCase):
                 argv = ["collector", "--url", "http://127.0.0.1:4900", "--workspace", "/synthetic",
                         "--claude-bin", "/bin/claude", "--claude-version", "test", "--codex-version", "test",
                         "--source-sha", "test", "--artifacts", directory]
-                # Enter the real wait_turn and top-level failure writer without
-                # creating a Planner, invoking a model or imitating its behavior.
                 with patch.object(ux, "Api", return_value=ApiResponses()), \
                      patch.object(ux.Round, "run", lambda self: self.wait_turn("malformed")), \
                      patch.object(ux.sys, "argv", argv), patch.object(ux.sys, "stdin", io.StringIO()), \
@@ -1053,7 +979,7 @@ class CollectorTests(unittest.TestCase):
 
     def test_production_terminal_text_rows_are_joined_without_mutating_transcript(self):
         observed = row(1)
-        # Frame.text: Vec<String>, emitted directly by terminal_interaction::observe.
+        # Frame.text is Vec<String>.
         observed["params"]["item"]["result"]["structuredContent"]["text"] = ["Claude", "3141", ""]
         original = copy.deepcopy(observed)
         _, evidence = ux.check_scenario("short", [observed], None)
@@ -1073,8 +999,6 @@ class CollectorTests(unittest.TestCase):
                 ux.terminal_evidence([observed])
 
     def test_completed_agent_message_uses_real_item_phase_and_text(self):
-        # Current app-server shape captured in plannerChatItems.test.ts; the
-        # kernel persists item fields verbatim, including phase.
         final = {"id": 1, "method": "item/completed", "params": {"completedAtMs": 1780977421069,
                  "item": {"id": "msg_agent", "phase": "final_answer", "text": "Done", "type": "agentMessage"},
                  "threadId": "thread", "turnId": "turn"}}
@@ -1153,13 +1077,11 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(result["readback_available"], 1)
         self.assertEqual(result["implicit_observation_inputs"], 1)
         self.assertEqual(result["drift_observed_inputs"], 0)
-        # The fresh observation is real terminal evidence, like any readback.
         binding, observations, _, errors = ux.terminal_evidence([stale])
         self.assertEqual(binding["terminal_id"], "t1")
         self.assertEqual([view["row_id"] for view in observations], [2])
         self.assertEqual(errors, [])
         self.assertEqual(stale, original)
-        # Both refusal shapes in one round add up; a written receipt does not.
         failed = row(3, "calm.terminal.input")
         failed["params"]["item"]["status"] = "failed"
         failed["params"]["item"]["error"] = {"message": "terminal changed since observation; observe again"}
@@ -1199,13 +1121,10 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(errors, [])
         self.assertEqual(ux.metrics([row(1), released])["readback_available"], 1)
-        # The identity checks still apply to a text-less state.
         foreign = copy.deepcopy(released)
         foreign["params"]["item"]["result"]["structuredContent"]["observation"]["state"]["terminal_session_id"] = "other"
         with self.assertRaisesRegex(ux.EvidenceError, "terminal or session changed"):
             ux.terminal_evidence([row(1), foreign])
-        # Without text_omitted a missing or malformed text is still an error,
-        # and text_omitted must be a string.
         for patch_state in ({"text_omitted": None}, {"text_omitted": 7}, {}):
             broken = copy.deepcopy(released)
             broken_state = broken["params"]["item"]["result"]["structuredContent"]["observation"]["state"]
@@ -1213,7 +1132,6 @@ class CollectorTests(unittest.TestCase):
             broken_state.update(patch_state)
             with self.subTest(patch=patch_state), self.assertRaisesRegex(ux.EvidenceError, "text must be an array"):
                 ux.terminal_evidence([row(1), broken])
-        # Text-less states alone are not a successful observation.
         with self.assertRaisesRegex(ux.EvidenceError, "no successful terminal observations"):
             ux.terminal_evidence([released])
 
@@ -1250,8 +1168,7 @@ class CollectorTests(unittest.TestCase):
             def call(self, method, path):
                 self.paths.append(path)
                 rows = [row(i) for i in range(1, 501)] if len(self.paths) == 1 else [row(501)]
-                # Transcript params are JSON encoded inside the REST JSON row
-                # (crates/calm-types/src/model.rs), not an embedded object.
+                # Transcript params are JSON encoded inside the REST JSON row, not an embedded object.
                 return [{**item, "params": json.dumps(item["params"])} for item in rows]
 
         pages = Pages()

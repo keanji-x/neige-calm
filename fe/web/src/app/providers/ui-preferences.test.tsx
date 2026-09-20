@@ -83,9 +83,7 @@ describe('local read receipts', () => {
     preferences.markRead('track', 'previously-visible', 100);
     expect(preferences.isUnread('track', 'previously-visible', 100)).toBe(false);
     expect(storage.values.size).toBe(0);
-    // The scope is entered with a server time *before* the activity, so the
-    // baseline does not hide it: what this asserts is that the unscoped
-    // in-memory receipt did not travel into the database scope.
+    // The scope is entered with a server time *before* the activity, so the baseline does not hide it.
     preferences.setReadScope('db-a', 50);
     expect(preferences.isUnread('track', 'previously-visible', 100)).toBe(true);
     preferences.markRead('track', 'currently-visible', 100);
@@ -111,16 +109,11 @@ describe('local read receipts', () => {
     expect(restored.isUnread('track', 'a', 100)).toBe(true);
   });
 
-  /*
-   * #1722 §5.2 — the four receipt contracts this slice adds, each named after
-   * the mutation that must redden it (§6 must-red table).
-   */
   it('first_scope_entry_marks_everything_read', () => {
     const now = 1_000_000;
     const storage = memoryStorage();
     const preferences = createUiPreferences(storage);
-    // A null scope first (the compat verdict is still pending): nothing is
-    // written — there is no database to key a baseline on yet.
+    // A null scope first (the compat verdict is still pending): there is no database to key a baseline on yet.
     preferences.setReadScope(null, now);
     expect(storage.values.size).toBe(0);
     preferences.setReadScope('db1', now);
@@ -130,8 +123,7 @@ describe('local read receipts', () => {
     expect(preferences.isUnread('conversation', 'c', now - 1)).toBe(false);
     // …and what completes after it is unread until acknowledged.
     expect(preferences.isUnread('track', 't', now + 1)).toBe(true);
-    // Written once, on disk, so a reload of the same device keeps the baseline
-    // without a receipt for every track.
+    // Written once, on disk, so a reload keeps the baseline without a receipt for every track.
     expect([...storage.values.keys()].filter((key) => key.includes('baseline'))).toHaveLength(1);
     const restored = createUiPreferences(storage);
     restored.setReadScope('db1', now + 500);
@@ -154,8 +146,7 @@ describe('local read receipts', () => {
     storage.values.set(DATABASE_ID_KEY, 'db1');
     const preferences = createUiPreferences(storage);
     expect(preferences.isUnread('track', 't', now)).toBe(true);
-    // The layout effect runs with a pending verdict: the seeded scope is
-    // replaced by null, and under null nothing is unread rather than everything.
+    // Under a null scope nothing is unread rather than everything.
     preferences.setReadScope(null);
     expect(preferences.isUnread('track', 't', now)).toBe(false);
     expect(preferences.isUnread('conversation', 'c', now)).toBe(false);
@@ -205,13 +196,8 @@ it('preserves newer cross-tab read receipts within the same recovery scope only'
   expect(restored.isUnread('conversation', 'visible', 20)).toBe(true);
 });
 
-/*
- * #1722 S2a review — the bundled recovery scope is `[origin, userId,
- * dbInstanceId]` and `dbInstanceId` changes on every kernel boot. Receipts and
- * the baseline live beside it, not under it: the Codex reproduction (baseline
- * 100, completion 150, restart at 200) re-stamped the baseline under the new
- * boot and swallowed the completion.
- */
+// The recovery scope carries `dbInstanceId`, which changes on every kernel boot; receipts and
+// the baseline live beside it, not under it, or a restart would re-stamp the baseline and swallow completions.
 it('receipts_survive_a_recovery_scope_change_on_the_same_database', () => {
   const storage = memoryStorage();
   const writes: string[] = [];
@@ -225,16 +211,14 @@ it('receipts_survive_a_recovery_scope_change_on_the_same_database', () => {
   expect(baselineKeys()).toHaveLength(1);
   expect(baselineKeys()[0]).not.toContain('boot-1');
   expect(preferences.isUnread('track', 't', 150)).toBe(true);
-  // The kernel restarts: a new boot id is adopted and the compat gate confirms
-  // the same database at a later server time.
+  // The kernel restarts: a new boot id, the same database at a later server time.
   preferences.setRecoveryScope(bootTwo);
   preferences.setReadScope('db', 200);
   expect(preferences.isUnread('track', 't', 150)).toBe(true);
   expect(baselineKeys()).toHaveLength(1);
   expect(storage.getItem(baselineKeys()[0])).toBe(JSON.stringify('100'));
   expect(writes.filter((key) => key.includes('baseline'))).toHaveLength(1);
-  // A receipt taken under one boot is read back under the next, and a fresh
-  // app instance (page reload after the restart) sees the same facts.
+  // A receipt taken under one boot is read back under the next, also by a fresh app instance.
   preferences.markRead('track', 't', 150);
   const restored = createUiPreferences(recorded);
   restored.setRecoveryScope(bootTwo);

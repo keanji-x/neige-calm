@@ -1,20 +1,6 @@
 // @vitest-environment jsdom
 //
-// #1234 S1b-3b — the desktop painter, against `checkProjection`'s synthetic
-// mount.
-//
-// **This file checks the painter, not the page.** It paints with the painter it
-// checks, which is the one thing `checkProjection` guarantees and
-// `checkProjectionIn` cannot. What it says nothing about is whether
-// `public.tsx` renders through this painter at all — that is
-// `desktop-entry.test.tsx` (it holds the call and the returned nodes), with
-// `desktop-projection.test.tsx` checking the resulting real DOM against the
-// view model and keeping the page from retyping a marker literal.
-//
-// The capability cases are here rather than there because support is a *painter*
-// fact: `delete-card` is supported when and only when the host passed
-// `onDeleteCard`, and that binding is what stops the desktop growing a delete
-// control on a page that offers no deletion (Δ3).
+// The desktop painter against `checkProjection`'s synthetic mount: this file checks the painter, not the page.
 
 import { render } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
@@ -24,11 +10,7 @@ import { checkProjection } from '../../../../../tools/projection/public.ts';
 import type { ProjectionNode } from '../../../../../tools/projection/public.ts';
 import { makeDesktopPainter, type DesktopLeaf } from './desktop-painter.tsx';
 
-/** The one mount every case here uses: it unwraps each module leaf and renders
- *  exactly what the painter painted, nothing fabricated. A module leaf is
- *  already finished (`DesktopLeaf`), so there is no key to supply here — which
- *  is also why a non-module leaf at this level is a thrown error and not a
- *  guess. */
+/** The one mount every case uses: it renders exactly what the painter painted; a non-module leaf at this level is a thrown error, not a guess. */
 const mount = (painted: readonly DesktopLeaf[]): ProjectionNode =>
   render(<>{painted.map((leaf) => {
     if (leaf.slot !== 'module') throw new Error(`checkProjection handed back a ${leaf.slot} leaf`);
@@ -51,9 +33,7 @@ const titled: PanelRow = {
   ],
 };
 
-/** No title, so the kind took the name slot and there is no separate `kind`
- *  field; kernel-owned, so a badge stands where the × would be and the view
- *  model derives no `delete-card` at all. */
+/** No title, so the kind took the name slot; kernel-owned, so the view model derives no `delete-card`. */
 const untitled: PanelRow = {
   id: 'card-2',
   title: 'harness',

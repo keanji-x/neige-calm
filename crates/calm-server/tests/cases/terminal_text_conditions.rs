@@ -1,16 +1,10 @@
-//! #1677 r16 — text conditions: `wait_text_absent` (and `wait_text`) gate
-//! the settle of a signal wait and generalise the text wait, through the
-//! real MCP tools, renderer, PTY and the production hook ingest route. The
-//! fake Claude below does what the real one does in rounds 15/16: it posts
-//! `Stop` while the busy hint (`esc to interrupt`) is still painted and
-//! paints the answer only later.
+//! Text conditions: `wait_text_absent` (and `wait_text`) gate the settle of a signal wait and
+//! generalise the text wait. The fake Claude posts `Stop` while the busy hint is still painted and paints the answer only later.
 use crate::terminal_support::Harness;
 use serde_json::{Value, json};
 
-/// Parses `--settings <file>` like the #1620 fake, echo off. Per stdin line:
-/// paints a busy row, posts Stop, waits 800 ms, replaces the busy row with
-/// `ANSWER:<line>` (the real Claude order: the hook fires before the final
-/// paint); `hold:<x>` keeps the busy row for 4 s instead.
+/// Fake claude, echo off. Per stdin line: paints a busy row, posts Stop, waits 800 ms, replaces the busy
+/// row with `ANSWER:<line>` (the real Claude order: the hook fires before the final paint); `hold:<x>` keeps the busy row for 4 s.
 const FAKE_CLAUDE_BUSY: &str = r#"#!/bin/sh
 settings=""
 while [ $# -gt 0 ]; do case "$1" in --settings) settings="$2"; shift 2;; *) shift;; esac; done
@@ -77,10 +71,6 @@ fn ask(terminal: &str, request: &str, text: &str, extra: Value) -> Value {
     args
 }
 
-/// The Claude case: with `wait_text_absent ["esc to interrupt"]` the signal
-/// readback returns once the busy row is gone and the answer painted
-/// (`conditions.absent true`, `repaint settled`); without conditions it
-/// returns at the spinner as before (#1628), the answer not yet painted.
 #[tokio::test]
 async fn absent_condition_holds_the_signal_readback_until_the_busy_hint_is_gone() {
     let h = Harness::start().await;
@@ -160,8 +150,6 @@ async fn absent_condition_holds_the_signal_readback_until_the_busy_hint_is_gone(
     h.stop(&terminal).await;
 }
 
-/// The budget ends while the busy row is still there: `unsettled`,
-/// `conditions.absent false`, the signal kept; the Planner observes again.
 #[tokio::test]
 async fn budget_with_the_hint_still_shown_is_unsettled() {
     let h = Harness::start().await;
@@ -206,10 +194,6 @@ async fn budget_with_the_hint_still_shown_is_unsettled() {
     h.stop(&terminal).await;
 }
 
-/// The argument contract on every carrier: bounds, mode coupling
-/// (`wait_text_absent` refused in change and elapsed, accepted in signal),
-/// text mode needs at least one condition, a history view is refused with
-/// conditions in signal mode too, and the wait arguments need observe=true.
 #[tokio::test]
 async fn text_condition_validation_on_every_carrier() {
     let h = Harness::start().await;
@@ -322,9 +306,8 @@ async fn text_condition_validation_on_every_carrier() {
         !h.interaction().input_pending(&terminal).await,
         "nothing was written"
     );
-    // Accepted shapes: signal mode with each side, text mode with the
-    // absent side alone (the pattern is not on the screen: matched at
-    // once after the settle window).
+    // Accepted shapes: signal mode with each side, text mode with the absent side alone (the pattern is
+    // not on the screen: matched at once after the settle window).
     let absent = h
         .ok(
             "calm.terminal.observe",

@@ -1,17 +1,5 @@
-//! First-class agent-failure diagnostics for the real-codex E2E suite (#852).
-//!
-//! Any `wait_for_*` helper that can time out on real-agent behavior should
-//! fail through [`panic_with_agent_diag`], which prints one combined dump:
-//! operation phases/`last_error`, event-kind census + ordered event stream +
-//! harness items, per-worktree `git status`/`git log`, every codex rollout
-//! transcript under the fixture's CODEX_HOME (each `function_call` name +
-//! `arguments` + output — the view that exposed the `git.commit`
-//! `arguments:"{}"` bug in #850), and the shared appserver stderr.
-//!
-//! The fixture's temp dir is wrapped in [`EvidenceTempDir`], which leaks the
-//! directory when the test thread panics (any panic, not just wait timeouts)
-//! so the rollout transcripts and appserver stderr survive process exit for
-//! post-mortem reads. On success the directory is removed as before.
+//! Agent-failure diagnostics for the real-codex E2E suite: `panic_with_agent_diag` prints one combined
+//! dump, and `EvidenceTempDir` leaks the fixture dir when the test thread panics.
 
 use std::fmt::Write as _;
 use std::io::Write as _;
@@ -26,10 +14,7 @@ use super::git_helpers::run_git_output;
 
 const SNIP_CHARS: usize = 2000;
 
-/// Cap per best-effort DB dump section: if the failure being diagnosed is
-/// pool exhaustion, an uncapped `fetch_all` stalls for sqlx's full
-/// `acquire_timeout` (`calm_truth::db::sqlite::SQLITE_ACQUIRE_TIMEOUT_MS`) per
-/// query, serially, before the dump prints.
+/// Under pool exhaustion an uncapped `fetch_all` stalls for sqlx's full acquire timeout per query.
 const DB_SECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Runs one DB dump query under [`DB_SECTION_TIMEOUT`]; `None` means the
@@ -62,9 +47,7 @@ impl EvidenceTempDir {
 
 impl Drop for EvidenceTempDir {
     fn drop(&mut self) {
-        // Limitation: `thread::panicking()` only sees a panic unwinding THIS
-        // thread — a panic inside a spawned task/thread whose failure is
-        // observed here (e.g. via a join handle) won't preserve evidence.
+        // `thread::panicking()` only sees a panic unwinding THIS thread; a panic in a spawned task won't preserve evidence.
         if std::thread::panicking()
             && let Some(dir) = self.dir.take()
         {
@@ -226,7 +209,6 @@ async fn worktree_diag(fx: &Fixture) -> String {
     out
 }
 
-/// `None` means the query timed out (see [`diag_rows`]).
 async fn operation_cwds(repo: &SqlxRepo) -> Option<Vec<PathBuf>> {
     let rows: Vec<(String,)> = diag_rows(
         sqlx::query_as(
@@ -276,9 +258,7 @@ fn rollout_transcripts_diag(evidence_root: &Path) -> String {
     out
 }
 
-/// Recursion guard for [`collect_rollouts`]: rollouts live a few levels down
-/// (`sessions/<yyyy>/<mm>/<dd>/`), so 8 is generous while still bounding a
-/// pathological (e.g. symlink-looped) tree.
+/// Rollouts live under `sessions/<yyyy>/<mm>/<dd>/`; 8 still bounds a symlink-looped tree.
 const MAX_ROLLOUT_SCAN_DEPTH: usize = 8;
 
 pub fn find_rollout_files(evidence_root: &Path) -> Vec<PathBuf> {

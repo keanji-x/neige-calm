@@ -1,8 +1,4 @@
-//! #1667 round-4 N3 — boot replay folds a report-edit session the way the
-//! live enqueue does: three contiguous `track.report_edited` events replay
-//! into ONE pending entry (first `body_before`, newest `body`), so a
-//! recovered queue does not carry one full-body pair, and one bounded
-//! diff, per save.
+//! Boot replay folds contiguous `track.report_edited` events into one pending entry, like the live enqueue.
 use super::completed_commit_tests::Fixture;
 use super::*;
 use crate::db::sqlite::append_decision_event_in_tx;

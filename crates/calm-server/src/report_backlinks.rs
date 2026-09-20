@@ -574,8 +574,7 @@ mod tests {
         );
     }
 
-    /// #1669 I5 — a `neige://source/…` citation is not a track reference:
-    /// it never becomes a backlink, whatever it sits next to.
+    /// A `neige://source/…` citation is not a track reference: it never becomes a backlink, whatever it sits next to.
     #[tokio::test]
     async fn source_links_never_produce_backlinks() {
         let repo = fresh_repo().await;
@@ -895,9 +894,7 @@ mod tests {
         assert_eq!(rest["backlinks"][0]["quote"]["before"], "before ");
         assert!(mcp_payload(&page)["backlinks"][0].get("quote").is_none());
 
-        // Exactness fixture for incremental accounting, including commas and both MCP payload
-        // copies. A one-byte-short cap rejects; the exact larger length admits the same prefix as
-        // full serialization.
+        // A one-byte-short cap rejects; the exact larger length admits the same prefix as full serialization.
         let mut prefix = Vec::new();
         let mut budget = WireBudget::new(7).unwrap();
         for _ in 0..3 {

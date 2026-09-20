@@ -1,27 +1,5 @@
-// #1234 S1b-2 — the contract of `tools/projection`'s `checkProjection`, driven
-// by synthetic painters.
-//
-// **This suite tests the checker in `tools/`, not this feature.** It does not
-// touch `public.tsx` and depends on nothing private to `features/track`; every
-// painter here is written in this file and emits marked JSX directly, so no
-// `ui/` primitive is involved either. It lives under `web/src` for one reason:
-// `vitest.config.ts` (readonly) pins `tools/**/*.test.ts` to the **node**
-// environment, and only `web/src/**` runs in jsdom. The alternatives were
-// editing that readonly config plus the TypeScript project boundary, or paying
-// Chromium for a pure-DOM contract.
-//
-// **Every fixture shares one canonical `mount`.** The checker cannot prove its
-// `mount` faithful — one that ignored `painted` and fabricated a correct tree
-// would pass everything — so this suite removes the freedom rather than
-// pretending to check it, and the last describe pins that this particular mount
-// is not ignoring its argument.
-//
-// **Each malicious painter asserts `toEqual`, not `toContain`.** "Something
-// went red" is not evidence that the obligation under test is the one that
-// caught it. Where two obligations are entangled by construction the expected
-// array holds both codes and says why; there is exactly one such place (badge
-// nesting: a badge inside a badge *is* a carrier holding a descendant content
-// marker, so the leaf rule cannot be avoided).
+// The contract of `tools/projection`'s `checkProjection`, driven by synthetic painters.
+// Lives under `web/src` only because `tools/**/*.test.ts` is pinned to the node environment and this needs jsdom.
 
 import { render } from '@testing-library/react';
 import type { ReactNode } from 'react';
@@ -41,8 +19,6 @@ const codesOf = (
   painter: RowPainter<ReactNode>,
   modules: readonly RowModuleView[],
 ): readonly ViolationCode[] => checkProjection(painter, modules, mount).map((violation) => violation.code);
-
-// ── The view model under test ────────────────────────────────────────────────
 
 const allSupported: RowPainter<ReactNode>['action'] = Object.freeze({
   'reveal-block': Object.freeze<ActionSupport>({ supported: true }),
@@ -77,10 +53,7 @@ const plainRow: PanelRow = Object.freeze({
   id: 'c2', title: 'Sweep', kind: null, badges: Object.freeze([]), status: null, activity: null, actions: Object.freeze([]),
 });
 
-/** The "only unsupported" half of §3.5's action-shape pair: under
- *  `deleteUnsupported` this row is left with no action at all, where `cardRow`
- *  keeps `open-card`. Without both halves, "the filter removed everything" and
- *  "the filter removed the right one" are the same observation. */
+/** The "only unsupported" half: under `deleteUnsupported` this row is left with no action at all, where `cardRow` keeps `open-card`. */
 const deleteOnlyRow: PanelRow = Object.freeze({
   id: 'c3',
   title: 'Purge',
@@ -114,12 +87,7 @@ const taskRow: PanelRow = Object.freeze({
   ]),
 });
 
-/** The empty-token row. Today's derivation cannot produce it —
- *  `deriveReportTasks` normalises `undefined | null | ''` alike to `null` — but
- *  `RowStatus['token']` is a plain string and this checker is generic over
- *  everything that type admits. An empty token makes the text obligation
- *  vacuously true, so a checker that compared the token by truthiness rather
- *  than by exact equality would never be caught without it. */
+/** The empty-token row: today's derivation cannot produce it, but `RowStatus['token']` is a plain string; a checker comparing the token by truthiness would never be caught without it. */
 const blankStatusRow: PanelRow = Object.freeze({
   id: 't2',
   title: 'T-2',
@@ -143,17 +111,7 @@ const view: readonly RowModuleView[] = Object.freeze([cards, tasks]);
 const withEmpty: readonly RowModuleView[] = Object.freeze([cards, emptyTasks]);
 const withEmptyCards: readonly RowModuleView[] = Object.freeze([emptyCards, tasks]);
 
-// ── The fixture shape guard (§3.5, oracle preconditions) ─────────────────────
-
-/** The canonical fixture lists — the ones whose *aggregate* shape is guarded.
- *  The guard below asserts over exactly this set, so a fixture added here
- *  without the shape it was meant to bring cannot slip in silently.
- *
- *  Two further module lists are handed to `checkProjection` further down and
- *  are deliberately **not** registered here: `cohostView` (E / co-hosting) and
- *  `tapView` (the mobile tap shape). Each exists to carry one narrow shape for
- *  one case, is read only by that case, and would drag the aggregate clauses
- *  below off their subject if merged in. */
+/** The canonical fixture lists whose aggregate shape is guarded; `cohostView` and `tapView` are deliberately not registered here. */
 const FIXTURES: readonly (readonly RowModuleView[])[] = Object.freeze([view, withEmpty, withEmptyCards]);
 
 const ALL_MODULES: readonly RowModuleView[] = FIXTURES.flatMap((fixture) => [...fixture]);
@@ -162,12 +120,7 @@ const ALL_ROWS: readonly PanelRow[] = ALL_MODULES.flatMap((module) => [...module
 const ACTION_KINDS: readonly RowAction['kind'][] =
   Object.freeze<readonly RowAction['kind'][]>(['reveal-block', 'open-card', 'delete-card']);
 
-/** The module-key domain in full. Typed as an exhaustive `Record`, so a new
- *  `RowModuleView['key']` cannot be introduced without landing here — and once
- *  here, the guard below demands the fixtures actually exercise it. Deriving
- *  the domain from the fixtures instead (`new Set(ALL_MODULES.map(…))`) would
- *  only ever check the keys that already appear: renaming `tasks.key` to
- *  `cards` would shrink the domain to match and stay green. */
+/** The module-key domain in full, typed as an exhaustive `Record`: deriving it from the fixtures would only ever check the keys that already appear. */
 const MODULE_KEY_TABLE: Readonly<Record<RowModuleView['key'], true>> =
   Object.freeze({ cards: true, tasks: true });
 const MODULE_KEYS = Object.keys(MODULE_KEY_TABLE) as readonly RowModuleView['key'][];
@@ -180,31 +133,9 @@ const supportedOf = (row: PanelRow): readonly RowAction[] =>
 const unsupportedOf = (row: PanelRow): readonly RowAction[] =>
   row.actions.filter((action) => !shapeTable[action.kind].supported);
 
-/*
- * These are **oracle preconditions, not obligations of the projection.** They do
- * not say anything is true of the renderer; they say the fixtures above are
- * discriminating enough for the malicious painters below to mean what they
- * claim. A fixture where every row's `title` equals its `kind` would let a
- * checker that confused the two fields stay green, and no assertion in the rest
- * of this file would notice.
- *
- * **What this guard is worth, precisely (§6.9).** It makes the checklist
- * *executed*: a fixture edit that drops a shape goes red naming the shape.
- * For the two closed domains — `RowAction['kind']` and `RowModuleView['key']` —
- * that is mechanical in both directions: the guard iterates a list tied to an
- * exhaustive `Record` rather than whatever the fixtures happen to contain, so a
- * new member cannot reach the type without landing in the table, and cannot
- * then be omitted from the coverage clause. It does **not** make the checklist
- * *complete*: the remaining clauses are a hand-written list, and a new field on
- * `RowBadge` / `RowStatus` / `PanelRow`, or a new distinguishing shape nobody
- * thought of, arrives with no clause and nothing here will ask for one. Keeping
- * the list adequate is a review obligation, not a mechanical one.
- */
+/* Oracle preconditions, not obligations of the projection: the fixtures must be discriminating enough for the malicious painters to mean what they claim. The two closed domains are mechanical; the remaining clauses are a hand-written list. */
 describe('fixture shape guard', () => {
   it('the action-kind list this guard iterates is the capability table in full', () => {
-    // A new `RowAction['kind']` must be added to the `Record`-typed table or the
-    // file will not typecheck; this pins the guard's own list to that table, so
-    // the new kind cannot then be omitted from the coverage clause below.
     expect([...ACTION_KINDS].sort()).toEqual(Object.keys(allSupported).sort());
   });
 
@@ -268,9 +199,6 @@ describe('fixture shape guard', () => {
   });
 
   it('the module keys these fixtures carry are the key domain in full', () => {
-    // Pins the fixture key set to the `Record`-typed domain in both directions:
-    // a key that disappears from the fixtures goes red here, and a new key added
-    // to `RowModuleView` goes red until the fixtures carry it.
     expect([...new Set(ALL_MODULES.map((module) => module.key))].sort()).toEqual([...MODULE_KEYS].sort());
   });
 
@@ -282,8 +210,6 @@ describe('fixture shape guard', () => {
     }
   });
 });
-
-// ── Marked JSX, out of which every painter below is composed ─────────────────
 
 const mark = (name: string, value: string): Readonly<Record<string, string>> => ({ [name]: value });
 
@@ -299,8 +225,7 @@ const badgeEl = (id: string, text: string, body?: ReactNode): ReactNode => (
 const statusEl = (token: string, phrase: string): ReactNode => (
   <span key="status" {...mark(MARKER.status, token)} title={phrase} />
 );
-/** Action hosts are spans, not buttons: §6.3 already declines to check whether
- *  a marker host is interactive, and one variant below nests two of them. */
+/** Action hosts are spans, not buttons: the checker declines to check whether a marker host is interactive, and one variant below nests two of them. */
 const actionEl = (
   action: RowAction,
   over: Readonly<{ label?: string | null; hint?: string | null; body?: ReactNode }> = {},
@@ -376,10 +301,6 @@ const moduleVariant = (
 ): RowPainter<ReactNode> =>
   variant({ module: (parts) => (parts.key === key ? build(parts) : faithful.module(parts)) });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// A — the four-layer bijection
-// ─────────────────────────────────────────────────────────────────────────────
-
 describe('A / module layer', () => {
   it('module-sequence: a module is dropped', () => {
     expect(codesOf(moduleVariant('tasks', () => null), view)).toEqual(['module-sequence']);
@@ -419,9 +340,7 @@ describe('A / module layer', () => {
     expect(codesOf(painter, withEmpty)).toEqual(['module-nesting']);
   });
 
-  // There is no `module-partition` case, and none can exist: the module layer's
-  // enclosing container is the root itself, so "root total == sum over enclosing
-  // containers" is an identity. See the note in `checkTree`.
+  // There is no `module-partition` case: the module layer's enclosing container is the root itself, so the partition check is an identity.
 });
 
 describe('A / row layer', () => {
@@ -491,9 +410,7 @@ describe('A / badge layer', () => {
   });
 
   it('badge-nesting: one badge is painted inside another', () => {
-    // Entangled by construction: a badge inside a badge *is* a badge carrier
-    // holding a descendant content marker, so `carrier-not-leaf` necessarily
-    // fires with it. Both codes are asserted rather than relaxing to `toContain`.
+    // Entangled by construction: a badge inside a badge *is* a badge carrier holding a descendant content marker, so `carrier-not-leaf` necessarily fires with it.
     const painter = rowVariant('t1', (row, parts) => rowEl(row, (
       <>{parts.title}{parts.kind}
         {badgeEl('d1', 'declared', <>declared{badgeEl('d2', 'declared')}</>)}
@@ -545,14 +462,7 @@ describe('A / action layer, and D — the action wording', () => {
   });
 
   it('action-sequence: a supported action is duplicated in place', () => {
-    // The third counter-example every layer owes: drop, reorder, **copy**. The
-    // extra-and-missing cases above are both killed by a checker that only
-    // verifies "every kind present is one the view model expects" — a set
-    // containment — because that is exactly what an extra *unsupported* kind and
-    // a missing kind each break. A duplicate leaves the set unchanged and only
-    // the multiplicity wrong, so it is the case that forces sequence equality.
-    // Mutating `sameSequence` here into a containment test turns this red and
-    // nothing else in this describe green-to-red for the right reason.
+    // Drop, reorder, copy: a duplicate leaves the set unchanged and only the multiplicity wrong, so it is the case that forces sequence equality.
     const painter = rowVariant('c1', (row, parts) => rowEl(row, (
       <>{parts.title}{parts.kind}{parts.badges}{parts.status}{parts.actions}
         <span key="copy" {...mark(MARKER.action, 'open-card')} /></>
@@ -610,10 +520,6 @@ describe('A / action layer, and D — the action wording', () => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// B — status
-// ─────────────────────────────────────────────────────────────────────────────
-
 describe('B / status', () => {
   it('status-cardinality: two status elements in one row', () => {
     const painter = rowVariant('t1', (row, parts) => rowEl(row, (
@@ -656,13 +562,6 @@ describe('B / status', () => {
   });
 
   it('a status marker co-hosted on the row element is exactly marker-co-host', () => {
-    // The obligation broken here is E and only E. An earlier `owned()` started
-    // its ownership search at `parentElement`, which excluded the container
-    // itself, so this row appeared to own *zero* status elements and
-    // `status-cardinality` fired alongside — read at the time as an entanglement
-    // "by construction". It was not: it was the ownership bug. The row owns the
-    // marker it carries, the cardinality is 1 as the view model says, and the
-    // co-hosting is the single fault reported.
     const painter = rowVariant('t1', (row, parts) => (
       <div
         key={row.id}
@@ -674,10 +573,6 @@ describe('B / status', () => {
     expect(codesOf(painter, view)).toEqual(['marker-co-host']);
   });
 });
-
-// ─────────────────────────────────────────────────────────────────────────────
-// C — the field carriers
-// ─────────────────────────────────────────────────────────────────────────────
 
 describe('C / field carriers', () => {
   it('field-cardinality: the row title carrier is missing', () => {
@@ -756,11 +651,6 @@ describe('C / field carriers', () => {
   });
 
   it('field-domain: a carrier names a field outside the closed value set', () => {
-    // `FIELD` calls its members the permitted values, and until this code existed
-    // nothing checked that: `data-nc-field="bogus"` matched none of the four
-    // value-specific selectors, so a misspelled field marker was invisible —
-    // neither counted nor reported. A typo'd `title` would have shown up only as
-    // `field-cardinality` pointing at the wrong obligation.
     const painter = rowVariant('c1', (row, parts) => rowEl(row, (
       <>{parts.title}{parts.kind}
         <span key="bogus" {...mark(MARKER.field, 'bogus')}>Ingest</span>
@@ -770,9 +660,7 @@ describe('C / field carriers', () => {
   });
 
   it('carrier-not-leaf: a content marker is painted inside a field carrier', () => {
-    // The badge is the row's real, single badge — the bijection is intact, so
-    // only the leaf rule can catch this. Without it, `textContent` comparison on
-    // a carrier holding other fields' text is meaningless.
+    // The badge is the row's real, single badge — the bijection is intact, so only the leaf rule can catch this.
     const painter = rowVariant('t1', (row, parts) => rowEl(row, (
       <>
         <span key="title" {...mark(MARKER.field, FIELD.title)}>{row.title}{badgeEl('d1', 'declared')}</span>
@@ -783,14 +671,8 @@ describe('C / field carriers', () => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// E — one content marker per element
-// ─────────────────────────────────────────────────────────────────────────────
-
 describe('E / co-hosting', () => {
-  // A view built so that a badge's text happens to equal the row's kind: that is
-  // what lets one element satisfy both obligations and makes `marker-co-host`
-  // the *only* thing standing between the checker and a false green.
+  // A view built so that a badge's text equals the row's kind: one element could satisfy both obligations, and only `marker-co-host` catches it.
   const cohostRow: PanelRow = Object.freeze({
     id: 'x1',
     title: 'Xenon',
@@ -819,11 +701,6 @@ describe('E / co-hosting', () => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// The false-red side. v4 and the v7 draft both died having only proved that
-// bad painters go red.
-// ─────────────────────────────────────────────────────────────────────────────
-
 describe('a faithful painter is green', () => {
   it('on a populated panel with a title != kind row, badges, a status and two actions', () => {
     expect(checkProjection(faithful, view, mount)).toEqual([]);
@@ -838,23 +715,7 @@ describe('a faithful painter is green', () => {
   });
 
   it('when the row element is itself the action host — the mobile shape', () => {
-    /*
-     * §3.5 allows this and mobile requires it: the whole list item is the
-     * tappable control, so `data-nc-row` and `data-nc-row-action` share one
-     * element. `data-nc-row-action` is a host annotation rather than a content
-     * marker, so co-hosting it is not the E violation that a second *content*
-     * marker would be.
-     *
-     * This is a false-red guard with a date on it: the checker's ownership scope
-     * began at `parentElement`, which reads this row as owning zero actions and
-     * reports `action-sequence` against a correct painter. It is no longer
-     * hypothetical — S1b-4b's mobile Task row paints exactly this shape, and
-     * `mobile-projection.test.tsx` runs the checker over it.
-     *
-     * The element is a `<div>` because this file's `mount` has no `<ul>` to put
-     * an `<li>` in; the tag is immaterial to the checker, which by §6.3 declines
-     * to look at host interactivity at all.
-     */
+    /* The mobile shape: the whole list item is the tappable control, so `data-nc-row` and `data-nc-row-action` share one element; `data-nc-row-action` is a host annotation, not a content marker. A `<div>` because this file's `mount` has no `<ul>`. */
     const tapRow: PanelRow = Object.freeze({
       id: 'm1',
       title: 'Ingest',
@@ -912,23 +773,8 @@ describe('a faithful painter is green', () => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// The mount is a trust boundary. This is the little that can be shown about it.
-// ─────────────────────────────────────────────────────────────────────────────
-
 describe('mount renders what the painter painted', () => {
-  /*
-   * `checkProjection` cannot prove its `mount` faithful — a `mount` that dropped
-   * `painted` on the floor and returned a fabricated correct tree would pass
-   * every case above, and no assertion inside the checker can tell the two
-   * apart. What *can* be shown, and is shown here, is that **this** mount is not
-   * doing that: two painters that differ only in what they paint, over the same
-   * modules and through the same mount, produce different verdicts. A mount that
-   * ignored `painted` would produce the same verdict for both.
-   *
-   * This is evidence about the mount, not about the checker's coverage, and it
-   * does not extend to the painter factories S1b-3/4 build in production.
-   */
+  /* `checkProjection` cannot prove its `mount` faithful; what can be shown is that this mount is not ignoring `painted`: two painters that differ only in what they paint produce different verdicts. */
   const identifiable = 'ONLY-THIS-PAINTER-WRITES-THIS';
 
   it('the verdict is a function of the painted output', () => {

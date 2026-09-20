@@ -19,14 +19,9 @@ describe('Settings mobile presentation', () => {
       onRetryLoad={vi.fn()}
     />);
 
-    /*
-     * `expect(locator).toBeTruthy()` — which these three assertions used to be
-     * — cannot fail: a locator object is truthy whether or not it matches
-     * anything. `expect.element` is the form that actually queries the page.
-     */
+    /* `expect.element` actually queries the page; `expect(locator).toBeTruthy()` cannot fail. */
     await expect.element(page.getByRole('textbox', { name: 'HTTP proxy' })).toBeInTheDocument();
     await expect.element(page.getByRole('textbox', { name: 'HTTPS proxy' })).toBeInTheDocument();
-    // No Save button: a proxy commits when its field is left (see `public.tsx`).
     await expect.element(page.getByRole('button', { name: 'Save', exact: true })).not.toBeInTheDocument();
     await expect.element(page.getByRole('button', { name: /Mobile connection/ })).toBeInTheDocument();
     await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
@@ -35,15 +30,6 @@ describe('Settings mobile presentation', () => {
 });
 
 describe('Settings confirmation and example text', () => {
-  /*
-   * Two claims a rendering engine has to answer, both about *paint*:
-   *
-   *   1. the confirmation is a tick and the word `Saved.` is not on screen —
-   *      jsdom reports every element as visible, so "hidden" is unfalsifiable
-   *      there and the word could return without a test noticing;
-   *   2. a placeholder is a lighter tone than a value the reader typed —
-   *      jsdom parses `::placeholder` and then declines to compute it.
-   */
   it('confirms with a tick whose word is only in the live region', async () => {
     await page.viewport(1180, 640);
     render(<NetworkPane
@@ -57,19 +43,9 @@ describe('Settings confirmation and example text', () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
     await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 
-    // Announced: the committed row's live region carries the word, and the
-    // other row's stays empty.
     const announced = [...document.querySelectorAll('[role="status"]')].map((n) => n.textContent);
     expect(announced).toEqual(['Saved.', '']);
 
-    /*
-     * Not drawn — and asserted over *every* node that says the word, not just
-     * the first. Reading one node cannot hold this claim: putting the message
-     * back on the field's own status renders a second `Saved.` beside the tick
-     * while the hidden region still matches `querySelector`, so the earlier
-     * single-node version of this test stayed green through exactly the
-     * regression it exists to catch.
-     */
     const painted = [...document.querySelectorAll('*')].filter((node) =>
       node.textContent === 'Saved.' && node.children.length === 0);
     expect(painted.length).toBeGreaterThan(0);
@@ -78,7 +54,6 @@ describe('Settings confirmation and example text', () => {
       expect(Math.round(box.width)).toBeLessThanOrEqual(1);
       expect(Math.round(box.height)).toBeLessThanOrEqual(1);
     }
-    // The tick itself is what the reader sees, so it must actually be painted.
     const tick = document.querySelector('input')?.closest('div')?.querySelector('svg');
     expect(tick === null || tick === undefined ? 0 : tick.getBoundingClientRect().width)
       .toBeGreaterThan(0);
@@ -102,8 +77,6 @@ describe('Settings confirmation and example text', () => {
     };
     const value = lightness(getComputedStyle(filled).color);
     const example = lightness(getComputedStyle(empty, '::placeholder').color);
-    // Lighter on a light background means *closer to the paper*, and by a step
-    // the eye reads as a different kind of text rather than as emphasis.
     expect(example).toBeGreaterThan(value + 0.2);
   });
 });

@@ -1,5 +1,3 @@
-// The cooked-shell PTY card. Kernel kind `'terminal'`. Owns a surface.
-
 import type { CardComponentProps, CardEntry, KernelCardInput } from '../registry.js';
 import type { WorkerSessionState } from '../../../../../core/api/schemas.js';
 import { TerminalCardView } from './terminal-card.tsx';
@@ -20,7 +18,6 @@ export type TerminalCard = Readonly<{
   gateCwd: string | null;
 }>;
 
-/** Runtime identity wins even when it has no PTY; payload is legacy-only. */
 export function terminalSessionFromCard(card: KernelCardInput): Pick<TerminalCard, 'terminalId' | 'sessionState'> {
   return {
     terminalId: card.runtime === undefined
@@ -30,12 +27,7 @@ export function terminalSessionFromCard(card: KernelCardInput): Pick<TerminalCar
   };
 }
 
-/**
- * Shared with `claude.ts` and `codex.ts`: all three kinds get `terminal_id`
- * projected into the payload by the same kind-agnostic kernel read path
- * (`session_projection_lookup.rs::project_runtime_fields`), so all three must
- * read it the same way.
- */
+/** Shared with `claude.ts` and `codex.ts`: the kernel projects `terminal_id` into all three payloads the same way. */
 export function terminalIdFromPayload(payload: unknown): string | null {
   if (typeof payload !== 'object' || payload === null) return null;
   const value = (payload as { terminal_id?: unknown }).terminal_id;
@@ -60,9 +52,6 @@ export const TERMINAL_CARD_ENTRY = Object.freeze({
     mode: 'atomic' as const,
     submit: (): Promise<{ cardId: string }> => Promise.reject(new Error('TerminalCardSubmitViaTrackRoute')),
   }),
-  /* No fields: a terminal has nothing to ask. It opens in the track's own
-     directory, and naming it before it exists is a decision the reader has no
-     information for yet — the head is renamable once there is something in it. */
   addPanel: Object.freeze({ label: 'terminal' }),
   fromKernel: (card: KernelCardInput): TerminalCard | null => (
     card.kind === 'terminal'

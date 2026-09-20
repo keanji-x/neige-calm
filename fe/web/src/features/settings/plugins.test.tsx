@@ -8,9 +8,8 @@ import { PluginsPane, type PluginsPaneProps } from './plugins.tsx';
 import styles from './settings.module.css';
 
 beforeEach(() => {
-  // Astryx's Spinner calls `matchMedia` unguarded and jsdom has none. Stubbed
-  // here and never globally: `app/theme` deliberately branches on `matchMedia`
-  // being absent, and a global polyfill would hide that path.
+  // Astryx's Spinner calls `matchMedia` unguarded and jsdom has none. Stubbed here, never globally:
+  // `app/theme` deliberately branches on `matchMedia` being absent.
   vi.stubGlobal('matchMedia', vi.fn(() => ({
     matches: false,
     addEventListener: vi.fn(),
@@ -30,23 +29,12 @@ function plugin(overrides: Partial<PluginListItem> = {}): PluginListItem {
     enabled: true,
     state: 'running',
     manifest_name: 'Todo',
-    /* Defaulted to the *absent* case on purpose: a fixture that offered
-       configuration everywhere would make "no entry point without it" a claim
-       no test could reach by accident. */
     has_config: false,
     ...overrides,
   };
 }
 
-/**
- * The rows' effect-boundary regions, in DOM order.
- *
- * Located by `data-nc-effect-boundary` rather than by `role="status"`: astryx
- * puts a visually-hidden `role="status"` region inside every `Button`, so once
- * the row grew a Remove button (#1480) the role no longer picks out one element
- * per row. The claims below are unchanged — which row holds text, and that it
- * is mounted while empty — only the way the element is named is.
- */
+/** The rows' effect-boundary regions, in DOM order. Located by attribute: astryx puts a hidden `role="status"` region inside every `Button`. */
 function boundaryLines(): HTMLElement[] {
   return [...document.querySelectorAll<HTMLElement>('[data-nc-effect-boundary]')];
 }
@@ -75,25 +63,18 @@ describe('Plugins pane', () => {
       onSetEnabled,
     })} />);
 
-    // Two switches both called "Enabled" is a list a screen reader cannot
-    // navigate; the name has to say which plugin.
     expect(screen.getByRole('switch', { name: 'Enable Todo' })).toBeTruthy();
     await userEvent.click(screen.getByRole('switch', { name: 'Enable Git forge' }));
     expect(onSetEnabled.mock.calls).toEqual([['git-forge', true]]);
   });
 
   it('shows the runtime state beside the switch, not instead of it', () => {
-    // Enabled and crashed is the disagreement this screen exists to show:
-    // the switch says what was asked for, the chip says what happened.
     const { container } = render(<PluginsPane {...props({
       plugins: [plugin({ enabled: true, state: 'crashed', last_error: 'exited with 1' })],
     })} />);
     const toggle = screen.getByRole<HTMLInputElement>('switch', { name: 'Enable Todo' });
     expect(toggle.checked).toBe(true);
     const chip = screen.getByText('crashed');
-    // "Beside" is now literal and is the point of the change: the chip
-    // annotates the switch, so the two share one container. Reading them at
-    // opposite edges of the row is what made the disagreement easy to miss.
     const cluster = container.querySelector('[data-nc-plugin-controls]');
     expect(cluster).not.toBeNull();
     expect(cluster?.contains(chip)).toBe(true);
@@ -101,12 +82,6 @@ describe('Plugins pane', () => {
     expect(screen.getByRole('alert').textContent).toBe('exited with 1');
   });
 
-  /*
-   * The one state the switch already says. Asserted as an absence *paired with
-   * a present chip in the same render*: a lone `queryByText('disabled')`
-   * assertion would also pass if the chip had been deleted for every state, and
-   * deleting it is the failure mode the source comment warns against.
-   */
   it('drops the chip only for `disabled`, where the switch already says it', () => {
     render(<PluginsPane {...props({
       plugins: [
@@ -119,34 +94,6 @@ describe('Plugins pane', () => {
     expect(screen.getByText('running')).toBeTruthy();
   });
 
-  /*
-   * ── One mark, five hues ───────────────────────────────────────────────────
-   *
-   * Owner preview feedback: the chip column mixed three visual weights, because
-   * astryx's `warning` and `neutral` variants are not the solid white-on-fill
-   * block its other three are. `settings.module.css` makes all five one block
-   * via scoped token overrides, so every chip has to actually carry that class
-   * — a chip that missed it would fall back to the vendor's own recipe and be
-   * exactly the inconsistency this removed, silently.
-   *
-   * The tone table is keyed by `PluginState`, so **adding a member to this
-   * repo's `PLUGIN_STATES`** fails to compile here rather than letting the new
-   * state acquire a tone by default. That is the whole of the claim, and it is
-   * narrower than the one this comment used to make: a kernel that grows an
-   * eighth wire name while `PLUGIN_STATES` stays as it is compiles green
-   * everywhere — the decoder degrades the unknown name to `unknown` and
-   * `stateVariant`'s `default:` paints it neutral, both by design. What is
-   * pinned here is the front-end's own enumeration, which is the artefact this
-   * file can see. Two groupings are load-bearing and are the reason this is a
-   * table and not a spot check:
-   *
-   * - `unavailable` is **not** `crashed`'s tone. It is a connector's normal
-   *   terminal state; red would say the kernel is broken.
-   * - `installed` **is** `spawning`'s tone. It is the kernel's fallback for
-   *   "enabled, supervisor table has no entry yet", which is what a plugin the
-   *   operator just switched on shows — a grey verdict chip beside an on switch
-   *   read as a contradiction that was not there.
-   */
   it('gives every chip one appearance, and keeps `unavailable` off the error tone', () => {
     const tones: Record<Exclude<PluginState, 'disabled'>, string> = {
       running: 'success',
@@ -173,19 +120,10 @@ describe('Plugins pane', () => {
       expect([state, chip.classList.contains(styles.pluginStateChip)])
         .toEqual([state, true]);
     }
-    // The two groupings, said as relations rather than as literals, so renaming
-    // a vendor tone cannot quietly satisfy them.
     expect(tones.unavailable).not.toBe(tones.crashed);
     expect(tones.installed).toBe(tones.spawning);
   });
 
-  /*
-   * The exception is keyed on `state`, not on `enabled`. The kernel takes the
-   * two from different places — `state` from the supervisor's table, `enabled`
-   * from the plugins row — and only *synthesises* `disabled` when the table has
-   * no entry, so nothing in the wire shape forbids this pairing. Hiding a chip
-   * because the switch is off would hide a crash to keep the row tidy.
-   */
   it('still shows a non-`disabled` state on a plugin whose switch is off', () => {
     render(<PluginsPane {...props({
       plugins: [plugin({ enabled: false, state: 'crashed', last_error: 'exited with 1' })],
@@ -199,16 +137,10 @@ describe('Plugins pane', () => {
     const { container } = render(<PluginsPane {...props({
       plugins: [plugin({ manifest_description: 'Tracks what is left to do.' })],
     })} />);
-    // One line of text, not two fragments that happen to be adjacent: the
-    // version has to share the title's element with the name.
     const title = container.querySelector('[data-nc-row-title]');
     expect(title?.textContent).toBe('Todo0.1.0');
-    // And the manifest's sentence is alone — the version no longer opens it,
-    // which is what made that line a list of unrelated fragments.
     expect(screen.getByText('Tracks what is left to do.').textContent)
       .toBe('Tracks what is left to do.');
-    // The id did not disappear with it: it is the key an operator carries to a
-    // manifest or a log line.
     expect(screen.getByText('todo')).toBeTruthy();
   });
 
@@ -223,15 +155,6 @@ describe('Plugins pane', () => {
     expect(screen.getByText('No plugins installed.')).toBeTruthy();
   });
 
-  /*
-   * #1284 §2.5 — "this plugin has nothing to configure" and "the configuration
-   * screen is not built" must be two different things on screen. The first is
-   * *no entry point at all*; the second was the empty pane behind a Configure
-   * button that this work exists to remove. So the absence is asserted on the
-   * row that says so, beside a row that offers it, in one render — a
-   * single-plugin assertion would still pass if the button were rendered
-   * unconditionally and the list happened to hold one plugin.
-   */
   it('offers a configuration entry point only where the kernel says there is one', async () => {
     const onOpenConfig = vi.fn();
     render(<PluginsPane {...props({
@@ -244,14 +167,6 @@ describe('Plugins pane', () => {
 
     expect(screen.queryByRole('button', { name: 'Configure Todo' })).toBeNull();
     const configure = screen.getByRole('button', { name: 'Configure Git forge' });
-    /*
-     * The entry point is a glyph now, and the accessible name is the *only*
-     * name it has left — which is exactly when losing the plugin's name from it
-     * stops being a style question and starts being a column of buttons all
-     * announced alike. So: nothing painted, and the name still says which
-     * plugin. `getByRole(name:)` above proves the name; this proves it is not
-     * merely echoing visible text that is still there.
-     */
     expect(configure.textContent).toBe('');
     expect(configure.getAttribute('aria-label')).toBe('Configure Git forge');
     await userEvent.click(configure);
@@ -259,8 +174,6 @@ describe('Plugins pane', () => {
   });
 
   it('keeps the switch usable on a row that also offers configuration', async () => {
-    // Two controls on one trailing edge, and both have to work: the drill-in
-    // must not have taken the row's switch away or swallowed its clicks.
     const onSetEnabled = vi.fn();
     render(<PluginsPane {...props({
       plugins: [plugin({ has_config: true, enabled: false })],
@@ -270,59 +183,20 @@ describe('Plugins pane', () => {
     expect(onSetEnabled.mock.calls).toEqual([['todo', true]]);
   });
 
-  /*
-   * #1242 — the line is per row, like every other per-row fact here. Asserted
-   * against a *second* row in the same render that is not flagged: a
-   * single-plugin assertion would still pass if the line were rendered
-   * unconditionally, which is the shape that would put a claim about one
-   * plugin's write under every other plugin's name.
-   */
   it('puts the effect-boundary line only on the row whose write is flagged', () => {
     render(<PluginsPane {...props({
       plugins: [plugin(), plugin({ id: 'git-forge', manifest_name: 'Git forge' })],
       effectBoundaryIds: new Set(['git-forge']),
     })} />);
-    /*
-     * Both rows carry the live region — it is mounted before it has anything to
-     * say, see the case below — so the assertion is on which one holds *text*.
-     * Read in DOM order, which is the order the fixture lists them.
-     */
     const [todoLine, forgeLine] = boundaryLines();
-    /*
-     * `already in progress` and not the whole sentence: it is the clause the
-     * claim lives in, and it is what a copy edit that changed the *meaning*
-     * would have to disturb. `takes effect` would not do — it is the half that
-     * survives a rewrite into a sentence about tools.
-     */
     expect(forgeLine?.textContent).toContain('already in progress');
     expect(todoLine?.textContent).toBe('');
-    // And each region is on its own plugin's row.
     expect(screen.getByText('git-forge').parentElement?.contains(forgeLine ?? null)).toBe(true);
     expect(screen.getByText('todo').parentElement?.contains(todoLine ?? null)).toBe(true);
-    /*
-     * And it does not claim the plugin has tools. "New tools will appear in a
-     * new conversation" would be false on a plugin that contributes none, and
-     * the row has no field that separates the two — `pluginListItemSchema`
-     * carries no `exposes_tools`. (The *write's* response does carry the
-     * manifest; `plugins.tsx` says why per-row copy is still not derived from
-     * it.) A statement about the *change* needs none of that.
-     *
-     * Matched as **the substring `tool`, case-insensitively** — deliberately
-     * wider than any one phrasing. "New tools", "its tools", "the tools it
-     * adds" and "Tools appear…" are all the same drift, and a guard pinned to
-     * one spelling would let three of them through. The width is what this
-     * line's own copy can afford: it says nothing about tools at all, so any
-     * occurrence of the word is a change of subject, and a change of subject
-     * here is the defect this guards.
-     */
     expect(forgeLine?.textContent?.toLowerCase()).not.toContain('tool');
   });
 
-  /*
-   * A live region that arrives in the same DOM mutation as its text is commonly
-   * not announced at all. `NetworkPane` learned this one file over and pins it
-   * the same way; this is the plugins row's copy of that case.
-   */
+  /* A live region that arrives in the same DOM mutation as its text is commonly not announced at all. */
   it('mounts the live region before it has anything to say', () => {
     render(<PluginsPane {...props({
       plugins: [plugin(), plugin({ id: 'git-forge', manifest_name: 'Git forge' })],
@@ -330,23 +204,6 @@ describe('Plugins pane', () => {
     expect(boundaryLines().map((node) => node.textContent)).toEqual(['', '']);
   });
 
-  /*
-   * ── The row that crashed says nothing about where the change reaches ──────
-   *
-   * `last_error` is server state and no write path clears it, so it is not
-   * disjoint from the flag the way the *write* error is (which `onMutate`
-   * clears before `onSuccess` could set anything). On the ordinary path it
-   * arrives after the flag: enable answers 200 while the supervisor is still
-   * bringing the process up, the plugin then crashes, and the list poll brings
-   * the reason back. A plugin that crashed will not take effect in a new
-   * conversation either, so the sentence would be a false promise sitting
-   * directly under the evidence against it — and a screen reader would
-   * announce the assertive alert and then the polite status saying otherwise.
-   *
-   * Asserted with the flag *set*, which is the only configuration that can
-   * fail: a case that left the flag unset would pass against a component that
-   * never suppresses anything.
-   */
   it('withholds the boundary line from a flagged row that is reporting a failure', () => {
     render(<PluginsPane {...props({
       plugins: [
@@ -358,8 +215,6 @@ describe('Plugins pane', () => {
     const [todoLine, forgeLine] = boundaryLines();
     expect(screen.getByRole('alert').textContent).toBe('Plugin crashed: exit code 1');
     expect(todoLine?.textContent).toBe('');
-    // The healthy row beside it still gets the line, so this is suppression and
-    // not the feature having been switched off.
     expect(forgeLine?.textContent).toContain('already in progress');
   });
 
@@ -373,39 +228,22 @@ describe('Plugins pane', () => {
   });
 });
 
-// ===========================================================================
-// #1480 — adding and removing
-// ===========================================================================
-
 describe('Plugins pane — add and remove', () => {
   it('offers the install form as a row you walk into, after the list', async () => {
     const onAdd = vi.fn();
     render(<PluginsPane {...props({ onAdd })} />);
     await userEvent.click(screen.getByText('Add a plugin'));
-    /* Call count, not arguments: the row hands its click event through, and
-       what this pins is that the row is the way in. */
     expect(onAdd.mock.calls.length).toBe(1);
   });
 
-  /*
-   * The empty list is the state where the row matters most: a screen that only
-   * says "none" is one whose single next step the reader has to find elsewhere.
-   */
   it('keeps the way in when nothing is installed', async () => {
     const onAdd = vi.fn();
     render(<PluginsPane {...props({ plugins: [], onAdd })} />);
     expect(screen.getByText('No plugins installed.')).toBeTruthy();
     await userEvent.click(screen.getByText('Add a plugin'));
-    /* Call count, not arguments: the row hands its click event through, and
-       what this pins is that the row is the way in. */
     expect(onAdd.mock.calls.length).toBe(1);
   });
 
-  /*
-   * The whole point of the control: a removal is irreversible and it sits one
-   * pixel from a switch that is safe to press. Pressing Remove must ask, and
-   * asking must not have removed anything yet.
-   */
   it('asks before it removes, and removes nothing until the question is answered', async () => {
     const onUninstall = vi.fn();
     render(<PluginsPane {...props({ onUninstall })} />);
@@ -422,8 +260,6 @@ describe('Plugins pane — add and remove', () => {
     const onUninstall = vi.fn();
     render(<PluginsPane {...props({ onUninstall })} />);
     await userEvent.click(screen.getByRole('button', { name: 'Remove Todo' }));
-    // While the row is asking, its ordinary controls are gone: a destructive
-    // answer and an ordinary one must not share a pointer.
     expect(screen.queryByRole('switch', { name: 'Enable Todo' })).toBeNull();
 
     await userEvent.click(screen.getByRole('button', { name: 'Keep Todo' }));
@@ -431,10 +267,6 @@ describe('Plugins pane — add and remove', () => {
     expect(screen.getByRole('switch', { name: 'Enable Todo' })).toBeTruthy();
   });
 
-  /*
-   * Two rows must not confirm as one. The question names its plugin because
-   * that is the moment the reader has to know which row answered.
-   */
   it('asks on one row at a time', async () => {
     render(<PluginsPane {...props({
       plugins: [plugin(), plugin({ id: 'git-forge', manifest_name: 'Git forge' })],

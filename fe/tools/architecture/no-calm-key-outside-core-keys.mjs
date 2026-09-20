@@ -1,11 +1,6 @@
 /**
- * Persistence and cache key namespaces are an API. Keep `calm:` and `calm.`
- * literals in core/keys so renames and compatibility policy have one owner.
- *
- * Known escape: separated concatenation such as `'calm' + ':x'` is not
- * rejected. Proving arbitrary constant expressions requires constant folding
- * and data-flow analysis; the direct pieces do not themselves match the key
- * namespace and rejecting all concatenation would produce unrelated noise.
+ * `calm:` / `calm.` key literals belong in core/keys so renames have one owner.
+ * Known escape: separated concatenation such as `'calm' + ':x'` is not rejected.
  */
 
 const calmKey = /^calm[:.]/;

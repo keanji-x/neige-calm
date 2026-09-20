@@ -6,9 +6,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 
-// #679 PR1 — moved vocabulary (TS-exported runtime projection types),
-// re-exported at the old paths. Source definitions live in calm-types;
-// do NOT re-declare them here.
+// Source definitions live in calm-types; do NOT re-declare them here.
 pub use calm_types::runtime::{
     AgentProvider, TimestampMs, WorkerSessionKind, WorkerSessionProjection,
 };
@@ -72,9 +70,8 @@ pub struct WorkerSessionInit {
 
 #[async_trait]
 pub trait WorkerSessionProjectionRepo {
-    /// Active = starting/running/idle/turn_pending, matching the
-    /// active-per-card partial unique constraint. Looks up a worker session by
-    /// provider-owned thread id for bridge/app-server attribution.
+    /// Active = starting/running/idle/turn_pending, matching the active-per-card
+    /// partial unique constraint.
     async fn session_projection_active_by_thread(
         &self,
         provider: AgentProvider,
@@ -92,9 +89,8 @@ pub trait WorkerSessionProjectionRepo {
         card_id: &CardId,
     ) -> Result<Option<WorkerSessionProjection>>;
 
-    /// Runtime row used by read-time payload projection. This preserves the
-    /// active-runtime lookup as the primary source, but also allows a latest
-    /// failed no-thread runtime to surface the legacy `failed_to_spawn` state.
+    /// The active runtime, or else a latest failed no-thread runtime so the legacy
+    /// `failed_to_spawn` state still surfaces.
     async fn session_projection_projectable_for_card(
         &self,
         card_id: &CardId,
@@ -112,16 +108,14 @@ pub trait WorkerSessionProjectionRepo {
         card_ids: &[CardId],
     ) -> Result<HashMap<CardId, WorkerSessionProjection>>;
 
-    /// Active = starting/running/idle/turn_pending, matching the
-    /// active-per-card partial unique constraint. Returns codex-owned
-    /// thread attributions used to rebuild the shared app-server cache.
+    /// Active = starting/running/idle/turn_pending, matching the active-per-card
+    /// partial unique constraint.
     async fn session_projection_active_shared_thread_attribution(
         &self,
     ) -> Result<Vec<(String, String)>>;
 
-    /// Active = starting/running/idle/turn_pending, matching the
-    /// active-per-card partial unique constraint. Batch scan for boot
-    /// takeover flows that need all live runtimes of a specific kind.
+    /// Active = starting/running/idle/turn_pending, matching the active-per-card
+    /// partial unique constraint.
     async fn session_projection_active_for_kind(
         &self,
         kind: WorkerSessionKind,
@@ -129,39 +123,26 @@ pub trait WorkerSessionProjectionRepo {
 
     async fn session_projection_by_id(&self, id: &str) -> Result<Option<WorkerSessionProjection>>;
 
-    /// #1449 — a runtime's own `state`, by id, independent of which runtime the
-    /// card currently points at.
-    ///
-    /// [`Self::session_projection_by_id`] cannot answer this question: its
-    /// SELECT is card-backed (`JOIN cards c ON c.session_id = ws.id`), so a row
-    /// the card has already moved off answers `None` — indistinguishable from
-    /// "there is no such row". The run loop refuses on `None`, so that
-    /// conflation would refuse every runtime whose card has moved on, live or
-    /// not.
+    /// A runtime's own `state`, by id, independent of which runtime the card
+    /// points at: `session_projection_by_id` is card-backed, so a row the card
+    /// moved off answers `None` there, indistinguishable from "no such row".
     async fn session_projection_state_by_id(&self, id: &str) -> Result<Option<WorkerSessionState>>;
 
-    /// #1449 S1 — a runtime's persisted `handle_state_json`, by id.
-    ///
-    /// Join-free and keyed on the id for the same reason as the reader above:
-    /// the caller asks about a row precisely when the card may already point
-    /// somewhere else.
+    /// Join-free and keyed on the id: the caller asks precisely when the card may
+    /// already point somewhere else.
     async fn session_projection_handle_state_by_id(
         &self,
         id: &str,
     ) -> Result<Option<serde_json::Value>>;
 
-    /// Idempotent: if no active runtime exists for this card, returns
-    /// `Ok(())` without writing. This handles fast-exit races and
-    /// pre-#488-backfilled-but-already-completed cards.
+    /// Idempotent: no active runtime for this card returns `Ok(())` without writing.
     async fn session_projection_set_status_for_card(
         &self,
         card_id: &str,
         status: WorkerSessionState,
     ) -> Result<()>;
 
-    /// Idempotent: if no active runtime exists for this card, returns
-    /// `Ok(())` without writing. This handles fast-exit races and
-    /// pre-#488-backfilled-but-already-completed cards.
+    /// Idempotent: no active runtime for this card returns `Ok(())` without writing.
     async fn session_projection_complete_for_card(
         &self,
         card_id: &str,
@@ -174,9 +155,8 @@ pub trait WorkerSessionProjectionRepo {
         terminal_status: WorkerSessionState,
     ) -> Result<()>;
 
-    /// Returns shared-spec runtimes whose `handle_state_json` carries a harness
-    /// snapshot (`$.mode == 'harness'`) so the planner harness boot path can
-    /// rebuild their in-memory task + replay pending observations.
+    /// Shared-spec runtimes whose `handle_state_json` carries a harness snapshot
+    /// (`$.mode == 'harness'`), for the boot-time harness rebuild.
     async fn session_projection_recover_harnesses_on_boot(
         &self,
     ) -> Result<Vec<WorkerSessionProjection>>;
@@ -198,8 +178,7 @@ impl From<serde_json::Error> for WorkerSessionProjectionRepoError {
     }
 }
 
-/// #930: lets the sqlite impl start its writing transactions through
-/// `begin_immediate_tx` (which returns `CalmError`) with plain `?`.
+/// Lets the sqlite impl use `begin_immediate_tx` (which returns `CalmError`) with plain `?`.
 impl From<crate::error::CalmError> for WorkerSessionProjectionRepoError {
     fn from(err: crate::error::CalmError) -> Self {
         Self::Message {

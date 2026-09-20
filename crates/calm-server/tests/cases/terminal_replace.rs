@@ -1,7 +1,5 @@
-//! #1677 S2 — `replace`: the server derives Left/Right, Backspace and text
-//! from the live cursor row, in one ordered write, against a real readline
-//! line editor (Python's `input()` with GNU readline under a UTF-8 locale)
-//! through the real MCP tools, renderer and PTY.
+//! `replace`: the server derives Left/Right, Backspace and text from the live cursor row, in one
+//! ordered write, against a real readline line editor (Python's `input()` under a UTF-8 locale).
 use crate::terminal_support::{Harness, human_takeover};
 use calm_server::terminal_interaction::{InputOptions, Target};
 use serde_json::{Value, json};
@@ -89,11 +87,7 @@ async fn ack(h: &Harness, terminal: &str) -> u64 {
         .expect("the open established the Planner's client")
 }
 
-/// Cursor at the end of the draft: the plan moves Left, erases `11` and
-/// inserts `19` in ONE write (the ack sequence advances by one), the receipt
-/// carries the plan, the readback IS the preview, Enter is separate. A
-/// replay returns the cached plan (`11` is gone from the row, so a
-/// recomputation could not succeed) and writes nothing more.
+/// A replay returns the cached plan (`11` is gone from the row, so a recomputation could not succeed).
 #[tokio::test]
 async fn replace_moves_left_from_the_end_and_the_receipt_carries_the_plan() {
     let h = Harness::start().await;
@@ -165,10 +159,6 @@ async fn replace_moves_left_from_the_end_and_the_receipt_carries_the_plan() {
     h.stop(&terminal).await;
 }
 
-/// Wide glyphs count as one character: with `松果` between `11` and the
-/// cursor the plan moves Left 3 (not 5 columns); from Home the plan moves
-/// Right to the end of `松果` and replaces it; the printed line after a
-/// separate Enter proves both edits.
 #[tokio::test]
 async fn replace_counts_cjk_characters_and_moves_right_from_home() {
     let h = Harness::start().await;
@@ -233,9 +223,6 @@ async fn replace_counts_cjk_characters_and_moves_right_from_home() {
     h.stop(&terminal).await;
 }
 
-/// Every refusal is an RPC error before any reservation or write: absent,
-/// ambiguous (overlapping occurrences included), on another row, control
-/// characters and shape; the request_id stays free.
 #[tokio::test]
 async fn replace_refusals_are_rpc_errors_before_any_write() {
     let h = Harness::start().await;
@@ -298,10 +285,7 @@ async fn replace_refusals_are_rpc_errors_before_any_write() {
     h.stop(&terminal).await;
 }
 
-/// A hidden cursor is positioned all the same (Claude Code keeps DECTCEM
-/// off in its draft box while moving the cursor to the edit point): the
-/// plan uses the position, the receipt reports `cursor_visible: false`,
-/// and readline applies the edit.
+/// Claude Code keeps DECTCEM off in its draft box while moving the cursor to the edit point.
 #[tokio::test]
 async fn replace_with_a_hidden_cursor_uses_its_position() {
     let h = Harness::start().await;
@@ -358,9 +342,6 @@ async fn replace_with_a_hidden_cursor_uses_its_position() {
     h.stop(&terminal).await;
 }
 
-/// The cursor facts: a cursor inside a wide cell and a match that cuts
-/// through a combining sequence are refused on the live frame; nothing is
-/// written.
 #[tokio::test]
 async fn replace_refuses_wide_cell_cursor_and_unaligned_matches() {
     let h = Harness::start().await;
@@ -402,10 +383,7 @@ async fn replace_refuses_wide_cell_cursor_and_unaligned_matches() {
     h.stop(&last).await;
 }
 
-/// Review r1 A: readline moves and erases per cell while the plan counts
-/// scalars, so a cell holding a combining sequence inside the match or
-/// between the match and the cursor is refused; the same edit as a
-/// `sequence` (Left per cell) still lands.
+/// readline moves and erases per cell while the plan counts scalars.
 #[tokio::test]
 async fn replace_refuses_a_combining_sequence_in_the_span_and_a_sequence_edits_it() {
     let h = Harness::start().await;
@@ -467,10 +445,8 @@ async fn replace_refuses_a_combining_sequence_in_the_span_and_a_sequence_edits_i
     h.stop(&terminal).await;
 }
 
-/// Review r1 B: a write into the last column parks the terminal cursor
-/// there with a pending wrap, one cell left of where the application has
-/// it (readline forces its own wrap, so the shape comes from an echoing
-/// `cat` here): the plan refuses it and a `sequence` still edits the line.
+/// A write into the last column parks the terminal cursor there with a pending wrap, one cell left
+/// of where the application has it (readline forces its own wrap, so the shape comes from an echoing `cat`).
 #[tokio::test]
 async fn replace_refuses_a_cursor_parked_in_the_last_column() {
     let h = Harness::start().await;
@@ -543,9 +519,7 @@ async fn replace_refuses_a_cursor_parked_in_the_last_column() {
     h.stop(&terminal).await;
 }
 
-/// Review r1 D: a `from` reaching into the blank run past the draft would
-/// move Right past the buffer's end (readline ignores it); refused, and
-/// the same `from` without the trailing space is the intended edit.
+/// A `from` reaching into the blank run past the draft would move Right past the buffer's end (readline ignores it).
 #[tokio::test]
 async fn replace_refuses_from_extending_past_the_draft() {
     let h = Harness::start().await;
@@ -573,8 +547,6 @@ async fn replace_refuses_from_extending_past_the_draft() {
     h.stop(&terminal).await;
 }
 
-/// A refusal after a granted claim carries the claim note (an error has no
-/// receipt), and the connection holds the control it claimed.
 #[tokio::test]
 async fn replace_refusal_after_a_granted_claim_carries_the_claim_note() {
     let h = Harness::start().await;
@@ -652,14 +624,10 @@ async fn replace_refusal_after_a_granted_claim_carries_the_claim_note() {
     h.stop(&terminal).await;
 }
 
-/// `allow_output_below_cursor` admits a replace: a hint line refreshing
-/// below the cursor is not stale for it, the write happens with the
-/// tolerance and the plan on the receipt.
 #[tokio::test]
 async fn replace_is_admitted_by_the_below_cursor_tolerance() {
     let h = Harness::start().await;
-    // A title row, an input row and a hint row two below the cursor that a
-    // background loop repaints every 100 ms (same box as the #1666 tests).
+    // A title row, an input row and a hint row two below the cursor that a background loop repaints every 100 ms.
     let terminal = open_claimed(
         &h,
         "printf 'Title line\\nType here: '; ( i=0; while :; do i=$((i+1)); printf '\\0337\\033[4;1Hhint %s\\0338' $i; sleep 0.1; done ) & cat >/dev/null",

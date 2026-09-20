@@ -1,6 +1,4 @@
-//! #1666 S3 — `input claim:true` / `release:true`: control per scenario
-//! through the real MCP tools, renderer and PTY, with a real human client
-//! where a takeover is needed.
+//! `input claim:true` / `release:true`: control per scenario through the real MCP tools, renderer and PTY.
 use crate::terminal_support::{Harness, human_takeover};
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -100,10 +98,8 @@ fn submit(terminal: &str, request: &str, text: &str, extra: Value) -> Value {
     }
     args
 }
-/// #1709 — `observed_at_ms` is an integer within a minute of this process's
-/// clock; `exited_at_ms` is null before the exit and, after it, an integer
-/// between `since` (a time the test read before the exit) and the
-/// observation's own capture instant. Returns `observed_at_ms`.
+/// `observed_at_ms` is an integer within a minute of this process's clock; `exited_at_ms` is null
+/// before the exit and, after it, between `since` and the capture instant. Returns `observed_at_ms`.
 fn assert_observation_times(state: &Value, since: i64, exited: bool) -> i64 {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -130,10 +126,6 @@ fn physical_lines(h: &Harness) -> Vec<u8> {
     std::fs::read(h.root.path().join("physical-lines")).unwrap_or_default()
 }
 
-/// A free terminal: the first observed input claims and writes in one call,
-/// the receipt names the claim and the new control id, the readback is the
-/// owner's; a second `claim:true` is a no-op `held`; a replay claims and
-/// writes nothing more.
 #[tokio::test]
 async fn input_claim_grants_when_free_and_writes_with_the_claim_in_the_receipt() {
     let h = Harness::start().await;
@@ -158,7 +150,7 @@ async fn input_claim_grants_when_free_and_writes_with_the_claim_in_the_receipt()
     assert_eq!(state["role"], "owner", "{state}");
     assert_eq!(state["control_id"], control);
     assert!(has_line(state, "COUNT:1:hello"), "{state}");
-    // #1677 S3: the text block is the summary in words; the claim is named.
+    // The text block is the summary in words; the claim is named.
     assert_eq!(
         summary(&first),
         format!(
@@ -223,10 +215,6 @@ async fn input_claim_grants_when_free_and_writes_with_the_claim_in_the_receipt()
     h.stop(&terminal).await;
 }
 
-/// A human holds control: the claim is refused by the pump (never a
-/// takeover), nothing is written or cached, the result is structured with
-/// a fresh observer observation; once the human is gone the same request
-/// claims and writes.
 #[tokio::test]
 async fn input_claim_is_refused_while_a_human_holds_control_and_writes_nothing() {
     let h = Harness::start().await;
@@ -310,9 +298,6 @@ async fn input_claim_is_refused_while_a_human_holds_control_and_writes_nothing()
     h.stop(&terminal).await;
 }
 
-/// The observation named a lease this connection no longer holds (released
-/// since): `claim:true` does not claim on that observation; a fresh observer
-/// observation does.
 #[tokio::test]
 async fn input_claim_is_refused_when_the_observation_named_a_lost_lease() {
     let h = Harness::start().await;
@@ -385,11 +370,6 @@ async fn input_claim_is_refused_when_the_observation_named_a_lost_lease() {
     h.stop(&terminal).await;
 }
 
-/// #1620 R6 shape on input: the grant is folded with a human takeover
-/// (delivery on the Planner's connection is held from inside the claim
-/// window until the human has taken over). The pump's verdict is Granted,
-/// the applied state names the human: a refusal without a write, well
-/// before the 7 s budget.
 #[tokio::test]
 async fn input_claim_folded_with_a_takeover_is_refused_without_a_write() {
     use std::sync::{Arc, Mutex};
@@ -467,8 +447,6 @@ async fn input_claim_folded_with_a_takeover_is_refused_without_a_write() {
     h.stop(&terminal).await;
 }
 
-/// A granted claim followed by the stale fence: nothing is written, but the
-/// stale result says the connection now holds control; the resend is `held`.
 #[tokio::test]
 async fn input_claim_then_stale_fence_reports_the_claim() {
     let h = Harness::start().await;
@@ -532,11 +510,6 @@ async fn input_claim_then_stale_fence_reports_the_claim() {
     h.stop(&terminal).await;
 }
 
-/// #1666 r1 (B) — the checks that need no live screen run before the claim:
-/// an invalid action (a sequence carrying Enter) and an observation taken as
-/// a history view are errors on a still-unowned terminal, no claim happened.
-/// Once a claim IS granted, every later error names the lease (here the
-/// surface fence after a resize).
 #[tokio::test]
 async fn input_claim_is_not_granted_on_a_request_that_errors_anyway() {
     let h = Harness::start().await;
@@ -632,10 +605,6 @@ async fn input_claim_is_not_granted_on_a_request_that_errors_anyway() {
     h.stop(&terminal).await;
 }
 
-/// `release:true` releases after the write: the bytes reached the program,
-/// the receipt says released and the readback is an observer's. A replay
-/// never releases again (control claimed since stays), and claim+release in
-/// one call brackets a one-input scenario.
 #[tokio::test]
 async fn input_release_releases_after_the_write_and_reads_back_as_observer() {
     let h = Harness::start().await;
@@ -755,9 +724,6 @@ async fn input_release_releases_after_the_write_and_reads_back_as_observer() {
     h.stop(&terminal).await;
 }
 
-/// A human takes over between the write and the release: the write stands
-/// (written before the takeover), the release reports `not_held`, the
-/// human keeps control and the readback is an observer's.
 #[tokio::test]
 async fn input_release_after_a_takeover_reports_not_held() {
     let h = Harness::start().await;
@@ -806,29 +772,20 @@ async fn input_release_after_a_takeover_reports_not_held() {
     h.stop(&terminal).await;
 }
 
-/// #1697 — a release on a terminal whose program has exited. The pump stops
-/// forwarding after `TerminalExited` (the WS client closes there), so the
-/// connection's mirror never sees the `OwnerChanged(None)` the release
-/// produces: the call used to fail after 7 s with tokio's `deadline has
-/// elapsed` while the registry had long dropped the lease. The release is
-/// now confirmed through the owner registry, the receipt says `released`,
-/// the readback is an observer's and the observation carries `exit_code`.
-/// A claim on the exited terminal is the binding refusal, not a 7 s wait.
 #[tokio::test]
 async fn control_release_on_an_exited_terminal_confirms_through_the_registry() {
     let h = Harness::start().await;
     let opened = h
         .ok(
             "calm.terminal.open",
-            // The claim must land before the exit; 3 s is margin for a loaded CI shard (the test waits for the exit anyway).
+            // The claim must land before the exit; 3 s is margin for a loaded CI shard.
             json!({"program":"sleep 3; exit 3","request_id":"exit-release","claim":true}),
         )
         .await;
     let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
     assert_eq!(opened["role"], "owner", "{opened}");
     assert_eq!(opened["exit_code"], Value::Null, "{opened}");
-    // #1709 — the open's readback ran before the exit: a capture instant
-    // and no exit instant.
+    // The open's readback ran before the exit: a capture instant and no exit instant.
     let before_exit = assert_observation_times(&opened, 0, false);
     // Wait until this connection's mirror saw the exit (a change wait can
     // return `exited` off the entry's exit state a moment before the frame
@@ -851,8 +808,7 @@ async fn control_release_on_an_exited_terminal_confirms_through_the_registry() {
     };
     assert_eq!(exited["wait"]["outcome"], "exited", "{exited}");
     assert_eq!(exited["role"], "owner", "{exited}");
-    // #1709 — the exit instant lies between the pre-exit readback and this
-    // observation's capture.
+    // The exit instant lies between the pre-exit readback and this observation's capture.
     assert_observation_times(&exited, before_exit, true);
     assert!(
         registry_owner(&h, &terminal).is_some(),
@@ -884,14 +840,12 @@ async fn control_release_on_an_exited_terminal_confirms_through_the_registry() {
     assert_eq!(state["exited"], true, "{state}");
     assert_eq!(state["exit_code"], 3, "{state}");
     assert_eq!(exited["exit_code"], 3, "known before the release: {exited}");
-    // #1709 — the release readback repeats the same exit instant.
+    // The release readback repeats the same exit instant.
     assert_observation_times(state, before_exit, true);
     assert_eq!(state["exited_at_ms"], exited["exited_at_ms"], "{state}");
     assert_eq!(registry_owner(&h, &terminal), None);
-    // #1709 r1 — a connection attached after the exit (detach, then observe
-    // more than 2 s after the first post-exit observation) receives only
-    // the replayed `TerminalExited`, and still reports the renderer's exit
-    // instant, never its own attach instant.
+    // A connection attached after the exit receives only the replayed `TerminalExited`, and still
+    // reports the renderer's exit instant, never its own attach instant.
     tokio::time::sleep(Duration::from_millis(2100)).await;
     let detached = h
         .call(
@@ -935,14 +889,6 @@ async fn control_release_on_an_exited_terminal_confirms_through_the_registry() {
     h.stop(&terminal).await;
 }
 
-/// #1701 — an exited Terminal-card terminal survives the orphan sweeper. The
-/// Planner opened a one-shot program, it exited, and the ephemeral terminal
-/// session completed, so the row matched `terminals_orphaned` and the next
-/// sweep past the 60 s grace deleted it: `observe` and `control release` on
-/// it then failed with `target has no terminal view`. The row now follows
-/// its card (the card still exists): after a sweep the final screen is still
-/// observable with `exited`/`exit_code` and a release still answers through
-/// the registry (#1697).
 #[tokio::test]
 async fn exited_terminal_card_terminal_survives_the_orphan_sweep() {
     let h = Harness::start().await;
@@ -985,11 +931,8 @@ async fn exited_terminal_card_terminal_survives_the_orphan_sweep() {
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     };
-    // #1701 r1 — the exit and the session completion are two writes
-    // (`attach_reader.rs`): with the session still active the sweep keeps
-    // the row on the unfixed query too, so the test would pass without
-    // exercising the defect. Wait until the card has no active session, the
-    // exact pre-fix orphan shape, and say so.
+    // The exit and the session completion are two writes; wait until the card has no active
+    // session, the exact orphan shape.
     let start = std::time::Instant::now();
     let active_sessions = loop {
         let active: i64 = sqlx::query_scalar(

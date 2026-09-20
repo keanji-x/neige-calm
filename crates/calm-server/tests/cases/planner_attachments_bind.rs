@@ -1,11 +1,4 @@
-//! #1505 S6-PR2 — binding an uploaded attachment to a message, and carrying it
-//! into `turn/start`.
-//!
-//! S6-PR1 shipped the disk half with nothing that wrote `bound/`, so every
-//! upload expired after the orphan TTL. What this file pins is the half that
-//! makes an attachment permanent, and it pins it at the two places the claim
-//! could be false: after a sweep that would have removed a staged file, and in
-//! the payload actually handed to the daemon.
+//! Binding an uploaded attachment to a message, and carrying it into `turn/start`.
 
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -32,14 +25,7 @@ async fn staged(boot: &Boot, payload: &[u8]) -> String {
         .to_string()
 }
 
-/// Run the staging sweep with a TTL of zero — i.e. reclaim everything the
-/// sweep is entitled to reclaim, right now.
-///
-/// This is the decisive instrument of this file. "The attachment is permanent"
-/// is not a claim about the passage of time; it is a claim about which
-/// directory the bytes are in, and the sweep is the thing that reads that
-/// directory. Asserting the file still exists without running the sweep would
-/// pass identically before and after the bind path.
+/// Run the staging sweep with a TTL of zero, reclaiming everything the sweep is entitled to reclaim right now.
 async fn sweep_everything_reclaimable(boot: &Boot) -> Vec<String> {
     let dirs = dir::open_card_dirs(&boot.attachment_root(), &boot.planner_card.id)
         .await
@@ -73,8 +59,6 @@ async fn read_back(boot: &Boot, attachment_id: &str) -> StatusCode {
     status
 }
 
-/// The acceptance case: a sent message's attachment is out of the sweep's
-/// reach, and its url still answers.
 #[tokio::test]
 async fn a_named_attachment_is_moved_out_of_reach_of_the_orphan_sweep() {
     let boot = boot_with(idle_snapshot(vec![])).await;
@@ -114,10 +98,6 @@ async fn a_named_attachment_is_moved_out_of_reach_of_the_orphan_sweep() {
     );
 }
 
-/// The negative half of the same statement, and the reason the sweep above is
-/// the right instrument: an upload nobody sent IS reclaimed, and its url then
-/// stops working. Without this, the test above could pass with a sweep that
-/// does nothing at all.
 #[tokio::test]
 async fn an_attachment_nobody_sent_is_still_reclaimed() {
     let boot = boot_with(idle_snapshot(vec![])).await;
@@ -128,8 +108,6 @@ async fn an_attachment_nobody_sent_is_still_reclaimed() {
     assert_eq!(read_back(&boot, &id).await, StatusCode::BAD_REQUEST);
 }
 
-/// What actually reaches codex: a `localImage` item, after the text, naming a
-/// path that exists on disk at the moment the turn is issued.
 #[tokio::test]
 async fn the_issued_turn_carries_a_local_image_item_for_the_attachment() {
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
@@ -145,15 +123,8 @@ async fn the_issued_turn_carries_a_local_image_item_for_the_attachment() {
     .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
 
-    // Wait on the CLOCK, not on the scheduler.
-    //
-    // A `yield_now()` spin was the first version of this and it went red on
-    // CI while passing on every local run. Issuance is driven by the run
-    // loop's 50ms tick, so a fixed number of cooperative yields can all be
-    // spent inside a single tick interval on a loaded machine — the loop
-    // finishes early and reports "no turn" for a turn that was merely a few
-    // milliseconds away. The subject here is what the turn CONTAINS, not how
-    // soon it appears, so the wait is a real deadline.
+    // Wait on the clock, not the scheduler: issuance is driven by the run loop's 50ms tick, so a fixed number
+    // of cooperative yields can all land inside one tick on a loaded machine.
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     let mut issued = Vec::new();
     while std::time::Instant::now() < deadline {
@@ -186,8 +157,6 @@ async fn the_issued_turn_carries_a_local_image_item_for_the_attachment() {
     );
 }
 
-/// Pasting a screenshot and pressing enter. An empty text beside an attachment
-/// is a message; an empty text beside nothing is still a refusal.
 #[tokio::test]
 async fn an_image_with_no_text_is_a_message_but_an_empty_message_is_not() {
     let boot = boot_with(idle_snapshot(vec![])).await;
@@ -214,9 +183,6 @@ async fn an_image_with_no_text_is_a_message_but_an_empty_message_is_not() {
     );
 }
 
-/// Cross-card forgery. The path is derived from the card in the URL, so
-/// another card's id simply is not there — and the refusal must happen before
-/// anything is written to this card's queue.
 #[tokio::test]
 async fn an_id_from_another_card_is_refused_and_queues_nothing() {
     let boot = boot_with(idle_snapshot(vec![])).await;
@@ -245,8 +211,6 @@ async fn an_id_from_another_card_is_refused_and_queues_nothing() {
     );
 }
 
-/// The two shapes of a malformed list. Both are refusals rather than quiet
-/// repairs, because both mean the client lost track of its own state.
 #[tokio::test]
 async fn a_list_that_is_too_long_or_repeats_itself_is_refused() {
     let boot = boot_with(idle_snapshot(vec![])).await;
@@ -286,8 +250,6 @@ async fn a_list_that_is_too_long_or_repeats_itself_is_refused() {
     );
 }
 
-/// The queue read shows the attachment, by id, with no host path anywhere in
-/// the response.
 #[tokio::test]
 async fn planner_run_lists_a_queued_messages_attachments_without_a_host_path() {
     let boot = boot_with(idle_snapshot(vec![])).await;
@@ -307,10 +269,7 @@ async fn planner_run_lists_a_queued_messages_attachments_without_a_host_path() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    // The composer asks this before it offers a paperclip. This fixture's
-    // track has a managed workspace, which is the only shape that supports
-    // attachments; the refusal on the other shape is
-    // `an_attached_workspace_is_refused_and_nothing_is_created`.
+    // This fixture's track has a managed workspace, the only shape that supports attachments.
     assert_eq!(run["attachments_supported"], json!(true));
     let entry = &run["pending"][0];
     assert_eq!(entry["attachments"][0]["id"], json!(id));
@@ -329,15 +288,8 @@ async fn planner_run_lists_a_queued_messages_attachments_without_a_host_path() {
     );
 }
 
-/// The second route that can carry the path, and the one #1505 PR1's audit
-/// structurally could not see: `GET /harness/items` returns each stored
-/// `params` blob verbatim, and this slice made codex put an absolute host path
-/// in one.
-///
-/// The row is inserted directly rather than waited for, because the assertion
-/// is about the SERIALIZATION and an empty transcript would satisfy a grep
-/// without exercising anything — which is how a route-level "no host path"
-/// check certifies itself.
+/// `GET /harness/items` returns each stored `params` blob verbatim. The row is inserted directly rather than
+/// waited for: an empty transcript would satisfy a grep without exercising anything.
 #[tokio::test]
 async fn the_transcript_route_does_not_carry_the_local_image_host_path() {
     use calm_server::db::prelude::*;
@@ -384,8 +336,7 @@ async fn the_transcript_route_does_not_carry_the_local_image_host_path() {
     .await;
     assert_eq!(status, StatusCode::OK, "body={items}");
     let serialized = items.to_string();
-    // The row really is in the response — otherwise the grep below proves
-    // nothing.
+    // The row really is in the response — otherwise the grep below proves nothing.
     assert!(serialized.contains("what is this?"), "{serialized}");
     assert!(serialized.contains("localImage"), "{serialized}");
     assert!(
@@ -398,8 +349,6 @@ async fn the_transcript_route_does_not_carry_the_local_image_host_path() {
     );
 }
 
-/// A queued attachment is part of the entry, so it survives the snapshot the
-/// harness persists and a boot recovery replays.
 #[tokio::test]
 async fn a_queued_attachment_survives_the_snapshot_round_trip() {
     let boot = boot_with(idle_snapshot(vec![])).await;
@@ -426,9 +375,7 @@ async fn a_queued_attachment_survives_the_snapshot_round_trip() {
     );
 }
 
-/// A pre-S6 snapshot has no `attachments` key. It must read back as an
-/// addressable entry with no attachments — NOT as a `LegacyUser`, which is
-/// what a required field would have made it.
+/// A pre-attachments snapshot has no `attachments` key; it must read back as an addressable entry, not as a `LegacyUser`.
 #[tokio::test]
 async fn a_snapshot_written_before_this_slice_keeps_its_entry_addressable() {
     let boot = boot_with(idle_snapshot(vec![])).await;
@@ -459,9 +406,6 @@ async fn a_snapshot_written_before_this_slice_keeps_its_entry_addressable() {
     assert!(entries[0].attachments().is_empty());
 }
 
-/// Binding moves bytes between the two directories the budget counts, so the
-/// number does not change. What changes is that the bound half can never come
-/// back — which is exactly what the budget's doc comment now says.
 #[tokio::test]
 async fn binding_does_not_change_what_the_card_has_spent() {
     let boot = boot_with(idle_snapshot(vec![])).await;
@@ -485,10 +429,7 @@ async fn binding_does_not_change_what_the_card_has_spent() {
         std::slice::from_ref(&id),
     )
     .await;
-    // #1505 S6 review. Asserting only "the totals are equal" made this test
-    // pass with the production bind removed entirely: nothing had moved, so
-    // nothing had changed. The bind must be shown to have HAPPENED before the
-    // equality means anything.
+    // The bind must be shown to have happened before the equality means anything.
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(names(&boot.bound_dir()), vec![id], "the bind ran");
     assert!(names(&boot.staging_dir()).is_empty());
@@ -497,16 +438,6 @@ async fn binding_does_not_change_what_the_card_has_spent() {
     assert_eq!(after, before, "a bind is a move, not a second copy");
 }
 
-/// A symlink where `bound/` should be, pointing at ANOTHER CARD's `bound/`.
-///
-/// This is the defect the first version of this slice shipped: only the source
-/// of the copy was `openat2`-guarded, so `create_dir_all` and `rename`
-/// resolved the planted link and card A's attachment landed in card B's
-/// never-swept directory — charged to card B's budget forever, because the
-/// re-open that noticed it ran AFTER the write and deleted nothing.
-///
-/// The assertions are in the order that matters: refused, nothing written
-/// through the link, and the staged original still where it was.
 #[tokio::test]
 async fn a_bound_directory_symlinked_to_another_card_refuses_before_writing() {
     let boot = boot_with(idle_snapshot(vec![])).await;
@@ -515,17 +446,8 @@ async fn a_bound_directory_symlinked_to_another_card_refuses_before_writing() {
 
     let victim = boot.attachment_root().join("card-victim").join("bound");
     std::fs::create_dir_all(&victim).unwrap();
-    // RELATIVE, and that is the whole point of this case.
-    //
-    // An absolute target is refused by `RESOLVE_BENEATH` on its own, so a test
-    // written that way passes whether or not `RESOLVE_NO_SYMLINKS` is set — it
-    // proves the old unguarded `rename` is gone and nothing about the flag
-    // that makes sibling cards separate trust domains. `../card-victim/bound`
-    // stays beneath the attachment root, so `RESOLVE_BENEATH` is happy with
-    // it and only `RESOLVE_NO_SYMLINKS` refuses. It is also the exact
-    // construction the review gave.
-    // The upload created `bound/` already, so the planted link replaces it —
-    // which is exactly what an agent with write access to this workspace does.
+    // RELATIVE: an absolute target is refused by `RESOLVE_BENEATH` on its own; `../card-victim/bound` stays beneath
+    // the root so only `RESOLVE_NO_SYMLINKS` refuses it. The upload created `bound/` already, so the link replaces it.
     std::fs::remove_dir(boot.bound_dir()).unwrap();
     std::os::unix::fs::symlink("../card-victim/bound", boot.bound_dir()).unwrap();
 
@@ -559,12 +481,7 @@ async fn a_bound_directory_symlinked_to_another_card_refuses_before_writing() {
     );
 }
 
-/// The same link, pointing OUTSIDE the attachment root entirely.
-///
-/// The sibling-card spelling and this one fail for different reasons —
-/// `RESOLVE_NO_SYMLINKS` catches the first, `RESOLVE_BENEATH` would catch this
-/// one even without it — so both are asserted rather than one standing in for
-/// the other.
+/// `RESOLVE_NO_SYMLINKS` catches the sibling-card spelling; `RESOLVE_BENEATH` catches this one even without it.
 #[tokio::test]
 async fn a_bound_directory_symlinked_outside_the_root_refuses_before_writing() {
     let boot = boot_with(idle_snapshot(vec![])).await;
@@ -573,11 +490,7 @@ async fn a_bound_directory_symlinked_outside_the_root_refuses_before_writing() {
 
     let outside = boot.workspace.join("escaped");
     std::fs::create_dir_all(&outside).unwrap();
-    // Relative here too, so the case is "the target leaves the root" and not
-    // "the target happens to be spelled absolutely" — those are different
-    // facts and `RESOLVE_BENEATH` is what answers this one.
-    // The upload created `bound/` already, so the planted link replaces it —
-    // which is exactly what an agent with write access to this workspace does.
+    // Relative here too, so the case is "the target leaves the root", which `RESOLVE_BENEATH` answers.
     std::fs::remove_dir(boot.bound_dir()).unwrap();
     std::os::unix::fs::symlink("../../../escaped", boot.bound_dir()).unwrap();
 
@@ -595,31 +508,21 @@ async fn a_bound_directory_symlinked_outside_the_root_refuses_before_writing() {
         names(&outside)
     );
     assert_eq!(names(&boot.staging_dir()), vec![id]);
-    // The refusal must not hand the client a host path — the same rule the
-    // read path follows.
+    // The refusal must not hand the client a host path.
     let sentence = body["error"].as_str().unwrap_or_default();
     assert!(!sentence.contains(".neige"), "body={body}");
     assert!(!sentence.contains("escaped"), "body={body}");
 }
 
-/// The staging half of the same statement. A planted `staging` link must not
-/// decide where the temporary is written either.
-///
-/// The refusal here is delivered by the READ, not by the bind: `open_attachment`
-/// resolves `<card>/staging/<id>` under the same rule, so a symlinked
-/// `staging` is `ELOOP` there first and the bind is never reached. That makes
-/// this case non-discriminating for the bind's own flag — weakening only
-/// `open_card_dirs` leaves it green — and it is kept anyway, because what it
-/// asserts is the thing that must be true regardless of which layer says no:
-/// refused, and no temporary written through the link.
+/// The refusal here is delivered by the READ, not the bind: `open_attachment` resolves `<card>/staging/<id>`
+/// under the same rule, so a symlinked `staging` is `ELOOP` there first.
 #[tokio::test]
 async fn a_staging_directory_symlinked_elsewhere_refuses_before_writing() {
     let boot = boot_with(idle_snapshot(vec![])).await;
     let card_id = boot.planner_card.id.as_str().to_string();
     let id = staged(&boot, b"temporary somewhere else").await;
 
-    // Move the real staging aside and put a link in its place, so the
-    // attachment still exists to be found and only the directory lies.
+    // Move the real staging aside and put a link in its place, so the attachment still exists and only the directory lies.
     let real = boot.staging_dir();
     let elsewhere = real.parent().unwrap().join("elsewhere");
     std::fs::rename(&real, &elsewhere).unwrap();
@@ -640,8 +543,6 @@ async fn a_staging_directory_symlinked_elsewhere_refuses_before_writing() {
     );
 }
 
-/// The redactor itself: shape-driven, total over nesting, and byte-identical
-/// when there is nothing to redact.
 #[test]
 fn the_redactor_rewrites_every_local_image_path_and_nothing_else() {
     use calm_server::planner_attachments::{REDACTED_LOCAL_IMAGE_PATH, redact_local_image_paths};
@@ -673,8 +574,6 @@ fn the_redactor_rewrites_every_local_image_path_and_nothing_else() {
     assert_eq!(redact_local_image_paths("{broken"), "{broken");
 }
 
-/// Naming the same attachment on a second message is legal and is a no-op on
-/// disk: the first send already bound it.
 #[tokio::test]
 async fn naming_an_already_bound_attachment_again_is_accepted() {
     let boot = boot_with(idle_snapshot(vec![])).await;
@@ -700,8 +599,6 @@ async fn naming_an_already_bound_attachment_again_is_accepted() {
     assert_eq!(names(&boot.bound_dir()), vec![id]);
 }
 
-/// An unparsable id never reaches the store: `AttachmentId`'s grammar is the
-/// gate, and it runs during deserialization of the request body.
 #[tokio::test]
 async fn a_traversal_shaped_id_is_rejected_by_the_body_schema() {
     let boot = boot_with(idle_snapshot(vec![])).await;

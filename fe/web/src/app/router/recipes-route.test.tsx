@@ -1,18 +1,5 @@
 // @vitest-environment jsdom
-//
-// `/recipes` and the recipe half of `/area/{id}/new` (#1292 S4), driven through
-// the real router, the real QueryClient and a fake transport — so every
-// assertion below is about the bytes that would go on the wire, not about a
-// fixture agreeing with itself.
-//
-// **The body editor is mocked, and only the body editor.** CodeMirror measures
-// a layout jsdom does not have, which is why `systems/fs-viewers` mocks its
-// pane in the same tier for the same reason. What is under test here is not
-// the text widget: it is what a save sends, what the screen renders once the
-// server answers, and what a conflict leaves standing. Those are the three
-// things a wrong implementation gets wrong, and none of them needs a real
-// editor to be wrong. The widget itself is exercised for real in
-// `features/report/recipe/recipe.browser.test.tsx`.
+// The body editor is mocked, and only it: CodeMirror measures a layout jsdom does not have.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider } from '@tanstack/react-router';
 import { StrictMode } from 'react';
@@ -68,12 +55,7 @@ const BODY_FIELD = 'Recipe body, Markdown';
 
 type Options = Readonly<{
   recipes?: unknown;
-  /**
-   * `GET /api/track-recipes`, answered per call — the 0-based read index — so a
-   * test can say what the list held *before* a write and what it holds once the
-   * refetch that write queued lands. `recipes` is the constant-answer form of
-   * the same thing; a test gives one or the other.
-   */
+  /** `GET /api/track-recipes`, answered per 0-based read index, so a test can say what the list held before a write and after its refetch. */
   recipeList?: (call: number) => ApiTransportResponse;
   templates?: unknown;
   /** What `PUT /api/track-recipes/{id}` answers. */
@@ -159,9 +141,7 @@ function lastPut(sent: readonly ApiRequest[]): ApiRequest | undefined {
   return [...sent].reverse().find((request) => request.method === 'PUT');
 }
 
-/* The recipe as the create resolved to it: a body the client never sent,
-   because the write boundary re-rendered every fence on the way in. Every
-   assertion about the create path is about *this* text reaching the screen. */
+/* The recipe as the create resolved to it: a body the client never sent. */
 const CREATED = {
   id: 'r-new', title: 'Ship checklist', body: 'Canonicalised by the server.\n',
   revision: 1, created_at: 3, updated_at: 3,
@@ -178,13 +158,7 @@ async function composeAndSave(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe('the recipe editor', () => {
-  /*
-   * The load half of the round trip. An editor that normalised, re-indented or
-   * re-wrapped what it loaded would send back something the author never
-   * touched — and because the write boundary accepts it, the damage would be
-   * stored silently. Saving an untouched recipe must therefore be a byte-exact
-   * echo, `if_revision` included.
-   */
+  /* Saving an untouched recipe must be a byte-exact echo, `if_revision` included. */
   it('sends back exactly what it loaded when nothing was edited', async () => {
     const user = userEvent.setup();
     const { sent } = atRecipes();
@@ -197,16 +171,8 @@ describe('the recipe editor', () => {
     expect(put?.body).toEqual({ title: 'Ship checklist', body: STORED_BODY, if_revision: 7 });
   });
 
-  /*
-   * The single most likely wrong implementation of this screen: render the
-   * draft after saving it. It looks right in every case where the server
-   * changes nothing — which is most of them — and hides the one thing the
-   * author most needs to see, because the write boundary *does* rewrite bodies
-   * (fences re-rendered, tombstones dropped, privilege fields normalized).
-   *
-   * So the stub answers with a body the client never sent, and both halves are
-   * asserted: the server's text is on screen and the sent text is not.
-   */
+  /* The stub answers with a body the client never sent: the server's text must be
+     on screen and the sent text not. */
   it('renders the server response after a save, not the local draft', async () => {
     const user = userEvent.setup();
     const rewritten = { ...RECIPE, body: 'Canonicalised by the server.\n', revision: 8 };
@@ -223,10 +189,6 @@ describe('the recipe editor', () => {
     expect((lastPut(sent)?.body as { body: string }).body).toBe('What the author typed.');
   });
 
-  /*
-   * A conflict costs a re-read. It must not also cost the edit: the author's
-   * text is the only thing in this exchange that exists nowhere else.
-   */
   it('keeps the draft when the recipe changed underneath the writer', async () => {
     const user = userEvent.setup();
     atRecipes({
@@ -241,20 +203,12 @@ describe('the recipe editor', () => {
     expect(screen.getByRole('textbox', { name: BODY_FIELD })).toHaveProperty(
       'value', 'Half-finished thought.',
     );
-    // Still editing — a conflict does not drop the reader back into the
-    // rendered view, where the draft would have nowhere to live.
+    // Still editing: a conflict does not drop the reader back into the rendered view.
     expect(screen.getByRole('button', { name: 'Save' })).toBeTruthy();
   });
 
-  /*
-   * The other half of that conflict: the notice tells the reader to close and
-   * reopen the recipe to start from the current version, and this asserts that
-   * doing so actually gets them one. It is a claim about the cache, not about
-   * the wording — reopening re-seeds the editor from the list's row, so if the
-   * 409 left the list holding the revision the server has already moved past,
-   * the reader reopens onto the same stale text and the next Save conflicts
-   * again, forever.
-   */
+  /* A claim about the cache: reopening re-seeds the editor from the list's row, so
+     a 409 must not leave the list holding the stale revision. */
   it('yields the current version when the reader takes the conflict notice up on it', async () => {
     const user = userEvent.setup();
     const moved = { ...RECIPE, body: "The other window's version.\n", revision: 9 };
@@ -276,16 +230,8 @@ describe('the recipe editor', () => {
     expect(await screen.findByText("The other window's version.")).toBeTruthy();
   });
 
-  /*
-   * `if_revision` is the author's read, and nothing else's.
-   *
-   * The editor seeds from its prop once and then holds the row in state, and
-   * this is the assertion that says why: the list underneath it refetches on
-   * its own schedule, and if the gate read that prop instead of the state, a
-   * refetch landing mid-edit would silently re-point the write at a revision
-   * the author never saw — turning the conflict the `if_revision` gate exists
-   * to raise into a clean overwrite of somebody else's work.
-   */
+  /* The editor seeds from its prop once and holds the row in state; a refetch
+     landing mid-edit must not re-point the write at a revision the author never saw. */
   it('gates the save on the revision the author opened, not on one a refetch brought in', async () => {
     const user = userEvent.setup();
     const moved = { ...RECIPE, body: 'Moved under the editor.\n', revision: 99 };
@@ -307,11 +253,6 @@ describe('the recipe editor', () => {
     });
   });
 
-  /*
-   * A delete that the server refused. The dialog used to close on the promise
-   * regardless and drop the rejection on the floor: no banner, no state change,
-   * and a list still showing the recipe with nothing on screen saying why.
-   */
   it('says so when the delete fails, instead of closing as if it had worked', async () => {
     const user = userEvent.setup();
     atRecipes({
@@ -328,18 +269,8 @@ describe('the recipe editor', () => {
 });
 
 describe('creating a recipe', () => {
-  /*
-   * The create path's version of the rule the whole editor is arranged around,
-   * and the one place it is hardest to hold: the save resolves, the page moves
-   * `open` to the brand-new id, and the list it would look that id up in is
-   * still the list from before the create — the mutation's invalidate only
-   * *queues* a refetch.
-   *
-   * So this stub's list read never returns the new row at all. Anything that
-   * depends on the refetch catching up fails here; only a page that renders the
-   * row the create resolved to passes. That is the difference between the rule
-   * holding by construction and holding by timing.
-   */
+  /* The mutation's invalidate only queues a refetch, so the stub's list read never
+     returns the new row; only a page that renders the row the create resolved to passes. */
   it('renders the row the create resolved to, with no list refetch to lean on', async () => {
     const user = userEvent.setup();
     atRecipes({ recipeList: () => OK([]), post: OK(CREATED) });
@@ -351,13 +282,8 @@ describe('creating a recipe', () => {
     expect(screen.queryByText(/You have no recipes yet/)).toBeNull();
   });
 
-  /*
-   * And when that refetch does not merely lag but fails. `trackRecipesQueryOptions`
-   * sets `retry: false`, so the cache keeps the previous list — the one without
-   * the new row — and a page that trusted the list would strand the reader on a
-   * list that does not show the recipe they just made, with no error naming the
-   * one that actually happened.
-   */
+  /* `trackRecipesQueryOptions` sets `retry: false`, so the cache keeps the previous
+     list, the one without the new row. */
   it('keeps the reader on the new recipe when the list refetch fails', async () => {
     const user = userEvent.setup();
     const failed = { status: 500, statusText: 'Internal Server Error', body: { error: 'Storage is offline.' } };
@@ -375,12 +301,8 @@ describe('creating a recipe', () => {
 });
 
 describe('creating a track from a recipe', () => {
-  /*
-   * `template_id` and `recipe_id` are mutually exclusive on the wire and the
-   * kernel answers a request naming both with a 400. The picker's tagged union
-   * makes that structural, and this is the assertion that the structure
-   * reaches the request: exactly one key, and it is the right one.
-   */
+  /* `template_id` and `recipe_id` are mutually exclusive on the wire; the kernel
+     answers a request naming both with a 400. */
   it('sends recipe_id and never template_id', async () => {
     const user = userEvent.setup();
     const { sent } = atNewTrack({

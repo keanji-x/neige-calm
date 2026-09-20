@@ -1,28 +1,7 @@
-//! #1628 S4 — `GET /api/tracks/{id}/report/series/{block_id}`: the
-//! browser's read of one `chart.series` block's resolved data.
-//!
-//! The person and the agent read the same row. `calm.report.read` attaches
-//! `resolved` to every series block in the document; this route answers for
-//! one block, through the same `report_series::hydrate` step, and returns
-//! that step's object verbatim — D4's "same bytes for the same row" is a
-//! property of there being one function, which is why this handler never
-//! rebuilds the JSON itself.
-//!
-//! `rev` binds the request to the block the caller rendered. The browser
-//! cannot hash the payload (the LAN is plain http, so `crypto.subtle` is
-//! unavailable, F6.10), and `rev` already bumps on every payload change; a
-//! mismatch is a 409 carrying the current rev, which the frontend treats
-//! as "the report is about to refresh", not as an error.
-//!
-//! A read never calls a plugin and never writes: a missing or stale row is
-//! an in-memory `enqueue` and the caller sees the row as it is now
-//! (`pending` when there is none). Opening the report in a browser is what
-//! makes the kernel go and fetch the data — that is the whole trigger.
-//!
-//! Every read here is one autocommit statement on the pool — the block
-//! index, then the row. No transaction, deferred or otherwise: this path is
-//! polled while a block is `pending`, and #930's `deferred_write_tx`
-//! invariant keeps `pool.begin()` out of production code.
+//! `GET /api/tracks/{id}/report/series/{block_id}`: the browser's read of one
+//! `chart.series` block's resolved data, returned verbatim from `report_series::hydrate`.
+//! A read never calls a plugin and never writes; a missing or stale row is an in-memory
+//! `enqueue`. Every read is one autocommit statement on the pool — no transaction.
 
 use axum::{
     Json, Router,
@@ -50,9 +29,8 @@ pub fn router() -> Router<AppState> {
     )
 }
 
-/// `?detail=`: `full` (the default) attaches every series' `points`;
-/// `summary` leaves the `data` column on disk and answers with the stored
-/// summary only.
+/// `?detail=`: `full` (the default) attaches every series' `points`; `summary` answers
+/// with the stored summary only.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ReportSeriesDetail {
@@ -70,10 +48,8 @@ impl From<ReportSeriesDetail> for Detail {
     }
 }
 
-/// `parameter_in` is spelled out because the handler takes the extractor
-/// as `Result<Query<_>, QueryRejection>` (to answer a missing `rev` with
-/// the house `ErrorBody`), which utoipa's axum inference does not see
-/// through.
+/// `parameter_in` is spelled out because the handler takes the extractor as
+/// `Result<Query<_>, QueryRejection>`, which utoipa's axum inference does not see through.
 #[derive(Debug, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct ReportSeriesQuery {
@@ -130,7 +106,7 @@ pub struct ReportSeriesEntry {
     pub points: Option<Vec<Vec<f64>>>,
 }
 
-/// The flattened `resolved` object (D4) — the same shape `calm.report.read`
+/// The flattened `resolved` object — the same shape `calm.report.read`
 /// attaches to a `chart.series` block, with the block's presentation
 /// fields (`view` / `field` / `period` / `range`) alongside.
 #[derive(Debug, Serialize, ToSchema)]
@@ -193,9 +169,7 @@ pub(crate) async fn get_report_series(
         .track_get(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("track {id}")))?;
-    // The resolver's pool is the repo's sqlite pool; a server without one
-    // cannot boot (`OperationRuntime requires a sqlite-backed Repo`), so
-    // this is an invariant, not a mode.
+    // A server without a sqlite pool cannot boot, so this is an invariant, not a mode.
     let pool = state.mcp_context.series_resolver.pool().ok_or_else(|| {
         CalmError::Internal("report_series: route requires a sqlite-backed repo".into())
     })?;

@@ -1,13 +1,4 @@
 // @vitest-environment jsdom
-//
-// #1722 §5.3 — Today's track rows, composed the way production composes them:
-// the real workspace queries, the real `kernel/track/activity` overlay decode,
-// the real `TrackRow` injected by `app/router`, and the real read receipt.
-//
-// `features/today`'s own suite renders a stand-in row and so cannot see
-// whether the router hands the row its `unread` — which is exactly the prop
-// the Today `renderTrackRow` used to omit. This is where that is pinned, next
-// to the rail's row for the same track, because the two share one receipt key.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
@@ -46,7 +37,7 @@ function renderToday() {
       if (request.path.startsWith('/api/overlays?')) return Promise.resolve(ok([
         // Completed after the device's baseline: unread until this device looks.
         activityOverlay('w-fresh', { activity_at_ms: 150 }),
-        // Completed before the baseline: read on arrival (owner decision (c)).
+        // Completed before the baseline: read on arrival.
         activityOverlay('w-seen', { activity_at_ms: 50 }),
         // In flight, and with an unread completion behind it: motion wins.
         activityOverlay('w-busy', { working: true, activity_at_ms: 150 }),

@@ -1,14 +1,6 @@
 #!/usr/bin/env bash
-# #933 — regression for entry.sh's required-CLI preflight
-# (`assert_required_tools_on_path`). The gate must FAIL CLOSED (exit 73) when
-# any bare CLI the contained agent stack shells out is missing from PATH, so a
-# provisioning gap is caught in the preflight (seconds) instead of mid-suite in
-# a ~40min real codex run (rg was #923 defect 3; neige was #931).
-#
-# Pure shell, NO docker: source entry.sh (its BASH_SOURCE guard suppresses
-# main), point PATH at a controlled dir of executable stubs, and assert the
-# exit contract. The stub set is built FROM `REQUIRED_PATH_TOOLS`, so the test
-# stays honest if that list changes.
+# Regression for entry.sh's required-CLI preflight (`assert_required_tools_on_path`): it must FAIL CLOSED (exit 73) when any bare CLI the contained agent stack shells out to is missing from PATH.
+# Pure shell, no docker: source entry.sh, point PATH at a dir of executable stubs built FROM `REQUIRED_PATH_TOOLS`, and assert the exit contract.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,8 +8,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=entry.sh
 source "$SCRIPT_DIR/entry.sh"
 
-# Sourcing entry.sh turns on `set -e`; the assertions below intentionally drive
-# a function that exits non-zero (in a subshell), so disable it for the body.
+# Sourcing entry.sh turns on `set -e`; the assertions drive functions that return non-zero.
 set +e
 
 FAILS=0

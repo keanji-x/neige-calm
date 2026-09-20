@@ -1,9 +1,4 @@
-//! #1147 S2 — §5 tests 1 and 7.
-//!
-//! These live in-crate (not `tests/cases/`) because they drive
-//! `provision_workspace_worktree`, which is `pub(crate)`: the point of test 1
-//! is that the *real* lease provisioner succeeds against a *real* materialized
-//! workspace, not that a re-implementation of it does.
+//! In-crate because these drive the `pub(crate)` lease provisioner against a real materialized workspace.
 
 use std::path::Path;
 use std::process::Command;
@@ -12,17 +7,8 @@ use std::sync::{Mutex, MutexGuard};
 use super::{InitCommit, materialize_managed_workspace, materialize_managed_workspace_inner};
 use crate::operation::workspace_lease::{WorkspaceLeaseTarget, provision_workspace_worktree};
 
-/// The git environment is **process-global**, so any test in this module that
-/// spawns git must hold this lock for its whole body.
-///
-/// `cargo-nextest` (what CI runs) gives each test its own process and would
-/// hide a violation completely. A plain `cargo test` shares one process across
-/// threads: with the lock scoped to a *helper function* instead of the test
-/// body, `cargo test -p calm-server --lib workspace_materialize` failed 5 runs
-/// out of 20, and `--test-threads=1` was always green. A test whose colour
-/// depends on the runner is not evidence, so every test below takes a
-/// [`GitEnv`] guard first — including the ones that only want the default
-/// environment.
+/// The git environment is process-global, so every git-spawning test holds this lock for its whole body
+/// (a helper-scoped guard was flaky under plain `cargo test`; nextest's per-process isolation would hide it).
 static GIT_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 struct GitEnv {
@@ -49,9 +35,7 @@ impl GitEnv {
         }
     }
 
-    /// git localizes its diagnostics (`LANG=zh_CN.UTF-8` on this host prints
-    /// `不是一个有效的对象名`). §5 test 1 asserts on the English text, so pin
-    /// the locale rather than assert against whatever the host happens to be.
+    /// git localizes its diagnostics; the tests assert on the English text.
     fn c_locale() -> Self {
         Self::set(&[
             ("LC_ALL", std::ffi::OsStr::new("C")),
@@ -84,8 +68,6 @@ impl Drop for GitEnv {
 
 const TRACK: &str = "track0000000000000000000000000001";
 
-/// `(root, repo_root)` for a fresh sandbox. The repository lives at
-/// `<root>/<area>/<track>` like production's `managed_workspace_path`.
 fn sandbox(tmp: &tempfile::TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
     let root = tmp.path().join("root");
     std::fs::create_dir_all(&root).unwrap();
@@ -107,13 +89,7 @@ fn head_resolves(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// `(major, minor)` of the `git` on PATH.
-///
-/// Behaviour under test differs across Git versions (see
-/// `worktree_add_without_a_baseline_commit_is_version_dependent`), and the
-/// version must be *parsed*, not inferred from an error string: the message
-/// differs between bare and non-bare repositories and is localized (this host
-/// prints `致命错误：不是一个有效的对象名`).
+/// `(major, minor)` of the `git` on PATH; parsed, because the error text differs by repo shape and locale.
 fn git_version() -> (u32, u32) {
     let out = Command::new("git").arg("--version").output().unwrap();
     let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -127,8 +103,6 @@ fn git_version() -> (u32, u32) {
     (major, minor)
 }
 
-/// `git rev-list --count --all` — the number design D4 compares against 1 when
-/// deciding whether a workspace is still untouched.
 fn count_all_commits(path: &Path) -> u32 {
     let out = Command::new("git")
         .arg("-C")
@@ -154,8 +128,6 @@ fn lease_target(repo_root: &Path) -> WorkspaceLeaseTarget {
     }
 }
 
-/// §5 test 1 (green half): a freshly materialized managed workspace can host a
-/// worker lease worktree.
 #[test]
 fn materialized_workspace_hosts_a_worker_worktree() {
     let _env = GitEnv::c_locale();
@@ -180,18 +152,7 @@ fn materialized_workspace_hosts_a_worker_worktree() {
     );
 }
 
-/// §5 test 1 (single-violation fixture): run the *production* materialize path
-/// with step 3 (the empty initial commit) removed.
-///
-/// The assertion is **version-independent on purpose**: what step 3 guarantees
-/// is that the workspace has exactly one commit, which is the baseline design
-/// D4 compares against when it asks "has anything happened here yet"
-/// (`git rev-list --count --all == 1`). Without the step there is no baseline
-/// at all.
-///
-/// It deliberately does NOT assert that `git worktree add` fails — that is a
-/// Git-version-dependent side effect, pinned separately in
-/// `worktree_add_without_a_baseline_commit_is_version_dependent`.
+/// Version-independent on purpose: only the missing baseline commit is asserted, not that `worktree add` fails.
 #[test]
 fn without_the_init_commit_there_is_no_baseline_commit() {
     let _env = GitEnv::c_locale();
@@ -199,7 +160,6 @@ fn without_the_init_commit_there_is_no_baseline_commit() {
     let (root, repo_root) = sandbox(&tmp);
     materialize_managed_workspace_inner(&root, &repo_root, TRACK, InitCommit::Skip).unwrap();
 
-    // Prove the mutation actually applied.
     assert!(
         !head_resolves(&repo_root),
         "mutation did not apply — HEAD still resolves, so the assertions below \
@@ -212,8 +172,6 @@ fn without_the_init_commit_there_is_no_baseline_commit() {
          `rev-list --count --all == 1` baseline does not exist"
     );
 
-    // …and the unmutated path establishes it, so the gap above is attributable
-    // to the missing commit and nothing else.
     materialize(&root, &repo_root).unwrap();
     assert!(head_resolves(&repo_root));
     assert_eq!(count_all_commits(&repo_root), 1);
@@ -221,26 +179,8 @@ fn without_the_init_commit_there_is_no_baseline_commit() {
     provision_workspace_worktree(&target).expect("worktree add after the commit is restored");
 }
 
-/// Pins the Git-version-dependent behaviour that the original rationale for
-/// step 3 got wrong.
-///
-/// The design used to justify the empty initial commit with "otherwise
-/// `git worktree add` fails and the first worker cannot start". That is true
-/// only on Git **< 2.42.0**. Git 2.42.0 (commit `128e5496b`, "worktree add:
-/// extend DWIM to infer `--orphan`", Jacob Abel) made `worktree add` in a
-/// repository with an unborn HEAD *succeed*: it infers `--orphan`, prints
-/// `No possible source branch, inferring '--orphan'` to stderr, and points the
-/// new worktree's HEAD at an unborn branch. No commit is created.
-/// `git-worktree` documents it as "as if `--orphan` was passed".
-///
-/// So on modern Git the missing baseline is **silent**, which is worse than the
-/// old hard error: the lease worktree exists, has no history, and each one is
-/// an unrelated orphan. The commit is still required — for the D4 baseline —
-/// but not for the reason originally written down.
-///
-/// Version is parsed, not string-matched: the old error text differs between
-/// bare (`invalid reference: HEAD`) and non-bare (`not a valid object name`)
-/// repositories and is localized.
+/// Git >= 2.42.0 infers `--orphan` for `worktree add` on an unborn HEAD and succeeds silently; older git fails.
+/// The version is parsed, not string-matched.
 #[test]
 fn worktree_add_without_a_baseline_commit_is_version_dependent() {
     let _env = GitEnv::c_locale();
@@ -284,8 +224,6 @@ fn worktree_add_without_a_baseline_commit_is_version_dependent() {
     }
 }
 
-/// §5 test 7: a global `commit.gpgsign=true` makes `git commit --allow-empty`
-/// fail hard unless materialize overrides it for its own invocation.
 #[test]
 fn materialize_survives_a_global_gpgsign_config() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -297,8 +235,6 @@ fn materialize_survives_a_global_gpgsign_config() {
     .unwrap();
     let _env = GitEnv::c_locale_with_global_config(&gitconfig);
 
-    // Sanity: the injected config really does break an un-overridden commit,
-    // otherwise the assertion below is vacuous on hosts without gpg.
     let control = tmp.path().join("control");
     std::fs::create_dir_all(&control).unwrap();
     assert!(
@@ -337,7 +273,6 @@ fn materialize_survives_a_global_gpgsign_config() {
     assert!(head_resolves(&repo_root));
 }
 
-/// D3 step 1: a directory we did not create is never adopted.
 #[test]
 fn materialize_refuses_a_foreign_non_empty_directory() {
     let _env = GitEnv::c_locale();
@@ -354,8 +289,6 @@ fn materialize_refuses_a_foreign_non_empty_directory() {
     );
 }
 
-/// D3: materialize is idempotent, and re-running it does not disturb the
-/// worker output already sitting in the workspace.
 #[test]
 fn materialize_is_idempotent() {
     let _env = GitEnv::c_locale();
@@ -388,9 +321,6 @@ fn materialize_is_idempotent() {
     );
 }
 
-/// D3 step 4: the exclusion goes into `.git/info/exclude`, never `.gitignore`
-/// — a `.gitignore` would show up as `?? .gitignore` and make D4's
-/// "nothing on disk" predicate permanently false.
 #[test]
 fn materialize_excludes_worktrees_via_git_info_exclude_not_gitignore() {
     let _env = GitEnv::c_locale();
@@ -424,7 +354,6 @@ fn materialize_excludes_worktrees_via_git_info_exclude_not_gitignore() {
     );
 }
 
-/// D2: the layout is `<root>/<area_id>/<track_id>`, ids only.
 #[test]
 fn managed_path_is_root_area_track() {
     let _env = GitEnv::c_locale();
@@ -432,23 +361,10 @@ fn managed_path_is_root_area_track() {
     assert_eq!(path, Path::new("/srv/ws/area1/track1"));
 }
 
-// ---------------------------------------------------------------------------
-// S2 red-team fixtures.
-// ---------------------------------------------------------------------------
-
-/// Measures how many materializations of one path are inside the critical
-/// section at the same time.
-///
-/// The per-path mutex's whole job is "never more than one", and that property
-/// is not observable through git's own symptoms: 24 barrier-synchronized
-/// threads racing `git init` on one directory did NOT reproduce a failure on
-/// this host even with the lock removed. Asserting the symptom would therefore
-/// have been a test that passes either way — worse than no test, because it
-/// would read as coverage. This probe asserts the property directly, so
-/// removing the lock turns it red deterministically.
+/// Measures how many materializations of one path are inside the critical section at once: git's own
+/// symptoms did not reproduce on this host with the lock removed, so the property is asserted directly.
 pub(super) struct OverlapProbe(std::path::PathBuf);
 
-/// `path -> (currently inside, peak simultaneous, total entries)`
 type OverlapCounts = std::collections::HashMap<std::path::PathBuf, (usize, usize, usize)>;
 static OVERLAP: Mutex<Option<OverlapCounts>> = Mutex::new(None);
 
@@ -463,7 +379,6 @@ impl OverlapProbe {
         OverlapProbe(path.to_path_buf())
     }
 
-    /// Highest simultaneous occupancy observed for `path`.
     fn peak(path: &Path) -> usize {
         let guard = OVERLAP.lock().unwrap_or_else(|e| e.into_inner());
         guard
@@ -473,8 +388,7 @@ impl OverlapProbe {
             .unwrap_or(0)
     }
 
-    /// How many materializations of `path` the probe saw in total. Guards the
-    /// peak assertion against passing because nothing ever entered.
+    /// Guards the peak assertion against passing because nothing ever entered.
     fn entries(path: &Path) -> usize {
         let guard = OVERLAP.lock().unwrap_or_else(|e| e.into_inner());
         guard
@@ -494,9 +408,7 @@ impl Drop for OverlapProbe {
     }
 }
 
-/// Build a *third-party* git repository with real history and a working file,
-/// as if the user had put one of their projects on the derived path.
-/// Caller must already hold a [`GitEnv`] guard — this spawns git.
+/// A third-party git repository with real history. Caller must hold a [`GitEnv`] guard.
 fn third_party_repo(path: &Path) {
     std::fs::create_dir_all(path).unwrap();
     assert!(
@@ -542,13 +454,6 @@ fn third_party_repo(path: &Path) {
     );
 }
 
-/// **B2** — "is it ours" must be decided by our own marker, never by "is this a
-/// git repository".
-///
-/// A third-party repository sitting on the derived path answers *yes* to the
-/// latter. Adopting it means the server appends to their `.git/info/exclude`,
-/// and — since S5 `remove_dir_all`s every `kind = Managed` directory — arms a
-/// deletion of the user's real work. Nothing about their repository may change.
 #[test]
 fn a_third_party_repository_on_the_derived_path_is_refused_untouched() {
     let _env = GitEnv::c_locale();
@@ -582,7 +487,6 @@ fn a_third_party_repository_on_the_derived_path_is_refused_untouched() {
         "unexpected error: {error}"
     );
 
-    // Zero changes, byte for byte.
     assert_eq!(
         std::fs::metadata(&exclude).map(|m| m.len()).unwrap_or(0),
         exclude_before,
@@ -620,12 +524,6 @@ fn a_third_party_repository_on_the_derived_path_is_refused_untouched() {
     );
 }
 
-/// **B2, single-violation fixture** — prove the marker is what refuses it.
-///
-/// Same third-party repository, but pre-marked as ours: materialize now
-/// proceeds. If the guard were "is this a git repository", the marker could not
-/// change the outcome and this assertion would fail — which is exactly what
-/// makes the test above attributable to the marker and not to some other check.
 #[test]
 fn the_marker_is_what_decides_adoption() {
     let _env = GitEnv::c_locale();
@@ -642,7 +540,6 @@ fn the_marker_is_what_decides_adoption() {
         .expect("a directory carrying our marker is ours and must be accepted");
 }
 
-/// **B2** — a marker naming a *different* track is corruption, not an invitation.
 #[test]
 fn a_marker_for_another_track_is_refused() {
     let _env = GitEnv::c_locale();
@@ -662,12 +559,6 @@ fn a_marker_for_another_track_is_refused() {
     );
 }
 
-/// **B3** — a symlink out of the workspace root must be refused.
-///
-/// `create_dir_all` follows symlinks, so `<root>/<area>` pointing elsewhere
-/// yields a stored path that satisfies every *lexical* `starts_with` while the
-/// repository — and all worker output in it — lives outside the tree S5
-/// believes it owns.
 #[test]
 #[cfg(unix)]
 fn a_symlink_out_of_the_root_is_refused() {
@@ -679,8 +570,6 @@ fn a_symlink_out_of_the_root_is_refused() {
     let area_dir = repo_root.parent().unwrap();
     std::os::unix::fs::symlink(&elsewhere, area_dir).unwrap();
 
-    // The stored path is lexically inside the root — this is the check that
-    // the invariant test and D8's prefix assertion would both be making.
     assert!(repo_root.starts_with(&root));
 
     let error =
@@ -691,9 +580,6 @@ fn a_symlink_out_of_the_root_is_refused() {
     );
 }
 
-/// **B3, single-violation fixture** — the same layout with a *real* directory
-/// instead of the symlink succeeds, so the refusal above is attributable to the
-/// symlink and not to the nested path shape.
 #[test]
 #[cfg(unix)]
 fn the_same_layout_without_a_symlink_succeeds() {
@@ -704,12 +590,6 @@ fn the_same_layout_without_a_symlink_succeeds() {
     materialize(&root, &repo_root).expect("a real directory under the root is fine");
 }
 
-/// **B4** — concurrent materialization of one path must not tear.
-///
-/// The launchpad's `ensure` is expected to race with itself (it carries a
-/// unique-index retry), and materialization runs outside the transaction.
-/// Four-way concurrency previously produced `cannot lock config file
-/// .git/config` and a spurious "not a neige-managed repository".
 #[test]
 fn concurrent_materialization_of_one_path_all_succeed() {
     let _env = GitEnv::c_locale();
@@ -717,9 +597,7 @@ fn concurrent_materialization_of_one_path_all_succeed() {
     let (root, repo_root) = sandbox(&tmp);
 
     const THREADS: usize = 24;
-    // A barrier, so every thread enters `materialize` at the same instant.
-    // Without it the first caller usually finishes before the rest start and
-    // they all take the cheap steady-state path — no contention, no coverage.
+    // Without the barrier the first caller finishes before the rest start and they all take the steady-state path.
     let barrier = std::sync::Barrier::new(THREADS);
     let errors: Vec<String> = std::thread::scope(|scope| {
         let barrier = &barrier;
@@ -744,9 +622,7 @@ fn concurrent_materialization_of_one_path_all_succeed() {
     );
     assert!(head_resolves(&repo_root));
 
-    // The load-bearing assertion. See `OverlapProbe`: git's own failure modes
-    // did not reproduce on this host even with the lock removed, so asserting
-    // only "they all succeeded" would pass with or without the mutex.
+    // The load-bearing assertion: "they all succeeded" passes with or without the mutex.
     assert_eq!(
         OverlapProbe::peak(&repo_root),
         1,
@@ -754,8 +630,6 @@ fn concurrent_materialization_of_one_path_all_succeed() {
          is not doing its job, and the interleaving that leaves a half-built \
          directory behind is reachable again"
     );
-    // …and the probe genuinely saw every thread arrive, so `peak == 1` cannot
-    // be passing because the critical section was never entered.
     assert_eq!(
         OverlapProbe::entries(&repo_root),
         THREADS,
@@ -764,20 +638,12 @@ fn concurrent_materialization_of_one_path_all_succeed() {
     );
 }
 
-/// **B4** — a directory left half-built by a crash is repairable.
-///
-/// Simulated by marking the directory as ours and then destroying the
-/// repository under it, which is the state a process killed mid-`git init`
-/// leaves behind. Before the marker existed this was permanently
-/// un-materializable: non-empty, unrecognisable, 500 on every later call with
-/// no path back.
 #[test]
 fn a_half_built_workspace_of_ours_is_repaired() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (root, repo_root) = sandbox(&tmp);
     materialize(&root, &repo_root).unwrap();
 
-    // Destroy everything except our marker, the way a crash mid-init would.
     let marker = std::fs::read_to_string(repo_root.join(".git").join(super::OWNER_MARKER)).unwrap();
     std::fs::remove_dir_all(repo_root.join(".git")).unwrap();
     std::fs::create_dir_all(repo_root.join(".git")).unwrap();
@@ -788,9 +654,6 @@ fn a_half_built_workspace_of_ours_is_repaired() {
     assert!(head_resolves(&repo_root));
 }
 
-/// **B6** — the git *environment* is isolated, not just the config files.
-///
-/// Each of these was measured to break materialization when inherited.
 #[test]
 fn materialize_survives_hostile_git_environment_variables() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -807,8 +670,6 @@ fn materialize_survives_hostile_git_environment_variables() {
         ("GIT_COMMITTER_NAME", std::ffi::OsStr::new("")),
     ]);
 
-    // Sanity: the injected environment really does break an un-isolated git,
-    // otherwise this test would pass without the isolation doing anything.
     let control = tmp.path().join("control");
     std::fs::create_dir_all(&control).unwrap();
     let control_init = Command::new("git")
@@ -844,31 +705,19 @@ fn materialize_survives_hostile_git_environment_variables() {
     let (root, repo_root) = sandbox(&tmp2);
     materialize(&root, &repo_root).expect("materialize under a hostile git environment");
 
-    // Restore the environment before verifying, so the repository is judged by
-    // a clean `git` — proving materialize produced a genuinely good repository
-    // rather than one that only looks good through the same isolation.
+    // Restore the environment before verifying, so the repository is judged by a clean `git`.
     drop(env);
     assert!(head_resolves(&repo_root));
     let target = lease_target(&repo_root);
     provision_workspace_worktree(&target).expect("worktree add on the isolated workspace");
 }
 
-/// **N1** — third leg of D3 contract (3): clear our own half-built state.
-///
-/// Marker present (so the directory is provably ours) + a `.git/config.lock`
-/// left by a process killed mid-`init`. Without the cleanup `git init` fails
-/// with `could not lock config file` on *every* subsequent call — the same
-/// permanent 500 the contract exists to abolish, entered through a lock file
-/// instead of an unmarked directory. On the launchpad that is a permanently
-/// dead Today panel.
 #[test]
 fn a_stale_lock_file_from_a_killed_init_is_cleared() {
     let _env = GitEnv::c_locale();
     let tmp = tempfile::TempDir::new().unwrap();
     let (root, repo_root) = sandbox(&tmp);
 
-    // The state a SIGKILL mid-`git init` leaves: ours, no resolvable HEAD, and
-    // a lock file guarding the config.
     std::fs::create_dir_all(repo_root.join(".git")).unwrap();
     std::fs::write(
         repo_root.join(".git").join(super::OWNER_MARKER),
@@ -888,11 +737,9 @@ fn a_stale_lock_file_from_a_killed_init_is_cleared() {
         "the stale lock is still there; the next call will fail the same way"
     );
 
-    // Idempotent afterwards — the failure mode was that it repeated forever.
     materialize(&root, &repo_root).expect("second call");
 }
 
-/// **N1** — the same for a lock deeper in `.git/`, e.g. a killed `commit`.
 #[test]
 fn a_stale_ref_lock_is_cleared() {
     let _env = GitEnv::c_locale();
@@ -906,13 +753,7 @@ fn a_stale_ref_lock_is_cleared() {
     assert!(head_resolves(&repo_root));
 }
 
-/// **N2** — `GIT_TEMPLATE_DIR` outranks `-c init.templateDir=`.
-///
-/// Git's precedence is `--template` > `GIT_TEMPLATE_DIR` > `init.templateDir`,
-/// so D3 step 2's `-c` override does **not** stop a template's `hooks/` from
-/// being copied into the new repository. The init commit itself survives
-/// (`--no-verify`), which is exactly what makes this quiet: the hook only
-/// fires later, on every git command a worker runs inside the workspace.
+/// `GIT_TEMPLATE_DIR` outranks `-c init.templateDir=`; the init commit survives (`--no-verify`) and the hook fires later.
 #[test]
 fn a_template_dir_in_the_environment_cannot_inject_hooks() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -931,9 +772,7 @@ fn a_template_dir_in_the_environment_cannot_inject_hooks() {
         ("GIT_TEMPLATE_DIR", template.as_os_str()),
     ]);
 
-    // Sanity: the injection really does work against an un-isolated git, even
-    // WITH the `-c init.templateDir=` override D3 step 2 relies on. Without
-    // this the test could pass on a git that ignores the variable entirely.
+    // Sanity: the injection works against an un-isolated git, so the test cannot pass on a git that ignores the variable.
     let control = tmp.path().join("control");
     assert!(
         Command::new("git")
@@ -963,15 +802,7 @@ fn a_template_dir_in_the_environment_cannot_inject_hooks() {
     assert!(head_resolves(&repo_root));
 }
 
-/// **N7** — pinned, NOT fixed in S2.
-///
-/// The symlink refusal happens *after* materialization has already written a
-/// complete repository at the resolved location, so a rejected create leaves a
-/// marked, fully-formed repository outside the workspace root that nothing
-/// will ever collect. Refusing earlier is not enough on its own (the resolved
-/// location is only knowable after `create_dir_all`), so this needs a real
-/// cleanup path — S5's job, and this test is here so S5 does not rediscover it
-/// as a new bug.
+/// KNOWN GAP: the symlink refusal happens after a complete repository was written at the resolved location.
 #[test]
 #[cfg(unix)]
 fn n7_a_refused_symlink_workspace_leaves_an_orphan_repository_outside_the_root() {
@@ -992,12 +823,7 @@ fn n7_a_refused_symlink_workspace_leaves_an_orphan_repository_outside_the_root()
     );
 }
 
-/// **N5** — pinned, NOT fixed in S2.
-///
-/// Losing the ownership marker (a partially restored backup, an over-eager
-/// cleanup) makes our own workspace permanently un-materializable, and there is
-/// no administrative way to re-claim it: the refusal is unconditional and
-/// nothing exposes "adopt this directory". S5/S6 need a re-claim path.
+/// KNOWN GAP: losing our own marker is an unconditional refusal with no re-claim path.
 #[test]
 fn n5_losing_our_own_marker_is_an_unrecoverable_refusal() {
     let _env = GitEnv::c_locale();
@@ -1014,18 +840,9 @@ fn n5_losing_our_own_marker_is_an_unrecoverable_refusal() {
             .contains("carries no neige ownership marker"),
         "unexpected error: {error}"
     );
-    // Deliberately asserting the *gap*: there is no supported recovery. If a
-    // later slice adds one, this test fails and the author must record it.
 }
 
-/// **N4** — pinned, NOT fixed in S2.
-///
-/// Moving `CALM_WORKSPACE_ROOT` (or `$HOME`) strands every existing managed
-/// track: its stored path is no longer under the configured root, so the
-/// containment assertion refuses it and the track can never take a lease again.
-/// The launchpad self-heals because its path is re-derived on every `ensure`;
-/// an ordinary track has no such path. A migration is owed — S5, with the
-/// recycle/relocate machinery.
+/// KNOWN GAP: moving the workspace root strands existing managed tracks with no migration path.
 #[test]
 fn n4_moving_the_workspace_root_strands_existing_tracks() {
     let _env = GitEnv::c_locale();
@@ -1050,24 +867,14 @@ fn n4_moving_the_workspace_root_strands_existing_tracks() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// #1427 — crash atomicity of the ownership claim.
-// ---------------------------------------------------------------------------
-
-/// Violations recorded by the installed crash-point observer, if any.
-///
-/// A thread-local rather than a `static`: the observer is armed for the
-/// duration of one test body and must not leak into any other test sharing the
-/// process under `cargo test`.
+/// Thread-local so the armed observer cannot leak into another test sharing the process.
 type CrashObserver = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
 thread_local! {
     static CRASH_OBSERVER: std::cell::RefCell<Option<CrashObserver>> =
         const { std::cell::RefCell::new(None) };
 }
 
-/// Called by [`super::claim_crash_point`]. Deliberately records instead of
-/// panicking: a panic raised while the `RefCell` is borrowed would abort the
-/// process during unwind when the guard below tries to clear the slot.
+/// Records instead of panicking: a panic while the `RefCell` is borrowed would abort during unwind.
 pub(super) fn claim_crash_point(path: &Path) {
     claim_park_point();
     let sink = CRASH_OBSERVER.with(|slot| slot.borrow().clone());
@@ -1099,18 +906,13 @@ impl Drop for CrashObserverGuard {
     }
 }
 
-/// The invariant #1427 is about, stated as a predicate over the workspace
-/// directory: **if `<path>` has any entry at all, it carries our marker**.
-///
-/// Its negation is precisely the `None if dir_has_entries(path)` arm — the
-/// permanent refusal that poisons the `Idempotency-Key`.
+/// The claim invariant: if `<path>` has any entry at all, it carries our marker.
 fn workspace_dir_is_empty_or_ours(path: &Path) -> std::result::Result<(), String> {
     let entries: Vec<_> = match std::fs::read_dir(path) {
         Ok(read) => read
             .map(|entry| entry.map(|entry| entry.file_name()))
             .collect::<std::result::Result<_, _>>()
             .map_err(|error| format!("read_dir({}): {error}", path.display()))?,
-        // Not created yet: nothing on disk, nothing to be refused later.
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(format!("read_dir({}): {error}", path.display())),
     };
@@ -1132,20 +934,8 @@ fn workspace_dir_is_empty_or_ours(path: &Path) -> std::result::Result<(), String
     }
 }
 
-/// **#1427 construction 1.** The claim must have no intermediate state in
-/// which `<path>` is non-empty and unmarked, because process death freezes
-/// whatever state it is in and the fence then refuses that directory forever.
-///
-/// The window is not raced for: `claim_crash_point` is called at each point
-/// where the claim has just changed what `read_dir(<path>)` reports, and the
-/// observer checks the invariant there. Those are the only points at which the
-/// claim mutates `<path>`; after the claim publishes the marker the invariant
-/// holds for every later write (`git init` and friends all land under a `.git`
-/// that already carries the marker).
-///
-/// Red before the fix: `write_owner_marker` `create_dir_all`s `<path>/.git`
-/// and only then writes the marker, so the checkpoint between those two
-/// syscalls sees a non-empty, unmarked workspace.
+/// The window is not raced for: `claim_crash_point` fires at each point where the claim changed what
+/// `read_dir(<path>)` reports, and the observer checks the invariant there.
 #[test]
 fn the_ownership_claim_never_leaves_an_unmarked_non_empty_workspace() {
     let _env = GitEnv::c_locale();
@@ -1165,15 +955,7 @@ fn the_ownership_claim_never_leaves_an_unmarked_non_empty_workspace() {
     );
 }
 
-/// **#1427 construction 2.** `std::fs::write` truncates the destination and
-/// then writes it, so a crash mid-write leaves a torn (in practice: empty)
-/// marker, which reads back as an owner that is not this track and lands on
-/// the foreign-owner arm — the same permanent refusal.
-///
-/// Asserted through the mechanism rather than by racing a torn read: the
-/// published marker must never be the file that was written into, so a rewrite
-/// has to replace the destination **inode**. An in-place truncating write keeps
-/// the inode; a temp-file-plus-`rename` cannot.
+/// Asserted through the mechanism: a rewrite must replace the marker's inode, which an in-place truncating write cannot.
 #[test]
 fn republishing_the_marker_replaces_the_inode_instead_of_truncating_it() {
     use std::os::unix::fs::MetadataExt;
@@ -1186,8 +968,7 @@ fn republishing_the_marker_replaces_the_inode_instead_of_truncating_it() {
     let marker = repo_root.join(".git").join(super::OWNER_MARKER);
     let before = std::fs::metadata(&marker).unwrap().ino();
 
-    // Break `HEAD` without touching the marker, so re-materialize takes the
-    // `!git_head_resolves` branch and re-asserts the marker (`:413-416`).
+    // Break `HEAD` without touching the marker, so re-materialize re-asserts the marker.
     std::fs::remove_file(repo_root.join(".git").join("HEAD")).unwrap();
     assert!(!head_resolves(&repo_root), "fixture did not break HEAD");
 
@@ -1206,11 +987,7 @@ fn republishing_the_marker_replaces_the_inode_instead_of_truncating_it() {
     );
 }
 
-/// The fence is **not** relaxed by #1427. A directory whose only entry is
-/// `.git/` — exactly the post-crash shape this issue is about, and equally the
-/// shape of a user's own bare or half-initialised repository — stays refused.
-/// There is no marker-absence allowlist; the fix closes the window that
-/// produces the state instead of admitting the state.
+/// A directory whose only entry is `.git/` stays refused: there is no marker-absence allowlist.
 #[test]
 fn a_dot_git_only_directory_without_a_marker_is_still_refused() {
     let _env = GitEnv::c_locale();
@@ -1226,29 +1003,11 @@ fn a_dot_git_only_directory_without_a_marker_is_still_refused() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// #1430 — two claims interleaved on one workspace path.
-// ---------------------------------------------------------------------------
-
-/// Bound on **every** wait in the interleaving tests below, including the park
-/// inside [`claim_crash_point`] itself.
-///
-/// Nothing here waits forever, by construction: a parked thread that is never
-/// released resumes on its own after this bound and runs to completion, so a
-/// broken rendezvous costs at most `PARK_BOUND` per wait and then fails on the
-/// test's own assertions. Every `join()` below is bounded for the same reason
-/// — a spawned thread can only ever block on the park, which is bounded. Worst
-/// case per test is three of these waits (hand-back, arrival, release), ~60 s;
-/// measured normal run time is under a second. A test that wedges a runner is
-/// worse than the gap it closes.
+/// Bound on every wait below, the park included: a parked thread that is never released resumes on its own
+/// and fails on the test's own assertions instead of wedging the runner.
 const PARK_BOUND: std::time::Duration = std::time::Duration::from_secs(20);
 
-/// A rendezvous armed on **one thread**, which parks that thread at the `at`-th
-/// call of [`claim_crash_point`] in [`super::claim_owner_marker`].
-///
-/// Thread-local for the same reason [`CRASH_OBSERVER`] is: the seam is a plain
-/// function call inside the claim, and each racing thread has to be steered
-/// independently.
+/// A rendezvous armed on one thread, parking it at the `at`-th [`claim_crash_point`] call.
 struct ClaimPark {
     at: usize,
     seen: usize,
@@ -1261,8 +1020,6 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// Arm the calling thread to park at its `at`-th crash point. Returns the
-/// release handle and the arrival signal for the controlling thread.
 fn arm_park(at: usize) -> (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>) {
     let (arrived_tx, arrived_rx) = std::sync::mpsc::channel();
     let (release_tx, release_rx) = std::sync::mpsc::channel();
@@ -1277,9 +1034,7 @@ fn arm_park(at: usize) -> (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receive
     (release_tx, arrived_rx)
 }
 
-/// Called by [`claim_crash_point`] before it observes anything. The armed
-/// rendezvous is `take`n when it fires, so the borrow is released before the
-/// wait and a thread parks at most once per arming.
+/// The armed rendezvous is `take`n when it fires, so the borrow is released before the wait.
 fn claim_park_point() {
     let park = CLAIM_PARK.with(|slot| {
         let mut slot = slot.borrow_mut();
@@ -1293,17 +1048,11 @@ fn claim_park_point() {
     });
     let Some(park) = park else { return };
     let _ = park.arrived.send(());
-    // Bounded: on timeout the thread simply carries on. See `PARK_BOUND`.
     let _ = park.release.recv_timeout(PARK_BOUND);
 }
 
-/// A second claimer for `path`, parked at its `at`-th crash point.
-///
-/// It calls the **real** [`super::claim_owner_marker`] — the per-path mutex
-/// that would serialize two claims lives in the *caller*
-/// ([`super::materialize_managed_workspace_inner`]), so calling the claim
-/// directly is exactly the situation a second **process** is in: no shared
-/// mutex, one shared staging path. Nothing about the claim is restated here.
+/// A second claimer for `path` calling the real claim directly — the per-path mutex lives in the caller,
+/// so this is exactly a second *process*: no shared mutex, one shared area directory.
 fn spawn_parked_claim(
     path: std::path::PathBuf,
     at: usize,
@@ -1325,12 +1074,7 @@ fn spawn_parked_claim(
     (release_tx, arrived_rx, handle)
 }
 
-/// Every staging directory currently sitting beside `path`, newest name last.
-///
-/// Since #1458 the staging name carries a per-attempt suffix, so a test cannot
-/// compute it; it reads the area directory instead. The prefix and the `-`
-/// separator are the production ones (`super::CLAIM_STAGING_PREFIX`), not a
-/// restatement of the naming scheme.
+/// Every staging directory beside `path`; the per-attempt suffix means a test cannot compute the name.
 fn staging_dirs(path: &Path) -> Vec<std::path::PathBuf> {
     let parent = path.parent().expect("the workspace path has a parent");
     let mut found: Vec<_> = std::fs::read_dir(parent)
@@ -1347,7 +1091,6 @@ fn staging_dirs(path: &Path) -> Vec<std::path::PathBuf> {
     found
 }
 
-/// The one staging directory expected to exist right now.
 fn only_staging_dir(path: &Path) -> std::path::PathBuf {
     let mut found = staging_dirs(path);
     assert_eq!(
@@ -1359,32 +1102,6 @@ fn only_staging_dir(path: &Path) -> std::path::PathBuf {
     found.pop().unwrap()
 }
 
-/// **#1430 — the benign half of the two-claimer race, as measured; kept true by
-/// #1458 through a different mechanism.**
-///
-/// Two claimers assemble a claim for one `<path>` at the same time. One of them
-/// loses, and losing must be **fail-closed**: it returns `Internal`, it writes
-/// nothing to `<path>`, and what `<path>` holds afterwards is the *winner's*
-/// correctly marked workspace, so the next materialization takes the "ours, for
-/// this track" branch and succeeds. That is the property this test is about and
-/// it is unchanged.
-///
-/// What changed is *where* the loser fails. Before #1458 both claimers shared
-/// one staging name, so the winner's `remove_dir_all` deleted the loser's
-/// staging and the loser died writing its marker into a directory that was no
-/// longer there (`create ownership marker …: No such file or directory`). Since
-/// #1458 each attempt stages under its own name, nobody touches the loser's
-/// directory, and it dies one step later — on the publishing `rename`, which
-/// finds `<path>` non-empty and answers `ENOTEMPTY` (`publish ownership claim …
-/// onto …: Directory not empty`). That is the fail-closed direction
-/// `claim_owner_marker` documents for the `rename`: it never clobbers bytes.
-///
-/// Both errors are measured, not assumed.
-///
-/// Mutation that must redden it: drop the `write_marker_file` call from
-/// `assemble_and_publish_claim` (publish the staging directory without a
-/// marker). The winner then publishes an unmarked `<path>` and the marker
-/// assertion here fires.
 #[test]
 fn a_claim_that_loses_the_staging_race_fails_closed_onto_the_winners_marker() {
     let _env = GitEnv::c_locale();
@@ -1392,16 +1109,12 @@ fn a_claim_that_loses_the_staging_race_fails_closed_onto_the_winners_marker() {
     let (root, path) = sandbox(&tmp);
     std::fs::create_dir_all(&path).unwrap();
 
-    // The loser: parked right after it has created its staging `.git`, before
-    // it writes the marker into it.
     let (release, arrived, loser) = spawn_parked_claim(path.clone(), 1);
     arrived
         .recv_timeout(PARK_BOUND)
         .expect("the loser must reach its first crash point");
     let losers_staging = only_staging_dir(&path);
 
-    // The winner runs the whole claim on this thread. It stages under its own
-    // name and publishes with one rename.
     super::claim_owner_marker(&path, TRACK).expect("the winner publishes its claim");
     assert_eq!(
         std::fs::read_to_string(super::owner_marker_path(&path))
@@ -1441,7 +1154,6 @@ fn a_claim_that_loses_the_staging_race_fails_closed_onto_the_winners_marker() {
         staging_dirs(&path)
     );
 
-    // The post-state is the whole point: the loser damaged nothing.
     workspace_dir_is_empty_or_ours(&path).expect(
         "the fence must still accept the workspace after the losing claim returned — \
          `remove_dir_all` is called on the caller's own staging directory and never on \
@@ -1457,37 +1169,7 @@ fn a_claim_that_loses_the_staging_race_fails_closed_onto_the_winners_marker() {
     );
 }
 
-/// **#1458 — the interleaving #1430 characterized as a defect, inverted.**
-///
-/// This test was `a_concurrent_claim_can_make_its_peer_publish_an_unmarked_workspace`
-/// and asserted the *wrong* behaviour on purpose (KNOWN GAP 13): park a claimer
-/// with its staging **fully assembled** — marker written, both directories
-/// fsynced, only the publishing `rename` left — and let a second claimer in.
-/// The second one's `remove_dir_all(<staging>)` deleted that assembled claim
-/// because the staging name was fixed per track and therefore *shared*, and its
-/// `create_dir_all` put a bare, unmarked `.git` back under the same name. The
-/// first claimer then renamed **that** onto `<path>` and returned `Ok`, leaving
-/// `<path>` non-empty and unmarked — the brick state #1427 abolished for process
-/// death, reached through a peer, and one that poisons the create's
-/// `Idempotency-Key` forever (`materialize_managed_workspace_inner`'s
-/// `None if dir_has_entries` arm).
-///
-/// #1458 made the staging name unique per attempt, so the peer has nothing to
-/// delete and nothing to recreate. The same interleaving now ends the right way
-/// round, and this test asserts that instead:
-///
-/// * the peer's entry does **not** disturb the parked claimer's staged marker;
-/// * the parked claimer publishes its **own** assembled claim, so `<path>` is
-///   marked for this track — `workspace_dir_is_empty_or_ours` holds, where it
-///   used to be the assertion that the invariant was violated;
-/// * the peer then fails **closed** on `ENOTEMPTY` and leaves no staging behind;
-/// * and the fence *accepts* the published workspace, where it used to refuse it
-///   forever.
-///
-/// Mutation that must redden it: go back to a fixed name — drop the
-/// `-{claim_attempt_id()}` from the staging name in `claim_owner_marker`. The
-/// peer's `remove_dir_all` then takes the assembled claim again and every
-/// assertion from the premise onward reproduces #1458.
+/// Mutation that must redden it: drop the `-{claim_attempt_id()}` suffix from the staging name.
 #[test]
 fn a_concurrent_claim_cannot_make_its_peer_publish_an_unmarked_workspace() {
     let _env = GitEnv::c_locale();
@@ -1495,8 +1177,6 @@ fn a_concurrent_claim_cannot_make_its_peer_publish_an_unmarked_workspace() {
     let (root, path) = sandbox(&tmp);
     std::fs::create_dir_all(&path).unwrap();
 
-    // Claimer 1: parked after the fsyncs, with a complete claim staged and the
-    // publishing rename still ahead of it.
     let (release_one, arrived_one, publisher) = spawn_parked_claim(path.clone(), 3);
     arrived_one
         .recv_timeout(PARK_BOUND)
@@ -1511,9 +1191,6 @@ fn a_concurrent_claim_cannot_make_its_peer_publish_an_unmarked_workspace() {
         "premise: claimer 1 staged a complete, marked claim"
     );
 
-    // Claimer 2: enters and stages under its own name, parked at its first
-    // crash point — exactly where the old peer had just wiped and recreated
-    // claimer 1's staging.
     let (release_two, arrived_two, peer) = spawn_parked_claim(path.clone(), 1);
     arrived_two
         .recv_timeout(PARK_BOUND)
@@ -1532,7 +1209,6 @@ fn a_concurrent_claim_cannot_make_its_peer_publish_an_unmarked_workspace() {
         "claimer 2 must not be able to remove or recreate claimer 1's staging"
     );
 
-    // Claimer 1 publishes its own, fully assembled, marked claim.
     let _ = release_one.send(());
     publisher
         .join()
@@ -1561,8 +1237,6 @@ fn a_concurrent_claim_cannot_make_its_peer_publish_an_unmarked_workspace() {
         staging_dirs(&path)
     );
 
-    // The product-level consequence, inverted: the fence accepts this workspace
-    // and the key is not poisoned.
     materialize(&root, &path).expect(
         "inverted by #1458: the fence accepts the workspace the race published. Before \
          the fix this refused with `is not empty and carries no neige ownership marker` \
@@ -1574,14 +1248,7 @@ fn a_concurrent_claim_cannot_make_its_peer_publish_an_unmarked_workspace() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// #1387 — attached admission refuses a repository whose `neige/` branch
-// namespace is already occupied by a branch literally named `neige`.
-// ---------------------------------------------------------------------------
-
-/// A repository shaped like a user's own: `main`, one commit. `git worktree
-/// add` on an unborn HEAD fails for a *different* reason, so the commit is load
-/// bearing wherever these repositories are provisioned into.
+/// A repository shaped like a user's own: `main`, one commit (`worktree add` on an unborn HEAD fails differently).
 fn user_repo(dir: &Path) {
     std::fs::create_dir_all(dir).unwrap();
     for args in [
@@ -1629,9 +1296,6 @@ fn git_in(dir: &Path, args: &[&str]) {
     );
 }
 
-/// The mechanical tie between the constant the check reads and the branch name
-/// production actually creates. Renaming one side without the other reddens
-/// here instead of silently disarming the check.
 #[test]
 fn attached_admission_names_the_ref_the_slice_branch_lives_under() {
     let branch = crate::operation::workspace_lease::workspace_slice_branch_for(
@@ -1649,9 +1313,6 @@ fn attached_admission_names_the_ref_the_slice_branch_lives_under() {
     );
 }
 
-/// The refusal, and what it has to say. Asserting on the error rather than on
-/// "an error": a 400 that does not name the ref leaves the user with nothing to
-/// act on, which is most of what #1387 is about.
 #[test]
 fn attaching_a_repo_holding_refs_heads_neige_is_refused_by_name() {
     let _env = GitEnv::c_locale();
@@ -1678,10 +1339,6 @@ fn attaching_a_repo_holding_refs_heads_neige_is_refused_by_name() {
     );
 }
 
-/// The other direction, and the reason the check is the *exact* ref rather than
-/// the whole prefix: a repository Neige has already worked in carries
-/// `neige/<track>/<card>` branches, and refusing to re-attach it would reject a
-/// directory nothing can actually go wrong with.
 #[test]
 fn a_repo_carrying_old_slice_branches_is_still_attachable() {
     let _env = GitEnv::c_locale();
@@ -1703,14 +1360,7 @@ fn a_repo_carrying_old_slice_branches_is_still_attachable() {
     );
 }
 
-/// Fail-closed: `show-ref` answering neither 0 nor 1 is an unanswered question,
-/// and an unanswered question is refused.
-///
-/// Reached directly rather than through [`super::validate_attached_workspace`],
-/// whose `rev-parse` gate rejects a non-repository first. That ordering is why
-/// this arm is defensive in production (a repository would have to vanish
-/// between the two commands) — which is exactly why it needs a test of its own
-/// rather than an argument.
+/// Reached directly: `validate_attached_workspace`'s `rev-parse` gate would reject a non-repository first.
 #[test]
 fn an_unanswerable_show_ref_is_refused() {
     let _env = GitEnv::c_locale();

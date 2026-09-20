@@ -22,54 +22,9 @@ require_path() {
   done
 }
 
-# attrs_above <code> <awk-ERE> — print the block of `#[…]` attribute lines
-# *directly above* the first line of <code> matching the pattern, and nothing
-# else. Lives here because two gates need the same adjacency semantics
-# (`report_write_boundary.sh` R1b/R4, `append_seam_boundary.sh` D1) and a second
-# copy would be a re-derivation of a rule that has already been defeated twice.
-#
-# "Directly above" is the whole point, and it is what a `grep -B N` window got
-# wrong. With a window, this passes:
-#
-#     #[cfg(any(test, feature = "fixtures"))]
-#     const CFG_MARKER: () = ();
-#     #[allow(clippy::too_many_arguments)]
-#     pub async fn persist_report(          // unconditionally public
-#
-# — the cfg is attached to a const, the function is public in every build, and
-# the string is still inside the window. Here any non-attribute line resets the
-# block, so the const breaks adjacency and the cfg is not reported.
-#
-# A blank line does NOT break the block, and that is not laxity: doc comments and
-# `//` rationale lines between an attribute and its item are blanked to empty
-# lines by the callers' comment stripper, so treating a blank as a break made
-# `report_write_boundary.sh` R4 go RED on the perfectly ordinary
-#
-#     #[cfg(any(test, feature = "fixtures"))]
-#     /// Test-only direct access to the boundary.
-#     pub async fn persist_report(
-#
-# and made R1b go GREEN when a `// rationale` line sat between the writer's cfg
-# and the writer. Rust does not detach an attribute from its item across blank
-# lines or comments; neither does this. A non-empty, non-attribute line still
-# breaks the block, which is what keeps the decoy-`const` above caught.
-#
-# A multi-line attribute is one attribute. rustfmt emits them — a long
-# `#[cfg(all(\n    feature = "fixtures",\n    unix\n))]` is three lines, only the
-# first of which starts with `#[`. Treating the continuation as "some other
-# line" cleared the block, which made R1b go GREEN on a cfg'd writer. So the
-# block stays open until brackets balance.
-#
-# The code blob is fed in through a HERE-STRING, never through
-# `printf '%s' "$code" | awk …`. The awk below `exit`s at the line that closes
-# the block, which closes the pipe under the `printf` still writing into it:
-# `printf` takes SIGPIPE, exits 141, and with `set -o pipefail` 141 becomes the
-# status of this function — even though awk had already printed the complete
-# block. Callers then read the status, not the output, and the flake is a FALSE
-# verdict rather than a crash: `report_write_boundary.sh` R4 went RED on the
-# untouched production file at roughly 1-in-6, and `append_seam_boundary.sh` D1
-# reported all four of its subjects "not found". A here-string is written by the
-# shell into a temp file, so there is no writer process left to signal.
+# attrs_above <code> <awk-ERE> — print the block of `#[…]` attribute lines *directly above* the first line of <code> matching the pattern. Shared by two gates' adjacency rules.
+# Any non-empty non-attribute line resets the block (a decoy `const` between the cfg and the item must break adjacency); a blank line does NOT (callers blank doc/`//` lines, and Rust does not detach an attribute across them); a multi-line attribute stays open until brackets balance (rustfmt wraps `#[cfg(all(…))]`).
+# The code blob is fed through a HERE-STRING, never `printf | awk`: the awk `exit`s at the closing line, `printf` takes SIGPIPE, and under `pipefail` 141 becomes this function's status — a false verdict.
 attrs_above() {
   awk -v pat="${2?pattern is required}" '
     function depth(s,   i, c, d) {

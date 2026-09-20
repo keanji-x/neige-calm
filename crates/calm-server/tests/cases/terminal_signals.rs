@@ -1,9 +1,5 @@
-//! #1620 — hook signals and bounded composite actions through the real MCP
-//! tools, the real operation runtime, a real PTY and the production ingest
-//! route. A fake `claude` (shell script) reads the generated `--settings`
-//! file and runs the registered hook command with synthetic payloads, so the
-//! whole path settings file → bridge command → `/internal/claude/hook` →
-//! renderer ring → `wait_for=signal` is exercised end to end.
+//! Hook signals and bounded composite actions through the real MCP tools, operation runtime, PTY and
+//! ingest route; a fake `claude` reads the generated `--settings` file and runs the registered hook command.
 use crate::terminal_support::{Harness, human_takeover};
 use calm_server::db::prelude::*;
 use calm_server::event::Event;
@@ -14,12 +10,8 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Parses `--settings <file>`, extracts the registered hook command, prints
-/// `READY <card id>` and then, per stdin line, runs the hook command with
-/// synthetic Claude Code payloads (`perm` → a permission Notification,
-/// anything else → UserPromptSubmit then Stop) before echoing the turn. Like
-/// the real Claude, the Stop body is byte-identical every turn: only the
-/// bridge's per-invocation occurrence id tells the turns apart.
+/// Fake claude: per stdin line runs the hook command with synthetic payloads (`perm` → a permission
+/// Notification, anything else → UserPromptSubmit then Stop) before echoing the turn; the Stop body is byte-identical every turn.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 settings=""
 while [ $# -gt 0 ]; do case "$1" in --settings) settings="$2"; shift 2;; *) shift;; esac; done
@@ -36,17 +28,8 @@ while IFS= read -r line; do
   printf 'TURN:%s:%s\n' "$n" "$line"
 done
 "#;
-/// #1628 fixture: the same settings parsing and hook command, but the PTY
-/// echo is off (so the screen changes only when the fake prints) and each
-/// stdin line selects when the answer is painted relative to the Stop hook:
-/// `late:<x>` posts Stop, then paints `ANSWER:<x>` 300 ms later (the real
-/// Claude order); `early:<x>` paints the answer, stays quiet 600 ms, then
-/// posts Stop; `prestop:<x>` paints the answer, waits 50 ms (shorter than
-/// `settle_ms`) and posts Stop, then paints nothing more; `burst` posts Stop
-/// and then paints a line every 50 ms for three seconds; anything else stays
-/// quiet 400 ms, posts Stop and paints nothing (the quiet screen at the
-/// signal has no change since the baseline, so it must not pass for
-/// `already`).
+/// Repaint fixture (echo off): `late:<x>` posts Stop then paints 300 ms later; `early:<x>` paints, waits 600 ms, posts Stop;
+/// `prestop:<x>` paints, waits 50 ms, posts Stop; `burst` posts Stop then paints every 50 ms for 3 s; else quiet 400 ms, Stop, no paint.
 const FAKE_CLAUDE_REPAINT: &str = r#"#!/bin/sh
 settings=""
 while [ $# -gt 0 ]; do case "$1" in --settings) settings="$2"; shift 2;; *) shift;; esac; done
@@ -141,7 +124,7 @@ async fn open_fake_claude(h: &Harness, request_id: &str) -> (Value, String) {
     );
     (opened, terminal)
 }
-/// Open a claimed #1628 repaint fake and return its terminal id.
+/// Open a claimed repaint fake and return its terminal id.
 async fn open_fake_claude_repaint(h: &Harness, request_id: &str) -> String {
     let opened = h
         .ok(
@@ -242,9 +225,7 @@ async fn open_writes_hook_settings_injects_env_and_replays_idempotently() {
         "exactly the seven issue events"
     );
     assert!(settings.get("mcpServers").is_none());
-    // #1704 S1 — no scope declared: the hooks-only file, no `permissions`
-    // key; no `claude_permissions` on the card, in the result or in the
-    // stored operation output.
+    // No scope declared: the hooks-only file, no `permissions` key; no `claude_permissions` anywhere.
     assert!(
         settings.get("permissions").is_none(),
         "no scope, no permissions block: {settings}"
@@ -484,10 +465,8 @@ async fn signal_wait_returns_on_the_matching_event_and_honors_the_filter() {
     assert_eq!(answered["wait"]["signal"]["event"], "stop");
     assert_eq!(answered["wait"]["baseline_signal_seq"], baseline);
     assert!(answered["wait"]["signal"]["seq"].as_u64().unwrap() > baseline);
-    // #1628: the readback settles the repaint after the signal. The echo of
-    // the submitted text may or may not have been quiet for settle_ms when
-    // the Stop landed, so either verdict is legal here; the precise cases
-    // are the `repaint_*` tests below.
+    // The readback settles the repaint after the signal; the echo may or may not have been quiet for
+    // settle_ms when the Stop landed, so either verdict is legal here.
     let repaint = answered["wait"]["repaint"]["outcome"].as_str().unwrap();
     assert!(
         matches!(repaint, "already" | "settled"),
@@ -512,9 +491,8 @@ async fn signal_wait_returns_on_the_matching_event_and_honors_the_filter() {
     // awaited on the screen rather than expected in the signal readback.
     h.observe_text(&terminal, "TURN:1:hello").await;
 
-    // No new signal: the budget elapses with outcome no_signal (#1692: not
-    // change mode's `unchanged`) and no signal; the idle screen was quiet
-    // for settle_ms at the deadline, so the wait is settled.
+    // No new signal: the budget elapses with outcome no_signal; the idle screen was quiet for settle_ms
+    // at the deadline, so the wait is settled.
     let idle = h
         .ok(
             "calm.terminal.observe",
@@ -544,10 +522,8 @@ async fn signal_wait_returns_on_the_matching_event_and_honors_the_filter() {
         "user_prompt_submit",
         "{prompt}"
     );
-    // The wait ended on the prompt: the fake's Stop and its turn line land
-    // later. Await the turn's projected completion so the next submission
-    // observes a settled screen (a turn line arriving between its observation
-    // and the write would make it `stale_observation`).
+    // The wait ended on the prompt: await the turn's projected completion so the next submission observes
+    // a settled screen (a turn line arriving between its observation and the write would be `stale_observation`).
     h.observe_text(&terminal, "TURN:2:again").await;
     // ... and session_end never arrives: budget, while the stop is still listed.
     let none = submit(
@@ -629,9 +605,6 @@ async fn signal_wait_returns_on_the_matching_event_and_honors_the_filter() {
     h.stop(&terminal).await;
 }
 
-/// #1628 (a) — Stop lands before the answer is painted (the real Claude
-/// order): one submit + signal readback already contains the answer, with
-/// `repaint.outcome == settled`; no second observation is needed.
 #[tokio::test]
 async fn signal_readback_waits_for_the_answer_painted_after_the_stop_hook() {
     let h = Harness::start().await;
@@ -676,8 +649,6 @@ async fn signal_readback_waits_for_the_answer_painted_after_the_stop_hook() {
     h.stop(&terminal).await;
 }
 
-/// #1628 (b) — the answer was painted and quiet well before Stop: the
-/// readback returns at the signal with `already`, not after `repaint_ms`.
 #[tokio::test]
 async fn signal_readback_returns_at_once_when_the_screen_settled_before_the_stop_hook() {
     let h = Harness::start().await;
@@ -711,10 +682,6 @@ async fn signal_readback_returns_at_once_when_the_screen_settled_before_the_stop
     h.stop(&terminal).await;
 }
 
-/// #1628 (b') — the answer was painted 50 ms before Stop (not yet quiet for
-/// `settle_ms`, so not `already`) and nothing follows: the quiet window runs
-/// from that paint, so the readback is `settled` about 100 ms after the
-/// signal instead of idling the whole `repaint_ms` and reporting `none`.
 #[tokio::test]
 async fn signal_readback_settles_from_an_answer_painted_just_before_the_stop_hook() {
     let h = Harness::start().await;
@@ -744,8 +711,6 @@ async fn signal_readback_settles_from_an_answer_painted_just_before_the_stop_hoo
     h.stop(&terminal).await;
 }
 
-/// #1628 (c)/(d) — Stop with nothing painted afterwards: `none` after
-/// `repaint_ms`; `repaint_ms: 0` restores the immediate return (`skipped`).
 #[tokio::test]
 async fn signal_readback_reports_none_after_repaint_ms_and_skipped_when_disabled() {
     let h = Harness::start().await;
@@ -794,8 +759,7 @@ async fn signal_readback_reports_none_after_repaint_ms_and_skipped_when_disabled
         skipped["wait"]["signal_at_ms"], skipped["wait"]["waited_ms"],
         "{skipped}"
     );
-    // settle_ms is accepted in signal mode now (#1628) and only bounds the
-    // quiet window; with nothing painted the verdict is still `none`.
+    // settle_ms is accepted in signal mode and only bounds the quiet window.
     let tuned = submit(
         &h,
         &terminal,
@@ -812,8 +776,6 @@ async fn signal_readback_reports_none_after_repaint_ms_and_skipped_when_disabled
     h.stop(&terminal).await;
 }
 
-/// #1628 (e) — the budget ends while the post-signal burst is still
-/// painting: `unsettled`, the signal kept, `waited_ms` at the budget.
 #[tokio::test]
 async fn signal_readback_reports_unsettled_when_the_budget_ends_mid_burst() {
     let h = Harness::start().await;
@@ -842,8 +804,6 @@ async fn signal_readback_reports_unsettled_when_the_budget_ends_mid_burst() {
     h.stop(&terminal).await;
 }
 
-/// #1628 (f) — `repaint_ms` is refused outside signal mode on every wait
-/// carrier, with the same invalid-params shape as `settle_ms`.
 #[tokio::test]
 async fn repaint_ms_is_refused_outside_signal_mode_on_every_carrier() {
     let h = Harness::start().await;
@@ -921,12 +881,8 @@ async fn readback_signal_baseline_is_read_before_the_physical_write() {
     let card_id = opened["card_id"].as_str().unwrap().to_owned();
     let ready = h.observe_text(&terminal, "READY").await;
     assert_eq!(ready["signals"]["last_seq"], 0);
-    // A signal that lands after this connection's previous observation but
-    // BEFORE the input call must not satisfy the readback wait: the readback
-    // baseline is the seq read just before the physical write, not the
-    // previous observation.
-    // Direct POSTs stand in for two bridge invocations: the body differs only
-    // by the per-invocation occurrence id the bridge stamps.
+    // A signal that lands after the previous observation but BEFORE the input call must not satisfy the
+    // readback wait: the baseline is the seq read just before the physical write. Direct POSTs stand in for two bridge invocations.
     assert_eq!(
         h.post_claude_hook(
             &card_id,
@@ -1213,7 +1169,7 @@ async fn open_with_claim_reports_takeover_on_replay_instead_of_reclaiming() {
     h.stop(&terminal).await;
 }
 
-/// The round-19 ledger scope (#1704 S1) as the Planner declares it.
+/// The round-19 ledger scope as the Planner declares it.
 fn round19_scope() -> Value {
     json!({
         "edit": ["**"],
@@ -1222,10 +1178,8 @@ fn round19_scope() -> Value {
         "deny": ["git push"]
     })
 }
-/// The effective block the kernel renders for [`round19_scope`] in `cwd`:
-/// every `git <rest>` prefix — declared, floor or denied — is followed by
-/// its `git -C /<cwd> <rest>` spelling (#1729); `python3 -m unittest` and
-/// the non-git floor prefixes are not.
+/// The effective block the kernel renders for [`round19_scope`] in `cwd`: every `git <rest>` prefix is
+/// followed by its `git -C /<cwd> <rest>` spelling; `python3 -m unittest` and the non-git floor prefixes are not.
 fn round19_block(cwd: &str) -> Value {
     let root = cwd.trim_matches('/');
     json!({
@@ -1248,12 +1202,6 @@ fn round19_block(cwd: &str) -> Value {
     })
 }
 
-/// #1704 S1 — an open that declares a scope writes the effective block into
-/// the settings file the child reads, stamps it on the card (server-owned,
-/// sticky), echoes it in the result and its summary line, persists it in the
-/// operation output (the recovery input) and carries it in the CardAdded
-/// event; a replay with the same scope returns the same terminal, any other
-/// scope (or none) is the runtime's payload conflict.
 #[tokio::test]
 async fn open_with_scope_writes_permissions_stamps_the_card_and_echoes_the_block() {
     use tower::ServiceExt;
@@ -1279,7 +1227,7 @@ async fn open_with_scope_writes_permissions_stamps_the_card_and_echoes_the_block
             "claude_permissions: unknown key 'allow'",
         ),
         (json!({}), "claude_permissions declares nothing"),
-        // Shape (#1704 r1): a JSON array or null is not read as a scope.
+        // Shape: a JSON array or null is not read as a scope.
         (
             json!([["**"], null, []]),
             "claude_permissions: must be an object",
@@ -1377,8 +1325,7 @@ async fn open_with_scope_writes_permissions_stamps_the_card_and_echoes_the_block
     assert_eq!(card.payload["schemaVersion"], 1);
     assert_eq!(opened["claude_permissions"], expected, "{opened}");
     let summary = response["result"]["content"][0]["text"].as_str().unwrap();
-    // #1704 S2 — no Track policy: the block's source is `declared`, on the
-    // card, in the result and in the summary line.
+    // No Track policy: the block's source is `declared`.
     assert_eq!(card.payload["claude_permissions_source"], "declared");
     assert_eq!(opened["claude_permissions_source"], "declared", "{opened}");
     assert!(
@@ -1551,7 +1498,7 @@ async fn hook_settings_file_is_removed_when_the_card_is_deleted() {
     assert!(sibling.exists());
     assert!(h.state.terminal_renderer.get(&terminal).is_none());
 
-    // #1704 S1 — a scoped open: the same file (with the block), the same reap.
+    // A scoped open: the same file (with the block), the same reap.
     let scoped = h
         .ok(
             "calm.terminal.open",
@@ -1592,10 +1539,7 @@ async fn hook_settings_file_is_removed_when_the_card_is_deleted() {
     h.stop(&terminal).await;
 }
 
-/// #1620 F1 — Claude's `Stop` body is byte-identical every turn. Two bridge
-/// invocations with the same stdin must produce two ring entries (seq 1 and
-/// 2): the bridge's per-invocation occurrence id is what keys them apart at
-/// the server, while a retry of one invocation (same body) stays a duplicate.
+/// Claude's `Stop` body is byte-identical every turn; the bridge's per-invocation occurrence id keys them apart.
 #[tokio::test]
 async fn two_byte_identical_stop_bodies_from_two_bridge_invocations_get_seq_1_and_2() {
     let h = Harness::start().await;
@@ -1632,9 +1576,6 @@ async fn two_byte_identical_stop_bodies_from_two_bridge_invocations_get_seq_1_an
     h.stop(&terminal).await;
 }
 
-/// #1620 F3 — terminal hook POSTs never occupy the bounded worker dedupe
-/// cache: a flood of them (more than the cache holds) must not evict a worker
-/// key, so a duplicate delivery of that worker hook is still suppressed.
 #[tokio::test]
 #[allow(deprecated)] // the production ingest gate reads the same raw role cache
 async fn terminal_hook_floods_do_not_evict_worker_dedupe_keys() {
@@ -1709,11 +1650,8 @@ async fn terminal_hook_floods_do_not_evict_worker_dedupe_keys() {
     h.stop(&terminal).await;
 }
 
-/// #1620 F2 — a human who claims control between the Planner's create and
-/// its claim keeps control: the claim is applied by the pump only if nobody
-/// else owns the terminal at that moment (decided under the registry lock,
-/// never from the Planner connection's cached owner, which was read before
-/// the human claimed and may not have seen the `OwnerChanged` yet).
+/// The claim is applied by the pump only if nobody else owns the terminal at that moment (decided under
+/// the registry lock, never from the Planner connection's cached owner).
 #[tokio::test]
 async fn open_with_claim_yields_to_a_human_who_claimed_inside_the_claim_window() {
     use calm_server::terminal_renderer::{ClientInputScope, ClientPumpContext, run_client_pump};
@@ -1848,9 +1786,7 @@ async fn open_with_claim_yields_to_a_human_who_claimed_inside_the_claim_window()
     h.stop(&terminal).await;
 }
 
-/// #1620 F4 — track deletion goes through the quiesce path, not the reap
-/// helper; the generated settings file must still go with the committed
-/// delete.
+/// Track deletion goes through the quiesce path, not the reap helper.
 #[tokio::test]
 async fn hook_settings_file_is_removed_when_the_track_is_deleted() {
     use tower::ServiceExt;
@@ -1891,11 +1827,7 @@ async fn hook_settings_file_is_removed_when_the_track_is_deleted() {
     h.stop(&terminal).await;
 }
 
-/// #1620 R1 — the hook route keys on the card's durable execution identity
-/// (its terminal row), not on the patchable `cards.kind`. After a public
-/// PATCH sets the kind to `codex` (the terminal row, process and hook
-/// settings all stay), a Claude hook for the card still lands in the ring
-/// and is never persisted or projected as worker state.
+/// The hook route keys on the card's durable execution identity (its terminal row), not on the patchable `cards.kind`.
 #[tokio::test]
 async fn hook_for_a_terminal_owning_card_stays_a_signal_after_a_kind_patch() {
     use tower::ServiceExt;
@@ -1938,9 +1870,7 @@ async fn hook_for_a_terminal_owning_card_stays_a_signal_after_a_kind_patch() {
     // A duplicate delivery is still deduped by the ring, not the worker cache.
     assert_eq!(h.post_claude_hook(&card_id, &stop).await, 200);
     assert_eq!(entry.signals.last_seq(), before + 1);
-    // Never worker state: nothing was persisted or broadcast for the card.
-    // (The MCP tools' own admission fence refuses the retargeted card, so the
-    // ring is read directly rather than through an observation.)
+    // Never worker state. (The MCP tools' admission fence refuses the retargeted card, so the ring is read directly.)
     let deadline = tokio::time::Instant::now() + Duration::from_millis(300);
     while let Ok(Ok(envelope)) = tokio::time::timeout_at(deadline, bus.recv()).await {
         assert!(
@@ -1955,10 +1885,6 @@ async fn hook_for_a_terminal_owning_card_stays_a_signal_after_a_kind_patch() {
     h.stop(&terminal).await;
 }
 
-/// #1620 — the provenance marker is server-owned: a client PATCH carrying
-/// `terminal_signals` is refused, and a PATCH that replaces the whole payload
-/// of a Planner-opened terminal keeps the marker (the kernel re-stamps it),
-/// so its hooks still route to the ring.
 #[tokio::test]
 async fn payload_patch_on_a_planner_terminal_keeps_the_marker_and_the_hook_stays_a_signal() {
     use tower::ServiceExt;
@@ -2027,11 +1953,7 @@ async fn payload_patch_on_a_planner_terminal_keeps_the_marker_and_the_hook_stays
     h.stop(&terminal).await;
 }
 
-/// #1620 R2 — a replayed `open claim:true` after a human takeover that this
-/// connection has not applied yet (its `OwnerChanged` delivery is held) must
-/// not report `claimed` from the cached lease: "already owned by this
-/// connection" is decided against the owner registry, and the replay
-/// reports the takeover reason while the human keeps control.
+/// "Already owned by this connection" is decided against the owner registry, not the cached lease.
 #[tokio::test]
 async fn open_with_claim_replay_reports_takeover_before_the_owner_change_is_delivered() {
     let h = Harness::start().await;
@@ -2111,15 +2033,8 @@ async fn open_with_claim_replay_reports_takeover_before_the_owner_change_is_deli
     h.stop(&terminal).await;
 }
 
-/// #1620 R6 — a human takeover applied back to back with the Planner's own
-/// grant never shows `owner == me` on the Planner's connection. The verdict
-/// comes from the pump's reply (`Granted`, sent under the registry lock and
-/// independent of protocol delivery); the claim then waits for that grant to
-/// be applied and reads the takeover instead of idling to its 7 s budget.
-/// Delivery on the Planner's connection is held from inside the claim window
-/// until the human has taken over, so the grant and the takeover are applied
-/// in one go — a deterministic fold, not a timing window: the outcome does
-/// not depend on which delivery the reader applies first.
+/// The verdict comes from the pump's reply (`Granted`, sent under the registry lock); delivery on the
+/// Planner's connection is held from inside the claim window until the human has taken over, so the fold is deterministic.
 #[tokio::test]
 async fn open_with_claim_reports_a_takeover_folded_with_its_grant() {
     use std::sync::{Arc, Mutex};
@@ -2195,11 +2110,7 @@ async fn open_with_claim_reports_a_takeover_folded_with_its_grant() {
     h.stop(&terminal).await;
 }
 
-/// #1620 R3 regression (a) — a Codex Worker card created through the
-/// production path (`card_with_codex_create_tx`, which also creates a
-/// terminal row) keeps its hook contract: a codex hook is persisted as a
-/// `codex.hook` event and projected onto the card FSM. Owning a terminal
-/// row must never route a worker's hook to the terminal-signal branch.
+/// Owning a terminal row must never route a worker's hook to the terminal-signal branch.
 #[tokio::test]
 #[allow(deprecated)] // the state's role cache is the one `enforce_role` reads
 async fn codex_worker_card_hooks_are_still_persisted_and_projected() {
@@ -2274,10 +2185,6 @@ async fn codex_worker_card_hooks_are_still_persisted_and_projected() {
     h.stop(&term.id).await;
 }
 
-/// #1620 R3 regression (b) — a Claude Worker card created through the
-/// production path (`card_with_claude_create_tx`, terminal row included)
-/// keeps its hook contract: a Claude `Stop` hook is persisted as a
-/// `claude.hook` event and projected onto the card FSM (`Idle`, #1722).
 #[tokio::test]
 #[allow(deprecated)] // the state's role cache is the one `enforce_role` reads
 async fn claude_worker_card_hooks_are_still_persisted_and_projected() {
@@ -2351,11 +2258,6 @@ async fn claude_worker_card_hooks_are_still_persisted_and_projected() {
     h.stop(&term.id).await;
 }
 
-/// #1620 R3 regression (d) — the provenance marker lives on the card: after
-/// a public PATCH retargets `kind` to `codex` AND the sweeper has reaped the
-/// terminal (row gone), a delayed Claude hook for the card is still
-/// acknowledged as a signal (dropped: no live entry) and never persisted or
-/// projected as worker state.
 #[tokio::test]
 async fn delayed_hook_after_kind_patch_and_terminal_reap_stays_a_signal() {
     use tower::ServiceExt;
@@ -2464,11 +2366,6 @@ async fn await_card_state(h: &Harness, card_id: &str, expected: &str) {
         panic!("no `status: {expected}` overlay on {card_id}; overlays: {overlays:?}");
     }
 }
-
-// ---------------------------------------------------------------------------
-// #1743 S2 — the sweeper ends worker sessions that were still running when
-// their track was completed (design §4.2), on a real PTY.
-// ---------------------------------------------------------------------------
 
 /// A shell that prints READY and then `exec`s into `sleep`, so the pid the
 /// terminal row persisted IS the process the TERM must reach.
@@ -2585,8 +2482,7 @@ async fn await_pid_gone(pid: i64) {
     }
 }
 
-/// `lifecycle → done` through `track_update_tx` (K20: the same UPDATE
-/// stamps `terminal_at`). Returns `terminal_at`.
+/// `lifecycle → done` through `track_update_tx` (the same UPDATE stamps `terminal_at`). Returns `terminal_at`.
 async fn complete_track(h: &Harness, track_id: &str) -> i64 {
     use calm_server::model::{TrackLifecycle, TrackPatch};
     h.sql
@@ -2666,11 +2562,8 @@ async fn sole_candidate(h: &Harness) -> calm_server::terminal_sweeper::Completed
     }
 }
 
-/// Turn a sleeper's session row into the shape of a shared-daemon codex
-/// worker (`provider = 'codex'`, `thread_id = 't-1'` — on 4140 every
-/// `running` codex row carries its thread id) and register `turn-1` as the
-/// thread's active turn on the fake app-server, so an interrupt addressed
-/// to `t-1` is recorded by `interrupted_turns_for_test()`.
+/// Turn a sleeper's session row into a shared-daemon codex worker (`provider = 'codex'`, `thread_id = 't-1'`)
+/// and register `turn-1` as the thread's active turn on the fake app-server.
 async fn make_codex_with_active_turn(h: &Harness, p: &PtySession) {
     sqlx::query("UPDATE worker_sessions SET provider = 'codex', thread_id = 't-1' WHERE id = ?1")
         .bind(&p.session)
@@ -2689,10 +2582,7 @@ async fn make_codex_with_active_turn(h: &Harness, p: &PtySession) {
     );
 }
 
-/// A PTY session minted BEFORE the track was completed is ended by one
-/// sweep: the row is written `exited` first, then the process is killed
-/// and the attach reader records `signal_killed = 1`; the pid is gone and
-/// the renderer entry is dropped.
+/// Written `exited` first, then killed: the attach reader records `signal_killed = 1`, the pid is gone, the renderer entry dropped.
 #[tokio::test]
 async fn done_track_running_pty_session_is_torn_down() {
     let h = Harness::start().await;
@@ -2727,8 +2617,7 @@ async fn done_track_running_pty_session_is_torn_down() {
     h.stop(&p.terminal).await;
 }
 
-/// A session minted AFTER the track was completed (`created_at_ms >
-/// terminal_at`) is the user's own new work and survives the sweep.
+/// `created_at_ms > terminal_at`: the user's own new work on a done track.
 #[tokio::test]
 async fn session_started_after_done_survives_sweep() {
     let h = Harness::start().await;
@@ -2757,9 +2646,7 @@ async fn session_started_after_done_survives_sweep() {
     h.stop(&p.terminal).await;
 }
 
-/// The `NOT EXISTS` arm: a worker whose task is still in flight
-/// (`running`) is not ended by the sweep; once the task settles (`done`),
-/// the next sweep ends it.
+/// The `NOT EXISTS` arm: once the task settles, the next sweep ends the worker.
 #[tokio::test]
 async fn in_flight_task_worker_survives_sweep() {
     let h = Harness::start().await;
@@ -2817,11 +2704,7 @@ async fn in_flight_task_worker_survives_sweep() {
     h.stop(&p.terminal).await;
 }
 
-/// Structural: a harness row (planner / assistant) is excluded from the
-/// set by TWO independent conditions — it is never `running` (idle /
-/// turn_pending / superseded) and it has no `terminal_run_id` — so no
-/// single-factor change can admit it. Asserted on the rows and on the
-/// set, then the sweep is shown to leave it alone.
+/// A harness row is outside the set by two independent conditions — never `running`, no `terminal_run_id` — so no single-factor change admits it.
 #[tokio::test]
 async fn harness_session_is_never_in_the_sweep_set() {
     use calm_server::db::sqlite::{card_create_with_id_tx, session_start_runtime_tx};
@@ -2929,8 +2812,7 @@ async fn harness_session_is_never_in_the_sweep_set() {
     assert_eq!(state, "starting");
 }
 
-/// The archived arm of the set: `archived_at IS NOT NULL` with
-/// `created_at_ms <= archived_at`, whatever the lifecycle says.
+/// `archived_at IS NOT NULL` with `created_at_ms <= archived_at`, whatever the lifecycle says.
 #[tokio::test]
 async fn archived_track_session_is_torn_down() {
     use calm_server::model::TrackPatch;
@@ -2967,10 +2849,7 @@ async fn archived_track_session_is_torn_down() {
     h.stop(&p.terminal).await;
 }
 
-/// A second sweep after the teardown finds an empty set and writes
-/// nothing: no session row, no terminal row, no event changes (the
-/// terminal row is inside the orphan arm's creation grace, so that arm is
-/// quiet too).
+/// The terminal row is still inside the orphan arm's creation grace, so that arm is quiet too.
 #[tokio::test]
 async fn sweep_is_idempotent() {
     let h = Harness::start().await;
@@ -3003,11 +2882,7 @@ async fn sweep_is_idempotent() {
     h.stop(&p.terminal).await;
 }
 
-/// A candidate collected by one pass is STALE once the track is reopened
-/// (`done → planning` clears `terminal_at`, K20) before its turn comes: the
-/// claim inside the IMMEDIATE write re-runs the set predicate for that
-/// session by id and leaves a row the predicate no longer returns alone
-/// (review r1, codex P1) — still `running`, no exit record, pid alive.
+/// Reopening (`done → planning`) clears `terminal_at`; the claim re-runs the set predicate by id and leaves the row alone.
 #[tokio::test]
 async fn reopened_track_session_survives_a_stale_candidate() {
     use calm_server::model::{TrackLifecycle, TrackPatch};
@@ -3046,20 +2921,8 @@ async fn reopened_track_session_survives_a_stale_candidate() {
     h.stop(&p.terminal).await;
 }
 
-/// A reopen that lands AFTER step 1's guard and BEFORE step 2's write —
-/// the window both r2 channels named (codex P2, A MINOR-B): the reopen
-/// route (`track_update`) takes no operation lock, so nothing outside the
-/// write serializes it. The write claims the session inside its IMMEDIATE
-/// transaction with the same by-id predicate, so a reopen committed in that
-/// window is honoured: still `running`, no exit record, pid alive,
-/// `terminal_at` NULL — and, the session being a codex worker with an
-/// active turn, NOT interrupted either: the interrupt (step 3) runs only
-/// after a successful claim (review r3, codex P2 / A MINOR-1). The reopen
-/// is committed in the window through the fixtures seam (`before_write`),
-/// not by timing: the sweeper's own `require_safe` is an IMMEDIATE
-/// transaction BEFORE the seam, so a reopen held open across the call
-/// parks the sweeper there, and the claim then sees it — that shape is
-/// green with or without the claim.
+/// The reopen route takes no operation lock; only the claim serializes it. The reopen goes through the `before_write`
+/// seam, not timing: `require_safe` is an IMMEDIATE transaction before the seam, so a reopen held open parks the sweeper there.
 #[tokio::test]
 async fn reopen_committed_during_the_claim_is_honoured() {
     use calm_server::model::{TrackLifecycle, TrackPatch};
@@ -3126,14 +2989,7 @@ async fn reopen_committed_during_the_claim_is_honoured() {
     h.stop(&p.terminal).await;
 }
 
-/// A codex candidate (a shared-daemon worker: `provider = 'codex'`, the
-/// row carries its `thread_id`) has its active turn interrupted by the
-/// captured thread id AFTER the claim wrote the row `exited`: the row is
-/// `exited`, the fake records `(t-1, turn-1)`, and at the seam before the
-/// write (the same instant as the reopen above) nothing has been
-/// interrupted yet. The interrupt is addressed by the captured id, not
-/// resolved through the session row — that row is no longer live once
-/// the claim has written it.
+/// The interrupt is addressed by the captured thread id, after the claim wrote the row `exited`; nothing is interrupted at the seam before the write.
 #[tokio::test]
 async fn codex_candidate_is_interrupted_after_the_claim() {
     use calm_server::terminal_sweeper::end_completed_track_session_before_write_for_test;
@@ -3177,12 +3033,8 @@ async fn codex_candidate_is_interrupted_after_the_claim() {
     h.stop(&p.terminal).await;
 }
 
-/// After a kernel restart the renderer registry is empty while the PTY
-/// lives on in the supervisor (K17). The sweep reattaches lazily (probe →
-/// `spawn_terminal_for`'s idempotent `EnsureProc`) and then reaps through
-/// the fresh entry. Simulated with a second `AppState` over the same repo
-/// and supervisor socket (a fresh, empty registry); the old registry's
-/// attach reader is severed the way a dead process would sever it.
+/// Simulated with a second `AppState` over the same repo and supervisor socket (a fresh, empty registry); the old
+/// registry's attach reader is severed the way a dead process would sever it.
 #[tokio::test]
 async fn reattach_then_reap_after_registry_reset() {
     let h = Harness::start().await;

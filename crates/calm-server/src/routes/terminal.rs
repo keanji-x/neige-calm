@@ -1,13 +1,5 @@
-//! `/api/cards/:id/terminal` — read-side helpers for terminal cards.
-//!
-//! The companion write path used to live here (`POST /api/cards/:id/terminal`,
-//! the second leg of the 3-step terminal-card recipe) but #13's atomic
-//! endpoint replaced it. The single remaining route is the GET that
-//! `useTodayTerminal` uses to validate a cached `card_id` from
-//! `localStorage` before attempting a WS attach.
-//!
-//! `spawn_terminal_for` stays public because several call sites still need
-//! it: terminal/codex/claude card creation and the WS lazy reattach path.
+//! `/api/cards/:id/terminal` — read-side helpers for terminal cards, plus the
+//! `spawn_terminal_for` seam card creation and WS lazy reattach use.
 
 use crate::db::RouteRepo;
 use crate::error::{CalmError, ErrorBody, Result};
@@ -25,9 +17,7 @@ pub fn router() -> Router<AppState> {
     Router::new().route("/api/cards/{card_id}/terminal", get(get_terminal_for_card))
 }
 
-/// Look up the Terminal row a card owns. Returns 404 if the card has no
-/// terminal (yet). The UI uses this to validate a card_id cached in
-/// localStorage before attempting a WS attach to its terminal.
+/// Look up the Terminal row a card owns; 404 if the card has no terminal (yet).
 #[utoipa::path(
     get,
     path = "/api/cards/{card_id}/terminal",
@@ -51,8 +41,7 @@ pub(crate) async fn get_terminal_for_card(
     Ok(Json(term))
 }
 
-/// Ensure a renderer-backed terminal process exists for the given terminal
-/// row. Used by terminal/codex card creation and lazy WS reattach.
+/// Ensure a renderer-backed terminal process exists for the given terminal row.
 pub(crate) async fn spawn_terminal_for(
     s: &AppState,
     term: &Terminal,
@@ -72,11 +61,8 @@ pub(crate) async fn spawn_terminal_for(
     .await
 }
 
-/// PR6 (#136) — lower-level seam over `spawn_terminal_for` that takes the
-/// constituent `DaemonClient` + `&dyn RouteRepo` instead of the full
-/// `AppState`. Used by the dispatcher (which doesn't own an `AppState` —
-/// it's a kernel-internal worker that ships before AppState exists in the
-/// boot order).
+/// Lower-level seam over `spawn_terminal_for` taking the constituent parts instead of
+/// the full `AppState`; used by the dispatcher, which doesn't own an `AppState`.
 pub(crate) async fn spawn_terminal_with_parts(
     daemon: &DaemonClient,
     renderer: &TerminalRendererRegistry,
@@ -131,8 +117,6 @@ async fn terminal_renderer_config(
         crate::proc_supervisor::resolve_control_sock(daemon.proc_supervisor_sock.as_deref())
             .await?;
 
-    // #177 PR2 — `term.theme_fg/_bg` are the single source of truth for
-    // startup OSC 10/11 reply colors. Thread them into every renderer spawn.
     let envs = terminal_child_envs(env);
 
     Ok(RendererConfig {

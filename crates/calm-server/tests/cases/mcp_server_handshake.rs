@@ -1,18 +1,5 @@
-//! PR7a.1 (#136 followup) — integration tests for the
-//! `mcp_server::handshake` path + per-connection identity binding.
-//!
-//! Boots a real `McpServer` against an in-memory `SqlxRepo` + a UDS
-//! tempdir, mints a Planner card with a per-card MCP token, and drives a mock
-//! client over the socket. Covers:
-//!
-//!   * `initialize` with a valid token → success + capabilities echoed.
-//!   * `initialize` with a bogus token → `-32401` error + connection close.
-//!   * `tools/call` before `initialize` → `-32002` error.
-//!   * Multiple `tools/call`s on one connection → per-call
-//!     `_meta.threadId` identity mapping routes to distinguishable threads.
-//!
-//! Test budget: 5 seconds per case (UDS bind/connect is sub-ms; the
-//! budget exists only to bound runaway hangs).
+//! Integration tests for the `mcp_server::handshake` path + per-connection identity binding,
+//! driven by a mock client over a UDS.
 
 #![cfg(unix)]
 
@@ -61,15 +48,14 @@ struct Boot {
     track_id: String,
     session_id: String,
     thread_id: String,
-    /// Raw per-card MCP token (kept in memory only — never persisted).
+    /// Raw per-card MCP token (never persisted).
     raw_token: String,
     socket_path: PathBuf,
     _tmp: TempDir,
 }
 
-/// Boot an `McpServer` against an in-memory SqlxRepo with a Planner card
-/// plus an MCP token already minted. The card's track + area are seeded so
-/// the emit tools (PR7a) can resolve the scope chain.
+/// Boot an `McpServer` with a Planner card plus an MCP token already minted; the card's track +
+/// area are seeded so the emit tools can resolve the scope chain.
 async fn boot() -> Boot {
     boot_with_registry(build_default_registry()).await
 }
@@ -78,9 +64,7 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
     let tmp = calm_test_sockets::socket_dir("mcp");
     let socket_path = calm_test_sockets::socket_path(tmp.path(), "kernel.sock");
 
-    // Hold the concrete `SqlxRepo` separately so we can reach `pool()`
-    // for the direct-tx card mint below; the `Arc<dyn Repo>` upcast
-    // goes to the server.
+    // Hold the concrete `SqlxRepo` separately to reach `pool()` for the direct-tx card mint.
     let sqlx_repo = Arc::new(
         SqlxRepo::open("sqlite::memory:")
             .await
@@ -113,10 +97,7 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
     let card_role_cache = CardRoleCache::new();
     let card_id = calm_server::model::new_id();
 
-    // Mint Planner card + token inside a tx. We bypass the route layer
-    // and write directly via `card_with_codex_create_tx` — the
-    // route layer would also work, but this keeps the test focused
-    // on the handshake / tools surface.
+    // Mint Planner card + token directly via `card_with_codex_create_tx`, bypassing the route layer.
     let mut tx = sqlx_repo.pool().begin().await.unwrap();
     let (_card, _term, mcp_token) = card_with_codex_create_tx(
         &mut tx,
@@ -132,10 +113,7 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
         None,
         None,
         CardRole::Planner,
-        // #229 PR A — planner cards are kernel-owned in production. The
-        // mcp-handshake test focuses on the MCP surface, not on the
-        // delete guard; minting `false` here also mirrors the prod
-        // track-create path (`routes/tracks.rs`).
+        // Planner cards are kernel-owned in production; `false` mirrors the prod track-create path.
         false,
         &card_role_cache,
         calm_server::routes::theme::RequestTheme::default_dark(),
@@ -259,8 +237,7 @@ async fn supersede_runtime_session(repo: &SqlxRepo, card_id: &str, thread_id: &s
     runtime.id
 }
 
-/// Connect to the kernel-side socket. Returns a buffered reader paired
-/// with the write half so the test can interleave read_line / write_all.
+/// Connect to the kernel-side socket; a buffered reader paired with the write half.
 async fn connect(
     path: &std::path::Path,
 ) -> (
@@ -366,10 +343,6 @@ fn registry_with_track_cat_identity_capture() -> (Arc<ToolRegistry>, IdentityCap
     registry.register(descriptor, handler);
     (Arc::new(registry), rx)
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn initialize_with_valid_token_succeeds() {
@@ -549,8 +522,7 @@ async fn initialize_with_bad_token_returns_minus_32401_and_closes() {
         "TOKEN_NOT_RECOGNIZED_CODE = -32401; got {err:#?}"
     );
 
-    // Server closes the connection on failed initialize — the next
-    // read should hit EOF.
+    // Server closes the connection on failed initialize — the next read hits EOF.
     let mut line = String::new();
     let n = timeout(TEST_BUDGET, rd.read_line(&mut line))
         .await
@@ -564,8 +536,7 @@ async fn initialize_with_bad_token_returns_minus_32401_and_closes() {
 async fn tools_call_before_initialize_is_rejected() {
     let b = boot().await;
     let (mut rd, mut wr) = connect(&b.socket_path).await;
-    // Send a `tools/call` without `initialize` first — the transport
-    // should refuse with -32002 ("not initialized").
+    // `tools/call` without `initialize` is refused with -32002.
     send_frame(
         &mut wr,
         tools_call_frame(
@@ -587,11 +558,8 @@ async fn tools_call_before_initialize_is_rejected() {
     let _ = &b.server;
 }
 
-// Per-call `_meta.threadId` routing is verified on one initialized card-bound
-// connection by wrapping `calm.track.cat` and capturing the identity delivered to
-// the handler. Both calls resolve to the same card/track, so the load-bearing
-// assertion is that the observed `identity.thread_id` matches each request's
-// `_meta.threadId`; falling back to the initialize/bound identity is caught.
+// Both calls resolve to the same card/track, so the load-bearing assertion is that the observed
+// `identity.thread_id` matches each request's `_meta.threadId`.
 #[tokio::test]
 async fn two_tools_calls_route_per_call_meta_thread_id() {
     let (registry, mut identity_rx) = registry_with_track_cat_identity_capture();
@@ -821,41 +789,18 @@ async fn track_file_tools_support_two_calls_on_one_connection() {
     let _ = &b.server;
 }
 
-/// Regression: a co-tenant `calm-server` against the same XDG-shared
-/// data dir must NOT steal the live socket on boot.
-///
-/// Pre-fix behavior: `McpServer::spawn` unconditionally
-/// `remove_file()`d any existing socket file before `bind()`. When a
-/// second server instance booted against the same data dir (e.g. two
-/// docker stacks pointing at `$HOME/.local/share/neige-calm`), it would
-/// race against the first instance's listener: the unlink severed the
-/// path → listener mapping in the filesystem without closing the live
-/// listener fd; the rebind then created a brand-new socket file the
-/// second process bound to. The second process typically died next
-/// (HTTP port already in use), leaving behind a defunct socket file at
-/// the path. The first instance's listener was still alive but
-/// orphaned — clients reaching it via the path got `ECONNREFUSED`.
-///
-/// Fix: probe the existing path with `UnixStream::connect` before
-/// unlink. A live answer means another listener owns the socket; we
-/// refuse to boot loudly rather than break the live tenant. This test
-/// drives a stand-in listener (a `UnixListener::bind` directly, no
-/// `McpServer` needed) and verifies the second `McpServer::spawn`
-/// errors and leaves the original listener intact.
+/// A co-tenant `calm-server` against the same data dir must NOT steal the live socket on boot:
+/// `spawn` probes the existing path with `UnixStream::connect` before unlinking, and a live
+/// answer refuses the boot rather than orphaning the first tenant's listener.
 #[tokio::test]
 async fn spawn_refuses_to_steal_live_co_tenant_socket() {
     let tmp = calm_test_sockets::socket_dir("mcp");
     let socket_path = calm_test_sockets::socket_path(tmp.path(), "kernel.sock");
 
-    // Stand-in "live first tenant": just a raw UnixListener bound at
-    // the same path. We don't need the full McpServer stack to exercise
-    // the steal-detection — the probe is purely about whether a peer
-    // answers `connect()`.
+    // Stand-in live first tenant: the probe is purely about whether a peer answers `connect()`.
     let first = tokio::net::UnixListener::bind(&socket_path).expect("first listener");
 
-    // Boot a real McpServer at the same path. Without the fix this
-    // would happily unlink the path, rebind, and return Ok. With the
-    // fix it must error.
+    // Boot a real McpServer at the same path; it must error.
     let sqlx_repo = Arc::new(
         SqlxRepo::open("sqlite::memory:")
             .await
@@ -892,8 +837,7 @@ async fn spawn_refuses_to_steal_live_co_tenant_socket() {
         "expected steal-refusal error message; got: {msg}"
     );
 
-    // The first listener must still be functional. A fresh connect +
-    // accept round-trip proves the path was not stolen.
+    // A fresh connect + accept round-trip proves the path was not stolen.
     let connect_handle = tokio::spawn({
         let p = socket_path.clone();
         async move { UnixStream::connect(&p).await }

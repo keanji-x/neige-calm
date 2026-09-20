@@ -1,16 +1,5 @@
-//! End-to-end integration test for the Slice C `neige.*` host-callback router.
-//!
-//! Drives a real `PluginHost` spawning a stub plugin (`stub-plugin-caller`)
-//! that issues a fixed sequence of `neige.*` callbacks. The test then asserts
-//! on the kernel-side repo state — overlays exist, the new card is there, the
-//! kv pair round-trips, and the rejected card was actually rejected.
-//!
-//! Slice C's binding specification accepted either this style or direct unit tests
-//! against `callbacks::dispatch`. The unit-test alternative already lives in
-//! `src/plugin_host/callbacks.rs` (covering every method with both allow and
-//! deny paths). This file adds the integration spine on top so the
-//! end-to-end router-task path — including the MCP frame round-trip — is
-//! exercised at least once.
+//! End-to-end test for the `neige.*` host-callback router: a real `PluginHost`
+//! spawns `stub-plugin-caller`, which issues a fixed sequence of callbacks.
 
 #![cfg(unix)]
 
@@ -28,10 +17,6 @@ use tokio::time::{Instant, sleep};
 
 const CALLER_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-caller");
 
-/// Boot a host with one caller-stub plugin installed and an area+track already
-/// seeded in the repo. Returns the host, the repo (so the test can assert on
-/// state directly), the demo track id (also baked into the plugin's env), and
-/// the tempdir guard.
 async fn boot_with_track(
     plugin_id: &str,
 ) -> (Arc<PluginHost>, Arc<dyn Repo>, String, tempfile::TempDir) {
@@ -93,9 +78,7 @@ async fn boot_with_track(
 
     let registry = PluginRegistry::from_manifests([(manifest, Some(install_dir.clone()))]);
     let events = EventBus::new();
-    // Seed plugins row so plugin_token_set's FK is satisfied at spawn time
-    // (the REST install handler does this in production; these direct-spawn
-    // tests bypass it).
+    // Seed the plugins row so plugin_token_set's FK is satisfied at spawn time.
     repo.plugin_install(calm_server::model::NewPlugin {
         id: plugin_id.into(),
         version: "0.1.0".into(),
@@ -108,10 +91,7 @@ async fn boot_with_track(
     .expect("seed plugin row");
     let host = Arc::new(PluginHost::new_full(
         Arc::new(registry),
-        // `repo.clone()` (method call) is a coercion site for the
-        // `Arc<dyn Repo>` → `Arc<dyn RouteRepo>` supertrait upcast
-        // (PR #41). `Arc::clone(&repo)` would NOT coerce because the
-        // free-function call returns the source type `Arc<dyn Repo>`.
+        // `repo.clone()` (method call) coerces `Arc<dyn Repo>` → `Arc<dyn RouteRepo>`; `Arc::clone(&repo)` would not.
         repo.clone(),
         plugins_dir,
         plugins_data_dir,
@@ -148,9 +128,6 @@ async fn caller_stub_drives_neige_callbacks_end_to_end() {
     host.spawn(plugin_id).await.expect("spawn caller stub");
     wait_for_running(&host, plugin_id).await;
 
-    // The stub pipelines its 6 callbacks immediately after `initialize`. Each
-    // call is repo-only + in-memory event emit, so the round-trip is fast.
-    // Poll for the success markers with a generous budget.
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let kv = repo.plugin_kv_get(plugin_id, "answer").await.unwrap();
@@ -162,7 +139,6 @@ async fn caller_stub_drives_neige_callbacks_end_to_end() {
         let other_card = cards.iter().find(|c| c.kind == "plugin:other.plugin:x");
 
         if let (Some(kv_val), Some(demo), Some(_term)) = (kv.as_ref(), demo_card, terminal_card) {
-            // Positive assertions on what should have happened.
             assert_eq!(kv_val, &json!(42), "kv.set must roundtrip through router");
 
             assert_eq!(
@@ -171,16 +147,12 @@ async fn caller_stub_drives_neige_callbacks_end_to_end() {
                 "card payload must round-trip"
             );
 
-            // Deny path: the plugin tried to create a card under another
-            // plugin's prefix. That request must have been rejected by perms.
             assert!(
                 other_card.is_none(),
                 "card with other plugin's prefix must be rejected; saw: {:?}",
                 other_card
             );
 
-            // Overlay should be present and scoped to the plugin's id (server
-            // enforces — the stub didn't even pass a plugin_id field).
             let overlays = repo.overlays_for("track", &track_id).await.unwrap();
             let our_overlay = overlays
                 .iter()

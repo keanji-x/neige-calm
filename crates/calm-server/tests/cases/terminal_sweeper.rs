@@ -1,29 +1,5 @@
-//! Scope C orphan-terminal sweeper tests. Planner: design doc §10.
-//!
-//! Coverage:
-//!
-//!   1. **Orphan detection.** A terminal without an active runtime owner is
-//!      picked up by `terminals_orphaned`; live runtime-owned terminals are not.
-//!   2. **Grace window.** A freshly-created orphan is held back by the
-//!      `grace_seconds` parameter; the same orphan, queried with a smaller
-//!      grace, surfaces.
-//!   3. **Cleanup emits `TerminalDeleted` with `actor = "kernel"`.** Audit
-//!      row lands in the `events` table; bus envelope carries the right
-//!      variant.
-//!   4. **Idempotent against dead daemon / missing socket.** A row whose
-//!      `renderer entry` points at nothing still gets reaped cleanly (no
-//!      panic, no error, audit event emitted).
-//!   5. **Non-orphans survive sweep cycles.** A terminal with an active
-//!      runtime owner is never targeted; multiple sweep calls leave it intact.
-//!
-//! Daemon-process killing is exercised at the unit level only — the
-//! integration tests don't start a terminal renderer. The graceful-kill
-//! path is tested by aiming `renderer entry` at a path that doesn't exist
-//! (connect fails → fall through), and the SIGTERM path is bypassed by
-//! leaving `pid` as `None` on the seeded row. The full end-to-end with a
-//! live daemon is left to the broader CI suite (where the binary is
-//! available) — these tests verify the sweep / audit invariants in
-//! isolation.
+//! Orphan-terminal sweeper tests: detection, grace window, audit event, idempotency against a dead
+//! daemon or stale pid. No terminal renderer is started; the SIGTERM path is exercised on a spawned `sleep`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -44,11 +20,7 @@ use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::terminal_sweeper;
 use serde_json::json;
 
-/// Build a fresh in-memory `AppState`. Plugin host is empty; daemon /
-/// codex are stubs (no real binaries spawned). Returns the concrete
-/// `SqlxRepo` alongside the state so tests can `SELECT` directly out of
-/// the events table without going through the `Repo` trait surface
-/// (matches the helper shape in `tests/sync_engine.rs`).
+/// A fresh in-memory `AppState` (stub daemon / codex) plus the concrete `SqlxRepo` for direct `SELECT`s.
 async fn fresh_state() -> (AppState, Arc<SqlxRepo>) {
     let concrete = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let repo: Arc<dyn Repo> = concrete.clone();
@@ -148,9 +120,8 @@ async fn seed_linked_pair(state: &AppState, concrete: &SqlxRepo) -> (String, Str
     (card.id.to_string(), term.id)
 }
 
-/// Seed a planner codex card + terminal whose active runtime is a shared-spec
-/// row with `thread_id` bound and `terminal_run_id = NULL`, matching the
-/// post-migration shape for bound shared-spec threads.
+/// Seed a planner codex card + terminal whose active runtime is a shared-spec row with `thread_id`
+/// bound and `terminal_run_id = NULL`.
 async fn seed_shared_planner_pair(
     state: &AppState,
     concrete: &SqlxRepo,
@@ -300,8 +271,7 @@ async fn seed_migrated_shared_planner_pair(
     (card.id.to_string(), term.id)
 }
 
-/// Strip any legacy payload link. This should not affect orphan detection;
-/// runtime ownership is now the contract.
+/// Strip any legacy payload link; runtime ownership is the orphan contract.
 async fn unlink_card(state: &AppState, card_id: &str) {
     state
         .raw_repo()
@@ -328,10 +298,7 @@ async fn complete_terminal_runtime_for_card(state: &AppState, card_id: &str) {
         .unwrap();
 }
 
-/// Backdate the `created_at` of every terminal row to `now - 120 s` so
-/// the sweeper's production 60-second grace window treats them as
-/// orphans. Returning early before the sweep call avoids the sleep-
-/// in-test antipattern.
+/// Backdate every terminal row's `created_at` to `now - 120 s`, past the sweeper's production 60 s grace.
 async fn age_all_terminals_past_grace(concrete: &SqlxRepo) {
     let cutoff = calm_server::model::now_ms() - 120_000;
     sqlx::query("UPDATE terminals SET created_at = ?1")
@@ -340,10 +307,6 @@ async fn age_all_terminals_past_grace(concrete: &SqlxRepo) {
         .await
         .unwrap();
 }
-
-// ---------------------------------------------------------------------------
-// 1. Orphan detection.
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn orphan_detection_skips_runtime_owned_terminal_and_finds_orphan() {
@@ -426,16 +389,8 @@ async fn orphan_sweep_reaps_terminal_after_runtime_completion() {
     );
 }
 
-/// #1701 — a Terminal-card terminal whose program exited normally is not
-/// residue: the attach reader recorded the exit on the row and completed the
-/// ephemeral session, and the card that owns the row still exists. Before the
-/// fix the row matched the orphan query the moment the session completed and
-/// the next sweep past the grace deleted it, so the Track's Terminal card
-/// pointed at nothing and `observe`/`control` on it failed. The row (final
-/// screen, scrollback, `exit_code`) now follows its card. The negative twin —
-/// the same seed with the session completed but NO recorded exit is still
-/// reaped — is `cleanup_safe_when_daemon_already_dead` and
-/// `sweep_emits_terminal_deleted_with_kernel_actor` below.
+/// A Terminal-card terminal whose program exited normally is not residue: the exit is on the row and
+/// the owning card still exists, so the row follows its card.
 #[tokio::test]
 async fn orphan_sweep_keeps_exited_terminal_card_terminal() {
     let (state, concrete) = fresh_state().await;
@@ -489,10 +444,6 @@ async fn migrated_shared_planner_terminal_survives_sweep() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 2. Grace window.
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn grace_window_holds_back_fresh_orphans() {
     let (state, concrete) = fresh_state().await;
@@ -514,10 +465,6 @@ async fn grace_window_holds_back_fresh_orphans() {
     assert_eq!(orphans.len(), 1);
     assert_eq!(orphans[0].id, terminal_id);
 }
-
-// ---------------------------------------------------------------------------
-// 3. Cleanup emits TerminalDeleted with actor="kernel".
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn sweep_emits_terminal_deleted_with_kernel_actor() {
@@ -568,14 +515,10 @@ async fn sweep_emits_terminal_deleted_with_kernel_actor() {
     .await
     .unwrap();
     assert_eq!(row.0, "terminal.deleted");
-    // PR2 of #136: events.actor stores the typed ActorId JSON form.
+    // events.actor stores the typed ActorId JSON form.
     let actor_json: serde_json::Value = serde_json::from_str(&row.1).unwrap();
     assert_eq!(actor_json, serde_json::json!({"kind": "Kernel"}));
 }
-
-// ---------------------------------------------------------------------------
-// 4. Idempotent against missing renderer / pid.
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn cleanup_safe_when_daemon_already_dead() {
@@ -603,11 +546,8 @@ async fn cleanup_safe_when_daemon_already_dead() {
 
 #[tokio::test]
 async fn cleanup_safe_with_stale_pid() {
-    // A pid persisted from a previous boot may point at nothing (process
-    // long since exited and pid recycled to an unrelated unix process we
-    // must not signal). The sweeper's `send_sigterm` guards >0 only; we
-    // pick a high pid that's very unlikely to exist or matter. The
-    // SIGTERM call may return ESRCH or EPERM — both are tolerated.
+    // A pid persisted from a previous boot may be recycled to an unrelated process; the SIGTERM call may
+    // return ESRCH or EPERM, both tolerated.
     let (state, concrete) = fresh_state().await;
     let (card_id, terminal_id) = seed_linked_pair(&state, &concrete).await;
     // Pick a pid that's almost certainly free.
@@ -631,10 +571,6 @@ async fn cleanup_safe_with_stale_pid() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 5. Non-orphans survive sweep cycles.
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn runtime_owned_terminal_survives_multiple_sweeps() {
     let (state, concrete) = fresh_state().await;
@@ -656,16 +592,8 @@ async fn runtime_owned_terminal_survives_multiple_sweeps() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 6. `reap_terminal_pid_only` (issue #310 followup): pid-only partial-spawn
-//    SIGTERM helper.
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn reap_terminal_pid_only_sigterms_live_pid() {
-    // Spawn a long-lived child that ignores nothing — default SIGTERM
-    // handling terminates `sleep` immediately. `sleep 300` gives the test
-    // plenty of slack before we'd need to fall back to SIGKILL on a leak.
     let mut child = tokio::process::Command::new("sleep")
         .arg("300")
         .stdin(std::process::Stdio::null())
@@ -676,22 +604,16 @@ async fn reap_terminal_pid_only_sigterms_live_pid() {
         .expect("spawn sleep");
     let pid: i32 = child.id().expect("child pid available") as i32;
 
-    // Sanity check: child is alive before the reap. `try_wait()` is None
-    // for a still-running child.
     assert!(
         child.try_wait().expect("try_wait ok").is_none(),
         "fixture child must be alive before reap"
     );
 
-    // Drive the helper. It's best-effort and returns nothing — success is
-    // observed by the child exiting.
+    // The helper is best-effort and returns nothing; success is observed by the child exiting.
     terminal_sweeper::reap_terminal_pid_only("test-terminal-id", pid as i64);
 
-    // Poll `try_wait()` (rather than `kill(pid, 0)`) — the parent hasn't
-    // reaped the zombie yet, so a `kill(pid, 0)` probe would keep
-    // returning 0 even after the child exited. `try_wait()` is the
-    // canonical "did my child terminate?" check and reaps in the same
-    // call when it has.
+    // Poll `try_wait()` rather than `kill(pid, 0)`: the zombie is unreaped, so a `kill(pid, 0)` probe
+    // would keep returning 0 after the child exited.
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     let mut exit_status = None;
     while std::time::Instant::now() < deadline {
@@ -704,8 +626,7 @@ async fn reap_terminal_pid_only_sigterms_live_pid() {
     let status = exit_status.unwrap_or_else(|| {
         panic!("reap_terminal_pid_only must SIGTERM the supplied pid; child {pid} survived")
     });
-    // SIGTERM-killed children report signal-termination, not a clean exit
-    // code. `ExitStatus::code()` returns None for signal exits on unix.
+    // `ExitStatus::code()` returns None for signal exits on unix.
     assert!(
         status.code().is_none(),
         "child exited but not via signal; expected SIGTERM termination, got {status:?}",
@@ -714,9 +635,6 @@ async fn reap_terminal_pid_only_sigterms_live_pid() {
 
 #[tokio::test]
 async fn reap_terminal_pid_only_tolerates_dead_pid() {
-    // Idempotent against pids that already vanished (the common case when
-    // the daemon races us and exits between the row read and the helper
-    // call). Pick a pid that's almost certainly unallocated and assert the
-    // helper doesn't panic / propagate.
+    // Idempotent against pids that already vanished; the helper must not panic or propagate.
     terminal_sweeper::reap_terminal_pid_only("test-terminal-id", 2_000_000_000);
 }

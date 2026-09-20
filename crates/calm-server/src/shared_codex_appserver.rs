@@ -1,8 +1,5 @@
-//! Shared `codex app-server` supervisor (#410 PR4).
-//!
-//! PR4 only starts, supervises, and takes over a single daemon for the whole
-//! server. It deliberately does not route any card traffic to this daemon yet;
-//! later PRs switch callers over through the public methods here.
+//! Shared `codex app-server` supervisor: starts, supervises, and takes over a single
+//! daemon for the whole server.
 
 #[cfg(target_os = "macos")]
 mod macos_process;
@@ -53,23 +50,14 @@ use crate::shared_codex_home::{EXPECTED_MCP_SERVERS, SharedCodexHome};
 
 pub type TurnId = String;
 
-/// #863 — ambient env keys forwarded verbatim into the spawned shared codex
-/// app-server. A const, not config: it is an implementation invariant of the
-/// spawn seam, not an operator choice; changing it is a code change with
-/// review + tests. Everything else in the parent env is dropped by
-/// `env_clear()`; computed keys (CODEX_HOME, NEIGE_CALM_BASE_URL, HTTP(S)
-/// proxies) are set explicitly in `apply_spawn_env`. Entry rationale cites
-/// the vendored codex source (`external/codex/codex-rs`).
+/// Ambient env keys forwarded verbatim into the spawned shared codex app-server; everything
+/// else in the parent env is dropped by `env_clear()`, computed keys are set in `apply_spawn_env`.
 pub const SPAWN_ENV_PASSTHROUGH: &[&str] = &[
-    // binary/tool resolution + codex arg0 PATH rewrite (codex-rs/arg0/src/lib.rs:146-153);
-    // MCP child commands are NOT which-resolved on unix — child PATH is used
-    // (codex-rs/rmcp-client/src/program_resolver.rs:22-29, utils.rs:130-142)
+    // binary/tool resolution; MCP child commands are NOT which-resolved on unix, child PATH is used
     "PATH",
-    // default-home fallback + `~` expansion in config paths (codex-rs/utils/home-dir/src/lib.rs:52-61,
-    // codex-rs/utils/absolute-path/src/lib.rs:29); forwarded to MCP children (utils.rs:130-142)
+    // default-home fallback + `~` expansion in config paths; forwarded to MCP children
     "HOME",
-    // codex's own child allow-lists forward these (rmcp-client/src/utils.rs:130-142 for MCP;
-    // UNIX_CORE_ENV_VARS protocol/src/shell_environment.rs:113-116 for inherit=Core shells)
+    // codex's own child allow-lists forward these
     "USER",
     "LOGNAME",
     "SHELL",
@@ -83,21 +71,19 @@ pub const SPAWN_ENV_PASSTHROUGH: &[&str] = &[
     "TEMP",
     "TMP",
     // reqwest env-proxy autodetect honors these for API traffic
-    // (codex-rs/login/src/auth/default_client.rs:222-229; not sandboxed → proxies active :250-251)
     "NO_PROXY",
     "no_proxy",
     "ALL_PROXY",
     "all_proxy",
-    // TLS custom CA (codex-rs/codex-client/src/custom_ca.rs:61-62, 373-386; SSL_CERT_DIR unused)
+    // TLS custom CA (SSL_CERT_DIR unused)
     "CODEX_CA_CERTIFICATE",
     "SSL_CERT_FILE",
-    // diagnostics (codex-rs/app-server/src/lib.rs:627,632 RUST_LOG; :112 LOG_FORMAT)
+    // diagnostics
     "RUST_LOG",
     "LOG_FORMAT",
     "RUST_BACKTRACE",
-    // API-key-mode auth fallbacks (codex-rs/login/src/auth/manager.rs:516-532;
-    // model-provider-info/src/lib.rs:340-347). Prod uses auth.json; kept so an
-    // API-key deployment doesn't silently break. Explicit pass-through, still an allow-list.
+    // API-key-mode auth fallbacks; prod uses auth.json, kept so an API-key deployment
+    // doesn't silently break. Still an allow-list.
     "OPENAI_API_KEY",
     "CODEX_API_KEY",
     "CODEX_ACCESS_TOKEN",
@@ -172,14 +158,13 @@ enum ResumeMode {
     HotTakeover,
 }
 
-/// #953 §2 — slow-lane retry ceiling for the self-heal loop. A code
-/// invariant, not a knob (Explicit-Config rule: no new config knobs).
+/// Slow-lane retry ceiling for the self-heal loop. A code invariant, not a knob.
 pub const HEAL_SLOW_RETRY_CEILING: Duration = Duration::from_secs(300);
 
-/// #953 §2 — ±20% uniform jitter applied to every heal delay.
+/// ±20% uniform jitter applied to every heal delay.
 const HEAL_JITTER_FRACTION: f64 = 0.2;
 
-/// #953 §2 — classified failure lanes for the self-heal loop.
+/// Classified failure lanes for the self-heal loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureClass {
     /// Fast lane — the existing `BackoffState` knobs. Child exited,
@@ -189,18 +174,13 @@ pub enum FailureClass {
     /// refusal that is safe to retry (floor `restart_max_delay_ms`, ceiling
     /// [`HEAL_SLOW_RETRY_CEILING`]).
     Persistent,
-    /// Slow lane, reconciliation-only rounds (#953 §3): a possible surviving
-    /// daemon we could not prove gone. The spawn path is unreachable until a
-    /// reconciliation round proves absence (or, for the pid-NULL operator
-    /// shape, until the operator clears the identity columns).
+    /// Slow lane, reconciliation-only rounds: a possible surviving daemon we could not prove
+    /// gone. The spawn path is unreachable until a round proves absence.
     Unreconciled,
 }
 
-/// #953 §1 — precondition validated (before any destructive work) by
-/// [`SharedCodexAppServer::transition_replace`] under the same core lock
-/// that captures the running parts. The transition serial is never released
-/// between validation and the terminal Running/Failed write, so no second
-/// pre-spawn check is needed.
+/// Precondition validated under the core lock before any destructive work; the transition
+/// serial is never released before the terminal Running/Failed write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplacePrecondition {
     /// Settings respawn: replace whatever is installed.
@@ -213,14 +193,8 @@ pub enum ReplacePrecondition {
     NotRunning,
 }
 
-/// #953 §5 — readiness snapshot published on every installed Running /
-/// terminal Failed, and on every transition ENTRY (`running: false` with
-/// the outgoing generation — PR2 review D1(b)), so `running: true` holds
-/// only while a Running incarnation is actually installed. `generation`
-/// identifies the Running incarnation (equality comparisons only;
-/// wrap/restart-reset harmless for the process-local consumer). Sole
-/// consumer in this slice: deferred harness recovery; future consumers
-/// (status/health, admin wait) can watch the same channel.
+/// Readiness snapshot published on every installed Running / terminal Failed and on every
+/// transition entry, so `running: true` holds only while a Running incarnation is installed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DaemonReadiness {
     pub generation: u64,
@@ -251,8 +225,7 @@ impl StartedVia {
     }
 }
 
-/// #953 §3 — result of the exhaustive per-shape resolution over a persisted
-/// daemon record.
+/// Result of the exhaustive per-shape resolution over a persisted daemon record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShapeResolution {
     /// Absence/death proven — identity columns may be NULLed (the durable
@@ -264,8 +237,8 @@ enum ShapeResolution {
     Unreconciled { needs_operator: bool },
 }
 
-/// #953 §2 — the identity/context columns a Failed persist writes. NULL-only
-/// when absence is proven; retained exactly as read while unreconciled.
+/// The identity/context columns a Failed persist writes: NULL-only when absence is proven;
+/// retained exactly as read while unreconciled.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FailedIdentity {
     pid: Option<i32>,
@@ -294,8 +267,8 @@ impl FailedIdentity {
         }
     }
 
-    /// Unreconciled: retain the tuple exactly as read (full or partial) —
-    /// identity presence IS the durable unreconciled marker (#953 §3).
+    /// Unreconciled: retain the tuple exactly as read — identity presence IS the durable
+    /// unreconciled marker.
     fn retained(record: &crate::db::SharedCodexDaemonRecord) -> Self {
         Self {
             pid: record.pid,
@@ -310,10 +283,8 @@ impl FailedIdentity {
     }
 }
 
-/// #953 §2 — last successfully-persisted Failed tuple. Identical consecutive
-/// Failed writes are skipped; the cache is updated ONLY after the DB write
-/// returns Ok (`note_written`), so a failed write is retried next round,
-/// never masked. Any successful non-failed write clears it.
+/// Last successfully-persisted Failed tuple; identical consecutive Failed writes are skipped.
+/// Updated ONLY after the DB write returns Ok, so a failed write is retried, never masked.
 #[derive(Default)]
 struct FailedPersistDedup(std::sync::Mutex<Option<(String, FailureClass, FailedIdentity)>>);
 
@@ -344,9 +315,8 @@ impl FailedPersistDedup {
     }
 }
 
-/// #953 §2 — RAII claim for the singleton heal task: `Drop` clears the
-/// `heal_active` flag, so panic, cancellation, abort, and normal exit all
-/// release the claim.
+/// RAII claim for the singleton heal task: `Drop` clears `heal_active`, so panic,
+/// cancellation, abort, and normal exit all release the claim.
 struct HealActiveGuard {
     flag: Arc<AtomicBool>,
 }
@@ -357,11 +327,8 @@ impl Drop for HealActiveGuard {
     }
 }
 
-/// #953 §2 — failure classification for the heal lanes. The Transient
-/// messages are exactly the cold-start poll failures produced in this file
-/// (`poll_connect_initialized`) plus the crash-watcher exit shape; everything
-/// else (exec/spawn errors, settings/config read errors, guard refusals)
-/// retries on the slow lane.
+/// Failure classification for the heal lanes: the Transient messages are exactly the
+/// cold-start poll failures plus the crash-watcher exit shape; everything else is slow-lane.
 fn classify_spawn_failure(err: &CalmError) -> FailureClass {
     let msg = err.to_string();
     if msg.contains("exited before initialize")
@@ -374,10 +341,8 @@ fn classify_spawn_failure(err: &CalmError) -> FailureClass {
     }
 }
 
-/// #954 review D2 — marker for the ONE error whose transition outcome was
-/// never observed (the detached spawn task died without publishing its
-/// result). Callers must not claim "terminalized + heal armed" for it: the
-/// in-memory state may still be `Starting` with heal unarmed.
+/// Marker for the ONE error whose transition outcome was never observed; callers must not
+/// claim "terminalized + heal armed" for it.
 const DETACHED_SPAWN_RESULT_LOST: &str =
     "detached spawn transition task ended without publishing a result";
 
@@ -385,8 +350,8 @@ fn detached_spawn_result_lost(err: &CalmError) -> bool {
     err.to_string().contains(DETACHED_SPAWN_RESULT_LOST)
 }
 
-/// #953 §2 — ±20% uniform jitter. Cheap clock-derived entropy: the heal loop
-/// only needs desynchronization, not statistical quality (no rand dep).
+/// ±20% uniform jitter; clock-derived entropy suffices because the heal loop only needs
+/// desynchronization.
 fn heal_jitter(delay: Duration) -> Duration {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -396,15 +361,8 @@ fn heal_jitter(delay: Duration) -> Duration {
     delay.mul_f64(1.0 - HEAL_JITTER_FRACTION + 2.0 * HEAL_JITTER_FRACTION * unit)
 }
 
-/// `/proc/<pid>/stat` state == `Z`. #953 review D4 — a zombie's meaning
-/// depends on WHICH question is being asked: for post-reap verification of
-/// a group WE just signaled it means "dead" (the leader cannot serve and
-/// merely awaits its parent's `wait()`, which may not be us — e.g. a
-/// test-spawned survivor); for a reconciliation probe BEFORE any signal it
-/// proves nothing about the process GROUP — live descendants may remain in
-/// the zombie leader's group, so absence must never be claimed from it.
-/// See [`survivor_alive_after_group_reap`] (post-signal, zombie = dead) vs
-/// [`proc_pid_present`] / `verify_owned_pid` (pre-signal, zombie = present).
+/// `/proc/<pid>/stat` state == `Z`. A zombie means "dead" only for post-reap verification
+/// of a group WE just signaled; before any signal it proves nothing about the process group.
 #[cfg(not(target_os = "macos"))]
 fn proc_pid_is_zombie(pid: i32) -> bool {
     let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
@@ -418,19 +376,8 @@ fn proc_pid_is_zombie(pid: i32) -> bool {
         .unwrap_or(false)
 }
 
-/// macOS twin of the Linux `/proc/<pid>/stat` reader: `proc_pidinfo`
-/// `PROC_PIDTBSDINFO` with `pbi_status == SZOMB`. XNU answers that flavor
-/// for zombies out of its zombie list, so an exited-but-unreaped direct
-/// child reports `SZOMB` — exactly the "exited, still pinning" observation
-/// the `ExitWait::Child` arm of `terminate_group_with_grace` polls for
-/// (without it every owned-child stop on macOS waited the full stop grace).
-/// `arg = 1` asks XNU to search the zombie list (`findzomb`); with `arg = 0`
-/// an unreaped child answers `ESRCH` instead.
-/// A short or failed answer (`ESRCH` once reaped, `EPERM` for a foreign
-/// process) is `false`, like a missing `/proc` entry. The pre-/post-signal
-/// caveats above apply unchanged: post-reap zombie = dead; pre-signal it
-/// proves nothing about the group. `proc_pid_present` / `verify_owned_pid`
-/// stay `/proc`-only (README: `/proc`-based recovery is not ported).
+/// macOS twin of the Linux `/proc/<pid>/stat` reader via `proc_pidinfo(PROC_PIDTBSDINFO)`;
+/// `arg = 1` asks XNU to search the zombie list, without it an unreaped child answers `ESRCH`.
 #[cfg(target_os = "macos")]
 fn proc_pid_is_zombie(pid: i32) -> bool {
     use std::ffi::c_void;
@@ -488,13 +435,9 @@ mod macos_zombie_tests {
     }
 }
 
-/// `/proc/<pid>` presence — the ONLY probe allowed for the pid-partial
-/// shape (#953 §3 shape (a)): ownership is unprovable (the pid may be
-/// recycled), so the record must never be reaped or signaled. #953 review
-/// D4(b) — a ZOMBIE counts as present: this probe runs before (and without)
-/// any signal, and a zombie entry does not prove the group named by the
-/// unverifiable record is gone. The shape self-resolves when the zombie's
-/// parent reaps it (`/proc/<pid>` disappears).
+/// `/proc/<pid>` presence — the ONLY probe allowed for the pid-partial shape: ownership is
+/// unprovable (the pid may be recycled), so the record must never be reaped or signaled.
+/// A zombie counts as present here.
 fn proc_pid_present(pid: i32) -> bool {
     if pid <= 0 {
         return false;
@@ -502,21 +445,13 @@ fn proc_pid_present(pid: i32) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
 }
 
-/// #953 §3 — POST-group-reap "survivor still alive" criterion: the verified
-/// identity matches a live, non-zombie process. Zombie-as-dead is valid
-/// here ONLY because every caller has just signaled the verified group
-/// (SIGTERM + SIGKILL): a leader left zombie by our own SIGKILL is dead for
-/// supervision purposes and merely awaits its parent's `wait()` (which may
-/// not be us, e.g. a test-spawned survivor). Absence proofs BEFORE any
-/// signal must NOT use this predicate (#953 review D4): pre-signal probes
-/// are `verify_owned_pid` (full tuple) or [`proc_pid_present`]
-/// (pid-partial shape), both of which treat a zombie as still-present.
+/// POST-group-reap "survivor still alive" criterion. Zombie-as-dead is valid here ONLY
+/// because every caller has just signaled the verified group; pre-signal probes must not use it.
 fn survivor_alive_after_group_reap(pid: i32, start_time: u64, boot_id: &str) -> bool {
     verify_owned_pid(pid, start_time, boot_id) && !proc_pid_is_zombie(pid)
 }
 
-/// #953 §3 durable marker prefixes — human-readable belt-and-braces; the
-/// machine rule is identity presence (`failed_row_identity_present`).
+/// Durable marker prefixes, human-readable; the machine rule is identity presence.
 const UNRECONCILED_PREFIX: &str = "unreconciled: ";
 const UNRECONCILED_NEEDS_OPERATOR_PREFIX: &str = "unreconciled-needs-operator: ";
 
@@ -535,11 +470,8 @@ fn strip_unreconciled_prefix(last_error: &str) -> &str {
         .unwrap_or(last_error)
 }
 
-/// #953 §3 read-side classification rule (explicit; survives calm-server
-/// restarts): `state='failed'` ∧ all identity columns NULL ⇒ SafeToRetry;
-/// `state='failed'` ∧ any identity column present ⇒ Unreconciled — run the
-/// per-shape resolution algorithm before any spawn. Unambiguous vs legacy
-/// rows: every pre-#953 Failed writer NULLed identity.
+/// Read-side rule: `state='failed'` ∧ all identity columns NULL ⇒ safe to retry; any
+/// identity column present ⇒ unreconciled, run the per-shape resolution before any spawn.
 fn failed_row_identity_present(record: &crate::db::SharedCodexDaemonRecord) -> bool {
     SharedDaemonState::from_db_str(&record.state) == SharedDaemonState::Failed
         && (record.pid.is_some()
@@ -548,10 +480,8 @@ fn failed_row_identity_present(record: &crate::db::SharedCodexDaemonRecord) -> b
             || record.boot_id.is_some())
 }
 
-/// The Failed message written while a row stays unreconciled. A pure
-/// function of the record's identity shape — NOT of its previous
-/// `last_error` — so identical consecutive rounds produce an identical
-/// tuple and dedup to a single DB write.
+/// A pure function of the record's identity shape — NOT of its previous `last_error` — so
+/// identical consecutive rounds dedup to a single DB write.
 fn unreconciled_message(
     record: &crate::db::SharedCodexDaemonRecord,
     needs_operator: bool,
@@ -664,9 +594,8 @@ impl BackoffState {
         bounded_exponential_backoff(self.initial, self.max, attempt)
     }
 
-    /// #953 §2 — slow heal lane: same attempts counter and stable-window
-    /// semantics as [`Self::next_delay`], but with floor = this state's max
-    /// (`restart_max_delay_ms`) and a caller-supplied ceiling.
+    /// Slow heal lane: same attempts counter as [`Self::next_delay`], floor = this state's
+    /// max, caller-supplied ceiling.
     pub fn next_slow_delay(&self, ceiling: Duration) -> Duration {
         self.reset_if_stable();
         let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
@@ -725,98 +654,50 @@ pub struct SharedCodexAppServer {
     /// after the owning workspace has been recycled.
     sealed_turn_threads: Arc<DashMap<String, ()>>,
     restart_backoff: BackoffState,
-    /// #949 — cold-start deadline for a freshly spawned child to bind its
-    /// socket and answer `initialize`. Codex may spend minutes backfilling
-    /// its state db before the socket exists; only this deadline (or a dead
-    /// child) may fail the spawn.
+    /// Cold-start deadline for a freshly spawned child to bind its socket and answer
+    /// `initialize`; codex may spend minutes backfilling its state db before the socket exists.
     start_timeout: Duration,
-    /// #954 — stop-grace ceiling for every daemon termination: SIGTERM →
-    /// exit-driven wait up to this ceiling → straggler cleanup (group
-    /// SIGKILL where the group is provably pinned, else the per-member
-    /// identity sweep — see `terminate_group_with_grace`). A cooperative
-    /// daemon pays its actual exit time, never the full grace.
+    /// Stop-grace ceiling for every daemon termination: SIGTERM → exit-driven wait → straggler
+    /// cleanup. A cooperative daemon pays its actual exit time, never the full grace.
     stop_grace: Duration,
     notifications: NotificationFanout,
     pending_codex_threads_handle: Option<Arc<PendingThreadStartRegistry>>,
     kernel_initiated_threads: Arc<Mutex<HashSet<String>>>,
-    /// #1444 review r1 — bounded tombstones for threads a committed delete
-    /// forgot; see [`ForgottenThreads`].
+    /// Bounded tombstones for threads a committed delete forgot; see [`ForgottenThreads`].
     forgotten_threads: Arc<Mutex<ForgottenThreads>>,
     kernel_thread_start_serial: Arc<Mutex<()>>,
-    /// #1444 R2 — the boundary that fences the resume replay against a
-    /// committed delete's cache cleanup. `resume_cached_threads` holds it
-    /// across each candidate's re-validation AND its resume RPC;
-    /// [`SharedCodexAppServer::forget_threads_for_deleted_cards`] takes it
-    /// too, so a mapping it drops cannot afterwards be resumed from the
-    /// snapshot the replay copied before the delete.
-    ///
-    /// Why not `kernel_thread_start_serial`, which the cleanup already takes:
-    /// `ensure_respawn_for_current_settings` and `thread_start_mint_*` hold
-    /// THAT guard across the respawn they trigger, and the respawn's resume
-    /// loop runs inside it — re-acquiring it per candidate self-deadlocks
-    /// (tokio mutexes are not reentrant). The proof is executed, not
-    /// asserted: that shape hung
-    /// `cold_respawn_replay_does_not_resume_a_card_deleted_mid_loop`.
-    ///
-    /// Lock order is `kernel_thread_start_serial` → `resume_replay_serial`,
-    /// and never the reverse: the cleanup takes them in that order, and the
-    /// replay takes only this one (its caller may already hold the start
-    /// serial). Nothing acquired inside a replay iteration needs the start
-    /// serial, so the cleanup's wait is bounded by one resume RPC.
+    /// Fences the resume replay against a committed delete's cache cleanup. Not
+    /// `kernel_thread_start_serial`: the respawn's resume loop runs inside that one and tokio
+    /// mutexes are not reentrant. Lock order: `kernel_thread_start_serial` → `resume_replay_serial`.
     resume_replay_serial: Arc<Mutex<()>>,
     codex_bin: String,
     log_dir: PathBuf,
     restart_count: std::sync::atomic::AtomicU64,
-    /// Wall-clock ms of the most recent successful daemon (re)connect (#741
-    /// §1.3). Stamped in `install_client` (the common connect/respawn path).
-    /// Feeds the 741-3 reaper's `REBUILD_GRACE`; nothing consumes it yet. `0`
-    /// until the first connect.
+    /// Wall-clock ms of the most recent successful daemon (re)connect; `0` until the first connect.
     daemon_connected_at_ms: AtomicI64,
     needs_respawn_on_next_thread_start: Arc<AtomicBool>,
-    /// #480 §C — typestate-companion state machine. PR5b migrates readers.
+    /// Typestate-companion state machine.
     core: Arc<tokio::sync::Mutex<SupervisorCore>>,
-    /// #480 §C — serializes process transitions (replaces `restart_lock` in PR5b).
+    /// Serializes process transitions.
     transition_serial: Arc<tokio::sync::Mutex<()>>,
-    /// #953 §2 — singleton claim for the background heal task; cleared by
-    /// the RAII [`HealActiveGuard`] on any task exit (panic/abort included).
+    /// Singleton claim for the background heal task; cleared by the RAII [`HealActiveGuard`].
     heal_active: Arc<AtomicBool>,
-    /// #953 §2 — slow-lane immediate wake on external change (the existing
-    /// settings-change path); the heal loop sleeps in select(sleep, nudge).
+    /// Slow-lane immediate wake on external change; the heal loop sleeps in select(sleep, nudge).
     heal_nudge: Arc<tokio::sync::Notify>,
-    /// #953 §2 — post-Ok dedup of Failed DB writes.
+    /// Post-Ok dedup of Failed DB writes.
     failed_persist_dedup: FailedPersistDedup,
-    /// #953 §5 — readiness channel: stamped on every installed Running
-    /// (typestate success arm) and every terminal Failed (typestate error
-    /// arm + the in-memory terminalization paths), and INVALIDATED
-    /// (`running: false`, outgoing generation) on transition ENTRY
-    /// (`transition_replace` leaving Running — PR2 review D1(b)), so a
-    /// transitional Restarting/Starting daemon is never mistaken for the
-    /// Running incarnation it replaced. Receivers via
-    /// [`Self::readiness_receiver`].
+    /// Readiness channel: stamped on every installed Running and terminal Failed, and
+    /// INVALIDATED on transition ENTRY, so a transitional daemon is never mistaken for Running.
     readiness: tokio::sync::watch::Sender<DaemonReadiness>,
-    /// #953 review D1 — fixtures-only interleaving gate: the heal loop's Ok
-    /// path awaits this mutex AFTER `ensure_running` succeeded but BEFORE it
-    /// releases the singleton claim. A test holding the lock parks the heal
-    /// task inside that window (modelling the post-serial
-    /// `resume_cached_threads` seconds) so a concurrent crash + failed
-    /// restart can deterministically lose its `schedule_heal` CAS against
-    /// the held claim. Uncontended (a lock/unlock pair) when no test holds
-    /// it; absent from non-fixtures builds.
+    /// Fixtures-only interleaving gate: the heal loop's Ok path awaits this AFTER
+    /// `ensure_running` succeeded but BEFORE it releases the singleton claim.
     #[cfg(feature = "fixtures")]
     heal_post_ok_gate: Arc<tokio::sync::Mutex<()>>,
-    /// #953 PR2 review D1 — fixtures-only interleaving gate:
-    /// `transition_replace` awaits this mutex right after the transition
-    /// ENTRY (state captured/replaced + readiness invalidated) and before
-    /// the reap/start body. A test holding the lock parks the transition
-    /// inside that window so the entry-time readiness invalidation is
-    /// deterministically observable. Uncontended (a lock/unlock pair) when
-    /// no test holds it; absent from non-fixtures builds.
+    /// Fixtures-only interleaving gate: `transition_replace` awaits this right after the
+    /// transition ENTRY and before the reap/start body.
     #[cfg(feature = "fixtures")]
     transition_entry_gate: Arc<tokio::sync::Mutex<()>>,
-    /// #954 — test seam: abort handle of the most recent detached spawn
-    /// transition task, so tests can model a runtime-teardown/panic abort
-    /// of the transition itself (caller cancellation can no longer reach
-    /// it). Fixtures builds only.
+    /// Test seam: abort handle of the most recent detached spawn transition task.
     #[cfg(feature = "fixtures")]
     detached_spawn_task: std::sync::Mutex<Option<tokio::task::AbortHandle>>,
     ingest_url: String,
@@ -824,10 +705,8 @@ pub struct SharedCodexAppServer {
     fake: Option<Arc<FakeSharedCodexAppServer>>,
 }
 
-/// Owns deletion-time thread seals until the caller has completed a whole
-/// quiesce step. Dropping an unfinished step (error, cancellation, or panic)
-/// rolls every seal back; `retain` transfers the successfully-quiesced ids to
-/// the filesystem/transaction half of the deletion saga.
+/// Owns deletion-time thread seals; dropping an unfinished step rolls every seal back, and
+/// `retain` transfers the quiesced ids to the transaction half of the deletion saga.
 pub(crate) struct DeletionThreadSeals {
     daemon: Arc<SharedCodexAppServer>,
     thread_ids: Vec<String>,
@@ -891,21 +770,13 @@ pub struct FakeSharedCodexAppServer {
     fail_next_thread_start: AtomicBool,
     fail_thread_resume: AtomicBool,
     resumed_threads: std::sync::Mutex<Vec<(String, bool)>>,
-    /// Sticky, unlike `fail_next_thread_start`: the condition it stands in for
-    /// (codex refusing every turn) is one whose RETRY behaviour is under test,
-    /// and a one-shot failure would be indistinguishable from a success on the
-    /// second attempt.
+    /// Sticky, unlike `fail_next_thread_start`: the RETRY behaviour is what is under test.
     fail_turn_start: AtomicBool,
-    /// Answer `turn/start` the way codex does when it sees the input and says
-    /// no, as opposed to not answering at all. The two take opposite paths in
-    /// `maybe_issue_turn` and the fake has to be able to produce both.
+    /// Answer `turn/start` the way codex does when it sees the input and says no, as opposed
+    /// to not answering at all; the two take opposite paths in `maybe_issue_turn`.
     reject_turn_start: AtomicBool,
-    /// A scripted `config/read` answer.
-    ///
-    /// Without this the fake answers no RPC at all, so every read is an
-    /// OUTAGE — and "codex could not be asked" and "codex answered, naming no
-    /// model" are the two sides of #1505 S4's transient/needs-a-choice split.
-    /// A fixture that can only produce one of them cannot test the split.
+    /// A scripted `config/read` answer; without it every read is an OUTAGE, and "could not be
+    /// asked" vs "answered, naming no model" are two different paths.
     config_read: std::sync::Mutex<Option<CodexConfig>>,
     /// Answer `config/read` the way codex does when it sees the request and
     /// refuses it — an answer, not an outage. The two take opposite paths.
@@ -915,38 +786,26 @@ pub struct FakeSharedCodexAppServer {
     fail_turn_interrupt: AtomicBool,
     started_thread_params: std::sync::Mutex<Vec<StartedThreadParam>>,
     started_turns: std::sync::Mutex<Vec<(String, Vec<InputItem>)>>,
-    /// #1505 S4-3 — the model selection each `turn/start` carried, in the
-    /// same order as `started_turns`. Kept in its own vector rather than
-    /// widened into that tuple so the dozen existing readers of
-    /// `started_turns_for_test` keep compiling and keep meaning what they
-    /// meant.
+    /// The model selection each `turn/start` carried, in the same order as `started_turns`.
     started_turn_selections: std::sync::Mutex<Vec<(String, TurnModelSelection)>>,
-    /// #1625 P2 — the `clientUserMessageId` each `turn/start` carried, in
-    /// the same order as `started_turns`. Its own vector for the same reason
-    /// as `started_turn_selections`.
+    /// The `clientUserMessageId` each `turn/start` carried, in the same order as `started_turns`.
     started_turn_client_ids: std::sync::Mutex<Vec<Option<String>>>,
     interrupted_turns: std::sync::Mutex<Vec<(String, String)>>,
     turn_start_return_hook: std::sync::Mutex<Option<TurnStartReturnHook>>,
-    /// #1625 P3 — every `turn/steer` this fake was handed, in order:
-    /// `(thread_id, expected_turn_id, input, client_user_message_id)`.
+    /// Every `turn/steer` this fake was handed, in order.
     steered_turns: std::sync::Mutex<Vec<SteeredTurnParam>>,
-    /// Answer the next `turn/steer` the way codex does when it sees the
-    /// request and says no — the exact `-32600` sentences it uses for "no
-    /// active turn" and "expected turn mismatch" — as opposed to not
-    /// answering at all. `None` accepts.
+    /// Answer the next `turn/steer` with codex's exact `-32600` refusal sentence, as opposed
+    /// to not answering at all. `None` accepts.
     reject_turn_steer: std::sync::Mutex<Option<String>>,
-    /// #1625 P3 review round 1 — answer the next `turn/steer` the way the
-    /// client does when codex does NOT answer: a `CodexAppServer` timeout
-    /// error, as opposed to `reject_turn_steer`'s refusal. The request is
-    /// still recorded, because on the wire it did go out.
+    /// Answer the next `turn/steer` the way the client does when codex does NOT answer (a
+    /// timeout); the request is still recorded, because on the wire it did go out.
     fail_turn_steer: AtomicBool,
     /// Same shape as `turn_start_return_hook`: hold `turn/steer` inside the
     /// daemon, after it has recorded the request, until the test releases it.
     turn_steer_return_hook: std::sync::Mutex<Option<TurnStartReturnHook>>,
 }
 
-/// #1625 P3 — one recorded `turn/steer`: thread, the `expectedTurnId` it
-/// carried, its input, and its `clientUserMessageId`.
+/// One recorded `turn/steer`: thread, `expectedTurnId`, input, `clientUserMessageId`.
 #[cfg(feature = "fixtures")]
 pub type SteeredTurnParam = (String, String, Vec<InputItem>, Option<String>);
 
@@ -979,14 +838,9 @@ impl FakeSharedCodexAppServer {
     }
 }
 
-/// #480 PR5a — typestate companion to the existing `SharedDaemonState`.
-/// Carries process-ownership data per variant; PR5b will migrate readers
-/// and remove the old scattered fields.
-///
-/// Hard boundaries (§F):
-/// - `Child` MUST stay private; only transition APIs may kill/replace.
-/// - Sibling attribution (thread_cache, active_turns, pending) is NOT
-///   part of typestate — those survive process restarts.
+/// Typestate companion to `SharedDaemonState`. `Child` MUST stay private; only transition
+/// APIs may kill/replace. Sibling attribution (thread_cache, active_turns, pending) survives
+/// process restarts and is NOT part of typestate.
 pub enum SupervisorState {
     Idle,
     Starting {
@@ -1006,7 +860,7 @@ pub enum SupervisorState {
     },
     Failed {
         last_error: String,
-        /// #953 §2 — heal-lane classification for this failure.
+        /// Heal-lane classification for this failure.
         class: FailureClass,
         since: Instant,
     },
@@ -1025,12 +879,8 @@ pub struct SupervisorWatcher {
 pub struct SupervisorCore {
     pub state: SupervisorState,
     pub attempts: u32,
-    /// #953 §1 — bumped (`wrapping_add`, defined wrap, no debug-overflow
-    /// panic) each time a Running state is installed. Consumers compare by
-    /// equality only, never ordering: the crash watcher records the
-    /// generation it observed dying and passes
-    /// [`ReplacePrecondition::GenerationIs`]; a mismatch means another
-    /// transition already replaced that process.
+    /// Bumped (`wrapping_add`) each time a Running state is installed. Consumers compare by
+    /// equality only, never ordering.
     pub generation: u64,
 }
 
@@ -1070,7 +920,6 @@ impl SupervisorState {
     }
 }
 
-// ===================== Construction & public thread/turn API =====================
 impl SharedCodexAppServer {
     pub fn new_stub(repo: Arc<dyn Repo>) -> Arc<Self> {
         Self::new_stub_inner(repo, None, false)
@@ -1236,21 +1085,9 @@ impl SharedCodexAppServer {
     }
 
     pub async fn start_or_takeover(self: &Arc<Self>) -> Result<()> {
-        // #863 review R2-1 / #953 §1 — the whole boot sequence is ONE
-        // serialized lifecycle transition: `transition_serial` is held from
-        // BEFORE the boot guard through the guard-refusal reconciliation +
-        // Failed write AND through the takeover/spawn (#480 §C invariant).
-        // The downstream callees (`start_body_locked` → `try_takeover_live`
-        // → `start_new_process_typestate`) are `_locked`-style callees that
-        // assume this guard instead of re-acquiring it — no double-lock.
-        // Thread resume runs after the serial is released (#953 §1: not a
-        // transition).
-        //
-        // #954 — the serial is an OWNED guard threaded down the `_locked`
-        // chain as a by-value token (type-enforcing the held-serial
-        // invariant); the spawn path moves it into the detached transition
-        // task, which releases it only after the terminal Running/Failed
-        // write.
+        // The whole boot sequence is ONE serialized transition: the owned serial is threaded down
+        // the `_locked` chain by value and released only after the terminal Running/Failed write.
+        // Thread resume runs after the serial is released (not a transition).
         let serial = Arc::clone(&self.transition_serial).lock_owned().await;
         self.rebuild_thread_cache_from_db().await?;
         let via = self.start_body_locked(serial, false, None).await?;
@@ -1258,12 +1095,8 @@ impl SharedCodexAppServer {
         Ok(())
     }
 
-    /// #953 §3 — supervisor entry to (re)establish a running daemon from any
-    /// non-Running state: `start_or_takeover` with a Running fast-path,
-    /// sharing the same `_locked` body (guard verify → persisted-record
-    /// reconciliation → takeover probe → spawn). The `NotRunning`
-    /// precondition is re-validated under the transition serial, so the heal
-    /// loop can never stomp a Running daemon a concurrent transition won.
+    /// (Re)establish a running daemon from any non-Running state; the `NotRunning` precondition
+    /// is re-validated under the transition serial so the heal loop can never stomp a Running daemon.
     pub async fn ensure_running(self: &Arc<Self>) -> Result<()> {
         #[cfg(feature = "fixtures")]
         if self.fake.is_some() {
@@ -1287,18 +1120,12 @@ impl SharedCodexAppServer {
         Ok(())
     }
 
-    /// #953 §5 — subscribe to the readiness channel (stamped on every
-    /// installed Running / terminal Failed, and INVALIDATED — `running:
-    /// false`, outgoing generation — on transition ENTRY in
-    /// `transition_replace`). Sole consumer in this slice: deferred harness
-    /// recovery.
+    /// Subscribe to the readiness channel.
     pub fn readiness_receiver(&self) -> tokio::sync::watch::Receiver<DaemonReadiness> {
         self.readiness.subscribe()
     }
 
-    /// Fixtures-only: publish a readiness value directly, so stub-daemon
-    /// tests can drive the deferred-recovery consumer deterministically
-    /// without a real spawn/heal cycle.
+    /// Fixtures-only: publish a readiness value directly.
     #[cfg(feature = "fixtures")]
     pub fn publish_readiness_for_test(&self, generation: u64, running: bool) {
         self.readiness.send_replace(DaemonReadiness {
@@ -1307,9 +1134,7 @@ impl SharedCodexAppServer {
         });
     }
 
-    /// #953 — preflight enrichment: same error variants/status as before,
-    /// message now carries the live failure and the fact that recovery runs
-    /// in the background. Preflights stay non-blocking.
+    /// Preflight message carrying the live failure; preflights stay non-blocking.
     pub fn not_running_message(&self) -> String {
         let last_error = self
             .core
@@ -1360,10 +1185,8 @@ impl SharedCodexAppServer {
         Ok(thread_id)
     }
 
-    /// Kernel-only thread mint. Performs the codex `thread/start` RPC and
-    /// populates in-memory caches without touching durable runtime rows;
-    /// callers that need a durable card/thread row persist it in their own
-    /// transaction boundary.
+    /// Kernel-only thread mint: performs `thread/start` and populates in-memory caches without
+    /// touching durable runtime rows.
     pub async fn thread_start_mint_for_card(
         self: &Arc<Self>,
         card_id: &str,
@@ -1482,14 +1305,9 @@ impl SharedCodexAppServer {
         self.reap_and_respawn_with_current_settings().await
     }
 
-    /// ARCH INVARIANT (#550 F3): planner-harness reconciliation turn issuance
-    /// goes through `harness::run_loop::IssueTurnHandle`; direct callers here
-    /// are non-harness boot/operation paths or lower-level tests.
-    ///
-    /// `client_user_message_id` rides to codex as `clientUserMessageId` and
-    /// comes back as `item.clientId` on the echoed `userMessage` (#1625 P2).
-    /// The planner drain passes its projection row's key; every other caller
-    /// passes `None` and gets the frame it always sent.
+    /// Planner-harness reconciliation turn issuance goes through `IssueTurnHandle`; direct
+    /// callers here are non-harness boot/operation paths or tests. `client_user_message_id`
+    /// comes back as `item.clientId` on the echoed `userMessage`.
     pub async fn turn_start(
         &self,
         thread_id: &str,
@@ -1582,24 +1400,14 @@ impl SharedCodexAppServer {
         Ok(turn_id)
     }
 
-    /// Whether a live app-server connection exists right now.
-    ///
-    /// This is the same criterion [`Self::connected_client`] applies, so a
-    /// caller that must distinguish "codex is dormant" from "codex answered
-    /// badly" can ask it directly instead of inferring a connection from
-    /// whether some RPC happened to succeed. Unlike [`Self::is_running`] it
-    /// awaits the core lock rather than `try_lock`-ing it (a contended lock
-    /// is not evidence of a dead daemon) and it does not report the fixtures
-    /// fake as connected — the fake installs no client and can answer no RPC.
+    /// Whether a live app-server connection exists right now. Awaits the core lock rather than
+    /// `try_lock`-ing it, and does not report the fixtures fake as connected.
     pub async fn has_connection(&self) -> bool {
         self.running_client().await.is_some()
     }
 
-    /// `model/list`, drained across codex's pagination cursor.
-    ///
-    /// Read-only and connection-only: it never spawns or heals the daemon. A
-    /// dormant installation must answer `GET /api/models` with
-    /// `source: "unavailable"`, not by booting a codex process behind a GET.
+    /// `model/list`, drained across codex's pagination cursor. Read-only and connection-only:
+    /// it never spawns or heals the daemon.
     pub async fn model_list(&self, deadline: tokio::time::Instant) -> Result<Vec<CodexModel>> {
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref()
@@ -1614,22 +1422,10 @@ impl SharedCodexAppServer {
         let mut skipped = 0usize;
         let mut cursor: Option<String> = None;
         // A server that echoes a cursor forever would otherwise pin this loop.
-        // The real catalog is a few dozen entries in one page; the cap only
-        // ever fires on a misbehaving peer.
         for _ in 0..MODEL_LIST_MAX_PAGES {
             let page = client.model_list(cursor.as_deref(), deadline).await?;
-            // Entries are decoded ONE AT A TIME, and a malformed one is
-            // skipped rather than failing the page.
-            //
-            // Codex's own `Model` already carries five `#[serde(default)]`
-            // attributes because it expects to grow, and this catalog is
-            // shipped by a component that versions independently of us. If a
-            // single preset dropped a field or renamed one, an all-or-nothing
-            // decode would empty the whole picker — and it would do so with
-            // the *same* user-visible shape as a dormant daemon ("codex is
-            // not running"), i.e. a fabricated outage while codex is happily
-            // running turns. Losing one unreadable preset is strictly better
-            // than losing the catalog.
+            // Entries are decoded ONE AT A TIME; a malformed one is skipped rather than failing the
+            // page, because an all-or-nothing decode would present a fabricated outage.
             for entry in page.data {
                 match serde_json::from_value::<CodexModel>(entry) {
                     Ok(model) => models.push(model),
@@ -1658,25 +1454,15 @@ impl SharedCodexAppServer {
                 }
             }
         }
-        // Falling out of the loop means the peer never cleared `nextCursor`.
-        // Returning what we collected would present a TRUNCATED catalog as a
-        // complete one: the picker would show a short list with nothing on it
-        // to say the list is short, and a model the account really has would
-        // simply be absent. Erroring degrades the endpoint to
-        // `source: "unavailable"`, which at least tells the reader the list is
-        // not to be trusted.
-        //
-        // The same reasoning governs the `?` above: an `Err` from any page
-        // abandons the pages already collected rather than answering with a
-        // prefix. A partial catalog is never presented as a whole one.
+        // The peer never cleared `nextCursor`. A partial catalog is never presented as a whole
+        // one, which is also why `?` above abandons the pages already collected.
         Err(CalmError::CodexAppServer(format!(
             "model/list did not terminate its pagination within {MODEL_LIST_MAX_PAGES} pages"
         )))
     }
 
-    /// `config/read` — the layer-merged effective config, narrowed to the
-    /// model defaults. `cwd` selects the project layers; see
-    /// [`CodexAppServer::config_read`].
+    /// `config/read` — the layer-merged effective config, narrowed to the model defaults;
+    /// `cwd` selects the project layers.
     pub async fn config_read(
         &self,
         cwd: Option<&str>,
@@ -1702,45 +1488,16 @@ impl SharedCodexAppServer {
         Ok(client.config_read(cwd, deadline).await?.config)
     }
 
-    /// #1444 — drop this daemon's `thread_id -> card_id` attribution for a set
-    /// of Cards whose owning Track/Area delete has **already committed**.
-    ///
-    /// Why it exists. `resume_cached_threads` (hot takeover *and* the
-    /// crash/respawn path in `transition_replace`, which does not rebuild the
-    /// cache from the database) resumes every entry it finds here. Without this
-    /// call the entries of a deleted Card survive the delete in memory, so a
-    /// reconnect resumes a thread whose Card has no database owner.
-    ///
-    /// **Serialization.** This takes `kernel_thread_start_serial`, the exact
-    /// guard [`handle_thread_started_notification`] holds across its
-    /// "is it already mapped? → resolve → insert" sequence. A late
-    /// `thread/started` for a deleted Card therefore cannot interleave with
-    /// this removal: it either finishes first (and its mapping is removed
-    /// here), or it runs after and finds no database owner to resolve, so it
-    /// inserts nothing.
-    ///
-    /// It also takes `resume_replay_serial`, which `resume_cached_threads`
-    /// holds across each candidate's re-validation and resume RPC, so a
-    /// candidate this call removes cannot afterwards issue a resume — the
-    /// in-flight snapshot the replay copied is not what decides.
-    ///
-    /// **Only after the commit.** Callers invoke this on the committed path
-    /// only. A failed transaction, or the workspace-compensation path, leaves
-    /// the mappings alone — the Cards still exist.
-    ///
-    /// **Infallible on purpose.** It returns how many mappings it dropped and
-    /// has no error path, so a cache miss can never be surfaced as, or
-    /// mistaken for, a database rollback. Cards not in `card_ids` are never
-    /// touched.
+    /// Drop this daemon's `thread_id -> card_id` attribution for Cards whose delete has already
+    /// committed, so a reconnect does not resume a thread with no database owner. Takes
+    /// `kernel_thread_start_serial` and `resume_replay_serial`; infallible on purpose.
     pub async fn forget_threads_for_deleted_cards(&self, card_ids: &HashSet<String>) -> usize {
         if card_ids.is_empty() {
             return 0;
         }
         let _start_guard = self.kernel_thread_start_serial.lock().await;
-        // #1444 R2 — and the replay boundary, in this order (see
-        // `resume_replay_serial`). An in-flight `resume_cached_threads` may
-        // hold a pre-delete snapshot; taking this makes the removal below
-        // strictly ordered against every remaining candidate's resume RPC.
+        // And the replay boundary, in this order: an in-flight `resume_cached_threads` may hold a
+        // pre-delete snapshot.
         let _replay_guard = self.resume_replay_serial.lock().await;
         let mut dropped: Vec<(String, String)> = Vec::new();
         self.thread_cache.retain(|thread_id, card_id| {
@@ -1768,65 +1525,9 @@ impl SharedCodexAppServer {
         dropped.len()
     }
 
-    /// #1553 (hygiene) — drop the deletion-time turn bookkeeping for threads a
-    /// committed Track/Area delete has already sealed and quiesced.
-    ///
-    /// Sibling of [`Self::forget_threads_for_deleted_cards`], which converges
-    /// `thread_cache` only. `sealed_turn_threads` and `active_turns` have no
-    /// remover on the delete path at all: the seal is dropped only by
-    /// `unseal_turn_thread_after_rollback` (a rollback, which by design keeps
-    /// the Cards) and the active turn only by an interrupt that observes the
-    /// same turn id. So a committed delete used to leave one entry per sealed
-    /// thread in each map for the process lifetime.
-    ///
-    /// **This is hygiene, not a bug fix.** No harm was constructible from the
-    /// leaked entries: the only reader of `sealed_turn_threads` is
-    /// [`Self::turn_thread_is_sealed`], which refuses a `turn/start` on a
-    /// thread whose Card no longer exists, and the only reader of
-    /// `active_turns` is [`Self::active_turn_id_for_thread`], reached through
-    /// callers that first resolve a thread id from a database row the delete
-    /// removed. Both leaked entries are therefore unreachable, not wrong. What
-    /// they are is unbounded: a long-lived server accumulates them.
-    ///
-    /// **Serialization — deliberately none.** The question is which guard the
-    /// other writers of these two maps hold, and the answer is that none of
-    /// them holds any: `seal_turn_thread_for_deletion`,
-    /// `unseal_turn_thread_after_rollback`, [`Self::turn_start`],
-    /// `track_active_turn` in the notification loop, [`Self::turn_interrupt`]
-    /// and [`Self::interrupt_active_turn`] all write through `DashMap`'s own
-    /// per-entry locking and nothing else. This call takes the same: nothing.
-    ///
-    /// It specifically does NOT take `kernel_thread_start_serial` (the guard
-    /// `forget_threads_for_deleted_cards` takes). That guard fences
-    /// `handle_thread_started_notification` and the `thread_start_mint_*`
-    /// family — none of which touches either map here — so taking it would
-    /// fence nothing while adding a nesting edge to a lock whose holders keep
-    /// it across a respawn. That is the exact shape #1444 R2 self-deadlocked
-    /// on (see `resume_replay_serial`); it is not repeated here. For the same
-    /// reason no new mutex is introduced: see the gap below for what one would
-    /// have to fence, and why the cost is not warranted for a leak with no
-    /// constructible harm.
-    ///
-    /// **KNOWN GAP (unchanged risk class, stated rather than hardened away).**
-    /// Unsealing is a check-then-act against [`Self::turn_start`], whose
-    /// post-RPC sequence is `insert active_turns` → re-read the seal →
-    /// interrupt if sealed. A `turn/start` that inserts before this call and
-    /// re-reads the seal after it observes no seal, so its turn is left
-    /// running instead of interrupted. No lock-free ordering of the two
-    /// removals below can close that; only a mutex shared with `turn_start`'s
-    /// critical section could. It is left open because the interleaving needs
-    /// a `turn/start` in flight for an already-sealed thread at commit time,
-    /// and the harness that owns these threads cannot produce one:
-    /// `HarnessHandle::shutdown_inner` seals first, then takes the `issuance`
-    /// mutex, which waits for any in-flight `turn/start` to finish recording
-    /// its id before the seal is retained into `sealed_thread_ids`.
-    ///
-    /// **Only after the commit, and infallible.** Callers invoke this on the
-    /// committed arm only — the rollback and workspace-compensation arms keep
-    /// both entries, exactly like `forget_threads_for_deleted_cards`, because
-    /// their Cards still exist. It returns the number of map entries it
-    /// dropped (at most two per thread) and has no error path, so a miss can
-    /// never be surfaced as, or mistaken for, a database rollback.
+    /// Drop the deletion-time turn bookkeeping for threads a committed delete has sealed and
+    /// quiesced. Deliberately takes no guard: every other writer of these maps uses `DashMap`'s
+    /// per-entry locking only, and taking the start serial across a respawn self-deadlocks.
     pub fn forget_turn_state_for_deleted_threads(&self, thread_ids: &[String]) -> usize {
         let mut dropped = 0_usize;
         for thread_id in thread_ids {
@@ -1848,13 +1549,8 @@ impl SharedCodexAppServer {
         dropped
     }
 
-    /// The `(thread_id, card_id)` pairs `resume_cached_threads` will iterate
-    /// on the next daemon (re)connect. It is a snapshot, so it is what the
-    /// loop CONSIDERS, not what it necessarily resumes: since #1444 R2 each
-    /// pair is re-validated against the live cache, under
-    /// `resume_replay_serial`, immediately before its resume RPC, and a
-    /// pair dropped by `forget_threads_for_deleted_cards` in the meantime is
-    /// skipped.
+    /// The `(thread_id, card_id)` pairs `resume_cached_threads` will iterate; a snapshot, each
+    /// pair re-validated under `resume_replay_serial` immediately before its resume RPC.
     fn resume_candidates(&self) -> Vec<(String, String)> {
         self.thread_cache
             .iter()
@@ -1874,24 +1570,9 @@ impl SharedCodexAppServer {
         self.sealed_turn_threads.contains_key(thread_id)
     }
 
-    /// `turn/steer` — hand `items` to the turn that is running on `thread_id`
-    /// right now (#1625 P3). `expected_turn_id` is the id the caller believes
-    /// is running; codex refuses the request when that is not the active
-    /// turn, and the refusal comes back as [`CalmError::CodexRefused`] with
-    /// codex's own sentence. Returns the id of the turn that took the input,
-    /// which is `expected_turn_id` whenever the call succeeds.
-    ///
-    /// No seal check and no `active_turns` write, unlike `turn_start`: a
-    /// steer creates no turn, so there is nothing new for deletion to
-    /// interrupt and nothing to record; the running turn is already tracked.
-    ///
-    /// The fake answers the way codex does rather than always saying yes: it
-    /// compares `expected_turn_id` against the turn its own `turn_start`
-    /// recorded for the thread, so a harness that believes a turn is running
-    /// when the daemon holds none, or a different one, is refused with the
-    /// same `-32600` sentence the real daemon sends. A test that has to
-    /// produce the refusal at a chosen moment scripts it with
-    /// `reject_turn_steer_for_test`.
+    /// `turn/steer` — hand `items` to the turn running on `thread_id`; codex refuses when
+    /// `expected_turn_id` is not the active turn (`CalmError::CodexRefused`). No seal check and
+    /// no `active_turns` write: a steer creates no turn.
     pub async fn turn_steer(
         &self,
         thread_id: &str,
@@ -2019,8 +1700,7 @@ impl SharedCodexAppServer {
         format!("unix://{}", self.sock.display())
     }
 
-    /// Wall-clock ms of the most recent successful daemon (re)connect (#741
-    /// §1.3). `0` before the first connect. Stamped in `install_client`.
+    /// Wall-clock ms of the most recent successful daemon (re)connect; `0` before the first connect.
     pub fn daemon_connected_at_ms(&self) -> calm_types::runtime::TimestampMs {
         self.daemon_connected_at_ms.load(Ordering::SeqCst)
     }
@@ -2028,9 +1708,8 @@ impl SharedCodexAppServer {
     pub fn mark_needs_respawn(&self) {
         self.needs_respawn_on_next_thread_start
             .store(true, Ordering::SeqCst);
-        // #953 §2 — the existing settings-change path doubles as the heal
-        // loop's slow-lane immediate wake. `notify_one` stores a permit, so
-        // a nudge fired while the loop is mid-round is not lost.
+        // The settings-change path doubles as the heal loop's slow-lane wake. `notify_one` stores
+        // a permit, so a nudge fired while the loop is mid-round is not lost.
         self.heal_nudge.notify_one();
     }
 
@@ -2088,7 +1767,6 @@ impl SharedCodexAppServer {
     }
 }
 
-// ===================== Env / config derivation =====================
 impl SharedCodexAppServer {
     pub fn effective_proxy_env(settings_value: Option<&str>, env_keys: &[&str]) -> Option<String> {
         Self::effective_proxy_env_from(settings_value, env_keys, |key| std::env::var(key).ok())
@@ -2113,10 +1791,8 @@ impl SharedCodexAppServer {
         https_proxy: Option<&str>,
     ) -> String {
         let mut h = Sha256::new();
-        // #863 — schema-version salt. The first boot of an upgraded binary
-        // mismatches every pre-upgrade persisted signature, so the existing
-        // reap-for-respawn takeover path (`try_takeover_live`) is guaranteed
-        // to replace a daemon spawned with the old (leaky) inherited env.
+        // Schema-version salt: the first boot of an upgraded binary mismatches every pre-upgrade
+        // signature, so the takeover path replaces a daemon spawned with the old inherited env.
         h.update(b"env-schema-v2:863|");
         h.update(ingest_url.as_bytes());
         h.update(b"|");
@@ -2127,10 +1803,8 @@ impl SharedCodexAppServer {
         hex[..16].to_string()
     }
 
-    /// #863 review F4 — one settings snapshot per spawn: both the child's
-    /// proxy env AND the persisted env signature must derive from the SAME
-    /// settings read, otherwise a settings change between two loads persists
-    /// a signature for an env the child never got.
+    /// One settings snapshot per spawn: the child's proxy env AND the persisted signature must
+    /// derive from the SAME settings read.
     async fn load_spawn_env_snapshot(&self) -> Result<SpawnEnvSnapshot> {
         let settings = load_settings(self.repo.as_ref()).await?;
         Ok(SpawnEnvSnapshot {
@@ -2157,11 +1831,8 @@ impl SharedCodexAppServer {
         Ok(self.env_signature_for_snapshot(&self.load_spawn_env_snapshot().await?))
     }
 
-    /// Settings-first, parent-env-fallback proxy resolution — the same
-    /// resolution `compute_env_signature` hashes — shaped as explicit
-    /// (UPPER, lower, value) pairs for the spawn env. #863: with
-    /// `env_clear()`, the fallback must be SET explicitly instead of the old
-    /// implicit inheritance-when-settings-absent.
+    /// Settings-first, parent-env-fallback proxy resolution as explicit (UPPER, lower, value)
+    /// pairs; with `env_clear()` the fallback must be SET explicitly.
     pub fn resolved_proxy_env_pairs(
         http_settings: Option<&str>,
         https_settings: Option<&str>,
@@ -2183,12 +1854,8 @@ impl SharedCodexAppServer {
         pairs
     }
 
-    /// #863 — the child env is a pure function of typed config: `env_clear()`
-    /// plus exactly [`SPAWN_ENV_PASSTHROUGH`], the computed keys, and (in
-    /// fixture builds only) the fake-codex fixture channel. The old
-    /// `env_remove` of per-card `NEIGE_*` keys is subsumed by `env_clear`.
-    /// Proxies come from the caller's pre-resolved [`SpawnEnvSnapshot`] so
-    /// the spawn env and the persisted signature share one settings read.
+    /// The child env is a pure function of typed config: `env_clear()` plus exactly
+    /// [`SPAWN_ENV_PASSTHROUGH`], the computed keys, and (fixture builds only) the fake-codex channel.
     fn apply_spawn_env(&self, cmd: &mut Command, snapshot: &SpawnEnvSnapshot) {
         cmd.env_clear();
         for key in SPAWN_ENV_PASSTHROUGH {
@@ -2198,12 +1865,8 @@ impl SharedCodexAppServer {
             }
         }
 
-        // Fixture channel (test-only passthrough): the fake app-server reads
-        // `FAKE_CODEX_*` / `NEIGE_OSC_TRACE_PATH` from its own process env;
-        // integration tests set them on the test process and rely on them
-        // reaching the child through this real spawn path. Compiled out of
-        // production builds — these names must NEVER join the prod
-        // `SPAWN_ENV_PASSTHROUGH` const.
+        // Fixture channel (test-only passthrough). Compiled out of production builds — these
+        // names must NEVER join the prod `SPAWN_ENV_PASSTHROUGH` const.
         #[cfg(feature = "fixtures")]
         for (key, value) in std::env::vars_os() {
             let fixture_key = key
@@ -2217,10 +1880,7 @@ impl SharedCodexAppServer {
         cmd.env("CODEX_HOME", self.home.path())
             .env("NEIGE_CALM_BASE_URL", &self.ingest_url);
 
-        // The snapshot values are already settings-first/parent-env-fallback
-        // resolved (`effective_proxy_env` in `load_spawn_env_snapshot`);
-        // `resolved_proxy_env_pairs` only applies the (UPPER, lower) pair
-        // shaping + empty filter here, so the lookup is inert.
+        // The snapshot values are already resolved; the lookup here is inert.
         for (upper, lower, value) in Self::resolved_proxy_env_pairs(
             snapshot.http_proxy.as_deref(),
             snapshot.https_proxy.as_deref(),
@@ -2231,20 +1891,14 @@ impl SharedCodexAppServer {
     }
 }
 
-/// #863 review F4 — a single-settings-read snapshot of the spawn-relevant
-/// runtime settings. Both the child's proxy env and the persisted
-/// `daemon_env_signature` are derived from one instance of this.
+/// A single-settings-read snapshot of the spawn-relevant runtime settings.
 struct SpawnEnvSnapshot {
     http_proxy: Option<String>,
     https_proxy: Option<String>,
 }
 
-// ===================== Process lifecycle / supervision =====================
-/// #954 defect 2 — outcome of the takeover connect probe. `running` rows
-/// (and other adoptable non-starting shapes) keep the single-attempt
-/// fast-fail: a running daemon whose socket doesn't answer is broken, so
-/// boot must not stall for it. `starting` rows get the bounded readiness
-/// window poll ([`SharedCodexAppServer::poll_adopt_initialized`]).
+/// Outcome of the takeover connect probe: `running` rows keep the single-attempt fast-fail
+/// (boot must not stall for a broken daemon); `starting` rows get the bounded readiness window.
 enum AdoptProbe {
     /// The socket answered `initialize` — continue into the adoption body.
     Connected((CodexAppServer, crate::codex_appserver::NotificationStream)),
@@ -2267,9 +1921,7 @@ impl SharedCodexAppServer {
             .ok_or_else(|| CalmError::CodexAppServer("shared app-server is not connected".into()))
     }
 
-    /// **Invariant (#863 review R2-1)**: caller MUST hold `transition_serial`
-    /// (the takeover transition runs through `start_new_process_typestate`,
-    /// which assumes the guard is already held).
+    /// Caller MUST hold `transition_serial`.
     async fn try_takeover_live(
         self: &Arc<Self>,
         record: &crate::db::SharedCodexDaemonRecord,
@@ -2298,17 +1950,9 @@ impl SharedCodexAppServer {
             );
             return Ok(false);
         }
-        // #953 review D3 — this settings read is the one fallible await in
-        // the takeover probe that is NOT already terminalized downstream;
-        // letting its error escape through `start_body_locked` /
-        // `transition_replace` would release the serial with the in-memory
-        // state stranded `Restarting` (no Failed state, no heal loop).
-        // Terminalize like the record-read failure arm: in-memory Failed +
-        // heal armed, DB row deliberately untouched — it still truthfully
-        // names a live VERIFIED daemon, so writing `failed` + retained
-        // identity would make the next heal round REAP a healthy survivor,
-        // and NULLing identity would forge proof of absence. The next heal
-        // round re-reads settings and retries the takeover.
+        // Terminalize a settings-read failure here (in-memory Failed + heal armed), else the serial
+        // is released with the state stranded `Restarting`. DB row deliberately untouched: it still
+        // truthfully names a live VERIFIED daemon.
         let current_env_signature = match self.current_env_signature().await {
             Ok(signature) => signature,
             Err(e) => {
@@ -2319,30 +1963,9 @@ impl SharedCodexAppServer {
                 return Err(CalmError::CodexAppServer(msg));
             }
         };
-        // #954 defect 3 — signature mismatch + verified healthy daemon ⇒
-        // ADOPT-AND-DRAIN, never reap-for-respawn. The v2 salt (#863)
-        // guarantees a mismatch on every first boot after an upgrade, so
-        // the old policy executed a healthy daemon at boot — that reap is
-        // what killed prod on 7/12. Adoption proceeds normally below;
-        // `mark_needs_respawn` after the re-stamp drains the daemon at the
-        // next thread-start boundary.
-        //
-        // Security property, stated precisely: adopt-and-drain guarantees
-        // that no NEW thread — and therefore no new MCP child or
-        // exec-shell — is ever created under detected-stale spawn
-        // settings: every production mint path crosses the needs_respawn
-        // drain boundary before minting (`thread_start_mint_inner` for
-        // card/planner/MCP-shell mints, `ensure_respawn_for_current_settings`
-        // for PTY/TUI creation). Documented residual: `turn_start` on an
-        // EXISTING thread does not cross the boundary — existing threads
-        // keep the MCP processes/config established under the old env
-        // until the drain completes (lazily, at the next mint) or the
-        // daemon is otherwise replaced. Two facts bound this residual: on
-        // the upgrade-salt mismatch the actual env values are typically
-        // byte-identical (only the salt changed, exposure zero); and the
-        // signature hashes ONLY the salt + ingest_url + HTTP(S)_PROXY —
-        // credentials and the rest of SPAWN_ENV_PASSTHROUGH were never
-        // detectable by this fence under either policy.
+        // Signature mismatch + verified healthy daemon ⇒ ADOPT-AND-DRAIN, never reap-for-respawn:
+        // the v2 salt mismatches on every first boot after an upgrade, and every mint path crosses
+        // the needs_respawn drain boundary; only `turn_start` on an EXISTING thread does not.
         let signature_mismatch =
             record.daemon_env_signature.as_deref() != Some(current_env_signature.as_str());
         if signature_mismatch {
@@ -2360,39 +1983,21 @@ impl SharedCodexAppServer {
             return Ok(false);
         };
         let sock = PathBuf::from(sock_path);
-        // #954 defect 2 — branch the probe on the persisted state: a
-        // `starting` row names a child still inside its own cold-start
-        // budget (mid-backfill after a calm-server crash/shutdown), so it
-        // gets the REMAINING readiness window instead of the instant
-        // handshake fast-fail that reaped it — and restarted backfill from
-        // scratch — on every boot.
+        // A `starting` row names a child still inside its cold-start budget (mid-backfill), so it
+        // gets the REMAINING readiness window instead of the instant handshake fast-fail.
         let probe = if matches!(
             SharedDaemonState::from_db_str(&record.state),
             SharedDaemonState::Starting
         ) {
-            // ms-domain saturating math anchored to the PERSISTED
-            // `started_at`: clock skew degenerates to a full or zero
-            // window, both bounded. Repeated boots against the same child
-            // never re-arm the window (adoption/re-stamp preserves
-            // `started_at`); a genuinely new spawn writes a new
-            // `started_at` and correctly gets a fresh window.
+            // ms-domain saturating math anchored to the PERSISTED `started_at`: clock skew degenerates
+            // to a full or zero window; repeated boots never re-arm the window.
             let elapsed = Duration::from_millis(now_ms().saturating_sub(started_at).max(0) as u64);
             let remaining = self.start_timeout.saturating_sub(elapsed);
             self.poll_adopt_initialized(&sock, pid, start_time, &boot_id, remaining)
                 .await
         } else {
-            // #1453 — this arm has no deadline of its own, and for a long
-            // time it had none anywhere: `connect_initialized` awaited a
-            // WebSocket upgrade that a wedged daemon simply never answers,
-            // so adopting one hung the boot forever with no error and no
-            // heal (and hung three tests, and the CI runner under them).
-            // The bound now lives at the transport, in
-            // `CodexAppServer::connect`'s `CONNECT_TIMEOUT`, so every caller
-            // of this helper gets it: connect ≤10s + upgrade ≤10s +
-            // `initialize` ≤10s (`connect_initialized`'s request timeout).
-            // A silent peer therefore lands in `HandshakeFailed` below —
-            // which reaps the verified process group and relaunches — with a
-            // diagnostic naming the socket and the peer's observed state.
+            // The deadline for this arm lives at the transport (`CodexAppServer::connect`'s
+            // `CONNECT_TIMEOUT`); a silent peer lands in `HandshakeFailed`, which reaps and relaunches.
             match connect_initialized(&sock).await {
                 Ok(pair) => AdoptProbe::Connected(pair),
                 Err(e) => AdoptProbe::HandshakeFailed(e.to_string()),
@@ -2427,20 +2032,9 @@ impl SharedCodexAppServer {
                     })
                 })
                 .await?;
-                // #953 — takeover success re-stamps `running` with the
-                // adopted tuple, so a row persisted as `starting` (or another
-                // legacy adoptable shape) reflects the live adopted daemon.
-                //
-                // #954 INVARIANT — the re-stamp keeps the OLD persisted
-                // signature (`record.daemon_env_signature`); the adoption
-                // path MUST NOT write the current signature anywhere. Drain
-                // durability rests on nothing else: `needs_respawn` is
-                // in-memory and lost on restart, so the next boot re-detects
-                // the mismatch from the untouched signature, re-adopts, and
-                // re-marks. On re-stamp Err the warning below stays correct
-                // because the failing write is the ONLY write on this path —
-                // the pre-existing row (old state, old signature) is
-                // untouched and the mismatch remains durably detectable.
+                // Takeover success re-stamps `running` with the adopted tuple but keeps the OLD persisted
+                // signature: the adoption path MUST NOT write the current signature anywhere, since
+                // `needs_respawn` is in-memory and the next boot must re-detect the mismatch.
                 if let Err(e) = self
                     .repo
                     .shared_daemon_runtime_set(SharedCodexDaemonUpdate {
@@ -2468,10 +2062,7 @@ impl SharedCodexAppServer {
                     self.failed_persist_dedup.clear();
                 }
                 if signature_mismatch {
-                    // #954 defect 3 — arm the drain AFTER the adoption is
-                    // installed (re-stamp Ok or Err alike: the current
-                    // process must drain either way, and durability comes
-                    // from the untouched old signature, not this flag).
+                    // Arm the drain AFTER the adoption is installed (re-stamp Ok or Err alike).
                     self.mark_needs_respawn();
                 }
                 Ok(true)
@@ -2497,41 +2088,17 @@ impl SharedCodexAppServer {
                     "starting child never bound within its remaining readiness \
                      window; reaping gracefully before relaunch"
                 );
-                // The same wall-clock deadline the child's own supervisor
-                // would have enforced (#949), just by a successor process —
-                // graceful (defect-1 helper), never the instant SIGKILL
-                // that armed codex's backfill lease on 7/12.
+                // The same wall-clock deadline the child's own supervisor would have enforced, just by a
+                // successor process — graceful, never an instant SIGKILL.
                 reap_verified_process_group(pid, pgid, start_time, &boot_id, self.stop_grace).await;
                 Ok(false)
             }
         }
     }
 
-    /// #953 §1 — THE atomic replace transition. Every process transition
-    /// funnels through here (settings respawn, crash restart, heal loop)
-    /// under a single continuously-held `transition_serial` guard: validate
-    /// precondition → capture RunningProcessParts + set Restarting → abort
-    /// watcher → reap → guard verify → record reconciliation →
-    /// takeover-probe/spawn (typestate). The serial is released only after
-    /// the terminal Running/Failed write; `resume_cached_threads` runs after
-    /// release (not a transition). The precondition is validated BEFORE any
-    /// destructive work, atomically with the capture, and the guard is never
-    /// released in between — no second pre-spawn check needed.
-    ///
-    /// #954 serial-hold analysis (grace runs INSIDE `transition_serial` —
-    /// required by the #953 atomic-transition invariant): a steady-state
-    /// transition holds the serial for up to `stop_grace + start_timeout` ≈
-    /// 60 + 120 = 180s at defaults (wedged old daemon paying the full
-    /// grace, then a slow cold start). The boot takeover of a `starting`
-    /// row can additionally pay the remaining readiness window before
-    /// reaping, so its worst case is `window (≤ start_timeout) +
-    /// stop_grace + start_timeout` ≈ 120 + 60 + 120 = 300s at defaults
-    /// (unbound child consuming the full window, then the full grace, then
-    /// a slow cold start). Queued behind it: thread-start
-    /// settings drains, crash restarts, heal rounds (their backoff happens
-    /// before acquiring), boot; track preflights observe non-Running and
-    /// fail fast rather than queue. All of those already tolerate the 120s
-    /// cold start; settings PUT / status snapshots never take the serial.
+    /// THE atomic replace transition: every process transition funnels through here under a
+    /// single continuously-held `transition_serial`, released only after the terminal
+    /// Running/Failed write. Worst-case hold ≈ readiness window + `stop_grace` + `start_timeout`.
     pub(crate) async fn transition_replace(
         self: &Arc<Self>,
         reason: &str,
@@ -2546,23 +2113,9 @@ impl SharedCodexAppServer {
                 match pre {
                     ReplacePrecondition::Always => {}
                     ReplacePrecondition::GenerationIs(generation) => {
-                        // #953 review D2 — generation equality alone is not
-                        // staleness proof: the generation bumps only when a
-                        // Running incarnation is INSTALLED, so an
-                        // intervening transition that FAILED (settings
-                        // respawn or heal round that consumed the crashed
-                        // process and then failed to spawn) leaves it
-                        // unchanged. The crashed incarnation this caller
-                        // observed is "still installed" only while the
-                        // state is Running (the watcher leaves the exited
-                        // child's Running state in place) AND carries that
-                        // generation; anything else — Failed/Restarting/
-                        // Starting installed by someone else — means
-                        // another transition already consumed it: abort
-                        // silently — no reap, no spawn, no crash-lane
-                        // retry overriding the later failure's
-                        // classification (also kills the double-spawn
-                        // interleaving of the old split path).
+                        // Generation equality alone is not staleness proof: it bumps only when a Running
+                        // incarnation is INSTALLED, so a failed intervening transition leaves it unchanged.
+                        // Anything but Running-with-this-generation means another transition consumed it.
                         if core.generation != generation
                             || !matches!(core.state, SupervisorState::Running { .. })
                         {
@@ -2604,14 +2157,8 @@ impl SharedCodexAppServer {
                 };
                 (parts, core.generation)
             };
-            // #953 PR2 review D1(b) — transition ENTRY: the state just left
-            // Running (Restarting is installed), so invalidate readiness NOW
-            // with the outgoing generation. Claim-boundary consumers
-            // (deferred harness recovery) would otherwise still see the last
-            // terminal `running: true` for the whole transition and accept a
-            // transitional daemon. No premature `running: true` is possible:
-            // both the Ok arm (installed Running) and every Err arm
-            // (terminal Failed / in-memory terminalization) re-publish the
+            // Transition ENTRY: invalidate readiness NOW with the outgoing generation, else
+            // claim-boundary consumers would accept a transitional daemon. Every arm re-publishes the
             // terminal value before the serial is released.
             self.readiness.send_replace(DaemonReadiness {
                 generation: outgoing_generation,
@@ -2629,32 +2176,24 @@ impl SharedCodexAppServer {
         Ok(ReplaceOutcome::Replaced)
     }
 
-    /// #953 §3 — the ONE shared start body: guard verify → persisted-record
-    /// reconciliation → takeover probe → spawn. **Invariant** (#954:
-    /// type-enforced): the caller passes its `transition_serial` guard as
-    /// the by-value `serial` token; every terminal Running/Failed write
-    /// happens before the token drops. The takeover path drops it on
-    /// return (after the terminal re-stamp); the spawn path moves it into
-    /// the detached transition task.
+    /// The ONE shared start body: guard verify → persisted-record reconciliation → takeover
+    /// probe → spawn. The by-value `serial` token is dropped only after the terminal write; the
+    /// spawn path moves it into the detached transition task.
     async fn start_body_locked(
         self: &Arc<Self>,
         serial: tokio::sync::OwnedMutexGuard<()>,
         increment_restart_count: bool,
         last_error: Option<String>,
     ) -> Result<StartedVia> {
-        // #863 boot guard — the resolved home is exactly what resumed
-        // threads will run against. Refuse before touching the process, and
-        // never strand a previously-live polluted daemon running
-        // unsupervised.
+        // Boot guard: refuse before touching the process, and never strand a previously-live
+        // polluted daemon running unsupervised.
         if let Err(guard_err) = self.home.verify_expected_mcp_servers(EXPECTED_MCP_SERVERS) {
             let msg = format!("refusing to launch shared codex app-server: {guard_err}");
             self.record_guard_refusal(&msg).await;
             return Err(CalmError::CodexAppServer(msg));
         }
-        // #953 §3 read-side rule (survives calm-server restarts): a `failed`
-        // row with ANY identity column present is an unreconciled possible
-        // survivor — run the per-shape resolution algorithm BEFORE any
-        // spawn; the spawn path is unreachable until it proves absence.
+        // A `failed` row with ANY identity column present is an unreconciled possible survivor;
+        // the spawn path is unreachable until the per-shape resolution proves absence.
         let record = match self.repo.shared_daemon_runtime_get().await {
             Ok(record) => record,
             Err(e) => {
@@ -2710,11 +2249,8 @@ impl SharedCodexAppServer {
         Ok(StartedVia::Spawn)
     }
 
-    /// #953 §3 — boot-guard refusal arm (home pollution). Runs the same
-    /// per-shape reconciliation as the failed-row path: a verified owned
-    /// survivor is reaped (existing "no polluted survivor" posture, #863),
-    /// anything unprovable stays unreconciled with the identity tuple
-    /// RETAINED as the durable marker.
+    /// Boot-guard refusal arm (home pollution): a verified owned survivor is reaped; anything
+    /// unprovable stays unreconciled with the identity tuple RETAINED as the durable marker.
     async fn record_guard_refusal(self: &Arc<Self>, guard_error: &str) {
         let record = match self.repo.shared_daemon_runtime_get().await {
             Ok(record) => record,
@@ -2759,13 +2295,9 @@ impl SharedCodexAppServer {
         }
     }
 
-    /// #953 §3 — exhaustive per-shape resolution over every persisted
-    /// identity combination (pid × pgid × verification-pair presence).
-    /// Proof of absence ⇒ the caller may NULL identity and reopen the spawn
-    /// path; anything else stays unreconciled and fail-closed. Destructive
-    /// action (a verified group reap) is allowed ONLY in the full-tuple
-    /// pgid==pid shape — never signal a pgid we did not create, never signal
-    /// a bare pid (not a group reap; ownership may be unprovable).
+    /// Exhaustive per-shape resolution over every persisted identity combination. A destructive
+    /// group reap is allowed ONLY in the full-tuple pgid==pid shape — never signal a pgid we did
+    /// not create, never signal a bare pid.
     async fn resolve_persisted_shape(
         &self,
         record: &crate::db::SharedCodexDaemonRecord,
@@ -2779,9 +2311,8 @@ impl SharedCodexAppServer {
                 // persisted" state.
                 return ShapeResolution::ProvenAbsent;
             }
-            // Shape (b): identity fragments without a pid name no process at
-            // all — nothing is establishable from the record; operator
-            // remediation only (clear the identity columns).
+            // Shape (b): identity fragments without a pid name no process at all; operator
+            // remediation only.
             tracing::warn!(
                 target: "shared_codex_daemon::stop",
                 pgid = ?record.pgid,
@@ -2795,11 +2326,8 @@ impl SharedCodexAppServer {
         };
         let (Some(start_time), Some(boot_id)) = (record.process_start_time, record.boot_id.clone())
         else {
-            // Shape (a): pid without a complete verification pair —
-            // ownership unprovable (the pid may be recycled), so never reap
-            // or signal; `/proc` existence (zombies INCLUDED — #953 review
-            // D4(b): a zombie leader proves nothing about its group) is the
-            // only safe probe.
+            // Shape (a): pid without a complete verification pair — ownership unprovable (the pid may
+            // be recycled), so never reap or signal; `/proc` existence (zombies INCLUDED) is the only safe probe.
             if proc_pid_present(pid) {
                 tracing::warn!(
                     target: "shared_codex_daemon::stop",
@@ -2813,14 +2341,8 @@ impl SharedCodexAppServer {
             return ShapeResolution::ProvenAbsent;
         };
         if !verify_owned_pid(pid, start_time, &boot_id) {
-            // Natural death (or the identity matches no live process). #953
-            // review D4(a) — a verified-but-ZOMBIE leader does NOT prove
-            // absence here: it can no longer serve, but live descendants
-            // may remain in its process group. Zombie leaders fall through
-            // to the pgid arms below: the owned pgid==pid shape still runs
-            // the group reap (verification permits signaling the known
-            // pgid), and the unsignalable shapes stay unreconciled until
-            // the leader is reaped by its parent (verify then fails).
+            // Natural death (or the identity matches no live process). A verified-but-ZOMBIE leader
+            // falls through to the pgid arms: live descendants may remain in its group.
             return ShapeResolution::ProvenAbsent;
         }
         match record.pgid {
@@ -2864,10 +2386,8 @@ impl SharedCodexAppServer {
                 }
             }
             None => {
-                // Triple complete but no pgid: there is no valid pgid to
-                // target, and signaling the bare pid is not a group reap —
-                // it risks orphaning grandchildren mid-tree. Stay consistent
-                // with the reap-by-pgid posture; self-resolves on death.
+                // Triple complete but no pgid: signaling the bare pid is not a group reap and risks
+                // orphaning grandchildren mid-tree. Self-resolves on death.
                 tracing::warn!(
                     target: "shared_codex_daemon::stop",
                     pid,
@@ -2896,7 +2416,7 @@ impl SharedCodexAppServer {
             };
             core.generation
         };
-        // #953 §5 — readiness stamped on every terminal Failed.
+        // Readiness stamped on every terminal Failed.
         self.readiness.send_replace(DaemonReadiness {
             generation,
             running: false,
@@ -2904,9 +2424,8 @@ impl SharedCodexAppServer {
         self.schedule_heal();
     }
 
-    /// #953 §2 — the single Failed DB writer, with post-Ok dedup. Persist
-    /// errors are `tracing::error!`-logged, never swallowed into `let _ =`,
-    /// and never mask the original failure (the caller keeps its error).
+    /// The single Failed DB writer, with post-Ok dedup. Persist errors are logged, never
+    /// swallowed, and never mask the original failure.
     async fn persist_failed_deduped(
         &self,
         last_error: &str,
@@ -2963,32 +2482,9 @@ impl SharedCodexAppServer {
         }
     }
 
-    /// Shared spawn-transition body — #954: DETACHED from its caller.
-    ///
-    /// The spawn path contains unbounded awaits (the persist DB write, the
-    /// up-to-`start_timeout` readiness poll), so caller cancellation inside
-    /// it could previously produce a TERM'd child with no row, or a
-    /// serial-released double-transition window. Instead, the ENTIRE
-    /// typestate unit `start_new_process_typestate(launch_spawned_process)`
-    /// — Starting flip, spawn/guard, persist, readiness poll, Running
-    /// install + watcher + generation + readiness publish, and both
-    /// error-terminalization arms — runs to completion inside ONE
-    /// `tokio::spawn` task that owns the transition serial (the moved
-    /// `serial` token) for its whole duration. Nothing is handed back: the
-    /// task sends only the final `Result<()>` over a oneshot — a plain
-    /// value whose drop carries no obligations. The caller merely OBSERVES:
-    ///   * caller cancelled mid-transition ⇒ the task still finishes the
-    ///     transition to a terminal state (Running installed, or Failed +
-    ///     heal armed) — the typestate arms ARE the terminalization;
-    ///   * caller cancelled after the result was sent ⇒ nothing pending,
-    ///     the state is already terminal.
-    ///
-    /// ORDERING INVARIANT (pinned by
-    /// `spawn_transition_task_outlives_caller_cancelled_at_first_await`):
-    /// `tokio::spawn` is synchronous — the transition task is created (and
-    /// the serial token moved into it) BEFORE this function's first await
-    /// of the receiver, so a caller cancelled at that first await still
-    /// leaves a running, serial-owning transition task.
+    /// Spawn-transition body, DETACHED from its caller: the whole typestate unit runs inside
+    /// ONE `tokio::spawn` task owning the serial token, so caller cancellation cannot strand a
+    /// half-done transition. `tokio::spawn` is synchronous, so the task exists before the first await.
     async fn spawn_process_transition(
         self: &Arc<Self>,
         serial: tokio::sync::OwnedMutexGuard<()>,
@@ -3006,10 +2502,7 @@ impl SharedCodexAppServer {
                         .await
                 })
                 .await;
-            // The terminal Running/Failed write, readiness publish, and
-            // heal arming all completed inside the typestate above; release
-            // the serial BEFORE publishing the result so an observer of the
-            // result never races a still-held serial.
+            // Release the serial BEFORE publishing the result so an observer never races a still-held serial.
             drop(serial);
             // Send failure = the caller was cancelled after detachment;
             // deliberately ignored — the transition is already terminal.
@@ -3026,17 +2519,9 @@ impl SharedCodexAppServer {
         drop(task);
         match result_rx.await {
             Ok(result) => result,
-            // The sender dropped without sending: the detached task
-            // panicked or the runtime is tearing down (its abort → local
-            // drop → SpawnedChildGuard belt SIGTERM). This observer CANNOT
-            // terminalize (the task owns the serial and the typestate), so
-            // the shape may be stranded: in-memory `Starting`, heal
-            // unarmed, child TERM'd by the belt (#954 review D2 — the
-            // accepted belt-contract residual). It is recoverable, not
-            // lost: the durable row still names the child, so the next
-            // transition (mint / settings drain / heal nudge) or the next
-            // boot's reconciliation/adoption resolves it. Surface the
-            // observation with the D2 marker so callers log it honestly.
+            // The sender dropped without sending: task panic or runtime teardown. This observer CANNOT
+            // terminalize (the task owns the serial); the durable row still names the child, so the
+            // next transition or boot reconciliation resolves it.
             Err(_) => Err(CalmError::CodexAppServer(format!(
                 "{DETACHED_SPAWN_RESULT_LOST} (task panic or runtime teardown)"
             ))),
@@ -3048,14 +2533,8 @@ impl SharedCodexAppServer {
         increment_restart_count: bool,
         last_error: Option<String>,
     ) -> Result<LaunchedSharedDaemon> {
-        // #863 boot guard on EVERY spawn (crash-restart/respawn included):
-        // pollution written while running is caught at the next launch.
-        // Accepted residual (#863 review F6): the ConfigLock taken inside
-        // `verify_expected_mcp_servers` is released between this verification
-        // and the exec below, so a racing writer could re-pollute config.toml
-        // (or drop a fresh `.env`) in that window. Accepted because all
-        // legitimate writers run earlier in boot wiring (seed → sanitize →
-        // ensure_*), and the guard re-runs on every respawn.
+        // Boot guard on EVERY spawn: pollution written while running is caught at the next launch.
+        // The ConfigLock is released between this verification and the exec; accepted residual.
         self.home
             .verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
             .map_err(|e| {
@@ -3063,8 +2542,7 @@ impl SharedCodexAppServer {
                     "refusing to launch shared codex app-server: {e}"
                 ))
             })?;
-        // #863 review F4 — ONE settings read per spawn: the child env below
-        // and the persisted signature both derive from this snapshot.
+        // ONE settings read per spawn: the child env and the persisted signature both derive from it.
         let spawn_env_snapshot = self.load_spawn_env_snapshot().await?;
         std::fs::create_dir_all(self.sock.parent().unwrap_or_else(|| Path::new(".")))?;
         std::fs::create_dir_all(&self.log_dir)?;
@@ -3081,13 +2559,9 @@ impl SharedCodexAppServer {
             .open(self.log_dir.join("stderr.log"))?;
 
         let mut cmd = Command::new(&self.codex_bin);
-        // #954 — deliberately NO `.kill_on_drop(true)`: with it, tokio
-        // SIGKILLs the child on every `Child` drop regardless of the
-        // guard's Drop body (cancellation, panic, runtime teardown), and
-        // that instant SIGKILL is exactly the lease-armer that livelocked
-        // production on 7/12. Termination happens ONLY via
-        // `terminate_group_with_grace` / `SpawnedChildGuard::reap_graceful`
-        // / the TERM-only Drop belt.
+        // Deliberately NO `.kill_on_drop(true)`: tokio would SIGKILL the child on every `Child`
+        // drop regardless of the guard's Drop body, and that instant SIGKILL is the lease-armer
+        // that livelocked production. Termination happens ONLY via the graceful helpers.
         cmd.arg("app-server")
             .arg("--listen")
             .arg(&listen)
@@ -3119,16 +2593,8 @@ impl SharedCodexAppServer {
         };
         let mut spawn_guard = SpawnedChildGuard::new(child, pgid);
 
-        // #954 — the fallible tail: every ordinary error path (persist
-        // failure, cold-start-deadline miss, Running-row write failure)
-        // awaits a GRACEFUL reap of the guarded child — SIGTERM →
-        // exit-driven wait up to the full stop grace → final SIGKILL —
-        // while still holding the transition serial, then propagates the
-        // error to the typestate choke point. The cold-start-deadline miss
-        // (the mid-backfill child whose SIGKILL armed the production
-        // livelock) is such an ordinary error path and gets the full grace
-        // — a tiered shorter grace for the never-initialized child was
-        // rejected: that tier IS the production failure.
+        // The fallible tail: every ordinary error path awaits a GRACEFUL reap of the guarded child
+        // (full stop grace, even for the cold-start-deadline miss) while still holding the serial.
         let launch = async {
             self.persist_runtime_starting(
                 &runtime,
@@ -3161,22 +2627,9 @@ impl SharedCodexAppServer {
                 return Err(err);
             }
         };
-        // #954 review D3 — this spawn just persisted a Running row whose
-        // `daemon_env_signature` derives from the live settings snapshot.
-        // If the effective signature STILL matches it, any pending
-        // `needs_respawn` drain is already satisfied by this very process
-        // (adopt-and-drain marked, then a crash-lane/heal-lane respawn
-        // landed with current settings) — clear the flag so the next mint
-        // doesn't pay a fully redundant graceful replace (cold start,
-        // potentially minutes). The RE-READ (not an assumption) preserves
-        // marks from settings changes that landed after this spawn's
-        // snapshot: those recompute to a DIFFERENT signature and the mark
-        // survives (pinned by `concurrent_mark_during_respawn_is_preserved`).
-        // Documented residual: a proxy upsert + mark landing entirely
-        // between this re-read and the swap below can be cleared — the
-        // daemon then runs with the old proxy, but the persisted OLD
-        // signature makes the next boot re-detect the mismatch and re-arm
-        // the drain (adopt-and-drain), so the loss is bounded, not silent.
+        // If the effective signature STILL matches the one just persisted, any pending
+        // `needs_respawn` drain is already satisfied by this very process — clear it so the next
+        // mint doesn't pay a redundant cold start. The RE-READ preserves marks from later settings changes.
         if self
             .current_env_signature()
             .await
@@ -3246,12 +2699,8 @@ impl SharedCodexAppServer {
         Ok(())
     }
 
-    /// #954 — both arms go through `terminate_group_with_grace`: SIGTERM →
-    /// exit-driven wait up to the stop grace (a cooperative daemon exits in
-    /// its own time, never paying the full grace) → straggler cleanup
-    /// (owned-child arm: group SIGKILL under the held-zombie pin;
-    /// runtime-identity arm: group SIGKILL only if still alive at the
-    /// deadline, else the per-member identity sweep — #954 review r2 D1).
+    /// Both arms go through `terminate_group_with_grace`: SIGTERM → exit-driven wait up to the
+    /// stop grace → straggler cleanup.
     async fn reap_current_child_or_runtime(&self, running: Option<RunningProcessParts>) {
         let Some(RunningProcessParts {
             runtime,
@@ -3317,18 +2766,9 @@ impl SharedCodexAppServer {
         Ok(())
     }
 
-    /// Wait for the freshly spawned child to bind its socket and answer
-    /// `initialize`. #949 — the wait is child-liveness-aware: a missing or
-    /// unready socket is NOT a failure while the child is alive (codex may
-    /// spend minutes backfilling its state db before it binds), a dead child
-    /// fails immediately with its exit status, and only the configured
-    /// cold-start deadline reaps a live-but-never-binding child (the
-    /// caller's explicit `SpawnedChildGuard::reap_graceful` does the
-    /// actual reaping — #954: SIGTERM, exit-driven grace, final SIGKILL). The
-    /// deadline is a TOTAL cap: it also cuts short an in-flight
-    /// `connect_initialized` attempt (socket accepted, `initialize` never
-    /// answered), so the configured wait cannot be exceeded by the attempt's
-    /// internal 10s request timeout.
+    /// Wait for the freshly spawned child to bind its socket and answer `initialize`. A missing
+    /// socket is NOT a failure while the child is alive (codex may backfill for minutes); a dead
+    /// child fails immediately; the deadline is a TOTAL cap that also cuts an in-flight attempt.
     async fn poll_connect_initialized(
         &self,
         spawn_guard: &mut SpawnedChildGuard,
@@ -3336,11 +2776,8 @@ impl SharedCodexAppServer {
         let started = tokio::time::Instant::now();
         let deadline = started + self.start_timeout;
         loop {
-            // The deadline caps the TOTAL wait, including an in-flight
-            // attempt: `connect_initialized` gives `initialize` its own 10s
-            // request timeout, so without `timeout_at` a child that accepts
-            // the socket but never answers would stretch the configured
-            // deadline by up to 10s per attempt.
+            // The deadline caps the TOTAL wait, including an in-flight attempt, so a child that accepts
+            // the socket but never answers cannot stretch it by the 10s per-attempt request timeout.
             let (deadline_hit_in_flight, attempt_err) =
                 match tokio::time::timeout_at(deadline, connect_initialized(&self.sock)).await {
                     Ok(Ok(pair)) => return Ok(pair),
@@ -3350,10 +2787,8 @@ impl SharedCodexAppServer {
                         "initialize attempt still in flight at the cold-start deadline".to_string(),
                     ),
                 };
-            // Probe liveness AFTER the (possibly long) attempt so both error
-            // paths below describe the child's state at emission time — a
-            // child that exited during a hung attempt surfaces its exit
-            // status here rather than a stale "still alive" claim.
+            // Probe liveness AFTER the (possibly long) attempt so the error describes the child's
+            // state at emission time.
             if let Some(status) = spawn_guard.try_wait_exit() {
                 return Err(CalmError::CodexAppServer(format!(
                     "shared codex app-server exited before initialize ({status}) \
@@ -3381,20 +2816,9 @@ impl SharedCodexAppServer {
         }
     }
 
-    /// #954 defect 2 — bounded readiness window for a verified `starting`
-    /// child: [`Self::poll_connect_initialized`]'s #949 loop with
-    /// child-liveness adapted to a non-child target — `verify_owned_pid`
-    /// polling instead of `spawn_guard.try_wait_exit()` (the child belongs
-    /// to a previous calm-server incarnation, so no `Child` handle exists).
-    /// `window` is the REMAINING budget
-    /// `start_timeout − (now − persisted started_at)`; a zero window
-    /// degenerates to a single raced attempt that the already-expired
-    /// deadline cuts short at its first `Pending` — in practice even an
-    /// already-bound socket cannot complete connect+initialize in that one
-    /// poll, so the probe lapses (→ graceful reap) rather than adopting.
-    /// The deadline is a TOTAL cap: it also cuts
-    /// short an in-flight `connect_initialized` attempt, so the window
-    /// cannot be exceeded by the attempt's internal 10s request timeout.
+    /// Bounded readiness window for a verified `starting` child of a previous calm-server
+    /// incarnation (no `Child` handle, so `verify_owned_pid` polling). `window` is the REMAINING
+    /// budget; the deadline is a TOTAL cap that also cuts an in-flight attempt.
     async fn poll_adopt_initialized(
         &self,
         sock: &Path,
@@ -3416,19 +2840,9 @@ impl SharedCodexAppServer {
                             .to_string(),
                     ),
                 };
-            // Liveness AFTER the (possibly long) attempt, mirroring
-            // `poll_connect_initialized`: a child that exited during a
-            // hung attempt is classified as exited, not lapsed. Zombie =
-            // dead (#953 review D4 posture, same as
-            // `terminate_group_with_grace`): an exited-but-unreaped child
-            // can never bind the socket, so polling it out to the window
-            // deadline would stall boot for nothing. Honest residual (the
-            // r5.1 accepted class): this ChildExited classification sends
-            // no signals at all — unlike the r5.1 non-owned dead-leader
-            // arms it performs no per-member straggler sweep, so members
-            // of the zombie leader's group can leak past the fresh spawn;
-            // only a socket-holding straggler is caught by the pre-spawn
-            // `reap_listener_if_alive`.
+            // Liveness AFTER the (possibly long) attempt. Zombie = dead: an exited-but-unreaped child
+            // can never bind the socket. This arm sends no signals, so members of a zombie leader's
+            // group can leak past the fresh spawn.
             if !verify_owned_pid(pid, start_time, boot_id) || proc_pid_is_zombie(pid) {
                 tracing::info!(
                     target: "shared_codex_daemon::start",
@@ -3463,10 +2877,8 @@ impl SharedCodexAppServer {
         }
     }
 
-    /// Take an exited child out of the installed Running state, together
-    /// with the generation of that Running incarnation (#953 §1: captured
-    /// atomically under the core lock, so the crash restart can pass
-    /// `GenerationIs` and abort if anything else replaced the process).
+    /// Take an exited child out of the installed Running state, with the generation captured
+    /// atomically under the core lock so the crash restart can pass `GenerationIs`.
     async fn try_take_exited_running_child(
         &self,
     ) -> Option<(std::process::ExitStatus, SharedDaemonRuntime, u64)> {
@@ -3505,16 +2917,11 @@ impl SharedCodexAppServer {
                     signal = status.signal(),
                     "shared codex app-server stopped"
                 );
-                // #953 §1 — the restart runs as its OWN task: the replace
-                // transition aborts the captured watcher handle (this task),
-                // so an inline restart would abort itself mid-transition.
-                // Staleness is handled by the `GenerationIs` precondition,
-                // not by task cancellation.
+                // The restart runs as its OWN task: the replace transition aborts the captured watcher
+                // handle (this task), so an inline restart would abort itself mid-transition.
                 tokio::spawn(Arc::clone(&this).restart_after_crash(error, generation));
-                // #480 PR5b: restart_after_crash spawns a new SupervisorWatcher
-                // for the replacement Running state. This task's loop must end
-                // here so we don't accumulate one stale watcher per crash.
-                // Mirrors `watch_taken_over_pid`'s return-after-restart shape.
+                // `restart_after_crash` spawns a new watcher; this loop must end here so we don't
+                // accumulate one stale watcher per crash.
                 return;
             }
         }
@@ -3527,10 +2934,8 @@ impl SharedCodexAppServer {
                 let Some(this) = this.upgrade() else {
                     return;
                 };
-                // #953 §1 — confirm the process we watched is still the
-                // installed Running incarnation and capture its generation
-                // atomically; if another transition already replaced it, do
-                // nothing (its watcher was aborted logically — we are stale).
+                // Confirm the process we watched is still the installed Running incarnation and capture
+                // its generation atomically; if another transition already replaced it, we are stale.
                 let generation = {
                     let core = this.core.lock().await;
                     match &core.state {
@@ -3559,24 +2964,16 @@ impl SharedCodexAppServer {
                     reason = "taken-over daemon exited",
                     "shared codex app-server takeover pid exited"
                 );
-                // Own task, not inline: see `watch_spawned_child` (#953 §1 —
-                // the transition aborts this watcher's handle).
+                // Own task, not inline: the transition aborts this watcher's handle.
                 tokio::spawn(Arc::clone(&this).restart_after_crash(error, generation));
                 return;
             }
         }
     }
 
-    /// Crash-watcher restart (#953 §1). The backoff sleep happens BEFORE
-    /// acquiring the transition serial — never while holding it — and the
-    /// `GenerationIs` precondition aborts silently (no reap, no spawn) if
-    /// any other transition already replaced the process this watcher
-    /// observed dying. On a failed respawn the Failed row + heal loop are
-    /// handled at the typestate choke point — the old swallowed `let _ =`
-    /// crash-path persist is gone (one writer).
-    ///
-    /// Boxed future: the watcher → restart → transition → spawn → watcher
-    /// cycle of opaque `async fn` types otherwise defeats `Send` inference.
+    /// Crash-watcher restart. The backoff sleep happens BEFORE acquiring the transition serial,
+    /// and `GenerationIs` aborts silently if another transition already replaced the process.
+    /// Boxed future: the watcher → restart → spawn → watcher cycle otherwise defeats `Send` inference.
     fn restart_after_crash(
         self: Arc<Self>,
         error: String,
@@ -3610,13 +3007,8 @@ impl SharedCodexAppServer {
                         "crash restart aborted: another transition already replaced the crashed process"
                     );
                 }
-                // #954 review D2 — the observation-lost error is the one
-                // Err for which "terminalized + heal armed" would be a
-                // false claim: the detached task died without publishing,
-                // so the in-memory state may remain `Starting` with heal
-                // unarmed. Recovery is the next transition (mint / settings
-                // drain / heal nudge) or boot reconciliation from the
-                // durable row — say that, not "recorded and armed".
+                // The observation-lost error is the one Err for which "terminalized + heal armed" would be
+                // a false claim; recovery is the next transition or boot reconciliation.
                 Err(e) if detached_spawn_result_lost(&e) => {
                     tracing::warn!(
                         target = "shared_codex_daemon::restart",
@@ -3626,11 +3018,7 @@ impl SharedCodexAppServer {
                     );
                 }
                 Err(e) => {
-                    // #953 review D3 — "recorded", not "persisted": every
-                    // escape path terminalizes the in-memory state and arms
-                    // heal, but the DB write only happens where a Failed row
-                    // is trustworthy (e.g. NOT on a settings-read failure
-                    // over a live takeover-eligible daemon).
+                    // "recorded", not "persisted": the DB write only happens where a Failed row is trustworthy.
                     tracing::warn!(
                         target = "shared_codex_daemon::restart",
                         error = %e,
@@ -3641,20 +3029,9 @@ impl SharedCodexAppServer {
         })
     }
 
-    /// #480 §C — typestate transition: begin/finish a fresh process spawn.
-    /// **Invariant**: caller MUST hold `transition_serial` for the duration
-    /// (#863 review R2-1: acquisition moved to the callers so the boot path
-    /// can hold ONE guard across boot-guard + takeover/spawn without
-    /// re-locking here). Callers: `try_takeover_live` and
-    /// `spawn_process_transition`, both under a caller-held guard.
-    ///
-    /// #953 §1 — this is THE Failed-persistence choke point: any spawn
-    /// failure (pre- or post-`persist_runtime_starting`) persists a `failed`
-    /// row here with the identity tuple NULLed — NULL is legitimate because
-    /// absence is proven for both cases (a self-spawned child is our direct
-    /// child, reaped by `SpawnedChildGuard`; a pre-spawn failure never had a
-    /// child). The unreconciled boot-guard case never reaches this arm — it
-    /// errors before `spawn()` and RETAINS identity (§3).
+    /// Typestate transition: begin/finish a fresh process spawn. Caller MUST hold
+    /// `transition_serial`. THE Failed-persistence choke point: any spawn failure persists a
+    /// `failed` row with identity NULLed (absence is proven for both pre- and post-spawn cases).
     pub(crate) async fn start_new_process_typestate<F, Fut>(
         self: &Arc<Self>,
         spawn: F,
@@ -3676,8 +3053,7 @@ impl SharedCodexAppServer {
                 let generation = {
                     let mut core = self.core.lock().await;
                     core.attempts = 0;
-                    // #953 §1 — a new Running incarnation is installed: bump
-                    // the generation (wrapping; equality-only consumers).
+                    // A new Running incarnation is installed: bump the generation (wrapping; equality-only consumers).
                     core.generation = core.generation.wrapping_add(1);
                     core.state = SupervisorState::Running {
                         child: launched.child,
@@ -3687,7 +3063,7 @@ impl SharedCodexAppServer {
                     };
                     core.generation
                 };
-                // #953 §5 — readiness stamped on every installed Running.
+                // Readiness stamped on every installed Running.
                 self.readiness.send_replace(DaemonReadiness {
                     generation,
                     running: true,
@@ -3705,7 +3081,7 @@ impl SharedCodexAppServer {
                     };
                     core.generation
                 };
-                // #953 §5 — readiness stamped on every terminal Failed.
+                // Readiness stamped on every terminal Failed.
                 self.readiness.send_replace(DaemonReadiness {
                     generation,
                     running: false,
@@ -3726,14 +3102,9 @@ impl SharedCodexAppServer {
     }
 }
 
-// ===================== #953 §2 — self-heal loop =====================
 impl SharedCodexAppServer {
-    /// Arm the background heal loop: at most one instance via CAS on
-    /// `heal_active`; the claim is released by [`HealActiveGuard`]'s RAII
-    /// `Drop` on panic, cancellation, abort, and normal exit alike. No-op in
-    /// fixtures fake mode (stubs never reach spawn paths). Returns the task
-    /// handle (tests use it; production callers drop it — the task holds
-    /// only a `Weak` and exits when the supervisor drops).
+    /// Arm the background heal loop: at most one instance via CAS on `heal_active`, released
+    /// by [`HealActiveGuard`]'s RAII `Drop`. The task holds only a `Weak`.
     fn schedule_heal(self: &Arc<Self>) -> Option<JoinHandle<()>> {
         #[cfg(feature = "fixtures")]
         if self.fake.is_some() {
@@ -3753,15 +3124,8 @@ impl SharedCodexAppServer {
         Some(tokio::spawn(Self::heal_loop(weak, guard)))
     }
 
-    /// Infinite classified retry — no give-up-after-N (give-up is the
-    /// defect-3 lockout reborn; systemd `Restart=always` precedent). Each
-    /// round: sleep by class (select against the settings-change nudge for
-    /// the slow lane's immediate wake) → upgrade the Weak → `ensure_running`.
-    /// Ok ⇒ release the claim, re-check the terminal state (re-arming on
-    /// Failed — #953 review D1), and exit. Err ⇒ reclassify from
-    /// the fresh Failed state and continue. Unreconciled rounds run only
-    /// guard + reconciliation — `ensure_running`'s body keeps the spawn path
-    /// unreachable until absence is proven.
+    /// Infinite classified retry — no give-up-after-N. Ok ⇒ release the claim, re-check the
+    /// terminal state (re-arming on Failed), exit. Err ⇒ reclassify and continue.
     async fn heal_loop(this: std::sync::Weak<Self>, claim: HealActiveGuard) {
         let mut claim = Some(claim);
         loop {
@@ -3780,26 +3144,12 @@ impl SharedCodexAppServer {
             };
             match strong.ensure_running().await {
                 Ok(()) => {
-                    // #953 review D1 fixtures gate — see the field doc: a
-                    // test holding this mutex parks the healed task here,
-                    // keeping the claim held across a concurrent failure.
+                    // Fixtures gate: a test holding this mutex parks the healed task here.
                     #[cfg(feature = "fixtures")]
                     drop(strong.heal_post_ok_gate.lock().await);
-                    // #953 review D1 — release the singleton claim BEFORE
-                    // the terminal re-check. `ensure_running()` Ok is not
-                    // proof the daemon is still Running: the transition
-                    // serial was released before thread resume, so a crash
-                    // + failed restart may already have installed Failed —
-                    // and ITS `schedule_heal()` CAS silently lost against
-                    // the claim this task was still holding. Releasing
-                    // first, then re-reading, closes BOTH orderings:
-                    //  * failure's schedule_heal ran BEFORE this release:
-                    //    every failure path flips the state to Failed
-                    //    before calling schedule_heal, so the re-check
-                    //    below observes Failed and re-arms the loop;
-                    //  * failure's schedule_heal runs AFTER this release:
-                    //    its CAS wins normally (and a concurrent re-arm
-                    //    below dedups on the same CAS).
+                    // Release the singleton claim BEFORE the terminal re-check: `ensure_running()` Ok is not
+                    // proof the daemon is still Running, and a concurrent failure's `schedule_heal()` CAS may
+                    // have lost against the claim this task was still holding.
                     drop(claim.take());
                     let failed_behind_ok = matches!(
                         strong.core.lock().await.state,
@@ -3824,11 +3174,7 @@ impl SharedCodexAppServer {
         }
     }
 
-    /// Delay for the next heal round: fast lane = the existing
-    /// `BackoffState` knobs; slow lane = same exponential/attempts with
-    /// floor `restart_max_delay_ms` and ceiling [`HEAL_SLOW_RETRY_CEILING`];
-    /// ±20% jitter on every delay. Backoff reset keeps the existing
-    /// `reset_if_stable` semantics — brief Running does NOT reset attempts.
+    /// Delay for the next heal round by lane, ±20% jitter; brief Running does NOT reset attempts.
     async fn next_heal_delay(&self) -> Duration {
         let class = {
             let core = self.core.lock().await;
@@ -3847,30 +3193,9 @@ impl SharedCodexAppServer {
     }
 }
 
-/// #1444 review r1 — thread ids whose `thread_cache` attribution was dropped
-/// by [`SharedCodexAppServer::forget_threads_for_deleted_cards`].
-///
-/// Why it has to exist. `handle_thread_started_notification` falls through
-/// cache → `kernel_initiated_threads` → database → `pending.on_thread_started`,
-/// and the pending registry binds **FIFO without reading the thread id**: it
-/// hands the front entry whatever thread id arrived. So "no owner anywhere" is
-/// the sentence that authorizes a bind. A deleted Card's thread satisfies that
-/// sentence — its cache entry is gone by design and its database row went with
-/// the Track — and would be handed to whatever unrelated Card is next in the
-/// pending queue. Before #1444 the surviving cache entry accidentally stopped
-/// that fall-through; this restores the stop deliberately, without restoring a
-/// resumable mapping.
-///
-/// **Bound.** At most [`FORGOTTEN_THREAD_TOMBSTONE_CAP`] ids. Entries leave in
-/// exactly two ways and no others: FIFO eviction of the oldest when a new id
-/// would exceed the cap, and process exit. Nothing else adds to it — only a
-/// committed Track/Area delete does — so it grows one entry per deleted Card
-/// thread and never per notification.
-///
-/// **Eviction is safe.** Evicting the oldest tombstone only restores the
-/// pre-tombstone behaviour for a thread whose delete is at least
-/// [`FORGOTTEN_THREAD_TOMBSTONE_CAP`] deleted threads old; the hazard it guards
-/// is an in-flight notification, which is orders of magnitude shorter-lived.
+/// Thread ids whose `thread_cache` attribution a committed delete dropped. The pending
+/// registry binds FIFO without reading the thread id, so without a tombstone a deleted Card's
+/// late `thread/started` would be handed to whatever unrelated Card is next in the queue.
 #[derive(Default)]
 struct ForgottenThreads {
     order: VecDeque<String>,
@@ -3899,7 +3224,6 @@ impl ForgottenThreads {
     }
 }
 
-// ===================== Notification routing & thread cache =====================
 impl SharedCodexAppServer {
     async fn install_client(
         &self,
@@ -3910,18 +3234,12 @@ impl SharedCodexAppServer {
             // New connection, new receiver; no job owns the replaceable client.
             service.install(&client)?;
         }
-        // #741 §1.3 — stamp the daemon (re)connect wall-clock. This is the
-        // common path for BOTH fresh-spawn and hot-takeover connects, so the
-        // 741-3 reaper's REBUILD_GRACE is reset on every reconnect. Always-on
-        // (cheap); nothing consumes it until 741-3.
+        // Stamp the daemon (re)connect wall-clock; common path for both fresh-spawn and hot-takeover.
         self.daemon_connected_at_ms
             .store(now_ms(), Ordering::SeqCst);
         let tx = self.notifications.clone();
-        // The notification task must not keep its own client alive. The
-        // client's writer is what lets the reader side reach EOF; retaining a
-        // strong Arc here makes supervisor drop self-defeating and leaves the
-        // old connection open forever. Upgrade only for the narrow late-turn
-        // interrupt that actually needs to issue an RPC.
+        // The notification task must not keep its own client alive: a strong Arc here leaves the
+        // old connection open forever. Upgrade only for the late-turn interrupt that needs an RPC.
         let client = Arc::downgrade(&client);
         let pending = self.pending_codex_threads_handle.clone();
         let repo = self.repo.clone();
@@ -4012,25 +3330,9 @@ impl SharedCodexAppServer {
             return;
         };
         for (thread_id, card_id) in self.resume_candidates() {
-            // #1444 R2 — the candidate list above is a SNAPSHOT. A Track/Area
-            // delete can commit, and `forget_threads_for_deleted_cards` can
-            // drop the victim's mapping, while this loop is parked awaiting an
-            // earlier candidate's resume RPC. Removing the mapping cannot
-            // invalidate a vector already copied, so every candidate is
-            // re-validated against the live cache HERE, under
-            // `resume_replay_serial` — the boundary the cleanup takes too (see
-            // that field for why it is not `kernel_thread_start_serial`).
-            //
-            // The guard is held across the whole iteration, RPC included, not
-            // just across the read: a check-then-act that released it first
-            // would leave exactly the window this fixes, one iteration
-            // narrower. Cost: a delete's cleanup waits for at most ONE
-            // in-flight resume (tokio's mutex is fair, so the queued cleanup
-            // wins the guard before this loop's next iteration takes it), and
-            // an RPC is bounded by the client's request timeout. Ordering is
-            // then linearizable in both outcomes: a resume that beat the
-            // cleanup was issued while the Card still had a mapping; every
-            // candidate after it observes the removal and is skipped.
+            // The candidate list is a SNAPSHOT; a delete can drop a mapping while this loop is parked,
+            // so every candidate is re-validated HERE under `resume_replay_serial`, held across the
+            // whole iteration including the RPC (releasing it first would leave the window).
             let _replay_guard = self.resume_replay_serial.lock().await;
             if self.cached_card_for_thread(&thread_id).as_deref() != Some(card_id.as_str()) {
                 tracing::info!(
@@ -4102,10 +3404,8 @@ impl SharedCodexAppServer {
                     continue;
                 }
             };
-            // Invariant: only the cold respawn caller may rotate and reemit
-            // per-card MCP config, and only for the card's active thread.
-            // Hot takeover always plain-resumes because loaded threads ignore
-            // resume config and keep using their existing environment.
+            // Only the cold respawn caller may rotate and reemit per-card MCP config, and only for the
+            // card's active thread; hot takeover plain-resumes because loaded threads ignore resume config.
             Self::resume_thread_typed(
                 &client,
                 &thread_id,
@@ -4139,15 +3439,10 @@ impl SharedCodexAppServer {
     }
 }
 
-// ===================== Test-only helpers =====================
 #[cfg(any(test, feature = "fixtures"))]
 impl SharedCodexAppServer {
-    /// #1444 — hold the *production* serialization primitive shared by
-    /// `handle_thread_started_notification` and
-    /// [`Self::forget_threads_for_deleted_cards`]. A test holding this guard
-    /// parks both, which is what proves they are on one boundary rather than
-    /// merely reaching a consistent end state. Twin of
-    /// `lock_transition_serial_for_test`.
+    /// Hold the production serialization primitive shared by `handle_thread_started_notification`
+    /// and [`Self::forget_threads_for_deleted_cards`].
     #[cfg(feature = "fixtures")]
     pub async fn lock_thread_start_serial_for_test(&self) -> tokio::sync::OwnedMutexGuard<()> {
         Arc::clone(&self.kernel_thread_start_serial)
@@ -4155,12 +3450,7 @@ impl SharedCodexAppServer {
             .await
     }
 
-    /// #1444 — what a reconnect would CONSIDER resuming, read through the
-    /// same accessor `resume_cached_threads` uses, sorted for a stable
-    /// assertion. Post-#1444-R2 the loop re-validates each pair before its
-    /// RPC, so a fresh read here cannot by itself answer what an in-flight
-    /// replay will do — see
-    /// `cold_respawn_replay_does_not_resume_a_card_deleted_mid_loop`.
+    /// What a reconnect would CONSIDER resuming, sorted for a stable assertion.
     #[cfg(feature = "fixtures")]
     pub fn resume_candidates_for_test(&self) -> Vec<(String, String)> {
         let mut candidates = self.resume_candidates();
@@ -4196,8 +3486,7 @@ impl SharedCodexAppServer {
             .unwrap_or_default()
     }
 
-    /// #1505 S4-3 — what each `turn/start` asked of the model, in issue
-    /// order. Pairs index-for-index with [`Self::started_turns_for_test`].
+    /// What each `turn/start` asked of the model; pairs index-for-index with `started_turns_for_test`.
     #[cfg(feature = "fixtures")]
     pub fn started_turn_selections_for_test(&self) -> Vec<(String, TurnModelSelection)> {
         self.fake
@@ -4211,8 +3500,8 @@ impl SharedCodexAppServer {
             .unwrap_or_default()
     }
 
-    /// #1625 P2 — the `clientUserMessageId` each `turn/start` carried, in
-    /// issue order. Pairs index-for-index with [`Self::started_turns_for_test`].
+    /// The `clientUserMessageId` each `turn/start` carried; pairs index-for-index with
+    /// `started_turns_for_test`.
     #[cfg(feature = "fixtures")]
     pub fn started_turn_client_ids_for_test(&self) -> Vec<Option<String>> {
         self.fake
@@ -4262,7 +3551,7 @@ impl SharedCodexAppServer {
         }
     }
 
-    /// #1625 P3 — every `turn/steer` the fake was handed, in order.
+    /// Every `turn/steer` the fake was handed, in order.
     #[cfg(feature = "fixtures")]
     pub fn steered_turns_for_test(&self) -> Vec<SteeredTurnParam> {
         self.fake
@@ -4289,10 +3578,8 @@ impl SharedCodexAppServer {
         }
     }
 
-    /// Make every subsequent `turn/steer` go UNANSWERED — the client's own
-    /// timeout error, the sentence `request_until` produces — or answered
-    /// again with `false`. The outcome on codex's side is, by construction,
-    /// unknown to the caller.
+    /// Make every subsequent `turn/steer` go UNANSWERED (the client's own timeout error) or
+    /// answered again with `false`.
     #[cfg(feature = "fixtures")]
     pub fn fail_turn_steer_for_test(&self, fail: bool) {
         if let Some(fake) = self.fake.as_ref() {
@@ -4317,8 +3604,7 @@ impl SharedCodexAppServer {
         self.turn_thread_is_sealed(thread_id)
     }
 
-    /// Answer `config/read` with this instead of failing. See
-    /// [`FakeSharedCodexAppServer::config_read`].
+    /// Answer `config/read` with this instead of failing.
     #[cfg(feature = "fixtures")]
     pub fn set_config_read_for_test(&self, config: CodexConfig) {
         if let Some(fake) = self.fake.as_ref() {
@@ -4463,44 +3749,36 @@ impl SharedCodexAppServer {
             .load(Ordering::SeqCst)
     }
 
-    /// #953 — whether the singleton heal-loop claim is currently held.
+    /// Whether the singleton heal-loop claim is currently held.
     pub fn heal_active_for_test(&self) -> bool {
         self.heal_active.load(Ordering::SeqCst)
     }
 
-    /// #953 — arm the heal loop directly (same CAS/RAII path as production).
+    /// Arm the heal loop directly (same CAS/RAII path as production).
     pub fn schedule_heal_for_test(self: &Arc<Self>) -> Option<JoinHandle<()>> {
         self.schedule_heal()
     }
 
-    /// #953 review D1 — the heal loop's post-Ok interleaving gate (fixtures
-    /// builds only): a test that locks this mutex parks the heal task AFTER
-    /// a successful round installed Running but BEFORE the task releases the
-    /// singleton `heal_active` claim.
+    /// The heal loop's post-Ok interleaving gate: locking it parks the heal task AFTER a
+    /// successful round but BEFORE the singleton claim is released.
     #[cfg(feature = "fixtures")]
     pub fn heal_post_ok_gate_for_test(&self) -> Arc<tokio::sync::Mutex<()>> {
         Arc::clone(&self.heal_post_ok_gate)
     }
 
-    /// #953 PR2 review D1 — the transition-entry interleaving gate (fixtures
-    /// builds only): a test that locks this mutex parks a
-    /// `transition_replace` AFTER the state left Running (readiness
-    /// invalidated with the outgoing generation) but BEFORE the reap/start
-    /// body runs.
+    /// The transition-entry interleaving gate: locking it parks a `transition_replace` AFTER
+    /// the state left Running but BEFORE the reap/start body.
     #[cfg(feature = "fixtures")]
     pub fn transition_entry_gate_for_test(&self) -> Arc<tokio::sync::Mutex<()>> {
         Arc::clone(&self.transition_entry_gate)
     }
 
-    /// #953 — current Running-incarnation generation.
+    /// Current Running-incarnation generation.
     pub async fn generation_for_test(&self) -> u64 {
         self.core.lock().await.generation
     }
 
-    /// #954 T7 — abort the most recent DETACHED spawn transition task
-    /// (models a runtime-teardown abort / in-task panic; caller
-    /// cancellation can no longer reach the transition). Returns whether a
-    /// task handle was present to abort.
+    /// Abort the most recent DETACHED spawn transition task; returns whether a handle was present.
     #[cfg(feature = "fixtures")]
     pub fn abort_detached_spawn_transition_for_test(&self) -> bool {
         let handle = self
@@ -4517,17 +3795,14 @@ impl SharedCodexAppServer {
         }
     }
 
-    /// #954 — acquire the transition serial as the owned by-value token the
-    /// `_locked` chain threads (for the spawn-ordering pin test).
+    /// Acquire the transition serial as the owned by-value token the `_locked` chain threads.
     #[cfg(feature = "fixtures")]
     pub async fn lock_transition_serial_for_test(&self) -> tokio::sync::OwnedMutexGuard<()> {
         Arc::clone(&self.transition_serial).lock_owned().await
     }
 
-    /// #954 — the raw detached spawn transition as an un-polled future, so
-    /// the ordering pin test can poll it exactly once (creating the
-    /// detached task) and then DROP it (caller cancelled at its first
-    /// await).
+    /// The raw detached spawn transition as an un-polled future, so a test can poll it once
+    /// and then DROP it.
     #[cfg(feature = "fixtures")]
     pub fn detached_spawn_transition_future_for_test(
         self: &Arc<Self>,
@@ -4537,8 +3812,7 @@ impl SharedCodexAppServer {
         async move { this.spawn_process_transition(serial, false, None).await }
     }
 
-    /// #953 — drive the atomic replace transition with an explicit
-    /// precondition (the crash watcher's production path).
+    /// Drive the atomic replace transition with an explicit precondition.
     pub async fn transition_replace_for_test(
         self: &Arc<Self>,
         reason: &str,
@@ -4563,7 +3837,7 @@ impl SharedCodexAppServer {
     }
 }
 
-/// #954 — where the termination signals go.
+/// Where the termination signals go.
 enum SignalScope {
     /// Signal the whole process group (the normal spawn-invariant target).
     Group { pgid: i32 },
@@ -4598,7 +3872,7 @@ impl SignalScope {
     }
 }
 
-/// #954 — how the helper observes the LEADER's exit.
+/// How the helper observes the LEADER's exit.
 enum ExitWait<'a> {
     /// We own the `Child` handle: exit-driven `child.wait()`.
     Child(&'a mut Child),
@@ -4615,33 +3889,16 @@ enum ExitWait<'a> {
     ProcPresence { pid: i32 },
 }
 
-/// #954 review D1 (r2-hardened) — how the leader's exit was observed,
-/// which decides what straggler cleanup is safe. Once a group's last
-/// member is reaped the kernel may recycle the numeric pgid, so an
-/// unverified `kill(-pgid, SIGKILL)` could hit an unrelated group.
+/// How the leader's exit was observed, which decides what straggler cleanup is safe: once
+/// a group's last member is reaped the kernel may recycle the numeric pgid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LeaderExit {
-    /// Exit observed with the leader still an UNREAPED zombie. Whether
-    /// that zombie PINS the group across the observation→signal interval
-    /// depends on who reaps it (#954 review r2 D1):
-    ///   * Owned `Child`: WE hold the unreaped zombie (`child.wait()` is
-    ///     deferred until after the signal decision), so the pin is
-    ///     guaranteed — the final group SIGKILL is safe and is sent for
-    ///     straggler descendants.
-    ///   * Non-owned (`VerifiedIdentity` / `ProcPresence`): the EXTERNAL
-    ///     parent can reap the zombie at any moment after our
-    ///     observation, un-pinning the pgid — so a group-wide signal
-    ///     still races recycling (the r1 shape merely narrowed the race
-    ///     to ε). Treated like [`LeaderExit::FullyGone`]: no group-wide
-    ///     signal; remaining members are swept individually under
-    ///     per-pid identity re-verification instead.
+    /// Exit observed with the leader still an UNREAPED zombie. Only an owned `Child` guarantees
+    /// the pin (WE defer `wait()`); a non-owned zombie can be reaped by its parent at any moment,
+    /// so it is treated like `FullyGone`.
     ExitedPinned,
-    /// The leader was fully reaped (`/proc` entry gone / identity
-    /// mismatch, or an owned child already waited on): the group may be
-    /// empty and its numeric id recycled — no group-wide signal is ever
-    /// sent. Non-owned paths sweep the remaining enumerable members
-    /// individually (verify-then-signal per pid); see
-    /// `terminate_group_with_grace` step 3 for the recorded residual.
+    /// The leader was fully reaped: the group may be empty and its id recycled — no group-wide
+    /// signal is ever sent; remaining members are swept individually.
     FullyGone,
     /// Grace ceiling elapsed with the leader still alive (not a zombie):
     /// the live leader is a member, so the group provably exists and
@@ -4649,52 +3906,17 @@ enum LeaderExit {
     AliveAtDeadline,
 }
 
-/// #954 defect 1 — THE shared exit-driven termination helper, replacing
-/// every fixed post-SIGTERM sleep. Steps:
-///  1. SIGTERM the scope.
-///  2. Wait for the LEADER's exit up to `grace`. The grace is a CEILING,
-///     not a sleep: a cooperative daemon (handles SIGTERM, checkpoints,
-///     exits in <2s) pays its actual exit time (plus at most the ≤100ms
-///     observation poll) — no fixed grace tax; a wedged daemon pays the
-///     full grace before SIGKILL.
-///  3. Straggler cleanup, gated on WHO controls the leader's zombie (#954
-///     review D1, hardened in r2):
-///     * Leader alive at the deadline → group SIGKILL (a live leader pins
-///       the group; recycling is impossible).
-///     * Owned `Child` observed exited → group SIGKILL. The Child arm
-///       observes exit WITHOUT reaping — `/proc` state poll, no
-///       `child.wait()` — so WE hold the unreaped zombie and it pins the
-///       pgid until after the signal; the child is reaped only afterwards.
-///     * Non-owned leader (`VerifiedIdentity` / `ProcPresence`) observed
-///       zombie OR fully reaped → NO group-wide signal, ever: the
-///       external parent can reap the zombie between our observation and
-///       a `kill(-pgid, …)`, letting the kernel recycle the numeric pgid
-///       (#954 review r2 D1 — observing `Z` does not preserve the pin).
-///       Instead the remaining group members are enumerated
-///       (`/proc/*/stat` `pgrp == pgid`) and SIGKILLed INDIVIDUALLY,
-///       each under a scan-time `start_time` capture re-verified
-///       immediately before its signal — the same verify-then-signal
-///       posture as every `verify_owned_pid`-then-`kill` site. Zombie
-///       members are skipped (already dead; their parent reaps them).
-///       Recorded residual (#954 review r2 D2): the sweep covers only
-///       members that are enumerable and identity-verifiable at sweep
-///       time — a member that forks after the scan, or whose re-verify
-///       fails, is deliberately left alone. Such a TERM-surviving
-///       straggler stays discoverable through the `--listen
-///       unix://<sock>` argv contract and self-limits on bind conflict
-///       (the same mitigation as the guard-drop orphan).
-///  4. Bounded post-wait; callers with identity keep their existing
-///     `survivor_alive_after_group_reap` post-check.
+/// THE shared exit-driven termination helper: SIGTERM → wait for the LEADER's exit up to
+/// `grace` (a ceiling, not a sleep) → straggler cleanup: group SIGKILL only when the group is
+/// provably pinned (live leader or owned unreaped child), else a per-member verify-then-signal sweep.
 async fn terminate_group_with_grace(
     scope: SignalScope,
     wait: ExitWait<'_>,
     grace: Duration,
 ) -> LeaderExit {
     let (scope_kind, scope_id) = scope.describe();
-    // #954 review D1 — an owned child that was ALREADY reaped before this
-    // helper ran (cold-start fail-fast `try_wait`) means the leader is gone
-    // and the numeric pgid may be recycled: nothing here is safely
-    // signalable anymore, not even the initial SIGTERM.
+    // An owned child ALREADY reaped before this helper ran means the numeric pgid may be
+    // recycled: nothing here is safely signalable anymore, not even the initial SIGTERM.
     if let ExitWait::Child(child) = &wait
         && child.id().is_none()
     {
@@ -4710,10 +3932,8 @@ async fn terminate_group_with_grace(
     let deadline = tokio::time::Instant::now() + grace;
     let (outcome, waited_child) = match wait {
         ExitWait::Child(child) => {
-            // Observe WITHOUT reaping (#954 review D1): `child.wait()`
-            // would release the zombie and un-pin the pgid before the
-            // final group signal. An unreaped direct child can never leave
-            // `/proc`, so state `Z` is exactly "exited, still pinning".
+            // Observe WITHOUT reaping: `child.wait()` would release the zombie and un-pin the pgid
+            // before the final group signal.
             let outcome = match child.id().and_then(|raw| i32::try_from(raw).ok()) {
                 Some(pid) => {
                     poll_leader_exit(deadline, || {
@@ -4731,11 +3951,7 @@ async fn terminate_group_with_grace(
             start_time,
             boot_id,
         } => (
-            // Post-signal poll: zombie = dead (#953 review D4 posture).
-            // The Z/FullyGone distinction no longer changes the cleanup
-            // (#954 review r2 D1 — a non-owned zombie's pin does not
-            // survive the observation→signal interval; both arms sweep),
-            // but it is kept for the caller-visible outcome and logs.
+            // Post-signal poll: zombie = dead.
             poll_leader_exit(deadline, || {
                 if !verify_owned_pid(pid, start_time, boot_id) {
                     Some(LeaderExit::FullyGone)
@@ -4766,9 +3982,8 @@ async fn terminate_group_with_grace(
     let owned_child = waited_child.is_some();
     match outcome {
         LeaderExit::ExitedPinned if owned_child => {
-            // Owned Child: WE hold the unreaped zombie (reaped only after
-            // this signal), so the pgid is provably pinned — the group
-            // SIGKILL is safe (r2-review-verified arm).
+            // Owned Child: WE hold the unreaped zombie, so the pgid is provably pinned and the group
+            // SIGKILL is safe.
             tracing::debug!(
                 target: "shared_codex_daemon::stop",
                 scope_kind,
@@ -4798,13 +4013,8 @@ async fn terminate_group_with_grace(
             );
         }
         LeaderExit::ExitedPinned | LeaderExit::FullyGone => {
-            // Non-owned leader observed zombie or fully reaped (#954
-            // review r2 D1): the external parent may reap the zombie —
-            // or already has — between observation and any group signal,
-            // and the kernel may then recycle the numeric pgid, so NO
-            // group-wide signal is sent from here. Stragglers are swept
-            // individually under per-pid verify-then-signal instead; see
-            // the helper doc (step 3) for the recorded residual.
+            // Non-owned leader dead: the external parent may reap the zombie between observation and
+            // a group signal, and the kernel may recycle the pgid, so NO group-wide signal is sent.
             match scope {
                 SignalScope::Group { pgid } => {
                     let sweep = sigkill_verified_group_members(pgid);
@@ -4821,10 +4031,7 @@ async fn terminate_group_with_grace(
                 }
                 #[cfg(target_os = "linux")]
                 SignalScope::Pid { .. } => {
-                    // Pid-fallback scope: the only known target IS the
-                    // dead leader; there is no pgid to enumerate and a
-                    // bare-pid SIGKILL races recycling identically —
-                    // nothing further can be signaled safely.
+                    // Pid-fallback scope: there is no pgid to enumerate and a bare-pid SIGKILL races recycling.
                     tracing::debug!(
                         target: "shared_codex_daemon::stop",
                         scope_kind,
@@ -4851,10 +4058,7 @@ async fn terminate_group_with_grace(
     outcome
 }
 
-/// #954 — ≤100ms observation poll against the grace deadline, classifying
-/// the leader's state (#954 review D1). Returns
-/// [`LeaderExit::AliveAtDeadline`] when the ceiling elapses without an
-/// exit observation.
+/// ≤100ms observation poll against the grace deadline; `AliveAtDeadline` when the ceiling elapses.
 async fn poll_leader_exit(
     deadline: tokio::time::Instant,
     mut observe: impl FnMut() -> Option<LeaderExit>,
@@ -4871,11 +4075,8 @@ async fn poll_leader_exit(
     }
 }
 
-/// SIGTERM → exit-driven wait up to `grace` → straggler cleanup (#954;
-/// previously a fixed 500ms sleep then SIGKILL): group SIGKILL only while
-/// the leader is provably alive at the deadline; a dead (zombie/reaped)
-/// leader triggers the per-member identity sweep instead (#954 review r2
-/// D1 — this path does not own the leader's zombie).
+/// SIGTERM → exit-driven wait up to `grace` → straggler cleanup (this path does not own the
+/// leader's zombie, so a dead leader triggers the per-member sweep).
 async fn reap_verified_process_group(
     pid: i32,
     pgid: i32,
@@ -4894,8 +4095,7 @@ async fn reap_verified_process_group(
     )
     .await;
 
-    // Post-signal check: zombie = dead (we just SIGKILLed the group; the
-    // leader may linger as a zombie until its parent waits — #953 review D4).
+    // Post-signal check: zombie = dead (the leader may linger until its parent waits).
     if survivor_alive_after_group_reap(pid, start_time, boot_id) {
         tracing::warn!(
             target: "shared_codex_daemon::stop",
@@ -5031,9 +4231,8 @@ async fn handle_thread_started_notification(
         return Ok(ThreadStartedHandling::DispatchNormally);
     }
 
-    // #1444 review r1 — a thread a committed delete forgot is NOT an
-    // ownerless thread the FIFO registry may hand to the next pending Card.
-    // Its owner existed and was deleted; the correct owner is nobody.
+    // A thread a committed delete forgot is NOT an ownerless thread the FIFO registry may
+    // hand to the next pending Card; the correct owner is nobody.
     if forgotten_threads.lock().await.contains(thread_id) {
         tracing::warn!(
             target: "shared_codex_daemon::pending_skip_forgotten_thread",
@@ -5088,7 +4287,7 @@ async fn reap_listener_if_alive(sock_path: &Path, grace: Duration) -> Result<()>
             "getpgid failed; falling back to pid-only reap of stale socket listener"
         );
         drop(stream);
-        // #954 — graceful pid-fallback reap (exit observed via /proc).
+        // Graceful pid-fallback reap (exit observed via /proc).
         terminate_group_with_grace(
             SignalScope::Pid { pid: peer_pid },
             ExitWait::ProcPresence { pid: peer_pid },
@@ -5106,11 +4305,7 @@ async fn reap_listener_if_alive(sock_path: &Path, grace: Duration) -> Result<()>
         "stale socket has live listener; reaping orphaned daemon pgid before unlink"
     );
     drop(stream);
-    // #954 — graceful group reap: SIGTERM → exit-driven wait (leader exit
-    // observed via /proc; a post-signal zombie counts as exited) →
-    // straggler cleanup (group SIGKILL only for a leader still alive at
-    // the deadline; otherwise the per-member identity sweep — #954
-    // review r2 D1).
+    // Graceful group reap: SIGTERM → exit-driven wait → straggler cleanup.
     terminate_group_with_grace(
         SignalScope::Group { pgid },
         ExitWait::ProcPresence { pid: peer_pid },
@@ -5155,14 +4350,8 @@ async fn reap_listener_if_alive(sock_path: &Path, grace: Duration) -> Result<()>
         }
         None
     };
-    // Register the kernel exit observation right after the peer connection
-    // identified the listener. An open connection does not pin the peer pid:
-    // the listener can exit, be reaped and have its pid recycled before the
-    // watch is registered. Registering here narrows that window to the
-    // connect→register interval — the same ε as the Linux
-    // SO_PEERCRED→getpgid→kill path, so not a regression. The macOS path must
-    // not use the Linux `/proc` wait or unlink before the observed process
-    // has exited.
+    // Register the exit observation right after the peer connection identified the listener:
+    // an open connection does not pin the peer pid, so registering here narrows the recycle window.
     let watcher = macos_process::ExitWatcher::new(peer_pid).map_err(|error| {
         CalmError::CodexAppServer(format!("watch listener process {peer_pid}: {error}"))
     })?;
@@ -5200,10 +4389,7 @@ impl SpawnedChildGuard {
             .expect("spawn guard disarmed once")
     }
 
-    /// #949 — non-blocking liveness probe on the still-guarded child. The
-    /// cold-start poll uses it to fail fast (with the exit status) when the
-    /// child dies before its socket appears. `None` while the child runs, or
-    /// on a probe error (the deadline then remains the backstop).
+    /// Non-blocking liveness probe on the still-guarded child; `None` while it runs or on a probe error.
     fn try_wait_exit(&mut self) -> Option<std::process::ExitStatus> {
         self.spawned_child
             .as_mut()
@@ -5211,9 +4397,7 @@ impl SpawnedChildGuard {
             .flatten()
     }
 
-    /// #954 — explicit graceful reap on the launch error path: SIGTERM →
-    /// exit-driven wait up to `grace` → final group SIGKILL, consuming the
-    /// guard (its Drop belt is disarmed).
+    /// Explicit graceful reap on the launch error path, consuming the guard (its Drop belt is disarmed).
     async fn reap_graceful(mut self, grace: Duration) {
         let Some(mut child) = self.spawned_child.take() else {
             return;
@@ -5233,24 +4417,9 @@ impl SpawnedChildGuard {
 }
 
 impl Drop for SpawnedChildGuard {
-    /// #954 — SIGTERM-only belt. With the spawn transition detached from
-    /// its caller, caller cancellation can no longer reach this guard; the
-    /// belt fires only on a panic inside — or a runtime-teardown abort of —
-    /// the detached transition task (abort → local drop → belt TERM). No
-    /// SIGKILL here (and no tokio `kill_on_drop`): the instant SIGKILL is
-    /// the lease-armer #954 removes. A TERM'd codex aborts its backfill
-    /// cleanly (no 900s lease) and self-exits on bind conflict; the
-    /// discoverability contract for a wedged orphan is its argv
-    /// (`--listen unix://<data_dir>/.../codex-appserver`), operator kills
-    /// by VERIFIED pid only.
-    ///
-    /// #954 review D2 — this belt does NOT terminalize the supervisor: a
-    /// panic in the detached task unwinds the serial and can leave
-    /// in-memory `Starting` with heal unarmed (the accepted belt-contract
-    /// residual). The shape is stranded, not lost — the durable row still
-    /// names the child, and if the TERM'd child survives (or was already
-    /// initialized), the next transition or boot reconciliation/adoption
-    /// recovers it.
+    /// SIGTERM-only belt: fires only on a panic inside, or a runtime-teardown abort of, the
+    /// detached transition task. No SIGKILL here: an instant SIGKILL arms codex's backfill lease.
+    /// It does NOT terminalize the supervisor; the durable row still names the child.
     fn drop(&mut self) {
         if self.spawned_child.is_none() {
             return;
@@ -5264,14 +4433,8 @@ impl Drop for SpawnedChildGuard {
     }
 }
 
-// #954 — `impl Drop for SharedCodexAppServer` is DELETED deliberately.
-// INVARIANT: calm-server shutdown NEVER signals the shared codex daemon;
-// the daemon is left running for the next boot's takeover (#953 re-stamp).
-// The old Drop SIGTERM'd the Running daemon's pgid — it never fired in
-// production while SIGTERM killed the process before drops ran, but WOULD
-// fire once main.rs's graceful shutdown (#954 defect 4) returns from main,
-// silently defeating takeover. Test teardown uses explicit cleanup (or the
-// fixture's pdeathsig hygiene belt), never a supervisor Drop.
+// `impl Drop for SharedCodexAppServer` is DELETED deliberately: calm-server shutdown NEVER
+// signals the shared codex daemon; it is left running for the next boot's takeover.
 
 #[async_trait::async_trait]
 impl calm_provider::provider::CodexDaemonProbe for SharedCodexAppServer {
@@ -5292,9 +4455,8 @@ impl calm_provider::provider::CodexDaemonProbe for SharedCodexAppServer {
         SharedCodexAppServer::daemon_connected_at_ms(self)
     }
 
-    /// Pull the #741 §1.3 liveness facts via `thread/read(include_turns)`
-    /// (+ `thread/loaded/list` for the `loaded` flag). `None` on ANY RPC
-    /// error / unreachable daemon — the arbiter treats that as `Unknown`.
+    /// Pull the liveness facts via `thread/read(include_turns)` (+ `thread/loaded/list`); `None`
+    /// on ANY RPC error, which the arbiter treats as `Unknown`.
     async fn read_liveness_facts(
         &self,
         thread_id: &str,
@@ -5312,10 +4474,8 @@ impl calm_provider::provider::CodexDaemonProbe for SharedCodexAppServer {
     }
 }
 
-/// Map the wire `thread/read` response (+ `loaded` flag) into the
-/// arbiter-facing [`CodexLivenessFacts`] (#741 §1.3). The "last turn" is the
-/// MOST RECENT element of `turns`; its `completedAt` is the died-mid-turn
-/// discriminator (§0.1).
+/// Map the wire `thread/read` response (+ `loaded` flag) into [`CodexLivenessFacts`]; the
+/// "last turn" is the MOST RECENT element of `turns`.
 fn liveness_facts_from_read(
     read: crate::codex_appserver::ThreadReadResponse,
     loaded: bool,
@@ -5371,8 +4531,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// #1444 review r1 — the tombstone set's stated bound, executed: entries
-    /// leave it by FIFO eviction at the cap and by nothing else, and a
+    /// Entries leave the tombstone set by FIFO eviction at the cap and by nothing else; a
     /// re-remembered id does not consume a second slot.
     #[test]
     fn forgotten_thread_tombstones_evict_oldest_first_at_the_cap() {
@@ -5396,18 +4555,13 @@ mod tests {
         assert!(forgotten.contains("T-overflow"));
     }
 
-    /// #953 design test 7 — the dedup cache is updated ONLY after a
-    /// successful DB write (`note_written`): a forced write failure (the
-    /// caller skipping `note_written`) leaves the cache unset so the next
-    /// identical round retries the write instead of masking it.
+    /// The dedup cache is updated ONLY after a successful DB write.
     #[test]
     fn failed_persist_dedup_updates_only_after_successful_write() {
         let dedup = FailedPersistDedup::default();
         let identity = FailedIdentity::proven_absent(Path::new("/tmp/s"), Path::new("/tmp/h"));
         assert!(!dedup.should_skip("boom", FailureClass::Persistent, &identity));
-        // Simulated DB-write failure: `note_written` is NOT called (that is
-        // the code-level contract at the persist site) — the tuple must
-        // still be written next round.
+        // Simulated DB-write failure: `note_written` is NOT called.
         assert!(
             !dedup.should_skip("boom", FailureClass::Persistent, &identity),
             "a failed write must not populate the dedup cache"
@@ -5430,9 +4584,8 @@ mod tests {
         assert!(!dedup.should_skip("boom", FailureClass::Persistent, &identity));
     }
 
-    /// #953 §2 — lane classification: the two cold-start poll failures and
-    /// child-exit shapes are Transient; exec/config/guard failures are
-    /// Persistent.
+    /// Lane classification: cold-start poll failures and child-exit shapes are Transient;
+    /// exec/config/guard failures are Persistent.
     #[test]
     fn classify_spawn_failure_assigns_lanes() {
         let transient = [
@@ -5461,7 +4614,7 @@ mod tests {
         }
     }
 
-    /// #953 §2 — jitter stays within ±20%.
+    /// Jitter stays within ±20%.
     #[test]
     fn heal_jitter_stays_within_twenty_percent() {
         for _ in 0..64 {
@@ -5473,8 +4626,8 @@ mod tests {
         }
     }
 
-    /// #953 design test 7 — Persistent hits the 300s slow ceiling with a
-    /// floor at `restart_max_delay`; Transient stays on the fast lane cap.
+    /// Persistent hits the slow ceiling with a floor at `restart_max_delay`; Transient stays
+    /// on the fast lane cap.
     #[test]
     fn slow_lane_floors_at_restart_max_and_caps_at_const_ceiling() {
         let state = BackoffState::new(Duration::from_millis(250), Duration::from_secs(10));
@@ -5504,7 +4657,7 @@ mod tests {
         );
     }
 
-    /// #953 §3 — read-side classification rule over row shapes.
+    /// Read-side classification rule over row shapes.
     #[test]
     fn failed_row_identity_presence_classifies_unreconciled() {
         let mut record = crate::db::SharedCodexDaemonRecord {
@@ -5537,20 +4690,9 @@ mod tests {
         );
     }
 
-    /// #953 review D3 — a settings-read failure inside `try_takeover_live`
-    /// (`current_env_signature`) during a takeover-eligible transition must
-    /// not escape the choke point with the in-memory state stranded
-    /// `Restarting`: the serial may only release on a TERMINAL in-memory
-    /// state, with the heal loop armed. The DB row is deliberately left
-    /// untouched: it still truthfully names a live verified daemon, and the
-    /// next heal round re-reads settings and retries the takeover (writing
-    /// `failed`+retained identity would make the next round REAP a healthy
-    /// survivor; NULLing identity would forge proof of absence).
-    ///
-    /// Injection: drop ONLY the `settings` table — `settings_get_all` fails
-    /// while `shared_daemon_runtime_get` stays healthy. The "live verified
-    /// daemon" is this test process itself (verifiable identity, never
-    /// signaled by this path).
+    /// A settings-read failure inside `try_takeover_live` must not escape with the in-memory
+    /// state stranded `Restarting`; the DB row is left untouched. Injection: drop ONLY the
+    /// `settings` table; the "live verified daemon" is this test process itself.
     #[tokio::test]
     async fn takeover_settings_read_failure_terminalizes_failed_and_arms_heal() {
         use calm_truth::db::{RepoOutOfDomain as _, RepoRead as _};
@@ -5679,9 +4821,7 @@ mod tests {
         assert_eq!(thread_id_from_started(&params), Some("thrd_xyz"));
     }
 
-    /// #863 — the v2 schema salt must change the signature for identical
-    /// inputs, so the first post-upgrade boot mismatches every pre-upgrade
-    /// persisted signature and forces exactly one normalize-respawn.
+    /// The v2 schema salt must change the signature for identical inputs.
     #[test]
     fn env_signature_v2_salt_differs_from_pre_salt_signature() {
         let ingest = "http://127.0.0.1:8765";
@@ -5698,9 +4838,8 @@ mod tests {
         );
     }
 
-    /// #863 — with `env_clear()`, a parent-env proxy must be RESOLVED and
-    /// set explicitly when settings are absent (the old behavior was
-    /// implicit inheritance). Settings still win over the parent env.
+    /// With `env_clear()`, a parent-env proxy must be RESOLVED and set explicitly when settings
+    /// are absent; settings still win over the parent env.
     #[test]
     fn resolved_proxy_pairs_settings_first_then_explicit_parent_env_fallback() {
         let pairs = SharedCodexAppServer::resolved_proxy_env_pairs(

@@ -1,9 +1,6 @@
-//! #1669 S1 — `calm.source.capture` / `calm.source.list` through the real
-//! tool registry (design §2.2 field matrix, §3 I2/I4, §5 counterexamples).
-//!
-//! The transient ring is seeded directly here (`ctx.plugin_results`); the
-//! recording point in the transport is exercised end to end by
-//! `mcp_source_capture_e2e.rs` through the kernel socket.
+//! `calm.source.capture` / `calm.source.list` through the real tool registry. The transient ring
+//! is seeded directly here (`ctx.plugin_results`); the transport recording point is covered by
+//! `mcp_source_capture_e2e.rs`.
 
 #![cfg(unix)]
 
@@ -24,7 +21,7 @@ const PLUGIN_ID: &str = "dev.echo";
 const TOOL_NAME: &str = "do.thing";
 const REGISTRY_NAME: &str = "plugin.dev.echo_do.thing";
 const SANITIZED_NAME: &str = "plugin_dev_echo_do_thing";
-/// #1686 — the name the model's tool list actually shows for [`REGISTRY_NAME`].
+/// The name the model's tool list actually shows for [`REGISTRY_NAME`].
 const QUALIFIED_NAME: &str = "mcp__calm__plugin_dev_echo_do_thing";
 const COLLIDING_PLUGIN_ID: &str = "dev";
 const COLLIDING_TOOL_NAME: &str = "echo.do.thing";
@@ -52,10 +49,8 @@ fn record(boot: &Boot, plugin_id: &str, tool: &str, args: &Value, result: &CallT
         .record(boot.track_id.as_str(), plugin_id, tool, args, result);
 }
 
-/// #1686 — a plugin host whose registry exposes [`REGISTRY_NAME`], a
-/// second `dev.echo` tool and the colliding plugin, running nothing: the
-/// track-visible universe the refusal consults to tell a registered tool
-/// with no record (b) from a name no visible plugin exposes (a).
+/// A plugin host whose registry exposes [`REGISTRY_NAME`], a second `dev.echo` tool and the
+/// colliding plugin, running nothing: the track-visible universe the refusal consults.
 const OTHER_TOOL_NAME: &str = "other.thing";
 const OTHER_REGISTRY_NAME: &str = "plugin.dev.echo_other.thing";
 
@@ -109,10 +104,6 @@ fn assert_invalid_params(err: &RpcError, needle: &str) {
     assert_eq!(err.code, -32602, "{err}");
     assert!(err.message.contains(needle), "{err}");
 }
-
-// ---------------------------------------------------------------------------
-// call branch
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn capture_call_stores_the_joined_text_blocks_and_anchors() {
@@ -248,9 +239,8 @@ async fn capture_resolves_the_sanitized_spelling_and_defaults_to_the_latest_call
     assert_invalid_params(&err, "no recorded result for this call in this track");
 }
 
-/// #1686 — the Codex-qualified spelling resolves; a matched tool whose
-/// entry for these args is missing still gets the "no recorded result"
-/// wording, not the unknown-name one.
+/// A matched tool whose entry for these args is missing gets the "no recorded result" wording,
+/// not the unknown-name one.
 #[tokio::test]
 async fn capture_resolves_the_codex_qualified_spelling() {
     let boot = boot().await;
@@ -287,10 +277,8 @@ async fn capture_resolves_the_codex_qualified_spelling() {
     assert!(!err.message.contains("unknown tool name"), "{err}");
 }
 
-/// #1686 (a) — a name no visible plugin exposes, in any spelling, is
-/// refused as unknown, listing the tools that do have a record: a
-/// registry-shaped name that is not registered, and a `mcp__` prefix
-/// without a delimited, non-empty server segment (not stripped).
+/// A name no visible plugin exposes, in any spelling, is refused as unknown, listing the tools
+/// that do have a record; a `mcp__` prefix without a delimited server segment is not stripped.
 #[tokio::test]
 async fn capture_refuses_an_unknown_tool_name_listing_the_recorded_tools() {
     let boot = boot().await;
@@ -320,9 +308,8 @@ async fn capture_refuses_an_unknown_tool_name_listing_the_recorded_tools() {
     }
 }
 
-/// #1686 (b) — a tool a visible plugin exposes but nobody in this track
-/// called keeps the "no recorded result" sentence (re-call, do not
-/// respell), plus the recorded list; every spelling of it.
+/// A tool a visible plugin exposes but nobody in this track called keeps the "no recorded
+/// result" sentence, in every spelling.
 #[tokio::test]
 async fn capture_names_a_known_tool_without_a_record_as_no_record() {
     let boot = boot().await;
@@ -352,9 +339,8 @@ async fn capture_names_a_known_tool_without_a_record_as_no_record() {
     }
 }
 
-/// Two calls of the same tool complete in the same millisecond (frozen
-/// clock); the older one is captured explicitly first — an LRU touch of A —
-/// and the args-omitted capture must still take B, the later completion.
+/// Two calls complete in the same millisecond (frozen clock); an explicit capture of the older
+/// one is an LRU touch, and the args-omitted capture must still take the later completion.
 #[tokio::test]
 async fn omitted_args_take_the_latest_completion_not_the_last_lookup() {
     let boot = boot().await;
@@ -524,10 +510,6 @@ async fn capture_does_not_see_another_tracks_records() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// quotes
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn capture_refuses_a_quote_that_is_not_a_byte_exact_substring() {
     let boot = boot().await;
@@ -626,10 +608,6 @@ async fn append_branch_merges_duplicates_keeps_ids_and_caps_at_thirty_two() {
         .unwrap_err();
     assert_invalid_params(&err, "not a source id");
 }
-
-// ---------------------------------------------------------------------------
-// manual branch + field matrix
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn capture_manual_stores_the_planners_bytes_with_url() {
@@ -767,10 +745,6 @@ async fn capture_field_matrix_refusals() {
     assert!(list(&boot).await.is_empty(), "refusals store nothing");
 }
 
-// ---------------------------------------------------------------------------
-// quota, roles, unwritten report
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn capture_over_the_per_track_quota_is_forbidden() {
     let boot = boot().await;
@@ -822,7 +796,7 @@ async fn non_planner_roles_are_refused_with_invalid_params() {
         assert_invalid_params(&err, "tool requires role=Planner");
     }
     assert!(list(&boot).await.is_empty());
-    // Design §6: the worker allowlist does not open these tools.
+    // The worker allowlist does not open these tools.
     let environment = calm_server::dedicated_codex::executor_environment();
     let allowed = environment["mcp_tools"].as_array().expect("mcp_tools");
     assert!(

@@ -1,20 +1,5 @@
-//! Issue #1444 — the shared Codex daemon's in-memory `thread_id -> card_id`
-//! attribution must converge with a Track/Area delete **commit**, driven
-//! through the real `DELETE /api/tracks/{id}` and `DELETE /api/areas/{id}`
-//! routes.
-//!
-//! What is actually at stake: `SharedCodexAppServer::resume_cached_threads`
-//! resumes every entry of `thread_cache` on a daemon (re)connect. The cold
-//! `start_or_takeover` path rebuilds that map from the database first, so it
-//! self-heals; the crash/respawn path (`transition_replace`) does **not**, so a
-//! stale entry there is resumed for a Card that no longer has a database owner.
-//! Every assertion below therefore reads
-//! `SharedCodexAppServer::resume_candidates_for_test` — the same accessor the
-//! production resume loop iterates — or `cached_card_for_thread`, and never a
-//! re-statement of the rule inside the fixture.
-//!
-//! #1393 already owns the active-turn quiesce, Harness shutdown, lifecycle
-//! fence and workspace compensation. Nothing here re-tests those.
+//! The shared Codex daemon's in-memory `thread_id -> card_id` attribution must converge with a Track/Area
+//! delete **commit**; the crash/respawn path resumes `thread_cache` without rebuilding it from the database.
 
 #![cfg(unix)]
 
@@ -42,11 +27,7 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
-// ---------------------------------------------------------------------------
-// Harness — same shape as `track_workspace_recycle`'s, plus the pending
-// registry, because `handle_thread_started_notification` returns early without
-// one and the late-`thread/started` race below needs that path to really run.
-// ---------------------------------------------------------------------------
+// Harness with the pending registry, because `handle_thread_started_notification` returns early without one.
 
 struct Boot {
     app: axum::Router,
@@ -172,9 +153,7 @@ async fn card_ids(b: &Boot, track_id: &str) -> Vec<String> {
     cards.iter().map(|card| card.id.to_string()).collect()
 }
 
-/// Put a `thread_id -> card_id` mapping into the shared daemon through the
-/// production kernel mint (`thread_start_mint_for_card`), which is how planner
-/// and worker threads really enter `thread_cache`.
+/// Put a `thread_id -> card_id` mapping into the shared daemon through the production kernel mint.
 async fn mint_thread(b: &Boot, card_id: &str) -> String {
     b.shared_codex
         .thread_start_mint_for_card(
@@ -201,8 +180,7 @@ async fn mint_track_threads(b: &Boot, track_id: &str) -> Vec<(String, String)> {
     out
 }
 
-/// The pairs a daemon reconnect would resume, read through the production
-/// accessor `resume_cached_threads` itself iterates.
+/// The pairs a daemon reconnect would resume, read through the accessor `resume_cached_threads` iterates.
 fn resume_candidates(b: &Boot) -> Vec<(String, String)> {
     b.shared_codex.resume_candidates_for_test()
 }
@@ -236,10 +214,6 @@ fn assert_not_resumable(b: &Boot, pairs: &[(String, String)]) {
         );
     }
 }
-
-// ---------------------------------------------------------------------------
-// Acceptance
-// ---------------------------------------------------------------------------
 
 /// Deleting a Track drops the mapping of every Card it owned — and only those.
 #[tokio::test]
@@ -295,9 +269,8 @@ async fn deleting_an_area_drops_member_mappings_and_keeps_other_areas() {
     assert_resumable(&b, &bystander_pairs);
 }
 
-/// A Track delete that does not commit must leave its mappings usable. The
-/// panic arrives after the workspace recycle and before the transaction, i.e.
-/// on the compensation path, which must not clean anything.
+/// A Track delete that does not commit must leave its mappings usable: the panic arrives on the
+/// compensation path, which must not clean anything.
 #[tokio::test]
 async fn a_rolled_back_track_delete_keeps_its_thread_mappings() {
     let b = boot().await;
@@ -328,9 +301,8 @@ async fn a_rolled_back_track_delete_keeps_its_thread_mappings() {
     assert_resumable(&b, &pairs);
 }
 
-/// The Area twin, on the arm that actually models a failed database commit:
-/// `finish_area_deletion` never runs, the workspace compensation does, and the
-/// mappings must survive both.
+/// The Area twin, on the arm that models a failed database commit: `finish_area_deletion` never runs,
+/// the workspace compensation does.
 #[tokio::test]
 async fn a_failed_area_delete_commit_keeps_its_thread_mappings() {
     let b = boot().await;
@@ -363,20 +335,14 @@ async fn a_failed_area_delete_commit_keeps_its_thread_mappings() {
     assert_resumable(&b, &pairs);
 }
 
-/// The concurrent regression through the real deletion entry point: a
-/// `thread/started` for the victim Card is handled while `DELETE
-/// /api/tracks/{id}` is parked between the workspace recycle and its
-/// transaction. The notification re-inserts the mapping — asserted, so the
-/// interleaving is real and not merely hoped for — and the commit must still
-/// leave nothing behind.
+/// A `thread/started` for the victim Card is handled while the delete is parked between the workspace
+/// recycle and its transaction; the notification re-inserts the mapping (asserted) and the commit must still leave nothing behind.
 #[tokio::test]
 async fn a_late_thread_started_during_a_track_delete_leaves_no_mapping() {
     let b = boot().await;
     let area_id = create_area(&b, "Atlas").await;
     let track_id = managed_track(&b, &area_id, "late notification").await;
-    // The database attribution a late `thread/started` resolves through: the
-    // track's live planner worker session, one of the rows the delete
-    // transaction removes.
+    // The database attribution a late `thread/started` resolves through: the track's live planner worker session.
     let late_thread = "T-late-1444";
     let (session_id, card_id): (String, String) = sqlx::query_as(
         "SELECT id, card_id FROM worker_sessions WHERE track_id=?1 \
@@ -415,8 +381,7 @@ async fn a_late_thread_started_during_a_track_delete_leaves_no_mapping() {
     });
     hook.entered.notified().await;
 
-    // Inside the window: the row is still there, so the notification really
-    // does re-establish the mapping the delete is about to invalidate.
+    // Inside the window: the row is still there, so the notification really does re-establish the mapping.
     b.shared_codex
         .handle_thread_started_notification_for_test(late_thread)
         .await
@@ -436,11 +401,8 @@ async fn a_late_thread_started_during_a_track_delete_leaves_no_mapping() {
     assert_not_resumable(&b, &[(late_thread.to_string(), card_id)]);
 }
 
-/// The two operations are on ONE serialization boundary, not merely agreeing
-/// on an end state. Holding the production `kernel_thread_start_serial` must
-/// park both; if the cleanup took a different lock (or none), it would finish
-/// while the guard is held and this test would go green for the wrong reason —
-/// so the parked-ness is asserted before the guard is released.
+/// The two operations are on ONE serialization boundary: holding the production `kernel_thread_start_serial`
+/// must park both, and the parked-ness is asserted before the guard is released.
 #[tokio::test]
 async fn cleanup_and_thread_started_share_the_kernel_thread_start_serial() {
     let b = boot().await;
@@ -494,9 +456,8 @@ async fn cleanup_and_thread_started_share_the_kernel_thread_start_serial() {
     assert_eq!(b.shared_codex.cached_card_for_thread(&thread_id), None);
 }
 
-/// The consequence the issue is actually about: after the delete commits, a
-/// daemon reconnect — hot takeover or cold respawn, both iterate this same
-/// list — has nothing to resume for the deleted Card.
+/// After the delete commits, a daemon reconnect (hot takeover or cold respawn iterate the same list) has
+/// nothing to resume for the deleted Card.
 #[tokio::test]
 async fn a_daemon_reconnect_would_not_resume_a_deleted_cards_thread() {
     let b = boot().await;
@@ -515,10 +476,8 @@ async fn a_daemon_reconnect_would_not_resume_a_deleted_cards_thread() {
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT, "body={body}");
 
-    // Creating a track also mints a planner thread, so the candidate list is
-    // not exactly the threads this test minted. The invariant is stated over
-    // ownership instead: not one candidate belongs to a deleted Card, and the
-    // survivor's own threads are all still there.
+    // Creating a track also mints a planner thread, so the invariant is stated over ownership: not one
+    // candidate belongs to a deleted Card, and the survivor's own threads are all still there.
     let victim_cards: HashSet<String> = victim_pairs
         .iter()
         .map(|(_, card_id)| card_id.clone())
@@ -535,23 +494,10 @@ async fn a_daemon_reconnect_would_not_resume_a_deleted_cards_thread() {
     assert_not_resumable(&b, &victim_pairs);
 }
 
-// ---------------------------------------------------------------------------
-// #1444 review r1 — the reviewer's adversarial ordering, built literally.
-//
-// `handle_thread_started_notification` falls through cache -> kernel-initiated
-// -> database -> `pending.on_thread_started`, and the pending registry binds
-// FIFO: it hands the *front* entry whatever thread id arrives, without ever
-// looking at the thread id. So any `thread/started` that reaches that last
-// branch is attributed to whichever Card happens to be waiting.
-//
-// Before #1444 the `thread_cache` entry of a deleted Card survived and stopped
-// the fall-through. This is the construction that asks whether dropping it
-// opened a cross-attribution window.
-// ---------------------------------------------------------------------------
+// The pending registry binds FIFO: it hands the *front* entry whatever thread id arrives, so any
+// `thread/started` that falls through cache -> kernel-initiated -> database is attributed to whichever Card is waiting.
 
-/// One terminal for `card_id`, alive (no exit code, not signal-killed) —
-/// `PendingThreadStartRegistry::is_terminal_alive` drops the front entry
-/// otherwise, and the FIFO bind under test would never be reached.
+/// One terminal for `card_id`, alive: `PendingThreadStartRegistry::is_terminal_alive` drops the front entry otherwise.
 async fn insert_live_terminal(b: &Boot, card_id: &str, terminal_id: &str) {
     let theme = calm_server::routes::theme::RequestTheme::default_dark();
     sqlx::query(
@@ -572,8 +518,7 @@ async fn insert_live_terminal(b: &Boot, card_id: &str, terminal_id: &str) {
     .unwrap();
 }
 
-/// The Card of `track_id` that owns a live worker session — the only Card the
-/// pending registry can bind, since `bind_entry` requires an active runtime.
+/// The Card of `track_id` that owns a live worker session — the only Card the pending registry can bind.
 async fn card_with_live_session(b: &Boot, track_id: &str) -> (String, String) {
     sqlx::query_as(
         "SELECT card_id, id FROM worker_sessions WHERE track_id=?1 \
@@ -585,8 +530,7 @@ async fn card_with_live_session(b: &Boot, track_id: &str) -> (String, String) {
     .expect("premise: the track owns a live worker session")
 }
 
-/// Queue one real pending registration for `card_id`, the way a TUI-started
-/// empty codex card does.
+/// Queue one real pending registration for `card_id`, the way a TUI-started empty codex card does.
 async fn register_pending(b: &Boot, track_id: &str, terminal_id: &str) -> String {
     let (card_id, worker_session_id) = card_with_live_session(b, track_id).await;
     insert_live_terminal(b, &card_id, terminal_id).await;
@@ -602,17 +546,8 @@ async fn register_pending(b: &Boot, track_id: &str, terminal_id: &str) -> String
     card_id
 }
 
-/// The finding, executed end to end.
-///
-/// The victim thread enters `thread_cache` through the pending registry — the
-/// one production insert that does NOT also record the thread in
-/// `kernel_initiated_threads`, so nothing but the cache stands between it and
-/// the FIFO bind. Its Track is then deleted through the real route (mapping
-/// forgotten, database attribution gone with the Track), an *unrelated* Card
-/// registers a live pending spawn, and a late duplicate `thread/started` for
-/// the deleted thread is handled.
-///
-/// It must not be handed to the unrelated Card.
+/// The victim thread enters `thread_cache` through the pending registry (the one insert that does NOT also
+/// record it in `kernel_initiated_threads`); after its Track is deleted, a late duplicate `thread/started` must not be handed to an unrelated waiting Card.
 #[tokio::test]
 async fn a_late_thread_started_after_cleanup_does_not_bind_an_unrelated_pending_card() {
     let b = boot().await;
@@ -621,8 +556,7 @@ async fn a_late_thread_started_after_cleanup_does_not_bind_an_unrelated_pending_
     let other_track = managed_track(&b, &area_id, "unrelated").await;
     let late_thread = "T-late-after-cleanup-1444";
 
-    // 1. The victim's thread arrives through the pending path, so the cache is
-    //    the ONLY place that knows it.
+    // 1. The victim's thread arrives through the pending path, so the cache is the ONLY place that knows it.
     let victim_card = register_pending(&b, &victim_track, "term-victim-1444").await;
     let bound = b
         .shared_codex
@@ -641,7 +575,7 @@ async fn a_late_thread_started_after_cleanup_does_not_bind_an_unrelated_pending_
         "premise: the victim card owns the thread"
     );
 
-    // 2. The delete commits; #1444's cleanup forgets the mapping.
+    // 2. The delete commits; the cleanup forgets the mapping.
     let (status, body) = request(
         b.app.clone(),
         "DELETE",
@@ -703,10 +637,8 @@ async fn a_late_thread_started_after_cleanup_does_not_bind_an_unrelated_pending_
         "the deleted thread was written onto {stolen:?}"
     );
 
-    // Negative control: the guard must reject only the forgotten thread, not
-    // ownerless `thread/started` in general. The unrelated Card's OWN thread
-    // start still binds — otherwise this test would pass just as well against
-    // a guard that refused every pending bind.
+    // Negative control: the unrelated Card's OWN thread start still binds, so the guard rejects only the
+    // forgotten thread and not ownerless `thread/started` in general.
     let own_thread = "T-own-1444";
     let own_bound = b
         .shared_codex
@@ -724,22 +656,11 @@ async fn a_late_thread_started_after_cleanup_does_not_bind_an_unrelated_pending_
     assert_eq!(b.pending.pending_count().await, 0);
 }
 
-// ---------------------------------------------------------------------------
-// #1553 (hygiene) — the two sibling maps the #1444 cleanup does NOT touch.
-//
-// `sealed_turn_threads` (read by `turn_thread_is_sealed`) and `active_turns`
-// (read by `active_turn_id_for_thread`) had no remover on the committed delete
-// path: the seal is dropped only by a ROLLBACK, and the active turn only by an
-// interrupt that matches the same turn id. These tests drive the real
-// `DELETE /api/tracks/{id}` / `DELETE /api/areas/{id}` and assert both arms:
-// the committed arm now converges both maps, and the rollback arms still leave
-// them alone. No harm was constructible from the old leak — see
-// `SharedCodexAppServer::forget_turn_state_for_deleted_threads`.
-// ---------------------------------------------------------------------------
+// `sealed_turn_threads` and `active_turns` had no remover on the committed delete path: the seal is dropped
+// only by a ROLLBACK, the active turn only by a matching interrupt. Both arms are asserted.
 
-/// Give the track's live planner worker session a codex thread id, the shape
-/// `quiesce_shared_card_active_turn` reads to decide what to seal, and return
-/// that thread id.
+/// Give the track's live planner worker session a codex thread id, the shape `quiesce_shared_card_active_turn`
+/// reads to decide what to seal.
 async fn seal_bait_thread(b: &Boot, track_id: &str, thread_id: &str) {
     let session_id: String = sqlx::query_scalar(
         "SELECT id FROM worker_sessions WHERE track_id=?1 \
@@ -759,16 +680,8 @@ async fn seal_bait_thread(b: &Boot, track_id: &str, thread_id: &str) {
     assert_eq!(updated.rows_affected(), 1);
 }
 
-/// A committed Track delete drops the sealed-thread verdict and the active turn
-/// id of the threads it sealed.
-///
-/// The active turn is seeded INSIDE the delete's commit window, after quiesce
-/// has already interrupted what it could see. That is the production shape that
-/// leaves one behind: `track_active_turn` inserts the id of a late `turn/started`
-/// on a sealed thread and its interrupt is best-effort — on failure the loop
-/// deliberately keeps the id (`shared_codex_appserver.rs`, "Keep the id in
-/// `active_turns`"). Seeding it directly is the same end state without the
-/// unreliable timing.
+/// The active turn is seeded INSIDE the delete's commit window, after quiesce has already interrupted what
+/// it could see: a late `turn/started` on a sealed thread whose best-effort interrupt failed keeps its id.
 #[tokio::test]
 async fn a_committed_track_delete_converges_the_sealed_and_active_turn_maps() {
     let b = boot().await;
@@ -777,12 +690,8 @@ async fn a_committed_track_delete_converges_the_sealed_and_active_turn_maps() {
     let sealed_thread = "T-sealed-1553";
     seal_bait_thread(&b, &track_id, sealed_thread).await;
 
-    // Scope control: a kernel-minted thread with a live turn, i.e. the window
-    // between the mint and the database attribution write. Quiesce cannot see
-    // it (no `thread_id` row for this Card), so it is NOT in `sealed_thread_ids`
-    // and the new sweep must not touch it. Its `active_turns` entry surviving is
-    // what proves the sweep is scoped to the sealed set rather than a blanket
-    // clear of the map.
+    // Scope control: a kernel-minted thread with a live turn is NOT in `sealed_thread_ids` (no `thread_id` row
+    // for this Card), so its `active_turns` entry surviving proves the sweep is scoped to the sealed set.
     let card = card_ids(&b, &track_id).await[0].clone();
     let unsealed_thread = mint_thread(&b, &card).await;
     let unsealed_turn = b
@@ -826,8 +735,7 @@ async fn a_committed_track_delete_converges_the_sealed_and_active_turn_maps() {
     let (status, body) = delete_task.await.unwrap();
     assert_eq!(status, StatusCode::NO_CONTENT, "body={body}");
     assert!(b.repo.track_get(&track_id).await.unwrap().is_none());
-    // #1444's half converged too; this test does not re-prove it, it only pins
-    // that both halves are now on the same committed arm.
+    // The mapping half converged too; this only pins that both halves are on the same committed arm.
     assert_eq!(
         b.shared_codex.cached_card_for_thread(&unsealed_thread),
         None
@@ -922,11 +830,8 @@ async fn a_committed_area_delete_converges_the_sealed_and_active_turn_maps() {
     );
 }
 
-/// Rollback arm, Track: the saga panics after the workspace recycle and before
-/// the transaction, so the compensation path runs and the Cards survive. The
-/// new sweep must not have run — the observable is `active_turns`, which no
-/// rollback path writes, unlike the seal, which
-/// `unseal_turn_thread_after_rollback` deliberately clears here.
+/// Rollback arm, Track: the compensation path runs and the Cards survive. The observable is `active_turns`,
+/// which no rollback path writes (unlike the seal, which `unseal_turn_thread_after_rollback` clears).
 #[tokio::test]
 async fn a_rolled_back_track_delete_keeps_the_active_turn_entry() {
     let b = boot().await;
@@ -971,8 +876,7 @@ async fn a_rolled_back_track_delete_keeps_the_active_turn_entry() {
     );
 }
 
-/// Rollback arm, Area: `finish_area_deletion` fails, the workspace compensation
-/// runs, and the Cards survive. Same observable as the Track twin.
+/// Rollback arm, Area: `finish_area_deletion` fails, the workspace compensation runs, the Cards survive.
 #[tokio::test]
 async fn a_failed_area_delete_commit_keeps_the_active_turn_entry() {
     let b = boot().await;

@@ -1,24 +1,5 @@
-//! Process-level tests for the market-data plugin, driven through a fake
-//! kernel over the real stdio channel.
-//!
-//! What these pin is not reachable from a pure function: which thread runs a
-//! tool call, which Track a call is attributed to, and the order of the
-//! callbacks a refresh makes. So the binary is spawned for real, and the fake
-//! kernel keeps actual KV state — a plugin whose `kv.set` went nowhere would
-//! pass a stubbed-out harness while losing every holding in production.
-//!
-//! Network: only where a test needs a price, and never a real one — every
-//! source this plugin has is pointed at loopback here. `DEAD_ENDPOINT` is a
-//! port nothing listens on; [`price_server`] stands in for Binance and
-//! [`sina_server`] for `hq.sinajs.cn`. `USDT` prices at 1.0 with no request at
-//! all, off Binance's pinned quote leg, which is what lets a *partially*
-//! priceable portfolio be built offline.
-//!
-//! A price now carries the currency its SOURCE quoted it in — `USDT` off
-//! Binance, `USD`/`HKD`/`CNY` off Sina, decided from the venue and code range.
-//! Values are converted into the configured settlement currency. A missing
-//! price or rate leaves its holding out of the total and skips the history
-//! point; every new history point records its currency.
+//! Process-level tests for the market-data plugin, driven through a fake kernel over the real
+//! stdio channel. Every price source is pointed at loopback; `USDT` prices at 1.0 with no request.
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -26,18 +7,12 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::support::market_plugin::*;
-/// Recording a holding wakes a pass that prices it and publishes to the Track
-/// the CALL came from.
-///
-/// The tool itself does not price: pricing is a network call, and a tool
-/// annotated `openWorldHint: true` is one codex refuses outright under the
-/// kernel's `approval_policy: "never"`. So the write records state and wakes
-/// the poll thread, and the reader still sees a fresh table a moment later.
+/// The tool itself does not price (an `openWorldHint: true` tool is refused under
+/// `approval_policy: "never"`); the write records state and wakes the poll thread.
 #[test]
 fn setting_a_holding_prices_it_now_and_publishes_to_the_callers_track() {
     let (endpoint, _hits) = price_server("2.5");
-    // A long poll interval proves the publish came from the WAKE, not from
-    // the interval elapsing.
+    // A long poll interval proves the publish came from the WAKE, not from the interval elapsing.
     let mut kernel = FakeKernel::boot(&endpoint);
 
     let reply = kernel.set_holding(2, "BTC", 4.0, TRACK);
@@ -70,25 +45,12 @@ fn setting_a_holding_prices_it_now_and_publishes_to_the_callers_track() {
     );
 }
 
-/// A holding stored before venues existed and a write that names the same
-/// asset with its venue are ONE holding, and the write leaves ONE row.
-///
-/// Driven through the real binary because the collapse happens across the
-/// whole `set` path — load (which normalises), `retain`, then a whole-array
-/// overwrite. The store is `FakeKernel`'s in-memory map, which reproduces the
-/// KV state semantics this turns on (one document per Track, replaced
-/// wholesale) rather than the KV service itself. Without read-side normalisation the retain
-/// compares `CRYPTO:BTC` against the legacy `BTC`, keeps it, and the KV ends
-/// up with two rows summing to 160 that the tables would price as one
-/// position of 160 BTC.
-///
-/// It also pins what the first write leaves behind: the canonical spelling,
-/// in place of the legacy one.
+/// The collapse happens across the whole `set` path — load (which normalises), `retain`, then a
+/// whole-array overwrite — so it is driven through the real binary.
 #[test]
 fn a_legacy_bare_holding_is_replaced_not_doubled_by_a_qualified_write() {
     let mut kernel = FakeKernel::boot(DEAD_ENDPOINT);
-    // Seeded directly, as a pre-venues install would have left it. The plugin
-    // has never seen this Track.
+    // Seeded directly, as a pre-venues install would have left it.
     kernel.kv.insert(
         "holdings/trk_caller".to_string(),
         json!([{ "asset": "BTC", "quantity": 100.0 }]),
@@ -103,25 +65,11 @@ fn a_legacy_bare_holding_is_replaced_not_doubled_by_a_qualified_write() {
     );
 }
 
-/// **A Hong Kong holding written under two spellings is ONE row.**
-///
-/// `HK:01810` and `HK:1810` are the same shares of Xiaomi, and a user who
-/// records a position with the leading zero and later re-records it without
-/// one must not end up holding it twice. This is the same shape as the bare/
-/// qualified crypto collapse above, one venue over, and it is the reason the
-/// Hong Kong fold lives in `parse_asset` rather than only in the URL builder:
-/// padding at the URL alone would send both rows to `hk01810`, price both at
-/// 27.48 HKD and sum them into a single-currency total with nothing visibly
-/// wrong with it.
-///
-/// Driven end to end because the collapse is the whole `set` path — load
-/// (which normalises), `retain`, then a whole-array overwrite — and no single
-/// function performs it. Removing the Hong Kong arm from `canonical_symbol`
-/// must turn this test RED with two rows in the store.
+/// `HK:01810` and `HK:1810` are the same shares; the Hong Kong fold lives in `parse_asset`,
+/// not only in the URL builder, or both rows would be priced and summed.
 #[test]
 fn a_padded_hong_kong_holding_is_replaced_not_doubled_by_an_unpadded_write() {
     let mut kernel = FakeKernel::boot(DEAD_ENDPOINT);
-    // Seeded directly, spelled the way a user or an earlier write left it.
     kernel.kv.insert(
         "holdings/trk_caller".to_string(),
         json!([{ "asset": "HK:01810", "quantity": 100.0 }]),
@@ -137,32 +85,9 @@ fn a_padded_hong_kong_holding_is_replaced_not_doubled_by_an_unpadded_write() {
     );
 }
 
-/// A stored `CN:` holding SURVIVES an unrelated `market.holdings.set` on the
-/// same Track — quantity intact, alongside the newly written asset.
-///
-/// This is the evidence FOR keeping `CN:` in the grammar, not against it: the
-/// row survives only because `CN:600519` still parses. Remove the arm and the
-/// same round trip loses it.
-///
-/// The deletion that removal would cause is not produced by any single
-/// function — it is the composition of `load_holdings` (which drops rows it
-/// cannot parse, without saying so) and `store_holdings` (a whole-array
-/// overwrite). A unit test is not blind to the arm's removal: deleting
-/// `"CN" => Some(Venue::Cn)` turns the parser's own tests red too. What no
-/// unit test shows is the COMPOSITION — that the drop on the read side is what
-/// erases the row from the store on the next write — and only a real round
-/// trip (seed, write something else, read the store) does.
-///
-/// Driven through the real binary for that reason. The store is `FakeKernel`'s
-/// in-memory map rather than the KV service; what it reproduces is the state
-/// semantics this test turns on — one document per Track, replaced wholesale
-/// by `neige.kv.set` — not the service. The seeded row is written directly, as
-/// the pre-split slice would have left it: the plugin has never seen this
-/// Track.
-///
-/// Deleting `"CN" => Some(Venue::Cn)` from `Venue::from_prefix` must turn this
-/// test RED. If it stays green, `CN:` is not carrying the round trip that is
-/// the whole reason it was kept, and the decision to keep it rests on nothing.
+/// The row survives only because `CN:600519` still parses: `load_holdings` drops rows it
+/// cannot parse and `store_holdings` overwrites the whole array, so only a real round trip
+/// shows the composition.
 #[test]
 fn a_stored_cn_holding_survives_a_write_to_a_different_asset() {
     let mut kernel = FakeKernel::boot(DEAD_ENDPOINT);
@@ -171,8 +96,7 @@ fn a_stored_cn_holding_survives_a_write_to_a_different_asset() {
         json!([{ "asset": "CN:600519", "quantity": 7.0 }]),
     );
 
-    // A different asset entirely — the `CN:` row is not the one being
-    // rewritten, it is the bystander the overwrite must not lose.
+    // The `CN:` row is the bystander the overwrite must not lose.
     kernel.set_holding(2, "SH:600519", 3.0, TRACK);
 
     assert_eq!(
@@ -187,8 +111,7 @@ fn a_stored_cn_holding_survives_a_write_to_a_different_asset() {
     );
 }
 
-/// A call with no Track is refused, not defaulted. Acting on some other
-/// Track's portfolio is the failure the `_meta` namespace exists to prevent.
+/// Acting on some other Track's portfolio is the failure the `_meta` namespace exists to prevent.
 #[test]
 fn a_call_without_a_track_is_refused_rather_than_guessed() {
     let mut kernel = FakeKernel::boot(DEAD_ENDPOINT);
@@ -209,7 +132,6 @@ fn a_call_without_a_track_is_refused_rather_than_guessed() {
     assert!(kernel.is_responsive());
 }
 
-/// Two Tracks keep two portfolios, and each is priced against its own.
 #[test]
 fn holdings_are_per_track() {
     let (endpoint, _hits) = price_server("2");
@@ -226,14 +148,11 @@ fn holdings_are_per_track() {
         Some(&json!([{ "asset": "CRYPTO:BTC", "quantity": 5.0 }])),
         "the second call must not overwrite the first Track's portfolio"
     );
-    // Priced against its own holdings, not against a shared document. Read
-    // per Track rather than in push order: a pass may batch both Tracks.
+    // Read per Track rather than in push order: a pass may batch both Tracks.
     assert_eq!(kernel.last_total_for(TRACK), Some(2.0));
     assert_eq!(kernel.last_total_for(OTHER_TRACK), Some(10.0));
 
-    // Storing separately is not the same as reading separately. Without this,
-    // an implementation that wrote per Track but read from one shared
-    // document would still pass everything above.
+    // Storing separately is not the same as reading separately.
     let listed = kernel.call_tool(4, "market.holdings.list", json!({}), Some(TRACK));
     let holdings = listed
         .pointer("/result/structuredContent/holdings")
@@ -248,8 +167,6 @@ fn holdings_are_per_track() {
     );
 }
 
-/// Zero is the spelling of "no longer held", and it takes the holding out of
-/// the stored portfolio rather than leaving a position of nothing.
 #[test]
 fn a_quantity_of_zero_removes_the_holding() {
     let (endpoint, _hits) = price_server("2");
@@ -259,10 +176,8 @@ fn a_quantity_of_zero_removes_the_holding() {
     assert_eq!(kernel.kv.get("holdings/trk_caller"), Some(&json!([])));
 }
 
-/// The reader thread must never be the thread doing the work: a tool call
-/// issues callbacks whose replies arrive on the same stdin the plugin reads.
-/// The assertion is latency — the reply must land far inside the plugin's own
-/// 15s callback timeout, which is what a blocked reader would cost.
+/// A tool call issues callbacks whose replies arrive on the same stdin the plugin reads; the
+/// reply must land far inside the plugin's own 15s callback timeout.
 #[test]
 fn a_tool_call_is_answered_while_the_reader_keeps_reading() {
     let mut kernel = FakeKernel::boot(DEAD_ENDPOINT);
@@ -270,13 +185,8 @@ fn a_tool_call_is_answered_while_the_reader_keeps_reading() {
     assert_eq!(reply.get("id"), Some(&json!(2)), "{reply:#?}");
 }
 
-/// A pass that cannot price part of the portfolio publishes the holdings table
-/// — which names the gap row by row — and no history point.
-///
-/// The portfolio is deliberately PARTLY priceable: `USDT` is the quote asset
-/// and prices at 1.0 with no network, while `BTC` goes to a dead endpoint. A
-/// wholly unpriceable portfolio would leave the total at zero, and a defect
-/// that skipped history only on a zero total would survive the test.
+/// The portfolio is deliberately PARTLY priceable: a wholly unpriceable one would leave the
+/// total at zero, and a defect that skipped history only on a zero total would survive.
 #[test]
 fn a_tick_that_cannot_price_everything_writes_no_history_point() {
     let mut kernel = FakeKernel::boot(DEAD_ENDPOINT);
@@ -306,9 +216,7 @@ fn a_tick_that_cannot_price_everything_writes_no_history_point() {
     assert!(kernel.is_responsive());
 }
 
-/// A history point that could not be stored is not published either:
-/// publishing it would show a point the next pass silently drops, which reads
-/// as data loss rather than the failed write it was.
+/// Publishing an unstored point would show one the next pass silently drops.
 #[test]
 fn a_history_point_that_cannot_be_stored_is_not_published() {
     let (endpoint, _hits) = price_server("2");
@@ -316,9 +224,7 @@ fn a_history_point_that_cannot_be_stored_is_not_published() {
     kernel.set_holding(2, "BTC", 1.0, TRACK);
     let before = kernel.pushes.len();
 
-    // Refuse only the history write. Refusing every write would also refuse
-    // the holdings write below, and the pass would never reach the step this
-    // test is about.
+    // Refuse only the history write, or the pass never reaches the step this test is about.
     kernel.refuse_kv_set = Some("history/".into());
     kernel.set_holding(3, "ETH", 2.0, TRACK);
 
@@ -330,14 +236,8 @@ fn a_history_point_that_cannot_be_stored_is_not_published() {
     assert!(kernel.is_responsive());
 }
 
-/// A poll pass must not republish a portfolio it read before a tool changed it.
-///
-/// The pass lists every Track up front and then prices them one at a time. If
-/// it published the listing's snapshot, a Track that a tool call updated and
-/// re-published in the meantime would be overwritten with the older value —
-/// and its obsolete total appended to the history, drawing a move that never
-/// happened. The fake kernel changes the stored holding in exactly that
-/// window: after the listing is answered, before the Track is priced.
+/// The pass lists every Track up front and then prices them one at a time; the fake kernel
+/// changes the stored holding after the listing is answered, before the Track is priced.
 #[test]
 fn a_poll_pass_prices_what_is_stored_now_not_what_it_listed() {
     let (endpoint, _hits) = price_server("2");
@@ -382,10 +282,6 @@ fn a_poll_pass_prices_what_is_stored_now_not_what_it_listed() {
 }
 
 /// One asset is priced once per pass, however many Tracks hold it.
-///
-/// Without the cache a pass costs one request per holding per Track: several
-/// Tracks watching the same asset would ask for the same number several times
-/// within the same second, and the pass would take proportionally longer.
 #[test]
 fn a_poll_pass_prices_each_asset_once_across_tracks() {
     let (endpoint, hits) = price_server("2");
@@ -434,12 +330,8 @@ fn a_poll_pass_prices_each_asset_once_across_tracks() {
     );
 }
 
-/// Selling out replaces the table rather than leaving the old one on screen.
-///
-/// Returning early on an empty portfolio would leave a reader who has just
-/// sold everything looking at their previous position, presented as current —
-/// a worse lie than an empty table. No history point goes with it: the series
-/// is about a portfolio's value, and there is no longer a portfolio.
+/// Returning early on an empty portfolio would leave a reader who has just sold everything
+/// looking at their previous position as current. No history point goes with it.
 #[test]
 fn removing_the_last_holding_publishes_an_empty_table() {
     let (endpoint, _hits) = price_server("2");
@@ -490,13 +382,8 @@ fn last_holdings_table<'a>(kernel: &'a FakeKernel, track: &str) -> &'a Value {
         .expect("a holdings push")
 }
 
-/// A stock holding is priced and CONVERTED through the whole shipping path —
-/// the real binary, the real HTTP client, and `FakeKernel`'s store standing in
-/// for the KV.
-///
-/// The price stays in the currency its market quotes; what reaches the total
-/// is that number carried into the settlement currency by a rate this plugin
-/// fetched. Both units are on the table, labelled apart.
+/// The price stays in the currency its market quotes; the total carries it into the settlement
+/// currency by a rate this plugin fetched.
 #[test]
 fn a_hong_kong_holding_is_priced_in_hkd_and_settled_in_usd() {
     let mut kernel = FakeKernel::boot_settling(DEAD_ENDPOINT, &sina_server(), 3600, "USD");
@@ -561,13 +448,7 @@ fn a_hong_kong_holding_is_priced_in_hkd_and_settled_in_usd() {
     );
 }
 
-/// **A portfolio spanning two currencies totals again, and its series moves.**
-///
-/// `USDT` prices at 1.0 off Binance's quote leg with no request; `HK:1810`
-/// prices at 27.48 HKD off the stock source. Before this slice such a Track
-/// got rows, no total and no history point at all — 1 plus 2748 is not a
-/// number in any currency. Now each row is carried into USD first, so the sum
-/// is a sum of like things, and the point that was being withheld is written.
+/// Each row is carried into USD first, so the sum is a sum of like things.
 #[test]
 fn a_portfolio_across_two_currencies_totals_and_writes_a_history_point() {
     let mut kernel = FakeKernel::boot_settling(DEAD_ENDPOINT, &sina_server(), 3600, "USD");
@@ -607,8 +488,7 @@ fn a_portfolio_across_two_currencies_totals_and_writes_a_history_point() {
         "{caption}",
     );
 
-    // Two points now, both labelled, and the second one is the one that used
-    // to be skipped.
+    // Two points now, both labelled.
     let points = kernel
         .kv
         .get("history/trk_caller")
@@ -618,7 +498,6 @@ fn a_portfolio_across_two_currencies_totals_and_writes_a_history_point() {
     assert_eq!(points[1]["total"].as_f64(), Some(351.51));
     assert_eq!(points[1]["currency"], json!("USD"));
 
-    // And `market.holdings.list` says the same thing in its own words.
     let listed = kernel.call_tool(4, "market.holdings.list", json!({}), Some(TRACK));
     let text = text_of(&listed);
     assert!(text.contains("Total 351.51 USD"), "{text}");
@@ -631,19 +510,8 @@ fn a_portfolio_across_two_currencies_totals_and_writes_a_history_point() {
     assert!(kernel.is_responsive());
 }
 
-/// **`market.holdings.list`'s prose and its `structuredContent` answer the same
-/// question about the same total.**
-///
-/// The combination that catches it: `complete` is false because ONE holding's
-/// rate is missing, while the rest sum to a real partial total. The prose said
-/// "No total — not every holding could be priced and converted" over a
-/// `structuredContent.total` of 2633.88 — a number in the payload and a
-/// sentence denying it exists. That is the shape the `Empty`/`NonePriced`
-/// split removed from the holdings table, reappearing at a different exit.
-///
-/// Both halves are read out of ONE real reply, through the real binary: they
-/// are two exits on one fact, and reading either alone passes on the version
-/// where they disagree.
+/// `complete` is false because ONE holding's rate is missing while the rest sum to a real
+/// partial total; prose and `structuredContent` are read out of ONE real reply.
 #[test]
 fn the_list_tool_says_the_same_thing_in_prose_and_in_structured_content() {
     let mut kernel =
@@ -685,13 +553,8 @@ fn the_list_tool_says_the_same_thing_in_prose_and_in_structured_content() {
     assert!(kernel.is_responsive());
 }
 
-/// **A holding whose exchange rate did not come back writes no history point**
-/// — and keeps the price that did.
-///
-/// The stock source answers the price and lists no rate row at all, which is
-/// the shape of a partial outage rather than a dead endpoint. The holding is
-/// unconvertible, so it is out of the total, so there is no total, so the
-/// series stands still. Nothing reaches for an older rate to keep it moving.
+/// The stock source answers the price and lists no rate row at all (a partial outage); nothing
+/// reaches for an older rate to keep the series moving.
 #[test]
 fn a_holding_whose_rate_is_unavailable_writes_no_history_point() {
     let mut kernel =
@@ -737,21 +600,12 @@ fn a_holding_whose_rate_is_unavailable_writes_no_history_point() {
     assert!(kernel.is_responsive());
 }
 
-/// **A point written before this slice does not say what it is in, and nothing
-/// pretends otherwise.**
-///
-/// KNOWN GAP, registered rather than worked around: `{at, total}` records no
-/// currency, and the unit it used — whatever the install settled in at that
-/// moment — was never stored anywhere. So the change column is blank across
-/// that boundary rather than subtracting two numbers that may be in different
-/// units, and the row's own currency cell is empty rather than borrowing
-/// today's.
+/// KNOWN GAP: a legacy `{at, total}` point records no currency, so the change column is blank
+/// across that boundary and the row's currency cell is empty rather than borrowing today's.
 #[test]
 fn a_point_from_before_this_slice_is_not_compared_against_a_new_one() {
     let mut kernel = FakeKernel::boot_settling(DEAD_ENDPOINT, &sina_server(), 3600, "USD");
-    // A point in the shape this plugin used to write. `100.0` in an unknown
-    // unit: if it were read as USD, the row below would show a change of
-    // +250.51 — a move this portfolio never made.
+    // `100.0` in an unknown unit: read as USD, the row below would show a +250.51 move that never happened.
     kernel.kv.insert(
         "history/trk_caller".into(),
         json!([{ "at": "2026-09-06T12:00:00Z", "total": 100.0 }]),

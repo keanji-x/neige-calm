@@ -1,10 +1,6 @@
-//! Text waiting (#1666): wake on renderer revisions and client protocol
-//! events, re-test the live viewport rows against the text conditions on
-//! every revision, and return once they have held for the settle window.
-//! "Until the screen shows X", not "until X appears anew": a screen that
-//! already matches settles from the wait's start. #1677 r16: the conditions
-//! are `wait_text` (any present) and `wait_text_absent` (none present),
-//! see `text_conditions.rs`.
+//! Text waiting: re-test the live viewport rows against the text conditions on every revision
+//! and return once they have held for the settle window. "Until the screen shows X", not
+//! "until X appears anew": a screen that already matches settles from the wait's start.
 use super::text_conditions::{ConditionState, TextConditions};
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -18,8 +14,7 @@ pub struct TextMatch {
     pub pattern: String,
     /// The matching row for that pattern: first top-down.
     pub row: usize,
-    /// The projection revision of the capture that confirmed the match (the
-    /// observation captured after the wait can be later).
+    /// The projection revision of the capture that confirmed the match.
     pub revision: u64,
     /// The match was present on the first capture and never vanished since.
     pub already: bool,
@@ -33,13 +28,11 @@ impl TextMatch {
 /// The text loop's verdict.
 #[derive(Debug, PartialEq, Eq)]
 pub struct TextWait {
-    /// The present match on the screen the wait ended on, if any (null
-    /// when only an absence condition was asked or the screen had none).
+    /// The present match on the screen the wait ended on, if any.
     pub matched: Option<TextMatch>,
     /// Every condition held on the screen the wait ended on.
     pub holds: bool,
-    /// Which conditions held on that screen (null for a condition without
-    /// patterns).
+    /// Which conditions held on that screen.
     pub conditions: ConditionState,
     /// The conditions held and the screen was quiet for the settle window.
     pub settled: bool,
@@ -47,18 +40,10 @@ pub struct TextWait {
     pub exited: bool,
 }
 
-/// The text-mode loop, separated from the client so its timing can be
-/// tested under a paused clock. `revisions` is the projection revision
-/// channel, `events` the client's protocol channel (both re-evaluate
-/// `stopped`), `capture` one read of the live viewport (its trimmed rows and
-/// revision; `None` when the projection is unavailable, which `stopped`
-/// then reports). The rows are captured once per revision wake — never on a
-/// protocol event or a timer wake alone — and re-tested against
-/// `conditions`; a screen on which they stop holding returns the wait to
-/// "not held". Only a revision starts or extends the quiet window; it ends
-/// the wait while the conditions hold. As in change mode, a timer wake
-/// re-reads the revision before settling, and a window that would end at
-/// or after the deadline reports the budget verdict instead.
+/// The text-mode loop, separated from the client so its timing can be tested under a paused
+/// clock. Rows are captured once per revision wake — never on a protocol event or a timer wake
+/// alone; only a revision starts or extends the quiet window. A timer wake re-reads the
+/// revision before settling.
 #[allow(clippy::too_many_arguments)]
 pub async fn wait_for_text(
     mut revisions: watch::Receiver<u64>,
@@ -95,9 +80,8 @@ pub async fn wait_for_text(
             if !first {
                 last_change = now;
             }
-            // The capture's own revision names the screen that was tested; the
-            // channel value only says a wake was due. An unavailable capture
-            // holds nothing (`stopped` reports it).
+            // The capture's own revision names the screen that was tested; the channel value only says
+            // a wake was due. An unavailable capture holds nothing.
             let tested = capture().map(|(rows, revision)| (conditions.test(&rows), revision));
             let found = tested
                 .as_ref()
@@ -116,10 +100,7 @@ pub async fn wait_for_text(
             });
         }
         let quiet_until = last_change + settle;
-        // Exit, disconnect and invalidation win over a settled match, as in
-        // the timer branch: an exit that becomes ready together with the
-        // quiet timer, or a screen that already exited while showing the
-        // pattern, is `exited`, never `matched`/`settled`.
+        // Exit, disconnect and invalidation win over a settled match: never `matched`/`settled`.
         if stopped() {
             return verdict(matched, state, false, true);
         }
@@ -147,8 +128,7 @@ pub async fn wait_for_text(
             }
             _ = tokio::time::sleep_until(timer) => {
                 if Some(*revisions.borrow_and_update()) != seen {
-                    // A revision landed while the timer was completing: the
-                    // rows are re-tested at the top of the loop.
+                    // A revision landed while the timer was completing: re-test at the top of the loop.
                     continue;
                 }
                 if stopped() {
@@ -203,12 +183,11 @@ mod tests {
         }
     }
     type Task = tokio::task::JoinHandle<(TextWait, Duration)>;
-    /// Every sender is kept alive by the fixture (a dropped sender ends the
-    /// loop at once, which would make a budget test vacuous).
+    /// Every sender is kept alive by the fixture (a dropped sender ends the loop at once).
     fn start(patterns: &[&str], rows: &[&str], settle_ms: u64, budget_ms: u64) -> (Fixture, Task) {
         start_with(patterns, &[], rows, settle_ms, budget_ms)
     }
-    /// The same with both condition lists (#1677 r16).
+    /// The same with both condition lists.
     fn start_with(
         present: &[&str],
         absent: &[&str],
@@ -276,9 +255,6 @@ mod tests {
         })
     }
 
-    /// The target appears on a later revision and the wait ends once that
-    /// screen has been quiet for `settle`; the report names the pattern,
-    /// the row and the confirming revision.
     #[tokio::test(start_paused = true)]
     async fn match_on_a_later_revision_settles_after_the_quiet_window() {
         let (fixture, task) = start(&["trust the files", "❯"], &["$ "], 150, 5_000);
@@ -297,8 +273,6 @@ mod tests {
         assert_eq!(fixture.captures.load(Ordering::SeqCst), 2);
     }
 
-    /// A screen that already shows the target returns after `settle` from
-    /// the wait's start with `already: true`; `settle: 0` returns at once.
     #[tokio::test(start_paused = true)]
     async fn already_matching_screen_settles_from_the_start() {
         let (fixture, task) = start(&["READY"], &["hello", "READY $ "], 150, 5_000);
@@ -318,9 +292,7 @@ mod tests {
         assert_eq!(waited, Duration::ZERO);
     }
 
-    /// A match that disappears before the quiet window ends returns the wait
-    /// to "no match"; a later reappearance is not `already` and settles from
-    /// its own revision.
+    /// A later reappearance is not `already` and settles from its own revision.
     #[tokio::test(start_paused = true)]
     async fn match_that_vanishes_before_settling_does_not_end_the_wait() {
         let (fixture, task) = start(&["READY"], &["booting"], 150, 5_000);
@@ -332,8 +304,7 @@ mod tests {
         fixture.paint(&["loading"]);
         tokio::task::yield_now().await;
         tokio::time::advance(Duration::from_millis(300)).await;
-        // Let the waiter observe the elapsed timer before asking: without
-        // the yield the task may simply not have been polled yet.
+        // Without the yield the task may simply not have been polled yet.
         tokio::task::yield_now().await;
         assert!(!task.is_finished(), "a vanished match must not settle");
         assert_eq!(fixture.captures.load(Ordering::SeqCst), 3);
@@ -359,8 +330,6 @@ mod tests {
         assert_eq!(waited, Duration::from_millis(250));
     }
 
-    /// The budget: no match at the deadline reports none; a match present
-    /// but not yet quiet at the deadline is reported unsettled.
     #[tokio::test(start_paused = true)]
     async fn budget_reports_unmatched_or_an_unsettled_match() {
         let (fixture, task) = start(&["READY"], &["$ "], 150, 300);
@@ -389,10 +358,7 @@ mod tests {
         assert_eq!(waited, Duration::from_millis(300));
     }
 
-    /// The quiet timer and a revision notification become ready in the same
-    /// poll (a helper's earlier sleep bumps the revision before the waiter
-    /// is polled): the timer wake re-reads the revision and restarts the
-    /// window instead of settling on a screen that already moved. Repeated
+    /// The quiet timer and a revision notification become ready in the same poll; repeated
     /// because `select!` picks among ready branches at random.
     #[tokio::test(start_paused = true)]
     async fn timer_completion_rechecks_the_revision_before_settling() {
@@ -421,11 +387,7 @@ mod tests {
         }
     }
 
-    /// Exit wins over a settled match: a screen that already exited while
-    /// showing the pattern (`settle` 0) is `exited`, and an exit whose flag
-    /// and protocol event become ready in the same driver pass as the quiet
-    /// timer is `exited` whichever branch `select!` picks (repeated because
-    /// the pick is random; the helper's earlier sleep fires first).
+    /// Repeated because the `select!` pick is random; the helper's earlier sleep fires first.
     #[tokio::test(start_paused = true)]
     async fn exit_wins_over_a_settled_match() {
         let (fixture, task) = start(&["READY"], &["READY"], 0, 5_000);
@@ -453,9 +415,6 @@ mod tests {
         }
     }
 
-    /// Protocol events wake the loop but neither capture nor extend the
-    /// window; an exit (or a stopped state read at the timer) ends the wait
-    /// as exited with whatever match stood.
     #[tokio::test(start_paused = true)]
     async fn protocol_events_do_not_capture_and_an_exit_ends_the_wait() {
         let (fixture, task) = start(&["READY"], &["READY"], 150, 5_000);
@@ -494,9 +453,7 @@ mod tests {
         assert!(verdict.exited, "exit at the deadline reported as unmatched");
     }
 
-    /// #1677 r16 absent-only: the wait ends once no absent pattern is on
-    /// any row and the screen is quiet; `matched` stays null, `conditions`
-    /// names the side that held.
+    /// Absent-only: `matched` stays null, `conditions` names the side that held.
     #[tokio::test(start_paused = true)]
     async fn absent_condition_alone_ends_the_wait_when_the_pattern_is_gone() {
         let (fixture, task) = start_with(
@@ -540,10 +497,8 @@ mod tests {
         assert_eq!(waited, Duration::from_millis(300));
     }
 
-    /// #1677 r16 present AND absent: a screen showing the prompt and the
-    /// busy hint matches the present pattern (reported, `already`) but does
-    /// not hold; the wait keeps going until a revision removes the hint,
-    /// then settles; both sides are reported.
+    /// Present AND absent: the present match is reported (`already`) but does not hold until a
+    /// revision removes the hint.
     #[tokio::test(start_paused = true)]
     async fn present_match_with_the_absent_pattern_still_on_screen_keeps_waiting() {
         let (fixture, task) = start_with(

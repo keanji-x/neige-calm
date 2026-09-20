@@ -1,20 +1,5 @@
-// Today's prop contract, and for each prop what the compact viewport does with
-// it (#1234).
-//
-// The two live together in one file on purpose. #1253 added six props to
-// `TodayPageProps` and the phone rendered none of them; the whole review chain
-// missed it because "what the phone draws" was written nowhere. Here, adding a
-// prop and declaring its disposition is a single file's edit, and skipping the
-// second half does not compile.
-//
-// It is a *leaf*: `public.tsx` imports from here and nothing here imports back.
-// The types moved out of `public.tsx` for exactly that reason — the ledger has
-// to see `keyof TodayPageProps`, and `public.tsx` has to see the keys the
-// ledger says are rendered, so one of the two directions must be an import of
-// this file. A type-only cycle would not do: `.dependency-cruiser.cjs` runs
-// with `tsPreCompilationDeps: true`, and `no-circular` fires on type-only
-// edges (measured). `public.tsx` re-exports the public types, so nothing outside
-// this directory changes.
+// Today's prop contract, and for each prop what the compact viewport does with it.
+// A leaf: `public.tsx` imports from here and nothing here imports back (a type-only cycle still trips `no-circular`).
 
 import type { ReactNode } from 'react';
 
@@ -22,30 +7,10 @@ import type { Track } from '../../../../core/domain/track.ts';
 import type { Area } from '../../../../core/domain/area.ts';
 import type { TodayLaunchpadWire } from '../../../../core/domain/today.ts';
 
-/**
- * INV-TODAY-002 — an hour-bucketed scheduled event.
- *
- * The list of these is **permanently empty today, and that is a seam, not dead
- * code**. The mockup carried a synthetic `SURF_SCHEDULE` keyed on hand-written
- * track ids; under real kernel data those ids never appear, so hour-scheduled
- * events stay empty until a scheduling plugin lands (drop-in: derive
- * `ScheduledEvent[]` from overlays where `kind === 'scheduled'`).
- *
- * The two agenda sources — scheduled events and live track activity — **must
- * co-exist**: a day with scheduled work *and* an open track shows both, rather
- * than letting the schedule layer monopolise the surface. That is why this
- * arrives as a prop with an empty default instead of a hard-coded `[]` inside
- * the component: deleting the branch would silently delete the seam, and the
- * contract test feeds a synthetic event through it to prove it still works.
- */
+/** An hour-bucketed scheduled event. Permanently empty today: a seam for a scheduling plugin, kept as a prop so the branch is not deleted. */
 export type ScheduledEvent = Readonly<{ track: Track; date: Date; hour: number }>;
 
-/**
- * How Today draws one track. It is injected rather than imported because the row
- * belongs to `features/track` and a feature domain may not import a sibling;
- * `app/router` supplies it so Today does not import a sibling feature. The
- * variant vocabulary is §6.3's, so every surface still renders the one row.
- */
+/** How Today draws one track. Injected because the row belongs to `features/track` and a feature domain may not import a sibling. */
 export type TrackRowRenderer = (
   track: Track,
   options: Readonly<{ variant: 'compact' | 'panel'; hourLabel?: string; areaName?: string }>,
@@ -56,74 +21,19 @@ export type TodayPageProps = Readonly<{
   areas: readonly Area[];
   /** Partial or failed workspace reads cannot establish aggregate activity. */
   activityAvailable: boolean;
-  /**
-   * The launchpad resolve (`GET /api/today/launchpad`), §5.1.
-   *
-   * `undefined` while the read is in flight, `null` when the server answered
-   * "there is no launchpad yet" — a 200 with a null body, which is an empty
-   * state and not a failure.
-   *
-   * **`report_has_noninitial_content` is the empty-state predicate, and it is
-   * the server's** (INV-TODAYDOC-003). Nothing on this page may re-derive it
-   * from the document: the kernel's freshly-minted report is a well-formed
-   * document carrying the maintenance-contract comment and four empty H1s, so
-   * `readTrackReport` returns non-null for it and a null-check here would
-   * render four empty headings where the empty state belongs. Matching on the
-   * body text would be worse — it is mirror code for a body the kernel owns.
-   */
+  /** The launchpad resolve. `undefined` while in flight, `null` when the server answered "no launchpad yet". The empty-state predicate is the server's `report_has_noninitial_content`; nothing here may re-derive it from the document, which is well-formed even when empty. */
   launchpad?: TodayLaunchpadWire | null;
-  /**
-   * The launchpad's report, already rendered. Injected rather than imported
-   * for the same reason `renderTrackRow` is: `ReportDocument` is
-   * `features/report` and a feature domain may not import a sibling.
-   */
+  /** The launchpad's report, already rendered; injected because `ReportDocument` is a sibling feature. */
   launchpadDocument?: ReactNode;
-  /**
-   * A failure of the resolve, already rendered as an error.
-   *
-   * INV-TODAYDOC-002 — when this is present the document region shows it and
-   * **not** the empty state. A 5xx quietly turning into "nothing written
-   * today" would tell the reader their day was empty when in fact the server
-   * could not be reached.
-   */
+  /** A failure of the resolve, already rendered. When present the document region shows it and not the empty state. */
   launchpadError?: ReactNode;
-  /**
-   * A control that acts on the day's document, composed by `app/router`
-   * (#1343). Today ships one: Reset, which puts the report back to its
-   * canonical empty state.
-   *
-   * A slot rather than a callback pair, for the reason `conversationList` is
-   * one: the control is destructive and therefore needs a confirmation dialog,
-   * `ConfirmDialog` lives in `ui/dialog` and is driven from `app/router`, and
-   * this domain composes neither. What lands here is already wired.
-   *
-   * It is rendered **only** beside a written document. There is nothing to
-   * reset when the report is already canonical. The empty state offers quiet
-   * Area/Track guidance, with creation remaining in the sidebar.
-   *
-   * It replaces `onWriteSummary` / `summaryPending` / `summaryNotice`, which
-   * are gone: the day's activity now reaches an agent server-side when a
-   * conversation is started on the launchpad, so the page no longer asks for
-   * the report to be written.
-   */
+  /** A control that acts on the day's document (Reset), composed by `app/router`. Rendered only beside a written document. */
   documentAction?: ReactNode;
   /** Navigation lives inside the injected row; Today itself opens nothing. */
   renderTrackRow: TrackRowRenderer;
-  /** See INV-TODAY-002. Production passes nothing; there is no scheduler yet. */
+  /** Production passes nothing; there is no scheduler yet. */
   scheduledEvents?: readonly ScheduledEvent[];
-  /**
-   * The panel card's second module, composed by `app/router`.
-   *
-   * A slot rather than props for the same reason `renderTrackRow` is a callback:
-   * `features/**` may not import a sibling domain, and the conversation list is
-   * `features/chat`. The same slot appears on the Today and Track routes — that
-   * identical second module is the point of the skeleton.
-   *
-   * On Today it is the launchpad Track's own server-backed list (#1341), not the
-   * old tab-wide registry index. Rows open in place because the launchpad is the
-   * Track this page represents. `app/router/today-conversation.test.tsx` owns
-   * that contract.
-   */
+  /** The panel card's second module, composed by `app/router`: the launchpad Track's own server-backed conversation list. */
   conversationList?: ReactNode;
   /** The conversation module head's `+`, composed by `app/router`. */
   conversationAction?: ReactNode;
@@ -131,66 +41,12 @@ export type TodayPageProps = Readonly<{
   nowMs?: number;
 }>;
 
-/**
- * What the compact (phone) viewport does with one prop.
- *
- * Deliberately **independent of which key it is annotating**: the ledger only
- * needs "every key has a disposition", and a value type that varied with the
- * key is the correlated-indexing shape that killed an earlier design.
- *
- * `render: false` cannot be written without a reason — the reason is a required
- * property of that arm, so omitting it is a type error rather than a review
- * finding. (Compare `core/view/panel.ts`'s `ActionSupport`, whose `why` only
- * ever gets read by a test.) Emptiness is checked too, see `LedgerWhyNonEmpty`.
- */
+/** What the compact (phone) viewport does with one prop. `render: false` cannot be written without a reason. */
 export type Disposition =
   | Readonly<{ render: true }>
   | Readonly<{ render: false; why: string }>;
 
-/**
- * Every `TodayPageProps` key, and whether `TodayCompact` — the only thing the
- * compact viewport renders — may receive it.
- *
- * **What carries the weight, precisely.** Two things, and the rest is hygiene:
- *
- * - `satisfies Record<keyof TodayPageProps, Disposition>` is the exhaustiveness
- *   check. A prop added to `TodayPageProps` and not to this object stops the
- *   build, and the diagnostic names the missing keys. This is the #1253 catch.
- * - **The absence of a widening type annotation.** The declaration must keep
- *   its precisely-inferred type: annotate it `: Record<keyof TodayPageProps,
- *   Disposition>` (or `Readonly<…>` of the same) and every entry widens,
- *   `CompactRenderedKeys` collapses to `never`, and the compact renderer loses
- *   even `nowMs` — measured. `satisfies` checks without widening; an
- *   annotation widens.
- *
- * The `as const`s are **not** in that list, and an earlier version of this
- * comment wrongly said they were. Measured on TypeScript 5.9.3: removing the
- * inner ones, or the outer one, leaves everything green. Precisely: the
- * literals are preserved by the current `Object.freeze` overload on its own,
- * while `satisfies` carries the shape and exhaustiveness constraint. The
- * `as const`s are kept as belt-and-braces against a future inference change,
- * not because anything here depends on them today.
- *
- * The `Object.freeze` calls **are** required, and by a lint rule rather than by
- * the type system: `fe/AGENTS.md` mandates freezing module-level static data,
- * freezing is shallow, and `architecture/no-module-runtime-state` rejects the
- * outer freeze on its own (measured by removing one inner call).
- *
- * The dispositions below were each read off the compact renderer as it stands:
- * `TodayCompact` draws a `MobileHeader` and an `AstryxCalendar`, and the only
- * value reaching either of them is the day, which comes from `nowMs`.
- *
- * **What this does not claim.** `render: true` is enforced as far as "the
- * compact renderer may name this prop"; nothing here proves a rendered prop
- * reaches the DOM, which is a liveness property the type system does not carry.
- * `render: false` is the strong half: the key is absent from the compact
- * renderer's props type, so touching it does not compile. That the phone has
- * no *other* renderer is carried by a gate, not by this sentence: the viewport
- * bit lives in `viewport-dispatch.tsx`, and the dependency-cruiser rule
- * `today-viewport-bit-in-dispatcher-only` is what stops any other module here
- * from importing `ui/viewport` and branching on it again (it has its own
- * positive/negative fixture under `tools/architecture/fixtures/`).
- */
+/** Every `TodayPageProps` key, and whether `TodayCompact` may receive it. `satisfies` is the exhaustiveness check; do not add a widening type annotation — it collapses `CompactRenderedKeys` to `never`. */
 export const TODAY_VIEWPORT_LEDGER = Object.freeze({
   activityAvailable: Object.freeze({
     render: false,
@@ -236,9 +92,6 @@ export const TODAY_VIEWPORT_LEDGER = Object.freeze({
     render: false,
     why: 'The `+` in the conversation module head, which is not drawn.',
   } as const),
-  // The one prop the phone genuinely uses, and the reason this file has to stay
-  // honest rather than being a wall of `false`: the compact renderer keys and
-  // seeds `AstryxCalendar` off the current day, which is derived from `nowMs`.
   nowMs: Object.freeze({ render: true } as const),
 } as const satisfies Record<keyof TodayPageProps, Disposition>);
 
@@ -247,16 +100,7 @@ type Ledger = typeof TODAY_VIEWPORT_LEDGER;
 /** Fails to compile, showing what it got instead, unless `T` is exactly `true`. */
 export type Assert<T extends true> = T;
 
-/**
- * Type *identity*, not assignability.
- *
- * The two-conditional trick compares the types as the checker's internal
- * identity relation does, so widening is visible: `A & { extra?: x }` is
- * mutually assignable to `A` when `extra` is optional, and one-directional
- * `extends` therefore cannot see the bypasses review measured — a page entry
- * annotated `TodayPageProps & { reviewProbe?: string }` passed an assignability
- * check while carrying a prop no ledger knows about.
- */
+/** Type identity, not assignability: one-directional `extends` cannot see an `A & { extra?: x }` widening. */
 export type Exactly<A, B> =
   (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
 
@@ -264,13 +108,7 @@ type EmptyWhyKeys = {
   [K in keyof Ledger]: Ledger[K] extends Readonly<{ render: false; why: '' }> ? K : never;
 }[keyof Ledger];
 
-/**
- * A reason of `''` satisfies `why: string` but says nothing, so it is rejected
- * here instead: this alias fails to compile, naming the offending keys, if any
- * `render: false` entry carries an empty reason. Whitespace-only reasons are
- * caught at runtime by this feature's contract test — a type cannot see through
- * `' '`.
- */
+/** Fails to compile, naming the offending keys, if any `render: false` entry carries an empty reason. */
 export type LedgerWhyNonEmpty = Assert<[EmptyWhyKeys] extends [never] ? true : EmptyWhyKeys>;
 
 /** The props the compact viewport is declared to draw. Derived, never written. */
@@ -278,43 +116,10 @@ export type CompactRenderedKeys = {
   [K in keyof Ledger]: Ledger[K]['render'] extends true ? K : never;
 }[keyof Ledger];
 
-/**
- * What the compact renderer is allowed to see.
- *
- * This is the mechanical half of the ledger: a prop declared `render: false` is
- * not a member of this type, so reading it inside the compact renderer is a
- * compile error rather than something a reviewer has to notice.
- */
+/** What the compact renderer is allowed to see: a prop declared `render: false` is not a member, so reading it is a compile error. */
 export type TodayCompactProps = Pick<TodayPageProps, CompactRenderedKeys>;
 
-/*
- * ── Binding the ledger to the type it claims to be about ────────────────────
- *
- * `satisfies` alone only closes the ledger against the props type *as written
- * on that one line*. Review measured the cheap ways around it, all green
- * before these three: weakening the constraint to `Partial<Record<…>>` or
- * `Record<string, Disposition>`, and giving `TodayPageProps` a string index
- * signature so that "every key" becomes trivially satisfiable.
- *
- * Two assertions, and they are **not** independent — measured, and worth
- * writing down because the obvious phrasing ("each one carries its own case")
- * is false. Against the index-signature bypass, either one alone still goes
- * red: exact key-set equality plus a literal key set on one side already
- * implies the other side is literal too. It takes deleting both to get back to
- * green. `PropsKeysAreLiteral` is kept anyway, for the diagnostic — it names
- * the index signature, where `LedgerCoversTheProps` only reports two key sets
- * that failed to match. Its mirror image on the ledger side is deleted rather
- * than kept as a third way of saying the same thing.
- *
- * These are **mechanism** assertions: they constrain how the ledger may be
- * written. The exactness assertions on the two entry signatures
- * (`page-props.test.ts`) are **outcome** assertions: they check what the
- * components actually take. Both are needed — a well-formed ledger bound to
- * nothing proves nothing, and a bound-but-weakened ledger proves nothing
- * either.
- *
- * Everything here is exported so `noUnusedLocals` cannot quietly delete it.
- */
+/* Binding the ledger to the type it claims to be about: `satisfies` alone is defeated by a weakened constraint or an index signature. Exported so `noUnusedLocals` cannot delete them. */
 
 /** Names an index signature directly: `string extends keyof X` means `X` has one. */
 export type PropsKeysAreLiteral = Assert<string extends keyof TodayPageProps ? false : true>;

@@ -1,12 +1,4 @@
-/**
- * §6.13 — the typed confirmation. The third and heaviest rung of §4.3's
- * confirmation ladder, and the product has exactly **one** operation on it:
- * deleting an area, which cascades to every track inside it.
- *
- * The Area group's actions menu opens this with the shared copy and strength.
- *
- * Used more widely it stops being a protection and becomes the new normal.
- */
+/** The typed confirmation: the heaviest rung of the confirmation ladder, used for exactly one operation (deleting an area). */
 
 import { useEffect, useRef, type RefObject } from 'react';
 
@@ -27,11 +19,7 @@ export type TypedConfirm = Readonly<{
   matches: boolean;
 }>;
 
-/**
- * Case-sensitive, no Unicode normalisation. Normalising would let two strings
- * that merely *look* alike through, and "you actually read the name" is the
- * entire value of this gate.
- */
+/** Case-sensitive, no Unicode normalisation: look-alike strings must not pass. */
 export function useTypedConfirm(expected: string): TypedConfirm {
   const [value, setValue] = useState('');
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -46,16 +34,7 @@ export function useTypedConfirm(expected: string): TypedConfirm {
   };
 }
 
-/**
- * Two sentences with different typography, which is why `deleteAreaCopy`
- * returns four fields rather than one `description`: a single slot cannot carry
- * both, and writing the prompt at each call site is exactly what INV-DUP-010
- * exists to prevent.
- *
- * There is no error message when the text does not match — the user is still
- * typing, not failing. And no placeholder in the input: a placeholder would
- * suggest the name can be copied out of it.
- */
+/** No error message while the text does not match, and no placeholder: it would suggest the name can be copied out of it. */
 export function TypedDeleteBody({ copy, expected, value, inputRef, onChange }: {
   copy: TypedConfirmCopy;
   expected: string;

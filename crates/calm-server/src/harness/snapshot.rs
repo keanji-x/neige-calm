@@ -1,10 +1,5 @@
-//! Persisted `PlannerHarness` state.
-//!
-//! `schema_version = 1` is the first live harness schema. Future schema bumps
-//! must migrate rows in the boot recovery path before tasks are respawned. The
-//! recovery contract is deliberately strict: the kernel must know every live
-//! schema it may encounter, so an unknown `schema_version` panics with
-//! `unknown PlannerHarness snapshot schema_version {n}; boot recovery must migrate live schemas`.
+//! Persisted `PlannerHarness` state. Future schema bumps must migrate rows in the boot recovery
+//! path before tasks are respawned; an unknown `schema_version` panics.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -16,141 +11,37 @@ use crate::harness::token_usage::TokenUsage;
 use crate::model::HarnessInputSegment;
 use crate::planner_attachments::bind::BoundAttachment;
 
-// #679 PR1 — `HarnessPhaseTag` moved to `calm_types::harness` (TS-exported,
-// referenced by `Event::HarnessPhaseChanged`). Re-exported so the
-// `crate::harness::snapshot::HarnessPhaseTag` path is unchanged. The
-// `From<&HarnessState>` impl below stays here — `HarnessState` is local.
 pub use calm_types::harness::HarnessPhaseTag;
 
 pub use calm_types::harness::{HARNESS_MODE, HARNESS_SNAPSHOT_SCHEMA_VERSION};
 
-/// The segments of the turn a PRE-#1625-P2 binary had in flight when it
-/// stopped, as that binary persisted them (#1505 S6 to #1625 P2; the struct
-/// as it stood is at `git show 5f39ac79^:crates/calm-server/src/harness/snapshot.rs`).
-///
-/// Read-only and read once. Before P2 the drain kept the batch's segments
-/// here, keyed by the turn they went out under, and the `userMessage` echo
-/// of that turn consumed them into the transcript row it inserted. P2 moved
-/// the segments onto the projection row the drain writes BEFORE `turn/start`,
-/// so no snapshot written by this binary carries the key any more — but a
-/// snapshot written by the previous one can, for a turn that was issued
-/// before the upgrade and echoed after it. That turn has no projection row
-/// (the old drain wrote none), so without this the echo would be stored
-/// with no segments and the transcript would render the batch's system
-/// observations as the person's words, attachments lost. Review round 2 —
-/// CONTRIBUTING.md, "Before you start": a persisted contract is not
-/// rewritten without a compatibility plan, and this is the plan's read
-/// side: the key is honoured on load and never written (the type cannot be
-/// serialized; `HarnessSnapshot` skips the field).
-///
-/// What this covers, exactly: one restart across the upgrade boundary. The
-/// entry lives on the live harness until the completed echo consumes it or
-/// the next drain supersedes it, and the first snapshot this binary writes
-/// drops the key — so a SECOND restart inside that window loses the
-/// segments for that one turn, which is the pre-P2 loss for a turn whose
-/// snapshot was never written. Declared, not closed.
+/// The segments of the turn an older binary had in flight when it stopped. Read on load and
+/// never written (the type cannot be serialized): that turn has no projection row, so without
+/// this its echo would be stored with no segments.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct IssuedInputSegments {
     pub turn_id: String,
     pub segments: Vec<HarnessInputSegment>,
 }
 
-/// #1505 PR1 — the persisted half of a [`QueueEntry::User`].
-///
-/// Stored in a third array parallel to `pending_queue`, rather than by turning
-/// `pending_queue` into an array of objects. That is not a style choice: the
-/// existing rows on disk hold bare `Observation` values, and `from_value_strict`
-/// has no pre-validation in boot recovery, so an incompatible element shape
-/// would panic every live harness on upgrade.
-///
-/// A `None` slot beside a `UserMessage` is the whole of what makes a
-/// [`QueueEntry::LegacyUser`]; see that variant for why it is never repaired.
-///
-/// # Adding a field here (read this first)
-///
-/// The three identity fields are **required**, with no `#[serde(default)]`,
-/// and that is
-/// safe only because of [`deserialize_pending_entry_meta`]: a slot this type
-/// cannot parse degrades to `None` instead of failing the whole snapshot. The
-/// alternative — defaulting each field — was considered and rejected: it turns
-/// a row that is missing `id` into an entry whose id is `""`, i.e. a
-/// half-built identity that reaches the wire and that PR2's delete-by-id would
-/// happily match. Degrading the slot lands on `LegacyUser`, a state that is
-/// already designed, already bounded (one drain) and already tested.
-///
-/// #1505 S6 added `attachments`, and added it **defaulted** rather than
-/// required, which is the opposite of the three above. The reason is that the
-/// degrade is only the right answer when there is no true reading of an old
-/// row. For an id there is none — a row with no id names no entry. For
-/// attachments there is one, and it is exact: a row written before this slice
-/// belongs to a message that could not have carried an image, so "no
-/// attachments" is not a fallback, it is the fact. Requiring the key would
-/// demote every entry queued across the upgrade to `LegacyUser` — losing the
-/// addressability PR1 exists to provide — in exchange for nothing.
-///
-/// So a later slice MAY add a required field here; whether it should turns on
-/// that same question. What it must NOT do is
-/// remove the lenient decoder, because `from_value_strict` panics on failure
-/// and runs on the boot path: a strict decode of a field that PR1-era rows do
-/// not carry is a permanently dead harness for every live card, and no test in
-/// this repo would catch it (every meta literal in the suite either omits the
-/// key entirely or was serialized by the current binary). Pinned by
-/// `a_meta_slot_a_future_field_broke_degrades_to_legacy_instead_of_panicking`.
+/// The persisted half of a [`QueueEntry::User`], stored in an array parallel to `pending_queue`
+/// because existing rows hold bare `Observation` values. The three identity fields are required,
+/// which is safe only because [`deserialize_pending_entry_meta`] degrades an unparsable slot to
+/// `None` (`LegacyUser`) instead of failing the snapshot; never remove that lenient decoder.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct QueueEntryMeta {
     pub id: QueueEntryId,
     pub rev: u32,
     pub queued_at_ms: i64,
-    /// #1505 S6 — the images this entry carries, with the absolute path each
-    /// was bound to.
-    ///
-    /// The path is persisted rather than recomputed. A harness knows its card
-    /// and its runtime; it does not know its workspace directory, and giving
-    /// it one so it could rebuild a path it was already told would add a
-    /// second derivation of the same name — the kind that agrees until it
-    /// does not. Recording the path the bind verified is also the literal
-    /// promise the design makes: the path is decided once, before the entry
-    /// exists, and nothing later recomputes it.
+    /// The images this entry carries, with the absolute path each was bound to. The path is
+    /// persisted rather than recomputed: it is decided once, before the entry exists.
     #[serde(default)]
     pub attachments: Vec<BoundAttachment>,
 }
 
-/// Decode one of the queue's parallel arrays ELEMENT BY ELEMENT, so a single
-/// unreadable element cannot cost the whole snapshot.
-///
-/// # Why every one of these arrays needs it, not just `pending_entry_meta`
-///
-/// `from_value_strict` `expect`s, and `recover_harnesses_on_boot`
-/// (`harness/mod.rs`) hands it `handle_state_json` with no pre-validation. So a
-/// serde error anywhere in that document is a panic on the boot path and every
-/// live harness for that card is gone until a human edits the database.
-/// `pending_entry_meta` was given a lenient decoder for exactly that reason;
-/// the other three arrays were left strict, which made the group posture stated
-/// on `pending_queue` below true of one field out of four. A row containing
-/// `"pending_message_ids": [["m1"], "oops"]` — hand-edited, or written by a
-/// binary from a slice that grew the element shape — took the whole card down.
-///
-/// # The degrade is per POSITION, never a shorter array
-///
-/// Each element that fails becomes that array's own "nothing here" value
-/// ([`Default`]), and the array keeps its length. Dropping the element instead
-/// would shift every later position by one and pair ids with the wrong
-/// sentences — the mis-attribution this module exists to remove, arriving
-/// through the repair rather than through the bug.
-///
-/// | array | element | unreadable element becomes |
-/// |---|---|---|
-/// | `pending_queue` | `Option<Observation>` | `None` — the position is skipped by [`HarnessSnapshot::pending_entries`], together with its side slots, so nothing is mis-paired |
-/// | `pending_envelope_ids` | `Option<i64>` | `None` — "no push to acknowledge" |
-/// | `pending_message_ids` | `Vec<String>` | empty — "no transfer identity yet"; the next transfer boundary mints one |
-///
-/// `pending_entry_meta` keeps its own decoder below because it demotes for two
-/// further reasons this one cannot express (an empty id, and a duplicate id).
-///
-/// Every drop is bounded and self-healing in the same way that one is: the
-/// entry either stays visible to the planner or is gone from a queue it could
-/// not have been delivered from, and the next `set_pending_entries` rewrites
-/// all four arrays from real values.
+/// Decode one of the queue's parallel arrays ELEMENT BY ELEMENT: `from_value_strict` runs on the
+/// boot path with no pre-validation, so a serde error anywhere is a dead harness. Each failed
+/// element becomes that array's `Default` and the array keeps its length, so no position shifts.
 fn lenient_parallel_array<'de, D, T>(deserializer: D) -> std::result::Result<Vec<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -163,27 +54,9 @@ where
         .collect())
 }
 
-/// Read the `pending_entry_meta` array without ever failing the snapshot.
-///
-/// Three ways a slot is dropped to `None` (i.e. its entry is read back as
-/// [`QueueEntry::LegacyUser`]), all of them reachable only through serde —
-/// a hand-edited `worker_sessions.handle_state_json`, or a row written by a
-/// binary from another slice:
-///
-/// 1. **it does not parse** — a missing or wrongly typed field. The
-///    alternative is `from_value_strict` panicking on the boot path.
-/// 2. **the id is empty** — `""` is not an address. Admitting it would put an
-///    `entry_id: ""` on the wire, which `PendingQueueEntry` promises never
-///    happens and which a later delete-by-id could match.
-/// 3. **the id repeats** within one queue — the second and later holders are
-///    dropped. Two entries answering to one address is precisely the
-///    "delete hits somebody else's message" failure this module exists to
-///    remove; minting cannot produce it (uuid v4), so a duplicate is always
-///    smuggled in, and there is no honest way to pick between the two.
-///
-/// Every drop is bounded and self-healing: the entry stays visible to the
-/// planner, is counted in `pending_overflow`, and disappears on the next
-/// drain. Nothing here can promote a slot, only demote it.
+/// Read the `pending_entry_meta` array without ever failing the snapshot. A slot is dropped to
+/// `None` (its entry reads back as `LegacyUser`) when it does not parse, when the id is empty,
+/// or when the id repeats within one queue. Nothing here can promote a slot, only demote it.
 fn deserialize_pending_entry_meta<'de, D>(
     deserializer: D,
 ) -> std::result::Result<Vec<Option<QueueEntryMeta>>, D::Error>
@@ -211,88 +84,20 @@ pub struct HarnessSnapshot {
     pub phase: HarnessPhaseTag,
     #[serde(default)]
     pub push_watermark: i64,
-    /// The four arrays below are ONE value split across four keys for
-    /// on-disk compatibility, and they are module-private so that the split
-    /// cannot be written apart. Every reader goes through
-    /// [`HarnessSnapshot::pending_entries`], every writer through
-    /// [`HarnessSnapshot::set_pending_entries`].
-    ///
-    /// The visibility argument covers Rust writers in this crate only. It does
-    /// NOT cover serde: a hand-written JSON row with arrays of different
-    /// lengths still deserializes, and `pending_entries()` pads the short sides
-    /// with `None` rather than panicking — deliberately, because panicking here
-    /// is a boot failure for a live harness (see `token_usage` below).
-    ///
-    /// That posture is delivered by [`lenient_parallel_array`] on all four,
-    /// not by three strict decoders and one lenient one: an unreadable ELEMENT
-    /// is as fatal to `from_value_strict` as a missing field, and it degrades
-    /// per position rather than by shortening the array. `Option<Observation>`
-    /// rather than `Observation` is what buys that for this array — a hole
-    /// keeps its index so no side slot moves under it, and serializes
-    /// identically to the observation for every value this crate writes,
-    /// because `set_pending_entries` only ever writes `Some`.
+    /// The four arrays below are ONE value split across four keys for on-disk compatibility, and
+    /// module-private so the split cannot be written apart. Serde still admits arrays of different
+    /// lengths; `pending_entries()` pads the short sides with `None` rather than panicking.
     #[serde(default, deserialize_with = "lenient_parallel_array")]
     pending_queue: Vec<Option<Observation>>,
     #[serde(default, deserialize_with = "lenient_parallel_array")]
     pending_envelope_ids: Vec<Option<i64>>,
-    /// #1505 PR1. Absent in every row written before this slice; an absent or
-    /// `None` slot beside a `UserMessage` is read back as
+    /// Absent in every old row; an absent or `None` slot beside a `UserMessage` is read back as
     /// [`QueueEntry::LegacyUser`] and is never given an id.
-    ///
-    /// No `HARNESS_SNAPSHOT_SCHEMA_VERSION` bump, for exactly the reasons
-    /// spelled out on `token_usage` below: no `deny_unknown_fields` anywhere in
-    /// this type, `#[serde(default)]` here, and `assert_known_schema` compares
-    /// only the integer. So:
-    ///
-    /// - **new binary, old row**: the key is absent, the array is empty, every
-    ///   user entry reads back as `LegacyUser`. Pinned by
-    ///   `a_pre_1505_snapshot_without_pending_entry_meta_yields_legacy_entries`.
-    /// - **old binary, new row** (the rollback direction): the key is unknown
-    ///   and ignored, so the old build boots and no message is lost. It is NOT
-    ///   lossless, and the thing it loses is the only thing this slice adds:
-    ///   the old build re-persists without the key, so on the way forward again
-    ///   every entry that was addressable is now a `LegacyUser` — withheld from
-    ///   `pending`, counted in `pending_overflow`, and never repaired. That is
-    ///   a bounded, one-drain loss of addressability, which is the correct
-    ///   trade against the alternative: bumping the version makes
-    ///   `assert_known_schema` panic on the old binary, i.e. every live harness
-    ///   unrecoverable rather than merely unaddressable.
-    ///
-    /// Pinned by `an_unknown_key_from_a_future_binary_is_ignored_not_rejected`.
     #[serde(default, deserialize_with = "deserialize_pending_entry_meta")]
     pending_entry_meta: Vec<Option<QueueEntryMeta>>,
-    /// #1449 — one set of message ids per `pending_queue` entry, so two copies
-    /// of the same sentence can be told apart wherever they meet.
-    ///
-    /// **A second identity, and deliberately not `pending_entry_meta`'s.**
-    /// `QueueEntryId` answers "which entry is the client addressing", is minted
-    /// once at enqueue, survives a fold on the SURVIVOR only, and is never
-    /// given to a [`QueueEntry::LegacyUser`]. These ids answer "which message
-    /// INSTANCES is this entry still holding", are minted wherever an instance
-    /// crosses a transfer boundary without one (legacy entries included), and a
-    /// fold unions them. Collapsing the two would either make legacy entries
-    /// addressable or make a fold drop an instance the give-back must move
-    /// back; #1449 round 6 and #1505 GAP-B are each pinned against one of those.
-    ///
-    /// **Identity only. Not a state machine.** These ids answer exactly one
-    /// question — "is this the same instance I moved?" — and they must not grow
-    /// a disposition, an accepted/canceled terminal state, or any other
-    /// semantics. A queue transfer that cannot tell instances apart degrades
-    /// into matching on message text, which is forgeable (two identical
-    /// sentences) and is the shape this repository has already been hurt by.
-    ///
-    /// A **set** per entry, not one id, because
-    /// [`crate::harness::queue::try_fold_tail`] concatenates two adjacent user
-    /// entries into a single entry under backpressure (#615 F3). One id per
-    /// entry would have to discard one of the two, which is the very loss of
-    /// identity the ids exist to prevent, so a fold unions the sets instead.
-    ///
-    /// Empty for every non-`UserMessage` entry, and for an entry enqueued
-    /// before this field existed — but only until that entry moves: the harvest
-    /// and the inherit mint an id for any `UserMessage` they carry that has
-    /// none, in the transaction that moves it, so a moved instance is always
-    /// identifiable. Minting there rather than at load keeps the id stable
-    /// across reads.
+    /// One set of message ids per `pending_queue` entry — "which message INSTANCES is this entry
+    /// still holding", distinct from `QueueEntryId`. Identity only, not a state machine. A set
+    /// because a fold unions two entries; empty until a transfer boundary mints one.
     #[serde(default, deserialize_with = "lenient_parallel_array")]
     pending_message_ids: Vec<Vec<String>>,
     #[serde(default)]
@@ -305,80 +110,20 @@ pub struct HarnessSnapshot {
     pub last_seen_head: Option<String>,
     #[serde(default)]
     pub issued_turn_head: Option<String>,
-    /// `issued_input_segments` was written here from #1505 S6 to #1625 P2.
-    /// The segments of a batch in flight are now the `input_segments` column
-    /// of the projection row the drain writes to the transcript table, which
-    /// is durable on its own. The key is still READ, for the one turn a
-    /// pre-P2 binary can have left in flight across the upgrade — see
-    /// [`IssuedInputSegments`] — and never written: `skip_serializing` here,
-    /// and the type derives no `Serialize`, so a snapshot from this binary
-    /// cannot carry it.
+    /// Legacy key: still READ for the one turn an older binary can have left in flight, never
+    /// written (`skip_serializing`, and the type derives no `Serialize`).
     #[serde(default, skip_serializing)]
     pub issued_input_segments: Option<IssuedInputSegments>,
-    /// #1625 P2 — the key under which the batch at the head of the queue is,
-    /// or is about to be, projected onto the transcript table: the row's
-    /// `item_uuid` and `turn/start`'s `clientUserMessageId`.
-    ///
-    /// Written by `maybe_issue_turn` in the snapshot that precedes the drain
-    /// and cleared once the turn is out (`persist_issuance_outcome` on the
-    /// success arm). Decided once per batch: a batch holding a user entry
-    /// takes that entry's own id, a batch of system observations alone takes
-    /// a mint; and once decided the slot is the key, ahead of whatever the
-    /// queue holds when the batch is drained again (review round 2 — the
-    /// queue can have gained a sentence between a restart and the re-drain,
-    /// and keying by it would leave the predecessor's row standing beside
-    /// the new one). Without the slot a harness restarted between the
-    /// projection write and the issuance outcome re-drained the same batch
-    /// under a fresh key, so the stale-row replacement in
-    /// `write_projection_row` matched nothing and the batch stood on the
-    /// transcript twice. Additive and defaulted, same compatibility argument
-    /// as `token_usage` below: an old row reads as `None`, an old binary
-    /// drops it — and what it loses is exactly one duplicate-row repair for
-    /// one in-flight batch.
+    /// The key under which the batch at the head of the queue is, or is about to be, projected onto
+    /// the transcript table. Written by `maybe_issue_turn` before the drain and cleared once the turn
+    /// is out; once decided, the slot outranks whatever the queue holds on a re-drain.
     #[serde(default)]
     pub projection_client_id: Option<QueueEntryId>,
     #[serde(default)]
     pub wedged_reason: Option<String>,
-    /// #1255 S3 — latest `thread/tokenUsage/updated` reading for this thread.
-    ///
-    /// No `schema_version` bump for this field, and that is a checked claim,
-    /// not an assumption. `HarnessSnapshot` carries no
-    /// `#[serde(deny_unknown_fields)]` (nor does any type it nests), so the
-    /// two directions are:
-    ///
-    /// - **new binary reading an old snapshot**: the key is absent,
-    ///   `#[serde(default)]` supplies `None`, and `assert_known_schema` only
-    ///   ever compares the integer — which is unchanged.
-    /// - **old binary reading a new snapshot** (the rollback direction, and
-    ///   the one that actually forces a version bump when it fails): serde's
-    ///   default is to *ignore* unknown keys, so an old build drops
-    ///   `token_usage` and boots. It loses the reading, which is the correct
-    ///   loss for a value that is re-pushed on the next model response.
-    ///
-    /// Bumping the version for a purely additive, defaulted field would have
-    /// cost the opposite: `assert_known_schema` panics on an unknown version,
-    /// so a bump makes every live snapshot unreadable by the older binary —
-    /// it would turn a lossless rollback into a boot panic.
-    ///
-    /// The first direction is now a *tested* claim, not only a read one:
-    /// `a_pre_1255_snapshot_without_token_usage_still_deserializes` below
-    /// feeds a literal that omits the key. It has to be a literal — every
-    /// other call site in the suite hands `from_value_strict` JSON that a new
-    /// binary just serialized, so `token_usage` is always present and the
-    /// absent-key path is otherwise never exercised.
-    ///
-    /// What that test actually pins, measured rather than assumed: deleting
-    /// `#[serde(default)]` from this field changes **nothing**, because
-    /// serde's derive already treats a missing `Option<T>` field as `None`.
-    /// The attribute is belt-and-braces and the test stays green without it —
-    /// verified by removing it and re-running. What *does* redden the test is
-    /// the field becoming genuinely required (a `deserialize_with`, or a
-    /// non-`Option` type), and the failure is not a missing field: it is
-    /// `is_harness_snapshot_value` answering false for every pre-#1255 row,
-    /// and `HarnessSnapshot::from_value_strict` **panicking** in boot recovery
-    /// (`harness/mod.rs`, which unlike `routes/cards.rs` has no
-    /// pre-validation guard) — i.e. every existing harness unrecoverable on
-    /// upgrade. That is the mutation the test was verified against.
+    /// Latest `thread/tokenUsage/updated` reading. Additive and defaulted, no `schema_version` bump:
+    /// an old binary ignores the unknown key and loses only a value re-pushed on the next response,
+    /// whereas a bump would turn a lossless rollback into a boot panic.
     #[serde(default)]
     pub token_usage: Option<TokenUsage>,
 }
@@ -437,9 +182,7 @@ impl HarnessSnapshot {
             issued_turn_head: None,
             issued_input_segments: None,
             projection_client_id: None,
-            // Set by `snapshot_for` from `Inner`, exactly like
-            // `last_seen_head` / `issued_turn_head` above: `from_state` sees
-            // only `HarnessState`, and token usage does not live there.
+            // Set by `snapshot_for` from `Inner`; `from_state` sees only `HarnessState`.
             token_usage: None,
             wedged_reason,
         };
@@ -454,38 +197,21 @@ impl HarnessSnapshot {
         snapshot
     }
 
-    /// Zip the four stored arrays into one fused view.
-    ///
-    /// Shorter sides are padded with `None`, which is where the old
-    /// alignment pass went (deleted by this slice). The variant is decided by the
-    /// observation together with its meta slot, and the mapping is total:
-    ///
-    /// | observation | meta slot | entry |
-    /// |---|---|---|
-    /// | `UserMessage` | `Some` | [`QueueEntry::User`] |
-    /// | `UserMessage` | `None` | [`QueueEntry::LegacyUser`] |
-    /// | anything else | ignored | [`QueueEntry::System`] |
-    ///
-    /// The third row ignores rather than honours a meta slot: no writer in this
-    /// crate can produce one (`set_pending_entries` writes `None` for every
-    /// non-user entry), and honouring a hand-written one would be the start of
-    /// an addressable system observation, which the enum exists to forbid.
+    /// Zip the four stored arrays into one fused view; shorter sides are padded with `None`.
+    /// `UserMessage` + `Some` meta → `User`; `UserMessage` + `None` → `LegacyUser`; anything else →
+    /// `System` (a meta slot there is ignored, never honoured).
     pub fn pending_entries(&self) -> Vec<QueueEntry> {
         self.pending_queue
             .iter()
             .enumerate()
             .filter_map(|(index, observation)| {
-                // A hole is a position whose observation this build could not
-                // read. The whole position goes — entry AND side slots — so
-                // nothing below is paired with a neighbour's identity.
+                // A hole is a position whose observation this build could not read; the whole position goes,
+                // side slots included, so nothing below is paired with a neighbour's identity.
                 let observation = observation.as_ref()?;
                 let envelope_id = self.pending_envelope_ids.get(index).copied().flatten();
                 let meta = self.pending_entry_meta.get(index).and_then(Option::as_ref);
-                // #1449 — the same padding rule as the other side arrays: a
-                // row written before `pending_message_ids` existed decodes to
-                // an EMPTY outer vec against an N-entry queue, and an absent
-                // slot must read as "no instance identity yet", never as
-                // somebody else's.
+                // Same padding rule as the other side arrays: an absent slot reads as "no instance identity
+                // yet", never as somebody else's.
                 let message_ids = self
                     .pending_message_ids
                     .get(index)
@@ -538,9 +264,7 @@ impl HarnessSnapshot {
                     queued_at_ms: *queued_at_ms,
                     attachments: attachments.clone(),
                 }),
-                // A legacy entry is written back exactly as it was read: text
-                // present, meta slot empty. That is what keeps it legacy across
-                // any number of restarts, and what keeps GAP-B true.
+                // A legacy entry is written back exactly as it was read: text present, meta slot empty.
                 QueueEntry::LegacyUser { .. } | QueueEntry::System { .. } => None,
             });
             pending_queue.push(Some(entry.observation()));
@@ -551,11 +275,7 @@ impl HarnessSnapshot {
         self.pending_message_ids = pending_message_ids;
     }
 
-    /// Read-only convenience for callers that only care about the observations.
-    ///
-    /// Holes are skipped, exactly as [`Self::pending_entries`] skips them, so
-    /// this and `pending_len` cannot disagree with the entry view about how
-    /// many things are queued.
+    /// Read-only view of the observations; holes are skipped exactly as `pending_entries` skips them.
     pub fn pending_observations(&self) -> Vec<Observation> {
         self.pending_queue.iter().flatten().cloned().collect()
     }
@@ -590,15 +310,8 @@ mod pending_side_array_tests {
             .collect()
     }
 
-    /// #1449 — a snapshot written before `pending_message_ids` existed decodes
-    /// with an EMPTY outer vec against a non-empty queue.
-    ///
-    /// That length mismatch is worse than having no ids at all: any code that
-    /// pairs the arrays by index would attribute an id to the wrong entry, and
-    /// the give-back would then move the wrong sentence. #1505 PR1 moved the
-    /// padding out of a separate aligner and into `pending_entries`, so the
-    /// mismatch cannot leave the READ — which is stronger than aligning at the
-    /// decoder only, because a snapshot built in memory gets it too.
+    /// A snapshot written before `pending_message_ids` existed decodes with an EMPTY outer vec
+    /// against a non-empty queue; the padding must happen on the READ, not only at the decoder.
     #[test]
     fn an_upgraded_snapshot_decodes_with_one_empty_id_set_per_entry() {
         let mut legacy = serde_json::to_value(HarnessSnapshot::initial(
@@ -624,12 +337,7 @@ mod pending_side_array_tests {
         );
     }
 
-    /// The counter-fixture: a deliberately mismatched snapshot must be
-    /// CORRECTED on the way out, not carried through.
-    ///
-    /// Both directions: a short array leaves entries with no id, a long one
-    /// pairs ids with entries that do not exist, and either one is a
-    /// mis-attribution the give-back would act on.
+    /// A deliberately mismatched snapshot must be CORRECTED on the way out, in both directions.
     #[test]
     fn alignment_corrects_both_a_short_and_a_long_id_array() {
         let mut short = HarnessSnapshot::initial(0, queued(&["one", "two", "three"]));
@@ -653,8 +361,7 @@ mod pending_side_array_tests {
         );
         assert_eq!(entries[0].message_ids(), ["m1".to_string()]);
 
-        // And the correction is not merely a read-side view: re-persisting
-        // through the single write point drops the orphan.
+        // Re-persisting through the single write point drops the orphan.
         let kept = long.pending_entries();
         long.set_pending_entries(kept);
         assert_eq!(long.pending_message_ids, vec![vec!["m1".to_string()]]);
@@ -702,23 +409,8 @@ mod tests {
 
     use serde_json::json;
 
-    /// Forward compatibility as an executed test rather than an asserted
-    /// claim (#1255 S3 review).
-    ///
-    /// This literal is a snapshot as a **pre-#1255 binary wrote it**: no
-    /// `token_usage` key at all. Nothing else in the suite can catch a
-    /// regression here, because every other `from_value_strict` call site
-    /// feeds it JSON a *current* binary just serialized, in which the key is
-    /// always present.
-    ///
-    /// Mutation-verified: removing `#[serde(default)]` alone does NOT redden
-    /// it (serde already reads a missing `Option` field as `None`), but making
-    /// the field genuinely required does — `#[serde(deserialize_with =
-    /// "Option::<TokenUsage>::deserialize")]` fails the
-    /// `is_harness_snapshot_value` assertion below. That red is the same red
-    /// as every deployed harness failing to recover on upgrade: boot recovery
-    /// (`harness/mod.rs`) calls `from_value_strict` with no pre-validation, so
-    /// it would panic.
+    /// A snapshot as a pre-`token_usage` binary wrote it: no key at all. Has to be a literal —
+    /// every other `from_value_strict` call site feeds JSON a current binary just serialized.
     #[test]
     fn a_pre_1255_snapshot_without_token_usage_still_deserializes() {
         let pre_1255 = json!({
@@ -756,37 +448,8 @@ mod tests {
         assert_eq!(snapshot.last_thread_id.as_deref(), Some("thread-pre-1255"));
     }
 
-    /// #1505 PR1 §11.1 #3 — the snapshot-layer half of "PR1 never silently
-    /// gives an old queue entry a new id".
-    ///
-    /// It has to be a hand-written literal. Every other `from_value_strict`
-    /// call site in the suite feeds JSON that a *current* binary just
-    /// serialized, in which `pending_entry_meta` is always present and
-    /// populated, so the absent-key path is otherwise never exercised.
-    ///
-    /// Mutation-verified (`MUTATION-1505-PR1`): rewriting the `(UserMessage,
-    /// None)` arm of `pending_entries` from `legacy_user(..)` to
-    /// `QueueEntry::user_message(..)` — minting instead of degrading —
-    /// reddens **eight** tests, of which **three** are independent judgements
-    /// of the invariant, one per layer, and all three are load-bearing:
-    ///
-    /// - this one, at the snapshot boundary;
-    /// - `planner_pending_queue::pre_1505_queue_entries_are_withheld_and_counted_not_minted`,
-    ///   which asserts it through `GET /planner/run` and also pins what the
-    ///   user is shown; and
-    /// - `planner_pending_queue::folding_onto_a_pre_1505_tail_answers_with_a_null_entry_id`,
-    ///   which asserts it through the `POST /planner/input` ack, the value
-    ///   PR4's placeholder rule reads.
-    ///
-    /// The other five go red because their fixtures travel through the mutated
-    /// arm, not because they judge this invariant:
-    /// `mismatched_parallel_arrays_pad_instead_of_panicking`,
-    /// `set_pending_entries_writes_every_parallel_array_in_step`,
-    /// `a_meta_slot_a_future_field_broke_degrades_to_legacy_instead_of_panicking`,
-    /// `an_empty_or_duplicated_entry_id_is_refused_rather_than_addressed`, and
-    /// `routes::cards::pending_page_tests::only_addressable_user_entries_reach_the_page`.
-    /// Deleting any of those five would not weaken this invariant; deleting
-    /// any of the three above would.
+    /// The snapshot layer never silently gives an old queue entry a new id. Has to be a hand-written
+    /// literal: every other call site feeds JSON with `pending_entry_meta` present.
     #[test]
     fn a_pre_1505_snapshot_without_pending_entry_meta_yields_legacy_entries() {
         let pre_1505 = json!({
@@ -851,8 +514,7 @@ mod tests {
             "envelope ids still line up positionally across the gap"
         );
 
-        // Re-persisting does not repair it: a LegacyUser written back is
-        // written back legacy, so it reads back legacy on the next boot too.
+        // Re-persisting does not repair it: a LegacyUser is written back legacy.
         let round_tripped = HarnessSnapshot::from_value_strict(
             serde_json::to_value(&snapshot).expect("serialize snapshot"),
         );
@@ -863,10 +525,7 @@ mod tests {
         );
     }
 
-    /// §1.5 — the fused write point is the reason a partial update cannot be
-    /// expressed any more. One list in, every parallel array out, always equal
-    /// length, with the meta slot populated for exactly the addressable
-    /// entries and the #1449 message ids riding the same index.
+    /// One list in, every parallel array out, always equal length.
     #[test]
     fn set_pending_entries_writes_every_parallel_array_in_step() {
         let user = QueueEntry::user_message("hello".into(), Some(9), Vec::new());
@@ -918,10 +577,7 @@ mod tests {
         assert_eq!(recovered.pending_entries()[2], legacy);
     }
 
-    /// A hand-written row with mismatched array lengths still loads: the short
-    /// sides pad with `None`. This is the serde hole the visibility argument
-    /// explicitly does not close, and padding rather than panicking is the
-    /// fail-open direction on purpose — a panic here is a dead harness.
+    /// Padding rather than panicking is the fail-open direction on purpose — a panic here is a dead harness.
     #[test]
     fn mismatched_parallel_arrays_pad_instead_of_panicking() {
         let ragged = json!({
@@ -946,11 +602,8 @@ mod tests {
         );
     }
 
-    /// #1625 P2, review round 2 — a snapshot written between #1505 S6 and
-    /// this slice carries an `issued_input_segments` key for the turn it had
-    /// in flight. This binary READS it (the echo of that turn needs those
-    /// segments; see [`IssuedInputSegments`]) and never WRITES it: the same
-    /// snapshot serialized again has no such key. Nothing else is disturbed.
+    /// A legacy `issued_input_segments` key is READ (the echo of that turn needs those segments)
+    /// and never WRITTEN.
     #[test]
     fn a_pre_p2_issued_input_segments_key_is_read_on_load_and_never_written() {
         let mut value =
@@ -992,15 +645,8 @@ mod tests {
         );
     }
 
-    /// #1514 review — the compatibility argument covers the OTHER direction
-    /// too, and now with a load-bearing test rather than only a read of the
-    /// derive.
-    ///
-    /// A row from a later binary carries keys this build has never heard of.
-    /// It must boot and ignore them. Today that rests on the absence of
-    /// `#[serde(deny_unknown_fields)]`, which is one attribute away from being
-    /// silently untrue — and the failure would be `from_value_strict`
-    /// panicking on the boot path, i.e. every live harness unrecoverable.
+    /// A row from a later binary carries unknown keys; it must boot and ignore them. Rests on the
+    /// absence of `#[serde(deny_unknown_fields)]`.
     #[test]
     fn an_unknown_key_from_a_future_binary_is_ignored_not_rejected() {
         let mut row = serde_json::to_value(HarnessSnapshot::initial(
@@ -1023,43 +669,10 @@ mod tests {
         );
     }
 
-    /// #1514 review, the highest-priority finding — a meta slot this build
-    /// cannot parse degrades to `LegacyUser`; it never panics.
-    ///
-    /// The scenario is concrete, not hypothetical: PR2's slice table adds CAS
-    /// / steer state to the queue entry, and `QueueEntryMeta` is the obvious
-    /// place. If that field were required and decoded strictly, every row
-    /// written by THIS slice would fail to deserialize, and
-    /// `from_value_strict` panics — on the boot path, with no pre-validation,
-    /// so the harness for that card never comes back. Every meta literal in
-    /// this repo either omits the key entirely or was serialized by the
-    /// current binary, so nothing else would catch it.
-    ///
-    /// #1514 review — the SAME degrade, for every array that runs parallel to
-    /// `pending_queue`, table-driven.
-    ///
-    /// One array had a lenient decoder and three did not, while the header on
-    /// `pending_queue` asserted the posture for the group. `from_value_strict`
-    /// `expect`s and `recover_harnesses_on_boot` calls it with no
-    /// pre-validation, so an unreadable ELEMENT in any of them was a boot
-    /// panic and a dead harness for that card — the exact failure the meta
-    /// decoder exists to prevent, one array over.
-    ///
-    /// A case per array, each planting ONE unreadable element beside one good
-    /// one, and each asserting the two things that make the degrade safe:
-    /// the decode does not panic, and the SURVIVING entry is still paired with
-    /// its OWN identity rather than its neighbour's. The second half is the
-    /// point — a decoder that dropped the bad element instead of holing it
-    /// would shift every later position and pass a length check while pairing
-    /// "second" with the first entry's ids.
-    ///
-    /// Sentinel for `lenient_parallel_array`: removing the
-    /// `deserialize_with` from any one of the three reddens its own case here
-    /// and nothing else.
+    /// A meta slot this build cannot parse degrades to `LegacyUser`; it never panics.
     #[test]
     fn an_unreadable_element_in_any_parallel_array_degrades_instead_of_panicking() {
-        // (array under test, the two elements — one good, one this build
-        // cannot read, in that order)
+        // (array under test, the two elements — one good, one this build cannot read)
         let cases: [(&str, Value); 3] = [
             // A future `Observation` variant, as this build sees it.
             (
@@ -1098,8 +711,6 @@ mod tests {
             let entries = snapshot.pending_entries();
 
             // The good element at index 0 keeps everything that was ITS own.
-            // Held for every case, including the one that holed `pending_queue`
-            // — there the second position disappears whole, side slots and all.
             assert_eq!(
                 entries[0].observation(),
                 Observation::UserMessage {
@@ -1124,15 +735,13 @@ mod tests {
             );
 
             match array {
-                // A hole removes the POSITION. Anything else would be a
-                // fabricated observation delivered to the planner.
+                // A hole removes the POSITION; anything else would be a fabricated observation.
                 "pending_queue" => assert_eq!(
                     entries.len(),
                     1,
                     "an observation this build cannot read is not a queue entry"
                 ),
-                // The other two keep the entry and lose only that one
-                // position's value.
+                // The other two keep the entry and lose only that one position's value.
                 "pending_envelope_ids" => {
                     assert_eq!(entries.len(), 2);
                     assert_eq!(entries[1].envelope_id(), None, "{array}: degraded slot");
@@ -1159,8 +768,7 @@ mod tests {
         }
     }
 
-    /// This test is also the sentinel for the decoder itself: deleting
-    /// `deserialize_pending_entry_meta` reddens it.
+    /// Also the sentinel for the decoder itself: deleting `deserialize_pending_entry_meta` reddens it.
     #[test]
     fn a_meta_slot_a_future_field_broke_degrades_to_legacy_instead_of_panicking() {
         let row = json!({
@@ -1172,9 +780,7 @@ mod tests {
                 {"type": "user_message", "text": "also written by PR1"}
             ],
             "pending_envelope_ids": [null, null],
-            // As a future binary that made `queued_at_ms` required would see
-            // a PR1-era row: the field this build writes is there, the one it
-            // does not know about is missing.
+            // As a future binary that made `queued_at_ms` required would see an older row.
             "pending_entry_meta": [
                 {"id": "kept", "rev": 0, "queued_at_ms": 5},
                 {"id": "broken", "rev": 0}
@@ -1195,15 +801,8 @@ mod tests {
         );
     }
 
-    /// #1514 review MN-2/MN-3 — the two identities serde could smuggle past
-    /// the minting path are refused at the read boundary.
-    ///
-    /// Neither is reachable from Rust: `QueueEntryId::mint` is uuid v4, so it
-    /// is neither empty nor repeatable. Both are reachable by hand-editing
-    /// `worker_sessions.handle_state_json`, and both would defeat the thing
-    /// this module exists for — an empty id puts an unusable address on the
-    /// wire, and a duplicate makes PR2's delete-by-id ambiguous, which is the
-    /// "delete hits somebody else's message" failure restated.
+    /// The two identities serde could smuggle past the minting path (empty id, duplicate id) are
+    /// refused at the read boundary; neither is reachable from Rust.
     #[test]
     fn an_empty_or_duplicated_entry_id_is_refused_rather_than_addressed() {
         let row = json!({

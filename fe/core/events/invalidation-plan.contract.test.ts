@@ -36,17 +36,6 @@ describe('invalidation plan contract', () => {
     });
   });
 
-  /*
-   * #1253 §6 — the two keys the Today trigger needs, asserted on their own.
-   *
-   * They are already covered by the literal list above; this states them as a
-   * requirement rather than as an incidental part of a snapshot, because the
-   * failure they prevent is invisible from inside this layer. A report edit
-   * that does not invalidate these two leaves the page unchanged after the
-   * button is pressed — with no error, no console warning and no failing
-   * golden, since `PolicyMap` is exhaustive over event kinds and not over query
-   * keys. Deleting either line from the policy turns this red and nothing else.
-   */
   it('refreshes the Today document and its resolve when a report is edited', () => {
     const event = { ev: 'track.report_edited', data: { track_id: 'lp' } } as Extract<
       WireEvent,
@@ -57,19 +46,8 @@ describe('invalidation plan contract', () => {
     expect(keys).toContainEqual(['track', 'lp']);
   });
 
-  /*
-   * #1628 D5 / A21 — the one key a report edit must NOT reach.
-   *
-   * `['track-report-series', trackId, blockId, rev]` is keyed by block
-   * revision: an edited block arrives with a new `rev` through the `['track',
-   * id]` refetch this plan does order, mounts a new key and fetches; an
-   * unchanged block keeps its key and its cache. The event carries no block
-   * id (only `track_id`), so the only way to reach series data from here is
-   * the whole prefix — every series block of the track, each a `full` read of
-   * up to 1 MiB, refetched because a paragraph changed. Adding the prefix
-   * here is a one-line "improvement" nothing else would catch: `PolicyMap` is
-   * exhaustive over event kinds, never over the keys they name.
-   */
+  /* Series keys are per block revision; the event carries no block id, so touching the
+   * `track-report-series` prefix would refetch every series block of the track. */
   it('report edit does not refetch unchanged series blocks', () => {
     const event = { ev: 'track.report_edited', data: { track_id: 'track-7' } } as Extract<
       WireEvent,
@@ -84,15 +62,6 @@ describe('invalidation plan contract', () => {
     expect(plan.invalidate).toContainEqual(['track', 'track-7']);
   });
 
-  /*
-   * #1505 S4 review. The failure is invisible from inside this layer and from
-   * inside the tab that causes it: the writer invalidates its own
-   * `planner-run` by hand, so every single-client test passes while a second
-   * tab shows a model the server is no longer using and sends under it.
-   * Deleting the key from the `card.updated` policy turns this red and
-   * nothing else — `PolicyMap` is exhaustive over event kinds, never over
-   * query keys.
-   */
   it('refreshes a card\'s planner run when the card changes', () => {
     const event = {
       ev: 'card.updated',
@@ -151,14 +120,7 @@ describe('invalidation plan contract', () => {
     expectTypeOf<typeof TRACK_FILES_DERIVED_KINDS[number]>().toEqualTypeOf<TrackFilesDerivedKind>();
   });
 
-  /*
-   * The exclusion, asserted from both sides so neither can drift silently.
-   *
-   * A hook fires roughly twice per tool call per running worker and writes no
-   * `tasks` row; `['track-report', …]` is a live query on the whole-document
-   * report projection. It must keep its workspace key (the files really did
-   * change) and must not have the verdict one.
-   */
+  /* A hook fires roughly twice per tool call per running worker and writes no `tasks` row. */
   it.each(['codex.hook', 'claude.hook'] as const)(
     'invalidates the workspace but never the task verdicts for %s',
     (ev) => {

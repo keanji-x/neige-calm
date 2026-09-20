@@ -1,19 +1,6 @@
-//! #741 §1.3 — the durable codex worker-liveness feeder (T2, OBSERVATIONAL).
-//!
-//! A long-lived task, spawned at dispatcher construction behind the SAME
-//! kill-switch as the reaper (`NEIGE_REAPER_DISABLED`), that subscribes to the
-//! shared codex daemon notification stream and push-feeds the durable
-//! `worker_sessions.{last_activity_ms,last_thread_status}` columns keyed by
-//! codex `thread_id`.
-//!
-//! It writes ONLY those two columns — plus, on a `turn/completed` whose
-//! `turn.status` is `completed`, the monotone
-//! `worker_sessions.last_turn_completed_ms` (#1722 §4.2.1) — via
-//! [`SessionRepo::session_record_activity_by_thread`]; never `updated_at_ms`,
-//! which orders projection reads.
-//!
-//! Both columns gate `Reaper::sweep_all` (`reaper/mod.rs`): stop stamping them
-//! and a live but quiet codex session ages past the deadline and is reapable.
+//! Durable codex worker-liveness feeder (OBSERVATIONAL): push-feeds
+//! `worker_sessions.{last_activity_ms,last_thread_status,last_turn_completed_ms}` from the
+//! daemon notification stream; never `updated_at_ms`, which orders projection reads.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -26,23 +13,9 @@ use crate::codex_appserver::{Notification, ThreadActiveFlag, ThreadStatus};
 use crate::db::prelude::*;
 use crate::model::now_ms;
 
-/// Map a `thread/status/changed` raw `status` JSON (`{ "type": "active",
-/// "activeFlags": [...] }`, design §1.3) to the short string persisted in
-/// `last_thread_status`. Pure + total: any shape that fails to parse degrades
-/// to `"unknown"` (#1722 §4.2.1 — fail-closed: `active` is the track
-/// activity projector's `working` evidence, so a status shape this binary
-/// does not know must not light an idle interactive card; `"unknown"` is
-/// outside every projector predicate and, for the reaper, gets the same
-/// 900 s time pre-gate as `idle` because the stamp still writes
-/// `last_activity_ms`).
-///
-/// The mapping:
-/// * `active` + `waitingOnUserInput` ⇒ `"waitingOnUserInput"`
-/// * `active` + `waitingOnApproval`  ⇒ `"waitingOnApproval"`
-///   (user-input wins if BOTH are set — the stronger human-block signal)
-/// * `active` (no flag)              ⇒ `"active"`
-/// * `idle` / `systemError` / `notLoaded` ⇒ that `type`
-/// * anything else                   ⇒ `"unknown"`
+/// Map a `thread/status/changed` raw `status` JSON to the persisted short string. Any shape
+/// that fails to parse degrades to `"unknown"` (fail-closed: `active` is the projector's
+/// `working` evidence). User-input wins over approval when both flags are set.
 pub fn status_str_from_value(status: &Value) -> &'static str {
     match serde_json::from_value::<ThreadStatus>(status.clone()) {
         Ok(parsed) => status_str_from_thread_status(&parsed),
@@ -68,24 +41,9 @@ fn status_str_from_thread_status(status: &ThreadStatus) -> &'static str {
     }
 }
 
-/// The per-notification feeder decision: which `last_thread_status` to stamp,
-/// or `None` to DROP the event without touching `worker_sessions`.
-///
-/// Stamped ONLY on TURN-BOUNDARY + STATUS events:
-/// * `ThreadStatusChanged` ⇒ the precise mapped status;
-/// * `TurnStarted` ⇒ `"active"`;
-/// * `TurnCompleted` ⇒ by the turn's `status` ([`turn_completed_status`]):
-///   `failed` ⇒ `"systemError"`, otherwise `"idle"`. This makes
-///   `turn/completed` the LAST stamp of a turn (#1722 §4.2.1): on the
-///   installed codex the value a finished shared-daemon thread rests at
-///   used to be `active` (F2.29), which the activity projector would read
-///   as still working.
-///
-/// Everything else is DROPPED (`None`): per-token `item/*` deltas
-/// (`item/agentMessage/delta`, …), `thread/started`, and any `Other` method.
-/// Turn granularity fully satisfies the reaper's 15-min DEADLINE pre-gate, so a
-/// `worker_sessions` write per agent-message chunk would be pure
-/// `begin_immediate_tx` write contention with no consumer benefit.
+/// Which `last_thread_status` to stamp, or `None` to DROP the event. Only turn-boundary and
+/// status events stamp; `turn/completed` is the LAST stamp of a turn (`failed` ⇒ `systemError`,
+/// else `idle`). Per-token `item/*` deltas would be pure write contention with no consumer.
 fn stamp_status_for(notification: &Notification) -> Option<&'static str> {
     match notification {
         Notification::ThreadStatusChanged { status, .. } => Some(status_str_from_value(status)),
@@ -97,12 +55,8 @@ fn stamp_status_for(notification: &Notification) -> Option<&'static str> {
     }
 }
 
-/// The stamp for a `turn/completed` `turn` object by its `status`
-/// (`completed` / `failed` / `interrupted`, F2.7). `failed` keeps the
-/// `systemError` codex sends just BEFORE the failed `turn/completed`
-/// (`harness/run_loop.rs`, the systemError branch) instead of overwriting it
-/// with `idle`; `completed`, `interrupted`, and any shape without a
-/// recognisable status all rest at `idle` — the turn is over either way.
+/// `failed` keeps the `systemError` codex sends just BEFORE the failed `turn/completed`; every
+/// other status rests at `idle`.
 fn turn_completed_status(turn: &Value) -> &'static str {
     match turn.get("status").and_then(Value::as_str) {
         Some("failed") => "systemError",
@@ -110,10 +64,7 @@ fn turn_completed_status(turn: &Value) -> &'static str {
     }
 }
 
-/// Is this a `turn/completed` whose turn actually COMPLETED (`status =
-/// completed`)? Only then does the stamp also raise
-/// `last_turn_completed_ms` (#1722 §4.2.1 (2)); an interrupted or failed
-/// turn stamps its status but leaves the completion column alone.
+/// Only a turn whose `status = completed` also raises `last_turn_completed_ms`.
 fn completed_turn(notification: &Notification) -> bool {
     matches!(
         notification,
@@ -122,23 +73,18 @@ fn completed_turn(notification: &Notification) -> bool {
     )
 }
 
-/// A stamp whose durable write failed once, kept for ONE replay on the same
-/// thread's next notification (#1722 §4.2.1 — no timer, no queue: one slot
-/// per thread, at most two attempts per stamp).
+/// A stamp whose durable write failed once, kept for ONE replay on the same thread's next
+/// notification: one slot per thread, at most two attempts per stamp.
 #[derive(Debug, Clone, Copy)]
 struct PendingStamp {
     at_ms: i64,
     status: &'static str,
-    /// `Some(at_ms)` when the stamp came from a completed turn — the replay
-    /// must raise `last_turn_completed_ms` exactly as the first attempt
-    /// would have.
+    /// `Some(at_ms)` when the stamp came from a completed turn, so the replay raises
+    /// `last_turn_completed_ms` exactly as the first attempt would have.
     turn_completed_ms: Option<i64>,
 }
 
 /// Run the durable liveness feeder loop until the notification channel closes.
-/// Each event is classified by [`stamp_status_for`]; only turn-boundary + status
-/// events stamp `worker_sessions.{last_activity_ms,last_thread_status}` keyed by
-/// `thread_id`, the rest are dropped (no write).
 pub async fn run_liveness_feeder(
     repo: Arc<dyn Repo>,
     rx: tokio::sync::broadcast::Receiver<Notification>,
@@ -153,17 +99,9 @@ pub async fn run_liveness_feeder(
     .await
 }
 
-/// The feeder loop over an injectable durable writer (`(thread_id, at_ms,
-/// status, turn_completed_ms) → Result`), so the replay policy can be driven
-/// by tests without a repo that fails on demand. Production passes
-/// `SessionRepo::session_record_activity_by_thread`. `turn_completed_ms` is
-/// `Some(at_ms)` for a completed turn's stamp and `None` otherwise.
-///
-/// Write-failure policy: a failed write is remembered per thread and replayed
-/// FIRST when that thread's next stampable notification arrives (with its
-/// original timestamp, so ordering is preserved); a replay that fails again
-/// is dropped with a warning. The new stamp is then written as usual and, if
-/// it fails, takes the slot. No timers, no queues.
+/// The feeder loop over an injectable durable writer so the replay policy can be driven by
+/// tests. A failed write is replayed FIRST on that thread's next stampable notification with its
+/// original timestamp; a replay that fails again is dropped.
 async fn run_feeder_loop<W, Fut, E>(
     mut rx: tokio::sync::broadcast::Receiver<Notification>,
     mut write: W,
@@ -222,9 +160,8 @@ async fn run_feeder_loop<W, Fut, E>(
                 }
             }
             Err(RecvError::Lagged(n)) => {
-                // We missed `n` notifications. The columns are best-effort
-                // recency hints (the live `thread_read` pull is authoritative
-                // for the reaper), so a lag is benign — log and keep going.
+                // The columns are best-effort recency hints (the live `thread_read` pull is authoritative
+                // for the reaper), so a lag is benign.
                 tracing::warn!(
                     target = "liveness_feeder",
                     skipped = n,
@@ -236,9 +173,8 @@ async fn run_feeder_loop<W, Fut, E>(
     }
 }
 
-/// Spawn [`run_liveness_feeder`] on the runtime, returning the join handle.
-/// The caller MUST take `rx` via `SharedCodexAppServer::subscribe_notifications`
-/// BEFORE the `Arc<SharedCodexAppServer>` is moved into the provider registry.
+/// The caller MUST take `rx` via `subscribe_notifications` BEFORE the `Arc<SharedCodexAppServer>`
+/// is moved into the provider registry.
 pub fn spawn_liveness_feeder(
     repo: Arc<dyn Repo>,
     rx: tokio::sync::broadcast::Receiver<Notification>,
@@ -250,10 +186,6 @@ pub fn spawn_liveness_feeder(
 mod tests {
     use super::*;
     use serde_json::json;
-
-    // ===================================================================
-    // status_str_from_value — the pure §1.3 mapping (its own unit test).
-    // ===================================================================
 
     #[test]
     fn maps_active_no_flags_to_active() {
@@ -301,8 +233,7 @@ mod tests {
         assert_eq!(status_str_from_value(&v), "notLoaded");
     }
 
-    /// #1722 §4.2.1 — an unparsable status shape is `"unknown"`, never
-    /// `"active"` (which the activity projector reads as working).
+    /// An unparsable status shape is `"unknown"`, never `"active"`.
     #[test]
     fn unknown_status_shape_stamps_unknown() {
         assert_eq!(
@@ -319,11 +250,6 @@ mod tests {
         assert_eq!(stamp_status_for(&n), Some("unknown"));
     }
 
-    // ===================================================================
-    // stamp_status_for — the per-notification feeder decision: turn/status
-    // events stamp, everything else (item/*, thread/started, Other) drops.
-    // ===================================================================
-
     #[test]
     fn stamps_thread_status_changed_with_mapped_status() {
         let n = Notification::ThreadStatusChanged {
@@ -333,21 +259,14 @@ mod tests {
         assert_eq!(stamp_status_for(&n), Some("waitingOnApproval"));
     }
 
-    // ===================================================================
-    // #1722 §4.2.1 — turn boundaries. Each sequence test drives the real
-    // feeder loop through a recording writer and asserts the LAST value the
-    // thread rests at, so a `turn/completed` that stamped `active` again
-    // (the pre-#1722 shape) reddens the test rather than a helper.
-    // ===================================================================
+    // Each sequence test drives the real feeder loop through a recording writer and asserts the
+    // LAST value the thread rests at.
 
-    /// One successful durable write as the recording writer saw it:
-    /// `(thread_id, at_ms, status, turn_completed_ms)`.
+    /// One successful durable write as the recording writer saw it.
     type Write = (String, i64, &'static str, Option<i64>);
 
-    /// Run `notifications` through [`run_feeder_loop`] with a writer that
-    /// records `(thread_id, at_ms, status)` for every successful write and
-    /// fails whenever `fail(thread_id, status)` says so (a failed attempt is
-    /// NOT recorded). Returns the recorded writes in order.
+    /// Run `notifications` through [`run_feeder_loop`] with a recording writer that fails whenever
+    /// `fail(thread_id, status)` says so (a failed attempt is NOT recorded).
     async fn drive(
         notifications: Vec<Notification>,
         mut fail: impl FnMut(&str, &'static str) -> bool + Send + 'static,
@@ -475,11 +394,6 @@ mod tests {
         assert_eq!(stamp_status_for(&started), Some("active"));
     }
 
-    // ===================================================================
-    // #1722 §4.2.1 (3) — failed-write replay: one slot per thread, replayed
-    // before that thread's next stamp, dropped after a second failure.
-    // ===================================================================
-
     #[tokio::test]
     async fn failed_write_is_replayed_before_the_threads_next_stamp() {
         let mut attempts = 0usize;
@@ -575,14 +489,7 @@ mod tests {
         assert_eq!(stamp_status_for(&other), None);
     }
 
-    // ===================================================================
-    // #1722 §4.2.1 (2) — `last_turn_completed_ms`, through the REAL repo
-    // writer: written only for a completed turn, raised monotonically.
-    // ===================================================================
-
-    /// Mint area → track → codex card → running session through the
-    /// production creation helpers (`session_start_runtime_tx` links
-    /// `cards.session_id`); returns `(repo, session id)`.
+    /// Mint area → track → codex card → running session through the production creation helpers.
     async fn seed_codex_session(thread_id: &str) -> (Arc<crate::db::sqlite::SqlxRepo>, String) {
         use crate::db::sqlite::{
             SqlxRepo, area_create_tx, card_create_with_id_tx, session_start_runtime_tx,
@@ -686,10 +593,8 @@ mod tests {
         row
     }
 
-    /// `completed@t2` then `completed@t1 < t2` does not lower the column;
-    /// `interrupted@t3` and `failed@t4` stamp their status but do not write
-    /// it — both through the storage writer with pinned instants and through
-    /// the real feeder loop over the same repo.
+    /// A later `completed@t1 < t2` does not lower the column; `interrupted` and `failed` stamp
+    /// their status but do not write it.
     #[tokio::test]
     async fn last_turn_completed_only_on_completed_and_monotone() {
         let (repo, ws) = seed_codex_session("th-done").await;

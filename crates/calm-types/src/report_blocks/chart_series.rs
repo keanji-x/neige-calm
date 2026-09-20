@@ -1,25 +1,5 @@
-//! #1628 S1 — the `chart.series` payload: a chart that *names* its data
-//! instead of carrying it.
-//!
-//! ```text
-//! { source, series, field?, range?, period?, view?, as_of?, overlays?, caption? }
-//! ```
-//!
-//! `source` is the plugin tool that resolves the series
-//! (`neige://plugin/<plugin_id>/<tool>`, the same two-segment shape a live
-//! `table` uses); `series` names the assets, venue-qualified. Nothing here
-//! is inlined: the kernel asks the plugin for the points later, on the
-//! read path, and stores what came back next to the block — a later slice
-//! owns that.
-//!
-//! Everything in this module is a pure function. `calm-types` has no clock,
-//! so `as_of` is checked against the *calendar* (four-two-two shape, month
-//! 1–12, day within that month, Gregorian leap years) and never against
-//! today: a cutoff in the future is a legal frozen block whose source has
-//! not published past it yet, not an error. The one cross-field rule is
-//! structural — a 31-day window cannot hold two complete calendar months —
-//! and every other "too few points" outcome is data, reported by the
-//! resolver rather than refused at the write end.
+//! The `chart.series` payload: a chart that *names* its data instead of carrying it.
+//! Pure functions only: `as_of` is checked against the calendar, never against today.
 
 use serde_json::{Map, Value};
 
@@ -28,10 +8,7 @@ use super::kinds::{
     validate_live_source,
 };
 
-/// Calendar days each `range` reaches back from the cutoff, inclusive on
-/// both ends: window = `[as_of - days, as_of]`. The kernel derives the
-/// resolver's `start` and the point-count ceiling from this same table, so
-/// there is exactly one definition of what `1Y` means.
+/// Calendar days each `range` reaches back from the cutoff, inclusive on both ends: window = `[as_of - days, as_of]`.
 pub const RANGE_DAYS: [(&str, u32); 6] = [
     ("1M", 31),
     ("3M", 92),
@@ -71,9 +48,8 @@ pub fn days_in_month(year: u32, month: u32) -> Option<u32> {
     })
 }
 
-/// `YYYY-MM-DD` → `(year, month, day)` iff the text has exactly that shape
-/// AND names a day that exists on the Gregorian calendar. No upper bound:
-/// this crate has no clock, and a future date is a valid cutoff.
+/// `YYYY-MM-DD` → `(year, month, day)` iff the text has exactly that shape AND names a day that
+/// exists on the Gregorian calendar; a future date is a valid cutoff.
 pub fn parse_ymd(text: &str) -> Option<(u32, u32, u32)> {
     let bytes = text.as_bytes();
     if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
@@ -100,11 +76,7 @@ pub fn is_valid_ymd(text: &str) -> bool {
     parse_ymd(text).is_some()
 }
 
-/// `^[A-Z]{2,8}:[A-Za-z0-9._-]{1,32}$` — a venue prefix and a symbol.
-/// Written out rather than as a regex: this crate carries no regex
-/// dependency, and the plugin owns what a venue *means* (the kernel only
-/// checks the shape, so `HK:9988` and `HK:09988` are two literal entries
-/// here even if the plugin later maps them to one asset).
+/// `^[A-Z]{2,8}:[A-Za-z0-9._-]{1,32}$` — a venue prefix and a symbol; the kernel only checks the shape.
 fn is_venue_qualified_asset(text: &str) -> bool {
     let Some((venue, symbol)) = text.split_once(':') else {
         return false;
@@ -146,9 +118,7 @@ fn enum_check<'a>(
     }
 }
 
-/// Validate a `chart.series` payload. Three passes, all pure: shape (strict,
-/// every string capped), the `as_of` calendar, and the `(range, period)`
-/// combination. Every violation is pushed with its field path.
+/// Validate a `chart.series` payload: shape, the `as_of` calendar, and the `(range, period)` combination.
 pub(super) fn validate_chart_series(map: &Map<String, Value>, errors: &mut Vec<String>) {
     reject_unknown(
         map,
@@ -158,7 +128,6 @@ pub(super) fn validate_chart_series(map: &Map<String, Value>, errors: &mut Vec<S
         errors,
     );
 
-    // -- shape ------------------------------------------------------------
     match map.get("source") {
         Some(Value::String(source)) => {
             check_string_cap("source", source, errors);
@@ -242,8 +211,7 @@ pub(super) fn validate_chart_series(map: &Map<String, Value>, errors: &mut Vec<S
             }
             None => errors.push("overlays: must be an array".into()),
         }
-        // D1 says overlays act on `line` / `candles` only. S1 pins the strict
-        // reading: carrying them under another view is refused, not ignored.
+        // Overlays under a view other than `line` / `candles` are refused, not ignored.
         if !matches!(view, "line" | "candles") {
             errors.push("overlays: apply only to view line|candles".into());
         }
@@ -251,7 +219,6 @@ pub(super) fn validate_chart_series(map: &Map<String, Value>, errors: &mut Vec<S
 
     optional_string(map, "caption", errors);
 
-    // -- as_of calendar ---------------------------------------------------
     if let Some(as_of) = map.get("as_of") {
         match as_of.as_str() {
             Some(text) => {
@@ -266,7 +233,6 @@ pub(super) fn validate_chart_series(map: &Map<String, Value>, errors: &mut Vec<S
         }
     }
 
-    // -- (range, period) combination --------------------------------------
     if range == Some("1M") && period == Some("month") {
         errors.push("range 1M cannot hold two complete month periods".into());
     }
@@ -284,8 +250,7 @@ mod tests {
         validate_payload(KIND_CHART_SERIES, &payload)
     }
 
-    /// The refusal for `payload`; `name` is the assertion being made, so a
-    /// payload that is wrongly accepted fails under that name.
+    /// The refusal for `payload`; `name` is the assertion being made.
     fn err_of(name: &str, payload: Value) -> String {
         match check(payload) {
             Err(err) => err,

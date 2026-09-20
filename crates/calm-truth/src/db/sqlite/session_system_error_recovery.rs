@@ -9,9 +9,8 @@ use sqlx::{Executor, Sqlite, SqlitePool, Transaction};
 use crate::error::Result;
 use crate::model::now_ms;
 
-/// Validate the carrier AND its complete snapshot under the caller's write
-/// transaction. A queue harvest, replacement, or completed execution cannot be
-/// revived even if an earlier read made it look recoverable.
+/// Validate under the caller's write transaction: a harvest, replacement or
+/// completion since an earlier read must not be revived.
 pub async fn session_system_error_recovery_matches_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: &str,
@@ -69,8 +68,6 @@ async fn matches<'e>(
         == Some(snapshot))
 }
 
-/// Restore the existing carrier without reserializing its queue, clearing its
-/// transcript, changing its thread, or reviving any other terminal state.
 pub async fn session_resume_system_error_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: &str,

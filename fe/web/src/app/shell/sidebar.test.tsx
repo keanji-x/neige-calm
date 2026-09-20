@@ -136,14 +136,6 @@ describe('area row', () => {
     expect(screen.queryByRole('button', { name: /Filed away/ })).toBeNull();
   });
 
-  /*
-   * The count is gone, and this asserts its absence.
-   *
-   * It answered a question nobody asks: you come to the rail to find *a* track,
-   * not to learn how many an area holds, and the number drove no decision here.
-   * It spent a grid column and a tone saying so. What the rail owes you about a
-   * area is already under it — its rows.
-   */
   it('carries the name and nothing else — no count, no identity dot', () => {
     const tracks = [
       track({ id: 'a', lifecycle: 'blocked' }),
@@ -179,8 +171,7 @@ describe('area row', () => {
     expect(screen.getByRole('button', { name: 'Collapse area Work' })).toBeTruthy();
   });
 
-  /* The rail does not own the new-track surface — since #1211 it is a route,
-     and the group reports which Area that route belongs to. */
+  /* The rail does not own the new-track surface; the group reports which Area the route belongs to. */
   it('starts a track in its own area from the row, without navigating into it', async () => {
     const onNewTrack = vi.fn();
     const onGo = vi.fn();
@@ -252,10 +243,8 @@ describe('destructive confirms', () => {
     renderSidebar({ onDeleteArea });
 
     await requestAreaDelete();
-    // §6.13 / CR-5a — the title names the area, and Confirm stays blocked until
-    // the name is reproduced. Deleting an area cascades to every track inside it;
-    // it is the one operation in the product that earns a typed confirm, and
-    // the destructive action is intentionally kept behind a typed confirm.
+    // Deleting an area cascades to every track inside it, so it is the one operation
+    // behind a typed confirm.
     expect(screen.getByRole('dialog', { name: 'Delete Work?' })).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Delete area' }));
     expect(onDeleteArea).not.toHaveBeenCalled();
@@ -290,9 +279,8 @@ describe('destructive confirms', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Delete Task' }));
     await userEvent.click(screen.getByRole('button', { name: 'Delete track' }));
-    // CR-6 — busy, not `disabled`. Cancel stays a real exit, the dialog stays
-    // mounted for the whole await, and Confirm stays focusable: focus is on it
-    // at this instant and `disabled` would drop it out of the trap.
+    // Busy, not `disabled`: focus is on Confirm at this instant and `disabled`
+    // would drop it out of the trap.
     const confirm = screen.getByRole('button', { name: 'Deleting…' });
     expect(confirm.hasAttribute('disabled')).toBe(false);
     expect(confirm.getAttribute('aria-disabled')).toBe('true');
@@ -350,9 +338,6 @@ describe('user menu', () => {
     const avatar = screen.getByRole('button', { name: 'Account menu for Kenji Xie' });
     expect(avatar.textContent).toBe('KX');
     await userEvent.click(avatar);
-    // Two destinations and the way out. The theme cycler is deliberately gone:
-    // it was the one item that acted instead of navigating, and Settings ›
-    // General states the same preference where its effect is visible.
     expect(screen.getAllByRole('menuitem').map((node) => node.textContent))
       .toEqual(['Settings', 'Plugins', 'Sign out']);
 
@@ -380,14 +365,8 @@ describe('collapse toggle', () => {
     expect(onGo).toHaveBeenCalledWith({ name: 'today' });
   });
 
-  /*
-   * The rail does not own `collapsed` — `AppShell` does, because collapsing
-   * changes the *shell grid column*, not just what the rail draws. A version of
-   * this suite that clicked the toggle and expected the rail to change was
-   * asserting against a `vi.fn()`; it passed only while the state still lived
-   * here. So: the click reports upward, and the collapsed rendering is driven
-   * by the prop.
-   */
+  /* `AppShell` owns `collapsed`, because collapsing changes the shell grid column;
+   * the click reports upward and the collapsed rendering is driven by the prop. */
   it('reports the toggle upward instead of collapsing itself', async () => {
     const onToggleCollapsed = vi.fn();
     renderSidebar({ tracks: [track({ title: 'Inside' })], onToggleCollapsed });
@@ -395,7 +374,6 @@ describe('collapse toggle', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     await userEvent.click(toggle);
     expect(onToggleCollapsed).toHaveBeenCalledTimes(1);
-    // Nothing changed here, because nothing here owns it.
     expect(screen.getByRole('heading', { name: 'Areas' })).toBeTruthy();
   });
 
@@ -403,13 +381,11 @@ describe('collapse toggle', () => {
     const { update } = renderSidebar({ tracks: [track({ title: 'Inside' })] });
     update({ collapsed: true });
 
-    // No section labels: 11px uppercase does not fit in 44px, and the strip
-    // answers "where am I", not "what is there".
+    // No section labels: 11px uppercase does not fit in 44px.
     expect(screen.queryAllByRole('heading')).toHaveLength(0);
     expect(screen.queryByRole('button', { name: /^Track Inside/ })).toBeNull();
     // The area is still reachable, named for assistive tech and initialled for
-    // sighted users — a letter, not one of eight area hues, because §7.5 keeps
-    // this surface greyscale apart from the current location and "waiting".
+    // sighted users; this surface stays greyscale.
     const item = screen.getByRole('button', { name: 'Show area Work' });
     expect(item.textContent).toBe('W');
     expect(screen.getByRole('button', { name: 'Account menu for You' })).toBeTruthy();
@@ -468,9 +444,8 @@ describe('collapse toggle', () => {
 
   it('shows the waiting count as the strip\'s only figure, with no dot beside it', () => {
     const { update } = renderSidebar({
-      // The count is the kernel's verdict (input or failed), not the lifecycle
-      // phase: a `blocked` track the kernel has said nothing about is not
-      // waiting on anyone (#1722 §5.1).
+      // The count is the kernel's verdict (input or failed), not the lifecycle phase:
+      // a `blocked` track the kernel has said nothing about is not waiting on anyone.
       tracks: [
         track({ id: 'a', lifecycle: 'blocked' }),
         track({ id: 'b', lifecycle: 'draft', attention: 'input' }),
@@ -485,12 +460,9 @@ describe('collapse toggle', () => {
 
 
 it('reads the track receipt against the activity high-water mark, not updatedAt', () => {
-  /*
-   * #1722 §5.2 — `updatedAt` moves on a rename or a pin; the receipt has to
-   * compare the kernel's completion-class high-water mark, and a track with no
-   * completion recorded (`activityAt: null`) is never unread however recently
-   * its row changed. The scope is entered at server time 100 (the baseline).
-   */
+  /* `updatedAt` moves on a rename or a pin; the receipt compares the kernel's
+   * completion high-water mark, and `activityAt: null` is never unread. The scope
+   * is entered at server time 100 (the baseline). */
   const preferences = createUiPreferences(memoryStorage());
   preferences.setReadScope('db1', 100);
   renderSidebar({

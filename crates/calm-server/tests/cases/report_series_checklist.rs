@@ -1,10 +1,5 @@
-//! #1628 S2 — the reply checklist at the kernel boundary (design §6 A12),
-//! driven through `resolve` so each rejection is observed as the stored
-//! `unavailable` row and its reason.
-//!
-//! Dates used throughout (all 2026): 09-07 Mon, 09-10 Thu, 09-11 Fri,
-//! 09-13 Sun, 09-14 Mon. `T0` is Monday 09-14 12:00Z, so a live cutoff is
-//! Sunday 09-13.
+//! The reply checklist at the kernel boundary, driven through `resolve`.
+//! Dates (all 2026): 09-07 Mon, 09-10 Thu, 09-11 Fri, 09-13 Sun, 09-14 Mon; `T0` is Monday 09-14 12:00Z.
 
 #![cfg(unix)]
 
@@ -35,7 +30,6 @@ fn live(period: &str) -> Value {
     json!({ "source": SOURCE, "series": ["US:NVDA"], "range": "3M", "period": period })
 }
 
-/// Resolve `block` against `reply`; returns `(outcome, reason)`.
 async fn verdict(fx: &SeriesFixture, block: Value, reply: Value) -> (ResolveOutcome, String) {
     let block_id = fx.write_series_block(block).await;
     fx.reply_structured(reply);
@@ -72,8 +66,6 @@ async fn reply_with_descending_timestamps_is_unavailable() {
     assert!(reason.contains("is not after"), "{reason}");
 }
 
-/// A week starting Monday 09-07 ends Sunday 09-13, after a Thursday 09-10
-/// cutoff — a half week, refused even though its start is inside the window.
 #[tokio::test]
 async fn partial_week_is_rejected_at_the_boundary() {
     let fx = SeriesFixture::boot(FixtureOptions::default()).await;
@@ -92,8 +84,6 @@ async fn partial_week_is_rejected_at_the_boundary() {
     );
 }
 
-/// Frozen daily: the last bar dated exactly `complete_through` has no later
-/// bar proving it closed.
 #[tokio::test]
 async fn bar_at_complete_through_is_rejected() {
     let fx = SeriesFixture::boot(FixtureOptions::default()).await;
@@ -112,8 +102,6 @@ async fn bar_at_complete_through_is_rejected() {
     );
 }
 
-/// Live daily is the one relaxed branch: a bar dated `complete_through`
-/// (= yesterday) is accepted.
 #[tokio::test]
 async fn live_daily_bar_at_complete_through_is_accepted() {
     let fx = SeriesFixture::boot(FixtureOptions::default()).await;
@@ -129,8 +117,6 @@ async fn live_daily_bar_at_complete_through_is_accepted() {
     assert_eq!(reason, "");
 }
 
-/// Live weekly stays strict: the week 09-07…09-13 ending on
-/// `complete_through` 09-13 (= the live cutoff) is refused.
 #[tokio::test]
 async fn live_week_at_complete_through_is_rejected() {
     let fx = SeriesFixture::boot(FixtureOptions::default()).await;
@@ -149,8 +135,6 @@ async fn live_week_at_complete_through_is_rejected() {
     );
 }
 
-/// The remaining rejections, table-driven: each row is `(name, block,
-/// reply, reason fragment)`.
 #[tokio::test]
 async fn reply_checklist_rejects_each_malformed_shape() {
     let fx = SeriesFixture::boot(FixtureOptions::default()).await;
@@ -294,7 +278,6 @@ async fn reply_checklist_rejects_each_malformed_shape() {
         "every rejection names its own cause"
     );
 
-    // And the positive control: the same shape, well-formed, lands `ok`.
     let (outcome, reason) = verdict(
         &fx,
         frozen("day", "2026-09-10"),

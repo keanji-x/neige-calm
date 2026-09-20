@@ -1,12 +1,5 @@
 // @vitest-environment jsdom
-// INV-DUP-009's one row, tested directly.
-//
-// Two surfaces render it and neither should retest its internals: the rail
-// composes it through `app/shell`, and Today receives it by injection because
-// `features/**` may not import a sibling domain. Their suites therefore use
-// stand-ins, and a stand-in cannot prove the row is a button, carries a
-// composed accessible name, or keeps its pin reachable. This file is where
-// those live — against the real component.
+// The one track row, tested directly against the real component: its other surfaces use stand-ins.
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -43,9 +36,6 @@ describe('INV-A11Y-061 navigation shape', () => {
 });
 
 describe('accessible name', () => {
-  // The status dot is `aria-hidden` decoration — it is the *name* that has to
-  // carry lifecycle and attention, on every variant, including the rail where
-  // the dot is the only thing a sighted user sees.
   it('names the lifecycle, and the attention state when there is one', () => {
     render(<TrackRow track={track({ lifecycle: 'blocked', attention: 'input' })} areaName="Work" onOpen={vi.fn()} nowMs={NOW} />);
     expect(screen.getByRole('button', {
@@ -115,8 +105,6 @@ describe('§6.3 variants differ in what they render, not in what they are', () =
 
   it('puts the hour label ahead of the title on a panel row, and no relative time after it', () => {
     const { container } = render(<TrackRow track={track()} variant="panel" hourLabel="15:00" onOpen={vi.fn()} nowMs={NOW} />);
-    // The whole text of the row: an hour, a title, nothing else. The panel
-    // variant drops the age, so a scheduled row states one time, not two.
     expect(container.textContent).toBe('15:00Open track');
   });
 });
@@ -143,14 +131,6 @@ describe('navigation activity markers', () => {
     expect(document.getElementById(row.getAttribute('aria-describedby')!)?.textContent).toBe('Unread updates');
   });
 
-  /*
-   * INV-APP-118 — the dot and the accessible name come from the kernel's
-   * activity overlay, never from the lifecycle. The two fixtures are chosen
-   * to disagree with the lifecycle in both directions, so a `trackActivityState`
-   * (or a name) that fell back to `isRunning(lifecycle)` reddens on each:
-   * `planning` with nothing in flight is quiet and not "running"; `done` with
-   * work still in flight spins and says so.
-   */
   it('derives the marker and the name from the activity overlay, not the lifecycle', () => {
     const view = render(<TrackRow track={track({ lifecycle: 'planning', working: false })} variant="rail" onOpen={vi.fn()} />);
     expect(view.container.querySelector('[data-nc-activity]')).toBeNull();
@@ -182,16 +162,6 @@ describe('navigation activity markers', () => {
     expect(view.container.querySelectorAll('[data-nc-activity="failed"]')).toHaveLength(1);
   });
 
-  /*
-   * The description hangs on the FOLDED state, not on the raw receipt (#1722
-   * §5.3, the rule the phone row and the conversation row already follow): an
-   * unread track that is also working is "working" — the dot says so and the
-   * name says so — and is described by nothing; only when the fold lands on
-   * `unread` is the row described, in the one vocabulary. A row that read
-   * `aria-describedby` off the `unread` prop would say "Unread updates" beside
-   * a spinner, which is the receipt said twice over a fact the name already
-   * ranks above it.
-   */
   it('describes an unread track only in the folded state, never beside a working name', () => {
     const description = () => {
       const id = screen.getByRole('button', { name: /^Track Open track/ }).getAttribute('aria-describedby');

@@ -53,16 +53,7 @@ export interface CardHostCapabilities {
   readonly cardId: string;
   readonly lifecycle: CardLifecycleStore;
   readonly slots: CardSlotStore;
-  /**
-   * The filesystem reads this host was built with, or `null`.
-   *
-   * A card cannot reach a transport on its own — `systems/**` sits below
-   * `app/**` and holds none — so the reads arrive here, injected once by
-   * `app/composition`. `null` is a host assembled without them (a test, a
-   * board that hosts no file-reading kind), and a card that needs them must
-   * say so on screen rather than throw: an empty pane with a reason is a state
-   * a reader can act on, an exception is not.
-   */
+  /** Filesystem reads injected by `app/composition`, or `null`; a card that needs them must render a reason rather than throw. */
   readonly files: CardFilesPort | null;
   readonly recovery: RecoveryAccess | null;
   emit(command: CardRuntimeCommand): void;

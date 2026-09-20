@@ -124,8 +124,6 @@ describe('Settings network form', () => {
   it('does not write while the reader is still typing', async () => {
     const onSave = vi.fn();
     render(<NetworkPane {...props({ onSave })} />);
-    // Per-keystroke saving would PUT `h`, `ht`, `htt`… and leave whatever the
-    // reader stopped at as the workspace's proxy.
     await userEvent.type(screen.getByLabelText('HTTP proxy'), 'http://edge');
     expect(onSave).not.toHaveBeenCalled();
   });
@@ -206,7 +204,6 @@ describe('Settings states', () => {
     const row = screen.getByLabelText('HTTP proxy').closest('li');
     expect(row?.textContent).toContain('PUT /api/settings failed');
     expect(screen.getByLabelText<HTMLInputElement>('HTTP proxy').value).toBe('http://edge:3128');
-    // The other row is untouched: one failed request describes one row.
     expect(screen.getByLabelText('HTTPS proxy').closest('li')?.textContent)
       .not.toContain('PUT /api/settings failed');
   });
@@ -225,11 +222,7 @@ describe('Settings states', () => {
 
   it('mounts the live region before it has anything to say', () => {
     render(<NetworkPane {...props()} />);
-    /*
-     * Always mounted, empty. A live region that arrives in the same mutation as
-     * its text is commonly not announced at all, which would leave the tick as
-     * the only confirmation — and a tick has no accessible name.
-     */
+    /* A live region that arrives in the same mutation as its text is commonly not announced at all. */
     expect(screen.getAllByRole('status').map((node) => node.textContent)).toEqual(['', '']);
   });
 });
@@ -243,12 +236,6 @@ function deferred(): Deferred {
   return { promise, resolve, reject };
 }
 
-/*
- * Two rows share one screen but not one status. Every case here was a
- * reproduced defect first: the pane used to read a pane-level
- * `saving`/`saveError`/`savedAt` triple with a single "which row" pointer, and
- * these four sequences are what that shape got wrong.
- */
 describe('Settings network commits, per row', () => {
   it('does not paint one row failure on the other row', async () => {
     const flights: Deferred[] = [];
@@ -299,9 +286,6 @@ describe('Settings network commits, per row', () => {
     await act(async () => { flights[0]?.reject(new Error('stale failure')); await Promise.resolve(); });
 
     const httpRow = field.closest('li');
-    // Both halves: the stale failure is not shown, **and** the newer commit's
-    // own outcome is. Asserting only the absence would stay green if the row
-    // simply dropped every verdict.
     expect(httpRow?.textContent).not.toContain('stale failure');
     expect(httpRow?.querySelector('[role="status"]')?.textContent).toBe('Saved.');
   });
@@ -318,11 +302,6 @@ describe('Settings network commits, per row', () => {
     await userEvent.clear(field);
     await userEvent.type(field, 'origin');
     await userEvent.tab();                        // back to what the server holds
-    /*
-     * The second commit must go out. Comparing against the server's bag alone
-     * would call this a no-op — the value equals what the server last said —
-     * and the in-flight `changed` would land as the reader's final answer.
-     */
     expect(onSave).toHaveBeenCalledTimes(2);
     expect(onSave).toHaveBeenLastCalledWith({ [HTTP_PROXY_KEY]: 'origin' });
     await act(async () => { flights[0]?.resolve(); flights[1]?.resolve(); await Promise.resolve(); });
@@ -338,8 +317,6 @@ describe('Settings network commits, per row', () => {
     await act(async () => { await userEvent.tab(); });
     expect(field.closest('li')?.textContent).toContain('unreachable');
 
-    // The obvious retry: focus it again and press Enter. `sent` records what
-    // the server *took*, so a failed value must not sit in it and swallow this.
     await act(async () => { await userEvent.type(field, '{Enter}'); });
     expect(onSave).toHaveBeenCalledTimes(2);
     expect(field.closest('li')?.querySelector('[role="status"]')?.textContent).toBe('Saved.');
@@ -355,8 +332,6 @@ describe('Settings network commits, per row', () => {
     await userEvent.type(field, '-more');        // the reader moves on
     await act(async () => { flight.resolve(); await Promise.resolve(); });
 
-    /* A settled at the same moment, and a tick beside `-more` would say the
-       value on screen is the one the server took. It is not. */
     expect(field.closest('li')?.querySelector('[role="status"]')?.textContent).toBe('');
     expect(field.closest('li')?.querySelector('svg')).toBeNull();
   });
@@ -380,11 +355,6 @@ describe('Settings network commits, per row', () => {
     await userEvent.type(field, 'B');
     await userEvent.tab();
 
-    /*
-     * The reader's last word is B, and C is still on its way. Clearing the
-     * whole `sent` record on any re-seed made this look unchanged — B equals
-     * the bag — so nothing was sent and C landed as the final value.
-     */
     expect(onSave).toHaveBeenCalledTimes(3);
     expect(onSave).toHaveBeenLastCalledWith({ [HTTP_PROXY_KEY]: 'B' });
     await act(async () => { flights[1]?.resolve(); await Promise.resolve(); });
@@ -414,8 +384,6 @@ describe('Settings network commits, per row', () => {
     expect(field.closest('li')?.querySelector('[role="status"]')?.textContent).toBe('Saved.');
 
     await userEvent.type(field, '2');
-    // A tick beside a value that was never sent is a lie about the value the
-    // reader is looking at.
     expect(field.closest('li')?.querySelector('[role="status"]')?.textContent).toBe('');
   });
 
@@ -430,12 +398,6 @@ describe('Settings network commits, per row', () => {
     await userEvent.tab();                       // commit AB, ticket 2, still out
     await act(async () => { flights[0]?.reject(new Error('older failed')); await Promise.resolve(); });
 
-    /*
-     * A's failure is superseded and says nothing about the value now in the
-     * field. Rolling the reference back on it would make the still-in-flight
-     * value look unsent, and the next blur — or the close below — would send
-     * it a second time.
-     */
     await userEvent.click(field);
     await act(async () => { await userEvent.tab(); });
     expect(onSave).toHaveBeenCalledTimes(2);
@@ -453,12 +415,6 @@ describe('Settings network commits, per row', () => {
     expect(field.closest('li')?.textContent).toContain('unreachable');
 
     view.unmount();
-    /*
-     * Clearing the reference on failure is what makes an explicit retry work.
-     * It must not also make *closing* a retry: the reader was told the write
-     * did not happen, and a second attempt landing afterwards — with nothing
-     * mounted to say so — makes that a lie.
-     */
     expect(onSave).toHaveBeenCalledTimes(1);
   });
 
@@ -472,7 +428,6 @@ describe('Settings network commits, per row', () => {
 
     await userEvent.type(field, 'Y');            // moves away — verdict withdrawn
     await userEvent.keyboard('{Backspace}');     // …and back to exactly X
-    // The old message must not reappear: nothing has been sent since.
     expect(field.closest('li')?.textContent).not.toContain('unreachable');
   });
 
@@ -484,12 +439,7 @@ describe('Settings network commits, per row', () => {
     await userEvent.type(field, 'X');
     await act(async () => { await userEvent.tab(); });          // commit X, succeeds
 
-    /*
-     * The bag comes back **normalised** — the server stored `X/`, not `X`. A
-     * reference kept until the bag equals what was sent would never clear, and
-     * would then outrank every future bag: retyping `X` becomes a silent
-     * no-op forever.
-     */
+    /* The bag comes back normalised — the server stored `X/`, not `X`. */
     view.rerender(<NetworkPane {...props({ onSave, settings: { [HTTP_PROXY_KEY]: 'X/' } })} />);
     await userEvent.clear(field);
     await userEvent.type(field, 'X');
@@ -512,12 +462,6 @@ describe('Settings network commits, per row', () => {
     await userEvent.type(screen.getByLabelText('HTTP proxy'), 'http://typed:9');
     await userEvent.tab();          // the real sequence: blur commits…
     view.unmount();                 // …and only then does the dialog go away.
-    /*
-     * The count is the assertion. `toHaveBeenCalledWith` accepts a duplicate
-     * happily, and the duplicate is the defect: the cleanup used to compare the
-     * draft against the server's bag, which the in-flight write has not
-     * reached yet, so it sent the identical patch a second time.
-     */
     expect(onSave).toHaveBeenCalledTimes(1);
   });
 });

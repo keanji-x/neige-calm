@@ -22,20 +22,15 @@ use crate::track_lifecycle::auto_transition_if_current_in_tx;
 
 pub const DEFAULT_REAPER_RECONCILE_SECS: u64 = 30;
 
-/// §1.1(d) pre-gate: a codex worker whose `last_activity_ms` is within this
-/// window (or whose thread is busy) is never reaped — no arbiter RPC. Default
-/// 15 min; override with `NEIGE_REAPER_DEADLINE_SECS`.
+/// Pre-gate: a codex worker active within this window (or with a busy thread) is never reaped. Override with `NEIGE_REAPER_DEADLINE_SECS`.
 pub const DEFAULT_REAPER_DEADLINE_SECS: u64 = 900;
 
-/// §1.3 rebuild grace: after a daemon (re)connect, hold off S2 `thread/read`
-/// pulls until the loaded-thread roster has stabilised. Default 5 min;
-/// override with `NEIGE_REAPER_REBUILD_GRACE_SECS`.
+/// After a daemon (re)connect, hold off `thread/read` pulls until the loaded-thread roster has stabilised. Override with `NEIGE_REAPER_REBUILD_GRACE_SECS`.
 pub const DEFAULT_REAPER_REBUILD_GRACE_SECS: u64 = 300;
 
 static REAPER_BOOT_DONE: AtomicBool = AtomicBool::new(false);
 
-/// Resolve a positive seconds value from `var` (non-positive / garbage →
-/// `default`), mirroring `Scheduler::reconcile_secs_from_env_var`.
+/// Resolve a positive seconds value from `var` (non-positive / garbage → `default`).
 fn reaper_secs_from_env_var(var: &str, default: u64) -> u64 {
     match std::env::var(var) {
         Ok(raw) => match raw.trim().parse::<u64>() {
@@ -64,10 +59,9 @@ pub struct Reaper {
     providers: WorkerProviderRegistry,
     events: EventBus,
     write: WriteContext,
-    /// §1.1(d) inactivity deadline in ms (from `NEIGE_REAPER_DEADLINE_SECS`).
+    /// Inactivity deadline in ms.
     deadline_ms: i64,
-    /// §1.3 daemon-reconnect rebuild grace in ms
-    /// (from `NEIGE_REAPER_REBUILD_GRACE_SECS`).
+    /// Daemon-reconnect rebuild grace in ms.
     rebuild_grace_ms: i64,
 }
 
@@ -158,17 +152,7 @@ impl Reaper {
 
             match liveness {
                 Liveness::Exited { evidence } => {
-                    // P2 (spawn-window false-convergence), HOISTED above the
-                    // session-mode branch so BOTH providers skip it: a
-                    // `starting` row exists in `sessions_nonterminal` BEFORE the
-                    // spawn registers a PTY with the proc-supervisor, so a
-                    // supervisor `ProbeOk{proc_running:false}` here means "not
-                    // spawned/registered YET", NOT "exited". A slow/stuck spawn
-                    // outliving a reaper tick would otherwise be FALSELY
-                    // converged while the spawn operation is still responsible
-                    // for completing/failing it. The spawn saga owns `starting`
-                    // sessions — record the probe as a T2 liveness observation
-                    // (no terminalize, no event) and let the spawn op converge.
+                    // A `starting` row exists BEFORE the spawn registers a PTY with the proc-supervisor, so `proc_running:false` here means 'not registered YET', not 'exited'. The spawn saga owns `starting` sessions: record the probe only.
                     if session.state == WorkerSessionState::Starting {
                         tracing::debug!(
                             session_id = %session.id,
@@ -194,24 +178,11 @@ impl Reaper {
                         continue;
                     }
 
-                    // #741-3: un-defer the codex drive. A resumable provider
-                    // (codex) whose PTY tore down does NOT itself mean the codex
-                    // thread died (e.g. a proc-supervisor restart empties the
-                    // registry while the thread survives on the separate
-                    // daemon), so PTY `Exited` is necessary but NOT sufficient.
-                    // Gate convergence on the death arbiter `confirm_durable_death`
-                    // (§1.1 S1/S2) — only a positive `Dead` verdict authorizes
-                    // a reap. The ephemeral path below is UNCHANGED.
+                    // For a resumable provider a PTY teardown does NOT mean the codex thread died (a proc-supervisor restart empties the registry while the thread survives on the daemon), so only a positive `Dead` verdict from the death arbiter authorizes a reap.
                     if provider.session_mode() == SessionMode::Resumable {
-                        // §1.1(d) cheap pre-gate: a recently-active or busy
-                        // thread is never reaped, and never costs an RPC. NULL
-                        // `last_activity_ms` ⇒ `created_at_ms` (NOT `now`, which
-                        // would make a never-active session look perpetually
-                        // fresh).
+                        // Cheap pre-gate: never costs an RPC. NULL `last_activity_ms` ⇒ `created_at_ms`, NOT `now`, which would make a never-active session look perpetually fresh.
                         let last = session.last_activity_ms.unwrap_or(session.created_at_ms);
-                        // `idle` / `systemError` / `notLoaded` / `unknown` (the feeder's
-                        // stamp for an unparsable status, #1722) are NOT busy: they rely
-                        // on the time pre-gate below, which the same stamp refreshes.
+                        // `idle` / `systemError` / `notLoaded` / `unknown` are NOT busy; they rely on the time pre-gate, which the same stamp refreshes.
                         let busy = matches!(
                             session.last_thread_status.as_deref(),
                             Some("active" | "waitingOnUserInput" | "waitingOnApproval")
@@ -240,8 +211,7 @@ impl Reaper {
                             }
                             continue;
                         }
-                        // No `thread_id` ⇒ nothing to `thread/read` ⇒ can't
-                        // confirm death ⇒ no reap.
+                        // No `thread_id` ⇒ can't confirm death ⇒ no reap.
                         let Some(thread_id) = session.thread_id.as_deref() else {
                             tracing::debug!(
                                 session_id = %session.id,
@@ -270,9 +240,7 @@ impl Reaper {
                             .confirm_durable_death(thread_id, now, connected, self.rebuild_grace_ms)
                             .await;
                         match verdict {
-                            // Positively dead — fall through to the EXISTING
-                            // converge path (converge_dead_worker FIRST, then
-                            // session_commit_exit), shared with ephemeral.
+                            // Positively dead — fall through to the converge path shared with ephemeral.
                             DeathVerdict::Dead => {}
                             // Alive / Unknown ⇒ NO reap; record T2 only.
                             _ => {
@@ -319,29 +287,7 @@ impl Reaper {
 
                     match verdict {
                         ExitInterpretation::Failed { reason } => {
-                            // FIX 2 (A3): converge BEFORE terminalizing so the
-                            // path is re-drivable. If we terminalized the
-                            // session first and then crashed, the session
-                            // would be dropped from `sessions_nonterminal`
-                            // (never re-probed) while the task stayed
-                            // `running` — a PERMANENT stall. By emitting the
-                            // kernel `TaskFailed` + parking Working→Reviewing
-                            // FIRST, a mid-crash leaves the session STILL
-                            // ACTIVE → re-probed next tick → converge again
-                            // (the in-tx `status IN (active)` CAS yields
-                            // rows==0 → race-lost → Ok; `auto_transition`
-                            // no-ops since the track is already Reviewing) →
-                            // then terminalize. Idempotent + re-drivable.
-                            //
-                            // FIX 3: carry the provider's Failed `reason` (it
-                            // hides the `-1` probe sentinel and explains real
-                            // non-zero/signal exits) into the TaskFailed event.
-                            //
-                            // §1.5 commit-CAS resume guard DEFERRED — neige does
-                            // not wire codex worker resume today (§0.2), so the
-                            // pull→commit resume TOCTOU is unreachable for
-                            // workers; add `last_activity_ms <= :pull_ts` to
-                            // `session_commit_exit_tx` when 8c wires resume.
+                            // Converge BEFORE terminalizing so the path is re-drivable: terminalizing first and then crashing would drop the session from `sessions_nonterminal` while the task stayed `running` — a permanent stall. A mid-crash leaves the session active and re-probed next tick.
                             if let Err(e) = converge_dead_worker(
                                 self.repo.as_ref(),
                                 &self.events,
@@ -396,10 +342,7 @@ impl Reaper {
                         ExitInterpretation::Completed
                         | ExitInterpretation::PreserveCard
                         | ExitInterpretation::ResumeEligible => {
-                            // FIX 4 (P2a): these verdicts are unreachable from
-                            // the probe `-1` sentinel (funnel/8c territory),
-                            // but record the liveness so the session is not a
-                            // silent skip if a provider ever produces one.
+                            // Unreachable from the probe `-1` sentinel, but record the liveness so the session is not a silent skip if a provider ever produces one.
                             tracing::debug!(
                                 session_id = %session.id,
                                 provider = session.provider.as_db_str(),
@@ -444,13 +387,8 @@ impl Reaper {
 }
 
 impl Reaper {
-    /// #741-4 (DR-2/DR-4/DR-5) — the dead-ROOT convergence scan. A sibling of
-    /// [`Reaper::sweep_all`]: same boot gate (DR-5 — must not fire before the
-    /// root backfill `0050` has settled), same reconcile loop. Drives a
-    /// POSITIVELY-dead root's track `Draft|Planning → Failed` via the DR-1
-    /// kernel FSM edges. The soundness predicate (the CARDINAL SAFETY RULE:
-    /// never converge a live or merely just-created track) is enforced inside
-    /// [`SessionRepo::dead_root_candidates`]; this loop only emits.
+    /// The dead-ROOT convergence scan: same boot gate and reconcile loop as `sweep_all`; drives a positively-dead root's track `Draft|Planning → Failed`.
+    /// The soundness predicate (never converge a live or merely just-created track) is enforced inside `dead_root_candidates`; this loop only emits.
     pub async fn sweep_dead_roots(&self) {
         if !reaper_boot_completed() {
             tracing::debug!(
@@ -482,17 +420,8 @@ impl Reaper {
     }
 }
 
-/// #741-4 (DR-3) — the task-less dead-root emitter. FRESH code, NOT a reuse of
-/// `converge_dead_worker`'s no-op NULL `spawn_op_id` fall-through: a dead root
-/// has no task row, so there is NO `TaskFailed` and NO task-status flip — only
-/// the `TrackLifecycleChanged{from → Failed}` lifecycle event, authored by
-/// `ActorId::KernelDispatcher` (cardless → unrestricted emit, no recorder gate;
-/// DR-6).
-///
-/// Drives the edge via `auto_transition_if_current_in_tx`, which is a CAS on
-/// the current lifecycle: if the track already moved (a live writer raced us, or
-/// the candidate read is stale), it returns `None` and we treat that as a
-/// race-loss (`Ok(())`).
+/// The task-less dead-root emitter: a dead root has no task row, so there is NO `TaskFailed` — only `TrackLifecycleChanged{from → Failed}`, authored by `ActorId::KernelDispatcher`.
+/// `auto_transition_if_current_in_tx` is a CAS on the current lifecycle; `None` means a live writer raced us and is treated as a race-loss (`Ok(())`).
 pub(crate) async fn converge_dead_root(
     repo: &dyn Repo,
     events: &EventBus,
@@ -525,9 +454,7 @@ pub(crate) async fn converge_dead_root(
             )
             .await?
             else {
-                // Track already moved (auto_transition no-op / current != from)
-                // ⇒ race-lost. Return a race-lost error the outer match
-                // absorbs into Ok(()) so no partial/empty event batch lands.
+                // Track already moved ⇒ race-lost; the outer match absorbs it into Ok(()) so no partial event batch lands.
                 return Err(race_lost_err());
             };
             let events = lifecycle_events
@@ -570,21 +497,11 @@ pub(crate) async fn converge_dead_worker(
         area: track.area_id.clone(),
     };
     let track_id = track.id.clone();
-    // FIX 3: the kernel `TaskFailed` carries the provider's interpreted Failed
-    // reason (e.g. "terminal worker exited (outcome unknown; observed via
-    // supervisor probe)") rather than the raw `-1` probe sentinel.
+    // The kernel `TaskFailed` carries the provider's interpreted reason rather than the raw `-1` probe sentinel.
     let reason = reason.to_string();
     let result = write_with_actor_events_typed::<(), _>(repo, None, events, write, move |tx| {
         Box::pin(async move {
-            // #1147 ① — the provider's interpreted reason lands on the
-            // row too, not just on the event. NOTE: the `spawn-failed`
-            // CLASSIFIER is knowingly wrong here (a reaped worker died
-            // at RUNTIME, it did not fail to spawn) — see
-            // docs/architecture/773-*.md §"reaper". Correcting the
-            // vocabulary is a separate decision with its own consumers
-            // (`is_gated_self_report`), deliberately not made in this
-            // slice; the reason tail at least stops the row from lying
-            // silently.
+            // The `spawn-failed` classifier is knowingly wrong here (a reaped worker died at RUNTIME); correcting the vocabulary has its own consumers (`is_gated_self_report`). The reason tail at least stops the row from lying silently.
             let rows = task_fail_from_worker_tx(
                 tx,
                 &task_id,

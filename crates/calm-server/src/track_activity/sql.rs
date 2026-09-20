@@ -1,38 +1,22 @@
-//! #1722 §4.2/§4.3 — the durable rows the track activity projector reads.
-//!
-//! Every function here is ONE autocommit SELECT over the pool. There is no
-//! explicit transaction anywhere in this module, and there must not be: a
-//! deferred `pool.begin()` holds read locks across statements and is a
-//! deadlock party against IMMEDIATE writers (`deferred_write_tx_invariant`);
-//! an autocommit statement releases everything before sqlx parks. The
-//! price is that consecutive statements share no snapshot — a write landing
-//! between two of them is corrected by the next 30 s reconcile (design §9
-//! G12).
+//! The durable rows the track activity projector reads. Every function here is ONE autocommit
+//! SELECT over the pool; a deferred `pool.begin()` would hold read locks across statements and
+//! deadlock against IMMEDIATE writers, so there must be no explicit transaction in this module.
 
 use sqlx::{Row, SqlitePool};
 
 use crate::error::Result;
 use crate::isolated_codex::lookup::isolated_card_exists_sql;
 
-/// E1 — harness turn end (design §4.3). The newest non-interrupted
-/// `turn/completed` transcript row per card is S1b's
-/// `LAST_TURN_COMPLETED_MS_SUBQUERY` (correlated on `c.id`, inlined here by
-/// its exported macro so the two spellings cannot drift); the track value
-/// is the max over its cards, so the statement enters the transcript table
-/// through the `(card_id, method, created_at_ms)` index once per card
-/// (F2.35). A `const` so the plan test runs THIS text
-/// (`e1_e2_query_plans_use_the_transcript_index`).
+/// E1 — harness turn end: the newest non-interrupted `turn/completed` transcript row per card,
+/// inlined from its exported macro so the two spellings cannot drift; a `const` so the plan test runs THIS text.
 pub const E1_HARNESS_TURN_COMPLETED_SQL: &str = concat!(
     "SELECT MAX(",
     calm_truth::last_turn_completed_ms_subquery!(),
     ") FROM cards c WHERE c.track_id = ?1"
 );
 
-/// E2 — a successful `calm.user.notify` (F2.28): the transcript row of the
-/// completed MCP tool call (`item/completed` only — the `item/started` twin
-/// of the same call is not a completion), entered through the same index.
-/// A row whose `item.error` is set or whose `item.status` is `failed` is
-/// not evidence.
+/// E2 — a successful `calm.user.notify`: the completed MCP tool call row (`item/completed` only).
+/// A row whose `item.error` is set or whose `item.status` is `failed` is not evidence.
 pub const E2_USER_NOTIFY_SQL: &str = "SELECT MAX(h.created_at_ms) FROM harness_items h \
      WHERE h.card_id IN (SELECT id FROM cards WHERE track_id = ?1) \
        AND h.method = 'item/completed' AND h.item_type = 'mcpToolCall' \
@@ -40,8 +24,7 @@ pub const E2_USER_NOTIFY_SQL: &str = "SELECT MAX(h.created_at_ms) FROM harness_i
        AND json_extract(h.params, '$.item.error') IS NULL \
        AND COALESCE(json_extract(h.params, '$.item.status'), '') <> 'failed'";
 
-/// `tracks` row slice the fold needs (design §4.2, lifecycle line;
-/// #1743 §4.1 rule 1 reads `archived_at` as the second terminal predicate).
+/// `tracks` row slice the fold needs.
 #[derive(Debug, Clone)]
 pub struct TrackRow {
     pub lifecycle: String,
@@ -49,7 +32,7 @@ pub struct TrackRow {
     pub archived_at: Option<i64>,
 }
 
-/// One `current_tasks` row — the W clause input (design §4.2 W, F2.22).
+/// One `current_tasks` row — the W clause input.
 #[derive(Debug, Clone)]
 pub struct TaskRow {
     pub key: String,
@@ -60,7 +43,7 @@ pub struct TaskRow {
     pub updated_at_ms: i64,
 }
 
-/// One eligible session — the S0 result row (design §4.2 S0).
+/// One eligible session — the S0 result row.
 #[derive(Debug, Clone)]
 pub struct SessionRow {
     pub id: String,
@@ -71,13 +54,11 @@ pub struct SessionRow {
     pub last_activity_ms: Option<i64>,
     pub updated_at_ms: i64,
     pub created_at_ms: i64,
-    /// `json_extract(handle_state_json, '$.mode')` — `Some("harness")` for
-    /// the planner / assistant harness rows (F2.2).
+    /// `json_extract(handle_state_json, '$.mode')` — `Some("harness")` for the planner / assistant harness rows.
     pub mode: Option<String>,
     /// The card-keyed isolated predicate (`isolated_codex::lookup`).
     pub isolated: bool,
-    /// `EXISTS (tasks.worker_card_id = card)` over EVERY attempt — the
-    /// "never bound to a task" arm negated. Shared with E5/E6 (§4.3).
+    /// `EXISTS (tasks.worker_card_id = card)` over EVERY attempt — the "never bound to a task" arm negated.
     pub task_bound: bool,
 }
 
@@ -88,8 +69,7 @@ pub struct CardStatusRow {
     pub updated_at: i64,
 }
 
-/// The persisted completion-class evidence, one `MAX` per source (design
-/// §4.3 E1, E2, E4–E7; E3 is folded from the W rows by the caller).
+/// The persisted completion-class evidence, one `MAX` per source (E3 is folded from the W rows by the caller).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Evidence {
     pub e1_harness_turn_completed: Option<i64>,
@@ -116,9 +96,7 @@ impl Evidence {
     }
 }
 
-/// Tick enumeration: every unarchived track (design §4.3 — no activity
-/// predicate, so a short task that starts and ends between two ticks on a
-/// quiet track is still found).
+/// Tick enumeration: every unarchived track — no activity predicate, so a short task between two ticks on a quiet track is still found.
 pub(crate) async fn unarchived_track_ids(pool: &SqlitePool) -> Result<Vec<String>> {
     let rows = sqlx::query("SELECT id FROM tracks WHERE archived_at IS NULL ORDER BY id")
         .fetch_all(pool)
@@ -138,13 +116,8 @@ pub(crate) async fn track_row(pool: &SqlitePool, track_id: &str) -> Result<Optio
     }))
 }
 
-/// P — the planner's last completed turn (#1743 §4.1): the max of the
-/// feeder's monotone `last_turn_completed_ms` over EVERY session of a
-/// `cards.role = 'planner'` card of the track, superseded ones included,
-/// so a planner restart does not reset it. `NULL` when no planner turn has
-/// ever completed. Not E1: E1 is the max over every card (assistant
-/// included), while task observations are pushed to the planner card only
-/// (K21).
+/// The planner's last completed turn: max of `last_turn_completed_ms` over every session of a
+/// planner card of the track (superseded ones included, so a restart does not reset it); `NULL` if none.
 pub const PLANNER_LAST_TURN_SQL: &str = "SELECT MAX(ws.last_turn_completed_ms) \
      FROM worker_sessions ws JOIN cards c ON c.id = ws.card_id \
     WHERE ws.track_id = ?1 AND c.role = 'planner'";
@@ -153,8 +126,7 @@ pub(crate) async fn planner_last_turn(pool: &SqlitePool, track_id: &str) -> Resu
     max_ms(pool, PLANNER_LAST_TURN_SQL, track_id).await
 }
 
-/// W — the current attempt of every task of the track (F2.22: one row per
-/// key, superseded attempts are not in `current_tasks`).
+/// W — the current attempt of every task of the track (superseded attempts are not in `current_tasks`).
 pub(crate) async fn current_tasks(pool: &SqlitePool, track_id: &str) -> Result<Vec<TaskRow>> {
     let rows = sqlx::query(
         "SELECT key, status, worker_card_id, child_track_id, finished_at_ms, updated_at_ms \
@@ -176,20 +148,16 @@ pub(crate) async fn current_tasks(pool: &SqlitePool, track_id: &str) -> Result<V
         .collect())
 }
 
-/// The "never bound to a task" predicate, negated: does ANY attempt row of
-/// the track name this card as its worker? Spelled once and spliced into
-/// S0 (twice), E5 and E6 so the four stay one predicate (design §4.3).
+/// Does ANY attempt row of the track name this card as its worker? Spliced into S0, E5 and E6 so the four stay one predicate.
 fn task_bound_exists_sql(card_expr: &str) -> String {
     format!(
         "EXISTS (SELECT 1 FROM tasks t WHERE t.track_id = ?1 AND t.worker_card_id = {card_expr})"
     )
 }
 
-/// S0 — the eligible sessions: the card's CURRENT session (`cards.session_id`)
-/// where the card is a harness card, the current attempt's worker card, or an
-/// interactive card that was never bound to a task. A superseded attempt's
-/// worker card matches none of the three, so its leftover `failed` session
-/// never reaches the fold (design §4.2 S0, B-M5).
+/// S0 — the eligible sessions: the card's CURRENT session where the card is a harness card, the
+/// current attempt's worker card, or an interactive card never bound to a task. A superseded
+/// attempt's worker card matches none, so its leftover `failed` session never reaches the fold.
 pub(crate) async fn eligible_sessions(
     pool: &SqlitePool,
     track_id: &str,
@@ -229,9 +197,8 @@ pub(crate) async fn eligible_sessions(
         .collect())
 }
 
-/// The `kernel/card/status` rows of the track's cards, keyed by card id.
-/// Which of them count is decided by the fold against S0 (rows without an
-/// eligible LIVE session are ignored, never rewritten — design §4.2, Q2 (c)).
+/// The `kernel/card/status` rows of the track's cards, keyed by card id. Which of them count
+/// is decided by the fold against S0 (rows without an eligible LIVE session are ignored, never rewritten).
 pub(crate) async fn card_status_overlays(
     pool: &SqlitePool,
     track_id: &str,
@@ -285,19 +252,15 @@ async fn max_ms(pool: &SqlitePool, sql: &str, track_id: &str) -> Result<Option<i
     Ok(row.try_get::<Option<i64>, _>(0)?)
 }
 
-/// E1, E2, E4–E7 — six autocommit `MAX` statements (design §4.3). E3 is
-/// computed from the W rows by the caller.
+/// E1, E2, E4–E7 — six autocommit `MAX` statements. E3 is computed from the W rows by the caller.
 pub(crate) async fn evidence(pool: &SqlitePool, track_id: &str) -> Result<Evidence> {
-    // E1 / E2 — the two transcript-table statements are the `pub const`s
-    // above (the plan test pins their index use).
-    // E4 — a lifecycle edge NOT driven by the user (`track.*` is never
-    // pruned; `events.actor` is the `ActorId` JSON, F2.18/F2.20).
+    // E4 — a lifecycle edge NOT driven by the user (`track.*` is never pruned;
+    // `events.actor` is the `ActorId` JSON).
     let e4 = "SELECT MAX(at) FROM events \
                WHERE scope_track = ?1 AND kind = 'track.lifecycle_changed' \
                  AND json_extract(actor, '$.kind') <> 'User'";
-    // E5 — the stop hook of an interactive claude/codex card that was never
-    // bound to a task. A task-bound worker lights once, through E3: it
-    // reports inside its turn and the turn ends later (F2.36).
+    // E5 — the stop hook of an interactive claude/codex card never bound to a task. A
+    // task-bound worker lights once, through E3.
     let e5 = format!(
         "SELECT MAX(e.at) FROM events e \
           WHERE e.scope_track = ?1 AND e.kind IN ('claude.hook', 'codex.hook') \
@@ -305,9 +268,8 @@ pub(crate) async fn evidence(pool: &SqlitePool, track_id: &str) -> Result<Eviden
             AND NOT {}",
         task_bound_exists_sql("json_extract(e.payload, '$.card_id')")
     );
-    // E6 — the feeder's monotone turn-completion column on a shared-daemon
-    // interactive card that was never bound to a task (§4.2.1; any session
-    // state — an exited session keeps it).
+    // E6 — the feeder's monotone turn-completion column on a shared-daemon interactive card
+    // never bound to a task (any session state — an exited session keeps it).
     let e6 = format!(
         "SELECT MAX(ws.last_turn_completed_ms) FROM worker_sessions ws \
           WHERE ws.track_id = ?1 AND ws.provider = 'codex' \

@@ -1,7 +1,5 @@
-// One Settings visit: a desktop dialog or a mobile route page, selected by the
-// shared compact breakpoint. The shell owns this above its keyed route stage,
-// so section routes keep one surface mounted. The URL selects the section;
-// pane hosts remain the sole owners of API reads and unsaved plugin forms.
+// One Settings visit: a desktop dialog or a mobile route page, mounted above the
+// shell's keyed route stage so section routes keep one surface. The URL selects the section.
 
 import { useCallback, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
@@ -31,12 +29,7 @@ import { useCurrentPath, useGo, type NavTarget } from '../router/navigation.ts';
 import { useTheme } from '../theme/public.tsx';
 import { MobileAccessHost } from './mobile-access-host.tsx';
 
-/**
- * Which pane the path asks for, or `null` when the reader is not in Settings.
- *
- * Exported and pure so the mapping is directly assertable: every settings path
- * has to reach a pane, and no other path may open the dialog.
- */
+/** Which pane the path asks for, or `null` when the reader is not in Settings. */
 export function settingsSectionForPath(path: string): SettingsSection | null {
   if (path === '/settings') return 'general';
   return SETTINGS_SECTIONS.find((entry) => path === `/settings/${entry.id}`)?.id ?? null;
@@ -53,11 +46,9 @@ export type SettingsOverlayProps = Readonly<{
 }>;
 
 /**
- * The pane tree is one portal into a stable container. Only the container's DOM
- * parent changes between the inline mobile page and the desktop dialog slot.
- * React ownership remains here, so resizing cannot discard plugin drafts.
- * Current Settings panes use no Dialog child-view context; any future such
- * consumer needs an explicit bridge rather than assuming DOM ancestry is context.
+ * The pane tree is one portal into a stable container; only the container's DOM
+ * parent changes between the mobile page and the desktop dialog slot, so resizing
+ * cannot discard plugin drafts. DOM ancestry is not React context here.
  */
 export function SettingsOverlay({ transport, unauthorized }: SettingsOverlayProps) {
   const go = useGo();
@@ -175,9 +166,8 @@ function AppearancePaneHost() {
   const theme = useTheme();
   return (
     <AppearancePane
-      // `app/theme` and `features/settings` each own their copy of the mode
-      // union — features may not import app. The adaptation is here, and the
-      // two unions are only kept in step by this line.
+      // `app/theme` and `features/settings` each own their copy of the mode union
+      // (features may not import app); the two are only kept in step by this line.
       themeMode={theme.mode satisfies SettingsThemeMode}
       onThemeModeChange={(mode) => theme.setMode(mode)}
     />
@@ -195,36 +185,17 @@ function NetworkPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
       settings={settings.data?.settings}
       loadError={settings.error instanceof Error ? settings.error.message : null}
       onRetryLoad={() => { void settings.refetch(); }}
-      /* The promise is the whole contract: the pane follows each commit's own
-         request, so a failure lands on the row that failed. This host holds no
-         `saving` / `saveError` / `savedAt` of its own — one triple for two rows
-         is what put HTTP's failure on the HTTPS row. */
+      /* The pane follows each commit's own promise, so a failure lands on the row
+               that failed; one shared triple for two rows put HTTP's failure on the HTTPS row. */
       onSave={(patch) => save(patch).then(() => undefined)}
     />
   );
 }
 
 /**
- * Settings › Plugins — the installed list, read here and rendered there.
- *
- * The list is not primed by a route loader: it is one screen's read, it fails
- * loudly on its own (`retry: false`), and a loader would make opening any other
- * settings pane wait on it.
- *
- * ## The configuration pane is a second level, not a second route
- *
- * #1284 S4 adds a drill-in: a row whose plugin declares a `config_schema` walks
- * into that plugin's configuration. Which row is open is held here rather than
- * in the URL, and that is the one place this file departs from "the URL is the
- * state".
- *
- * The reason is what the second level *is*. Every other settings level is a
- * screen you can be sent to; this one holds an operator's unsaved edits to a
- * document, keyed to a schema version the kernel may have replaced since. A
- * shareable link to it would either arrive with someone else's draft or arrive
- * empty on a plugin that no longer declares the field the link was made for. So
- * it lives for as long as the visit does, and `/settings/plugins` stays the
- * address of the list.
+ * Settings › Plugins. Which row's configuration is open is held here, not in the
+ * URL: the second level holds an operator's unsaved edits, so a shareable link
+ * could only arrive with someone else's draft or empty.
  */
 function PluginsPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
   const plugins = useQuery(pluginsQueryOptions(transport, unauthorized));
@@ -232,20 +203,11 @@ function PluginsPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
   const config = usePluginConfigMutations(transport, unauthorized);
   const install = usePluginInstall(transport, unauthorized);
   const [openId, setOpenId] = useState<string | null>(null);
-  /* #1480 — the install form is a second level for the same reason the
-     configuration pane is one: it holds what the operator is typing, including
-     a credential, and a shareable link to it could only arrive empty or with
-     somebody else's draft in it. */
+  /* The install form is a second level for the same reason: it holds what the
+       operator is typing, including a credential. */
   const [adding, setAdding] = useState(false);
-  /*
-   * The row is what says the pane may be open at all, and it is re-derived from
-   * the list on every render rather than copied into state when it was clicked.
-   * The list refetches — an enable/disable invalidates it, and a plugin can be
-   * uninstalled from elsewhere — so a pane that trusted a captured row would
-   * keep offering a configuration screen for a plugin that is no longer there,
-   * and `has_config` is the kernel's answer to "is there anything to configure",
-   * not a fact about the moment the button was pressed.
-   */
+  /* The row is re-derived from the list on every render, never copied into state:
+   * the list refetches, and a plugin can be uninstalled from elsewhere. */
   const open = openId === null
     ? undefined
     : plugins.data?.find((plugin) => plugin.id === openId && plugin.has_config);
@@ -262,9 +224,8 @@ function PluginsPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
         onCheckConnector={install.checkConnector}
         onInstallConnector={install.installConnector}
         onInstallLocalPath={install.installLocalPath}
-        /* The list is what says the install worked, so the form leaves as soon
-           as the kernel accepts one — the new row is already on the screen
-           behind it, switched off, waiting to be enabled. */
+        /* The list is what says the install worked; the new row is already on the
+                   screen behind the form, switched off. */
         onInstalled={() => setAdding(false)}
       />
     );

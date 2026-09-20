@@ -39,9 +39,8 @@ struct PendingLink {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnsafeTrackLink {
-    /// The exact destination when pulldown-cmark borrowed it from the source,
-    /// otherwise a bounded excerpt of the smallest parser-provided source span
-    /// containing it.
+    /// The exact destination when pulldown-cmark borrowed it from the source, otherwise a bounded
+    /// excerpt of the smallest parser-provided source span containing it.
     pub source: String,
     pub decoded_destination: String,
 }
@@ -89,12 +88,8 @@ pub fn scan_links(markdown: &str) -> LinkScan {
     scan_links_with_options(markdown, opts)
 }
 
-/// Rewrite links that target a copied block in `source_track_id` so they target
-/// the same block in `target_track_id`.
-///
-/// Unlike [`scan_links`], this operates on Markdown source ranges: the offsets
-/// in [`ScannedLink`] belong to the rendered plain-text label and cannot be
-/// used to edit link destinations in the source document.
+/// Rewrite links that target a copied block in `source_track_id` so they target the same block in
+/// `target_track_id`. Operates on Markdown source ranges, unlike [`scan_links`]'s label offsets.
 pub fn rewrite_track_links(
     markdown: &str,
     source_track_id: &str,
@@ -322,8 +317,6 @@ pub fn parse_destination(destination: &str) -> Option<(String, Option<String>)> 
 }
 
 /// Build the canonical internal destination for a track or one of its blocks.
-/// Keeping the released wire prefix here gives callers one construction source
-/// alongside [`parse_destination`] and [`rewrite_track_destination`].
 pub fn format_track_destination(track_id: &str, block_id: Option<&str>) -> String {
     let mut destination = format!("{TRACK_LINK_PREFIX}{track_id}");
     if let Some(block_id) = block_id {
@@ -878,7 +871,6 @@ mod tests {
             gfm_label: Option<&'static str>,
         }
 
-        // Tables and task lists have no observable extraction delta here; these cases document behavior until plain-text semantics land in a later PR.
         let cases = [
             Case {
                 name: "table cell",

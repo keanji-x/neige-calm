@@ -1,7 +1,4 @@
-//! #1666 S4 — `allow_output_below_cursor`: a status-line refresh below the
-//! input box is not a stale observation, everything else still is. Real MCP
-//! tools, renderer and PTY; screen changes at or above the cursor are
-//! injected through the render plane exactly as a program would paint them.
+//! `allow_output_below_cursor`: a status-line refresh below the input box is not a stale observation, everything else still is.
 use crate::terminal_support::Harness;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -95,10 +92,6 @@ fn typed(terminal: &str, request: &str, observation: &Value, extra: Value) -> Va
     args
 }
 
-/// The hint line keeps refreshing below the cursor: a plain input is a
-/// stale result whose `screen_diff` shows only rows below the cursor
-/// changed; the same request with `allow_output_below_cursor` writes and
-/// the receipt names the tolerance and the rows it admitted.
 #[tokio::test]
 async fn hint_line_refresh_below_the_cursor_is_admitted_with_the_tolerance() {
     let h = Harness::start().await;
@@ -191,10 +184,7 @@ async fn hint_line_refresh_below_the_cursor_is_admitted_with_the_tolerance() {
     h.stop(&terminal).await;
 }
 
-/// A cursor hidden in both captures (Claude Code keeps DECTCEM off in its
-/// draft box while positioning the cursor at the edit point, #1677): the
-/// hint refresh below it is stale without the flag, with `screen_diff`
-/// reporting `visible: false`, and admitted with it on the position alone.
+/// Claude Code keeps DECTCEM off in its draft box while positioning the cursor at the edit point.
 #[tokio::test]
 async fn hidden_cursor_in_both_captures_is_admitted_on_its_position() {
     let h = Harness::start().await;
@@ -262,11 +252,6 @@ async fn hidden_cursor_in_both_captures_is_admitted_on_its_position() {
     h.stop(&terminal).await;
 }
 
-/// The refusal table with the tolerance requested: a change on the cursor
-/// row, a text change above, a presentation-only (bold) change above and a
-/// cursor move each stay stale, with `screen_diff` naming why; a hidden
-/// cursor is an input-mode change and is refused by the surface fence
-/// before the rows are compared; nothing is written.
 #[tokio::test]
 async fn changes_at_or_above_the_cursor_and_cursor_changes_stay_stale() {
     let h = Harness::start().await;
@@ -389,8 +374,8 @@ async fn changes_at_or_above_the_cursor_and_cursor_changes_stay_stale() {
         .await;
     assert_eq!(receipt(&both)["outcome"], "written", "{both}");
     assert_eq!(receipt(&both)["output_since_observation"], true);
-    // The same-surface fence admitted it, not the row comparison, and the
-    // receipt says so (#1684) while still listing the row above.
+    // The same-surface fence admitted it, not the row comparison, and the receipt says so while
+    // still listing the row above.
     let drift = &receipt(&both)["observation_drift"];
     assert_eq!(drift["tolerance"], "output_since_observation", "{both}");
     assert_eq!(drift["rows_changed_at_or_above_cursor"], 1, "{drift}");
@@ -403,10 +388,6 @@ async fn changes_at_or_above_the_cursor_and_cursor_changes_stay_stale() {
     h.stop(&terminal).await;
 }
 
-/// #1666 r1 (F) — the tolerance admits draft edits only. Every other action
-/// is refused as invalid params by the MCP layer before any fence runs, and
-/// the service refuses the same shapes on its own when called directly
-/// (nothing reserved or written either way); an editing key is admitted.
 #[tokio::test]
 async fn below_cursor_tolerance_is_refused_for_everything_but_draft_edits() {
     use calm_server::terminal_interaction::{InputOptions, Target};
@@ -483,8 +464,6 @@ async fn below_cursor_tolerance_is_refused_for_everything_but_draft_edits() {
     h.stop(&terminal).await;
 }
 
-/// Many rows below the cursor changed: the receipt lists the first 16 and
-/// says it truncated; the stale result reports counts only.
 #[tokio::test]
 async fn admitted_rows_are_listed_up_to_sixteen_and_counted_in_full() {
     let h = Harness::start().await;

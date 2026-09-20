@@ -14,9 +14,7 @@ impl TerminalInteraction {
             return receipt;
         };
         let captured = async {
-            // Pin the physical client and its complete execution binding to
-            // the action that already ran; `capture` re-reads task/control
-            // state again after its wait, against this same binding.
+            // Pin the physical client and its execution binding to the action that already ran.
             let resolved = Self::resolve_target(
                 self.repo.as_ref(),
                 identity,
@@ -54,14 +52,9 @@ impl TerminalInteraction {
     }
 }
 
-/// Release readback economy (#1618): a release rarely changes the screen, so
-/// when the readback captured the same revision as this connection's previous
-/// observation (`previous`, read before the readback registered itself) the
-/// `text` array is dropped and `text_omitted` names that observation. Both
-/// captures must be live viewports (scroll offset 0): a history view shares
-/// the live revision but shows different text, so eliding after one would
-/// hide the live screen. Every other field stays; claim readbacks and observe
-/// always carry text.
+/// When the readback captured the same revision as this connection's previous observation,
+/// `text` is dropped and `text_omitted` names that observation. Both captures must be live
+/// viewports (scroll offset 0): a history view shares the live revision but shows different text.
 pub(super) fn omit_unchanged_release_text(
     receipt: &mut Value,
     previous: Option<LatestObservation>,
@@ -129,8 +122,6 @@ mod release_text_tests {
         let mut first = receipt();
         omit_unchanged_release_text(&mut first, None);
         assert_eq!(first, receipt());
-        // The previous observation was a history view of the same revision:
-        // its text is not the live text, so the readback keeps its own.
         let mut history = receipt();
         omit_unchanged_release_text(&mut history, latest(id, 9, 1));
         assert_eq!(history, receipt());
@@ -140,8 +131,7 @@ mod release_text_tests {
         let mut kept = scrolled.clone();
         omit_unchanged_release_text(&mut kept, latest(id, 9, 0));
         assert_eq!(kept, scrolled);
-        // An unavailable readback is left exactly as it was: no `state` key
-        // may be conjured into it.
+        // An unavailable readback is left exactly as it was: no `state` key may be conjured into it.
         let unavailable = json!({"terminal_id":"t1","control_id":null,"observation":{"status":"unavailable","reason":"gone"}});
         let mut untouched = unavailable.clone();
         omit_unchanged_release_text(&mut untouched, latest(id, 9, 0));

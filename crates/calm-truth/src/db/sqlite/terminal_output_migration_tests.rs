@@ -1,4 +1,4 @@
-//! #1456 — forward-only durable terminal output evidence migration.
+//! Forward-only durable terminal output evidence migration.
 
 use std::borrow::Cow;
 

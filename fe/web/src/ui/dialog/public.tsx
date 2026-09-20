@@ -7,22 +7,18 @@ export interface DialogChildView { title: ReactNode; body: ReactNode; onEscape?:
 export interface DialogViewController { pushView: (view: DialogChildView) => () => void; popView: () => void }
 export interface DialogProps {
   open: boolean; onClose: () => void; title?: string; hideTitleRow?: boolean; children?: ReactNode; wide?: boolean;
-  /** CR-3 — drop the `×` while keeping the title. `hideTitleRow` can only remove both. */
+  /** Drop the `×` while keeping the title; `hideTitleRow` can only remove both. */
   hideClose?: boolean;
   initialFocusRef?: RefObject<HTMLElement | null>;
 }
-/**
- * CR-6 — three mutually exclusive Confirm states. `blocked` is a genuine
- * unavailability (real `disabled`); `busy` keeps the button focusable so the
- * focus trap does not lose a member mid-flight (§5.1).
- */
+/** `blocked` is real `disabled`; `busy` keeps the button focusable so the focus trap does not lose a member mid-flight. */
 export type ConfirmState = 'ready' | 'blocked' | 'busy';
 export interface ConfirmDialogProps {
   open: boolean; title: string; description?: ReactNode; confirmLabel?: string; cancelLabel?: string;
   onConfirm: () => void; onCancel: () => void; destructive?: boolean; confirmState?: ConfirmState;
-  /** CR-7 — second label node, so busy can swap text without changing width. */
+  /** Second label node, so busy can swap text without changing width. */
   confirmBusyLabel?: string;
-  /** CR-1 — override the initial focus target; defaults to Cancel. */
+  /** Override the initial focus target; defaults to Cancel. */
   initialFocusRef?: RefObject<HTMLElement | null>;
 }
 
@@ -69,18 +65,7 @@ export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children
     previousViewRef.current = { depth: 0, id: null };
   }, [open, setViews]);
 
-  /*
-   * A child view changes which half of the still-mounted Dialog is visible.
-   * The opening-focus effect below only keys on `open`, so without this handoff
-   * focus stays on the now-`display:none` opener; popping the child then removes
-   * its focused Cancel/Select control and browsers drop focus to <body>.
-   *
-   * Capture happens synchronously in `pushView`, before React hides the base
-   * body. On a push, focus the first control in the child body (or the Dialog
-   * chrome if it has none). On a pop, restore the exact control that opened the
-   * removed view. The id comparison makes disposing a non-top LIFO entry a
-   * focus no-op: the visible child did not change.
-   */
+  /* The opening-focus effect keys only on `open`; without this handoff focus stays on the now-`display:none` opener and popping the child drops focus to <body>. Disposing a non-top LIFO entry is a focus no-op. */
   useEffect(() => {
     if (!open) return;
     const current = { depth: views.length, id: view?.id ?? null };
@@ -103,9 +88,7 @@ export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children
           : null;
         (child === null ? reachable : focusables(child))[0]?.focus();
       }
-      // `.focus()` can silently fail even for an element our syntactic filter
-      // accepted (for example a button inside a newly-disabled fieldset).
-      // Verify the result after both the restore and child-entry branches.
+      // `.focus()` can silently fail for an element the syntactic filter accepted (e.g. inside a newly-disabled fieldset); verify.
       const active = document.activeElement;
       if (active === null || !(reachable as readonly Element[]).includes(active)) {
         (reachable[0] ?? panel).focus();
@@ -158,73 +141,15 @@ export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children
     const frame = requestAnimationFrame(() => {
       const panel = panelRef.current;
       if (!panel) return;
-      /*
-       * #1161 — the reader gets there first, and wins.
-       *
-       * This runs a frame after the panel mounts, and a reader who clicks into
-       * a field inside that frame had focus taken off them and put on
-       * `focusables(panel)[0]`, which is the header's Close button. Their
-       * keystrokes then went to a button, and the first **space** activated it
-       * and discarded the half-filled dialog. That was #1161: it read as a
-       * flaky test because the frame usually lands before the click, and every
-       * test in `ui/dialog` stubbed `requestAnimationFrame` to run
-       * synchronously, which removes the window entirely.
-       *
-       * Opening focus is a courtesy for a reader who has not acted yet, so it
-       * yields to one who has — but only to a real landing place. The test is
-       * membership of `focusables(panel)` and nothing else, not
-       * `panel.contains(…)`, and the difference is two ways the looser test
-       * would yield to nothing:
-       *
-       *  - the panel carries `tabIndex={-1}`, so a mousedown on chrome (the
-       *    title, the padding) makes the *panel* the active element. That is
-       *    not the reader choosing a field, and `initialFocusRef` should still
-       *    win; and
-       *  - a base-view element stays mounted under `display: none` once a child
-       *    view is pushed, so `contains` keeps saying yes about content nobody
-       *    can see or reach.
-       *
-       * `focusables` already excludes the panel itself and filters the
-       * `disabled` *attribute*, `inert` and anything not visible within the
-       * panel, so it is close enough to the question worth asking here. It is
-       * not exact — disability inherited from a `<fieldset disabled>` is not an
-       * attribute on the control — which is why the focus below is verified
-       * afterwards rather than assumed.
-       */
+      /* Opening focus yields to a reader who already landed on a real focusable — membership of `focusables(panel)`, not `panel.contains(…)`, which would also yield to the `tabIndex={-1}` panel itself and to a base view hidden under a pushed child. */
       const reachable = focusables(panel);
       const active = document.activeElement;
-      // Compared as `Element`, not `HTMLElement`: `focusables` matches `a[href]`,
-      // which an SVG anchor satisfies while being an `SVGElement`. Narrowing to
-      // `HTMLElement` here would have let the guard fall through for exactly the
-      // reader it exists to protect.
+      // Compared as `Element`, not `HTMLElement`: an SVG anchor matches `a[href]` but is an `SVGElement`.
       if (active !== null && (reachable as readonly Element[]).includes(active)) return;
-      /*
-       * The named target is checked against the same list rather than trusted.
-       * `.focus()` on a `disabled` or hidden element is a silent no-op, so
-       * focus simply stayed wherever it was — outside the panel. A modal open
-       * with focus outside it is worse than picking the wrong control inside.
-       * Measured before the check existed: `insidePanel=false`, with focus left
-       * on the opener. (In a browser the background is `inert` by then and the
-       * unfocusing steps would drop it to `body` instead; jsdom does not
-       * implement that, so the probe saw the opener. Outside either way.)
-       *
-       * This one predates #1161 and no caller passes an unusable ref today; it
-       * is fixed here because this is the function being repaired and the
-       * failure is the same family — opening focus landing somewhere nobody
-       * can use.
-       */
+      /* The named target is checked against the same list: `.focus()` on a disabled or hidden element is a silent no-op that leaves focus outside the modal. */
       const named = initialFocusRef?.current ?? null;
       (named !== null && reachable.includes(named) ? named : reachable[0] ?? panel).focus();
-      /*
-       * And then check, rather than predict.
-       *
-       * `focusables` asks `hasAttribute('disabled')`, which is an attribute
-       * test, while disability is *inherited* — a control inside a
-       * `<fieldset disabled>` passes the filter and still cannot take focus.
-       * That is one way; enumerating the rest is the losing game, and the thing
-       * that actually matters is a single fact that can just be read back: a
-       * modal must not be open with focus outside it.
-       */
+      /* Disability is inherited (`<fieldset disabled>`) and `focusables` only tests the attribute, so read the result back rather than predict it. */
       if (!panel.contains(document.activeElement)) panel.focus();
     });
     return () => {
@@ -274,10 +199,7 @@ export function ConfirmDialog({ open, title, description, confirmLabel = 'Confir
   const cancelRef = useRef<HTMLButtonElement | null>(null);
   const confirmRef = useRef<HTMLButtonElement | null>(null);
 
-  // CR-2 — the instant Confirm becomes really `disabled` it leaves the focus trap
-  // (`focusables()` filters `[disabled]`), so move focus to Cancel first. `busy` does
-  // not trigger this: it keeps the button focusable, and yanking focus out from under
-  // the pointer would be an unasked-for jump.
+  // A really `disabled` Confirm leaves the focus trap, so move focus to Cancel first; `busy` stays focusable and must not yank focus.
   useEffect(() => {
     if (confirmState !== 'blocked') return;
     if (document.activeElement === confirmRef.current) cancelRef.current?.focus();

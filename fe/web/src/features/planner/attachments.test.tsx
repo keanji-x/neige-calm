@@ -42,14 +42,7 @@ function Harness({ upload, supported = true, card = 'card-1' }: {
   );
 }
 
-/**
- * The hidden `<input type="file">`.
- *
- * Found by its type and not by an accessible name, because it deliberately has
- * none: the `IconButton` beside it is the control a person operates, carries
- * the name and the disabled state, and opens this by `click()`. Two announced
- * file controls in one composer was the alternative.
- */
+/** The hidden `<input type="file">`, found by its type: it deliberately has no accessible name. */
 function picker(): HTMLInputElement {
   const found = document.querySelector<HTMLInputElement>('input[type="file"]');
   if (found === null) throw new Error('no file input rendered');
@@ -61,9 +54,7 @@ function attachButton(): HTMLButtonElement {
   return screen.getByRole<HTMLButtonElement>('button', { name: 'Attach an image' });
 }
 
-/** True whether the button is natively disabled or `aria-disabled` (which is
- *  what Astryx switches to when the button carries a tooltip, so that the
- *  reason stays reachable by keyboard). */
+/** True whether the button is natively disabled or `aria-disabled` (Astryx switches to the latter when the button carries a tooltip). */
 function attachBlocked(): boolean {
   const button = attachButton();
   return button.disabled || button.getAttribute('aria-disabled') === 'true';
@@ -72,21 +63,13 @@ function attachBlocked(): boolean {
 async function pick(file: File) {
   await act(async () => {
     fireEvent.change(picker(), { target: { files: [file] } });
-    /* The upload is a promise; letting the microtask queue drain inside `act`
-       is what folds its state update into this commit. */
+    /* Letting the microtask queue drain inside `act` folds the upload's state update into this commit. */
     await Promise.resolve();
   });
 }
 
 describe('planner attachments', () => {
-  /*
-   * The control opens the picker.
-   *
-   * Every other test here dispatches `change` on the hidden input directly,
-   * which is the only way to simulate a file choice — and which means none of
-   * them execute the line that opens it. Delete `picker.current?.click()` and
-   * they all still pass while nobody can attach anything.
-   */
+  /* Every other test dispatches `change` on the hidden input directly, so none of them executes the line that opens it. */
   it('opens the file picker when the control is pressed', async () => {
     render(<Harness upload={vi.fn<UploadAttachment>()} />);
     const opened = vi.fn();
@@ -105,12 +88,6 @@ describe('planner attachments', () => {
     expect(await readBytes()).toBeInstanceOf(Uint8Array);
     expect(contentType).toBe('image/png');
 
-    /*
-     * The preview src is the url the SERVER built. Anything derived locally —
-     * a blob url, a data url — would be a second representation of the same
-     * bytes, and on this deployment (plain-http LAN) the secure-context-only
-     * half of that family does not exist at runtime at all.
-     */
     const thumb = document.querySelector('img');
     expect(thumb?.getAttribute('src')).toBe(uploaded(0).url);
     expect(latest?.ids).toEqual([uploaded(0).attachmentId]);
@@ -159,15 +136,6 @@ describe('planner attachments', () => {
     expect(latest?.ids).toEqual([]);
   });
 
-  /*
-   * #1505 S6 review — an upload that lands after the reader moved on belongs
-   * to the card it was started for.
-   *
-   * The card-change effect clears the strip, but it cannot cancel a request
-   * already in flight. Without an ownership check the answer appended to the
-   * NEW card's composer: card B showing card A's picture, and a cross-card
-   * refusal when it is sent.
-   */
   it('does not adopt an upload that finished after the card changed', async () => {
     let settle: ((value: () => UploadAttachmentResponse) => void) | undefined;
     const upload = vi.fn<UploadAttachment>()
@@ -199,20 +167,9 @@ describe('planner attachments', () => {
     expect(latest?.ids).toEqual([uploaded(0).attachmentId]);
   });
 
-  /*
-   * The acceptance condition #1505 set for a track whose workspace is a folder
-   * the person owns: the control says it is unavailable AND says why, rather
-   * than looking live and answering 400.
-   */
   it('is unavailable with a reason on a track that cannot take attachments', async () => {
     render(<Harness upload={vi.fn<UploadAttachment>()} supported={false} />);
     expect(attachBlocked()).toBe(true);
-    /*
-     * The reason is a tooltip on the button rather than a `title` attribute,
-     * and the button stays focusable while disabled so the tooltip can be
-     * reached without a mouse — which is the half `title` never had. Asserted
-     * by actually opening it: a tooltip nobody can open is not a reason.
-     */
     await userEvent.hover(attachButton());
     expect(await screen.findByText(ATTACHED_WORKSPACE_REASON)).toBeTruthy();
   });

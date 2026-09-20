@@ -93,9 +93,8 @@ async fn upgrade_backfills_legacy_nonterminal_claim_context_to_empty_set() {
             .expect("read upgraded legacy task");
     assert_eq!(claim_context.as_deref(), Some("[]"));
 
-    // The first correctness sweep treats a present empty closure as a
-    // verified legacy claim, not as the fail-closed "snapshot missing"
-    // case. Pin both halves of that distinction at the upgrade boundary.
+    // A present empty closure is a verified legacy claim, not the fail-closed
+    // "snapshot missing" case.
     let frozen = claim_context
         .as_deref()
         .and_then(|json| serde_json::from_str::<Vec<calm_types::event::TaskContextRef>>(json).ok());
@@ -429,18 +428,8 @@ async fn sqlx_repo_open_accepts_nonterminal_block_row_at_0073_without_data_loss(
     .execute(&pool)
     .await
     .expect("seed pre-0073 in-flight block task");
-    // The before/after snapshots must name their columns DIFFERENTLY, because
-    // #1316 S2's migration 0081 renames two of them (`wave_id` -> `track_id`,
-    // `child_wave_id` -> `child_track_id`). Before 0081 this test could reuse
-    // one column list for both sides, and that is exactly what made the rename
-    // surface here: `HEAD_TASK_COLUMNS` describes the schema AFTER the upgrade
-    // and cannot address the 0072 row.
-    //
-    // The invariant is unchanged and still load-bearing: the assertion compares
-    // VALUES, so renaming a column must not alter any of them. Deriving the
-    // pre-0081 list from the head list (rather than writing a second literal
-    // roster) keeps the two in lockstep — a column added to `HEAD_TASK_COLUMNS`
-    // is automatically snapshotted on both sides.
+    // Migration 0081 renames `wave_id` -> `track_id` and `child_wave_id` ->
+    // `child_track_id`, so the pre-0081 snapshot needs its own column names.
     let pre_0081_columns: Vec<String> = HEAD_TASK_COLUMNS
         .iter()
         .map(|c| match *c {

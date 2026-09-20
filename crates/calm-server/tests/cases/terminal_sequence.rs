@@ -1,6 +1,4 @@
-//! #1666 S2 — `sequence`: a bounded edit in one ordered write request (one
-//! barrier, one acknowledgement, one receipt), through the real MCP tools,
-//! renderer and PTY.
+//! `sequence`: a bounded edit in one ordered write request (one barrier, one acknowledgement, one receipt).
 use crate::terminal_support::Harness;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -79,10 +77,6 @@ fn edit() -> Value {
         {"type":"text","text":"9"}]})
 }
 
-/// One sequence is ONE request: the connection's acknowledged input
-/// sequence advances by exactly one for four steps, the PTY receives the
-/// concatenated bytes in order (`cat -v` in raw mode shows them), and a
-/// replay writes nothing more.
 #[tokio::test]
 async fn sequence_is_one_write_with_the_concatenated_bytes_in_order() {
     let h = Harness::start().await;
@@ -151,16 +145,11 @@ async fn sequence_is_one_write_with_the_concatenated_bytes_in_order() {
     h.stop(&terminal).await;
 }
 
-/// The bounded-edit shape end to end on a real line editor: one sequence
-/// turns the draft `7200 + 19` into `7209 + 19`, the readback shows the
-/// corrected draft, and Enter is a separate action.
 #[tokio::test]
 async fn sequence_corrects_one_digit_of_a_readline_draft_in_one_write() {
     let h = Harness::start().await;
-    // #1716: type only once the `bash-5.2$ ` prompt is up and readline owns
-    // the line. On a loaded runner bash's startup loses the race to the
-    // sequence, and the cooked tty echoes the raw bytes as an unedited draft.
-    // Rows are trailing-trimmed, so the pattern is `$`, not `$ `.
+    // Type only once the `bash-5.2$ ` prompt is up and readline owns the line: on a loaded runner bash's
+    // startup loses the race and the cooked tty echoes the raw bytes. Rows are trailing-trimmed, so the pattern is `$`, not `$ `.
     let opened = h
         .ok(
             "calm.terminal.open",
@@ -207,8 +196,6 @@ async fn sequence_corrects_one_digit_of_a_readline_draft_in_one_write() {
     h.stop(&terminal).await;
 }
 
-/// Submission and control keys, submit, click, nesting, step count and size
-/// are refused as invalid actions before any reservation or write.
 #[tokio::test]
 async fn sequence_rejects_submission_keys_and_shapes_before_any_write() {
     let h = Harness::start().await;
@@ -314,9 +301,6 @@ async fn sequence_rejects_submission_keys_and_shapes_before_any_write() {
     h.stop(&terminal).await;
 }
 
-/// A sequence sits behind the same fences as every action: a moved
-/// revision is a structured stale result (with `screen_diff`), nothing is
-/// written or cached, and the advised resend writes the sequence once.
 #[tokio::test]
 async fn sequence_behind_a_stale_observation_is_refused_then_resent() {
     let h = Harness::start().await;

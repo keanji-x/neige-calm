@@ -236,7 +236,7 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
         None,
         registry.clone(),
         daemon,
-        // #1147 S2 — attached fixtures: materialization on lease is a no-op.
+        // Attached fixtures: materialization on lease is a no-op.
         std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
         4,
     );
@@ -401,7 +401,7 @@ async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
         None,
         registry,
         daemon,
-        // #1147 S2 — attached fixtures: materialization on lease is a no-op.
+        // Attached fixtures: materialization on lease is a no-op.
         std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
         4,
     );

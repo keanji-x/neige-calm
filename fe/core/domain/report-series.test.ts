@@ -5,7 +5,7 @@ import {
   trackReportSeriesOperation,
 } from './report-series.js';
 
-/* The design's own sample (#1628 D4), as the route serves it. */
+/* The design's own sample, as the route serves it. */
 const OK_ROW = {
   status: 'ok', as_of: '2026-09-11', resolved_at: '2026-09-12T08:00:00Z', pinned: false,
   view: 'normalized', field: 'close', period: 'day', range: '1Y',

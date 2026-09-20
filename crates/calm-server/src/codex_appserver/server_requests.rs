@@ -1,7 +1,5 @@
 //! Connection-owned dynamic-tool requests. No business authority is inferred here.
-//! There are at most 16 outstanding handlers, 16 queued deliveries, and 32 queued
-//! replies. A saturated reply queue or duplicate in-flight ID closes the socket:
-//! a peer that cannot receive an error must not cause unbounded tasks or memory.
+//! A saturated reply queue or duplicate in-flight ID closes the socket: a peer that cannot receive an error must not cause unbounded tasks or memory.
 use super::*;
 use std::collections::HashSet;
 use tokio::task::JoinSet;
@@ -33,7 +31,7 @@ pub struct DynamicToolCallParams {
     pub arguments: Value,
 }
 
-/// F2-A only needs text results; other content types can be added when used.
+/// Only text results are needed so far; other content types can be added when used.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DynamicToolCallResponse {

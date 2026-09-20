@@ -1,17 +1,4 @@
-// The recipe body editor, for real, in a real engine.
-//
-// Every other assertion about this screen lives in the jsdom tier with the
-// widget substituted, because CodeMirror measures a layout jsdom does not
-// have. That substitution is sound for what those cases assert — the save
-// payload, the post-save render, the conflict — and it proves nothing about
-// the one thing it replaces: that the editor actually mounts, actually shows
-// the recipe, and that what the reader types actually reaches the draft the
-// Save button sends.
-//
-// That gap is not hypothetical. An editor wired to the wrong prop, or one
-// whose `onChange` never reaches state, passes every jsdom case in this slice
-// untouched and is broken on screen. This file is the case that would not
-// pass.
+// The recipe body editor, for real, in a real engine: CodeMirror measures a layout jsdom does not have.
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -29,9 +16,6 @@ const RECIPE: TrackRecipe = {
 describe('the recipe body editor in a browser', () => {
   it('shows the stored body and sends what the reader typed into it', async () => {
     const user = userEvent.setup();
-    /* Typed by its parameter rather than by a cast on `mock.calls`: the draft
-       is the assertion's subject, and an `as` there would let the shape drift
-       without the test noticing. `draft` is read below, so nothing is unused. */
     const onWrite = vi.fn((draft: RecipeDraft) =>
       Promise.resolve({ kind: 'saved' as const, recipe: { ...RECIPE, body: draft.body } }));
     render(
@@ -46,16 +30,9 @@ describe('the recipe body editor in a browser', () => {
     );
 
     await user.click(screen.getByRole('button', { name: 'Edit' }));
-    /* CodeMirror's editable is a `contenteditable`, so it resolves as a
-       textbox by the accessible name the widget stamps on it — the same name
-       the jsdom substitute carries, which is what keeps the two tiers talking
-       about one control. */
     const field = await screen.findByRole('textbox', { name: 'Recipe body, Markdown' });
     expect(field.textContent).toContain('Ship checklist');
 
-    /* Typed into the real engine: the click places a selection, and the
-       keystrokes go through CodeMirror's own input handling — which is
-       precisely the path a substitute cannot exercise. */
     await user.click(field);
     await user.keyboard('{Control>}{End}{/Control}');
     await user.keyboard('One more line.');

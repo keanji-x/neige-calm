@@ -263,9 +263,7 @@ pub async fn since_last_turn_block(
         if entry.path == "report.md" && patch.is_some() {
             out.push_str(" (unified patch follows)");
         } else if entry.path == "report.md" && report_changed && report_patch == ReportPatch::Omit {
-            // #1667 round-2 F3 — the caller's turn input is the block-level
-            // diff of this very edit, so the patch is not repeated here.
-            // (Under `Include` a change that yielded no patch says nothing.)
+            // The caller's turn input is the block-level diff of this very edit, so the patch is not repeated here.
             out.push_str(" (see the block-level diff below)");
         }
         out.push('\n');

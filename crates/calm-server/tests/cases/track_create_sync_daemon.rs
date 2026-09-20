@@ -1,44 +1,5 @@
-//! Issue #236 (closes) — `POST /api/tracks` must spawn the planner card's
-//! codex daemon **synchronously** before returning 201.
-//!
-//! ## Why
-//!
-//! Pre-fix: the route returned 201 the instant the track + planner card +
-//! terminal-row tx committed, and `seed_and_spawn_planner_daemon` was
-//! fired through `tokio::spawn`. That opened a ~400 ms race window in
-//! which the frontend could open the planner card's WS (which goes
-//! through `ws::terminal::resolve_live_renderer`), see
-//! `renderer entry = None` on the terminal row, and trigger the
-//! revive-by-respawn path with the row's **baked env** — which omits
-//! `NEIGE_MCP_SOCKET` / `NEIGE_MCP_TOKEN` (those are folded in only
-//! at the original `spawn_terminal_for` call site). Result: two daemons
-//! race on the same `--sock` path and the WS attaches to the
-//! no-MCP one, breaking the codex MCP handshake.
-//!
-//! Post-fix: by the time 201 reaches the client, `renderer entry` on
-//! the planner card's terminal row is `Some(<sock>)`, the socket exists
-//! on disk, and a subsequent WS attach never hits the respawn branch.
-//!
-//! ## Test design
-//!
-//! We use the real terminal renderer path (the same one
-//! `tests/codex_card_endpoint.rs` and `tests/ws_terminal_e2e.rs`
-//! locate). The planner card's `program` is hard-coded to `"codex"` by
-//! `seed_and_spawn_planner_daemon`; there's no `codex` binary in CI, so
-//! `/bin/sh -c codex` will fail-fast inside the daemon child. That's
-//! fine — `spawn_terminal_for` waits for the *daemon* socket to accept,
-//! not for the spawned program to stay alive. The socket binds before
-//! the daemon execs the child, so the wait-for-socket loop completes
-//! and `renderer setup` lands.
-//!
-//! Assertions:
-//!   1. `POST /api/tracks` returns 201 (synchronous spawn succeeded).
-//!   2. The planner card's terminal row has `renderer entry = Some(_)`.
-//!   3. The socket file exists on disk at that path.
-//!   4. A second `terminal_get` immediately after the response (the
-//!      shape `ws::terminal::resolve_live_renderer` would see) does NOT
-//!      observe `renderer entry = None`, i.e. the race window is
-//!      closed.
+//! `POST /api/tracks` boots the planner card's codex app-server before returning 201; the boot is
+//! non-fatal to track creation.
 
 #![cfg(unix)]
 
@@ -92,11 +53,7 @@ async fn boot() -> Boot {
     });
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    // #234 (rebase) — TrackAreaCache joined the AppState/PluginHost surface
-    // alongside CardRoleCache. Empty seed is fine here: no tracks pre-exist
-    // in the freshly-opened in-memory repo, and the track we create through
-    // `POST /api/tracks` populates the cache write-through via
-    // `track_create_tx`.
+    // Empty seed is fine here: no tracks pre-exist and `track_create_tx` populates the cache write-through.
     let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
     repo.seed_track_area_cache(&track_area_cache).await.unwrap();
     let state = AppState::from_parts(
@@ -115,10 +72,7 @@ async fn boot() -> Boot {
                 track_area_cache.clone(),
             ),
         )),
-        // #293 cutover — `POST /api/tracks` now boots a kernel-owned codex
-        // app-server before returning 201. Point `codex_bin` at the
-        // `osc-probe-child` fake app-server fixture so the boot succeeds
-        // without a real codex on PATH (see `tests/common/mod.rs`).
+        // Point `codex_bin` at the fake app-server fixture so the boot succeeds without a real codex on PATH.
         Arc::new(common::fake_codex_client()),
         Some(card_role_cache.clone()),
         Some(track_area_cache.clone()),
@@ -157,27 +111,8 @@ async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value) 
     (status, json)
 }
 
-/// Verify: after `POST /api/tracks` returns 201, the planner card's
-/// terminal row has a registered renderer entry and a persisted pid.
-/// This is the post-#388 Phase 3b contract — no race window.
-/// Regression test for the WS attach path: immediately after `POST
-/// /api/tracks`, the fresh terminal must already have a renderer entry.
-/// Phase 3b no longer has a daemon-UDS revive branch.
-/// Issue #293 / PR #311 — the planner-push app-server boot is NON-FATAL to
-/// track creation. Every codex-free environment (CI's web a11y job, the
-/// chromium docker stack) has no working `codex`, so booting the
-/// shared codex daemon fails. This MUST NOT 500 the track create:
-/// the route logs a warning and returns **201** with an inert track (the
-/// planner card has no `codex_thread_id` or shared source marker).
-///
-/// This test boots with a deterministically-broken `codex_bin` (an
-/// absolute path that does not exist, so the boot fails fast regardless
-/// of whether a real `codex` is on PATH) and asserts:
-///   1. `POST /api/tracks` returns 201 (boot failure is tolerated),
-///   2. the track + planner card rows are committed,
-///   3. the planner card payload has NO `codex_thread_id` / `appserver_sock`
-///      (the persist step is skipped on the failure path),
-///   4. no pending shared thread-start entry is registered for the inert track.
+/// The planner-push app-server boot is NON-FATAL to track creation: with a deterministically-broken
+/// `codex_bin` the route returns 201 with an inert track (no `codex_thread_id`, no shared source marker).
 #[tokio::test]
 async fn post_api_tracks_tolerates_broken_codex_bin_returns_201_inert_track() {
     let tmp = TempDir::new().expect("tempdir for daemon sockets");
@@ -203,9 +138,7 @@ async fn post_api_tracks_tolerates_broken_codex_bin_returns_201_inert_track() {
     let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
     repo.seed_track_area_cache(&track_area_cache).await.unwrap();
 
-    // Deterministically-broken codex bin: absolute, absent. The route must
-    // still commit an inert track instead of surfacing the daemon failure as a
-    // 500.
+    // Deterministically-broken codex bin: absolute, absent.
     let mut codex = calm_server::state::CodexClient::new_stub();
     codex.codex_bin = "/nonexistent-codex-bin-tolerant-201-test".into();
 
@@ -266,9 +199,7 @@ async fn post_api_tracks_tolerates_broken_codex_bin_returns_201_inert_track() {
         .find(|c| card_role_cache.get(&c.id) == Some(calm_server::model::CardRole::Planner))
         .expect("planner card persisted even though the planner agent didn't start");
 
-    // (3) The planner is NOT running: no codex_thread_id / appserver_sock
-    // were persisted (those writes live AFTER the boot, on the success
-    // path only).
+    // (3) The planner is NOT running: those writes live AFTER the boot, on the success path only.
     assert!(
         planner_card
             .payload
@@ -294,22 +225,8 @@ async fn post_api_tracks_tolerates_broken_codex_bin_returns_201_inert_track() {
     );
 }
 
-/// Issue #1211 (retires the #251 contract) — track create must NOT stamp
-/// `payload.prompt` on the planner card, not even for a non-empty title.
-///
-/// #251 threaded the track title into `payload.prompt` so the shared daemon's
-/// `turn/start` would open the session with the title as the agent's first
-/// input, and its test asserted `prompt == title` verbatim. That contract
-/// rested entirely on "the title IS the track's intent" — the single new-track
-/// input box doubled as the title and as the statement of what to do.
-/// #1211 takes that premise apart: the title defaults to a placeholder and the
-/// planner agent names the track (`calm.track.rename`) once it has worked out from
-/// the conversation what the work actually is. With no intent in the title
-/// there is nothing to seed, so the `prompt` key must be absent.
-///
-/// The child-track path still passes a seed through
-/// `planner_harness_card_payload` — that seed is the task goal the parent planner
-/// declared, not a track title, and it is deliberately untouched here.
+/// Track create must NOT stamp `payload.prompt` on the planner card: the title carries no intent (the agent
+/// names the track later). The child-track path's seed is the task goal, not a title, and is untouched.
 #[tokio::test]
 async fn post_api_tracks_does_not_stamp_prompt_on_planner_card() {
     let boot = boot().await;
@@ -350,24 +267,12 @@ async fn post_api_tracks_does_not_stamp_prompt_on_planner_card() {
         planner_card.payload.get("codex_source"),
         Some(&json!("shared"))
     );
-    // The title itself still round-trips onto the track row — #1211 retires the
-    // title→prompt seeding, not the title.
+    // The title itself still round-trips onto the track row.
     assert_eq!(track.title, title);
 }
 
-/// Issue #251 — when a track's title is whitespace-only the planner card
-/// must NOT stamp a `payload.prompt` and the codex command line must
-/// fall back to a bare `codex`. The route layer rejects empty titles
-/// in production, but the planner_card seed path defenses against an
-/// empty title here too so a future loosening of route validation
-/// doesn't quietly start an empty shared-daemon turn.
-///
-/// We can't easily POST a whitespace title through the route (axum's
-/// JSON serde + the `NewTrack { title: String }` shape accept anything
-/// non-null), so this test takes the inner path: it creates a track row
-/// with title = "   " via the repo, then asserts the resulting card
-/// shape. The shape assertion uses the same payload-prompt field
-/// the shared-daemon `turn/start` path keys on.
+/// The route rejects empty titles, but the planner-card seed path must defend against a whitespace title
+/// too; the row is created via the repo because the route cannot carry a whitespace title.
 #[tokio::test]
 async fn whitespace_title_does_not_stamp_prompt_on_planner_card() {
     let boot = boot().await;
@@ -379,11 +284,8 @@ async fn whitespace_title_does_not_stamp_prompt_on_planner_card() {
         json!({"area_id": boot.area_id, "title": "   ", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
-    // The track create may still 500 because the daemon child fails to
-    // exec `codex` in CI — but the row commit is what we're testing
-    // here. Tolerate either 201 (sync spawn happened to win) or 500
-    // (daemon-side failure post-commit); both shapes leave the card
-    // row behind.
+    // The create may still 500 because the daemon child fails to exec `codex` in CI; both 201 and 500 leave
+    // the card row behind, which is what is under test.
     assert!(
         status == StatusCode::CREATED || status == StatusCode::INTERNAL_SERVER_ERROR,
         "expected 201 or 500 (daemon spawn may fail in CI without codex bin); got {status}",
@@ -406,17 +308,8 @@ async fn whitespace_title_does_not_stamp_prompt_on_planner_card() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Issue #250 PR 2 — track.cwd → planner-daemon cwd contract
-// ---------------------------------------------------------------------------
-
-/// PR 2 contract: track create persists `track.cwd` and uses the same
-/// path for the optional area folder claim, not the pre-#250
-/// `routes::codex_cards::default_cwd()` fallback.
-///
-/// Two rows must observe the same cwd at commit time:
-///   1. `tracks.cwd`        — the track row's column.
-///   2. `area_folders.path` — the attached folder claim.
+/// Track create persists `track.cwd` and uses the same path for the optional area folder claim:
+/// `tracks.cwd` and `area_folders.path` must observe the same cwd at commit time.
 #[tokio::test]
 async fn post_api_tracks_persists_track_cwd_and_attach_folder() {
     let boot = boot().await;
@@ -434,8 +327,7 @@ async fn post_api_tracks_persists_track_cwd_and_attach_folder() {
         }),
     )
     .await;
-    // Real daemon binary: spawn succeeds (the daemon binds its socket
-    // before exec'ing the inner `/bin/sh -c codex`).
+    // Real daemon binary: the daemon binds its socket before exec'ing the inner `/bin/sh -c codex`.
     assert_eq!(
         status,
         StatusCode::CREATED,
@@ -454,11 +346,7 @@ async fn post_api_tracks_persists_track_cwd_and_attach_folder() {
     assert_eq!(folders[0].path, cwd);
 }
 
-/// Lifecycle terminal-state E2E from the route: after `POST /api/tracks`
-/// + walking the track to Done via the lifecycle state machine, the
-/// GET track detail must surface `terminal_at = Some(_)`. Locks in the
-/// "route → lifecycle → repo" plumbing the calendar window query
-/// relies on.
+/// After `POST /api/tracks` and walking the track to Done, the GET detail must surface `terminal_at = Some(_)`.
 #[tokio::test]
 async fn post_api_tracks_then_lifecycle_done_surfaces_terminal_at_in_get() {
     use calm_server::model::TrackLifecycle;
@@ -483,12 +371,8 @@ async fn post_api_tracks_then_lifecycle_done_surfaces_terminal_at_in_get() {
         .expect("track id in response")
         .to_string();
 
-    // March the track through the happy path to Done. We use the repo
-    // directly (which routes through `track_update_tx`) so we don't
-    // have to mint a PlannerAgent actor at the route boundary; the
-    // route's lifecycle validator is unit-tested in
-    // `track_lifecycle.rs`. The interesting wiring here is the
-    // track_update_tx → terminal_at column write.
+    // March the track through the happy path to Done via the repo (`track_update_tx`) so no PlannerAgent
+    // actor is needed at the route boundary.
     for step in [
         TrackLifecycle::Planning,
         TrackLifecycle::Dispatching,

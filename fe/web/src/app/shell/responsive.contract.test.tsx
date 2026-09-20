@@ -8,8 +8,8 @@ import type { Area } from '../../../../core/domain/area.ts';
 import { NEUTRAL_ACTIVITY, type Track } from '../../../../core/domain/track.ts';
 import { createUiPreferences, UiPreferencesProvider } from '../providers/ui-preferences.tsx';
 
-/* Keep real router/history state for shell-owned surfaces while isolating
- * navigation effects. An empty useRouter result hid required history fields. */
+/* Real router/history state, with navigation effects isolated: an empty
+ * `useRouter` result hides required history fields. */
 vi.mock('@tanstack/react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-router')>();
   const router = actual.createRouter({
@@ -43,16 +43,12 @@ vi.mock('../providers/queries.ts', () => ({
   }),
   useAreaMutations: () => ({ create: vi.fn(), update: vi.fn(), remove: vi.fn() }),
   useTrackMutations: () => ({ setPinned: vi.fn(), create: vi.fn(), remove: vi.fn() }),
-  // #1209 — the dialog's template read. Blank-only is a working state, so the
-  // rail contract needs nothing more than the degraded shape here.
+  // Blank-only is a working state, so the rail contract needs nothing more.
   useTrackTemplates: () => ({ templates: [], error: null, loaded: true, refetch: vi.fn() }),
   ApiError: class ApiError extends Error {},
 }));
-/*
- * A *partial* mock: the hooks are stubbed, but `pathFor` — which the dock's
- * selection rule reads the route table from (#1191 §3.3) — stays the real one.
- * Re-declaring it here would put a second copy of the route table in a test.
- */
+/* A partial mock: `pathFor`, which the dock's selection rule reads the route
+ * table from, stays the real one. */
 vi.mock('../router/navigation.ts', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../router/navigation.ts')>()),
   useCurrentPath: () => '/',
@@ -103,13 +99,8 @@ describe('compact navigation interaction contracts', () => {
     expect(screen.getByRole('menuitem', { name: 'Product' })).toBeTruthy();
   });
 
-  /*
-   * #1722 §5.2 — the shell hands the phone's Track list the rail's receipt,
-   * key for key: a completion the kernel recorded after this reader's last
-   * look is unread on the phone, and the same `markRead` that the track page
-   * makes clears it. `MobileTracks` alone cannot show this (its receipt is a
-   * prop); only the shell decides which receipt that prop is.
-   */
+  /* `MobileTracks` alone cannot show this (its receipt is a prop); only the shell
+   * decides which receipt that prop is. */
   it('hands the Track list the rail’s read receipt, so a newer completion is unread until it is read', () => {
     compactViewport();
     workspaceTracks = [{ ...TRACK, activityAt: 150 }];

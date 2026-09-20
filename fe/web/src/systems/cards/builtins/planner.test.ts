@@ -13,15 +13,12 @@ describe('planner card entry', () => {
   it('[INV-CARD-182] recognises a planner harness only by the planner_harness discriminator', () => {
     expect(PLANNER_CARD_ENTRY.fromKernel?.({ id: 'c1', kind: 'codex', payload: { planner_harness: true } }))
       .toEqual({ type: 'planner', id: 'c1' });
-    // Extra payload fields are irrelevant — the discriminator alone decides.
     expect(PLANNER_CARD_ENTRY.fromKernel?.({ id: 'c2', kind: 'codex', payload: { planner_harness: true, title: 'x' } }))
       .toEqual({ type: 'planner', id: 'c2' });
   });
 
   it('[INV-CARD-182] refuses an ordinary codex card, so widening the predicate to kind alone is red', () => {
-    // This is the whole reason the predicate is two clauses. If `fromKernel`
-    // were `kind === 'codex'`, every ordinary codex card in production would
-    // resolve to a headless planner and disappear from the track.
+    // A `kind === 'codex'` predicate would make every ordinary codex card a headless planner.
     for (const payload of [{}, { planner_harness: false }, { planner_harness: 'true' }, { planner_harness: 1 }]) {
       expect(PLANNER_CARD_ENTRY.fromKernel?.({ id: 'c', kind: 'codex', payload }), JSON.stringify(payload)).toBeNull();
     }
@@ -48,14 +45,6 @@ describe('planner card entry', () => {
   });
 
   it('[INV-CARD-181] takes no claim, so it stays on the insertion-ordered fallback scan', () => {
-    // An exact claim on `'codex'` would ask planner about the shared kernel kind
-    // before `CODEX_CARD_ENTRY`, which is registered first. It would not change
-    // any answer — `resolve` falls through an entry returning `null` — but the
-    // no-claim rule is the stated contract for both sides of this kind, so it
-    // is pinned here rather than left to be true by accident.
-    // Read through the interface: the entry literal is checked with `satisfies`
-    // so registration can require `headless`, which means the constant's own
-    // type only lists the members it declares.
     expect((PLANNER_CARD_ENTRY as CardEntry<PlannerCard>).claim).toBeUndefined();
   });
 
@@ -63,9 +52,6 @@ describe('planner card entry', () => {
     const registry = createCardRegistry();
     registerAvailableBuiltinCards(registry);
     expect(registry.resolve({ id: 'c1', kind: 'codex', payload: { planner_harness: true } })?.type).toBe('planner');
-    // Now that `CODEX_CARD_ENTRY` has landed (#1150) the counter-example is
-    // sharper than "nothing resolves": an ordinary codex payload must reach the
-    // codex adapter registered ahead of planner, never this one.
     expect(registry.resolve({ id: 'c2', kind: 'codex', payload: {} })?.type).toBe('codex');
   });
 });

@@ -1,7 +1,7 @@
 error[E0624]: associated function `event_append_in_tx` is private
- --> tests/ui/call_event_append_in_tx.rs:10:31
+ --> tests/ui/call_event_append_in_tx.rs:6:31
   |
- 10 |       let _appender = SqlxRepo::event_append_in_tx;
+  6 |       let _appender = SqlxRepo::event_append_in_tx;
     |                                 ^^^^^^^^^^^^^^^^^^ private associated function
     |
    ::: src/db/sqlite/events.rs

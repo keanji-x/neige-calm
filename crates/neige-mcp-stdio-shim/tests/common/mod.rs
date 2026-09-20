@@ -1,6 +1,5 @@
-//! Shared helpers for the shim integration tests: a stub kernel on a
-//! short-path UDS, a spawned shim, and line-level JSON-RPC readers on
-//! both wires. Every wait is bounded by [`TEST_BUDGET`].
+//! Shared helpers for the shim integration tests: a stub kernel on a short-path UDS,
+//! a spawned shim, and line-level JSON-RPC readers on both wires.
 
 #![allow(dead_code)]
 
@@ -31,8 +30,7 @@ pub fn listen(socket_path: &Path) -> UnixListener {
     })
 }
 
-/// Drop-and-rebind at the same path: the kernel restarting. tokio does
-/// not unlink the socket file on drop, so the stale path is removed first.
+/// Drop-and-rebind at the same path. tokio does not unlink the socket file on drop.
 pub fn rebind(socket_path: &Path) -> UnixListener {
     let _ = std::fs::remove_file(socket_path);
     listen(socket_path)
@@ -218,11 +216,8 @@ pub async fn read_stderr_line(reader: &mut BufReader<ChildStderr>) -> String {
     line
 }
 
-/// The stub reads the handshake on a raw stream, answers it, then shuts
-/// down its READ side only. The shim's next socket write fails with
-/// EPIPE while its read side sees no EOF — the D5-a shape, where zero
-/// bytes reached the kernel. Returns the stream so the caller decides
-/// when the shim finally sees EOF.
+/// Answer the handshake, then shut down the stub's READ side only: the shim's next
+/// socket write fails with EPIPE while its read side sees no EOF.
 pub async fn handshake_then_shut_read(
     listener: &UnixListener,
     stdin: &mut ChildStdin,

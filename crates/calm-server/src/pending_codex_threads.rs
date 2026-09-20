@@ -1,19 +1,5 @@
-//! Ordering-based pending registry for empty-prompt user codex cards.
-//!
-//! Empty user cards can fresh-start a thread from the TUI over the shared
-//! daemon, but the route does not know the thread id at spawn time. Spike 3
-//! established that PTY spawn order matches `thread/started` notification
-//! order, so this registry FIFO-binds the next shared-daemon thread start to
-//! the oldest pending card.
-//!
-//! A `PendingEntry` represents one codex spawn awaiting its `thread/started`.
-//! Its identity is the spawn: `terminal_id` and `runtime_id` are each unique
-//! per spawn, with `runtime_id == worker_session.id`. `card_id` is not unique
-//! in the queue because a card can be rapidly re-spawned, queuing multiple
-//! entries. Therefore every per-spawn operation (register-dedup, bind,
-//! dead-terminal expiry, stale-drop cleanup, compensation-remove) must key on
-//! the spawn (`runtime_id` / `terminal_id`), never on `card_id`. `card_id` in
-//! this registry is informational for logging and scope only.
+//! Ordering-based pending registry for empty-prompt user codex cards: FIFO-binds the next shared-daemon `thread/started` to the oldest pending card.
+//! Every per-spawn operation keys on the spawn (`runtime_id` / `terminal_id`), never on `card_id`, because a card can be re-spawned while queued.
 
 use std::collections::HashSet;
 use std::collections::VecDeque;
@@ -54,8 +40,7 @@ pub struct PendingEntry {
     /// PTY pid (best-effort, for debug logs). Not used for attribution.
     pub pty_pid: Option<i32>,
     pub registered_at: Instant,
-    /// Spike-3 fallback hook. PR6 records the opt-in bit but does not
-    /// implement tools/call attribution yet.
+    /// Opt-in bit only; tools/call attribution is not implemented.
     pub belt_and_suspenders_attribution_via_tools_call: bool,
 }
 
@@ -160,23 +145,7 @@ impl PendingThreadStartRegistry {
                 };
                 self.drop_stale_entry(dropped, "thread_started_stale_front")
                     .await;
-                // Followup gate #3 (PR6 R6 P2-A pragmatic mitigation):
-                // STOP after dropping a stale front rather than looping with
-                // the SAME thread_id. The next-in-queue entry (if any) is
-                // soft-deterministically tied to a DIFFERENT pending PTY
-                // spawn — binding it to THIS thread_id would be a cross-
-                // attribution: the new card would receive a thread that the
-                // dropped card's TUI requested.
-                //
-                // codex 0.135 has no opaque request-id passthrough in
-                // thread/start / thread/started, so we cannot harden the
-                // FIFO attribution any further. Treating the thread_id as
-                // an orphan here is the least-surprising failure mode —
-                // the legitimate next-in-queue entry must wait for its OWN
-                // thread/started event (the daemon will emit one per
-                // outstanding thread/start RPC). Some empty cards may miss
-                // a bind, but no card receives a thread that wasn't its
-                // own.
+                // Stop after dropping a stale front rather than looping with the same thread_id: the next-in-queue entry belongs to a different PTY spawn and must wait for its own thread/started, or it would receive a thread another card's TUI requested.
                 tracing::warn!(
                     target = "shared_codex_daemon::pending_orphan_thread_started",
                     %thread_id,
@@ -460,16 +429,7 @@ enum BindEntryOutcome {
     Orphan { reason: &'static str },
 }
 
-// TODO(#679 cleanup, off-roadmap): orphan-ness is signaled OUT of the bind tx
-// closure by encoding it into a magic-prefixed `CalmError::Internal` string and
-// decoding it back in `pending_runtime_orphan_reason` — control flow via an error
-// string. Footgun: adding a new orphan reason requires touching TWO places (the
-// `PENDING_RUNTIME_ORPHAN_*` consts AND the decode `match`); forgetting the decode
-// arm silently degrades drop -> re-park. Cleaner shape: resolve the runtime status
-// BEFORE opening the write tx and decide Orphan there (no tx, no sentinel); let the
-// rare in-tx TOCTOU fall to the plain-Err re-park path. Not worth a dedicated PR on
-// this just-stabilized file — fold the refactor in opportunistically the next time
-// this module is touched for real.
+// TODO: orphan-ness is signaled out of the bind tx via a magic-prefixed `CalmError::Internal` string; a new orphan reason must be added to both the consts and the decode `match`, or drop silently degrades to re-park.
 const PENDING_RUNTIME_ORPHAN_PREFIX: &str = "__pending_codex_runtime_orphan__";
 const PENDING_RUNTIME_ORPHAN_MISSING: &str = "thread_started_runtime_missing";
 const PENDING_RUNTIME_ORPHAN_NOT_ACTIVE: &str = "thread_started_runtime_not_active";

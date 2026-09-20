@@ -19,8 +19,8 @@
     main.rs:185-192 是生产 router 的全部 merge 面（其中没有 dev_routes）。#1148 第三轮：再补
     112-115 —— `--serve`/`--assert` 二选一的前置门控（缺任一即 exit 2），是「只有 replay --serve
     这条路径能走到挂载点」的入口证据，此前未登记。
-  source: crates/calm-server/src/bin/replay.rs:112-115,130-159,226-245,277-284
-    crates/calm-server/src/main.rs:185-192
+  source: crates/calm-server/src/bin/replay.rs:76-79,94-106,159-169,187-194
+    crates/calm-server/src/main.rs:158-165
   authoritative_test: NONE
   owner_slice: none/e2e/infra
   intentional_omission: true
@@ -57,7 +57,7 @@
   why: >
     tui-theme-protocol.spec.ts:6 (`type ThemeName = 'light' | 'dark' | 'system'`) and a11y-axe.spec.ts:72-83 —
     the dataset attribute is the single integration point for CSS, xterm theming and axe scanning.
-  source: fe/web/src/app/theme/public.tsx:1-69 ; fe/core/keys/storage.ts:1-31
+  source: fe/web/src/app/theme/public.tsx:1-69 ; fe/core/keys/storage.ts:1-26
   authoritative_test: fe/web/src/app/theme/theme.browser.test.tsx:1
   owner_slice: app/theme
   intentional_omission: false
@@ -75,10 +75,10 @@
     The kernel keys its managed-workspace branch on the *absence* of cwd (`routes/tracks.rs`
     `cwd_omitted`): a control defaulting to $HOME or to "" would silently move every track onto the
     attached branch, where the kernel neither creates nor reclaims the directory.
-  source: fe/web/src/features/area/new-track/public.tsx:232-254,504-518,677-684;
+  source: fe/web/src/features/area/new-track/public.tsx:44-52,213-221,318-325;
     fe/web/src/app/router/new-track-route.tsx:69-85
-  authoritative_test: fe/web/src/features/area/new-track/public.test.tsx:1012-1022;
-    fe/web/src/app/router/new-track-route.test.tsx:586-628
+  authoritative_test: fe/web/src/features/area/new-track/public.test.tsx:729-734;
+    fe/web/src/app/router/new-track-route.test.tsx:474-499
   owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
@@ -113,14 +113,14 @@
     remains recovery evidence rather than an acknowledged queue entry.
     The new front end's counterpart to the legacy `E2E-CAP-SPECCHAT-012` (`You · queued`), which
     stays `migration: pending` against `web/e2e`.
-  source: fe/web/src/app/router/public.tsx:549-567,709-716,774-778,947-960
+  source: fe/web/src/app/router/public.tsx:405-418,480-487,498-501,609-616
   # A table over the whole phase enum: for each of the eight, whether the marker appears, whether
   # the composer stays open, and whether a second message can be sent. The predicate itself is
   # tabulated a second time at the platform-independent tier
   # (`fe/core/domain/conversation.test.ts`, `describe('kernelQueuesInput')`), which is not cited
   # here because a row declares one `test_tier` and that suite is not jsdom.
-  authoritative_test: fe/web/src/app/router/planner-conversation.test.tsx:1430-1491;
-    fe/web/src/app/router/track-conversation.test.tsx:660-744,860-879
+  authoritative_test: fe/web/src/app/router/planner-conversation.test.tsx:1004-1055;
+    fe/web/src/app/router/track-conversation.test.tsx:572-631,747-766
   owner_slice: app/router
   intentional_omission: false
   runtime_layer: app
@@ -141,7 +141,7 @@
     repository does not conflict. The legacy resolve round trip only ever chose false in that
     same-area case, which the kernel's in-transaction scan already reaches atomically.
   source: fe/web/src/app/router/new-track-route.tsx:69-79
-  authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:705-733
+  authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:561-578
   owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
@@ -177,9 +177,9 @@
     `lint:depcruise`): every file rendering `DirectoryField` or `DirectoryBrowser` must be
     registered with how it hosts the picker, so an unregistered call site is red before anyone
     reads a test. This row keeps only what its own test can falsify.
-  source: fe/web/src/features/area/new-track/public.tsx:759-772;
-    fe/tools/architecture/directory-picker-hosts.mjs:128-153,346-367
-  authoritative_test: fe/web/src/features/area/new-track/public.test.tsx:1039-1063
+  source: fe/web/src/features/area/new-track/public.tsx:393-406;
+    fe/tools/architecture/directory-picker-hosts.mjs:14-30,213-234
+  authoritative_test: fe/web/src/features/area/new-track/public.test.tsx:744-759
   owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
@@ -205,8 +205,8 @@
     Recorded as a new row because the old -003 wording was the *only* place either half was
     written down, and E2E-CAP-TRACKCREATE-014 — which its `why` pointed at — is a legacy pending
     row describing `web/`'s NewTaskForm, not this app.
-  source: fe/web/src/ui/schema-form/fields/DirectoryField/public.tsx:79-90
-  authoritative_test: fe/web/src/features/track/new-card/public.test.tsx:89
+  source: fe/web/src/ui/schema-form/fields/DirectoryField/public.tsx:26-36
+  authoritative_test: fe/web/src/features/track/new-card/public.test.tsx:68
   owner_slice: ui/schema-form
   intentional_omission: false
   runtime_layer: ui
@@ -224,7 +224,7 @@
     The kernel names an entry without placing it (`fs.rs` `DirEntry` is name + is_dir), while the
     picker navigates by entry path. A second copy of the join rule would drift from the one the
     picker's own input bar uses; core may not import ui, so the owner's function is injected.
-  source: fe/core/domain/fs.ts:166-179; fe/web/src/app/providers/directory.ts:28-36
+  source: fe/core/domain/fs.ts:127-140; fe/web/src/app/providers/directory.ts:15-21
   authoritative_test: fe/web/src/app/providers/directory.test.ts:34
   owner_slice: app/providers
   intentional_omission: false
@@ -245,8 +245,8 @@
     `ApiError` holding the status text alone: undecoded, the only thing the user is told is
     "Conflict". The area name comes from the workspace read, which is why the decode is rendered
     by the route that owns the create and not by the presentational form.
-  source: fe/core/domain/area.ts:193-230; fe/web/src/app/router/new-track-route.tsx:95-106
-  authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:768-785
+  source: fe/core/domain/area.ts:159-189; fe/web/src/app/router/new-track-route.tsx:95-106
+  authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:605-618
   owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
@@ -278,10 +278,10 @@
     the statement had to move from "collects nothing" to "collects the intent and not a name" —
     which is why the screen half is asserted on a control *named* a title rather than on the
     absence of the one field the page has.
-  source: fe/web/src/features/area/new-track/public.tsx:232-254,504-538;
+  source: fe/web/src/features/area/new-track/public.tsx:44-52,213-235;
     fe/web/src/app/router/new-track-route.tsx:69-85
-  authoritative_test: fe/web/src/features/area/new-track/public.test.tsx:211-216;
-    fe/web/src/app/router/new-track-route.test.tsx:559-584
+  authoritative_test: fe/web/src/features/area/new-track/public.test.tsx:149;
+    fe/web/src/app/router/new-track-route.test.tsx:460-472
   owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
@@ -305,8 +305,8 @@
     `ChatComposerInput` forwards its DOM ref to the *wrapper*, which is not focusable, so a ref
     would silently focus nothing. Asserted as behaviour — type, then read the field back — because
     that is what the reader notices; an `activeElement` check alone passes on a focused wrapper.
-  source: fe/web/src/features/area/new-track/public.tsx:423-426
-  authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:529-539
+  source: fe/web/src/features/area/new-track/public.tsx:154-157
+  authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:446-449
   owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
@@ -329,8 +329,8 @@
     explicit per-caller prop and not the shared primitive's default. The already-blank case is
     arithmetic, not policy — there is no state change to request.
     The legacy front-end's opposite rule is E2E-INV-RENAME-009 above.
-  source: fe/web/src/ui/editable-title/public.tsx:36-52,99-113; fe/web/src/features/track/page/public.tsx:321-328
-  authoritative_test: fe/web/src/app/router/track-untitled.test.tsx:383
+  source: fe/web/src/ui/editable-title/public.tsx:15,51-57; fe/web/src/features/track/page/public.tsx:238-240
+  authoritative_test: fe/web/src/app/router/track-untitled.test.tsx:270
   owner_slice: ui/editable-title
   intentional_omission: false
   runtime_layer: ui
@@ -351,8 +351,8 @@
     typing. It could not be *stored* — resubmitting it hit the unchanged-value arm and wrote
     nothing — so the defect is the text in the box, not a write, and a fix aimed at persistence
     would have been aimed at nothing.
-  source: fe/web/src/ui/editable-title/public.tsx:16-46,141-143; fe/web/src/features/track/page/public.tsx:321-328
-  authoritative_test: fe/web/src/features/track/page/public.contract.test.tsx:154
+  source: fe/web/src/ui/editable-title/public.tsx:9-13,85-87; fe/web/src/features/track/page/public.tsx:238-240
+  authoritative_test: fe/web/src/features/track/page/public.contract.test.tsx:117
   owner_slice: ui/editable-title
   intentional_omission: false
   runtime_layer: ui
@@ -390,14 +390,14 @@
     failed landing complete the create the reader asked for, and what makes Back to that same
     entry do the same thing. The last is the price of the first, and both are pinned rather than
     left to be discovered.
-  source: fe/web/src/app/router/navigation.ts:40,69-81,159-184,253-284;
-    fe/web/src/app/router/public.tsx:1637-1647,2363-2368,2773-2798;
-    fe/web/src/features/chat/thread/public.tsx:1277-1282,1357,1423,1484-1503,1651-1654
+  source: fe/web/src/app/router/navigation.ts:22,33-38,78-92,112-134;
+    fe/web/src/app/router/public.tsx:1077-1082,1553-1557,1866-1890;
+    fe/web/src/features/chat/thread/public.tsx:502-506,517,539,544-563,601-603
   # One line per clause of the statement, because no single case covers it: 205 the landing and the
   # caret, 261 that a fresh navigation carries no mark, 298 that returning by Back to the entry whose
   # landing failed arms it again, 327 that redeeming is one-shot, 355 that the mark is struck off even
   # when there was no card to open.
-  authoritative_test: fe/web/src/app/router/track-untitled.test.tsx:205,261,298,327,355
+  authoritative_test: fe/web/src/app/router/track-untitled.test.tsx:166,191,210,233,252
   owner_slice: app/router
   intentional_omission: false
   runtime_layer: app
@@ -422,8 +422,8 @@
     reads as their text having been changed behind their back; rendering the response makes it the
     thing they see at the moment it happens. This is the failure an implementation is likeliest to
     have, because it looks correct in every case where the server changed nothing.
-  source: fe/web/src/features/report/recipe/public.tsx:147-180,298-308
-  authoritative_test: fe/web/src/app/router/recipes-route.test.tsx:210,343,361
+  source: fe/web/src/features/report/recipe/public.tsx:56-72,169-173
+  authoritative_test: fe/web/src/app/router/recipes-route.test.tsx:176,274,287
   owner_slice: features/report/recipe
   intentional_omission: false
   runtime_layer: features
@@ -444,8 +444,8 @@
     dropping it would turn the cheap failure into an expensive one. Modelled as its own outcome
     because "keep the draft" is a behaviour, and deciding a behaviour by matching an error string
     makes it depend on wording.
-  source: fe/web/src/features/report/recipe/public.tsx:93-99,284-291
-  authoritative_test: fe/web/src/app/router/recipes-route.test.tsx:230,258
+  source: fe/web/src/features/report/recipe/public.tsx:20-26,155-161
+  authoritative_test: fe/web/src/app/router/recipes-route.test.tsx:192,212
   owner_slice: features/report/recipe
   intentional_omission: false
   runtime_layer: features
@@ -470,10 +470,10 @@
     template — creating a track from something the reader never picked. A same-id recipe likewise
     cannot satisfy an unresolved Area template preference. The tag makes exclusivity a property of
     the submit function's shape rather than a rule it has to remember.
-  source: fe/web/src/features/area/default-pills/public.tsx:23-29,92-105,145-163;
-    fe/web/src/features/area/new-track/public.tsx:219-230,392-396,444-482,504-538
-  authoritative_test: fe/web/src/features/area/new-track/recipe-picker.test.tsx:123,136,161,181;
-    fe/web/src/app/router/recipes-route.test.tsx:384-404
+  source: fe/web/src/features/area/default-pills/public.tsx:21-27,85-98,137-155;
+    fe/web/src/features/area/new-track/public.tsx:32-42,134-138,162-195,213-235
+  authoritative_test: fe/web/src/features/area/new-track/recipe-picker.test.tsx:100,113,133,146;
+    fe/web/src/app/router/recipes-route.test.tsx:306-326
   owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features

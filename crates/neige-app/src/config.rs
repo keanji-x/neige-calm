@@ -62,12 +62,8 @@ pub(crate) struct ChildConfig {
 pub(crate) struct TimingConfig {
     pub stop_grace: Duration,
     pub restart_delay: Duration,
-    /// #1282 — how much of the `/upgrade/apply` healthcheck deadline is
-    /// reserved for the child's plugin-autospawn phase, which runs before it
-    /// binds its HTTP listener. Defaults to
-    /// [`crate::apply::DEFAULT_BOOT_PLUGIN_BUDGET`]; raise it with
-    /// `[timing] boot_plugin_budget_ms` on a deployment with more app plugins
-    /// than the default assumes.
+    /// How much of the `/upgrade/apply` healthcheck deadline is reserved for the child's plugin-autospawn
+    /// phase, which runs before it binds its HTTP listener; raise it with `[timing] boot_plugin_budget_ms`.
     pub boot_plugin_budget: Duration,
 }
 

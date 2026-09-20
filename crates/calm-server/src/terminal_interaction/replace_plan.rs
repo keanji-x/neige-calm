@@ -1,17 +1,7 @@
-//! `replace` (#1677): the server derives the cursor moves, the Backspaces
-//! and the text of a draft edit from the cursor row of the live frame, so the
-//! Planner no longer counts characters (CJK width included) by hand. Pure
-//! functions over a captured `Frame`; no lock, no client.
-//!
-//! The plan assumes the cursor row is the application's line buffer with one
-//! character per non-padding cell, and that the application moves one
-//! character per arrow key and erases one per Backspace (true for Claude
-//! Code, readline and most line editors). The cursor may be hidden: Claude
-//! Code keeps DECTCEM off in its draft box while still positioning the
-//! cursor at the edit point, so the plan uses the position whether or not
-//! the cursor is shown and reports `cursor_visible` for the Planner to
-//! audit. The tool guarantees that the bytes correspond to the plan against
-//! the row as captured; nothing more.
+//! `replace`: derive the cursor moves, Backspaces and text of a draft edit from the cursor row
+//! of the live frame. Assumes one character per non-padding cell and one move/erase per key
+//! (true for Claude Code, readline and most line editors); the cursor may be hidden (Claude
+//! Code keeps DECTCEM off in its draft box) and its position is used regardless.
 use super::actions::ACTION_BYTES_MAX;
 use anyhow::{Result, ensure};
 use calm_terminal_view::{Frame, InputSurface, key_bytes};
@@ -21,14 +11,12 @@ use std::cmp::Ordering;
 /// `from` is at most this many bytes.
 pub const REPLACE_FROM_BYTES_MAX: usize = 200;
 
-/// The cursor movement of a plan: `Left` or `Right`, repeated.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Moves {
     pub key: &'static str,
     pub repeat: usize,
 }
 
-/// One derived edit against the cursor row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplacePlan {
     /// The cursor row the plan was derived from.
@@ -108,15 +96,9 @@ impl ReplacePlan {
             pending_wrap,
         })
     }
-    /// Derive the plan for `from` → `to` on the cursor row of `frame`. Every
-    /// refusal is an error: cursor row outside the viewport, cursor inside a
-    /// wide cell or off the row, cursor parked in the last column (pending
-    /// wrap), `from` absent or ambiguous (overlapping occurrences count),
-    /// `from` reaching into the blank run past the draft, or a cell holding
-    /// several scalars (a combining sequence, an emoji) inside the match or
-    /// the movement span — the application moves and erases per cell, the
-    /// plan counts scalars, and the two agree only when every cell touched
-    /// holds one.
+    /// Derive the plan for `from` → `to` on the cursor row of `frame`. Every refusal is an error;
+    /// a cell holding several scalars inside the match or the movement span is refused because
+    /// the application moves per cell while the plan counts scalars.
     pub fn derive(frame: &Frame, from: &str, to: &str) -> Result<Self> {
         let CursorRow {
             chars,
@@ -154,9 +136,7 @@ impl ReplacePlan {
             end <= cursor_index || end <= draft_end,
             "replace: from extends past the draft; drop its trailing spaces"
         );
-        // Every cell inside the match or between its end and the cursor
-        // must hold exactly one scalar (this also covers a match that cuts
-        // through a cell's text).
+        // Every cell inside the match or between its end and the cursor must hold exactly one scalar.
         let (low, high) = (starts[0].min(cursor_index), end.max(cursor_index));
         ensure!(
             cells
@@ -184,9 +164,8 @@ impl ReplacePlan {
             inserted: to.to_owned(),
         })
     }
-    /// The bytes of the plan in one ordered write: the moves, then one
-    /// Backspace per erased character, then the inserted text, with the same
-    /// key encoding as `sequence` (arrows respect DECCKM).
+    /// The bytes of the plan in one ordered write: moves, Backspaces, then the inserted text
+    /// (arrows respect DECCKM).
     pub fn bytes(&self, surface: &InputSurface) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
         if let Some(moves) = self.moves {
@@ -225,8 +204,6 @@ mod tests {
         Some(Moves { key, repeat })
     }
 
-    /// Cursor at the end of the draft: Left moves; at Home: Right moves;
-    /// right after `from`: no moves. Bytes are moves, Backspaces, text.
     #[test]
     fn plan_moves_left_right_or_not_at_all_and_encodes_one_write() {
         let surface = frame(b"").input_surface();
@@ -262,7 +239,6 @@ mod tests {
             json!({"row":0,"cursor_index":11,"cursor_visible":true,"moves":null,"erased":2,"inserted":"19"})
         );
         assert_eq!(end.to_json()["moves"], json!({"key":"Left","repeat":5}));
-        // Deleting: an empty `to` writes only the Backspaces.
         let delete = plan(b"> 7200 + 11", " + 11", "").unwrap();
         assert_eq!(delete.erased, 5);
         assert_eq!(delete.inserted, "");
@@ -276,20 +252,15 @@ mod tests {
                 .unwrap(),
             b"\x1bOD\x1bOD\x7f\x7f19".to_vec()
         );
-        // The cursor row is the one the cursor is on, not the first row.
         let second = plan(b"first\r\n> 11", "11", "19").unwrap();
         assert_eq!(second.row, 1);
         assert_eq!(second.cursor_index, 4);
         assert_eq!(second.moves, None);
     }
 
-    /// Wide glyphs: one character per non-padding cell, so the moves count
-    /// characters, not columns (松果 occupies four columns and two
-    /// characters); the cursor may not sit inside a wide cell.
     #[test]
     fn wide_cells_count_one_character_and_refuse_a_cursor_inside_them() {
         let surface = frame(b"").input_surface();
-        // "11 松果" = 7 columns, 5 characters; cursor at the end.
         let cjk = plan("11 松果".as_bytes(), "11", "19").unwrap();
         assert_eq!(cjk.cursor_index, 5);
         assert_eq!(cjk.moves, moves("Left", 3), "3 characters, not 5 columns");
@@ -306,7 +277,6 @@ mod tests {
             ]
             .concat()
         );
-        // Cursor inside the wide glyph 松 (column 3 is its padding cell).
         let inside = plan("> 松果\x1b[4G".as_bytes(), "果", "子");
         assert!(
             inside
@@ -314,23 +284,17 @@ mod tests {
                 .to_string()
                 .contains("inside a wide cell"),
         );
-        // Cursor on the boundary before 果 (column 4): Right 1 to its end.
         let boundary = plan("> 松果\x1b[5G".as_bytes(), "果", "子").unwrap();
         assert_eq!(boundary.cursor_index, 3);
         assert_eq!(boundary.moves, moves("Right", 1));
-        // The padding cell itself never enters the row string.
         let f = frame("> 松".as_bytes());
         assert_eq!(f.cells[3].width, 0);
         assert_eq!(f.cells[3].text, " ");
         assert_eq!(ReplacePlan::cursor_row(&f).unwrap().chars.len(), 19);
     }
 
-    /// Blank cells count (a blank is a character of the buffer). A combining
-    /// sequence is one cell with several scalars: the application moves and
-    /// erases per cell while the plan counts scalars, so such a cell inside
-    /// the match or between the match and the cursor is refused (review r1
-    /// A: on readline `> 11 café` + Left×6/Backspace×2 gave `191 café`, and
-    /// `from "é"` ate the `f`); cells outside that span do not matter.
+    /// A combining sequence is one cell with several scalars; on readline `> 11 café` +
+    /// Left×6/Backspace×2 gave `191 café`, so such a cell inside the span is refused.
     #[test]
     fn blank_cells_count_and_multi_scalar_cells_in_the_span_are_refused() {
         let blanks = plan(b"a b", "a b", "ab").unwrap();
@@ -368,8 +332,6 @@ mod tests {
         }
         let cut = ReplacePlan::derive(&f, "cafe", "tea").unwrap_err();
         assert!(cut.to_string().contains("combining sequence"), "{cut}");
-        // The multi-scalar cell before both the match and the cursor does
-        // not enter the moves: cells and scalars agree on the span.
         let f = frame("> caf\u{65}\u{301} 11".as_bytes());
         let after = ReplacePlan::derive(&f, "11", "19").unwrap();
         assert_eq!(after.cursor_index, 10);
@@ -380,10 +342,8 @@ mod tests {
         assert_eq!(tail.moves, moves("Left", 5), "five cells, five scalars");
     }
 
-    /// Review r1 B: after a write into the last column the terminal parks
-    /// the cursor there with a pending wrap, one cell left of where the
-    /// application has it; the plan cannot see the flag and refuses the
-    /// shape. A cursor in the last column over a blank cell is not that.
+    /// After a write into the last column the terminal parks the cursor there with a pending
+    /// wrap, one cell left of where the application has it; the plan cannot see the flag.
     #[test]
     fn a_cursor_parked_in_the_last_column_over_text_is_refused() {
         let filled = frame(b"> 7200 + 11 done xyz");
@@ -402,9 +362,7 @@ mod tests {
         assert_eq!(plan.moves, moves("Left", 8));
     }
 
-    /// Review r1 D: a `from` that reaches into the blank run past the draft
-    /// would move Right past the buffer's end; refused unless the cursor
-    /// itself is past that point (the blanks are then typed text).
+    /// A `from` reaching into the blank run past the draft would move Right past the buffer's end.
     #[test]
     fn from_extending_past_the_draft_is_refused() {
         let past = plan(b"> 7200 + 11", "11 ", "19").unwrap_err();
@@ -417,15 +375,12 @@ mod tests {
             past.to_string().contains("extends past the draft"),
             "{past}"
         );
-        // Two typed trailing spaces, cursor after them: the space is real.
         let typed = plan(b"> 7200 + 11  ", "11 ", "19").unwrap();
         assert_eq!(typed.cursor_index, 13);
         assert_eq!(typed.moves, moves("Left", 1));
         assert_eq!(typed.erased, 3);
     }
 
-    /// A hidden cursor (DECTCEM off, as in Claude Code's draft box) is
-    /// positioned all the same: the plan uses it and reports the fact.
     #[test]
     fn hidden_cursor_is_used_by_position_and_reported() {
         let hidden = plan(b"> 7200 + 11 done\x1b[?25l", "11", "19").unwrap();
@@ -446,8 +401,6 @@ mod tests {
         );
     }
 
-    /// Absent, ambiguous (overlapping occurrences included), another row,
-    /// off the row, and the size bound.
     #[test]
     fn refusals_absent_ambiguous_other_row_off_row_and_size() {
         let absent = plan(b"> 7200 + 11", "12", "19").unwrap_err();
@@ -463,7 +416,6 @@ mod tests {
             "aaa holds two aa: {overlapping}"
         );
         assert!(plan(b"> aaa", "aaa", "b").is_ok());
-        // `from` is on the row above the cursor row.
         let above = plan(b"> 11\r\n> 12", "11", "19").unwrap_err();
         assert!(
             above.to_string().contains("is not on the cursor row"),

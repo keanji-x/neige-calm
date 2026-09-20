@@ -11,10 +11,8 @@ use crate::prompts::render_named;
 use calm_types::task_recovery::TaskRecoveryCapability;
 use serde_json::json;
 
-/// The briefing's two prose fragments (#1635 S1c): the frame around the
-/// kernel-snapshot JSON, and the notice that replaces a semantic briefing when
-/// this turn falls back to the exact MCP interface. `pub(super)` so the
-/// run-loop tests can locate the JSON through the fragment's own shape.
+/// The frame around the kernel-snapshot JSON, and the notice that replaces a semantic briefing
+/// when this turn falls back to the exact MCP interface.
 pub(super) const BRIEFING: &str = include_str!("../../prompts/recovery-briefing/briefing.md");
 pub(super) const EXACT_INTERFACE: &str =
     include_str!("../../prompts/recovery-briefing/exact-interface.md");

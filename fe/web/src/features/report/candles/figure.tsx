@@ -1,14 +1,5 @@
-// The candle drawing itself, shared by two blocks (#1628 S4.5).
-//
-// `chart.candles` carries its candles in the payload; `chart.series` with
-// `view: candles` receives the same rows from the kernel's resolved data. One
-// figure draws both, so the polarity (CN: up is red, down is green), the
-// hollow/solid encoding and the MA overlays cannot drift between them. The
-// two blocks differ only in their chrome — header, range switch, caption —
-// which stays with each block.
-//
-// Everything here is SVG for the reasons `public.tsx` gives: the tokens work,
-// there is no dependency and no lazy chunk, and the candles are markup.
+// The candle drawing itself, shared by `chart.candles` and `chart.series` with `view: candles`, so
+// the polarity (CN: up is red, down is green), the hollow/solid encoding and the MA overlays cannot drift.
 
 import styles from './candles.module.css';
 
@@ -46,9 +37,7 @@ export function formatVolume(value: number): string {
   return String(Math.round(value));
 }
 
-/** UTC, deliberately: the timestamps are the kernel's, and a chart that
- *  shifted its dates by the reader's timezone would disagree with the prose
- *  next to it. */
+/** UTC, deliberately: a chart that shifted its dates by the reader's timezone would disagree with the prose next to it. */
 export function formatDate(tsMs: number): string {
   const date = new Date(tsMs);
   const month = String(date.getUTCMonth() + 1).padStart(2, '0');
@@ -56,12 +45,7 @@ export function formatDate(tsMs: number): string {
   return `${date.getUTCFullYear()}-${month}-${day}`;
 }
 
-/**
- * The candles, the volume bars, the MA overlays and the legend. `label` is
- * what the figure is a picture of — the symbol or the asset id — and is used
- * only in the one sentence that describes the whole figure to a reader who
- * is not going to look at 200 rectangles.
- */
+/** The candles, the volume bars, the MA overlays and the legend. `label` is used only in the one sentence describing the whole figure. */
 export function CandlesFigure({ candles, overlays, label }: {
   candles: readonly CandleRow[];
   overlays: readonly CandleOverlay[];
@@ -98,12 +82,7 @@ export function CandlesFigure({ candles, overlays, label }: {
 
   return (
     <>
-      {/*
-        The chart is a figure, not a control: the whole of it is described once,
-        in words, for a reader who is not going to look at 200 rectangles. The
-        rectangles themselves are `aria-hidden` — announcing each candle would
-        be a worse experience than announcing none.
-      */}
+      {/* A figure, not a control: described once in words; the rectangles themselves are `aria-hidden`. */}
       <svg
         className={styles.svg}
         viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
@@ -136,9 +115,7 @@ export function CandlesFigure({ candles, overlays, label }: {
                   x={x - bodyWidth / 2}
                   y={bodyTop}
                   width={bodyWidth}
-                  /* A doji has open === close; without a floor its body would
-                     be a zero-height rect, i.e. invisible exactly where the
-                     market did nothing — which is information. */
+                  /* A doji has open === close; without a floor its body would be invisible exactly where the market did nothing. */
                   height={Math.max(1, bodyBottom - bodyTop)}
                   vectorEffect="non-scaling-stroke"
                 />

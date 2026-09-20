@@ -1,31 +1,5 @@
-//! Worker outcome tools and the retired legacy dispatch-request shim.
-//!
-//! Outcome tools lower a JSON `arguments` object to a single eventized
-//! write. The kernel translates the per-call [`ToolCallIdentity`]
-//! into an [`ActorId`] (Planner → `AiPlanner`, Worker → `AiCodex`) and emits
-//! through `write_with_event_typed`, which runs the role gate, persists
-//! the event row, and broadcasts on the bus.
-//!
-//! ## Tool surface
-//!
-//! * `calm.dispatch_request` — retired #644 compatibility shim. Hidden
-//!   from tools/list; persisted pre-cutover planner threads can still call
-//!   it and receive a structured migration payload. It performs no write.
-//!
-//! * `calm.task.complete` — Worker reports success with an opaque
-//!   result + artifact list. Maps to `Event::TaskCompleted`.
-//!
-//! * `calm.task.fail` — Worker reports failure with a free-form
-//!   reason. Maps to `Event::TaskFailed`.
-//!
-//! ## Scope construction
-//!
-//! Every emitted event's `EventScope` is anchored on the *caller's*
-//! card — the kernel pulls `track_id` + `area_id` by looking up the
-//! card row + the track row, so the planner card's emissions land under
-//! `EventScope::Card { card, track, area }`. Worker cards emit under
-//! their own card scope; the role gate enforces that they can't
-//! escape it.
+//! Worker outcome tools (`calm.task.complete`, `calm.task.fail`) and the retired
+//! `calm.dispatch_request` shim. Every emitted event's scope is anchored on the caller's card.
 
 use crate::decision_sink::CardDecisionSink;
 use crate::error::CalmError;
@@ -66,9 +40,7 @@ pub fn register_into(registry: &mut ToolRegistry) {
     register_deprecated_alias(registry, "calm.task_failed", TOOL_TASK_FAIL);
 }
 
-/// Common wrapper that turns a typed async fn into the boxed-future
-/// `ToolHandler` the registry expects. Saves three copies of the same
-/// `Box::pin` boilerplate.
+/// Turns a typed async fn into the boxed-future `ToolHandler` the registry expects.
 fn wrap<F, Fut>(f: F) -> ToolHandler
 where
     F: Fn(Arc<AppContext>, ToolCallIdentity, Value) -> Fut + Send + Sync + 'static,
@@ -83,10 +55,6 @@ where
         })
     })
 }
-
-// ---------------------------------------------------------------------------
-// Retired calm.dispatch_request
-// ---------------------------------------------------------------------------
 
 fn dispatch_request_descriptor() -> ToolDescriptor {
     ToolDescriptor {
@@ -129,10 +97,6 @@ async fn dispatch_request(
     }))
 }
 
-// ---------------------------------------------------------------------------
-// calm.task.complete
-// ---------------------------------------------------------------------------
-
 fn task_complete_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TASK_COMPLETE.into(),
@@ -149,10 +113,7 @@ fn task_complete_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        // #838 Move 2 — visible to workers so a codex worker's `tools/list`
-        // advertises the native completion tool (it reports completion via
-        // this tool instead of the `neige` CLI). Role-gated to Worker (the
-        // handler also `require_role(Worker)`s).
+        // Visible to workers so a codex worker's `tools/list` advertises the native completion tool.
         visible_to_roles: &[CardRole::Worker],
     }
 }
@@ -359,10 +320,6 @@ fn worktree_committed_event_spec() -> ForgeEventSpec {
     }
 }
 
-// ---------------------------------------------------------------------------
-// calm.task.fail
-// ---------------------------------------------------------------------------
-
 fn task_fail_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TASK_FAIL.into(),
@@ -378,7 +335,7 @@ fn task_fail_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        // #838 Move 2 — visible to workers (see `task_complete_descriptor`).
+        // Visible to workers (see `task_complete_descriptor`).
         visible_to_roles: &[CardRole::Worker],
     }
 }
@@ -414,11 +371,6 @@ async fn task_fail(
     Ok(json!({ "status": "emitted" }))
 }
 
-// ---------------------------------------------------------------------------
-// Shared emit path — derives the session-shaped actor from ToolCallIdentity
-// inside CardDecisionSink and delegates the eventized write.
-// ---------------------------------------------------------------------------
-
 async fn commit_worker_task_report_for_identity(
     ctx: &Arc<AppContext>,
     identity: &ToolCallIdentity,
@@ -432,9 +384,7 @@ async fn commit_worker_task_report_for_identity(
     match result {
         Ok(_) => Ok(()),
         Err(CalmError::Forbidden(msg)) => {
-            // Role gate refusal — surface as a custom error code so a
-            // mis-roled card sees a deterministic failure shape rather
-            // than a generic internal error.
+            // Role gate refusal — a custom error code so a mis-roled card sees a deterministic failure shape.
             Err(RpcError::custom(
                 -32403,
                 format!("emit {kind_tag}: forbidden: {msg}"),

@@ -43,27 +43,11 @@ describe('revealReportAnchor', () => {
     expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start', behavior: 'auto' });
   });
 
-  // A stale backlink, or a block the agent has since rewritten. An error about
-  // a document the reader can already see would be noise.
   it('does nothing at all for an anchor that is not on the page', () => {
     expect(() => revealReportAnchor('b-gone')).not.toThrow();
   });
 
-  /*
-   * ── Landing on a folded block ────────────────────────────────────────────
-   *
-   * A `task` block is a `<details>` (`features/report/task`), so from the
-   * moment it could be folded, all four arrival paths — the outline, a
-   * `neige://` link from another report, a backlink, and the panel's task
-   * inventory — could scroll to a row with the answer hidden under it and flash
-   * the title. That is worse than not moving: the reader is told "it is here"
-   * and shown nothing.
-   *
-   * Both directions are asserted because they are different cases and neither
-   * covers the other. `document/public.tsx` puts the block id on the `div`
-   * *around* the block, so the `<details>` is a descendant of the target; an
-   * anchor nested inside a fold is the other way round.
-   */
+  /* `document/public.tsx` puts the block id on the `div` around the block, so the `<details>` is a descendant of the target; an anchor nested inside a fold is the other way round. */
   it('unfolds a disclosure inside the block it lands on', () => {
     document.body.innerHTML = '<article data-nc-report=""><div id="b-3"><details><summary>Task</summary>detail</details></div></article>';
     revealReportAnchor('b-3');
@@ -80,30 +64,20 @@ describe('revealReportAnchor', () => {
     expect(document.getElementById('outer')).toHaveProperty('open', true);
   });
 
-  /* One way only. Arriving is a request to read; scrolling away is not a
-     request to put it back, and a block that re-folded itself would be the app
-     taking back what it was asked for. */
   it('leaves an already-open disclosure open, and never folds one', () => {
     document.body.innerHTML = '<article data-nc-report=""><div id="b-5"><details open><summary>Task</summary>detail</details></div></article>';
     revealReportAnchor('b-5');
     expect(document.querySelector('details')?.open).toBe(true);
   });
 
-  /*
-   * **Order, not just outcome.** Scrolling to a closed disclosure and then
-   * opening it puts the reader somewhere the layout has since moved: the
-   * browser measures where to land while the content is still collapsed. The
-   * unfold has to happen first, and "both things happened" is what an
-   * end-state assertion checks. This one records the order.
-   */
+  /* The browser measures where to land while the content is still collapsed, so the unfold has to happen first. */
   it('unfolds before it measures where to scroll', () => {
     document.body.innerHTML =
       '<article data-nc-report=""><div id="b-6"><details><summary>Task</summary>detail</details></div></article>';
     const order: string[] = [];
     const details = document.querySelector('details')!;
     const target = document.getElementById('b-6')!;
-    /* `open` is a property with a setter on the prototype; recording through it
-       catches the write wherever in the function it happens. */
+    /* `open` is a property with a setter on the prototype; recording through it catches the write wherever it happens. */
     const descriptor = Object.getOwnPropertyDescriptor(HTMLDetailsElement.prototype, 'open')!;
     Object.defineProperty(details, 'open', {
       configurable: true,
@@ -117,12 +91,7 @@ describe('revealReportAnchor', () => {
     expect(order).toEqual(['open', 'scroll']);
   });
 
-  /*
-   * The anchor id comes from the route hash, so it is reader-supplied. `#root`
-   * resolves to the application's own root element, and an unscoped descendant
-   * walk would open every `<details>` on the page — every task in every report
-   * on screen — because somebody pasted a URL with the wrong fragment.
-   */
+  /* `#root` resolves to the application's own root element, so an unscoped descendant walk would open every `<details>` on the page. */
   it('does not unfold anything when the anchor is not inside a report', () => {
     document.body.innerHTML =
       '<div id="root"><article data-nc-report=""><details><summary>Task</summary>d</details></article></div>';
@@ -130,8 +99,6 @@ describe('revealReportAnchor', () => {
     expect(document.querySelector('details')?.open).toBe(false);
   });
 
-  // Arriving twice at the same anchor has to flash twice, and a transition that
-  // is already at its end state has nothing to run from.
   it('re-arms the marker on a second arrival at the same anchor', () => {
     revealReportAnchor('b-1');
     const target = document.getElementById('b-1');

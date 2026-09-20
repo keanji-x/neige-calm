@@ -48,9 +48,7 @@ fn package_directory_contains_v2_manifest_and_hashes_inner() {
     .expect("parse manifest");
     assert_eq!(manifest.release_id, "smoke");
     assert_eq!(manifest.schema_version, 2);
-    // Pins the `product_major()` default (#1209 bumped it 0 -> 1). This
-    // assertion is load-bearing only because the whole test body runs
-    // inside `with_env_removed("NEIGE_PRODUCT_MAJOR", ..)` above.
+    // Load-bearing only because the whole test body runs inside `with_env_removed("NEIGE_PRODUCT_MAJOR", ..)` above.
     assert_eq!(manifest.product_major, 1);
     assert_eq!(manifest.compatibility.terminal_frame_version, 4);
     assert_eq!(manifest.compatibility.terminal_protocol_version, 4);

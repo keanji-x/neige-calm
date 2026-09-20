@@ -24,15 +24,12 @@ fn work_brief() -> ContractHeader {
 
 const WORK_BRIEF_LINE: &str = "<!-- neige:contract {\"version\":1,\"sections\":[{\"h1\":\"概要\"},{\"h1\":\"待你定\",\"omit_if_empty\":true},{\"h1\":\"已完成\"},{\"h1\":\"决策\"}]} -->";
 
-// —— canonical form ————————————————————————————————————————————————
-
 #[test]
 fn canonical_line_is_the_documented_one_liner_and_round_trips() {
     let line = canonical_line(&work_brief());
     assert_eq!(line, WORK_BRIEF_LINE);
     assert!(!line.contains('\n'));
     assert_eq!(parse_line(&line), Some(Ok(work_brief())));
-    // `omit_if_empty: false` is omitted, `true` is kept.
     assert!(!line.contains("\"omit_if_empty\":false"));
     assert_eq!(line.matches("omit_if_empty").count(), 1);
 }
@@ -80,7 +77,6 @@ fn normalize_header_borrows_when_there_is_nothing_to_do() {
     }
     let canonical = format!("{WORK_BRIEF_LINE}\n\n# 概要\n");
     assert!(matches!(normalize_header(&canonical), Ok(Cow::Borrowed(_))));
-    // No trailing newline at all: line 1 is the whole body.
     assert!(matches!(
         normalize_header(WORK_BRIEF_LINE),
         Ok(Cow::Borrowed(_))
@@ -102,8 +98,6 @@ fn normalize_header_rewrites_only_line_one() {
         Err(HeaderError::Malformed(_))
     ));
 }
-
-// —— parse_line negatives, one per rule ————————————————————————————
 
 #[test]
 fn parse_line_is_none_for_non_header_lines() {
@@ -147,13 +141,12 @@ fn parse_line_rejects_one_rule_at_a_time() {
     // JSON does not parse
     malformed("<!-- neige:contract not json -->", "expected");
     malformed("<!-- neige:contract  -->", "EOF");
-    // JSON contains `-->` (the last ` -->` is the close; the inner one
-    // would end the HTML comment early)
+    // JSON contains `-->` (the last ` -->` is the close; the inner one would end the HTML comment early)
     malformed(
         "<!-- neige:contract {\"version\":1,\"sections\":[{\"h1\":\"a --> b\"}]} -->",
         "contains `-->`",
     );
-    // unknown field: the issue's `tasks` / `prose_budget` are not v1
+    // unknown field
     malformed(
         "<!-- neige:contract {\"version\":1,\"sections\":[{\"h1\":\"x\"}],\"tasks\":true} -->",
         "unknown field `tasks`",
@@ -214,12 +207,6 @@ fn parse_line_rejects_one_rule_at_a_time() {
     );
 }
 
-/// Review round 1 MAJOR: a literal `{"h1":"-->"}` is caught by the
-/// serialized-text check, but an escaped spelling such as `{"h1":"-\u002d>"}`
-/// passes it and decodes to `-->` — `canonical_line` would then emit a literal
-/// `-->` inside the JSON, so `normalize_header` would produce a header its own
-/// parser rejects. Both delimiters are rejected on the decoded value, so every
-/// spelling is rejected the same way.
 #[test]
 fn h1_containing_a_comment_delimiter_is_malformed_even_when_json_escaped() {
     let malformed = |line: &str| match parse_line(line) {
@@ -231,10 +218,6 @@ fn h1_containing_a_comment_delimiter_is_malformed_even_when_json_escaped() {
         }
         other => panic!("{line:?}: expected Malformed, got {other:?}"),
     };
-    // Plain: the serialized text `{"h1":"-->"}` is followed by ` -->`, and
-    // `rfind` takes the LAST close, so the first `-->` is inside the JSON
-    // and caught by the serialized-text check — message differs; the
-    // decoded check is what catches the escaped spellings below.
     assert!(matches!(
         parse_line("<!-- neige:contract {\"version\":1,\"sections\":[{\"h1\":\"-->\"}]} -->"),
         Some(Err(HeaderError::Malformed(_)))
@@ -250,11 +233,6 @@ fn h1_containing_a_comment_delimiter_is_malformed_even_when_json_escaped() {
     );
 }
 
-/// `normalize_header` is idempotent on every accepted input: what it emits
-/// is canonical and parses back to the same header, so a second pass
-/// borrows. Covers the canonical, the non-canonical spellings, escaped
-/// unicode, and a header whose `h1` carries JSON-escaped characters that
-/// survive (`"`, `\`, `/`).
 #[test]
 fn normalize_header_is_idempotent_on_every_accepted_input() {
     let inputs = [
@@ -277,12 +255,9 @@ fn normalize_header_is_idempotent_on_every_accepted_input() {
             matches!(twice, Cow::Borrowed(_)),
             "second pass must find line 1 canonical: {input:?}"
         );
-        // and the funnel accepts the normalized form
         assert!(matches!(check_document(&once), Ok(Some(_))), "{input:?}");
     }
 }
-
-// —— check_document: header placement ——————————————————————————————
 
 #[test]
 fn check_document_accepts_headerless_bodies() {
@@ -320,8 +295,6 @@ fn check_document_rejects_a_misplaced_header() {
         check_document(&format!("# 概要\n\ntext\n{WORK_BRIEF_LINE}\n")),
         Err(HeaderError::Misplaced { line: 4 })
     );
-    // The exact with-markers shape S2c must strip before calling: the
-    // marker line pushes the header to line 2 → fail closed.
     assert_eq!(
         check_document(&format!("<!-- neige:b_00aa -->\n{WORK_BRIEF_LINE}\n")),
         Err(HeaderError::Misplaced { line: 2 })
@@ -339,8 +312,6 @@ fn check_document_rejects_duplicate_headers_before_anything_else() {
         check_document(&format!("{WORK_BRIEF_LINE}\n{WORK_BRIEF_LINE}\n")),
         Err(HeaderError::Duplicate)
     );
-    // Duplicate wins over Misplaced, and over the second one being
-    // malformed or fenced.
     assert_eq!(
         check_document(&format!(
             "x\n{WORK_BRIEF_LINE}\n```\n<!-- neige:contract junk\n```\n"
@@ -362,12 +333,9 @@ fn check_document_propagates_malformed_and_flags_non_canonical_as_internal() {
             "non-canonical header reached the funnel".into()
         ))
     );
-    // …and the fix is exactly `normalize_header` first.
     let normalized = normalize_header(reordered).unwrap();
     assert_eq!(check_document(&normalized), Ok(Some(work_brief())));
 }
-
-// —— check_document: block-0 comment scan (D2 (e), v5 descope) ———————
 
 fn with_block0(tail: &str) -> String {
     format!("{WORK_BRIEF_LINE}\n{tail}")
@@ -458,9 +426,6 @@ fn blocks_after_zero_are_never_scanned() {
     );
 }
 
-/// Mutation proof (#1635 S2b brief): replacing the ordered scan with a
-/// pair count (`matches("<!--").count() == matches("-->").count()`) must
-/// go red here. Opens 2 / closes 2, yet the last comment is open.
 #[test]
 fn stray_close_before_an_open_does_not_balance_it() {
     let body = with_block0("-->\n<!-- unclosed\n");
@@ -474,12 +439,8 @@ fn stray_close_before_an_open_does_not_balance_it() {
 
 #[test]
 fn scan_is_header_gated_by_construction() {
-    // With no header there is nothing to scan: the same unclosed block 0
-    // is Ok(None). (Reads as legacy/written in S3; not this module's call.)
     assert_eq!(check_document("<!-- never closed\n\n# 概要\n"), Ok(None));
 }
-
-// —— is_pure_comment_block ————————————————————————————————————————
 
 #[test]
 fn pure_comment_blocks_are_comments_and_whitespace_only() {

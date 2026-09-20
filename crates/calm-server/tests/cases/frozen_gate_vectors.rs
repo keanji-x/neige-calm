@@ -1,42 +1,7 @@
-//! Frozen gate-denial security vectors — issue #679 PR0-A.
-//!
-//! The role-gate decision matrix (event kind × actor × scope → allow/deny)
-//! is materialized as data files under `tests/vectors/gate_denials/*.json`.
-//! This driver loads every vector and executes it through the **real write
-//! entry** — `Repo::log_pure_event` on a real sqlite `SqlxRepo` with a
-//! seeded card-role / track-area cache — exactly the path production MCP /
-//! REST writes take after `routes`/`emit` construct the `(actor, scope,
-//! event)` tuple. It deliberately imports **no role_gate internals**
-//! (no `enforce_role`, no `RoleViolation`): the gate is observed only
-//! through its transactional effect (Forbidden error, no event row, no
-//! broadcast) so a future gate rewrite (#679 PR7's Principal gate) must
-//! pass the *same vector files unmodified*.
-//!
-//! These vectors are CHARACTERIZATION — they pin current `main` behavior,
-//! including cells that look like bugs (see the `note` fields in
-//! `06_task_report_and_reportcard.json`: the kernel gate allows
-//! AiPlanner→task.completed and performs no self-scope check for
-//! ReportCard-bound actors). Do not "fix" a vector to match intuition:
-//! changing any file under `tests/vectors/` requires a commit message
-//! carrying `FROZEN-VECTOR-CHANGE:` + rationale (CI-enforced, see
-//! `.github/workflows/ci.yml` job `frozen-vectors`).
-//!
-//! Vector schema (stable):
-//! ```json
-//! {
-//!   "description": "...",
-//!   "note": "optional characterization caveat",
-//!   "actor":  { "kind": "AiCodex", "id": "$WORKER_CARD" },
-//!   "event":  { "ev": "task.completed", "data": { ... } },
-//!   "scope":  { "kind": "Card", "id": { "card": "...", "track": "...", "area": "..." } },
-//!   "expected": { "decision": "allow" } | { "decision": "deny", "error_contains": "..." }
-//! }
-//! ```
-//! `actor` / `scope` / `event` use the production serde wire shapes of
-//! `ActorId` / `EventScope` / `Event` (adjacent-tagged), so the files stay
-//! valid against the same compatibility guarantees as the persisted event
-//! log. `$PLACEHOLDER` strings are substituted with ids minted by the
-//! sqlite fixture before deserialization.
+//! Frozen gate-denial vectors (`tests/vectors/gate_denials/*.json`) executed through the real
+//! write entry `Repo::log_pure_event`, importing no role_gate internals. The vectors are
+//! characterization: changing any file under `tests/vectors/` requires a commit message carrying
+//! `FROZEN-VECTOR-CHANGE:` + rationale (CI-enforced).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -56,10 +21,7 @@ use calm_types::worker::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-/// Total number of vectors shipped across all files. Pinned so a vector
-/// silently dropped from a JSON file (e.g. a bad merge) fails loudly.
-/// Adding/removing vectors updates this constant in the same
-/// `FROZEN-VECTOR-CHANGE:` commit that touches the vectors dir.
+/// Total number of vectors shipped, so one silently dropped from a JSON file fails loudly.
 const EXPECTED_VECTOR_COUNT: usize = 68;
 
 #[derive(Debug, Deserialize)]
@@ -81,18 +43,14 @@ enum Expected {
     Deny { error_contains: String },
 }
 
-/// Real-sqlite fixture mirroring `dispatcher_role_scope.rs`: two areas,
-/// each with one track; the home track hosts a codex worker, a claude
-/// worker, a planner card, a report card, and a second ("other") worker.
-/// Roles land in both the cards table and the in-memory caches the
-/// write entry consults.
+/// Real-sqlite fixture: two areas, each with one track; the home track hosts the worker,
+/// planner, report and "other" cards, with roles in both the cards table and the caches.
 struct Fixture {
     repo: Arc<SqlxRepo>,
     bus: EventBus,
     cache: CardRoleCache,
     wcc: TrackAreaCache,
-    /// `$PLACEHOLDER` → minted id. Longest keys first so no placeholder
-    /// is a prefix of an earlier-substituted one.
+    /// `$PLACEHOLDER` → minted id. Longest keys first so no placeholder is a prefix of an earlier one.
     subst: Vec<(&'static str, String)>,
 }
 
@@ -114,9 +72,7 @@ impl Fixture {
         let planner = seed_card(&repo, &cache, &home_track, CardRole::Planner).await;
         let report = seed_card(&repo, &cache, &home_track, CardRole::ReportCard).await;
         let other = seed_card(&repo, &cache, &home_track, CardRole::Worker).await;
-        // #1189 — the Assistant arm needs an assistant card in the home
-        // track and a report card in a *foreign* track (the "may not write
-        // another track's report card" cell).
+        // The Assistant arm needs a report card in a *foreign* track.
         let assistant = seed_card(&repo, &cache, &home_track, CardRole::Assistant).await;
         let other_track_report = seed_card(&repo, &cache, &other_track, CardRole::ReportCard).await;
 
@@ -158,9 +114,7 @@ impl Fixture {
         .await;
 
         let subst = vec![
-            // Longest keys first so no placeholder is a prefix of an
-            // earlier-substituted one ($OTHER_TRACK_REPORT_CARD would
-            // otherwise be eaten by $OTHER_TRACK).
+            // Longest keys first: `$OTHER_TRACK_REPORT_CARD` would otherwise be eaten by `$OTHER_TRACK`.
             (
                 "$OTHER_TRACK_REPORT_CARD",
                 other_track_report.as_str().to_string(),
@@ -225,7 +179,7 @@ async fn seed_area_track(
         AreaId::from(area.id.as_str()),
         TrackId::from(track.id.as_str()),
     );
-    // The gate's #234 area cross-check consults this cache.
+    // The gate's area cross-check consults this cache.
     wcc.insert(track_id.clone(), area_id.clone());
     (area_id, track_id)
 }

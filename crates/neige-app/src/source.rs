@@ -197,10 +197,8 @@ fn required_bins(source_dir: &Path) -> Vec<NamedPath> {
         "neige-codex-bridge",
         "neige-mcp-stdio-shim",
         "neige-tailnet",
-        // Issue #388 Phase 1 — calm-server connects to this binary over a
-        // control UDS for every terminal spawn; without it in the activated
-        // release `neige-app system serve` will time out waiting for
-        // `<current-server>/bin/calm-proc-supervisor` to come up.
+        // calm-server connects to this binary over a control UDS for every terminal spawn; without it in the
+        // activated release `neige-app system serve` times out waiting for `calm-proc-supervisor` to come up.
         "calm-proc-supervisor",
         "neige",
     ]

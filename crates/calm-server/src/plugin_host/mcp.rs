@@ -1,29 +1,5 @@
-//! Line-delimited JSON-RPC 2.0 client actor for talking to a plugin process.
-//!
-//! Wire format: one JSON object per line, terminated by `\n`. Matches the MCP
-//! `stdio` transport (modelcontextprotocol.io specification, 2025-11-25). NOT
-//! Content-Length-framed — that's the HTTP transport, which we don't use.
-//!
-//! Topology (design doc §3.1): the kernel = MCP client, plugin = MCP server,
-//! but the same socket carries plugin-initiated `neige.*` requests that the
-//! kernel routes (Slice C). This module owns the framing + correlation +
-//! `initialize` handshake; Slice C drains the inbound channels and dispatches.
-//!
-//! Concurrency model:
-//!   * One reader task: parses each line, peels off whether it's a response
-//!     (has `id`, may have `result` or `error`), a request (has `id` + `method`),
-//!     or a notification (has `method`, no `id`). Routes accordingly.
-//!   * One writer task: serializes outbound frames (one mpsc channel for both
-//!     kernel-initiated requests and notifications, plus responses-to-plugin).
-//!   * Public `McpClient` owns the outbound mpsc sender + the inflight-response
-//!     map. `call` allocates an id, registers a oneshot, sends the frame, awaits.
-//!
-//! Channel sizes (design doc §3.2 — backpressure is fine):
-//!   * outbound (kernel → plugin): 256 deep. Most calls are 1:1 RPC, so this
-//!     bounds at the worst case of "burst of 256 notifications without flush".
-//!   * inbound_requests / inbound_notifications: 64 deep. Slice C's dispatcher
-//!     is the consumer; if it falls behind, we pause reading the plugin —
-//!     better than dropping plugin → kernel writes silently.
+//! Line-delimited JSON-RPC 2.0 client actor for talking to a plugin process (MCP `stdio`
+//! transport: one JSON object per line, not Content-Length-framed).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -38,42 +14,23 @@ use tokio::task::JoinHandle;
 
 use super::error::McpError;
 
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
-
-/// MCP / kernel protocol version we advertise in `initialize`. Slice C will
-/// likely move this into a shared constants module.
+/// MCP / kernel protocol version we advertise in `initialize`.
 pub const KERNEL_PROTOCOL_VERSION: &str = "2025-11-25";
 
-/// MCP `tools/call` content block — text / image / etc. We only carry the
-/// fields we actually consume today (the `type` discriminator + `text`); other
-/// fields (`data`, `mimeType`, ...) are tolerated under `extra` so future specification
-/// extensions don't break parsing.
-///
-/// Specification ref: model-context-protocol 2025-11-25, `CallToolResult.content[]`.
+/// MCP `tools/call` content block; unknown fields are tolerated under `extra`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContentBlock {
     #[serde(rename = "type")]
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
-    /// Everything we don't model explicitly. Keeps unknown fields from
-    /// breaking deserialization (the MCP Apps profile adds keys here over
-    /// time).
+    /// Everything we don't model explicitly, so unknown fields don't break deserialization.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, Value>,
 }
 
-/// MCP `resources/read` content entry (M3). Specification 2026-01-26 §`ResourceContents`.
-/// The kernel uses this for `ui://<plugin>/<view>` resources served from disk
-/// (see `plugin_host::resources`). Either `text` or `blob` is populated per
-/// the specification — we keep both `Option<String>` so we don't have to choose at
-/// parse time, and we forward `_meta` verbatim so the MCP Apps profile's
-/// `ui.csp` + `ui.permissions` round-trip without us pinning their shape.
-///
-/// Field naming: `mime_type` and `meta` rename to the camelCase wire keys
-/// (`mimeType`, `_meta`) so Rust stays snake_case.
+/// MCP `resources/read` content entry. `_meta` is forwarded verbatim so the MCP Apps profile's
+/// `ui.csp` + `ui.permissions` round-trip without pinning their shape.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResourceContent {
     pub uri: String,
@@ -87,24 +44,14 @@ pub struct ResourceContent {
     pub meta: Option<Value>,
 }
 
-/// MCP `resources/read` result envelope. Per the spec, a single read may
-/// return multiple `ResourceContent` blocks (e.g. multi-part documents); for
-/// `ui://...` HTML resources the kernel always emits exactly one entry, but
-/// we keep the Vec shape so consumers stay specification-compliant.
+/// MCP `resources/read` result envelope; a single read may return multiple entries.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResourceContents {
     #[serde(default)]
     pub contents: Vec<ResourceContent>,
 }
 
-/// MCP `tools/call` result shape (M2). Per specification 2025-11-25:
-/// `{ content: ContentBlock[], isError?: bool, _meta?: object,
-///    structuredContent?: any }`. We only inspect `_meta.ui.resourceUri` and
-/// `is_error` for now — the rest is opaque pass-through to the caller.
-///
-/// Field naming: `is_error` and `structured_content` use serde renames to the
-/// camelCase wire keys (`isError`, `structuredContent`) so our Rust code stays
-/// in snake_case.
+/// MCP `tools/call` result shape. Only `_meta.ui.resourceUri` and `is_error` are inspected; the rest is pass-through.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CallToolResult {
     #[serde(default)]
@@ -136,31 +83,24 @@ impl RequestId {
     }
 }
 
-/// A plugin-originated JSON-RPC request the kernel must answer. Slice C will
-/// match `method` against `neige.*` and route to a handler; for Slice B the
-/// default consumer just responds `MethodNotFound` to everything so the wire
-/// stays sane in tests.
+/// A plugin-originated JSON-RPC request the kernel must answer.
 #[derive(Debug)]
 pub struct InboundRequest {
     pub id: RequestId,
     pub method: String,
     pub params: Value,
-    /// Slice C calls `responder.send(...)` with the kernel-side outcome. If
-    /// dropped without sending, the reader task synthesizes a generic
-    /// `InternalError` so the plugin doesn't deadlock.
+    /// If dropped without sending, the reader task synthesizes a generic `InternalError` so the plugin doesn't deadlock.
     pub responder: oneshot::Sender<Result<Value, RpcError>>,
 }
 
-/// A plugin-originated notification (no response expected). Slice C drains
-/// the receiver and acts (e.g. `notifications/cancelled`).
+/// A plugin-originated notification (no response expected).
 #[derive(Debug, Clone)]
 pub struct InboundNotification {
     pub method: String,
     pub params: Value,
 }
 
-/// JSON-RPC `error` object per §5.1 of the specification. The `code` ranges and the
-/// kernel-extension codes (-32001..-32005) are documented in design doc §3.3.
+/// JSON-RPC `error` object.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RpcError {
     pub code: i64,
@@ -216,27 +156,14 @@ impl std::fmt::Display for RpcError {
 }
 impl std::error::Error for RpcError {}
 
-// ---------------------------------------------------------------------------
-// Outbound frame plumbing
-// ---------------------------------------------------------------------------
-
-/// A pre-serialized frame to send to the plugin. We pre-serialize so the
-/// writer task is just "drain mpsc, write line, flush" — no JSON work on the
-/// I/O path.
+/// A pre-serialized frame to send to the plugin, so the writer task does no JSON work on the I/O path.
 #[derive(Debug)]
 struct OutboundFrame(Vec<u8>);
 
-// ---------------------------------------------------------------------------
-// McpClient — the public surface
-// ---------------------------------------------------------------------------
-
 type ResponderMap = Arc<Mutex<HashMap<RequestId, oneshot::Sender<Result<Value, RpcError>>>>>;
 
-/// RAII ownership of one entry in the [`ResponderMap`] for the lifetime of
-/// the `call` future that registered it (#1628 S2). Dropping the guard —
-/// normal return, early error, or the future being cancelled by a timeout —
-/// removes the entry; removing an entry the reader task already took is a
-/// no-op.
+/// RAII ownership of one entry in the [`ResponderMap`] for the lifetime of the `call` future that
+/// registered it; dropping the guard (including cancellation by a timeout) removes the entry.
 struct ResponderSlot<'a> {
     map: &'a ResponderMap,
     id: RequestId,
@@ -251,85 +178,27 @@ impl Drop for ResponderSlot<'_> {
     }
 }
 
-/// Wire-name of the experimental capability that opts a plugin into the
-/// `neige.*` host-callback namespace. Plugins that never call back into the
-/// kernel can omit this and still run; see `PluginHost::spawn` for the
-/// gating logic.
+/// Wire-name of the experimental capability that opts a plugin into the `neige.*` host-callback namespace.
 pub const KERNEL_CALLBACKS_CAPABILITY: &str = "dev.neige/kernel-callbacks";
 
-/// `_meta` namespace naming the Track a `tools/call` was made from.
-///
-/// Carried as `{"id": "<track_id>"}` — the same one-level wrapper
-/// `dev.neige/config` uses, and for the same reason: a bare string could
-/// never grow a sibling field without ambiguity.
-///
-/// **The kernel fills this from the resolved identity; nothing in the request
-/// body reaches it.** A plugin that keeps per-Track state has to know which
-/// Track it is acting for, and a Track named in `arguments` would be a Track
-/// the calling agent chose — the same reasoning that makes
-/// `callbacks::dispatch` inject `plugin_id` rather than read it from params.
-///
-/// Two qualifications, because "the caller cannot influence it" would be
-/// wider than what the code enforces:
-///
-/// * The value follows the **identity**, and on a `DaemonTrust` connection
-///   the caller selects the identity by naming a `threadId`
-///   (`resolve_tools_call_identity`). Such a caller can therefore have its
-///   call attributed to any live session's Track. That is what daemon trust
-///   already means everywhere else in this transport — it is not a hole this
-///   namespace opens — but it is why the guarantee is stated as "from the
-///   resolved identity" rather than "from a Track the caller cannot pick".
-///   A `CardBound` connection cannot cross sessions.
-/// * Not every production `tools/call` carries it: `routes::cards`' `via`
-///   path passes `None` (see the call site there). A plugin must treat the
-///   namespace as absent-able and refuse rather than default, which is what
-///   the market plugin's `track_from_call` does.
+/// `_meta` namespace naming the Track a `tools/call` was made from, as `{"id": "<track_id>"}`.
+/// The kernel fills this from the resolved identity; nothing in the request body reaches it. Not every
+/// `tools/call` carries it, so a plugin must refuse rather than default when it is absent.
 pub const TRACK_META_KEY: &str = "dev.neige/track";
 
-/// Version of the `dev.neige/kernel-callbacks` capability the kernel supports.
-/// Plugins advertise `experimental[KERNEL_CALLBACKS_CAPABILITY].version` in
-/// their `initialize` response; only an **exact** match here counts as
-/// "capability declared". Any other value (including a missing `version`
-/// field) is treated as the capability being absent and a `warn!` log is
-/// emitted so the divergence is visible during debugging. Issue #45.
+/// Version of the `dev.neige/kernel-callbacks` capability; only an exact match in the plugin's
+/// `initialize` response counts as "capability declared".
 pub const KERNEL_CALLBACKS_CAPABILITY_VERSION: u32 = 1;
 
-/// Everything the kernel hands a plugin **inside `initialize.params._meta`**,
-/// as one argument rather than a growing tail of `Option`s.
-///
-/// `_meta` is the MCP-sanctioned place for out-of-band, vendor-namespaced
-/// information, and this kernel now puts two things there: the auth echo
-/// (`dev.neige/auth`, slice H) and, since #1284 §2.3(a), the plugin's
-/// effective configuration (`dev.neige/config`).
-///
-/// **One entry point, not two.** An overload that defaults `config` to `None`
-/// would leave the production handshake as the only caller that carries
-/// configuration, and every test reaching for the convenience door — which is
-/// how a delivery seam quietly stops being one (the S1 review's verdict on
-/// `effective_config`'s second door, one module over). Callers that genuinely
-/// carry neither — the duplex-stream unit tests — write both fields out as
-/// `None`.
-///
-/// **And deliberately no `Default`** (S2 review P3). The argument above rules
-/// out a second *function*; a `Default` impl reopens the same door as a second
-/// *literal*, because `InitializeMeta { expected_echo: Some(t),
-/// ..Default::default() }` is a handshake that silently delivers no
-/// configuration and reads like it was written on purpose. Every field being
-/// mandatory at every call site is what makes "did this caller mean to send
-/// nothing?" a question the compiler asks instead of one an end-to-end test
-/// has to catch. The cost is a dozen two-field literals in the transport unit
-/// tests, which is the correct place to pay it.
+/// Everything the kernel hands a plugin inside `initialize.params._meta`. Deliberately no `Default`:
+/// every field is mandatory at every call site so a handshake that delivers no config is written on purpose.
 #[derive(Clone, Copy)]
 pub struct InitializeMeta<'a> {
-    /// The raw per-process token the plugin must mirror back at
-    /// `result._meta["dev.neige/auth"].echoed_token`. `None` skips the check
-    /// entirely and is only used by unit tests.
+    /// The raw per-process token the plugin must mirror back at `result._meta["dev.neige/auth"].echoed_token`;
+    /// `None` skips the check (unit tests only).
     pub expected_echo: Option<&'a str>,
-    /// #1284 §2.3(a) — `defaults ⊕ user_config` for this plugin, as produced
-    /// by [`super::config::effective_config`]. `None` omits the namespace
-    /// altogether; `Some(empty)` states "this kernel delivers configuration
-    /// and there is none", which is a different sentence and one a plugin can
-    /// act on.
+    /// `defaults ⊕ user_config` for this plugin. `None` omits the namespace; `Some(empty)` states
+    /// "this kernel delivers configuration and there is none".
     pub config: Option<&'a serde_json::Map<String, Value>>,
 }
 
@@ -345,39 +214,15 @@ pub struct McpClient {
     /// hanging on a oneshot that nobody will ever fulfill.
     closed: Arc<AsyncMutex<Option<String>>>,
     /// Inbound channels — handed out exactly once via the take_* methods.
-    /// Wrapped in `Mutex<Option<...>>` so the actor's reader task can own its
-    /// half of the channel and any single consumer can take the receiver.
     inbound_requests_rx: Mutex<Option<mpsc::Receiver<InboundRequest>>>,
     inbound_notifications_rx: Mutex<Option<mpsc::Receiver<InboundNotification>>>,
-    /// `result.capabilities` from the plugin's `initialize` response — captured
-    /// once during handshake. Plugins opt into `neige.*` host-callbacks by
-    /// echoing back the kernel's `experimental.dev.neige/kernel-callbacks`
-    /// entry; the host inspects this via `server_capabilities()` to decide
-    /// whether to install the dispatcher or a MethodNotFound drainer.
+    /// `result.capabilities` from the plugin's `initialize` response, captured once during handshake.
     server_capabilities: Mutex<Value>,
 }
 
 impl McpClient {
-    /// Spawn reader + writer tasks over the given stream pair and perform the
-    /// `initialize` handshake. Returns once initialize succeeds (or fails with
-    /// `InitializeRejected`-equivalent semantics in `McpError`).
-    ///
-    /// `read`/`write` are typically `tokio::process::ChildStdout` and
-    /// `ChildStdin` respectively, but we keep them `dyn` so tests can wire in
-    /// `tokio::io::duplex` halves without spawning a real process.
-    ///
-    /// When `meta.expected_echo` is `Some(raw_token)`, the kernel embeds the
-    /// raw token in `initialize.params._meta["dev.neige/auth"].expected_echo`
-    /// and requires the plugin to mirror it back in
-    /// `initialize.result._meta["dev.neige/auth"].echoed_token`. Mismatch
-    /// surfaces as `McpError::Framing("auth mismatch")` so callers
-    /// (`PluginHost::spawn`) can translate to `HostError::AuthMismatch` and
-    /// skip respawn.
-    ///
-    /// `None` skips the check entirely — only used by unit tests that wire a
-    /// plain duplex stub. Production always passes the per-process token.
-    ///
-    /// `meta.config` is the #1284 §2.3(a) delivery: see [`InitializeMeta`].
+    /// Spawn reader + writer tasks over the given stream pair and perform the `initialize` handshake.
+    /// An auth-echo mismatch surfaces as `McpError::Framing("auth mismatch")`.
     pub async fn connect_with_auth<R, W>(
         read: R,
         write: W,
@@ -416,47 +261,13 @@ impl McpClient {
             server_capabilities: Mutex::new(Value::Object(Default::default())),
         });
 
-        // initialize handshake — design doc §3.1.
         client.initialize(meta).await?;
 
         Ok(client)
     }
 
-    /// `initialize` request per MCP specification: declare protocol version + the
-    /// `experimental.dev.neige/kernel-callbacks` capability (design doc §3.1,
-    /// migration doc §6/M1) so the plugin knows we accept `neige.*` callbacks
-    /// and can opt in by echoing the capability back. We don't read every
-    /// `serverInfo` field — just confirm a `protocolVersion` echo and that the
-    /// response is shaped like an object.
-    ///
-    /// Auth handshake (migration doc §7.6 row 2): the auth-echo lives at
-    /// `params._meta["dev.neige/auth"].expected_echo` and the plugin must
-    /// mirror it back at `result._meta["dev.neige/auth"].echoed_token`.
-    ///
-    /// When `expected_echo` is `Some(raw)`, we inline the raw token under
-    /// `_meta` and demand the plugin echo it back. The kernel-side raw-vs-raw
-    /// equality is fine here because the token is full-entropy and the
-    /// mismatch path kills the process immediately.
-    ///
-    /// Config handshake (#1284 §2.3(a)): the effective configuration rides in
-    /// the same `_meta` object under `dev.neige/config`, as
-    /// `{"values": {…}}`. **The wrapper is load-bearing, not ceremony.** The
-    /// keys inside `values` are named by the manifest author and filled by the
-    /// operator; splicing them straight into the kernel's namespace slot would
-    /// mean the kernel could never add a sibling field there without a plugin
-    /// being unable to tell it apart from a configuration key of the same
-    /// name. One level of nesting buys that back permanently, and it matches
-    /// the shape `dev.neige/auth` already has — a kernel-owned object with
-    /// named fields, not a bag of foreign keys.
-    ///
-    /// Nothing is echoed back for config: unlike the auth token there is no
-    /// claim to verify, and demanding a mirror would turn "the plugin ignores
-    /// configuration it does not understand" into a failed handshake.
-    ///
-    /// The plugin-author-facing statement of all of the above — namespace
-    /// keys, the object wrapper, and what absent vs. present-and-empty each
-    /// mean — is `docs/architecture/plugin-handshake-meta.md`. Change the
-    /// shape here and that page is the other thing to change.
+    /// `initialize` request. `_meta` carries the auth echo and the config as `{"values": {…}}`; the
+    /// wrapper lets the kernel add sibling fields without colliding with a configuration key. Config is not echoed back.
     async fn initialize(self: &Arc<Self>, meta: InitializeMeta<'_>) -> Result<(), McpError> {
         let InitializeMeta {
             expected_echo,
@@ -490,8 +301,7 @@ impl McpClient {
             }
         }
 
-        // Bound the handshake — a healthy stub responds in < 50 ms; we give
-        // 10 s for slow CI / cold-start cases.
+        // 10 s bounds the handshake for slow CI / cold-start cases.
         let result =
             tokio::time::timeout(Duration::from_secs(10), self.call("initialize", params)).await;
 
@@ -514,8 +324,6 @@ impl McpClient {
                 "initialize result was not an object: {value}"
             )));
         }
-        // Validate `serverInfo` is *some* object if present — be lenient about
-        // missing optional fields; the specification lets implementations evolve.
         if let Some(server_info) = value.get("serverInfo")
             && !server_info.is_object()
         {
@@ -523,13 +331,7 @@ impl McpClient {
                 "initialize.serverInfo was not an object: {server_info}"
             )));
         }
-        // Issue #45: enforce that the plugin echoes the exact protocol version
-        // the kernel advertised. Pre-#45 the kernel sent `KERNEL_PROTOCOL_VERSION`
-        // but accepted any (or missing) `result.protocolVersion`; a plugin
-        // claiming an incompatible specification revision would silently negotiate
-        // against a kernel that doesn't actually speak its dialect. We now
-        // fail the handshake on mismatch — the existing initialize-failure
-        // path reaps the child and surfaces `HostError::InitializeRejected`.
+        // The plugin must echo the exact protocol version the kernel advertised.
         let plugin_protocol = value
             .get("protocolVersion")
             .and_then(|v| v.as_str())
@@ -540,10 +342,7 @@ impl McpClient {
                 plugin: plugin_protocol.to_string(),
             });
         }
-        // M1: when we issued an expected_echo, the plugin must mirror it back
-        // at `result._meta["dev.neige/auth"].echoed_token`. Use the marker
-        // string `auth mismatch` so PluginHost::spawn can recognize the path
-        // and translate to HostError::AuthMismatch.
+        // The `auth mismatch` marker string is what `PluginHost::spawn` recognizes to translate to `HostError::AuthMismatch`.
         if let Some(expected) = expected_echo {
             let echoed = value
                 .pointer("/_meta/dev.neige~1auth/echoed_token")
@@ -555,38 +354,24 @@ impl McpClient {
                 }
             }
         }
-        // M1: capture `result.capabilities` for later host-side gating of the
-        // `neige.*` router (`PluginHost::spawn` reads it via
-        // `server_capabilities()`). Missing/non-object → empty object, which
-        // surfaces as "no capability declared".
+        // Missing/non-object → empty object, which surfaces as "no capability declared".
         let caps = value
             .get("capabilities")
             .cloned()
             .filter(|v| v.is_object())
             .unwrap_or_else(|| Value::Object(Default::default()));
         *self.server_capabilities.lock().unwrap() = caps;
-        // After initialize, MCP specification wants a `notifications/initialized` from
-        // the client. Fire-and-forget.
+        // MCP wants a `notifications/initialized` from the client after initialize.
         self.notify("notifications/initialized", json!({})).await?;
         Ok(())
     }
 
-    /// `result.capabilities` from the most recent successful `initialize`
-    /// response. Empty object until the handshake completes. Slice C (now M1)
-    /// reads `experimental[KERNEL_CALLBACKS_CAPABILITY]` to decide whether to
-    /// install the `neige.*` dispatcher or a MethodNotFound drainer.
+    /// `result.capabilities` from the most recent successful `initialize`; empty object until then.
     pub fn server_capabilities(&self) -> Value {
         self.server_capabilities.lock().unwrap().clone()
     }
 
-    /// Convenience predicate: did the plugin opt into the `neige.*` namespace?
-    /// True iff
-    /// `result.capabilities.experimental["dev.neige/kernel-callbacks"].version`
-    /// equals `KERNEL_CALLBACKS_CAPABILITY_VERSION`. Any other value
-    /// (including a missing entry or a missing `version` field) is treated
-    /// as the capability being absent. When the capability is present but
-    /// at a non-matching version, a `warn!` log is emitted so the divergence
-    /// is visible during debugging. Issue #45.
+    /// Did the plugin opt into the `neige.*` namespace? Only an exact `version` match counts; anything else warns and is treated as absent.
     pub fn has_kernel_callbacks_capability(&self, plugin_id: &str) -> bool {
         let caps = self.server_capabilities.lock().unwrap();
         let entry = caps.pointer(&format!(
@@ -596,10 +381,6 @@ impl McpClient {
         match entry {
             None => false,
             Some(node) => {
-                // Per specification the value is an object with a `version` field. We
-                // accept only `u32` exact-match; anything else (missing field,
-                // wrong type, wrong number) → treat as absent and warn so
-                // operators can see the version skew.
                 let version = node.get("version").and_then(|v| v.as_u64());
                 match version {
                     Some(v) if v == u64::from(KERNEL_CALLBACKS_CAPABILITY_VERSION) => true,
@@ -618,21 +399,8 @@ impl McpClient {
         }
     }
 
-    /// MCP `tools/call` (M2): invoke a tool the plugin server registered via
-    /// `tools/list`. Returns the parsed `CallToolResult`. Errors surface as
-    /// either a `RpcError` (transport-level / specification-shaped) or — when the tool
-    /// itself signalled failure — `result.is_error == Some(true)` with
-    /// human-readable text in `result.content` for the caller to relay.
-    ///
-    /// We keep the result type loose: `_meta` is `serde_json::Value` so the
-    /// host route can pluck `_meta.ui.resourceUri` (the M2 use case) without
-    /// us pinning every reserved sub-key.
-    /// MCP `tools/call`. `track_id` — when the caller has one — rides in
-    /// `params._meta` under [`TRACK_META_KEY`] rather than in `arguments`:
-    /// the arguments belong to the tool's own `input_schema`, which is
-    /// authored by the plugin and frequently `additionalProperties: false`,
-    /// and a kernel-injected key there would either be rejected or collide
-    /// with a parameter of the same name.
+    /// MCP `tools/call`. `track_id` rides in `params._meta` under [`TRACK_META_KEY`] rather than in
+    /// `arguments`: the tool's `input_schema` is plugin-authored and often `additionalProperties: false`.
     pub async fn tools_call(
         &self,
         name: &str,
@@ -654,12 +422,7 @@ impl McpClient {
         })
     }
 
-    /// MCP `resources/read` (M3): fetch a resource by URI. Pattern-mirror of
-    /// `tools_call`. Returns the parsed `ResourceContents` (one or more entries
-    /// per the specification). Note that `ui://<plugin>/<view>` resources are served by
-    /// the *kernel*, not the plugin — this method is the plugin-facing
-    /// counterpart for plugin-owned resource URIs (e.g. `neige://...` reads).
-    /// The kernel-side `ui://` handler lives in `plugin_host::resources`.
+    /// MCP `resources/read`. `ui://<plugin>/<view>` resources are served by the kernel, not the plugin; this is the plugin-facing counterpart.
     pub async fn resources_read(&self, uri: &str) -> Result<ResourceContents, RpcError> {
         let params = json!({ "uri": uri });
         let raw = self.call("resources/read", params).await?;
@@ -670,11 +433,9 @@ impl McpClient {
         })
     }
 
-    /// Outbound call (kernel → plugin). Allocates an id, registers a oneshot,
-    /// sends the frame, awaits the matching response.
+    /// Outbound call (kernel → plugin).
     pub async fn call(&self, method: &str, params: Value) -> Result<Value, RpcError> {
-        // Cheap fast-path: if transport is already closed, surface that as an
-        // internal error instead of registering a doomed responder.
+        // Fast-path: a closed transport fails here instead of registering a doomed responder.
         if let Some(reason) = self.closed.lock().await.clone() {
             return Err(RpcError::internal(format!(
                 "mcp transport closed: {reason}"
@@ -684,12 +445,7 @@ impl McpClient {
         let id = RequestId::from_u64(self.next_id.fetch_add(1, Ordering::Relaxed));
         let (tx, rx) = oneshot::channel();
         self.responders.lock().unwrap().insert(id.clone(), tx);
-        // #1628 S2 (D2 step 5) — the slot leaves the map with THIS future,
-        // however the future ends: a reply (the reader already removed it, the
-        // second remove is a no-op), a dead writer, or the caller dropping us
-        // — `tokio::time::timeout` cancelling a hung `tools/call` is the case
-        // that used to leak one slot per timeout, unbounded across blocks and
-        // TTL cycles.
+        // The slot leaves the map with THIS future however it ends — including a `timeout` cancelling a hung call.
         let _slot = ResponderSlot {
             map: &self.responders,
             id: id.clone(),
@@ -706,9 +462,7 @@ impl McpClient {
         }
     }
 
-    /// Number of kernel → plugin requests still waiting for a reply. The
-    /// witness for the responder guard above: after a timed-out call this
-    /// must be back to what it was before the call.
+    /// Number of kernel → plugin requests still waiting for a reply.
     #[cfg(test)]
     pub(crate) fn pending_responders(&self) -> usize {
         self.responders
@@ -730,11 +484,7 @@ impl McpClient {
         Ok(())
     }
 
-    /// Take the inbound-request channel. Slice C calls this once at host
-    /// init and drains. Subsequent calls return `None`.
-    ///
-    /// Slice B's tests call this and drain with a no-op responder so the
-    /// channel doesn't backpressure on noisy plugins.
+    /// Take the inbound-request channel; subsequent calls return `None`.
     pub fn take_inbound_requests(&self) -> Option<mpsc::Receiver<InboundRequest>> {
         self.inbound_requests_rx.lock().unwrap().take()
     }
@@ -767,10 +517,6 @@ impl Drop for McpClient {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tasks
-// ---------------------------------------------------------------------------
-
 fn spawn_writer<W>(
     mut write: W,
     mut rx: mpsc::Receiver<OutboundFrame>,
@@ -786,16 +532,13 @@ where
                 *closed.lock().await = Some(reason);
                 return;
             }
-            // We append `\n` in the frame builder, so flush per-message is the
-            // simplest "send immediately" guarantee. For high throughput we'd
-            // batch; for plugin RPC, latency wins over throughput.
+            // Flush per message: for plugin RPC, latency wins over throughput.
             if let Err(e) = write.flush().await {
                 let reason = format!("flush failed: {e}");
                 *closed.lock().await = Some(reason);
                 return;
             }
         }
-        // mpsc closed — nothing left to write.
     })
 }
 
@@ -811,9 +554,7 @@ where
     R: AsyncRead + Send + Unpin + 'static,
 {
     tokio::spawn(async move {
-        // BufReader<R> implements AsyncBufReadExt directly when R: AsyncRead +
-        // Unpin. Trying to abstract via a trait object trips dyn-compatibility
-        // (read_line returns ReadLine<'_, Self>); keep it monomorphized.
+        // Kept monomorphized: a `dyn` reader trips dyn-compatibility (`read_line` returns `ReadLine<'_, Self>`).
         let mut reader = BufReader::new(read);
         let mut line = String::new();
         loop {
@@ -853,22 +594,15 @@ where
                         params,
                         responder: responder_tx,
                     };
-                    // If Slice C hasn't drained yet, we block here — that's the
-                    // intentional backpressure. The writer can still send
-                    // responses for in-flight kernel→plugin requests because
-                    // the writer task is a separate channel.
+                    // Blocking here is the intentional backpressure; the writer task is a separate channel so responses still flow.
                     if in_req_tx.send(req).await.is_err() {
-                        // Nobody is listening on the request channel (test
-                        // setup where the consumer was dropped). Synthesize a
-                        // MethodNotFound so the plugin doesn't hang.
+                        // No consumer on the request channel: synthesize a MethodNotFound so the plugin doesn't hang.
                         let frame =
                             build_error_response_frame(&id, &RpcError::method_not_found(&method));
                         let _ = out_tx.send(OutboundFrame(frame)).await;
                         continue;
                     }
-                    // Spawn a small joiner so a stuck handler can't block the
-                    // reader. The responder oneshot is a single value, so this
-                    // task lifetime equals "until Slice C answers or drops".
+                    // A separate joiner so a stuck handler can't block the reader.
                     let out_tx2 = out_tx.clone();
                     let id2 = id.clone();
                     let method2 = method.clone();
@@ -888,8 +622,7 @@ where
                 }
                 Ok(Frame::Notification { method, params }) => {
                     let notif = InboundNotification { method, params };
-                    // Bounded mpsc — drop if Slice C isn't draining. Notifs
-                    // are by specification lossy, so silent drop is correct semantics.
+                    // Notifications are by specification lossy, so a silent drop on a full buffer is correct.
                     if let Err(e) = in_notif_tx.try_send(notif) {
                         tracing::debug!(error = %e, "inbound notification dropped (buffer full or no consumer)");
                     }
@@ -911,13 +644,7 @@ fn flush_responders_with_error(responders: &ResponderMap, msg: &str) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Framing
-// ---------------------------------------------------------------------------
-
-/// Decoded JSON-RPC frame. `pub(crate)` so PR7a's `mcp_server` reuses the
-/// same parsing logic for the inverse direction (kernel-as-server reading
-/// from the shim's UDS connection).
+/// Decoded JSON-RPC frame.
 #[derive(Debug)]
 pub(crate) enum Frame {
     Response {
@@ -941,8 +668,7 @@ pub(crate) fn parse_frame(s: &str) -> Result<Frame, String> {
         .as_object()
         .ok_or_else(|| "frame is not an object".to_string())?;
 
-    // Per specification, `jsonrpc` MUST be "2.0". We accept missing for ergonomic stubs
-    // but warn — production plugins should send it.
+    // Missing `jsonrpc` is accepted for ergonomic stubs.
     let _jsonrpc = obj.get("jsonrpc");
 
     let id = obj.get("id").cloned();
@@ -950,7 +676,6 @@ pub(crate) fn parse_frame(s: &str) -> Result<Frame, String> {
 
     match (id, method) {
         (Some(id_v), Some(m)) => {
-            // Request: has id + method.
             let id = serde_json::from_value::<RequestId>(id_v.clone())
                 .map_err(|e| format!("invalid id: {e}"))?;
             let params = obj.get("params").cloned().unwrap_or(Value::Null);
@@ -961,7 +686,6 @@ pub(crate) fn parse_frame(s: &str) -> Result<Frame, String> {
             })
         }
         (Some(id_v), None) => {
-            // Response: has id, no method. Should have `result` xor `error`.
             let id = serde_json::from_value::<RequestId>(id_v.clone())
                 .map_err(|e| format!("invalid id: {e}"))?;
             if let Some(err_v) = obj.get("error") {
@@ -978,7 +702,6 @@ pub(crate) fn parse_frame(s: &str) -> Result<Frame, String> {
             }
         }
         (None, Some(m)) => {
-            // Notification: method, no id.
             let params = obj.get("params").cloned().unwrap_or(Value::Null);
             Ok(Frame::Notification { method: m, params })
         }
@@ -1030,10 +753,6 @@ pub(crate) fn build_error_response_frame(id: &RequestId, err: &RpcError) -> Vec<
     s.push('\n');
     s.into_bytes()
 }
-
-// ===========================================================================
-// Unit tests — framing only. End-to-end actor tests live in the smoke test.
-// ===========================================================================
 
 #[cfg(test)]
 mod tests {
@@ -1104,8 +823,6 @@ mod tests {
 
     #[tokio::test]
     async fn tools_call_parses_result_meta_ui() {
-        // M2: assert McpClient::tools_call serializes the right wire shape and
-        // parses _meta.ui.resourceUri + structuredContent into CallToolResult.
         let (kernel, plugin) = tokio::io::duplex(8 * 1024);
         let (k_r, k_w) = tokio::io::split(kernel);
         let (p_r, p_w) = tokio::io::split(plugin);
@@ -1140,8 +857,6 @@ mod tests {
                         }
                     })
                 } else if method == "tools/call" {
-                    // Assert the kernel sent the expected shape so we know
-                    // tools_call's serialization matches the specification.
                     let params = v.get("params").expect("params");
                     assert_eq!(params["name"], "make_status_card");
                     assert_eq!(params["arguments"]["x"], 1);
@@ -1195,10 +910,7 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_millis(200), plugin_task).await;
     }
 
-    /// #1628 S2 A5b — a peer that completes `initialize` and then never
-    /// answers anything. Two `tools/call`s cancelled by `timeout` must leave
-    /// the responder map exactly as empty as it was before them: the
-    /// `ResponderSlot` guard, not the peer, clears the slot.
+    /// Two `tools/call`s cancelled by `timeout` must leave the responder map as empty as before them.
     #[tokio::test]
     async fn timed_out_calls_leave_no_responder() {
         let (kernel, plugin) = tokio::io::duplex(8 * 1024);
@@ -1276,9 +988,6 @@ mod tests {
 
     #[tokio::test]
     async fn resources_read_parses_contents_with_meta_ui() {
-        // M3: assert McpClient::resources_read serializes the specification wire shape
-        // and parses contents[].{uri, mimeType, text, _meta} into
-        // ResourceContents.
         let (kernel, plugin) = tokio::io::duplex(8 * 1024);
         let (k_r, k_w) = tokio::io::split(kernel);
         let (p_r, p_w) = tokio::io::split(plugin);
@@ -1387,15 +1096,10 @@ mod tests {
 
     #[tokio::test]
     async fn client_round_trips_one_call() {
-        // Stub the plugin as another duplex half. We "echo": for any incoming
-        // request, reply with `{"got": method}`. We *never* send our own
-        // requests, so initialize's notifications/initialized notification
-        // is harmless on this end.
         let (kernel, plugin) = tokio::io::duplex(8 * 1024);
         let (k_r, k_w) = tokio::io::split(kernel);
         let (p_r, p_w) = tokio::io::split(plugin);
 
-        // Stub plugin task: parse lines, respond to anything with an id.
         let plugin_task = tokio::spawn(async move {
             let mut reader = BufReader::new(p_r);
             let mut writer = p_w;
@@ -1410,7 +1114,6 @@ mod tests {
                 if let Some(id) = v.get("id").cloned() {
                     let method = v.get("method").and_then(|m| m.as_str()).unwrap_or("");
                     let reply = if method == "initialize" {
-                        // Reply with a serverInfo so initialize succeeds.
                         json!({
                             "jsonrpc": "2.0",
                             "id": id,
@@ -1432,7 +1135,6 @@ mod tests {
                     writer.write_all(s.as_bytes()).await.unwrap();
                     writer.flush().await.unwrap();
                 }
-                // notifications: no response.
             }
         });
 
@@ -1452,11 +1154,7 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_millis(200), plugin_task).await;
     }
 
-    /// Issue #45 test helper: spawn a stub plugin that replies to `initialize`
-    /// with a caller-supplied `result` payload, then echoes any further
-    /// requests as `{"echo": method}`. Returns the duplex halves the kernel
-    /// side should hand to `McpClient::connect_with_auth`, plus the JoinHandle so tests
-    /// can drain it on shutdown.
+    /// Spawn a stub plugin that replies to `initialize` with `init_result`, then echoes further requests as `{"echo": method}`.
     fn spawn_init_stub(
         init_result: Value,
     ) -> (
@@ -1514,9 +1212,6 @@ mod tests {
 
     #[tokio::test]
     async fn initialize_accepts_matching_protocol_version() {
-        // Issue #45: when the plugin echoes the kernel's `KERNEL_PROTOCOL_VERSION`
-        // verbatim, handshake should succeed (this is the green-path baseline
-        // every existing stub fixture already meets).
         let (k_r, k_w, task) = spawn_init_stub(json!({
             "protocolVersion": KERNEL_PROTOCOL_VERSION,
             "serverInfo": { "name": "stub", "version": "0.0.0" },
@@ -1532,8 +1227,6 @@ mod tests {
         )
         .await
         .expect("connect");
-        // sanity: with empty capabilities, the kernel-callbacks predicate
-        // returns false (capability absent).
         assert!(!client.has_kernel_callbacks_capability("test.plugin"));
         drop(client);
         let _ = tokio::time::timeout(Duration::from_millis(200), task).await;
@@ -1541,8 +1234,6 @@ mod tests {
 
     #[tokio::test]
     async fn initialize_rejects_mismatched_protocol_version() {
-        // Issue #45: a plugin claiming a different `protocolVersion` must fail
-        // the handshake with the typed `ProtocolVersionMismatch` variant.
         let (k_r, k_w, task) = spawn_init_stub(json!({
             "protocolVersion": "2099-01-01",
             "serverInfo": { "name": "stub", "version": "0.0.0" },
@@ -1570,7 +1261,6 @@ mod tests {
 
     #[tokio::test]
     async fn capability_present_with_matching_version_is_true() {
-        // Issue #45: `version: KERNEL_CALLBACKS_CAPABILITY_VERSION` → present.
         let (k_r, k_w, task) = spawn_init_stub(json!({
             "protocolVersion": KERNEL_PROTOCOL_VERSION,
             "serverInfo": { "name": "stub", "version": "0.0.0" },
@@ -1597,10 +1287,6 @@ mod tests {
 
     #[tokio::test]
     async fn capability_present_with_wrong_version_is_false() {
-        // Issue #45: `version: 2` (or anything ≠ KERNEL_CALLBACKS_CAPABILITY_VERSION)
-        // → treated as absent. A warn-level log is emitted; we don't assert on
-        // the log output (no log-capture infra in this crate yet) but the
-        // boolean is the load-bearing contract for the host gating logic.
         let (k_r, k_w, task) = spawn_init_stub(json!({
             "protocolVersion": KERNEL_PROTOCOL_VERSION,
             "serverInfo": { "name": "stub", "version": "0.0.0" },
@@ -1627,7 +1313,6 @@ mod tests {
 
     #[tokio::test]
     async fn capability_present_without_version_field_is_false() {
-        // Issue #45: object present but `version` missing → absent.
         let (k_r, k_w, task) = spawn_init_stub(json!({
             "protocolVersion": KERNEL_PROTOCOL_VERSION,
             "serverInfo": { "name": "stub", "version": "0.0.0" },
@@ -1654,9 +1339,6 @@ mod tests {
 
     #[tokio::test]
     async fn capability_entirely_absent_is_false() {
-        // Issue #45: no `experimental` entry at all → absent (regression guard
-        // for the pre-#45 behavior that the no-capability gating tests already
-        // depend on; explicit here to keep all six cases co-located).
         let (k_r, k_w, task) = spawn_init_stub(json!({
             "protocolVersion": KERNEL_PROTOCOL_VERSION,
             "serverInfo": { "name": "stub", "version": "0.0.0" },

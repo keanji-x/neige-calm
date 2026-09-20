@@ -1,18 +1,5 @@
-//! #1209 PR-2 (design §3.3, test #17) — migration 0079 renames
-//! `tracks.workflow_id` -> `tracks.template_id` and `tracks.workflow_input` ->
-//! `tracks.template_input`.
-//!
-//! The rest of the slice only shows that the code works *after* the rename;
-//! nothing in it would notice if the rename had thrown the old rows' values
-//! away. A round-trip through `POST /api/tracks` writes a fresh row, so it
-//! passes just as happily against an `ADD COLUMN` + `DROP COLUMN` migration
-//! that silently blanks every track created before the upgrade. These fixtures
-//! are the only carrier for "the rename preserves values".
-//!
-//! Recipe borrowed from `track_plugin_scope_migration_tests`: build a migrator
-//! truncated to the version *before* the one under test, seed rows through the
-//! old schema (so the old column names here are correct and must NOT be
-//! renamed), then apply the migration under test and read the result back.
+//! Migration 0079 renames `tracks.workflow_id`/`workflow_input` -> `template_id`/`template_input`;
+//! these pin that the rename preserves values (an `ADD COLUMN` + `DROP COLUMN` would blank old rows).
 
 use std::borrow::Cow;
 
@@ -42,12 +29,8 @@ async fn columns_of_tracks(pool: &sqlx::SqlitePool) -> Vec<String> {
         .collect()
 }
 
-/// Seed a track at the 0078 schema with **non-NULL** values in both columns
-/// about to be renamed, apply 0079, and read the values back through the new
-/// names.
-///
-/// Non-NULL matters: with NULLs on both sides, an `ADD COLUMN` + `DROP COLUMN`
-/// implementation is indistinguishable from `RENAME COLUMN`.
+/// Non-NULL matters: with NULLs on both sides, `ADD COLUMN` + `DROP COLUMN`
+/// is indistinguishable from `RENAME COLUMN`.
 #[tokio::test]
 async fn migration_0079_preserves_the_renamed_column_values() {
     let pool = SqlitePoolOptions::new()
@@ -60,8 +43,7 @@ async fn migration_0079_preserves_the_renamed_column_values() {
         .await
         .expect("apply migrations through 0078");
 
-    // Pre-0079 schema: these column names are the correct ones here and are
-    // deliberately exempt from the rename sweep.
+    // Pre-0079 schema: these column names are correct here and exempt from the rename sweep.
     let columns = columns_of_tracks(&pool).await;
     assert!(
         columns.iter().any(|c| c == "workflow_id") && columns.iter().any(|c| c == "workflow_input"),
@@ -84,9 +66,8 @@ async fn migration_0079_preserves_the_renamed_column_values() {
     .await
     .expect("seed track with both legacy columns populated");
 
-    // `run` applies only what is missing, so this applies exactly 0079 on top
-    // of the 0078 state built above. A migrator holding *only* 0079 would be
-    // rejected by sqlx's applied-version check (`VersionMissing`).
+    // `run` applies only what is missing; a migrator holding *only* 0079 would be
+    // rejected by sqlx's applied-version check.
     migrator_through(79).run(&pool).await.expect("apply 0079");
 
     let row = sqlx::query("SELECT template_id, template_input FROM waves WHERE id='w-1'")
@@ -105,11 +86,8 @@ async fn migration_0079_preserves_the_renamed_column_values() {
     );
 }
 
-/// The other half of the same migration: the old names must be **gone**.
-///
-/// Kept as its own test rather than two more assertions in the one above so
-/// that "0079 renamed only one of the two columns" and "0079 lost the values"
-/// are distinguishable failures.
+/// Separate test so "renamed only one column" and "lost the values" are
+/// distinguishable failures.
 #[tokio::test]
 async fn migration_0079_removes_both_legacy_column_names() {
     let pool = SqlitePoolOptions::new()

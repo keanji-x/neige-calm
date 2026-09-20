@@ -55,8 +55,7 @@ export function useDeleteConfirm(
     pending,
     feedback,
     request: (id: string) => { feedback.clear(); setTarget(id); },
-    // INV-CONFIRM-001 — closing aborts the request and releases this target;
-    // no delete is allowed to outlive the dialog that owns its consequences.
+    // Closing aborts the request and releases this target; no delete may outlive the dialog that owns its consequences.
     cancel: () => { active.current?.abort(); active.current = null; setPending(false); setTarget(null); },
     confirm: () => {
       if (pending || target === null) return;

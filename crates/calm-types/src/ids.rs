@@ -1,27 +1,24 @@
 //! Typed opaque identifiers and event-producer identity.
-//!
-//! Identifier newtypes serialize transparently as strings. `ActorId` is a
-//! persisted event-log shape and must remain wire compatible.
+//! `ActorId` is a persisted event-log shape and must remain wire compatible.
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use utoipa::ToSchema;
 
 use crate::worker::WorkerSessionId;
 
-/// Area identifier. UUID-shaped (32 hex, no dashes) in practice, but the
-/// kernel treats the value as opaque; never parses it.
+/// Area identifier.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema, TS)]
 #[serde(transparent)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct AreaId(pub String);
 
-/// Track identifier. See [`AreaId`] for the opacity contract.
+/// Track identifier.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema, TS)]
 #[serde(transparent)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct TrackId(pub String);
 
-/// Card identifier. See [`AreaId`] for the opacity contract.
+/// Card identifier.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema, TS)]
 #[serde(transparent)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
@@ -116,11 +113,6 @@ mod tests {
 
     #[test]
     fn wire_shape_is_transparent_string() {
-        // The whole point of `#[serde(transparent)]` is that the wire shape
-        // stays a bare string — no `{"0": "..."}` wrapper from the tuple
-        // struct's default Serialize. The frontend's generated TS treats
-        // these as string aliases; a change here would break the wire
-        // contract silently.
         let id = CardId("abc123".to_string());
         assert_eq!(serde_json::to_string(&id).unwrap(), r#""abc123""#);
         let back: CardId = serde_json::from_str(r#""abc123""#).unwrap();
@@ -138,9 +130,6 @@ mod tests {
 
     #[test]
     fn actor_id_tagged_serialization() {
-        // `#[serde(tag = "kind", content = "id")]` is what later PRs will
-        // pin the audit-log shape against. Lock the encoding down here so a
-        // future serde attribute change can't silently break the wire.
         let a = ActorId::AiCodex(CardId::from("card-7"));
         let s = serde_json::to_string(&a).unwrap();
         assert_eq!(s, r#"{"kind":"AiCodex","id":"card-7"}"#);
@@ -169,10 +158,6 @@ mod tests {
         let back: ActorId = serde_json::from_str(&s).unwrap();
         assert_eq!(back, claude_session);
 
-        // Unit-variant round-trip: serde adjacently-tagged enums encode
-        // unit variants with just the `kind` discriminator (no `id`
-        // payload). Round-trip is the contract we care about — exact
-        // textual shape is locked in by the AiCodex case above.
         let u = ActorId::User;
         let back: ActorId = serde_json::from_str(&serde_json::to_string(&u).unwrap()).unwrap();
         assert_eq!(back, u);

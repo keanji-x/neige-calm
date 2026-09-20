@@ -1,14 +1,5 @@
-// The track page's series resolver (#1628 D5): one query per `chart.series`
-// block in the report, handed to `ReportDocument` as a lookup the way the
-// live-table overlay resolver is.
-//
-// `useQueries` and not one query per block component: `features/**` cannot
-// import `app/**`, so the block cannot own its query — and a lookup keyed by
-// `(blockId, rev)` is exactly the shape the design's refresh story wants. A
-// block whose payload changed arrives with a new `rev`, appears here under a
-// new key and fetches; an unchanged block keeps its key, its cache and its
-// timer. The document's own refetch (`['track', id]`) is what moves `rev`,
-// which is why `track.report_edited` never touches the series prefix.
+// The track page's series resolver: one query per `chart.series` block, keyed by
+// `(blockId, rev)` so a changed block refetches and an unchanged one keeps its cache.
 
 import { useQueries, type UseQueryResult } from '@tanstack/react-query';
 import { useCallback, useMemo } from 'react';
@@ -25,12 +16,7 @@ function seriesKey(blockId: string, rev: number): string {
   return `${blockId}@${rev}`;
 }
 
-/**
- * The query's state as the block reads it. Data wins while it exists — a
- * refetch in flight, or one that failed after a good read, keeps the last
- * row on screen rather than blanking the figure; only a query with nothing
- * yet distinguishes loading from failed.
- */
+/** Data wins while it exists: a refetch in flight or failed after a good read keeps the last row on screen. */
 export function seriesResolutionOf(result: Pick<UseQueryResult<SeriesRead>, 'data' | 'isError' | 'error'>): SeriesResolution {
   if (result.data !== undefined) return result.data;
   if (result.isError) {

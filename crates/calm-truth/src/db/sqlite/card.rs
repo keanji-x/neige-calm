@@ -30,39 +30,20 @@ pub async fn terminal_get_by_card_tx(
     Ok(row)
 }
 
-/// Card-row insert that lets the caller pre-mint the row id.
-///
-/// Carved out from `card_create_tx` so atomic-card endpoints (terminal,
-/// codex) can stamp the soon-to-exist card id into per-card sidecar paths
-/// (e.g. `codex_homes_dir.join(card_id)`) *before* the row hits the DB,
-/// without re-fetching the row after insert. The standalone
-/// [`card_create_tx`] wrapper preserves the original "mint inside the
-/// helper" contract for every other caller.
-///
-/// The track-report guard below covers every Rust API creation path. Direct SQL
-/// through [`SqlxRepo::pool`](super::SqlxRepo::pool) and frozen historical
-/// migration seeds do not pass through this Rust boundary and are outside its
-/// guarantee.
+/// Card-row insert that lets the caller pre-mint the row id, so atomic-card endpoints can stamp it into per-card
+/// sidecar paths before the row exists. Direct SQL and frozen migration seeds bypass the track-report guard below.
 pub async fn card_create_with_id_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: String,
     p: NewCard,
     role: CardRole,
-    // Issue #229 PR A — explicit, required: every call site must decide
-    // whether the card is user-deletable. Per `[[required-over-option]]`
-    // an `Option<bool>` with a serde default would silently hide the
-    // wrong default at any future callsite (kernel-owned cards minted
-    // as deletable would be a security regression). The three live
-    // callers cover the policy:
-    //   * `card_create_tx`              → `true`  (user-facing Worker cards)
-    //   * dispatcher worker terminals    → `true`  (workers are user-facing)
-    //   * `card_with_codex_create_tx`    → caller decides (`false` for planner)
+    // Explicit and required: every call site must decide whether the card is user-deletable; a hidden default
+    // minting kernel-owned cards as deletable would be a security regression.
     deletable: bool,
     card_role_cache: &CardRoleCache,
 ) -> Result<Card> {
-    // A track-report can only be born through Rust as a kernel-owned ReportCard
-    // with the canonical initial payload. All report content must arrive later
-    // through the report persist boundary, which writes payload and CRDT together.
+    // A track-report can only be born as a kernel-owned ReportCard with the canonical initial payload; all report
+    // content arrives later through the persist boundary, which writes payload and CRDT together.
     if p.kind == "track-report" {
         if role != CardRole::ReportCard {
             return Err(CalmError::BadRequest(
@@ -82,9 +63,7 @@ pub async fn card_create_with_id_tx(
             ));
         }
     }
-    // Keep the pre-0072 typed owner check: the removed deleting guard had
-    // temporarily subsumed it, but missing tracks must still return NotFound
-    // before sort allocation or either half of an atomic card create runs.
+    // Missing tracks must return NotFound before sort allocation or either half of an atomic card create runs.
     let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM tracks WHERE id = ?1")
         .bind(p.track_id.as_str())
         .fetch_optional(&mut **tx)
@@ -107,14 +86,7 @@ pub async fn card_create_with_id_tx(
     let now = now_ms();
     let payload_text = serde_json::to_string(&p.payload)?;
     let title = p.title.filter(|t| !t.trim().is_empty());
-    // `role` lands in the `cards.role` column added by migration 0008
-    // (PR3, #136). User-facing card creation now uniformly passes
-    // `CardRole::Worker`; track-create passes `CardRole::Planner`.
-    //
-    // `deletable` lands in the column added by migration 0013 (#229 PR A).
-    // SQLite has no native bool; we encode as `1` / `0`, matching the
-    // column's `INTEGER NOT NULL DEFAULT 1` shape. sqlx maps `bool ↔ i64`
-    // transparently via its `Encode<Sqlite>` impl, so the bind is direct.
+    // SQLite has no native bool; `deletable` is stored as `1` / `0` and sqlx maps `bool ↔ i64` directly.
     sqlx::query(
         r#"INSERT INTO cards
                (id, track_id, kind, sort, payload, title, role, deletable, created_at, updated_at)
@@ -132,14 +104,8 @@ pub async fn card_create_with_id_tx(
     .bind(now)
     .execute(&mut **tx)
     .await?;
-    // PR3 (#136) — write-through into the role cache. The cache update
-    // happens *inside* the surrounding `write_with_event` transaction
-    // so a follow-up emit in the same closure can see the freshly
-    // minted role via `enforce_role`'s lookup. A txn rollback leaves a
-    // stale entry; that's acceptable per the cache's documented
-    // semantics — `enforce_role` denies in the only direction that
-    // matters (unknown card) and the next boot's `seed_from_db` will
-    // overwrite stale entries from the persisted truth.
+    // Write-through into the role cache *inside* the surrounding transaction so a follow-up emit in the same closure
+    // sees the freshly minted role; a rollback leaves a stale entry the next boot's `seed_from_db` overwrites.
     let card_id: CardId = id.into();
     card_role_cache.insert(card_id.clone(), role, p.track_id.clone());
     Ok(Card {
@@ -161,10 +127,7 @@ pub async fn card_create_tx(
     p: NewCard,
     card_role_cache: &CardRoleCache,
 ) -> Result<Card> {
-    // User-facing Worker cards are user-deletable by default — the user
-    // added them via REST and can remove them the same way. Planner / report
-    // cards take the explicit `false` route via
-    // `card_with_codex_create_tx`.
+    // User-facing Worker cards are user-deletable; planner / report cards take the explicit `false` route.
     card_create_with_id_tx(tx, new_id(), p, CardRole::Worker, true, card_role_cache).await
 }
 
@@ -192,16 +155,9 @@ async fn card_update_inner_tx(
         c.sort = v;
     }
     if let Some(mut v) = p.payload {
-        // #1620 / #1704 — the server-owned keys are sticky: the payload
-        // column is replaced wholesale, so for each key of
-        // `SERVER_OWNED_TERMINAL_PAYLOAD_KEYS` whose stored value is the
-        // kernel-minted shape (`server_owned_value_is_sticky`: the marker
-        // `== true`, the permissions block an object) that value is
-        // re-inserted into the replacement, and no writer (REST PATCH, plugin
-        // update, kernel merge) can drop the hook routing or the permissions
-        // audit trail by omission. A non-object replacement cannot carry them
-        // and is refused. Cards without a sticky value never gain one here —
-        // only the creation path mints them.
+        // The server-owned keys are sticky: the payload column is replaced wholesale, so each kernel-minted value in
+        // `SERVER_OWNED_TERMINAL_PAYLOAD_KEYS` is re-inserted into the replacement and no writer can drop the hook routing
+        // or the permissions audit trail by omission. A non-object replacement is refused; only creation mints them.
         let stored: Vec<(&str, serde_json::Value)> = SERVER_OWNED_TERMINAL_PAYLOAD_KEYS
             .iter()
             .filter_map(|key| {
@@ -227,12 +183,7 @@ async fn card_update_inner_tx(
     if let Some(v) = p.title {
         c.title = Some(v).filter(|t| !t.trim().is_empty());
     }
-    // Issue #229 PR A — `p.deletable` is intentionally ignored here.
-    // The route handler in `routes/cards.rs::update_card` returns 400
-    // when a client sends the field; the field exists on `CardPatch`
-    // only to make that 400 explicit (rather than serde silently
-    // dropping an unknown field). The UPDATE statement below also
-    // doesn't touch the `deletable` column — defense in depth.
+    // `p.deletable` is intentionally ignored (the route returns 400 when a client sends it) and the UPDATE never touches the column.
     c.updated_at = now_ms();
     let payload_text = serde_json::to_string(&c.payload)?;
 
@@ -269,31 +220,15 @@ pub async fn card_update_tx(
     card_update_inner_tx(tx, existing, p).await
 }
 
-/// Issue #247 PR1 — track-report-specific transactional update that
-/// rewrites both the legacy `payload` JSON column AND the new opaque
-/// CRDT blob in `body_crdt` in one statement. Uses the private ungated
-/// update path because this function is the report persist boundary's
-/// JSON+CRDT seam. It runs the shared JSON/timestamps update, then a
-/// single UPDATE to stamp the blob. Both writes happen inside the
-/// supplied `tx` so a rollback drops them together — the JSON cache
-/// and the CRDT authoritative bytes never drift.
-///
-/// `body_crdt` is the `automerge::AutoCommit::save()` bytes from
-/// `track_report_doc::ReportDoc::to_bytes`; the kernel never
-/// interprets the column outside of the round-trip via that module.
-///
-/// This is a **track-report-only** seam. Terminal / codex /
-/// plugin cards continue going through `card_update_tx`, which never
-/// touches `body_crdt` — the column stays NULL on those rows forever.
+/// Track-report-only update that rewrites the `payload` JSON AND the opaque `body_crdt` blob in one transaction,
+/// so the JSON cache and the CRDT authoritative bytes never drift. `card_update_tx` never touches `body_crdt`.
 pub async fn card_update_with_crdt_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
     p: CardPatch,
     body_crdt: Vec<u8>,
 ) -> Result<Card> {
-    // Reuse the existing JSON+timestamps update path so the two
-    // codepaths can't drift on what `updated_at` / payload-text
-    // semantics look like.
+    // Reuse the JSON+timestamps update path so the two codepaths can't drift on `updated_at` / payload semantics.
     let existing = card_for_update_tx(tx, id).await?;
     if existing.kind != "track-report" {
         return Err(CalmError::BadRequest(
@@ -306,12 +241,7 @@ pub async fn card_update_with_crdt_tx(
         ));
     }
     let card = card_update_inner_tx(tx, existing, p).await?;
-    // Second statement: stamp the opaque CRDT bytes onto the row.
-    // Split into its own UPDATE (rather than extending the one above)
-    // so plain `card_update_tx` callers never sqlx-bind a `Vec<u8>`
-    // they don't care about. The combined cost is one extra UPDATE
-    // per track-report write, which is dominated by the surrounding
-    // event-emit work.
+    // A separate UPDATE so plain `card_update_tx` callers never bind a `Vec<u8>` they don't care about.
     sqlx::query(r#"UPDATE cards SET body_crdt = ?1 WHERE id = ?2"#)
         .bind(&body_crdt)
         .bind(card.id.as_str())
@@ -320,23 +250,8 @@ pub async fn card_update_with_crdt_tx(
     Ok(card)
 }
 
-/// Issue #247 PR1 — read the opaque CRDT blob for a card inside an
-/// open transaction. Returns `None` in either of two cases:
-///
-///   * the card row doesn't exist (fetched via `fetch_optional` —
-///     no `NotFound` is raised, the absent row collapses into the
-///     same "no blob to load" signal as a NULL column), or
-///   * the row exists but `body_crdt` IS NULL (every pre-PR1 row,
-///     plus non-track-report cards which never get initialized).
-///
-/// Returns `Some(bytes)` for any row whose first post-PR1 write has
-/// run through `card_update_with_crdt_tx`.
-///
-/// Read inside the same tx as the update so a concurrent writer
-/// can't slip a blob in between this read and our `to_bytes` write
-/// (the track-report write path is the only writer of the column
-/// today, but pinning the read to the tx is cheap and matches the
-/// pattern the rest of `*_tx` uses).
+/// Read the opaque CRDT blob for a card inside an open transaction. `None` when the row is absent or `body_crdt`
+/// IS NULL (pre-CRDT rows and non-track-report cards); read in the same tx so a concurrent writer can't slip in between.
 pub async fn card_body_crdt_get_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
@@ -578,16 +493,10 @@ pub async fn card_delete_tx(
     if res.rows_affected() == 0 {
         return Err(CalmError::NotFound(format!("card {id}")));
     }
-    // Not reached when a track/area delete cascades cards via FK — those
-    // paths sweep card overlays in their own txn via
-    // overlay_delete_card_overlays_by_track_tx / overlay_delete_subtree_by_area_tx.
+    // Not reached when a track/area delete cascades cards via FK — those paths sweep card overlays in their own txn.
     overlay_delete_by_entity_tx(tx, "card", id).await?;
-    // PR3 (#136) — keep the role cache in lockstep with the table.
-    // Like the insert-side write-through, this happens before commit;
-    // a txn rollback would leave the cache temporarily missing an
-    // entry. The consequence is at worst an `enforce_role` deny on a
-    // re-emit that would have been allowed (the card still exists),
-    // which is the *safe* failure mode for an auth gate.
+    // Keep the role cache in lockstep with the table; a rollback leaves the cache missing an entry, which at worst
+    // causes an `enforce_role` deny — the safe failure mode.
     card_role_cache.remove(&CardId::from(id));
     Ok(())
 }
@@ -603,44 +512,14 @@ pub async fn terminal_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> R
     Ok(())
 }
 
-/// Transactional terminal-row insert. Structural twin of the `terminal_create`
-/// method on `SqlxRepo` — same parent-card-exists and per-card uniqueness
-/// pre-checks, same `NotFound` / `Conflict` mapping — but composable inside
-/// `Repo::write_with_event` closures alongside the card write.
-///
-/// Invoked from the three `card_with_*_create_tx` composites and, directly,
-/// from `claude_restart_adapter` — which is why the freeze below lives here and
-/// not on the composites.
-///
-/// The standalone `RepoOutOfDomain::terminal_create` still talks to the pool.
-/// It has **no production caller** (the `POST /api/cards/:id/terminal` write
-/// route it was built for is gone; `routes/terminal.rs` is read-only now), only
-/// test fixtures, so it is not a second write entry in production — but a
-/// fixture that reaches it does bypass the freeze. Fixtures needing a terminal
-/// row that behaves like production must go through a `card_with_*_create_tx`.
-///
-/// # #1147 S6 — this is freeze point 2 ("terminal persistence")
-///
-/// A `terminals` row stores a `cwd` string. Nothing re-anchors it: the spawn
-/// paths read the row, not the track, so once this row exists the track's
-/// workspace can no longer move without leaving a terminal pointed at a
-/// directory that has been renamed into `.trash/`. Design §更换与冻结 therefore
-/// lists terminal persistence as a freeze point, and requires the freeze to sit
-/// at the real low-level write entry rather than depend on an enumeration of
-/// call sites — S2 hung a guard on four composites and still missed
-/// `claude_restart_adapter`, which reaches this function directly.
-///
-/// It is deliberately unconditional in the *card kind*: codex, claude and
-/// terminal cards all persist a `cwd` here, and all three are the durable
-/// consumer the design names. The one exception — the system area's launchpad
-/// track, which the kernel re-points on every `ensure` — lives inside
-/// [`track_workspace_freeze_tx`] as a SQL clause, so it cannot be forgotten here.
+/// Transactional terminal-row insert, composable inside `write_with_event` closures alongside the card write.
+/// This is the workspace freeze point: a `terminals` row stores a `cwd` that nothing re-anchors, so the freeze sits at
+/// this low-level write entry rather than on the composites. `RepoOutOfDomain::terminal_create` bypasses it (test fixtures only).
 pub async fn terminal_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
     p: NewTerminal,
 ) -> Result<Terminal> {
-    // Parent card must exist; surface as NotFound to mirror MockRepo.
-    // `track_id` comes back on the same read because the freeze below needs it.
+    // Parent card must exist; `track_id` comes back on the same read because the freeze below needs it.
     let owner: Option<(String,)> = sqlx::query_as("SELECT track_id FROM cards WHERE id = ?1")
         .bind(p.card_id.as_str())
         .fetch_optional(&mut **tx)
@@ -648,8 +527,7 @@ pub async fn terminal_create_tx(
     let Some((track_id,)) = owner else {
         return Err(CalmError::NotFound(format!("card {}", p.card_id)));
     };
-    // Per-card uniqueness — surface as Conflict to mirror MockRepo
-    // (the schema also enforces this via UNIQUE on terminals.card_id).
+    // Per-card uniqueness, surfaced as Conflict (the schema also enforces it via UNIQUE on terminals.card_id).
     let dup: Option<(String,)> = sqlx::query_as("SELECT id FROM terminals WHERE card_id = ?1")
         .bind(p.card_id.as_str())
         .fetch_optional(&mut **tx)
@@ -664,10 +542,7 @@ pub async fn terminal_create_tx(
     let now = now_ms();
     let id = new_id();
     let env_text = serde_json::to_string(&p.env)?;
-    // #177 — theme is a write-once row invariant. Render the
-    // `(r, g, b)` tuples to comma-decimal once at row creation so
-    // every spawn path that reads this row can use the theme with zero
-    // allocation.
+    // Theme is a write-once row invariant: rendered to comma-decimal once so every spawn path can use it with zero allocation.
     let theme_fg = p.theme.fg_arg();
     let theme_bg = p.theme.bg_arg();
     sqlx::query(
@@ -685,50 +560,9 @@ pub async fn terminal_create_tx(
     .bind(now)
     .execute(&mut **tx)
     .await?;
-    // #1147 S6 — freeze point 2, closing gap N17. After this statement the row
-    // above is a durable, un-re-anchorable copy of a directory, so the track's
-    // workspace must stop being movable in the SAME transaction: a freeze that
-    // could commit separately from the row it protects is not a freeze.
-    //
-    // # The deadlock N17 recorded, re-measured
-    //
-    // N17 said the `UPDATE tracks` here never returns. It does return — measured
-    // with printf probes on
-    // `claude_card_endpoint::post_claude_restart_recreates_missing_terminal_row_and_resumes_session`,
-    // which logged `UPDATE ok` twice and then hung. The hang is one step later,
-    // and it is the mirror image of what N17 described: this transaction now
-    // holds the shared-cache WRITE lock on `tracks`, and
-    // `ClaudeRestartAdapter::prepare_tx` went on to read `tracks` through
-    // `card_scope`, which uses the *pool* — a second connection — while this
-    // transaction is still open. The task then waits on itself forever in
-    // `sqlx_sqlite::statement::unlock_notify::wait`.
-    //
-    // So the rule for anyone adding a caller is not "do not freeze here", and
-    // it is not about `tracks` either. The general rule, of which this is one
-    // instance:
-    //
-    //   **A transaction must not read, off the pool, any table it has itself
-    //   written, before it commits.** The pool is a second connection; under
-    //   shared cache it blocks on a lock only the caller can release.
-    //
-    // `tracks` is simply the table S6 added to this transaction's write set;
-    // `cards`, `terminals` and the event tables were already in it, and a pool
-    // read of any of them from inside these flows would hang the same way. What
-    // S6 changed is which reads are now unsafe, not what the rule is.
-    //
-    // **This rule has no mechanical enforcement.** Nothing scans for it. The
-    // whole of its coverage is one wall clock on one flow
-    // (`claude_card_endpoint::post_claude_restart_does_not_deadlock_on_the_workspace_freeze`),
-    // which turns a wedged CI job into a legible red test for THAT flow only. A
-    // new adapter that creates a terminal row and then reads `tracks` (or
-    // `cards`) through `self.repo` will still hang CI with no diagnosis. The
-    // tree was swept once, at S6: every other adapter (codex, claude,
-    // claude-worker, terminal, terminal-worker) resolves its scope BEFORE
-    // creating the card, which is equally correct. That sweep is a measurement
-    // of one moment, not a guarantee.
-    //
-    // The in-transaction readers exist for this: `card_scope_tx`
-    // (`calm-server/src/routes/cards.rs`), `track_workspace_read_tx`.
+    // The track's workspace must stop being movable in the SAME transaction as the row it protects.
+    // Deadlock hazard: a transaction must not read, off the pool, any table it has itself written before it commits —
+    // under shared cache the pool connection blocks on a lock only the caller can release. Use the `*_tx` readers instead.
     super::track_workspace::track_workspace_freeze_tx(tx, &track_id, now).await?;
     Ok(Terminal {
         id,

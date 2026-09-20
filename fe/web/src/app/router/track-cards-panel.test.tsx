@@ -1,9 +1,5 @@
 // @vitest-environment jsdom
-//
-// `INV-CARD-226` at the only place it is user-visible: the track route's CARDS
-// panel. The partition helper has its own unit tests, but a helper nobody calls
-// is a no-op — these drive the real route, the real registry and the real
-// built-ins, so unwiring `cards={panelCards}` back to `cards={cards}` is red.
+// The track route's CARDS panel, driven through the real route, registry and built-ins.
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider } from '@tanstack/react-router';
@@ -33,12 +29,7 @@ function card(overrides: Partial<CardWire> & Pick<CardWire, 'id' | 'kind'>): Car
   };
 }
 
-/*
- * Wire order is the assertion: the panel must present exactly the surviving
- * cards, in the order the kernel sent them, with the two headless kinds gone.
- * The headless pair is interleaved on purpose — dropping them must not shuffle
- * what is left.
- */
+/* The headless pair is interleaved on purpose: dropping them must not shuffle what is left. */
 const PLANNER_CARD = card({ id: 'card-planner', kind: 'codex', title: 'Planner chat', payload: { planner_harness: true }, sort: 1 });
 const UNKNOWN_TERMINAL = card({ id: 'card-term', kind: 'terminal', title: 'Terminal one', sort: 2 });
 const REPORT_CARD = card({ id: 'card-report', kind: 'track-report', title: 'Report card', sort: 3, payload: { body: '' } });
@@ -54,36 +45,14 @@ const FILE_LINK_REPORT_CARD = card({
 });
 const VISIBLE_CARD = card({ id: 'card-surface', kind: 'panel-surface', title: 'Surface', sort: 4 });
 const ORDINARY_CODEX = card({ id: 'card-codex', kind: 'codex', title: 'Codex chat', sort: 5, payload: {} });
-/*
- * The subject of the "unclaimed cards stay listed" assertion below. Every other
- * fixture here now resolves — terminal, codex, planner, track-report and the
- * surface stub — so without this the assertion has nothing to be about.
- *
- * The kind is deliberately not a member of `BUILTIN_CARD_ORDER`: naming it e.g.
- * `file-viewer` would make the test quietly stop testing the unknown branch the
- * day that entry lands, with no signal.
- */
+/* The kind is deliberately not a member of `BUILTIN_CARD_ORDER`: naming a real kind
+ * would make the test quietly stop testing the unknown branch the day that entry lands. */
 const UNCLAIMED_CARD = card({ id: 'card-unclaimed', kind: 'panel-unclaimed', title: 'Unclaimed thing', sort: 6 });
 const CARDS = [PLANNER_CARD, UNKNOWN_TERMINAL, REPORT_CARD, VISIBLE_CARD, ORDINARY_CODEX, UNCLAIMED_CARD];
 
-/*
- * Terminal now owns a surface; this extra fixture still covers the unknown
- * adapter-miss branch so the panel test can tell "kept every non-headless
- * card" apart from "kept only the cards no adapter claimed". This fixture
- * is the *only* stub here: everything else — registry, built-ins, route,
- * panel — is production code.
- *
- * The type is deliberately **not** a member of `BUILTIN_CARD_ORDER`. Registry
- * registration is keyed by type and overwrites, and this runs after
- * `bootTestCardRuntime()`, so naming it e.g. `file-viewer` would silently
- * shadow that entry the day S3c/the viewer epic lands it — the test would keep
- * exercising the stub with no signal at all. `headless-filter.test.ts` keeps
- * `surface-fixture` out of the tuple for the same reason.
- *
- * What makes it "a card with a surface" here is that it resolves and does not
- * declare `headless`. The panel row prints the title and then the kind;
- * the fixture's JSX is for the grid cell once a row is opened.
- */
+/* The only stub here. Registry registration is keyed by type and overwrites, and
+ * this runs after `bootTestCardRuntime()`, so the type must not be a member of
+ * `BUILTIN_CARD_ORDER` or it would silently shadow that entry. */
 type SurfaceFixtureCard = Readonly<{ type: 'panel-surface-fixture'; id: string }>;
 const SURFACE_FIXTURE_ENTRY: CardEntry<SurfaceFixtureCard> = {
   type: 'panel-surface-fixture',
@@ -95,24 +64,9 @@ const SURFACE_FIXTURE_ENTRY: CardEntry<SurfaceFixtureCard> = {
   fromKernel: (raw) => (raw.kind === 'panel-surface' ? { type: 'panel-surface-fixture', id: raw.id } : null),
 };
 
-/*
- * ── The TASKS panel's runtime half (#1149) ────────────────────────────────
- *
- * Three dispatched tasks, split by what the *registry* can draw — never by the
- * worker kind, which is the whole point of driving them through the real route:
- * nothing here declares which is which.
- *
- *   * `has-adapter` — a terminal worker on a `terminal` card: drawable.
- *   * `codex-adapter` — a codex worker on a `codex` card: drawable too, since
- *     #1162 landed `CODEX_CARD_ENTRY`. It used to be the negative case, and the
- *     route needed no edit for it to flip — the id simply started resolving,
- *     which is the claim the router's comment makes and this row now pins.
- *   * `no-adapter` — a worker card whose *card kind* no entry claims. That is
- *     the state that survives every adapter landing: a kernel newer than this
- *     bundle stamps a worker card of a kind the registry has never heard of, so
- *     `?card=` would bounce straight back off the URL. Deliberately not a member
- *     of `BUILTIN_CARD_ORDER`, for the reason `UNCLAIMED_CARD` spells out.
- */
+/* Three dispatched tasks, split by what the registry can draw: `has-adapter` and
+ * `codex-adapter` are drawable; `no-adapter` is a worker card whose kind no entry
+ * claims, deliberately not a member of `BUILTIN_CARD_ORDER`. */
 const TASK_REPORT_CARD = card({
   id: 'card-report', kind: 'track-report', title: 'Report card', sort: 3, deletable: false,
   payload: {
@@ -130,8 +84,7 @@ const TASK_DIAGNOSTICS = [
   { blockId: 'b-codex', key: 'codex-adapter', schedulable: true, status: 'running', workerCardId: ORDINARY_CODEX.id, diagnostics: [] },
   { blockId: 'b-unknown', key: 'no-adapter', schedulable: true, status: 'running', workerCardId: UNCLAIMED_CARD.id, diagnostics: [] },
 ];
-/** The kernel's `kernel/track/activity` row for `w1` with per-card verdicts
- *  (#1722 §4.1) — the shape `track-conversation.test.tsx` seeds. */
+/** The kernel's `kernel/track/activity` row for `w1` with per-card verdicts. */
 const activityOverlay = (cards: readonly { card_id: string; state: 'working' | 'input' | 'failed' }[]) => ({
   id: 'activity-w1', plugin_id: 'kernel', entity_kind: 'track', entity_id: TRACK.id, kind: 'activity',
   payload: { schemaVersion: 1, working: cards.length > 0, attention: 'none', activity_at_ms: null, items: [], cards },
@@ -142,11 +95,9 @@ function setup(
   cards: readonly CardWire[] = CARDS,
   {
     withVisibleFixture = true,
-    /* A thunk is allowed so a test can change the kernel's answer between
-       reads — which is the only way to observe a refetch at all. */
+    /* A thunk, so a test can change the kernel's answer between reads. */
     taskDiagnostics = [] as readonly unknown[] | (() => readonly unknown[]),
-    /* The track detail's overlay rows — the `kernel/track/activity` row is
-       what every indicator on the page reads (INV-APP-118). */
+    /* The track detail's overlay rows; the `kernel/track/activity` row is what every indicator reads. */
     overlays = [] as readonly unknown[],
   } = {},
 ) {
@@ -193,8 +144,7 @@ function setup(
 }
 
 async function inventoryLabels(): Promise<string[]> {
-  // `[data-nc-card-inventory]` is the CARDS module's own list, not any of the
-  // page's other lists — the panel is what the user reads.
+  // `[data-nc-card-inventory]` is the CARDS module's own list, not the page's other lists.
   const list = await waitFor(() => {
     const found = document.querySelector('[data-nc-card-inventory]');
     if (found === null) throw new Error('card inventory has not rendered');
@@ -207,9 +157,8 @@ beforeEach(() => {
   window.history.pushState({}, '', `${APP_BASEPATH}/track/w1`);
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 1; });
   vi.stubGlobal('cancelAnimationFrame', vi.fn());
-  // jsdom has no layout, so `Element.prototype.scrollIntoView` does not exist —
-  // and `revealReportAnchor` calls it on the reveal path a task row without a
-  // worker card takes. Without this the reveal throws out of the click handler.
+  // jsdom has no layout, so `Element.prototype.scrollIntoView` does not exist, and
+  // `revealReportAnchor` calls it.
   Element.prototype.scrollIntoView = vi.fn();
 });
 
@@ -222,21 +171,16 @@ describe('track route CARDS panel', () => {
   it('[INV-CARD-226] drops the resolved headless cards from the rendered panel', async () => {
     setup();
     const labels = await inventoryLabels();
-    // The two headless kinds are gone from the product surface, not merely
-    // absent from a helper's return value.
     expect(labels.some((label) => label.includes('Planner chat'))).toBe(false);
     expect(labels.some((label) => label.includes('Report card'))).toBe(false);
-    // The planner card is still on the page as a *conversation* — it is the CARDS
-    // module it must be absent from, so the assertion stays scoped to it.
+    // The planner card is still on the page as a conversation; it is the CARDS module it must be absent from.
     expect(screen.queryByRole('button', { name: /Conversation Planner chat/ })).toBeTruthy();
   });
 
   it('[INV-CARD-226] keeps unclaimed cards, because an unlisted card is worse than an unrecognised one', async () => {
     setup();
     const labels = await inventoryLabels();
-    // `panel-unclaimed` is the subject: no registered entry claims that kind,
-    // so it resolves to nothing and must still be listed. Terminal and codex
-    // both own surfaces now, so they are listed as real cards instead.
+    // `panel-unclaimed` resolves to nothing and must still be listed.
     expect(labels.some((label) => label.includes('Unclaimed thing'))).toBe(true);
     expect(labels.some((label) => label.includes('Codex chat'))).toBe(true);
     expect(labels.some((label) => label.includes('Terminal one'))).toBe(true);
@@ -244,10 +188,6 @@ describe('track route CARDS panel', () => {
 
   it('[INV-CARD-226] renders exactly the surviving cards in the kernel wire order', async () => {
     setup();
-    // Every fixture here has a title, so every row prints its name and, in the
-    // quiet rank, its kind (#1149 — see the titled/untitled case below). The
-    // set and the order are the kernel's wire order with the headless pair
-    // dropped; `panel-unclaimed` resolves to nothing and is listed all the same.
     expect(await inventoryLabels()).toEqual([
       'Terminal oneterminal', 'Surfacepanel-surface', 'Codex chatcodex', 'Unclaimed thingpanel-unclaimed',
     ]);
@@ -375,14 +315,6 @@ describe('track route CARDS panel', () => {
     expect(await screen.findByText('No cards yet.')).toBeTruthy();
   });
 
-  /*
-   * #1149 titles every worker card after its task key, and the row used to
-   * print `title ?? kind` — so `codex`, `claude` and `terminal` would have
-   * disappeared from the panel on exactly the cards whose kind matters most
-   * (three workers named after three slices are otherwise indistinguishable).
-   * Every fixture here carries a title, which is what worker cards now look
-   * like, so the panel's own text is the assertion.
-   */
   it('shows a titled card by its name AND its kind, and an untitled one by its kind alone', async () => {
     setup([...CARDS, card({ id: 'card-bare', kind: 'terminal', sort: 6 })]);
     const labels = await inventoryLabels();
@@ -399,8 +331,7 @@ describe('track route TASKS panel', () => {
     for (const summary of inventory.querySelectorAll<HTMLElement>('details:not([open]) > summary')) fireEvent.click(summary);
     return within(inventory).findByRole('button', { name });
   };
-  /** Scoped to the TASKS module: `terminal` and `codex` are also the words the
-   *  CARDS module prints in its own quiet rank one module above. */
+  /** Scoped to the TASKS module: `terminal` and `codex` are also words the CARDS module prints. */
   async function tasks(): Promise<HTMLElement> {
     return waitFor(() => {
       const found = document.querySelector('[data-nc-task-inventory]');
@@ -409,16 +340,7 @@ describe('track route TASKS panel', () => {
     });
   }
 
-  /*
-   * The click-through only exists where the board can actually land. Asked of
-   * the REGISTRY, through the very list the grid draws — never of a hardcoded
-   * set of worker kinds, which is how this went wrong: a kind whose card the
-   * registry cannot draw would have bounced `?card=` straight back off the URL
-   * and a click would have gone nowhere at all.
-   *
-   * CHANGED SHAPE (#1149) — the control is the row's *kind*, not the row. The
-   * row itself always reveals the block now, which is the test below.
-   */
+  /* The control is the row's kind, not the row; the row itself always reveals the block. */
   it('opens the worker card from the kind of a task the registry can draw', async () => {
     setup(TASK_CARDS, { taskDiagnostics: TASK_DIAGNOSTICS });
     await userEvent.click(within(await tasks()).getByRole('button', { name: 'terminal' }));
@@ -426,11 +348,6 @@ describe('track route TASKS panel', () => {
     expect(document.querySelector('[data-nc-card-cell][data-nc-card-id="card-term"]')).toBeTruthy();
   });
 
-  /*
-   * `codex` was the negative case here until #1162 registered `CODEX_CARD_ENTRY`;
-   * the route was never told about it, and this row is the evidence that the
-   * affordance followed the registry on its own.
-   */
   it('offers the codex card too, now that an entry claims that kind', async () => {
     setup(TASK_CARDS, { taskDiagnostics: TASK_DIAGNOSTICS });
     await userEvent.click(within(await tasks()).getByRole('button', { name: 'codex' }));
@@ -441,27 +358,17 @@ describe('track route TASKS panel', () => {
   it('never routes at a card no adapter claimed: that kind is not a control at all', async () => {
     setup(TASK_CARDS, { taskDiagnostics: TASK_DIAGNOSTICS });
     const list = within(await tasks());
-    // `no-adapter` is dispatched onto `card-unclaimed`, whose kind no entry
-    // claims — the state that outlives every adapter landing, unlike the codex
-    // row above. The word is on the row; what it is not is something to click.
+    // `no-adapter` is dispatched onto `card-unclaimed`, whose kind no entry claims:
+    // the word is on the row, but it is not something to click.
     expect(list.getByText('claude')).toBeTruthy();
     expect(list.queryByRole('button', { name: 'claude' })).toBeNull();
     await userEvent.click(await taskRow(/^no-adapter/));
-    // The grid stays closed and the board never mounts at all — the same two
-    // facts "does not mount the board until a card is opened" pins above.
     expect(document.querySelector('[data-nc-card-grid]')?.getAttribute('aria-hidden')).toBe('true');
     expect(document.querySelector('[data-nc-card-board]')).toBeNull();
     expect(window.location.search).not.toContain('card=card-unclaimed');
-    // It landed on the block instead, exactly where an undispatched row lands.
     expect(window.location.hash).toContain('b-unknown');
   });
 
-  /*
-   * The landing an assigned row used to LOSE. While the row was the card
-   * control, a dispatched task's declaration was unreachable from the panel;
-   * `has-adapter` is dispatched onto a card the registry can draw, so it is
-   * precisely the row that used to route away, and it must now reveal.
-   */
   it('reveals the block from the row even when the task has an openable card', async () => {
     setup(TASK_CARDS, { taskDiagnostics: TASK_DIAGNOSTICS });
     await waitFor(() => expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-term"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('running'));
@@ -472,29 +379,15 @@ describe('track route TASKS panel', () => {
     expect(window.location.hash).toContain('b-term');
   });
 
-  /* And the run lands on both rows regardless — the registry decides where a
-     kind can go, not whether the kernel's verdict is reported. */
+  /* The registry decides where a kind can go, not whether the kernel's verdict is reported. */
   it('reports the run on both rows, whichever card the work landed on', async () => {
     setup(TASK_CARDS, { taskDiagnostics: TASK_DIAGNOSTICS });
     await waitFor(() => expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-term"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('running'));
     await waitFor(() => expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-unknown"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('running'));
   });
 
-  /*
-   * #1722 S2b r5 (Codex P2) — identity and openability are two facts, and this
-   * is the one place they meet: `no-adapter` is dispatched onto `card-unclaimed`,
-   * a card no entry claims. The route used to null the task's `workerCardId`
-   * so the kind would not become a control — and that erased the id the TASKS
-   * row keys its activity verdict by (INV-APP-118): the kernel said the card
-   * was working, the CARDS row showed it (INV-CARD-226 keeps the card listed),
-   * the TASKS row showed nothing. Now the id stays and only the control is
-   * gated, on the same openable set `TaskRecovery` reads.
-   *
-   * The r5 mutation (the route nulls the id again, or the derivation looks
-   * the verdict up through the openable subset — manifest
-   * `s2b-task-row-loses-worker-identity`): this case goes red at the first
-   * `waitFor`; the twin below stays green.
-   */
+  /* Identity and openability are two facts: the task keeps its `workerCardId` (the
+   * TASKS row keys its activity verdict by it) and only the control is gated. */
   it('shows the kernel verdict on a task whose worker no adapter claims, and still offers no control', async () => {
     setup(TASK_CARDS, {
       taskDiagnostics: TASK_DIAGNOSTICS,
@@ -503,11 +396,10 @@ describe('track route TASKS panel', () => {
     const list = within(await tasks());
     await waitFor(() => expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-unknown"] [data-nc-activity]')
       ?.getAttribute('data-nc-activity')).toBe('working'));
-    // The kind is still a word, not a control: no button, no destination hint.
     expect(list.getByText('claude')).toBeTruthy();
     expect(list.queryByRole('button', { name: 'claude' })).toBeNull();
     expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-unknown"] [title^="Open the worker card"]')).toBeNull();
-    // The CARDS row for the same card reads the same verdict — the two modules agree.
+    // The CARDS row for the same card reads the same verdict.
     expect(document.querySelector('[data-nc-card-inventory] [data-nc-row="card-unclaimed"] [data-nc-activity]')
       ?.getAttribute('data-nc-activity')).toBe('working');
   });
@@ -575,21 +467,9 @@ describe('track route TASKS panel', () => {
   });
 });
 
-/*
- * ── Convergence without an event (#1149) ──────────────────────────────────
- *
- * The kernel stamps `worker_card_id` in `scheduler::mark_running`, which emits
- * **nothing** — `task.dispatched` fired before the spawn, when the column was
- * still NULL, and every `runtime.*` a worker adapter emits is emitted during
- * the spawn, also before it. So between spawn and completion the frontend gets
- * no report-invalidating event at all for a terminal worker, and only
- * `codex.hook` / `claude.hook` for the agent ones — which deliberately do not
- * invalidate this key. Without a timer the click-through is dead for exactly
- * the window it exists for.
- *
- * These tests drive the real route and the real query options; the transport
- * changes its answer between reads, and nothing dispatches an event.
- */
+/* The kernel stamps `worker_card_id` in `scheduler::mark_running`, which emits
+ * nothing, so between spawn and completion no event invalidates this key: only
+ * a timer makes the click-through appear. */
 describe('track route TASKS panel convergence', () => {
   const dispatched = [{
     blockId: 'b-term', key: 'has-adapter', schedulable: true, status: 'dispatched', diagnostics: [],
@@ -604,8 +484,7 @@ describe('track route TASKS panel convergence', () => {
   }];
 
   beforeEach(() => {
-    // `shouldAdvanceTime` keeps `userEvent` and `waitFor` — both of which wait
-    // on real-ish timers — from deadlocking under a frozen clock.
+    // `shouldAdvanceTime` keeps `userEvent` and `waitFor` from deadlocking under a frozen clock.
     vi.useFakeTimers({ shouldAdvanceTime: true });
   });
   afterEach(() => { vi.useRealTimers(); });
@@ -613,16 +492,13 @@ describe('track route TASKS panel convergence', () => {
   it('picks up the silent worker-card stamp on its own, with no event at all', async () => {
     let verdicts: readonly unknown[] = dispatched;
     setup(TASK_CARDS, { taskDiagnostics: () => verdicts });
-    // Pre-stamp: the row knows it was dispatched and its kind is inert — the
-    // verdict carries no `workerCardId` yet, so there is nothing to open.
+    // Pre-stamp: the verdict carries no `workerCardId` yet, so there is nothing to open.
     await waitFor(() => expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-term"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('dispatched'));
     expect(screen.queryByRole('button', { name: 'terminal' })).toBeNull();
 
     verdicts = running;
     await vi.advanceTimersByTimeAsync(3_000);
 
-    // What converges is the *affordance*: the kind becomes a control once the
-    // silent stamp lands, which is the whole reason this poll exists.
     const converged = await waitFor(() => screen.getByRole('button', { name: 'terminal' }));
     expect(converged.getAttribute('title')).toBe('Open the worker card for has-adapter');
     await waitFor(() => expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-term"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('running'));

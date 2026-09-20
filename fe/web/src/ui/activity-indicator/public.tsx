@@ -5,15 +5,9 @@ import styles from './activity-indicator.module.css';
 export type ActivityState = 'failed' | 'attention' | 'working' | 'unread' | 'quiet';
 
 /**
- * The visual counterpart of an activity state. By default the owning control
- * supplies the accessible label and the marker is decorative (`aria-hidden`).
- *
- * `spoken` is for the surfaces where no owning control names the fact — a
- * card or task row whose status word says which phase this is, a terminal
- * head whose words say how the connection stands: the string is rendered
- * visually hidden right after the marker, and it is the caller's vocabulary
- * (`activityLabelOf`, `core/domain/activity.ts`) — this primitive is
- * domain-free and may not import it. `null`/omitted keeps the marker silent.
+ * The visual counterpart of an activity state; by default the owning control supplies the accessible
+ * label and the marker is decorative. `spoken` is rendered visually hidden after the marker where no
+ * owning control names the fact; this primitive is domain-free and may not import the vocabulary.
  */
 export function ActivityIndicator({ state, spoken = null }: Readonly<{ state: ActivityState; spoken?: string | null }>) {
   if (state === 'quiet') return null;

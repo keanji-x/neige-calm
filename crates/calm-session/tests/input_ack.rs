@@ -1,24 +1,5 @@
-//! Acceptance tests for `DaemonMsg::InputAck` + per-connection
-//! `input_seq` on `ClientMsg::Input` — the deterministic delivery
-//! acknowledgement that lets a kernel-originated transient
-//! `DaemonClient` (e.g. `inject_stdin`) wait for the PTY write to
-//! complete instead of racing a fixed `tokio::time::sleep` close-grace.
-//!
-//! The state-machine layer (`TerminalSessionState::on_client_frame`) is
-//! protocol-only — it doesn't perform the actual PTY write, it just
-//! forwards `input_seq` into the `Effect::WriteToPty` it emits. That
-//! forwarding is what these tests cover. The shell-side ack-emission
-//! point (the PTY-writer thread firing `DaemonMsg::InputAck` after
-//! `write_all` returns) is exercised by the existing e2e tests against
-//! the real daemon binary; here we keep the contract testable in pure
-//! Rust without spawning processes.
-//!
-//! Design choice (option (b) — see issue #115): `input_seq == 0` means
-//! "no ack requested". The daemon writes the bytes and emits no ack
-//! frame. Browser-typing path keeps the wire default at 0 to avoid
-//! ack-frame noise on the hot path.
-//!
-//! Closes part of #115.
+//! Acceptance tests for `DaemonMsg::InputAck` + per-connection `input_seq` on `ClientMsg::Input`; the state
+//! machine only forwards `input_seq` into `Effect::WriteToPty`, the shell emits the ack after the PTY write.
 
 use calm_session::terminal_session::{
     Effect, OwnerRegistry, PtyBroadcaster, SessionContext, TerminalSessionState,
@@ -45,7 +26,6 @@ fn ctx<'a>(broadcaster: &'a PtyBroadcaster, session_id: Uuid) -> SessionContext<
         pty_seq_tail: broadcaster.pty_seq(),
         render_rev: broadcaster.render_rev(),
         is_child_ready: false,
-        // PtyBroadcaster pre-dates theming; unknown current colors.
         current_default_fg: None,
         current_default_bg: None,
     }
@@ -76,9 +56,7 @@ fn hello(client_id: Uuid, kernel_input: bool) -> ClientMsg {
     }
 }
 
-/// Attach an owner via the state machine and drain its handshake
-/// effects so the post-handshake input-path is the only thing under
-/// test in the following frames.
+/// Attach an owner and drain its handshake effects.
 fn attach_owner() -> (TerminalSessionState, OwnerRegistry, PtyBroadcaster) {
     let broadcaster = PtyBroadcaster::new(1024);
     let mut registry = OwnerRegistry::new();
@@ -94,12 +72,6 @@ fn attach_owner() -> (TerminalSessionState, OwnerRegistry, PtyBroadcaster) {
     (state, registry, broadcaster)
 }
 
-/// `ClientMsg::Input { data, input_seq: N }` (N > 0) — protocol layer
-/// must forward `data` AND `input_seq` into the `Effect::WriteToPty`
-/// it emits, so the shell can fire `DaemonMsg::InputAck { input_seq:
-/// N }` after the PTY write completes. The state machine itself
-/// doesn't emit `InputAck` — that's the shell's job — but the
-/// `input_seq` MUST round-trip through the effect.
 #[test]
 fn owner_input_with_nonzero_seq_forwards_seq_into_write_effect() {
     let (mut state, mut registry, broadcaster) = attach_owner();
@@ -126,11 +98,7 @@ fn owner_input_with_nonzero_seq_forwards_seq_into_write_effect() {
     assert_eq!(write.1, 7, "input_seq must round-trip into the effect");
 }
 
-/// Two consecutive `Input` frames with seqs `N, N+1` produce two
-/// `WriteToPty` effects in the same order. The state machine itself
-/// doesn't track or reorder — that's a per-call test, but pairing
-/// them in one fixture catches an accidental "state captures the last
-/// seq" bug.
+/// Pairing two frames in one fixture catches an accidental "state captures the last seq" bug.
 #[test]
 fn owner_input_two_frames_preserve_seq_order() {
     let (mut state, mut registry, broadcaster) = attach_owner();
@@ -171,11 +139,6 @@ fn owner_input_two_frames_preserve_seq_order() {
     assert_eq!(s2, 43);
 }
 
-/// `ClientMsg::Input { data, input_seq: 0 }` (the wire default for
-/// browser clients) still produces a `WriteToPty` effect — the daemon
-/// still writes the bytes to the PTY. The shell-side post-write check
-/// (`input_seq > 0`) is the only thing that suppresses the
-/// `DaemonMsg::InputAck`; the protocol layer is uniform.
 #[test]
 fn owner_input_seq_zero_still_writes() {
     let (mut state, mut registry, broadcaster) = attach_owner();
@@ -205,18 +168,9 @@ fn owner_input_seq_zero_still_writes() {
     );
 }
 
-/// Backward compat: an older JSON `Input` frame missing the
-/// `input_seq` key MUST decode as `input_seq: 0` thanks to
-/// `#[serde(default)]`. This is what hand-rolled and pre-#115 callers
-/// would have sent; the daemon must accept it and treat it identically
-/// to a frame with `input_seq: 0`.
-///
-/// We synthesize the older payload by hand-rolling JSON (the current
-/// `ClientMsg` always serializes both keys), then deserialize through
-/// `serde_json` — the same hop the WS bridge uses on the up arm.
+/// An older JSON `Input` frame missing the `input_seq` key MUST decode as `input_seq: 0` via `#[serde(default)]`.
 #[test]
 fn input_decodes_missing_input_seq_as_zero() {
-    // Hand-rolled JSON missing the `input_seq` key.
     let raw = serde_json::json!({
         "Input": {
             "data": [104, 105], // "hi"
@@ -237,13 +191,7 @@ fn input_decodes_missing_input_seq_as_zero() {
     }
 }
 
-/// Tuple-style `{"Input": [..]}` (the pre-#115 wire shape) MUST NOT
-/// silently succeed — it's a structurally different payload from the
-/// current struct variant, and a silent acceptance would mask a
-/// genuine wire-version skew. We assert the JSON decode fails so the
-/// daemon will reject such a frame with `unparseable ClientMsg JSON;
-/// dropping` at the WS bridge — exactly the same code path that
-/// catches any other malformed frame.
+/// The tuple-style `{"Input": [..]}` wire shape MUST NOT silently decode; a silent acceptance would mask a genuine wire-version skew.
 #[test]
 fn input_tuple_form_no_longer_decodes() {
     let raw = serde_json::json!({
@@ -257,31 +205,22 @@ fn input_tuple_form_no_longer_decodes() {
     );
 }
 
-/// `DaemonMsg::InputAck { input_seq }` is the wire shape the daemon
-/// emits after a successful PTY write. We assert it serializes and
-/// deserializes through the JSON hop (the WS bridge) without losing
-/// the seq, and that it bincode-round-trips for the kernel↔daemon
-/// hop.
 #[test]
 fn input_ack_round_trips_json_and_bincode() {
     let original = DaemonMsg::InputAck { input_seq: 12345 };
 
-    // JSON (WS bridge hop): browser-facing path.
     let json = serde_json::to_string(&original).expect("serialize");
     let decoded: DaemonMsg = serde_json::from_str(&json).expect("deserialize");
     match decoded {
         DaemonMsg::InputAck { input_seq } => assert_eq!(input_seq, 12345),
         other => panic!("expected InputAck, got {other:?}"),
     }
-    // Sanity-check the wire shape so a careless rename of `input_seq`
-    // would fail this test (the kernel transient client matches on
-    // the field name).
+    // The kernel transient client matches on the `input_seq` field name.
     assert!(
         json.contains("\"input_seq\":12345"),
         "expected `input_seq` key in JSON, got: {json}"
     );
 
-    // Bincode (kernel ↔ daemon hop).
     let bytes = bincode::serde::encode_to_vec(&original, bincode::config::standard())
         .expect("bincode encode");
     let (decoded, _): (DaemonMsg, _) =
@@ -293,17 +232,13 @@ fn input_ack_round_trips_json_and_bincode() {
     }
 }
 
-/// Observer (no kernel_originated_input) sending Input — even with
-/// a non-zero seq — gets `NotOwner` and NO `WriteToPty` effect.
-/// Authorization comes before ack mechanics: a forged seq must not
-/// induce the daemon to ack an unauthorized write.
+/// Authorization comes before ack mechanics: a forged seq must not induce the daemon to ack an unauthorized write.
 #[test]
 fn observer_input_with_seq_is_rejected_before_ack() {
     let broadcaster = PtyBroadcaster::new(1024);
     let mut registry = OwnerRegistry::new();
     let session_id = Uuid::new_v4();
 
-    // Pre-register a separate owner so this client attaches as Observer.
     let _ = registry.on_attach(Uuid::new_v4(), None);
 
     let observer_id = Uuid::new_v4();
@@ -344,18 +279,12 @@ fn observer_input_with_seq_is_rejected_before_ack() {
     );
 }
 
-/// Observer with `kernel_originated_input` capability AND non-zero
-/// `input_seq` — the trusted kernel-private path: the protocol layer
-/// must produce a `WriteToPty` carrying the seq, so the shell can
-/// emit `InputAck` after the write completes. This is the primary
-/// happy path for the `DaemonClient::inject_stdin` migration in PR #110.
 #[test]
 fn kernel_input_observer_input_with_seq_writes_with_seq() {
     let broadcaster = PtyBroadcaster::new(1024);
     let mut registry = OwnerRegistry::new();
     let session_id = Uuid::new_v4();
 
-    // Pre-register a separate owner so the kernel client attaches as Observer.
     let _ = registry.on_attach(Uuid::new_v4(), None);
 
     let kernel_id = Uuid::new_v4();
@@ -387,7 +316,6 @@ fn kernel_input_observer_input_with_seq_writes_with_seq() {
         .expect("kernel-input observer with seq must still produce WriteToPty");
     assert_eq!(write.0, b"\r");
     assert_eq!(write.1, 1);
-    // ...and must NOT raise NotOwner.
     assert!(
         !effects.iter().any(|e| matches!(
             e,

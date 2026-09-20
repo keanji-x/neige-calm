@@ -1,14 +1,5 @@
-//! #1147 S3 — the three clauses of the "is anything on disk" predicate.
-//!
-//! Every fixture is built by running the **production materializer** and then
-//! performing one real action a real writer performs. Nothing here
-//! re-implements the predicate or hand-crafts a `.git` directory: the point of
-//! the design's D4 is that it does not have to know who wrote, so a fixture
-//! that simulates the *verdict* rather than the *cause* would prove nothing.
-//!
-//! Each clause has a fixture that only it rejects — see
-//! `each_clause_has_a_fixture_only_it_rejects`, which asserts that
-//! mechanically rather than leaving it to a reviewer's reading.
+//! Every fixture is built by the production materializer plus one real writer action; nothing hand-crafts a
+//! `.git` or simulates the verdict rather than the cause.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -22,8 +13,6 @@ struct Fixture {
     track_id: String,
 }
 
-/// A freshly materialized managed workspace at `<root>/<area>/<track>` — the
-/// exact shape `POST /api/tracks` produces.
 fn materialized() -> Fixture {
     let root = tempfile::TempDir::new().unwrap();
     let track_id = format!("w{}", uuid::Uuid::new_v4().simple());
@@ -50,8 +39,7 @@ fn git(at: &Path, args: &[&str]) {
     );
 }
 
-/// The identity every fixture commit needs; the materializer only sets it for
-/// its own one-shot commit, so a repository it produced has no `user.name`.
+/// The materializer only sets an identity for its own one-shot commit, so its repository has no `user.name`.
 fn with_identity(at: &Path) {
     git(at, &["config", "user.name", "fixture"]);
     git(at, &["config", "user.email", "fixture@example.com"]);
@@ -84,13 +72,7 @@ fn a_plain_untracked_file_is_dirty() {
     drop(fx.root);
 }
 
-/// The clause that only `--ignored` catches.
-///
-/// `materialize_managed_workspace` writes `.claude/worktrees/` into
-/// `.git/info/exclude` (S2, so that worker output does not permanently dirty
-/// the tree). That exclusion is exactly what would hide a workspace full of
-/// worker output from a plain `git status --porcelain`. Dropping `--ignored`
-/// from the predicate turns this test — and only this test — green-to-red.
+/// Only `--ignored` catches this: `.claude/worktrees/` is in `.git/info/exclude`.
 #[test]
 fn excluded_worker_output_is_dirty() {
     let fx = materialized();
@@ -103,7 +85,6 @@ fn excluded_worker_output_is_dirty() {
     std::fs::create_dir_all(&lease).unwrap();
     std::fs::write(lease.join("out.txt"), b"worker output\n").unwrap();
 
-    // The premise: a plain `status --porcelain` really is blind to this.
     let plain = Command::new("git")
         .arg("-C")
         .arg(&fx.workspace)
@@ -127,12 +108,7 @@ fn excluded_worker_output_is_dirty() {
     drop(fx.root);
 }
 
-/// An empty `.claude/worktrees/` must NOT be dirty.
-///
-/// The design says so explicitly, and it matters: `create_workspace_lease_directory`
-/// makes the parent directory, and a lease that has been released leaves the
-/// tree behind. If an empty directory counted, a workspace would become
-/// permanently un-re-pointable for no reason.
+/// A released lease leaves the empty parent directory behind; counting it would make the workspace un-re-pointable.
 #[test]
 fn an_empty_worktrees_directory_is_still_pristine() {
     let fx = materialized();
@@ -141,7 +117,6 @@ fn an_empty_worktrees_directory_is_still_pristine() {
     drop(fx.root);
 }
 
-/// A commit that leaves no working-tree trace at all.
 #[test]
 fn a_commit_on_another_branch_is_dirty() {
     let fx = materialized();
@@ -155,7 +130,6 @@ fn a_commit_on_another_branch_is_dirty() {
     );
     git(&fx.workspace, &["checkout", "-q", "main"]);
 
-    // Working tree is clean again — only the commit count betrays the work.
     let status = Command::new("git")
         .arg("-C")
         .arg(&fx.workspace)
@@ -179,8 +153,7 @@ fn a_commit_on_another_branch_is_dirty() {
     drop(fx.root);
 }
 
-/// `git stash` is the same class as the branch commit above and is the reason
-/// the clause says `--all` rather than `HEAD`.
+/// The reason the clause says `--all` rather than `HEAD`.
 #[test]
 fn a_stash_is_dirty() {
     let fx = materialized();
@@ -211,8 +184,6 @@ fn a_stash_is_dirty() {
     drop(fx.root);
 }
 
-/// A live worktree: files live elsewhere, the repository here is clean, and a
-/// `rename` would dangle both of the absolute pointers that bind them.
 #[test]
 fn a_live_worktree_is_dirty() {
     let fx = materialized();
@@ -240,9 +211,6 @@ fn a_live_worktree_is_dirty() {
     drop(fx.root);
 }
 
-/// Fail-closed: a path that is not a repository at all cannot be proven empty,
-/// so it is dirty. "Cannot tell" is never "clean" — the consequence of a wrong
-/// `Pristine` is renaming a directory with work in it into the trash.
 #[test]
 fn a_path_that_is_not_a_repository_is_dirty() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -263,12 +231,7 @@ fn a_missing_path_is_dirty() {
     );
 }
 
-/// The meta-test the design asks for: every clause is load bearing, stated as
-/// an assertion rather than as three separate tests a reader has to correlate.
-///
-/// For each clause, a fixture exists that **only that clause** rejects — i.e.
-/// running the predicate with that one clause removed would accept it. This is
-/// checked by running each clause's own command against each fixture.
+/// For each clause, a fixture exists that only that clause rejects, checked by running each clause's command against each fixture.
 #[test]
 fn each_clause_has_a_fixture_only_it_rejects() {
     fn clause_verdicts(path: &Path) -> [bool; 3] {
@@ -301,8 +264,6 @@ fn each_clause_has_a_fixture_only_it_rejects() {
         ]
     }
 
-    // Fixture 1 — excluded worker output: only the status clause (thanks to
-    // `--ignored`) rejects it.
     let a = materialized();
     let lease = a.workspace.join(".claude").join("worktrees").join("c");
     std::fs::create_dir_all(&lease).unwrap();
@@ -313,7 +274,6 @@ fn each_clause_has_a_fixture_only_it_rejects() {
         "excluded worker output must be rejected by the status clause alone"
     );
 
-    // Fixture 2 — a stash: only the rev-list clause rejects it.
     let b = materialized();
     with_identity(&b.workspace);
     std::fs::write(b.workspace.join("wip.txt"), b"x\n").unwrap();
@@ -325,7 +285,6 @@ fn each_clause_has_a_fixture_only_it_rejects() {
         "a stash must be rejected by the rev-list clause alone"
     );
 
-    // Fixture 3 — a live worktree: only the worktree clause rejects it.
     let c = materialized();
     let elsewhere = c.root.path().join("wt");
     git(

@@ -1,31 +1,5 @@
-//! #1253 PR2 — `POST /api/today/summary` end to end.
-//!
-//! Owns three of the design's invariants:
-//!
-//! * **INV-TODAYDOC-007** — this endpoint refuses an empty activity window,
-//!   creating no conversation and enqueuing no message.
-//! * **INV-TODAYDOC-010** — the first successful trigger leaves **two**
-//!   `harness.user_message.enqueued` rows (bootstrap + summary) and every later
-//!   one leaves a third, fourth, … Merged turns are expected and are never
-//!   counted.
-//! * **INV-TODAYDOC-011** — the derived conversation card is invariant under
-//!   actor, workspace re-point and request count.
-//!
-//! Since #1343 it also owns the *other* consumer of the same projection: a
-//! conversation created on the launchpad track through
-//! `POST /api/tracks/{id}/conversations` opens with the day's activity window.
-//! The two live in one file because they read one computation and because the
-//! rulings only make sense side by side — the summary endpoint refuses an empty
-//! day, the conversation path states it.
-//!
-//! Plus the one thing the projection's own unit tests cannot claim: that the
-//! rows a *real* emitter writes are the rows it counts.
-//!
-//! Activity is always produced through production routes here — never by
-//! inserting into `events` — because "does the projection see what the kernel
-//! writes?" is precisely what an insert would assume rather than test. The unit
-//! tests in `activity_window` take the opposite side of that split: they need
-//! millisecond control over `at`, which no route offers, and they say so.
+//! `POST /api/today/summary` end to end, plus the launchpad conversation's opening briefing.
+//! Activity is always produced through production routes here, never by inserting into `events`.
 
 #![cfg(unix)]
 
@@ -59,8 +33,7 @@ struct Boot {
     app: axum::Router,
     state: AppState,
     repo: Arc<SqlxRepo>,
-    /// #1253 PR2 — this server's own create-arm counters. Per instance, so a
-    /// sibling case in the same binary cannot move them.
+    /// This server's own create-arm counters, per instance so a sibling case cannot move them.
     create_counters: Arc<calm_server::routes::today_summary::TodaySummaryCreateCounters>,
     _tmp: TempDir,
 }
@@ -70,18 +43,13 @@ async fn boot() -> Boot {
     boot_with(TempDir::new().unwrap(), repo, "workspaces").await
 }
 
-/// A server over a given database and workspace root.
-///
-/// The root is a parameter for the same reason `today_launchpad`'s is: booting
-/// a *second* server over the *same* database with a *different* root is what a
-/// workspace re-point looks like from the rows' point of view, and that is the
-/// fixture INV-TODAYDOC-011 needs.
+/// A server over a given database and workspace root; a second server over the same database with a
+/// different root is what a workspace re-point looks like to the rows.
 async fn boot_with(tmp: TempDir, repo: Arc<SqlxRepo>, root_name: &str) -> Boot {
     boot_with_rendezvous(tmp, repo, root_name, None).await
 }
 
-/// `boot_with`, plus the option to arm the create-arm rendezvous. Only the
-/// create-race case passes `Some`.
+/// `boot_with`, plus the option to arm the create-arm rendezvous.
 async fn boot_with_rendezvous(
     tmp: TempDir,
     repo: Arc<SqlxRepo>,
@@ -101,9 +69,8 @@ async fn boot_with_rendezvouses(
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let roles = CardRoleCache::new();
     let tracks = TrackAreaCache::new();
-    // Seeded, not empty: a second server over an existing database must
-    // recognise the cards already there, or `ensure` tries to mint a second
-    // planner card and the re-point fixture stops being a re-point.
+    // Seeded, not empty: a second server over an existing database must recognise the cards already
+    // there, or `ensure` tries to mint a second planner card.
     repo.seed_card_role_cache(&roles).await.unwrap();
     repo.seed_track_area_cache(&tracks).await.unwrap();
     let events = EventBus::new();
@@ -145,9 +112,7 @@ async fn boot_with_rendezvouses(
     };
     let create_counters = Arc::clone(&state.today_summary_create);
     let app = routes::router()
-        // `POST /api/tracks/{id}/report` — the route this file produces its
-        // activity with — extracts a `Principal`, so the session layer has to
-        // be present exactly as `main.rs` assembles it.
+        // `POST /api/tracks/{id}/report` extracts a `Principal`, so the session layer has to be present.
         .layer(Extension(Principal {
             user_id: "owner".into(),
             display_name: "owner".into(),
@@ -195,9 +160,7 @@ impl Boot {
         )
     }
 
-    /// A user-visible area with one real track in it. Through `POST /api/areas`
-    /// and `POST /api/tracks`, so the area is `kind = 'user'` and the track has
-    /// the cards and workspace a production track has.
+    /// A user-visible area with one real track in it, through `POST /api/areas` and `POST /api/tracks`.
     async fn user_track(&self, title: &str) -> String {
         let (status, area) = self
             .request(
@@ -224,14 +187,7 @@ impl Boot {
         track["id"].as_str().unwrap().to_string()
     }
 
-    /// Real activity: a user editing a track's report through the REST route.
-    ///
-    /// This is a production emitter — `track_report::write::persist` writes one
-    /// `CardUpdated` and one `TrackReportEdited`, both at `EventScope::Card`
-    /// (`write.rs`, the two `events.push` calls that share `scope`) — so it is
-    /// the row shape the projection has to be able to see, not a hand-built
-    /// approximation. The scope was written as `Track` here before #1318 §1 and
-    /// was wrong then too; corrected while renaming the emitter.
+    /// Real activity: a user editing a track's report through the REST route (a production emitter).
     async fn edit_report(&self, track_id: &str, summary: &str) {
         let (status, body) = self
             .request(
@@ -249,10 +205,7 @@ impl Boot {
             .await
     }
 
-    /// `POST /api/today/launchpad/ensure` — the only way to get a launchpad
-    /// without going through the summary endpoint, which is what the #1343
-    /// cases need: they must be able to reach a launchpad on a day the summary
-    /// endpoint would refuse.
+    /// `POST /api/today/launchpad/ensure` — reaches a launchpad on a day the summary endpoint would refuse.
     async fn ensure_launchpad(&self) -> String {
         let (status, body) = self
             .request("POST", "/api/today/launchpad/ensure", None, None)
@@ -285,15 +238,8 @@ impl Boot {
         )
     }
 
-    /// This card's transcript in delivery order: what the app-server was handed
-    /// first, then what is still queued behind it.
-    ///
-    /// **Turns before queue is the order, not an arbitrary concatenation.** A
-    /// message that has reached a turn was drained before anything still in the
-    /// queue, and within each half the order is the source's own — the fake
-    /// records turn items in order and `pending_queue` is a queue. So a message
-    /// appearing earlier in this joined text really was enqueued earlier, which
-    /// is the only claim the #1343 ordering assertion makes.
+    /// This card's transcript in delivery order: what the app-server was handed first, then what is
+    /// still queued behind it (turns before queue; within each half the source's own order).
     async fn transcript_in_order(&self, card_id: &str) -> String {
         let mut texts = self.turn_texts();
         texts.extend(self.queued_texts(card_id).await);
@@ -307,22 +253,8 @@ impl Boot {
             .unwrap()
     }
 
-    /// Every `harness.user_message.enqueued` row for **this card**, oldest
-    /// first, as its `char_count`.
-    ///
-    /// **This is a COUNT of enqueues and nothing else. The lengths are not a
-    /// discriminator and must not be used as one.** An earlier version of this
-    /// doc said the opposite — that "the two texts differ in length, so the
-    /// sequence says which messages were sent" — and that claim is exactly what
-    /// this round disproved: a foreign message can stand in for the bootstrap
-    /// and a length assertion cannot tell. Use [`Boot::delivered`] for "which
-    /// message"; use this only for "how many enqueues are on the permanent
-    /// record".
-    ///
-    /// Scoped to one card on purpose. It feeds `expected_total` in the
-    /// concurrency case, where an unscoped count would silently start including
-    /// any message some other part of the fixture enqueued — and the symptom
-    /// would be a ten-second timeout rather than a legible failure.
+    /// Every `harness.user_message.enqueued` row for **this card**, oldest first, as its `char_count`.
+    /// A COUNT of enqueues only: the lengths are not a discriminator; use [`Boot::delivered`] for "which message".
     async fn enqueued_char_counts(&self, card_id: &str) -> Vec<i64> {
         sqlx::query_scalar(
             "SELECT json_extract(payload, '$.char_count') FROM events \
@@ -336,15 +268,6 @@ impl Boot {
     }
 
     /// The distinct `events.actor` values behind one event kind, sorted.
-    ///
-    /// The audit log's own column, read the way an auditor would. Nothing else
-    /// in this file looks at attribution, and until it did, the reasoning on
-    /// `synthetic_actor` was unguarded: the mutation that forwards the caller's
-    /// declared actor goes red only because a downstream authorization gate
-    /// rejects an AI actor carrying no card context today. Relax that gate — or
-    /// re-attribute `ai:codex` once a card IS in scope — and the summary would
-    /// start being recorded as an agent starting itself, with nothing turning
-    /// red.
     async fn actors_for(&self, kind: &str) -> Vec<String> {
         sqlx::query_scalar("SELECT DISTINCT actor FROM events WHERE kind = ?1 ORDER BY actor")
             .bind(kind)
@@ -353,15 +276,8 @@ impl Boot {
             .unwrap()
     }
 
-    /// The distinct actors of every event of one kind written after `mark`
-    /// about `card_id`.
-    ///
-    /// Watermarked because the card already carries the first trigger's events
-    /// by the time a dormancy is staged; without it "some event somewhere is
-    /// the kernel's" would be true before the restart ever ran. Keyed by kind
-    /// for the same reason: an earlier version asked only "any event about this
-    /// card", which stayed green while the restart was attributed to the user,
-    /// because unrelated kernel-authored rows land in the same window.
+    /// The distinct actors of every event of one kind written after `mark` about `card_id`.
+    /// Watermarked and keyed by kind: unrelated kernel-authored rows land in the same window.
     async fn actors_for_card_after(&self, mark: i64, card_id: &str, kind: &str) -> Vec<String> {
         sqlx::query_scalar(
             "SELECT DISTINCT actor FROM events \
@@ -375,14 +291,8 @@ impl Boot {
         .unwrap()
     }
 
-    /// The **production** predicate statement, run against this server's
-    /// database.
-    ///
-    /// `user_message_enqueued_on_active_runtime` is `pub(crate)` and takes a
-    /// `WorkerState`, so an integration test cannot call it; what it can do is
-    /// execute the exact SQL that function executes, which
-    /// `user_message_enqueued_on_active_runtime_sql` exists to hand out. Copying
-    /// the statement into this file instead would test the copy.
+    /// The **production** predicate statement, run against this server's database:
+    /// `user_message_enqueued_on_active_runtime` is `pub(crate)`, so its SQL is executed verbatim instead.
     async fn enqueued_on_active_runtime(&self, track_id: &str, card_id: &str) -> bool {
         sqlx::query_scalar::<_, i64>(
             &calm_server::routes::conversations_shared::user_message_enqueued_on_active_runtime_sql(
@@ -414,60 +324,8 @@ impl Boot {
             .unwrap()
     }
 
-    /// How many times each `needle` was **actually delivered**, counted by
-    /// identity over the delivered bytes.
-    ///
-    /// The two halves have different scopes, and the caller has to know it: the
-    /// turn half is server-wide — [`Boot::turn_texts`] reads
-    /// `started_turns_for_test()`, which has no card filter — while the queued
-    /// half is `card_id`'s newest `worker_sessions` row only.
-    ///
-    /// **Why not `char_count`, and why not row counts.** The audit event carries
-    /// only a length, and a length cannot tell "the bootstrap was delivered"
-    /// from "some other message of a similar size was" — a review found a case
-    /// asserting exactly that and passing on a *foreign* message standing in for
-    /// the bootstrap while claiming to prove "bootstrap + summary". A count
-    /// assertion structurally cannot make that distinction, which is why this
-    /// matches the bytes.
-    ///
-    /// **Where the bytes come from.** A message is normally in one of two
-    /// places: still queued in the persisted harness snapshot
-    /// (`worker_sessions.handle_state_json` → `pending_queue`), or already
-    /// folded into a turn the harness issued, which the fake app-server records
-    /// verbatim. Reading only the first is a race — the run loop drains on its
-    /// own tick, and a first draft of this helper measured 2 messages after
-    /// three triggers because of it.
-    ///
-    /// "One of two" is not exact, and the retry loop is what absorbs the
-    /// difference: between a turn being issued and `persist_snapshot` landing,
-    /// the same message is briefly in **both**, so a single read can
-    /// over-count. Retrying until the total matches `expected_total` settles on
-    /// the consistent reading; it is not a formality.
-    ///
-    /// `expected_total` is how many messages the caller knows were sent; the
-    /// read is retried until the needles account for exactly that many. It is a
-    /// parameter rather than `SELECT count(*) FROM events` because one case
-    /// deliberately deletes those rows to stage its state.
-    ///
-    /// **What settling here does and does not prove.** An earlier version of
-    /// this doc said settling is "the point at which nothing is in flight". It
-    /// is not: queued and delivered are summed, so a state where every message
-    /// is still sitting in the persisted queue and the fake app-server received
-    /// nothing settles just as well. Measured while investigating #1309, one
-    /// run of the concurrency case settled at `[1, 2]` with all three messages
-    /// queued and zero turns issued — green having delivered nothing. Settling
-    /// means "the needles account for exactly `expected_total` messages across
-    /// this server's turns and this card's newest queue"; for "the app-server
-    /// really received one" use
-    /// [`Boot::await_reached_appserver`].
-    ///
-    /// **The deadline failure prints the texts, not just the counts.** #1309 is
-    /// why: `saw [1, 3]` against an expected 3 names no cause, while the turn
-    /// text behind it held four `User says:` blocks and said exactly which
-    /// extra message had arrived and where it came from.
-    ///
-    /// The counts are occurrences rather than messages — see [`count_needles`],
-    /// which is where that behaviour and its consequence live.
+    /// How many times each `needle` was **actually delivered**, matched by bytes over this server's turns
+    /// (server-wide) plus `card_id`'s NEWEST queue. A message can briefly be in both, so the read is retried until the needles account for exactly `expected_total`.
     async fn delivered(
         &self,
         card_id: &str,
@@ -497,40 +355,8 @@ impl Boot {
         }
     }
 
-    /// Block until `needle` has reached this server's fake app-server, and
-    /// answer how many times it occurs there.
-    ///
-    /// The anti-vacuum for [`Boot::delivered`], which counts queued and
-    /// delivered together and therefore settles on a run that delivered
-    /// nothing: measured under #1309, the concurrency case settled at `[1, 2]`
-    /// with all three messages still in the queue and zero turns issued, and
-    /// read green having handed the agent nothing.
-    ///
-    /// It is one needle rather than "everything the caller sent", and that
-    /// limit is the fake's, not a choice: `new_fake_running_with_pending` never
-    /// completes a turn, so the harness issues its first turn and holds
-    /// everything behind it forever. Whatever is in that first turn is all that
-    /// will ever be delivered — waiting for the rest hangs, which is measured
-    /// (30 s deadline, hit on every run). What *is* always in it is the first
-    /// message the harness was given, which for the concurrency case is the
-    /// bootstrap, and "the bootstrap really reached the app-server" is the
-    /// claim that case needs.
-    ///
-    /// **The count is sampled at first sighting, not settled globally.** This
-    /// returns the instant `count > 0`, so it answers "how many occurrences
-    /// were visible the moment the needle first appeared". That is the number
-    /// the concurrency case wants — the fake completes no turn, and a turn's
-    /// items are pushed under one mutex, so the first turn's contents are final
-    /// — but it is not a global total: a second bootstrap arriving in a *later*
-    /// turn would still read 1 here. What catches that one is the
-    /// [`Boot::delivered`] assertion below the call site, which sums this
-    /// server's turns — all of them, whatever card they belong to — with the
-    /// newest `worker_sessions` row's queue. That queued half is the newest row
-    /// only (see [`Boot::queued_texts`]), so what the pair catches is a second
-    /// bootstrap that reached a turn or is still queued on the newest session —
-    /// not one parked in a superseded row, which neither read can see.
-    ///
-    /// The deadline failure prints the turn texts and the queue in full.
+    /// Block until `needle` has reached this server's fake app-server, and answer how many times it occurs
+    /// there. Sampled at first sighting: the fake never completes a turn, so only the first turn's contents are ever delivered.
     async fn await_reached_appserver(&self, card_id: &str, needle: &str) -> usize {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         loop {
@@ -553,18 +379,8 @@ impl Boot {
         }
     }
 
-    /// The user-message texts still sitting in this card's persisted harness
-    /// queue (`worker_sessions.handle_state_json` → `pending_queue`).
-    ///
-    /// The NEWEST session only, not every session this card has had.
-    ///
-    /// A dormant restart mints a second `worker_sessions` row and the new
-    /// harness inherits the old one's still-undelivered queue, so summing
-    /// across rows counts those messages twice — measured, the dormant case
-    /// read [2, 3] where the truth was [1, 2]. Reading the newest row is right
-    /// rather than merely convenient: a message that was actually delivered has
-    /// left the queue and is in a turn, and turns are read across the whole
-    /// fake, so nothing is lost.
+    /// The user-message texts still sitting in this card's persisted harness queue, NEWEST session only:
+    /// a dormant restart's harness inherits the old queue, so summing across rows counts messages twice.
     async fn queued_texts(&self, card_id: &str) -> Vec<String> {
         let states: Vec<Option<String>> = sqlx::query_scalar(
             "SELECT handle_state_json FROM worker_sessions WHERE card_id = ?1 \
@@ -595,9 +411,7 @@ impl Boot {
         let mut texts = Vec::new();
         for (_thread, items) in self.state.shared_codex_appserver.started_turns_for_test() {
             for item in items {
-                // #1505 S6 added `InputItem::LocalImage`. Text is what this
-                // helper is for; an image item is not a turn text and is
-                // skipped rather than mis-reported as one.
+                // An image item is not a turn text and is skipped.
                 if let calm_server::codex_appserver::InputItem::Text { text } = item {
                     texts.push(text);
                 }
@@ -606,14 +420,8 @@ impl Boot {
         texts
     }
 
-    /// Every observation still sitting in **any** of this card's persisted
-    /// harness queues, paired with the `worker_sessions` row it came from.
-    ///
-    /// Deliberately wider than [`Boot::queued_texts`], which reads the newest
-    /// row and `user_message` entries only. This is the shape
-    /// [`Boot::quiesce_and_clear_queue`] actually rewrites — every row, every
-    /// `Observation` variant (`calm-types/src/observation.rs`) — so its guard
-    /// and its read-back are taken over this rather than over the texts.
+    /// Every observation still sitting in **any** of this card's persisted harness queues, paired with its
+    /// `worker_sessions` row: the shape [`Boot::quiesce_and_clear_queue`] rewrites.
     async fn pending_observations(&self, card_id: &str) -> Vec<(String, Value)> {
         let states: Vec<(String, Option<String>)> =
             sqlx::query_as("SELECT id, handle_state_json FROM worker_sessions WHERE card_id = ?1")
@@ -636,114 +444,8 @@ impl Boot {
         out
     }
 
-    /// Shut this server's harnesses down and clear whatever they left in
-    /// `card_id`'s persisted queue, so a server booted *next* over the same
-    /// database inherits nothing.
-    ///
-    /// Only the concurrency case needs this, and it needs it because a second
-    /// server is about to recover a harness from this card's persisted
-    /// snapshot: every message still in `pending_queue` at that moment is
-    /// inherited and re-delivered into the second server's own fake app-server,
-    /// and every count taken there would then be counting this server's
-    /// messages too (#1309).
-    ///
-    /// **Waiting for the queue to drain by itself would hang, and that is
-    /// measured, not assumed.** The fake app-server never completes a turn, so
-    /// the harness issues its first turn and then holds everything behind it
-    /// forever; a first version of this fix polled for an empty queue and timed
-    /// out on 102 of 144 starvation runs with staging's summary still sitting
-    /// there. Whether the queue is empty at all is therefore pure scheduling
-    /// luck: adjacent messages are joined into one turn only when both arrive
-    /// before the run loop ticks.
-    ///
-    /// So the coupling is closed instead of waited on, and both halves are
-    /// needed.
-    ///
-    /// **The shutdown fences the only writer still live at this point in this
-    /// fixture; it does not leave a final snapshot behind.**
-    /// The harness type's `shutdown` (`harness/run_loop.rs:190`) stores
-    /// `shutting_down = true` as its *first*
-    /// action, and `persist_snapshot_inner` early-returns `Ok(())` whenever
-    /// that flag is set — so every persist from that harness from then on is a
-    /// permanent no-op, including `shutdown`'s own `persist_snapshot()` call,
-    /// which writes nothing. That permanent fence, plus the `abort()` that
-    /// stops the run loop, is what makes the clear safe. An earlier version of
-    /// this doc credited "a final snapshot and then an abort"; the final
-    /// snapshot does not exist.
-    ///
-    /// "Only writer" is a fact about this moment, not a property of the row:
-    /// `handle_state_json` has other writers that the `shutting_down` flag does
-    /// not fence. The ones that rewrite the whole snapshot reach
-    /// `session_set_handle_state_tx`, and today that is the harness-start
-    /// adapter (its module is declared at
-    /// `operation/mod.rs:15`, the write is at that module's line 1019, and it
-    /// is reached only from a request), `harness::persist_recovered_snapshot`
-    /// (`harness/mod.rs:323`, writing at line 332), and the dev force-phase
-    /// hook (`src/replay.rs:445`, `#[cfg(feature = "fixtures")]`, writing at
-    /// line 596) — a grep, not a closed set, so read it as
-    /// "these and whatever else that grep finds". None of them runs behind the
-    /// clear here: staging's HTTP requests have all returned; this fixture
-    /// assembles `AppState::from_parts` without arming deferred harness
-    /// recovery and never calls `recover_harnesses_on_boot`, so no recovery
-    /// task exists to persist one; and the dev hook's route is mounted only by
-    /// the separate replay binary (`src/bin/replay.rs:244`), which this
-    /// fixture never runs.
-    ///
-    /// **The abort is not a join, so the read-back polls.** `abort()` takes
-    /// effect at the aborted task's next await, so a persist that passed the
-    /// `shutting_down` check *before* the flag was stored can still be inside
-    /// `write_in_tx_typed`. A transaction dropped on cancel commits nothing and
-    /// is harmless; a COMMIT that lands after the clear would reinstate exactly
-    /// the queue this staging removes, which is the original #1309 inheritance
-    /// flake. So the read-back below is a short poll rather than a single read:
-    /// it fails here, by name, on a commit that lands up to its last poll
-    /// *and puts an observation back into the queue*, instead of letting `b`
-    /// silently inherit the row. The covered window ends at that last poll,
-    /// not at the 200 ms mark: the loop checks at 20 ms granularity and
-    /// returns straight after the deadline check, so a commit between the
-    /// final check and the return is inside the wall-clock window yet unseen.
-    /// A late persist that commits an already-empty queue passes wherever it
-    /// lands — correctly, since it leaves nothing to inherit. What the poll
-    /// does **not** prove is that no commit ever lands after the window
-    /// closes — only joining the aborted task could, and the harness exposes
-    /// no join. It bounds the window; the evidence that the bound holds in
-    /// practice is two *post-fix* starvation run sets on this PR, each the
-    /// same repro (two cores, 12 parallel copies, 12 rounds = 144 runs): the
-    /// set from the round that landed this fix, and a second set re-measured
-    /// on commit `03f8ef69`, which carries this poll unchanged. 0 failures in
-    /// each. The `105 of 144` figure
-    /// elsewhere in this file is a genuine pre-fix set; the `102 of 144` one
-    /// is not — it was measured on the rejected drain-polling candidate fix
-    /// described above. Both predate this poll, so neither says anything
-    /// about it.
-    ///
-    /// **The guard is taken over the observations the clear destroys.** The
-    /// clear rewrites `pending_queue` and `pending_envelope_ids` to `[]` on
-    /// *every*
-    /// `worker_sessions` row for the card, which discards every `Observation`
-    /// variant — `ReportEdited`, `TaskCompleted`, `WorkerHookStop`, … — not
-    /// just the newest row's `user_message`s that [`Boot::queued_texts`] can
-    /// see. So the check runs over [`Boot::pending_observations`]: `expected`
-    /// names the messages this server is known to have sent, and anything that
-    /// is not a `user_message` matching one of them panics rather than being
-    /// silently deleted. Nothing else is reachable in this fixture today (the
-    /// derived card is `CardRole::Assistant`, and boot-recovery replay in
-    /// `harness/mod.rs` is gated at line 149 on a persisted card role the
-    /// derived card does not have), but the guard no longer
-    /// depends on that staying true.
-    ///
-    /// Both the guard and the read-back cover the `pending_queue` half only;
-    /// the arrays beside it are cleared and never read back. That is
-    /// deliberate rather than an oversight: restoring a snapshot zips the
-    /// arrays positionally and pads the short sides
-    /// (`HarnessSnapshot::pending_entries`, which absorbed the old alignment
-    /// pass in #1505 PR1), so a leftover
-    /// envelope id, entry meta or message id with no observation behind it is
-    /// dropped and can deliver nothing.
-    ///
-    /// The clear itself is the same kind of surgical staging as the case's own
-    /// `DELETE` of the enqueued rows: this card's state is being set to
-    /// "nothing pending".
+    /// Shut this server's harnesses down and clear whatever they left in `card_id`'s persisted queue, so a
+    /// server booted next over the same database inherits nothing. Waiting for a drain would hang (the fake never completes a turn); `abort()` is not a join, so the read-back polls.
     async fn quiesce_and_clear_queue(&self, card_id: &str, expected: &[&str]) {
         for harness in self.state.harness.drain_all_for_dev() {
             harness.shutdown().await.unwrap();
@@ -771,12 +473,7 @@ impl Boot {
             let mut parsed: Value = serde_json::from_str(&state).unwrap();
             parsed["pending_queue"] = json!([]);
             parsed["pending_envelope_ids"] = json!([]);
-            // #1505 PR1 / #1449 — the queue is four parallel arrays, so "clear
-            // the queue" has to clear all four. Leaving one behind would
-            // still read back as an empty queue (`pending_entries` iterates
-            // `pending_queue`), but it would leave a hand-written row whose
-            // arrays disagree, and this fixture's whole job is to stage a
-            // state, not an oddity.
+            // The queue is four parallel arrays, so "clear the queue" has to clear all four.
             parsed["pending_entry_meta"] = json!([]);
             parsed["pending_message_ids"] = json!([]);
             sqlx::query("UPDATE worker_sessions SET handle_state_json = ?1 WHERE id = ?2")
@@ -812,21 +509,13 @@ impl Boot {
     }
 }
 
-/// How `events.actor` spells one [`ActorId`].
-///
-/// The column holds `serde_json::to_string(&actor)`
-/// (`calm-truth/src/db/sqlite/events.rs`), so the expected value is computed
-/// the same way rather than written out as a literal — a hand-typed `"user"`
-/// would be a guess at a representation this test does not own, and would go
-/// green or red for reasons that have nothing to do with attribution.
+/// How `events.actor` spells one [`ActorId`]: `serde_json::to_string(&actor)`, computed rather than hand-typed.
 fn stored(actor: ActorId) -> String {
     serde_json::to_string(&actor).unwrap()
 }
 
-/// How many times each needle occurs across `texts`.
-///
-/// Occurrences, not messages: the harness joins adjacent user messages into one
-/// turn text, so two bootstraps folded into a single turn read as two.
+/// How many times each needle occurs across `texts`. Occurrences, not messages: the harness joins
+/// adjacent user messages into one turn text.
 fn count_needles(texts: &[String], needles: &[&str]) -> Vec<usize> {
     needles
         .iter()
@@ -839,12 +528,8 @@ fn count_needles(texts: &[String], needles: &[&str]) -> Vec<usize> {
         .collect()
 }
 
-/// The summary prompt's prose ahead of its counts block — text that appears
-/// in the summary prompt and in nothing else, so a delivered message can be
-/// identified as the summary by its content rather than by its size. Taken
-/// from the fragment itself (#1635 S1c) so this file carries no copy of the
-/// wording; the counts block is excluded because the opening briefing renders
-/// the same block.
+/// The summary prompt's prose ahead of its counts block — text in the summary prompt and nothing else;
+/// the counts block is excluded because the opening briefing renders the same block.
 fn summary_marker() -> &'static str {
     include_str!("../../prompts/today-summary/write.md")
         .split_once("{counts}")
@@ -852,33 +537,14 @@ fn summary_marker() -> &'static str {
         .0
 }
 
-/// A phrase carried by #1343's opening briefing and by nothing else, including
-/// the summary prompt.
-///
-/// The two prompts render the *same* counts block, so a needle taken from the
-/// counts would match either of them; this one is from the briefing's own lead
-/// sentence, which is deliberately worded apart from the summary's for exactly
-/// that reason.
+/// A phrase carried by the opening briefing and by nothing else, including the summary prompt.
 const BRIEFING_MARKER: &str = "Context from the server before you start";
 
 /// The briefing's empty-day sentence, which has no counts in it at all.
 const EMPTY_DAY_MARKER: &str = "nothing has been recorded in this workspace today";
 
-/// #1343 — a conversation started on the launchpad opens with the day's window,
-/// **ahead of** the user's first message.
-///
-/// This is the injection that replaces the deleted `Rewrite today's progress`
-/// button as the way the day's activity reaches an agent. Three things are
-/// asserted and each rules out a different way of shipping nothing:
-///
-/// * the briefing was delivered at all (a needle on its own lead sentence, not
-///   on the counts, which the summary prompt also renders);
-/// * it carries the *real* counts, so it is the projection and not a template —
-///   the report edit below is one `track.report_edited` on one track;
-/// * it precedes the user's message, which is the whole point of calling it
-///   opening material;
-/// * only the user's words produce a `harness.user_message.enqueued` audit row:
-///   kernel context must not masquerade as something the user typed.
+/// Only the user's words produce a `harness.user_message.enqueued` audit row: kernel context must not
+/// masquerade as something the user typed.
 #[tokio::test]
 async fn a_launchpad_conversation_opens_with_todays_activity_before_the_users_message() {
     let b = boot().await;
@@ -930,26 +596,12 @@ async fn a_launchpad_conversation_opens_with_todays_activity_before_the_users_me
     );
 }
 
-/// #1343 — an empty day is **stated**, not skipped, and it does not block the
-/// create.
-///
-/// The ruling this pins is the one the injection had to make: INV-TODAYDOC-007
-/// refuses an empty day on `POST /api/today/summary`, and the two rejected
-/// alternatives here were to copy that refusal (a user could then not start a
-/// conversation on a quiet morning) or to send nothing (the agent would answer
-/// "what happened today?" from the workspace, which is exactly the state the
-/// injection exists to end).
-///
-/// So both halves are asserted, and both are load-bearing: a 201 alone is
-/// satisfied by an implementation that briefs nothing, and the empty-day
-/// sentence alone is satisfied by one that also refuses.
+/// Both halves are load-bearing: a 201 alone is satisfied by an implementation that briefs nothing, the
+/// empty-day sentence alone by one that also refuses.
 #[tokio::test]
 async fn an_empty_day_is_briefed_as_empty_and_still_opens_the_conversation() {
     let b = boot().await;
-    // A track exists and no activity was produced on it: creating a track is
-    // not on the allowlist, so this really is an empty day. The sibling case
-    // `an_empty_activity_window_refuses_without_creating_or_sending_anything`
-    // shows the summary endpoint refusing the very same state.
+    // A track exists and no activity was produced on it: creating a track is not on the allowlist.
     let _quiet = b.user_track("quiet").await;
     let launchpad = b.ensure_launchpad().await;
 
@@ -976,22 +628,8 @@ async fn an_empty_day_is_briefed_as_empty_and_still_opens_the_conversation() {
     );
 }
 
-/// #1343 — the launchpad's assistant is started under the launchpad identity,
-/// and every other track's under the ordinary one.
-///
-/// This is the *other half* of the injection: material without authority did
-/// not move the report. Measured on the 4140 preview before this change — told
-/// explicitly to write a block, the agent wrote one; told casually what had
-/// happened, it made zero tool calls, because its prompt's first duty was
-/// "answer the user" and its closing sentence said it was a guest in a document
-/// the planner agent maintains.
-///
-/// Asserted on `developer_instructions` at `thread/start`, which is the only
-/// place in the process where the two identities are distinguishable, and by
-/// **equality against the production renderer** rather than by a keyword: a
-/// `contains("launchpad")` check would stay green if the fork shipped a
-/// half-built template. Both directions are in one case because either alone is
-/// satisfied by a build that hands every track the same prompt.
+/// Asserted on `developer_instructions` at `thread/start`, the only place the two identities are
+/// distinguishable, by equality against the production renderer rather than by a keyword.
 #[tokio::test]
 async fn the_launchpad_assistant_starts_under_the_launchpad_identity_and_others_do_not() {
     let b = boot().await;
@@ -1026,13 +664,8 @@ async fn the_launchpad_assistant_starts_under_the_launchpad_identity_and_others_
         instructions.contains(&ordinary_prompt),
         "an ordinary track's assistant must keep the identity it always had;          started threads carried: {instructions:#?}"
     );
-    // The launchpad identity must not leak onto the other track. Keyed on the
-    // sentence that is true there and false here rather than on a whole
-    // document, because this says *which* claim must not travel.
-    //
-    // The ASSISTANT start, located by its own opening line: that track also has
-    // a planner thread start in this list, and an earlier version of this
-    // assertion picked it up by matching the track id alone.
+    // The launchpad identity must not leak onto the other track. The ASSISTANT start is located by its own
+    // opening line: that track also has a planner thread start in this list.
     let ordinary_started = instructions
         .iter()
         .find(|text| {
@@ -1047,11 +680,7 @@ async fn the_launchpad_assistant_starts_under_the_launchpad_identity_and_others_
     );
 }
 
-/// #1343 stays on the launchpad. An ordinary track's conversation is untouched.
-///
-/// The branch is `track_get_launchpad()`-identity, so this is the case that
-/// tells "brief the launchpad" from "brief everything": the workspace here has
-/// a launchpad *and* real activity, so a briefing that leaked onto other tracks
+/// The workspace here has a launchpad *and* real activity, so a briefing that leaked onto other tracks
 /// would have material to leak.
 #[tokio::test]
 async fn an_ordinary_tracks_conversation_carries_no_activity_briefing() {
@@ -1078,25 +707,11 @@ async fn an_ordinary_tracks_conversation_carries_no_activity_briefing() {
     );
 }
 
-/// INV-TODAYDOC-007 — the endpoint refuses an empty window and leaves nothing
-/// behind.
-///
-/// Both halves are in one case on purpose. The refusal assertions are all
-/// satisfied by an endpoint that never works at all, so the second half drives
-/// the same endpoint against a workspace that *has* activity and shows every
-/// one of them flipping. Without it this would be green on a handler that
-/// returned 409 unconditionally.
-///
-/// The statement is narrow by design: it is about **this endpoint**.
-/// `POST /api/tracks/{id}/conversations` and `POST /api/cards/{id}/planner/input`
-/// remain reachable and are deliberately out of scope — a user typing to an
-/// agent by hand is not what is being prevented.
+/// Both halves in one case: the refusal assertions alone are satisfied by an endpoint that never works at all.
 #[tokio::test]
 async fn an_empty_activity_window_refuses_without_creating_or_sending_anything() {
     let b = boot().await;
-    // A track exists, so "nothing happened" is not "nothing exists": creating a
-    // track is not activity under the allowlist (`track.created` is not on it),
-    // and that is the state a user opening Today on a quiet morning is in.
+    // A track exists, so "nothing happened" is not "nothing exists": `track.created` is not on the allowlist.
     let track_id = b.user_track("quiet").await;
 
     let (status, body) = b.summary(None).await;
@@ -1149,25 +764,8 @@ async fn an_empty_activity_window_refuses_without_creating_or_sending_anything()
     );
 }
 
-/// INV-TODAYDOC-010 — the first trigger enqueues two messages, every later one
-/// enqueues one more.
-///
-/// **Turns are deliberately not counted.** `run_loop::maybe_issue_turn` drains
-/// the whole pending queue into a single `turn_start`, so "three presses, three
-/// turns" is false by design and a case asserting it could only pass on
-/// timing. `harness.user_message.enqueued` is a permanent kind written once per
-/// enqueue, which is the layer that can actually be proved.
-///
-/// The regression it exists for is the silent no-op: a second press that sends
-/// nothing at all, because the bootstrap arm declines once the card has ever
-/// had a message. That is why the summary is sent *outside* both the create
-/// arm and that arm, and it is what the third and fourth rows below assert.
-///
-/// The assertions are on the delivered **texts**, not on row counts or lengths.
-/// That is what pins the first trigger's second message as a summary rather
-/// than a second bootstrap — the other defect this shape had, when a design
-/// revision gave the summary only to the re-run branch and the first use
-/// produced a summary with no material. A count cannot tell those apart.
+/// Turns are deliberately not counted: `maybe_issue_turn` drains the whole pending queue into a single
+/// `turn_start`. The assertions are on delivered texts, not row counts, so a second bootstrap cannot pass as a summary.
 #[tokio::test]
 async fn the_first_trigger_sends_bootstrap_and_summary_and_each_later_one_sends_a_summary() {
     let b = boot().await;
@@ -1222,19 +820,7 @@ async fn the_first_trigger_sends_bootstrap_and_summary_and_each_later_one_sends_
         "three triggers, one conversation"
     );
 
-    /*
-     * The audit log says a human did this, and that is the whole point of
-     * `synthetic_actor`.
-     *
-     * `Actor::to_actor_id` maps `"user"` and every non-`ai:codex` value to
-     * `ActorId::User`, so what this pins is not "two humans agree" — it is that
-     * the caller's declared actor never reaches the message. The endpoint has
-     * no `Actor` extractor precisely so that no future edit can start
-     * forwarding one, and this is the assertion that notices if one does.
-     * Attributing a button press to an agent would make the log say the summary
-     * agent started itself, which is the `identity_migration_attribution_scope`
-     * failure exactly.
-     */
+    // The caller's declared actor never reaches the message: the endpoint has no `Actor` extractor.
     assert_eq!(
         b.actors_for("harness.user_message.enqueued").await,
         vec![stored(ActorId::User)],
@@ -1243,21 +829,8 @@ async fn the_first_trigger_sends_bootstrap_and_summary_and_each_later_one_sends_
     );
 }
 
-/// INV-TODAYDOC-011 — the summary conversation is the same card whatever the
-/// actor, and across a workspace re-point.
-///
-/// The re-point is the decisive half, and it is why this is an end-to-end case
-/// rather than only the module's golden. `derive_track_conversation_keys` feeds
-/// one digest to the card id **and** the operation key, so mixing
-/// `workspace_key_digest(cwd)` into the key — the shape `today.rs` uses for a
-/// key that carries no conversation identity — derives a *second* conversation
-/// card the moment the workspace moves. Nothing about that failure looks wrong:
-/// both requests succeed, and the user simply finds two conversations, one of
-/// which has the history.
-///
-/// The second server over the same database with a different workspace root is
-/// exactly what a `CALM_WORKSPACE_ROOT` change (or a pre-S2 upgrade) looks like
-/// to the rows.
+/// Mixing `workspace_key_digest(cwd)` into the key would derive a *second* conversation card the moment
+/// the workspace moves, with both requests succeeding.
 #[tokio::test]
 async fn a_repointed_workspace_and_a_different_actor_reuse_the_one_summary_conversation() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -1280,16 +853,7 @@ async fn a_repointed_workspace_and_a_different_actor_reuse_the_one_summary_conve
             .await
             .unwrap();
 
-    /*
-     * A declared AI actor, and what it must NOT change is the attribution.
-     *
-     * This used to assert the derived `card_id` was unchanged — an assertion no
-     * mutation can fail, because `derive_track_conversation_keys(track_id, key)`
-     * has no actor parameter at all. It read like a guard and was one only by
-     * accident (it covered the 403 path). The real property is that the header
-     * does not reach the message: the endpoint takes no `Actor`, so a caller
-     * claiming `ai:codex` still has the summary recorded against the human.
-     */
+    // A declared AI actor must not change the attribution: the endpoint takes no `Actor`.
     let (status, same) = before.summary(Some("ai:codex")).await;
     assert_eq!(status, StatusCode::OK, "body={same}");
     assert_eq!(
@@ -1337,18 +901,8 @@ async fn a_repointed_workspace_and_a_different_actor_reuse_the_one_summary_conve
     assert_eq!(enqueued, 4);
 }
 
-/// The projection counts what the kernel actually writes.
-///
-/// `activity_window`'s own cases build their rows with an INSERT, because they
-/// need to choose `at` to the millisecond. That leaves one thing they cannot
-/// claim: that a real emitter's row has the `kind` and the `scope_track` the
-/// query joins on. This drives two production write paths and reads the answer
-/// out of the endpoint's own gate — if either emitter's shape stopped matching,
-/// the endpoint would refuse a day on which two things demonstrably happened.
-///
-/// It also pins the visibility filter from the other side: the launchpad's own
-/// report edits, which every successful summary produces, are in the system
-/// area and must never be what keeps the window non-empty.
+/// Drives two production write paths and reads the answer out of the endpoint's own gate; the launchpad's
+/// own report edits are in the system area and must never be what keeps the window non-empty.
 #[tokio::test]
 async fn a_real_report_edit_and_a_real_lifecycle_change_are_both_counted_as_activity() {
     let b = boot().await;
@@ -1390,21 +944,8 @@ async fn a_real_report_edit_and_a_real_lifecycle_change_are_both_counted_as_acti
     );
 }
 
-/// A dormant harness is recovered by re-submitting `planner-harness-start`, and
-/// the conversation's transcript survives it.
-///
-/// D5 makes this mandatory, and the reason is that with one long-lived
-/// conversation a single dormant session would kill the button for good: there
-/// is no other route back to a live harness, so the button would answer 409
-/// forever until a human pressed Reset.
-///
-/// **What must NOT happen is the easy fix.** `reset_planner_harness_card` — the
-/// `/planner/reset` path — hard-codes `reset_harness_items: true`, which erases
-/// the card's harness items. Those items *are* the conversation the user asked
-/// for, so recovering through reset would answer 200 while deleting the thing
-/// the feature exists to produce. Nothing about that shows up in a status code,
-/// which is why the assertion below is on the item count and not on the
-/// response.
+/// Recovering through `/planner/reset` would erase the card's harness items (`reset_harness_items: true`),
+/// which are the conversation itself, so the assertion is on the item count and not on the response.
 #[tokio::test]
 async fn a_dormant_harness_is_restarted_without_erasing_the_conversation() {
     let b = boot().await;
@@ -1416,16 +957,8 @@ async fn a_dormant_harness_is_restarted_without_erasing_the_conversation() {
     let card_id = first["card_id"].as_str().unwrap().to_string();
     let launchpad = first["track_id"].as_str().unwrap().to_string();
 
-    // A turn's worth of transcript, so "did the recovery keep it?" has an
-    // answer. Written through the repo the harness itself writes with.
-    //
-    // Kept by IDENTITY, not by count. Since #1625 P2 the live harness writes
-    // a transcript row for every batch it drains — the bootstrap and the
-    // summary, before the restart and again after it — on its own schedule,
-    // so the card's row count is a fact about the drain's timing and not
-    // about erasure. `harness_items.id` is `AUTOINCREMENT`, so a deleted
-    // row's id is never handed out again: this row still standing under its
-    // own id after the recovery is what "not erased" means.
+    // A turn's worth of transcript, kept by IDENTITY, not by count: the live harness writes a transcript row
+    // per drained batch on its own schedule, and `harness_items.id` is `AUTOINCREMENT`.
     let sentinel = b
         .repo
         .harness_item_insert(
@@ -1443,14 +976,10 @@ async fn a_dormant_harness_is_restarted_without_erasing_the_conversation() {
         .await
         .unwrap();
 
-    // Everything after this point is the recovery's doing, which is what makes
-    // the attribution assertions below about the restart rather than about the
-    // first trigger.
+    // Everything after this point is the recovery's doing.
     let mark = b.last_event_id().await;
 
-    // Dormancy, in the shape `ensure_live_planner_harness` actually tests for: no
-    // session row in an active state for this card. That is trigger B of #649 —
-    // the state a failed start or a crashed session leaves behind.
+    // Dormancy, in the shape `ensure_live_planner_harness` tests for: no session row in an active state.
     sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE card_id = ?1")
         .bind(&card_id)
         .execute(b.repo.pool())
@@ -1473,38 +1002,8 @@ async fn a_dormant_harness_is_restarted_without_erasing_the_conversation() {
         "the recovery must not erase the transcript — that is the difference \
          between re-submitting a start and going through `/planner/reset`"
     );
-    /*
-     * Identity, not a count. The summary is the message the trigger was FOR, and
-     * a length assertion would read the right total whichever text arrived. This
-     * is the one branch where a content error is uniquely possible — the retry
-     * re-sends a text the handler chose — and no other case covers it.
-     */
-    /*
-     * Three messages: the mint's bootstrap, a SECOND bootstrap onto the
-     * restarted session, and the summary. The second bootstrap is the #1314
-     * ruling, not a regression — see [`TODAY_SUMMARY_BOOTSTRAP_TEXT`]. The
-     * predicate is bound to the card's ACTIVE runtime, and the dormancy staged
-     * above replaced it: the restarted session is a new codex thread holding
-     * none of the old one's context, so the standing instruction has to be said
-     * to it again or its first turn is exactly the bare-summary turn that text
-     * exists to prevent. Until #1314 the predicate answered "this card has had a
-     * message at some point" and the restarted session got the summary alone.
-     *
-     * The FIRST trigger's summary is the message missing from this total, and
-     * that half is unchanged. Since #1314 the bootstrap ships inside the mint
-     * transaction and hard-fires as the session's own first turn, so the same
-     * trigger's summary lands behind it on that session's queue; the dormancy
-     * supersedes that session and the restart inherits nothing from it —
-     * `session_projection_active_for_card_tx` reads ACTIVE rows only — so it is
-     * stranded on a queue no harness will drain again.
-     *
-     * `delivered` is deliberately the narrow read (every turn plus the card's
-     * NEWEST session queue), because that is exactly the reachable set: a
-     * stranded message must not be counted as delivered. A read widened to
-     * every persisted queue would total 4 here and would go on totalling 4 if
-     * the summary were stranded for any other reason, which is the dimension
-     * this assertion exists to hold.
-     */
+    // Three messages: the mint's bootstrap, a SECOND bootstrap onto the restarted session (a new codex thread
+    // holding none of the old context), and the summary; the first trigger's summary is stranded on the superseded session's queue.
     assert_eq!(
         b.delivered(
             &card_id,
@@ -1519,28 +1018,9 @@ async fn a_dormant_harness_is_restarted_without_erasing_the_conversation() {
          reachable summary — the first trigger's summary was stranded on the \
          superseded session's queue"
     );
-    /*
-     * The restart is the kernel's, and it is the one place in this module that
-     * constructs `ActorId::Kernel` directly — it has to, because
-     * `Actor("kernel").to_actor_id()` silently degrades to `User`.
-     *
-     * Nobody asked for this restart: the user asked for a summary and the
-     * server decided a harness needed re-opening. Recording it as a human act
-     * would put a session start in the log that no human performed. The
-     * messages stay the human's (asserted above), so this also pins that the
-     * two attributions did not collapse into one.
-     */
-    /*
-     * `card.updated` specifically, because that is the event
-     * `PlannerHarnessStartAdapter` writes under the operation payload's `actor` —
-     * i.e. the one row whose attribution this module chose.
-     *
-     * A first version asked only "is any event about this card since the mark
-     * attributed to the kernel", and that was a fake gate: it stayed green when
-     * the restart was attributed to the user, because unrelated kernel-authored
-     * rows land in the same window. Measured 8/8 green under exactly that
-     * mutation.
-     */
+    // The restart is the kernel's: `Actor("kernel").to_actor_id()` silently degrades to `User`, so
+    // `ActorId::Kernel` is constructed directly.
+    // `card.updated` specifically: the event `PlannerHarnessStartAdapter` writes under the operation payload's `actor`.
     let restart_actors = b
         .actors_for_card_after(mark, &card_id, "card.updated")
         .await;
@@ -1560,29 +1040,8 @@ async fn a_dormant_harness_is_restarted_without_erasing_the_conversation() {
     );
 }
 
-/// A derived card that exists with an **empty transcript** still gets the
-/// bootstrap. Both review channels found this from opposite ends.
-///
-/// **No production route is known to reach that state since #1314.** The
-/// bootstrap now ships inside the mint transaction, so a create that succeeds
-/// has already enqueued it and a create that does not succeed either leaves no
-/// card or leaves one whose enqueued row committed alongside it. The
-/// post-operation `send_planner_input` that used to be able to fail on its own,
-/// leaving a minted card with an empty transcript, no longer exists.
-///
-/// **What this fixture is, then.** It stages the state by hand: the card is
-/// minted through the production endpoint under the production key, and then
-/// the audit rows that mint wrote are removed, leaving a live runtime and an
-/// empty transcript. That is the pair the predicate reads — `card_get` says
-/// yes, `user_message_enqueued_on_active_runtime` says no. It pins the predicate, not a
-/// reachable production sequence, and it must not be read as evidence that one
-/// exists.
-///
-/// What must NOT happen is what a card-only predicate does: skip the bootstrap
-/// and send only the summary. The trigger would then deliver ONE message where
-/// two are owed, and the standing "stand by" instruction would never reach the
-/// agent at all — for the life of the conversation, since the card exists from
-/// then on.
+/// No production route is known to reach this state (the bootstrap ships inside the mint transaction); the
+/// fixture stages it by hand and pins the predicate, not a reachable production sequence.
 #[tokio::test]
 async fn a_card_left_with_an_empty_transcript_still_receives_the_bootstrap() {
     let b = boot().await;
@@ -1612,9 +1071,7 @@ async fn a_card_left_with_an_empty_transcript_still_receives_the_bootstrap() {
         "the fixture must actually reproduce the empty transcript, or this \
          case proves nothing"
     );
-    // The mint's own two messages were really delivered; only the audit rows
-    // are gone. Baseline them so the assertion below is about what THIS trigger
-    // added rather than about what the mint left behind.
+    // The mint's own two messages were really delivered; only the audit rows are gone. Baseline them.
     assert_eq!(
         b.delivered(
             &card_id,
@@ -1657,61 +1114,16 @@ async fn a_card_left_with_an_empty_transcript_still_receives_the_bootstrap() {
     );
 }
 
-/// #1314 — a bootstrap stranded on a `failed` session is re-sent by the next
-/// trigger, and only by the next one.
-///
-/// **The state is reachable in production**, which is what separates this case
-/// from its empty-transcript sibling above. The mint enqueues the bootstrap
-/// inside its own transaction; `thread/start` then fails; compensation runs
-/// `delete_card` and *that* fails too, so the operation lands `Stuck` and the
-/// card survives — `deletable: false`, carrying the bootstrap on a `failed`
-/// session's pending queue with its `harness.user_message.enqueued` row
-/// committed alongside it.
-///
-/// Nothing will ever drain that queue: the dormant restart mints a fresh runtime
-/// and `session_projection_active_for_card_tx` inherits from an ACTIVE row only.
-/// Under the old "has this card ever had a row" predicate every later trigger
-/// therefore read `true` and sent the summary alone — measured on this exact
-/// fixture, press 2 delivered `[0 bootstraps, 1 summary]` and press 3 the same,
-/// forever, on a card the user cannot delete. Binding the predicate to the
-/// **current active runtime** is what heals it: the surviving row names the
-/// `failed` runtime, so it does not answer for the restarted one.
-///
-/// Both directions are asserted, because either alone is satisfiable by a
-/// broken predicate: press 2 must deliver the bootstrap (a constant-`true`
-/// predicate never does), and press 3 must not (a constant-`false` one always
-/// does).
-///
-/// **Two fixture devices, both named rather than implied.**
-/// `fail_next_thread_start_for_test` is armed only after the launchpad has been
-/// materialized through its own endpoint, so the one armed failure is spent by
-/// the conversation mint and not by the launchpad's harness start. The
-/// `BEFORE DELETE` trigger is what makes `delete_card` fail; it is dropped
-/// immediately afterwards, because its job is to stage this one compensation
-/// failure and nothing later in the case should run against a database that
-/// refuses to delete cards.
-///
-/// The premises below are asserted rather than assumed: without them a green run
-/// could mean the mint never failed, the card was deleted after all, the session
-/// is still active, or there was no stranded evidence row to be fooled by — none
-/// of which exercise the hazard.
+/// Reachable in production: the mint enqueues the bootstrap in its own transaction, `thread/start` fails,
+/// compensation's `delete_card` fails too, so the card survives with the bootstrap stranded on a `failed` session's queue.
 #[tokio::test]
 async fn a_stranded_bootstrap_on_a_failed_session_is_re_sent_by_the_next_trigger() {
     let b = boot().await;
     let track_id = b.user_track("stranded").await;
     b.edit_report(&track_id, "something happened").await;
 
-    // The launchpad first, through its own endpoint, and **twice**. Every
-    // `ensure` submits a `planner-harness-start` and the fake mints a thread for
-    // it, so an armed failure would be spent there instead of on the
-    // conversation mint. The first call runs under the `bootstrap` idempotency
-    // key and the second under `reuse` — a *different* key, so it is a second
-    // real start, not a replay. Only from the third `ensure` on (the one
-    // `POST /api/today/summary` performs itself) does the key repeat and the
-    // operation replay without touching the app-server. Measured: with a single
-    // pre-`ensure` the armed failure landed on the launchpad's `reuse` start and
-    // the endpoint answered `launchpad exists but harness start failed`, having
-    // never reached the conversation at all.
+    // The launchpad first, through its own endpoint, and **twice**: the first `ensure` runs under the `bootstrap`
+    // key and the second under `reuse`, so an armed failure would otherwise be spent there instead of on the conversation mint.
     let mut launchpad = Value::Null;
     for _ in 0..2 {
         let (status, body) = b
@@ -1851,36 +1263,8 @@ async fn a_stranded_bootstrap_on_a_failed_session_is_re_sent_by_the_next_trigger
     );
 }
 
-/// #1314 — evidence stamped with a runtime that has since been **replaced** is
-/// not evidence, and the predicate that says so is one statement.
-///
-/// **What this case is a regression for.** The predicate used to be two
-/// autocommit reads: pick the card's ACTIVE runtime, then look for that
-/// runtime's `harness.user_message.enqueued` row. `/planner/reset` takes the
-/// *recovery* lock, not the first-message claim this caller holds, so it can
-/// supersede R1 and start R2 between those two reads. Read 1 then reports R1,
-/// read 2 finds R1's own row and answers `true`, so the bootstrap is skipped —
-/// and the summary that follows unconditionally writes R2's own enqueued row, so
-/// every later trigger reads `true` legitimately and skips it again. The standing
-/// instruction never arrives at all.
-///
-/// **The interleaving itself is not constructed here, and that is not a
-/// shortcut.** Constructing it needs a suspension point *between* the two reads;
-/// the fix is that there is no longer anything between them, because there is one
-/// statement, and a single SQLite statement reads one snapshot. There is no hook
-/// a fixture could park on, so a "race" case here would either hammer two
-/// endpoints and hope — green whichever way the scheduler ran — or park on a
-/// rendezvous that production no longer contains. What is asserted instead is the
-/// property the race violated, at the two levels that can be observed:
-///
-/// 1. the production statement, run verbatim, answers `false` when the surviving
-///    evidence names a runtime that is no longer the active one (and `true`
-///    before the replacement, or a constant-`false` statement would pass);
-/// 2. end to end, the trigger after the replacement delivers the bootstrap
-///    again — the "eventually delivered, never permanently skipped" half.
-///
-/// The replacement is staged through `/planner/reset`, the endpoint whose lock
-/// ordering made the race reachable, rather than by editing `worker_sessions`.
+/// `/planner/reset` takes the recovery lock, not the first-message claim, so it can replace the active
+/// runtime under this caller; the predicate is one SQLite statement so it reads one snapshot.
 #[tokio::test]
 async fn evidence_bound_to_a_replaced_runtime_is_not_read_as_evidence() {
     let b = boot().await;
@@ -1956,13 +1340,8 @@ async fn evidence_bound_to_a_replaced_runtime_is_not_read_as_evidence() {
     // …and the end-to-end half: the bootstrap really is delivered again.
     let (status, second) = b.summary(None).await;
     assert_eq!(status, StatusCode::OK, "body={second}");
-    // `await_reached_appserver` is deliberately NOT used here: R1's bootstrap is
-    // already in this server's turn texts, so it would return the instant it
-    // looked and would say nothing about the message this trigger sent. What
-    // discriminates is the split below — measured [2, 2] over 4 messages: the
-    // mint's bootstrap and summary, both folded into R1's turns, plus a bootstrap
-    // AND a summary sitting on R2's queue. A predicate still fooled by R1's rows
-    // sends the summary alone and reads [1, 2] over 3.
+    // `await_reached_appserver` is deliberately NOT used here: R1's bootstrap is already in this server's turn
+    // texts, so it would return at once and say nothing about the message this trigger sent.
     assert_eq!(
         b.delivered(
             &card_id,
@@ -1978,25 +1357,8 @@ async fn evidence_bound_to_a_replaced_runtime_is_not_read_as_evidence() {
     );
 }
 
-/// D5's create-409 fallback: **conflict ⇒ resolve the derived card ⇒ carry on
-/// to the planner input.**
-///
-/// The window is one request wide — between this handler's `card_get` and its
-/// create, a concurrent request under the same fixed key can mint the card —
-/// and it is *created* here rather than waited for. `tokio::join!` does not
-/// order two requests, so a case that fired two and hoped would be green on a
-/// scheduler that serialised them, reporting success for a run in which the arm
-/// was never entered. The counters are what prove it was: `attempts` says the
-/// request found no card, `conflicts` says it took the fallback.
-///
-/// The interloper is the production conversation endpoint under the same key
-/// with **different text**, because that is what makes the conflict permanent
-/// rather than an idempotent replay: the first message is bound into the
-/// operation payload as a SHA-256, so the two submissions collide on
-/// `insert_operation`'s "same key, different payload hash" — the 409 that never
-/// expires, since `operations` has no pruner. Failing outright there would
-/// leave the button dead forever on a state the caller asked for and that now
-/// exists.
+/// The window between `card_get` and the create is created here, not waited for; the interloper uses the
+/// same key with **different text**, so the conflict is a permanent payload-hash 409, not an idempotent replay.
 #[tokio::test]
 async fn a_create_that_loses_the_key_race_resolves_the_card_and_still_sends() {
     let barrier = Arc::new(tokio::sync::Barrier::new(2));
@@ -2028,10 +1390,8 @@ async fn a_create_that_loses_the_key_race_resolves_the_card_and_still_sends() {
         )
     });
 
-    // Wait until the request has passed `card_get` and found nothing. Only then
-    // is planting a card guaranteed to produce the conflict; acting earlier
-    // would make it take the "card already exists" path and never reach the
-    // create arm at all.
+    // Wait until the request has passed `card_get` and found nothing; planting earlier would take the
+    // "card already exists" path.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while b.create_counters.snapshot().0 == 0 {
         assert!(
@@ -2093,24 +1453,8 @@ async fn a_create_that_loses_the_key_race_resolves_the_card_and_still_sends() {
         1,
         "the race must not leave two conversations"
     );
-    /*
-     * The interloper's own first message, then the summary the trigger was for
-     * — asserted by identity, which is the only way to see that the second
-     * message is the summary and the first is NOT the bootstrap.
-     *
-     * The bootstrap is deliberately absent. The transcript is no longer empty,
-     * and the predicate is "has anything been enqueued", not "was the bootstrap
-     * delivered" — see `TODAY_SUMMARY_BOOTSTRAP_TEXT` for why a user speaking
-     * first suppresses it permanently and why that is the right ruling rather
-     * than a gap. A row-count assertion here would read `2` and call it
-     * "bootstrap + summary", which is exactly the mistake this case used to
-     * make.
-     *
-     * The interloper posts to `POST /api/tracks/{launchpad}/conversations`, so
-     * since #1343 it also carries the day's opening briefing — three messages,
-     * not two. It is named here rather than folded into the total so that the
-     * count stays a statement about *which* messages arrived.
-     */
+    // The interloper's own first message, then the summary — asserted by identity. The bootstrap is deliberately
+    // absent (a user speaking first suppresses it), and the interloper also carries the day's opening briefing: three messages.
     assert_eq!(
         b.delivered(
             &card_id,
@@ -2129,48 +1473,8 @@ async fn a_create_that_loses_the_key_race_resolves_the_card_and_still_sends() {
     );
 }
 
-/// The per-card first-message claim, which the recovery send must hold.
-///
-/// **This is a race this handler owns.** The bootstrap arm is a read
-/// (`user_message_enqueued_on_active_runtime`) followed by a send, and nothing else
-/// serializes it: two concurrent triggers against a card with an empty
-/// transcript both read "nothing enqueued" and both send, and the agent gets
-/// the same standing instruction twice. Measured — the case below is that
-/// measurement.
-///
-/// The window is open **only** in the empty-transcript state, which is what
-/// makes it worth a case rather than a comment: an ordinary double-click on a
-/// first trigger is serialized by the create arm's idempotency, so the obvious
-/// test would be green. And the state is persistent — the card is
-/// `deletable: false` and never goes away.
-///
-/// The race is **created**, not hoped for: both requests park at a rendezvous
-/// placed before the claim, so they are guaranteed to contend rather than
-/// depending on a scheduler that happens to interleave them. The
-/// `bootstrap_arrivals` check below is a fixture sanity check and nothing more
-/// — see its message for why it cannot be the proof.
-///
-/// **Two servers, one in-memory database, and that coupling is closed
-/// explicitly.** The state is staged on a separate server because a
-/// `Barrier::new(2)` would park the staging request forever — it has no partner
-/// (same fixture shape as the re-point case). The consequence is that the
-/// staging server's harness stays alive against the same `worker_sessions` row
-/// while `b` recovers a second harness from the persisted snapshot, and
-/// whatever staging has not yet delivered is inherited by `b` and re-delivered
-/// into `b`'s own fake app-server.
-///
-/// An earlier version of this doc named that hazard and then declared it stable
-/// on the strength of 25 unmutated runs. **That claim was false**: under CPU
-/// starvation (#1309 — pinned to two cores, 12 concurrent copies) 105 of 144
-/// runs failed, every one of them by inheritance — `b`'s single turn held four
-/// `User says:` blocks (`summary / bootstrap / summary / summary`) against
-/// three enqueued rows, the leading summary being staging's. Whether staging
-/// happens to leave anything behind is pure scheduling luck — the harness joins
-/// adjacent messages into one turn only when both arrive before the run loop
-/// ticks — so the fixture no longer depends on the answer: staging is shut down
-/// and its residue cleared before `b` is booted, and `b` inherits nothing by
-/// construction. Counts are read from `b`'s own fake app-server, which is what
-/// keeps staging's two messages out of the totals in the first place.
+/// The bootstrap arm is a read followed by a send, serialized only by the per-card first-message claim; the
+/// window is open only in the empty-transcript state. Both requests park at a rendezvous before the claim, so they contend by construction.
 #[tokio::test]
 async fn two_concurrent_triggers_on_an_empty_transcript_deliver_one_bootstrap() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -2181,12 +1485,8 @@ async fn two_concurrent_triggers_on_an_empty_transcript_deliver_one_bootstrap() 
     let (status, first) = staging.summary(None).await;
     assert_eq!(status, StatusCode::OK, "body={first}");
     let card_id = first["card_id"].as_str().unwrap().to_string();
-    // #1309 — decouple the two servers BEFORE `b` exists. `b` recovers its
-    // harness from this card's persisted snapshot, so anything staging left in
-    // the queue would be inherited and re-delivered into `b`'s own fake
-    // app-server, and every count below would then be counting staging's
-    // messages too. Staging is shut down and its residue cleared rather than
-    // waited on — see the helper for why waiting cannot work here.
+    // Decouple the two servers BEFORE `b` exists: `b` recovers its harness from this card's persisted
+    // snapshot, so anything staging left in the queue would be inherited and re-delivered.
     staging
         .quiesce_and_clear_queue(&card_id, &[TODAY_SUMMARY_BOOTSTRAP_TEXT, summary_marker()])
         .await;
@@ -2238,42 +1538,10 @@ async fn two_concurrent_triggers_on_an_empty_transcript_deliver_one_bootstrap() 
          they both park at — and a missing partner would hang there rather than \
          reach this line"
     );
-    /*
-     * Scoped to THIS server: the staging server's own two messages went to its
-     * own fake app-server and are not visible here, so these counts are exactly
-     * what the two concurrent triggers delivered.
-     *
-     * `expected_total` is the live enqueued-row count rather than a literal, so
-     * that a run which delivers a second bootstrap still SETTLES — four enqueued
-     * rows, four counted messages — and then fails on the assertion below with
-     * both counts in the message.
-     *
-     * That guarantee only holds while every message counted here has an
-     * enqueued row on THIS card, which is what the clear above buys — and #1309
-     * is the counterexample to the older, unconditional version of this
-     * comment: an inherited message is counted and has no row, the totals then
-     * never agree, and the case died on the settle deadline with no diagnosis
-     * rather than on this assertion. `delivered`'s deadline now dumps the texts
-     * for the same reason.
-     */
-    // Something actually reached the agent. `delivered` below counts queued and
-    // delivered together, so on its own it settles on a run where `b` handed
-    // the app-server nothing — measured under #1309: `[1, 2]` with all three
-    // messages still in the queue and zero turns issued, green and vacuous.
-    // Only the bootstrap can be claimed, and that is the fake's limit rather
-    // than a weakening: the fake never completes a turn, so whatever is not in
-    // the first turn is never delivered at all. The bootstrap is in it — it is
-    // the first message the harness is given.
-    //
-    // With the claim in place the bootstrap is provably first: request B blocks
-    // at `lock_card` until A's bootstrap `send_summary` has been awaited inside
-    // the lock. Removing the claim removes that ordering too, so the mutation
-    // can go red here by DEADLINE rather than by count — a summary is observed
-    // first, the next tick issues a turn holding only it (`UserMessage` is
-    // hard-fire, so debounce does not hold it back), and the bootstrap sits
-    // behind a turn the fake never completes. Both failures are legible (the
-    // deadline dumps turns and queue), but "red by count" is a property of the
-    // runs that were measured, not a guarantee of the mutation.
+    // Scoped to THIS server. `expected_total` is the live enqueued-row count rather than a literal, so a run
+    // that delivers a second bootstrap still SETTLES and then fails on the assertion below.
+    // Something actually reached the agent: `delivered` counts queued and delivered together, so on its own it
+    // settles on a run where `b` handed the app-server nothing. Only the bootstrap can be claimed: the fake never completes a turn.
     let bootstraps_reaching_the_agent = b
         .await_reached_appserver(&card_id, TODAY_SUMMARY_BOOTSTRAP_TEXT)
         .await;

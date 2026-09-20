@@ -1,7 +1,5 @@
-// The two compact creation preferences shared by the Area editor and the New
-// Track composer. Their hosts own state and directory browsing; this module
-// owns the visible controls so the two surfaces cannot drift into different
-// field chrome or different selection semantics.
+// The two compact creation preferences shared by the Area editor and the New Track
+// composer; hosts own state and directory browsing, this module owns the controls.
 
 import { Button } from '@astryxdesign/core/Button';
 import { Divider } from '@astryxdesign/core/Divider';
@@ -66,12 +64,7 @@ export function TemplatePill({
   );
 }
 
-/**
- * The shared compact starting-point control. New Track supplies recipes and
- * its manage action; the Area editor uses the built-in-template-only adapter
- * above. Keeping the controlled menu and its Escape focus handoff here avoids
- * two subtly different pill implementations.
- */
+/** The shared compact starting-point control; New Track supplies recipes and its manage action. */
 export function StartingPointPill({
   templates, templatesLoaded, recipes = [], value, onChange, placement,
   onManageRecipes, controlLabel = 'Template', triggerId, isDisabled = false,
@@ -105,9 +98,8 @@ export function StartingPointPill({
   const showGroupHeadings = recipes.length > 0 && templates.length > 0;
   const closeOnEscape = (event: KeyboardEvent<HTMLSpanElement>) => {
     if (event.key !== 'Escape' || !open) return;
-    // Own Escape before a host Dialog's document listener sees it. Some menu
-    // rows also host a HoverCard whose native Escape listener prevents the
-    // DropdownMenu's delegated handler from restoring focus reliably.
+    // Own Escape before a host Dialog's document listener sees it: a HoverCard's
+    // native Escape listener keeps the DropdownMenu from restoring focus reliably.
     event.preventDefault();
     event.stopPropagation();
     setOpen(false);

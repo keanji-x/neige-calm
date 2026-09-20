@@ -1,84 +1,11 @@
-//! Server-side terminal model: vte-driven grid + scrollback + snapshot
-//! serialization.
-//!
-//! Pure IO-free types. No tokio, no `Arc`/`Mutex`. The render plane in
-//! [`crate::terminal_session::RenderPlane`] owns one [`TerminalModel`]; the
-//! daemon shell feeds it raw PTY bytes via [`TerminalModel::feed`].
-//!
-//! ## Architecture (#69)
-//!
-//! The VT parser and the terminal state are split by a [`TerminalHandler`]
-//! trait. [`VteProcessor`] owns a `vte::Parser` and translates each
-//! `vte::Perform` callback into a `TerminalHandler` method call by VT
-//! semantics (e.g. `print` / `cursor_to` / `erase_screen`). The grid /
-//! cursor / scrollback / SGR mutation lives entirely in
-//! `impl TerminalHandler for TerminalModel` — no parsing happens there,
-//! no state mutation happens in `VteProcessor`.
-//!
-//! Reference tests use real terminal recordings (planned). Methodology
-//! inspired by Warp/Alacritty's `Handler`-style separation between VT
-//! parsing and grid mutation; Neige's implementation is original — no
-//! AGPL code reuse.
-//!
-//! ## Pipeline
-//!
-//! 1. PTY chunk arrives → `RenderPlane::on_pty_chunk(bytes)`.
-//! 2. `feed(bytes)` runs a [`VteProcessor`] over `&mut self` (since
-//!    `TerminalModel` implements [`TerminalHandler`]); each visible state
-//!    change bumps `rev` once.
-//! 3. The raw bytes are simultaneously broadcast as a `RenderPatch` with
-//!    `encoding = Vt` so xterm.js on the client gets the same bytes the
-//!    server's model just consumed.
-//! 4. On `ClientHello`, the render plane calls
-//!    [`TerminalModel::snapshot_vt`] with the client's *desired* geometry
-//!    (cols/rows). The result is a fresh ANSI byte stream that, when fed
-//!    into an empty xterm, reproduces the current visible state — bound
-//!    to the client's geometry, not the daemon's internal one.
-//! 5. If the client asked for scrollback, the plane also calls
-//!    [`TerminalModel::scrollback_vt`] and stuffs the result into
-//!    `RenderSnapshot.scrollback`.
-//!
-//! ## Coverage (and what's NOT covered)
-//!
-//! Implemented well enough for bash/zsh/codex/claude TUI:
-//! - CSI cursor moves: CUU/CUD/CUF/CUB/CUP/HVP
-//! - CSI erase: ED (J), EL (K) — all variants 0/1/2
-//! - CSI scroll: SU (S), SD (T)
-//! - CSI SGR (m): full attribute set including 256-color and truecolor
-//! - DECSET/DECRST 25 (cursor visibility — tracked but not emitted to wire)
-//! - C0 controls: BS, HT, LF, CR, BEL
-//! - DECSET host modes 9/1000/1002/1003/1006 (mouse), 1004 (focus),
-//!   1049 (alt-screen *flag*), 2004 (bracketed paste) — tracked and
-//!   re-emitted at the front of `snapshot_vt` so a fresh xterm.js after
-//!   browser refresh re-enters the same modes. Alt-screen still shares
-//!   the main grid (no second buffer yet).
-//!
-//! **EXPERIMENTAL / first-pass only — known gaps**:
-//! - **Alternate screen buffer (DECSET 1049)** — we track the flag so
-//!   reconnects restore `CSI ?1049h`, but we do not swap grids. vim /
-//!   less / htop still leak alt-screen cells into the main grid.
-//! - **OSC** — OSC 10/11 color queries (`ESC ] N ; ? ESC \`) are answered
-//!   when default fg/bg are configured (used to follow the host page theme
-//!   — issue #177). Other OSC sequences (title, hyperlink, OSC 12 cursor
-//!   color, etc.) remain ignored.
-//! - **Sixel / kitty graphics** — ignored.
-//! - **Wide characters (CJK, emoji)** — treated as single-width. Lines
-//!   with wide chars may render at the wrong width on snapshot.
-//! - **Combining characters** — overwrite the previous cell instead of
-//!   combining. Visible artifacts on RTL / Hindi / Arabic.
-//! - **DEC line drawing / G0/G1 character sets** — ignored.
-//! - **Tab stops** — fixed at every 8 columns (no DECSC / TBC).
-//!
-//! 80% correctness against typical shells is the bar; the gap above is
-//! the 20% we explicitly accept in this PR.
+//! Server-side terminal model: vte-driven grid + scrollback + snapshot serialization. Pure IO-free types.
+//! Known gaps: no alt-screen grid swap, wide/combining chars treated as single-width, no scroll region, tab stops fixed at 8.
 
 use std::collections::VecDeque;
 
 use vte::{Params, Parser, Perform};
 
-/// Scrollback limit honored by [`TerminalModel::scrollback_vt`] and by the
-/// snapshot caller when deciding whether to populate
-/// `RenderSnapshot.scrollback`.
+/// Scrollback limit honored by [`TerminalModel::scrollback_vt`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScrollbackLimit {
     /// No scrollback emitted.
@@ -96,10 +23,7 @@ pub struct Cursor {
     pub col: u16,
 }
 
-/// Colors. `Default` means "the terminal's default fg/bg"; emitting it as
-/// SGR is `39`/`49`. `Indexed(0..=15)` map to standard ANSI 30-37 / 90-97
-/// (fg) and 40-47 / 100-107 (bg). Higher indices use SGR 38;5;n / 48;5;n.
-/// Truecolor uses SGR 38;2;r;g;b / 48;2;r;g;b.
+/// `Default` means the terminal's default fg/bg (SGR `39`/`49`); `Indexed(0..=15)` map to ANSI 30-37/90-97, higher use `38;5;n`; `Rgb` uses `38;2;r;g;b`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Color {
     #[default]
@@ -108,8 +32,7 @@ pub enum Color {
     Rgb(u8, u8, u8),
 }
 
-/// SGR (Select Graphic Rendition) state. Cleared by `ESC[0m`; individual
-/// attributes flipped by their respective SGR codes.
+/// SGR (Select Graphic Rendition) state.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SgrState {
     pub fg: Color,
@@ -128,9 +51,7 @@ impl SgrState {
         *self = Self::default();
     }
 
-    /// Serialize this state as the minimal SGR sequence that would set it
-    /// from a clean (reset) state. Always starts with a `0;` reset to
-    /// avoid inheriting attributes from whatever preceded.
+    /// The minimal SGR sequence that sets this state from a reset; always starts with `0;` so nothing is inherited.
     pub fn to_sgr_bytes(self) -> Vec<u8> {
         let mut params: Vec<String> = vec!["0".to_string()];
         if self.bold {
@@ -172,9 +93,7 @@ impl SgrState {
     }
 }
 
-/// One cell in the grid: the printable character (single-width assumed)
-/// plus its SGR attributes at the time of write. `' '` with default SGR
-/// is the canonical "blank cell".
+/// One cell in the grid; `' '` with default SGR is the canonical blank cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cell {
     pub ch: char,
@@ -264,13 +183,7 @@ impl Grid {
     }
 }
 
-/// Erase region selector for [`TerminalHandler::erase_screen`] /
-/// [`TerminalHandler::erase_line`]. Matches xterm's CSI J / CSI K modes
-/// (0 / 1 / 2) but named for clarity.
-///
-/// VT note: CSI 3 J ("also clear scrollback") is folded into [`Self::All`]
-/// — we don't expose a separate variant because the current
-/// implementation doesn't distinguish it.
+/// Erase region selector matching xterm's CSI J / CSI K modes 0/1/2; CSI 3 J (also clear scrollback) is folded into `All`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EraseMode {
     /// From the cursor to the end of the line / screen (CSI 0 J / 0 K).
@@ -281,53 +194,32 @@ pub enum EraseMode {
     All,
 }
 
-/// Trait implemented by the terminal state (grid + cursor + SGR +
-/// scrollback) consumed by [`VteProcessor`].
-///
-/// Methods are named after VT semantics rather than byte codes; the
-/// processor adapts each `vte::Perform` callback into the appropriate
-/// trait method, so SGR parsing, CUP decoding, etc. live exactly once on
-/// the implementation side.
-///
-/// Reference tests use real terminal recordings (planned). Methodology
-/// inspired by Warp/Alacritty `Handler` separation; no AGPL code reuse.
+/// Terminal state (grid + cursor + SGR + scrollback) consumed by [`VteProcessor`]; methods are named after VT semantics, not byte codes.
 pub trait TerminalHandler {
-    /// Print one printable character at the current cursor position.
-    /// Wide characters / combining marks are treated as single-width —
-    /// see module doc "EXPERIMENTAL" notes.
+    /// Print one printable character at the cursor; wide characters / combining marks are treated as single-width.
     fn print(&mut self, c: char);
-
-    // ---- C0 controls ------------------------------------------------
 
     /// CR (0x0D) — move cursor to column 0 of the current row.
     fn carriage_return(&mut self);
-    /// LF / VT / FF (0x0A..=0x0C) — move cursor down one row, scrolling
-    /// the top line into scrollback if past the bottom.
+    /// LF / VT / FF (0x0A..=0x0C) — cursor down one row, scrolling at the bottom.
     fn line_feed(&mut self);
-    /// BS (0x08) — move cursor one column left (no wrap to previous
-    /// row).
+    /// BS (0x08) — cursor one column left, no wrap to the previous row.
     fn backspace(&mut self);
-    /// HT (0x09) — advance cursor to the next 8-column tab stop, clamped
-    /// to `cols - 1`.
+    /// HT (0x09) — advance to the next 8-column tab stop, clamped to the last column.
     fn horizontal_tab(&mut self);
     /// BEL (0x07) — noop in this implementation.
     fn bell(&mut self);
-
-    // ---- CSI cursor moves -------------------------------------------
 
     /// CUU (CSI A) — cursor up by `n`, saturating at row 0.
     fn cursor_up(&mut self, n: u16);
     /// CUD (CSI B / CSI e) — cursor down by `n`, clamped to last row.
     fn cursor_down(&mut self, n: u16);
-    /// CUF (CSI C / CSI a) — cursor forward (right) by `n`, clamped to
-    /// last col.
+    /// CUF (CSI C / CSI a) — cursor forward by `n`, clamped to the last column.
     fn cursor_forward(&mut self, n: u16);
     /// CUB (CSI D) — cursor back (left) by `n`, saturating at col 0.
     fn cursor_backward(&mut self, n: u16);
 
-    /// CUP / HVP (CSI H / CSI f) — absolute cursor position. `row` /
-    /// `col` are 0-indexed (the parser has already converted from the
-    /// 1-indexed wire form). Both axes clamp into grid bounds.
+    /// CUP / HVP (CSI H / CSI f) — absolute cursor position, 0-indexed.
     fn cursor_to(&mut self, row: u16, col: u16);
 
     /// CHA / HPA (CSI G / CSI \`) — absolute column position, 0-indexed.
@@ -336,119 +228,53 @@ pub trait TerminalHandler {
     /// VPA (CSI d) — absolute row position, 0-indexed.
     fn cursor_row(&mut self, row: u16);
 
-    // ---- CSI erase --------------------------------------------------
-
     /// ED (CSI J) — erase in display, relative to the cursor.
     fn erase_screen(&mut self, mode: EraseMode);
 
     /// EL (CSI K) — erase in line, relative to the cursor.
     fn erase_line(&mut self, mode: EraseMode);
 
-    // ---- CSI scroll -------------------------------------------------
-
-    /// SU (CSI S) — scroll the viewport up by `n` lines; the top `n`
-    /// rows move into scrollback (no scroll region).
+    /// SU (CSI S) — scroll the viewport up by `n`; the top rows move into scrollback (no scroll region).
     fn scroll_up(&mut self, n: u16);
-    /// SD (CSI T) — scroll the viewport down by `n` lines; the bottom
-    /// `n` rows are dropped, top `n` filled with blanks.
+    /// SD (CSI T) — scroll the viewport down by `n`; bottom rows dropped, top filled with blanks.
     fn scroll_down(&mut self, n: u16);
 
-    // ---- SGR --------------------------------------------------------
-
-    /// SGR (CSI m) — set graphic rendition. `params` is the
-    /// already-flattened sequence of SGR codes (extended-color
-    /// `38;5;n` / `38;2;r;g;b` arrive as consecutive elements; the
-    /// implementation walks them).
+    /// SGR (CSI m); `params` is the already-flattened code sequence (extended colors arrive as consecutive elements).
     fn set_sgr(&mut self, params: &[u16]);
-
-    // ---- DEC private modes -----------------------------------------
 
     /// DECTCEM (CSI ?25 h/l) — show or hide the cursor.
     fn set_cursor_visible(&mut self, visible: bool);
 
-    /// DECSET 1049 — enter alternate screen. The current `TerminalModel`
-    /// impl records the flag for snapshot restore and does **not** swap
-    /// grids; `rev()` stays unchanged.
+    /// DECSET 1049 — enter alternate screen. Only a flag for snapshot restore; grids are not swapped and `rev()` stays unchanged.
     fn enter_alt_screen(&mut self);
 
-    /// DECRST 1049 — exit alternate screen. Clears the flag; still no
-    /// second grid. Same no-bump-rev invariant as enter.
+    /// DECRST 1049 — exit alternate screen. Same no-bump-rev invariant as enter.
     fn exit_alt_screen(&mut self);
 
-    /// DECSET/DECRST mouse reporting (`CSI ? 9/1000/1002/1003/1006 h/l`).
-    /// Default noop so test handlers that do not care can skip it.
+    /// DECSET/DECRST mouse reporting (`CSI ? 9/1000/1002/1003/1006 h/l`). Default noop.
     fn set_mouse_mode(&mut self, _code: u16, _enabled: bool) {}
 
     /// DECSET/DECRST 2004 — bracketed paste. Default noop.
     fn set_bracketed_paste(&mut self, _enabled: bool) {}
 
-    /// DECSET/DECRST 1004 — focus event reporting (`CSI ?1004 h/l`).
-    /// `enabled = true` for `h` (the child opted in to receiving
-    /// `ESC[I`/`ESC[O` focus-in/out events), `false` for `l`.
-    ///
-    /// We track this purely as a *capability signal*, not because we
-    /// generate focus events from the model: the daemon reads it (via
-    /// [`crate::terminal_session::RenderPlane::focus_event_tracking`]) to
-    /// decide whether a child is a focus-aware TUI (codex opts in on
-    /// startup) or a passive consumer (a shell's line editor sits in raw
-    /// mode at the prompt but never enables 1004). Mirrors zellij's
-    /// `focus_event_tracking` gate.
-    ///
-    /// Invariant: this is a mode flag, not visible content — like
-    /// alt-screen it MUST NOT bump the render rev.
+    /// DECSET/DECRST 1004 — focus event reporting. Tracked purely as a capability signal (is the child a focus-aware TUI?);
+    /// a mode flag, not visible content, so it MUST NOT bump the render rev.
     fn set_focus_event_tracking(&mut self, enabled: bool);
 
-    /// OSC 10 / OSC 11 color query — `ESC ] 10 ; ? ST` or
-    /// `ESC ] 11 ; ? ST`. `slot` is `10` (default foreground) or `11`
-    /// (default background); the handler decides whether to push a
-    /// reply (`ESC ] slot ; rgb:RRRR/GGGG/BBBB ST`) into its
-    /// pending-write buffer.
-    ///
-    /// Default impl is a noop so non-`TerminalModel` test handlers
-    /// don't have to implement it. The real impl on `TerminalModel`
-    /// generates the OSC reply when default colors have been
-    /// configured via [`TerminalModel::set_default_colors`].
+    /// OSC 10 / OSC 11 color query (`ESC ] slot ; ? ST`); the handler may push a reply into its pending-write buffer. Default noop.
     fn osc_color_query(&mut self, _slot: u8) {}
 
-    /// DSR cursor position report (`CSI 6 n`) — the child probes for
-    /// the current cursor position and expects `ESC [ row;col R` back
-    /// (1-indexed wire format). codex's startup probe (#177) issues
-    /// this alongside OSC 10/11 / CSI ?u / CSI c and waits for the
-    /// reply before finalizing its terminal-capability cache; if we
-    /// stay silent it burns its full 100ms timeout.
-    ///
-    /// Default impl is a noop. Real impl on `TerminalModel` pushes
-    /// the reply into `pending_osc_replies`.
+    /// DSR cursor position report (`CSI 6 n`); the child expects `ESC [ row;col R` (1-indexed), and codex's startup probe burns its full timeout if we stay silent. Default noop.
     fn device_status_report_cursor(&mut self) {}
 
-    /// Kitty keyboard-enhancement query (`CSI ? u`) — the child asks
-    /// what kitty keyboard-protocol flags this terminal supports. We
-    /// support none, so the canonical reply is `ESC [ ? 0 u`. Same
-    /// startup-probe story as DSR: silence forces codex to wait the
-    /// full timeout.
-    ///
-    /// Default impl is a noop. Real impl on `TerminalModel` pushes
-    /// the reply into `pending_osc_replies`.
+    /// Kitty keyboard-enhancement query (`CSI ? u`); we support none, so the reply is `ESC [ ? 0 u`. Default noop.
     fn kitty_keyboard_query(&mut self) {}
 
-    /// Primary device attributes (`CSI c` / `CSI 0 c`) — the child
-    /// asks "what kind of terminal are you?". We answer with the
-    /// minimum xterm-compatible DA1 string `ESC [ ? 1 ; 0 c`
-    /// ("VT101, no options"), enough to satisfy codex's probe. DA2
-    /// (`CSI > c`) and DA3 (`CSI = c`) are NOT handled here — keep
-    /// the contract narrow.
-    ///
-    /// Default impl is a noop. Real impl on `TerminalModel` pushes
-    /// the reply into `pending_osc_replies`.
+    /// Primary device attributes (`CSI c` / `CSI 0 c`); answered with the minimum xterm-compatible `ESC [ ? 1 ; 0 c`. DA2/DA3 are NOT handled. Default noop.
     fn device_attributes_primary(&mut self) {}
 }
 
-/// VTE-to-handler adapter. Owns nothing of its own beyond a borrow of the
-/// underlying [`TerminalHandler`]; implements `vte::Perform` and forwards
-/// each callback to the appropriate trait method.
-///
-/// Never mutates grid / cursor / SGR state directly — all of that lives
-/// in `impl TerminalHandler for TerminalModel`.
+/// VTE-to-handler adapter: implements `vte::Perform` and forwards each callback to the [`TerminalHandler`]; never mutates state directly.
 pub struct VteProcessor<'a, H: TerminalHandler + ?Sized> {
     handler: &'a mut H,
 }
@@ -502,9 +328,7 @@ impl<H: TerminalHandler + ?Sized> Perform for VteProcessor<'_, H> {
     }
 
     fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
-        // DEC private (ESC[?...) sequences arrive with intermediates =
-        // b"?". We dispatch DECTCEM (25), DECSET 1049 (alt-screen) and
-        // DECSET 1004 (focus event reporting); everything else is a noop.
+        // DEC private (ESC[?...) sequences arrive with intermediates = b"?".
         if intermediates == b"?" {
             match action {
                 'h' => {
@@ -540,11 +364,7 @@ impl<H: TerminalHandler + ?Sized> Perform for VteProcessor<'_, H> {
                     }
                 }
                 'u' => {
-                    // Kitty keyboard-enhancement query (`CSI ? u`).
-                    // We don't implement the kitty progressive
-                    // protocol, so reply with flags=0. codex (#177)
-                    // probes this at startup and blocks on the
-                    // response.
+                    // Kitty keyboard-enhancement query (`CSI ? u`); codex probes this at startup and blocks on the response.
                     self.handler.kitty_keyboard_query();
                 }
                 _ => { /* unknown ?-CSI: noop */ }
@@ -552,7 +372,6 @@ impl<H: TerminalHandler + ?Sized> Perform for VteProcessor<'_, H> {
             return;
         }
 
-        // Vanilla CSI.
         match action {
             'A' => self.handler.cursor_up(Self::first_param_or(params, 1)),
             'B' | 'e' => self.handler.cursor_down(Self::first_param_or(params, 1)),
@@ -587,9 +406,7 @@ impl<H: TerminalHandler + ?Sized> Perform for VteProcessor<'_, H> {
             'S' => self.handler.scroll_up(Self::first_param_or(params, 1)),
             'T' => self.handler.scroll_down(Self::first_param_or(params, 1)),
             'm' => {
-                // Flatten (semicolon + colon subparams) into a single
-                // sequence; SGR walking lives in the handler so it sees
-                // every code in order.
+                // Flatten (semicolon + colon subparams) into a single sequence; SGR walking lives in the handler.
                 if params.is_empty() {
                     self.handler.set_sgr(&[]);
                 } else {
@@ -597,45 +414,25 @@ impl<H: TerminalHandler + ?Sized> Perform for VteProcessor<'_, H> {
                     self.handler.set_sgr(&flat);
                 }
             }
-            // DSR — Device Status Report. `CSI 6 n` asks for the
-            // cursor position; reply with `ESC [ row;col R`
-            // (1-indexed). Other DSR params (5 = "status",
-            // 25 = "DECSRC", ...) are ignored. Guard on empty
-            // intermediates so we don't mishandle DEC-private
-            // DSR variants like `CSI ? 6 n`.
+            // DSR `CSI 6 n`; guard on empty intermediates so DEC-private variants like `CSI ? 6 n` are not mishandled.
             'n' if intermediates.is_empty() && Self::first_param_or(params, 0) == 6 => {
                 self.handler.device_status_report_cursor();
             }
-            // DA1 — Primary Device Attributes. `CSI c` (or
-            // `CSI 0 c`) asks "what kind of terminal are you?".
-            // DA2 (`CSI > c`) and DA3 (`CSI = c`) carry the same
-            // final byte but live behind their own intermediates
-            // — gate on empty intermediates so we only answer DA1.
-            // Param defaults to 0 when omitted (per VT100 specification) so
-            // both `CSI c` and `CSI 0 c` route here; non-zero params
-            // fall through to the noop arm.
+            // DA1: gate on empty intermediates so DA2 (`CSI > c`) / DA3 (`CSI = c`) are not answered; param defaults to 0 when omitted.
             'c' if intermediates.is_empty() && Self::first_param_or(params, 0) == 0 => {
                 self.handler.device_attributes_primary();
             }
-            // Unknown CSI: noop. NEVER panic — the protocol allows the
-            // child to emit anything (mouse, bracketed paste, ...).
+            // Unknown CSI: noop. NEVER panic — the child may emit anything.
             _ => {}
         }
     }
 
     fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, _byte: u8) {
-        // ESC-only sequences (no CSI / OSC) — DECSC / DECRC / index / RI /
-        // charset selection. All currently noop; flagged EXPERIMENTAL.
+        // ESC-only sequences (DECSC / DECRC / index / RI / charset selection): all noop.
     }
 
     fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
-        // OSC 10 (default fg) / OSC 11 (default bg) with `?` as the value
-        // payload is a query — codex (and many TUIs) probes the terminal
-        // for its theme this way at startup and on focus regains. Pass
-        // it through to the handler so the model can push a reply into
-        // its pending-write buffer; the daemon flushes those bytes to the
-        // PTY master after `feed()`. Everything else stays noop (title,
-        // hyperlinks, ...).
+        // OSC 10/11 with `?` as the value is a theme query; the model pushes a reply into its pending-write buffer and the daemon flushes it after `feed()`.
         let Some(first) = params.first() else { return };
         let Some(second) = params.get(1) else { return };
         if *second != b"?" {
@@ -644,10 +441,7 @@ impl<H: TerminalHandler + ?Sized> Perform for VteProcessor<'_, H> {
         let slot = match *first {
             b"10" => 10u8,
             b"11" => 11u8,
-            // OSC 12 (cursor color) is deliberately silent — codex's
-            // startup probe doesn't query it (verified via strace in
-            // #177 P2). Adding a reply would be harmless but unneeded;
-            // staying silent matches every other non-10/11 OSC slot.
+            // OSC 12 (cursor color) is deliberately silent, like every other non-10/11 slot.
             _ => return,
         };
         self.handler.osc_color_query(slot);
@@ -658,10 +452,7 @@ impl<H: TerminalHandler + ?Sized> Perform for VteProcessor<'_, H> {
     fn unhook(&mut self) {}
 }
 
-/// High-level driver: owns the [`vte::Parser`], the grid, cursor, SGR
-/// state, and scrollback. Implements [`TerminalHandler`] so
-/// [`VteProcessor`] can drive it directly. Exposes `feed` / `resize` /
-/// `snapshot_vt` / `scrollback_vt` to the daemon.
+/// High-level driver: owns the parser, grid, cursor, SGR state and scrollback; implements [`TerminalHandler`].
 pub struct TerminalModel {
     parser: Parser,
     grid: Grid,
@@ -671,19 +462,10 @@ pub struct TerminalModel {
     scrollback_max_lines: usize,
     rev: u32,
     cursor_visible: bool,
-    /// DECSET 1004 (focus event reporting) state. `true` once the child
-    /// has sent `CSI ?1004 h`, cleared on `CSI ?1004 l`. The daemon reads
-    /// this as a "focus-aware TUI" signal to gate the mid-session `ESC[I`
-    /// theme nudge (see `daemon.rs` `Effect::TerminalThemeUpdate`) — a
-    /// shell at the prompt (ZLE raw, no 1004) would otherwise see a stray
-    /// focus-in byte in its line buffer (#295 / PR #296 / #305).
-    /// Per-`TerminalModel`, so per-PTY/session and dies with the model;
-    /// single writer (parser) + single reader (session loop) under the
-    /// `render_plane` lock, no multi-client ambiguity. Not visible
-    /// content, so it never bumps the render rev.
+    /// DECSET 1004 state; the daemon reads it as a "focus-aware TUI" signal to gate the mid-session `ESC[I` theme nudge
+    /// (a shell at the prompt would otherwise see a stray focus-in byte). Not visible content, so never bumps the render rev.
     focus_event_tracking: bool,
-    /// DECSET 1049 flag. We do not swap grids yet, but reconnect snapshots
-    /// must re-emit `CSI ?1049h` so xterm.js leaves the normal buffer.
+    /// DECSET 1049 flag; grids are not swapped, but reconnect snapshots must re-emit `CSI ?1049h`.
     alt_screen: bool,
     mouse_x10: bool,
     mouse_vt200: bool,
@@ -691,16 +473,10 @@ pub struct TerminalModel {
     mouse_any: bool,
     mouse_sgr: bool,
     bracketed_paste: bool,
-    /// Default foreground/background RGB the daemon advertises to the
-    /// PTY child in reply to OSC 10/11 color queries. `None` means
-    /// "stay silent" — the child falls back to its built-in default,
-    /// which is what the daemon did historically (#177 first-fix).
+    /// Default fg/bg advertised in reply to OSC 10/11 queries; `None` means stay silent and the child falls back to its built-in default.
     default_fg: Option<(u8, u8, u8)>,
     default_bg: Option<(u8, u8, u8)>,
-    /// Bytes the daemon should push back onto the PTY master after the
-    /// current `feed()` returns. Populated by [`Self::osc_color_query`]
-    /// when a child probes OSC 10/11. The session loop drains via
-    /// [`Self::take_pending_osc_replies`].
+    /// Bytes the daemon should push back onto the PTY master after the current `feed()` returns; drained via [`Self::take_pending_osc_replies`].
     pending_osc_replies: Vec<u8>,
 }
 
@@ -729,11 +505,7 @@ impl TerminalModel {
         }
     }
 
-    /// Same as [`Self::new`] but pre-seeds the default fg/bg the model
-    /// will advertise on OSC 10/11 queries. Used by the daemon when the
-    /// host browser has stamped its theme onto the CLI args so codex's
-    /// startup probe gets an authoritative answer instead of falling
-    /// back to its built-in default.
+    /// Same as [`Self::new`] but pre-seeds the default fg/bg, so a child's startup OSC 10/11 probe gets an authoritative answer.
     pub fn with_colors(
         cols: u16,
         rows: u16,
@@ -747,9 +519,7 @@ impl TerminalModel {
         m
     }
 
-    /// Replace the default fg/bg. The next OSC 10/11 query will reflect
-    /// the new value. Pre-existing `pending_osc_replies` are not
-    /// rewritten — they correspond to a query that already happened.
+    /// Replace the default fg/bg; pre-existing `pending_osc_replies` are not rewritten.
     pub fn set_default_colors(&mut self, fg: Option<(u8, u8, u8)>, bg: Option<(u8, u8, u8)>) {
         self.default_fg = fg;
         self.default_bg = bg;
@@ -764,16 +534,11 @@ impl TerminalModel {
     }
 
     /// Whether the child has enabled DECSET 1004 (focus event reporting).
-    /// Read by the daemon to decide whether a child is a focus-aware TUI
-    /// (codex opts in) vs. a passive consumer (a shell never does).
     pub fn focus_event_tracking(&self) -> bool {
         self.focus_event_tracking
     }
 
-    /// Drain any OSC reply bytes the model produced since the last call.
-    /// The daemon writes these to the PTY master after each `feed()` so
-    /// the child reads its color-query answer on stdin via crossterm's
-    /// event queue.
+    /// Drain any reply bytes the model produced since the last call; the daemon writes them to the PTY master after each `feed()`.
     pub fn take_pending_osc_replies(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.pending_osc_replies)
     }
@@ -819,9 +584,7 @@ impl TerminalModel {
     }
 
     fn newline(&mut self) {
-        // LF: cursor down one row; if past bottom, scroll up (eviction to
-        // scrollback). xterm-by-default behaviour; we don't track the
-        // scroll region (DECSTBM) — see EXPERIMENTAL notes in module doc.
+        // LF: cursor down; past the bottom, scroll up into scrollback. No scroll region (DECSTBM) tracking.
         if self.cursor.row + 1 >= self.grid.rows_count {
             self.scroll_up_inner(1);
         } else {
@@ -829,12 +592,9 @@ impl TerminalModel {
         }
     }
 
-    /// Feed raw PTY bytes through the parser. Each visible state change
-    /// bumps `rev()` by 1. Empty input bumps nothing.
+    /// Feed raw PTY bytes through the parser. Each visible state change bumps `rev()` by 1.
     pub fn feed(&mut self, bytes: &[u8]) {
-        // Take the parser out so we can hand `&mut self` to the
-        // processor — the parser is logically separate from terminal
-        // state and the borrow checker needs us to prove that.
+        // Take the parser out so `&mut self` can be handed to the processor.
         let mut parser = std::mem::replace(&mut self.parser, Parser::new());
         {
             let mut processor = VteProcessor::new(self);
@@ -845,25 +605,17 @@ impl TerminalModel {
         self.parser = parser;
     }
 
-    /// Resize the internal grid. Existing content is clipped (cols
-    /// reduced) or padded with blank cells (cols increased). Rows reduced
-    /// preserve the active tail and evict older top lines into scrollback.
-    /// Cursor is clamped into the new geometry.
-    /// Always bumps `rev` (caller expectation: any resize requires a
-    /// fresh snapshot anyway).
+    /// Resize the internal grid: cols clip/pad, reduced rows keep the active tail and evict older top lines into scrollback. Always bumps `rev`.
     pub fn resize(&mut self, cols: u16, rows: u16) {
         let new_cols = cols.max(1);
         let new_rows = rows.max(1);
         if new_cols == self.grid.cols && new_rows == self.grid.rows_count {
-            // Identity resize: still bump so the daemon can decide to
-            // re-broadcast a snapshot. Cheap, infrequent.
+            // Identity resize: still bump so the daemon can decide to re-broadcast a snapshot.
             self.bump();
             return;
         }
 
-        // 1. Adjust per-row width. Rows must remain exactly grid.cols wide:
-        // retaining hidden suffixes would let stale text reappear after a
-        // narrow-width edit followed by a widen.
+        // Rows must remain exactly grid.cols wide: retaining hidden suffixes would let stale text reappear after a widen.
         if new_cols != self.grid.cols {
             let new_cols_usize = new_cols as usize;
             for row in self.grid.rows.iter_mut() {
@@ -872,24 +624,17 @@ impl TerminalModel {
             self.grid.cols = new_cols;
         }
 
-        // 2. Adjust row count.
         let cur_rows = self.grid.rows.len();
         let target_rows = new_rows as usize;
         match target_rows.cmp(&cur_rows) {
             std::cmp::Ordering::Greater => {
-                // Pad below.
                 let blank_row = vec![Cell::default(); new_cols as usize];
                 for _ in cur_rows..target_rows {
                     self.grid.rows.push(blank_row.clone());
                 }
             }
             std::cmp::Ordering::Less => {
-                // Trim genuinely unused rows below the cursor first. If
-                // the bottom contains output (or the cursor), anchor to
-                // that active tail and evict from the top into scrollback.
-                // This preserves the common short prompt at top without
-                // ever deleting bottom output just because the cursor was
-                // moved elsewhere before a remount.
+                // Trim genuinely unused rows below the cursor first; otherwise anchor to the active tail and evict from the top into scrollback.
                 let to_drop = cur_rows - target_rows;
                 for _ in 0..to_drop {
                     let last_idx = self.grid.rows.len().saturating_sub(1);
@@ -926,17 +671,6 @@ impl TerminalModel {
         self.cursor
     }
 
-    /// Serialize the current viewport at the requested geometry.
-    ///
-    /// Strategy: emit `ESC[?25l ESC[2J ESC[H`, then for each target row
-    /// emit a cursor-position, an SGR reset, then per-cell (SGR-diff +
-    /// char), then `ESC[K` to clear any trailing default cells the model
-    /// has past the last non-blank cell. Finishes with cursor position +
-    /// `ESC[?25h` (or `?25l` if the model says the cursor is hidden).
-    ///
-    /// If `target_cols/target_rows` differs from the internal grid we
-    /// best-effort clip / pad — full geometry rebind (re-feeding the
-    /// child's bytes at the new size) is out of scope; see module doc.
     fn emit_host_modes(&self, out: &mut Vec<u8>) {
         let mut push = |n: u16| {
             out.extend_from_slice(format!("\x1b[?{n}h").as_bytes());
@@ -969,28 +703,21 @@ impl TerminalModel {
 
     pub fn snapshot_vt(&self, target_cols: u16, target_rows: u16) -> Vec<u8> {
         let mut out = Vec::with_capacity(target_cols as usize * target_rows as usize * 2);
-        // Re-enter host modes *before* painting. A remounted xterm.js starts
-        // in the normal buffer with mouse reporting off; without this prefix
-        // grok-style TUIs look painted but wheel/clicks never reach the child.
+        // Re-enter host modes *before* painting: a remounted xterm.js starts with mouse reporting off, so clicks would never reach the child.
         self.emit_host_modes(&mut out);
-        // 1. Hide cursor while painting; clear screen; home.
         out.extend_from_slice(b"\x1b[?25l\x1b[2J\x1b[H");
 
         let target_cols = target_cols.max(1);
         let target_rows = target_rows.max(1);
 
         for row_idx in 0..target_rows {
-            // Position at row+1, col 1 (1-indexed).
             let pos = format!("\x1b[{};1H", row_idx + 1);
             out.extend_from_slice(pos.as_bytes());
-            // Reset SGR — the row begins from a clean state.
             out.extend_from_slice(b"\x1b[0m");
 
             let mut last_sgr = SgrState::default();
 
-            // Find last non-blank cell in this row so we don't emit a
-            // trailing run of " " — `ESC[K` after the loop wipes the
-            // remainder.
+            // Skip the trailing blank run; `ESC[K` after the loop wipes the remainder.
             let last_non_blank = {
                 let mut found = None;
                 for col_idx in 0..target_cols {
@@ -1012,15 +739,12 @@ impl TerminalModel {
                     push_char_utf8(&mut out, cell.ch);
                 }
             }
-            // Clear to end of line — covers cells past `end` and rows
-            // past internal-grid cols when `target_cols > grid.cols`.
+            // Clear to end of line — also covers cols past the internal grid when `target_cols > grid.cols`.
             out.extend_from_slice(b"\x1b[K");
         }
 
-        // Reset SGR + position cursor + cursor visibility.
         out.extend_from_slice(b"\x1b[0m");
         let cur = self.cursor;
-        // Clamp cursor into the target geometry.
         let row = (cur.row.min(target_rows.saturating_sub(1))) + 1;
         let col = (cur.col.min(target_cols.saturating_sub(1))) + 1;
         let pos = format!("\x1b[{};{}H", row, col);
@@ -1033,13 +757,8 @@ impl TerminalModel {
         out
     }
 
-    /// Serialize the scrollback as ANSI bytes. The output is intended to
-    /// be written into the client's terminal BEFORE `snapshot_vt` so the
-    /// scrollback ends up in the client's own scrollback ring.
-    ///
-    /// Whole-line granularity: each scrollback row becomes one
-    /// `\x1b[0m` reset + cell run + `\x1b[K\r\n`. Lines that exceed the
-    /// requested `limit` are dropped from the *front* (oldest first).
+    /// Serialize the scrollback as ANSI bytes, to be written BEFORE `snapshot_vt` so it lands in the client's own
+    /// scrollback ring; lines beyond `limit` are dropped from the front (oldest first).
     pub fn scrollback_vt(&self, limit: ScrollbackLimit) -> Vec<u8> {
         let max = match limit {
             ScrollbackLimit::None => return Vec::new(),
@@ -1074,17 +793,9 @@ impl TerminalModel {
     }
 }
 
-// =========================================================================
-// `TerminalHandler` impl: all grid/cursor/SGR/scrollback mutation lives
-// here. `VteProcessor` calls into these methods; nothing in the parser
-// adapter touches state directly. Every public method bumps `rev` once
-// per visible state change (matches PR-2 semantics — see existing
-// `terminal_model.rs` acceptance tests).
-// =========================================================================
+// All grid/cursor/SGR/scrollback mutation lives here; every method bumps `rev` once per visible state change.
 impl TerminalHandler for TerminalModel {
     fn print(&mut self, c: char) {
-        // Wide-char and combining-char handling: see EXPERIMENTAL note.
-        // Single-width assumed.
         let cell = Cell {
             ch: c,
             sgr: self.sgr,
@@ -1094,10 +805,7 @@ impl TerminalHandler for TerminalModel {
         if self.cursor.col + 1 < self.grid.cols {
             self.cursor.col += 1;
         } else {
-            // End of line: stay at the last column. xterm's "auto-wrap"
-            // pending-wrap flag is intentionally simplified — the next
-            // print will overwrite the last cell unless a CR/LF/CUP
-            // arrives first. Sufficient for typical shell prompts.
+            // End of line: stay at the last column; xterm's pending-wrap flag is intentionally simplified.
             self.cursor.col = self.grid.cols.saturating_sub(1);
         }
         self.bump();
@@ -1121,7 +829,6 @@ impl TerminalHandler for TerminalModel {
     }
 
     fn horizontal_tab(&mut self) {
-        // HT: jump to next 8-col boundary.
         let next = (self.cursor.col / 8 + 1) * 8;
         let max = self.grid.cols.saturating_sub(1);
         self.cursor.col = next.min(max);
@@ -1214,9 +921,7 @@ impl TerminalHandler for TerminalModel {
             self.bump();
             return;
         }
-        // Walk by param-position. Extended color sequences
-        // (38;5;n / 38;2;r;g;b — colon or semicolon separated) arrive
-        // pre-flattened from `VteProcessor`.
+        // Extended color sequences (38;5;n / 38;2;r;g;b) arrive pre-flattened.
         let mut i = 0;
         while i < params.len() {
             let p = params[i];
@@ -1290,8 +995,7 @@ impl TerminalHandler for TerminalModel {
     }
 
     fn enter_alt_screen(&mut self) {
-        // Flag only: we still paint into the main grid. Snapshot restore
-        // needs the flag so a remounted xterm.js switches to alt screen.
+        // Flag only: we still paint into the main grid.
         self.alt_screen = true;
     }
 
@@ -1315,18 +1019,12 @@ impl TerminalHandler for TerminalModel {
     }
 
     fn set_focus_event_tracking(&mut self, enabled: bool) {
-        // Pure mode flag — record it, do NOT bump rev (no visible state
-        // change). The daemon reads it via
-        // `RenderPlane::focus_event_tracking()` to gate the mid-session
-        // `ESC[I` theme nudge.
+        // Pure mode flag — do NOT bump rev (no visible state change).
         self.focus_event_tracking = enabled;
     }
 
     fn device_status_report_cursor(&mut self) {
-        // CSI 6 n reply — `ESC [ row;col R`, both 1-indexed on the
-        // wire. Our internal `Cursor` is 0-indexed; convert with +1.
-        // codex (#177) blocks on this during startup; missing reply
-        // burns the full 100ms probe timeout.
+        // `ESC [ row;col R`, both 1-indexed on the wire; codex blocks on this during startup.
         let row1 = self.cursor.row.saturating_add(1);
         let col1 = self.cursor.col.saturating_add(1);
         let reply = format!("\x1b[{};{}R", row1, col1);
@@ -1334,38 +1032,24 @@ impl TerminalHandler for TerminalModel {
     }
 
     fn kitty_keyboard_query(&mut self) {
-        // CSI ? u reply — flags=0 means "no kitty keyboard-protocol
-        // enhancements supported". The progressive-enhancement
-        // protocol is documented at
-        // https://sw.kovidgoyal.net/kitty/keyboard-protocol/ ; we
-        // intentionally advertise nothing so the child falls back to
-        // legacy keycoding (what neige-calm has always done).
+        // flags=0: no kitty keyboard-protocol enhancements, so the child falls back to legacy keycoding.
         self.pending_osc_replies.extend_from_slice(b"\x1b[?0u");
     }
 
     fn device_attributes_primary(&mut self) {
-        // DA1 reply — `ESC [ ? 1 ; 0 c` ("VT101, no options"). This
-        // is the minimum xterm-compatible response and is enough to
-        // satisfy codex's startup capability probe.
+        // DA1 reply `ESC [ ? 1 ; 0 c` ("VT101, no options"), the minimum xterm-compatible response.
         self.pending_osc_replies.extend_from_slice(b"\x1b[?1;0c");
     }
 
     fn osc_color_query(&mut self, slot: u8) {
-        // OSC 10 → default fg, OSC 11 → default bg. xterm replies with
-        // the 16-bit form `rgb:RRRR/GGGG/BBBB`; we mirror that — each
-        // 8-bit channel `c` becomes `c * 257` (== `(c<<8)|c`) and emits
-        // four hex digits. Terminated with the canonical ST
-        // (`ESC \`). `bell_terminated` queries (`BEL`-terminated)
-        // technically exist too, but ST is universally accepted and
-        // codex specifically uses the parser shape that handles either.
+        // xterm replies with the 16-bit form `rgb:RRRR/GGGG/BBBB`: each 8-bit channel becomes `c * 257`, terminated with ST.
         let rgb = match slot {
             10 => self.default_fg,
             11 => self.default_bg,
             _ => return,
         };
         let Some((r, g, b)) = rgb else {
-            // No color configured → stay silent. The child falls back to
-            // its built-in default, matching pre-#177 behaviour.
+            // No color configured → stay silent; the child falls back to its built-in default.
             return;
         };
         let to16 = |c: u8| (c as u16) * 257;

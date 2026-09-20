@@ -87,8 +87,7 @@ mod shared_codex_home {
             mode, 0o600,
             "shared config.toml must be 0600 (contains daemon token): got {mode:o}"
         );
-        // #863 review F5 — the atomic tmp+rename writer must not leave its
-        // sibling temp file behind after a successful write.
+        // The atomic tmp+rename writer must not leave its sibling temp file behind.
         assert!(
             !home.path().join("config.toml.tmp").exists(),
             "atomic config writer must clean up its temp file via rename"
@@ -510,10 +509,8 @@ args = ["--bar"]
         assert!(text.contains("# important"));
     }
 
-    /// #863 §3.3 — seed is an explicit two-file sanitized import: host
-    /// `mcp_servers`/`hooks` are stripped from the imported config.toml, and
-    /// nothing besides auth.json + config.toml is copied (no plugins/,
-    /// skills/, sessions/, sqlite state, or `.env`).
+    /// Seed is a two-file sanitized import: host `mcp_servers`/`hooks` are stripped, and nothing
+    /// besides auth.json + config.toml is copied.
     #[test]
     fn seed_imports_sanitized_config_and_auth_only() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -597,18 +594,14 @@ args = ["--bar"]
     fn verify_expected_mcp_servers_accepts_missing_empty_and_calm_only_configs() {
         let root = tempfile::tempdir().expect("tempdir");
         let home = shared_home(&root);
-        // Home directory absent entirely.
         home.verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
             .expect("missing home is ok");
-        // Home exists, config.toml missing.
         home.seed_from(None).expect("seed empty");
         home.verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
             .expect("missing config.toml is ok");
-        // Empty config.
         std::fs::write(home.path().join("config.toml"), "").expect("write empty config");
         home.verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
             .expect("empty config is ok");
-        // calm-only (with env/tools sub-tables) as boot wiring writes it.
         let shim = McpShimConfig {
             shim_bin: root.path().join("bin/neige-mcp-stdio-shim"),
             socket_path: root.path().join("mcp/kernel.sock"),
@@ -686,11 +679,8 @@ args = ["--bar"]
         assert!(err.to_string().contains("dotty"), "must name it: {err}");
     }
 
-    /// #863 review F2 — the guard treats a leaked `<home>/.env` as
-    /// derived-state pollution: it DELETES it (converges without an outage)
-    /// instead of refusing, at every guard point (boot/takeover and every
-    /// respawn). Codex arg0 `load_dotenv` would otherwise inject it into the
-    /// daemon's own process env, bypassing the spawn allow-list.
+    /// A leaked `<home>/.env` is deleted, not refused: Codex arg0 `load_dotenv` would otherwise inject
+    /// it into the daemon's own process env, bypassing the spawn allow-list.
     #[test]
     fn verify_expected_mcp_servers_deletes_leaked_dotenv_and_accepts_home() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -711,7 +701,6 @@ args = ["--bar"]
             !home.path().join(".env").exists(),
             "guard must delete the leaked .env"
         );
-        // Idempotent: a clean home stays accepted.
         home.verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
             .expect("clean home must keep passing the guard");
     }
@@ -769,7 +758,6 @@ args = ["--bar"]
         home.verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
             .expect("sanitized home must pass the boot guard");
 
-        // Idempotent: a second run removes nothing.
         let removed_again = home
             .sanitize_unexpected_mcp_servers(EXPECTED_MCP_SERVERS)
             .expect("second sanitize");

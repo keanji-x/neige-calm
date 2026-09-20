@@ -1,16 +1,4 @@
-//! Kernel-side `resources/read` handler for `ui://<plugin>/<view>` resources.
-//!
-//! Under MCP Apps, the iframe HTML formerly served at
-//! `GET /api/plugins/:id/views/:view_id` is now fetched via a JSON-RPC
-//! `resources/read` call carrying a `ui://` URI. The plugin's manifest already
-//! lists every view + its on-disk path, so the kernel can answer the read
-//! locally without forwarding to the plugin process — this also keeps the
-//! HTML cacheable + side-effect-free.
-//!
-//! The plumbing into the iframe transport (postMessage AppBridge) lands in
-//! M5. M3 publishes `read_ui_resource` as a pure-function entry point that
-//! any caller (M5's host route, today's tests) can invoke once they hold a
-//! reference to the registry.
+//! Kernel-side `resources/read` handler for `ui://<plugin>/<view>` resources, answered locally from the manifest without forwarding to the plugin.
 
 use std::path::PathBuf;
 
@@ -21,16 +9,10 @@ use super::manifest::View;
 use super::mcp::{ResourceContent, ResourceContents};
 use super::registry::PluginRegistry;
 
-/// MIME type the MCP Apps specification stipulates for HTML resources backing an iframe.
-/// The `profile=mcp-app` parameter is the discriminator AppBridge uses to
-/// decide whether to wrap the body in a sandboxed double-iframe versus
-/// rendering inline.
+/// MIME type the MCP Apps specification stipulates for HTML resources backing an iframe; `profile=mcp-app` is what AppBridge keys its sandboxing on.
 pub const HTML_MCP_APP_MIME: &str = "text/html;profile=mcp-app";
 
-/// Failure modes for `read_ui_resource`. We split the URI-parse and
-/// not-found cases because the caller surfaces them at different HTTP statuses
-/// (400 vs 404), and we keep `Io` distinct because a stat failure on the HTML
-/// asset is an operator-fix-it not a user-fix-it.
+/// URI-parse and not-found are split because the caller maps them to 400 vs 404.
 #[derive(Debug, Error)]
 pub enum ResourceError {
     /// URI didn't match `ui://<plugin>/<view>`.
@@ -45,8 +27,7 @@ pub enum ResourceError {
     #[error("view `{view_id}` not found on plugin `{plugin_id}`")]
     ViewNotFound { plugin_id: String, view_id: String },
 
-    /// Filesystem read failed. Almost always "expected file is missing" —
-    /// surface the path so operators can spot a packaging mistake fast.
+    /// Filesystem read failed; carries the path so a packaging mistake is visible.
     #[error("reading view html {path}: {source}")]
     Io {
         path: String,
@@ -55,17 +36,11 @@ pub enum ResourceError {
     },
 }
 
-/// Parse `ui://<plugin>/<view>` (no trailing slash, no scheme variations).
-///
-/// We're strict on shape: the specification leaves the URI authority component open
-/// per host, and we picked `<plugin_id>` per the M3 design doc §7.6 row 1.
-/// A `/` after the view_id is rejected for now — multi-asset views land in
-/// a later slice if we need them.
+/// Parse `ui://<plugin>/<view>`; a `/` after the view_id is rejected.
 fn parse_ui_uri(uri: &str) -> Result<(String, String), ResourceError> {
     let body = uri
         .strip_prefix("ui://")
         .ok_or_else(|| ResourceError::MalformedUri(uri.to_string()))?;
-    // body = "<plugin_id>/<view_id>"
     let (plugin_id, view_id) = body
         .split_once('/')
         .ok_or_else(|| ResourceError::MalformedUri(uri.to_string()))?;
@@ -75,9 +50,7 @@ fn parse_ui_uri(uri: &str) -> Result<(String, String), ResourceError> {
     Ok((plugin_id.to_string(), view_id.to_string()))
 }
 
-/// Compose the `_meta.ui` object for a view. Returns `None` if neither CSP
-/// nor permissions were declared (so the wire response omits `_meta`
-/// entirely, matching the MCP Apps profile's "no extras" form).
+/// Compose `_meta.ui` for a view; `None` when neither CSP nor permissions were declared, so the wire response omits `_meta`.
 fn build_meta_ui(view: &View) -> Option<Value> {
     let csp_val = view
         .csp
@@ -100,21 +73,7 @@ fn build_meta_ui(view: &View) -> Option<Value> {
     Some(json!({ "ui": Value::Object(ui) }))
 }
 
-/// Read the HTML asset backing `ui://<plugin>/<view>`.
-///
-/// Arguments:
-///   * `registry` — the in-memory manifest cache. Must already have an
-///     install_path recorded for the plugin (every installed plugin does).
-///   * `uri` — the full `ui://...` request URI.
-///
-/// Returns one-entry `ResourceContents` with the HTML body in `text`,
-/// `mimeType = "text/html;profile=mcp-app"`, and a `_meta.ui` object
-/// carrying the view's CSP + permissions when set on the manifest.
-///
-/// Path resolution mirrors the deleted `view_html` route: HTML lives at
-/// `<install_path>/views/<view_id>.html`. We deliberately don't honor the
-/// manifest's `entry_html` field — that's a forward-compat slot for
-/// view-specific filenames, and M3 sticks with the on-disk convention.
+/// Read the HTML asset backing `ui://<plugin>/<view>` from `<install_path>/views/<view_id>.html`; the manifest's `entry_html` is deliberately not honored.
 pub fn read_ui_resource(
     registry: &PluginRegistry,
     uri: &str,
@@ -132,10 +91,7 @@ pub fn read_ui_resource(
             view_id: view_id.clone(),
         })?;
 
-    // The registry tracks install_path per plugin. We require it here: the
-    // alternative ("fall back to plugins_dir/<id>") would couple this module
-    // to the PluginHost's plugins_dir, which we'd rather not. Tests seed an
-    // install_path on `registry.insert(..., Some(path))`.
+    // An install_path is required; falling back to `plugins_dir/<id>` would couple this module to the host.
     let install_path: PathBuf = registry
         .install_path(&plugin_id)
         .ok_or_else(|| ResourceError::PluginNotFound(plugin_id.clone()))?;
@@ -157,19 +113,13 @@ pub fn read_ui_resource(
     })
 }
 
-// ===========================================================================
-// Tests
-// ===========================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::plugin_host::manifest::{CspBlock, Manifest, UiPermissions};
     use std::path::Path;
 
-    /// Build a registry with one plugin installed at a tempdir, optionally
-    /// writing a `views/<view_id>.html` file. Returns the temp guard so the
-    /// caller can keep it alive for the test scope.
+    /// One plugin installed at a tempdir, optionally with a `views/<view_id>.html`; the guard keeps the tempdir alive.
     fn seed_plugin(
         plugin_id: &str,
         view: View,
@@ -183,7 +133,6 @@ mod tests {
             std::fs::create_dir_all(&views_dir).unwrap();
             std::fs::write(views_dir.join(format!("{}.html", view.view_id)), body).unwrap();
         }
-        // Build a minimal valid manifest carrying just this view.
         let manifest_json = serde_json::json!({
             "manifest_version": 1,
             "id": plugin_id,
@@ -214,8 +163,6 @@ mod tests {
 
     #[test]
     fn read_ui_resource_returns_html_with_meta_ui() {
-        // Manifest with CSP + permissions set; HTML file exists; round-trip
-        // produces the expected ResourceContents shape.
         let mut view = base_view();
         view.csp = Some(CspBlock {
             default_src: Some(vec!["'self'".into()]),
@@ -277,8 +224,6 @@ mod tests {
 
     #[test]
     fn read_ui_resource_omits_meta_ui_when_view_has_no_csp_permissions() {
-        // View with neither CSP nor permissions → `_meta` is None on the
-        // resource entry, so the wire response omits it entirely.
         let (reg, _tmp) = seed_plugin(
             "dev.neige.demo",
             base_view(),
@@ -314,7 +259,6 @@ mod tests {
 
     #[test]
     fn io_error_surfaces_path() {
-        // Plugin + view registered, but no HTML file on disk.
         let (reg, _tmp) = seed_plugin("dev.neige.demo", base_view(), None);
         let err = read_ui_resource(&reg, "ui://dev.neige.demo/status").unwrap_err();
         match err {

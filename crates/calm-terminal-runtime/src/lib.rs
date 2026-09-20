@@ -1,8 +1,5 @@
-//! Private RMUX host and explicit launch configuration for Neige terminals.
-//!
-//! This package hosts the upstream daemon in its own process. It does not own
-//! Neige card/task identity or interpret pane exits as business completion.
-//! Dropping an SDK connection never means shutting down the runtime.
+//! Private RMUX host and explicit launch configuration for Neige terminals. Dropping an SDK connection never
+//! means shutting down the runtime; pane exits are not business completion.
 #![forbid(unsafe_code)]
 
 use std::ffi::OsString;
@@ -39,10 +36,8 @@ pub struct RuntimeLaunch {
 }
 
 impl RuntimeLaunch {
-    /// Linux process containment for one Neige terminal runtime. When the
-    /// namespace's init exits, the kernel terminates its remaining processes.
-    /// This intentionally does not promise filesystem or network isolation.
-    /// No unshare-try fallback: inability to create the namespace is a failure.
+    /// Linux process containment (a namespace, not filesystem/network isolation): when the namespace's init exits,
+    /// the kernel terminates its remaining processes. No unshare-try fallback.
     #[cfg(target_os = "linux")]
     pub fn isolated_command(&self, unshare: &Path) -> io::Result<Command> {
         if !unshare.is_absolute() {

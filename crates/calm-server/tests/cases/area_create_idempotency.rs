@@ -1,4 +1,4 @@
-//! Issue #1500 A2 — retry Area creation at the production REST boundary.
+//! Retry Area creation at the production REST boundary.
 
 #![cfg(unix)]
 

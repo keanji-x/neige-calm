@@ -1,92 +1,7 @@
-//! Storage contract.
-//!
-//! `Repo` is the interface every persistence backend implements. The kernel
-//! is generic over it: REST handlers, terminal lifecycle, plugin host all
-//! consume `Arc<dyn Repo>`. The only concrete impl is `SqlxRepo`
-//! (sqlite.rs) — used both in production (file-backed sqlite) and in
-//! tests/dev (`sqlite::memory:`). A second hand-maintained in-memory
-//! `MockRepo` used to live here; it was removed in D3 once tests covered
-//! cascade semantics directly — running both impls in lockstep had drifted
-//! and become a booby trap (see issue #4).
-//!
-//! ## Conventions
-//!
-//! * Methods that "get" a missing row return `Ok(None)`. Methods that
-//!   "update/delete" a missing row return `Err(CalmError::NotFound(...))`.
-//! * Patch fields that are `None` mean "leave alone".
-//! * The repo stamps `created_at` / `updated_at` itself via `model::now_ms()`.
-//! * The repo allocates ids via `model::new_id()`.
-//! * `sort` defaults to "append to end" (current max + 1.0) when `None`.
-//!
-//! ## Sync engine write path (phase 1)
-//!
-//! After Scope A, every mutating handler in `routes/*.rs`,
-//! `plugin_host/callbacks.rs`, and the `card_fsm` overlay projector funnels
-//! through `Repo::write_with_event`. The wrapper opens a sqlx transaction,
-//! runs the caller-supplied closure (which must use the `_tx`-suffixed
-//! free functions in `db::sqlite` for any nested entity write), persists
-//! the produced `Event` into the `events` table in the same txn, commits,
-//! and only then emits a `BroadcastEnvelope { id, actor, event }` on the
-//! `EventBus`. Failure of either the entity write or the event insert
-//! rolls back the whole transaction — neither row exists, and the bus is
-//! never notified. See `docs/sync-engine-design.md` §1.4 and §3.
-//!
-//! `log_pure_event` is the same shape for events that don't have an
-//! associated entity write (e.g. `Event::CodexHook`, `Event::PluginState`).
-//! It still goes through the events table and produces a stamped
-//! `BroadcastEnvelope`, so every broadcast a client sees has a real id
-//! it can use as a cursor.
-//!
-//! The raw `INSERT INTO events ...` is **private** to `SqlxRepo` (see
-//! `sqlite.rs::SqlxRepo::event_append_in_tx`). Exposing two parallel
-//! write paths on the trait would invite handlers to drift back to a
-//! bare insert and bypass the commit-then-emit guarantee.
-//!
-//! ## Trait capability split (Scope α)
-//!
-//! `Repo` is split into sub-traits along the *capability* axis. The
-//! goal is to make "no route handler can reach a raw sync-domain write"
-//! a compile-time invariant, not a grep-time one:
-//!
-//!   * [`RepoRead`] — universal read surface (`areas_list`, `track_get`,
-//!     `overlays_for`, `plugins_list_all`, `terminal_get`, …). Anyone
-//!     with a `&dyn RepoRead` can fetch anything; no writes.
-//!   * [`RepoEventWrite`] — the audited write surface
-//!     (`write_with_event`, `log_pure_event`, `events_since`,
-//!     `events_earliest_id`). Supertrait `RepoRead` because every audited
-//!     write closure typically needs to read a parent row first.
-//!   * [`RepoSyncDomainRaw`] — **gated.** Raw entity writes for the
-//!     in-scope sync domain: areas, tracks, cards, overlays. These exist
-//!     on the trait because `SqlxRepo` is the canonical impl and the
-//!     types must be addressable somewhere — but the `RouteRepo` trait
-//!     object route handlers see does **not** include this supertrait,
-//!     so a handler that types `s.repo.area_create(...)` fails to
-//!     compile. The only legitimate consumers are db-internal helpers,
-//!     tests, and fixtures.
-//!   * [`RepoOutOfDomain`] — operational writes the kernel deliberately
-//!     keeps off the sync engine: `terminal_*` (server-side process
-//!     lifecycle), `plugin_*` (install/enable/config/KV/tokens),
-//!     `settings_*` (app-global config). These do **not** emit events;
-//!     they are server-private state that no other peer needs to
-//!     replicate. Routes see them — they are part of the normal REST
-//!     surface for plugin install, settings PUT, etc.
-//!   * [`WorkerSessionProjectionRepo`] — runtime table ownership for provider/card runtime
-//!     bookkeeping. It stays on the full internal repo surface, outside
-//!     route-facing sync-domain writes.
-//!
-//! [`Repo`] is the full internal marker that requires all of those
-//! capabilities. `SqlxRepo` implements it directly so infrastructure can
-//! also expose the sqlite pool escape hatch without widening `RouteRepo`.
-//!
-//! [`RouteRepo`] is the *narrow* trait object `AppState::repo` exposes
-//! to handlers: `RepoEventWrite + RepoOutOfDomain` (which transitively
-//! grants `RepoRead`). It deliberately excludes `RepoSyncDomainRaw` —
-//! that's the whole point.
-//!
-//! Internal callers that legitimately need raw access (db-private
-//! helpers, replay lib, terminal_sweeper, tests) reach `&dyn Repo` via
-//! `AppState::raw_repo()` — the ugly name is a deliberate signal that
-//! you're stepping outside the gate.
+//! Storage contract: `Repo` is the interface every persistence backend implements; `SqlxRepo` is the only impl.
+//! Split by capability so that no route handler can reach a raw sync-domain write at compile time: `RouteRepo` (what
+//! handlers see) excludes `RepoSyncDomainRaw`; `AppState::raw_repo()` is the deliberate step outside the gate.
+//! Conventions: "get" of a missing row is `Ok(None)`, "update/delete" is `Err(NotFound)`; patch fields `None` mean leave alone.
 
 use crate::card_role_cache::CardRoleCache;
 use crate::error::Result;
@@ -107,44 +22,16 @@ use std::sync::Arc;
 pub mod rows;
 pub mod sqlite;
 
-/// Closure shape accepted by `Repo::write_with_event`. The closure receives
-/// a mutable transaction handle (so it can call the `_tx`-suffixed helpers
-/// in `db::sqlite`) and returns the `Event` to persist + broadcast.
-///
-/// The closure is **not** generic over a returned row type — that would
-/// make `Repo` not dyn-compatible, and `Arc<dyn Repo>` is plumbed through
-/// every handler and the plugin host. The typed row a handler wants to
-/// return to its REST caller is communicated via an outer captured
-/// `Arc<Mutex<Option<R>>>` (or similar). The thin `write_with_event_typed`
-/// free function below does that capture for ergonomic callers.
-///
-/// We require `for<'tx>` so the borrow of the transaction doesn't bleed
-/// out into the surrounding handler scope — same shape `sqlx::Transaction`
-/// itself uses on its associated executor functions.
+/// Closure shape accepted by `Repo::write_with_event`; returns the `Event` to persist + broadcast. Not generic over a
+/// returned row (that would break dyn-compatibility) — `write_with_event_typed` captures the typed row for callers.
 pub type WriteWithEventFn<'a> = Box<
     dyn for<'tx> FnOnce(&'tx mut Transaction<'_, Sqlite>) -> BoxFuture<'tx, Result<Event>>
         + Send
         + 'a,
 >;
 
-/// PR6 (#136) — plural counterpart to [`WriteWithEventFn`]. Closure
-/// returns a `Vec<(EventScope, Event)>` so a single transaction can
-/// persist multiple events, each tagged with its own scope. Used by
-/// `routes::tracks::create_track` to atomically emit both
-/// `Event::TrackUpdated` (scope = Track) and `Event::CardAdded`
-/// (scope = Card) for the auto-minted planner card.
-///
-/// Invariants:
-///   * The closure must return a non-empty vec — an empty vec is a
-///     contract violation and causes the trait method to roll back
-///     with `CalmError::Internal`.
-///   * Each `(scope, event)` is independently checked against
-///     `enforce_role` with the supplied `actor`. Any single
-///     `RoleViolation` rolls the entire batch back: neither the
-///     entity write nor any event row survives.
-///   * Events are persisted in vec order and broadcast in the same
-///     order post-commit. A subscriber that listens to multiple
-///     scopes sees the order the closure declared.
+/// Plural counterpart to [`WriteWithEventFn`]: one transaction persists multiple events, each with its own scope.
+/// Must return a non-empty vec; any single `RoleViolation` rolls the entire batch back; events persist and broadcast in vec order.
 pub type WriteWithEventsFn<'a> = Box<
     dyn for<'tx> FnOnce(
             &'tx mut Transaction<'_, Sqlite>,
@@ -153,9 +40,7 @@ pub type WriteWithEventsFn<'a> = Box<
         + 'a,
 >;
 
-/// #597 internal helper shape: like [`WriteWithEventsFn`], but each event
-/// carries its own actor. Used when a kernel-auto lifecycle event must commit
-/// atomically with the planner/worker write that triggered it.
+/// Like [`WriteWithEventsFn`], but each event carries its own actor, for a kernel-auto lifecycle event committing atomically with the write that triggered it.
 pub type WriteWithActorEventsFn<'a> = Box<
     dyn for<'tx> FnOnce(
             &'tx mut Transaction<'_, Sqlite>,
@@ -164,43 +49,9 @@ pub type WriteWithActorEventsFn<'a> = Box<
         + 'a,
 >;
 
-/// Issue #310 — event-less counterpart to [`WriteWithEventFn`]. Closure
-/// runs in one sqlx transaction and returns nothing; no event row is
-/// appended to the `events` log, no broadcast is sent. Used by the
-/// dispatcher's two-stage worker spawn, where the `card.added` event is
-/// deferred until the renderer/supervisor entry has been established.
-///
-/// **Caveat — crash-window orphan.** The window between the row-creation
-/// tx commit and the post-spawn `log_pure_event(CardAdded)` is on the
-/// order of microseconds, but it is real.
-/// but it's real. If the kernel process dies mid-window (SIGKILL,
-/// OOM, panic that escapes the tokio task supervisor), the durable
-/// state on next boot is:
-///   * The card row is on disk; the terminal row is on disk; the
-///     daemon child may or may not be alive depending on when in the
-///     window we died.
-///   * No `CardAdded` event was appended to the events log — replay
-///     will not surface the card.
-///   * No `CardAdded` broadcast fired — no subscriber learned about
-///     the row at the time it was written.
-///   * The terminal-sweeper will NOT reap the orphan while the terminal's
-///     card has an active worker session: its SQL excludes terminals whose
-///     `card_id` appears on a `worker_sessions` row in an active state.
-///   * The operation idempotency row owns future retries — a user
-///     who re-dispatches with the same key observes the existing
-///     operation result instead of a fresh worker spawn.
-///
-/// The dispatcher's `TaskFailed` emission only fires on a returned
-/// error from a live spawn, not on a process death mid-spawn, so the
-/// requesting planner harness never receives a task failure observation.
-/// Net effect: an undead card that nothing knows about.
-///
-/// This is accepted scope for the current fix (the alternative —
-/// emitting `CardAdded` inside the tx — is the live `child-exited`
-/// bug we're solving). A proper fix needs boot-time events-log
-/// reconciliation (scan for terminal rows whose `cards.payload.id`
-/// has no corresponding `CardAdded` event and either emit the event
-/// or rollback the row). Tracked for followup; see issue TBD.
+/// Event-less counterpart to [`WriteWithEventFn`]: no event row, no broadcast. Used by the dispatcher's two-stage
+/// worker spawn. Crash-window hazard: if the kernel dies between this commit and the post-spawn `log_pure_event(CardAdded)`,
+/// the card row exists but replay never surfaces it and the sweeper won't reap it while its session is active.
 pub type WriteInTxFn<'a> = Box<
     dyn for<'tx> FnOnce(&'tx mut Transaction<'_, Sqlite>) -> BoxFuture<'tx, Result<()>> + Send + 'a,
 >;
@@ -230,11 +81,7 @@ pub struct SharedCodexDaemonRecord {
     pub daemon_env_signature: Option<String>,
 }
 
-/// Internal MCP auth identity recovered from `cards.session_id`.
-///
-/// Deliberately narrower than [`Card`]: `cards.session_id` is not part of
-/// the public card wire model, but the MCP transport needs this card-derived
-/// actor data while session identity is the credential authority.
+/// Internal MCP auth identity recovered from `cards.session_id`; narrower than [`Card`] because `session_id` is not part of the public wire model.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionCardIdentity {
     pub card_id: CardId,
@@ -267,96 +114,38 @@ pub struct WorkspaceLease {
     pub state: String,
 }
 
-// ---------------------------------------------------------------------------
-// Sub-trait split. See the "Trait capability split" section in the module
-// docs for the rationale. Each sub-trait carries `Send + Sync + 'static` so
-// the resulting trait objects can live in `Arc<dyn ...>`.
-//
-// One implementation note: every sub-trait below uses `#[async_trait]` and
-// is dyn-compatible (no generic methods, no `Self` in return types). The
-// `RouteRepo` alias is also dyn-compatible because the only methods it
-// "carries" are inherited via supertraits — `dyn RouteRepo` upcasts to
-// `dyn RepoEventWrite` (and from there to `dyn RepoRead`) via the same
-// vtable, since trait objects with supertrait constraints have a single
-// merged vtable layout.
-// ---------------------------------------------------------------------------
+// Each sub-trait carries `Send + Sync + 'static` and is dyn-compatible; `dyn RouteRepo` upcasts to its supertraits via the merged vtable.
 
-/// Universal read surface. Anything that can hand out a `&dyn RepoRead`
-/// permits arbitrary reads; no writes are reachable from here.
+/// Universal read surface; no writes are reachable from here.
 #[async_trait]
 pub trait RepoRead: Send + Sync + 'static {
-    // ---- areas
-    /// Every area regardless of [`AreaKind`]. Internal callers (replay,
-    /// debug surfaces, integration tests that assert on the system
-    /// area's existence) use this; the user-facing `GET /api/areas`
-    /// route prefers [`RepoRead::areas_list_user_visible`] so the
-    /// singleton system area introduced by issue #175 stays hidden
-    /// from the sidebar surface.
+    /// Every area regardless of [`AreaKind`]; the user-facing route prefers [`RepoRead::areas_list_user_visible`] so the system area stays hidden.
     async fn areas_list(&self) -> Result<Vec<Area>>;
-    /// Issue #175 — `areas_list` filtered to `kind = 'user'`. Default
-    /// read surface for `GET /api/areas` so the system area that hosts
-    /// the default Today terminal's track never reaches the sidebar.
-    /// Opt back into the full list via `?include_system=true` (calls
-    /// [`RepoRead::areas_list`]).
+    /// `areas_list` filtered to `kind = 'user'`, so the system area never reaches the sidebar.
     async fn areas_list_user_visible(&self) -> Result<Vec<Area>>;
     async fn area_get(&self, id: &str) -> Result<Option<Area>>;
-    /// Issue #175 — fetch the singleton system area if one exists.
-    /// Returns `None` until the first call to `POST /api/areas/system`
-    /// mints the row. Backed by the unique partial index on
-    /// `areas(kind) WHERE kind = 'system'` from migration 0009.
+    /// The singleton system area, `None` until `POST /api/areas/system` mints the row.
     async fn area_get_system(&self) -> Result<Option<Area>>;
 
-    // ---- area_folders
-    /// Issue #250 PR 1 — folders claimed by a single area, sorted by
-    /// path for stable UI ordering.
+    /// Folders claimed by a single area, sorted by path for stable UI ordering.
     async fn area_folders_by_area(&self, area_id: &str) -> Result<Vec<AreaFolder>>;
-    /// Issue #250 PR 1 — every folder across every area, `ORDER BY path
-    /// ASC`. Used by the resolve endpoint to find the covering claim
-    /// application-side (SQLite has no native prefix function fast enough
-    /// to outweigh a Rust-side O(N) scan at the table sizes we expect —
-    /// folders are minted manually by users, not auto-discovered).
+    /// Every folder across every area, `ORDER BY path ASC`; the resolve endpoint finds the covering claim application-side.
     async fn area_folders_list_all(&self) -> Result<Vec<AreaFolder>>;
-    /// Issue #250 PR 1 — single-row fetch for the DELETE handler's
-    /// existence check.
     async fn area_folder_get(&self, id: i64) -> Result<Option<AreaFolder>>;
 
-    // ---- tracks
     async fn tracks_by_area(&self, area_id: &str) -> Result<Vec<Track>>;
     async fn track_get(&self, id: &str) -> Result<Option<Track>>;
-    /// #1253 PR1 — the Today launchpad track, or `None` before it has ever
-    /// been minted.
-    ///
-    /// `purpose = 'launchpad'` is the same predicate
-    /// `today_launchpad_ensure_tx` selects on, and migration 0064's partial
-    /// unique index `idx_tracks_one_launchpad` makes it single-valued, so this
-    /// is a lookup and not a "first of many". It lives here rather than as a
-    /// SELECT inside the route because a route-local `SELECT` over `tracks`
-    /// would be a second column list to keep in step with `TRACK_SELECT_COLUMNS`.
+    /// The Today launchpad track (`purpose = 'launchpad'`, single-valued by a partial unique index), or `None` before it has been minted.
     async fn track_get_launchpad(&self) -> Result<Option<Track>>;
     async fn track_detail(&self, id: &str) -> Result<Option<TrackDetail>>;
-    /// #1704 S2 — the Claude Code permission policy that applies to `id`:
-    /// its tree ROOT's `claude_permissions_policy` (a child row is always
-    /// NULL), `None` when the root carries none. Fails closed on an
-    /// unresolvable root (`Conflict`) or an undecodable stored value; see
-    /// `sqlite::track_claude_permissions_ceiling_read`, which the terminal
-    /// adapter also calls inside its write transaction.
+    /// The Claude Code permission policy that applies to `id`: its tree ROOT's `claude_permissions_policy` (a child row
+    /// is always NULL). Fails closed on an unresolvable root (`Conflict`) or an undecodable stored value.
     async fn track_claude_permissions_ceiling(
         &self,
         id: &str,
     ) -> Result<Option<ClaudePermissionsScope>>;
-    /// Issue #250 PR 2 — calendar window query.
-    ///
-    /// Returns every track whose lifespan overlaps the half-open
-    /// `[since, until]` millisecond range (both endpoints inclusive
-    /// per the issue planner): `created_at <= until AND (terminal_at IS
-    /// NULL OR terminal_at >= since)`. `area_id`, when `Some(_)`,
-    /// further restricts the result to a single area.
-    ///
-    /// Any combination of the three filters is legal — when all three
-    /// are `None` the query degenerates to "every track in the DB" so
-    /// callers that omit every parameter still get a sensible default.
-    /// Sorted by `created_at ASC, id ASC` for stable pagination later;
-    /// PR 2 returns the full window in one shot.
+    /// Calendar window query: every track whose lifespan overlaps `[since, until]` (inclusive):
+    /// `created_at <= until AND (terminal_at IS NULL OR terminal_at >= since)`; all filters optional. Sorted by `created_at ASC, id ASC`.
     async fn tracks_window(
         &self,
         area_id: Option<&str>,
@@ -364,11 +153,7 @@ pub trait RepoRead: Send + Sync + 'static {
         until: Option<i64>,
     ) -> Result<Vec<Track>>;
 
-    // ---- tasks (issue #644 — track-scoped task plan)
-    /// Current execution rows in the track's plan, ordered for stable listing:
-    /// `priority DESC, created_at_ms ASC, key ASC` (the same order the
-    /// PR-B scheduler's ready-set query uses, design §5.2). Backed by
-    /// the `tasks_track_status_idx` index from migration 0041.
+    /// Current execution rows in the track's plan, ordered `priority DESC, created_at_ms ASC, key ASC` (the scheduler's ready-set order).
     async fn tasks_by_track(&self, track_id: &str) -> Result<Vec<Task>>;
     /// Single-row fetch by the composed `"{track_id}:{key}"` id.
     async fn task_get(&self, id: &str) -> Result<Option<Task>>;
@@ -379,19 +164,11 @@ pub trait RepoRead: Send + Sync + 'static {
     async fn task_for_worker_card(&self, card_id: &str) -> Result<Option<Task>>;
     /// All surviving execution rows, oldest generation first.
     async fn task_history_by_key(&self, track_id: &str, key: &str) -> Result<Vec<Task>>;
-    /// Issue #644 PR-B — every non-terminal task across every track
-    /// (`pending` / `dispatched` / `running` / `verifying`), in stable
-    /// `(track_id, priority DESC, created_at_ms ASC, key ASC)` order.
-    /// Backed by `tasks_track_status_idx`. Used by the scheduler's sweep
-    /// (boot, periodic reconcile, post-`Lagged`) — design §8.
+    /// Every non-terminal task across every track, in stable `(track_id, priority DESC, created_at_ms ASC, key ASC)` order; the scheduler's sweep source.
     async fn tasks_nonterminal(&self) -> Result<Vec<Task>>;
-    /// In-flight frozen contexts affected by an edit to `dst_track_id`.
-    /// The JOIN is a correctness guard: stale index rows never revive a
-    /// terminal or deleted task.
+    /// In-flight frozen contexts affected by an edit to `dst_track_id`; the JOIN guarantees stale index rows never revive a terminal or deleted task.
     async fn task_contexts_by_dst_track(&self, dst_track_id: &str) -> Result<Vec<TaskContextRow>>;
-    /// Explicit recovery candidates affected by an edit to `dst_track_id`.
-    /// Kept separate from the fresh pass so stale rows never re-enter material
-    /// classification or its retry budget.
+    /// Explicit recovery candidates affected by an edit to `dst_track_id`, kept separate so stale rows never re-enter material classification or its retry budget.
     async fn stale_task_contexts_by_dst_track(
         &self,
         dst_track_id: &str,
@@ -400,22 +177,13 @@ pub trait RepoRead: Send + Sync + 'static {
     async fn task_contexts_inflight_fresh(&self) -> Result<Vec<TaskContextRow>>;
     /// Recovery sweep source for non-terminal rows that already carry stale.
     async fn task_contexts_inflight_stale(&self) -> Result<Vec<TaskContextRow>>;
-    /// Minimal operation lookup for session-owned worker convergence:
-    /// `worker_sessions.spawn_op_id` resolves to `operations.idempotency_key`,
-    /// which is the immutable task id the worker operation was submitted with.
+    /// `worker_sessions.spawn_op_id` resolves to `operations.idempotency_key`, the immutable task id the worker operation was submitted with.
     async fn operation_idempotency_key_by_id(&self, op_id: &str) -> Result<Option<String>>;
 
-    // ---- cards
     async fn cards_by_track(&self, track_id: &str) -> Result<Vec<Card>>;
     async fn track_report_cards_by_area(&self, area_id: &str) -> Result<Vec<Card>>;
     async fn card_get(&self, id: &str) -> Result<Option<Card>>;
-    /// #960 PR2 review — atomic single-row fetch of a card together
-    /// with its opaque CRDT blob (`cards.body_crdt`). One SELECT, one
-    /// row: the returned `(Card, blob)` pair is a self-consistent
-    /// snapshot (a concurrent persist can never tear payload vs.
-    /// CRDT). The blob is `None` for rows never touched by the
-    /// track-report persist path; the bytes are opaque to every caller
-    /// except `calm-server::track_report_doc`.
+    /// Atomic single-row fetch of a card with its opaque CRDT blob (`cards.body_crdt`), so a concurrent persist can never tear payload vs. CRDT.
     async fn card_get_with_body_crdt(&self, id: &str) -> Result<Option<(Card, Option<Vec<u8>>)>>;
     /// Read-time task diagnostics, evaluated in one read transaction with the
     /// same DB-aware predicate as report projection.
@@ -426,11 +194,7 @@ pub trait RepoRead: Send + Sync + 'static {
         task_budget_default: i64,
     ) -> Result<Vec<crate::db::sqlite::BlockVerdict>>;
     async fn card_role_get(&self, id: &str) -> Result<Option<CardRole>>;
-    /// Page **every** `harness_items` row for a card, whatever its `method`.
-    ///
-    /// This is the raw storage read. The transcript feed must NOT use it — see
-    /// [`harness_item_list_transcript_by_card`](Self::harness_item_list_transcript_by_card)
-    /// for why.
+    /// Page **every** `harness_items` row for a card, whatever its `method`. The transcript feed must NOT use it.
     async fn harness_item_list_by_card(
         &self,
         card_id: &str,
@@ -439,30 +203,9 @@ pub trait RepoRead: Send + Sync + 'static {
         descending: bool,
     ) -> Result<Vec<HarnessItem>>;
 
-    /// Page only the rows a transcript can render: `item/started`,
-    /// `item/completed`, and — since #1625 P1 — `turn/completed`, the one row
-    /// per finished turn that carries its terminal `status` and `error`.
-    ///
-    /// Same paging contract as [`harness_item_list_by_card`](Self::harness_item_list_by_card)
-    /// (`after_id` exclusive, `limit` rows, always returned ascending), and the
-    /// filter is deliberately in the SQL rather than applied to the result:
-    /// `limit` has to be a budget of *renderable* rows. `#1255` made this load
-    /// bearing by writing codex's per-turn `turn/plan/updated` checklist into
-    /// the same table — with an unfiltered query, every stored plan row eats
-    /// one of the frontend's 300 page slots (`HARNESS_ITEMS_PAGE_LIMIT`) and
-    /// pushes a real transcript row behind "Load earlier". Filtering after the
-    /// fetch would not fix it and would break the cursor besides: the caller
-    /// treats a short page as "no more rows".
-    ///
-    /// The frontend keeps its own allowlist (`isTranscriptMethod` in
-    /// `fe/core/domain/conversation.ts`); that stays as a second line of
-    /// defence, not as the only one.
-    ///
-    /// **For the UI slice that will render plans:** read those rows through an
-    /// explicit path of their own — a dedicated method, or a caller-supplied
-    /// method filter. Do **not** widen this query back to unfiltered to get at
-    /// them; that silently restores the page-budget regression above for every
-    /// transcript reader.
+    /// Page only the rows a transcript can render (`item/started`, `item/completed`, `turn/completed`). The filter is in the
+    /// SQL on purpose: `limit` must be a budget of *renderable* rows, or stored plan rows eat the page and a short page
+    /// reads as "no more rows". Do not widen this query back to unfiltered.
     async fn harness_item_list_transcript_by_card(
         &self,
         card_id: &str,
@@ -471,15 +214,7 @@ pub trait RepoRead: Send + Sync + 'static {
         descending: bool,
     ) -> Result<Vec<HarnessItem>>;
 
-    /// #695 PR2 — page the `worker_flow_items` capture table for a card.
-    ///
-    /// Sibling of [`harness_item_list_by_card`](Self::harness_item_list_by_card)
-    /// with identical paging semantics: `after_id` is the exclusive cursor
-    /// (0 means "from the start" — for `descending` it maps to "from the
-    /// newest"), `limit` is clamped to a sane ceiling, and rows come back in
-    /// ascending `id` order regardless of paging direction so callers can
-    /// always append. Returns the raw [`WorkerFlowItemRow`](crate::db::rows::WorkerFlowItemRow);
-    /// projection into a render shape is PR3's job, not this storage layer's.
+    /// Page the `worker_flow_items` capture table for a card; same paging semantics as `harness_item_list_by_card` (rows always ascending regardless of direction).
     async fn worker_flow_item_list_by_card(
         &self,
         card_id: &str,
@@ -495,37 +230,22 @@ pub trait RepoRead: Send + Sync + 'static {
         source_kind: &str,
     ) -> Result<Option<crate::db::rows::WorkerFlowCursor>>;
 
-    // ---- overlays
     async fn overlays_for(&self, entity_kind: &str, entity_id: &str) -> Result<Vec<Overlay>>;
-    /// List every overlay attached to entities of the given `entity_kind`
-    /// (e.g. `"track"`), regardless of `entity_id`. Used by the sidebar so
-    /// track status indicators stay accurate without per-track detail fetches.
+    /// Every overlay attached to entities of the given `entity_kind`, regardless of `entity_id`.
     async fn overlays_by_kind(&self, entity_kind: &str) -> Result<Vec<Overlay>>;
 
-    // ---- terminals (read-only)
     async fn terminal_get(&self, id: &str) -> Result<Option<Terminal>>;
     async fn terminal_get_by_card(&self, card_id: &str) -> Result<Option<Terminal>>;
-    /// Return every terminal row whose card has no active worker session
-    /// (`starting`, `running`, `idle`, or `turn_pending`), whose
-    /// `created_at` is older than `grace_seconds` ago, and that is NOT an
-    /// exited Terminal-card terminal: a row with a recorded exit
-    /// (`exit_code IS NOT NULL OR signal_killed = 1`) on a card of kind
-    /// `terminal` follows its card instead (#1701). Terminals of other card
-    /// kinds are returned once their session ends regardless of the exit.
-    /// Used exclusively by the `terminal_sweeper` background task.
+    /// Every terminal row whose card has no active worker session and is older than `grace_seconds`, excluding exited
+    /// Terminal-card terminals (those follow their card). Used exclusively by the `terminal_sweeper`.
     async fn terminals_orphaned(&self, grace_seconds: i64) -> Result<Vec<Terminal>>;
-    /// Return every terminal row whose child has not recorded an exit yet.
-    /// Used by boot-time supervisor reconciliation after #388 Phase 3b.
+    /// Every terminal row whose child has not recorded an exit yet, for boot-time supervisor reconciliation.
     async fn terminals_running(&self) -> Result<Vec<Terminal>>;
 
-    /// Shared-daemon empty-goal planner cards that still need the TUI to
-    /// fresh-start their first thread. These are excluded from the legacy
-    /// initial-prompt bootstrap path and must be re-registered with
-    /// `PendingThreadStartRegistry` on boot.
+    /// Shared-daemon empty-goal planner cards that still need the TUI to fresh-start their first thread; re-registered with `PendingThreadStartRegistry` on boot.
     async fn shared_planner_cards_for_initial_prompt_takeover(
         &self,
     ) -> Result<Vec<(String, String, String, i64)>>;
-    // ---- plugins (read-only)
     async fn plugins_list(&self) -> Result<Vec<Plugin>>;
     async fn plugins_list_all(&self) -> Result<Vec<Plugin>>;
     async fn plugin_get_by_id(&self, id: &str) -> Result<Option<Plugin>>;
@@ -537,81 +257,41 @@ pub trait RepoRead: Send + Sync + 'static {
         prefix: &str,
     ) -> Result<Vec<(String, serde_json::Value)>>;
 
-    // ---- settings (read-only)
     async fn settings_get_all(&self) -> Result<Vec<(String, String)>>;
 
-    /// PR3 (#136) — populate the supplied `CardRoleCache` from the persisted
-    /// `cards.role` column. Boot-time helper for `AppState::new` that keeps
-    /// the cache implementation pool-agnostic (the `&SqlitePool`-typed
-    /// `CardRoleCache::seed_from_db` is private to the sqlite backend, but
-    /// this trait method lets `AppState` seed through the dyn-trait alone).
+    /// Populate the supplied `CardRoleCache` from `cards.role`, so `AppState` can seed through the dyn-trait alone.
     async fn seed_card_role_cache(&self, cache: &CardRoleCache) -> Result<()>;
 
-    /// #234 — populate the supplied `TrackAreaCache` from the persisted
-    /// `tracks.area_id` column. Mirror of [`seed_card_role_cache`].
+    /// Populate the supplied `TrackAreaCache` from `tracks.area_id`.
     async fn seed_track_area_cache(&self, cache: &TrackAreaCache) -> Result<()>;
 
-    /// PR7a (#136) — look up the card id bound to a presented MCP
-    /// token's `SHA-256` hash. Returns `None` if no row matches. The
-    /// MCP server uses this during the `initialize` handshake to
-    /// resolve which card identity to bind the connection to.
-    ///
-    /// Returns `Some((card_id, stored_hash))` on match, or `None` when
-    /// no row carries the queried hash. The caller is expected to pass
-    /// `hash_token(presented)` to look up the row, then immediately run
-    /// `verify_token(presented, &stored_hash)` against the returned hash
-    /// for constant-time equality before trusting the binding —
-    /// `SELECT WHERE hashed_token = ?` already operates on the hash, so
-    /// the column-equality check is the primary filter; the explicit
-    /// verify is defense-in-depth against a malformed `hashed_token`
-    /// (e.g. truncated migration) somehow matching a non-equivalent
-    /// presented hash. PR7a.1 (#136 followup) tightened this from
-    /// `Option<String>` to `Option<(String, String)>` so the handshake
-    /// can actually run that constant-time compare.
+    /// Look up `(card_id, stored_hash)` for a presented MCP token's SHA-256 hash. The caller must still run
+    /// `verify_token(presented, &stored_hash)` for a constant-time compare before trusting the binding.
     async fn card_mcp_token_lookup_by_hash(
         &self,
         hashed_token: &str,
     ) -> Result<Option<(String, String)>>;
 
-    /// PR7b-i Unit 2 (#679) — recover the card-derived actor identity for
-    /// an authenticated worker session. This is intentionally keyed by
-    /// `cards.session_id` so persisted events continue to use card-shaped
-    /// actors while the token authority comes from `worker_sessions`.
+    /// Recover the card-derived actor identity for an authenticated worker session, keyed by `cards.session_id`.
     async fn card_identity_get_by_session(
         &self,
         session_id: &str,
     ) -> Result<Option<SessionCardIdentity>>;
 
-    /// Return the newest workspace lease currently held by a card, if any.
-    ///
-    /// `releasing` leases are intentionally excluded: callers use this path
-    /// to execute work in a live workspace, and a releasing lease may already
-    /// be mid-teardown.
+    /// The newest workspace lease held by a card; `releasing` leases are excluded because they may already be mid-teardown.
     async fn workspace_lease_for_card(&self, card_id: &str) -> Result<Option<WorkspaceLease>>;
 
-    /// PR7b-i Unit 1 (#679) — look up the active worker session bound to
-    /// a presented MCP token's `SHA-256` hash. Mirrors
-    /// [`RepoRead::card_mcp_token_lookup_by_hash`]: the caller passes
-    /// `hash_token(presented)`, receives the stored session row, then
-    /// immediately runs `verify_token(presented, stored_hash)`.
-    ///
-    /// Only live authority-bearing sessions are returned. Terminal or
-    /// stale rows (`failed`, `exited`, `superseded`) deliberately collapse
-    /// to `None` so Unit 2 can bind a connection principal only to the
-    /// current session actor.
+    /// Look up the active worker session bound to a presented MCP token's hash; the caller then runs `verify_token`.
+    /// Terminal or stale rows (`failed`, `exited`, `superseded`) deliberately collapse to `None`.
     async fn session_get_by_active_token_hash(
         &self,
         hashed_token: &str,
     ) -> Result<Option<WorkerSession>>;
 
-    /// Reload a worker session by id without applying authority filtering.
-    /// MCP per-call revalidation uses this to reject cached card-bound
-    /// identities once their bound session leaves the active authority set.
+    /// Reload a worker session by id without authority filtering, so per-call revalidation can reject identities whose session left the active set.
     async fn session_get_by_id(&self, id: &WorkerSessionId) -> Result<Option<WorkerSession>>;
 
-    /// Return whether a card owns a per-card MCP token row. Used by the
-    /// planner-harness reusable-thread invariant: only threads minted under
-    /// PR #567 should be reused without reminting.
+    /// Whether a card owns a per-card MCP token row; only such threads may be reused without reminting.
     async fn card_mcp_token_exists_for_card(&self, card_id: &str) -> Result<bool>;
 
     async fn shared_daemon_runtime_get(&self) -> Result<SharedCodexDaemonRecord>;
@@ -625,52 +305,13 @@ pub struct TaskContextRow {
     pub closure_truncated: bool,
 }
 
-/// Eventized write surface. The **only** path that writes to the persistent
-/// event log + broadcasts on the bus. Carries `RepoRead` as a supertrait
-/// because every write closure typically needs to read a parent row first
-/// (and any read is also legal from inside the closure).
+/// Eventized write surface: the **only** path that writes the persistent event log + broadcasts on the bus.
 #[async_trait]
 #[allow(clippy::too_many_arguments)]
 pub trait RepoEventWrite: RepoRead {
-    /// Atomic write + event-log invariant: run the closure inside one
-    /// sqlx transaction, then `INSERT INTO events ... RETURNING id` in
-    /// the same txn, commit, and emit `BroadcastEnvelope { id, actor, event }`
-    /// on the supplied event bus.
-    ///
-    /// Error semantics:
-    ///   * Closure returns `Err(e)`: txn rolls back, `Err(e)` bubbles up,
-    ///     no entity row, no event row, no broadcast.
-    ///   * Events-insert fails (DB-level): txn rolls back, error bubbles
-    ///     up, same as above.
-    ///   * Commit fails: error bubbles up, no broadcast.
-    ///   * Commit succeeds, broadcast send returns zero subscribers: the
-    ///     event is persisted and visible to replay; current live clients
-    ///     see nothing, but that's fine (they have no live socket).
-    ///
-    /// `actor` is the declared identity of the producer
-    /// ([`ActorId::User`] / [`ActorId::Kernel`] / [`ActorId::Plugin`] /
-    /// [`ActorId::AiCodex`] / …). Not authenticated — see design doc
-    /// §1.1 disclaimer. PR2 of #136 typed this from `&str` to `ActorId`
-    /// so PR3's `enforce_role` can pattern-match on the variant cleanly.
-    /// The value is JSON-serialized into the existing `events.actor`
-    /// TEXT column (`serde_json::to_string(&actor)`) — forward-compatible
-    /// with future actor enrichment without a schema bump.
-    ///
-    /// `scope` is the event's "home scope" in the area → track → card
-    /// hierarchy. Persisted into the `events.scope_*` columns added in
-    /// migration 0007 so PR3/PR5/PR8 can filter / route / authorize
-    /// without re-parsing the event payload. Pick the most specific
-    /// scope you can determine at the call site; fall back to
-    /// [`EventScope::System`] only when no scope is determinable
-    /// (e.g. plugin state transitions, server-internal lifecycle).
-    ///
-    /// `correlation` is optional; populated for plugin tool-call writes
-    /// per design §9 (`"user_tool_call:<call_id>"`).
-    ///
-    /// `write` is the [`WriteContext`] wrapper used by PR3's
-    /// `role_gate::enforce_role` to consult both write-through caches
-    /// inside the transaction, after the closure produces an event
-    /// and before the event row is appended.
+    /// Run the closure inside one transaction, append the event in the same txn, commit, then broadcast; any failure
+    /// rolls back with no entity row, no event row and no broadcast. `actor` is declared, not authenticated. Pick the most
+    /// specific `scope`; `EventScope::System` only when none is determinable.
     async fn write_with_event(
         &self,
         actor: ActorId,
@@ -681,38 +322,8 @@ pub trait RepoEventWrite: RepoRead {
         f: WriteWithEventFn<'_>,
     ) -> Result<i64>;
 
-    /// PR6 (#136) — plural counterpart to [`write_with_event`]. Persist
-    /// and broadcast **multiple events** from one transaction, each
-    /// tagged with its own [`EventScope`]. The single transaction
-    /// invariant (closure → enforce_role per event → persist all →
-    /// commit → broadcast all) is preserved; either every event lands
-    /// and is broadcast, or none of them do.
-    ///
-    /// All events in the batch share the supplied `actor` — the
-    /// "request initiator" is one per transaction. Per-event scopes
-    /// let a single mutation (e.g. track create with auto-minted planner
-    /// card) emit both a track-scoped and a card-scoped envelope so
-    /// subscribers filtered by either scope pick up the relevant
-    /// frame without re-routing through ancestors.
-    ///
-    /// Error semantics mirror `write_with_event`:
-    ///   * Closure returns `Err(e)`: txn rolls back; `Err(e)` bubbles
-    ///     up; no entity rows, no event rows, no broadcasts.
-    ///   * `enforce_role` denies any event in the batch: txn rolls
-    ///     back; the violation surfaces as `CalmError::Forbidden`;
-    ///     no rows survive.
-    ///   * Empty vec returned by the closure: txn rolls back with
-    ///     `CalmError::Internal` — every caller must emit at least
-    ///     one event (use `write_with_event` if the singular case is
-    ///     all you need).
-    ///   * Per-event `event_append_in_tx` failure mid-batch: txn
-    ///     rolls back; subsequent events in the batch are never
-    ///     persisted; the earlier-persisted events vanish with the
-    ///     rollback (commit-then-emit invariant: nothing was
-    ///     broadcast yet).
-    ///
-    /// Returns the assigned `events.id` for each persisted event, in
-    /// the order the closure produced them.
+    /// Plural counterpart to [`write_with_event`]: either every event lands and is broadcast, or none do. An empty vec
+    /// rolls back with `CalmError::Internal`; a role denial on any event rolls back the whole batch as `Forbidden`.
     async fn write_with_events(
         &self,
         actor: ActorId,
@@ -722,13 +333,7 @@ pub trait RepoEventWrite: RepoRead {
         f: WriteWithEventsFn<'_>,
     ) -> Result<Vec<i64>>;
 
-    /// #597 — plural eventized write where each event carries its own actor.
-    ///
-    /// This is reserved for atomic kernel-auto lifecycle hooks: the triggering
-    /// write remains attributed to the planner/worker actor, while the automatic
-    /// `track.updated` transition is attributed to `Kernel` or
-    /// `KernelDispatcher`. Role enforcement still runs independently for each
-    /// `(actor, scope, event)` tuple and any refusal rolls back the full tx.
+    /// Plural eventized write where each event carries its own actor, for atomic kernel-auto lifecycle hooks; role enforcement runs per tuple.
     async fn write_with_actor_events(
         &self,
         correlation: Option<&str>,
@@ -737,20 +342,7 @@ pub trait RepoEventWrite: RepoRead {
         f: WriteWithActorEventsFn<'_>,
     ) -> Result<Vec<i64>>;
 
-    /// Persist + broadcast a pure event (no associated entity write). Same
-    /// commit-then-emit invariant as `write_with_event`, but no transaction
-    /// closure — the event itself is the only write.
-    ///
-    /// Used for `Event::CodexHook` (ingest at
-    /// `routes::codex::ingest_hook`) and `Event::PluginState` (plugin
-    /// supervisor lifecycle in `plugin_host::PluginHost::emit_state`).
-    /// Returns the assigned `events.id`.
-    ///
-    /// PR2 of #136: `actor` is now typed [`ActorId`]; `scope` carries the
-    /// event's home scope (use [`EventScope::System`] for plugin-state
-    /// transitions which have no entity scope; use [`EventScope::Card`]
-    /// for codex hooks when the track→area chain is joinable, otherwise
-    /// fall back to [`EventScope::System`]).
+    /// Persist + broadcast a pure event (no associated entity write), same commit-then-emit invariant.
     async fn log_pure_event(
         &self,
         actor: ActorId,
@@ -762,103 +354,29 @@ pub trait RepoEventWrite: RepoRead {
         event: Event,
     ) -> Result<i64>;
 
-    /// Issue #310 — run a tx-scoped write without persisting or broadcasting
-    /// an event. Same atomicity contract as `write_with_event` (closure
-    /// runs in one tx, error rolls back, success commits), but the caller
-    /// takes responsibility for broadcasting any downstream event(s) via
-    /// `log_pure_event` after this returns.
-    ///
-    /// The dispatcher uses this for the first stage of its two-stage
-    /// worker-spawn pipeline: the tx mints the worker card + terminal row,
-    /// commits, and only then establishes the renderer/supervisor entry.
-    /// The `card.added` event is emitted via `log_pure_event`
-    /// post-spawn-success so subscribers never see a `CardAdded` frame
-    /// whose backing terminal is not yet attachable.
-    ///
-    /// **Why a separate method instead of passing a no-op event to
-    /// `write_with_event`**: the broadcast bus is hard-coded into
-    /// `write_with_event`'s post-commit step; suppressing the broadcast
-    /// would require a flag on the trait method that every other call
-    /// site has to default. A dedicated event-less method makes the
-    /// "no event from this tx" intent explicit at the call site and
-    /// keeps the role-gate machinery out of the path (no event = no
-    /// gate to enforce; cache write-through still happens inside
-    /// `card_create_with_id_tx` exactly as before).
+    /// Run a tx-scoped write without persisting or broadcasting an event; the caller broadcasts downstream events via
+    /// `log_pure_event`. No event means no role gate; cache write-through still happens inside the `_tx` helpers.
     async fn write_in_tx(&self, f: WriteInTxFn<'_>) -> Result<()>;
 
-    /// Scope D — replay query. Read events with `id > since_id` from the
-    /// persistent log, deserialize each `(kind, payload)` row back into a
-    /// typed `Event`, and return them in ascending id order.
-    ///
-    /// Pairs with the WS `since` protocol (see `ws::events::handle`): the
-    /// handler calls this to stream historical frames to a reconnecting
-    /// client, then transitions to live broadcast. The cursor protocol
-    /// relies on the strict-monotonic `events.id` to dedupe replay-vs-live
-    /// at the boundary (design §2.2).
-    ///
-    /// `limit` is required — the events table grows for the lifetime of
-    /// the deployment (issue #854: 214k rows / 1.7 GB observed), so every
-    /// reader must state its bound. The window truncates at the first
-    /// `limit` rows in id order; non-positive limits return no rows. A
-    /// caller that genuinely wants the whole log (fixture asserts, boot
-    /// replay over a bounded fixture set) says so with `i64::MAX`.
-    ///
-    /// Rows whose payload fails to deserialize back into an `Event` variant
-    /// are logged + skipped, not propagated as an error — corrupt history
-    /// shouldn't strand otherwise-connected clients.
-    ///
-    /// Each tuple is `(events.id, event_version, EventScope, Event)`. The
-    /// `event_version` is the value persisted on the row (migration 0006);
-    /// rows that predate the migration backfill to `1` via the column
-    /// default. The `EventScope` is reconstructed from the `events.scope_*`
-    /// columns added in migration 0007 — rows that predate it (NULL
-    /// ancestor cols) load as [`EventScope::System`]. The replay path
-    /// stamps both onto the `BroadcastEnvelope` so frame consumers see the
-    /// version + scope the row was written under, not the kernel's current
-    /// constants.
+    /// Replay query: events with `id > since_id`, ascending. `limit` is required (the table grows for the deployment's
+    /// lifetime); `i64::MAX` says "the whole log". Rows whose payload fails to deserialize are logged and skipped.
+    /// Each tuple is `(events.id, event_version, EventScope, Event)` as persisted on the row, not the kernel's current constants.
     async fn events_since(
         &self,
         since_id: i64,
         limit: i64,
     ) -> Result<Vec<(i64, u32, EventScope, Event)>>;
 
-    /// Bounded probe over the RAW `events` window past `since_id`: returns
-    /// `(count, max_id)` for the first `probe_limit` rows with
-    /// `id > since_id` in id order (non-positive limits probe zero rows;
-    /// `max_id` is `None` when the window is empty).
-    ///
-    /// "Raw" is the load-bearing word (issue #854 review): this probes rows
-    /// *before* the payload/kind deserialization pass that
-    /// [`RepoEventWrite::events_since`] applies, which silently drops
-    /// malformed-payload and unknown-kind rows. A replay-cap decision made
-    /// on the *filtered* `events_since` length can undercount the pending
-    /// window — the filtered length sits at/below the cap while more raw
-    /// rows remain — so the caller would stream the surviving page and then
-    /// stamp `_replay_complete` at the server tip, permanently advancing
-    /// the client past events that were never sent. Over-cap routing must
-    /// therefore be decided on this raw count.
-    ///
-    /// `max_id` gives the caller the raw END of the probed window, so a
-    /// replay that reads the window with a separate (non-snapshot) query
-    /// can bound its cursor by what it actually accounted for — including
-    /// trailing rows the deserialization pass dropped — rather than by a
-    /// later `MAX(id)` that may cover rows committed in between (PR #867
-    /// round-2 review).
-    ///
-    /// Cost: an index-only scan of at most `probe_limit` ids (the
-    /// aggregates are taken over a `LIMIT`ed subquery), never a full-table
-    /// `COUNT(*)`.
+    /// Bounded probe over the RAW `events` window past `since_id`: `(count, max_id)` of the first `probe_limit` rows.
+    /// Raw is load-bearing: `events_since` silently drops malformed rows, so an over-cap decision made on its filtered
+    /// length could stamp `_replay_complete` past events that were never sent. Index-only scan, never a full `COUNT(*)`.
     async fn events_raw_window_since(
         &self,
         since_id: i64,
         probe_limit: i64,
     ) -> Result<(i64, Option<i64>)>;
 
-    /// Read only selected event kinds scoped to one track. This is for
-    /// projection tools that need a bounded audit-log slice, not a replay
-    /// cursor: callers must pass the exact kind tags they need and the query
-    /// filters on `scope_track = ?`. When `since_id` is present, the SQL
-    /// additionally filters on `events.id > since_id`.
+    /// Selected event kinds scoped to one track — a bounded audit-log slice for projection tools, not a replay cursor.
     async fn events_for_track(
         &self,
         track_id: &str,
@@ -866,69 +384,33 @@ pub trait RepoEventWrite: RepoRead {
         since_id: Option<i64>,
     ) -> Result<Vec<TrackEvent>>;
 
-    /// Lowest live `events.id`, or `None` if the table is empty.
-    ///
-    /// Used by the WS handler to detect a `since` cursor that predates the
-    /// retention horizon (after the operator turns on
-    /// `events_retention_days`). When `since < earliest_id`, the server
-    /// can't honor the replay; it must reply with a `_snapshot_required`
-    /// control frame so the client throws away its cached state and
-    /// refetches via REST (design §2.3).
+    /// Lowest live `events.id`; a `since` cursor below it predates the retention horizon and gets `_snapshot_required`.
     async fn events_earliest_id(&self) -> Result<Option<i64>>;
 
-    /// Highest `events.id` ever deleted by the events retention pruner
-    /// (`crate::events_prune`), or `0` if nothing has ever been pruned.
-    ///
-    /// Durable (persisted in `retention_meta`, updated in the same
-    /// transaction as each pruning DELETE). Used by the WS replay guard:
-    /// a `since` cursor below this watermark may have pruned rows anywhere
-    /// in `(since, watermark]`, so the server must send
-    /// `_snapshot_required` instead of a gappy replay. `MIN(id)` alone
-    /// cannot detect these interior holes — structural events are
-    /// permanent, so the earliest id never advances past the first
-    /// structural row (#854 slice 2).
+    /// Highest `events.id` ever deleted by the retention pruner (durable, `0` if never pruned). A `since` cursor below it
+    /// may have interior holes that `MIN(id)` cannot detect, because structural events are permanent.
     async fn events_prune_watermark(&self) -> Result<i64>;
 
-    /// Highest live `events.id`, or `None` if the table is empty.
-    ///
-    /// Used by the WS handler so `_replay_complete` can stamp the
-    /// server's actual log tip — not just the highest id returned by
-    /// the replay window — into the frame's `_id`. That lets a client
-    /// whose persisted cursor is *ahead* of the server's tip (e.g. the
-    /// dev `/dev/reset` path that wipes `sqlite_sequence`, so re-seeded
-    /// events restart at id=1) detect "the server is no longer the
-    /// kernel I was talking to" and re-bootstrap its cache. Issue #290.
+    /// Highest live `events.id`; `_replay_complete` stamps the actual log tip so a client whose cursor is *ahead* of it can detect a reset kernel.
     async fn events_latest_id(&self) -> Result<Option<i64>>;
 }
 
-/// Raw sync-domain entity writes. Gated: the trait object `RouteRepo` that
-/// `AppState::repo` exposes does **not** carry this supertrait, so route
-/// handlers cannot call these methods. They live on the trait so the
-/// concrete `SqlxRepo` impl can be addressed by db-internal helpers, the
-/// replay lib, and tests via `AppState::raw_repo()`.
-///
-/// Sync-domain == the per-user/per-AI co-edit shared state surface defined
-/// by the sync engine: areas, tracks, cards, overlays. Any direct write here
-/// bypasses `write_with_event` and is therefore invisible to replicas — the
-/// whole reason this surface is gated.
+/// Raw sync-domain entity writes. Gated: `RouteRepo` does **not** carry this supertrait, so route handlers cannot call
+/// these; a direct write here bypasses `write_with_event` and is invisible to replicas.
 #[async_trait]
 pub trait RepoSyncDomainRaw: RepoRead {
-    // ---- areas
     async fn area_create(&self, p: NewArea) -> Result<Area>;
     async fn area_update(&self, id: &str, p: AreaPatch) -> Result<Area>;
     async fn area_delete(&self, id: &str) -> Result<()>;
 
-    // ---- tracks
     async fn track_create(&self, p: NewTrack) -> Result<Track>;
     async fn track_update(&self, id: &str, p: TrackPatch) -> Result<Track>;
     async fn track_delete(&self, id: &str) -> Result<()>;
 
-    // ---- cards
     async fn card_create(&self, p: NewCard) -> Result<Card>;
     async fn card_update(&self, id: &str, p: CardPatch) -> Result<Card>;
     async fn card_delete(&self, id: &str) -> Result<()>;
 
-    // ---- overlays
     /// Upserts on the `(plugin_id, entity_kind, entity_id, kind)` unique tuple.
     async fn overlay_upsert(&self, p: NewOverlay) -> Result<Overlay>;
     async fn overlay_delete(
@@ -940,21 +422,10 @@ pub trait RepoSyncDomainRaw: RepoRead {
     ) -> Result<()>;
 }
 
-/// Out-of-sync-domain writes: terminal lifecycle, plugin install/config,
-/// app-global settings. Deliberately **not** event-sourced — these are
-/// server-private operational state, not shared co-edit state. Routes
-/// see this surface (plugin install REST, settings PUT, the terminal
-/// PID-persist sidecar).
+/// Out-of-sync-domain writes (terminal lifecycle, plugin install/config, settings): server-private operational state, deliberately **not** event-sourced.
 #[async_trait]
 pub trait RepoOutOfDomain: RepoRead {
-    // ---- track recipes (#1292) --------------------------------------
-    //
-    // Out-of-domain rather than event-writing: a recipe is a user's private
-    // authoring artifact, not part of the event-sourced track domain, and it
-    // emits no `Event`. Cross-window staleness is handled by the `revision`
-    // CAS (the loser gets 409) rather than by live invalidation — see the
-    // #1292 design §3.1b for why that trade was taken rather than minting a
-    // new `Event` variant and its frontend invalidation policy.
+    // Track recipes are a user's private authoring artifact and emit no `Event`; cross-window staleness is handled by the `revision` CAS (loser gets 409).
     async fn track_recipe_create(&self, p: NewTrackRecipe) -> Result<TrackRecipe>;
     async fn track_recipe_update(
         &self,
@@ -964,17 +435,8 @@ pub trait RepoOutOfDomain: RepoRead {
     ) -> Result<TrackRecipe>;
     async fn track_recipe_get(&self, id: &str) -> Result<Option<TrackRecipe>>;
 
-    // ---- track-create idempotency binding (#1384) -------------------
-    //
-    // Out-of-domain for the same reason the recipes above are: the row is
-    // pure request-dedup bookkeeping, emits no `Event`, and no frontend
-    // invalidation policy names it. The WRITE side is deliberately absent
-    // from this trait — there is no `track_create_idempotency_claim` taking
-    // `&self`, because a pooled write is precisely the failure this table
-    // exists to remove. The only writer is the `_tx` free function composed
-    // into the create transaction; adding a pool-writing sibling here would
-    // re-open the window on the next caller who reached for the convenient
-    // one.
+    // Track-create idempotency binding: pure request-dedup bookkeeping. The WRITE side is deliberately absent from this
+    // trait — a pooled write is precisely the failure this table exists to remove; the only writer is the `_tx` free function.
     /// Which track `(area_id, Idempotency-Key)` already minted, if any.
     async fn track_create_idempotency_get(
         &self,
@@ -984,25 +446,18 @@ pub trait RepoOutOfDomain: RepoRead {
     async fn track_recipe_delete(&self, id: &str) -> Result<()>;
     async fn track_recipe_list(&self) -> Result<Vec<TrackRecipe>>;
 
-    // ---- terminals (writes)
     async fn terminal_create(&self, p: NewTerminal) -> Result<Terminal>;
-    /// Persist the child PID captured by the renderer/supervisor path. The
-    /// orphan-terminal sweeper uses this as a SIGTERM fallback target.
+    /// Persist the child PID; the orphan-terminal sweeper uses it as a SIGTERM fallback target.
     async fn terminal_set_pid(&self, id: &str, pid: Option<u32>) -> Result<()>;
-    /// #306 — record the child's exit info. The two arguments are mutually
-    /// exclusive at the writer: a signal-
-    /// killed child writes `exit_code = None, signal_killed = true`, an
-    /// `exit()` child writes `exit_code = Some(_), signal_killed = false`.
-    /// Callers must respect that invariant; the repo enforces neither.
+    /// Record the child's exit info. A signal-killed child writes `exit_code = None, signal_killed = true`; an `exit()`
+    /// child writes `Some(_), false`. The repo enforces neither.
     async fn terminal_set_exit(
         &self,
         id: &str,
         exit_code: Option<i32>,
         signal_killed: bool,
     ) -> Result<()>;
-    /// #1456 — atomically persist the exit status and bounded merged PTY
-    /// output evidence. The live attach reader uses this; synthetic recovery
-    /// writers use `terminal_set_exit` and therefore record an empty stream.
+    /// Atomically persist the exit status and bounded merged PTY output; synthetic recovery writers use `terminal_set_exit` and record an empty stream.
     async fn terminal_set_exit_with_output(
         &self,
         id: &str,
@@ -1011,20 +466,14 @@ pub trait RepoOutOfDomain: RepoRead {
         pty_output: &str,
         pty_output_truncated: bool,
     ) -> Result<()>;
-    /// Clear stale PID and exit markers immediately before spawning or
-    /// reattaching a terminal child. Fresh terminal rows are already clean;
-    /// recovered rows may carry a previous PID plus boot reconciliation exit
-    /// markers.
+    /// Clear stale PID and exit markers immediately before spawning or reattaching; recovered rows may carry a previous PID plus boot reconciliation markers.
     async fn terminal_clear_exit_for_spawn(&self, id: &str) -> Result<()>;
-    /// Remove a terminal row by id. Surfaced on the trait so the sweeper
-    /// can call it from inside its `write_with_event` closure via the
-    /// `_tx`-suffixed helper.
+    /// Remove a terminal row by id.
     async fn terminal_delete(&self, id: &str) -> Result<()>;
 
     async fn shared_daemon_runtime_set(&self, update: SharedCodexDaemonUpdate) -> Result<()>;
     async fn shared_daemon_record_event(&self, action: &str, error: Option<&str>) -> Result<()>;
 
-    // ---- planner harness item stream (#510 PR-ui C1)
     #[allow(clippy::too_many_arguments)]
     async fn harness_item_insert(
         &self,
@@ -1052,32 +501,16 @@ pub trait RepoOutOfDomain: RepoRead {
         params: &str,
     ) -> Result<i64>;
 
-    // ---- #1625 P2 — the drain-time projection of a user message ---------
-    //
-    // A projection row is a transcript row the KERNEL wrote at queue drain,
-    // before codex echoed anything: `method = 'item/completed'`,
-    // `item_type = 'userMessage'`, `turn_id IS NULL`, and `item_uuid` holding
-    // the CLIENT id the drain sent codex as `clientUserMessageId`. That
-    // three-column shape — completed, no turn, uuid equal to a client id — is
-    // the key every method below matches on. Nothing codex sends can produce
-    // it: a codex echo always carries a turn.
-    //
-    // The methods are keyed by `card_id` and never by `worker_session_id`,
-    // because a projection written by one runtime may be upgraded by its
-    // successor after a repoint.
+    // A projection row is a transcript row the KERNEL wrote at queue drain: `method = 'item/completed'`,
+    // `item_type = 'userMessage'`, `turn_id IS NULL`, `item_uuid` = the CLIENT id. Nothing codex sends can produce that shape.
+    // Keyed by `card_id`, never `worker_session_id`, because a successor runtime may upgrade the row after a repoint.
 
-    /// The `id` of the projection row for `client_id` on `card_id`, if one
-    /// stands. Read by the echo path to decide whether an `item/started`
-    /// echo is one this card has already rendered.
+    /// The `id` of the projection row for `client_id` on `card_id`, if one stands.
     async fn transcript_projection_id(&self, card_id: &str, client_id: &str)
     -> Result<Option<i64>>;
 
-    /// Upgrade the projection row for `client_id` in place with codex's echo:
-    /// its turn, its item id, its verbatim `params`. `input_segments` is
-    /// untouched — that column is the kernel's own record of what was sent,
-    /// and codex's echo cannot improve on it. Returns the row's `id`, or
-    /// `None` when no projection stands (the echo is then an ordinary insert
-    /// for the caller to make).
+    /// Upgrade the projection row in place with codex's echo (turn, item id, verbatim `params`); `input_segments` is
+    /// untouched. `None` when no projection stands (the echo is then an ordinary insert).
     async fn transcript_projection_upgrade(
         &self,
         card_id: &str,
@@ -1087,23 +520,11 @@ pub trait RepoOutOfDomain: RepoRead {
         params: &str,
     ) -> Result<Option<i64>>;
 
-    /// Remove the projection row for `client_id` — the `turn/start` it stood
-    /// for did not go out and the batch went back on the queue. Returns how
-    /// many rows went (0 or 1).
+    /// Remove the projection row for `client_id` — its `turn/start` did not go out. Returns 0 or 1.
     async fn transcript_projection_delete(&self, card_id: &str, client_id: &str) -> Result<u64>;
 
-    // ---- worker message-flow capture (#695 PR2) ------------------------
-    /// Append one captured worker-flow item, returning the new row id.
-    ///
-    /// Sibling of [`harness_item_insert`](Self::harness_item_insert):
-    /// `card_id` is nullable so the row can outlive its worker card (the FK is
-    /// `ON DELETE SET NULL`, #695), while `worker_session_id` is a required
-    /// `worker_sessions(id)` FK as of migration 0049. `kind` is the
-    /// `WorkerFlowItem` discriminant and `payload` is its JSON-serialized form
-    /// (+ envelope / provider_extra / raw_ref). The repo method delegates to the
-    /// [`worker_flow_item_insert_tx`](sqlite::worker_flow_item_insert_tx)
-    /// free fn so PR3's sink can call the same insert from inside
-    /// `commit_decision`'s transaction.
+    /// Append one captured worker-flow item, returning the new row id. `card_id` is nullable so the row can outlive
+    /// its worker card (`ON DELETE SET NULL`); `worker_session_id` is a required FK.
     #[allow(clippy::too_many_arguments)]
     async fn worker_flow_item_insert(
         &self,
@@ -1116,11 +537,8 @@ pub trait RepoOutOfDomain: RepoRead {
         created_at_ms: i64,
     ) -> Result<i64>;
 
-    /// Upsert the passive worker-flow capture cursor for one card/source.
-    ///
-    /// `record_index` may move down when a rollout file is rewritten during
-    /// compaction; callers validate the source identity before taking that
-    /// reset path.
+    /// Upsert the passive worker-flow capture cursor for one card/source. `record_index` may move down when a rollout
+    /// file is rewritten during compaction; callers validate the source identity before taking that reset path.
     #[allow(clippy::too_many_arguments)]
     async fn worker_flow_cursor_upsert(
         &self,
@@ -1134,42 +552,27 @@ pub trait RepoOutOfDomain: RepoRead {
         updated_at_ms: i64,
     ) -> Result<()>;
 
-    // ---- plugins (writes)
-    //
-    // M3 (Slice A) surface: install / enable / get-by-id / delete / list-all.
-    /// Upsert by id. The repo stamps `installed_at` (preserving the existing
-    /// value on update) and `updated_at`. `enabled` defaults to false on the
-    /// install row — the user (or Slice D's enable endpoint) flips it later.
+    /// Upsert by id; `installed_at` is preserved on update and `enabled` defaults to false on the install row.
     async fn plugin_install(&self, p: NewPlugin) -> Result<Plugin>;
     async fn plugin_update_enabled(&self, id: &str, enabled: bool) -> Result<Plugin>;
-    /// Overwrite `user_config` (the opaque JSON blob the PATCH config route
-    /// writes). The repo stamps `updated_at`; everything else is preserved.
+    /// Overwrite `user_config` (the opaque JSON blob the PATCH config route writes).
     async fn plugin_update_user_config(
         &self,
         id: &str,
         user_config: serde_json::Value,
     ) -> Result<Plugin>;
-    /// Overwrite the persisted manifest blob. The reload route calls this
-    /// after re-reading manifest.json from disk so subsequent `GET
-    /// /api/plugins/:id` responses (which read from the DB row, not the
-    /// live registry) reflect on-disk reality.
+    /// Overwrite the persisted manifest blob; `GET /api/plugins/:id` reads from the DB row, not the live registry.
     async fn plugin_update_manifest(&self, id: &str, manifest: serde_json::Value)
     -> Result<Plugin>;
     async fn plugin_delete(&self, id: &str) -> Result<()>;
 
-    /// Drop every overlay owned by a plugin. Slice D's uninstall route fires
-    /// this so a deleted plugin's overlays don't render as ghosts. (Design
-    /// doc §2.7 calls this out as the default; the alternative — "keep for
-    /// forensics" — is what users have to opt into manually.)
+    /// Drop every overlay owned by a plugin, so a deleted plugin's overlays don't render as ghosts.
     async fn overlays_clear_by_plugin(&self, plugin_id: &str) -> Result<()>;
 
-    /// Drop every KV row owned by a plugin. Called from the uninstall path so
-    /// per-plugin KV doesn't outlive the install row.
+    /// Drop every KV row owned by a plugin.
     async fn plugin_kv_clear(&self, plugin_id: &str) -> Result<()>;
 
-    // ---- per-plugin tokens (Slice H wires the lifecycle; Slice A just owns
-    // the storage). Hash is hex-encoded `SHA-256(raw_token)`; expires_at is
-    // unix millis (matches the rest of the kernel's `*_at` columns).
+    // Per-plugin tokens: hash is hex-encoded `SHA-256(raw_token)`; expires_at is unix millis.
     async fn plugin_token_set(
         &self,
         plugin_id: &str,
@@ -1178,10 +581,7 @@ pub trait RepoOutOfDomain: RepoRead {
     ) -> Result<()>;
     async fn plugin_token_delete(&self, plugin_id: &str) -> Result<()>;
 
-    // ---- per-plugin KV store (Slice C surfaces to plugins via `neige.kv.*`;
-    // Slice A owns the bare CRUD). Values are arbitrary JSON; the kernel
-    // does not parse semantics, but it does enforce per-plugin namespacing
-    // at this trait layer (no method takes a global key).
+    // Per-plugin KV: values are arbitrary JSON; namespacing is enforced at this trait layer (no method takes a global key).
     async fn plugin_kv_set(
         &self,
         plugin_id: &str,
@@ -1190,82 +590,27 @@ pub trait RepoOutOfDomain: RepoRead {
     ) -> Result<()>;
     async fn plugin_kv_delete(&self, plugin_id: &str, key: &str) -> Result<()>;
 
-    // ---- app-global settings (Settings page, codex spawn proxy override).
-    //
-    // Tiny KV. `settings_upsert` is per-key INSERT OR REPLACE; an empty
-    // string is treated as a delete on the *route* boundary (callers can
-    // still upsert an empty value if they have a reason to).
+    // App-global settings: per-key INSERT OR REPLACE; an empty string is treated as a delete at the *route* boundary.
     async fn settings_upsert(&self, key: &str, value: &str) -> Result<()>;
     async fn settings_delete(&self, key: &str) -> Result<()>;
 
-    // ---- area_folders (issue #250 PR 1)
-    //
-    // Operational mapping table — not on the event-sourced sync domain
-    // path (no `Event::AreaFolderAdded`-style variants land in PR 1).
-    // Treated like terminals / plugins: server-private state, REST writes
-    // straight against the row without an event-log entry.
-    /// Insert a folder under `area_id` with **no** overlap check. The
-    /// caller owns path normalization and conflict detection.
-    ///
-    /// Not reachable from HTTP: `POST /api/areas/{id}/folders` goes
-    /// through [`Self::area_folder_create_checked`] because a scan on one
-    /// pooled connection followed by an INSERT on another lets two
-    /// concurrent requests both claim overlapping paths (#275). This
-    /// primitive survives for tests and seeds that deliberately want to
-    /// build states the checked writer refuses.
+    // area_folders is an operational mapping table, not on the event-sourced path.
+    /// Insert a folder with **no** overlap check; not reachable from HTTP, which goes through
+    /// [`Self::area_folder_create_checked`]. Survives for tests and seeds that want states the checked writer refuses.
     async fn area_folder_create(&self, area_id: &str, path: &str) -> Result<AreaFolder>;
-    /// Issue #275 — atomically claim `path` for `area_id`: the overlap
-    /// scan and the INSERT run inside one `BEGIN IMMEDIATE` transaction,
-    /// so no concurrent writer can slip an ancestor/descendant claim
-    /// between them. `UNIQUE(area_folders.path)` only catches *equal*
-    /// paths and is therefore not sufficient on its own.
-    ///
-    /// This is what makes "at most one claim covers any path" a real
-    /// invariant, which in turn is what lets
-    /// [`crate::area_folder_claim::find_owner`] serve both resolvers
-    /// without a tiebreak.
-    ///
-    /// Returns `Conflict` (not `Err`) for overlap so the route can render
-    /// the structured 409 body; a missing `area_id` is still `Err(NotFound)`.
-    /// The transaction does nothing but two SQL statements — no I/O — so
-    /// the writer-lock window stays as short as the plain INSERT's.
-    ///
-    /// # Precondition
-    ///
-    /// `path` MUST already be normalized — i.e. the output of
-    /// [`crate::area_folder_claim::normalize_path`]. The overlap
-    /// classification is pure string comparison: `Equal` is `f.path ==
-    /// path` and the ancestor/descendant arms are prefix tests. A
-    /// non-normalized input is silently *mis*classified rather than
-    /// rejected — `"/a/b/"` against a stored `"/a/b"` compares unequal,
-    /// skips `Equal`, and falls into the descendant arm — so normalizing
-    /// is the caller's job, not this method's.
-    ///
-    /// Debug builds assert `path == normalize_path(path)`, which
-    /// machine-checks **only the trailing-slash form**: `normalize_path`
-    /// strips one trailing slash and does nothing else, so a path
-    /// carrying `.` / `..` segments (`"/a/./b"`) is its own fixed point —
-    /// it passes the `debug_assert` and still misclassifies against a
-    /// stored `"/a/b"`. Callers that can produce such segments must
-    /// canonicalize before they get here; nothing in this layer catches
-    /// it.
+    /// Atomically claim `path` for `area_id`: the overlap scan and the INSERT run inside one `BEGIN IMMEDIATE` transaction
+    /// (`UNIQUE(path)` only catches *equal* paths). Returns `Conflict`, not `Err`, for overlap. `path` MUST already be
+    /// normalized: a non-normalized input is silently misclassified, and `.`/`..` segments are not caught at this layer.
     async fn area_folder_create_checked(
         &self,
         area_id: &str,
         path: &str,
     ) -> Result<crate::area_folder_claim::AreaFolderClaim>;
-    /// Delete a folder by integer id. Returns `NotFound` when no row
-    /// exists. PR 2 will add a "has live track referencing this path"
-    /// guard at the route layer; the repo primitive stays narrow.
+    /// Delete a folder by integer id; `NotFound` when no row exists.
     async fn area_folder_delete(&self, id: i64) -> Result<()>;
 }
 
-/// Prelude module that re-exports every sub-trait + `Repo` itself so test
-/// modules and internal code can do `use calm_server::db::prelude::*` to
-/// bring all the method names into scope at once. Production code is
-/// expected to import the *narrowest* trait it actually needs (it
-/// reinforces the capability gate); the prelude exists because test code
-/// regularly seeds entity rows via every kind of write.
+/// Re-exports every sub-trait + `Repo` for test modules; production code should import the *narrowest* trait it needs.
 pub mod prelude {
     pub use super::{
         Repo, RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, RouteRepo,
@@ -1275,66 +620,28 @@ pub mod prelude {
     pub use crate::session_repo::SessionRepo;
 }
 
-/// The trait object route handlers actually see via `AppState::repo`.
-/// Excludes [`RepoSyncDomainRaw`] — that's the gate. Reads come in via
-/// the `RepoRead` supertrait, and the only writes reachable here are
-/// the event-sourced ones plus the out-of-domain operational writes.
-///
-/// Implemented blanket for any type that combines the route-facing
-/// supertraits, so `SqlxRepo` (and any future repo impl) picks it up
-/// automatically.
+/// The trait object route handlers see via `AppState::repo`. Excludes [`RepoSyncDomainRaw`] — that's the gate.
+/// Blanket-implemented for any type combining the route-facing supertraits.
 pub trait RouteRepo: RepoEventWrite + RepoOutOfDomain + WorkerSessionProjectionRepo {}
 impl<T> RouteRepo for T where
     T: RepoEventWrite + RepoOutOfDomain + WorkerSessionProjectionRepo + ?Sized
 {
 }
 
-/// Full repo capability. Declared as a supertrait of [`RouteRepo`] +
-/// [`RepoSyncDomainRaw`] so `Arc<dyn Repo>` upcasts to `Arc<dyn RouteRepo>`
-/// via stable trait-object upcasting (Rust 1.86+). The blanket impl picks
-/// up `SqlxRepo` automatically once it implements the required sub-traits.
-///
-/// `&dyn Repo` is the internal-access escape hatch used by db-internal
-/// helpers, the replay lib, terminal_sweeper, and tests. Production route
-/// handlers see the narrower [`RouteRepo`] trait object instead — see
-/// `AppState::repo`.
+/// Full repo capability; `Arc<dyn Repo>` upcasts to `Arc<dyn RouteRepo>`. `&dyn Repo` is the internal-access escape
+/// hatch reached via `AppState::raw_repo()`.
 pub trait Repo: RouteRepo + RepoSyncDomainRaw + WorkerSessionProjectionRepo + SessionRepo {
-    /// Internal sqlite escape hatch for infrastructure that owns tables
-    /// outside the route-facing sync-domain traits. Kept off `RouteRepo` so
-    /// ordinary handlers cannot bypass the existing write gates.
+    /// Internal sqlite escape hatch for infrastructure that owns tables outside the route-facing traits; kept off `RouteRepo`.
     fn sqlite_pool(&self) -> Option<SqlitePool> {
         None
     }
 
-    /// #1722 S1b — the stable identity of the database behind this repo:
-    /// minted into the one-row `database_identity` table on the first open
-    /// after migration 0110 and read back by every later open, so two boots
-    /// on the same file answer the same id. `AppState` carries it as
-    /// `database_id`, next to the per-boot `db_instance_id`. Required, not
-    /// defaulted: a repo without one has no database to name.
+    /// The stable identity of the database behind this repo, minted into the one-row `database_identity` table on first open; two boots on the same file answer the same id.
     fn database_id(&self) -> Arc<String>;
 }
 
-// ---------------------------------------------------------------------------
-// `write_with_event_typed` — ergonomic generic wrapper around the
-// dyn-compatible trait method.
-// ---------------------------------------------------------------------------
-
-/// Generic convenience wrapper over `RepoEventWrite::write_with_event` for
-/// callers who want to return a typed row to their REST / plugin-host
-/// caller. The closure returns `(R, Event)`; we capture `R` in an outer
-/// mutex so the trait method's `WriteWithEventFn` (which only knows about
-/// `Event`) can stay dyn-compatible.
-///
-/// The `&dyn RepoEventWrite` bound (rather than `&dyn Repo`) is the
-/// capability gate: a route handler whose `s.repo: Arc<dyn RouteRepo>`
-/// upcasts cleanly here, because `RouteRepo` is itself a `RepoEventWrite`.
-/// But the same handler can **not** reach raw sync-domain writes through
-/// `s.repo` — those live on `RepoSyncDomainRaw`, which `RouteRepo` does
-/// not extend.
-///
-/// This is *purely sugar* — the underlying invariants (single transaction,
-/// commit-then-emit) come from the trait method.
+/// Generic wrapper over `RepoEventWrite::write_with_event` for callers who want a typed row back; the row is captured
+/// in an outer mutex so the trait method stays dyn-compatible. Purely sugar — the invariants come from the trait method.
 #[allow(clippy::too_many_arguments)]
 pub async fn write_with_event_typed<R, F>(
     repo: &dyn RepoEventWrite,
@@ -1384,22 +691,7 @@ where
     Ok((row, event_id))
 }
 
-/// PR6 (#136) — generic plural counterpart to
-/// [`write_with_event_typed`]. Same `R`-capture trick (the trait
-/// method's closure can't return a typed row directly without
-/// breaking dyn-compatibility), now batched across multiple events.
-///
-/// The closure returns `(R, Vec<(EventScope, Event)>)` — one typed
-/// row + one or more `(scope, event)` pairs. Each event is
-/// independently authorized via `enforce_role` against the supplied
-/// `actor`; any violation rolls the whole transaction back.
-///
-/// Use this when a single mutation must emit multiple events tagged
-/// with different scopes — e.g. `routes::tracks::create_track`'s
-/// atomic planner-card binding emits a track-scoped `TrackUpdated` plus a
-/// card-scoped `CardAdded` from the same tx so per-track and per-card
-/// subscribers each see the relevant frame at first hand. For the
-/// usual single-event case stay on [`write_with_event_typed`].
+/// Generic plural counterpart to [`write_with_event_typed`]: one typed row + one or more `(scope, event)` pairs from one tx.
 pub async fn write_with_events_typed<R, F>(
     repo: &dyn RepoEventWrite,
     actor: ActorId,
@@ -1449,7 +741,7 @@ where
     Ok((row, event_ids))
 }
 
-/// #597 typed counterpart to [`RepoEventWrite::write_with_actor_events`].
+/// Typed counterpart to [`RepoEventWrite::write_with_actor_events`].
 pub async fn write_with_actor_events_typed<R, F>(
     repo: &dyn RepoEventWrite,
     correlation: Option<&str>,
@@ -1498,16 +790,7 @@ where
     Ok((row, event_ids))
 }
 
-/// Issue #310 — typed counterpart to [`RepoEventWrite::write_in_tx`].
-/// Same `R`-capture trick as [`write_with_event_typed`]: the trait
-/// method's closure returns `()` (no event, no row) so a typed row
-/// has to be carried out via an `Arc<Mutex<Option<R>>>` set inside
-/// the closure. The free function below does that capture so callers
-/// can stay on the ergonomic `(R) → typed-R out` shape.
-///
-/// Used by the dispatcher to mint a worker card + terminal row in one tx
-/// without broadcasting `CardAdded`; the post-spawn `log_pure_event(CardAdded)`
-/// then carries the row to subscribers after the renderer is attachable.
+/// Typed counterpart to [`RepoEventWrite::write_in_tx`], with the same row-capture trick as [`write_with_event_typed`].
 pub async fn write_in_tx_typed<R, F>(repo: &dyn RepoEventWrite, f: F) -> Result<R>
 where
     R: Send + 'static,

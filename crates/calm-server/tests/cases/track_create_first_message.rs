@@ -1,94 +1,5 @@
-//! #1299 S1 — `POST /api/tracks` delivers the synthesiser page's first message
-//! atomically.
-//!
-//! The sentence the user types on `/area/{id}/new` used to go nowhere. These
-//! tests pin the three things that had to become true for it to arrive:
-//!
-//! 1. it reaches the agent at all, exactly once;
-//! 2. it arrives as a **`UserMessage` attributed to the human**, not as a
-//!    `TrackGoal` (different render, no hard-fire, no human attribution);
-//! 3. a rejected message leaves nothing behind;
-//! 4. a create that promised delivery and did not complete the start says so —
-//!    a harness that fails to start turns the create into a 5xx instead of a
-//!    201 that quietly dropped the sentence, and the 5xx's text reports an
-//!    *unknown* delivery, because on one of the four failure branches the
-//!    message has in fact already arrived.
-//!
-//! Plus the largest regression surface: a create WITHOUT `first_message` must
-//! behave exactly as it did before this slice, down to the operation payload
-//! bytes — including keeping its `warn!` + 201 when the harness fails to
-//! start, which is the control for (4).
-//!
-//! And one product with a neighbouring slice: `first_message` × `recipe_id`
-//! (#1292 S2). Both fields are optional and independent, so picking a recipe
-//! *and* typing a sentence became reachable the moment both shipped, with
-//! nothing asserting about the pair. The two cases at the bottom of this file
-//! cover it in both directions — an existing recipe and a missing one.
-//!
-//! # #1384 — safe retry
-//!
-//! The second half. A create carrying a `first_message` now requires an
-//! `Idempotency-Key`, and the key→track binding is persisted **in the same
-//! transaction that mints the id** (`track_create_idempotency`). The four
-//! variants that block make up the middle of this file:
-//!
-//! * V1 — a replay returns the same track and does not re-deliver;
-//! * V2 — a success that landed on a `#N` retry key still replays;
-//! * V3 — the arm is decided before the create path validates, so a replay
-//!   survives its attached directory being deleted;
-//! * V4 — a daemon outage adopts the track it already minted, instead of
-//!   minting one per retry.
-//!
-//! # #1426 — the message-less half, header-optional
-//!
-//! #1384 left a message-less create non-idempotent and registered it as KNOWN
-//! GAP 1. #1426 closes it **for creates that send an `Idempotency-Key`** and
-//! changes nothing for the ones that do not, which is every message-less caller
-//! alive today. The two tests that pinned the old boundary were changed rather
-//! than routed around, each carrying the before/after in its own doc comment:
-//!
-//! * `a_message_less_create_without_a_key_is_unchanged` — narrowed to the
-//!   key-less shape, which really is unchanged, payload bytes included;
-//! * `a_message_less_create_with_a_key_binds_and_replays` — **inverted**: what
-//!   asserted `binding_count == 0` and two tracks now asserts one binding and
-//!   one track;
-//! * `a_key_bound_by_one_create_shape_refuses_the_other` — new, and the reason
-//!   the binding row needs a fingerprint *variant* rather than a nullable
-//!   digest.
-//!
-//! What is still not promised: a key-less message-less create is not
-//! idempotent, and never will be — there is nothing to key it on.
-//!
-//! Two further arms used to be **not covered here, and no test pretended to
-//! cover them**: the in-flight duplicate and the primary-key race.
-//! `plan_first_message` takes a claim before either lookup and holds it through
-//! the mint, so two same-key creates served by **one `AppState`** serialize and
-//! the second takes the resuming arm without ever reaching the primary key.
-//!
-//! **#1430 closed two of the three, and both had been mis-scoped.** The
-//! serializing claim is `conversation_first_message_locks`, a
-//! **per-`AppState`** field, not a per-process one: two `AppState`s over one
-//! on-disk SQLite file, in **one process**, already race, and no second OS
-//! process is required. So:
-//!
-//! * the primary-key race is
-//!   `a_loser_of_the_cross_instance_key_race_writes_nothing_and_retries_onto_the_winner`
-//!   — two instances over one database file, with the loser *held* at the mint
-//!   rendezvous rather than raced-and-hoped;
-//! * the `Stuck` arm needed no second instance at all and is
-//!   `a_replay_of_a_stuck_attempt_answers_500_and_delivers_nothing`.
-//!   (The `Stuck` → 500 mapping was already exercised on the *minting* arm by
-//!   `a_stuck_start_after_spawn_has_already_delivered_the_first_message`; what
-//!   was unpinned is a *replay* joining a `Stuck` predecessor — that
-//!   `retryable_operation_key` does not step over it, and that the replay
-//!   opens no `#N` attempt and delivers no second copy.)
-//!
-//! What remains uncovered is one thing only: a **live** in-flight duplicate on
-//! a second instance, i.e. a runtime future actually awaiting a `running`
-//! operation. It buys one response shape that `select_arm`'s decision table
-//! already pins, at the cost of a parking `planner-harness-start` adapter, and
-//! is recorded with that reasoning as
-//! `docs/design-1384-track-idempotency.md` §9 gap 12.
+//! `POST /api/tracks` delivers the synthesiser page's first message atomically, exactly once, as a
+//! `UserMessage` from the human; one `Idempotency-Key` produces at most one track across retries, outages and re-points.
 
 #![cfg(unix)]
 
@@ -127,16 +38,12 @@ struct Boot {
     state: AppState,
     area_id: String,
     repo: Arc<SqlxRepo>,
-    /// `Arc` so two instances of the same database can share one sandbox: the
-    /// `workspace_root` a track's managed path is derived from must be the SAME
-    /// directory on both, or the loser of the primary-key race would be racing
-    /// against a track it could never collide with on disk.
+    /// `Arc` so two instances of the same database share one sandbox: `workspace_root` must be the SAME
+    /// directory on both, or the loser of the primary-key race could never collide on disk.
     tmp: Arc<TempDir>,
 }
 
-/// A real git repository the user owns, the shape `PATCH /api/tracks/{id}`
-/// accepts as an attached workspace. Same recipe as
-/// `cases/track_workspace_repoint.rs::user_repo`.
+/// A real git repository the user owns, the shape `PATCH /api/tracks/{id}` accepts as an attached workspace.
 fn user_repo(at: &std::path::Path) -> PathBuf {
     fn git(at: &std::path::Path, args: &[&str]) {
         let out = std::process::Command::new("git")
@@ -167,12 +74,8 @@ async fn boot() -> Boot {
     boot_with_daemon(true).await
 }
 
-/// Same fixture, but with the shared codex app-server **not running** —
-/// `SharedCodexAppServer::is_running()` is false, which is what
-/// `PlannerHarnessStartAdapter::validate` refuses on. This is the production
-/// state during a daemon outage / restart window, and it is the only way to
-/// reach variant 4: with a fake installed, `is_running()` short-circuits to
-/// `true` and the outage is unconstructible.
+/// Same fixture, but with the shared codex app-server **not running**, which `PlannerHarnessStartAdapter::validate`
+/// refuses on; with a fake installed `is_running()` short-circuits to `true` and the outage is unconstructible.
 async fn boot_without_daemon() -> Boot {
     boot_with_daemon(false).await
 }
@@ -205,26 +108,8 @@ async fn boot_with_daemon(daemon_running: bool) -> Boot {
     instance_on(tmp, repo, area.id.to_string(), daemon_running).await
 }
 
-/// #1430 — **two `AppState`s over one on-disk SQLite file, in one process.**
-///
-/// This is the degraded multi-instance deployment `state.rs` describes in the
-/// doc comment on `conversation_first_message_locks`: that map, and every other
-/// lock map, is a per-`AppState` field, so nothing here serializes two same-key
-/// creates. No second OS process is required to reach the primary key — the
-/// wall was never the process boundary.
-///
-/// `sqlite::memory:` cannot carry this: sqlx gives every parsed set of options
-/// its own named cache, so two `open("sqlite::memory:")` calls are two
-/// unrelated databases. The shared spelling is the one
-/// `tests/support/kernel_proc.rs` already uses, and `SqlxRepo::open` sets WAL
-/// and `busy_timeout` on every connection for any URL — nothing here is
-/// test-special.
-///
-/// What is deliberately NOT shared, because production instances do not share
-/// it either: the `EventBus`, the role/track caches, the `OperationRuntime`,
-/// the harness registry, the `db_instance_id`, the four lock maps, the
-/// `PluginHost` and the fake app-server. What IS shared: the database file and
-/// the `workspace_root` sandbox.
+/// Two `AppState`s over one on-disk SQLite file, in one process: the lock maps are per-`AppState`, so nothing
+/// serializes two same-key creates. `sqlite::memory:` cannot carry this (two opens are two databases).
 async fn boot_two_instances_on_one_database() -> (Boot, Boot) {
     let tmp = Arc::new(TempDir::new().unwrap());
     let db_url = format!(
@@ -247,9 +132,7 @@ async fn boot_two_instances_on_one_database() -> (Boot, Boot) {
     (winner, loser)
 }
 
-/// One server instance over `repo`. Factored out of `boot_with_daemon` so a
-/// second instance is the same fixture with a different `repo`, rather than a
-/// parallel copy that could drift from it.
+/// One server instance over `repo`.
 async fn instance_on(
     tmp: Arc<TempDir>,
     repo: Arc<SqlxRepo>,
@@ -306,9 +189,7 @@ impl Boot {
         app_for_state(state)
     }
 
-    /// `POST /api/tracks`. `idempotency_key` and `first_message` are both
-    /// optional so one helper covers the legacy shape and the keyed shape — the
-    /// point of several tests below is that omitting them changes nothing.
+    /// `POST /api/tracks`; `idempotency_key` and `first_message` are both optional.
     async fn create_track(
         &self,
         idempotency_key: Option<&str>,
@@ -325,12 +206,8 @@ impl Boot {
         self.post_create(idempotency_key, body).await
     }
 
-    /// `POST /api/tracks` with an **explicit** `cwd`, i.e. the attached branch.
-    ///
-    /// The attached branch is the one whose create-path validation reads the
-    /// disk (`validate_attached_workspace`), so it is the only shape that can
-    /// show the ordering bug: the same bytes stop being acceptable the moment
-    /// the directory goes away, even though the replay mints nothing.
+    /// `POST /api/tracks` with an **explicit** `cwd`, i.e. the attached branch — the only shape whose
+    /// create-path validation reads the disk.
     async fn create_track_at(
         &self,
         idempotency_key: Option<&str>,
@@ -380,8 +257,7 @@ impl Boot {
         )
     }
 
-    /// `PATCH /api/tracks/{id}` — the production route that repoints a managed
-    /// workspace at a repository the user owns (#1147 S3).
+    /// `PATCH /api/tracks/{id}` — the production route that repoints a managed workspace at a repository the user owns.
     async fn repoint_to(&self, track_id: &str, path: &std::path::Path) -> (StatusCode, Value) {
         let body = json!({"workspace": {
             "kind": "attached",
@@ -409,11 +285,8 @@ impl Boot {
         )
     }
 
-    /// `DELETE /api/tracks/{id}` — the production route, not a `DELETE FROM
-    /// tracks`. The arm under test is reached through the binding row that
-    /// outlives the track, and only the real handler proves the row does
-    /// outlive it: a hand-written row delete would be this test asserting its
-    /// own premise.
+    /// `DELETE /api/tracks/{id}` — the production route, not a `DELETE FROM tracks`, so the binding row's
+    /// survival is the real handler's.
     async fn delete_track(&self, track_id: &str) -> StatusCode {
         self.app
             .clone()
@@ -437,13 +310,8 @@ impl Boot {
             .unwrap()
     }
 
-    /// The `cwd` of every `planner-harness-start` payload that carries `needle`
-    /// as its `first_message`, oldest first.
-    ///
-    /// Filtered by `first_message` on purpose: the re-point route submits a
-    /// `planner-harness-start` of its own (with the new cwd and
-    /// `force_new_thread`), so "the last payload" would answer about the wrong
-    /// operation.
+    /// The `cwd` of every `planner-harness-start` payload that carries `needle` as its `first_message`, oldest
+    /// first. Filtered by `first_message` because the re-point route submits a `planner-harness-start` of its own.
     async fn first_message_payload_cwds(&self, needle: &str) -> Vec<String> {
         let rows: Vec<String> = sqlx::query_scalar(
             "SELECT payload_json FROM operations WHERE kind = 'planner-harness-start' \
@@ -459,7 +327,7 @@ impl Boot {
             .collect()
     }
 
-    /// #1384 — how many `(area, Idempotency-Key)` → track bindings exist.
+    /// How many `(area, Idempotency-Key)` → track bindings exist.
     async fn binding_count(&self) -> i64 {
         self.count("SELECT COUNT(*) FROM track_create_idempotency")
             .await
@@ -499,18 +367,8 @@ impl Boot {
         .unwrap()
     }
 
-    /// How many copies of `needle` the harness has been handed.
-    ///
-    /// Counted from the harness, not from the audit event: the audit row is
-    /// only *evidence* of a delivery, so counting it to prove a delivery
-    /// happened would be circular. Two places have to be summed because a
-    /// message may or may not have been drained into a turn yet — turns already
-    /// started on the fake app-server, plus observations still queued.
-    ///
-    /// Substring occurrences, not entries: adjacent `UserMessage`s fold into
-    /// one concatenated entry, so counting entries would under-report a double
-    /// send. Polls, because the run loop drains on a background task, and
-    /// returns what it saw so a failing assertion reports the real number.
+    /// How many copies of `needle` the harness has been handed: turns already started plus observations still
+    /// queued, as substring occurrences (adjacent `UserMessage`s fold into one entry). Polls and returns what it saw.
     async fn copies_in_harness(&self, needle: &str, want: usize) -> usize {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
@@ -551,19 +409,8 @@ impl Boot {
         }
     }
 
-    /// How many copies of `needle` the DAEMON was actually handed.
-    ///
-    /// `copies_in_harness` deliberately sums turns AND live pending queues,
-    /// because a message that has not drained yet is still a message the system
-    /// owes. That makes it the wrong instrument for the #1449 lifetime cases:
-    /// a runtime whose row was retired under it keeps its queue in memory —
-    /// it simply may never issue it — so the queued copy and a successor's
-    /// delivery would read as a double delivery when only one turn ever
-    /// happened. This counts turns only.
-    ///
-    /// Polls, and returns what it saw, for the same reasons `copies_in_harness`
-    /// does: asking for `want + 1` burns the deadline and turns "no second copy
-    /// had arrived at the instant I looked" into an assertion.
+    /// How many copies of `needle` the DAEMON was actually handed — turns only. A runtime whose row was retired
+    /// under it keeps its queue in memory, so `copies_in_harness` would read a double delivery.
     async fn delivered_copies(&self, needle: &str, want: usize) -> usize {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
@@ -590,9 +437,7 @@ impl Boot {
         }
     }
 
-    /// Everything the fake app-server was ever asked to run a turn on, as one
-    /// JSON blob. This is the *rendered* text — `Observation::to_turn_text` —
-    /// which is where `TrackGoal` and `UserMessage` visibly differ.
+    /// Everything the fake app-server was ever asked to run a turn on, as one JSON blob of *rendered* text.
     async fn started_turn_text(&self, needle: &str) -> String {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
@@ -606,8 +451,7 @@ impl Boot {
         }
     }
 
-    /// Every `planner-harness-start` payload as it was persisted into
-    /// `operations.payload_json`.
+    /// Every `planner-harness-start` payload as persisted into `operations.payload_json`.
     async fn operation_payloads(&self) -> Vec<Value> {
         let rows: Vec<String> = sqlx::query_scalar(
             "SELECT payload_json FROM operations WHERE kind = 'planner-harness-start'",
@@ -620,8 +464,7 @@ impl Boot {
             .collect()
     }
 
-    /// `POST /api/track-recipes` — the production write boundary for a
-    /// user-defined recipe (#1292 S1). Returns its id.
+    /// `POST /api/track-recipes`. Returns its id.
     async fn create_recipe(&self, title: &str, body: &str) -> String {
         let response = self
             .app
@@ -645,8 +488,7 @@ impl Boot {
         created["id"].as_str().unwrap().to_string()
     }
 
-    /// `GET /api/tracks/{id}`, used here only to read the instantiated report
-    /// back out of the same surface the picker reads.
+    /// `GET /api/tracks/{id}`, used here only to read the instantiated report back.
     async fn track_detail(&self, track_id: &str) -> Value {
         let response = self
             .app
@@ -667,11 +509,8 @@ impl Boot {
         detail
     }
 
-    /// Reject the `spawn_succeeded` phase write, so the driver's `set_phase`
-    /// errors *after* `spawn_side_effect` has already installed a live
-    /// harness. This is the only way to reach the `OperationOutcome::Stuck`
-    /// binding of `harness_start_failed` from a route test: the failure has to
-    /// land between the side effect and the record of it.
+    /// Reject the `spawn_succeeded` phase write, so the driver's `set_phase` errors *after* `spawn_side_effect`
+    /// installed a live harness: the only way to reach `OperationOutcome::Stuck` from a route test.
     async fn reject_spawn_succeeded(&self) {
         sqlx::query(
             "CREATE TRIGGER reject_spawn_succeeded BEFORE UPDATE ON operations \
@@ -683,13 +522,8 @@ impl Boot {
         .unwrap();
     }
 
-    /// #1449 — park the next planner harness immediately before it can turn
-    /// its pending queue into a turn, and hand back the two halves of the
-    /// rendezvous.
-    ///
-    /// `ANY_RUNTIME`, not a named id, because the runtime under test does not
-    /// exist yet: `POST /api/tracks` mints it, starts its run loop and lets it
-    /// drain, all before the 201 is written.
+    /// Park the next planner harness immediately before it can turn its pending queue into a turn. `ANY_RUNTIME`
+    /// because the runtime under test does not exist yet.
     fn hold_the_next_drain(&self) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
         let entered = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
@@ -722,12 +556,8 @@ impl Boot {
             .unwrap()
     }
 
-    /// How many **persisted** runtime snapshots still hold `needle` on their
-    /// `pending_queue`, i.e. still owe it to an agent.
-    ///
-    /// Since S2 the transfer is a move, so this counts owners rather than
-    /// copies: a retired row stops holding what was taken off it, and a live
-    /// successor holds it until it drains and re-persists.
+    /// How many **persisted** runtime snapshots still hold `needle` on their `pending_queue`. The transfer is a
+    /// move, so this counts owners rather than copies.
     async fn rows_holding(&self, needle: &str) -> usize {
         let rows: Vec<Option<String>> =
             sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions")
@@ -750,13 +580,8 @@ impl Boot {
             .count()
     }
 
-    /// Poll until exactly `want` persisted snapshots still carry `needle`, and
-    /// report what was actually seen so a failure names the real number.
-    ///
-    /// Not a settle sleep: it waits on a production write (the successor's
-    /// post-turn `persist_snapshot`) that the next restart's inherit reads. A
-    /// restart issued before it lands would inherit a queue the successor has
-    /// already delivered, which is a different defect from the one under test.
+    /// Poll until exactly `want` persisted snapshots still carry `needle`; waits on the successor's post-turn
+    /// `persist_snapshot`, which the next restart's inherit reads.
     async fn wait_until_rows_holding(&self, needle: &str, want: usize) -> usize {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
@@ -768,12 +593,8 @@ impl Boot {
         }
     }
 
-    /// #1449 — park the harness INSIDE `turn/start`, after the fake daemon has
-    /// already recorded the batch.
-    ///
-    /// The window this opens is the one the harvest has to reason about: the
-    /// daemon has the sentence, and `maybe_issue_turn` has not yet written the
-    /// emptied queue back to the row.
+    /// Park the harness INSIDE `turn/start`, after the fake daemon has recorded the batch and before
+    /// `maybe_issue_turn` writes the emptied queue back to the row.
     fn hold_the_next_turn_start(&self) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
         let entered = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
@@ -786,14 +607,8 @@ impl Boot {
         (entered, release)
     }
 
-    /// Retire a runtime in the database and NOTHING else — the durable half of
-    /// the re-point fence (`routes/tracks.rs` calls this very helper), without
-    /// the process half that tears the handle down.
-    ///
-    /// That split is the point: a live, healthy run loop whose row has been
-    /// retired under it is reachable in production (`prepare_tx` supersedes the
-    /// card's live predecessor and nothing stops its handle until a later step
-    /// of the same operation), and it is what these tests need to order.
+    /// Retire a runtime in the database and NOTHING else — the durable half of the re-point fence without the
+    /// process half; a live run loop whose row was retired under it is reachable in production.
     async fn retire_runtime_in_the_database(&self, worker_session_id: &str) {
         let worker_session_id = worker_session_id.to_string();
         write_in_tx_typed(self.repo.as_ref() as &dyn Repo, move |tx| {
@@ -822,8 +637,7 @@ impl Boot {
             .unwrap_or_default()
     }
 
-    /// Poll until a runtime's persisted queue reaches `want` entries; report
-    /// what was actually seen so a failure names the real number.
+    /// Poll until a runtime's persisted queue reaches `want` entries; report what was actually seen.
     async fn wait_for_persisted_queue_len(&self, worker_session_id: &str, want: usize) -> usize {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
@@ -835,8 +649,7 @@ impl Boot {
         }
     }
 
-    /// The card's currently ACTIVE runtime id. Unlike `only_runtime`, safe on a
-    /// track that also has a terminal card with a runtime of its own.
+    /// The card's currently ACTIVE runtime id; safe on a track that also has a terminal card with a runtime.
     async fn active_runtime_of_card(&self, card_id: &str) -> String {
         sqlx::query_scalar(
             "SELECT id FROM worker_sessions WHERE card_id = ?1 \
@@ -848,14 +661,13 @@ impl Boot {
         .unwrap()
     }
 
-    /// `POST /api/today/launchpad/ensure` — the production caller of
-    /// `prepare_tx`'s NON-deferred arm on its second and later calls.
+    /// `POST /api/today/launchpad/ensure` — the production caller of `prepare_tx`'s NON-deferred arm on its
+    /// second and later calls.
     async fn ensure_launchpad(&self) -> (StatusCode, Value) {
         self.post_json("/api/today/launchpad/ensure", "{}").await
     }
 
-    /// `POST /api/cards/{id}/planner/input` — the production send path, whose
-    /// enqueue is persisted before the response (`observe_user_message_durable`).
+    /// `POST /api/cards/{id}/planner/input` — the production send path, whose enqueue is persisted before the response.
     async fn send_planner_input(&self, card_id: &str, text: &str) -> (StatusCode, Value) {
         self.post_json(
             &format!("/api/cards/{card_id}/planner/input"),
@@ -907,9 +719,7 @@ impl Boot {
         )
     }
 
-    /// `POST /api/cards/{id}/planner/reset` — the production dormant-restart
-    /// route. `force_new_thread: true`, i.e. the same `prepare_tx` arm the
-    /// re-point fence's restart takes.
+    /// `POST /api/cards/{id}/planner/reset` — the production dormant-restart route (`force_new_thread: true`).
     async fn reset_planner(&self, card_id: &str) -> (StatusCode, Value) {
         let response = self
             .app
@@ -946,9 +756,6 @@ impl Boot {
 }
 
 /// The headline: the sentence reaches the agent, once, with the create.
-///
-/// Fails when the `Observation::UserMessage` seed is removed from
-/// `PlannerHarnessStartAdapter::prepare_tx`.
 #[tokio::test]
 async fn the_first_message_reaches_the_agent_exactly_once() {
     let b = boot().await;
@@ -957,12 +764,8 @@ async fn the_first_message_reaches_the_agent_exactly_once() {
         .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
 
-    // "Exactly once", written so it actually says that. `copies_in_harness`
-    // returns as soon as it has seen `want`, so asking for 1 and comparing to 1
-    // asserts "at least one, and no second copy had arrived at the instant I
-    // looked" — the second half is a race, not an assertion. So: wait for the
-    // delivery with its own budget, then ask for a SECOND copy, which burns the
-    // full deadline before answering 1.
+    // `copies_in_harness` returns as soon as it has seen `want`, so "exactly once" is: wait for the delivery
+    // with its own budget, then ask for a SECOND copy, which burns the full deadline before answering 1.
     assert_eq!(
         b.copies_in_harness("refactor the parser", 1).await,
         1,
@@ -981,15 +784,8 @@ async fn the_first_message_reaches_the_agent_exactly_once() {
     b.shutdown_harnesses().await;
 }
 
-/// The message is a **`UserMessage` from the human**, not a `TrackGoal`.
-///
-/// Two independent assertions because the two halves fail differently:
-/// swapping the observation type keeps the audit row (it is written on
-/// `first_message.is_some()`, not on the variant) but changes the rendered turn
-/// text from `"User says:\n…"` to bare text; attributing the event to a machine
-/// actor keeps the render but loses the human.
-///
-/// Fails when `Observation::UserMessage` is swapped for `Observation::TrackGoal`.
+/// Two independent assertions: swapping the observation type keeps the audit row but changes the rendered
+/// turn text; attributing the event to a machine actor keeps the render but loses the human.
 #[tokio::test]
 async fn the_first_message_is_a_user_message_attributed_to_the_human() {
     let b = boot().await;
@@ -1007,9 +803,7 @@ async fn the_first_message_is_a_user_message_attributed_to_the_human() {
         turns.contains("please rename the track"),
         "…carrying the user's own text: turns={turns}"
     );
-    // The persisted `actor` column, verbatim. `ActorId::User` serialises as
-    // `{"kind":"User"}`; any AI/session actor is a different shape, so this
-    // pins WHO the row is attributed to rather than merely that a row exists.
+    // The persisted `actor` column, verbatim: `ActorId::User` serialises as `{"kind":"User"}`.
     assert_eq!(
         b.user_message_actor().await,
         r#"{"kind":"User"}"#,
@@ -1018,28 +812,8 @@ async fn the_first_message_is_a_user_message_attributed_to_the_human() {
     b.shutdown_harnesses().await;
 }
 
-/// The largest regression surface in this slice: a create with **no**
-/// `first_message` **and no `Idempotency-Key`** is unchanged.
-///
-/// # What this used to assert, and why the change is deliberate (#1426)
-///
-/// Until #1426 this test also sent a duplicate key twice and asserted **four**
-/// tracks, on the ground that the header was "not read at all" on this path.
-/// That was true and it was #1384's stated KNOWN GAP 1, not an accident. #1426
-/// closed the gap the header-**optional** way: a message-less create that sends
-/// a key now binds it, so the keyed half of the old assertion has moved to
-/// `a_message_less_create_with_a_key_binds_and_replays`, inverted.
-///
-/// What survives here is the half the old sentence was really protecting, and
-/// it is the one that governs every message-less caller alive today — none of
-/// which sends a key (`web/`'s HTTP helper cannot even carry one). For them the
-/// path is byte-for-byte the pre-#1299 one: two identical creates are two
-/// tracks, and the operation payload carries no `first_message` key at all,
-/// because `skip_serializing_if` is what keeps an in-flight retry across a
-/// deploy from becoming a spurious payload-hash 409.
-///
-/// Fails when the message-less fork stops returning `CreatePlan::Legacy` for a
-/// key-less request.
+/// A create with **no** `first_message` **and no `Idempotency-Key`** is unchanged: two identical creates
+/// are two tracks, and the operation payload carries no `first_message` key at all (`skip_serializing_if`).
 #[tokio::test]
 async fn a_message_less_create_without_a_key_is_unchanged() {
     let b = boot().await;
@@ -1073,15 +847,7 @@ async fn a_message_less_create_without_a_key_is_unchanged() {
     b.shutdown_harnesses().await;
 }
 
-/// A rejected message leaves nothing behind — the one compensation-shaped
-/// promise this slice does make.
-///
-/// `create_track` mints five kinds of row and materializes a workspace after the
-/// commit, so it is not a compensating handler and this slice does not make it
-/// one. What it guarantees is narrower and checkable: the `first_message`
-/// validation runs before *any* of that.
-///
-/// Fails when the validation is moved after the mint.
+/// A rejected message leaves nothing behind: the `first_message` validation runs before *any* row is minted.
 #[tokio::test]
 async fn a_rejected_first_message_leaves_no_track_and_no_cards() {
     let b = boot().await;
@@ -1096,36 +862,19 @@ async fn a_rejected_first_message_leaves_no_track_and_no_cards() {
     assert_eq!(b.track_count().await, 0);
     assert_eq!(b.card_count().await, 0);
 
-    // 32768 characters is the ceiling, counted in CHARACTERS not bytes — a
-    // multi-byte string at the limit must be accepted.
+    // 32768 characters is the ceiling, counted in CHARACTERS not bytes.
     let at_limit = "é".repeat(32_768);
     let (ok, body) = b.create_track(Some("idem-limit"), Some(&at_limit)).await;
     assert_eq!(ok, StatusCode::CREATED, "body={body}");
     b.shutdown_harnesses().await;
 }
 
-/// A `template_id` create delivers the message like any other create.
-///
-/// This case replaces a refusal. Until #1318 S2 there was a second create
-/// shape, `{"as_template": true}`, which minted a track and deliberately did
-/// **not** start a planner harness; a `first_message` on it had no queue to
-/// land in, so this slice refused the combination before the mint. #1318 S2
-/// retired that field (it is now an unknown field, 422 at the extractor), and
-/// with it the only branch that skipped `start_planner_harness` — the call in
-/// `create_track_with_planner_harness` is now unconditional.
-///
-/// So "template create" today means `template_id`, which names a roster entry
-/// (`crates/calm-server/src/templates.rs`) that seeds the report inside the
-/// create transaction and then starts the harness exactly like a blank create.
-/// There is nothing left to refuse, and the thing worth pinning is the
-/// opposite: that this shape delivers. Read from the harness, not from the
-/// status code, because a create that dropped the message would also answer
-/// 201.
+/// A `template_id` create seeds the report inside the create transaction and then starts the harness like
+/// a blank create; read from the harness, because a create that dropped the message would also answer 201.
 #[tokio::test]
 async fn a_template_create_delivers_the_first_message() {
     let b = boot().await;
-    // A needle that appears nowhere in the `small-change` template body, so the
-    // count cannot be satisfied by the seeded report travelling into the turn.
+    // A needle that appears nowhere in the `small-change` template body.
     let needle = "check the p99 on the way out";
     let (status, body) = b
         .post_create(
@@ -1142,8 +891,7 @@ async fn a_template_create_delivers_the_first_message() {
     assert_eq!(status, StatusCode::CREATED, "body={body}");
     let track_id = body["id"].as_str().unwrap().to_string();
 
-    // Premise: this really is the template shape, not a blank create that
-    // ignored `template_id`.
+    // Premise: this really is the template shape.
     let template_id: Option<String> =
         sqlx::query_scalar("SELECT template_id FROM tracks WHERE id = ?1")
             .bind(&track_id)
@@ -1174,24 +922,10 @@ async fn a_template_create_delivers_the_first_message() {
     b.shutdown_harnesses().await;
 }
 
-// ---------------------------------------------------------------------------
-// `first_message` × `recipe_id`
-//
-// A combination neither suite covered. #1292 S2 added `recipe_id` as a third
-// initialization source and pinned it on creates that type nothing; #1299 S1
-// added `first_message` and pinned it on creates that name no source. Both are
-// optional and independent, so the product is reachable from the synthesiser
-// page the moment a user picks a recipe and also types a sentence — and until
-// these two cases it was reachable with nothing asserting about it.
-//
-// The two halves fail differently, which is why there are two cases: the
-// recipe is instantiated *inside* the create transaction and the message is
-// delivered by the operation submitted *after* it commits, so an interaction
-// bug can drop either one while leaving the other looking correct.
-// ---------------------------------------------------------------------------
+// `first_message` × `recipe_id`: the recipe is instantiated *inside* the create transaction and the message
+// is delivered by the operation submitted *after* it commits, so a bug can drop either one alone.
 
-/// A recipe body with one task, so "the recipe was instantiated" is checkable
-/// on a structural field and not only on prose.
+/// A recipe body with one task, so instantiation is checkable on a structural field.
 fn recipe_body() -> String {
     format!(
         "# Rollout\n\nStage it, then watch the dashboards.\n\n{}",
@@ -1218,24 +952,14 @@ fn report_payload(detail: &Value) -> &Value {
         .expect("track-report card")
 }
 
-/// `first_message` + an **existing** `recipe_id`: the recipe becomes the
-/// report and the sentence is delivered exactly once, on one 201.
-///
-/// Both halves are asserted on the mechanism rather than on the status code.
-/// The recipe half reads the report back through `GET /api/tracks/{id}` and
-/// checks the task block, because a create that silently took the blank branch
-/// would also answer 201 with a perfectly plausible empty report. The delivery
-/// half uses this suite's two-step budget — wait for the first copy, then ask
-/// for a second one and let it burn the whole deadline — because comparing a
-/// single `want: 1` poll against 1 asserts "no second copy had arrived at the
-/// instant I looked", which is a race and not an assertion.
+/// Both halves asserted on the mechanism: the report is read back through `GET /api/tracks/{id}`, and the
+/// delivery uses the two-step "then ask for a second copy" budget.
 #[tokio::test]
 async fn a_first_message_is_delivered_once_on_a_recipe_create() {
     let b = boot().await;
     let recipe_id = b.create_recipe("rollout flow", &recipe_body()).await;
 
-    // A needle that appears nowhere in the recipe, so `copies_in_harness`
-    // cannot be satisfied by the instantiated report travelling into the turn.
+    // A needle that appears nowhere in the recipe.
     let needle = "watch the p99 while it stages";
     let (status, body) = b
         .post_create(
@@ -1278,8 +1002,7 @@ async fn a_first_message_is_delivered_once_on_a_recipe_create() {
         vec![json!("stage")],
         "the recipe's task must be on the new track's report: {payload}"
     );
-    // A recipe id is not a plugin-bindable template id, and a `first_message`
-    // riding along must not change that.
+    // A recipe id is not a plugin-bindable template id.
     let template_id: Option<String> =
         sqlx::query_scalar("SELECT template_id FROM tracks WHERE id = ?1")
             .bind(&track_id)
@@ -1310,22 +1033,8 @@ async fn a_first_message_is_delivered_once_on_a_recipe_create() {
     b.shutdown_harnesses().await;
 }
 
-/// `first_message` + a **missing** `recipe_id`: the in-transaction 400 rolls
-/// the whole create back, and the message leaves no trace either.
-///
-/// This is the one refusal in this suite that is decided *inside* the create
-/// transaction rather than before it (`TrackInit::Recipe` reads the row in the
-/// same tx as the mint, on purpose, so a concurrently deleted recipe cannot be
-/// seen as present by a pre-tx read and absent by the writer). So "nothing is
-/// left behind" here is a rollback claim, not an ordering claim, and it is
-/// asserted over every row kind this path can write: the track, its cards, the
-/// operation the delivery would have travelled on, and the audit event.
-///
-/// The `operations` count is the load-bearing one for the interaction: the
-/// `planner-harness-start` carrying `first_message` is submitted only *after*
-/// the create transaction commits, so a create that submitted it before
-/// resolving the recipe would leave an operation row pointing at a track that
-/// never existed.
+/// The one refusal decided *inside* the create transaction (`TrackInit::Recipe` reads the row in the same tx
+/// as the mint), so "nothing is left behind" is a rollback claim asserted over every row kind, operations included.
 #[tokio::test]
 async fn a_first_message_with_an_unknown_recipe_leaves_nothing_behind() {
     let b = boot().await;
@@ -1368,48 +1077,11 @@ async fn a_first_message_with_an_unknown_recipe_leaves_nothing_behind() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// A harness that fails to start
-//
-// `start_planner_harness` can fail in four ways — the submit is rejected, the
-// wait errors, the operation reaches `Failed`, the operation reaches `Stuck`.
-// All four used to be `warn!` + `Ok(())`, i.e. 201, which was the right answer
-// while a create carried nothing but structure: "the track exists and its
-// planner agent is inert" is recoverable, and the user can start the agent from
-// the track.
-//
-// A create carrying a `first_message` promised something more, and the message
-// only ever gets written by that same operation. So the two cases below pin the
-// fork: with a message, a failed start is a 5xx; without one, the same failure
-// is still a 201. They are a pair on purpose — a fix that made every harness
-// failure a 5xx would satisfy the first and break the second, and that
-// regression is exactly what the second case exists to catch.
-//
-// Both drive the real route with `fail_next_thread_start_for_test`, which makes
-// the production adapter fail in `AppServerInteract`, i.e. the
-// `OperationOutcome::Failed` branch. A third case further down reaches the
-// `Stuck` branch by rejecting the `spawn_succeeded` phase write, which is the
-// branch that behaves differently in the one way that matters — the message is
-// already delivered. The remaining two (submit failed, `wait()` errored) are
-// not separately implemented: all four write one `harness_start_failed`
-// binding that one `if` reads, so the branch under test is the same code they
-// reach.
-// ---------------------------------------------------------------------------
+// A harness that fails to start: with a message a failed start is a 5xx, without one the same failure is
+// still a 201. `fail_next_thread_start_for_test` reaches the `Failed` branch; rejecting `spawn_succeeded` reaches `Stuck`.
 
-/// With a `first_message`, a harness that fails to start is a 5xx — and the
-/// track is still there.
-///
-/// The second half is the part worth writing down. This is not a compensating
-/// handler: by the time `start_planner_harness` runs, the create transaction
-/// has committed and the workspace is materialized. The 5xx says "the create
-/// did not keep its delivery promise", not "nothing happened", and this test
-/// pins both halves so nobody later reads the status as a rollback.
-///
-/// On *this* branch the message really did not arrive (asserted below), but
-/// that is a fact about this branch, not about the status code: see
-/// `a_stuck_start_after_spawn_has_already_delivered_the_first_message` for the
-/// branch where the same 5xx sits on top of a delivered message, which is why
-/// the response text asserts an unknown outcome rather than a failed one.
+/// Not a compensating handler: the create transaction has committed and the workspace is materialized, so
+/// the 5xx says "the delivery promise was not kept", not "nothing happened".
 #[tokio::test]
 async fn a_failed_harness_start_fails_a_create_that_carried_a_first_message() {
     let b = boot().await;
@@ -1426,18 +1098,8 @@ async fn a_failed_harness_start_fails_a_create_that_carried_a_first_message() {
          would have delivered it never started: status={status} body={body}"
     );
 
-    // Premise: the message really was not delivered — otherwise the 5xx would
-    // be the lie instead.
-    //
-    // Checked at the harness, not at the audit event. The audit row IS written
-    // here: `prepare_tx` seeds the observation and writes
-    // `harness.user_message.enqueued` in one transaction that commits in
-    // `TxCommitted`, and the failure happens later, in `AppServerInteract`.
-    // `events` is an append-only log and the operation's compensation does not
-    // rewrite history — it marks the runtime failed, which is what makes the
-    // seeded observation unreachable. So the audit row says "a delivery was
-    // attempted", not "a delivery happened", and counting it here would assert
-    // the opposite of the thing under test.
+    // Premise: the message really was not delivered, checked at the harness. The audit row IS written here
+    // (`prepare_tx` commits it before `AppServerInteract` fails), so it only says a delivery was attempted.
     assert_eq!(
         b.copies_in_harness("do not lose this sentence", 1).await,
         0,
@@ -1456,13 +1118,8 @@ async fn a_failed_harness_start_fails_a_create_that_carried_a_first_message() {
     b.shutdown_harnesses().await;
 }
 
-/// Without a `first_message`, the *same* failure is still a 201.
-///
-/// The control for the case above, and the reason the new semantics is scoped
-/// to `first_message` rather than applied to every harness failure. Nothing the
-/// user typed was riding on this operation, so "the track exists, its planner
-/// agent is inert" is a complete and recoverable answer — the pre-#1299
-/// behaviour, unchanged.
+/// The control: nothing the user typed was riding on this operation, so "the track exists, its planner
+/// agent is inert" is a complete and recoverable answer.
 #[tokio::test]
 async fn a_failed_harness_start_still_creates_a_track_without_a_first_message() {
     let b = boot().await;
@@ -1482,59 +1139,15 @@ async fn a_failed_harness_start_still_creates_a_track_without_a_first_message() 
     b.shutdown_harnesses().await;
 }
 
-// ---------------------------------------------------------------------------
-// #1299 — what the 500 is allowed to SAY.
-//
-// Characterization, not an invariant. The four failure bindings the handler
-// collapses into one `harness_start_failed` do not agree about whether the
-// message arrived, and the case below is the one that proves it: the phase
-// write fails *after* `spawn_side_effect` installed a live harness, so the
-// seeded observation is already in it and the turn is already out, while the
-// response is still a 500. The 500 text therefore may not assert non-delivery
-// — a user who followed such a text and resent from the track would get two
-// copies.
-//
-// "Failing after the spawn means the message is already delivered" is a
-// consequence of today's driver semantics (spawn is the side effect, the
-// phase write only records it, and there is no compensation on this path), not
-// a property anyone promised.
-//
-// #1384 UPDATE — the unknown survived, and this is why.
-//
-// The header used to say this test was expected to change once #1384 taught the
-// endpoint to answer what actually happened. It cannot, and the reason is not
-// effort: `harness.user_message.enqueued` proves only an *attempt*. `prepare_tx`
-// seeds the observation and writes that audit row in a transaction that commits
-// at `TxCommitted`, the later `AppServerInteract` can still fail, `events` is
-// append-only, and compensation only marks the runtime failed. There is no other
-// durable record of the turn leaving, so no read the handler can perform answers
-// the question — and a *negative* claim would be a lie precisely on this branch.
-//
-// What #1384 did add is the actionable half, and only for the two things it can
-// prove: a retry under the same `Idempotency-Key` creates no second track (the
-// binding row) and delivers no second copy (`retryable_operation_key` does not
-// step over `Stuck`, so the retry resolves to this same operation and replays
-// the recorded failure). The assertions below now pin both, and pin that the
-// text still refuses to claim the track is usable — a replay does not repair an
-// attached workspace whose directory was deleted.
-// ---------------------------------------------------------------------------
+// What the 500 is allowed to SAY: the phase write can fail *after* `spawn_side_effect` installed a live
+// harness, so the message may already be delivered and the text may not assert non-delivery.
 
-/// A start that fails *after* the spawn has already delivered the message —
-/// and the 500 must not claim otherwise.
-///
-/// Two halves, both needed:
-///
-/// * the observed behaviour (`copies_in_harness == 1` under a 500), which is
-///   the reason the wording has to be uncertain rather than negative;
-/// * the wording itself, asserted in both directions — the new text is present
-///   AND the old "was not delivered" claim is absent. Asserting only one of the
-///   two goes silently vacuous the next time somebody rewrites the sentence.
+/// The wording is asserted in both directions — the new text is present AND the old "was not delivered"
+/// claim is absent — because asserting one alone goes vacuous the next time the sentence is rewritten.
 #[tokio::test]
 async fn a_stuck_start_after_spawn_has_already_delivered_the_first_message() {
     let b = boot().await;
-    // Reject the `spawn_succeeded` phase write, i.e. fail the operation at the
-    // one point that is past the side effect. This is the `OperationOutcome::
-    // Stuck` binding of `harness_start_failed`.
+    // Reject the `spawn_succeeded` phase write: fail the operation at the one point past the side effect.
     b.reject_spawn_succeeded().await;
 
     let needle = "this sentence is already on its way";
@@ -1545,8 +1158,7 @@ async fn a_stuck_start_after_spawn_has_already_delivered_the_first_message() {
         "a create whose harness start did not complete still answers 5xx: body={body}"
     );
 
-    // The observed fact that makes a "not delivered" 500 a lie: the harness is
-    // live and holding the sentence.
+    // The observed fact that makes a "not delivered" 500 a lie: the harness is live and holding the sentence.
     assert_eq!(
         b.copies_in_harness(needle, 1).await,
         1,
@@ -1560,8 +1172,7 @@ async fn a_stuck_start_after_spawn_has_already_delivered_the_first_message() {
         text.contains("cannot tell whether the first message reached the agent"),
         "the 500 must report an unknown delivery, since it is unknown: {text}"
     );
-    // …and negative: it does not assert the delivery failed. A user acting on
-    // that claim resends and ends up with two copies.
+    // ...and negative: it does not assert the delivery failed.
     assert!(
         !text.contains("not delivered"),
         "the 500 must not claim the message was not delivered — on this path it was: {text}"
@@ -1570,9 +1181,7 @@ async fn a_stuck_start_after_spawn_has_already_delivered_the_first_message() {
         !text.contains("send the message from the track itself"),
         "…nor instruct an unconditional resend, which duplicates it on this path: {text}"
     );
-    // #1384 — the two properties the server CAN prove, named in the text. Both
-    // are new: before the binding row existed, a retry under this key minted a
-    // second track, so neither sentence would have been true.
+    // The two properties the server CAN prove, named in the text.
     assert!(
         text.contains("no second track"),
         "the 500 must say that retrying under the same key mints no second track — that is what \
@@ -1583,9 +1192,8 @@ async fn a_stuck_start_after_spawn_has_already_delivered_the_first_message() {
         "…and that it delivers no second copy, which is the half a user is actually afraid of: \
          {text}"
     );
-    // And the claim it must NOT make, now that the create IS retryable: that the
-    // track is fine. A replay does not repair an attached workspace whose
-    // directory was deleted, so "retryable" is not "healthy".
+    // And the claim it must NOT make: that the track is fine. A replay does not repair an attached workspace
+    // whose directory was deleted.
     assert!(
         text.contains("does not assert that the track is usable"),
         "the 500 must not let 'safe to retry' be read as 'the track is fine': {text}"
@@ -1598,21 +1206,7 @@ async fn a_stuck_start_after_spawn_has_already_delivered_the_first_message() {
     b.shutdown_harnesses().await;
 }
 
-// ===========================================================================
-// #1384 — safe retry.
-//
-// Everything below this line is about ONE `Idempotency-Key` producing at most
-// one track. The four variants the issue names are T-V1…T-V4; the rest pin the
-// pieces they rest on (the arm table's fail-closed cell, the `Mint`-only
-// binding write, `Resume`'s re-materialization and the poisoned-workspace
-// trade).
-// ===========================================================================
-
 /// `Idempotency-Key` is required exactly when `first_message` is present.
-///
-/// Fails when the header is made optional on this branch — a `first_message`
-/// with no key has no dedup key at all, so a retried create would mint a second
-/// track and deliver the instruction twice.
 #[tokio::test]
 async fn a_first_message_without_an_idempotency_key_is_rejected_before_any_mint() {
     let b = boot().await;
@@ -1623,29 +1217,8 @@ async fn a_first_message_without_an_idempotency_key_is_rejected_before_any_mint(
     assert_eq!(b.binding_count().await, 0);
 }
 
-/// T-LEGACY-1, **inverted by #1426** — a message-less create that sends an
-/// `Idempotency-Key` binds it, and the same key again returns the same track.
-///
-/// # What this used to assert
-///
-/// This test previously asserted `binding_count == 0` and `track_count == 2`
-/// for exactly this request: the key was inert, because `plan_first_message`
-/// returned `Legacy` before reading the header. That was #1384's KNOWN GAP 1,
-/// registered deliberately. #1426 closes it, so the test is inverted rather
-/// than deleted — the same interleaving, the opposite verdict — the way #1458
-/// inverted its own characterization test.
-///
-/// #1384's argument for not writing the binding here was that `Legacy` "has
-/// already returned from the dispatch, so there is no resuming arm for a
-/// primary-key collision to map onto". #1426 answers it by *building* the arm
-/// (`CreatePlan::MessageLessResume`), not by relaxing anything: the second
-/// create below takes it, mints nothing, and answers 201 with the first track.
-///
-/// Sent WITH a key and WITHOUT a `first_message`, which is still the only shape
-/// that can tell "the header was present" from "the plan minted".
-///
-/// Fails when the message-less binding write is removed (the second create then
-/// mints a second track), and when the message-less resume arm is removed.
+/// A message-less create that sends an `Idempotency-Key` binds it, and the same key again returns the same
+/// track through the message-less resume arm.
 #[tokio::test]
 async fn a_message_less_create_with_a_key_binds_and_replays() {
     let b = boot().await;
@@ -1682,8 +1255,7 @@ async fn a_message_less_create_with_a_key_binds_and_replays() {
         0,
         "nothing was typed on either request, so nothing may be enqueued"
     );
-    // A different key is a different create: the mechanism is per-key, not a
-    // global "one track per area".
+    // A different key is a different create: the mechanism is per-key.
     let (third, third_body) = b.create_track(Some("idem-message-less-2"), None).await;
     assert_eq!(third, StatusCode::CREATED);
     assert_ne!(third_body["id"], first_body["id"]);
@@ -1691,19 +1263,8 @@ async fn a_message_less_create_with_a_key_binds_and_replays() {
     b.shutdown_harnesses().await;
 }
 
-/// #1426 — one `Idempotency-Key` names one create **shape**, in both
-/// directions, and one create body.
-///
-/// The shape half is the load-bearing one and it cannot be caught by the
-/// request digest: `create_request_sha256` covers the mint inputs and
-/// `first_message` is not one of them, so the two bodies below hash
-/// identically. Only the binding row's fingerprint variant distinguishes them.
-/// Without that check, the `first_message` create at the bottom would take the
-/// resuming arm over a message-less binding and answer **201 for a delivery
-/// nobody made**.
-///
-/// Fails when the create-shape comparison in `ensure_binding_create_matches` is
-/// removed.
+/// `create_request_sha256` does not cover `first_message`, so the two bodies hash identically; only the
+/// binding row's fingerprint variant tells the shapes apart.
 #[tokio::test]
 async fn a_key_bound_by_one_create_shape_refuses_the_other() {
     let b = boot().await;
@@ -1711,8 +1272,7 @@ async fn a_key_bound_by_one_create_shape_refuses_the_other() {
     let (created, body) = b.create_track(Some("idem-shape"), None).await;
     assert_eq!(created, StatusCode::CREATED, "body={body}");
 
-    // Same key, same body, plus a sentence: the digests match, the shapes do
-    // not, and adopting the track would promise a delivery that never happened.
+    // Same key, same body, plus a sentence: the digests match, the shapes do not.
     let (with_message, body) = b.create_track(Some("idem-shape"), Some("ship it")).await;
     assert_eq!(
         with_message,
@@ -1731,8 +1291,7 @@ async fn a_key_bound_by_one_create_shape_refuses_the_other() {
          body={body}"
     );
 
-    // The ordinary payload-conflict half still applies to this shape: same key,
-    // no message either time, different create body.
+    // The ordinary payload-conflict half still applies: same key, no message either time, different body.
     let (renamed, body) = b
         .post_create(
             Some("idem-shape"),
@@ -1757,11 +1316,7 @@ async fn a_key_bound_by_one_create_shape_refuses_the_other() {
     b.shutdown_harnesses().await;
 }
 
-/// T-V1 — replaying a successful create returns the SAME track and does not
-/// re-deliver the message.
-///
-/// Fails when the binding lookup in `plan_first_message` is made to always
-/// answer `None`: the replay then mints a second track.
+/// Replaying a successful create returns the SAME track and does not re-deliver the message.
 #[tokio::test]
 async fn replaying_a_successful_create_returns_the_same_track_and_delivers_once() {
     let b = boot().await;
@@ -1770,9 +1325,8 @@ async fn replaying_a_successful_create_returns_the_same_track_and_delivers_once(
         .await;
     assert_eq!(first, StatusCode::CREATED, "body={first_body}");
     assert_eq!(b.binding_count().await, 1, "the mint wrote its binding");
-    // Give the first delivery its own budget before the replay, so the "no
-    // second copy" check below burns its full deadline on the question it is
-    // actually asking instead of racing the first enqueue.
+    // Give the first delivery its own budget before the replay, so the "no second copy" check burns its full
+    // deadline on the question it is actually asking.
     assert_eq!(
         b.copies_in_harness("ship the thing", 1).await,
         1,
@@ -1797,19 +1351,8 @@ async fn replaying_a_successful_create_returns_the_same_track_and_delivers_once(
     b.shutdown_harnesses().await;
 }
 
-/// T-V1b — arm (a) with the one piece of server state that can move underneath
-/// a replay: the track's workspace.
-///
-/// `PATCH /api/tracks/{id}` repoints a managed workspace at a repository the
-/// user owns, which changes `track.workspace.path`. That path travels in the
-/// `planner-harness-start` payload, and `submit` compares `payload_hash` before
-/// anything else — so a replay that rebuilt the payload from *current* state
-/// would hash differently and be answered 409 `conflict` for a request the
-/// client sent byte for byte identically. Permanently, and indistinguishably
-/// from a genuine different-body conflict.
-///
-/// Fails when the `PriorArm::Replay` branch takes `track.workspace.path`
-/// instead of the chosen operation's own `cwd`.
+/// The workspace path travels in the `planner-harness-start` payload and `submit` compares `payload_hash`
+/// first, so a replay must carry the chosen operation's own `cwd`, not the repointed `track.workspace.path`.
 #[tokio::test]
 async fn a_replay_survives_the_track_being_repointed_in_between() {
     let b = boot().await;
@@ -1864,8 +1407,7 @@ async fn a_replay_survives_the_track_being_repointed_in_between() {
         1,
         "and the replay must not deliver the instruction a second time"
     );
-    // The mechanism, not just the status: the replayed payload carries the
-    // predecessor's cwd, which is what makes the hashes match.
+    // The mechanism, not just the status: the replayed payload carries the predecessor's cwd.
     assert_eq!(
         b.first_message_payload_cwds("ship the thing").await,
         vec![managed_path.clone()],
@@ -1874,15 +1416,8 @@ async fn a_replay_survives_the_track_being_repointed_in_between() {
     b.shutdown_harnesses().await;
 }
 
-/// The counterweight to the case above, resolving the **other** way.
-///
-/// A genuine retry really executes: it starts a harness. Replaying the failed
-/// attempt's `cwd` would start it in a managed directory the re-point has since
-/// moved into the trash. Nothing forces it to be byte-identical either — the
-/// retry runs under a fresh `#N` key that no earlier payload hash is bound to.
-///
-/// This test must stay GREEN when the replay fix is mutated away, which is what
-/// proves the fix is scoped to the replay arm rather than applied to both.
+/// The counterweight: a genuine retry really starts a harness, so it must use the current cwd, not the failed
+/// attempt's (which the re-point has since moved into the trash).
 #[tokio::test]
 async fn a_retry_after_a_failure_uses_the_repointed_workspace() {
     let b = boot().await;
@@ -1941,20 +1476,8 @@ async fn a_retry_after_a_failure_uses_the_repointed_workspace() {
     b.shutdown_harnesses().await;
 }
 
-/// T-V2 — the success did not happen on the base key, it happened on `#2`, and
-/// replaying it must still be a replay.
-///
-/// 1. the base attempt terminally fails;
-/// 2. the same key succeeds under `#2`, whose payload froze the *managed* cwd;
-/// 3. `PATCH /api/tracks/{id}` repoints the track;
-/// 4. the create request is replayed byte for byte.
-///
-/// `retryable_operation_key` walks past the `Failed` base and stops on `#2`
-/// because it is not `Failed` — so the chosen key already holds a **succeeded**
-/// operation, i.e. this is a replay. A criterion that only asks "does the chosen
-/// key carry a `#N` suffix" answers `GenuineRetry` here, rebuilds the payload
-/// from the repointed workspace, and `submit` answers 409 for a byte-identical
-/// request.
+/// The success happened on `#2`, not the base key: `retryable_operation_key` walks past the `Failed` base and
+/// stops on `#2`, which already holds a succeeded operation, so this is a replay.
 #[tokio::test]
 async fn a_replay_of_a_success_that_happened_on_a_retry_key_survives_a_repoint() {
     let b = boot().await;
@@ -2022,8 +1545,7 @@ async fn a_replay_of_a_success_that_happened_on_a_retry_key_survives_a_repoint()
     b.shutdown_harnesses().await;
 }
 
-/// T-HASH-1 / arm (e) — the same key with a different message is a conflict,
-/// not a silent replay of the first sentence.
+/// The same key with a different message is a conflict, not a silent replay of the first sentence.
 #[tokio::test]
 async fn the_same_key_with_a_different_first_message_is_a_conflict() {
     let b = boot().await;
@@ -2045,8 +1567,7 @@ async fn the_same_key_with_a_different_first_message_is_a_conflict() {
     b.shutdown_harnesses().await;
 }
 
-/// Arm (b) — after a terminally failed attempt the same key genuinely RETRIES:
-/// it does not replay the recorded failure, and it does not mint a second track.
+/// After a terminally failed attempt the same key genuinely RETRIES: no replay of the recorded failure, no second track.
 #[tokio::test]
 async fn the_same_key_after_a_failed_start_retries_against_the_same_track() {
     let b = boot().await;
@@ -2093,14 +1614,8 @@ async fn the_same_key_after_a_failed_start_retries_against_the_same_track() {
     b.shutdown_harnesses().await;
 }
 
-/// The seam between arm (b) and arm (e), measured.
-///
-/// Arm (e) ("same key, different message ⇒ 409") is not unconditional. The 409
-/// comes from the payload hash bound to a *specific* operation key, and a
-/// terminal failure moves the retry to a fresh `#N` key that no hash is bound
-/// to. So an edited sentence resent after a failure is accepted — and the
-/// interesting half is what happens to the *abandoned* draft: it must not be
-/// delivered alongside the edit.
+/// The 409 comes from the payload hash bound to a *specific* operation key, and a terminal failure moves the
+/// retry to a fresh `#N` key, so an edited sentence resent after a failure is accepted; the abandoned draft must not be delivered too.
 #[tokio::test]
 async fn the_same_key_after_a_failure_accepts_an_edited_first_message() {
     let b = boot().await;
@@ -2153,13 +1668,8 @@ async fn the_same_key_after_a_failure_accepts_an_edited_first_message() {
         "and the abandoned draft is never delivered — the retry replaces it, it does not \
          accompany it"
     );
-    // TWO audit rows for ONE delivery, and that is the current truth rather than
-    // an oversight: the failed attempt's `prepare_tx` committed — the enqueue and
-    // its `harness.user_message.enqueued` row share that transaction — and only
-    // the thread start afterwards failed. Compensation aborts the harness task
-    // and fails the runtime; it does not roll back a committed event row. So "an
-    // audit row exists" does NOT imply "the message was delivered", which is the
-    // same fact that keeps the 500's wording uncertain.
+    // TWO audit rows for ONE delivery: the failed attempt's `prepare_tx` committed its enqueue row and only the
+    // thread start afterwards failed; compensation does not roll back a committed event row.
     assert_eq!(
         b.user_message_event_count().await,
         2,
@@ -2199,9 +1709,8 @@ async fn the_same_key_after_a_failure_accepts_an_edited_first_message() {
     b.shutdown_harnesses().await;
 }
 
-/// #1434 — a fresh `#N` operation key relaxes only the message attempt. The
-/// track's creation parameters have already committed and cannot be replayed,
-/// so changing one must still conflict with the binding-level request shape.
+/// A fresh `#N` operation key relaxes only the message attempt; the track's creation parameters have already
+/// committed, so changing one must still conflict with the binding-level request shape.
 #[tokio::test]
 async fn a_failed_operation_does_not_unbind_the_create_shape() {
     let b = boot().await;
@@ -2235,13 +1744,8 @@ async fn a_failed_operation_does_not_unbind_the_create_shape() {
     b.shutdown_harnesses().await;
 }
 
-/// T-EXH-1 / arm (d) — 64 terminally failed attempts exhaust the key, and the
-/// 65th says so with its own code rather than a generic 500.
-///
-/// Driven through the real endpoint 64 times rather than by hand-seeding
-/// `operations` rows: the `#N` chain, the payload the route writes and the
-/// track-reuse branch all have to hold for the count to be reached, and a
-/// seeded row would prove none of that.
+/// 64 terminally failed attempts exhaust the key, and the 65th says so with its own code. Driven through the
+/// real endpoint 64 times so the `#N` chain, payload and track-reuse branch all have to hold.
 #[tokio::test]
 async fn a_key_exhausted_by_64_failed_attempts_answers_409() {
     let b = boot().await;
@@ -2286,21 +1790,8 @@ async fn a_key_exhausted_by_64_failed_attempts_answers_409() {
     b.shutdown_harnesses().await;
 }
 
-/// T-V3 — the arm is decided BEFORE the create path validates the request.
-///
-/// 1. a create with an explicit `cwd` succeeds, attaching the track to a
-///    directory the user owns;
-/// 2. the user deletes that directory;
-/// 3. the create request is replayed **byte for byte**.
-///
-/// The replay mints nothing — the track, its cards and its folder claim all
-/// exist — so nothing about it needs the directory. But the handler re-read the
-/// disk on the way in (`validate_attached_workspace`) and answered
-/// `400 attached workspace ... does not exist` before it ever reached the replay
-/// branch. Not a missing frozen payload field: an ordering bug.
-///
-/// Fails (400 instead of 201) when `validate_attached_workspace` is moved ahead
-/// of the `CreatePlan` dispatch.
+/// The arm is decided BEFORE the create path validates the request: a byte-identical replay mints nothing,
+/// so `validate_attached_workspace` re-reading a deleted directory must not 400 it.
 #[tokio::test]
 async fn a_replay_survives_the_attached_directory_being_deleted() {
     let b = boot().await;
@@ -2323,10 +1814,8 @@ async fn a_replay_survives_the_attached_directory_being_deleted() {
         "premise: the successful create delivered the sentence once"
     );
 
-    // The disturbance: the user's directory goes away. The harness is
-    // deliberately left running — shutting it down here would drop any copy
-    // still sitting in its pending queue, and the final count would then read 0
-    // under load.
+    // The disturbance: the user's directory goes away. The harness is deliberately left running — shutting it
+    // down would drop any copy still in its pending queue.
     std::fs::remove_dir_all(&attached).unwrap();
     assert!(!attached.exists(), "premise: the directory really is gone");
 
@@ -2349,10 +1838,7 @@ async fn a_replay_survives_the_attached_directory_being_deleted() {
         1,
         "and the replay must not deliver the instruction a second time"
     );
-    // KNOWN GAP 6, asserted rather than assumed: the replay 201s and the
-    // workspace is still broken. `materialize_workspace` is an unconditional
-    // no-op for `Attached`, so `Resume`'s re-materialization does not repair
-    // this — and no "safe retry" sentence in this feature claims it does.
+    // The replay 201s and the workspace is still broken: `materialize_workspace` is a no-op for `Attached`.
     assert!(
         !attached.exists(),
         "the replay must NOT have recreated the user's directory: that is the deliberate \
@@ -2361,13 +1847,8 @@ async fn a_replay_survives_the_attached_directory_being_deleted() {
     b.shutdown_harnesses().await;
 }
 
-/// The same root cause truncating the genuine-retry arm, which is why the fix is
-/// the ordering and not a wider frozen payload.
-///
-/// Constructed with a `.git` removal rather than a whole-directory delete so the
-/// retry has a real directory to run in: `PATCH /api/tracks/{id}` refuses to
-/// repoint an *attached* workspace, so "repoint to a valid B" is not reachable
-/// for the shape that can 400 here.
+/// Constructed with a `.git` removal rather than a whole-directory delete so the retry has a real directory
+/// to run in (`PATCH` refuses to repoint an *attached* workspace).
 #[tokio::test]
 async fn a_retry_after_a_failure_survives_the_attached_directory_ceasing_to_validate() {
     let b = boot().await;
@@ -2398,9 +1879,7 @@ async fn a_retry_after_a_failure_survives_the_attached_directory_ceasing_to_vali
     let (_, path) = b.workspace_row(&track_id).await;
     assert_eq!(PathBuf::from(&path), attached);
 
-    // The disturbance: the directory stops satisfying the create-path check
-    // (`is not inside a Git work tree`) while remaining a perfectly usable
-    // directory for the retry that is about to run in it.
+    // The disturbance: the directory stops satisfying the create-path check while remaining usable.
     std::fs::remove_dir_all(attached.join(".git")).unwrap();
 
     let (retry, retry_body) = b
@@ -2441,14 +1920,8 @@ async fn a_retry_after_a_failure_survives_the_attached_directory_ceasing_to_vali
     b.shutdown_harnesses().await;
 }
 
-/// The counterweight to the two cases above: moving the arm decision in front of
-/// the create-path validation must not remove that validation from the path that
-/// still mints.
-///
-/// Written as an assertion rather than as "I read the code and `Legacy` returns
-/// before the header is read": every check the reorder skipped on the resuming
-/// arms is exercised here on a create with **no** `first_message`, plus a
-/// template create, which is the other production entry into this handler.
+/// Moving the arm decision in front of the create-path validation must not remove that validation from the
+/// path that still mints.
 #[tokio::test]
 async fn a_create_without_a_first_message_still_runs_every_create_check() {
     let b = boot().await;
@@ -2520,24 +1993,8 @@ async fn a_create_without_a_first_message_still_runs_every_create_check() {
     b.shutdown_harnesses().await;
 }
 
-/// **T-V4 — the headline.** A daemon outage adopts the track it already minted
-/// instead of turning one `Idempotency-Key` into a track farm.
-///
-/// The construction, and why it is not covered by "this handler does not
-/// compensate": `OperationRuntime::submit` runs `adapter.validate` **before**
-/// `insert_operation`, and `PlannerHarnessStartAdapter::validate` refuses while
-/// the shared app-server is down. So the refusal writes no operation row at all.
-/// Before #1384 the operation row was the only record of which track a key
-/// created, so this measured, on exactly this fixture: two requests under one
-/// key, both 500, **2** tracks, **4** cards, **0** operations.
-///
-/// The numbers below are the inverted ones, and the inversion is the point. The
-/// rejected daemon-preflight fix asserted `tracks == 0` — it prevented the mint.
-/// This design does not prevent it; it *adopts* it. One track, two cards, two
-/// 500s, no delivery, and `operations` still 0 because `validate` still refuses.
-///
-/// Fails (`track_count == 2`) when the `track_create_idempotency` INSERT is
-/// deleted from the create closure: the retry then reads no binding and mints.
+/// A daemon outage adopts the track it already minted instead of minting one per retry: `validate` refuses
+/// before `insert_operation`, so the binding row is the only record of which track a key created.
 #[tokio::test]
 async fn a_daemon_outage_adopts_the_track_it_already_minted_under_one_key() {
     let b = boot_without_daemon().await;
@@ -2553,7 +2010,7 @@ async fn a_daemon_outage_adopts_the_track_it_already_minted_under_one_key() {
         StatusCode::INTERNAL_SERVER_ERROR,
         "…and the retry fails the same way, for the same reason: body={second_body}"
     );
-    // The load-bearing number. `2` is the measured pre-#1384 behaviour.
+    // The load-bearing number.
     assert_eq!(
         b.track_count().await,
         1,
@@ -2580,12 +2037,8 @@ async fn a_daemon_outage_adopts_the_track_it_already_minted_under_one_key() {
     b.shutdown_harnesses().await;
 }
 
-/// #1434 — the durable binding must remember the request as well as the ids.
-///
-/// The first call commits the track and binding, then fails before an operation
-/// row exists. Starting the daemon before the second call makes the old defect
-/// decisive: without a binding-level message digest, the edited sentence is
-/// accepted on the vacant operation key and delivered to the original track.
+/// The durable binding must remember the request as well as the ids: without a binding-level message digest,
+/// an edited sentence is accepted on the vacant operation key and delivered to the original track.
 #[tokio::test]
 async fn an_operationless_binding_rejects_a_different_first_message() {
     let b = boot_without_daemon().await;
@@ -2626,9 +2079,8 @@ async fn an_operationless_binding_rejects_a_different_first_message() {
     b.shutdown_harnesses().await;
 }
 
-/// #1434 — create parameters have already taken effect once the binding exists.
-/// A vacant operation key must not make a different title look like a retryable
-/// operation parameter: no operation can apply that title to the existing row.
+/// Create parameters have already taken effect once the binding exists: a vacant operation key must not make
+/// a different title look like a retryable operation parameter.
 #[tokio::test]
 async fn an_operationless_binding_rejects_a_different_create_shape() {
     let b = boot_without_daemon().await;
@@ -2667,8 +2119,7 @@ async fn an_operationless_binding_rejects_a_different_create_shape() {
     b.shutdown_harnesses().await;
 }
 
-/// #1434 migration contract — an 0088 row has no reconstructible full request.
-/// It is represented as a named legacy state and refused before replay side
+/// Migration contract — an 0088 row has no reconstructible full request and is refused before replay side
 /// effects instead of pretending NULL hashes mean a match.
 #[tokio::test]
 async fn a_legacy_binding_without_a_request_fingerprint_fails_closed() {
@@ -2703,9 +2154,8 @@ async fn a_legacy_binding_without_a_request_fingerprint_fails_closed() {
     b.shutdown_harnesses().await;
 }
 
-/// Frozen pre-cross-area request fingerprint for create_track's empty title,
-/// omitted cwd/source fields and black/white theme. Seed the old persisted
-/// digest, then replay through the real HTTP route on the upgraded server.
+/// Frozen pre-cross-area request fingerprint: seed the old persisted digest, then replay through the real
+/// HTTP route on the upgraded server.
 #[tokio::test]
 async fn pre_cross_area_bindings_replay_after_upgrade() {
     for message in [None, Some("same sentence")] {
@@ -2731,12 +2181,7 @@ async fn pre_cross_area_bindings_replay_after_upgrade() {
     }
 }
 
-/// T-V4b — the control: the message-less path keeps its `warn!` + 201 during the
-/// same outage.
-///
-/// The rejected preflight fix would have turned this 201 into a 500 (and every
-/// in-transaction 4xx with it). Nothing in this design puts a daemon check
-/// anywhere the `Legacy` arm can reach, and this is what says so.
+/// The control: the message-less path keeps its `warn!` + 201 during the same outage.
 #[tokio::test]
 async fn a_create_without_a_first_message_still_succeeds_during_a_daemon_outage() {
     let b = boot_without_daemon().await;
@@ -2747,19 +2192,8 @@ async fn a_create_without_a_first_message_still_succeeds_during_a_daemon_outage(
     b.shutdown_harnesses().await;
 }
 
-/// T-ARM-2 — the arm table's last cell: a binding **miss** with an **occupied**
-/// chosen key mints nothing.
-///
-/// The state is unreachable by construction (the binding commits strictly before
-/// the operation is submitted), so it is constructed by hand: an operation row
-/// under the derived key with no binding row. The earlier draft answered `Mint`
-/// here, which fails *open* — the mint commits a track and its cards, and
-/// `insert_operation` then raises `idempotency_payload_conflict` on the unique
-/// violation, leaving an orphan track behind a 409. That is the exact failure
-/// class this feature abolishes, so the honest answer is an error.
-///
-/// The assertion that matters is `track_count == 0`, not the status: the claim
-/// is about what is **written**.
+/// A binding **miss** with an **occupied** chosen key mints nothing. Unreachable by construction, so built by
+/// hand; the assertion that matters is `track_count == 0`, not the status.
 #[tokio::test]
 async fn a_binding_miss_with_an_occupied_key_mints_nothing() {
     use sha2::{Digest, Sha256};
@@ -2770,8 +2204,8 @@ async fn a_binding_miss_with_an_occupied_key_mints_nothing() {
         hasher.update(format!("track-create:{}:{key}", b.area_id));
         format!("track-create-{}", hex::encode(hasher.finalize()))
     };
-    // An operation under the derived key, in a non-`Failed` phase so
-    // `retryable_operation_key` stops on it, and with no binding row anywhere.
+    // An operation under the derived key, in a non-`Failed` phase so `retryable_operation_key` stops on it, and
+    // with no binding row anywhere.
     sqlx::query(
         "INSERT INTO operations \
          (id, kind, operation_key, idempotency_key, payload_hash, target_type, target_json, \
@@ -2802,25 +2236,8 @@ async fn a_binding_miss_with_an_occupied_key_mints_nothing() {
     assert_eq!(b.binding_count().await, 0);
 }
 
-/// #1430 item 2a — the `Stuck` arm's mapping, which nothing pinned.
-///
-/// `response_for`'s `OperationOutcome::Stuck` branch
-/// (`routes/tracks/create.rs`) is the only thing standing between a create
-/// whose harness start left an operation stuck and a 201 that would claim a
-/// delivery nobody can prove. It was unreachable through the route only because
-/// `planner-harness-start` never parks in this fixture — not because anything
-/// serializes it. `retryable_operation_key` stops on **any** non-`Failed`
-/// phase, so writing that phase onto the operation this key already owns puts
-/// the next request straight onto the `Replay` arm and into `wait`, in one
-/// instance and with no harness of any kind.
-///
-/// The phase is written onto the row a real create produced, not onto a
-/// hand-assembled one: the point is that a *replay of this key* answers 500, so
-/// the binding row, the payload hash and the operation key all have to be the
-/// ones the route itself derived, or the replay would be joining something
-/// else.
-///
-/// Mutation that must redden it: make `response_for`'s `Stuck` arm `Ok(())`.
+/// `retryable_operation_key` stops on **any** non-`Failed` phase, so writing `Stuck` onto the operation a real
+/// create produced puts the next request onto the `Replay` arm, which must answer 500 and deliver nothing.
 #[tokio::test]
 async fn a_replay_of_a_stuck_attempt_answers_500_and_delivers_nothing() {
     let b = boot().await;
@@ -2833,10 +2250,7 @@ async fn a_replay_of_a_stuck_attempt_answers_500_and_delivers_nothing() {
     assert_eq!(b.copies_in_harness("the stuck sentence", 1).await, 1);
     let deliveries_before = b.user_message_event_count().await;
 
-    // The phase compensation could not finish on. `retryable_operation_key`
-    // deliberately does not step over it (see its doc comment): the derived
-    // card may still exist, so the key keeps answering this operation's
-    // recorded failure until an operator clears the row.
+    // The phase compensation could not finish on; `retryable_operation_key` deliberately does not step over it.
     let updated = sqlx::query(
         "UPDATE operations \
          SET phase = 'stuck', \
@@ -2877,8 +2291,7 @@ async fn a_replay_of_a_stuck_attempt_answers_500_and_delivers_nothing() {
          retry is safe; body={body}"
     );
 
-    // What the 500 is worth: nothing new was written, and above all the
-    // sentence was not delivered a second time.
+    // What the 500 is worth: nothing new was written, and the sentence was not delivered a second time.
     assert_eq!(b.track_count().await, 1);
     assert_eq!(b.binding_count().await, 1);
     assert_eq!(
@@ -2896,36 +2309,8 @@ async fn a_replay_of_a_stuck_attempt_answers_500_and_delivers_nothing() {
     b.shutdown_harnesses().await;
 }
 
-/// #1430 item 1 — the cross-instance primary-key race, driven through the
-/// **route**, deterministically.
-///
-/// T-BIND-2 (`calm-truth/src/db/sqlite/track_create_idempotency_tests.rs`)
-/// pins the constraint itself, sequentially, at the database layer. Three
-/// things it cannot say, and this case does:
-///
-/// 1. the route maps that unique violation onto a 500 that names it, rather
-///    than letting a raw sqlx error out or — worse — recovering in place;
-/// 2. the loser leaves **no orphan track** behind that 500. Its mint had
-///    already inserted a track row when the binding INSERT failed; the answer
-///    is worth nothing unless that row went away with the transaction;
-/// 3. the loser's client retry resolves to the **winner's** track through
-///    `Resume`, which is the whole reason a fail-closed 500 is an acceptable
-///    answer to give a racer.
-///
-/// **Why this is not the vacuous test that was deleted.** The deleted
-/// `two_concurrent_same_key_creates_produce_one_track` fired two requests at
-/// one `AppState` and hoped; the in-process claim serialized them and the
-/// second took `Resume` without ever reaching the INSERT, so it was green with
-/// or without the mapping. Here the two requests are served by two
-/// `AppState`s that share nothing but the database file, and the loser is
-/// *held* at the mint rendezvous until the winner has committed — so "lookup 1
-/// missed, then the INSERT found the row" is constructed, not hoped for. The
-/// assertion that says so is the loser's status and message: had it taken
-/// `Resume`, it would be a 201.
-///
-/// Mutations that must redden it: swallow the binding-claim error in
-/// `routes/tracks.rs` (the loser then commits a second track — assertion 2), or
-/// widen the binding primary key per T-BIND-2 (same effect, one layer down).
+/// The cross-instance primary-key race: two `AppState`s sharing only the database file, the loser *held* at
+/// the mint rendezvous until the winner commits. The loser 500s naming the violation, leaves no orphan track, and its retry resolves to the winner's track.
 #[tokio::test]
 async fn a_loser_of_the_cross_instance_key_race_writes_nothing_and_retries_onto_the_winner() {
     use calm_server::routes::tracks::TrackCreateMintGate;
@@ -2940,8 +2325,7 @@ async fn a_loser_of_the_cross_instance_key_race_writes_nothing_and_retries_onto_
             .with_track_create_mint_rendezvous(gate.clone()),
     );
 
-    // The loser starts first and parks after its lookup 1 missed, before its
-    // create transaction opens.
+    // The loser starts first and parks after its lookup 1 missed, before its create transaction opens.
     let loser_body = json!({
         "area_id": loser.area_id,
         "title": "",
@@ -2970,8 +2354,7 @@ async fn a_loser_of_the_cross_instance_key_race_writes_nothing_and_retries_onto_
         }
     });
 
-    // Bounded, like every wait in this case: a loser that never arrives fails
-    // this assertion instead of hanging the runner (#1453).
+    // Bounded: a loser that never arrives fails this assertion instead of hanging the runner.
     tokio::time::timeout(std::time::Duration::from_secs(30), gate.reached.wait())
         .await
         .expect("the loser must reach the mint window; without it this case is vacuous");
@@ -3011,9 +2394,7 @@ async fn a_loser_of_the_cross_instance_key_race_writes_nothing_and_retries_onto_
         "and must say which wall it hit; body={loser_error}"
     );
 
-    // (2) no orphan. This is the assertion the whole design exists for: the
-    // loser's transaction had already minted a track row when the binding
-    // INSERT raised, and it must have gone away with the rollback.
+    // (2) no orphan: the loser's transaction had already minted a track row when the binding INSERT raised.
     assert_eq!(
         winner.track_count().await,
         1,
@@ -3026,8 +2407,7 @@ async fn a_loser_of_the_cross_instance_key_race_writes_nothing_and_retries_onto_
         .unwrap();
     assert_eq!(surviving, winner_track, "and the survivor is the winner's");
 
-    // (3) the retry, on the losing instance and with the rendezvous gone,
-    // resolves to the winner's track through `Resume`.
+    // (3) the retry, on the losing instance and with the rendezvous gone, resolves to the winner's track.
     let (retry_status, retry_body) = loser
         .post_create_on(
             loser.app.clone(),
@@ -3052,21 +2432,8 @@ async fn a_loser_of_the_cross_instance_key_race_writes_nothing_and_retries_onto_
     loser.shutdown_harnesses().await;
 }
 
-/// T-MAT-1 — `Resume` re-materializes the workspace.
-///
-/// The failure points the resuming arm exists for include "process died between
-/// the COMMIT and `materialize_workspace`" and "`materialize_workspace` returned
-/// `Err`". A resume that only re-submitted the operation would answer 201 for a
-/// track whose managed directory does not exist — #1147 replayed one layer down.
-///
-/// Construction: create successfully with key K, then remove the managed
-/// directory, then replay K.
-///
-/// Fails when the `materialize_workspace` call is deleted from
-/// `adopt_prior_track`: the replay then 201s onto a directory with no `HEAD`.
-/// (#1426 moved that call out of `resume_prior_attempt` into `adopt_prior_track`,
-/// which both resuming arms call; this case drives it through
-/// `resume_prior_attempt`.)
+/// `Resume` re-materializes the workspace: the process can die between the COMMIT and `materialize_workspace`,
+/// and a resume that only re-submitted the operation would 201 onto a directory with no `HEAD`.
 #[tokio::test]
 async fn a_resume_after_a_materialize_failure_materializes_the_workspace() {
     let b = boot().await;
@@ -3109,16 +2476,8 @@ async fn a_resume_after_a_materialize_failure_materializes_the_workspace() {
     b.shutdown_harnesses().await;
 }
 
-/// T-MAT-2 — the idempotence premise §4.4 rests on: re-materializing a HEALTHY
-/// managed workspace is a no-op.
-///
-/// Every other resuming test would stay green if `materialize_workspace` quietly
-/// re-ran `git init` and a fresh initial commit on each call — the directory
-/// stays valid either way. This one sees it, because it compares the owner
-/// marker and the HEAD commit id across the replay.
-///
-/// Fails when the `if !git_head_resolves(path)` guard is dropped from
-/// `materialize_managed_workspace_inner`: HEAD moves.
+/// Re-materializing a HEALTHY managed workspace is a no-op: the owner marker and the HEAD commit id are
+/// compared across the replay.
 #[tokio::test]
 async fn a_resume_on_a_healthy_managed_workspace_is_a_no_op() {
     let b = boot().await;
@@ -3174,24 +2533,8 @@ async fn a_resume_on_a_healthy_managed_workspace_is_a_no_op() {
     b.shutdown_harnesses().await;
 }
 
-/// T-BRICK-1 — the ownership fence is NOT relaxed, and the answer is
-/// 409 `idempotency_key_exhausted` rather than a generic 500 or a 201.
-///
-/// The state is reachable, not theoretical: `write_owner_marker` creates
-/// `<path>/.git` and only then writes the marker, so process death between those
-/// two syscalls leaves a directory that has entries and no marker — which
-/// `materialize_workspace` refuses forever. Allowlisting "the only entry is
-/// `.git/`" would be a marker-absence heuristic, and no positive fingerprint can
-/// separate it from a user's own partially-initialised repository, so the
-/// refusal stands and the resuming arm inherits it.
-///
-/// The honest cost, stated in the design and asserted here: this key is poisoned
-/// for good. `idempotency_key_exhausted` is the one answer that is actionable —
-/// "retry under a new key", which `a_new_idempotency_key_recovers_from_a_poisoned_workspace`
-/// shows really works.
-///
-/// Fails when the materialization failure is mapped back to a generic
-/// `CalmError::Internal`.
+/// Process death between `create_dir_all(<path>/.git)` and the marker write leaves a directory with entries
+/// and no marker, which `materialize_workspace` refuses forever; the key is poisoned and the answer is 409 `idempotency_key_exhausted`.
 #[tokio::test]
 async fn a_resume_onto_an_unmarked_non_empty_workspace_is_key_exhausted() {
     let b = boot().await;
@@ -3224,18 +2567,8 @@ async fn a_resume_onto_an_unmarked_non_empty_workspace_is_key_exhausted() {
     assert_eq!(b.track_count().await, 1, "and nothing new is minted");
 }
 
-/// T-BRICK-2 — the escape, and it needs no new machinery: the poisoning is
-/// **per key**.
-///
-/// A new `Idempotency-Key` misses the binding, mints a fresh track id, and a
-/// managed path is derived from *that* id — so it is a different directory and
-/// the poisoned one is never revisited. Nothing pulls the new attempt back onto
-/// the old path: a managed workspace takes `FolderClaim::Skip`, so no
-/// `area_folders` row contends on it either.
-///
-/// Fails when the managed path is derived from `(area_id, idempotency_key)`
-/// instead of the minted track id: the new key then lands on the poisoned
-/// directory and this test 409s.
+/// The poisoning is **per key**: a new `Idempotency-Key` mints a fresh track id and a managed path derived
+/// from *that* id, so the poisoned directory is never revisited.
 #[tokio::test]
 async fn a_new_idempotency_key_recovers_from_a_poisoned_workspace() {
     let b = boot().await;
@@ -3259,10 +2592,8 @@ async fn a_new_idempotency_key_recovers_from_a_poisoned_workspace() {
         "premise: the old key is exhausted: body={poisoned_body}"
     );
 
-    // A distinct sentence, so the delivery assertion below is about THIS track.
-    // The poisoned track's harness was shut down before the disturbance, which
-    // drops anything still sitting in its pending queue — counting both copies
-    // would be counting a fixture artefact.
+    // A distinct sentence, so the delivery assertion below is about THIS track; the poisoned track's harness
+    // was shut down, which drops anything still in its pending queue.
     let (fresh, fresh_body) = b
         .create_track(Some("idem-fresh"), Some("ship the OTHER thing"))
         .await;
@@ -3293,56 +2624,8 @@ async fn a_new_idempotency_key_recovers_from_a_poisoned_workspace() {
     b.shutdown_harnesses().await;
 }
 
-/// #1299 F2, **re-pinned by #1428** — the `Resume` arm's fail-closed answer
-/// when the track is gone, and what that answer now says.
-///
-/// `adopt_prior_track` — which `resume_prior_attempt` calls, and which #1426
-/// factored out of it so the message-less resuming arm shares one copy of this
-/// decision — reads `track_get(prior.track_id)` and turns `None` into a
-/// refusal. This case drives that branch through `resume_prior_attempt`; it
-/// does not drive the message-less arm. Until #1299 F2 nothing drove it: the
-/// module header's "Pinned by the branch" identified the code, which is not an
-/// assertion about behaviour.
-///
-/// **#1428 changed the code, not the fence, and this test was inverted rather
-/// than routed around.** It asserted `INTERNAL_SERVER_ERROR`; it now asserts
-/// 409 `idempotency_key_exhausted`. Everything the old case really protected is
-/// still asserted below — both premises, and that the refused replay mints
-/// neither a track nor a second binding row. What changed is only which of the
-/// two poisoned-key answers this branch gives, and it now gives the same one as
-/// its sibling branch fifteen lines down (T-BRICK-1).
-///
-/// **Why the code matters more than the status.** `trackCreateKeyAction`
-/// (`fe/core/domain/track.ts`) returns `'preserve'` for every 5xx — deliberately,
-/// since a 5xx may have committed and rotating its key could mint a second
-/// track — and `'replace'` only for `idempotency_key_exhausted`. Under the old
-/// 500 a reader whose track was deleted was pinned to a dead key until they
-/// reloaded the page. `a_new_idempotency_key_recovers_from_a_deleted_track` is
-/// the other half of that story.
-///
-/// **Why the state is reachable.** The binding row is deliberately not
-/// `ON DELETE CASCADE` (see the comment on the branch), so deleting a track
-/// leaves its `Idempotency-Key` pointing at an id that no longer resolves. A
-/// user who creates a track, deletes it, and whose client then retries the
-/// original create — a retry the client believes is safe, because the key is
-/// what makes it safe — lands exactly here.
-///
-/// **Why not 201.** A 201 would have to mint a *replacement* track under a key
-/// that already names a different one, i.e. answer byte-identical requests with
-/// two different tracks, which is the one thing the key exists to prevent. That
-/// is unchanged by #1428: this branch still mints nothing.
-///
-/// **Why not 404.** It reads as "your track is gone", when what happened is
-/// that the server refuses to reuse a spent key — and the actionable
-/// instruction is to retry under a new one, not to go looking for the track.
-///
-/// The premises are asserted rather than assumed. Without them a green run
-/// could mean "the delete never happened" or "the binding row went with it",
-/// neither of which exercises the branch — the request would simply be a fresh
-/// create that happens to fail.
-///
-/// Mutation that must redden it: restore `CalmError::Internal` on that
-/// `track_get`'s `ok_or_else`, or replace it with a path that mints.
+/// The `Resume` arm when the track is gone: the binding row is deliberately not `ON DELETE CASCADE`, so a
+/// retried create lands on a key naming a deleted track and must answer 409 `idempotency_key_exhausted` (the code the frontend rotates on), minting nothing.
 #[tokio::test]
 async fn a_replay_onto_a_deleted_track_is_key_exhausted() {
     let b = boot().await;
@@ -3365,9 +2648,7 @@ async fn a_replay_onto_a_deleted_track_is_key_exhausted() {
         0,
         "premise: the delete committed; otherwise the replay resolves a live track"
     );
-    // Premise 2 — and the binding row outlived it. This is what routes the
-    // replay into `Resume` at all; without it the request is an ordinary mint
-    // and the branch under test is never entered.
+    // Premise 2 — and the binding row outlived it, which is what routes the replay into `Resume` at all.
     assert_eq!(
         b.binding_count().await,
         1,
@@ -3395,9 +2676,7 @@ async fn a_replay_onto_a_deleted_track_is_key_exhausted() {
          body={body}"
     );
 
-    // And it minted nothing on the way out: a refusal that left a replacement
-    // track behind would be the exact outcome the branch exists to refuse,
-    // reported as an error.
+    // And it minted nothing on the way out.
     assert_eq!(
         b.track_count().await,
         0,
@@ -3406,24 +2685,8 @@ async fn a_replay_onto_a_deleted_track_is_key_exhausted() {
     assert_eq!(b.binding_count().await, 1, "nor a second binding row");
 }
 
-/// #1428 — the escape from a deleted track's poisoned key, and the reason
-/// making it a 409 was worth twenty production lines.
-///
-/// The poisoning is per key and permanent: the binding row deliberately has no
-/// `ON DELETE CASCADE`, so nothing will ever make the old key resolve again.
-/// The recovery is therefore not "repair the key" but "use another one" — a new
-/// `Idempotency-Key` misses the binding, takes `Mint`, and gets a working
-/// track. This asserts that the escape the refusal *advertises* actually works,
-/// which is the half a refusal-only test cannot show.
-///
-/// It is deliberately the twin of `a_new_idempotency_key_recovers_from_a_poisoned_workspace`:
-/// the two ways this branch can be poisoned now answer with one code and have
-/// one escape, and a reader comparing the pair sees that rather than inferring
-/// it.
-///
-/// Mutation that must redden it: make `adopt_prior_track`'s `track_get` miss
-/// mint a replacement instead of refusing — the fresh key then resolves the
-/// dead binding and `assert_ne!` on the two track ids fails.
+/// The escape from a deleted track's poisoned key: a new `Idempotency-Key` misses the binding, takes `Mint`,
+/// and gets a working track.
 #[tokio::test]
 async fn a_new_idempotency_key_recovers_from_a_deleted_track() {
     let b = boot().await;
@@ -3436,8 +2699,7 @@ async fn a_new_idempotency_key_recovers_from_a_deleted_track() {
     b.shutdown_harnesses().await;
     assert!(b.delete_track(&dead_track).await.is_success());
 
-    // Premise: the old key really is dead, and says so with the code the
-    // frontend rotates on.
+    // Premise: the old key really is dead, with the code the frontend rotates on.
     let (poisoned, poisoned_body) = b
         .create_track(Some("idem-deleted-original"), Some(message))
         .await;
@@ -3448,8 +2710,7 @@ async fn a_new_idempotency_key_recovers_from_a_deleted_track() {
     );
     assert_eq!(poisoned_body["code"], "idempotency_key_exhausted");
 
-    // A distinct sentence, so the delivery assertion below is about THIS track
-    // and not a leftover copy of the deleted one's.
+    // A distinct sentence, so the delivery assertion below is about THIS track.
     let (fresh, fresh_body) = b
         .create_track(
             Some("idem-deleted-fresh"),
@@ -3480,15 +2741,8 @@ async fn a_new_idempotency_key_recovers_from_a_deleted_track() {
     b.shutdown_harnesses().await;
 }
 
-/// T-HASH-1 — the same key with a different **create** is a conflict.
-///
-/// Before #1384 the operation payload covered none of the create request's own
-/// fields, so this returned 201 and the ORIGINAL track: the caller's new title
-/// was silently discarded and nothing said so. `create_request_sha256` now
-/// binds the complete mint shape in the durable binding row and is also carried
-/// into `payload_hash` for operation-level replay compatibility.
-///
-/// Fails when `title` is omitted from the binding's create-request digest.
+/// The same key with a different **create** is a conflict: `create_request_sha256` binds the complete mint
+/// shape in the binding row and is carried into `payload_hash`.
 #[tokio::test]
 async fn the_same_key_with_a_different_title_is_a_conflict() {
     let b = boot().await;
@@ -3513,8 +2767,7 @@ async fn the_same_key_with_a_different_title_is_a_conflict() {
     );
     assert_eq!(b.track_count().await, 1, "and must mint nothing");
 
-    // The control: the SAME title still replays. Without it the assertion above
-    // would also be satisfied by a key that 409s on every repeat.
+    // The control: the SAME title still replays, so the assertion above is not satisfied by a key that 409s on every repeat.
     let (replay, replay_body) = b.post_create(Some("idem-title"), base).await;
     assert_eq!(
         replay,
@@ -3547,11 +2800,8 @@ async fn the_same_key_with_a_different_title_is_a_conflict() {
     b.shutdown_harnesses().await;
 }
 
-/// #1434 / #1429 — the binding-level create fingerprint covers every request
-/// field that decides the minted track, not only the three fields the operation
-/// payload happened to cover first. These edits are intentionally invalid or
-/// stale under today's world in some rows: the fingerprint comparison must run
-/// before replay skips create-path validation and before any side effect.
+/// The binding-level create fingerprint covers every request field that decides the minted track; the
+/// comparison must run before replay skips create-path validation and before any side effect.
 #[tokio::test]
 async fn every_mint_input_is_bound_to_the_track_create_key() {
     let b = boot().await;
@@ -3604,22 +2854,8 @@ async fn every_mint_input_is_bound_to_the_track_create_key() {
     b.shutdown_harnesses().await;
 }
 
-/// T-HASH-2 — `skip_serializing_if` keeps every existing caller's
-/// `payload_hash` stable.
-///
-/// The four other producers of `PlannerHarnessStartOperationPayload` and every
-/// message-less create leave `create_request_sha256` as `None`. If the field
-/// serialized as `"create_request_sha256": null` instead of being omitted, their
-/// payload bytes would change, their `payload_hash` would move, and an
-/// operation submitted by an older binary and retried after a deploy would come
-/// back 409 `conflict` — a spurious "you changed your message" for a request
-/// nobody changed.
-///
-/// Companion of `a_message_less_create_without_a_key_is_unchanged`: that one pins
-/// the absence of `first_message`, this one the absence of the digest, and both
-/// on the same bytes.
-///
-/// Fails when `skip_serializing_if` is removed from the field.
+/// `skip_serializing_if` keeps every existing caller's `payload_hash` stable: a `null` digest would move the
+/// bytes, and an operation submitted by an older binary and retried after a deploy would come back 409.
 #[tokio::test]
 async fn a_message_less_create_writes_byte_identical_payload_json() {
     let b = boot().await;
@@ -3634,8 +2870,7 @@ async fn a_message_less_create_writes_byte_identical_payload_json() {
         );
     }
 
-    // And the positive half, so this is not merely "the field is never written":
-    // a keyed create DOES carry it as an operation-local compatibility belt.
+    // And the positive half: a keyed create DOES carry it.
     let (status, body) = b
         .create_track(Some("idem-digest"), Some("ship the thing"))
         .await;
@@ -3654,35 +2889,13 @@ async fn a_message_less_create_writes_byte_identical_payload_json() {
     b.shutdown_harnesses().await;
 }
 
-// ---------------------------------------------------------------------------
-// #1449 — a sentence that has not drained yet must survive the runtime that was
-// holding it.
-//
-// The mechanism, restated so these three tests read as one argument:
-//
-// * the first message is seeded onto the mint's `pending_queue` inside the mint
-//   transaction, and only the run loop's drain turns it into a turn;
-// * `PATCH /api/tracks/{id}` fences the track — every live runtime goes
-//   `superseded` and its registry handle is torn down — and then restarts;
-// * before this slice the successor started with an EMPTY queue, so a drain
-//   that lost that race left the sentence on a row nothing ever reads again:
-//   no error, no card change, an agent that was never told anything.
-//
-// `PlannerHarnessDrainRaceHook` parks the drain one statement before it takes
-// the queue, which makes the losing order the only order. The existing
-// `a_replay_of_a_success_that_happened_on_a_retry_key_survives_a_repoint`
-// reaches the same window only under load, four times out of six.
-// ---------------------------------------------------------------------------
+// A sentence that has not drained yet must survive the runtime that was holding it: the re-point fence
+// supersedes every live runtime, and the successor must harvest the queue. `PlannerHarnessDrainRaceHook` parks the drain so the losing order is the only order.
 
-/// The sentence used by the #1449 tests. Distinct from every other needle in
-/// this file so `copies_in_harness` cannot count someone else's message.
+/// Distinct from every other needle in this file so `copies_in_harness` cannot count someone else's message.
 const STRANDED: &str = "reconcile the ledger before Friday";
 
 /// THE repro. Deterministic, no load required.
-///
-/// Red before the fix with `left: 0, right: 1`: the sentence is on the
-/// superseded runtime's queue, the handle is gone from the registry, and
-/// nothing reads it.
 #[tokio::test]
 async fn a_first_message_not_yet_drained_when_the_workspace_is_repointed_still_reaches_the_agent() {
     let b = boot().await;
@@ -3712,8 +2925,7 @@ async fn a_first_message_not_yet_drained_when_the_workspace_is_repointed_still_r
          slice it stayed on the superseded runtime's undrained queue and no path ever read it \
          again"
     );
-    // "exactly once", the same way the headline test says it: ask for a second
-    // copy and let the deadline burn.
+    // "exactly once": ask for a second copy and let the deadline burn.
     assert_eq!(
         b.copies_in_harness(STRANDED, 2).await,
         1,
@@ -3724,10 +2936,8 @@ async fn a_first_message_not_yet_drained_when_the_workspace_is_repointed_still_r
         "the mechanism, not just the outcome: the row the queue was taken from must be stamped, \
          which is what stops the next restart from taking it again"
     );
-    // #1449 S2 — and the transfer is a MOVE: the row it came off does not keep
-    // a copy. Asserted here rather than only in `runtime_repo`, because that
-    // test drives the harvest helper with a fixture decoder of its own and so
-    // says nothing about the decoder production actually runs.
+    // The transfer is a MOVE: the row it came off does not keep a copy. Asserted here because the unit test
+    // drives the harvest helper with a fixture decoder, not the one production runs.
     assert_eq!(
         b.persisted_queue(&stranded_runtime).await.len(),
         0,
@@ -3736,17 +2946,8 @@ async fn a_first_message_not_yet_drained_when_the_workspace_is_repointed_still_r
     b.shutdown_harnesses().await;
 }
 
-/// Exactly-once across restarts: the stamp, not an ordering argument.
-///
-/// The first restart INHERITS the parked runtime's whole queue (that is what
-/// the dormant-restart arm has always done) and stamps it. The second restart
-/// then finds a `superseded` row that still carries the sentence in its
-/// persisted snapshot — snapshots are never edited in place — and must take
-/// nothing from it.
-///
-/// Red when either half of the exactly-once construction is removed: the
-/// `queue_harvested_at_ms IS NULL` conjunct in the harvest predicate, or the
-/// stamp on the inherit path.
+/// The first restart INHERITS the parked runtime's whole queue and stamps it; the second restart finds a
+/// `superseded` row that still carries the sentence in its snapshot and must take nothing from it.
 #[tokio::test]
 async fn a_harvested_sentence_is_not_delivered_again_by_a_second_restart() {
     let b = boot().await;
@@ -3775,14 +2976,8 @@ async fn a_harvested_sentence_is_not_delivered_again_by_a_second_restart() {
         b.harvest_stamp(&parked_runtime).await.is_some(),
         "premise: the inherit must stamp the row it emptied"
     );
-    // Wait for the successor's post-turn snapshot write, so the second restart
-    // inherits what the successor really has left rather than a queue it has
-    // already delivered. One row still holds the sentence: the parked
-    // predecessor's, frozen for good.
-    // #1449 S2 — the transfer is a MOVE, so at any moment at most one row owes
-    // the sentence: the predecessor stopped owing it when the successor took
-    // it, and the successor stops owing it when it delivers it. Waiting for
-    // zero is waiting for that delivery to be written down.
+    // Wait for the successor's post-turn snapshot write. The transfer is a MOVE, so at any moment at most one
+    // row owes the sentence; waiting for zero is waiting for that delivery to be written down.
     assert_eq!(
         b.wait_until_rows_holding(STRANDED, 0).await,
         0,
@@ -3804,20 +2999,8 @@ async fn a_harvested_sentence_is_not_delivered_again_by_a_second_restart() {
     b.shutdown_harnesses().await;
 }
 
-/// Only the human's own words travel.
-///
-/// The #1343 opening briefing is an `Observation::SystemContext` describing the
-/// runtime's `cwd`, and a re-point is precisely the event that makes that
-/// directory the wrong one.
-///
-/// What this test asserts is exactly one direction: the OLD briefing does not
-/// travel. It does **not** assert that the successor writes a new one, and the
-/// successor does not: the re-point's restart payload carries
-/// `opening_briefing: None` (`routes/tracks.rs`), so no briefing is rendered on
-/// this path at all. Re-briefing a re-pointed workspace is a product question
-/// this slice does not answer.
-///
-/// Red when the harvest filter stops excluding `SystemContext`.
+/// Only the human's own words travel: the opening briefing is an `Observation::SystemContext` describing the
+/// runtime's `cwd`, and a re-point is what makes that directory wrong. The successor writes no new one (`opening_briefing: None`).
 #[tokio::test]
 async fn a_repoint_does_not_carry_the_old_workspace_briefing_forward() {
     const OLD_BRIEFING: &str = "briefing about the workspace this track is leaving";
@@ -3833,8 +3016,7 @@ async fn a_repoint_does_not_carry_the_old_workspace_briefing_forward() {
     entered.notified().await;
     let (stranded_runtime, _card_id) = b.only_runtime().await;
 
-    // Put a briefing on the parked runtime's queue and persist it, so the row
-    // the fence retires carries BOTH kinds of observation.
+    // Put a briefing on the parked runtime's queue and persist it, so the retired row carries BOTH kinds of observation.
     let handle = b
         .state
         .harness
@@ -3874,30 +3056,11 @@ async fn a_repoint_does_not_carry_the_old_workspace_briefing_forward() {
     b.shutdown_harnesses().await;
 }
 
-// ---------------------------------------------------------------------------
-// #1449 review round 2 — the three lifetime holes the harvest opened, and the
-// one it inherited.
-//
-// The common shape: a runtime's row can be retired while its run loop is alive,
-// healthy and unaware. `PATCH /api/tracks/{id}` commits that retirement in one
-// transaction and tears the handle down afterwards; `prepare_tx` commits it and
-// leaves the handle to a later step of the same operation. Everything below
-// orders events inside that gap, with `retire_runtime_in_the_database` standing
-// in for the durable half exactly as the fence performs it.
-// ---------------------------------------------------------------------------
+// A runtime's row can be retired while its run loop is alive, healthy and unaware; everything below orders
+// events inside that gap, with `retire_runtime_in_the_database` as the durable half of the fence.
 
-/// A batch the daemon already has must not be handed to the successor as well.
-///
-/// The window: `maybe_issue_turn` persists "the batch is still queued", drains
-/// in memory, calls `turn/start`, and only THEN persists the emptied queue. That
-/// last write used to be lost twice over — `persist_snapshot_inner` returns
-/// early once `shutting_down` is set, and `session_set_handle_state_tx` carries
-/// `AND state IN ('starting','running','idle','turn_pending')` so a retired row
-/// matches nothing. Either way the last word on a fenced runtime was "still
-/// queued", and the harvest believed it.
-///
-/// Red before `persist_issuance_outcome`: the row keeps a one-entry queue for
-/// good and the restart delivers the sentence a second time.
+/// `maybe_issue_turn` persists "still queued", drains in memory, calls `turn/start`, and only THEN persists the
+/// emptied queue; on a fenced runtime that last write is lost, so the harvest would re-deliver the batch.
 #[tokio::test]
 async fn a_batch_the_daemon_already_has_is_not_harvested_after_the_row_is_retired() {
     let b = boot().await;
@@ -3907,8 +3070,7 @@ async fn a_batch_the_daemon_already_has_is_not_harvested_after_the_row_is_retire
         .create_track(Some("idem-1449-issued"), Some(STRANDED))
         .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
-    // Parked inside `turn/start`: the fake daemon has already recorded the
-    // batch, and the run loop has not yet written the emptied queue back.
+    // Parked inside `turn/start`: the fake daemon has recorded the batch, the emptied queue is not yet written back.
     entered.notified().await;
     let (runtime, card_id) = b.only_runtime().await;
     assert_eq!(
@@ -3942,20 +3104,8 @@ async fn a_batch_the_daemon_already_has_is_not_harvested_after_the_row_is_retire
     b.shutdown_harnesses().await;
 }
 
-/// A runtime that is no longer its card's carrier must not issue its queue.
-///
-/// The mirror image of the case above, and the one that makes the harvest safe
-/// in the other direction: the mint transaction takes the queue and commits,
-/// and the predecessor's run loop — which knows nothing about it, because
-/// `shutting_down` is process memory and nobody set it — would otherwise drain
-/// the same batch and deliver it too.
-///
-/// **This window is older than the harvest.** The dormant-restart INHERIT
-/// (`prepare_tx`'s deferred arm) has copied a live predecessor's whole queue
-/// the same way since long before #1449; the harvest only widened the copy from
-/// memory to disk. The check added here closes it for both, which is why this
-/// test is red on `ce4445f6` — the repro commit, whose production code is
-/// `main`'s — as well as on `b44f45c7`.
+/// The mint transaction takes the queue and commits, and the predecessor's run loop knows nothing about it
+/// (`shutting_down` is process memory), so it would otherwise drain the same batch too.
 #[tokio::test]
 async fn a_runtime_that_is_no_longer_the_cards_carrier_does_not_issue_its_queue() {
     let b = boot().await;
@@ -3978,19 +3128,8 @@ async fn a_runtime_that_is_no_longer_the_cards_carrier_does_not_issue_its_queue(
         "a retired runtime must leave its queue for whoever the mint handed it to; issuing it \
          anyway is how the same sentence reaches the agent twice"
     );
-    // #1449 — two separate things, and the earlier version of this test had
-    // one of them backwards.
-    //
-    // The handle stays REGISTERED and alive. A handle that wound itself down
-    // would still be in the registry, and `ensure_live_planner_harness` does
-    // not health-check a registered handle, so a predecessor a failed mint
-    // later restores would answer `Conflict` forever with no way back but
-    // `/planner/reset`.
-    //
-    // But a durable send through it is REFUSED, because it cannot be made
-    // durable: `session_set_handle_state_tx` matches no row once this runtime
-    // is retired, and reporting success there is how a sentence got a 201 and
-    // no home. Refusing sends the caller to the successor.
+    // The handle stays REGISTERED and alive (`ensure_live_planner_harness` does not health-check a registered
+    // handle), but a durable send through it is REFUSED: `session_set_handle_state_tx` matches no retired row.
     let handle = b
         .state
         .harness
@@ -4011,14 +3150,7 @@ async fn a_runtime_that_is_no_longer_the_cards_carrier_does_not_issue_its_queue(
     b.shutdown_harnesses().await;
 }
 
-/// #1449 S4 — a runtime whose row is GONE does not issue either.
-///
-/// The carrier check reads one row by id and has to decide what a missing row
-/// means. It fails closed: a runtime that cannot show it still speaks for the
-/// card does not speak. Rows are deleted by card, track and area deletion, by a
-/// start's compensation, and by the dev replay reset — every one of them a
-/// context where issuing a turn is wrong. That list came from scanning the tree
-/// for `DELETE FROM worker_sessions`; nothing ratchets it.
+/// A runtime whose row is GONE does not issue either: the carrier check fails closed on a missing row.
 #[tokio::test]
 async fn a_runtime_whose_row_has_been_deleted_does_not_issue_its_queue() {
     let b = boot().await;
@@ -4031,10 +3163,8 @@ async fn a_runtime_whose_row_has_been_deleted_does_not_issue_its_queue() {
     entered.notified().await;
     let (runtime, _card_id) = b.only_runtime().await;
 
-    // Through the production deleter, not a raw `DELETE`: `session_delete_tx`
-    // clears `tracks.root_session_id` first, and a fixture that skipped that
-    // would trip the foreign key rather than reproduce the state a card, track
-    // or area deletion actually leaves behind.
+    // Through the production deleter, not a raw `DELETE`: `session_delete_tx` clears `tracks.root_session_id`
+    // first, and a fixture that skipped that would trip the foreign key.
     {
         let worker_session_id = runtime.clone();
         write_in_tx_typed(b.repo.as_ref() as &dyn Repo, move |tx| {
@@ -4058,18 +3188,8 @@ async fn a_runtime_whose_row_has_been_deleted_does_not_issue_its_queue() {
     b.shutdown_harnesses().await;
 }
 
-/// A restart that fails after the harvest committed must give the queue back.
-///
-/// `plan_compensation` marks the half-started successor `failed`, and `failed`
-/// is a state the harvest predicate deliberately never reads. The rows the
-/// sentences came from are already stamped. Without an undo the sentence is
-/// unreachable for good — no error, no card change, nothing to notice — and the
-/// mint transaction's own rollback does not cover it, because compensation is a
-/// different transaction.
-///
-/// The reasoning that justifies excluding `failed` in the first place does not
-/// reach here either: a failed *create* is retried by its caller with the same
-/// text under a `#N` key, but a restart's payload carries `first_message: None`.
+/// A restart that fails after the harvest committed must give the queue back: compensation marks the
+/// successor `failed`, a state the harvest predicate never reads, and compensation is a different transaction from the mint.
 #[tokio::test]
 async fn a_failed_restart_gives_the_harvested_sentence_back() {
     let b = boot().await;
@@ -4116,17 +3236,8 @@ async fn a_failed_restart_gives_the_harvested_sentence_back() {
     b.shutdown_harnesses().await;
 }
 
-/// The NON-deferred arm of `prepare_tx`, which every other test in this file
-/// misses: they all create tracks, and `force_new_thread: true` is what a create
-/// with a message and a re-point both send.
-///
-/// `POST /api/today/launchpad/ensure` is the reachable caller of the other arm:
-/// the first call creates and forces a new thread, the second finds the track
-/// already there and starts with `force_new_thread: false`
-/// (`routes/today.rs`). That arm supersedes the card's live predecessor without
-/// inheriting anything from it, so before #1449 whatever the predecessor still
-/// owed was dropped on the floor — the same silent loss as the re-point, on a
-/// path nobody was looking at.
+/// The NON-deferred arm of `prepare_tx`: `ensure`'s second call starts with `force_new_thread: false`, which
+/// supersedes the card's live predecessor without inheriting anything from it.
 #[tokio::test]
 async fn the_non_deferred_arm_carries_an_undrained_sentence_to_its_successor() {
     const LAUNCHPAD_SENTENCE: &str = "check the overnight builds";
@@ -4141,8 +3252,7 @@ async fn the_non_deferred_arm_carries_an_undrained_sentence_to_its_successor() {
     let planner_card_id = first_body["planner_card_id"].as_str().unwrap().to_string();
     let runtime = b.active_runtime_of_card(&planner_card_id).await;
 
-    // Park the drain, THEN send: the sentence has to be durably queued and
-    // still undrained when the second ensure runs.
+    // Park the drain, THEN send: the sentence has to be durably queued and still undrained when the second ensure runs.
     let (entered, release) = b.hold_the_next_drain();
     let (sent, sent_body) = b
         .send_planner_input(&planner_card_id, LAUNCHPAD_SENTENCE)
@@ -4182,20 +3292,8 @@ async fn the_non_deferred_arm_carries_an_undrained_sentence_to_its_successor() {
     b.shutdown_harnesses().await;
 }
 
-/// #1449 B1 — a deferred mint that fails must give the INHERITED queue back.
-///
-/// The inherit is a move: `prepare_tx` takes the predecessor's whole queue into
-/// the successor and empties the predecessor in the same transaction. The
-/// harvest's undo journal cannot cover that transfer — the predecessor is still
-/// `active` when the harvest runs, and the harvest reads `superseded` rows — so
-/// until the inherit filed its own journal entry, a `thread/start` failure left
-/// the sentence on a `failed` successor that the harvest never reads, while
-/// `restore_old_runtime` brought the predecessor back with an empty queue. The
-/// sentence was gone with no error and no trace, and on `origin/main` — where
-/// the inherit is a copy — the restored predecessor still had it.
-///
-/// The predecessor must stay ACTIVE for this to take the inherit arm; retiring
-/// it first is what makes the sibling test exercise the harvest arm instead.
+/// A deferred mint that fails must give the INHERITED queue back: the inherit is a move the harvest's undo
+/// journal cannot cover (the predecessor is still `active`), so it files its own journal entry.
 #[tokio::test]
 async fn a_failed_deferred_mint_gives_the_inherited_sentence_back() {
     let b = boot().await;
@@ -4248,22 +3346,8 @@ async fn a_failed_deferred_mint_gives_the_inherited_sentence_back() {
     b.shutdown_harnesses().await;
 }
 
-/// #1449 — a durable send is either ON THE ROW or REFUSED. Never accepted and
-/// only in memory.
-///
-/// This is the invariant, and the previous version of this test did not test
-/// it. It sent through `POST /api/cards/{id}/planner/input`, which resolves the
-/// runtime through `ACTIVE_CARD_RUNTIME_SELECT` and therefore answers 409 for a
-/// retired row before reaching the harness at all — so every iteration hit the
-/// `continue` and the assertion never ran. It was green for the same reason an
-/// empty loop is green, while standing as the only evidence that the race was
-/// closed.
-///
-/// So this one goes through the HANDLE, which is what the route holds once it
-/// has resolved a runtime, and which is the object the reachable window hands
-/// to a send that started before the mint committed. The counter in the loop is
-/// asserted, so an interleaving that stops reaching the send fails here instead
-/// of passing quietly.
+/// A durable send is either ON THE ROW or REFUSED, never accepted and only in memory. Driven through the
+/// HANDLE, which is what the route holds once it has resolved a runtime; the loop counter is asserted.
 #[tokio::test]
 async fn a_durable_send_is_on_the_row_or_refused_never_accepted_into_memory() {
     let b = boot().await;
@@ -4311,9 +3395,7 @@ async fn a_durable_send_is_on_the_row_or_refused_never_accepted_into_memory() {
             Err(_) => refused += 1,
         }
     }
-    // No `accepted + refused == 20` here: every iteration increments one of
-    // them, so that would be a tautology dressed as a premise. The premise that
-    // does work is the next one.
+    // No `accepted + refused == 20` here: every iteration increments one of them, so that would be a tautology.
     assert!(
         refused > 0,
         "premise: this test is worthless unless the sends actually reached a retired runtime; \
@@ -4322,20 +3404,8 @@ async fn a_durable_send_is_on_the_row_or_refused_never_accepted_into_memory() {
     b.shutdown_harnesses().await;
 }
 
-/// #1449 — a sentence that crossed the upgrade with no id is still given back
-/// when the mint that moved it fails.
-///
-/// `pending_message_ids` is `#[serde(default)]`, so every entry a pre-#1449
-/// binary enqueued decodes to an empty set, and nothing back-fills ids for
-/// entries already on a queue. Migration 0095 leaves live rows unstamped on
-/// purpose — so their queues stay harvestable — which puts exactly those
-/// entries in the class that moves.
-///
-/// The give-back returns only ids the failing runtime still holds, and `any`
-/// over an empty set is false. So before ids were minted at the transfer
-/// boundary, such a sentence was moved off its row by the mint, never returned,
-/// and left on a `failed` successor: a row the harvest does not read and
-/// `restore_old_runtime` does not revive.
+/// `pending_message_ids` is `#[serde(default)]`, so a sentence enqueued by an older binary decodes with no
+/// id; the give-back must still return it when the mint that moved it fails.
 #[tokio::test]
 async fn a_pre_upgrade_sentence_survives_a_failed_mint_that_moved_it() {
     const LEGACY: &str = "typed before the upgrade";
@@ -4354,9 +3424,7 @@ async fn a_pre_upgrade_sentence_survives_a_failed_mint_that_moved_it() {
     );
     entered.notified().await;
 
-    // Rewrite the row the way a pre-#1449 binary left it: the queue is there,
-    // the id array is not. Straight to the column, because the point is a row
-    // this binary never wrote.
+    // Rewrite the row the way an older binary left it: the queue is there, the id array is not.
     let state: String =
         sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id = ?1")
             .bind(&predecessor)
@@ -4372,8 +3440,8 @@ async fn a_pre_upgrade_sentence_survives_a_failed_mint_that_moved_it() {
         .await
         .unwrap();
 
-    // The predecessor stays ACTIVE, so the restart takes the inherit arm, and
-    // the restart fails after its transaction committed.
+    // The predecessor stays ACTIVE, so the restart takes the inherit arm, and the restart fails after its
+    // transaction committed.
     b.state
         .shared_codex_appserver
         .fail_next_thread_start_for_test();
@@ -4405,25 +3473,8 @@ async fn a_pre_upgrade_sentence_survives_a_failed_mint_that_moved_it() {
     b.shutdown_harnesses().await;
 }
 
-/// #1449 — the input to the accepted duplicate, pinned as intended rather than
-/// left for the next reader to rediscover as a bug.
-///
-/// `user_message_enqueued_on_active_runtime` asks whether the CURRENT runtime
-/// has been spoken to. A move carries the sentence to the successor but leaves
-/// the evidence row naming the runtime that was replaced, so the predicate
-/// answers `false` and `POST /api/today/summary` sends its bootstrap again —
-/// and the harvested copy is still on the queue. Two copies, and they do not
-/// fold: folding needs a full 256-entry queue.
-///
-/// This is #1314's residual with a larger membership, not a new defect. Writing
-/// an evidence row for the successor is not the fix: `harness.user_message.enqueued`
-/// records an act somebody performed, and a harvest is kernel-internal movement
-/// nobody performed. The duplicate is priced — the text says "stand by and
-/// touch nothing", so obeying it twice is obeying it once.
-///
-/// Asserted here, in #1449's own suite, rather than in `today_summary.rs`:
-/// carrying one issue's evidence in another issue's file is what makes a
-/// recorded property quietly stop being true.
+/// A move carries the sentence to the successor but leaves the evidence row naming the replaced runtime, so
+/// `user_message_enqueued_on_active_runtime` answers `false` and the summary trigger sends its bootstrap again: an accepted, priced duplicate.
 #[tokio::test]
 async fn a_replaced_runtime_keeps_the_evidence_enqueued_against_it() {
     let b = boot().await;
@@ -4454,23 +3505,10 @@ async fn a_replaced_runtime_keeps_the_evidence_enqueued_against_it() {
         "premise: it is on the row and has not drained"
     );
 
-    // The replacement moves it forward; the evidence row keeps naming the
-    // runtime that was replaced.
+    // The replacement moves it forward; the evidence row keeps naming the runtime that was replaced.
     b.retire_runtime_in_the_database(&runtime).await;
-    // The successor's own drain, parked before it exists.
-    //
-    // "The sentence is on the successor's queue" is a state the successor is
-    // in the business of ending: its run loop takes the queue as soon as it
-    // has one. Reading the row and hoping to win that race is a test whose
-    // premise holds or not depending on machine load, and it did not hold on
-    // CI. So the hook is installed BEFORE the mint that creates the successor,
-    // which is what makes "not drained yet" a held state rather than a window:
-    // there is no instant at which the successor could have run past it.
-    //
-    // Installed while the predecessor is still parked past its own hook, so
-    // this one cannot be the hook that predecessor takes. Its queue is empty
-    // by now anyway — the harvest moved it — and a retired runtime turns back
-    // at the carrier check above the hook.
+    // The successor's own drain, parked before it exists: the hook is installed BEFORE the mint that creates
+    // the successor, so "not drained yet" is a held state rather than a window.
     let (successor_entered, successor_release) = b.hold_the_next_drain();
     let (second, second_body) = b.ensure_launchpad().await;
     assert_eq!(
@@ -4495,16 +3533,8 @@ async fn a_replaced_runtime_keeps_the_evidence_enqueued_against_it() {
     release.notify_one();
     successor_release.notify_one();
 
-    // The mechanism behind the accepted duplicate, asserted directly: the
-    // message is on the successor, and the only evidence row names the runtime
-    // that was replaced. That divergence is exactly what
-    // `user_message_enqueued_on_active_runtime` reads, so the next summary
-    // trigger sends its bootstrap again and the queue carries two copies.
-    //
-    // The trigger itself is NOT driven here: it refuses a day with no activity,
-    // and building one is `today_summary.rs`'s fixture, not this file's. What
-    // this pins is the input to the predicate; the pricing of the extra copy is
-    // #1314's and is documented at the predicate.
+    // The mechanism behind the accepted duplicate: the message is on the successor, and the only evidence row
+    // names the runtime that was replaced. The trigger itself is not driven here.
     let evidence_runtimes: Vec<String> = sqlx::query_scalar(
         "SELECT json_extract(payload, '$.worker_session_id') FROM events \
          WHERE kind = 'harness.user_message.enqueued'",
@@ -4526,39 +3556,8 @@ async fn a_replaced_runtime_keeps_the_evidence_enqueued_against_it() {
     b.shutdown_harnesses().await;
 }
 
-/// #1514 review [MAJOR] — the track's FIRST MESSAGE is addressable in
-/// `GET /planner/run`'s `pending`.
-///
-/// # Why this test exists at all
-///
-/// It exists because the mint site said it could not. The comment there
-/// offered itself explicitly IN PLACE OF a test, on the ground that "the only
-/// `QueueEntry` this module can build that renders as a `UserMessage` is
-/// `User` … the id-less variant has no constructor reachable from here".
-///
-/// That sentence is false, and the construction is two lines: `QueueEntry` is
-/// a `pub` enum re-exported as `crate::harness::QueueEntry`, which the adapter
-/// already imports, and an enum variant is exactly as visible as its enum. So
-/// `entries.push(QueueEntry::LegacyUser { text: text.to_string(), envelope_id:
-/// None, message_ids: Vec::new() })` compiles in that module today.
-/// `set_pending_entries` then writes a `None` meta slot, the first message
-/// reads back as a `LegacyUser` for the rest of its life, and it is withheld
-/// from `pending` and counted only in `pending_overflow` — with nothing red,
-/// because the argument that excused the test was the thing that was wrong.
-///
-/// **"No constructor reachable from here" is not a property a `pub` variant
-/// has.** A privacy argument covers the named constructor
-/// (`QueueEntry::legacy_user` really is `pub(in crate::harness)`) and nothing
-/// else; the variant literal walks around it.
-///
-/// # The drain, which is what made this look untestable
-///
-/// A user message hard-fires, so the harness this request starts drains it
-/// almost immediately and a later read finds an empty queue. That is a race,
-/// not an impossibility: #1449's drain hook parks the runtime immediately
-/// before the drain, which turns the window into a held state and lets the
-/// queue be read at the endpoint the product actually serves. No sleep, no
-/// retry, no settle loop — the hook is a rendezvous.
+/// The track's FIRST MESSAGE is addressable in `GET /planner/run`'s `pending`: a `QueueEntry::LegacyUser`
+/// literal compiles in the adapter and would be withheld from `pending`. The drain hook parks the runtime so the queue can be read.
 #[tokio::test]
 async fn the_tracks_first_message_is_addressable_in_the_pending_page() {
     const SENTENCE: &str = "the first thing anybody said on this track";
@@ -4569,14 +3568,11 @@ async fn the_tracks_first_message_is_addressable_in_the_pending_page() {
         .create_track(Some("idem-first-addressable"), Some(SENTENCE))
         .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
-    // `POST /api/tracks` does not name the planner card in its body (only
-    // `/today/launchpad/ensure` does), so it is read from the one runtime row
-    // the create minted — the same route every other test in this file uses.
+    // `POST /api/tracks` does not name the planner card in its body, so it is read from the one runtime row the create minted.
     let (_runtime, planner_card_id) = b.only_runtime().await;
 
-    // PREMISE, not a wait: the runtime is parked at the drain hook, so what
-    // follows reads a queue that provably still holds the sentence. Without
-    // this the assertions below could pass on an empty queue by racing.
+    // PREMISE, not a wait: the runtime is parked at the drain hook, so what follows reads a queue that provably
+    // still holds the sentence.
     tokio::time::timeout(std::time::Duration::from_secs(10), entered.notified())
         .await
         .expect("the harness must reach the drain hook before it can drain");

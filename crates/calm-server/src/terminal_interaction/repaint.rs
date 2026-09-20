@@ -1,11 +1,6 @@
-//! The repaint phase of a signal wait (#1628), moved out of `wait.rs` with
-//! #1677 r16, which adds the text conditions: Claude's `Stop` hook fires
-//! while the busy spinner (`esc to interrupt`) is still painted, so the
-//! phase settles only once the screen is quiet AND the conditions
-//! (`wait_text` present, `wait_text_absent` gone) hold on the current
-//! screen, re-tested once per revision like text mode. Without conditions
-//! the phase is exactly the #1628 one. Pure timing over channels, tested
-//! under a paused clock.
+//! The repaint phase of a signal wait: Claude's `Stop` hook fires while the busy spinner is
+//! still painted, so the phase settles only once the screen is quiet AND the text conditions
+//! hold on the current screen. Pure timing over channels, tested under a paused clock.
 use super::text_conditions::{ConditionState, TextConditions};
 use super::wait::millis;
 use serde_json::{Value, json};
@@ -13,7 +8,7 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tokio::time::Instant;
 
-/// Signal mode (#1628): the screen's behaviour after the signal arrived.
+/// The screen's behaviour after the signal arrived.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RepaintOutcome {
     /// A revision had already landed since the baseline, the screen had
@@ -54,8 +49,7 @@ impl RepaintReport {
     }
 }
 
-/// Signal mode (#1628): the repaint window after the signal and the quiet
-/// window that ends it. `repaint == 0` skips the phase.
+/// The repaint window after the signal and the quiet window that ends it. `repaint == 0` skips the phase.
 #[derive(Clone, Copy, Debug)]
 pub struct RepaintPlan {
     pub repaint: Duration,
@@ -70,11 +64,8 @@ impl RepaintPlan {
         }
     }
 }
-/// Revision bookkeeping across both phases of a signal wait: whether any
-/// revision landed since the wait's baseline and when the last one did. A
-/// revision already above the baseline when the wait starts counts as a
-/// change at the start (its real time is unknown, so the quiet window is
-/// measured from the start, never earlier).
+/// Revision bookkeeping across both phases of a signal wait. A revision already above the
+/// baseline when the wait starts counts as a change at the start (its real time is unknown).
 pub(super) struct Repaint {
     seen: u64,
     pub(super) changed: bool,
@@ -88,9 +79,8 @@ impl Repaint {
             last_change: started,
         }
     }
-    /// Record `current`; true when it is a newer revision than the last
-    /// recorded one (revisions only grow; a channel value older than a
-    /// revision a capture already rendered is not a change).
+    /// Record `current`; true when it is a newer revision than the last recorded one
+    /// (a channel value older than a revision a capture already rendered is not a change).
     pub(super) fn observe(&mut self, current: u64, now: Instant) -> bool {
         if current <= self.seen {
             return false;
@@ -104,9 +94,8 @@ impl Repaint {
         now.saturating_duration_since(self.last_change)
     }
 }
-/// The text conditions as tested on the screens of the repaint phase: one
-/// capture per revision (never on a timer or protocol wake alone), vacuous
-/// when there are no conditions.
+/// The text conditions as tested on the screens of the repaint phase: one capture per
+/// revision (never on a timer or protocol wake alone), vacuous when there are no conditions.
 struct Tested {
     at: Option<u64>,
     state: ConditionState,
@@ -120,11 +109,8 @@ impl Tested {
             holds: conditions.is_empty(),
         }
     }
-    /// Test the screen for channel revision `revision` and return the
-    /// revision the capture actually rendered: the projection may already
-    /// be past the channel value (review r1 C), and the conditions then
-    /// describe that newer screen, whose quiet window the caller must
-    /// restart from now rather than credit with the older revision's.
+    /// Returns the revision the capture actually rendered: the projection may already be past the
+    /// channel value, and the caller must then restart the quiet window from now.
     fn test(
         &mut self,
         conditions: &TextConditions,
@@ -150,9 +136,8 @@ impl Tested {
         }
     }
 }
-/// Test the conditions on `current` and, when the capture rendered a newer
-/// revision, record that revision as a change at `now` so no quiet window
-/// is credited to a screen the conditions were not read from.
+/// When the capture rendered a newer revision, record it as a change at `now` so no quiet
+/// window is credited to a screen the conditions were not read from.
 fn observe_and_test(
     screen: &mut Repaint,
     tested: &mut Tested,
@@ -168,22 +153,10 @@ fn observe_and_test(
     }
 }
 
-/// The repaint phase of a signal wait (#1628). At the signal: a revision
-/// since the baseline that has been quiet for `settle`, on a screen where
-/// the conditions hold, is `Already`. Else the loop keys on
-/// `screen.changed` (any revision since the wait's baseline, before or
-/// after the signal): while nothing has changed it waits for the first
-/// revision until `repaint` after the signal (or the budget) → `None`; once
-/// a change exists it waits until the screen has been quiet for `settle`
-/// with the conditions holding → `Settled`, or the budget → `Unsettled`
-/// (#1677 r16: while the conditions do not hold the phase keeps waiting for
-/// further revisions, each re-tested, until the budget). So a revision 50 ms
-/// before the signal settles 100 ms after it (settle 150) rather than idling
-/// `repaint`. Exit, disconnect and projection invalidation (`stopped`,
-/// re-read on every wake) end the phase with the verdict the screen had
-/// reached. As in change mode, a timer wake re-reads the revision before
-/// settling. Returns the verdict and the conditions' state on the last
-/// tested screen.
+/// The repaint phase of a signal wait. Keys on `screen.changed` (any revision since the wait's
+/// baseline, before or after the signal), so a revision 50 ms before the signal settles 100 ms
+/// after it rather than idling `repaint`. Exit, disconnect and projection invalidation end the
+/// phase with the verdict the screen had reached.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn settle_after_signal(
     mut revisions: watch::Receiver<u64>,
@@ -218,9 +191,7 @@ pub(super) async fn settle_after_signal(
         return (report(RepaintOutcome::Already), tested.state);
     }
     let repaint_deadline = (signal_at + plan.repaint).min(deadline);
-    // A change exists (since the baseline) but never went quiet with the
-    // conditions holding before the phase ended → `Unsettled`; no change at
-    // all → `None`.
+    // A change that never went quiet with the conditions holding → `Unsettled`; no change → `None`.
     let verdict = |changed: bool| {
         if changed {
             RepaintOutcome::Unsettled
@@ -246,8 +217,7 @@ pub(super) async fn settle_after_signal(
         } else if tested.holds {
             (screen.last_change + plan.settle).min(deadline)
         } else {
-            // The conditions do not hold: only a further revision can end
-            // the phase before the budget.
+            // The conditions do not hold: only a further revision can end the phase before the budget.
             deadline
         };
         if now >= timer {
@@ -281,8 +251,7 @@ mod tests {
         rows: Arc<Mutex<Vec<String>>>,
         revision: Arc<AtomicU64>,
         captures: Arc<AtomicUsize>,
-        /// Added to the revision every capture reports (review r1 C: the
-        /// projection can be past the channel value when the rows are read).
+        /// Added to the revision every capture reports (the projection can be past the channel value).
         ahead: Arc<AtomicU64>,
     }
     impl Fixture {
@@ -294,9 +263,7 @@ mod tests {
         }
     }
     type Task = tokio::task::JoinHandle<((RepaintReport, ConditionState), Duration)>;
-    /// Drive the phase directly, as if the signal had just arrived: the
-    /// screen's `rows` are the current revision (`painted_ms_ago` before the
-    /// signal, counted as a change since the baseline when nonzero).
+    /// Drive the phase directly, as if the signal had just arrived.
     fn start(
         present: &[&str],
         absent: &[&str],
@@ -366,9 +333,6 @@ mod tests {
         ConditionState { present, absent }
     }
 
-    /// Without conditions the phase is #1628's: quiet at the signal is
-    /// `already`, a later revision settles after the quiet window, nothing
-    /// within the repaint window is `none`; no capture is ever taken.
     #[tokio::test(start_paused = true)]
     async fn without_conditions_the_phase_is_unchanged_and_never_captures() {
         let (fixture, task) = start(&[], &[], &["busy"], Some(200), 5_000);
@@ -395,11 +359,8 @@ mod tests {
         assert_eq!(waited, Duration::from_millis(1_500));
     }
 
-    /// The Claude case: the signal arrives with the busy hint painted and
-    /// quiet (would be `already`), the absent condition does not hold, so
-    /// the phase keeps waiting; the answer paints 400 ms later without the
-    /// hint and the phase settles after the quiet window; `already` is not
-    /// used since the screen that settled came after the signal.
+    /// The Claude case: the busy hint is painted and quiet at the signal, so the phase keeps
+    /// waiting until a revision removes it.
     #[tokio::test(start_paused = true)]
     async fn absent_pattern_at_the_signal_defers_the_settle_until_a_revision_removes_it() {
         let (fixture, task) = start(
@@ -438,10 +399,6 @@ mod tests {
         assert_eq!(waited, Duration::ZERO);
     }
 
-    /// The conditions are re-tested on every revision, not only at the
-    /// signal: two repaints keep the hint, the third removes it, and only
-    /// then does the quiet window count; a repaint that brings the hint
-    /// back returns the phase to waiting.
     #[tokio::test(start_paused = true)]
     async fn conditions_are_retested_on_every_revision() {
         let (fixture, task) = start(&["❯"], &["esc to interrupt"], &["thinking"], None, 5_000);
@@ -472,15 +429,11 @@ mod tests {
         assert_eq!(fixture.captures.load(Ordering::SeqCst), 5);
     }
 
-    /// Review r1 C: the capture renders a revision newer than the channel
-    /// value — the hint was cleared between the channel read and the rows
-    /// read. The conditions then describe that newer screen, so no quiet
-    /// window may be credited from the older revision: not `already` at the
-    /// signal, and in the loop the window restarts at the capture.
+    /// The capture renders a revision newer than the channel value: no quiet window may be
+    /// credited from the older revision.
     #[tokio::test(start_paused = true)]
     async fn a_newer_captured_revision_restarts_the_quiet_window() {
-        // Channel 1, quiet 200 ms, would be `already`; the capture reports
-        // revision 2 without the hint.
+        // Channel 1, quiet 200 ms, would be `already`; the capture reports revision 2 without the hint.
         let (fixture, task) = start(&[], &["esc to interrupt"], &["❯ answer"], Some(200), 5_000);
         fixture.ahead.store(1, Ordering::SeqCst);
         tokio::task::yield_now().await;
@@ -498,8 +451,7 @@ mod tests {
         assert_eq!(report.outcome, RepaintOutcome::Settled);
         assert_eq!(conditions, state(None, Some(true)));
         assert_eq!(waited, Duration::from_millis(150));
-        // The channel later reports the revision the capture already saw:
-        // no second capture, no second window.
+        // The channel later reports the revision the capture already saw: no second capture, no second window.
         let (fixture, task) = start(
             &[],
             &["esc to interrupt"],
@@ -534,9 +486,6 @@ mod tests {
         );
     }
 
-    /// The budget ends with the hint still shown: `unsettled` (a revision
-    /// existed), the state says which side failed; with no revision at all
-    /// the verdict stays `none` after the repaint window, conditions or not.
     #[tokio::test(start_paused = true)]
     async fn budget_with_the_pattern_present_is_unsettled_and_no_revision_is_none() {
         let (fixture, task) = start(&[], &["busy"], &["busy"], Some(200), 800);
@@ -558,8 +507,7 @@ mod tests {
         assert_eq!(conditions, state(None, Some(false)), "tested at the signal");
         assert_eq!(waited, Duration::from_millis(1_500));
         assert_eq!(fixture.captures.load(Ordering::SeqCst), 1);
-        // An exit while the hint is shown ends the phase with the verdict
-        // reached so far and the state of the last tested screen.
+        // An exit while the hint is shown ends the phase with the verdict reached so far.
         let (fixture, task) = start(&[], &["busy"], &["busy"], Some(200), 5_000);
         tokio::task::yield_now().await;
         tokio::time::advance(Duration::from_millis(50)).await;

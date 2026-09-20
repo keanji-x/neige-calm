@@ -1,32 +1,6 @@
-//! Regression anchor: codex `PermissionRequest` hook ingest → role gate →
-//! card FSM → track-scoped `any_card_needs_input` overlay, end-to-end at the
-//! kernel level (no real codex CLI involved).
-//!
-//! Two cases live in this file:
-//!
-//!   1. **Worker card** — passes today. Documents the working pipeline so a
-//!      future regression that breaks the FSM or the aggregator surfaces
-//!      here instead of in a hand-tested UI bug report.
-//!
-//!   2. **Planner card** — historically failed at the role gate. The
-//!      `role_gate.rs` `Some(CardRole::Planner)` arm of the `AiCodex` actor
-//!      match unconditionally rejected every write, including the codex
-//!      bridge's lifecycle hook POST. The fix carves out `Event::CodexHook`
-//!      from an `AiCodex(planner_card)` actor as a pure lifecycle
-//!      observation (the bridge runs as a subprocess of codex regardless
-//!      of card role and can't easily know the role at fire time); other
-//!      events from `AiCodex(planner_card)` are still refused, and
-//!      `TrackUpdated` is still gated separately at the top of the
-//!      function. This test pins the regression: without the carveout,
-//!      the FSM never observes `permission_request`, and the track
-//!      `any_card_needs_input` overlay never flips.
-//!
-//! Patterns lifted from:
-//!
-//!   * `crates/calm-server/tests/codex_ingest.rs` — `AppState` /
-//!     `EventBus` / `actor_middleware` scaffolding.
-//!   * `crates/calm-server/src/card_fsm.rs::tests::needs_input_overlay_*`
-//!     — what to poll for once the FSM has observed `permission_request`.
+//! Codex `PermissionRequest` hook ingest → role gate → card FSM → track-scoped `any_card_needs_input` overlay.
+//! The Planner case pins the role gate's carve-out: `Event::CodexHook` from an `AiCodex(planner_card)` actor is
+//! a lifecycle observation and must not be refused like other planner-card writes.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -46,24 +20,12 @@ use calm_server::track_area_cache::TrackAreaCache;
 use serde_json::Value;
 use tower::ServiceExt;
 
-/// How long we'll wait for the `any_card_needs_input` overlay to land
-/// after POSTing the hook. The FSM commits inside a single transaction
-/// (overlay + event row) so this only needs to outlast the tokio task
-/// hop + sqlite commit; 2 s is comfortable.
+/// The FSM commits overlay + event row in one transaction, so this only needs to outlast a task hop + sqlite commit.
 const OVERLAY_DEADLINE: Duration = Duration::from_secs(2);
-/// Poll interval inside the deadline.
 const OVERLAY_POLL: Duration = Duration::from_millis(50);
 
-/// Shared fixture used by both cases. Returns the assembled axum app +
-/// the repo (so the assertions can poll overlays directly) + the card id
-/// (so the assertions can scope to it).
-///
-/// The caller decides the card's role via `role`. We override the cache
-/// entry after the standard `card_create` (which seeds `Worker`) so we
-/// don't have to fan out to the `card_create_with_id_tx` machinery that
-/// the production planner-card mint uses. The role gate only reads the
-/// cache, so a cache override is sufficient to reproduce the gate
-/// decision the production path would make.
+/// The role gate only reads the cache, so overriding the cache entry after `card_create` reproduces the
+/// production gate decision for either role.
 async fn setup(role: CardRole) -> (axum::Router, Arc<dyn Repo>, String, String) {
     let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
@@ -101,17 +63,12 @@ async fn setup(role: CardRole) -> (axum::Router, Arc<dyn Repo>, String, String) 
 
     let cache = CardRoleCache::new();
     repo.seed_card_role_cache(&cache).await.unwrap();
-    // Override: `card_create` seeds `Worker`; for the Planner-card case we
-    // need the cache to report `Planner`, mirroring what the real
-    // `card_with_codex_create_tx` would have written.
+    // `card_create` seeds `Worker`; override for the Planner case.
     cache.insert(card.id.clone(), role, track.id.clone());
 
     let track_area_cache = TrackAreaCache::new();
-    // The track-area cache is write-through populated in `track_create_tx`,
-    // but our SqlxRepo instance holds its own cache; we re-seed the one
-    // we'll thread through `AppState` and the FSM so the role gate's
-    // worker-scope cross-check (and our track-scoped overlay aggregate)
-    // can both resolve `track -> area` without going to the DB.
+    // Re-seed the track-area cache threaded through `AppState` and the FSM, so the role gate's worker-scope
+    // cross-check and the track-scoped aggregate resolve `track -> area` without the DB.
     track_area_cache.insert(track.id.clone(), area.id.clone());
 
     let events = EventBus::new();
@@ -133,17 +90,13 @@ async fn setup(role: CardRole) -> (axum::Router, Arc<dyn Repo>, String, String) 
         Some(track_area_cache.clone()),
     );
 
-    // Spawn the FSM projector *before* we POST the hook, so it's
-    // subscribed by the time the bus broadcasts `Event::CodexHook`.
-    // (The existing `codex_ingest.rs` integration test stops at the bus
-    // assertion; we want the full overlay-aggregation path.)
+    // Spawn the FSM projector before the POST so it is subscribed when the bus broadcasts `Event::CodexHook`.
     calm_server::card_fsm::spawn(
         repo.clone(),
         events.clone(),
         calm_server::state::WriteContext::new(cache.clone(), track_area_cache),
     );
-    // Give the spawn a tick to subscribe — matches the unit-test pattern
-    // in `card_fsm::tests`.
+    // Give the spawn a tick to subscribe.
     tokio::task::yield_now().await;
 
     let app = axum::Router::new()
@@ -154,7 +107,6 @@ async fn setup(role: CardRole) -> (axum::Router, Arc<dyn Repo>, String, String) 
     (app, repo, card.id.to_string(), track.id.to_string())
 }
 
-/// POST the `PermissionRequest` hook for `card_id` and assert 204.
 async fn post_permission_request(app: &axum::Router, card_id: &str) {
     let body = serde_json::json!({
         "hook_event_name": "PermissionRequest",
@@ -184,10 +136,7 @@ async fn post_permission_request(app: &axum::Router, card_id: &str) {
     );
 }
 
-/// Poll `overlays_for("track", track_id)` until the
-/// `any_card_needs_input` overlay shows `value: true`, or the deadline
-/// expires. Returns the overlay payload on success; panics with a
-/// descriptive message on timeout.
+/// Poll until the track's `any_card_needs_input` overlay shows `value: true`; panics on timeout.
 async fn await_track_needs_input(repo: &Arc<dyn Repo>, track_id: &str) -> Value {
     let poll = async {
         loop {
@@ -203,8 +152,6 @@ async fn await_track_needs_input(repo: &Arc<dyn Repo>, track_id: &str) -> Value 
     match tokio::time::timeout(OVERLAY_DEADLINE, poll).await {
         Ok(payload) => payload,
         Err(_) => {
-            // Re-read overlays for the failure message so the caller sees
-            // exactly what the projection landed on (or didn't).
             let overlays = repo.overlays_for("track", track_id).await.unwrap();
             panic!(
                 "timed out waiting for `any_card_needs_input` overlay with `value: true` \
@@ -214,12 +161,8 @@ async fn await_track_needs_input(repo: &Arc<dyn Repo>, track_id: &str) -> Value 
     }
 }
 
-/// Poll the card-scoped `status` overlay until it reads `AwaitingInput`,
-/// or the deadline expires. This isolates "FSM observed the transition"
-/// from "FSM observed but the track aggregator broke" — if the card
-/// overlay flipped but the track one didn't, the bug is in
-/// `recompute_track_needs_input`; if neither flipped, the bug is upstream
-/// of the FSM (e.g. the role gate refusing the write).
+/// Isolates "FSM observed the transition" from "the track aggregator broke": if the card overlay flipped but the
+/// track one did not, the bug is in `recompute_track_needs_input`; if neither, it is upstream of the FSM.
 async fn await_card_awaiting_input(repo: &Arc<dyn Repo>, card_id: &str) {
     let poll = async {
         loop {
@@ -247,10 +190,8 @@ async fn worker_card_permission_request_flips_track_needs_input() {
 
     post_permission_request(&app, &card_id).await;
 
-    // Card-scoped status flips first (the FSM writes it before the
-    // track-scoped aggregate).
+    // Card-scoped status flips first (the FSM writes it before the track-scoped aggregate).
     await_card_awaiting_input(&repo, &card_id).await;
-    // Track-scoped aggregate follows.
     let payload = await_track_needs_input(&repo, &track_id).await;
     assert_eq!(payload["value"], Value::Bool(true));
 }
@@ -259,20 +200,9 @@ async fn worker_card_permission_request_flips_track_needs_input() {
 async fn planner_card_permission_request_flips_track_needs_input() {
     let (app, repo, card_id, track_id) = setup(CardRole::Planner).await;
 
-    // The POST itself returns 204 today: `routes::codex::ingest_hook`
-    // uses `log_pure_event`, which on a role-gate violation rolls the
-    // write back but the HTTP handler converts the resulting error into
-    // a 4xx/5xx. If that ever surfaces, the post helper will panic on
-    // the status mismatch — and that *is* the visible failure mode of
-    // the bug from a different angle. The canonical failure we expect
-    // here, however, is the overlay never flipping, which the poller
-    // surfaces below.
+    // The POST returns 204 even when the role gate rolls the write back; the visible failure is the overlay never flipping.
     post_permission_request(&app, &card_id).await;
 
-    // Same assertions as the Worker case. With the bug in place, the
-    // role gate refuses the write at `role_gate.rs:226-232`, the FSM
-    // never sees the CodexHook event, and neither overlay flips —
-    // the first await below times out with a descriptive message.
     await_card_awaiting_input(&repo, &card_id).await;
     let payload = await_track_needs_input(&repo, &track_id).await;
     assert_eq!(payload["value"], Value::Bool(true));

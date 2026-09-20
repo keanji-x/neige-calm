@@ -1,19 +1,6 @@
-//! #1620 — hook signals for Planner-opened terminals.
-//!
-//! `calm.terminal.open` asks the terminal-create operation for
-//! `planner_hooks`; the adapter then derives, from the card id it allocates,
-//! a hooks-only Claude settings file under the server-owned
-//! `<data_dir>/terminal-hooks/` directory and the env the existing
-//! `neige-codex-bridge` contract needs (`NEIGE_CLAUDE_SETTINGS`,
-//! `NEIGE_CARD_ID`, `NEIGE_CALM_BASE_URL`, `NEIGE_HOOK_PROVIDER`,
-//! `NEIGE_HOOK_URL`). The Planner starts Claude with
-//! `claude --settings "$NEIGE_CLAUDE_SETTINGS"`; nothing is installed into the
-//! user's `~/.claude` or the project directory.
-//!
-//! Hook payloads reaching `/internal/claude/hook` for a Terminal card are
-//! parsed into a bounded [`IncomingSignal`] and appended to the renderer
-//! entry's ring. They are application data: forgeable by any local process,
-//! never authority and never an instruction.
+//! Hook signals for Planner-opened terminals: a hooks-only Claude settings file under the
+//! server-owned `<data_dir>/terminal-hooks/` directory, and the env the bridge needs.
+//! Hook payloads are application data: forgeable by any local process, never authority.
 use crate::card_fsm::{CLAUDE_WORKER_HOOKS, ClaudeWorkerHook};
 use crate::routes::claude_cards::{build_claude_settings_json_for, claude_hook_command};
 use crate::routes::codex::to_snake_case;
@@ -115,9 +102,8 @@ impl TerminalHookSettings {
         Value::Object(merged)
     }
 
-    /// The settings file for `card_id`: the hooks-only file, plus Claude
-    /// Code's `permissions` block when the open declared a scope (#1704 S1;
-    /// `None` keeps the file byte-identical to the hooks-only one).
+    /// The settings file for `card_id`: the hooks-only file, plus Claude Code's `permissions`
+    /// block when the open declared a scope (`None` keeps the file byte-identical).
     pub fn settings_json(
         &self,
         card_id: &str,
@@ -162,8 +148,7 @@ fn settings_path_in(dir: &Path, card_id: &str) -> PathBuf {
     dir.join(format!("{card_id}.json"))
 }
 
-/// Delete `<dir>/<card_id>.json` (best effort; a missing file is fine). The
-/// path is derived from the server-owned directory, never from env.
+/// Delete `<dir>/<card_id>.json` (best effort; a missing file is fine).
 pub fn remove_settings_file(dir: &Path, card_id: &str) {
     if card_id.is_empty() || card_id.contains('/') || card_id.contains("..") {
         return;
@@ -312,8 +297,7 @@ mod tests {
         }
     }
 
-    /// #1704 S1 — no scope: the file IS the hooks-only file (no
-    /// `permissions` key, not even a null one, and no reordering).
+    /// No scope: no `permissions` key, not even a null one, and no reordering.
     #[test]
     fn settings_json_without_a_scope_is_the_hooks_only_file() {
         let settings = settings();
@@ -330,8 +314,6 @@ mod tests {
         );
     }
 
-    /// #1704 S1 — with a scope the rendered block lands verbatim under
-    /// `permissions` and the seven hook events are untouched.
     #[test]
     fn settings_json_with_a_scope_writes_the_block_verbatim_under_permissions() {
         let block = EffectiveClaudePermissions {

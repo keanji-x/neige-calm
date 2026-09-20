@@ -1,8 +1,4 @@
-//! Deterministic ids for Track assistant conversations.
-//!
-//! `POST /api/tracks/{track_id}/conversations` lazily mints a card on its first
-//! message. Both ids below are pure functions of `(track_id, Idempotency-Key)`,
-//! so every retry aims at the same card even when operation dedup misses.
+//! Deterministic ids for Track assistant conversations: both are pure functions of `(track_id, Idempotency-Key)`, so every retry aims at the same card even when operation dedup misses.
 
 use sha2::{Digest, Sha256};
 
@@ -14,11 +10,7 @@ pub(crate) struct DerivedConversationKeys {
     pub(crate) operation_key: String,
 }
 
-/// The hash input retains its historical `wave-conversation` namespace.
-///
-/// That literal is persisted hash input. #1316 deliberately did not rename it:
-/// changing it would make retries derive different card ids from rows already
-/// stored by older builds.
+/// The `wave-conversation` literal is persisted hash input: renaming it would make retries derive different card ids from rows stored by older builds.
 pub(crate) fn derive_track_conversation_keys(
     track_id: &str,
     idempotency_key: &str,

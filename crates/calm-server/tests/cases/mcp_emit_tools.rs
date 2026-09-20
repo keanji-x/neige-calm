@@ -1,17 +1,5 @@
-//! PR7a.1 (#136 followup) — integration tests for the three PR7a emit
-//! tools (legacy `calm.dispatch_request`, `calm.task.complete`,
+//! Integration tests for the emit tools (legacy `calm.dispatch_request`, `calm.task.complete`,
 //! `calm.task.fail`) over the real MCP server transport.
-//!
-//! Each test:
-//!   * Boots an `McpServer` against an in-memory `SqlxRepo`.
-//!   * Mints either a Planner or Worker card (with its per-card MCP token).
-//!   * Connects, `initialize`s with the token, then calls one tool.
-//!   * Verifies either the retired dispatch shim payload or an event
-//!     broadcast frame with the correct actor + scope.
-//!
-//! Also covers the identity-binding invariant: a `card_id` field
-//! smuggled into the tool's `arguments` is IGNORED — the kernel always
-//! routes through the `_meta.threadId` mapping.
 
 #![cfg(unix)]
 
@@ -64,10 +52,6 @@ async fn recv_bus(
         .expect("bus envelope within budget")
         .expect("bus open")
 }
-
-// ---------------------------------------------------------------------------
-// Per-tool happy paths.
-// ---------------------------------------------------------------------------
 
 fn retired_dispatch_payload() -> serde_json::Value {
     json!({
@@ -207,8 +191,7 @@ async fn dispatch_request_rejects_worker_identity() {
         .get("code")
         .and_then(|v| v.as_i64())
         .expect("error has code");
-    // require_role surfaces as InvalidParams (-32602) — matches the soft
-    // role gate convention used by other planner-only MCP tools.
+    // require_role surfaces as InvalidParams (-32602), the soft role gate convention.
     assert_eq!(
         code, -32602,
         "expected planner-only soft gate; got {err:#?}"
@@ -478,16 +461,10 @@ async fn task_failed_emits_task_failed_with_worker_actor() {
     let _ = (&b.server, &b.repo);
 }
 
-// ---------------------------------------------------------------------------
-// Identity binding: smuggled `card_id` arg is ignored.
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn smuggled_card_id_in_args_is_ignored() {
-    // The transport binds the identity at handshake — sending a
-    // `card_id` field in `arguments` must not let the caller claim a
-    // different card. Defense-in-depth assertion against a future
-    // refactor that accidentally trusts tool args for identity.
+    // The transport binds the identity at handshake; a `card_id` field in `arguments` must not let
+    // the caller claim a different card.
     let b = boot_with_role(CardRole::Worker).await;
     let mut rx = b.events.subscribe_filtered();
     let (mut rd, mut wr) = connect(&b.socket_path).await;
@@ -511,8 +488,6 @@ async fn smuggled_card_id_in_args_is_ignored() {
     assert!(resp.get("error").is_none(), "tool errored: {resp:#?}");
 
     let env = wait_for_kind(&mut rx, "task.completed").await;
-    // The actor / scope must still bind to the connection's card
-    // through its session, NOT the smuggled other_card_id.
     match &env.actor {
         ActorId::AiCodexSession(sid) => assert_eq!(
             sid.as_str(),

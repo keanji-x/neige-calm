@@ -1,12 +1,5 @@
-//! #1669 §2.4 / I3 — captured sources follow their track: a fork copies
-//! every `report_sources` row into the child inside the create transaction
-//! (ids and anchors verbatim); a capture after the fork stays with the
-//! parent; deleting the parent leaves the child's copy intact; deleting a
-//! track cascades its rows away and empties its slot in the transient ring.
-//!
-//! Same route boot as `cards_deletable.rs`: the fake codex app-server
-//! fixture answers the track-create handshake, so `POST /api/tracks` (the
-//! fork) and `DELETE /api/tracks/{id}` run the production routes.
+//! Captured sources follow their track: a fork copies every `report_sources` row
+//! into the child, and deleting a track cascades its rows and empties its slot in the transient ring.
 
 #![cfg(unix)]
 
@@ -76,8 +69,7 @@ async fn boot() -> Boot {
     ));
     let plugin_host_cell = Arc::new(tokio::sync::OnceCell::new());
     assert!(plugin_host_cell.set(plugin_host.clone()).is_ok());
-    // The route state's own context, so the ring the delete route empties
-    // is the one this test fills.
+    // The route state's own context, so the ring the delete route empties is the one this test fills.
     let ctx = AppContext::new(
         repo.clone(),
         events.clone(),
@@ -192,8 +184,6 @@ async fn create_track(boot: &Boot, title: &str, fork_from: Option<&str>) -> Stri
     created["id"].as_str().unwrap().to_string()
 }
 
-/// Insert one source through the store, the way the tool does (one
-/// `write_in_tx`), with a quote anchor.
 async fn insert_source(boot: &Boot, track_id: &str, source_id: &str, body: &str) {
     let track = track_id.to_string();
     let row = NewSource {
@@ -268,14 +258,12 @@ async fn fork_copies_sources_verbatim_and_the_copies_outlive_the_parent() {
     assert_eq!(detail["quotes"][0]["id"], "q1");
     assert_eq!(detail["quotes"][0]["text"], "beta");
 
-    // A capture after the fork stays with the parent.
     insert_source(&boot, &parent, "src_00000003", "gamma body").await;
     assert_eq!(sources_of(&boot, &parent).await.len(), 3);
     assert_eq!(sources_of(&boot, &child).await.len(), 2);
     let (status, _) = detail_of(&boot, &child, "src_00000003").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
-    // Deleting the parent cascades its rows and leaves the child whole.
     let (status, body) = request(&boot, "DELETE", &format!("/api/tracks/{parent}"), None).await;
     assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
     assert!(boot.repo.track_get(&parent).await.unwrap().is_none());

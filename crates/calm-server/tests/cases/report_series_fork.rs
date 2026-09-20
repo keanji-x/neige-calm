@@ -1,6 +1,5 @@
-//! #1628 S2 — a fork copies every `report_series` row of the source track
-//! into the new track inside the fork's own transaction (design D3 seq 12,
-//! S2.13): block ids survive the fork, so the rows keep their identity.
+//! A fork copies every `report_series` row of the source track inside the fork's own transaction;
+//! block ids survive the fork, so the rows keep their identity.
 
 #![cfg(unix)]
 

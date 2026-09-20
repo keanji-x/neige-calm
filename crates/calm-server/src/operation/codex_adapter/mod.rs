@@ -89,9 +89,7 @@ pub struct CodexWorkerAdapter {
     mcp_server: Option<Arc<McpServer>>,
     card_role_cache: CardRoleCache,
     track_area_cache: TrackAreaCache,
-    /// #1147 D2 — the managed workspace root, needed because taking a lease
-    /// re-runs materialization for a managed track (red-team B5). Boot-frozen
-    /// config, threaded rather than read from a global.
+    /// The managed workspace root: taking a lease re-runs materialization for a managed track. Boot-frozen config, threaded rather than read from a global.
     workspace_root: std::path::PathBuf,
     #[cfg(feature = "fixtures")]
     preparation_hook: Option<Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>>,
@@ -187,13 +185,8 @@ impl CodexWorkerAdapter {
 pub struct CodexCreateOperationPayload {
     pub actor: ActorId,
     #[serde(default)]
-    /// Wire key frozen as `runtime_id`: migration 0094 renames the Rust field
-    /// but leaves `operations.payload_json` alone — see that migration's §4.
-    /// The `rename` is the load-bearing half: an operation parked across a
-    /// restart is resumed by re-reading its stored payload, and without the
-    /// rename a row that stores a real id under the frozen key would
-    /// deserialize to `None`, so the `unwrap_or_else(new_id)` below would mint
-    /// a FRESH session id for a row that already had one.
+    /// Wire key frozen as `runtime_id`: stored payloads keep the old key, and without the `rename` a parked row with a real id
+    /// would deserialize to `None` and `unwrap_or_else(new_id)` below would mint a FRESH session id for it.
     #[serde(rename = "runtime_id")]
     pub worker_session_id: Option<String>,
     pub request: NormalizedCodexCreateRequest,
@@ -205,9 +198,7 @@ pub struct CodexWorkerOperationPayload {
     pub track_id: String,
     pub idempotency_key: String,
     pub goal: String,
-    /// Forward-compatible only. Scheduler-created Codex worker payloads keep
-    /// this absent because the workspace lease path created in `prepare_tx`
-    /// is the worker cwd.
+    /// Forward-compatible only; scheduler-created payloads keep this absent because the workspace lease path is the worker cwd.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
     #[serde(default)]
@@ -326,8 +317,7 @@ impl ProviderAdapter for CodexAdapter {
             )));
         }
         if !self.shared_codex_appserver.is_running() {
-            // #953 — same variant/status; message carries the live failure
-            // and the background-retry fact. Preflights stay non-blocking.
+            // Message carries the live failure and the background-retry fact; preflights stay non-blocking.
             return Err(self.shared_codex_appserver.not_running_error());
         }
         Ok(())
@@ -442,15 +432,8 @@ impl ProviderAdapter for CodexAdapter {
                     {
                         thread_id
                     } else {
-                        // CodexAdapter (kind="codex-create") is the user-initiated
-                        // interactive card path. `ThreadConfig::NoMcp` is correct here: this
-                        // card injects no NEIGE_MCP_SOCKET/NEIGE_MCP_TOKEN into its
-                        // runtime env (see `build_codex_env`) and starts with
-                        // `developer_instructions: None` (no worker prompt, hence no
-                        // `neige task-completed` reporting contract to satisfy), so there
-                        // is nothing to put in `shell_environment_policy.set`.
-                        // The worker path (CodexWorkerAdapter -> spawn_codex_worker_via_shared_daemon)
-                        // is the one that needs shell_environment_policy.set (#836).
+                        // `ThreadConfig::NoMcp` is correct here: the interactive card injects no NEIGE_MCP_SOCKET/NEIGE_MCP_TOKEN and has no worker prompt,
+                        // so there is nothing to put in `shell_environment_policy.set`; only the worker path needs it.
                         self.shared_codex_appserver
                             .thread_start_mint_for_card(
                                 &card_id,
@@ -482,9 +465,7 @@ impl ProviderAdapter for CodexAdapter {
             let turn_started_at_ms = output_optional_i64(output, "turn_started_at_ms")?;
             if turn_started_at_ms.is_none() {
                 self.shared_codex_appserver
-                    // #1505 S4-3: worker/dedicated threads carry no per-card
-                    // model selection — the picker addresses planner cards
-                    // only — so this turn has nothing to say about the model.
+                    // Worker/dedicated threads carry no per-card model selection (the picker addresses planner cards only).
                     .turn_start(
                         &thread_id,
                         vec![InputItem::text(prompt_text)],
@@ -694,9 +675,7 @@ impl ProviderAdapter for CodexAdapter {
                 }
                 Ok(())
             }
-            // Back-compat: operations that entered `compensating` under a pre-PR10-d
-            // release persisted the legacy op string; accept it during recovery so
-            // in-flight compensation states still drain. New states write the new name.
+            // Back-compat: accept the legacy op string during recovery so in-flight compensation states still drain.
             "session_projection_set_status_failed_for_card"
             | "runtime_set_status_failed_for_card" => {
                 let card_id = step.arg_string("card_id", "codex")?;
@@ -789,16 +768,12 @@ impl ProviderAdapter for CodexWorkerAdapter {
     ) -> Result<TxOutput> {
         let payload: CodexWorkerOperationPayload = serde_json::from_value(input.clone())?;
         super::refuse_if_context_stale(tx, Some(&payload.idempotency_key)).await?;
-        // #1149 — title the worker card after its task key. Derived from
-        // the `tasks` row inside this tx (never carried on the payload,
-        // which would move `stable_payload_hash`), and fail-soft: `None`
-        // just leaves the card untitled.
+        // Derived from the `tasks` row inside this tx (never carried on the payload, which would move `stable_payload_hash`); `None` leaves the card untitled.
         let card_title = super::task_key_for_card_title(tx, &payload.idempotency_key).await;
         let card_id = new_id();
         let runtime_id = new_id();
         let track_id = TrackId::from(payload.track_id.clone());
-        // `payload.cwd` is forward-compatible only; the isolated lease path is
-        // authoritative for codex-worker execution.
+        // `payload.cwd` is forward-compatible only; the isolated lease path is authoritative for codex-worker execution.
         let lease_target = prepare_workspace_lease_target_tx(
             tx,
             track_id.as_str(),
@@ -965,7 +940,6 @@ impl ProviderAdapter for CodexWorkerAdapter {
         let payload: CodexWorkerOperationPayload = serde_json::from_value(_op.payload.clone())?;
         super::admit_task_side_effect(ctx.repo.as_ref(), &payload.idempotency_key).await?;
         if !self.shared_codex_appserver.is_running() {
-            // #953 — message-only enrichment; see prepare-side preflight.
             return Err(self.shared_codex_appserver.not_running_error());
         }
 
@@ -1200,25 +1174,8 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
         if let Some(thread_id) = TxOutput::non_empty_string(runtime.thread_id.as_deref()) {
             thread_id
         } else {
-            // The worker's AI exec-shells only receive NEIGE_MCP_SOCKET /
-            // NEIGE_MCP_TOKEN via the per-thread `shell_environment_policy.set`
-            // config — codex does NOT inherit the daemon process env into
-            // exec-shells, and the daemon `env_remove`s NEIGE_MCP_TOKEN from
-            // itself. Channel 3 is still needed so the worker's `neige` READS
-            // can reach the kernel; completion no longer rides it — since #838
-            // Move 2 the codex worker reports via the native
-            // `calm.task.complete` MCP tool (channel 2). Use the SAME shim
-            // socket already used below for the terminal viewer env so the
-            // daemon's shim socket matches.
-            //
-            // Production INVARIANT: both arms are always `Some` for a real
-            // worker spawn. `ctx.mcp_token` is minted unconditionally above
-            // (`mint_card_mcp_token`), and `ctx.mcp_server` is wired from
-            // `AppState::new` (`state.rs`), which calls `McpServer::spawn`
-            // unconditionally (boot fails if it fails) and passes
-            // `Some(mcp_server)` into the dispatcher/adapter. The remaining
-            // test hatches that use `from_parts` must wire a stub `McpServer`
-            // before reaching this worker spawn path.
+            // codex does NOT inherit the daemon process env into exec-shells (and the daemon `env_remove`s NEIGE_MCP_TOKEN from itself); the per-thread
+            // `shell_environment_policy.set` is the only channel. Both arms are always `Some` for a real worker spawn; `from_parts` test hatches must wire a stub `McpServer`.
             let (token, server) = match (ctx.mcp_token, ctx.mcp_server) {
                 (Some(token), Some(server)) => (token, server),
                 _ => {
@@ -1267,8 +1224,6 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
                 .launch
                 .clone()
                 .run_observed(ctx.spawn_ctx.repo.as_ref(), async move {
-                    // #1505 S4-3: see the sibling call above — no picker
-                    // addresses this thread.
                     shared
                         .turn_start(
                             &launch_thread,
@@ -1315,8 +1270,7 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
         }
     }
 
-    // The business turn is already issued. Optional viewer preparation must
-    // not route any subsequent failure into business startup compensation.
+    // The business turn is already issued; a viewer-preparation failure must not route into business startup compensation.
     match ctx.spawn_ctx.repo.task_get(ctx.launch.task_id()).await {
         Ok(Some(task)) if !task.status.is_terminal() => {}
         Ok(_) => return Ok(SpawnHandle::NoOp),
@@ -1532,15 +1486,7 @@ async fn persist_shared_worker_runtime_fields(
     Ok(())
 }
 
-/// Read a card's payload JSON inside an open transaction.
-///
-/// `pub(crate)` rather than private because it has a second caller:
-/// `planner_harness_start_adapter::card_apply_harness_start_payload_tx`. Both
-/// need the same thing — the payload as the transaction sees it, so an
-/// owned-keys merge writes back over current data instead of over a snapshot
-/// taken before the transaction opened. #1505 S4-1 lifted the visibility
-/// rather than let the planner adapter carry a byte-identical copy of this
-/// query.
+/// The payload as the transaction sees it, so an owned-keys merge writes back over current data instead of a pre-tx snapshot.
 pub(crate) async fn card_payload_get_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     card_id: &str,

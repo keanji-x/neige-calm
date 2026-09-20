@@ -56,7 +56,6 @@ describe('ReportSeriesBlock', () => {
     expect(lines.length).toBe(2);
     expect([...lines].map((line) => line.getAttribute('data-nc-series'))).toEqual(['US:NVDA', 'HK:9988']);
     expect(container.querySelector('svg')?.getAttribute('aria-label')).toContain('2 series');
-    // The legend carries the summary's own numbers, and the failed asset's verdict.
     expect(container.textContent).toContain('+49.66%');
     expect(container.textContent).toContain('unknown_asset — no such listing');
     expect(container.textContent).toContain('USD / HKD');
@@ -69,12 +68,8 @@ describe('ReportSeriesBlock', () => {
       okEntry('HK:9988', [200, 100]),
     ], { view: 'normalized' }));
     const [nvda, baba] = polylinePoints(container);
-    // Both first points sit on the same y: 100 is the same height whatever
-    // the price. Dividing by the LAST value instead would put the last points
-    // level and the first ones apart.
     expect(nvda?.[0]?.[1]).toBeCloseTo(baba?.[0]?.[1] ?? Number.NaN, 6);
     expect(nvda?.[nvda.length - 1]?.[1]).not.toBeCloseTo(baba?.[baba.length - 1]?.[1] ?? Number.NaN, 6);
-    // …and the legend says where each ended, from 100: doubled, and halved.
     const legend = screen.getByRole('list', { name: 'Series' }).textContent ?? '';
     expect(legend).toContain('US:NVDA');
     expect(legend).toContain('100 → 200.00');
@@ -151,15 +146,11 @@ describe('ReportSeriesBlock', () => {
     expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 
-  // The status line (#1693): three facts, three sentences, and never the
-  // phrase "not pinned" — a frozen block whose last day has not arrived was
-  // read as "the author did not freeze this".
   it('frozen and pinned: says frozen-at and pinned, once', () => {
     const { container } = draw(ok([okEntry('US:NVDA', [1, 2])], { pinned: true, as_of: '2026-09-11' }), { as_of: '2026-09-11' });
     expect(container.textContent).toContain('frozen at 2026-09-11 · pinned');
     expect(container.textContent).not.toContain('pin pending');
     expect(container.textContent).not.toContain('not pinned');
-    // The sentence carries `as_of`; the separate "as of" span would say it twice.
     expect(container.textContent).not.toContain('as of 2026-09-11');
   });
 

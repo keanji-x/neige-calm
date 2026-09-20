@@ -1,10 +1,4 @@
-//! #854 slice 1 — `events_since` must not permit an unbounded read.
-//!
-//! The events table grows for the lifetime of the deployment (214k rows /
-//! 1.7 GB observed in prod), so every reader has to state its bound. These
-//! tests pin the repo-layer contract: the returned window is the first
-//! `limit` rows after `since_id` in id order, and no call shape can express
-//! sqlite's `LIMIT -1` "no limit" sentinel.
+//! `events_since` must not permit an unbounded read: no call shape can express sqlite's `LIMIT -1`.
 
 use calm_truth::card_role_cache::CardRoleCache;
 use calm_truth::db::RepoEventWrite;
@@ -65,7 +59,6 @@ async fn events_since_enforces_caller_bound() {
         "window is the first `limit` rows in id order"
     );
 
-    // Resume from the window's tail: pagination covers the rest.
     let rest = repo
         .events_since(seeded[4], 5)
         .await
@@ -81,8 +74,6 @@ async fn events_since_non_positive_limit_returns_no_rows() {
         .expect("open sqlite repo");
     seed_area_updates(&repo, 3).await;
 
-    // Negative values must clamp to empty, never fall through to sqlite's
-    // `LIMIT -1` "no limit" sentinel.
     for limit in [0, -1, -100] {
         let rows = repo.events_since(0, limit).await.expect("events_since");
         assert!(rows.is_empty(), "limit {limit} must return no rows");
@@ -120,16 +111,8 @@ async fn events_since_keeps_pre_3b_prime_task_context_frozen_events() {
     ));
 }
 
-/// #1252 S0 R1/F1 — `harness.transcript.cleared` gained three telemetry
-/// fields. Rows written before that carry only `{card_id, worker_session_id,
-/// track_id}` — spelled `runtime_id` until migration 0094 rewrote the key
-/// (9 such rows in the live prod db at the time of the fix) — and
-/// `events_since` feeds every stored row back through
-/// `Event::from_kind_and_payload`. If the new fields were required, those
-/// rows would fail to deserialize and be silently `continue`d past — while
-/// WS replay still counts their ids toward the client cursor, so a client
-/// that missed a reset would never hear `harness.transcript.cleared` and
-/// would splice the post-reset transcript onto the pre-reset one.
+/// Pre-telemetry `harness.transcript.cleared` rows must still deserialize: a dropped row would
+/// desync the WS replay cursor and splice the post-reset transcript onto the pre-reset one.
 #[tokio::test]
 async fn events_since_keeps_pre_1252_harness_transcript_cleared_events() {
     let repo = SqlxRepo::open("sqlite::memory:")
@@ -155,8 +138,6 @@ async fn events_since_keeps_pre_1252_harness_transcript_cleared_events() {
         1,
         "historical transcript reset must not be silently dropped"
     );
-    // `None`, not `Some(0)`: an unmeasured historical reset must stay
-    // distinguishable from one that measured a genuinely empty transcript.
     assert!(
         matches!(
             &rows[0].3,
@@ -176,8 +157,6 @@ async fn events_since_keeps_pre_1252_harness_transcript_cleared_events() {
     );
 }
 
-/// #1110 S5 — `Event::WorkflowRegistered` left the enum. Replay of an old
-/// `workflow.registered` envelope must skip the row, not fail the read.
 #[tokio::test]
 async fn events_since_skips_retired_workflow_registered_without_error() {
     let repo = SqlxRepo::open("sqlite::memory:")
@@ -216,20 +195,13 @@ async fn events_since_skips_retired_workflow_registered_without_error() {
     );
 }
 
-/// PR #867 review — the WS replay cap decision runs on
-/// `events_raw_window_since`, which must probe RAW rows (including ones
-/// `events_since` drops at deserialization time), report the raw window
-/// end id, and stay bounded by the probe limit.
 #[tokio::test]
 async fn events_raw_window_since_probes_raw_rows_and_respects_probe_limit() {
     let repo = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open sqlite repo");
     let seeded = seed_area_updates(&repo, 4).await;
-    // A raw row whose kind matches no `Event` variant: invisible to
-    // `events_since`, but the raw probe must include it. Seeded LAST so
-    // the window's `max_id` assertion below proves the probe sees past
-    // what the deserialization pass surfaces.
+    // Unknown kind seeded LAST so the `max_id` assertion proves the probe sees past what `events_since` surfaces.
     let unknown_id: i64 = sqlx::query_scalar(
         r#"INSERT INTO events (kind, payload, actor, at, event_version)
            VALUES ('test.unknown_kind', '{}', 'user', 0, 1)
@@ -239,7 +211,6 @@ async fn events_raw_window_since_probes_raw_rows_and_respects_probe_limit() {
     .await
     .expect("insert unknown-kind row");
 
-    // 5 raw rows total; events_since only surfaces the 4 good ones.
     let filtered = repo.events_since(0, 100).await.expect("events_since");
     assert_eq!(
         filtered.len(),
@@ -254,13 +225,10 @@ async fn events_raw_window_since_probes_raw_rows_and_respects_probe_limit() {
         "raw probe must count rows events_since drops and report the raw window end"
     );
 
-    // The probe is bounded by `probe_limit`, never a full scan: count and
-    // max id both reflect only the first `probe_limit` rows.
     assert_eq!(
         repo.events_raw_window_since(0, 3).await.expect("raw probe"),
         (3, Some(seeded[2]))
     );
-    // `since_id` offsets the window like events_since does.
     assert_eq!(
         repo.events_raw_window_since(seeded[1], 100)
             .await
@@ -268,14 +236,12 @@ async fn events_raw_window_since_probes_raw_rows_and_respects_probe_limit() {
         (3, Some(unknown_id)),
         "two good rows + the unknown-kind row remain past seeded[1]"
     );
-    // Empty window: zero count, no max id.
     assert_eq!(
         repo.events_raw_window_since(unknown_id, 100)
             .await
             .expect("raw probe"),
         (0, None)
     );
-    // Non-positive probe limits clamp to zero (no `LIMIT -1` sentinel).
     for limit in [0, -1, -100] {
         assert_eq!(
             repo.events_raw_window_since(0, limit)

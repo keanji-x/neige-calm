@@ -1,39 +1,4 @@
-//! Issue #1147 S3 — changing a track's workspace, driven through the real
-//! `PATCH /api/tracks/{id}`.
-//!
-//! Every test here runs the production route and then **looks at the
-//! filesystem**. That discipline is inherited from S4/S5: the assertion that
-//! actually stops the accident is "perform the operation for real, then go and
-//! see what is on disk", not a SQL query over `workspace_path`.
-//!
-//! The three-step execution shape (design §更换与冻结) each has its own test:
-//!
-//! 1. the fence — `the_fence_is_up_before_the_move_not_after_it`. Note the
-//!    name: asserting the END state proves nothing, because the harness
-//!    restart supersedes the old runtime on its own. Measured.
-//! 2. the pre-move re-check — `a_write_between_the_fence_and_the_move_is_refused`
-//!    (the ONE timing predicate in this design; a static state assertion
-//!    cannot stand in for it)
-//! 3. the move's own assertions — inherited from S5's
-//!    `recycle_track_workspace`, exercised here end to end
-//!
-//! **Running a subset locally: pass `--no-fail-fast`.** Without it cargo stops
-//! at the first failure, and a mutation check that stops at 48 of 62 reports
-//! "only one test died" for a mutation that actually kills three. That is not
-//! hypothetical — it nearly recorded N19's two new tests as one, in the
-//! opposite direction from the mistake above: a wrong *green* rather than a
-//! wrong *cause*.
-//!
-//! and the four refusals (frozen / already attached / system area / non-empty)
-//! each have one too. The freeze latch's system-area exclusion has
-//! `a_workspace_lease_never_freezes_the_launchpad`; freeze point 2 (terminal
-//! persistence), which S3 left open as gap N17 and S6 closed, has
-//! `a_terminal_card_lands_in_the_workspace_and_freezes_it`.
-//!
-//! The transition is `managed → attached` and nothing else. There is no
-//! `managed → managed`: a managed path is derived from the track's area and id,
-//! so re-allocating one always re-derives the same directory
-//! (`a_managed_target_is_a_documented_400_not_a_silent_no_op`).
+//! Changing a track's workspace through the real `PATCH /api/tracks/{id}`; every test runs the route and then looks at the filesystem.
 
 #![cfg(unix)]
 
@@ -59,23 +24,13 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
-// ---------------------------------------------------------------------------
-// Harness (same shape as `track_workspace_recycle.rs`)
-// ---------------------------------------------------------------------------
-
 struct Boot {
     app: axum::Router,
     repo: Arc<SqlxRepo>,
     workspace_root: PathBuf,
-    /// #1147 S3 — the registry the route's in-memory fence acts on.
-    ///
-    /// Held so tests can install a REAL `PlannerHarness` into it. Without one the
-    /// whole `harness.get` / `shutdown` / `remove` half of the fence is dead
-    /// code under test: it was measured that deleting it turned no test red,
-    /// which is exactly the shape this slice has been caught by twice.
+    /// The registry the route's in-memory fence acts on; tests install a real `PlannerHarness` into it.
     harness: calm_server::harness::HarnessRegistry,
-    /// Kept so a test can call an operation directly, for guards no HTTP
-    /// request can reach — see `a_non_user_actor_may_not_change_a_workspace`.
+    /// Kept so a test can call an operation directly, for guards no HTTP request can reach.
     state: AppState,
     roles: CardRoleCache,
     tracks: TrackAreaCache,
@@ -140,12 +95,7 @@ async fn boot() -> Boot {
     }
 }
 
-/// Install a real `PlannerHarness` in the registry under the track's live
-/// planner-harness runtime, and return that runtime id.
-///
-/// `run_unstarted_for_test` builds the handle without spawning the run loop, so
-/// the test gets a genuine `PlannerHarness` — one whose `shutdown()` really runs —
-/// with no background task to race the assertions.
+/// Install a real `PlannerHarness` under the track's live planner-harness runtime and return that runtime id; `run_unstarted_for_test` spawns no run loop.
 async fn install_live_harness(b: &Boot, track_id: &str) -> String {
     let runtime_id: String = sqlx::query_scalar(
         "SELECT id FROM worker_sessions WHERE track_id=?1 \
@@ -276,9 +226,7 @@ async fn repoint_to(b: &Boot, track_id: &str, path: &Path) -> (StatusCode, Strin
     .await
 }
 
-/// The refusal tests do not care *where* the track would have gone, only that
-/// it does not go: they all use a perfectly valid target so the refusal cannot
-/// be coming from target validation.
+/// A valid target, so a refusal cannot be coming from target validation.
 async fn repoint(b: &Boot, track_id: &str) -> (StatusCode, String) {
     let target = user_repo(&b.tmp.path().join(format!("target-{track_id}")));
     repoint_to(b, track_id, &target).await
@@ -333,33 +281,9 @@ fn commit_count(path: &Path) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// Every path under `root`, with file contents. Directories map to `None`,
-/// symlinks to their target, files to their exact bytes.
-///
-/// Comparing this before and after is the assertion that matters for an
-/// attached target: not "the directory still exists", but "not one byte
-/// moved". It deliberately includes `.git/` — a `.claude/worktrees/` line
-/// appearing in `.git/info/exclude`, or a `neige-workspace` marker showing up,
-/// are both ways the server could have taken ownership of a user's repository,
-/// and both show up here as a diff.
+/// Every path under `root`, with file contents. Directories map to `None`, symlinks to their target, files to their exact bytes; `.git/` included.
 fn fingerprint(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
-    /// Git's **own** transient lock files under `.git/`, by exact name.
-    ///
-    /// Measured on CI (git 2.55) and not reproducible on this host (git 2.39):
-    /// background maintenance creates `.git/objects/maintenance.lock` after a
-    /// commit and removes it moments later, so a before/after pair straddling
-    /// that window reports `removed: …maintenance.lock` and blames the server
-    /// for a file it never saw. `user_repo` also turns maintenance off; this is
-    /// the half that does not depend on remembering to.
-    ///
-    /// **Named, and rooted at `.git/`, on purpose.** The first version matched
-    /// any `*.lock` anywhere, which was strictly wrong: it blinded the
-    /// fingerprint to `.git/config.lock` and `.git/index.lock` — the exact
-    /// files `workspace_materialize::clear_our_stale_git_locks` deletes — so
-    /// the one production routine that removes files from a repository became
-    /// invisible to the assertion whose entire job is "the server did not touch
-    /// the user's repository". It also hid a work-tree `Cargo.lock`. An
-    /// unexpected `*.lock` must fail this assertion, not be waved through.
+    /// Git's own transient lock files under `.git/`, by exact name; a broader `*.lock` match would blind the fingerprint to `config.lock`/`index.lock`.
     fn is_transient_git_lock(rel: &Path) -> bool {
         const NAMES: [&str; 2] = ["maintenance.lock", "gc.pid.lock"];
         rel.starts_with(".git")
@@ -421,12 +345,7 @@ fn user_repo(at: &Path) -> PathBuf {
     std::fs::create_dir_all(at).unwrap();
     git(at, &["init", "-b", "main"]);
     with_identity(at);
-    // Keep git from touching this repository behind our back. Since 2.5x a
-    // commit can kick off background maintenance, which leaves
-    // `.git/objects/maintenance.lock` around for a moment — long enough for a
-    // fingerprint pair to straddle it and blame the server. Measured on CI
-    // (git 2.55); this host runs 2.39 and never showed it, which is the whole
-    // reason it reached CI.
+    // Keep git from touching this repository behind our back: background maintenance leaves a lock file a fingerprint pair can straddle.
     git(at, &["config", "gc.auto", "0"]);
     git(at, &["config", "maintenance.auto", "false"]);
     std::fs::write(at.join("README.md"), b"the user's own work\n").unwrap();
@@ -434,10 +353,6 @@ fn user_repo(at: &Path) -> PathBuf {
     git(at, &["commit", "-q", "--no-verify", "-m", "user commit"]);
     at.to_path_buf()
 }
-
-// ---------------------------------------------------------------------------
-// The happy path
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn a_pristine_track_is_pointed_at_the_users_repository() {
@@ -455,7 +370,6 @@ async fn a_pristine_track_is_pointed_at_the_users_repository() {
     let (status, body) = repoint_to(&b, &track, &target).await;
     assert_eq!(status, StatusCode::OK, "body={body}");
 
-    // The row points at the user's repository, attached and frozen.
     let (kind, path, frozen) = workspace_row(&b, &track).await;
     assert_eq!(kind, "attached");
     assert_eq!(PathBuf::from(&path), target);
@@ -466,8 +380,6 @@ async fn a_pristine_track_is_pointed_at_the_users_repository() {
          same thing over the whole table"
     );
 
-    // The user's repository is byte-for-byte untouched: not initialized, not
-    // committed into, no `.git/info/exclude` line, no ownership marker.
     assert_eq!(
         diff(&target_before, &fingerprint(&target)),
         Vec::<String>::new(),
@@ -495,8 +407,6 @@ async fn a_pristine_track_is_pointed_at_the_users_repository() {
         "the old managed directory must be gone from its original path"
     );
 
-    // The claim was minted for this area, so a second track in the same
-    // repository does not have to re-argue ownership.
     let claims: Vec<(String, String)> = sqlx::query_as("SELECT path, area_id FROM area_folders")
         .fetch_all(b.repo.pool())
         .await
@@ -508,7 +418,6 @@ async fn a_pristine_track_is_pointed_at_the_users_repository() {
     );
 }
 
-/// Frozen means frozen: the door only opens once.
 #[tokio::test]
 async fn a_second_repoint_is_refused_because_the_first_one_froze_it() {
     let b = boot().await;
@@ -539,10 +448,7 @@ async fn the_planner_harness_is_restarted_on_the_new_path_with_a_new_thread() {
     let (status, body) = repoint_to(&b, &track, &target).await;
     assert_eq!(status, StatusCode::OK, "body={body}");
 
-    // The re-point must submit a `planner-harness-start` carrying the NEW cwd and
-    // `force_new_thread: true`. A resumed thread keeps the cwd it was minted
-    // with, so `force_new_thread: false` would leave the planner agent working in
-    // the trashed directory while every worker uses the new one.
+    // A resumed thread keeps the cwd it was minted with, so the restart must carry `force_new_thread: true`.
     let payloads = harness_start_payloads(&b).await;
     let last: Value = serde_json::from_str(payloads.last().expect("a harness start")).unwrap();
     assert_eq!(
@@ -569,15 +475,7 @@ async fn the_planner_harness_is_restarted_on_the_new_path_with_a_new_thread() {
     );
 }
 
-/// The fence must be up **before** the move, not merely as a side effect of
-/// the restart afterwards.
-///
-/// Asserting the end state proves nothing: the restart carries
-/// `force_new_thread: true`, which supersedes the previous runtime on its own
-/// (`session_prepare_deferred_planner_tx`), so an after-the-fact check is green
-/// even with the fence deleted — measured. The question is a *temporal* one —
-/// "could a push still start a turn at the moment the directory moves?" — so
-/// it is asked in the window, through the same hook the re-check test uses.
+/// The restart's `force_new_thread: true` supersedes the old runtime on its own, so only an in-window check can see the fence.
 #[tokio::test]
 async fn the_fence_is_up_before_the_move_not_after_it() {
     let b = boot().await;
@@ -627,9 +525,7 @@ async fn the_fence_is_up_before_the_move_not_after_it() {
     });
 
     entered.notified().await;
-    // In the window: the fence transaction has committed and nothing has moved
-    // yet. Every runtime that was active must already be gone from the set
-    // `dispatcher::harness_runtime_id_for_planner_card` reads.
+    // In the window: the fence transaction has committed and nothing has moved yet.
     let still_active: Vec<String> = sqlx::query_scalar(
         "SELECT id FROM worker_sessions WHERE track_id=?1 \
          AND state IN ('starting','running','idle','turn_pending') ORDER BY id",
@@ -652,18 +548,7 @@ async fn the_fence_is_up_before_the_move_not_after_it() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Step 2 — the ONE timing predicate
-// ---------------------------------------------------------------------------
-
-/// A write that lands **after** the criteria transaction committed and
-/// **before** the move must abort the re-point.
-///
-/// This is the test the design's "SQLite 事务不能隔离文件系统写入" sentence
-/// exists for, and it cannot be replaced by a static assertion: at the moment
-/// the fence transaction commits, every durable state the route can read says
-/// the workspace is empty. Deleting the pre-move re-check leaves this test —
-/// and only this test — red.
+/// At the moment the fence transaction commits every durable state says the workspace is empty; only the pre-move re-check can see this write.
 #[tokio::test]
 async fn a_write_between_the_fence_and_the_move_is_refused() {
     let b = boot().await;
@@ -698,8 +583,6 @@ async fn a_write_between_the_fence_and_the_move_is_refused() {
         .await
     });
 
-    // The racing writer: exactly what a turn that was already in flight when
-    // the fence went up would do.
     entered.notified().await;
     std::fs::write(
         path.join("agent-output.md"),
@@ -715,7 +598,6 @@ async fn a_write_between_the_fence_and_the_move_is_refused() {
         "a write in the fence→move window must abort the re-point; body={body}"
     );
 
-    // Nothing moved, and nothing was lost.
     assert!(
         trash_entries(&b.workspace_root).is_empty(),
         "the workspace must not have been renamed into the trash"
@@ -730,10 +612,7 @@ async fn a_write_between_the_fence_and_the_move_is_refused() {
         path,
         "the stored path must be unchanged after a refusal"
     );
-    // …and no claim was minted. The fence transaction COMMITS (it is also what
-    // supersedes the runtimes), so its claim pass has to be scan-only: a row
-    // written there would outlive this refusal and leave the caller a 409 plus
-    // a `area_folders` claim they never got a track for.
+    // The fence transaction commits, so its claim pass must be scan-only or a claim row would outlive this refusal.
     let claims: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM area_folders")
         .fetch_one(b.repo.pool())
         .await
@@ -743,10 +622,6 @@ async fn a_write_between_the_fence_and_the_move_is_refused() {
         "a refusal after the fence must leave no folder claim behind"
     );
 }
-
-// ---------------------------------------------------------------------------
-// The "anything on disk" refusals — one per clause, through the real route
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn a_plain_file_in_the_workspace_refuses_the_change() {
@@ -764,9 +639,7 @@ async fn a_plain_file_in_the_workspace_refuses_the_change() {
     );
 }
 
-/// Worker output under `.claude/worktrees/` is EXCLUDED by
-/// `.git/info/exclude`, so a plain `git status --porcelain` cannot see it.
-/// Only the `--ignored` clause rejects this.
+/// `.claude/worktrees/` is excluded by `.git/info/exclude`, so only the `--ignored` clause sees it.
 #[tokio::test]
 async fn excluded_worker_output_refuses_the_change() {
     let b = boot().await;
@@ -810,11 +683,7 @@ async fn a_commit_on_a_slice_branch_refuses_the_change() {
     assert_eq!(commit_count(&path), "2", "the commit must still be there");
 }
 
-/// A lease worktree at the path leases really use. Doubly covered — the
-/// checkout inside `.claude/worktrees/` is also ignored-but-present, so the
-/// status clause rejects it first — which is why the single-violation fixture
-/// for the worktree clause is the test below, not this one. Kept because this
-/// is the shape production actually produces.
+/// The shape production actually produces; the status clause rejects it before the worktree clause does.
 #[tokio::test]
 async fn a_lease_worktree_at_the_real_lease_path_refuses_the_change() {
     let b = boot().await;
@@ -843,14 +712,7 @@ async fn a_lease_worktree_at_the_real_lease_path_refuses_the_change() {
     assert!(lease.join(".git").exists());
 }
 
-/// A worktree whose files are **outside** the workspace: the repository here is
-/// clean by every other measure, and only `git worktree list` says otherwise.
-///
-/// Moving this repository would dangle `<wt>/.git` and
-/// `<repo>/.git/worktrees/<n>/gitdir` — two absolute pointers, in both
-/// directions — so the copy in the trash would not even be a usable
-/// repository. Single-violation fixture for the worktree clause: measured, the
-/// clause's removal turns this test red and no other integration test.
+/// Clean by every other measure; only `git worktree list` says otherwise. Moving it would dangle the absolute pointers in both directions.
 #[tokio::test]
 async fn a_worktree_outside_the_workspace_refuses_the_change() {
     let b = boot().await;
@@ -894,10 +756,6 @@ async fn a_worktree_outside_the_workspace_refuses_the_change() {
     assert!(elsewhere.join(".git").exists());
 }
 
-// ---------------------------------------------------------------------------
-// The typed refusals
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn an_attached_workspace_refuses_the_change() {
     let b = boot().await;
@@ -938,21 +796,7 @@ async fn an_attached_workspace_refuses_the_change() {
     assert_eq!(PathBuf::from(path), repo_dir);
 }
 
-/// The `kind` guard on its own, with the freeze latch taken out of the way.
-///
-/// The test above is doubly covered: `AttachedFromCwd` freezes at creation, so
-/// the freeze guard rejects before the kind guard is reached — measured, and
-/// deleting the kind guard turns no test red. That defence in depth is
-/// correct, but it leaves the guard without a fixture, and the guard is the
-/// one that decides whether the server may `rename` a directory a **user**
-/// owns.
-///
-/// So the row is put into `attached` + unfrozen directly. That state is not
-/// reachable through any route today — migration 0077's comment names it
-/// exactly ("an unfrozen `attached` row is exactly the state in which a future
-/// PATCH branch that forgot to check `kind` would relocate a real user
-/// repository") — which is the point: this asserts the guard, not the
-/// reachability. Same discipline as S5's guard-4 fixture.
+/// `AttachedFromCwd` freezes at creation, so the row is put into `attached` + unfrozen directly — a state no route reaches today.
 #[tokio::test]
 async fn an_unfrozen_attached_workspace_is_still_refused() {
     let b = boot().await;
@@ -988,9 +832,6 @@ async fn an_unfrozen_attached_workspace_is_still_refused() {
     assert_eq!(PathBuf::from(path), repo_dir);
 }
 
-/// The system area's launchpad path is kernel-maintained and is the documented
-/// exception to the freeze latch, so it must be unreachable from the PATCH
-/// route — otherwise the exception becomes a hole.
 #[tokio::test]
 async fn a_system_area_track_refuses_the_change() {
     let b = boot().await;
@@ -1036,17 +877,7 @@ async fn a_managed_target_is_a_documented_400_not_a_silent_no_op() {
     assert_eq!(workspace_row(&b, &track).await.0, "managed");
 }
 
-// ---------------------------------------------------------------------------
-// Target validation (design D3) — the same three checks on both routes
-// ---------------------------------------------------------------------------
-
-/// Failure has to surface HERE, with git's own words.
-///
-/// Without this, attaching a directory that does not exist is a 201, and the
-/// first `kind: codex` task then dies inside `git_repo_root_for_track_cwd`
-/// leaving nothing but `spawn-failed` in `tasks.status_detail`. That is issue
-/// #1147's opening paragraph — so accepting it from the entry point this slice
-/// adds would have shipped the original defect through a new door.
+/// Without this, a nonexistent directory is a 201 and the first codex task dies with only `spawn-failed` visible.
 #[tokio::test]
 async fn attaching_a_path_that_does_not_exist_is_refused_on_both_routes() {
     let b = boot().await;
@@ -1091,12 +922,7 @@ async fn attaching_a_directory_that_is_not_a_git_work_tree_is_refused_on_both_ro
     std::fs::create_dir_all(&plain).unwrap();
     std::fs::write(plain.join("notes.txt"), b"just a folder\n").unwrap();
 
-    // Premise, asserted rather than assumed: git discovery walks UPWARD, so
-    // this test is only meaningful while no ANCESTOR of the temp dir is a work
-    // tree. A stray `.git` in `$TMPDIR` — which really does turn up on shared
-    // dev boxes — makes every tempdir "inside a repository" and turns the 400
-    // below into a 201, which reads as "the guard is broken" when it is the
-    // fixture's world that changed. Fail here instead, naming the cause.
+    // Premise, asserted: git discovery walks UPWARD, so a stray `.git` in `$TMPDIR` would turn the 400 below into a 201.
     let discovery = Command::new("git")
         .arg("-C")
         .arg(&plain)
@@ -1148,12 +974,7 @@ async fn attaching_a_file_rather_than_a_directory_is_refused() {
     assert!(body.contains("is not a directory"), "{body}");
 }
 
-/// A subdirectory of a repository is a legal cwd, deliberately.
-///
-/// `rev-parse --show-toplevel` succeeds there, and the worker path derives the
-/// repository root itself (`git_repo_root_for_track_cwd`) — so refusing it
-/// would reject a directory work can actually happen in, for a reason nothing
-/// downstream cares about.
+/// A subdirectory is a legal cwd: the worker path derives the repository root itself.
 #[tokio::test]
 async fn attaching_a_subdirectory_of_a_repository_is_allowed() {
     let b = boot().await;
@@ -1168,13 +989,6 @@ async fn attaching_a_subdirectory_of_a_repository_is_allowed() {
     assert_eq!(PathBuf::from(workspace_row(&b, &track).await.1), sub);
 }
 
-// ---------------------------------------------------------------------------
-// The area_folders claim rules — the same ones `POST /api/tracks` uses
-// ---------------------------------------------------------------------------
-
-/// A directory another area already claims comes back as the STRUCTURED 409,
-/// with nothing moved. Same body shape the create route returns, because both
-/// go through `enforce_folder_claim_tx`.
 #[tokio::test]
 async fn a_directory_claimed_by_another_area_is_a_structured_conflict() {
     let b = boot().await;
@@ -1224,7 +1038,6 @@ async fn a_directory_claimed_by_another_area_is_a_structured_conflict() {
     );
     assert!(conflict["conflict_kind"].is_string(), "{body}");
 
-    // Nothing happened.
     let (kind, path, frozen) = workspace_row(&b, &track).await;
     assert_eq!(kind, "managed");
     assert_eq!(PathBuf::from(path), managed_path);
@@ -1232,12 +1045,7 @@ async fn a_directory_claimed_by_another_area_is_a_structured_conflict() {
     assert!(trash_entries(&b.workspace_root).is_empty());
     assert!(managed_path.join(".git").is_dir());
 
-    // …including the planner harness. The claim rules are checked in the fence
-    // transaction *before* the supersede, so a target that was never going to
-    // be accepted does not cost the user their running agent. Without that
-    // early check the conflict is still caught (the write transaction re-runs
-    // the same rules, authoritatively) but only after the harness has been
-    // torn down and restarted — a worse answer to the same question.
+    // The claim rules run in the fence transaction before the supersede, so a doomed target does not cost the user their running agent.
     let active_after: Vec<String> = sqlx::query_scalar(
         "SELECT id FROM worker_sessions WHERE track_id=?1 \
          AND state IN ('starting','running','idle','turn_pending') ORDER BY id",
@@ -1252,8 +1060,6 @@ async fn a_directory_claimed_by_another_area_is_a_structured_conflict() {
     );
 }
 
-/// Without `attach_folder`, an unclaimed directory is refused rather than
-/// silently making a homeless track — the same rule `POST /api/tracks` has.
 #[tokio::test]
 async fn an_unclaimed_directory_without_attach_folder_is_refused() {
     let b = boot().await;
@@ -1277,8 +1083,6 @@ async fn an_unclaimed_directory_without_attach_folder_is_refused() {
     assert!(trash_entries(&b.workspace_root).is_empty());
 }
 
-/// A directory this area already claims is a no-op for the claim table, not a
-/// duplicate-row 409 — issue #275's rule, inherited for free.
 #[tokio::test]
 async fn a_directory_this_area_already_claims_needs_no_new_claim() {
     let b = boot().await;
@@ -1341,23 +1145,7 @@ async fn a_workspace_change_cannot_ride_along_with_row_edits() {
     assert!(trash_entries(&b.workspace_root).is_empty());
 }
 
-// ---------------------------------------------------------------------------
-// The freeze latch — each freeze point through its real production route
-// ---------------------------------------------------------------------------
-
-/// Freeze point 2: terminal persistence — #1147 S6, closing gap N17.
-///
-/// This test REPLACES `a_terminal_card_does_not_freeze_the_workspace_yet_n17`,
-/// which asserted the gap and the premise that made it harmless in S3 ("no
-/// terminal ever captures `tracks.workspace_path`"). S6 is the slice that makes
-/// terminals land in the workspace, so that premise is gone and the gap is a
-/// real hole; the old test is not relaxed here, it is inverted.
-///
-/// The two halves are asserted together on purpose. The freeze without the
-/// default would be over-strict (a terminal that never captured the path would
-/// still nail the workspace down); the default without the freeze is the hole —
-/// a re-point would rename the terminal's directory into `.trash/` while a
-/// `terminals` row still points at it, and nothing re-anchors a `terminals.cwd`.
+/// A re-point would rename the terminal's directory into `.trash/` while a `terminals` row still points at it; nothing re-anchors `terminals.cwd`.
 #[tokio::test]
 async fn a_terminal_card_lands_in_the_workspace_and_freezes_it() {
     let b = boot().await;
@@ -1412,13 +1200,7 @@ async fn a_terminal_card_lands_in_the_workspace_and_freezes_it() {
     );
 }
 
-/// An explicit cwd is honored — the default is a default, not a policy.
-///
-/// Pinned separately because the natural over-reach of S6 is to force every
-/// terminal into the workspace. `POST /api/tracks/{id}/terminal-cards` has taken
-/// a `cwd` since #13, and nothing in design §更换与冻结 says it stops being
-/// respected. The freeze still applies: it is the *row*, not the path it names,
-/// that cannot be re-anchored.
+/// An explicit cwd is honored; the freeze still applies because it is the row, not the path it names, that cannot be re-anchored.
 #[tokio::test]
 async fn an_explicit_terminal_cwd_is_kept_and_still_freezes() {
     let b = boot().await;
@@ -1451,7 +1233,6 @@ async fn an_explicit_terminal_cwd_is_kept_and_still_freezes() {
     );
 }
 
-/// Freeze point 3: the track leaves Draft.
 #[tokio::test]
 async fn leaving_draft_freezes_the_workspace_and_the_change_is_refused() {
     let b = boot().await;
@@ -1491,11 +1272,7 @@ async fn leaving_draft_freezes_the_workspace_and_the_change_is_refused() {
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
     assert!(trash_entries(&b.workspace_root).is_empty());
 
-    // The route checks `frozen_at` in the fence transaction, BEFORE the
-    // supersede. `track_workspace_write_tx`'s latch would refuse this write
-    // anyway — that is the durable guarantee — but only after the harness has
-    // been torn down and restarted. Two layers, and this is what the outer one
-    // buys: a track that was never going to move does not lose its agent.
+    // `frozen_at` is checked in the fence transaction, before the supersede, so a track that was never going to move does not lose its agent.
     let active_after: Vec<String> = sqlx::query_scalar(
         "SELECT id FROM worker_sessions WHERE track_id=?1 \
          AND state IN ('starting','running','idle','turn_pending') ORDER BY id",
@@ -1510,8 +1287,6 @@ async fn leaving_draft_freezes_the_workspace_and_the_change_is_refused() {
     );
 }
 
-/// Freeze point 1: the first workspace lease, taken through the production
-/// lease preparation + acquisition path rather than a hand-written INSERT.
 #[tokio::test]
 async fn the_first_workspace_lease_freezes_the_workspace() {
     let b = boot().await;
@@ -1539,9 +1314,7 @@ async fn the_first_workspace_lease_freezes_the_workspace() {
     tx.commit().await.unwrap();
     assert!(target.join(".git").is_dir());
 
-    // The lease acquisition itself, through the same in-transaction entry
-    // point the dispatcher uses. `POST /api/tracks/{id}/codex-cards` would
-    // reach it too but needs a live codex app-server.
+    // Through the dispatcher's in-transaction entry point; the codex-cards route would need a live codex app-server.
     calm_server::test_seams::acquire_workspace_lease_for_test(
         b.repo.pool(),
         &card,
@@ -1562,19 +1335,13 @@ async fn the_first_workspace_lease_freezes_the_workspace() {
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
 }
 
-/// Freeze point 4 is S4's: a child track is frozen the moment it is created,
-/// because a planner bootstraps a harness on it immediately and there is no
-/// window in which it could safely be re-pointed. Asserted here so a future
-/// change to the child adapter that un-freezes it turns THIS slice red too.
 #[tokio::test]
 async fn a_child_track_is_frozen_at_creation_and_cannot_be_repointed() {
     let b = boot().await;
     let area = create_area(&b, "c").await;
     let (parent, _) = managed_track(&b, &area, "parent").await;
     let (child, _) = managed_track(&b, &area, "child").await;
-    // The child adapter's own tests cover the creation path; here the point is
-    // the *state* it produces, so the row is put into that state directly and
-    // the production PATCH route is what gets tested.
+    // The row is put into the child state directly; the production PATCH route is what gets tested.
     sqlx::query("UPDATE tracks SET parent_track_id=?1, workspace_frozen_at=?2 WHERE id=?3")
         .bind(&parent)
         .bind(1_i64)
@@ -1588,18 +1355,7 @@ async fn a_child_track_is_frozen_at_creation_and_cannot_be_repointed() {
     assert!(trash_entries(&b.workspace_root).is_empty());
 }
 
-/// The launchpad must survive its own freeze points.
-///
-/// Every codex task on the Today panel takes a workspace lease, which is freeze
-/// point 1. If that stamped the launchpad, the very next
-/// `POST /api/today/launchpad/ensure` would hit the latch in
-/// `track_workspace_write_tx` and 500 — a permanently dead Today panel, and the
-/// panel is the one surface a user cannot route around.
-///
-/// The exclusion lives inside `track_workspace_freeze_tx` as a SQL clause rather
-/// than as an `if` at each freeze point, so this test drives a real freeze point
-/// against the real launchpad and then re-runs `ensure`. Measured: removing the
-/// clause turns this test red and no other.
+/// Every Today-panel codex task takes a lease; a frozen launchpad would make `ensure` 500 forever.
 #[tokio::test]
 async fn a_workspace_lease_never_freezes_the_launchpad() {
     let b = boot().await;
@@ -1644,45 +1400,17 @@ async fn a_workspace_lease_never_freezes_the_launchpad() {
          a stamp here bricks `today_launchpad_ensure_tx` against the freeze latch"
     );
 
-    // The consequence, stated as behaviour rather than as a column value.
     let (status, body) = request(b.app.clone(), "POST", "/api/today/launchpad/ensure", None).await;
     assert!(
         status == StatusCode::OK || status == StatusCode::CREATED,
         "the Today panel must still come up after a lease: {status} {body}"
     );
 
-    // …and it is still not user-repointable.
     let (status, body) = repoint(&b, &track).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
 }
 
-// ---------------------------------------------------------------------------
-// The in-memory half of the fence, and the promises made on the refusal paths
-// ---------------------------------------------------------------------------
-
-/// The database fence alone is not enough, and this is the test that says so.
-///
-/// `maybe_issue_turn` reads no durable state, so an observation that was
-/// already enqueued before the fence transaction committed still becomes a
-/// turn — writing into the directory about to be renamed, and (a process's cwd
-/// follows the inode on Linux) into `.trash` afterwards. The route therefore
-/// also takes the live handle out of the registry and shuts it down.
-///
-/// This exists because that half had **no assertion**, and the distinction
-/// matters enough to state precisely — an earlier revision of this comment got
-/// it wrong and said the code was never executed.
-///
-/// It was executed. A panic probe planted in the loop fired in **six** tests
-/// that never call `install_live_harness`: creating a track registers a live
-/// planner-harness runtime on its own, so the registry is populated naturally and
-/// the loop really runs. What was missing is that nothing ever *checked the
-/// slot afterwards*, so deleting `harness.get` + `shutdown()` + `remove` turned
-/// nothing red — measured. `install_live_harness` is not what makes the code
-/// run; it is what gives this test a runtime id it can name and then assert is
-/// gone.
-///
-/// "Never ran" and "ran, unobserved" call for different fixes, and only the
-/// second one is true here.
+/// `maybe_issue_turn` reads no durable state, so an observation enqueued before the fence committed still becomes a turn unless the live handle is shut down.
 #[tokio::test]
 async fn the_fence_also_takes_the_live_harness_out_of_the_registry() {
     let b = boot().await;
@@ -1702,12 +1430,7 @@ async fn the_fence_also_takes_the_live_harness_out_of_the_registry() {
     );
 }
 
-/// A refusal must put the harness back — on the OLD path.
-///
-/// The route's promise is "a refusal leaves nothing behind except a re-opened
-/// harness". Tearing the harness down and then returning 409 without the
-/// restart would leave the track alive but its planner agent dead, which is worse
-/// than the change the caller was denied.
+/// A refusal after teardown without the restart would leave the track alive but its planner agent dead.
 #[tokio::test]
 async fn a_refusal_after_the_fence_reopens_the_harness_on_the_old_path() {
     let b = boot().await;
@@ -1772,18 +1495,7 @@ async fn a_refusal_after_the_fence_reopens_the_harness_on_the_old_path() {
     );
 }
 
-/// A shutdown that fails must not swallow the track's planner agent.
-///
-/// By this point the fence transaction has COMMITTED: every runtime is
-/// superseded. The shape this replaces removed the registry entry first and
-/// then used `?`, so a failing shutdown returned 500 with the runtimes
-/// superseded, the entry gone, and the restart skipped — the planner agent was
-/// dead with nothing left that would ever start it again.
-///
-/// The failure is injected (`fail_workspace_repoint_shutdown_for_test`):
-/// `PlannerHarness::shutdown` only fails on a persistence error that an
-/// integration test cannot provoke without dismantling the very runtime row
-/// the fence needs. Same deterministic-injection posture S5 used for N16.
+/// The failure is injected: `PlannerHarness::shutdown` only fails on a persistence error an integration test cannot provoke.
 #[tokio::test]
 async fn a_failed_harness_shutdown_still_completes_the_repoint() {
     let b = boot().await;
@@ -1814,25 +1526,7 @@ async fn a_failed_harness_shutdown_still_completes_the_repoint() {
     );
 }
 
-/// Moving a directory is a human decision.
-///
-/// This is the only thing standing between an **agent** and pointing a track at
-/// any repository on the box. Issue #985 drew that line for
-/// `automation_policy`; a workspace re-point is strictly more destructive.
-/// Every other test in this file runs as the user, so without this one the
-/// guard has no fixture at all.
-///
-/// `ai:codex` is not an arbitrary choice, and the reason is worth knowing:
-/// `Actor::to_actor_id` maps `"user"` → `User`, `"ai:codex"` → `AiCodex`, and
-/// **everything else — including `ai:planner` — to `User`** by a documented
-/// defensive default. So `ai:codex` is the only header value that reaches a
-/// non-`User` `ActorId` at all, and a test written with `ai:planner` passes
-/// vacuously while looking correct (measured: it returned 200 and moved the
-/// workspace). That is not a hole this slice opened or should close here —
-/// `actor.rs`'s module doc is explicit that the header is a *declared*, not
-/// authenticated, identity and "plumbing, not a security boundary", and #985's
-/// identical guard has exactly the same reach. What this test pins is that the
-/// guard is wired and fires, not that the header cannot be lied about.
+/// `ai:codex` is the only header value `Actor::to_actor_id` maps to a non-`User` actor; `ai:planner` would pass vacuously.
 #[tokio::test]
 async fn a_non_user_actor_may_not_change_a_workspace() {
     let b = boot().await;
@@ -1841,23 +1535,8 @@ async fn a_non_user_actor_may_not_change_a_workspace() {
     let target = user_repo(&b.tmp.path().join("my-project"));
     let target_before = fingerprint(&target);
 
-    // Called directly rather than over HTTP, and that is the finding rather
-    // than a shortcut. Measured: driving this through `PATCH` with
-    // `X-Calm-Actor: ai:codex` DOES answer 403 — but with
-    // `"AiCodex/AiClaude/AiPlanner actor has empty card id"`, a different and
-    // older guard. `Actor::to_actor_id` maps every header string except
-    // `"ai:codex"` to `User`, and `"ai:codex"` carries an empty card id that
-    // the outer guard rejects first, so no HTTP request can produce a caller
-    // this check would be the first to stop. A test written over the route
-    // therefore passes with this guard deleted — it did, and that is why it is
-    // written this way.
-    // A live harness, so the refusal can be told apart from the OTHER
-    // `Forbidden` this call can produce. Deleting the user-only guard does not
-    // make the operation succeed — it makes it fail later, inside the write
-    // transaction's role gate, AFTER the fence has committed and the harness
-    // has been torn down. Both answers are 403, so a test that only checks the
-    // status (or even only `matches!(.., Forbidden(_))`) passes either way;
-    // measured, twice. What actually differs is *when* it refuses.
+    // Called directly: over HTTP an `ai:codex` actor is refused earlier by the empty-card-id guard, so no request reaches this check.
+    // A live harness tells this refusal apart from the write transaction's role gate, which also answers 403 but only after teardown.
     let runtime_id = install_live_harness(&b, &track).await;
 
     let track_row = b.repo.track_get(&track).await.unwrap().unwrap();

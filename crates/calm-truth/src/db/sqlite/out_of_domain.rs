@@ -9,19 +9,15 @@ use crate::db::{RepoOutOfDomain, RepoRead, SharedCodexDaemonUpdate};
 use crate::error::{CalmError, Result};
 use crate::model::*;
 
-/// #1252 S0-2 — what a card's harness transcript held, measured before it
-/// is destroyed. `harness_items` has no token-count column, so `params_bytes`
-/// (the summed byte length of the JSON-RPC `params` payloads) is the only
-/// cumulative-size measure the schema can honestly supply.
+/// What a card's harness transcript held, measured before it is destroyed;
+/// `params_bytes` is the summed byte length of the JSON-RPC `params` payloads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct HarnessTranscriptMeasure {
     pub item_count: i64,
     pub params_bytes: i64,
 }
 
-/// Measure a card's harness transcript. Call this immediately before
-/// [`harness_items_delete_by_card_tx`] inside the same transaction: after the
-/// delete the rows are gone and the measurement is unrecoverable.
+/// Call immediately before [`harness_items_delete_by_card_tx`] in the same transaction.
 pub async fn harness_items_measure_by_card_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: &str,
@@ -54,11 +50,6 @@ pub async fn harness_items_delete_by_card_tx(
     Ok(())
 }
 
-/// #695 PR2 — append one `worker_flow_items` row inside an open transaction,
-/// returning the new row id. Free fn (mirroring the harness `_tx` helpers) so
-/// PR3's `WorkerFlowItemSink` can call it from inside `commit_decision`'s
-/// closure. The `RepoOutOfDomain::worker_flow_item_insert` trait method wraps
-/// this in its own short transaction for standalone callers.
 #[allow(clippy::too_many_arguments)]
 pub async fn worker_flow_item_insert_tx(
     tx: &mut Transaction<'_, Sqlite>,
@@ -90,11 +81,6 @@ pub async fn worker_flow_item_insert_tx(
     Ok(row.get::<i64, _>("id"))
 }
 
-/// #695 PR2 — hard-delete every `worker_flow_items` row for a card. Mirror of
-/// [`harness_items_delete_by_card_tx`]. Unlike the FK's `ON DELETE SET NULL`
-/// (which preserves the transcript when the *card* is deleted), this is the
-/// explicit "purge this card's captured flow" path a caller can invoke
-/// directly inside a transaction.
 pub async fn worker_flow_items_delete_by_card_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: &str,
@@ -106,20 +92,11 @@ pub async fn worker_flow_items_delete_by_card_tx(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// RepoOutOfDomain — operational writes that intentionally bypass the event
-// log: terminal lifecycle, plugin install/config, app-global settings. See
-// db/mod.rs module doc for the sync-domain vs. out-of-domain split.
-// ---------------------------------------------------------------------------
-
 #[async_trait]
 impl RepoOutOfDomain for SqlxRepo {
     async fn track_recipe_create(&self, p: NewTrackRecipe) -> Result<TrackRecipe> {
-        // #930 — a transaction that writes takes the write lock up front.
-        // `pool.begin()` is BEGIN DEFERRED, which acquires it lazily: a
-        // deferred transaction that reads and then writes can lose the
-        // upgrade to a concurrent writer and surface as SQLITE_BUSY, with
-        // nothing safe to retry because the read half already happened.
+        // A deferred tx that reads then writes can lose the lock upgrade and surface
+        // as SQLITE_BUSY with nothing safe to retry, so writers BEGIN IMMEDIATE.
         let mut tx = super::infra::begin_immediate_tx(&self.pool).await?;
         let out = super::track_recipe::track_recipe_create_tx(&mut tx, &p.title, &p.body).await?;
         tx.commit().await?;
@@ -132,10 +109,6 @@ impl RepoOutOfDomain for SqlxRepo {
         p: NewTrackRecipe,
         if_revision: i64,
     ) -> Result<TrackRecipe> {
-        // Immediate for the same reason, and here it is load-bearing rather
-        // than precautionary: this transaction reads (the conflict/404
-        // disambiguation and the read-back) around its `UPDATE`, which is
-        // exactly the deferred-upgrade shape #930 forbids.
         let mut tx = super::infra::begin_immediate_tx(&self.pool).await?;
         let out = super::track_recipe::track_recipe_update_tx(
             &mut tx,
@@ -150,8 +123,6 @@ impl RepoOutOfDomain for SqlxRepo {
     }
 
     async fn track_recipe_get(&self, id: &str) -> Result<Option<TrackRecipe>> {
-        // Read-only: query the pool directly rather than opening a
-        // transaction for a single SELECT.
         let row: Option<(String, String, String, i64, i64, i64)> = sqlx::query_as(
             "SELECT id, title, body, revision, created_at, updated_at \
              FROM track_recipes WHERE id = ?1",
@@ -176,7 +147,6 @@ impl RepoOutOfDomain for SqlxRepo {
         area_id: &str,
         idempotency_key: &str,
     ) -> Result<Option<super::TrackCreateBinding>> {
-        // Read-only, one primary-key hit: the pool, not a transaction.
         super::track::track_create_idempotency_get_pool(&self.pool, area_id, idempotency_key).await
     }
 
@@ -209,9 +179,7 @@ impl RepoOutOfDomain for SqlxRepo {
             .collect())
     }
 
-    // ------------------------------------------------------------- terminals
     async fn terminal_create(&self, p: NewTerminal) -> Result<Terminal> {
-        // Parent card must exist; surface as NotFound to mirror MockRepo.
         let owner: Option<(String,)> = sqlx::query_as("SELECT id FROM cards WHERE id = ?1")
             .bind(p.card_id.as_str())
             .fetch_optional(&self.pool)
@@ -219,8 +187,6 @@ impl RepoOutOfDomain for SqlxRepo {
         if owner.is_none() {
             return Err(CalmError::NotFound(format!("card {}", p.card_id)));
         }
-        // Per-card uniqueness — surface as Conflict to mirror MockRepo
-        // (the schema also enforces this via UNIQUE on terminals.card_id).
         let dup: Option<(String,)> = sqlx::query_as("SELECT id FROM terminals WHERE card_id = ?1")
             .bind(p.card_id.as_str())
             .fetch_optional(&self.pool)
@@ -235,9 +201,6 @@ impl RepoOutOfDomain for SqlxRepo {
         let now = now_ms();
         let id = new_id();
         let env_text = serde_json::to_string(&p.env)?;
-        // #177 — render theme RGB once at row-creation; persisted in
-        // comma-decimal form so every spawn-path read is a zero-alloc
-        // string slice.
         let theme_fg = p.theme.fg_arg();
         let theme_bg = p.theme.bg_arg();
         sqlx::query(
@@ -273,7 +236,6 @@ impl RepoOutOfDomain for SqlxRepo {
     }
 
     async fn terminal_set_pid(&self, id: &str, pid: Option<u32>) -> Result<()> {
-        // Cast to i64 for sqlite's INTEGER affinity; u32 is well within range.
         let pid_i64: Option<i64> = pid.map(|p| p as i64);
         let res = sqlx::query("UPDATE terminals SET pid = ?1 WHERE id = ?2")
             .bind(pid_i64)
@@ -305,10 +267,8 @@ impl RepoOutOfDomain for SqlxRepo {
         pty_output: &str,
         pty_output_truncated: bool,
     ) -> Result<()> {
-        // #306/#1456 — single UPDATE; exit and output evidence are written together so
-        // a reader never sees a mismatched intermediate state. The
-        // mutual-exclusion invariant (signal_killed=true ⇒ exit_code=None)
-        // is the writer's responsibility — see daemon `spawn_child_waiter`.
+        // Single UPDATE so exit and output evidence land together; signal_killed=true
+        // ⇒ exit_code=None is the writer's responsibility.
         let res = sqlx::query(
             "UPDATE terminals SET exit_code=?1,signal_killed=?2,pty_output=?3,\
              pty_output_truncated=?4 WHERE id=?5",
@@ -412,8 +372,6 @@ impl RepoOutOfDomain for SqlxRepo {
         Ok(())
     }
 
-    // ---- planner harness item stream (#510 PR-ui C1) -----------------------
-
     #[allow(clippy::too_many_arguments)]
     async fn harness_item_insert(
         &self,
@@ -478,8 +436,6 @@ impl RepoOutOfDomain for SqlxRepo {
         Ok(id)
     }
 
-    // ---- #1625 P2 — projection rows (see the trait for the key) ----------
-
     async fn transcript_projection_id(
         &self,
         card_id: &str,
@@ -506,13 +462,9 @@ impl RepoOutOfDomain for SqlxRepo {
         item_uuid: &str,
         params: &str,
     ) -> Result<Option<i64>> {
-        // #930 uniform rule: writing transactions always BEGIN IMMEDIATE.
         let mut tx = begin_immediate_tx(&self.pool).await?;
-        // `RETURNING` on UPDATE: sqlite ≥ 3.35, which the bundled sqlx
-        // driver is. `LIMIT 1` is not available on UPDATE in the bundled
-        // build, so the row is chosen by the subquery instead — the newest
-        // projection with this key, which is also what `_projection_id`
-        // reads.
+        // `LIMIT 1` is not available on UPDATE in the bundled sqlite build, so the
+        // subquery chooses the row: the newest projection with this key.
         let row = sqlx::query(
             r#"UPDATE harness_items
                SET turn_id = ?3, item_uuid = ?4, params = ?5
@@ -550,8 +502,6 @@ impl RepoOutOfDomain for SqlxRepo {
         Ok(done.rows_affected())
     }
 
-    // ---- worker message-flow capture (#695 PR2) -------------------------
-
     #[allow(clippy::too_many_arguments)]
     async fn worker_flow_item_insert(
         &self,
@@ -563,7 +513,6 @@ impl RepoOutOfDomain for SqlxRepo {
         payload: &str,
         created_at_ms: i64,
     ) -> Result<i64> {
-        // #930 uniform rule: writing transactions always BEGIN IMMEDIATE.
         let mut tx = begin_immediate_tx(&self.pool).await?;
         let id = worker_flow_item_insert_tx(
             &mut tx,
@@ -619,23 +568,8 @@ impl RepoOutOfDomain for SqlxRepo {
         Ok(())
     }
 
-    // --------------------------------------------------------------- plugins
-    /// #1284 S1 review round 3 (P2-3) — **the `DO UPDATE` set deliberately
-    /// omits `user_config`.**
-    ///
-    /// `PATCH /api/plugins/{id}/config` documents itself as the only thing
-    /// that can change an installed plugin's `user_config`, and a good deal
-    /// hangs off that sentence: it is the whole reason a corrupt row had to be
-    /// given an API-reachable exit (`?reset=true`) rather than a 500. Until
-    /// this round the sentence was true only because
-    /// `PluginHost::install` refuses a duplicate id a few lines before
-    /// reaching here — an argument that leans on a TOCTOU-shaped check
-    /// elsewhere rather than on this statement's own carrier.
-    ///
-    /// So the statement is carried here instead: the upsert can no longer
-    /// reset an existing row's operator configuration to the `{}` a fresh
-    /// install passes in, whatever calls it. The `INSERT` still supplies the
-    /// initial value — creating the field is not overwriting it.
+    /// The `DO UPDATE` set deliberately omits `user_config`: only
+    /// `PATCH /api/plugins/{id}/config` may change an installed plugin's config.
     async fn plugin_install(&self, p: NewPlugin) -> Result<Plugin> {
         let manifest_text = serde_json::to_string(&p.manifest)?;
         let user_config_text = serde_json::to_string(&p.user_config)?;
@@ -754,7 +688,6 @@ impl RepoOutOfDomain for SqlxRepo {
         Ok(())
     }
 
-    // -------------------------------------------------------- plugin tokens
     async fn plugin_token_set(
         &self,
         plugin_id: &str,
@@ -784,7 +717,6 @@ impl RepoOutOfDomain for SqlxRepo {
         Ok(())
     }
 
-    // -------------------------------------------------------- plugin kv
     async fn plugin_kv_set(
         &self,
         plugin_id: &str,
@@ -818,7 +750,6 @@ impl RepoOutOfDomain for SqlxRepo {
         Ok(())
     }
 
-    // -------------------------------------------------------------- settings
     async fn settings_upsert(&self, key: &str, value: &str) -> Result<()> {
         let now = now_ms();
         sqlx::query(
@@ -844,11 +775,7 @@ impl RepoOutOfDomain for SqlxRepo {
         Ok(())
     }
 
-    // ----------------------------------------------------- area_folders
     async fn area_folder_create(&self, area_id: &str, path: &str) -> Result<AreaFolder> {
-        // Parent area must exist; surface as NotFound to mirror the
-        // terminal_create precedent above (FK error message would be
-        // less actionable for the REST caller).
         let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM areas WHERE id = ?1")
             .bind(area_id)
             .fetch_optional(&self.pool)
@@ -857,10 +784,8 @@ impl RepoOutOfDomain for SqlxRepo {
             return Err(CalmError::NotFound(format!("area {area_id}")));
         }
         let now = now_ms();
-        // Unchecked primitive: no overlap scan at all (see the trait
-        // doc). The UNIQUE constraint on `path` is the only guard, and
-        // it only rejects an *equal* path. HTTP callers go through
-        // `area_folder_create_checked` instead (#275).
+        // Unchecked primitive: no overlap scan; UNIQUE(path) only rejects an *equal*
+        // path. HTTP callers go through `area_folder_create_checked`.
         let res =
             sqlx::query("INSERT INTO area_folders (area_id, path, created_at) VALUES (?1, ?2, ?3)")
                 .bind(area_id)
@@ -887,32 +812,22 @@ impl RepoOutOfDomain for SqlxRepo {
         area_id: &str,
         path: &str,
     ) -> Result<AreaFolderClaim> {
-        // Precondition (see the trait doc): `path` is already normalized.
-        // `classify_conflict` is pure string comparison, so a trailing
-        // slash would silently *mis*classify rather than error out.
+        // Precondition: `path` is already normalized; `classify_conflict` is pure
+        // string comparison, so a trailing slash would silently misclassify.
         debug_assert_eq!(
             path,
             crate::area_folder_claim::normalize_path(path),
             "area_folder_create_checked requires a normalized path; got `{path}`"
         );
-        // #275 — BEGIN IMMEDIATE takes the writer lock *before* the scan,
-        // so the SELECT and the INSERT are one atomic step. Without it the
-        // scan and the insert land on two different pooled connections and
-        // concurrent `/a` + `/a/b` claims both pass an empty-table scan
-        // (UNIQUE(path) only rejects *equal* paths).
-        //
-        // Deliberately nothing but three statements in here: no git probe,
-        // no filesystem work, no plugin/network call. The writer-lock hold
-        // is the same order of magnitude as the bare INSERT it replaces.
+        // BEGIN IMMEDIATE takes the writer lock before the scan so SELECT and INSERT
+        // are one atomic step (UNIQUE(path) only rejects *equal* paths). Nothing but
+        // these three statements belongs inside the lock.
         let mut tx = begin_immediate_tx(&self.pool).await?;
         let existing = super::area_folders_list_all_tx(&mut tx).await?;
         if let Some(conflict) = crate::area_folder_claim::classify_conflict(&existing, path) {
-            // Read-only tx: rollback is the cheap, explicit close.
             let _ = tx.rollback().await;
             return Ok(AreaFolderClaim::Conflict(conflict));
         }
-        // Shares the area-exists check + UNIQUE-to-Conflict mapping with
-        // the track-create attach path.
         let folder = super::area_folder_create_tx(&mut tx, area_id, path).await?;
         tx.commit().await?;
         Ok(AreaFolderClaim::Created(folder))

@@ -319,10 +319,8 @@ impl TaskContextMonitor {
                 }
             }
         }
-        // #1160 — the read path states the same rule in
-        // `calm-truth::db::sqlite::task_projection::live_declaration_blocks_by_key`
-        // (calm-truth cannot depend on calm-server). Keep the two arms in sync;
-        // do not add a third spelling of "which block owns this key".
+        // The read path states the same rule in
+        // `calm-truth::db::sqlite::task_projection::live_declaration_blocks_by_key`; keep the two in sync.
         let root = match live.as_slice() {
             [root] => root.clone(),
             [] if tombstoned => return Err(ResolveError::RootTombstoned),
@@ -926,9 +924,7 @@ impl TaskContextMonitor {
     }
 }
 
-/// Closure resolution and transactional restoration share report authority.
-/// Old rows without CRDT retain their existing payload-block reader; when CRDT
-/// exists its block snapshot wins over a stale derived JSON cache.
+/// When CRDT exists its block snapshot wins over a stale derived JSON cache.
 pub(crate) fn context_snapshot_values(
     track_id: &str,
     payload: &serde_json::Value,

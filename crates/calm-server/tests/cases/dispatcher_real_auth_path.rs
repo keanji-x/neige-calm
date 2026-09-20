@@ -1,54 +1,5 @@
-//! Issue #199 — dispatcher exercised through the real HTTP ingress
-//! (actor middleware + scope derivation + role gate) rather than
-//! `log_pure_event` hand-drives.
-//!
-//! What this catches that the other dispatcher / role tests don't:
-//!
-//!   * `tests/dispatcher.rs` and `tests/track_as_actor_smoke.rs` both
-//!     call `Repo::log_pure_event` directly — they skip the actor
-//!     middleware, the request body extraction, and the scope
-//!     derivation that lives in the route. A regression in any of
-//!     those layers (e.g. the codex bridge's `card_id` query param
-//!     no longer resolves to `EventScope::Card`, or the actor
-//!     middleware silently defaults to `User` when it shouldn't)
-//!     surfaces in real deploys but is invisible in those tests.
-//!   * `tests/role_enforcement.rs` covers the gate in isolation but
-//!     also bypasses HTTP entirely.
-//!
-//! Composition under test, exercised in ONE flow:
-//!
-//!   1. Area → track → codex card seeded. The track-create route
-//!      mints a planner card with `CardRole::Planner`; we add a second
-//!      `kind: 'codex'` card via the route surface to get a worker-
-//!      adjacent `CardRole::Worker` row whose `card_id` is valid for
-//!      the `/internal/codex/hook` ingest.
-//!   2. POST `/internal/codex/hook?card_id=<worker>` with
-//!      `X-Calm-Actor: ai:codex` succeeds (204), and the resulting
-//!      `hook.codex.*` events row records:
-//!        * `actor = "ai:codex"` (middleware + scope-β reattribution)
-//!        * `scope` resolves to `Card` (codex.rs scope derivation
-//!          followed `card → track → area` correctly).
-//!   3. POST `/internal/codex/hook?card_id=<worker>` WITHOUT the
-//!      `X-Calm-Actor` header lands `actor = "user"` (middleware
-//!      default), and the gate accepts it — `ActorId::User` is the
-//!      unrestricted path. This pins the documented contract for
-//!      bridges that don't yet stamp the header.
-//!   4. POST `/internal/codex/hook?card_id=` (empty) with the
-//!      `ai:codex` header is **rejected by the role gate** before
-//!      any event row is appended. The 403 propagates; the events
-//!      table count is unchanged from step 3. This is the "errored
-//!      scope writes are rejected" verdict the issue calls out.
-//!   5. POST `/internal/codex/hook?card_id=<track_id>` (a card id
-//!      that doesn't resolve to a card row — the route falls back
-//!      to `EventScope::System`) with the `ai:codex` header is
-//!      rejected for the same reason (unknown card id → role gate
-//!      denies the typed `AiCodex(CardId)` actor it can't look up).
-//!
-//! The `CardRole` cache write-through invariant is verified
-//! transitively: step 1's track-create has to put the planner card
-//! into the cache for the dispatcher / role gate to see it; step 2's
-//! success and step 4's failure both depend on that cache being
-//! seeded correctly.
+//! Dispatcher exercised through the real HTTP ingress (actor middleware + scope derivation +
+//! role gate) rather than `log_pure_event` hand-drives.
 
 #![cfg(unix)]
 
@@ -99,10 +50,7 @@ async fn boot() -> Boot {
 
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        // Non-existent daemon binary; the dispatcher's spawn step fails
-        // post-commit on the codex / terminal write paths, but the
-        // routes under test (`/internal/codex/hook`) don't spawn
-        // anything — the failure path is irrelevant here.
+        // Non-existent daemon binary; the routes under test spawn nothing.
         proc_supervisor_sock: None,
     });
     let events = EventBus::new();
@@ -127,9 +75,8 @@ async fn boot() -> Boot {
             ),
         )),
         {
-            // Deterministically-broken codex bin (absolute, absent) so the
-            // planner-push app-server boot fails fast regardless of PATH. Track
-            // create tolerates this (#293 / PR #311) and returns 201.
+            // Deterministically-broken codex bin so the planner-push app-server boot fails fast; track
+            // create tolerates this and returns 201.
             let mut codex = CodexClient::new_stub();
             codex.codex_bin = "/nonexistent-codex-bin-dispatcher-real-auth".into();
             Arc::new(codex)
@@ -190,8 +137,7 @@ async fn event_count(repo: &SqlxRepo) -> i64 {
 async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
     let boot = boot().await;
 
-    // ---- 1. Track create through the route → planner card lands with
-    //         CardRole::Planner, role cache reflects it.
+    // 1. Track create through the route → planner card lands with CardRole::Planner.
     let (status, _track_body) = post_with_actor(
         boot.app.clone(),
         "/api/tracks",
@@ -209,8 +155,7 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
     assert_eq!(tracks.len(), 1);
     let track = tracks.into_iter().next().unwrap();
     let cards_after_track = boot.repo.cards_by_track(track.id.as_str()).await.unwrap();
-    // Issue #229 PR B — track create now mints two kernel-owned cards
-    // (planner + track-report). Find the planner card by kind.
+    // Track create mints two kernel-owned cards (planner + track-report); find the planner by kind.
     assert_eq!(
         cards_after_track.len(),
         2,
@@ -228,14 +173,9 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
         "planner card's role lives in the cache after track create",
     );
 
-    // Seed a worker `kind: 'codex'` card so we have a card_id the codex
-    // bridge ingest can resolve. We POST through the cards route (not
-    // `Repo::card_create`) so the role-cache write-through populates
-    // the SAME `CardRoleCache` instance that the route + role gate
-    // consult — `SqlxRepo` carries its own internal cache field that
-    // never sees AppState writes. The route's `card_create_with_id_tx`
-    // call threads `s.card_role_cache` explicitly, which is the one
-    // we need to query below.
+    // POST through the cards route (not `Repo::card_create`) so the role-cache write-through
+    // populates the SAME `CardRoleCache` the route + role gate consult; `SqlxRepo` carries its
+    // own internal cache that never sees AppState writes.
     let uri_cards = format!("/api/tracks/{}/cards", track.id);
     let (status, card_body) = post_with_actor(
         boot.app.clone(),
@@ -259,7 +199,7 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
 
     let baseline = event_count(&boot.repo).await;
 
-    // ---- 2. Valid AiCodex ingest with a resolvable card_id.
+    // 2. Valid AiCodex ingest with a resolvable card_id.
     let uri_ok = format!("/internal/codex/hook?card_id={}", worker_codex_id);
     let (status, body) = post_with_actor(
         boot.app.clone(),
@@ -274,14 +214,8 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
         "codex hook ingest with valid card_id + ai:codex header → 204 (got {status:?}, body {body})"
     );
 
-    // The route stamps `actor = "ai:codex"` and resolves the scope
-    // through `card → track → area`. Confirm both at the SQL level —
-    // the scope is decomposed across `scope_kind`, `scope_card`,
-    // `scope_track`, `scope_area` (migration 0007).
-    // events.kind is the `Event` enum's `kind_tag()` — `"codex.hook"`
-    // for `Event::CodexHook` (the inner `kind` field, formatted as
-    // "hook.codex.<event_name>", lives in the JSON payload). Filter
-    // by the kind_tag column and decode the payload separately.
+    // events.kind is the `Event` enum's `kind_tag()` (`"codex.hook"`); the inner `kind` field lives
+    // in the JSON payload.
     let row: (
         String,
         String,
@@ -297,10 +231,7 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
     .fetch_one(boot.repo.pool())
     .await
     .expect("hook event row landed");
-    // The codex hook ingest re-attributes the actor from the `card_id`
-    // query parameter, threading an `ActorId::AiCodex(<card_id>)` into
-    // the event row (not the raw header string). `events.actor` is
-    // JSON-serialized; parse it back to assert the kind + id.
+    // The hook ingest re-attributes the actor from the `card_id` query parameter; `events.actor` is JSON.
     let actor_json: Value = serde_json::from_str(&row.0).expect("events.actor is JSON");
     assert_eq!(
         actor_json.get("kind").and_then(|v| v.as_str()),
@@ -339,16 +270,9 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
         "exactly one new event row from the successful ingest",
     );
 
-    // ---- 3. Actor middleware exercised via a route that DOES forward
-    //         the extracted `Actor` to the typed `ActorId` (overlays
-    //         upsert — the codex hook route deliberately ignores its
-    //         `_actor` and reattributes via `card_id`, so it can't
-    //         prove this leg). A `POST /api/overlays` with no header
-    //         must land `actor = "User"` (middleware default → typed
-    //         actor); the same POST with `X-Calm-Actor: ai:codex`
-    //         is REFUSED at the gate because the middleware-default
-    //         `to_actor_id` for `ai:codex` synthesizes an empty CardId
-    //         that the gate's empty-CardId guard rejects.
+    // 3. A route that DOES forward the extracted `Actor` (overlays upsert; the codex hook route
+    // reattributes via `card_id`): no header lands `actor = "User"`, while `ai:codex` is refused
+    // because the middleware-default `to_actor_id` synthesizes an empty CardId the gate rejects.
     let upsert_uri = "/api/overlays";
     let upsert_body = json!({
         "plugin_id": "core",
@@ -384,11 +308,8 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
         "two writes landed by now: codex hook + overlay upsert (events.id baseline+>=2)",
     );
 
-    // ---- 4. Empty card_id with ai:codex header → role gate rejects.
-    //
-    // The gate's empty-CardId guard fires before any SQL runs (see
-    // `tests/role_enforcement.rs::empty_codex_card_id_rejected`).
-    // The HTTP surface returns 403; the events count must NOT bump.
+    // 4. Empty card_id with ai:codex header → the gate's empty-CardId guard fires before any SQL;
+    // 403 and the events count must NOT bump.
     let (status, _) = post_with_actor(
         boot.app.clone(),
         "/internal/codex/hook?card_id=",
@@ -407,12 +328,8 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
         "rejected ingest must NOT append to the event log",
     );
 
-    // ---- 5. Unknown card_id with ai:codex → unknown-card gate
-    //         rejects. The route's scope derivation falls back to
-    //         `EventScope::System` for a card that doesn't resolve;
-    //         the role gate then refuses the typed AiCodex actor it
-    //         can't look up in the role cache. Same 403, same
-    //         events-table invariant as step 4.
+    // 5. Unknown card_id with ai:codex → scope falls back to `EventScope::System` and the gate
+    // refuses the AiCodex actor it cannot look up.
     let (status, _) = post_with_actor(
         boot.app.clone(),
         // track id is not a card id → unresolvable

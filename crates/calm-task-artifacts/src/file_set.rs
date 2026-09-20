@@ -6,18 +6,8 @@ use crate::{
 use std::fs::File;
 
 impl ArtifactStore {
-    /// Capture one nonempty explicit file set as one immutable snapshot.
-    ///
-    /// All stop-boundary, pinned-root, provenance and descriptor ownership rules
-    /// of `capture_file` apply to every opener invocation. In particular, open
-    /// read-only with O_NONBLOCK and refuse symlinks and mount crossings beneath
-    /// the pinned source root. The caller must keep the entire source stopped
-    /// throughout capture; the library cannot prove these assertions.
-    ///
-    /// Paths are opened once each in canonical order, under the store lock; the
-    /// opener must not reenter this store. Frozen replay/conflict never opens a
-    /// source. Invalid lists fail before opening anything. A failure before freeze
-    /// publishes no snapshot or key binding; retry may open the source again.
+    /// Capture one nonempty explicit file set as one immutable snapshot; the opener rules of `capture_file` apply to every
+    /// invocation. Paths are opened once each in canonical order under the store lock; a failure before freeze publishes nothing.
     pub fn capture_files(
         &self,
         request: FileSetCaptureRequest<'_>,

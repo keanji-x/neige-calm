@@ -1,44 +1,4 @@
-//! Replay-loader infrastructure shared by the `replay` binary and the
-//! `tests/replay_fixtures.rs` integration test.
-//!
-//! Per design doc §6.3, fixtures are JSON traces under
-//! `crates/calm-server/tests/fixtures/events/<name>.events.json`. Two
-//! consumers care about loading + replaying them:
-//!
-//!  1. The integration test in `tests/replay_fixtures.rs` — boots a
-//!     bare WS-only router, raw-inserts events, drains the WS replay
-//!     window, and asserts state against `expected`.
-//!
-//!  2. The `cargo run --bin replay` binary — boots the **full** app
-//!     router (REST + WS) so a developer can poke the resulting state
-//!     from a browser (`--serve`), or compares state against the
-//!     fixture's `expected` block and exits with a status code
-//!     (`--assert`).
-//!
-//! Rather than duplicate the load/boot/seed dance, this module hosts
-//! the shared types + helpers and exposes them off `calm_server::replay`.
-//! The test boots a minimal WS-only router on top of the seeded repo;
-//! the binary boots the full router on top of the same seeded repo.
-//! Both share the same fixture parser and seeding path.
-//!
-//! ## Fixture format
-//!
-//! ```json
-//! {
-//!   "name": "...",
-//!   "description": "...",
-//!   "events": [{ "kind": "...", "actor": "...", "payload": {...} }, ...],
-//!   "expected": {
-//!     "last_event_kind": "overlay.set",
-//!     "layout_positions": { "<card_id>": { x, y, w, h }, ... }
-//!   }
-//! }
-//! ```
-//!
-//! Events are seeded via `Repo::log_pure_event` — the public ingest
-//! path used everywhere else in the kernel for events with no
-//! associated entity write. That keeps the commit-then-emit invariant
-//! intact and gives the seeded rows real `events.id`s in append order.
+//! Replay-loader infrastructure shared by the `replay` binary and the `tests/replay_fixtures.rs` integration test: fixture parsing, in-memory boot, and event seeding via `Repo::log_pure_event`.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -55,10 +15,6 @@ use crate::operation::terminal_adapter::SpawnHook;
 use crate::plugin_host::{PluginHost, PluginRegistry};
 use crate::state::{AppState, CodexClient, DaemonClient};
 
-// ---------------------------------------------------------------------------
-// Fixture shape (mirrors `tests/replay_fixtures.rs`)
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct Fixture {
     pub name: String,
@@ -72,66 +28,31 @@ pub struct Fixture {
 #[derive(Debug, Clone, Deserialize)]
 pub struct FixtureEvent {
     pub kind: String,
-    /// PR2 of #136 — accepts both shapes so the loader round-trips:
-    ///   * `"user"` / `"kernel"` / `"ai:codex"` — the pre-PR2 string
-    ///     audit grammar (still present in checked-in fixtures).
-    ///   * `{"kind": "User"}` / `{"kind": "AiCodex", "id": "..."}` —
-    ///     the typed [`ActorId`] JSON form the recorder now writes.
-    ///
-    /// [`seed_events`] maps either back onto the typed [`ActorId`] via
-    /// [`actor_from_legacy_string`] (string branch) or direct
-    /// deserialization (object branch).
+    /// Either the legacy string grammar (`"user"` / `"kernel"` / `"ai:codex"`) or the typed `ActorId` JSON object.
     pub actor: serde_json::Value,
     pub payload: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct FixtureExpected {
-    /// If present, assert the *last* event kind in the persisted log
-    /// matches this value (post-seed).
+    /// If present, assert the *last* event kind in the persisted log matches.
     #[serde(default)]
     pub last_event_kind: Option<String>,
-    /// If non-empty, assert the post-replay `view/layout` overlay's
-    /// `positions` map matches this exactly (same cardinality, same
-    /// per-card x/y/w/h).
+    /// If non-empty, assert the post-replay `view/layout` overlay's `positions` map matches exactly.
     #[serde(default)]
     pub layout_positions: serde_json::Map<String, serde_json::Value>,
 }
 
-/// Read + parse a fixture from disk. Returns a descriptive error on
-/// missing file or malformed JSON — the binary surfaces these straight
-/// to stderr.
-///
-/// Accepts **two** on-disk shapes so RECORD_SESSION output is directly
-/// replayable (round-trip invariant — design doc §6.3):
-///
-///   1. Curated fixture object: `{name, description, events, expected}` —
-///      the format `tests/fixtures/events/*.events.json` ships.
-///   2. NDJSON session recording: one `{"kind","actor","payload"}` object
-///      per line — the shape `spawn_session_recorder` writes.
-///
-/// Detection: read the first non-blank line and check whether it parses
-/// as a `FixtureEvent` (i.e. has a top-level `kind` field). If so, the
-/// whole file is treated as NDJSON and a synthetic `Fixture` is
-/// constructed with `name` derived from the filename, an empty
-/// `expected` block, and the events in append order. Otherwise we fall
-/// back to parsing the entire file as a single `Fixture` JSON object.
-///
-/// This is a pure shape sniff; nothing reads ahead beyond the first line
-/// before committing to a branch.
+/// Read + parse a fixture from disk. Accepts a curated fixture object or an NDJSON session recording (one `{"kind","actor","payload"}` per line); the first non-blank line decides which.
 pub fn load_fixture_from_path(path: &Path) -> Result<Fixture, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("read fixture {}: {}", path.display(), e))?;
 
-    // Sniff: first non-blank line. If it parses as a `FixtureEvent`,
-    // we're looking at NDJSON. Curated fixtures start `{` followed by
-    // `"name"` / whitespace; that line on its own does not parse as
-    // FixtureEvent (no `kind` field), so the sniff is unambiguous.
+    // A curated fixture's first line has no `kind` field, so the sniff is unambiguous.
     let first_line = text.lines().find(|l| !l.trim().is_empty());
     if let Some(line) = first_line
         && serde_json::from_str::<FixtureEvent>(line).is_ok()
     {
-        // NDJSON branch — every non-blank line is a FixtureEvent.
         let mut events = Vec::new();
         for (lineno, raw) in text.lines().enumerate() {
             if raw.trim().is_empty() {
@@ -160,29 +81,14 @@ pub fn load_fixture_from_path(path: &Path) -> Result<Fixture, String> {
         });
     }
 
-    // Object branch — single JSON fixture object.
     serde_json::from_str(&text).map_err(|e| format!("parse fixture {}: {}", path.display(), e))
 }
 
-// ---------------------------------------------------------------------------
-// In-memory boot
-// ---------------------------------------------------------------------------
-
-/// Boot an in-memory `SqlxRepo` + `EventBus` + minimal `AppState` with
-/// stub external clients. No background tasks are spawned (no FSM, no
-/// orphan-terminal sweeper) — the replay loader plays back a known event
-/// log, and the kernel-internal projectors that would react to that log
-/// would step on the seeded events.
-///
-/// Returns the components separately so the test harness (which only
-/// wires up the WS router) and the binary (which mounts the full router)
-/// can each build their own `axum::Router::with_state`.
+/// Boot an in-memory `SqlxRepo` + `EventBus` + minimal `AppState` with stub external clients. No background tasks: kernel-internal projectors would step on the seeded events.
 pub async fn boot_in_memory() -> anyhow::Result<(Arc<SqlxRepo>, EventBus, AppState)> {
     let events = EventBus::new();
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await?);
-    // PR3 (#136) — replay path doesn't need role enforcement coverage
-    // (fixtures replay as `ActorId::User`, which the gate lets through
-    // without a cache lookup). An empty cache is fine.
+    // Fixtures replay as `ActorId::User`, which the role gate lets through without a cache lookup.
     let card_role_cache = crate::card_role_cache::CardRoleCache::new();
     let track_area_cache = crate::track_area_cache::TrackAreaCache::new();
     let write = crate::state::WriteContext::new(card_role_cache.clone(), track_area_cache.clone());
@@ -225,43 +131,20 @@ fn replay_terminal_spawn_hook() -> SpawnHook {
     )
 }
 
-/// Raw-insert every fixture event into the repo via `Repo::log_pure_event`.
-/// Returns the assigned `events.id`s in append order.
-///
-/// `log_pure_event` is the same public path used by codex hook ingest +
-/// plugin-state emission — it persists the event row and broadcasts the
-/// envelope inside the commit-then-emit window. From the consumer's
-/// perspective (WS subscribers, replay queries) the result is
-/// indistinguishable from a "real" event from a write handler.
+/// Raw-insert every fixture event via `Repo::log_pure_event` (the same path as hook ingest), returning the assigned `events.id`s in append order.
 pub async fn seed_events(
     repo: &SqlxRepo,
     bus: &EventBus,
     fixture: &Fixture,
 ) -> anyhow::Result<Vec<i64>> {
     let mut out = Vec::with_capacity(fixture.events.len());
-    // PR3 (#136) — seed path uses an empty cache. Fixture events are
-    // replayed under their persisted actor (predominantly `User`); the
-    // role gate lets `User`/`Kernel`/`Plugin` through without a cache
-    // lookup. `AiCodex` actors in legacy fixtures predate PR3's role
-    // model and would be denied for unknown card — that's intentional
-    // (replay should refuse to ingest events the live kernel would
-    // refuse to mint).
+    // Empty cache: `AiCodex` actors in legacy fixtures would be denied for an unknown card, intentionally — replay must not ingest what the live kernel would refuse.
     let cache = crate::card_role_cache::CardRoleCache::new();
     let wcc = crate::track_area_cache::TrackAreaCache::new();
     for ev in &fixture.events {
         let event = Event::from_kind_and_payload(&ev.kind, ev.payload.clone())
             .map_err(|e| anyhow::anyhow!("reconstruct event {}: {}", ev.kind, e))?;
-        // PR2 of #136: Fixtures predate typed actors/scope but the
-        // RECORD_SESSION recorder now writes the typed JSON form. Accept
-        // either:
-        //   * a bare string (`"user"` / `"kernel"` / `"ai:codex"` / `"plugin:foo"`)
-        //     — the legacy fixture grammar, mapped via `actor_from_legacy_string`,
-        //   * the typed `ActorId` JSON object (`{"kind":"User"}` etc.)
-        //     — directly deserialized.
-        // Scope is always `System` for fixtures — replays don't carry
-        // ancestor metadata and the NULL-fallback collapses it anyway.
-        // Tests that need scope assertions should write through the
-        // typed surface, not the fixture path.
+        // Scope is always `System` for fixtures: replays don't carry ancestor metadata.
         let actor = if let Some(s) = ev.actor.as_str() {
             actor_from_legacy_string(s)
         } else {
@@ -276,10 +159,7 @@ pub async fn seed_events(
     Ok(out)
 }
 
-/// Map a legacy fixture-actor string to an [`ActorId`]. The pre-PR2
-/// audit grammar was `"user"` / `"kernel"` / `"plugin:<id>"` / `"ai:<id>"`;
-/// PR2 of #136 superseded that with the typed enum. This helper preserves
-/// the round-trip for replay fixtures shipped under the old wire format.
+/// Map a legacy fixture-actor string (`"user"` / `"kernel"` / `"plugin:<id>"` / `"ai:<id>"`) to an [`ActorId`].
 fn actor_from_legacy_string(s: &str) -> ActorId {
     if s == "user" {
         ActorId::User
@@ -288,88 +168,41 @@ fn actor_from_legacy_string(s: &str) -> ActorId {
     } else if let Some(id) = s.strip_prefix("plugin:") {
         ActorId::Plugin(id.to_string())
     } else if s == "ai:codex" {
-        // Legacy fixtures don't carry a card id; PR3 will reattribute
-        // via the dispatcher. Use an empty CardId tag — honest "we know
-        // it's codex but the fixture doesn't say which card".
+        // Legacy fixtures don't carry a card id; an empty CardId tag is the honest answer.
         ActorId::AiCodex(crate::ids::CardId::from(""))
     } else {
-        // Unknown legacy form — attribute as User rather than fabricate
-        // a typed identity from an attacker-controlled string. Replay
-        // fixtures are checked-in test data, so this is just paranoia.
+        // Unknown legacy form: attribute as User rather than fabricate a typed identity from the string.
         ActorId::User
     }
 }
 
-/// Wipe every row from the in-memory repo and re-seed the fixture's event
-/// stream. Used exclusively by `--serve` mode's `POST /dev/reset`
-/// endpoint to give the Playwright `a11y` suite a hermetic starting
-/// point per test (issue #56 followup).
-///
-/// **Dev-only.** This bypasses the audited write path on purpose — the
-/// reset is conceptually a fresh boot of the in-memory kernel, not a
-/// business mutation. To keep parity with `boot_in_memory()` we delete
-/// every domain row + the entire event log + the `sqlite_sequence` rows
-/// (so re-seeding starts at `events.id = 1` like a cold boot would). The
-/// re-seed then runs through the normal `seed_events` path, emitting
-/// envelopes on the bus exactly as the initial boot did.
-///
-/// Tables wiped match the schema declared by `migrations/0001..0004`:
-/// `events`, `overlays`, `cards`, `tracks`, `areas`, `terminals`,
-/// `plugins`, `plugin_kv`, `plugin_tokens`, `settings`, plus the
-/// #644 `tasks` table (migration 0041) and the #854 `retention_meta`
-/// table (migration 0060). Migration rows
-/// (`_sqlx_migrations`) are preserved — wiping them would force a
-/// re-migrate that we don't need for a stateful reset.
-///
-/// Returns the assigned `events.id`s of the freshly-seeded events.
+/// Wipe every row from the in-memory repo and re-seed the fixture's event stream (`POST /dev/reset` in `--serve` mode).
+/// Dev-only: bypasses the audited write path on purpose. `_sqlx_migrations` is preserved.
 pub async fn reset_from_fixture(
     repo: &SqlxRepo,
     bus: &EventBus,
     fixture: &Fixture,
 ) -> anyhow::Result<Vec<i64>> {
-    // Delete order respects FK chains, children before parents:
-    // `terminals.card_id → cards` is now `ON DELETE RESTRICT`
-    // (migration 0011), so terminals MUST be wiped before cards or
-    // the FK trips with `(code: 1811) FOREIGN KEY constraint failed`.
-    // After that, `cards.track_id → tracks` and `tracks.area_id → areas`
-    // still cascade, but we delete them explicitly in child-first order
-    // so the whole table-wipe sequence is uniform and order-correct
-    // regardless of which FKs are RESTRICT vs CASCADE. The SqlxRepo
-    // opens with `PRAGMA foreign_keys = ON`, so an out-of-order delete
-    // would surface as a constraint error — this explicit ordering is
-    // what enforces correctness; we no longer rely on `ON DELETE CASCADE`
-    // declarations to bail us out.
-    //
-    // Event-linked candidate decision bindings and receipts must precede the
-    // event log. Production Track cascades and Operation stop guards remain intact.
+    // Delete order respects FK chains, children before parents: `PRAGMA foreign_keys = ON` and some FKs are RESTRICT, so this explicit ordering is what enforces correctness.
     let pool = repo.pool();
-    // #930 uniform rule: writing transactions always BEGIN IMMEDIATE —
-    // deferred transactions are reserved for read-only work.
+    // Writing transactions always BEGIN IMMEDIATE.
     let mut tx = begin_immediate_tx(pool).await?;
     for stmt in [
         "DELETE FROM task_candidate_decision_bindings",
         "DELETE FROM task_candidate_decisions",
         "DELETE FROM events",
-        // Retention bookkeeping must reset WITH the event log: a stale
-        // `events_prune_watermark` from the pre-reset log would sit above
-        // the re-seeded ids and strand every WS client in a
-        // `_snapshot_required` loop (#854 slice 2).
+        // A stale `events_prune_watermark` above the re-seeded ids would strand every WS client in a `_snapshot_required` loop.
         "DELETE FROM retention_meta",
         "DELETE FROM overlays",
         "DELETE FROM terminals",
         "DELETE FROM cards",
         "DELETE FROM task_ref_index",
-        // `tasks` (migration 0041, issue #644) deliberately has no FK to
-        // `tracks`, so deleting `tracks` will NOT cascade here — the wipe
-        // must name it explicitly or task rows leak across resets.
+        // `tasks` deliberately has no FK to `tracks`, so it must be named explicitly.
         "DELETE FROM tasks",
         "DELETE FROM task_attempt_allocations",
-        // `tracks.root_session_id` points at `worker_sessions` without
-        // ON DELETE SET NULL, so table-level resets must clear it before
-        // worker sessions leave.
+        // `tracks.root_session_id` has no ON DELETE SET NULL; clear it before worker sessions leave.
         "UPDATE tracks SET root_session_id = NULL",
-        // `worker_sessions.track_id` is a NO ACTION FK, so sessions must
-        // leave before their parent tracks.
+        // `worker_sessions.track_id` is a NO ACTION FK, so sessions leave before their tracks.
         "DELETE FROM worker_sessions",
         "DELETE FROM tracks",
         "DELETE FROM areas",
@@ -377,13 +210,7 @@ pub async fn reset_from_fixture(
         "DELETE FROM plugin_tokens",
         "DELETE FROM plugins",
         "DELETE FROM settings",
-        // Reset all AUTOINCREMENT counters so re-seeded events start at
-        // id=1 (matching a cold `boot_in_memory()`). Without this, a
-        // fixture's `expected.last_event_kind` would still pass — the
-        // assertion only looks at the tip — but any WS replay client
-        // that recorded a cursor between resets would see id-skips,
-        // which is exactly the determinism break this endpoint exists
-        // to prevent.
+        // Reset AUTOINCREMENT counters so re-seeded events start at id=1; a WS client holding a cursor across resets would otherwise see id-skips.
         "DELETE FROM sqlite_sequence",
     ] {
         sqlx::query(stmt).execute(&mut *tx).await?;
@@ -393,19 +220,11 @@ pub async fn reset_from_fixture(
     seed_events(repo, bus, fixture).await
 }
 
-// ---------------------------------------------------------------------------
-// `force_planner_phase` — issue #682, dev hook behind `POST /dev/force-planner-phase`
-// ---------------------------------------------------------------------------
-
-/// Sentinel thread id stamped on dev-forced planner runtimes. The stub
-/// app-server can never start a real thread in replay mode, but the
-/// harness needs *a* thread id to be recoverable (boot recovery and
-/// `/planner/input` lazy recovery both refuse rows with no thread anywhere).
+/// Sentinel thread id stamped on dev-forced planner runtimes; recovery refuses rows with no thread anywhere.
 #[cfg(feature = "fixtures")]
 pub const DEV_FORCED_THREAD_ID: &str = "dev-forced-thread";
 
-/// Outcome of [`force_planner_phase`], serialized verbatim into the replay
-/// binary's `POST /dev/force-planner-phase` response body.
+/// Outcome of [`force_planner_phase`], serialized verbatim into the `POST /dev/force-planner-phase` response.
 #[cfg(feature = "fixtures")]
 #[derive(Debug, serde::Serialize)]
 pub struct ForcePlannerPhaseOutcome {
@@ -415,34 +234,8 @@ pub struct ForcePlannerPhaseOutcome {
     pub new_phase: crate::harness::HarnessPhaseTag,
 }
 
-/// Issue #682 PR-1 — force a planner card's harness phase. Dev-only: this is
-/// the engine behind the replay binary's `POST /dev/force-planner-phase`, so
-/// Playwright e2e can drive `GET /planner/run`, `harness.phase.changed`
-/// events, and the PlannerCurrentRun UI without a real codex daemon.
-///
-/// Why the function must stand its own harness up (Step-0 probe, pinned by
-/// `tests/replay_force_planner_phase.rs`): in replay boot the shared codex
-/// app-server is a stub (`is_running()` == false), so the
-/// `planner-harness-start` operation submitted by `POST /api/tracks` fails at
-/// `validate` — the planner card exists but has NO runtime row and NO
-/// registered harness. A 404 on registry miss would make e2e setup
-/// impossible, so this converges any valid planner card to a forceable
-/// harness:
-///
-/// 1. card guard mirrors the production `/planner/*` routes (404 unknown
-///    card / role, 403 non-planner-codex);
-/// 2. no active worker session → insert one (`session_start_runtime_tx`, kind
-///    `SharedPlanner`) carrying an initial [`HarnessSnapshot`] and the
-///    [`DEV_FORCED_THREAD_ID`] sentinel;
-/// 3. registry miss → [`crate::harness::spawn_recovered_harness`] — the
-///    exact seam boot recovery uses; it does no codex RPC;
-/// 4. [`crate::harness::PlannerHarness::force_phase_for_dev`] sets the FSM
-///    state and reuses the regular persist path, so snapshot, runtime
-///    status, `GET /planner/run`, and the `HarnessPhaseChanged` event all
-///    agree by construction.
-///
-/// Errors use [`crate::error::CalmError`] so the binary's handler can map
-/// `e.status()` straight to an HTTP status.
+/// Dev-only: force a planner card's harness phase so e2e can drive `GET /planner/run` and `harness.phase.changed` without a real codex daemon.
+/// In replay boot the app-server is a stub, so the planner card has no runtime row and no registered harness; this stands one up (runtime row, then `spawn_recovered_harness`) before forcing the phase through the regular persist path.
 #[cfg(feature = "fixtures")]
 pub async fn force_planner_phase(
     state: &AppState,
@@ -462,13 +255,7 @@ pub async fn force_planner_phase(
     };
     use crate::state::RouteState;
 
-    // Issue #682 review — `wedged` is not forceable: `persist_snapshot`
-    // would write `WorkerSessionState::Failed` (via `run_status_for`), and the read
-    // path (`session_projection_active_for_card`, used by `GET /planner/run` and by
-    // this function) filters failed rows — a "successful" force would
-    // instantly report `{runtime_id: null, phase: null}` and the next
-    // force would mint a second runtime. Body validation runs first,
-    // mirroring `send_planner_input`'s text guard.
+    // `wedged` is not forceable: `persist_snapshot` would write `Failed`, which the read path filters, so the next force would mint a second runtime.
     if to == HarnessPhaseTag::Wedged {
         return Err(CalmError::BadRequest(
             "`wedged` is not forceable (a failed runtime row is no longer projectable by \
@@ -478,7 +265,6 @@ pub async fn force_planner_phase(
         ));
     }
 
-    // Guard chain mirrors `routes::cards::get_planner_run`: card → role → kind.
     let card = repo
         .card_get(card_id)
         .await?
@@ -502,18 +288,10 @@ pub async fn force_planner_phase(
             track.id
         )));
     }
-    // Issue #682 review — take the same per-card recovery lock
-    // `ensure_live_planner_harness` (`/planner/input` lazy recovery) and
-    // `/planner/reset` use, and hold it through stand-up + force. Without it
-    // a concurrent Send racing this hook could double-spawn the harness
-    // (the second `spawn_recovered_harness` shuts the first down), or a
-    // reset could supersede the runtime between the fetch below and
-    // registration. Everything after this line reads/writes runtime rows
-    // and the registry under the lock.
+    // Same per-card recovery lock as `/planner/input` lazy recovery and `/planner/reset`, held through stand-up + force, or a concurrent Send could double-spawn the harness.
     let route = RouteState::from_ref(state);
     let _recovery_guard = lock_card(&route.planner_recovery_locks, card.id.as_str()).await;
 
-    // Ensure an active runtime row exists (Step-0: replay boot leaves none).
     let card_id_string = card.id.to_string();
     let runtime = match repo
         .session_projection_active_for_card(&card_id_string)
@@ -534,26 +312,14 @@ pub async fn force_planner_phase(
                         WorkerSessionInit {
                             id: runtime_id_for_tx,
                             card_id: card_id_for_tx,
-                            // Only a real planner card gets the `SharedPlanner` kind:
-                            // that kind maps to `WorkerContract::Planner`,
-                            // which makes the session the track's root
-                            // authority. Both conversation flavours are
-                            // ordinary codex-card sessions.
+                            // Only a real planner card gets `SharedPlanner`, which makes the session the track's root authority.
                             kind: if role == CardRole::Planner {
                                 WorkerSessionKind::SharedPlanner
                             } else {
                                 WorkerSessionKind::CodexCard
                             },
                             agent_provider: Some(AgentProvider::Codex),
-                            // Deliberately `Idle`, not the `Starting` that
-                            // `run_status_for(PendingThreadStart)` would
-                            // derive from the snapshot phase: a `starting`
-                            // row trips `ensure_live_planner_harness`'s 503
-                            // "start still in flight" guard, breaking
-                            // `/planner/input` until the first force lands.
-                            // Harmless mismatch — the first
-                            // `persist_snapshot` (end of this function)
-                            // overwrites status from the live state anyway.
+                            // `Idle`, not `Starting`: a `starting` row trips `ensure_live_planner_harness`'s 503 guard. The first `persist_snapshot` overwrites status anyway.
                             status: WorkerSessionState::Idle,
                             terminal_run_id: None,
                             thread_id: Some(DEV_FORCED_THREAD_ID.into()),
@@ -579,9 +345,7 @@ pub async fn force_planner_phase(
         }
     };
 
-    // `spawn_recovered_harness` needs a deserializable snapshot on the row;
-    // a row from some other (half-failed) source may lack one — heal it
-    // with a fresh initial snapshot rather than 404ing.
+    // `spawn_recovered_harness` needs a deserializable snapshot on the row; heal a missing one rather than 404.
     let runtime = match runtime.handle_state_json.as_ref() {
         Some(value) if is_harness_snapshot_value(value) => runtime,
         _ => {
@@ -615,8 +379,7 @@ pub async fn force_planner_phase(
         }
     };
 
-    // Registry miss → stand the harness up via the boot-recovery seam
-    // (no codex RPC; snapshot load + catch-up replay + run + register).
+    // Registry miss → stand the harness up via the boot-recovery seam (no codex RPC).
     let harness = match state.harness.get(&runtime.id) {
         Some(harness) => harness,
         None => crate::harness::spawn_recovered_harness(
@@ -640,14 +403,7 @@ pub async fn force_planner_phase(
         })?,
     };
 
-    // Issue #682 review — the recovered harness runs against the replay
-    // stub app-server, so it must never issue turns: `turn_start` would
-    // fail, the batch would re-buffer with `hard_fire`, and the run loop
-    // would churn phases every 50ms tick the moment `/planner/input` (or a
-    // catch-up observation) lands in an issuable phase. Observations still
-    // enqueue — PR-2's `/planner/input` happy path stays functional.
-    // Idempotent, so calling it on an already-paused (previously forced)
-    // harness is fine.
+    // The recovered harness runs against the stub app-server and must never issue turns, or the run loop would churn phases every tick. Idempotent.
     harness.pause_issuance_for_dev();
 
     let (old_phase, new_phase) = harness.force_phase_for_dev(to).await?;
@@ -659,18 +415,7 @@ pub async fn force_planner_phase(
     })
 }
 
-/// Issue #682 review — shut down and deregister every registered planner
-/// harness. The replay binary's `POST /dev/reset` calls this BEFORE
-/// reseeding the repo: `reset_from_fixture` wipes the runtime rows, so a
-/// harness left registered would survive as an orphaned 50ms-tick task
-/// whose every snapshot persist warns "runtime … not found" — and across a
-/// long Playwright suite (`beforeEach` reset pattern) those accumulate.
-///
-/// Uses the existing remove-then-`shutdown()` seam (`HarnessRegistry::
-/// remove` + `PlannerHarness::shutdown`), the same path `planner-harness-shutdown`
-/// and track deletion take — no new kill mechanism. Shutdown against the
-/// replay stub daemon degrades to warn-logged no-op RPCs by design.
-///
+/// Shut down and deregister every registered planner harness, BEFORE `POST /dev/reset` reseeds: `reset_from_fixture` wipes the runtime rows, and a harness left registered would survive as an orphaned tick task.
 /// Returns the number of harnesses shut down.
 #[cfg(feature = "fixtures")]
 pub async fn shutdown_registered_harnesses(state: &AppState) -> usize {
@@ -683,10 +428,6 @@ pub async fn shutdown_registered_harnesses(state: &AppState) -> usize {
     }
     count
 }
-
-// ---------------------------------------------------------------------------
-// Assertion helpers used by `--assert`
-// ---------------------------------------------------------------------------
 
 #[derive(Debug)]
 pub struct AssertOutcome {
@@ -703,22 +444,12 @@ impl AssertOutcome {
     }
 }
 
-/// Run every assertion in `fixture.expected` against the seeded repo
-/// state. Missing fields in `expected` are silently skipped — callers
-/// can ship partial fixtures while building up coverage.
-///
-/// Returns the matched/failed breakdown rather than panicking so the
-/// binary can decide its own exit code + stdout format.
+/// Run every assertion in `fixture.expected` against the seeded repo; missing fields are skipped. Returns matched/failed rather than panicking.
 pub async fn assert_expected(repo: &SqlxRepo, fixture: &Fixture) -> anyhow::Result<AssertOutcome> {
     let mut matched: Vec<String> = Vec::new();
     let mut failed: Vec<String> = Vec::new();
 
-    // last_event_kind — read the head of the event log.
     if let Some(expected_kind) = &fixture.expected.last_event_kind {
-        // The fixture seeded N events via `log_pure_event`; the highest
-        // id is the last one we inserted. Reuse `events_since(0)` to
-        // grab the whole log in order (small fixtures only — replay
-        // throughput target is 10k events per §6.4).
         let log = repo.events_since(0, i64::MAX).await?;
         match log.last() {
             Some((_, _, _, ev)) => {
@@ -737,21 +468,7 @@ pub async fn assert_expected(repo: &SqlxRepo, fixture: &Fixture) -> anyhow::Resu
         }
     }
 
-    // layout_positions — replay the event log to derive the current
-    // `view/layout` overlay state, then compare its `positions` map.
-    //
-    // We can't query `overlays_for` here: `log_pure_event` writes the
-    // event row but does *not* project to the entity tables (that's
-    // the write-handler's job, and the loader bypasses handlers by
-    // design — the whole point of a fixture is to seed a raw event
-    // log without re-running the business logic that produced it).
-    //
-    // So we fold the event stream ourselves: walk events in id order,
-    // and let each `overlay.set` for the target track's `view/layout`
-    // overwrite the running state. This is what a WS replay consumer
-    // (`useOverlayState` in the frontend, the test in
-    // `tests/replay_fixtures.rs`) would do, just done server-side
-    // without the WS hop.
+    // `log_pure_event` does not project to the entity tables, so `overlays_for` cannot be queried; fold the event stream instead, as a WS replay consumer would.
     if !fixture.expected.layout_positions.is_empty() {
         let track_id = infer_track_id(fixture);
         match track_id {
@@ -803,18 +520,7 @@ pub async fn assert_expected(repo: &SqlxRepo, fixture: &Fixture) -> anyhow::Resu
     Ok(AssertOutcome { matched, failed })
 }
 
-/// Fold the persisted event log to derive the current `view/layout`
-/// positions map for `track_id`. Returns `None` if no `overlay.set` for
-/// `(view, track_id, layout)` has been observed (or the most recent
-/// event for that overlay was an `overlay.deleted`). The fold mirrors
-/// what `useOverlayState` does on the frontend: later events for the
-/// same `(plugin_id, entity_kind, entity_id, kind)` quad overwrite
-/// earlier ones, and `overlay.deleted` clears state.
-///
-/// Made `pub` so the integration test in `tests/replay_fixtures.rs`
-/// can exercise the fold directly (a 3-step set/delete/set sequence is
-/// easier to drive without a full WS round-trip). Not part of any
-/// stable surface; treat as test-helper-shape.
+/// Fold the persisted event log to derive the current `view/layout` positions for `track_id`; `None` if never set or last deleted. `pub` for the integration test.
 pub async fn derive_layout_positions(
     repo: &SqlxRepo,
     track_id: &str,
@@ -826,10 +532,7 @@ pub async fn derive_layout_positions(
     ))
 }
 
-/// Pure fold used by `derive_layout_positions` — exposed so tests can
-/// feed a hand-built event sequence without touching the repo. Walks
-/// events in caller-provided order and tracks the running `view/layout`
-/// state for `track_id`: `overlay.set` upserts, `overlay.deleted` clears.
+/// Pure fold used by `derive_layout_positions`: `overlay.set` upserts, `overlay.deleted` clears.
 pub fn fold_layout_positions<I>(
     events: I,
     track_id: &str,
@@ -863,10 +566,7 @@ where
     current
 }
 
-/// Best-effort: find the track id the fixture's `view/layout` overlay
-/// is attached to. The fixture schema does not name the track directly
-/// in `expected`, so we walk the seeded events and pick the first
-/// `overlay.set` whose entity_kind is `view` and kind is `layout`.
+/// Best-effort: the first `overlay.set` with entity_kind `view` and kind `layout` names the track.
 fn infer_track_id(fixture: &Fixture) -> Option<String> {
     for ev in &fixture.events {
         if ev.kind == "overlay.set"
@@ -880,35 +580,11 @@ fn infer_track_id(fixture: &Fixture) -> Option<String> {
     None
 }
 
-// ---------------------------------------------------------------------------
-// RECORD_SESSION — append every emitted envelope as line-delimited JSON
-// ---------------------------------------------------------------------------
-
-/// Spawn a tokio task that subscribes to the event bus and appends every
-/// envelope to `path` as a JSON line in the fixture's per-event shape
-/// (`{"kind", "actor", "payload"}`).
-///
-/// Honored by `calm-server` when `RECORD_SESSION=<path>` is set in the
-/// environment. The resulting file is directly playable by `replay --file`.
-///
-/// The `actor` field on each recorded line is whatever the producing
-/// `write_with_event` / `log_pure_event` call passed through — i.e. the
-/// declared identity from `X-Calm-Actor` or the handler's `Actor::kernel()`
-/// constant. Replayed traces preserve real attribution (issue #39).
-///
-/// Limitations (design doc §6.3 calls this out):
-///   - The leading entity snapshot mentioned in §6.3 is deferred: a
-///     snapshot would let a fixture target a non-empty starting state
-///     without re-seeding from scratch, but the existing §6.3 fixtures
-///     (and the track-grid trace) already start from empty, so this gap
-///     doesn't block the headline workflow.
+/// Spawn a task that appends every bus envelope to `path` as a JSON line in the fixture's per-event shape; honored when `RECORD_SESSION=<path>` is set. The result is directly playable by `replay --file`.
 pub fn spawn_session_recorder(bus: &EventBus, path: std::path::PathBuf) {
     let mut rx = bus.subscribe();
     tokio::spawn(async move {
-        // Open in append mode — multiple server restarts under the same
-        // `RECORD_SESSION` accumulate into one trace, which is usually
-        // what you want when reproducing a "weird thing that happened
-        // across a restart" bug.
+        // Append mode: multiple restarts under the same `RECORD_SESSION` accumulate into one trace.
         let file = match std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -939,10 +615,6 @@ pub fn spawn_session_recorder(bus: &EventBus, path: std::path::PathBuf) {
                     let payload = envelope.event.payload_value();
                     let line = serde_json::json!({
                         "kind": kind,
-                        // Real per-event attribution carried on the
-                        // envelope by the wrapper that committed the
-                        // events row (issue #39). The replay loader
-                        // round-trips this field verbatim.
                         "actor": envelope.actor,
                         "payload": payload,
                     });

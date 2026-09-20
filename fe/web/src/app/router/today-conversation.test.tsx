@@ -1,18 +1,5 @@
 // @vitest-environment jsdom
-//
-// #1341 — Today's Conversations module lists the LAUNCHPAD TRACK's own
-// conversations, by the same rule the track route uses ("this track's").
-//
-// This file exists because the previous rule was a different kind of thing
-// entirely: Today read the tab-local session registry, so its list was "every
-// conversation this browser tab has opened, anywhere". Those two rules agree on
-// nothing except by accident. A launchpad conversation may exist without this
-// tab ever opening it — including the fixed summary writer created by the
-// still-served `POST /api/today/summary` endpoint — and Today must list it.
-//
-// The whole file drives the real router, the real queries and the real
-// transport port; nothing here stubs `useConversationPanel` or the panel's
-// wiring, because the wiring IS the claim.
+// Today's Conversations module lists the LAUNCHPAD TRACK's own conversations, driven through the real router.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
@@ -34,10 +21,8 @@ const TRACK = {
   id: 'w1', area_id: 'c1', title: 'Other track', sort: 1, lifecycle: 'working', cwd: '/tmp',
   archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 1,
 };
-/* The launchpad track is `lp` throughout, and it is deliberately absent from
-   the workspace lists above: it lives in the system area, which
-   `GET /api/areas` filters out (#175), so Today reaches it through the resolve
-   and through nothing else. */
+/* The launchpad track is `lp` throughout, deliberately absent from the workspace
+   lists above: it lives in the system area, which `GET /api/areas` filters out. */
 
 /** A row in the shape `GET /api/tracks/{id}/conversations` serves. */
 function conversationRow(overrides: Record<string, unknown> = {}) {
@@ -60,7 +45,7 @@ type Case = Readonly<{
   launchpadConversations?: () => Promise<ApiTransportResponse>;
   /** Persisted turns served when a launchpad conversation is opened. */
   historyRows?: readonly unknown[];
-  /** Rows the OTHER track serves — the ones Today must no longer show. */
+  /** Rows the OTHER track serves, which Today must not show. */
   trackRows?: readonly unknown[];
   /** Whether the workspace has a user-visible area/track besides the launchpad. */
   userWorkspace?: boolean;
@@ -77,9 +62,8 @@ function renderApp({
   const transport: ApiTransportPort = {
     send: (request) => {
       requests.push(request);
-      /* `report_has_noninitial_content: false` keeps the document region in its
-         empty state, which means the track detail is never read — this file is
-         about the panel, and a document fixture would only add noise. */
+      /* `report_has_noninitial_content: false` keeps the document region empty, so the
+         track detail is never read. */
       if (request.path === '/api/today/launchpad') {
         return launchpadResolve?.()
           ?? Promise.resolve(ok({ track_id: 'lp', report_has_noninitial_content: false }));
@@ -176,14 +160,8 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
     expect(requests.map((request) => request.path)).toContain(LAUNCHPAD_CONVERSATIONS);
   });
 
-  /*
-   * The inversion's other half, and the half a "just point it at the launchpad"
-   * change could silently not deliver: visiting another track must no longer put
-   * that track's conversations on Today. The registry still receives them — the
-   * track route remembers what it lists so a reader who walks back finds the
-   * names and turn counts this tab derived — so a Today that kept consulting it
-   * would keep showing them.
-   */
+  /* The registry still receives another track's rows, so a Today that consulted it
+     would keep showing them. */
   it('keeps another track’s conversations off Today, however recently they were visited', async () => {
     const { router } = renderApp({
       launchpadRows: () => [conversationRow({ title: 'Today’s progress' })],
@@ -197,36 +175,16 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
     expect(screen.queryByRole('button', { name: /Conversation Other chat/ })).toBeNull();
   });
 
-  /*
-   * Opened where it is, not somewhere else — which is the half of the inversion
-   * that is easy to miss, because the list looked right either way.
-   *
-   * Today used to be the one route that could not hold the drawer: it had no
-   * track, so opening a row navigated to whichever track the row belonged to and
-   * left an open request in the registry for that route to redeem (#1189 G6).
-   * There is nothing to navigate to now — the row is on the launchpad, and the
-   * launchpad's page is this one. Sending the reader to `/track/lp` would be
-   * sending them into the system area, off every list, away from the report the
-   * conversation is about.
-   */
   it('opens its own conversation in the drawer, navigating nowhere', async () => {
     const { router } = renderApp({ launchpadRows: () => [conversationRow({ title: 'Today’s progress' })] });
     await userEvent.click(await screen.findByRole('button', { name: /Conversation Today’s progress/ }));
     expect(await screen.findByRole('complementary', { name: 'Today’s progress' })).toBeTruthy();
-    /* The memory history this file drives the router with, still on Today. A
-       navigation would have put `/track/lp` here. */
+    /* Still on Today: a navigation would have put `/track/lp` here. */
     expect(router.state.location.pathname).toBe('/');
   });
 
-  /*
-   * #1722 §5.3, the third `ChatList` site (A-MAJOR-1). The launchpad is in the
-   * system area, so it is on no workspace track list and this page has no
-   * track detail — its rows can only read `working` off the workspace-wide
-   * overlays query, which the route must ask for itself. A `cards` that only
-   * flows through the track route leaves this list `{}`: the summary writer
-   * never shows working while it writes, and its drawer never carries the
-   * live mark. `state: 'turn_pending'` on the row is not a verdict.
-   */
+  /* The launchpad is on no workspace track list, so its rows can only read `working`
+     off the workspace-wide overlays query. `state: 'turn_pending'` on the row is not a verdict. */
   it('the launchpad summary row reads the launchpad activity overlay', async () => {
     let cards: { card_id: string; state: 'working' | 'input' | 'failed' }[] = [];
     const { client } = renderApp({
@@ -266,16 +224,12 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
 
     await userEvent.click(await screen.findByRole('button', { name: 'Conversation Today’s progress' }));
     expect(await screen.findByRole('complementary', { name: 'Today’s progress' })).toBeTruthy();
-    /* The row has to have LOADED for the name assertion below to mean anything.
-       A history row the wire schema rejects is dropped silently, and then
-       "the bootstrap is not in the name" is true because nothing is. */
+    /* The row has to have LOADED for the name assertion below to mean anything: a
+       history row the wire schema rejects is dropped silently. */
     expect(await screen.findByText(bootstrap)).toBeTruthy();
     expect(screen.queryByRole('complementary', { name: /daily-progress writer/ })).toBeNull();
   });
 
-  /* The `+` always means a conversation with Today. With a launchpad it opens
-     an ordinary scoped draft; without one, its press materialises the track
-     first and remains the only write in that entry flow. */
   it('offers a + once there is a launchpad to attach a conversation to', async () => {
     renderApp();
     await screen.findByText('No conversations yet.');
@@ -289,17 +243,8 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
     expect(screen.queryByText('Nothing here yet.')).toBeNull();
   });
 
-  /*
-   * The symbol, not just the control. It drew `Icon name="chat"` — a speech
-   * bubble — while every other "make a new one" in the app draws `plus`, and
-   * owner looking for a way to add a conversation did not recognise it as one.
-   * A label-only assertion stayed green through that, because the label was
-   * always right; what was wrong was the glyph.
-   *
-   * Pinned against the shell's own add rather than against a copy of the plus
-   * path: the claim is that these two agree, and a literal path here would go
-   * on passing if the icon set changed underneath both.
-   */
+  /* Pinned against the shell's own add rather than a literal path, so the claim
+     survives an icon-set change underneath both. */
   it('draws the same add glyph the rest of the app draws, not a speech bubble', async () => {
     renderApp();
     await screen.findByText('No conversations yet.');
@@ -317,8 +262,7 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
     await screen.findByRole('region', { name: 'Getting started' });
     expect(screen.getByText('Start a conversation with Today.')).toBeTruthy();
     const start = screen.getByRole('button', { name: 'Start a conversation with Today' });
-    // Merely rendering the entry must remain a pure read; launchpad creation is
-    // attributable to the reader's press, never to opening Today.
+    // Merely rendering the entry must remain a pure read.
     expect(requests.filter((request) => request.method !== 'GET')).toEqual([]);
 
     await userEvent.click(start);
@@ -331,9 +275,8 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
 
   it('keeps a failed ensure visible when its refetch discovers the launchpad, then opens it on retry', async () => {
     const { requests } = renderNoLaunchpad({
-      /* The server creates the launchpad before starting its harness. A start
-         failure therefore returns 503 while the following resolve truthfully
-         finds the new track. */
+      /* The server creates the launchpad before starting its harness, so a start
+         failure returns 503 while the following resolve finds the new track. */
       ensure: () => Promise.resolve({
         status: 503, statusText: 'Service Unavailable', body: { error: 'harness start failed' },
       }),
@@ -360,13 +303,8 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
     expect(requests.filter((request) => request.path === '/api/today/launchpad/ensure')).toHaveLength(1);
   });
 
-  /*
-   * No launchpad, no list — and, above all, no request. A fresh workspace
-   * resolves to `200 null`, and a list read keyed on the empty string would ask
-   * the server about a track called `''` on every first-run page load. The same
-   * empty id would build `/api/cards//…` paths behind the drawer, which the
-   * route this replaced asserted against from the other end.
-   */
+  /* A fresh workspace resolves to `200 null`; a list read keyed on the empty string
+     would ask the server about a track called `''` on every first-run load. */
   it('asks for no conversation list at all when there is no launchpad yet', async () => {
     const { requests } = renderNoLaunchpad();
     await screen.findByText('Start a conversation with Today.');

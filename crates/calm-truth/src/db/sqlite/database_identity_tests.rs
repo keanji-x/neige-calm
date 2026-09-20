@@ -1,9 +1,4 @@
-//! #1722 S1b — `database_identity` (migration 0110) is one row that every
-//! open of the same file reads back.
-//!
-//! `AppState`-level twins (`database_id_survives_reboot`, which also pins
-//! that `db_instance_id` still differs per boot) live in
-//! `calm-server/tests/cases/version.rs`; these pin the repo mechanism.
+//! `database_identity` is one row that every open of the same file reads back.
 
 use std::str::FromStr;
 
@@ -72,16 +67,13 @@ async fn database_id_survives_reopen_of_the_same_file() {
     assert_ne!(other.database_id, first_id);
 }
 
-/// Several boots racing on a migrated file with no identity yet all read one
-/// id: `INSERT OR IGNORE` on the fixed key serializes on the write lock and
-/// every loser reads the winner's row.
+/// `INSERT OR IGNORE` on the fixed key serializes on the write lock and every loser reads the winner's row.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn database_id_concurrent_boot_reads_one_id() {
     let dir = tempfile::tempdir().unwrap();
     let url = file_url(&dir);
 
-    // Migrate without minting: `SqlxRepo::open` would mint, and the race
-    // under test is the mint itself.
+    // Migrate without minting: the race under test is the mint itself.
     let setup = raw_pool(&url).await;
     crate::MIGRATOR.run(&setup).await.unwrap();
     assert!(identity_rows(&setup).await.is_empty());
@@ -113,9 +105,7 @@ async fn database_id_concurrent_boot_reads_one_id() {
     );
 }
 
-/// `CHECK (singleton = 1)` is what makes the table one row. The two tests
-/// above stay green without it (they only ever insert key 1); this is the
-/// one that turns red when the CHECK is dropped.
+/// The two tests above stay green without the CHECK (they only ever insert key 1).
 #[tokio::test]
 async fn database_identity_rejects_second_row() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();

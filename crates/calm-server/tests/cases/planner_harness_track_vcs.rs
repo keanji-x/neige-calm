@@ -124,9 +124,7 @@ async fn boot() -> Boot {
         config: HarnessConfig {
             debounce_min_idle: Duration::from_millis(10),
             debounce_max_wait: Duration::from_millis(200),
-            // #1667 D2 — the report-edit pair too, so the round-2 F3 tests
-            // below (a queue of nothing but a `ReportEdited`) issue within
-            // the suite's budget instead of the shipped 20 s.
+            // The report-edit pair too, so a queue of nothing but a `ReportEdited` issues within the suite's budget.
             report_edit_min_idle: Duration::from_millis(10),
             report_edit_max_wait: Duration::from_millis(200),
             ..HarnessConfig::default()
@@ -217,10 +215,7 @@ async fn plain_chat_turn_does_not_refresh_or_read_track_vcs() {
     .fetch_one(boot.repo.pool())
     .await
     .unwrap();
-    // #1505 PR1 — user text goes through the durable route, which is the only
-    // one that mints a queue id. `observe` now refuses a `UserMessage`
-    // outright, so a test that used it was exercising a shape production
-    // never produces.
+    // User text goes through the durable route, the only one that mints a queue id; `observe` refuses a `UserMessage` outright.
     harness
         .observe_user_message_durable("hello without vcs".into(), Vec::new())
         .await
@@ -244,26 +239,12 @@ async fn plain_chat_turn_does_not_refresh_or_read_track_vcs() {
     harness.shutdown().await.unwrap();
 }
 
-/// #1189 A6 — the track assistant makes the track-VCS decision in two halves, and
-/// this pins both against each other.
-///
-/// * It **skips the per-turn transcript-refresh WRITE.** The premise of #1189 is
-///   N conversations on one track; keeping the refresh would multiply a
-///   track-scoped write transaction by N and contend with the planner harness's own
-///   per-turn refresh for the sqlite write lock. The sibling above asserts the
-///   same for an area chat.
-/// * It **still receives the since-last-turn diff.** This is where the assistant
-///   differs from the area chat, and it is the half that would be silently lost
-///   if `HarnessProfile::Assistant` were simply added to the plain-chat branch:
-///   an assistant whose job is answering questions about the track and editing
-///   its report must see what changed under it. Skipping the refresh does not
-///   cost the block — `since_last_turn_block` falls back to the track's current
-///   head when no refresh commit is supplied, which is what this test drives.
+/// The assistant skips the per-turn transcript-refresh write (N conversations would contend for the sqlite write lock)
+/// but still receives the since-last-turn diff: `since_last_turn_block` falls back to the track's current head when no refresh commit is supplied.
 #[tokio::test]
 async fn assistant_turn_skips_the_transcript_refresh_but_still_reads_the_track_diff() {
     let boot = boot().await;
-    // Shut the planner harness down first so every write and turn below is the
-    // assistant's; otherwise the planner's own refresh would mask the skip.
+    // Shut the planner harness down first so every write and turn below is the assistant's; otherwise the planner's own refresh would mask the skip.
     boot.harness.shutdown().await.unwrap();
     let assistant_card = add_card_with_event(
         &boot.repo,
@@ -362,10 +343,7 @@ async fn assistant_turn_skips_the_transcript_refresh_but_still_reads_the_track_d
         },
         snapshot,
     });
-    // #1505 PR1 — user text goes through the durable route, which is the only
-    // one that mints a queue id. `observe` now refuses a `UserMessage`
-    // outright, so a test that used it was exercising a shape production
-    // never produces.
+    // User text goes through the durable route, the only one that mints a queue id.
     harness
         .observe_user_message_durable("what changed?".into(), Vec::new())
         .await
@@ -695,13 +673,8 @@ async fn wait_for_state(
     }
 }
 
-// Waits on the harness's IN-MEMORY `last_seen_head` (not the persisted snapshot).
-// The turn-completion path persists the snapshot one await-point BEFORE it stamps
-// the in-memory value (run_loop.rs ~1534 then ~1536), so polling the snapshot can
-// return before the in-memory stamp lands — and a later in-memory stamp would then
-// clobber a test's `set_last_seen_head_raw` override. Waiting on the in-memory
-// value guarantees that stamp has landed, so the override is authoritative for the
-// next turn's diff baseline. See issue #687.
+// Waits on the harness's IN-MEMORY `last_seen_head`, not the persisted snapshot: the turn-completion path persists
+// the snapshot one await-point BEFORE stamping the in-memory value, and a later in-memory stamp would clobber a test's `set_last_seen_head_raw` override.
 async fn wait_for_in_mem_last_seen_head(boot: &Boot) -> String {
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
@@ -903,10 +876,7 @@ fn turn_text(daemon: &SharedCodexAppServer, idx: usize) -> String {
     assert_eq!(items.len(), 1);
     match &items[0] {
         InputItem::Text { text } => text.clone(),
-        // #1505 S6. These cases issue text only; a `localImage` reaching here
-        // would mean the diff-block path started carrying attachments, and
-        // returning its path as "the turn text" would make every assertion
-        // below read a different thing than it names.
+        // These cases issue text only; a `localImage` reaching here would mean the diff-block path started carrying attachments.
         other => panic!("expected one text item, got {other:?}"),
     }
 }
@@ -1131,11 +1101,7 @@ async fn next_turn_prepends_diff_since_completed_turn_head() {
     boot.harness.shutdown().await.unwrap();
 }
 
-/// #1667 round-2 F3 — a turn opened by a `ReportEdited` observation
-/// names `report.md` in the since-last-turn block but does not repeat
-/// the change as a unified patch: the turn's own input is the block-level
-/// diff, and the patch (which spans everything since the previous turn)
-/// was the same change told twice in two shapes.
+/// The turn's own input is the block-level diff, so the unified patch would be the same change told twice.
 #[tokio::test]
 async fn report_edited_turn_names_report_md_without_the_unified_patch() {
     let boot = boot().await;
@@ -1189,10 +1155,7 @@ async fn report_edited_turn_names_report_md_without_the_unified_patch() {
     boot.harness.shutdown().await.unwrap();
 }
 
-/// #1667 round-4 M3 — a pre-#1667 `ReportEdited` (no `body_before`: a
-/// queue entry persisted before the upgrade) renders the re-read sentence
-/// and no block-level diff, so the unified patch is the only place that
-/// edit is visible: the batch is still a quiet turn, but the patch stays.
+/// A `ReportEdited` with no `body_before` (a queue entry persisted before the upgrade) renders no block-level diff, so the unified patch is the only place that edit is visible.
 #[tokio::test]
 async fn legacy_report_edited_turn_keeps_the_unified_patch() {
     let boot = boot().await;
@@ -1227,10 +1190,7 @@ async fn legacy_report_edited_turn_keeps_the_unified_patch() {
     boot.harness.shutdown().await.unwrap();
 }
 
-/// #1678 A1 (review round 1) — the channel statement is a fact about the
-/// batch, not about one edit: the front end folds a turn away only when
-/// every segment is a report edit, so only such a batch may be told to end
-/// silently. Rendered per observation it would land in a mixed batch too.
+/// The channel statement is a fact about the batch, not about one edit: the front end folds a turn away only when every segment is a report edit.
 const CHANNEL_LINE: &str = "This is a background sync turn: an ordinary reply here \
     is folded away by the front end. Call calm.user.notify only for a conflict \
     with work still in flight, data you cannot parse, or a decision only the \
@@ -1248,9 +1208,7 @@ fn report_edit_with_diff(boot: &Boot) -> Observation {
     }
 }
 
-/// A batch that is nothing but report edits, each with its diff, closes
-/// its input with the channel line: once, after the last diff, as the
-/// last line of the turn text.
+/// The channel line closes the input once, after the last diff, as the last line of the turn text.
 #[tokio::test]
 async fn report_edited_batch_closes_with_the_channel_line() {
     let boot = boot().await;
@@ -1279,10 +1237,7 @@ async fn report_edited_batch_closes_with_the_channel_line() {
     boot.harness.shutdown().await.unwrap();
 }
 
-/// `[User, ReportEdited]` drained together opens an ordinary turn (the
-/// front end does not fold it), so the batch carries no channel line: the
-/// planner must answer the user, not end silently. The edit's own data
-/// line is still there, being a fact about the edit.
+/// The front end does not fold a mixed batch, so it carries no channel line; the edit's own data line is still there.
 #[tokio::test]
 async fn mixed_batch_with_a_user_message_has_no_channel_line() {
     let boot = boot().await;
@@ -1302,9 +1257,7 @@ async fn mixed_batch_with_a_user_message_has_no_channel_line() {
         .unwrap();
     boot.harness.observe(report_edit_with_diff(&boot)).unwrap();
     wait_for_pending_len(&boot.harness, 2).await;
-    // Completed by notification, not `complete_latest_turn`: the batch is
-    // hard-fire (a user message) and issues before that helper could see
-    // the `TurnCompleted` state it waits for.
+    // Completed by notification, not `complete_latest_turn`: a hard-fire batch issues before that helper could see the `TurnCompleted` state it waits for.
     let first_turn_id = boot
         .daemon
         .active_turn_for_test(&boot.thread_id)
@@ -1339,8 +1292,7 @@ async fn mixed_batch_with_a_user_message_has_no_channel_line() {
     boot.harness.shutdown().await.unwrap();
 }
 
-/// A pre-#1667 entry (`body_before: None`) renders no diff and keeps the
-/// unified patch; by the same predicate it gets no channel line.
+/// A `body_before: None` entry renders no diff, so by the same predicate it gets no channel line.
 #[tokio::test]
 async fn legacy_report_edited_batch_has_no_channel_line() {
     let boot = boot().await;
@@ -1370,9 +1322,7 @@ async fn legacy_report_edited_batch_has_no_channel_line() {
     boot.harness.shutdown().await.unwrap();
 }
 
-/// #1667 round-2 F3 — the counterpart: a turn opened by a user message
-/// (with the same report change since the last turn) still carries the
-/// unified patch, so the omission is scoped to report-edit-only batches.
+/// The counterpart: the patch omission is scoped to report-edit-only batches.
 #[tokio::test]
 async fn user_message_turn_still_carries_the_unified_report_patch() {
     let boot = boot().await;

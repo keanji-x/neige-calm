@@ -138,7 +138,6 @@ pub(crate) enum Verdict {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum BreakingReason {
-    /// Top-level productMajor changed.
     ProductMajorChanged,
     /// One or more Tier B protocol/version compatibility fields changed.
     WireIncompatibility,
@@ -823,8 +822,6 @@ mod tests {
 
     #[test]
     fn web_only_denies_mcp_setup_bundle_on_pre_setup_kernel() {
-        // Use the same capability revision that calm-server actually emits,
-        // not a fixture's independently handwritten target API version.
         let mut target = compat(27, 27);
         target.api_version = calm_types::compatibility::REST_API_VERSION.into();
         let mut old = current();

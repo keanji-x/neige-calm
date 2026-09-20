@@ -18,20 +18,10 @@ const paths: Readonly<Record<IconName, readonly string[]>> = Object.freeze({
     'M4 11.5h8l-1.2-1.7V7a2.8 2.8 0 0 0-5.6 0v2.8L4 11.5Z',
     'M6.5 12.5a1.5 1.5 0 0 0 3 0',
   ]),
-  /* The two filesystem marks (§6.7's set, added for the directory browser).
-     They are closed outlines rather than filled shapes because every other
-     icon here is line work and a filled folder would read as the heaviest
-     mark in the app at the smallest size it is used. The folder's tab is the
-     one diagonal in the set; the file's fold is a second path so the corner
-     stays a real fold instead of a crease drawn over a rectangle. */
+  /* Closed outlines rather than filled shapes: every other icon here is line work and a filled folder would read as the heaviest mark in the app at its smallest size. */
   folder: Object.freeze(['M2 12.5V3.5h4.2l1.6 2H14v7z']),
   file: Object.freeze(['M4 2.5h5l3 3v8H4z', 'M9 2.5v3h3']),
-  /* The attach control's mark (#1505 S6).
-     A paperclip and not a picture frame: a frame at 16px has about 7×5 of
-     interior left after its own 1.5 stroke, and the horizon and sun drawn
-     inside it merged into one dark mass — measured, not guessed. The clip is a
-     single open stroke with no interior at all, so it survives the size it is
-     actually used at, and it is the idiom for "attach" in any case. */
+  /* A paperclip and not a picture frame: a frame at 16px has about 7×5 of interior left after its own 1.5 stroke, and the horizon and sun inside it merged into one dark mass. */
   paperclip: Object.freeze([
     'M14.29 7.37l-6.13 6.13a4 4 0 0 1-5.66-5.66l6.13-6.13a2.67 2.67 0 0 1 3.77 3.77l-6.13 6.13a1.33 1.33 0 0 1-1.89-1.89l5.66-5.65',
   ]),

@@ -1,30 +1,5 @@
 //! `POST`/`GET /api/cards/{id}/planner/attachments[/{attachment_id}]`.
-//!
-//! # Why there is a dedicated read-back endpoint
-//!
-//! `GET /api/fs/readfile-raw` would work with zero new code — it accepts any
-//! absolute path and has no workspace boundary. That is exactly the problem:
-//! the browser would have to hold and send back the attachment's absolute host
-//! path, which turns "the harness already ships host paths to the client" from
-//! an existing fact into something a product feature depends on, and it grows a
-//! boundary-free read primitive a permanent consumer. Here the server derives
-//! the directory from `(card -> track -> workspace)` and joins a validated id
-//! onto it, so there is no traversal surface to defend in the first place.
-//!
-//! # The two ends are guarded differently, on purpose
-//!
-//! Reading is admitted for any actor, exactly like `GET /harness/items`: an
-//! agent's working directory *is* this workspace, so it can already open these
-//! bytes with its own tools, and a guard it can walk around is a guard that
-//! only misleads the next reader.
-//!
-//! Writing runs `require_rest_user_actor_for`, which refuses a request that
-//! *declares* a non-`user` actor in `X-Calm-Actor`. That is the whole of it: a
-//! request with no `X-Calm-Actor` header at all is `Actor::DEFAULT` — `user` —
-//! and is accepted. So the guard turns away an agent that labels itself and
-//! nothing else; it is the same REST contract the track-report write routes
-//! carry, deliberately shared rather than tightened here, because narrowing it
-//! on this one endpoint would put two different answers on the same header.
+//! Reading is admitted for any actor (an agent can already open these bytes with its own tools); writing refuses a request that declares a non-`user` actor, and a request with no `X-Calm-Actor` header is `user`.
 
 use axum::body::Body;
 use axum::extract::{Path, State};
@@ -56,17 +31,13 @@ pub fn router() -> Router<AppState> {
         )
 }
 
-/// Everything both handlers need: the card, its `.neige/attachments` root, and
-/// the git work tree that root lives in.
 struct AttachmentContext {
     card: Card,
     root: std::path::PathBuf,
     repo_root: std::path::PathBuf,
 }
 
-/// Card admission is the same predicate `GET /api/cards/{id}/harness/items`
-/// uses. An attachment is conversation content, so the door onto it must not be
-/// wider than the door onto the conversation.
+/// Card admission is the same predicate `GET /api/cards/{id}/harness/items` uses: the door onto an attachment must not be wider than the door onto the conversation.
 async fn attachment_context(s: &RouteState, id: &str) -> Result<AttachmentContext> {
     let card = s
         .repo
@@ -179,21 +150,9 @@ pub(crate) async fn read_planner_attachment(
         .map_err(|error| CalmError::BadRequest(error.to_string()))?;
     let context = attachment_context(&s, &id).await?;
     let card_id: CardId = context.card.id.clone();
-    // #1505 review round 3. This used to lstat the name and then open it —
-    // two resolutions, so a rename in between decided what was served — and
-    // then, for one round, a hand-rolled `O_NOFOLLOW` open, which still covered
-    // only the final component and could park a blocking thread on a FIFO.
-    // Both were a mirror of a primitive this repo already has. `open_attachment`
-    // calls that primitive instead.
     let opened = open_attachment(&context.root, &card_id, &attachment_id).await?;
-    // Content type comes from the id's extension, which came from the sniffed
-    // magic number — never from the file's current bytes and never from a
-    // header. `read_file_raw_response_from_handle` supplies `nosniff`, a
-    // sandbox CSP and `no-store`; none of that is restated here.
-    //
-    // The `path` it takes is only ever rendered into an error message, so it is
-    // handed the attachment id rather than the host path the bytes live at:
-    // that string reaches the client.
+    // Content type comes from the id's extension (the sniffed magic number), never from the file's current bytes or a header.
+    // The `path` argument is only ever rendered into an error message that reaches the client, so it is the attachment id rather than the host path.
     let for_errors = std::path::PathBuf::from(attachment_id.as_str());
     crate::routes::fs::read_file_raw_response_from_handle(
         opened.file,

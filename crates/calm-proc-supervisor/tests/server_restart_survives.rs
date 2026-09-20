@@ -7,45 +7,10 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::process::Command;
 
-/// Liveness upper bound for "read the next frame / wait for the expected
-/// state". Anti-hang guard only — no case here claims the supervisor reacts
-/// within this budget, so a slow-but-correct run must still pass. Costs
-/// nothing on the happy path (each wait returns as soon as its frame lands).
-/// The 1-2s budgets this replaces are the same shape that flaked on CI's
-/// 2-core runner under `retries = 0`. 120s is the `slow-timeout` of nextest
-/// `profile.ci`; the local `profile.default` warns at 60s. Both are warn-only,
-/// so neither kills the test — past this point nextest's slow-test report is the
-/// signal, not a hand-picked deadline.
-/// To assert promptness, measure elapsed and assert on it instead.
+/// Anti-hang guard only; no case here claims the supervisor reacts within this budget, so a slow-but-correct run must still pass.
 const LIVENESS_BUDGET: Duration = Duration::from_secs(120);
 
-/// What this test proves and what it doesn't:
-///
-/// **Proves** — the proc-supervisor's load-bearing OS-level invariants:
-///   1. After a client (i.e. simulated calm-server) drops the UDS
-///      connection, the daemon process the supervisor spawned remains
-///      alive. This is the OS-level shape of "calm-server restart leaves
-///      daemons alive": from the supervisor's POV the restart looks
-///      exactly like a connection close followed by a fresh connection.
-///   2. EnsureProc is idempotent on `proc_id` — a reconnecting client
-///      gets the existing pid back, not a duplicate fork. This is the
-///      original primitive that boot-time reattach in calm-server will
-///      rely on.
-///   3. When the supervisor itself receives SIGTERM it tears down every
-///      live proc (the explicit "supervisor death drops procs" Non-goal
-///      from #388).
-///
-/// **Does NOT prove** — these belong to a fuller stack-level test that
-/// would spawn an actual `neige-app` + `calm-server`:
-///   * the daemon's `PR_SET_PDEATHSIG` is correctly anchored to the
-///     supervisor and not calm-server (it is, by construction — the
-///     supervisor is now the spawn-parent — but this test doesn't put
-///     the terminal renderer in the loop to confirm);
-///   * neige-app's peer-supervision ordering (calm-proc-supervisor up
-///     before calm-server) and `/admin/restart` scope.
-///
-/// A follow-up PR should add a `neige_app_restart_calm_server_leaves_daemon_alive`
-/// E2E that walks the full stack.
+/// A dropped UDS connection leaves the spawned daemon alive, EnsureProc is idempotent on `proc_id`, and SIGTERM to the supervisor tears down every live proc.
 #[tokio::test]
 async fn proc_outlives_client_disconnect_and_dies_with_supervisor() {
     let temp = calm_test_sockets::socket_dir("ps");
@@ -72,32 +37,8 @@ async fn proc_outlives_client_disconnect_and_dies_with_supervisor() {
     let same_pid = ensure(&control_sock, request).await;
     assert_eq!(same_pid, pid, "EnsureProc must be idempotent by proc_id");
 
-    // #1013 — the elapsed assertion below is the load-bearing half of case 3.
-    //
-    // `assert!(!pid_alive(pid))` alone is near-tautological here: `src/main.rs`
-    // is `#[tokio::main]`, so runtime drop waits on the in-flight
-    // `spawn_blocking(move || waitpid(pid))` that `reap_children` started. The
-    // supervisor process therefore *cannot* exit before the pipe child does,
-    // and `supervisor.wait()` above already implies the child is gone. If
-    // `pgid_lease::group_target` ever returns `Err` for a Pipe entry — which
-    // drops every Pipe entry out of `terminate_all_process_groups_sync` via its
-    // `filter_map(.. .ok())` and re-breaks #388 — this test does not go red, it
-    // **hangs** until the fixture's own 30s self-exit releases the waitpid.
-    // Measured: baseline 0.23s; with that mutation 30.03s, still "ok".
-    //
-    // So measure the SIGTERM→teardown latency instead. Budget rationale:
-    //   * fixture self-exits at 30s (tests/fixtures/ready-sleeper/main.rs) —
-    //     10s leaves a 20s margin, i.e. the mutated run trips this, not the
-    //     fixture;
-    //   * baseline is ~0.23s — 10s is a ~40x margin, so this is not a
-    //     hand-tuned deadline and a slow CI runner will not flake it.
-    // Deliberately NOT done: raising the fixture's sleep to widen the gap.
-    // `try_spawn_pipe` sets `kill_on_drop(false)`, so a failing run would leak
-    // a process for the whole sleep, on a box that also runs production.
-    //
-    // The primary gate for the Pipe-`Err` rule is the `--lib` test
-    // `pgid_lease_tests::pipe_target_is_ok_kind_readable_and_refused_by_the_signal_rpc`.
-    // This is the secondary, end-to-end one.
+    // The elapsed assertion is the load-bearing half: `src/main.rs` is `#[tokio::main]`, so runtime drop blocks on the `reap_children` waitpid and the supervisor cannot exit before the pipe child does.
+    // If shutdown stopped group-SIGTERMing Pipe entries this test would hang until the fixture's 30s self-exit, not go red. 10s leaves a 20s margin against that and ~40x against the ~0.23s baseline.
     let t0 = std::time::Instant::now();
     unsafe {
         libc::kill(
@@ -114,8 +55,7 @@ async fn proc_outlives_client_disconnect_and_dies_with_supervisor() {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    // The loop checks at t≈0,50,..,950ms and then sleeps a 20th time; without
-    // this the last observation is at 950ms and the final sleep is wasted.
+    // One more observation after the 20th sleep, so the final sleep is not wasted.
     let died = died || !pid_alive(pid);
     let elapsed = t0.elapsed();
     assert!(died, "child should die when supervisor exits");
@@ -130,9 +70,7 @@ async fn proc_outlives_client_disconnect_and_dies_with_supervisor() {
     );
 }
 
-/// Upper bound on SIGTERM(supervisor) → pipe child dead → supervisor exited.
-/// Unlike `LIVENESS_BUDGET` this one **is** an asserted claim about promptness;
-/// see the rationale at its use site.
+/// Upper bound on SIGTERM(supervisor) → pipe child dead → supervisor exited. Unlike `LIVENESS_BUDGET` this one is an asserted claim about promptness.
 const TEARDOWN_BUDGET: Duration = Duration::from_secs(10);
 
 async fn ensure(control_sock: &Path, request: EnsureProcRequest) -> u32 {

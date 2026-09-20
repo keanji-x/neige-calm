@@ -1,9 +1,4 @@
-//! Track-report payload vocabulary (#679 PR1).
-//!
-//! [`TrackReportPayload`] is the Tier-A persisted card payload + TS-exported
-//! wire type, so it lives here. The persist boundary (`write::persist` and
-//! its three entry points, CRDT plumbing, REST/MCP resolvers) stays in
-//! calm-server's `track_report` module, which re-exports this type.
+//! Track-report payload vocabulary: the Tier-A persisted card payload + TS-exported wire type.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -26,74 +21,29 @@ pub struct ReportBlock {
     pub payload: serde_json::Value,
 }
 
-/// The payload persisted in a track-report card's `payload` JSON column.
-///
-/// Wire shape (camelCase to match the rest of the kernel's payloads):
-///
-/// ```json
-/// {
-///   "schemaVersion": 4,
-///   "docRev": 7,
-///   "summary": "Refactored the dispatcher into a typed actor",
-///   "body": "# Goal\n\nReplace the ad-hoc loop with…\n\n# Progress\n..."
-/// }
-/// ```
-///
-/// `summary` is the one-line previewable in sidebars / list views;
-/// `body` is the Markdown source the TrackReportCard renders. The
-/// frontend derives sections from `body` by splitting on H1 headings;
-/// the storage layer does not impose a section vocabulary.
+/// The payload persisted in a track-report card's `payload` JSON column; `summary` is the one-line
+/// preview, `body` the Markdown source the TrackReportCard renders.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct TrackReportPayload {
-    /// Tier A persistence contract — see
-    /// `TRACK_REPORT_PAYLOAD_SCHEMA_VERSION` in calm-truth's
-    /// `validation.rs`. `4` since #1456 discriminated terminal `command`
-    /// from agent `goal`; blocks remain authoritative and `body` is their
-    /// flat projection. Older rows remain readable and are lazily
-    /// upgraded at the next persist via the CRDT-layer migrator
-    /// (`ReportDoc::ensure_blocks_layout`).
+    /// Tier A persistence contract; older rows remain readable and are lazily upgraded at the next persist.
     pub schema_version: u32,
-    /// Document-wide optimistic-concurrency revision. This is mirrored
-    /// from the authoritative CRDT root and increments after every
-    /// successful report persist (whole-document or block-level).
+    /// Document-wide optimistic-concurrency revision, mirrored from the authoritative CRDT root.
     #[serde(default)]
     #[schema(required = true)]
     pub doc_rev: u64,
-    /// One-line summary used by sidebars / track-list previews. Empty
-    /// string is valid (means "planner agent has not produced a summary
-    /// yet"); the field stays a required `String` per the
-    /// [[required-over-option]] rule.
+    /// One-line summary used by sidebars / track-list previews; empty string is valid.
     pub summary: String,
-    /// Markdown source. Sections are derived at render time by
-    /// splitting at H1 (`^# `) headings; the kernel reads that structure
-    /// only to check the contract header once at the persist funnel
-    /// (#1635 D2) and to answer `report_startup_read_required` (#1635 D3:
-    /// unwritten iff `summary` is empty and either the body carries a
-    /// header, block 0 is only HTML comments and every later block is a
-    /// bare declared `# <h1>`, or it carries no header and is byte-equal to
-    /// the frozen pre-header body; a body the funnel check rejects reads as
-    /// written).
+    /// Markdown source. Sections are derived at render time by splitting at H1 (`^# `) headings.
     pub body: String,
-    /// Block mirror of the authoritative CRDT block map (#960 PR2).
-    /// Since schema v2 the CRDT `blocks`/`order` layout is the source
-    /// of truth; this JSON field and `body` are both projections the
+    /// Block mirror of the authoritative CRDT block map; this field and `body` are both projections the
     /// persist boundary rewrites on every write. v1 rows may omit it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocks: Option<Vec<ReportBlock>>,
 }
 
-/// #1635 D2 — the work-brief contract header: the four default sections,
-/// `待你定` omitted when empty. With [`research_header`] this is what the
-/// header line every shipped body carries is held to: `report/default.md`
-/// line 1 is `canonical_line(&work_brief_header())`, the pin in
-/// `initial_body_is_header_line_plus_legacy_v4` holds the two together, and
-/// `default_h1s_are_the_work_brief_header_sections` ties the file's H1s to
-/// these sections. The built-in template files (calm-server,
-/// `templates/builtin/*.md`, #1635 S4) carry the same header lines as data;
-/// calm-server's `templates` tests hold them to these constructors through
-/// `check_document`.
+/// The work-brief contract header: the four default sections, `待你定` omitted when empty.
 pub fn work_brief_header() -> ContractHeader {
     ContractHeader {
         version: 1,
@@ -106,8 +56,7 @@ pub fn work_brief_header() -> ContractHeader {
     }
 }
 
-/// #1635 D2 — the investment-research contract header (#1571): seven fixed
-/// sections, `待你定` omitted when empty.
+/// The investment-research contract header: seven fixed sections, `待你定` omitted when empty.
 pub fn research_header() -> ContractHeader {
     ContractHeader {
         version: 1,
@@ -130,51 +79,19 @@ fn section(h1: &str, omit_if_empty: bool) -> ContractSection {
     }
 }
 
-/// The default report body (#1635 S2b): `report/default.md`, byte for byte —
-/// the canonical work-brief header line, then exactly the frozen
-/// [`LEGACY_INITIAL_V4_BODY`] (writing rules + section rules, closed, then
-/// the four empty H1s; sections are left empty on purpose — a `_待填_`
-/// placeholder would render and the agent would read it as content to
-/// delete). The file is the single source; `initial_body_is_header_line_plus_legacy_v4`
-/// pins it as `canonical_line(&work_brief_header()) + "\n" + LEGACY_INITIAL_V4_BODY`
-/// so neither side can drift alone.
+/// The default report body: `report/default.md`, byte for byte. Sections are left empty on purpose:
+/// a placeholder would render and the agent would read it as content to delete.
 fn initial_body() -> &'static str {
     include_str!("report/default.md")
 }
 
-/// #1635 S2a — the default report body exactly as shipped up to and including
-/// `7754fd32` (no contract header line). Frozen as a file so the bytes survive
-/// squash merges: the header-less compatibility fallback of
-/// `report_startup_read_required` (S3) compares against THIS, and the
-/// post-S2b default body is pinned as `header line + "\n" + this`.
-/// Never edit the file; a change here is a change to what "unwritten" means
-/// for every pre-header track in every database.
-///
-/// The file was generated, not typed, from the fragments `initial_body()`
-/// concatenated at that commit — and the pin in `legacy_initial_v4_bytes_are_pinned`
-/// is the output of the same command. (The fragment files were deleted in
-/// #1635 S4 once nothing concatenated them any more — the contract now lives
-/// whole in `report/default.md` and in calm-server's `templates/builtin/*.md`
-/// — so the command is reproducible at `7754fd32`, not at HEAD.)
-///
-/// ```sh
-/// { cat crates/calm-types/src/track_report_contract_rules.md \
-///       crates/calm-types/src/track_report_section_rules.md; \
-///   printf -- '-->\n\n# 概要\n\n# 待你定\n\n# 已完成\n\n# 决策\n'; } \
-///   > crates/calm-types/src/report/legacy_initial_v4.md
-/// sha256sum crates/calm-types/src/report/legacy_initial_v4.md
-/// # 6cd893b62424185a842cccc790712a0c1d05151ec84cb6d9d85544f0d2e3f9f3
-/// wc -c crates/calm-types/src/report/legacy_initial_v4.md
-/// # 2647
-/// ```
+/// The default report body exactly as shipped before the contract header line, frozen as a file.
+/// Never edit it: a change is a change to what "unwritten" means for every pre-header track.
 pub const LEGACY_INITIAL_V4_BODY: &str = include_str!("report/legacy_initial_v4.md");
 
 impl TrackReportPayload {
-    /// Current schema version. Bumping this is a Tier A breaking
-    /// change — the same PR must also extend
-    /// [`crate::card_kind::TrackReportCardHandler`] and the matching
-    /// frontend zod schema in
-    /// `web/src/api/schemas.ts`.
+    /// Current schema version. Bumping this is a Tier A breaking change that must also extend the
+    /// track-report card handler and the frontend zod schema.
     pub const SCHEMA_VERSION: u32 = 4;
 
     pub fn new(summary: impl Into<String>, body: impl Into<String>) -> Self {
@@ -187,74 +104,21 @@ impl TrackReportPayload {
         }
     }
 
-    /// Canonical "track was just minted; planner hasn't run yet" payload.
-    /// Used by `routes::tracks::create_track` (PR B). Historical
-    /// migration seeds stay frozen; freshly-minted tracks use this copy.
-    ///
-    /// The body is a *structural skeleton*: the machine-readable contract
-    /// header line (#1635 D2, `<!-- neige:contract … -->`), a maintenance
-    /// contract carried in a second, prose HTML comment, then the four
-    /// default H1 sections (#1185). Both comments are dropped when the
-    /// document is rendered, so users never see them on the page — but they
-    /// stay in the body source, which every source-reading subject reads
-    /// (the planner agent, a worker's `neige cat report.md`, the REST read
-    /// surface, the track's VCS diff). It is layout control, not access
-    /// control: never put secrets in it.
+    /// Canonical "track was just minted; planner hasn't run yet" payload. Its HTML comments are dropped
+    /// on render but stay in the body source every source-reading subject reads: layout control, not access control — never put secrets in it.
     pub fn initial() -> Self {
         Self::new("", initial_body())
     }
 
-    /// #1110 S3 — whether planner's first turn must `calm.report.read`:
-    /// `!self.is_unwritten()`.
-    ///
-    /// False only for an **unwritten** document: `summary` is empty and
-    /// `body` is structurally the empty skeleton (#1635 D3) — see
-    /// [`Self::is_unwritten`] for the exact shape. `doc_rev` / `blocks` are
-    /// not consulted, so a CRDT-materialized placeholder stays false. Any
-    /// prose, data fence, sub-heading, or foreign H1 is true; so is a
-    /// non-empty `summary` whatever the body, which is why the built-in
-    /// templates (born with a summary) read as written (#1635 §6.4).
+    /// Whether planner's first turn must `calm.report.read`: `!self.is_unwritten()`.
     pub fn report_startup_read_required(&self) -> bool {
         !self.is_unwritten()
     }
 
-    /// #1635 D3 — the structural "nothing has been written here" predicate,
-    /// polarity as the issue writes it (`true` = unwritten).
-    ///
-    /// `summary` must be empty. Then, on the marker-stripped body:
-    ///
-    /// * **headered** (`check_document` → `Ok(Some(header))`): every slice
-    ///   is prose (no `neige-block` fence), block 0 is nothing but HTML
-    ///   comments ([`is_pure_comment_block`] — the header line plus the prose
-    ///   contract), and every later block, once `str::trim`med, is exactly
-    ///   `# <h1>` for some `h1` the header declares. A closed user comment
-    ///   in block 0 after the contract (`<!-- User note -->`) therefore
-    ///   reads as unwritten — comments are invisible, and that is D3's rule
-    ///   (issue §6.9 registers the asymmetry with blocks ≥ 1); a `<!--` on a
-    ///   line indented four or more columns is visible code, not a comment,
-    ///   and reads as written. Consequences of that shape, all pinned in
-    ///   `report_startup_read_required_cell`:
-    ///   - a **subset** of the declared H1s is still unwritten, and so is a
-    ///     different **order** — membership is tested per slice with `any`,
-    ///     so order is not part of the predicate (a consequence of the
-    ///     sketch, not a promise);
-    ///   - an H1 the header does not declare, a `## sub`, a `---`, an
-    ///     `![alt](x)` line, a `<table>`, a task fence, or an HTML comment
-    ///     in any block ≥ 1 (even a closed one — issue §6.9 asymmetry) all
-    ///     read as written;
-    ///   - the leniency is `str::trim` (Unicode) on each slice: trailing
-    ///     whitespace on a heading line and whitespace-only lines under a
-    ///     heading are tolerated; a leading space is not a heading to
-    ///     `split_body` and reads as written.
-    /// * **headerless** (`Ok(None)`): unwritten iff `body` is byte-equal to
-    ///   the frozen pre-header body [`LEGACY_INITIAL_V4_BODY`] — every track
-    ///   minted before the contract header still carries those bytes and
-    ///   must keep reading as unwritten (the launchpad empty state depends
-    ///   on it).
-    /// * **rejected** by the funnel check (`Err(_)`: misplaced / duplicate /
-    ///   malformed / non-canonical header, unclosed block-0 comment): not
-    ///   unwritten. Fail-closed — a body S2c's ingresses would never have
-    ///   stored still gets an answer, and the answer is "read it".
+    /// The structural "nothing has been written here" predicate (`true` = unwritten): `summary` empty
+    /// and, on the marker-stripped body, either a headered pure-comment block 0 followed only by bare
+    /// declared `# <h1>` blocks, or a headerless body byte-equal to [`LEGACY_INITIAL_V4_BODY`].
+    /// A body the funnel check rejects reads as written (fail-closed).
     fn is_unwritten(&self) -> bool {
         if !self.summary.is_empty() {
             return false;
@@ -311,9 +175,6 @@ mod tests {
         );
     }
 
-    /// #1635 D3 — the structural predicate's cell: one row per consequence
-    /// the [`TrackReportPayload::is_unwritten`] doc comment lists. Every row
-    /// is evaluated and every mismatch is reported together.
     #[test]
     fn report_startup_read_required_cell() {
         use crate::report_blocks::{KIND_TASK, render_fence};
@@ -321,8 +182,6 @@ mod tests {
 
         let new = |summary: &str, body: String| TrackReportPayload::new(summary, body);
         let header = canonical_line(&work_brief_header());
-        // The smallest headered block 0: the header line and one closed prose
-        // contract comment. `initial()` is the full-size version of this.
         let block0 = format!("{header}\n<!-- 报告维护契约 -->\n\n");
         let headered = |sections: &str| format!("{block0}{sections}");
         let four = "# 概要\n\n# 待你定\n\n# 已完成\n\n# 决策\n";
@@ -332,10 +191,6 @@ mod tests {
         materialized.doc_rev = 7;
         materialized.blocks = Some(vec![]);
 
-        // The same header spelt non-canonically (an explicit
-        // `"omit_if_empty":false`): S2c's ingresses rewrite it, so storage
-        // never holds it, but the predicate must still answer — and the
-        // funnel check says `Internal`, which the predicate reads as written.
         let non_canonical = headered(four).replacen(
             r#"{"h1":"概要"}"#,
             r#"{"h1":"概要","omit_if_empty":false}"#,
@@ -356,9 +211,7 @@ mod tests {
         );
         assert!(parse_fence(&task_fence).is_some());
 
-        // (row name, payload, expected `report_startup_read_required`)
         let rows: Vec<(&str, TrackReportPayload, bool)> = vec![
-            // —— unwritten ——
             ("initial()", initial.clone(), false),
             (
                 "initial() materialized by CRDT: doc_rev = 7, blocks = Some([])",
@@ -409,7 +262,6 @@ mod tests {
                 ),
                 false,
             ),
-            // —— written ——
             (
                 "a non-empty summary over the initial body",
                 new("fork source summary", initial.body.clone()),
@@ -531,24 +383,16 @@ mod tests {
         );
     }
 
-    /// #1185 — the birth body is a structural skeleton, and this test is the
-    /// one place in the repo that pins its shape.
     #[test]
     fn initial_body_is_the_default_structural_skeleton() {
         let body = TrackReportPayload::initial().body;
 
-        // —— the contract block: first, and closed before the first H1 ——
-        // `starts_with("<!--") + contains("-->")` is a vacuous pair: moving
-        // `-->` below a heading satisfies both and destroys the rendering.
-        // So assert the slice shape instead.
         let slices = crate::report_blocks::split_body(&body);
         assert_eq!(
             slices.len(),
             5,
             "1 contract block + 4 sections; got {slices:#?}"
         );
-        // #1635 D2: the machine-readable header is line 1, the prose
-        // contract comment starts on line 2.
         assert!(slices[0].raw.starts_with(HEADER_OPEN));
         assert_eq!(
             slices[0].raw.lines().next(),
@@ -577,8 +421,6 @@ mod tests {
                 "section order is fixed: {head:?}"
             );
         }
-        // No line-initial `# `/`## ` inside the contract — `split_body` would
-        // cleave it into two blocks (#1185 §0(a)).
         assert!(
             !slices[0]
                 .raw
@@ -592,8 +434,6 @@ mod tests {
             "#1172: the TASKS panel owns task runtime state"
         );
 
-        // —— the policy really did move here (these strings used to live in
-        // calm-server's planner_card.rs) ——
         for rule in [
             "写产出，不写过程",
             "散文正文",
@@ -609,7 +449,6 @@ mod tests {
             );
         }
 
-        // —— kernel carrier properties ——
         assert_eq!(crate::report_blocks::flatten(&slices), body);
         assert!(
             slices
@@ -624,16 +463,11 @@ mod tests {
             "the marker stripper must not eat the contract comment"
         );
 
-        // —— byte properties ——
         assert!(
             !body.contains('\r'),
             "a CRLF checkout would silently change split_body's input"
         );
         assert!(body.ends_with('\n') && !body.ends_with("\n\n"));
-        // Exactly one header line, it is line 1, and block 0 does not end
-        // inside a comment (#1635 D2 (a)–(e)). `default.md` is pinned byte for
-        // byte in `initial_body_is_header_line_plus_legacy_v4`, so a stray
-        // `-->` in the file is caught there, not here.
         assert_eq!(
             body.lines().filter(|l| l.starts_with(HEADER_OPEN)).count(),
             1,
@@ -642,12 +476,6 @@ mod tests {
         assert_eq!(check_document(&body), Ok(Some(work_brief_header())));
     }
 
-    /// #1635 S2b — the structural pin: today's default body is exactly the
-    /// canonical work-brief header line, a newline, and the frozen v4 bytes.
-    /// `default.md` is the single source; this holds it to
-    /// `work_brief_header()` on one side and `legacy_initial_v4.md` (itself
-    /// sha-pinned below) on the other, so neither can drift alone. Do not
-    /// weaken.
     #[test]
     fn initial_body_is_header_line_plus_legacy_v4() {
         assert_eq!(
@@ -659,11 +487,6 @@ mod tests {
         );
     }
 
-    /// #1635 S2b — the default body passes the funnel check as-is: one
-    /// header, on line 1, canonical, block 0 does not end inside a comment
-    /// (line-based scan). Birth
-    /// bypasses the funnel (`card.rs` compares the whole payload to
-    /// `initial()`), so this is where `initial()` is held to the funnel.
     #[test]
     fn initial_body_passes_the_funnel_check_unchanged() {
         let body = TrackReportPayload::initial().body;
@@ -672,18 +495,12 @@ mod tests {
             matches!(normalize_header(&body), Ok(Cow::Borrowed(_))),
             "the shipped header is already canonical"
         );
-        // Block 0 is the contract and nothing else — the S3 predicate.
         let slices = crate::report_blocks::split_body(&body);
         assert!(crate::report_contract::is_pure_comment_block(
             &slices[0].raw
         ));
     }
 
-    /// #1635 S2b review — the first "header ↔ document shape" pin: the H1s
-    /// `default.md` ships, in order, are exactly `work_brief_header()`'s
-    /// sections. Rename one side and this goes red (the byte pin alone would
-    /// not notice a header edit that is mirrored into the file). S3's
-    /// structural predicate relies on this correspondence.
     #[test]
     fn default_h1s_are_the_work_brief_header_sections() {
         let body = TrackReportPayload::initial().body;
@@ -713,11 +530,6 @@ mod tests {
         );
     }
 
-    /// #1635 S2a — the bytes are pinned independently of `initial_body()`, so
-    /// an edit that moves `default.md` and `legacy_initial_v4.md` in step
-    /// still goes red here.
-    /// Length, no CR, and the sha256 printed by the generating command in the
-    /// constant's doc comment.
     #[test]
     fn legacy_initial_v4_bytes_are_pinned() {
         use sha2::{Digest as _, Sha256};
@@ -734,13 +546,6 @@ mod tests {
         );
     }
 
-    /// #1635 S2b — a pre-header track whose body is exactly the frozen bytes
-    /// reads as unwritten, exactly as it did before the header existed:
-    /// `initial()` grew a header line, the rows in every database did not.
-    /// S3 replaced the byte comparison by the structural predicate (D3);
-    /// this cell is its headerless arm, `Ok(None) => body ==
-    /// LEGACY_INITIAL_V4_BODY`. A non-empty summary or any other byte still
-    /// reads as written.
     #[test]
     fn legacy_initial_v4_reads_as_unwritten() {
         let payload = TrackReportPayload::new("", LEGACY_INITIAL_V4_BODY);

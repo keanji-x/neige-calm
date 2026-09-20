@@ -1,63 +1,16 @@
-//! #1284 §2.3 — **effective plugin configuration**, and the single function
-//! every consumer of it goes through.
-//!
-//! The stored value (`plugins.user_config`) is only half of what a plugin
-//! actually runs with: the other half is the `default` on each
-//! `Manifest.config_schema` property. The composition is
-//! `defaults ⊕ user_config`, and it is applied **on read**, never written
-//! back — see [`effective_config`]'s own doc for why that direction is
-//! load-bearing rather than an implementation detail.
-//!
-//! **This module exists to be a seam, not to hold an algorithm.** Three
-//! separate slices consume configuration (S2 `app` via
-//! `initialize._meta["dev.neige/config"]`, S3a `cli-query` via argv slots +
-//! `config_env`, S3b `mcp-http` via url slots), plus the two route-side
-//! readers here in S1. Five hand-written `⊕`s would be five chances for
-//! "default applied" to mean five slightly different things; one function
-//! makes "which defaults are in force" a question with exactly one answer.
+//! Effective plugin configuration: `defaults ⊕ user_config`, composed on read and never written back, through the one function every consumer goes through.
 
 use serde_json::{Map, Value};
 
 use super::manifest::Manifest;
 
-/// `defaults ⊕ user_config` — what the plugin actually runs with.
-///
-/// * A schema property with a `default` and no user value contributes its
-///   default.
-/// * A user value overrides the default for that key.
-/// * A key the user never set and whose property has no `default` is simply
-///   absent — there is no `null` filler, because `null` is not a value this
-///   subset's `type` keyword can ever accept.
-/// * Keys in `user_config` that the schema does not declare are dropped. They
-///   can only be residue: the write path refuses undeclared keys
-///   (`additionalProperties: false`), so the sole way to hold one is to have
-///   been configured under an older manifest whose schema has since narrowed.
-///   Passing such a key on to a consumer would resurrect a setting the current
-///   manifest says does not exist.
-/// * No `config_schema` ⇒ empty map, whatever `user_config` holds. Same
-///   reason: without a schema there is nothing the kernel can vouch for, and
-///   the write path refuses to add anything (400).
-///
-/// **Defaults are not persisted.** Materializing them into
-/// `plugins.user_config` at write time would freeze the manifest's defaults at
-/// the moment of the operator's first Save: a later manifest that changes a
-/// default would then be permanently invisible to every already-configured
-/// install, and the DB would no longer distinguish "the operator chose this"
-/// from "this is what the manifest happened to say that day". Reading them
-/// keeps the manifest the authority and the DB the record of intent.
+/// `defaults ⊕ user_config` — what the plugin actually runs with. A user value overrides the default; an unset key with no `default` is absent (never `null`); keys the schema does not declare are dropped; no `config_schema` ⇒ empty map.
+/// Defaults are not persisted: materializing them at write time would freeze the manifest's defaults at the operator's first Save and lose "the operator chose this" vs "the manifest said so that day".
 pub fn effective_config(manifest: &Manifest, user_config: &Value) -> Map<String, Value> {
     effective_config_from_schema(manifest.config_schema.as_ref(), user_config)
 }
 
-/// The merge itself, over a bare schema.
-///
-/// **Private on purpose (#1284 S1 review).** It used to be `pub` so the routes
-/// could merge against the persisted `plugins.manifest` blob; that second
-/// entry point was the seam's undoing — a seam with two doors is not a seam,
-/// and the test that was supposed to hold them together (`both_entry_points_agree`)
-/// compared `f(x)` with `f(x)` and could not fail. The routes now hold a typed
-/// [`Manifest`] from the registry like every other consumer, so [`effective_config`]
-/// is the only way in.
+/// The merge itself, over a bare schema. Private on purpose: a seam with two doors is not a seam, so [`effective_config`] is the only way in.
 fn effective_config_from_schema(
     config_schema: Option<&Value>,
     user_config: &Value,
@@ -73,9 +26,7 @@ fn effective_config_from_schema(
 
     for (key, property_schema) in properties {
         if let Some(value) = user.and_then(|u| u.get(key)) {
-            // A stored `null` cannot occur — the write path deletes on `null`
-            // rather than storing it — but a hand-edited row could hold one,
-            // and the honest reading of "no value" is "fall back to default".
+            // A stored `null` cannot occur (the write path deletes on `null`), but a hand-edited row could hold one; "no value" falls back to the default.
             if !value.is_null() {
                 out.insert(key.clone(), value.clone());
                 continue;
@@ -88,27 +39,8 @@ fn effective_config_from_schema(
     out
 }
 
-/// Which `config_schema.required` keys are **not** in force — the consumption-
-/// side half of the §2.2 adjudication, as a carrier rather than a promise.
-///
-/// #1284 v6 moved `required` off the write path (a Save carries only the keys
-/// the operator edited, so enforcing it there makes the first Save of a
-/// two-required-key plugin unconditionally 400) and onto consumption: a plugin
-/// missing required configuration does not come up, and lands in the
-/// `unavailable` + `last_error` terminal state §2.4 defines. S1 owns the write
-/// side of that trade, so it also owns the seam the other side needs —
-/// otherwise S2, S3a and S3b each write their own "which required keys are
-/// missing", which is the restatement §2.3's `effective_config` exists to
-/// prevent, one field over.
-///
-/// Takes the **effective** map, not the stored one: a key satisfied by its
-/// manifest `default` is not missing, and only the merged view knows that.
-/// Returns the offending keys in schema-declared order so the `last_error` a
-/// consumer composes is stable across bring-ups.
-///
-/// Empty vec for a plugin with no `config_schema`, and for a schema with no
-/// `required`: nothing is demanded, so nothing is missing. Render the refusal
-/// with [`missing_required_reason`] rather than by formatting the list again.
+/// Which `config_schema.required` keys are **not** in force. Takes the **effective** map: a key satisfied by its manifest `default` is not missing. Returns the keys in schema-declared order so a composed `last_error` is stable across bring-ups.
+/// Empty for a plugin with no `config_schema` or no `required`. Render the refusal with [`missing_required_reason`], not by formatting the list again.
 pub fn missing_required(manifest: &Manifest, effective: &Map<String, Value>) -> Vec<String> {
     let Some(schema) = manifest.config_schema.as_ref() else {
         return Vec::new();
@@ -124,22 +56,7 @@ pub fn missing_required(manifest: &Manifest, effective: &Map<String, Value>) -> 
         .collect()
 }
 
-/// The §2.4 `last_error` for [`missing_required`]'s output — **the** wording,
-/// as a function rather than as a sentence in a doc comment.
-///
-/// #1284 S3a review P1-2. `missing_required`'s doc has always said the refusal
-/// is built "from this list and no other enumeration", and both consumers
-/// honoured it — and still produced two different sentences, because a wording
-/// contract stated in prose is one each consumer re-types. S2's `app` path
-/// appended the operator's next step; S3a's `cli-query` path shipped the bare
-/// list. §2.5's plugin detail view renders `last_error` verbatim for both
-/// kinds, so the same failure told an operator two different things depending
-/// on which kind of plugin hit it.
-///
-/// The instruction is part of the message on purpose: `Unavailable` is
-/// terminal for both kinds (no supervisor, no retry), so "what do I do now" has
-/// exactly one answer — fill the keys in and start it again — and it is not
-/// available anywhere else in the UI.
+/// The `last_error` wording for [`missing_required`]'s output, as a function so every consumer says the same thing. The instruction is part of the message on purpose: `Unavailable` is terminal (no supervisor, no retry), and "what do I do now" is not available anywhere else in the UI.
 pub fn missing_required_reason(missing: &[String]) -> String {
     format!(
         "missing required configuration: {}. Set it under Settings › Plugins, \
@@ -154,8 +71,7 @@ mod tests {
     use crate::plugin_host::manifest::Manifest;
     use serde_json::json;
 
-    /// Drive the real parser, not a hand-built `Manifest` — the schema has to
-    /// survive `Manifest::validate` for these merges to mean anything.
+    /// Drive the real parser, not a hand-built `Manifest`: the schema has to survive `Manifest::validate` for these merges to mean anything.
     fn manifest_with(config_schema: Value, manifest_version: u32) -> Manifest {
         let text = serde_json::to_string(&json!({
             "manifest_version": manifest_version,
@@ -201,10 +117,6 @@ mod tests {
         assert_eq!(eff.get("retries"), Some(&json!(3)), "untouched default");
     }
 
-    /// The read half of the PATCH `null` semantics: once the key is gone from
-    /// `user_config` the default is in force again — which is what makes
-    /// "clear this field" a meaningful operation instead of a way to reach an
-    /// unrepresentable empty state.
     #[test]
     fn a_cleared_key_falls_back_to_its_default() {
         let m = manifest_with(schema(), 2);
@@ -223,9 +135,6 @@ mod tests {
         assert!(!eff.contains_key("removed_last_version"), "got {eff:?}");
     }
 
-    /// Same fixture route, minus the `config_schema` key — a plugin that
-    /// declares no configurable surface has an empty effective config no
-    /// matter what the row holds.
     #[test]
     fn no_config_schema_yields_an_empty_map() {
         let text = serde_json::to_string(&json!({
@@ -242,9 +151,7 @@ mod tests {
         assert!(effective_config(&m, &json!({ "theme": "light" })).is_empty());
     }
 
-    /// A schema may legally omit `properties` entirely (the subset validator
-    /// accepts `{type, additionalProperties}`) — it then declares no keys, so
-    /// the merge is empty rather than a pass-through of whatever is stored.
+    /// A schema may legally omit `properties` entirely (the subset validator accepts `{type, additionalProperties}`).
     #[test]
     fn a_schema_without_properties_declares_nothing() {
         let m = manifest_with(
@@ -257,11 +164,7 @@ mod tests {
         );
     }
 
-    /// The hand-edited-row branch: `null` is not a value any `type` in this
-    /// subset accepts, so a stored `null` reads as "no value" and the
-    /// manifest's default is in force. (The write path never stores one — it
-    /// deletes on `null` — which is exactly why this branch needs its own
-    /// witness rather than riding on a route test.)
+    /// The write path never stores a `null` (it deletes on `null`), which is why this branch needs its own witness rather than riding on a route test.
     #[test]
     fn a_stored_null_falls_back_to_the_default() {
         let m = manifest_with(schema(), 2);
@@ -273,10 +176,6 @@ mod tests {
         );
     }
 
-    /// P1-E — the consumption-side seam. A `required` key with a `default` is
-    /// satisfied without the operator touching it (which is why this asks the
-    /// *effective* map); one without a default and unset is what will stop a
-    /// bring-up.
     #[test]
     fn missing_required_names_only_the_keys_nothing_supplies() {
         let m = manifest_with(
@@ -310,8 +209,6 @@ mod tests {
         assert!(missing_required(&m, &eff).is_empty(), "got {eff:?}");
     }
 
-    /// The two "demands nothing" shapes, so the function is not a constant
-    /// `Err`-by-another-name for plugins that never opted in.
     #[test]
     fn missing_required_is_empty_when_the_manifest_demands_nothing() {
         let no_required = manifest_with(schema(), 2);
@@ -330,11 +227,7 @@ mod tests {
         assert!(missing_required(&no_schema, &Map::new()).is_empty());
     }
 
-    /// S3a review P1-2 — the wording contract, pinned once so the two spawn
-    /// paths cannot say two different things. The instruction half is asserted
-    /// explicitly: without it the message tells an operator what is wrong and
-    /// not what to do about it, which is the S3a/S2 divergence this function
-    /// exists to close.
+    /// The instruction half is asserted explicitly: without it the message tells an operator what is wrong and not what to do about it.
     #[test]
     fn the_missing_required_reason_names_the_keys_and_the_next_step() {
         let reason = missing_required_reason(&["token".to_string(), "secondary".to_string()]);
@@ -345,11 +238,7 @@ mod tests {
         );
     }
 
-    /// `user_config` is a `Value`, and a row that somehow holds a non-object
-    /// must not be read as "these are your settings". The read side degrades
-    /// to defaults; the *write* side refuses outright (see
-    /// `patch_config_refuses_to_overwrite_a_non_object_user_config`), which is
-    /// the half that could lose data.
+    /// The read side degrades a non-object `user_config` to defaults; the write side refuses outright, which is the half that could lose data.
     #[test]
     fn a_non_object_user_config_reads_as_defaults_only() {
         let m = manifest_with(schema(), 2);

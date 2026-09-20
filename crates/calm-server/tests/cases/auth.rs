@@ -1,20 +1,4 @@
-//! Integration tests for the issue #189 auth surface — drives the real
-//! axum routes via `tower::ServiceExt::oneshot`, covering:
-//!
-//!   * `POST /api/auth/login` happy path (cookie issued + whoami body)
-//!   * `POST /api/auth/login` wrong-credential path (401 + standard body)
-//!   * `GET /api/auth/whoami` 401 / 200 paths
-//!   * Protected route 401 with valid 401 payload shape
-//!   * Protected route 200 once the session cookie is presented
-//!   * `POST /api/auth/logout` clears the cookie + invalidates the session
-//!   * `CALM_DEV_AUTOLOGIN=true` lets every request through without a cookie
-//!
-//! Each test boots a fresh `AuthState` + `AppState` and calls the production
-//! router assembly (auth router merged at top, protected REST tree gated by
-//! `require_session`). We sidestep the WS
-//! ladder here — the WS upgrade route is covered by the existing
-//! `tests/ws_*.rs` suite plus a smoke test below that asserts the upgrade
-//! rejects an unauthenticated request with 401 (no upgrade response).
+//! Integration tests for the auth surface, driving the production router assembly via `oneshot`.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -263,7 +247,6 @@ async fn login_success_issues_cookie_and_returns_whoami() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // Cookie checks — Set-Cookie present + attrs we care about.
     let raw = resp
         .headers()
         .get(header::SET_COOKIE)
@@ -279,7 +262,6 @@ async fn login_success_issues_cookie_and_returns_whoami() {
     );
     assert!(raw.contains("Path=/"), "missing Path=/: {raw}");
 
-    // Body — owner whoami shape.
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(v["userId"], "local-owner");
@@ -311,8 +293,7 @@ async fn login_wrong_password_returns_401_with_standard_payload() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    // No Set-Cookie on failure — we mustn't leak a session id when the
-    // credential check failed.
+    // No Set-Cookie on failure — must not leak a session id.
     assert!(resp.headers().get(header::SET_COOKIE).is_none());
 
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
@@ -349,7 +330,6 @@ async fn whoami_with_valid_cookie_returns_owner_payload() {
     let auth_state = live_auth_state("alice", "hunter2");
     let app = app(state, auth_state);
 
-    // Log in to mint a session id.
     let body = serde_json::to_vec(&serde_json::json!({
         "username": "alice",
         "password": "hunter2",
@@ -369,7 +349,6 @@ async fn whoami_with_valid_cookie_returns_owner_payload() {
         .unwrap();
     let cookie = extract_session_cookie(resp.headers());
 
-    // Re-issue whoami with the cookie.
     let resp = app
         .oneshot(
             Request::builder()
@@ -641,9 +620,7 @@ async fn protected_route_with_valid_session_returns_200() {
 
 #[tokio::test]
 async fn version_route_remains_public() {
-    // `/api/version` is the pre-auth compatibility probe — frontend must
-    // be able to read it before it knows whether it's logged in. The
-    // session middleware MUST NOT apply to it.
+    // `/api/version` is the pre-auth compatibility probe; the session middleware must not apply to it.
     let state = fresh_state().await;
     let auth_state = live_auth_state("alice", "hunter2");
     let app = app(state, auth_state);
@@ -666,7 +643,6 @@ async fn logout_clears_cookie_and_invalidates_session() {
     let auth_state = live_auth_state("alice", "hunter2");
     let app = app(state, auth_state);
 
-    // Log in to mint a session.
     let body = serde_json::to_vec(&serde_json::json!({
         "username": "alice",
         "password": "hunter2",
@@ -686,7 +662,6 @@ async fn logout_clears_cookie_and_invalidates_session() {
         .unwrap();
     let cookie = extract_session_cookie(resp.headers());
 
-    // Logout.
     let resp = app
         .clone()
         .oneshot(
@@ -706,15 +681,13 @@ async fn logout_clears_cookie_and_invalidates_session() {
         .expect("logout sets cookie")
         .to_str()
         .unwrap();
-    // Removal cookie has Max-Age=0 and empty value — browsers drop the
-    // stored cookie on receipt.
+    // Removal cookie has Max-Age=0 and an empty value.
     assert!(raw.starts_with(&format!("{SESSION_COOKIE}=")));
     assert!(
         raw.contains("Max-Age=0") || raw.contains("Max-Age=-1"),
         "got: {raw}"
     );
 
-    // Using the now-stale cookie must fail.
     let resp = app
         .oneshot(
             Request::builder()
@@ -735,7 +708,6 @@ async fn dev_autologin_lets_every_request_through() {
     let auth_state = dev_auth_state();
     let app = app(state, auth_state);
 
-    // whoami without any cookie returns the owner payload directly.
     let resp = app
         .clone()
         .oneshot(
@@ -753,7 +725,6 @@ async fn dev_autologin_lets_every_request_through() {
     assert_eq!(v["userId"], "local-owner");
     assert_eq!(v["role"], "owner");
 
-    // Protected REST without a cookie also returns 200.
     let resp = app
         .oneshot(
             Request::builder()

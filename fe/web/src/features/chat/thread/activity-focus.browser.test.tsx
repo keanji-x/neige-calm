@@ -29,18 +29,6 @@ function groupButton(container: HTMLElement): HTMLElement {
 
 const visible = (element: Element) => element.checkVisibility({ visibilityProperty: true });
 
-/*
- * ── A row clipped from a group that stays, in a real engine ───────────────
- *
- * The 300-row page shifts by however many rows arrived, and can take the
- * first call of a three-call run while the other two keep the vendor's
- * element mounted. The row the reader had open — with the mouse or the
- * keyboard — is rebuilt closed by the vendor when *Load earlier* brings it
- * back; its detail must be open again. And a reader whose focus was *in*
- * that row when it went is not dropped on `<body>`: the group's header,
- * which is still there, is where they land — unless they had already moved
- * on, to the composer or anywhere else, in which case nothing moves.
- */
 describe('a row clipped from a still-mounted group', () => {
   const failed = activity('failed', { state: 'failed', verb: 'Ran', target: 'npm test', detail: 'failure evidence' });
   const later = [activity('later-1'), activity('later-2')];
@@ -68,7 +56,6 @@ describe('a row clipped from a still-mounted group', () => {
     expect(header.getAttribute('aria-expanded')).toBe('true');
     const detail = screen.getByText('failure evidence');
     await expect.poll(() => visible(detail)).toBe(true);
-    /* And the reader can still close it with the same input. */
     if (input === 'mouse') {
       await userEvent.click(screen.getByRole('button', { name: /Ran npm test/ }));
     } else {
@@ -89,7 +76,6 @@ describe('a row clipped from a still-mounted group', () => {
     rerender(<ChatThread cards={{}} stalled={false} conversation={conversation()} turns={later} />);
     expect(screen.getByRole('group', { name: '2 tool calls' })).toBe(group);
     expect(document.activeElement).toBe(header);
-    /* From there the keyboard goes on as it did: Enter closes the group. */
     await userEvent.keyboard('{Enter}');
     expect(header.getAttribute('aria-expanded')).toBe('false');
   });
@@ -106,7 +92,6 @@ describe('a row clipped from a still-mounted group', () => {
     await userEvent.keyboard('{Enter}{Tab} ');
     expect(document.activeElement).toBe(screen.getByRole('button', { name: /Ran npm test/ }));
     expect(visible(screen.getByText('failure evidence'))).toBe(true);
-    /* The reader moves on to the composer, then the row goes. */
     const composer = screen.getByRole('textbox', { name: 'Message' });
     composer.focus();
     rerender(
@@ -116,7 +101,6 @@ describe('a row clipped from a still-mounted group', () => {
       </>,
     );
     expect(document.activeElement).toBe(composer);
-    /* The row comes back: still nothing moves. */
     rerender(
       <>
         <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[failed, ...later]} />
@@ -138,7 +122,6 @@ describe('a row clipped from a still-mounted group', () => {
     await userEvent.click(header);
     await userEvent.click(screen.getByRole('button', { name: /Ran npm test/ }));
     expect(document.activeElement).toBe(screen.getByRole('button', { name: /Ran npm test/ }));
-    /* A click on nothing focusable puts focus on the body, on purpose. */
     await userEvent.click(screen.getByText('Elsewhere on the page'));
     expect(document.activeElement).toBe(document.body);
     rerender(
@@ -150,13 +133,7 @@ describe('a row clipped from a still-mounted group', () => {
     expect(document.activeElement).toBe(document.body);
   });
 
-  /*
-   * A commit can move focus itself — a component earlier in the tree putting
-   * it on the composer in its own layout effect, in the same commit that
-   * drops the row. React dispatches no blur for the row it removes, so the
-   * note still names the row; what says "not lost" is that focus is somewhere
-   * real. Nothing is taken from there.
-   */
+  /* React dispatches no blur for the row it removes, so the note still names it; what says "not lost" is that focus is somewhere real. */
   it('does not take focus from an element another effect focused in the same commit', async () => {
     function Parker({ on }: { on: boolean }) {
       useLayoutEffect(() => {
@@ -193,14 +170,7 @@ describe('a row clipped from a still-mounted group', () => {
     expect(document.activeElement).toBe(second);
   });
 
-  /*
-   * The vendor keeps a closed group's rows in the DOM, hidden by this
-   * module's stylesheet. A row can only be focused while the group is open,
-   * and the reader closes a group from its header — but a group closed by a
-   * press that did not first take focus (assistive software, a script) would
-   * leave focus on a row that is no longer shown. The header is the landing
-   * there too, and no hidden element keeps focus.
-   */
+  /* The vendor keeps a closed group's rows in the DOM, hidden by stylesheet, so a group closed by a press that did not first take focus would leave focus on a hidden row. */
   it('lands focus on the header when the group closes under the focused row', async () => {
     const { container } = render(<ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[failed, ...later]} />);
     const header = groupButton(container);
@@ -215,22 +185,6 @@ describe('a row clipped from a still-mounted group', () => {
   });
 });
 
-/*
- * ── A run whose own element goes ──────────────────────────────────────────
- *
- * The page shift that clips a row can also take the run's element with it:
- * a two-call run left with one call is drawn as the transcript's own line
- * (`ChatThread`), and a run the shift takes whole is drawn as nothing. The
- * element the reader's focus was in is unmounted either way, and nothing
- * inside it is left to notice. The transcript is: focus lands on the same
- * call's line, on the same run's line, on the nearest surviving run — its
- * header, or its line if it is a run of one — or on the entry now standing
- * where the run was — in that order — and the next Tab goes on from there,
- * not from the top of the page. The
- * same rule as for a clipped row governs when: only for focus this commit
- * actually took. The orders below put the focused call *after* the call the
- * shift takes, as a newest-page refetch that drops the oldest prefix does.
- */
 describe('a run whose own element goes', () => {
   const failed = activity('failed', { state: 'failed', verb: 'Ran', target: 'npm test', detail: 'failure evidence' });
   const done = activity('done', { target: 'pwd' });
@@ -268,7 +222,6 @@ describe('a run whose own element goes', () => {
     const line = failedLine();
     expect(line.textContent).toContain('failure evidence');
     expectLent(line);
-    /* The next Tab goes on to the next control in the transcript, not back to the top of the page. */
     await userEvent.keyboard('{Tab}');
     expect(document.activeElement).toBe(headerOf(screen.getByRole('group', { name: '2 tool calls' })));
     expectReturned(line);
@@ -316,12 +269,6 @@ describe('a run whose own element goes', () => {
     expect(document.activeElement).toBe(headerOf(screen.getByRole('group', { name: '2 tool calls' })));
   });
 
-  /*
-   * A run of one is a run, and its line stands for it the way a header
-   * stands for a group; either is nearer than a message. Which run is a
-   * matter of where, not of size: the first after where the old one stood,
-   * else the last before it.
-   */
   it('moves focus to the line of the next surviving run of one when the focused run leaves whole, and Tabs on from there', async () => {
     const nearby = activity('nearby', { verb: 'Ran', target: 'nearby' });
     const harness = (turns: readonly TranscriptEntry[]) => (
@@ -389,12 +336,7 @@ describe('a run whose own element goes', () => {
     expectReturned(reply);
   });
 
-  /*
-   * A line or a message is not a control, so the landing wears no ring: the
-   * ring promises keyboard input goes here, and none does — the same argument
-   * the composer's perch makes. Asserted after a real key press, so
-   * `:focus-visible` is genuinely engaged and the rule is genuinely applied.
-   */
+  /* Asserted after a real key press, so `:focus-visible` is genuinely engaged. */
   it('draws no focus ring on a landing that is not a control', async () => {
     const { rerender } = render(<ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[done, failed, boundary, ...later]} />);
     await focusFailedRow();
@@ -403,7 +345,6 @@ describe('a run whose own element goes', () => {
     expectLent(line);
     expect(line.matches(':focus-visible')).toBe(true);
     expect(getComputedStyle(line).outlineStyle).toBe('none');
-    /* And the control it Tabs on to keeps its own ring. */
     await userEvent.keyboard('{Tab}');
     const header = document.activeElement as HTMLElement;
     expect(header.matches(':focus-visible')).toBe(true);
@@ -467,11 +408,7 @@ describe('a run whose own element goes', () => {
     expect(document.activeElement).toBe(document.body);
   });
 
-  /*
-   * The transcript is one instance per conversation (`key={open.id}` at the
-   * router), so a switch unmounts the whole of it, note and all. Whoever
-   * switched did so from somewhere, and that somewhere keeps focus.
-   */
+  /* The transcript is one instance per conversation (`key={open.id}` at the router), so a switch unmounts the whole of it. */
   it('leaves focus where the reader switched conversations from', async () => {
     const harness = (id: string, turns: readonly TranscriptEntry[]) => (
       <>
@@ -490,21 +427,7 @@ describe('a run whose own element goes', () => {
   });
 });
 
-/*
- * ── A window that shares nothing with the last ────────────────────────────
- *
- * A refetch of the newest page moves the window by however many rows
- * arrived, and past everything shown when more arrived than a page holds:
- * then no key survives to say where the run stood. That refetch is the one
- * way this transcript replaces its window whole (*Load earlier* keeps what
- * is shown), and it only ever moves forward — so the run stood before all
- * of it, and the landing is the first run. The entries' times are read for
- * the one contradiction, every entry now shown stamped earlier than every
- * entry that was, when the window went back and the landing is the last
- * run; they are two ranges and never an order — `atMs` is not one clock,
- * and is not what the transcript is sorted by — so ranges that touch or
- * overlap leave the default standing.
- */
+/* Entry times are read as two ranges, never an order: `atMs` is not one clock and is not what the transcript is sorted by. */
 describe('a window that shares nothing with the last', () => {
   const old = [
     activity('done', { target: 'pwd', atMs: 5 }),
@@ -570,21 +493,6 @@ describe('a window that shares nothing with the last', () => {
   });
 });
 
-/*
- * ── A note whose focus went somewhere real ────────────────────────────────
- *
- * The note is written by the transcript's own focus events, and React
- * dispatches none for a node it removes. So when the element the note names
- * goes in a commit in which another effect puts focus somewhere real — the
- * composer, say — nothing is taken from the composer; but the note has
- * outlived the focus it described. Should the reader then click off, onto
- * nothing, that blur is the composer's and never reaches the transcript, and
- * the next commit would find focus on `<body>`, read the note, and land the
- * reader back on a tool they left a commit ago. So a note is kept across a
- * commit only while focus is actually in the run it names — where a later
- * commit that takes the element still has it to land from — and a note whose
- * focus is anywhere else is over; only a focus event writes another.
- */
 describe('a note whose focus another effect took', () => {
   const failed = activity('failed', { state: 'failed', verb: 'Ran', target: 'npm test', detail: 'failure evidence' });
   const done = activity('done', { target: 'pwd' });
@@ -621,11 +529,7 @@ describe('a note whose focus another effect took', () => {
     expect(element.hasAttribute('data-nc-landing')).toBe(true);
   }
 
-  /**
-   * What the commit takes from under the focused row — the row while its run
-   * stays; the run whole; the run down to that one call, drawn as a line —
-   * and a later commit that takes what was left.
-   */
+  /** What the commit takes from under the focused row, and a later commit that takes what was left. */
   const takes: Record<string, Readonly<{ before: readonly TranscriptEntry[]; after: readonly TranscriptEntry[]; then: readonly TranscriptEntry[] }>> = {
     'row': { before: [failed, ...retained, boundary, ...later], after: [...retained, boundary, ...later], then: [boundary, ...later] },
     'run': { before: [done, failed, boundary, ...later], after: [boundary, ...later], then: [boundary] },
@@ -638,11 +542,9 @@ describe('a note whose focus another effect took', () => {
 
     rerender(harness(after, true));
     expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Message' }));
-    /* A click on nothing focusable puts focus on the body, on purpose. */
     await userEvent.click(screen.getByText('Elsewhere on the page'));
     expect(document.activeElement).toBe(document.body);
 
-    /* Commits that change nothing, one that adds, and one that takes what the note could still name. */
     rerender(harness([...after], true));
     expect(document.activeElement).toBe(document.body);
     rerender(harness([...after, more], true));
@@ -715,17 +617,7 @@ describe('a note whose focus another effect took', () => {
   });
 });
 
-/*
- * ── The loan a landing makes ──────────────────────────────────────────────
- *
- * `tabindex` and `data-nc-landing` are lent for exactly as long as the
- * landing holds focus. The reader moving on is a blur the transcript sees.
- * But the lent element can also *go* — its run comes back whole, the
- * transcript empties, the conversation is switched away — in a commit that
- * also puts focus somewhere real, and React dispatches no blur for a node it
- * removes. The loan ends all the same, at that commit or with the transcript,
- * and focus is not touched to end it.
- */
+/* `tabindex` and `data-nc-landing` are lent only while the landing holds focus; React dispatches no blur for a node it removes, so the loan ends at that commit without touching focus. */
 describe('the loan a landing makes', () => {
   const failed = activity('failed', { state: 'failed', verb: 'Ran', target: 'npm test', detail: 'failure evidence' });
   const done = activity('done', { target: 'pwd' });

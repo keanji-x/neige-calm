@@ -1,18 +1,4 @@
-//! #1292 S1 — `/api/track-recipes`, user-defined starting points.
-//!
-//! What these pin, and why each needs pinning:
-//!
-//!   * **Normalization at the write boundary.** A recipe must not carry one
-//!     track's authority into every track made from it. The privilege fields
-//!     go through the same function fork uses; tombstones are dropped, which
-//!     is the one place recipes deliberately differ from fork.
-//!   * **The actor gate, with `ai:claude` as the negative.** `ai:codex`
-//!     would prove nothing: `Actor::to_actor_id` folds every *other* `ai:*`
-//!     into `ActorId::User`, so a gate written against the typed value would
-//!     pass `ai:claude` and still look correct in a test that only tried
-//!     `ai:codex`.
-//!   * **409 writes nothing.** A conflict that still committed would be
-//!     indistinguishable from a correct refusal by status code alone.
+//! `/api/track-recipes`, user-defined starting points.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -126,9 +112,7 @@ fn task_payloads(body: &str) -> Vec<Value> {
         .collect()
 }
 
-/// A block reference to a track this test never creates, built by the
-/// production formatter rather than spelled as a literal — a hand-written
-/// URI would be this file's own idea of what `parse_destination` accepts.
+/// Built by the production formatter rather than spelled as a literal.
 fn foreign_block_ref() -> String {
     calm_types::report_links::format_track_destination(FOREIGN_TRACK, Some("b_1f3a"))
 }
@@ -144,15 +128,7 @@ fn fences(body: &str) -> Vec<(String, Value)> {
         .collect()
 }
 
-// ---------------------------------------------------------------------------
-// Normalization
-// ---------------------------------------------------------------------------
-
-/// All four normalizations in one body, asserted field by field.
-///
-/// `released_by_user` must be **absent**, not `false`: the two are identical
-/// to every reader but not to `track_report_edit_guard`, which compares the
-/// raw `Option<&Value>`. Absent is the shape a fresh declaration has.
+/// `released_by_user` must be absent, not `false`: `track_report_edit_guard` compares the raw `Option<&Value>`.
 #[tokio::test]
 async fn create_normalizes_every_privilege_field_and_drops_tombstones() {
     let boot = boot().await;
@@ -200,23 +176,6 @@ async fn create_normalizes_every_privilege_field_and_drops_tombstones() {
     );
 }
 
-/// `refs` is dropped, and the four fields beside it that look similar are
-/// not.
-///
-/// The first half is the behaviour: a recipe cannot own a block id (they are
-/// minted per track at instantiation), so a `refs` entry it ships names some
-/// other track's block — which either freezes that block into the
-/// instantiated task's prompt or, when it no longer resolves, raises a
-/// `refs`-path diagnostic that makes the task unschedulable.
-///
-/// The second half is the fence around it. `cwd`, `context`, `depends_on`
-/// and `gate` are the other fields a recipe carries in from wherever it was
-/// authored, and none of them is this function's business: `cwd` is a path
-/// its author can mean and the S4 editor shows her, `depends_on` names keys
-/// this same recipe declares, and `gate`/`context` are the work's own
-/// definition. Asserting them byte-identical is what stops the next edit
-/// here from generalising "drop what the recipe cannot own" into "drop
-/// whatever looks inherited".
 #[tokio::test]
 async fn create_drops_refs_and_touches_nothing_beside_them() {
     let boot = boot().await;
@@ -235,10 +194,6 @@ async fn create_drops_refs_and_touches_nothing_beside_them() {
             "key": "live",
             "goal": "do the thing",
             "kind": "codex",
-            // Well-formed and accepted by `report_blocks::kinds`, which is
-            // the point: nothing rejects this at the door, so the drop is
-            // the only thing standing between the recipe and a reference it
-            // does not own.
             "refs": [foreign_block_ref()],
             "cwd": cwd,
             "context": context,
@@ -277,19 +232,6 @@ async fn create_drops_refs_and_touches_nothing_beside_them() {
     assert_eq!(live["gate"], gate);
 }
 
-/// A non-task fence is re-rendered into canonical form, with its payload
-/// untouched.
-///
-/// Why this matters and a semantic check would not: instantiation re-renders
-/// every fence it can parse, so a recipe holding a compact `app` payload
-/// would produce a track whose bytes differ from the ones the picker showed —
-/// same meaning, different document, and "the recipe and its instantiation
-/// are the same bytes" would be false. Canonicalising at the write boundary
-/// is what makes that re-render the identity.
-///
-/// The `Value` assertion is the other half: normalization may change how the
-/// payload is spelled and nothing else. A non-task fence carries no task
-/// authority, so nothing in it is the recipe's business to edit.
 #[tokio::test]
 async fn a_non_task_fence_is_stored_in_canonical_form_with_its_payload_intact() {
     let boot = boot().await;
@@ -330,12 +272,7 @@ async fn a_non_task_fence_is_stored_in_canonical_form_with_its_payload_intact() 
     );
 }
 
-/// Every Markdown heading in `body`, as `(level, text)`, read with a real
-/// CommonMark parser.
-///
-/// Deliberately not a substring scan: the bug this pins is that dropping a
-/// tombstone *creates* a heading out of prose that contains no heading
-/// marker at all (`foo\n---\n` is a Setext H2), so only a parser can see it.
+/// Read with a real CommonMark parser: `foo` followed by `---` is a Setext H2, which no substring scan sees.
 fn headings(body: &str) -> Vec<(u32, String)> {
     use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
     let mut out = Vec::new();
@@ -369,14 +306,6 @@ fn headings(body: &str) -> Vec<(u32, String)> {
     out
 }
 
-/// Dropping a tombstone must not change how its *neighbours* parse.
-///
-/// The shape is specific and adversarial: the prose before the fence ends on
-/// a non-blank line (`foo`), the prose after it opens with `---`. Spliced
-/// naively those two become `foo\n---\n` — a Setext H2 titled "foo" — so
-/// "delete one task" would silently promote a paragraph to a heading and
-/// swallow the thematic break. The oracle is the whole heading list, before
-/// and after: nothing about the surrounding prose may move.
 #[tokio::test]
 async fn dropping_a_tombstone_does_not_splice_its_prose_neighbours() {
     let boot = boot().await;
@@ -419,25 +348,6 @@ async fn dropping_a_tombstone_does_not_splice_its_prose_neighbours() {
     );
 }
 
-/// Normalization is a fixed point: storing what a store returned changes
-/// nothing, byte for byte.
-///
-/// Without this, the fix above could pay for its paragraph break by growing
-/// the body a blank line on every save — the same content, re-saved from the
-/// editor a few times, would drift.
-///
-/// The body carries a **non-task** fence too, in compact spelling: the second
-/// pass is only the identity if the first pass already canonicalised it.
-///
-/// One task carries `refs`, and the assertion below is in two halves for a
-/// reason worth stating: **byte-identity alone cannot catch blanking.** An
-/// implementation that wrote `refs: []` rather than removing the key is a
-/// fixed point too — the second pass reads `[]` and writes `[]`. So the
-/// second half asserts the *shape* of the fixed point: no task in a stored
-/// recipe carries a `refs` key at all. Absent and `[]` are the same to every
-/// reader of a task declaration, but not to a diff of two stored recipes,
-/// nor to the "instantiation re-renders this to the same bytes"
-/// construction, which is what this whole file is defending.
 #[tokio::test]
 async fn normalization_is_byte_identical_the_second_time() {
     let boot = boot().await;
@@ -505,11 +415,7 @@ async fn normalization_is_byte_identical_the_second_time() {
     );
 }
 
-/// The 403 a refused recipe write returns must talk about **recipes**.
-///
-/// The decision is the block endpoints' shared helper, but their sentence
-/// sends the caller to the MCP `calm.report.*` tools — advice that is simply
-/// wrong here: no MCP tool writes recipes.
+/// The shared block-endpoint 403 sends callers to the MCP `calm.report.*` tools, which do not write recipes.
 #[tokio::test]
 async fn the_recipe_403_explains_recipes_not_report_blocks() {
     let boot = boot().await;
@@ -537,8 +443,6 @@ async fn the_recipe_403_explains_recipes_not_report_blocks() {
     );
 }
 
-/// The same normalization on the update path. Without this, a recipe could
-/// be created clean and then edited dirty.
 #[tokio::test]
 async fn update_normalizes_too() {
     let boot = boot().await;
@@ -575,10 +479,6 @@ async fn update_normalizes_too() {
     assert_eq!(updated["revision"], json!(2), "revision must bump");
 }
 
-/// A recipe with no tasks at all is legal end to end — the body fence
-/// validator accepts it, the declaration projection is empty, and task
-/// projection takes an empty slice. Pinned so nobody later "helpfully" adds
-/// a minimum-one-task rule.
 #[tokio::test]
 async fn a_recipe_may_have_zero_tasks() {
     let boot = boot().await;
@@ -594,9 +494,6 @@ async fn a_recipe_may_have_zero_tasks() {
     assert!(task_payloads(created["body"].as_str().unwrap()).is_empty());
 }
 
-/// A body whose fence is well-formed but whose payload violates the task
-/// schema is a **400**, not a 500: this input came from the caller, unlike
-/// `prepare_template_report`'s Rust constants.
 #[tokio::test]
 async fn a_schema_violating_task_payload_is_a_400() {
     let boot = boot().await;
@@ -628,12 +525,7 @@ async fn an_empty_title_is_refused() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
-// ---------------------------------------------------------------------------
-// Actor gate
-// ---------------------------------------------------------------------------
-
-/// `ai:claude`, deliberately — see this module's header. Every write verb is
-/// covered because a gate is only as good as its least-guarded entry point.
+/// `ai:claude`, deliberately: `Actor::to_actor_id` folds every other `ai:*` into `ActorId::User`, so `ai:codex` would prove nothing.
 #[tokio::test]
 async fn a_declared_agent_actor_may_not_write_recipes() {
     let boot = boot().await;
@@ -671,7 +563,6 @@ async fn a_declared_agent_actor_may_not_write_recipes() {
         assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {error}");
     }
 
-    // …and the recipe is untouched.
     let (status, still) = send(
         boot.app.clone(),
         "GET",
@@ -685,8 +576,6 @@ async fn a_declared_agent_actor_may_not_write_recipes() {
     assert_eq!(still["revision"], json!(1));
 }
 
-/// The positive half. Without it the gate could be "reject everything" and
-/// every negative test above would still pass.
 #[tokio::test]
 async fn a_user_actor_may_write_recipes() {
     let boot = boot().await;
@@ -703,13 +592,6 @@ async fn a_user_actor_may_write_recipes() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Optimistic locking
-// ---------------------------------------------------------------------------
-
-/// Two writers holding the same `revision`: the second is refused **and
-/// writes nothing**. A conflict that still committed would pass a
-/// status-code-only assertion.
 #[tokio::test]
 async fn a_stale_revision_is_a_409_that_writes_nothing() {
     let boot = boot().await;
@@ -805,16 +687,7 @@ async fn delete_removes_it_from_the_list() {
     assert!(list.as_array().unwrap().is_empty(), "list={list}");
 }
 
-// ---------------------------------------------------------------------------
-// #1635 S2c — the contract header at the recipe's own write boundary. A
-// stored recipe reaches the report funnel only when it is instantiated, so
-// the same rule (`check_document`) runs here, on the normalized body, and the
-// template-file front-matter prefix is refused outright.
-// ---------------------------------------------------------------------------
-
-/// A one-section header as a caller might spell it — keys out of declaration
-/// order and an explicit `"omit_if_empty":false` — so a stored canonical line
-/// proves the boundary rewrote it rather than passed it through.
+/// Keys out of declaration order and an explicit default, so a canonical stored line proves a rewrite.
 const NON_CANONICAL_HEADER: &str = "<!-- neige:contract {\"sections\":[{\"omit_if_empty\":false,\"h1\":\"概要\"}],\"version\":1} -->";
 
 fn one_section_header() -> calm_types::report_contract::ContractHeader {
@@ -831,8 +704,7 @@ fn first_line(body: &str) -> &str {
     body.split('\n').next().unwrap_or_default()
 }
 
-/// `+++` opens a template file's TOML front matter (#1635 D1). A recipe body
-/// is the part *after* it; one that starts with it was pasted whole.
+/// `+++` opens a template file's TOML front matter; a body starting with it was pasted whole.
 #[tokio::test]
 async fn a_body_that_starts_with_front_matter_is_a_400_on_both_verbs() {
     let boot = boot().await;
@@ -888,8 +760,6 @@ async fn a_body_that_starts_with_front_matter_is_a_400_on_both_verbs() {
     );
 }
 
-/// The header is normalized at the boundary, so the row — and therefore the
-/// picker and every track instantiated from it — holds the canonical line.
 #[tokio::test]
 async fn a_non_canonical_header_is_stored_and_read_back_canonical() {
     use calm_types::report_contract::canonical_line;
@@ -932,7 +802,6 @@ async fn a_non_canonical_header_is_stored_and_read_back_canonical() {
     );
 }
 
-/// D2 (a) at this boundary: a header anywhere but line 1 is `Misplaced`.
 #[tokio::test]
 async fn a_header_off_line_1_is_a_400() {
     let boot = boot().await;
@@ -958,8 +827,6 @@ async fn a_header_off_line_1_is_a_400() {
     );
 }
 
-/// The PUT verb runs the same boundary: a non-canonical header written over
-/// an existing recipe is stored — and read back — canonical.
 #[tokio::test]
 async fn update_stores_a_non_canonical_header_canonical() {
     use calm_types::report_contract::canonical_line;
@@ -1007,7 +874,6 @@ async fn update_stores_a_non_canonical_header_canonical() {
     );
 }
 
-/// And the PUT verb refuses a header off line 1 the same way, writing nothing.
 #[tokio::test]
 async fn update_with_a_header_off_line_1_is_a_400_that_writes_nothing() {
     let boot = boot().await;

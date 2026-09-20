@@ -1,7 +1,7 @@
 error[E0603]: module `events` is private
- --> tests/ui/name_authorized_capability.rs:8:49
+ --> tests/ui/name_authorized_capability.rs:4:49
   |
- 8 |     let _forged: Option<calm_truth::db::sqlite::events::gated::Authorized<'_>> = None;
+ 4 |     let _forged: Option<calm_truth::db::sqlite::events::gated::Authorized<'_>> = None;
    |                                                 ^^^^^^         ---------- struct `Authorized` is not publicly re-exported
    |                                                 |
    |                                                 private module

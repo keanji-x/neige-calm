@@ -69,16 +69,10 @@ export function mountProductionApp(root: HTMLElement, browser: Readonly<{
   const createRecoveryEvents = () => createBrowserEventComposition({ storage: browser.storage, transport: probe,
     cursorStore, unauthorizedChannel: unauthorized,
     probeUnauthorized: () => { recovery?.resume(); return Promise.resolve(); } });
-  // The one place the card runtime is assembled. `bootCards` is called exactly
-  // once, on this instance — there is no module-level registry and no
-  // module-level "already registered" guard (`INV-CARD-224` is retired); a
-  // second boot would be a second registry, which is what the contract test
-  // pins.
+  // The one place the card runtime is assembled: no module-level registry, so a second boot would be a second registry.
   const registry = createCardRegistry();
   bootCards(registry);
-  // The card runtime's one I/O capability: the filesystem reads a card may
-  // make, built from this app's transport and its 401 channel so a card's read
-  // hits the same session handling as every other read (see `CardFilesPort`).
+  // Built from this app's transport and 401 channel so a card's read hits the same session handling as every other read.
   const host = createCardHost(registry, { files: createCardFilesPort(transport, unauthorized), ...(__NC_BUNDLED__ ? { recovery: access } : {}) });
   const runtime: ProviderRuntime = {
     fetchVersion: () => runOperation(probe, serverVersionOperation(), unauthorized),

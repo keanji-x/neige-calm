@@ -1,12 +1,6 @@
 // @vitest-environment node
 //
-// The add menu as a projection of the registry.
-//
-// Driven through `registerAvailableBuiltinCards` rather than a hand-built
-// registry: the claim under test is about what *this build* offers, and a
-// fixture registry would only prove that the filter works on rows the fixture
-// chose. The kinds a kernel-minted-only entry must never surface (`planner`,
-// `track-report`) are real entries here, not stand-ins.
+// The add menu as a projection of the registry, driven through `registerAvailableBuiltinCards` rather than a fixture registry.
 
 import { describe, expect, it } from 'vitest';
 
@@ -25,13 +19,6 @@ describe('cardAddMenuEntries', () => {
       .toEqual([['terminal', 'terminal'], ['codex', 'codex'], ['file-viewer', 'file']]);
   });
 
-  /*
-   * The menu's order is `BUILTIN_CARD_ORDER`, inherited through registration
-   * order rather than restated — a second ordering table here is exactly the
-   * kind of duplicate that drifts. Asserted as the full list above; this case
-   * pins the *reason* by naming the two kinds whose relative order would flip
-   * if the projection ever sorted by anything of its own (label, say).
-   */
   it('keeps registration order, so terminal precedes codex as the built-in order says', () => {
     const types = builtinMenu().map((entry) => entry.type);
     expect(types.indexOf('terminal')).toBeLessThan(types.indexOf('codex'));
@@ -43,14 +30,7 @@ describe('cardAddMenuEntries', () => {
     expect(types).not.toContain('track-report');
   });
 
-  /*
-   * The two exclusions are independent rules and fail independently, so each
-   * gets a single-violation fixture: an entry that declares an `addPanel` and
-   * would be offered but for its create strategy. Without these, deleting
-   * either arm of the `mode` check stays green — the built-ins that exercise
-   * them (`planner`, `track-report`) declare no `addPanel` at all, so they are
-   * filtered a step earlier and prove nothing about this check.
-   */
+  /* The built-ins that exercise the two exclusions (`planner`, `track-report`) declare no `addPanel` at all, so they are filtered a step earlier; each arm of the `mode` check needs its own fixture. */
   const declaring = (mode: 'kernel-minted-only' | 'catalog' | 'generic'): CardEntry => ({
     type: `fixture-${mode}`,
     component: () => null,
@@ -64,9 +44,7 @@ describe('cardAddMenuEntries', () => {
         ? Object.freeze({ mode: 'catalog' as const, catalog: 'fixture' })
         : Object.freeze({ mode: 'kernel-minted-only' as const }),
     addPanel: Object.freeze({ label: 'fixture' }),
-  /* The fixture types are deliberately not in `CardDataMap` — a fixture kind
-     that declared itself there would be a card kind of the product. The cast is
-     what a registry of heterogeneous entries costs at a test's boundary. */
+  /* The fixture types are deliberately not in `CardDataMap`; the cast is what a registry of heterogeneous entries costs at a test's boundary. */
   } as unknown as CardEntry);
 
   it('drops a kernel-minted-only entry that asked to be in the menu', () => {
@@ -81,8 +59,6 @@ describe('cardAddMenuEntries', () => {
     expect(cardAddMenuEntries(registry)).toEqual([]);
   });
 
-  /* The positive half of the same pair: without it, a filter that dropped
-     everything would satisfy both cases above. */
   it('keeps a generic entry that asked to be in the menu', () => {
     const registry = createCardRegistry();
     registry.register(declaring('generic'));
@@ -91,9 +67,6 @@ describe('cardAddMenuEntries', () => {
 
   it('gives a fieldless kind an empty field list, not undefined', () => {
     const terminal = builtinMenu().find((entry) => entry.type === 'terminal');
-    // The caller branches on `fields.length === 0` to create without a form;
-    // `undefined` there would throw on a gesture that is supposed to be the
-    // cheapest one in the menu.
     expect(terminal?.fields).toEqual([]);
   });
 });

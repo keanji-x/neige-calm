@@ -1,22 +1,6 @@
 // @vitest-environment jsdom
-//
-// Settings › Plugins › add and remove, wired to the real thing (#1480).
-//
-// The panes' own tests drive them through their props, which cannot see the
-// claims that exist only once the app is assembled:
-//
-//   1. **the install request that leaves the browser is the one the kernel
-//      documents** — `source.kind = "mcp_http"` with the credential and its
-//      placement as sibling fields. The pane can be shown to build a draft;
-//      that the draft becomes *that body* is a fact about
-//      `installConnectorOperation` and the transport, and it is read here off
-//      the recorded request.
-//   2. **a blank credential is an absent key, not an empty string.** The
-//      kernel reads absent as "no credential" and refuses an empty one, so the
-//      difference is the whole keyless-connector case.
-//   3. **removing a plugin issues one DELETE and then re-reads the list**, so
-//      the row disappears because the kernel says so and not because the UI
-//      decided to hide it.
+// Settings › Plugins › add and remove over the real router and transport: a blank
+// credential is an absent key, not an empty string, and the kernel refuses an empty one.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -122,7 +106,6 @@ describe('Settings › Plugins › add, end to end', () => {
         headers: { Authorization: 'Bearer sk-live-credential' },
       },
     });
-    // The form leaves once the kernel has accepted, back to the list it added to.
     await screen.findByText('Add a plugin');
   });
 
@@ -182,9 +165,6 @@ describe('Settings › Plugins › add, end to end', () => {
     });
   });
 
-  /* The refusal the operator meets most: an id somebody already used. It has to
-     arrive on the form, in the kernel's own words, with the form still holding
-     what was typed. */
   it('shows the kernel’s refusal without leaving the form', async () => {
     renderPlugins((request) => {
       if (request.path === '/api/plugins') return ok([]);
@@ -193,9 +173,7 @@ describe('Settings › Plugins › add, end to end', () => {
         return {
           status: 409,
           statusText: 'Conflict',
-          /* The kernel's own `ErrorBody`: the sentence is `error`, the code is
-             `code`. A fixture that nested them would be asserting against a
-             shape no route produces. */
+          /* The kernel's own `ErrorBody`: the sentence is `error`, the code is `code`. */
           body: { error: 'plugin `todo` already installed at version `0.1.0`', code: 'plugin_conflict' },
         };
       }

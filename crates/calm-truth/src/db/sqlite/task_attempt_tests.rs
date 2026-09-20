@@ -1,4 +1,3 @@
-//! #1501 regressions through the real projection and execution write helpers.
 use super::*;
 use crate::db::RepoRead;
 use crate::model::TaskStatus;

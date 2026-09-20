@@ -1,52 +1,7 @@
-//! #1253 D5 — `POST /api/today/summary`: ask an agent to write today's
-//! progress into Today's document.
-//!
-//! This is the action the whole issue was opened for ("有一个 conversation 总结
-//! 今天做了些什么"). The document is the launchpad track's `track-report` card
-//! (design D1); the writer is an assistant conversation on that track, which the
-//! user can read in Today's Conversations module — it *is* the conversation
-//! they asked for.
-//!
-//! # The endpoint is server-synthesised
-//!
-//! It takes no request body and no client prompt, and — deliberately — it does
-//! not extract [`Actor`] from the request either. Both absences are load-bearing
-//! and are explained where they bite: the prompt in [`summary_prompt`], the
-//! actor in [`synthetic_actor`].
-//!
-//! # The order of operations, and why it is that order
-//!
-//! 1. compute the day's activity window (`activity_window`);
-//! 2. **empty ⇒ refuse, having created nothing** (INV-TODAYDOC-007);
-//! 3. ensure the launchpad exists;
-//! 4. create the summary conversation *if it is not there yet*, with static
-//!    bootstrap text and nothing else;
-//! 5. **unconditionally** send one planner input carrying the activity summary.
-//!
-//! Step 2 comes before step 3 so that a refusal materialises no workspace and
-//! starts no harness, not merely "no conversation".
-//!
-//! **That guarantee is about this endpoint, and it is worth saying what it does
-//! not reach.** Since 2026-09-03 the Today page presses
-//! `POST /api/today/launchpad/ensure` before this route when there is no
-//! launchpad at all, because this ordering is precisely what made a quiet day
-//! unescapable: no activity ⇒ refused here at step 2 ⇒ never a launchpad ⇒ the
-//! page's other door (the Conversations `+`) withheld too. Nothing here changed
-//! for it, and nothing here should: a refusal from *this* handler still leaves
-//! nothing behind, which is the whole content of INV-TODAYDOC-007. What the
-//! frontend adds is a separate, explicitly-pressed request whose declared job is
-//! to materialise the workspace, so the workspace is attributable to that
-//! request rather than left behind by a refusal. The reasoning and its residual
-//! cost live with the caller, on `useTodaySummaryMutation` in
-//! `fe/web/src/app/providers/queries.ts`.
-//!
-//! Steps 4 and 5 are **one path, not two branches**. An earlier revision gave
-//! the summary to a "re-run" branch and let the create path carry only its
-//! first message; since the create carries nothing but
-//! [`TODAY_SUMMARY_BOOTSTRAP_TEXT`] — and a same-key replay of it answers 201
-//! without delivering anything a second time — that shape produced a summary
-//! with no material on the very first use, the one impression the user gets.
-//! See the design's §0c.1.
+//! `POST /api/today/summary`: ask an agent to write today's progress into Today's
+//! document. An empty day is refused having created nothing; otherwise ensure the
+//! launchpad, create the summary conversation if absent, and unconditionally send one
+//! planner input carrying the activity summary.
 
 use axum::{
     Json, Router,
@@ -84,270 +39,65 @@ pub fn router() -> Router<AppState> {
     Router::new().route("/api/today/summary", post(write_today_summary))
 }
 
-/// The `Idempotency-Key` the summary conversation is derived from.
-///
-/// **A bare constant. Nothing may be mixed in — not the workspace digest, not
-/// the actor, not the date.** This has been got wrong once already and the
-/// failure is quiet, so the reason is written out in full.
-///
-/// `derive_track_conversation_keys` feeds one digest to **both** ids: the card is
-/// `conv-{digest[..32]}` and the operation key is `wave-conversation-{digest}`
-/// (`conversation_keys.rs`). So anything mixed into the key changes the **card
-/// id** too. Mix in `workspace_key_digest(cwd)` and one workspace re-point
-/// derives a *second* conversation card, which is precisely the thing D5 rules
-/// out ("one summary conversation for the launchpad's lifetime"); worse, code
-/// that looked the card up under the bare key and created it under the digest
-/// key would create a card it never finds again.
-///
-/// The `today.rs` precedent that *does* mix a digest in does not transfer: its
-/// key names an operation only. This one carries conversation identity.
-///
-/// What that precedent was defending against — `insert_operation`'s permanent
-/// 409 on "same key, different payload hash", with no pruner on `operations` —
-/// is instead handled by removing the variables from the payload, which is what
-/// [`synthetic_actor`], the `card_get` branch and [`TODAY_SUMMARY_BOOTSTRAP_TEXT`] between
-/// them do.
+/// The `Idempotency-Key` the summary conversation is derived from. A bare constant:
+/// `derive_track_conversation_keys` feeds one digest to both the card id and the
+/// operation key, so mixing in a workspace digest, actor or date would derive a second
+/// conversation card.
 pub const TODAY_SUMMARY_CONVERSATION_KEY: &str = "today-summary";
 
-/// The conversation this endpoint talks to, derived.
-///
-/// A named function rather than an inline call so that INV-TODAYDOC-011 has
-/// something to pin: `the_summary_conversation_key_is_bare` below is a golden on
-/// **this** function. Copying `conversation_keys.rs`'s own golden would prove
-/// nothing here — that one stays green with every line of this module deleted.
-///
-/// It is also the only route from a track id to a card id in this module, which
-/// is what makes the golden a statement about the endpoint rather than about a
-/// helper the endpoint might not use.
+/// The conversation this endpoint talks to, derived; the only route from a track id to
+/// a card id in this module, so a golden on it is a statement about the endpoint.
 pub(crate) fn summary_conversation_keys(track_id: &str) -> DerivedConversationKeys {
     derive_track_conversation_keys(track_id, TODAY_SUMMARY_CONVERSATION_KEY)
 }
 
-/// The derived summary-conversation card id, for tests that must assert the
-/// endpoint landed on *the* card rather than on *a* card.
+/// The derived summary-conversation card id, for tests.
 #[cfg(feature = "fixtures")]
 #[doc(hidden)]
 pub fn today_summary_card_id_for_test(track_id: &str) -> String {
     summary_conversation_keys(track_id).card_id
 }
 
-/// The actor every request from this endpoint is attributed to.
-///
-/// **Fixed, and not read from the request.** `PlannerHarnessStartOperationPayload`
-/// carries `actor`, the whole payload is hashed into the operation's
-/// `payload_hash`, and `insert_operation` answers "same idempotency key,
-/// different hash" with a 409 that never expires — `operations` has no pruner.
-/// `today.rs` records that exact accident verbatim: *"409, on every request,
-/// forever"*. So the payload must not contain anything that varies between two
-/// presses of one button.
-///
-/// The channel that actually varies is the client's `X-Calm-Actor` header:
-/// `Actor::to_actor_id` maps `"user"` **and every non-`ai:codex` value** to
-/// `ActorId::User`, so two human accounts cannot differ, but `ai:codex` can.
-/// This handler closes it structurally — it has no `Actor` extractor at all, so
-/// there is no header to forward and no future edit can quietly start
-/// forwarding one.
-///
-/// **Why `user` and not `kernel`.** The message is composed by the server, but
-/// the act is a human pressing a button, and that is what the audit log should
-/// say. The alternative is also not reachable honestly: `send_planner_input`
-/// derives its audit actor from the `Actor` it is handed, and
-/// `Actor("kernel").to_actor_id()` silently degrades to `ActorId::User` — so
-/// "attribute this to the kernel" would mean reimplementing the send rather
-/// than calling it, and reimplementing it is how the two paths drift.
-/// `ActorId::Kernel` is constructed directly in the one place that can: the
-/// harness restart below, which submits its own operation payload.
+/// The actor every request from this endpoint is attributed to. Fixed, not read from
+/// the request: the payload is hashed into the operation's `payload_hash`, and a
+/// same-key different-hash submit is a 409 that never expires. `user` because the act
+/// is a human pressing a button; `Actor("kernel").to_actor_id()` degrades to `User` anyway.
 fn synthetic_actor() -> Actor {
     Actor(Actor::DEFAULT.to_string())
 }
 
-/// The standing instruction the summary conversation is opened with.
-///
-/// **Not "the first message ever sent".** What the code does is narrower and is
-/// stated exactly:
-///
-/// > this text is sent when the card's **currently ACTIVE runtime** has no
-/// > `harness.user_message.enqueued` row of its own, and never again while that
-/// > runtime stays active.
-///
-/// So a user who types into this conversation before the first trigger
-/// suppresses it — **until that runtime is replaced**, not permanently. The
-/// evidence row is permanent, but it is stamped with the runtime the message
-/// went to (`calm-types/src/event.rs`), and the predicate only counts rows
-/// belonging to the runtime that is live now
-/// (`conversations_shared::user_message_enqueued_on_active_runtime`). A restart,
-/// a `/planner/reset`, a crash recovery — anything that mints a new runtime for
-/// this card — lifts the suppression, and the next trigger re-delivers the
-/// standing instruction to the new session.
-///
-/// **That ruling was "permanent" until #1314 and the change is a fix, not a
-/// weakening.** Permanent suppression was measurably wrong in one direction
-/// only, and it was the losing one: when a mint's compensation fails at
-/// `delete_card`, the card survives carrying the seeded bootstrap on a `failed`
-/// session's queue with its evidence row committed alongside it, and the dormant
-/// restart does **not** inherit that queue
-/// (`session_projection_active_for_card_tx` inherits from an ACTIVE row only).
-/// Under the old predicate every later trigger read "already enqueued" and
-/// declined, so the standing instruction never reached any agent, for the life
-/// of a card the user cannot delete.
-///
-/// **Why the new semantics is acceptable, in the terms this text is for.** The
-/// hazard below is "the agent's first turn happens with no material" — and it is
-/// *per session*, because a new runtime is a new codex thread that holds none of
-/// the old one's context. A runtime replacement is precisely the moment the
-/// standing instruction has to be said again. The cost is the mirror case: a
-/// replacement that carried the old queue forward re-sends an instruction that
-/// was still reachable, so the agent can see "stand by and do nothing yet" more
-/// than once.
-///
-/// **Since #1449 that is every replacement, not only an inheriting one.** Every
-/// `prepare_tx` now moves a superseded predecessor's undelivered user messages
-/// to the successor, so the re-point fence, `POST /conversations`,
-/// `/planner/reset` and this launchpad path all land in the same family. The
-/// evidence row keeps naming the runtime that was replaced, so the predicate
-/// answers `false` and the bootstrap is sent again. That is the predicate
-/// working as specified: it asks whether the CURRENT runtime has been spoken
-/// to, and it is deliberately conservative in the direction of re-sending.
-///
-/// Writing an evidence row for the successor instead is not the fix, and not
-/// only because it collides with #1314's tests: `harness.user_message.enqueued`
-/// records an ACT — some actor enqueued N characters into runtime X — and a
-/// harvest is kernel-internal movement that nobody performed. Synthesising one
-/// would make the audit log assert a send that never happened.
-///
-/// **How many copies, stated as what is actually true.** Not "at most two":
-/// nothing here caps the count. Each replacement run before the moved queue has
-/// drained carries the previous copies forward and appends one more, and every
-/// copy is a `UserMessage` that can hard-fire a turn of its own. Two copies do
-/// not fold — folding needs a full 256-entry queue.
-///
-/// **Second-order, and new with the move**: the summary prompt below is itself
-/// an `Observation::UserMessage`, so a harvested STALE summary now arrives
-/// alongside the fresh one this call sends unconditionally. The later one is a
-/// superset and is what the agent should work from; the failure mode is a
-/// wasted paragraph, not a wrong report.
-///
-/// What makes this the acceptable side to err on is not a bound on the number
-/// but the content: the text tells the agent to stand by and touch nothing, so
-/// obeying it an additional time is obeying it once — the wasted turns are
-/// empty. The alternative, the silent loss, is not recoverable at all.
-///
-/// Only a `superseded` predecessor is harvested (`session_projection.rs`'s
-/// predicate), so a dormant or `exited` one contributes nothing to this: the
-/// residual is narrower than the path table in the design's §3 suggests.
-///
-/// **What the bootstrap is for.** `UserMessage` is hard-fire, so if it reaches
-/// an issuable drain before the summary does, the agent takes a turn holding
-/// only it. An agent told "write the report" would write one with no material;
-/// told to stand by, it spends a harmless empty turn. The hazard is therefore
-/// *specifically* "the agent's first turn happens with no material". If any
-/// other message already preceded the summary, that turn has already happened
-/// with something else in hand, and this text has nothing left to protect.
-///
-/// **Why not a bootstrap-aware predicate.** Researched rather than assumed, and
-/// none of the three candidates beats the kind-plus-runtime read above:
-///
-/// * `harness.user_message.enqueued` carries `char_count` and no text
-///   (`calm-types/src/event.rs`), so matching a length is a collision, not a
-///   predicate.
-/// * `harness_items` does hold the bytes, but it is written when **codex echoes
-///   the turn back**, not when the message is enqueued. Two triggers before
-///   that echo lands would both read "not delivered" and both send — turning a
-///   rare suppressed bootstrap into a routine duplicated one, which is the
-///   failure the per-card claim below exists to prevent. It is also erased by
-///   `/planner/reset` and by legacy-Today adoption.
-/// * A new marker means either a write-only flag — which
-///   `conversations_shared::user_message_enqueued_on_active_runtime`'s own docs reject as
-///   "wrong in one direction either way" — or adding a text digest to a shared
-///   event kind used by two other endpoints, which is an event-version bump
-///   plus frontend schema and goldens, and is outside this slice.
-///
-/// **What the text must still be: static, byte-for-byte, forever.**
-/// `POST /api/tracks/{id}/conversations` binds it into the operation payload as
-/// a SHA-256 (arm (e)), so a date, a timestamp or the activity counts in here
-/// would make every later retry under the same key a 409. It is one of the
-/// three variables D5 has to eliminate to keep the deterministic key safe; the
-/// other two are the actor above and `cwd`.
-///
-/// **What is true about `cwd`, stated narrowly.** Once the derived card exists,
-/// the create arm is not entered again, so a workspace re-point after that
-/// point cannot resubmit the key under a new payload. It does **not** hold
-/// before the card exists: a create that lands `Stuck` *without* leaving the
-/// card is not stepped over by `retryable_operation_key` (which appends `#N`
-/// only for `Phase::Failed`), so a re-point followed by a press resubmits the
-/// same key with a different hash and 409s permanently. That window is narrow,
-/// fail-closed and already named in D5's residual-window paragraph; what it is
-/// not is impossible, and an earlier wording here said it was.
+/// The standing instruction the summary conversation is opened with. Sent when the
+/// card's currently ACTIVE runtime has no `harness.user_message.enqueued` row of its
+/// own, and never again while that runtime stays active.
 pub const TODAY_SUMMARY_BOOTSTRAP_TEXT: &str =
     include_str!("../../prompts/today-summary/bootstrap.md");
 
-/// The summary prompt's prose (#1635 S1c), with `{counts}` where the
-/// server-counted activity block goes. The counts block stays code
-/// (`activity_counts_block` is data formatting, not prose).
+/// The summary prompt's prose, with `{counts}` where the server-counted activity block goes.
 const TODAY_SUMMARY_WRITE_TEXT: &str = include_str!("../../prompts/today-summary/write.md");
 
-/// A rendezvous the create-under-a-fixed-key race can be **created** at.
-///
-/// `None` in production — the create arm costs one `Option` check and never
-/// waits. A test arms it with a `Barrier::new(2)`; both requests then park here
-/// after their `card_get` has returned `None` and before either submits, so the
-/// second provably cannot see the first one's card and must take the 409
-/// fallback.
-///
-/// **Why it exists at all.** The fallback's window is one request wide and
-/// `tokio::join!` does not order two requests, so a case that merely fired two
-/// and hoped would be green on a scheduler that serialises them — reporting
-/// success for a run in which the arm was never entered. Our box is not an
-/// environment that can falsify that; a CI runner is. The same reasoning, and
-/// the same shape, as `routes::today`'s [`SystemAreaMintRendezvous`], down to
-/// living on [`AppState`] rather than in a `static`: a process-global is shared
-/// by every `AppState` in the process, which a threaded `cargo test` turns into
-/// cross-case interference.
-///
-/// [`SystemAreaMintRendezvous`]: crate::routes::today::SystemAreaMintRendezvous
-/// [`AppState`]: crate::state::AppState
+/// A rendezvous the create-under-a-fixed-key race can be created at. `None` in
+/// production; a test arms it with a `Barrier::new(2)` so both requests park after
+/// `card_get` returned `None` and before either submits. Lives on `AppState` rather
+/// than a `static` so a threaded `cargo test` cannot share it across cases.
 pub type TodaySummaryCreateRendezvous = Option<std::sync::Arc<tokio::sync::Barrier>>;
 
-/// A rendezvous the **first-message** race can be created at.
-///
-/// Separate from [`TodaySummaryCreateRendezvous`] because it guards a different
-/// window at a different point in the handler, and a single barrier serving
-/// both would be waited on twice by one request in the create case and hang.
-/// `None` in production, same as its sibling.
+/// A rendezvous the first-message race can be created at. Separate from
+/// [`TodaySummaryCreateRendezvous`]: one barrier serving both would be waited on twice
+/// by a single request in the create case and hang. `None` in production.
 pub type TodaySummaryBootstrapRendezvous = Option<std::sync::Arc<tokio::sync::Barrier>>;
 
-/// Per-server observation of the create arm.
-///
-/// **`attempts` is what makes the race deterministic rather than hoped for**,
-/// and it is incremented *before* the rendezvous for exactly the reason
-/// `SystemAreaMintCounters::attempts` is: it lets a test know a request has
-/// passed `card_get` and found nothing, which is the only moment at which
-/// planting a conflicting card is guaranteed to produce the 409 the fallback
-/// exists for. Without it the test would have to guess when to act, and
-/// guessing wrong makes the case pass while never entering the arm.
-///
-/// **`conflicts` is not the assertion, it is the assertion's validity.** Every
-/// outcome the case checks — both requests 200, one conversation card, the
-/// right enqueued rows — is equally true of a run in which the fallback never
-/// ran. This is what tells the two apart.
-///
-/// Unconditional rather than `fixtures`-gated, for the reason the sibling
-/// counters give: a case about ordering has to execute the instructions
-/// production executes, and the cost is two relaxed atomic adds on a path taken
-/// at most once per launchpad.
+/// Per-server observation of the create arm. `attempts` is incremented before the
+/// rendezvous so a test knows a request passed `card_get` and found nothing;
+/// `conflicts` is what proves the fallback actually ran. Unconditional rather than
+/// fixtures-gated so the tested binary is the shipped one.
 #[derive(Debug, Default)]
 pub struct TodaySummaryCreateCounters {
     /// Requests that found no derived card and therefore entered the create arm.
     pub attempts: AtomicU64,
-    /// Creates that lost the key race and took D5's 409 fallback.
+    /// Creates that lost the key race and took the 409 fallback.
     pub conflicts: AtomicU64,
-    /// Requests that reached the bootstrap decision block.
-    ///
-    /// It is incremented *before* the transcript is read, so it does **not**
-    /// witness "both requests saw an empty transcript" — an earlier comment
-    /// claimed that and two review channels independently caught it. What
-    /// creates the race is the rendezvous; this only says how many requests got
-    /// as far as the block.
+    /// Requests that reached the bootstrap decision block. Incremented before the
+    /// transcript is read, so it does not witness "both saw an empty transcript".
     pub bootstrap_arrivals: AtomicU64,
 }
 
@@ -367,25 +117,12 @@ impl TodaySummaryCreateCounters {
 pub struct TodaySummaryStarted {
     /// The launchpad track, whose report the agent is being asked to rewrite.
     pub track_id: String,
-    /// The summary conversation's card. Stable for the launchpad's lifetime
-    /// (INV-TODAYDOC-011) and openable in Today's Conversations module.
+    /// The summary conversation's card. Stable for the launchpad's lifetime.
     pub card_id: String,
 }
 
-/// Render the prompt. Template text plus five integers, and that is the whole
-/// contract.
-///
-/// The length bound is why: `send_planner_input` rejects anything over
-/// `MAX_PLANNER_INPUT_CHARS` (32,768), and a prompt built from a fixed template
-/// and five `i64`s has a maximum length that can be computed by reading it —
-/// `the_prompt_is_bounded_far_below_the_planner_input_ceiling` computes it. Adding
-/// track titles or a detail list would remove that property, and the design says
-/// what re-adding it would then cost (a deterministic character budget plus
-/// 32,768/32,769/CJK boundary cases).
-///
-/// The counts are stated as counts, and the prompt says so: the agent has no
-/// way to query for more (design D4 deleted that layer), so a prompt implying
-/// it could would be an instruction to hallucinate.
+/// Render the prompt: template text plus five integers, so its maximum length can be
+/// computed by reading it and stays under `MAX_PLANNER_INPUT_CHARS`.
 fn summary_prompt(activity: &WorkspaceActivityWindow) -> Result<String> {
     Ok(render_named(
         TODAY_SUMMARY_WRITE_TEXT,
@@ -405,9 +142,6 @@ fn summary_prompt(activity: &WorkspaceActivityWindow) -> Result<String> {
     ),
 )]
 /// Ask the summary conversation to write today's progress.
-///
-/// See the module docs for the shape of the whole path; the comments below only
-/// say what each step's alternative got wrong.
 pub(crate) async fn write_today_summary(
     State(app): State<AppState>,
 ) -> Result<Json<TodaySummaryStarted>> {
@@ -419,31 +153,17 @@ pub(crate) async fn write_today_summary(
         .sqlite_pool()
         .ok_or_else(|| CalmError::Internal("today summary requires a sqlite-backed repo".into()))?;
 
-    // Read the launchpad, do NOT ensure it: the reflexive exclusion needs its
-    // id when it has one, and an absent launchpad simply excludes nothing.
-    // Ensuring here would mean an empty day still materialized a workspace and
-    // started a harness — the thing step 2 exists to avoid.
+    // Read the launchpad, do NOT ensure it: ensuring here would mean an empty day still
+    // materialized a workspace and started a harness.
     let launchpad = app.repo.track_get_launchpad().await?;
-    // The shared entry point, not a second computation: since #1343 the
-    // launchpad's conversation-create path reads the same window, and two
-    // surfaces quoting different numbers for one day is the failure that would
-    // never look like a failure. See `activity_window`'s module docs.
+    // The shared entry point, not a second computation: the conversation-create path
+    // reads the same window.
     let activity =
         todays_workspace_activity(&pool, launchpad.as_ref().map(|track| track.id.as_str())).await?;
 
-    // INV-TODAYDOC-007's enforcement point, and it is here rather than in the
-    // frontend on purpose: hiding the button is UI, and a POST straight at this
-    // endpoint would sail past it. The statement is deliberately narrow — it is
-    // about *this* endpoint. `POST /api/tracks/{id}/conversations` and
-    // `POST /api/cards/{id}/planner/input` stay reachable and are not in scope: a
-    // user typing to an agent by hand is not the thing being prevented.
-    //
-    // #1343 sharpened what "in scope" means rather than widening it. The
-    // conversation-create path now also reads today's window and opens with it,
-    // and it does **not** refuse an empty day — it says the day is empty
-    // (`activity_window::opening_activity_briefing`). The two are not in
-    // tension: what this gate refuses is commissioning a *report* out of
-    // nothing, and a conversation the user starts commissions nothing.
+    // The empty-day gate lives here rather than in the frontend: hiding the button is UI,
+    // and a POST straight at this endpoint would sail past it. Only this endpoint refuses;
+    // a user typing to an agent by hand is not what is being prevented.
     if activity.is_empty() {
         return Err(CalmError::TodaySummaryNoActivity(
             "nothing happened in this workspace today, so there is nothing to \
@@ -452,102 +172,36 @@ pub(crate) async fn write_today_summary(
         ));
     }
 
-    // Idempotent, and the only bootstrap on this path. It materializes the
-    // workspace and waits on a `planner-harness-start`, which is exactly why the
-    // page-load resolve must never call it (INV-TODAYDOC-001) and why this —
-    // an explicit action — is where it belongs (§5.1).
+    // Idempotent, and the only bootstrap on this path; it materializes the workspace and
+    // waits on a `planner-harness-start`.
     let (_status, Json(launchpad)) =
         ensure_today_launchpad(State(app.clone()), synthetic_actor()).await?;
     let track_id = launchpad.track_id;
     let derived = summary_conversation_keys(&track_id);
 
-    // **The branch predicate is "the card exists AND its live runtime has
-    // already been sent a message", not "the card exists".** Two review
-    // channels found the gap from opposite ends, and both end in the same
-    // place: a derived card that exists while nothing has spoken to the session
-    // that is running on it.
-    //
-    // #1314 changed what those two entrances look like, and the honest record
-    // of it is:
-    //
-    // * The create operation lands `Stuck`. `plan_compensation` marks it on the
-    //   first compensation error and never re-drives it, leaving the card
-    //   behind (`deletable: false`, so the user cannot clear it) with no active
-    //   runtime. Since #1314 the bootstrap text is enqueued by that operation's
-    //   own transaction, so what survives is a card whose message sits on a
-    //   `failed` session's pending queue with its
-    //   `harness.user_message.enqueued` row committed alongside it. **This
-    //   entrance is reachable and is the one the predicate now heals.** The
-    //   dormant restart does NOT inherit that queue
-    //   (`session_projection_active_for_card_tx` inherits from an ACTIVE row
-    //   only), so the message is stranded; the row is stamped with the `failed`
-    //   runtime, so `user_message_enqueued_on_active_runtime` does not count it
-    //   and the next press re-delivers the standing instruction onto the
-    //   restarted session. Until #1314 the predicate read "any row on this
-    //   card" and declined forever — measured: press 2 and press 3 both sent
-    //   the summary alone, and the agent never received the bootstrap.
-    //   `a_stranded_bootstrap_on_a_failed_session_is_re_sent_by_the_next_trigger`
-    //   drives exactly that sequence through the production routes.
-    // * The create operation *succeeds* and `create_track_conversation`'s own
-    //   post-operation `send_planner_input` then fails (a 503 from a shared
-    //   app-server that went down in between). **This entrance no longer
-    //   exists**: #1314 deleted that send, so the mint and the delivery of the
-    //   bootstrap commit or roll back together and a successful create cannot
-    //   leave an empty transcript.
-    //
-    // The read is not only for the reachable entrance above: what
-    // INV-TODAYDOC-010 and [`TODAY_SUMMARY_BOOTSTRAP_TEXT`] are stated in terms
-    // of is *messages*, not cards. Under a card-only predicate a press that
-    // found such a card would skip the create arm and send only the summary,
-    // and two things break at once: the *first successful* trigger leaves ONE
-    // `harness.user_message.enqueued` row where INV-TODAYDOC-010 requires two,
-    // and the standing instruction that keeps a bootstrap-only turn from
-    // writing a report with no material never reaches the session at all.
-    // `a_card_left_with_an_empty_transcript_still_receives_the_bootstrap`
-    // stages that shape directly by deleting the audit rows.
-    //
-    // It is read *after* the create arm rather than inside its condition: that
-    // way one statement covers the recovery entrance, the 409-race fallback and
-    // the ordinary case where the card was minted seconds ago by this very
-    // request.
-    //
-    // The recovery is NOT "call `create_track_conversation` again". Against an
-    // existing card the adapter's `validate` refuses to re-mint and answers 409
-    // — correctly, since the card is not the thing missing. What is missing is
-    // the message, so the message is what gets sent, down the one channel that
-    // sends messages.
+    // The branch predicate is "the card exists AND its live runtime has already been sent
+    // a message", not "the card exists": a create that lands `Stuck` leaves the card
+    // behind with its bootstrap stranded on a `failed` session's queue. The recovery is
+    // NOT calling `create_track_conversation` again (the adapter refuses to re-mint); what
+    // is missing is the message, so the message is what gets sent.
     if s.repo.card_get(&derived.card_id).await?.is_none() {
         let mut headers = HeaderMap::new();
         headers.insert(
             "idempotency-key",
             HeaderValue::from_static(TODAY_SUMMARY_CONVERSATION_KEY),
         );
-        // Counted before the rendezvous, so a test can tell "this request found
-        // no card" from "it read someone else's". See
-        // [`TodaySummaryCreateCounters`].
+        // Counted before the rendezvous, so a test can tell "found no card" from "read
+        // someone else's".
         app.today_summary_create
             .attempts
             .fetch_add(1, Ordering::Relaxed);
-        // Armed only by the concurrency case; `None` in production, where this
-        // is one `Option` check on a path taken once per launchpad. See
-        // [`TodaySummaryCreateRendezvous`] for why the 409 window below has to
-        // be created rather than waited for.
+        // Armed only by the concurrency case; `None` in production.
         if let Some(barrier) = &app.today_summary_create_rendezvous {
             barrier.wait().await;
         }
-        // The real handler, not a reimplementation of it: the mint, the
-        // derived-id guard, the four retry arms and the in-transaction
-        // delivery of the bootstrap text all have to be the ones production
-        // uses. The one thing this caller says for itself is
-        // `CallerSuppliesItsOwn`: #1343 gives a user-started launchpad
-        // conversation the day's counts as opening material, and this path
-        // already carries them in `summary_prompt` below — being briefed as
-        // well would state them twice and leave a third
-        // `harness.user_message.enqueued` row where INV-TODAYDOC-010 wants two.
-        //
-        // Since #1314 that ruling rides in the operation payload rather than
-        // being acted on after the operation commits, so it reaches the same
-        // decision from inside the mint transaction.
+        // The real handler, not a reimplementation of it. `CallerSuppliesItsOwn`: this path
+        // already carries the day's counts in `summary_prompt` below; being briefed as well
+        // would state them twice and leave a third `harness.user_message.enqueued` row.
         let created = create_track_conversation_inner(
             s.clone(),
             w.clone(),
@@ -562,22 +216,10 @@ pub(crate) async fn write_today_summary(
             OpeningBriefing::CallerSuppliesItsOwn,
         )
         .await;
-        // D5's create-409 fallback: **conflict ⇒ resolve the derived card ⇒
-        // carry on to the planner input**, if the card is in fact there.
-        //
-        // The window is real and is exactly one request wide: between the
-        // `card_get` above and this create, a concurrent request under the same
-        // key can mint the card. Ours then loses on either wall the adapter
-        // has — `validate` refusing to re-mint an existing card, or
-        // `insert_operation` refusing the same idempotency key under a
-        // different payload hash — and both answer 409 `conflict`. Failing
-        // outright there would be wrong twice over: the state the caller asked
-        // for now exists, and the payload-hash flavour is permanent
-        // (`operations` has no pruner), so the button would stay dead forever.
-        //
-        // The `card_get` re-read is the whole condition, and it is fail-closed:
-        // a 409 with no card is a conflict about something else and is
-        // re-raised unchanged.
+        // The create-409 fallback: conflict ⇒ resolve the derived card ⇒ carry on to the
+        // planner input, if the card is in fact there. A concurrent request under the same key
+        // can mint the card between the `card_get` above and this create, and the
+        // payload-hash flavour of that 409 is permanent. A 409 with no card is re-raised unchanged.
         if let Err(error) = created {
             let card_exists = s.repo.card_get(&derived.card_id).await?.is_some();
             if !create_conflict_is_recoverable(&error, card_exists) {
@@ -595,79 +237,25 @@ pub(crate) async fn write_today_summary(
         }
     }
 
-    // Whatever route got us here, the standing instruction has to reach the
-    // agent before the day's numbers do — *if nothing has spoken to the session
-    // that is live on this card*. The predicate is "has a user message been
-    // enqueued onto the current ACTIVE runtime", not "was the bootstrap
-    // delivered", and [`TODAY_SUMMARY_BOOTSTRAP_TEXT`] says why that is the
-    // right question rather than a cheap proxy: the hazard is a session's first
-    // turn taken with no material, and any earlier message *on that session*
-    // has already spent it.
-    //
-    // **Two limits of the evidence, both inherited and neither hidden.**
-    // `send_planner_input` enqueues the observation and *then* writes the
-    // `harness.user_message.enqueued` row (`routes/cards.rs`), so a send whose
-    // audit write fails leaves the agent holding the message with no row, and
-    // the next trigger sends it again. And the row is written per durable
-    // enqueue, not per model delivery, so it says "queued", not "the model saw
-    // it" — the agent process can still fail before consuming the persisted
-    // observation. Both are properties of shared production code; what would
-    // be wrong is claiming an exactly-once guarantee on top of them, so:
-    // at-least-once, deduplicated per runtime by a permanent row in the
-    // ordinary case.
-    //
-    // **Under the per-card first-message claim, and that is not optional.**
-    // `create_track_conversation` used to perform the same read-then-send under
-    // this same lock; #1314 removed both from there, because its delivery now
-    // rides inside the mint operation and is serialized by the operation row
-    // rather than by a lock. This read-then-send is not, so it keeps the claim
-    // for the reason it was introduced: two concurrent requests both read "no
-    // user message yet" and both send, so the agent gets the same standing
-    // instruction twice. Measured — two concurrent triggers against a card with
-    // an empty transcript delivered two bootstraps.
-    //
-    // The window is open **only** while the live runtime has not been spoken
-    // to, which makes it worse rather than better: an ordinary double-click on
-    // a first trigger is serialized by the create arm's own idempotency, while
-    // the states this recovery exists for persist until something sends —
-    // the card is `deletable: false` and never goes away, and a card left with
-    // a `failed` session sits in that state across every restart.
-    //
-    // Lock order, which this path must not be the one to break:
-    // `conversation_first_message_locks` → `planner_recovery_locks` is the only
-    // permitted nesting (see the field's docs), and it is what happens here —
-    // `send_summary` → `send_planner_input` → `ensure_live_planner_harness` takes the
-    // recovery lock on a registry miss. The dormant restart nested inside also
-    // submits an operation, whose adapter takes its own private per-card mint
-    // locks; nothing in the tree takes those and then this claim, so that
-    // nesting closes no cycle.
+    // The standing instruction has to reach the agent before the day's numbers do, if
+    // nothing has spoken to the session live on this card. Under the per-card first-message
+    // claim: two concurrent requests would both read "no user message yet" and both send.
+    // Lock order: `conversation_first_message_locks` → `planner_recovery_locks` is the only
+    // permitted nesting, and it is what happens here. At-least-once: the audit row is
+    // written after the enqueue.
     {
-        // Counts requests that reached this block. That is ALL it proves — not
-        // that two requests observed an empty transcript, which it cannot know:
-        // it increments before `user_message_enqueued_on_active_runtime` runs. **The
-        // barrier below is what creates the race**; the counter is a cheap
-        // sanity check that the arm was entered the expected number of times,
-        // and it is close to vacuous on its own, because a `Barrier::new(2)`
-        // with a missing partner parks forever and no assertion is ever
-        // reached.
+        // Counts requests that reached this block; the barrier below is what creates the race.
         app.today_summary_create
             .bootstrap_arrivals
             .fetch_add(1, Ordering::Relaxed);
-        // Armed only by the concurrency case; `None` in production. Outside the
-        // claim on purpose: parking inside it would serialize the two requests
-        // before they can race, which is the one thing the case must not do.
+        // Armed only by the concurrency case; `None` in production. Outside the claim on
+        // purpose: parking inside it would serialize the two requests before they can race.
         if let Some(barrier) = &app.today_summary_bootstrap_rendezvous {
             barrier.wait().await;
         }
-        // Held across genuinely blocking work, which is worth stating because
-        // the obvious assumption is the opposite: on the dormant branch
-        // `send_summary` submits a `planner-harness-start` and waits on it, and
-        // that operation performs a codex `thread/start` RPC. So a slow or
-        // wedged app-server holds this claim for as long as the operation runs.
-        // The blast radius is one card — the map is per-card and every other
-        // taker of it works on a different conversation — and the nesting is
-        // still the permitted one, but "only cheap work happens under the
-        // claim" is not true here.
+        // Held across genuinely blocking work: on the dormant branch `send_summary` submits a
+        // `planner-harness-start` and waits on it, so a wedged app-server holds this claim for
+        // as long as that runs. The blast radius is one card.
         let _first_message_claim =
             lock_card(&s.conversation_first_message_locks, &derived.card_id).await;
         if !user_message_enqueued_on_active_runtime(&w, &track_id, &derived.card_id).await? {
@@ -682,8 +270,7 @@ pub(crate) async fn write_today_summary(
         }
     }
 
-    // Unconditional. This is the only channel the summary ever travels on, and
-    // the create above never carries it.
+    // Unconditional: this is the only channel the summary ever travels on.
     send_summary(&s, &w, &cs, &derived.card_id, summary_prompt(&activity)?).await?;
 
     Ok(Json(TodaySummaryStarted {
@@ -692,53 +279,17 @@ pub(crate) async fn write_today_summary(
     }))
 }
 
-/// Is a failed create one this handler may continue past?
-///
-/// Both conjuncts are load-bearing and they fail closed in different
-/// directions. **Only a `conflict`**: every other failure — a 503 from a
-/// shared app-server that is down, a `Stuck` operation's 500, a `BadRequest` —
-/// means the create did not happen and nothing is there to carry on to, so it
-/// has to reach the caller as itself rather than be re-shaped into a 404 from a
-/// send against a card that was never minted. **And only if the card is
-/// there**: a conflict about anything else is still a conflict.
-///
-/// Extracted so the truth table can be pinned
-/// (`create_conflict_is_recoverable_only_for_a_conflict_whose_card_exists`).
-///
-/// **A named gap, stated plainly rather than papered over.** That test binds
-/// this function; it does not bind the *call site*. Replacing the call with a
-/// bare `true` leaves it green — measured, 8/8 — and no behavioural case
-/// catches it either, because the two states that would distinguish it are not
-/// constructible in-process without bypassing the production create route: a
-/// create that fails with a non-conflict *after* the launchpad's own
-/// `planner-harness-start` has already succeeded, and a permanent payload-hash 409
-/// under a key whose card does not exist. Do not claim the concurrency case
-/// covers this; it exercises the recoverable direction only.
+/// Is a failed create one this handler may continue past? Only a `conflict` (anything
+/// else means the create did not happen), and only if the card is there (a conflict
+/// about anything else is still a conflict).
 fn create_conflict_is_recoverable(error: &CalmError, card_exists: bool) -> bool {
     matches!(error, CalmError::Conflict(_)) && card_exists
 }
 
-/// Send the summary, recovering once from a dormant harness.
-///
-/// `ensure_live_planner_harness` answers 409 `planner_harness_dormant` for three
-/// states — no active runtime, no thread, unreadable snapshot — and with one
-/// long-lived conversation any of them would kill this button permanently: there
-/// is no other path back to a live session.
-///
-/// **The recovery re-submits `planner-harness-start`; it must NOT call
-/// `/planner/reset`.** The two are not equivalent and the difference is exactly
-/// what the user came for: `reset_planner_harness_card` hard-codes
-/// `reset_harness_items: true`, which erases the transcript — and that
-/// transcript is the conversation this whole feature exists to produce. A plain
-/// start with `reset_harness_items: false` and `force_new_thread: true` restores
-/// the session and keeps every message. It cannot be short-circuited by
-/// idempotency either: it submits under a fresh `operation_key` with no
-/// idempotency key, exactly as the reset path's own start does.
-///
-/// The 503 states (`Starting`, shared app-server down, saturated observation
-/// queue) are **not** recovered here. They are transient by construction and
-/// surface as 503 so the caller retries — restarting a harness that is already
-/// starting would be the wrong move.
+/// Send the summary, recovering once from a dormant harness. The recovery re-submits
+/// `planner-harness-start` and must NOT call `/planner/reset`, which hard-codes
+/// `reset_harness_items: true` and would erase the transcript. The 503 states are
+/// transient and are not recovered here.
 async fn send_summary(
     s: &RouteState,
     w: &WorkerState,
@@ -753,8 +304,6 @@ async fn send_summary(
             State(cs.clone()),
             synthetic_actor(),
             Path(card_id.to_string()),
-            // The Today summary sends text the kernel composed; it has no
-            // upload channel and no attachment to name.
             Json(SendPlannerInputRequest {
                 text,
                 attachments: Vec::new(),
@@ -791,9 +340,8 @@ async fn restart_summary_harness(s: &RouteState, card_id: &str) -> Result<()> {
             CalmError::NotFound(format!("track {} for card {card_id}", card.track_id))
         })?;
     let payload = serde_json::to_value(PlannerHarnessStartOperationPayload {
-        // Constructed directly, because `Actor::to_actor_id` cannot produce it:
-        // `Actor("kernel")` falls through to `ActorId::User`. This restart is
-        // not the user's act — nobody asked for it — so it is the kernel's.
+        // Constructed directly, because `Actor("kernel").to_actor_id()` falls through to
+        // `ActorId::User`. Nobody asked for this restart, so it is the kernel's.
         actor: ActorId::Kernel,
         track_id: track.id.to_string(),
         planner_card_id: card.id.clone(),
@@ -801,20 +349,15 @@ async fn restart_summary_harness(s: &RouteState, card_id: &str) -> Result<()> {
         sort: None,
         cwd: track.workspace.path.clone(),
         goal: None,
-        // The whole point. `true` here is `/planner/reset`'s behaviour and would
-        // delete the conversation.
+        // `true` here is `/planner/reset`'s behaviour and would delete the conversation.
         reset_harness_items: false,
         force_new_thread: true,
-        // This card is the assistant conversation this module minted, so its
-        // profile is known rather than inferred. Starting it as `Planner` would
-        // give the thread the planner prompt and role while the card row still
-        // said `assistant`.
+        // This card is the assistant conversation this module minted; starting it as `Planner`
+        // would give the thread the planner prompt while the card row still said `assistant`.
         profile: HarnessProfile::Assistant,
         create_card: None,
         first_message: None,
         create_request_sha256: None,
-        // #1343 — not a conversation create; nothing to brief. `None` is
-        // skipped by serde, so this payload's bytes are unchanged.
         opening_briefing: None,
     })?;
     run_planner_card_operation(s, "planner-harness-start", payload).await
@@ -824,21 +367,7 @@ async fn restart_summary_harness(s: &RouteState, card_id: &str) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// INV-TODAYDOC-011 — the key this endpoint derives from is the bare
-    /// constant, so the card id depends on the track and on nothing else.
-    ///
-    /// A golden, and a golden on **this module's** function: mixing anything
-    /// into the key — a workspace digest, an actor, a date — changes these two
-    /// strings, and both would still satisfy a round-trip check like
-    /// `keys(w) == keys(w)`. `conversation_keys.rs`'s own golden is not a
-    /// substitute: it pins the derivation, which is not the decision being made
-    /// here, and it stays green with this whole file deleted.
-    ///
-    /// What it cannot see is a second caller that derives its own id without
-    /// going through `summary_conversation_keys`. That is covered end to end
-    /// instead, by `today_summary::a_repointed_workspace_reuses_the_one_summary_conversation`,
-    /// which drives the endpoint from two servers with different workspace
-    /// roots and asserts one card.
+    /// A golden on this module's function: mixing anything into the key changes these strings.
     #[test]
     fn the_summary_conversation_key_is_bare() {
         assert_eq!(TODAY_SUMMARY_CONVERSATION_KEY, "today-summary");
@@ -850,12 +379,6 @@ mod tests {
         );
     }
 
-    /// D5's create-409 fallback is *only* for a conflict whose card is there.
-    ///
-    /// All four cells, because each is a different failure. A non-conflict must
-    /// surface as itself — swallowing a 503 turns "the agent service is down"
-    /// into a 404 from a send against a card that was never minted — and a
-    /// conflict with no card is a conflict about something else.
     #[test]
     fn create_conflict_is_recoverable_only_for_a_conflict_whose_card_exists() {
         let conflict = CalmError::Conflict("card already exists".into());
@@ -866,13 +389,8 @@ mod tests {
         assert!(!create_conflict_is_recoverable(&other, false));
     }
 
-    /// The prompt's length is bounded by reading it, which is what lets D4 drop
-    /// the truncation discipline the MCP layer would have needed.
-    ///
-    /// `i64::MIN` rather than a plausible count: the bound has to hold for every
-    /// value the type admits, and the widest rendering is the longest negative
-    /// integer. (Counts cannot go negative — `COUNT(*)` — so this is the bound,
-    /// not a case.)
+    /// `i64::MIN` rather than a plausible count: the widest rendering is the longest
+    /// negative integer.
     #[test]
     fn the_prompt_is_bounded_far_below_the_planner_input_ceiling() {
         let widest = summary_prompt(&WorkspaceActivityWindow {
@@ -889,8 +407,7 @@ mod tests {
              {} chars",
             widest.chars().count()
         );
-        // The bootstrap travels the same channel and is validated by
-        // `validate_first_message` under the identical ceiling.
+        // The bootstrap travels the same channel under the identical ceiling.
         assert!(
             TODAY_SUMMARY_BOOTSTRAP_TEXT.chars().count()
                 < crate::routes::cards::MAX_PLANNER_INPUT_CHARS

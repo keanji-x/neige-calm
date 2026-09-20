@@ -1,12 +1,5 @@
-//! #1255 S3 — `thread/tokenUsage/updated` end to end.
-//!
-//! The arithmetic itself is unit-tested next to the code it protects
-//! (`calm-server/src/harness/token_usage.rs`). What this file pins is the
-//! wiring the unit tests cannot see: that a real notification reaches the run
-//! loop's arm, that the reading rides the runtime snapshot out to
-//! `worker_sessions.handle_state` and back in through the constructor, and
-//! that `GET /api/cards/{id}/planner/run` reports it — derived from `last`, with
-//! the lifetime `total` nowhere on the wire.
+//! `thread/tokenUsage/updated` end to end: a real notification reaches the run loop, the reading rides the runtime
+//! snapshot through `worker_sessions.handle_state` and back, and `GET /api/cards/{id}/planner/run` reports it from `last`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -33,22 +26,13 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-/// The thread id the harness in this file is seeded with. Notifications must
-/// carry it: `on_notification`'s prologue drops any frame whose `threadId`
-/// does not match, and it does so silently. Fixtures hold a placeholder; the
-/// test substitutes this in.
+/// The thread id the harness is seeded with; `on_notification` silently drops any frame whose `threadId` does not match.
 const SEED_THREAD_ID: &str = "thread-token-usage";
 
-/// A thread id that is emphatically not this harness's. See
-/// [`token_usage_from_a_foreign_thread_is_ignored`].
+/// A thread id that is emphatically not this harness's.
 const FOREIGN_THREAD_ID: &str = "thread-belonging-to-another-card";
 
-/// The `thread/tokenUsage/updated` payload — a **real capture** out of
-/// `~/.codex/sessions` on this box, cross-checked against the deployed
-/// binary's own `generate-json-schema` output. See the `_provenance` block
-/// inside the file for the source frame, the redactions, and the command.
-/// Because the numbers were not curated, they are more damning than any
-/// invented ones: a `total`-derived percentage would be ~26607%.
+/// The `thread/tokenUsage/updated` payload, a real capture out of `~/.codex/sessions`; see the `_provenance` block inside the file.
 const USAGE_FIXTURE: &str = include_str!("../fixtures/thread_token_usage_updated.json");
 
 /// `last.totalTokens` in the captured frame.
@@ -58,8 +42,7 @@ const CAPTURED_TOTAL: i64 = 65_570_537;
 /// `modelContextWindow` in the captured frame.
 const CAPTURED_WINDOW: i64 = 258_400;
 
-/// The fixture's wire `params`, with the placeholder `threadId` replaced by
-/// the seeded one.
+/// The fixture's wire `params`, with the placeholder `threadId` replaced by the seeded one.
 fn fixture_params() -> Value {
     let fixture: Value = serde_json::from_str(USAGE_FIXTURE).unwrap();
     let mut params = fixture
@@ -70,9 +53,7 @@ fn fixture_params() -> Value {
     params
 }
 
-/// A frame built by editing the captured frame's counts, so every test in
-/// this file still exercises the real field layout rather than a hand-rolled
-/// object that happens to have the two keys the parser reads.
+/// A frame built by editing the captured frame's counts, so every test still exercises the real field layout.
 fn frame_with(last_total: i64, window: Value) -> Value {
     let mut params = fixture_params();
     params["tokenUsage"]["last"]["totalTokens"] = json!(last_total);
@@ -80,9 +61,7 @@ fn frame_with(last_total: i64, window: Value) -> Value {
     params
 }
 
-/// The same frame, addressed to a thread this harness does not own. Built
-/// through `fixture_params` and then re-addressed, so the ONLY difference
-/// from a frame this harness must accept is the `threadId`.
+/// The same frame re-addressed to a thread this harness does not own; the ONLY difference is the `threadId`.
 fn foreign_frame(last_total: i64, window: Value) -> Value {
     let mut params = frame_with(last_total, window);
     params["threadId"] = json!(FOREIGN_THREAD_ID);
@@ -98,11 +77,7 @@ struct Boot {
     runtime_id: String,
 }
 
-/// A planner card with a *live, registered* harness behind it.
-///
-/// `GET /planner/run` resolves through the registry (active runtime row →
-/// `s.harness.get`), so a harness that merely exists is not enough — it has to
-/// be installed under the same runtime id as the row.
+/// A planner card with a live, registered harness: `GET /planner/run` resolves through the registry, so the harness must be installed under the same runtime id as the row.
 async fn boot() -> Boot {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
@@ -262,11 +237,7 @@ async fn wait_for_notification_receiver(daemon: &SharedCodexAppServer) {
     }
 }
 
-/// Emit a frame and wait until the harness's own snapshot reflects it.
-///
-/// Polling the snapshot rather than sleeping: notification handling is
-/// asynchronous on the run loop's `select!`, so the alternative is a race that
-/// passes on a quiet box and flakes on a loaded one.
+/// Emit a frame and poll until the harness's own snapshot reflects it (notification handling is asynchronous on the run loop's `select!`).
 async fn emit_and_wait(boot: &Boot, params: Value, expect_used: i64) -> TokenUsage {
     boot.daemon.emit_notification_for_test(Notification::Other {
         method: "thread/tokenUsage/updated".into(),
@@ -287,15 +258,7 @@ async fn emit_and_wait(boot: &Boot, params: Value, expect_used: i64) -> TokenUsa
     }
 }
 
-/// THE central-trap regression at the integration layer, and the one to read
-/// first if this file goes red.
-///
-/// The captured frame's `total.totalTokens` is 65_570_537 against a 258_400
-/// window — 253.8x over, which is what a long real thread looks like. The
-/// response must report the `last`-derived occupancy (113_356 → ~41.13%) and
-/// must not be anywhere near the ~26607% that `total` produces. It must also
-/// not ship `total_tokens` at all: the reading is stored with it, and the wire
-/// type drops it precisely so no client can divide by the wrong number.
+/// The captured frame's `total.totalTokens` is 253.8x the window; the response must report the `last`-derived occupancy and must not ship `total_tokens` at all.
 #[tokio::test]
 async fn planner_run_reports_percent_derived_from_last_not_the_lifetime_total() {
     let boot = boot().await;
@@ -331,9 +294,7 @@ async fn planner_run_reports_percent_derived_from_last_not_the_lifetime_total() 
         "a total-derived percentage would be ~26607%; got {percent}"
     );
 
-    // #1255 S3 review — `at_ms` ships. Without it a reading rehydrated from a
-    // months-old snapshot is indistinguishable on the wire from a live one,
-    // and the field's own doc comment claims exactly that distinguishability.
+    // Without `at_ms` a reading rehydrated from a months-old snapshot is indistinguishable on the wire from a live one.
     assert_eq!(
         wire["at_ms"].as_i64(),
         Some(usage.at_ms),
@@ -353,9 +314,7 @@ async fn planner_run_reports_percent_derived_from_last_not_the_lifetime_total() 
     boot.harness.shutdown().await.unwrap();
 }
 
-/// A later frame with `modelContextWindow: null` updates the counts and keeps
-/// the window. Asserted through the REST response, because the consequence
-/// that matters is the meter not blinking out mid-turn.
+/// Asserted through the REST response, because the consequence that matters is the meter not blinking out mid-turn.
 #[tokio::test]
 async fn planner_run_keeps_a_known_context_window_across_a_null_frame() {
     let boot = boot().await;
@@ -388,10 +347,7 @@ async fn planner_run_keeps_a_known_context_window_across_a_null_frame() {
     boot.harness.shutdown().await.unwrap();
 }
 
-/// `used > window`: the raw count ships, the percentage does not, and it is
-/// NOT clamped to 100. See `TokenUsage::percent` for why a clamp would be the
-/// dishonest choice — it would render our proxy failing as a plausible "the
-/// context is full".
+/// `used > window`: the raw count ships, the percentage does not, and it is NOT clamped to 100.
 #[tokio::test]
 async fn planner_run_omits_the_percentage_when_usage_exceeds_the_window() {
     let boot = boot().await;
@@ -426,17 +382,8 @@ async fn planner_run_omits_the_percentage_when_usage_exceeds_the_window() {
     boot.harness.shutdown().await.unwrap();
 }
 
-/// The reading survives `snapshot_for` → `handle_state` → the constructor.
-///
-/// This is the reboot / lazy-recovery path, and it is a genuine round trip:
-/// the second harness is built from the JSON the first one actually wrote to
-/// `worker_sessions.handle_state`, so it exercises serialization,
-/// `from_value_strict` (including `assert_known_schema` against the
-/// *unbumped* version — the field is `#[serde(default)]`, which is what makes
-/// the bump unnecessary) and `inner_from_params`'s rehydration in one pass.
-/// Drop the rehydration line and the value is written to disk and silently
-/// discarded on the way back: codex re-pushes usage only on the next model
-/// response, so a resumed-but-idle thread would show no context reading at all.
+/// A genuine round trip: the second harness is built from the JSON the first one wrote to `worker_sessions.handle_state`.
+/// codex re-pushes usage only on the next model response, so a resumed-but-idle thread would otherwise show no reading.
 #[tokio::test]
 async fn token_usage_round_trips_through_the_persisted_runtime_snapshot() {
     let boot = boot().await;
@@ -485,30 +432,10 @@ async fn token_usage_round_trips_through_the_persisted_runtime_snapshot() {
     rehydrated.shutdown().await.unwrap();
 }
 
-/// THE cross-thread gate (#1255 S3 review). Card A must never show card B's
-/// context, and this is the only test that holds it.
-///
-/// `PlannerHarness::run` subscribes to the daemon's *global* notification
-/// broadcast, so every harness on the box receives every
-/// `thread/tokenUsage/updated` frame from every thread. The sole filter is
-/// `on_notification`'s prologue comparing `notif.thread_id()` against the
-/// harness's own. Every other test in this file goes through `fixture_params`,
-/// which overwrites `threadId` with the seeded one — so none of them can see
-/// this. Its failure mode is not a crash or an error: it is a meter showing a
-/// plausible number that belongs to a different conversation.
-///
-/// The assertion is on the **window**, not the count, and that is deliberate.
-/// An ignored notification returns before `persist_snapshot`, so it leaves no
-/// trace to poll for — there is no barrier that says "the foreign frame has
-/// been processed and discarded". Sequencing a legitimate frame after it gives
-/// that barrier (the run loop handles the broadcast in order), but a count
-/// would then simply be overwritten and the test would pass either way. The
-/// window survives: `sticky_merge` keeps a window a previous frame established.
-/// So a foreign frame carrying a window, followed by a legitimate frame
-/// carrying none, leaves exactly one distinguishable state.
-///
-/// Mutation: delete the two-line `thread_id` guard at the top of
-/// `on_notification` and this goes red on `context_window`.
+/// `PlannerHarness::run` subscribes to the daemon's global broadcast, so every harness receives every thread's frames;
+/// the sole filter is `on_notification`'s `thread_id` guard. The assertion is on the window: an ignored frame leaves
+/// no trace to poll for, and `sticky_merge` keeps a window a previous frame established, so a foreign frame carrying
+/// a window followed by a legitimate frame carrying none leaves exactly one distinguishable state.
 #[tokio::test]
 async fn token_usage_from_a_foreign_thread_is_ignored() {
     let boot = boot().await;
@@ -520,8 +447,7 @@ async fn token_usage_from_a_foreign_thread_is_ignored() {
         params: foreign_frame(200_000, json!(400_000)),
     });
 
-    // Our own next frame: it carries no window of its own, so any window on
-    // the wire afterwards can only have come from the foreign frame.
+    // Our own next frame carries no window, so any window on the wire afterwards can only have come from the foreign frame.
     let usage = emit_and_wait(&boot, frame_with(55_555, Value::Null), 55_555).await;
 
     assert_eq!(

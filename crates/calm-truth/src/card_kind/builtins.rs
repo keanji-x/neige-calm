@@ -31,13 +31,10 @@ impl CardKindHandler for TerminalCardHandler {
         struct TerminalPayload {
             #[serde(default)]
             terminal_id: Option<String>,
-            /// #1620 — see `validation::TERMINAL_SIGNALS_PAYLOAD_KEY`.
             #[serde(default)]
             terminal_signals: Option<bool>,
-            /// #1704 — see `validation::TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY`.
             #[serde(default)]
             claude_permissions: Option<Value>,
-            /// #1704 S2 — see `validation::TERMINAL_CLAUDE_PERMISSIONS_SOURCE_PAYLOAD_KEY`.
             #[serde(default)]
             claude_permissions_source: Option<Value>,
         }

@@ -1,37 +1,5 @@
-//! Per-card event watermark cache.
-//!
-//! ## What it's for now (#293 cutover)
-//!
-//! The pull machinery that originally owned this cache
-//! (`calm.wait_for_events` + the `/internal/codex/pending_events`
-//! long-poll) was deleted in the #293 push cutover. The sole remaining
-//! consumer is the dispatcher's **push watermark** (`Inner.push_cursor`
-//! in `dispatcher.rs`): keyed by the planner `CardId`, it dedups pushed
-//! observations so a re-delivered broadcast envelope (at-least-once
-//! delivery) doesn't issue a duplicate `turn/start`. A push fires only
-//! when `envelope_id > cursor`, then bumps.
-//!
-//! ## Semantics
-//!
-//! The cursor is the highest `events.id` already acted on for that card.
-//! [`EventCursorCache::bump`] is monotonic, so an out-of-order / lower id
-//! never rewinds it.
-//!
-//! ## Durability
-//!
-//! The cache itself is in-memory only. Current harness recovery persists
-//! the durable watermark in runtime handle state. The in-memory cache and
-//! recovered watermark serve different roles:
-//!   * **in-memory cursor** — per-process dedup hint, bumped after a push
-//!     has been accepted by the live runtime.
-//!   * **recovered watermark** — recovery floor for cross-restart catch-up.
-//!
-//! ## Concurrency
-//!
-//! `DashMap` per-key locking. The dispatcher additionally serializes the
-//! `(get → compare → bump → push)` sequence per-track (see
-//! `Inner.push_locks`) so the read-modify-write is atomic against other
-//! same-track pushes.
+//! Per-card event watermark cache: the highest `events.id` already acted on for a card.
+//! In-memory only; the dispatcher serializes `(get → compare → bump → push)` per track.
 
 use crate::ids::CardId;
 use dashmap::DashMap;
@@ -44,25 +12,17 @@ pub struct EventCursorCache {
 }
 
 impl EventCursorCache {
-    /// Fresh empty cache.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Current cursor for `card`. Returns `0` when no entry exists —
-    /// the dispatcher's push path treats any positive `envelope_id` as
-    /// newer than the initial `0`, so the first push always fires.
+    /// Returns `0` when no entry exists, so the first push always fires.
     pub fn get(&self, card: &CardId) -> i64 {
         self.inner.get(card).map(|v| *v).unwrap_or(0)
     }
 
-    /// Bump the cursor to `id` *only if* it's strictly higher than the
-    /// current value. Defends against an out-of-order completion (two
-    /// concurrent waits returning in reverse id order) accidentally
-    /// rewinding the cursor. Returns the new effective value.
+    /// Bump only if `id` is strictly higher, so an out-of-order completion never rewinds the cursor.
     pub fn bump(&self, card: CardId, id: i64) -> i64 {
-        // DashMap's `entry` API gives us a single-shot
-        // get-or-insert-and-update path.
         let mut entry = self.inner.entry(card).or_insert(0);
         if id > *entry {
             *entry = id;
@@ -70,32 +30,20 @@ impl EventCursorCache {
         *entry
     }
 
-    /// Force-set the cursor. Most production paths use [`bump`] so
-    /// concurrent pushes never rewind each other; runtime app-server
-    /// recovery deliberately rewinds this in-process cache to the durable
-    /// watermark before replaying catch-up rows.
+    /// Force-set the cursor (no monotonicity check); recovery rewinds to the durable watermark with it.
     pub fn set(&self, card: CardId, id: i64) {
         self.inner.insert(card, id);
     }
 
-    /// Drop a card's entry. Currently exercised only by the unit tests
-    /// — the card-delete path doesn't yet thread this cache through, so
-    /// stale entries linger until the next server restart. That's
-    /// harmless: the cursor is a soft dedup watermark, a deleted card is
-    /// unreachable from the push path, and a future caller with the same
-    /// id (collisions notwithstanding) would `bump` past whatever stale
-    /// value we held. Kept on the surface so a future wire-up is a
-    /// one-line change. Safe on missing keys.
+    /// Drop a card's entry. Safe on missing keys.
     pub fn remove(&self, card: &CardId) {
         self.inner.remove(card);
     }
 
-    /// Number of entries (telemetry / test convenience).
     pub fn len(&self) -> usize {
         self.inner.len()
     }
 
-    /// Mirrors `Vec::is_empty`; clippy nags otherwise.
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
@@ -151,8 +99,6 @@ mod tests {
 
     #[test]
     fn set_overrides_cursor_value() {
-        // `set` does NOT check monotonicity; production recovery uses it
-        // to rewind the in-process cursor to the durable watermark.
         let c = EventCursorCache::new();
         c.bump(cid("a"), 100);
         c.set(cid("a"), 5);

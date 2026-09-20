@@ -1,24 +1,5 @@
-//! PR7b (#136) — `mcp_server::tools::track_state` integration smoke.
-//!
-//! Boots an in-memory `SqlxRepo` + an `EventBus` + a pre-seeded
-//! `CardRoleCache`, constructs an `AppContext` directly (no live MCP
-//! listener — these tests exercise the handlers as plain async fns),
-//! and asserts the end-to-end happy paths for each tool.
-//!
-//! Coverage:
-//!
-//!   1. `calm.track.state` (planner card) returns the track row + the cards
-//!      list with `role` populated.
-//!   2. `calm.task.verdict` with `status=accepted` emits
-//!      `task.completed` carrying the planner's `{status,reason}` verdict
-//!      in `result`; `status=rejected` emits `task.failed` with the
-//!      reason verbatim.
-//!
-//! No live UDS, no handshake — the track-state tools' contract is
-//! "given a `ToolCallIdentity` + `Value` args, do the right thing"; the
-//! transport layer's job is to bind the identity, and that's
-//! exercised by PR7a's handshake tests + the PR7a.1 worker MCP wiring
-//! tests.
+//! `mcp_server::tools::track_state` integration smoke: in-memory `SqlxRepo` + `EventBus` + seeded
+//! `CardRoleCache`, handlers driven as plain async fns with no live MCP listener.
 
 use std::sync::Arc;
 
@@ -45,9 +26,7 @@ use serde_json::{Value, json};
 
 const PLANNER_SESSION_ID: &str = "planner-session";
 
-/// One-shot boot: in-memory sqlite + bus + cache + one area with one
-/// track with one planner card and one worker card. Returns enough handles
-/// to drive a tool through its registered closure.
+/// One-shot boot: in-memory sqlite + bus + cache + one area with one track, one planner card and one worker card.
 struct Boot {
     ctx: Arc<AppContext>,
     registry: Arc<ToolRegistry>,
@@ -170,16 +149,10 @@ async fn boot() -> Boot {
 
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    // Manually pin the roles. The tx-suffixed mint helpers do the cache
-    // write-through in production; for this test, we mock the post-mint
-    // state.
     card_role_cache.insert(planner_card.id.clone(), CardRole::Planner, track.id.clone());
     card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, track.id.clone());
-    // #1189 §3.6 — the persisted column is no longer optional. `enforce_role`
-    // still only reads the cache, but the recorder gate resolves
-    // session → card → {role, track} with a live `cards` read inside the write
-    // tx, so a cache-only pin would leave this "planner card" persisted as a
-    // worker and deny every write for a reason no test here is about.
+    // The recorder gate resolves session → card → {role, track} with a live `cards` read inside the
+    // write tx, so a cache-only role pin would leave the planner card persisted as a worker.
     crate::support::mcp::set_persisted_card_role(
         repo.as_ref(),
         planner_card.id.as_str(),
@@ -224,10 +197,7 @@ async fn boot() -> Boot {
     }
 }
 
-/// Drive a tool via the registry the way the transport does — by
-/// looking it up and invoking the boxed handler. Returns the tool's
-/// `Result<Value, RpcError>` (the RpcError's `Display` is opaque, so
-/// the caller inspects `.code` / `.message` directly).
+/// Drive a tool via the registry the way the transport does. The `RpcError` `Display` is opaque, so callers inspect `.code` / `.message`.
 async fn call_tool(
     boot: &Boot,
     name: &str,
@@ -280,10 +250,6 @@ async fn set_track_lifecycle(boot: &Boot, lifecycle: TrackLifecycle) {
         .expect("set test track lifecycle");
 }
 
-// ---------------------------------------------------------------------------
-// calm.track.state
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn get_track_state_returns_track_and_cards_for_planner() {
     let boot = boot().await;
@@ -309,7 +275,6 @@ async fn get_track_state_returns_track_and_cards_for_planner() {
         .expect("response carries `cards`");
     assert_eq!(cards.len(), 2, "boot fixture mints exactly two cards");
 
-    // Find the planner card in the list and assert its role.
     let planner = cards
         .iter()
         .find(|c| c.get("id").and_then(Value::as_str) == Some(boot.planner_card_id.as_str()))
@@ -340,9 +305,6 @@ async fn get_track_state_returns_track_and_cards_for_planner() {
     );
 }
 
-/// Planner feedback #3 — `next` is derived from the FSM for the planner actor.
-/// With zero declared tasks only the report tools can carry a lifecycle write,
-/// and `planning → reviewing` is the self-executed conclusion path.
 #[tokio::test]
 async fn track_state_next_from_planning_without_tasks_offers_reviewing_via_report_tools() {
     let boot = boot().await;
@@ -414,7 +376,6 @@ async fn track_state_next_from_reviewing_offers_done_and_from_done_is_empty() {
 
 #[tokio::test]
 async fn get_track_state_callable_by_worker() {
-    // Confirms the planner-only soft role gate doesn't fire on read.
     let boot = boot().await;
     let out = call_tool(&boot, TOOL_TRACK_STATE, worker_identity(&boot), json!({}))
         .await
@@ -426,10 +387,6 @@ async fn get_track_state_callable_by_worker() {
         Some(boot.track_id.as_str()),
     );
 }
-
-// ---------------------------------------------------------------------------
-// calm.task.verdict
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn task_verdict_accepted_emits_task_completed() {
@@ -848,10 +805,6 @@ async fn task_verdict_lifecycle_illegal_rolls_back_verdict_and_events() {
         "rolled-back verdict must not be persisted: {events:?}"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Track lifecycle defaults
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn new_track_defaults_to_draft_lifecycle() {

@@ -39,10 +39,7 @@ use clap::Parser;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-/// Serializes intra-binary tests that toggle `FAKE_CODEX_CAPTURE_REQUESTS`
-/// (or any other process env read by the fake codex shim). Peer test
-/// binaries keep their own `ENV_LOCK` because each test binary is a separate
-/// process.
+/// Serializes intra-binary tests that toggle process env read by the fake codex shim.
 static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn fake_codex_bin() -> String {
@@ -321,7 +318,7 @@ fn spawn_dispatcher_with_permits(boot: &Boot, permits: usize) -> Dispatcher {
         boot.renderer.clone(),
         Some(boot.mcp_server.clone()),
         boot.shared.clone(),
-        // #1147 S2 — attached fixtures: materialization on lease is a no-op.
+        // Attached fixtures: materialization on lease is a no-op.
         std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
         permits,
     )
@@ -1344,15 +1341,7 @@ async fn worker_via_shared_daemon_writes_runtime_and_projects_thread_id() {
                 == Some(idempotency_key.as_str())
                 && c.payload.get("codex_thread_id").and_then(Value::as_str)
                     == Some("fake-thread-0001")
-                // `codex_thread_id` is overlaid from the runtime row by
-                // `project_runtime_into_cards_payload`, while `appserver_sock`
-                // lives only in the base card payload read by `cards_by_track`
-                // one statement earlier. Those are two separate, non-snapshot
-                // reads: the spawn's persist tx (which writes BOTH atomically)
-                // can commit between them, so an iteration can see the runtime
-                // thread id while still holding a pre-commit base payload with
-                // no `appserver_sock`. Require `appserver_sock` here so the wait
-                // only settles on a fully consistent snapshot before asserting.
+                // `codex_thread_id` and `appserver_sock` come from two separate non-snapshot reads that the spawn's persist tx can commit between, so require both before settling.
                 && c.payload.get("appserver_sock").and_then(Value::as_str).is_some()
         })
     })
@@ -1403,14 +1392,7 @@ async fn worker_via_shared_daemon_writes_runtime_and_projects_thread_id() {
             .any(|row| row.get("method").and_then(Value::as_str) == Some("turn/start")),
         "shared daemon should receive turn/start: {rows:?}"
     );
-    // The shared worker must be started with the WorkerCodex-role developer
-    // instructions — otherwise the agent on the shared daemon behaves like
-    // a plain prompt session and skips the task reporting contract. Assert
-    // thread/start carried them. Since #838 Move 2 the codex worker reports
-    // completion via the native `calm.task.complete` / `calm.task.fail` MCP
-    // tools (channel 2) instead of the `neige task-completed` shell CLI —
-    // the CLI needs channel 3, which keeps getting dropped (#836). claude
-    // keeps the CLI (asserted by the claude_adapter contract test).
+    // Without the WorkerCodex-role developer instructions the agent behaves like a plain prompt session and skips the task reporting contract.
     let thread_start = rows
         .iter()
         .find(|row| row.get("method").and_then(Value::as_str) == Some("thread/start"))
@@ -1441,9 +1423,7 @@ async fn worker_via_shared_daemon_writes_runtime_and_projects_thread_id() {
 
 #[tokio::test]
 async fn worker_shared_daemon_stopped_rolls_back_card() {
-    // ENV_LOCK protects against env-var pollution from concurrent tests
-    // (FAKE_CODEX_CAPTURE_REQUESTS / FAKE_CODEX_PTY_FAIL / etc) that would
-    // affect the fake daemon and the renderer-entry expectation here.
+    // ENV_LOCK protects against env-var pollution from concurrent tests that would affect the fake daemon.
     let _guard = ENV_LOCK.lock().await;
     let boot = boot(false).await;
     let _dispatcher = spawn_dispatcher(&boot);
@@ -1598,9 +1578,7 @@ async fn worker_optional_viewer_failure_preserves_business_and_owned_cleanup() {
     unsafe {
         std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
     }
-    // The business provider is the explicit fake app-server binary. Pin the
-    // independently launched `codex resume` viewer to an owned exiting script,
-    // so this test never invokes a host Codex CLI through PATH.
+    // Pin the `codex resume` viewer to an owned exiting script so this test never invokes a host Codex CLI through PATH.
     use std::os::unix::fs::PermissionsExt;
     let viewer_bin = capture.path().join("viewer-bin");
     std::fs::create_dir(&viewer_bin).unwrap();
@@ -1785,14 +1763,7 @@ async fn worker_optional_viewer_failure_preserves_business_and_owned_cleanup() {
     );
 }
 
-/// Regression for #836: a shared-daemon codex worker's AI exec-shells only
-/// receive `NEIGE_MCP_SOCKET`/`NEIGE_MCP_TOKEN` through the per-thread
-/// `thread/start` `shell_environment_policy.set` channel (codex does NOT
-/// inherit the daemon process env into exec-shells, and the daemon even
-/// `env_remove`s `NEIGE_MCP_TOKEN` from itself). Without that config the
-/// mandated `neige task-completed` CLI fails and the worker can never report
-/// `task.complete`. Assert the worker `thread/start` carries both keys under
-/// `shell_environment_policy.set`.
+/// Codex does NOT inherit the daemon process env into exec-shells, so `NEIGE_MCP_SOCKET`/`NEIGE_MCP_TOKEN` must arrive via `thread/start` `shell_environment_policy.set`.
 #[tokio::test]
 async fn worker_thread_start_carries_mcp_shell_environment_policy() {
     let _guard = ENV_LOCK.lock().await;

@@ -9,18 +9,8 @@ import { BoardHost } from '../ui/board-host.tsx';
 import { partitionTrackCards } from './headless-filter.ts';
 import { registerAvailableBuiltinCards } from './register.ts';
 
-/*
- * #1722 S2b r1 (Codex P2-3) — the terminal head's spoken verdict.
- *
- * A *connected* head is the case that matters: once the connection is up the
- * head prints no words of its own (`terminal-lifecycle.test.tsx` covers the
- * `Connecting…` / `Session exited.` words), so the indicator is the only thing
- * left and, decorative by contract, it would leave a working terminal with no
- * accessible "in motion" fact. The real surface never connects under jsdom
- * (no socket, no `ServerHello`), so this file — and only this file — replaces
- * it with one that reports `connected` on mount; the lifecycle suite keeps the
- * real surface and its `Connecting…` reading.
- */
+// The real surface never connects under jsdom (no socket, no `ServerHello`), so this file replaces
+// it with one that reports `connected` on mount.
 vi.mock('../../terminal/surface.tsx', async () => {
   const { createElement, useEffect } = await import('react');
   return {

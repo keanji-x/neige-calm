@@ -1,27 +1,15 @@
-//! Control per scenario (#1666): `input claim:true` folds a claim-if-unowned
-//! into the first observed input of a scenario, `release:true` gives control
-//! back right after the last write. Both helpers assume the caller holds the
-//! connection's serial guard (the public `control()` re-takes it and must
-//! not be called from here). The release step is shared with `control
-//! release` (#1697): one decision, reported the same way on both carriers.
+//! Claim and release steps folded into `input`. Both helpers assume the caller holds the
+//! connection's serial guard (the public `control()` re-takes it and must not be called from here).
 use super::*;
 
-/// The claim step of an `input claim:true`, decided before the pre-write
-/// capture.
+/// The claim step of an `input claim:true`, decided before the pre-write capture.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum ClaimStep {
-    /// This connection already holds control: no claim was sent and the
-    /// ordinary control fence applies unchanged.
+    /// This connection already holds control: no claim was sent.
     Held,
-    /// A claim-if-unowned was granted and its `OwnerChanged` applied: the
-    /// None → Some transition is authorized for this input, and the new
-    /// lease is the control id.
+    /// A claim-if-unowned was granted and its `OwnerChanged` applied; the new lease is the control id.
     Claimed(Uuid),
-    /// No write may follow. `status` is `unavailable` (another client owns
-    /// the terminal, a takeover folded with the grant, or the observation's
-    /// control is no longer held) or `unconfirmed` (the claim or its
-    /// delivery timed out: a later `claim:true` on this connection reports
-    /// what stands).
+    /// No write may follow. `status` is `unavailable` or `unconfirmed` (the claim or its delivery timed out).
     Unavailable {
         status: &'static str,
         reason: String,
@@ -37,7 +25,7 @@ impl ClaimStep {
     }
 }
 
-/// The release step of `input release:true` and `control release` (#1697).
+/// The release step of `input release:true` and `control release`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum ReleaseStep {
     /// This connection held control (mirror and registry agreed) and the
@@ -65,20 +53,13 @@ impl ReleaseStep {
 /// while this connection no longer holds control.
 pub const CONTROL_NO_LONGER_HELD: &str =
     "terminal control held at the observation is no longer held; observe before input";
-/// Reason of a release on an exited terminal that the owner registry did
-/// not confirm within its budget (#1697).
+/// Reason of a release on an exited terminal that the owner registry did not confirm in time.
 pub const RELEASE_NOT_CONFIRMED_AFTER_EXIT: &str = "terminal exited; release not confirmed";
 
 impl TerminalInteraction {
-    /// The claim step (#1666 S3). Held control needs no claim. An observer
-    /// observation (`saved_control == None`) on a connection without control
-    /// runs the same atomic claim-if-unowned as `open claim:true` (the pump
-    /// decides under the owner-registry lock and never displaces a human),
-    /// takes the pump's own verdict, waits for the grant to be applied and
-    /// re-reads what stands: a grant folded with a takeover never shows
-    /// `owner == me` and is a refusal, as `open` detects. Anything else
-    /// (`saved_control` set but not held any more) is a refusal without a
-    /// claim: the observation described a lease this connection lost.
+    /// The claim step. Held control needs no claim; an observer observation on a connection
+    /// without control runs the atomic claim-if-unowned. A grant folded with a takeover never
+    /// shows `owner == me` and is a refusal.
     pub(super) async fn claim_for_input(
         &self,
         client: &Client,
@@ -120,8 +101,7 @@ impl TerminalInteraction {
                 reason,
             });
         }
-        // Granted: the `OwnerChanged` naming this connection mints the control
-        // id when applied (counted even when folded with a takeover).
+        // Granted: the `OwnerChanged` naming this connection mints the control id when applied.
         match client
             .wait(
                 |state| state.grants != grants_before,
@@ -153,19 +133,9 @@ impl TerminalInteraction {
             }),
         }
     }
-    /// The release step (#1666 S3, shared with `control release` since
-    /// #1697): `Released` when this connection held control (mirror and
-    /// registry agree) and the release was applied, `NotHeld` when it did
-    /// not, `Unconfirmed` when the release could not be sent or its
-    /// application was not confirmed in time. Never touches `pending` or
-    /// the write outcome. On a live terminal the confirmation is the
-    /// `OwnerChanged` the mirror applies. On an exited terminal it cannot
-    /// be: the pump stops forwarding after `TerminalExited` (the WS client
-    /// closes there), so the registry — which the pump still updates from
-    /// this connection's frames — is the truth and the mirror a cache the
-    /// pump stopped feeding at exit; the registry is polled (it does not
-    /// wake `changed()`) and the mirror is set from it once it no longer
-    /// names this connection.
+    /// The release step. Never touches `pending` or the write outcome. On an exited terminal the
+    /// pump stops forwarding after `TerminalExited`, so the registry is the truth and the mirror a
+    /// stale cache: the registry is polled (it does not wake `changed()`) and the mirror set from it.
     pub(super) async fn release(&self, client: &Client) -> ReleaseStep {
         let (held_in_mirror, exited) = client
             .screen

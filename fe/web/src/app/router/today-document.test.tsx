@@ -1,21 +1,6 @@
 // @vitest-environment jsdom
-//
-// #1253 §5.2 — the Today document region, composed the way production composes
-// it: the real resolve query, the real track detail query, the real
-// `readTrackReport` and the real `ReportDocument`.
-//
-// What this file proves, precisely: given a report body with the SHAPE that
-// defeats a naive predicate — a non-empty, well-formed document whose sections
-// are all empty — the branch taken is the server field's and the rendered
-// output differs accordingly. It does NOT evaluate the kernel's own
-// `TrackReportPayload::initial()`; `INITIAL_BODY` below is a stand-in and says
-// so. The one test that runs against the kernel's real canonical payload is
-// server-side: `today_launchpad::a_crdt_materialized_canonical_report_still_
-// reads_as_unwritten`.
-//
-// It also owns the resolve/detail interleaving, which `features/today` cannot
-// see: in-flight, detail-failed and payload-undecodable are three different
-// answers and this is where they are kept apart.
+// The Today document region, composed the way production composes it. `INITIAL_BODY`
+// is a stand-in for the kernel's canonical payload, not a copy of it.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
@@ -48,16 +33,9 @@ const track = {
 const launchpadTrack = { ...track, id: 'lp', title: 'Today' };
 
 /**
- * A stand-in for the kernel's `TrackReportPayload::initial()` body.
- *
- * It is not a copy of that text and must never become one — the kernel owns
- * those words and mirroring them here would be exactly the mirror code
- * INV-TODAYDOC-003 forbids in production. What it reproduces are the three
- * properties that make the naive predicate wrong: a leading HTML comment, four
- * empty H1 sections, and therefore a body that is a perfectly well-formed,
- * non-empty document. `readTrackReport` returns non-null for it, so anything
- * that decided "is there progress?" by null-checking the report would show
- * four empty headings where the empty state belongs.
+ * A stand-in for the kernel's `TrackReportPayload::initial()` body, never a copy
+ * of it: a leading HTML comment and four empty H1 sections, so `readTrackReport`
+ * returns non-null for a report nobody has written.
  */
 const INITIAL_BODY = '<!-- 报告维护契约: 当下快照，每次 REWRITE -->\n\n'
   + '# 概要\n\n# 待你定\n\n# 已完成\n\n# 决策\n';
@@ -73,19 +51,9 @@ function reportCard(body: string) {
 }
 
 /**
- * How `GET /api/tracks/{lp}` behaves for a case.
- *
- * `'seeded'` primes the query cache as well as answering, which removes the
- * one-frame gap between the resolve landing and the detail landing. That gap
- * is real production behaviour, but it is *also* a state in which the document
- * region is legitimately blank — so an INV-003 assertion made during it is
- * satisfied by a frame that says nothing about the predicate, and a mutation
- * deleting the `report_has_noninitial_content` check once passed on exactly
- * that. INV-003 cases therefore use `'seeded'`.
- *
- * The gap itself is not thereby swept away: `'hung'` and a 5xx response are
- * what the interleaving cases below use, and they are the only way to see the
- * three states the document region has to keep apart.
+ * `'seeded'` primes the query cache as well as answering, removing the one-frame
+ * gap between resolve and detail in which the document region is legitimately
+ * blank and an empty-state assertion would pass vacuously.
  */
 type DetailMode = 'seeded' | 'hung' | ApiTransportResponse;
 
@@ -155,9 +123,7 @@ describe('INV-TODAYDOC-003 the canonical initial report is an empty state, not f
   });
 
   it('is the server field and not the document that decides', async () => {
-    // The mirror of the first case: the SAME canonical initial body, and only
-    // the server field flipped. A predicate derived from the document could
-    // not tell these two renders apart; this one must.
+    // The SAME canonical initial body, with only the server field flipped.
     renderToday({ resolve: resolved(true), body: INITIAL_BODY });
     const main = await screen.findByRole('main');
     expect(await within(main).findByRole('heading', { name: '概要' })).toBeTruthy();
@@ -169,22 +135,16 @@ describe('INV-TODAYDOC-001 the page load only resolves', () => {
   it('never bootstraps the launchpad while rendering Today', async () => {
     const { requests } = renderToday({ resolve: resolved(false), body: INITIAL_BODY });
     await screen.findByRole('region', { name: GUIDE_LABEL });
-    /* `ensure` materializes a workspace and waits on a `planner-harness-start`
-       operation, so putting it on this path would make Today's first paint
-       depend on codex being up. Asserting on the whole request log rather than
-       on the one path: any write at all during a page load is the defect. */
+    /* `ensure` waits on a `planner-harness-start` operation, so Today's first paint
+       must not depend on it. Any write at all during a page load is the defect. */
     expect(requests.filter((request) => request.method !== 'GET')).toEqual([]);
     expect(requests.map((request) => request.path)).not.toContain('/api/today/launchpad/ensure');
     expect(requests.map((request) => request.path)).toContain('/api/today/launchpad');
   });
 
   it('renders the empty state, and no bootstrap, when there is no launchpad at all', async () => {
-    /* `200 null`, not `404`. Routine absence is data: a fresh workspace has no
-       launchpad, and that is the ordinary state of this route rather than a
-       failure. It was a 404 for one revision, which put a browser console
-       error on every fresh-workspace session and failed the two Playwright
-       specs that assert none. Feeding a 404 here now takes the error branch
-       and this case goes red — which is the point. */
+    /* `200 null`, not `404`: routine absence is data. Feeding a 404 here takes the
+       error branch. */
     const { requests } = renderToday({ resolve: noLaunchpad(), body: INITIAL_BODY });
     expect(await screen.findByRole('region', { name: GUIDE_LABEL })).toBeTruthy();
     expect(screen.queryAllByRole('alert')).toEqual([]);
@@ -194,11 +154,8 @@ describe('INV-TODAYDOC-001 the page load only resolves', () => {
   });
 
   it('treats a 404 as a failure, not as an empty day', async () => {
-    /* The other half of the contract, and the reason the status code moved.
-       404 no longer means "nothing yet" anywhere in this frontend: there is no
-       status-code special case left, so an unexpected 404 surfaces like any
-       other transport failure instead of being silently rendered as an empty
-       workspace. */
+    /* There is no status-code special case left, so an unexpected 404 surfaces like
+       any other transport failure. */
     renderToday({
       resolve: { status: 404, statusText: 'Not Found', body: { error: 'launchpad route missing' } },
       body: INITIAL_BODY,
@@ -219,19 +176,13 @@ describe('INV-TODAYDOC-002 a failed resolve surfaces as an error', () => {
 });
 
 describe('INV-TODAYDOC-002 the three document states are three answers', () => {
-  /*
-   * `readTrackReport(...) === null` is true while the detail is in flight, when
-   * the detail read fails, and when the payload will not decode. Collapsing
-   * them onto `ReportDocument`'s `empty` told a reader whose server was
-   * unreachable that their build was too old, and offered no retry — the
-   * degradation this invariant forbids, with a worse lie than the empty state.
-   */
+  /* `readTrackReport(...) === null` is true while the detail is in flight, when the
+     read fails, and when the payload will not decode; they must not collapse. */
   const DECODE_COPY = "Today's report could not be read.";
 
   it('says nothing while the track detail is still in flight', async () => {
-    // This frame is on EVERY page load: the detail query cannot start until
-    // the resolve has answered with a track id, so it is strictly one round
-    // trip behind.
+    // This frame is on EVERY page load: the detail query cannot start until the
+    // resolve has answered with a track id.
     const { requests } = renderToday({ resolve: resolved(true), body: INITIAL_BODY, detail: 'hung' });
     await waitFor(() => { expect(requests.map((request) => request.path)).toContain('/api/tracks/lp'); });
     const main = screen.getByRole('main');
@@ -252,8 +203,7 @@ describe('INV-TODAYDOC-002 the three document states are three answers', () => {
   });
 
   it('keeps the decoding copy for the one state it describes', async () => {
-    // Detail arrived, server says the report has content, payload will not
-    // decode. This is the only state that sentence is true for.
+    // Detail arrived, server says the report has content, payload will not decode.
     renderToday({
       resolve: resolved(true), body: INITIAL_BODY,
       detail: ok({
@@ -270,28 +220,17 @@ describe('INV-TODAYDOC-002 the three document states are three answers', () => {
   it('does not read the track detail at all when the server says there is no content', async () => {
     const { requests } = renderToday({ resolve: resolved(false), body: INITIAL_BODY, detail: 'hung' });
     await screen.findByRole('region', { name: GUIDE_LABEL });
-    // Nothing to draw ⇒ nothing to fetch. It also keeps the states above
-    // honest: each is about a document the reader is actually owed.
+    // Nothing to draw ⇒ nothing to fetch.
     expect(requests.map((request) => request.path)).not.toContain('/api/tracks/lp');
   });
 });
 
-/*
- * #1343 — Reset, and what the page must and must not do around it.
- *
- * The `Rewrite today's progress` trigger this replaces is gone (owner call):
- * the day's activity now reaches an agent when a conversation is started on
- * the launchpad, server-side, so the page no longer asks for a write at all.
- * What it asks for is the opposite — empty the document so the flow can be run
- * again from the empty state.
- */
 describe('#1343 the document’s Reset control', () => {
   const RESET = 'Reset';
   const CONFIRM = 'Reset report';
 
-  /* The deleted control, pinned by absence. A label regex rather than an exact
-     string: "Write", "Rewrite" and anything else ending in "today’s progress"
-     are all the same growth back. */
+  /* A label regex rather than an exact string: anything ending in "today’s
+       progress" is the same growth back. */
   it('offers no write-the-report control in either document state', async () => {
     renderToday({ resolve: resolved(false), body: INITIAL_BODY });
     await screen.findByRole('region', { name: GUIDE_LABEL });
@@ -303,22 +242,15 @@ describe('#1343 the document’s Reset control', () => {
     expect(screen.queryByRole('button', { name: /today’s progress/ })).toBeNull();
   });
 
-  /* Nothing to reset when the report is already canonical, so no control —
-     and the empty state stays one sentence. */
+  /* Nothing to reset when the report is already canonical, so no control. */
   it('is absent while the report is already empty', async () => {
     renderToday({ resolve: resolved(false), body: INITIAL_BODY });
     await screen.findByRole('region', { name: GUIDE_LABEL });
     expect(screen.queryByRole('button', { name: RESET })).toBeNull();
   });
 
-  /*
-   * Destructive, so it is confirmed first — and the confirmation is what sends
-   * the request, not the control.
-   *
-   * Both halves are asserted. "The dialog opened" alone is satisfied by a
-   * control that also fired; "the request went out" alone is satisfied by one
-   * that never confirmed.
-   */
+  /* Both halves: "the dialog opened" alone is satisfied by a control that also
+       fired; "the request went out" alone by one that never confirmed. */
   it('confirms before it posts, and posts to the reset endpoint alone', async () => {
     const { requests } = renderToday({ resolve: resolved(true), body: '# 概要\n\n今天合了两个 PR。\n' });
     await userEvent.click(await screen.findByRole('button', { name: RESET }));
@@ -329,22 +261,13 @@ describe('#1343 the document’s Reset control', () => {
       expect(requests.filter((request) => request.method !== 'GET').map((request) => request.path))
         .toEqual(['/api/today/launchpad/report/reset']);
     });
-    /* No document on the wire. The canonical body is kernel-owned text a
-       client cannot reproduce byte for byte, and one byte out fails silently.
-       A body here would be that hazard growing back. */
+    /* No document on the wire: the canonical body is kernel-owned text a client
+           cannot reproduce byte for byte. */
     expect(requests.find((request) => request.path === '/api/today/launchpad/report/reset')?.body)
       .toBeUndefined();
   });
 
-  /*
-   * The failure this control exists to avoid shipping: press Reset, the server
-   * empties the report, and the page keeps showing the old one.
-   *
-   * Unlike the deleted trigger — whose 200 meant "enqueued", so refetching
-   * would have fetched the old report and masked a broken event chain — this
-   * 200 means the write already landed. The mutation invalidates both keys and
-   * this drives the whole path through the real router.
-   */
+  /* This 200 means the write already landed, so the mutation invalidates both keys. */
   it('redraws the empty state once the reset lands', async () => {
     let hasContent = true;
     const transport: ApiTransportPort = {
@@ -381,10 +304,7 @@ describe('#1343 the document’s Reset control', () => {
     expect(screen.queryByText('今天合了两个 PR。')).toBeNull();
   });
 
-  /* A failed reset changes nothing, and says so where a failed delete says it
-     — the route's error box, which is this app's one convention for a
-     destructive write that did not happen. The document behind it is the same
-     document, because the server wrote nothing. */
+  /* A failed reset changes nothing and says so in the route's error box. */
   it('announces a failed reset and keeps the document', async () => {
     renderToday({
       resolve: resolved(true), body: '# 概要\n\n今天合了两个 PR。\n',
@@ -400,27 +320,15 @@ describe('#1343 the document’s Reset control', () => {
 });
 
 /*
- * §6 — the refresh chain, which no button on this page depends on any more and
- * which is therefore *more* load-bearing than it was, not less.
- *
- * The day's report is now written by an agent in a conversation started on the
- * launchpad; nothing on Today asks for that write, so an event is the ONLY way
- * the page can learn it happened. `track.report_edited` carries
- * `['today-launchpad']` (the empty-state predicate) and `['track', id]` (the
- * document), and `PolicyMap` is exhaustive over event kinds rather than over
- * query keys — so deleting either line turns no golden red. This is what turns
- * red.
- *
- * Both directions are driven, and the second is the one that separates the two
- * keys: empty → written mounts the detail query for the first time, so
- * `['today-launchpad']` alone would be enough. Written → written does not move
- * the resolve's value at all, and `['track', id]` is the only key that can make
- * the already-mounted detail refetch.
+ * An event is the ONLY way Today learns the report was written. `PolicyMap` is
+ * exhaustive over event kinds, not query keys, so deleting either key from
+ * `track.report_edited` turns no golden red; this is what turns red. Written →
+ * written is the case that needs `['track', id]`, since the resolve's value does not move.
  */
 describe('#1253 §6 the report-edit refresh chain', () => {
   function reportEdited(editId: string) {
-    // The real wire event through the real plan and the real adapter — not a
-    // hand-picked key list, which would assert the chain by assuming it.
+    // The real wire event through the real plan and the real adapter, not a
+    // hand-picked key list.
     return wireEventSchema.parse({
       ev: 'track.report_edited',
       data: {

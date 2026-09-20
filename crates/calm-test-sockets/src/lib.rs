@@ -1,16 +1,5 @@
-//! 测试专用：给 unix domain socket 发放「短路径」。
-//!
-//! `sun_path` 只有 108 字节（含结尾的 NUL，实际可用 107）。测试里习惯把
-//! socket 建在 `TempDir` 下，而 `TempDir` 默认落在 `$TMPDIR` —— 自托管
-//! runner 上 `TMPDIR=/home/runner/actions-runner-neige-calm/_work/_temp`
-//! 就已经 49 字节，再加 `TempDir` 自己的 `/.tmpXXXXXX`（11 字节）只剩
-//! 47 字节给socket 名字。短路径下全绿、长 `TMPDIR` 下 `InvalidInput:
-//! "path must be shorter than SUN_LEN"` —— #1439 就是这么红的。
-//!
-//! 所以 socket 目录不能问 `$TMPDIR` 要，必须自己钉在一个短基址上。
-//! `socket_dir()` 把目录钉在 `/tmp/nsk-<uid>` 下（同 uid 私有，
-//! `tempfile` 的随机后缀保证并发测试进程之间不撞名），
-//! `socket_path()` 在 bind 之前就把超限的路径连同它的字节数打出来。
+//! 测试专用：给 unix domain socket 发放「短路径」。`sun_path` 只有 108 字节，而 `$TMPDIR` 在自托管 runner 上
+//! 已经很长，所以 socket 目录钉在 `/tmp/nsk-<uid>` 下，刻意不读 `$TMPDIR`。
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -20,9 +9,7 @@ pub use tempfile::TempDir;
 /// `sun_path` 是 108 字节且必须以 NUL 结尾，故路径本身最多 107 字节。
 pub const MAX_SOCKET_PATH_BYTES: usize = 107;
 
-/// 短基址：`/tmp/nsk-<uid>`（13 字节左右），刻意不读 `$TMPDIR`。
-/// `/tmp` 不可写时退回 `std::env::temp_dir()` —— 那时长度不再有保证，
-/// 但 [`socket_path`] 的断言仍会把问题说清楚。
+/// 短基址：`/tmp/nsk-<uid>`，刻意不读 `$TMPDIR`；`/tmp` 不可写时退回 `std::env::temp_dir()`，长度不再有保证。
 fn base_dir() -> PathBuf {
     // SAFETY: getuid() 无参数、不会失败、无内存副作用。
     let uid = unsafe { libc::getuid() };
@@ -33,9 +20,7 @@ fn base_dir() -> PathBuf {
     }
 }
 
-/// 一个只存放 socket 的临时目录，路径长度与 `$TMPDIR` 无关。
-///
-/// `prefix` 请保持很短（几个字符），它直接计入 `sun_path` 预算。
+/// 一个只存放 socket 的临时目录，路径长度与 `$TMPDIR` 无关；`prefix` 直接计入 `sun_path` 预算，请保持很短。
 #[track_caller]
 pub fn socket_dir(prefix: &str) -> TempDir {
     try_socket_dir(prefix)
@@ -49,10 +34,7 @@ pub fn try_socket_dir(prefix: &str) -> io::Result<TempDir> {
         .tempdir_in(base_dir())
 }
 
-/// 在 `dir` 下拼出 socket 路径，并在 bind 之前校验它塞得进 `sun_path`。
-///
-/// 失败信息带上算出来的路径和它的字节数 —— 裸 `unwrap()` 只会说
-/// "path must be shorter than SUN_LEN"，不说是哪条路径、多长。
+/// 在 `dir` 下拼出 socket 路径，并在 bind 之前校验它塞得进 `sun_path`（失败信息带上路径和字节数）。
 #[track_caller]
 pub fn socket_path(dir: &Path, name: &str) -> PathBuf {
     let path = dir.join(name);
@@ -92,7 +74,6 @@ mod tests {
     #[test]
     fn socket_dir_is_short_regardless_of_tmpdir() {
         let dir = socket_dir("t");
-        // 目录本身要短到还能容下一个像样的 socket 名字。
         let len = dir.path().as_os_str().as_encoded_bytes().len();
         assert!(
             len < 40,

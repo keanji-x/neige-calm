@@ -7,18 +7,13 @@ use dashmap::mapref::entry::Entry;
 use crate::harness::PlannerHarness;
 use crate::ids::TrackId;
 
-/// #953 §5 — registry-local monotonic reservation identity. Minted by a
-/// checked increment (panic on exhaustion — the clean anti-ABA invariant;
-/// unreachable in practice at u64 width), never reused, so a stale
+/// Registry-local monotonic reservation identity, never reused, so a stale
 /// [`HarnessReservation`] guard can be recognized by id equality alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReservationId(u64);
 
-/// #953 §5 — a registry slot is either a claim in flight (`Reserved`) or an
-/// installed live harness (`Live`). `Reserved` slots are exclusively owned
-/// by their [`HarnessReservation`] guard: [`HarnessRegistry::remove`] is
-/// Live-only and no-ops on them, and only the guard carrying the matching
-/// id may install into or release the slot.
+/// A slot is either a claim in flight (`Reserved`, exclusively owned by its guard) or an
+/// installed live harness (`Live`).
 pub enum Slot {
     Reserved(ReservationId),
     Live(PlannerHarness),
@@ -41,13 +36,9 @@ impl Default for HarnessRegistry {
     }
 }
 
-/// #953 §5 — RAII claim on a registry slot. Obtained from
-/// [`HarnessRegistry::try_reserve`] / [`HarnessRegistry::reserve_replacing`];
-/// consumed by [`Self::install`]. `Drop` without install releases the slot
-/// (spawn-failure release). Both install and Drop mutate the slot ONLY if it
-/// still holds `Reserved` with this guard's id — a guard superseded by a
-/// later `reserve_replacing` (or whose slot was removed and re-claimed) is
-/// inert and can never stomp a newer claim.
+/// RAII claim on a registry slot; `Drop` without install releases it. Both install and Drop
+/// mutate the slot ONLY if it still holds `Reserved` with this guard's id, so a superseded
+/// guard is inert and can never stomp a newer claim.
 pub struct HarnessReservation {
     registry: HarnessRegistry,
     worker_session_id: String,
@@ -57,15 +48,9 @@ pub struct HarnessReservation {
 }
 
 impl HarnessReservation {
-    /// Swap the slot to `Live(handle)` iff it still holds `Reserved(self.id)`.
-    /// Returns `false` (inert no-op) when the slot was removed, superseded,
-    /// or re-reserved — the caller MUST then shut down the handle it just
-    /// built instead of leaking its run loop.
-    ///
-    /// Entry-guard mechanics (deadlock-free): match `entry(runtime_id)`; on
-    /// `Occupied`, compare against `Reserved(self.id)` and mutate through the
-    /// occupied entry's own `insert` — never `DashMap::remove` while holding
-    /// the entry guard.
+    /// Swap the slot to `Live(handle)` iff it still holds `Reserved(self.id)`. On `false` the
+    /// caller MUST shut down the handle it just built. Mutates through the occupied entry's own
+    /// `insert` — never `DashMap::remove` while holding the entry guard.
     #[must_use = "a false install means the caller must shut down the handle it built"]
     pub fn install(mut self, handle: PlannerHarness) -> bool {
         self.done = true;
@@ -82,8 +67,7 @@ impl HarnessReservation {
         }
     }
 
-    /// Fixtures/test-only: forge a second guard with the same id, so a test
-    /// can withhold a stale guard past its owner's Drop (#953 test 14 iii).
+    /// Fixtures/test-only: forge a second guard with the same id, so a test can withhold a stale guard.
     #[cfg(any(test, feature = "fixtures"))]
     pub fn duplicate_for_test(&self) -> HarnessReservation {
         HarnessReservation {
@@ -124,10 +108,8 @@ impl HarnessRegistry {
         ReservationId(id)
     }
 
-    /// Direct Live install (test seams). Stomps whatever occupies the slot
-    /// (a superseded reservation's guard becomes inert — same posture as
-    /// [`Self::reserve_replacing`]); returns the previous Live handle.
-    /// Production registration paths go through reserve → install.
+    /// Direct Live install (test seams). Stomps whatever occupies the slot; production goes
+    /// through reserve → install.
     pub fn insert(&self, runtime_id: String, handle: PlannerHarness) -> Option<PlannerHarness> {
         match self.0.map.insert(runtime_id, Slot::Live(handle)) {
             Some(Slot::Live(previous)) => Some(previous),
@@ -135,9 +117,7 @@ impl HarnessRegistry {
         }
     }
 
-    /// #953 §5 — claim a vacant slot. Single `entry()` op: vacant ⇒ insert
-    /// `Reserved(fresh_id)` and return the guard; occupied (Reserved OR
-    /// Live) ⇒ `None`. Deferred recovery's `SkipIfClaimed` claim.
+    /// Claim a vacant slot in a single `entry()` op; occupied (Reserved OR Live) ⇒ `None`.
     pub fn try_reserve(&self, runtime_id: String) -> Option<HarnessReservation> {
         let id = self.next_reservation_id();
         match self.0.map.entry(runtime_id.clone()) {
@@ -154,11 +134,8 @@ impl HarnessRegistry {
         }
     }
 
-    /// #953 §5 — atomic swap to `Reserved(fresh_id)` regardless of the prior
-    /// slot, returning the previous Live handle so the caller can shut it
-    /// down outside the map lock. Supersede semantics: a prior reservation's
-    /// guard becomes inert (its id no longer matches). Boot recovery / user
-    /// resume / start-adapter replace path.
+    /// Atomic swap to `Reserved(fresh_id)` regardless of the prior slot, returning the previous
+    /// Live handle so the caller can shut it down outside the map lock; a prior guard becomes inert.
     pub fn reserve_replacing(
         &self,
         runtime_id: String,
@@ -195,11 +172,7 @@ impl HarnessRegistry {
             })
     }
 
-    /// #953 §5 — removes **Live entries only**; no-ops on `Reserved` (a
-    /// reservation is exclusively owned by its guard — Drop is the owner's
-    /// cancel, id-checked). All four Live-targeting production call sites
-    /// (user shutdown, track shutdown, old-runtime supersede, start
-    /// compensation) keep these semantics.
+    /// Removes **Live entries only**; no-ops on `Reserved` (Drop is the owner's cancel).
     pub fn remove(&self, runtime_id: &str) -> Option<PlannerHarness> {
         match self.0.map.entry(runtime_id.to_owned()) {
             Entry::Occupied(occupied) => match occupied.get() {
@@ -213,11 +186,8 @@ impl HarnessRegistry {
         }
     }
 
-    /// Snapshot every installed handle owned by a track. Deletion holds the
-    /// track's recovery fence while consuming this list, so no direct recovery
-    /// can install behind it; operation-driven installs are stopped by the
-    /// operation drive fence. Registry membership, not DB status, is the source
-    /// of truth here because a failed session can still have a live run loop.
+    /// Snapshot every installed handle owned by a track. Registry membership, not DB status, is
+    /// the source of truth because a failed session can still have a live run loop.
     pub fn live_for_track(&self, track_id: &TrackId) -> Vec<(String, PlannerHarness)> {
         self.0
             .map
@@ -247,14 +217,8 @@ impl HarnessRegistry {
         Ok(seals.retain())
     }
 
-    /// Issue #682 review — remove and return every registered Live harness
-    /// so the replay binary's `POST /dev/reset` can shut them down before
-    /// reseeding (see `replay::shutdown_registered_harnesses`). Without
-    /// this, each dev-forced harness survives a reset as an orphaned
-    /// 50ms-tick task whose snapshot persists warn forever against the
-    /// reseeded (runtime-row-less) repo. Fixtures-gated: production code
-    /// only ever removes harnesses one at a time via [`Self::remove`].
-    /// Reserved slots stay untouched (their guards own them).
+    /// Remove and return every registered Live harness so `POST /dev/reset` can shut them down
+    /// before reseeding. Reserved slots stay untouched.
     #[cfg(feature = "fixtures")]
     pub fn drain_all_for_dev(&self) -> Vec<PlannerHarness> {
         let runtime_ids: Vec<String> = self.0.map.iter().map(|entry| entry.key().clone()).collect();
@@ -274,10 +238,6 @@ impl HarnessRegistry {
     }
 }
 
-// #953 test 14 — stale reservation guards. All four production stale-guard
-// orderings are deterministic registry-level state machines; the
-// install-failure shutdown path (14 iv) lives in `harness::tests` where a
-// real handle's run loop can be asserted shut down.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,9 +274,6 @@ mod tests {
         handle
     }
 
-    /// 14(i) — `remove()` no-ops on Reserved: the slot stays claimed (a
-    /// second `try_reserve` still loses), and only the owner guard's Drop
-    /// releases it.
     #[tokio::test]
     async fn remove_no_ops_on_reserved_slot() {
         let registry = HarnessRegistry::new();
@@ -335,9 +292,6 @@ mod tests {
         );
     }
 
-    /// 14(ii) — `reserve_replacing` supersedes an in-flight reservation:
-    /// the stale guard's install returns false (newer claim untouched) and
-    /// its Drop is inert.
     #[tokio::test]
     async fn superseded_reservation_install_and_drop_are_inert() {
         let registry = HarnessRegistry::new();
@@ -365,9 +319,7 @@ mod tests {
         live.shutdown().await.unwrap();
     }
 
-    /// 14(iii) — remove-and-reclaim: a withheld stale guard (leaked via the
-    /// test duplicate hook) from a released reservation mutates nothing
-    /// against the re-claimed slot.
+    /// A withheld stale guard from a released reservation mutates nothing against the re-claimed slot.
     #[tokio::test]
     async fn stale_guard_after_reclaim_mutates_nothing() {
         let registry = HarnessRegistry::new();
@@ -397,9 +349,6 @@ mod tests {
             .unwrap();
     }
 
-    /// #953 test 8 (reservation release) — a forced spawn failure drops the
-    /// guard without install: the slot is vacant again and a user resume can
-    /// claim it.
     #[tokio::test]
     async fn dropped_reservation_releases_slot_for_user_claim() {
         let registry = HarnessRegistry::new();
@@ -416,9 +365,6 @@ mod tests {
         assert_eq!(registry.len_active(), 1);
     }
 
-    /// Live-only accounting: `get`/`len_active` exclude in-flight
-    /// reservations; `reserve_replacing` over a Live slot returns the old
-    /// handle for shutdown outside the map lock.
     #[tokio::test]
     async fn reserve_replacing_returns_previous_live_handle() {
         let registry = HarnessRegistry::new();

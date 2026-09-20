@@ -107,30 +107,17 @@ fn observe_pid(pid: i32) -> PidObservation {
     observe_pid_with(pid, send_signal)
 }
 
-/// Wait until `pid` disappears, or (on Linux) becomes a zombie.
-///
-/// The claimed-child test reads `expected_start_time` from `/proc` (on Linux)
-/// after its fixture writes the pidfile and before dropping the child. When that
-/// argument is `Some`, failure cleanup requires that exact pre-teardown identity
-/// and does not substitute an identity observed during this poll.
-///
-/// The three `cli_query` callers can only read their pidfiles after the operation
-/// under test has returned, so they pass `None`. On Linux, cleanup then anchors
-/// to the first live `start_time` observed here. That fallback can still mistake
-/// a PID recycled before the first observation for the fixture and SIGKILL it if
-/// it remains alive for the full poll. We accept that pid-wraparound-shaped
-/// residual because omitting cleanup would leave a 30-second fixture process on
-/// every ordinary failing run. Without any readable `/proc` identity, cleanup
-/// fails closed and leaves the straggler alone.
+/// Wait until `pid` disappears, or (on Linux) becomes a zombie. With `expected_start_time`
+/// `None`, cleanup anchors to the first live `start_time` observed here and can still mistake
+/// a PID recycled before that for the fixture; without any readable `/proc` identity it fails closed.
 #[cfg(unix)]
 pub(crate) async fn assert_pid_dead(pid: i32, expected_start_time: Option<u64>, what: &str) {
     assert!(pid > 1, "implausible descendant pid {pid}");
 
     let mut last_observation = None;
     let mut first_start_time = None;
-    // Keep this 200 x 20 ms budget at about 4 s. The tightest claimed-child
-    // fixture can spend 10 s at the spawn deadline + 4 s polling its pidfile +
-    // 4 s in `assert_all_gone` + 4 s here = 22 s against its `sleep 30`.
+    // Keep this 200 x 20 ms budget at about 4 s: the tightest claimed-child fixture spends 22 s
+    // against its `sleep 30`.
     for _ in 0..200 {
         let observation = observe_pid(pid);
         if matches!(observation, PidObservation::Dead) {
@@ -187,8 +174,7 @@ mod tests {
     #[tokio::test]
     async fn assert_pid_dead_rejects_implausible_pids_before_any_signal() {
         for pid in [0, -1] {
-            // If the guard is deleted, the first `kill(pid, 0)` is intercepted
-            // as ESRCH: the test turns RED without delivering any real signal.
+            // If the guard is deleted, the first `kill(pid, 0)` is intercepted as ESRCH: the test turns RED.
             TEST_SIGNAL_INTERCEPT.with(|intercept| {
                 intercept.set(Some((0, Err(Some(libc::ESRCH)))));
             });
@@ -220,9 +206,7 @@ mod tests {
             .expect("the test process must have a readable start_time");
         let wrong_start_time = actual_start_time ^ 1;
 
-        // Intercept both the existence probes and any erroneous cleanup signal.
-        // Exactly 200 calls means the bounded poll ran without attempting the
-        // 201st call, which would be SIGKILL.
+        // Exactly 200 calls means the bounded poll ran without attempting the 201st, which would be SIGKILL.
         TEST_SIGNAL_INTERCEPT.with(|intercept| intercept.set(Some((0, Ok(())))));
         let result = std::panic::AssertUnwindSafe(assert_pid_dead(
             pid,

@@ -1,7 +1,4 @@
-//! Test seams of the resolver (#1628 D2 seam list): a recorder for the
-//! unstarted mode and the failpoints the lane / admission tests drive.
-//! Compiled only for tests and the `fixtures` feature; production builds
-//! carry none of it.
+//! Test seams of the resolver: a recorder for the unstarted mode and the failpoints the lane / admission tests drive. Compiled only for tests and the `fixtures` feature.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex as StdMutex, PoisonError};
@@ -68,11 +65,7 @@ impl Failpoints {
     pub fn release_precheck(&self) {
         self.precheck_release.notify_one();
     }
-    /// The next row write parks after its row is built, before the DB is
-    /// touched, until [`Self::release_write`]. One-shot: only the first
-    /// `resolve` to reach the write is held; later ones write straight
-    /// through. Tests wait on [`Self::write_held`] for the park, an event,
-    /// instead of on a plugin delay.
+    /// The next row write parks after its row is built, before the DB is touched, until [`Self::release_write`]. One-shot.
     pub fn hold_before_write(&self) {
         self.hold_before_write.store(true, Ordering::SeqCst);
     }

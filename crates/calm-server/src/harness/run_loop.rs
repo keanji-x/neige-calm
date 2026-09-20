@@ -42,46 +42,9 @@ use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::track_area_cache::TrackAreaCache;
 use crate::track_vcs;
 
-/// #1449 — park a runtime immediately before it can turn its pending queue into
-/// a turn, so a test can order "the workspace is repointed" strictly *before*
-/// "the first message drains".
-///
-/// The race this makes deterministic is real and silent: `PATCH
-/// /api/tracks/{id}` supersedes every live runtime of the track and mints a
-/// successor, and until #1449 the successor started with an empty queue. If the
-/// drain lost the race, the sentence the user typed sat forever on a superseded
-/// row that nothing reads. Under load the existing
-/// `a_replay_of_a_success_that_happened_on_a_retry_key_survives_a_repoint`
-/// catches it a few times out of six; this hook makes it every time.
-///
-/// # Why here and not at the drain itself
-///
-/// The queue is taken a few statements below, under `inner.issuance` — and
-/// `PlannerHarness::shutdown_inner` takes that same lock. A hook parked while
-/// holding it would deadlock the very `PATCH` the test is trying to order
-/// against: the fence's `shutdown_fenced_harness` would wait for the run loop
-/// that is waiting for the test that is waiting for the `PATCH`. Parking one
-/// statement earlier keeps the property the test needs — the queue has not been
-/// touched — while leaving the shutdown path free. The re-check of
-/// `shutting_down` immediately after the lock is what stops the parked loop
-/// from draining once it is released.
-///
-/// Same convention as `WorkspaceRepointRaceHook` in `routes/tracks.rs`, and the
-/// same limit to it: the hook struct, the registry and the wait are
-/// `fixtures`-only, so a release build compiles no map and no rendezvous. The
-/// call site and `wait_at_planner_harness_drain_race_hook` itself are NOT
-/// `cfg`-gated — in a release build the body collapses to
-/// `let _ = worker_session_id;` and the call remains, taking that one
-/// argument.
-///
-/// # Arming
-///
-/// [`ANY_RUNTIME`] parks whichever runtime reaches the drain FIRST, not a
-/// runtime chosen by name — the two are the same thing only while the process
-/// has exactly one harness that can drain. `nextest` gives every test its own
-/// process, so no other test in this suite can steal the entry; a card that
-/// starts a second harness within one test can. Arm by runtime id whenever the
-/// id is knowable.
+/// Fixtures-only: park a runtime immediately before it turns its pending queue into a turn.
+/// Parked one statement before `inner.issuance` is taken, because `shutdown_inner` takes that
+/// same lock and a hook parked under it would deadlock the `PATCH` a test orders against.
 #[cfg(feature = "fixtures")]
 #[derive(Clone)]
 pub struct PlannerHarnessDrainRaceHook {
@@ -97,15 +60,8 @@ fn planner_harness_drain_race_hooks()
     HOOKS.get_or_init(|| StdMutex::new(HashMap::new()))
 }
 
-/// Arm the hook for whichever runtime reaches the drain next, rather than for a
-/// named one.
-///
-/// Needed because the id of the runtime under test cannot be known before it
-/// exists: `POST /api/tracks` mints the runtime, starts its run loop and lets it
-/// drain, all before the 201 is written. Arming after the response is a race
-/// that the drain usually wins — which is precisely the race #1449 is about. The
-/// entry is still one-shot, so a second runtime is unaffected unless the test
-/// arms it again.
+/// Arm the hook for whichever runtime reaches the drain next; the runtime under test cannot be
+/// named before `POST /api/tracks` mints it.
 #[cfg(feature = "fixtures")]
 pub const ANY_RUNTIME: &str = "#1449-any-runtime";
 
@@ -183,22 +139,12 @@ async fn wait_at_planner_harness_observation_race_hook(worker_session_id: &str) 
 }
 
 const OBSERVATION_BUFFER: usize = 256;
-/// Hard cap on queued observations. Public because it is a wire-visible
-/// constant: at this length an incoming user message folds into the tail
-/// instead of taking a slot, which is the one accepted way `POST
-/// /planner/input` answers with `entry_id: null`. A test that hardcoded 256
-/// would be restating this rather than checking it.
+/// Hard cap on queued observations. Wire-visible: at this length a user message folds into
+/// the tail instead of taking a slot (`entry_id: null`).
 pub const MAX_PENDING_QUEUE_LEN: usize = 256;
 const RECENT_HOOK_KEY_CACHE_LEN: usize = 256;
-/// #615 F3 fold-in: upper bound on the size of a folded `UserMessage` tail
-/// entry. Each individual `/planner/input` body is capped at 32_768 chars at the
-/// route layer, but the fold path concatenates adjacent UserMessage
-/// observations into one entry. Under sustained backpressure a stream of
-/// max-size posts could otherwise grow the tail without bound and inflate every
-/// snapshot rewrite. Once the folded text would exceed this cap, refuse to
-/// fold; the eviction-fallback path in `enqueue_pending_observation` then drops
-/// a non-hard-fire entry from the queue front and lets the incoming UserMessage
-/// take a fresh slot.
+/// Upper bound on a folded `UserMessage` tail entry; beyond it the fold is refused and the
+/// eviction fallback in `enqueue_pending_observation` runs.
 const MAX_FOLDED_USER_MESSAGE_CHARS: usize = 4 * 32_768;
 
 #[derive(Clone)]
@@ -233,10 +179,6 @@ pub(super) struct Inner {
     observations: ObservationIngress,
     state: Mutex<HarnessState>,
     last_phase: Mutex<HarnessPhaseTag>,
-    /// #1505 PR1 — one queue, not a bundle of parallel arrays. `QueueEntry`
-    /// carries the envelope id, the #1449 message ids and (for user input) the
-    /// stable entry id, so there is no second array that can drift out of step
-    /// with this one.
     pending_queue: Mutex<VecDeque<QueueEntry>>,
     recent_hook_keys: Mutex<VecDeque<String>>,
     recent_hook_key_set: Mutex<HashSet<String>>,
@@ -247,73 +189,25 @@ pub(super) struct Inner {
     /// See `HarnessSnapshot::projection_client_id`. Live copy of the slot;
     /// `maybe_issue_turn` is its only writer.
     projection_client_id: Mutex<Option<QueueEntryId>>,
-    /// See `HarnessSnapshot::issued_input_segments`: the segments of the
-    /// turn a pre-#1625-P2 binary left in flight, read from its snapshot at
-    /// boot and never written back. Consumed by that turn's completed
-    /// `userMessage` echo (`on_notification`), or superseded by the next
-    /// drain (`maybe_issue_turn`), whichever comes first — exactly the
-    /// lifetime the pre-P2 slot had.
+    /// Segments of the turn an older binary left in flight, read from its snapshot at boot and
+    /// never written back.
     legacy_issued_input_segments: Mutex<Option<IssuedInputSegments>>,
     last_report_body_sha256: Mutex<Option<String>>,
     last_seen_head: Mutex<Option<track_vcs::CommitHash>>,
-    /// #1255 S3 — latest context-window reading from `thread/tokenUsage/updated`.
-    /// Latest-wins: every frame replaces this whole value (modulo the sticky
-    /// window in [`TokenUsage::sticky_merge`]), and it rides the runtime
-    /// snapshot out to `worker_sessions.handle_state` on the next persist.
+    /// Latest context-window reading from `thread/tokenUsage/updated`; latest-wins.
     token_usage: Mutex<Option<TokenUsage>>,
     debounce: Mutex<DebounceState>,
     interrupt_deadline: Mutex<Option<(String, Instant)>>,
-    /// #1505 S4 review — do not re-attempt turn issuance before this instant.
-    ///
-    /// Set when model selection, briefing preparation or `turn/start` fails.
-    ///
-    /// A resolution failure re-buffers, which arms `hard_fire`, which means
-    /// the very next 50 ms tick would try again — and each attempt costs a
-    /// transcript-refresh WRITE transaction before it gets far enough to fail.
-    /// While codex is unreachable that failure is instant and the loop would
-    /// spin at twenty write transactions a second for as long as the outage
-    /// lasts. This paces it. Nothing else is delayed: the queue is untouched,
-    /// and the only cost of the pause is that a selection repaired inside it
-    /// waits out the remainder.
+    /// Do not re-attempt turn issuance before this instant. Without it a re-buffered batch re-arms
+    /// `hard_fire` and the loop spins at twenty write transactions a second while codex is unreachable.
     issuance_retry_after: Mutex<Option<Instant>>,
-    /// #1505 S4 review — what to tell the reader about why their message has
-    /// not been sent, or `None` when there is nothing worth saying.
-    ///
-    /// Live-only, exactly like `phase`: it is re-derived by the next attempt,
-    /// so a restart or a supersede loses nothing that will not come straight
-    /// back. It is deliberately NOT on `HarnessSnapshot` — a field there would
-    /// be dropped by the adapter's three-key copy on supersede and would have
-    /// to be kept in step by hand forever, for a value whose whole lifetime is
-    /// one retry interval.
-    ///
-    /// These failures fill it, and the wording differs because the reader's
-    /// situation does:
-    ///
-    ///  * a briefing read failed — says input is retained and preparation will retry;
-    ///  * a selection nobody can determine — names the choice that fixes it;
-    ///  * a turn codex refused — says the message was NOT sent;
-    ///  * a run of retryable failures that has lasted past
-    ///    [`HarnessConfig::transient_silence_budget`] — says the message is
-    ///    still coming.
-    ///
-    /// A brief retryable failure fills nothing. A codex restart is nobody's
-    /// problem to act on, and a notice for every one of them would train the
-    /// reader to ignore the field.
-    ///
-    /// **It is therefore not "only failures that cannot clear themselves"** —
-    /// that was true when only the first case existed, and stopped being true
-    /// when the third was added without this sentence being revisited.
+    /// What to tell the reader about why their message has not been sent, or `None`. Live-only,
+    /// like `phase`: re-derived by the next attempt, deliberately not on `HarnessSnapshot`.
     issuance_block: Mutex<Option<String>>,
-    /// When the current run of consecutive refusals began, or `None` when the
-    /// last attempt succeeded. Feeds
-    /// [`HarnessConfig::transient_silence_budget`].
+    /// When the current run of consecutive refusals began; feeds `transient_silence_budget`.
     refusing_since: Mutex<Option<Instant>>,
-    /// #1505 S4 review round 2 — how many issuance attempts have been refused.
-    ///
-    /// Exists so a test can assert the retry is PACED without waiting on a
-    /// wall clock: an interval smaller than a test's own deadline is invisible
-    /// to any assertion that merely waits for an outcome, which is how the
-    /// first cut of the pacing shipped untested.
+    /// How many issuance attempts have been refused, so a test can assert the retry is PACED
+    /// without waiting on a wall clock.
     #[cfg(feature = "fixtures")]
     refused_issuances: AtomicU64,
     shutdown: broadcast::Sender<()>,
@@ -329,75 +223,28 @@ pub(super) struct Inner {
     /// before the daemon returns a turn id; shutdown waits for that response,
     /// then interrupts the now-known turn before aborting the run loop.
     issuance: Mutex<()>,
-    /// Issue #682 review — issuance kill-switch for dev-forced harnesses.
-    /// Checked at the top of [`maybe_issue_turn`]; observations still
-    /// enqueue normally, the harness just never calls `turn_start`. Only
-    /// the fixtures-gated [`PlannerHarness::pause_issuance_for_dev`] sets it,
-    /// so production harnesses never pause.
+    /// Issuance kill-switch for dev-forced harnesses; only `pause_issuance_for_dev` sets it.
     issuance_paused: AtomicBool,
-    /// #1505 PR2b — queue entries the load-time truncation discarded whose
-    /// `harness.queue.changed { dropped }` row does not exist yet.
-    ///
-    /// A `tokio::Mutex`: `flush_dropped_announcements` holds it across the
-    /// event inserts so two racing flushers cannot both take the same id.
-    ///
-    /// Held here rather than passed to the run loop alone because the loss and
-    /// its announcement have to share a fate, and the run loop is not the
-    /// first thing that can make the loss durable:
-    /// `planner_harness_start_adapter` calls `handle.persist_snapshot()` on
-    /// its OWN task immediately after `PlannerHarness::run` returns, which can
-    /// run before the spawned loop is ever polled. `persist_snapshot_inner`
-    /// therefore drains this first and refuses to write if it cannot — so the
-    /// truncated queue reaches the row only once the record of what it lost
-    /// is already there, and a failure leaves the untruncated row intact for
-    /// the next boot to retry.
+    /// Queue entries the load-time truncation discarded whose `dropped` row does not exist yet.
+    /// A `tokio::Mutex` held across the event inserts so two racing flushers cannot take the same id;
+    /// `persist_snapshot_inner` drains this first and refuses to write if it cannot.
     unannounced_drops: Mutex<Vec<QueueEntryId>>,
-    /// #1625 P3 review round 1 — the entries codex accepted through
-    /// `turn/steer` into the turn that is running, in the order they were
-    /// steered, held until that turn completes. See [`SteeredEntry`] for why
-    /// a completion has to look at them: codex records a steered input only
-    /// at its next model request, and an interrupt before that clears it.
-    ///
-    /// Live-only, like `issuance_block`: the list is about a turn this
-    /// process is watching, and a restart loses the turn with it — the
-    /// snapshot restores as `Resumed`, and no completion for that turn will
-    /// ever reach this loop, so nothing here could be acted on.
+    /// Entries codex accepted through `turn/steer` into the running turn, held until that turn
+    /// completes. Live-only: a restart loses the turn with it.
     steered_into_running_turn: Mutex<Vec<SteeredEntry>>,
     abort_handle: StdMutex<Option<AbortHandle>>,
     config: HarnessConfig,
 }
 
-/// #1625 P3 review round 1 — one entry codex has accepted into the running
-/// turn, remembered until that turn ends.
-///
-/// Accepted is not recorded. Vendored codex (`external/codex` @ `5a440c0`):
-/// `turn/steer` only pushes the input into the turn's `pending_input`
-/// (`core/src/session/mod.rs`, `steer_input`); it is written to history and
-/// echoed as `item/started` + `item/completed` at the turn's NEXT model
-/// request (`session/turn.rs`, `run_hooks_and_record_inputs`); and an
-/// interrupt in between — the Stop button, or `max_turn_duration` — goes
-/// through `abort_all_tasks` → `input_queue.clear_pending`, which empties
-/// `pending_input` (`core/src/session/input_queue.rs`). The turn then ends
-/// with `status: interrupted` and the sentence is in nobody's record: not in
-/// codex's history, not in the queue, and its transcript row still says it
-/// was sent.
-///
-/// The completion sweep (`restore_steered_entries_codex_dropped`) tells the
-/// two outcomes apart by the row: the echo upgrades the projection in place
-/// (`transcript_projection_upgrade` stamps the turn id), and on the ordered
-/// notification stream the echo precedes the completion, so a row that is
-/// STILL a projection when the completion arrives is a sentence codex never
-/// recorded. That row is deleted and the entry goes back to the head of the
-/// queue with its id and rev, exactly as a refused steer's does.
+/// One entry codex accepted into the running turn. Codex records a steered input only at its
+/// next model request, and an interrupt before that clears it; the completion sweep tells the
+/// two apart by whether the transcript row is still a projection.
 struct SteeredEntry {
     /// The turn `turn/steer` named as `expectedTurnId` and codex confirmed.
     turn_id: String,
     entry: QueueEntry,
-    /// The transcript projection written once codex accepted, or `None` if
-    /// that write failed (logged at the time). Without a row the sweep has
-    /// nothing to consult and leaves the entry alone: it cannot tell a
-    /// delivery from a drop, and re-delivering a sentence codex has is the
-    /// worse error of the two.
+    /// The transcript projection written once codex accepted, or `None` if that write failed;
+    /// without a row the sweep cannot tell a delivery from a drop and leaves the entry alone.
     row_id: Option<i64>,
 }
 
@@ -412,13 +259,8 @@ impl<'a> IssueTurnHandle<'a> {
         }
     }
 
-    /// `selection` is required, not defaulted: #1505 S4-3 makes "which model
-    /// runs this turn" part of what issuance means, and a default here would
-    /// be a silent answer to it.
-    ///
-    /// `client_user_message_id` is the key of the projection row the drain
-    /// wrote for this batch (#1625 P2); codex hands it back as
-    /// `item.clientId` on the echoed `userMessage`.
+    /// `selection` is required: a default would silently answer which model runs this turn.
+    /// `client_user_message_id` is the projection row's key; codex hands it back as `item.clientId`.
     pub(super) async fn issue(
         &self,
         thread_id: &str,
@@ -448,62 +290,17 @@ enum HarnessObservationCommand {
         deliveries: Vec<HarnessObservationDelivery>,
         persisted: oneshot::Sender<Result<DurableAck>>,
     },
-    /// #1505 PR2 — a human edit or delete against one queue entry.
-    ///
-    /// It rides the same mpsc as every other command and is handled in the
-    /// same `observations.recv()` arm, so it never runs part-way through a
-    /// tick's `watchdog_tick` / `maybe_issue_turn`.
-    ///
-    /// That is NOT what makes "a delete racing a drain has two outcomes, never
-    /// three" true, and the earlier draft of this comment said it was.
-    /// `pending_queue` is a `tokio::Mutex`; the disjunction comes from
-    /// `queue::apply_mutation` doing its whole compare-and-swap under one hold
-    /// of it, and from `maybe_issue_turn` emptying the queue under the same
-    /// lock before it calls `turn/start`. Running this on the caller's task
-    /// instead was tried as a mutation and reddened nothing, which is correct.
-    ///
-    /// What the single arm does buy: a mutation cannot be interleaved with the
-    /// rest of a tick, and it cannot be starved by one either.
-    ///
-    /// Unlike `Durable`, the sender does NOT hold `durable_observation` while
-    /// it waits. That mutex is held by `observe_durable_observations` across
-    /// its `confirmation.await`, so a POST stuck behind a slow issuance blocks
-    /// every later POST; a mutation must not be able to join that queue behind
-    /// an unrelated send. What this buys is concurrent WAITING, not lower
-    /// latency: every one of these still waits for the same `select!`.
+    /// A human edit or delete against one queue entry. Rides the same mpsc as every other command,
+    /// so it never runs part-way through a tick; the delete-vs-drain atomicity itself comes from
+    /// `queue::apply_mutation` doing its whole compare-and-swap under one queue-lock hold.
     Mutate {
         mutation: QueueMutation,
         actor: ActorId,
         applied: oneshot::Sender<Result<MutationResult>>,
     },
-    /// #1625 P3 — a human asking for one queued entry to go into the turn
-    /// that is running right now, instead of waiting for the next one.
-    ///
-    /// What rules out the double delivery the design named (the turn ends
-    /// under the steer, the tick drains the entry into the next turn, codex
-    /// delivers it in both) is take-before-ask under the queue lock: the
-    /// entry leaves the queue BEFORE codex is asked — the drain's own order,
-    /// which empties the queue before `turn/start` — and every way back in
-    /// (`rebuffer_head`) takes the same lock the drain reads under. So at no
-    /// instant does the queue list a sentence codex may already hold, and a
-    /// drain that runs at any point during the RPC finds nothing of it. A
-    /// refused steer awaited off this task would hold just the same:
-    /// `planner_steer.rs`'s completion-race test holds the RPC open,
-    /// completes the turn under it, and shows one delivery.
-    ///
-    /// What the same channel and the same `select!` arm as `Mutate` DO buy
-    /// is ordering with the completion: `handle_steer` awaits `turn/steer`
-    /// inside the arm, so no notification is processed until it returns —
-    /// the `TurnCompleted` sweep over `steered_into_running_turn` therefore
-    /// always sees an accepted entry registered, and the echo that names its
-    /// row can never be processed before the row is written. Off this task
-    /// a completion could run its sweep between codex accepting and the
-    /// steer registering the entry, and a dropped sentence would go
-    /// unnoticed.
-    ///
-    /// The cost is the mirror image: a slow `turn/steer` holds the loop for
-    /// its duration, exactly as a slow `turn/start` already does in the tick
-    /// arm, and the same client request timeout bounds both.
+    /// A human asking for one queued entry to go into the running turn. Take-before-ask under the
+    /// queue lock rules out double delivery; awaiting `turn/steer` inside this arm orders the steer
+    /// with the completion, so the `TurnCompleted` sweep always sees an accepted entry registered.
     Steer {
         entry_id: QueueEntryId,
         if_entry_rev: u32,
@@ -512,7 +309,7 @@ enum HarnessObservationCommand {
     },
 }
 
-/// #1625 P3 — a steer that took effect: codex has the entry inside `turn_id`.
+/// A steer that took effect: codex has the entry inside `turn_id`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SteerApplied {
     pub entry_id: QueueEntryId,
@@ -522,38 +319,23 @@ pub struct SteerApplied {
     pub turn_id: String,
 }
 
-/// #1625 P3 — why a steer delivered nothing. In every arm the entry is still
-/// in the queue, with the id and rev the client read, and drains into the
-/// next turn the ordinary way.
+/// Why a steer delivered nothing. In every arm the entry is still in the queue with the id
+/// and rev the client read.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SteerRefused {
-    /// The queue's own answer — not there, not the rev you read, or not
-    /// uniquely named — given before the phase is looked at, because it is
-    /// about the message the person pointed at rather than the moment they
-    /// pressed.
+    /// The queue's own answer — not there, not the rev you read, or not uniquely named.
     Queue(MutationRefused),
     /// No turn is running at this moment: nothing was taken out of the queue
     /// and codex was not asked.
     NoRunningTurn { phase: HarnessPhaseTag },
-    /// Codex was asked and said no — the turn had ended, or another one was
-    /// running (`CalmError::CodexRefused`, codex's own `-32600` sentence in
-    /// `message`). The entry is back at the head of the queue; no transcript
-    /// row was written, because the row is written only once codex has said
-    /// yes. `phase` is the harness's own phase at the moment it answered,
-    /// which is still `TurnRunning` until the completion codex has already
-    /// seen reaches this loop.
+    /// Codex was asked and said no. The entry is back at the head of the queue; no transcript row
+    /// was written. `phase` is still `TurnRunning` until the completion reaches this loop.
     NotTaken {
         message: String,
         phase: HarnessPhaseTag,
     },
-    /// Codex was asked and did not answer: the request timed out, or the
-    /// connection dropped before the reply, or it could not be reached at
-    /// all (any error that is not `CodexRefused`). Whether codex took the
-    /// message is NOT known on this side. The entry is back at the head of
-    /// the queue and goes with the next turn — if codex did take it, its
-    /// echo will still arrive and the sentence reaches the model twice; the
-    /// alternative is losing it. The route gives this its own `code` so the
-    /// person is told "unknown", not "nothing happened".
+    /// Codex was asked and did not answer, so whether it took the message is NOT known. The entry
+    /// goes with the next turn — if codex did take it the sentence reaches the model twice.
     Unanswered {
         message: String,
         phase: HarnessPhaseTag,
@@ -594,26 +376,8 @@ async fn restore_durable_user_message(inner: &Inner, checkpoint: DurableUserMess
     *inner.debounce.lock().await = checkpoint.debounce;
 }
 
-/// #1505 PR1 — what a durable enqueue tells the caller about the entry it
-/// created.
-///
-/// A process-internal channel type, not a wire type: the HTTP layer maps it
-/// into `SendPlannerInputResponse.entry_id`.
-///
-/// `entry_id` is `None` in exactly one accepted case — the incoming message
-/// folded into a [`QueueEntry::LegacyUser`] tail, which never gains an id.
-/// The other `None` paths the client sees are refusals, not acks: a dormant
-/// harness (no runtime at all), a 503 from a saturated observation channel,
-/// and a 409 from a harness that is shutting down.
-///
-/// A batch carries at most one user-authored delivery today
-/// (`observe_user_message_durable` sends exactly one), so the ack is exact.
-/// The rule if that ever changes is written into the loops that fill this in:
-/// the LAST user-authored delivery wins, `None` included. Skipping the
-/// assignment when the id happens to be `None` would be worse than arbitrary —
-/// a batch whose final message folded onto a legacy tail would report the
-/// id of an EARLIER message, i.e. name the wrong entry rather than admit to
-/// naming none.
+/// What a durable enqueue tells the caller. `entry_id` is `None` in exactly one accepted case —
+/// the message folded into a `LegacyUser` tail. The LAST user-authored delivery wins, `None` included.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DurableAck {
     pub entry_id: Option<QueueEntryId>,
@@ -670,9 +434,8 @@ impl PlannerHarness {
         params.snapshot.assert_known_schema();
         let (obs_tx, obs_rx) = mpsc::channel(observation_buffer);
         let (shutdown_tx, _shutdown_rx) = broadcast::channel(4);
-        // No run loop on this path to flush the drop announcements early; the
-        // `persist_snapshot_inner` drain still covers them, which is the half
-        // that carries the guarantee.
+        // No run loop on this path to flush the drop announcements early; the `persist_snapshot_inner`
+        // drain still covers them.
         let (inner, _announce_dropped_first) =
             inner_from_params(params, ObservationIngress::Unstarted(obs_tx), shutdown_tx);
         (Self { inner }, obs_rx)
@@ -714,11 +477,8 @@ impl PlannerHarness {
         result
     }
 
-    /// Fold and persist non-replayable user intent before acknowledging it.
-    ///
-    /// The returned [`DurableAck`] names the entry the text ended up in — which
-    /// is NOT always an entry minted for this call: under backpressure the text
-    /// folds into the queue tail and the ack names the survivor.
+    /// Fold and persist non-replayable user intent before acknowledging it. The ack names the
+    /// entry the text ended up in — under backpressure, the fold survivor.
     pub async fn observe_user_message_durable(
         &self,
         text: String,
@@ -783,24 +543,14 @@ impl PlannerHarness {
         }
     }
 
-    /// #1505 PR2 — edit or delete one queue entry, from the REST write port.
-    ///
-    /// The outer `Result` is transport: the harness is shutting down, or its
-    /// command channel is saturated. The inner [`MutationResult`] is the
-    /// queue's own answer — applied, not found, stale, or ambiguous.
-    ///
-    /// `actor` is only ever [`ActorId::User`] today, because both routes
-    /// refuse anything else before calling this. It is a parameter rather than
-    /// a hardcoded constant so the event says who asked rather than restating
-    /// what the route guard happens to permit; PR2b's kernel-authored `Dropped`
-    /// is the second caller.
+    /// Edit or delete one queue entry from the REST write port. Outer `Result` is transport; inner
+    /// [`MutationResult`] is the queue's own answer.
     pub async fn mutate_pending_entry(
         &self,
         mutation: QueueMutation,
         actor: ActorId,
     ) -> Result<MutationResult> {
-        // Deliberately NOT taking `durable_observation`: see the doc comment on
-        // `HarnessObservationCommand::Mutate`.
+        // Deliberately NOT taking `durable_observation`.
         if self.inner.shutting_down.load(Ordering::SeqCst) {
             return Err(CalmError::Conflict(
                 "planner harness is shutting down; refusing queue mutation".into(),
@@ -830,13 +580,8 @@ impl PlannerHarness {
         }
     }
 
-    /// #1625 P3 — send one queued entry into the turn that is running now,
-    /// from the REST write port.
-    ///
-    /// Two layers, as with [`Self::mutate_pending_entry`]: the outer `Result`
-    /// is transport, the inner [`SteerResult`] is the loop's answer. Every
-    /// inner refusal leaves the entry queued under the id and rev the client
-    /// read.
+    /// Send one queued entry into the running turn from the REST write port. Every inner refusal
+    /// leaves the entry queued under the id and rev the client read.
     pub async fn steer_pending_entry(
         &self,
         entry_id: QueueEntryId,
@@ -987,14 +732,8 @@ impl PlannerHarness {
         snapshot_for(&self.inner).await
     }
 
-    /// Why this conversation's queue is not draining, or `None` when there is
-    /// nothing worth telling the reader.
-    ///
-    /// `None` does NOT mean "waiting is the right answer": a long-running
-    /// outage is exactly the case where waiting is right and the reader is
-    /// told anyway, because silence and a hang are indistinguishable from
-    /// their side. See [`Inner::issuance_block`] for the producers, and
-    /// for why this is live-only rather than a snapshot field.
+    /// Why this conversation's queue is not draining, or `None`. `None` does NOT mean waiting is
+    /// the right answer.
     pub async fn issuance_block(&self) -> Option<String> {
         self.inner.issuance_block.lock().await.clone()
     }
@@ -1005,12 +744,7 @@ impl PlannerHarness {
         self.inner.refused_issuances.load(Ordering::SeqCst)
     }
 
-    /// Forget a refusal so the next tick re-attempts immediately.
-    ///
-    /// Called when a person changes the selection. Without it they would fix
-    /// the thing the message told them to fix and then watch their sentence sit
-    /// there for the rest of the 30 s interval, which is exactly long enough to
-    /// conclude that nothing happened.
+    /// Forget a refusal so the next tick re-attempts immediately (called when a person changes the selection).
     pub async fn retry_issuance_now(&self) {
         *self.inner.issuance_retry_after.lock().await = None;
         *self.inner.issuance_block.lock().await = None;
@@ -1066,34 +800,9 @@ impl PlannerHarness {
         let _ = on_observation(&self.inner, entry).await;
     }
 
-    /// Issue #682 — dev-only seam for the replay binary's
-    /// `POST /dev/force-planner-phase`. Forces the harness FSM into the state
-    /// matching `tag` (synthesized with `"dev-forced"` sentinel ids) and
-    /// runs the regular [`persist_snapshot`] path — the single write point
-    /// that updates the persisted snapshot (`session_set_handle_state_tx`),
-    /// the worker-session status, and emits `HarnessPhaseChanged` when the
-    /// phase actually changed. All three read surfaces (`GET /planner/run`,
-    /// the WS event stream, the DB snapshot) stay consistent by
-    /// construction. Forcing the same phase twice emits no duplicate event
-    /// (persist only emits on `last_phase != new_phase`).
-    ///
-    /// Live-watchdog interactions a caller (read: PR-2 e2e specs) must know:
-    /// - forcing `resumed` is not sticky — `watchdog_tick` decays `Resumed`
-    ///   to `Idle` after `config.resumed_reconcile_budget` (default 5s),
-    ///   emitting one more `HarnessPhaseChanged`;
-    /// - `wedged` is rejected (`BadRequest`): persisting it writes
-    ///   `WorkerSessionState::Failed` via `run_status_for`, and
-    ///   `session_projection_active_for_card` filters failed rows, so `GET
-    ///   /planner/run` would instantly report dormant and the next force would
-    ///   mint a second runtime. The dev endpoint
-    ///   (`replay::force_planner_phase`) 400s before ever reaching here;
-    /// - any armed `interrupt_deadline` (a prior `/planner/interrupt`) and
-    ///   `issued_turn_id` are cleared before persisting, so the interrupt
-    ///   watchdog can't asynchronously flip a freshly forced phase to
-    ///   `Wedged` mid-test.
-    ///
-    /// Returns `(old_phase, new_phase)` so the dev endpoint can report
-    /// what it did.
+    /// Dev-only seam for `POST /dev/force-planner-phase`: forces the FSM into `tag` and runs the
+    /// regular `persist_snapshot` path. `wedged` is rejected — it would persist as `Failed` and the
+    /// active-runtime read would report dormant. Returns `(old_phase, new_phase)`.
     #[cfg(feature = "fixtures")]
     pub async fn force_phase_for_dev(
         &self,
@@ -1123,11 +832,6 @@ impl PlannerHarness {
                 last_turn_id: DEV_FORCED_TURN_ID.into(),
             },
             HarnessPhaseTag::Resumed => HarnessState::Resumed { resumed_at: now },
-            // See doc-comment: a forced Wedged would persist as
-            // `WorkerSessionState::Failed`, which the active-runtime read path
-            // filters out. `replay::force_planner_phase` rejects the tag with
-            // the client-facing message; this arm is defense in depth for
-            // any future direct caller.
             HarnessPhaseTag::Wedged => {
                 return Err(CalmError::BadRequest(
                     "force_phase_for_dev does not support `wedged` (a failed runtime row \
@@ -1138,10 +842,8 @@ impl PlannerHarness {
         };
         let old_phase = *self.inner.last_phase.lock().await;
         *self.inner.state.lock().await = state;
-        // Phases that imply a known turn need `last_turn_id` populated so
-        // `persist_snapshot` can derive `active_turn_id` (TurnRunning /
-        // IssuingInterrupt) and the snapshot round-trips through
-        // `state_from_snapshot` recovery. Keep a real id if one exists.
+        // Phases that imply a known turn need `last_turn_id` populated so `persist_snapshot` can
+        // derive `active_turn_id`. Keep a real id if one exists.
         if matches!(
             tag,
             HarnessPhaseTag::TurnRunning
@@ -1153,12 +855,8 @@ impl PlannerHarness {
                 *last_turn_id = Some(DEV_FORCED_TURN_ID.into());
             }
         }
-        // Issue #682 review — disarm async followers of the *previous*
-        // state before persisting the forced one: a `/planner/interrupt`
-        // issued earlier arms `interrupt_deadline` (30s), after which
-        // `watchdog_tick` would flip the harness to `Wedged` mid-test and
-        // emit an unexpected phase event. `issued_turn_id` likewise belongs
-        // to the superseded state.
+        // Disarm async followers of the previous state before persisting the forced one, or the
+        // interrupt watchdog could flip a freshly forced phase to `Wedged` mid-test.
         *self.inner.issued_turn_id.lock().await = None;
         *self.inner.legacy_issued_input_segments.lock().await = None;
         *self.inner.interrupt_deadline.lock().await = None;
@@ -1166,32 +864,20 @@ impl PlannerHarness {
         Ok((old_phase, tag))
     }
 
-    /// Issue #682 review — permanently stop this harness from issuing
-    /// turns. `replay::force_planner_phase` calls this on every harness it
-    /// hands out: in replay mode the shared codex app-server is a
-    /// non-running stub, so `turn_start` always fails and the run loop
-    /// would otherwise churn (`issuing_turn` → fail → re-buffer with
-    /// `hard_fire` → retry) on every 50ms tick once an issuable phase
-    /// holds a pending observation. Observations (`/planner/input`) still
-    /// enqueue normally — the harness just never issues.
+    /// Permanently stop this harness from issuing turns; in replay mode the app-server is a stub
+    /// and `turn_start` always fails.
     #[cfg(feature = "fixtures")]
     pub fn pause_issuance_for_dev(&self) {
         self.inner.issuance_paused.store(true, Ordering::SeqCst);
     }
 
-    /// #1505 PR2 — the debounce arming, for the tests that pin §4.5.
-    ///
-    /// Read directly rather than inferred from whether a turn fired: inferring
-    /// it would make the assertion depend on the 50ms tick, and a rule about
-    /// what the queue is armed with is not a rule about when.
+    /// The debounce arming, read directly rather than inferred from whether a turn fired.
     #[cfg(feature = "fixtures")]
     pub async fn debounce_hard_fire_for_test(&self) -> bool {
         self.inner.debounce.lock().await.hard_fire
     }
 
-    /// Whether `(first_pending_at, last_pending_at)` are set. The values are
-    /// `Instant`s and mean nothing outside this process; whether they are
-    /// present is the whole of what §4.5 says about them.
+    /// Whether `(first_pending_at, last_pending_at)` are set.
     #[cfg(feature = "fixtures")]
     pub async fn debounce_timestamps_set_for_test(&self) -> (bool, bool) {
         let debounce = self.inner.debounce.lock().await;
@@ -1201,11 +887,8 @@ impl PlannerHarness {
         )
     }
 
-    /// #1667 A3 — age the pending window by `by` without sleeping: both
-    /// debounce timestamps move into the past, so the next 50 ms tick sees
-    /// a window that has been idle for `by` longer than it really has. The
-    /// run loop reads `std::time::Instant`, which `tokio::time::pause`
-    /// cannot move, so this is the fixture clock.
+    /// Age the pending window by `by` without sleeping; the loop reads `std::time::Instant`,
+    /// which `tokio::time::pause` cannot move.
     #[cfg(feature = "fixtures")]
     pub async fn rewind_debounce_for_test(&self, by: Duration) {
         let mut debounce = self.inner.debounce.lock().await;
@@ -1227,11 +910,7 @@ impl PlannerHarness {
             .unwrap_or(0)
     }
 
-    /// #1667 round-4 N6 — how long since the newest pending entry landed,
-    /// in milliseconds; zero when there is no window. A test that drives
-    /// the clock with `rewind_debounce_for_test` reads this to know that an
-    /// observation sent through the channel has actually stamped the
-    /// window before it rewinds again.
+    /// How long since the newest pending entry landed, in milliseconds; zero when there is no window.
     #[cfg(feature = "fixtures")]
     pub async fn debounce_last_pending_elapsed_ms_for_test(&self) -> u128 {
         self.inner
@@ -1313,12 +992,8 @@ fn inner_from_params(
         legacy_issued_input_segments: Mutex::new(snapshot.issued_input_segments),
         last_report_body_sha256: Mutex::new(snapshot.last_report_body_sha256),
         last_seen_head: Mutex::new(snapshot.last_seen_head),
-        // Round-trips through the snapshot so the reading survives a reboot
-        // and the lazy-recovery respawn in `ensure_live_planner_harness`. Without
-        // this line the value would be written to disk and then silently
-        // dropped on the way back in — codex only re-pushes it on the next
-        // model response, so a resumed-but-idle thread would read as having no
-        // context usage at all.
+        // Round-trips through the snapshot: codex only re-pushes it on the next model response, so a
+        // resumed-but-idle thread would otherwise read as having no context usage.
         token_usage: Mutex::new(snapshot.token_usage),
         debounce: Mutex::new(debounce),
         interrupt_deadline: Mutex::new(None),
@@ -1371,12 +1046,8 @@ fn debounce_from_initial_queue(queue: &VecDeque<QueueEntry>) -> DebounceState {
     }
 }
 
-/// Seed hook-stop dedupe from the restored pending queue.
-///
-/// Snapshot recovery has already accepted these `WorkerHookStop` observations, so
-/// their non-empty `idempotency_key` values must populate the recent-key LRU
-/// before fallback replay or bridge retry can deliver the same hook again. Empty
-/// keys are skipped because old snapshot rows deserialize them from the default.
+/// Seed hook-stop dedupe from the restored pending queue so fallback replay or bridge retry
+/// cannot deliver the same hook again. Empty keys are skipped (old snapshot rows default them).
 fn recent_hook_keys_from_pending_queue(
     pending_queue: &VecDeque<QueueEntry>,
 ) -> (VecDeque<String>, HashSet<String>) {
@@ -1399,16 +1070,8 @@ fn recent_hook_keys_from_pending_queue(
     (keys, set)
 }
 
-/// Cadence timer for the harness run loop's periodic maintenance branch.
-///
-/// The loop's `select!` can be parked for a long bounded stretch inside
-/// `maybe_issue_turn` (transcript refresh + diff + head fallback + a
-/// `turn/start` round trip, ~41s worst case). With tokio's default
-/// [`MissedTickBehavior::Burst`] a 50ms interval would then hand back roughly
-/// 800 immediately-ready ticks, and every one of them competes with the
-/// observation, notification and shutdown branches of the same `select!`.
-/// [`MissedTickBehavior::Skip`] collapses that backlog into a single tick on
-/// the next aligned deadline.
+/// Cadence timer. The loop can be parked ~41s inside `maybe_issue_turn`; `MissedTickBehavior::Skip`
+/// collapses the resulting tick backlog into one.
 fn harness_tick() -> tokio::time::Interval {
     let mut tick = tokio::time::interval(Duration::from_millis(50));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1422,15 +1085,8 @@ async fn run_loop(
     mut notifications: broadcast::Receiver<Notification>,
     announce_dropped_first: bool,
 ) {
-    // #1505 PR2b — before the first command is served, so a reader who has
-    // seen ANY of this harness's work has seen its drop announcements too, and
-    // "nothing was dropped" is a fact rather than "not yet".
-    //
-    // Correctness does not rest on this call. `persist_snapshot_inner` drains
-    // the same list and refuses to write without it, so the loss cannot become
-    // durable unannounced even if this task is never polled, is aborted
-    // part-way, or fails right here. This is the early flush, not the
-    // guarantee.
+    // Early flush before the first command is served. Correctness does not rest on it:
+    // `persist_snapshot_inner` drains the same list and refuses to write without it.
     if announce_dropped_first && let Err(error) = flush_dropped_announcements(&inner).await {
         tracing::error!(
             card_id = %inner.card_id,
@@ -1550,19 +1206,8 @@ async fn quiesce_system_error(inner: &Arc<Inner>) -> Result<()> {
     Ok(())
 }
 
-/// #1505 PR2 — the whole of what `HarnessObservationCommand::Mutate` is allowed
-/// to do: take the queue lock, apply the mutation, re-arm the debounce, persist,
-/// emit.
-///
-/// It runs on the run-loop task (or, under the fixtures ingress, on the
-/// caller's — there is no loop there to hand it to). An edit or a delete is
-/// answered from memory and the database alone; codex is not asked, so
-/// neither holds the loop for longer than a snapshot write and an event
-/// insert. A steer is the
-/// command on this channel that DOES await codex, and it does so on purpose —
-/// see `HarnessObservationCommand::Steer` and `handle_steer`, which is why a
-/// `QueueMutation::Steer` handed to this function is refused rather than
-/// applied: applying it here would take the entry out and deliver it nowhere.
+/// Take the queue lock, apply the mutation, re-arm the debounce, persist, emit. A
+/// `QueueMutation::Steer` is refused here: applying it would take the entry out and deliver it nowhere.
 async fn handle_queue_mutation(
     inner: &Arc<Inner>,
     mutation: &QueueMutation,
@@ -1582,10 +1227,8 @@ async fn handle_queue_mutation(
     };
     let applied = match outcome {
         Ok(applied) => applied,
-        // A refusal changed nothing, so there is nothing to persist and nothing
-        // to announce. In particular a 404 does NOT mean the entry was
-        // delivered — `rebuffer_head` can put a drained batch back — so
-        // inventing an event here would put a false sentence in the audit log.
+        // A refusal changed nothing; a 404 does NOT mean the entry was delivered (`rebuffer_head`
+        // can put a drained batch back), so no event is invented.
         Err(refused) => return Ok(Err(refused)),
     };
 
@@ -1594,21 +1237,14 @@ async fn handle_queue_mutation(
     }
 
     if let Err(error) = persist_snapshot(inner).await {
-        // Same shape as the durable enqueue path: memory is rolled back to the
-        // exact queue the mutation started from, so a client that gets a 500
-        // and re-reads sees the entry it tried to change, unchanged.
+        // Memory is rolled back to the exact queue the mutation started from.
         *inner.pending_queue.lock().await = checkpoint;
         return Err(error);
     }
 
     if let Err(error) = emit_queue_changed(inner, actor, &applied.entry_id, applied.change).await {
-        // The snapshot above is already committed, so the change has happened
-        // whatever this says. Reporting failure here would invite a retry of a
-        // delete that already succeeded, and the retry would answer 404 —
-        // telling the user their entry was never there. Surface it
-        // operationally instead. The visible cost is real: the frontend's queue
-        // region is invalidated BY this event, so a client that is not the one
-        // that issued the mutation will not refresh until something else moves.
+        // The snapshot is already committed, so the change has happened; reporting failure would
+        // invite a retry of a delete that already succeeded.
         tracing::error!(
             card_id = %inner.card_id,
             entry_id = %applied.entry_id,
@@ -1620,12 +1256,8 @@ async fn handle_queue_mutation(
     Ok(Ok(applied))
 }
 
-/// §4.5 — one rule for every departure from the queue. `hard_fire` is
-/// recomputed over what is left, so deleting (or steering away) the only user
-/// message does not leave a queue of soft observations falsely armed. The
-/// timestamps are NOT touched unless the queue emptied: the observations still
-/// waiting keep the arming they were enqueued with, and a user taking a
-/// message out must not postpone somebody else's turn.
+/// One rule for every departure from the queue: `hard_fire` is recomputed over what is left;
+/// the timestamps are NOT touched unless the queue emptied.
 async fn rearm_debounce_after_departure(inner: &Inner, applied: &MutationApplied) {
     let mut debounce = inner.debounce.lock().await;
     debounce.hard_fire = applied.remaining_hard_fire;
@@ -1635,61 +1267,17 @@ async fn rearm_debounce_after_departure(inner: &Inner, applied: &MutationApplied
     }
 }
 
-/// #1625 P3 — the whole of what `HarnessObservationCommand::Steer` does, in
-/// this order and no other:
-///
-///  1. answer the queue's own refusals (not there, stale, ambiguous) — the
-///     entry is untouched;
-///  2. refuse unless a turn is running — the entry is untouched;
-///  3. take the entry OUT of the queue (`QueueMutation::Steer`), re-arm the
-///     debounce over what is left;
-///  4. `turn/steer` with `expectedTurnId` = the running turn and
-///     `clientUserMessageId` = the entry id;
-///  5. on yes: write its transcript row, keyed by the entry id, `turn_id`
-///     NULL, exactly the projection the drain writes (`write_projection_row`);
-///     remember the entry for the turn's completion (`SteeredEntry`);
-///     persist the queue without it; announce the row and the departure
-///     (`Steered`); answer 200. On anything else: put the entry back at the
-///     head with its id and rev (`rebuffer_head`), announce the return
-///     (`Restored`), and refuse — `NotTaken` when codex said no,
-///     `Unanswered` when it said nothing.
-///
-/// Step 3 before step 4 is the pinned order, and `HarnessObservationCommand::Steer`
-/// says what it rests on. The input is the entry's own text plus one
-/// `localImage` per attachment — the same segment the drain would build for
-/// it — and nothing the drain prepends: no track diff, no recovery
-/// briefing, no result receipts. Those are context for a turn that is
-/// starting; this turn already has its context.
-///
-/// The row is written AFTER codex has said yes (review round 1), unlike the
-/// drain's, which precedes `turn/start`. Written before, a refusal had a row
-/// to delete and a crash between the write and the RPC left an orphan keyed
-/// by the entry id; written after, neither exists, and nothing is lost by
-/// the reordering: this function runs on the loop task, so codex's echo —
-/// `item/started`, then `item/completed`, both carrying `clientId` = the
-/// entry id — cannot be processed before it returns, and the upgrade through
-/// `transcript_projection_upgrade` finds the row exactly as the drain's echo
-/// finds its. A reader on another device sees the sentence when the 200's
-/// `harness.item.added` reaches them, one RPC later than before.
-///
-/// What a refusal means for the person: nothing was lost. The entry is in
-/// the queue — untouched for steps 1 and 2, at the head after step 5 — with
-/// the id and rev they read, and it goes with the next turn. `Restored` is
-/// what tells the OTHER clients: the entry was out of the queue for the
-/// length of the RPC, and one that read `/planner/run` inside that window
-/// would otherwise keep showing it as sent.
+/// The whole of `HarnessObservationCommand::Steer`: take the entry OUT of the queue before
+/// `turn/steer` is asked; on yes write its transcript row (AFTER codex said yes, unlike the
+/// drain) and remember it for the completion; otherwise put it back at the head and refuse.
 async fn handle_steer(
     inner: &Arc<Inner>,
     entry_id: &QueueEntryId,
     if_entry_rev: u32,
     actor: &ActorId,
 ) -> Result<SteerResult> {
-    // Read on this task. The phase leaves `TurnRunning` through the
-    // notification arm of the same `select!`, which cannot run while this
-    // function does; the one writer on another task is `issue_interrupt`
-    // (a person pressing Stop). A Stop landing between here and the RPC is
-    // answered by codex itself (`SteerRefused::NotTaken`); a Stop landing
-    // after codex accepted is what `SteeredEntry` exists for.
+    // Read on this task: the phase leaves `TurnRunning` through the notification arm of the same
+    // `select!`; a Stop landing after codex accepted is what `SteeredEntry` exists for.
     let running = inner.state.lock().await.clone();
     let phase = HarnessPhaseTag::from(&running);
     let turn_id = match running {
@@ -1720,9 +1308,7 @@ async fn handle_steer(
     rearm_debounce_after_departure(inner, &applied).await;
 
     let Some(thread_id) = inner.thread_id.read().await.clone() else {
-        // `TurnRunning` is only ever entered from a `turn/started` on this
-        // thread, so this is unreachable in practice; refusing rather than
-        // panicking keeps the entry.
+        // Unreachable in practice (`TurnRunning` is only entered from a `turn/started` on this thread).
         rebuffer_head(inner, vec![entry]).await;
         return Ok(Err(SteerRefused::NoRunningTurn { phase }));
     };
@@ -1755,13 +1341,8 @@ async fn handle_steer(
         .await;
     let error = match steered {
         Ok(taken_by) => {
-            // Codex has the sentence. The row that shows it on every screen
-            // is written now, and a failed write is logged rather than
-            // reported: the delivery has happened whatever this says, the
-            // echo will insert a row of its own if there is none to upgrade,
-            // and a 500 here would invite a retry of a delivery that already
-            // happened. `SteeredEntry::row_id` records the miss for the
-            // completion sweep.
+            // Codex has the sentence. A failed row write is logged rather than reported: the delivery has
+            // happened whatever this says, and a 500 would invite a retry of it.
             let row_id = match insert_projection_row(
                 inner,
                 &thread_id,
@@ -1791,13 +1372,8 @@ async fn handle_steer(
                     entry,
                     row_id,
                 });
-            // The queue without the entry is the truth to persist. A failed
-            // write here is logged and the steer still answers 200, for the
-            // reason above; the next successful snapshot (the turn's
-            // completion at the latest) writes the same queue. The window it
-            // leaves — a restart before that write re-drains the entry — is
-            // the same window the drain's own `persist_issuance_outcome`
-            // has, and is declared in the PR.
+            // The queue without the entry is the truth to persist; a failed write is logged and the steer
+            // still answers 200.
             if let Err(error) = persist_snapshot(inner).await {
                 tracing::error!(
                     worker_session_id = %inner.worker_session_id,
@@ -1829,9 +1405,6 @@ async fn handle_steer(
             if let Err(error) =
                 emit_queue_changed(inner, actor, entry_id, HarnessQueueChange::Steered).await
             {
-                // Same reasoning as the mutation path: the delivery has
-                // happened whatever this says, so it is surfaced operationally
-                // rather than reported as a failure that invites a retry.
                 tracing::error!(
                     worker_session_id = %inner.worker_session_id,
                     card_id = %inner.card_id,
@@ -1849,12 +1422,8 @@ async fn handle_steer(
         Err(error) => error,
     };
 
-    // Refused, unreachable, or timed out: the sentence goes back where it
-    // was. No row was written, so there is none to delete. The snapshot on
-    // disk never stopped listing the entry (it is persisted only once codex
-    // has said yes), so the persist here changes nothing durable and its
-    // failure is a warning, not a 500 over a queue that is already right in
-    // memory and on disk.
+    // Refused, unreachable, or timed out: the sentence goes back. No row was written and the
+    // on-disk snapshot never stopped listing the entry, so a persist failure is a warning.
     rebuffer_head(inner, vec![entry]).await;
     if let Err(persist_error) = persist_snapshot(inner).await {
         tracing::warn!(
@@ -1868,9 +1437,7 @@ async fn handle_steer(
     if let Err(event_error) =
         emit_queue_changed(inner, actor, entry_id, HarnessQueueChange::Restored).await
     {
-        // The entry IS back; a client that missed this refetches on the
-        // next event that touches the queue. Reporting failure would turn a
-        // typed "still queued" into an untyped 500 over the same queue.
+        // The entry IS back; reporting failure would turn a typed "still queued" into an untyped 500.
         tracing::error!(
             worker_session_id = %inner.worker_session_id,
             card_id = %inner.card_id,
@@ -1888,12 +1455,8 @@ async fn handle_steer(
         "planner harness could not steer the entry into the running turn; re-buffered it"
     );
     let phase = HarnessPhaseTag::from(&*inner.state.lock().await);
-    // `CodexRefused` is the one error shape in which codex is known to have
-    // seen the request and declined it (`codex_appserver::request_until`);
-    // every other error — timeout, connection closed before the reply, no
-    // client — leaves the outcome unknown, and is answered as such. A send
-    // that never left this process is folded into "unknown" too: an honest
-    // superset, at the price of one over-cautious sentence.
+    // `CodexRefused` is the one error shape in which codex is known to have seen the request;
+    // every other error leaves the outcome unknown.
     Ok(Err(match error {
         CalmError::CodexRefused(message) => SteerRefused::NotTaken { message, phase },
         other => SteerRefused::Unanswered {
@@ -1903,29 +1466,9 @@ async fn handle_steer(
     }))
 }
 
-/// #1625 P3 review round 1 — the `TurnCompleted` arm's sweep over
-/// `steered_into_running_turn`: every entry codex accepted into `turn_id`
-/// whose transcript row is still a projection (see [`SteeredEntry`]) was
-/// dropped by codex before it was recorded — the interrupt cleared its
-/// pending input — so the row is deleted and the entry goes back to the head
-/// of the queue, in steer order, with its id and one rev up
-/// (`QueueEntry::bump_rev_for_restore`, review round 2), and its return is
-/// announced (`Restored`, actor `Kernel`). Entries whose row was upgraded by
-/// the echo are delivered and are simply forgotten.
-///
-/// Called AFTER the arm's non-target and stale-completion gates (a completion
-/// the FSM ignores sweeps nothing) and BEFORE
-/// `persist_snapshot_stamping_issued_head`, so the `HarnessPhaseChanged`
-/// that persist emits — whose plan refetches both the queue and the
-/// transcript — already finds the rows gone and the queue refilled. The
-/// re-buffer arms `hard_fire`, so the restored entry drains into the next
-/// turn on the tick that follows, as any queued message does once a turn
-/// has ended.
-///
-/// Entries recorded under a different turn than the one completing cannot
-/// occur (a steer names the running turn, and the arm accepts completions
-/// for the running turn only); they are swept all the same rather than left
-/// to wait for a completion that will never come, and the mismatch is logged.
+/// `TurnCompleted` sweep: every steered entry whose transcript row is still a projection was
+/// dropped by codex before it was recorded, so the row is deleted and the entry goes back to
+/// the head one rev up. Runs after the arm's gates and BEFORE the phase persist.
 async fn restore_steered_entries_codex_dropped(
     inner: &Arc<Inner>,
     turn_id: &str,
@@ -2009,13 +1552,8 @@ async fn restore_steered_entries_codex_dropped(
         .iter()
         .filter_map(|entry| entry.id().cloned())
         .collect::<Vec<_>>();
-    // #1625 P3 review round 2 — one rev up before it goes back. The client
-    // whose steer answered 200 is hiding the entry; the page it reads after
-    // this restore lists the same id again, and without the bump that page
-    // is indistinguishable from the one it read before the steer — a client
-    // whose refetch lands only after the restore would hide the entry for
-    // good. The refused-steer restore in `handle_steer` does NOT bump, and
-    // `bump_rev_for_restore` says why.
+    // One rev up before it goes back, so the client hiding the entry can tell the restored page
+    // from the one it read before the steer.
     for entry in &mut restored {
         entry.bump_rev_for_restore();
     }
@@ -2044,10 +1582,8 @@ async fn announce_restored_entries(inner: &Arc<Inner>, ids: Vec<QueueEntryId>) {
     }
 }
 
-/// One `harness.queue.changed` row for `entry_id`, with `actor` as the
-/// event's own actor field (the websocket frame carries no envelope actor).
-/// The caller decides what a failure means: the queue change it announces
-/// has already happened by the time this is called, on every path.
+/// One `harness.queue.changed` row for `entry_id`. The change it announces has already
+/// happened by the time this is called.
 async fn emit_queue_changed(
     inner: &Arc<Inner>,
     actor: &ActorId,
@@ -2106,31 +1642,9 @@ async fn on_observation(inner: &Arc<Inner>, entry: QueueEntry) -> EnqueueOutcome
     outcome
 }
 
-/// KNOWN GAP (#1449): the harvest appends to the successor's queue without
-/// consulting `MAX_PENDING_QUEUE_LEN` — the constant is private to this module
-/// — and the cap is applied here afterwards, from the OLD end. The harvested
-/// human sentences are the oldest entries, so they are the ones dropped, and
-/// the source row is stamped and emptied by then: the only trace is the warn
-/// below. It needs a predecessor holding more than `MAX_PENDING_QUEUE_LEN`
-/// undelivered entries, and it became reachable when the transfer became a
-/// move.
-///
-/// #1505 PR2b — the warn is no longer the only trace. Returns the
-/// [`QueueEntryId`]s of the addressable user entries this discarded, so the
-/// caller can announce each one as `harness.queue.changed { change: dropped }`.
-/// The announcement is an audit row and the input a future frontend slice
-/// needs; it is NOT, today, something that stops a stale client placeholder,
-/// because nothing in either frontend tree reads the `dropped` variant — the
-/// event maps to query invalidation only (`fe/core/events/invalidation-plan.ts`).
-/// A browser holding the echo for a discarded entry still shows it after the
-/// entry leaves `pending`. Closing that needs a per-entry retirement channel
-/// into the router — a new effect in `fe/core/events`'s reducer and an arm in
-/// its adapter — and no slice is scheduled for it, so this is a live gap and
-/// not a handoff.
-///
-/// Only `User` entries are named. A `LegacyUser` has no id (so nothing can be
-/// said about it that a client could act on) and a `System` entry was never a
-/// person's message; both are still counted in the warn's arithmetic.
+/// The cap is applied here, from the OLD end, so harvested human sentences are the first
+/// dropped. Returns the ids of the addressable user entries discarded, so the caller can
+/// announce each as `dropped`; a `LegacyUser` has no id and a `System` entry is not a person's.
 fn truncate_snapshot_pending_queue(snapshot: &mut HarnessSnapshot) -> Vec<QueueEntryId> {
     let len = snapshot.pending_len();
     if len <= MAX_PENDING_QUEUE_LEN {
@@ -2153,53 +1667,11 @@ fn truncate_snapshot_pending_queue(snapshot: &mut HarnessSnapshot) -> Vec<QueueE
     dropped
 }
 
-/// #1505 PR2b — drain the `harness.queue.changed { change: dropped }` rows the
-/// load-time truncation still owes, and report a failure to the caller.
-///
-/// This is the announcement's whole guarantee, and it is a fail-closed one:
-/// `persist_snapshot_inner` calls it before every write and refuses the write
-/// if it returns `Err`, so a truncated queue reaches the row only after the
-/// record of what it discarded is already committed.
-///
-/// **The lock is held across the inserts, and that is what stops two flushers
-/// IN THIS PROCESS announcing the same id.** Two callers really do race: the
-/// run loop's early flush runs on the task spawned by `PlannerHarness::run`,
-/// while `planner_harness_start_adapter` calls `handle.persist_snapshot()` on
-/// its own task straight afterwards — and `persist_snapshot` yields at its
-/// first database await, which is when the spawned loop first gets polled, so
-/// this interleaves on a current-thread runtime too. Reading the head under
-/// the lock and then dropping it before the insert let both callers take the
-/// same id and announce it twice. The second caller now waits and finds the
-/// list empty.
-///
-/// **It is not a claim across boots, and one row per entry is not guaranteed
-/// there.** The list lives in memory. Give `[A, B, C]`: A's row commits and A
-/// leaves the list, B's insert fails, the write is refused, and the process
-/// restarts — boot 2 reads the still-untruncated `handle_state_json`, derives
-/// the same three ids, and nothing compares them against the rows already in
-/// `events`, so A is announced a second time. Aborting the run-loop task
-/// between the commit inside `log_pure_event` and the `retain` below has the
-/// same shape. Making it true across boots needs the announcement and the
-/// truncation to share a transaction, or the reader to dedupe on `entry_id`;
-/// neither is here.
-///
-/// Ids are removed one at a time, as each row commits, so a failure part-way
-/// through leaves exactly the un-announced remainder behind. That also makes
-/// the drain safe to abandon: `shutdown_inner` can abort the run-loop task
-/// mid-flush without turning the leftovers into a silent loss, because nothing
-/// can persist the truncation without draining them first.
-///
-/// A failure does not overwrite the untruncated row, so nothing is lost *by
-/// this write*. Whether those entries are ever read again depends on what
-/// becomes of the runtime: a boot that reaches this row re-truncates and
-/// retries, but a mint that fails here is compensated to `failed`, and neither
-/// the harvest (which reads `superseded` rows) nor `restore_old_runtime` reads
-/// a failed one — so entries that originated on this row, as opposed to ones
-/// recorded in the `harvested_from` journal, can still be stranded there.
+/// Drain the `dropped` rows the load-time truncation still owes. Fail-closed: `persist_snapshot_inner`
+/// refuses its write if this returns `Err`. The lock is held across the inserts so two flushers
+/// in this process cannot announce the same id; across boots one row per entry is NOT guaranteed.
 async fn flush_dropped_announcements(inner: &Arc<Inner>) -> Result<()> {
-    // One flusher at a time, for the whole drain. A `tokio::Mutex` because the
-    // guard is held across the `log_pure_event` await below — which is the
-    // point, not an oversight.
+    // One flusher at a time; a `tokio::Mutex` because the guard is held across the await.
     let mut outstanding = inner.unannounced_drops.lock().await;
     loop {
         let Some(entry_id) = outstanding.first().cloned() else {
@@ -2231,13 +1703,8 @@ async fn flush_dropped_announcements(inner: &Arc<Inner>) -> Result<()> {
 
 async fn enqueue_pending_observation(inner: &Arc<Inner>, entry: QueueEntry) -> EnqueueOutcome {
     let mut queue = inner.pending_queue.lock().await;
-    // #1667 D1 — one edit session is many saves. Adjacent, contiguous report
-    // edits of the same track fold on every enqueue (first `body_before`,
-    // newest `body`), so the planner reads ONE diff from the version it last
-    // knew to the newest body instead of one bounded diff per save. Only
-    // this shape folds early: user text keeps its own slot (ids,
-    // attachments, separate `User says:` blocks) until the cap below forces
-    // a fold.
+    // Adjacent, contiguous report edits of the same track fold on every enqueue, so the planner
+    // reads ONE diff; user text keeps its own slot until the cap forces a fold.
     if let FoldOutcome::Folded { entry_id } = try_fold_report_edit_tail(&mut queue, &entry) {
         return EnqueueOutcome::Accepted { entry_id };
     }
@@ -2249,10 +1716,8 @@ async fn enqueue_pending_observation(inner: &Arc<Inner>, entry: QueueEntry) -> E
             FoldOutcome::NotFolded => {}
         }
         let hard = entry.is_hard_fire();
-        // Eviction can only ever take a non-hard-fire entry, and every one of
-        // those is a `System` entry (`QueueEntry::User` / `LegacyUser` report
-        // hard-fire unconditionally). So neither fold nor eviction can destroy
-        // an id a client has already been shown.
+        // Eviction only ever takes a non-hard-fire entry, which is always a `System` entry, so
+        // neither fold nor eviction can destroy an id a client has been shown.
         if let Some(drop_idx) = queue.iter().position(|queued| !queued.is_hard_fire()) {
             queue.remove(drop_idx);
         } else {
@@ -2418,19 +1883,15 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                 };
                 *inner.interrupt_deadline.lock().await = None;
                 let _ = persist_turn_outcome(inner, &turn_id, &turn).await;
-                // The Stop path is the one that drops steered input (see
-                // `SteeredEntry`); the sweep runs before the phase persist so
-                // the phase event carries the restored queue.
+                // The Stop path is the one that drops steered input; the sweep runs before the phase persist.
                 let restored = restore_steered_entries_codex_dropped(inner, &turn_id).await;
                 persist_snapshot_stamping_issued_head(inner).await?;
                 announce_restored_entries(inner, restored).await;
                 return Ok(());
             }
             let state = inner.state.lock().await.clone();
-            // Codex sends systemError BEFORE the failed turn/completed. Keep
-            // the exact outcome even though the harness is now blocked. Only
-            // the explicit ID of our last turn qualifies; stale completions
-            // and missing IDs cannot settle another turn or unpause issuance.
+            // Codex sends systemError BEFORE the failed turn/completed. Only the explicit ID of our last
+            // turn qualifies; stale completions and missing IDs cannot settle another turn.
             if matches!(&state, HarnessState::Wedged { reason, .. } if reason == HARNESS_SYSTEM_ERROR_REASON)
                 && turn.get("id").and_then(Value::as_str) == fallback_turn_id.as_deref()
                 && fallback_turn_id.is_some()
@@ -2470,17 +1931,14 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
             };
             *inner.interrupt_deadline.lock().await = None;
             let _ = persist_turn_outcome(inner, &turn_id, &turn).await;
-            // A turn can end without a model request after the steer on
-            // this branch too (a model error, `max_turn_duration` when the
-            // interrupt was issued elsewhere); same sweep, same order.
+            // A turn can end without a model request after the steer on this branch too; same sweep.
             let restored = restore_steered_entries_codex_dropped(inner, &turn_id).await;
             persist_snapshot_stamping_issued_head(inner).await?;
             announce_restored_entries(inner, restored).await;
             return Ok(());
         }
-        // #1625 P1: the turn-outcome row is written only from `TurnCompleted`
-        // above — codex 0.153.4 has no `turn/aborted` notification; an
-        // interrupt arrives as `turn/completed` with `status: "interrupted"`.
+        // Codex has no `turn/aborted` notification; an interrupt arrives as `turn/completed` with
+        // `status: "interrupted"`.
         Notification::Other { method, params } if method == "turn/aborted" => {
             let Some(aborted_turn_id) = other_turn_id(&params).map(ToOwned::to_owned) else {
                 tracing::debug!("planner harness ignoring turn/aborted without a turn id");
@@ -2549,14 +2007,8 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                 .map(ToOwned::to_owned);
             let turn_id = item_turn_id(&params).map(ToOwned::to_owned);
             let params_json = serde_json::to_string(&params)?;
-            // Review round 2 — the one turn a PRE-P2 binary can have left in
-            // flight across the upgrade (`HarnessSnapshot::issued_input_segments`).
-            // Its drain wrote no projection row, so its echo takes the
-            // segments from the legacy slot, exactly as the pre-P2 echo arm
-            // did: matched by turn, attached to the row this arm inserts,
-            // and consumed by the completed echo. A turn issued by THIS
-            // binary never matches — its segments are on its projection row
-            // and the slot holds nothing of its own.
+            // The one turn an older binary can have left in flight: its drain wrote no projection row,
+            // so its echo takes the segments from the legacy slot.
             let legacy_segments_json = if is_user_message_type(item_type.as_deref()) {
                 let legacy = inner.legacy_issued_input_segments.lock().await;
                 legacy
@@ -2567,32 +2019,9 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
             } else {
                 None
             };
-            // #1625 P2 — a `userMessage` echo carrying `item.clientId` is
-            // codex handing back the id the drain sent as
-            // `clientUserMessageId`, and that id names the projection row the
-            // drain wrote before `turn/start` went out (`write_projection_row`).
-            // That row is the person's sentence, already on every screen; the
-            // echo upgrades it in place (turn, codex item id, verbatim params)
-            // and must never become a second copy of it. The `input_segments`
-            // column stays as the drain wrote it — it is the kernel's record
-            // of what was sent, which the echo cannot improve on.
-            //
-            // Codex announces the same item twice, `item/started` then
-            // `item/completed`, and only a completed `userMessage` renders
-            // (`fe/core/domain/conversation.ts` reads user messages from
-            // completed rows alone). The
-            // projection is already a completed row, so a started echo that
-            // names it is not stored at all: stored, it would stand beside
-            // the projection as a row the frontend pairs with nothing — the
-            // pairing key is `item_uuid`, and the projection's is the client
-            // id until the completed echo arrives — and a started row for a
-            // user message has never carried anything the completed one does
-            // not. An echo whose client id names no projection (the row was
-            // cleared under it, or codex invented one) is stored exactly as
-            // before this slice.
-            //
-            // Exactly ONE row renders per drained turn, before the echo and
-            // after it: that is the invariant this arm keeps.
+            // A `userMessage` echo carrying `item.clientId` names the projection row the drain wrote;
+            // the echo upgrades it in place and must never become a second copy. Only a completed
+            // `userMessage` renders, so a started echo naming a projection is not stored at all.
             let projection_client_id = if is_user_message_type(item_type.as_deref()) {
                 item.get("clientId")
                     .and_then(Value::as_str)
@@ -2668,31 +2097,10 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
             }
             emit_item_added(inner, item_db_id, item_uuid, item_type, turn_id, method).await?;
         }
-        // `turn/plan/updated` — codex's own TODO checklist for the running
-        // turn (`{ threadId, turnId, explanation, plan: [{ step, status }] }`,
-        // status spelled `pending` | `inProgress` | `completed` on the wire).
-        // Each notification carries the *whole* checklist and supersedes the
-        // previous one for that turn; we kept dropping it into the catch-all
-        // below, so the shape has never been observable from real data. This
-        // arm only persists it (#1255) — no UI reads it yet, deliberately:
-        // how often codex revises a plan inside one turn decides the UI shape,
-        // and only stored rows can answer that.
+        // `turn/plan/updated` — codex's whole TODO checklist for the running turn, superseding the
+        // previous one. Persisted only; no UI reads it yet.
         Notification::Other { method, params } if method == "turn/plan/updated" => {
-            // Structurally required, not defensive: `harness_items.thread_id`
-            // is NOT NULL, so there is no row to write without one.
-            //
-            // What this branch actually catches is narrow: a *malformed* plan,
-            // one carrying no `threadId` at all (upstream marks it required)
-            // while the harness has no thread either. It is NOT the early-turn
-            // case. A plan that does carry a `threadId` while `inner.thread_id`
-            // is still `None` never reaches this arm — `on_notification` opens
-            // by comparing `notif.thread_id()` (which for `Other` reads
-            // `params.threadId`) against `inner.thread_id` and returns at the
-            // top of this function. That prologue is the real silent-loss path
-            // for an early plan, and it logs nothing at all. #1255 leaves it
-            // alone on purpose: it is the shared prologue for every
-            // notification type, so instrumenting it is its own change. If plan
-            // loss ever needs to be observable, that is where to look.
+            // `harness_items.thread_id` is NOT NULL, so there is no row to write without one.
             let Some(thread_id) = inner.thread_id.read().await.clone() else {
                 tracing::warn!(
                     runtime_id = %inner.worker_session_id,
@@ -2703,10 +2111,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                 );
                 return persist_snapshot(inner).await;
             };
-            // `turnId` is top-level on a plan; `item_turn_id` already falls
-            // back to it — and, unlike `other_turn_id`, it also accepts the
-            // snake_case `turn_id` spelling, which is why it is the one used
-            // here (pinned by `turn_plan_updated_persists_rows_without_events`).
+            // `turnId` is top-level on a plan; `item_turn_id` falls back to it and accepts `turn_id` too.
             let turn_id = item_turn_id(&params).map(ToOwned::to_owned);
             let params_json = serde_json::to_string(&params)?;
             inner
@@ -2717,12 +2122,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     inner.track_id.as_str(),
                     &thread_id,
                     turn_id.as_deref(),
-                    // No `item_uuid`, and no `item_type`: a plan is not an item.
-                    // It has no id and no item type, and writing either would
-                    // state something untrue about the row. (It has no rendering
-                    // consequence either way — `harnessItemToActivity` needs an
-                    // `item/*` method *and* an `item` object in `params`, and a
-                    // plan frame has neither.)
+                    // No `item_uuid` and no `item_type`: a plan is not an item.
                     None,
                     None,
                     &method,
@@ -2730,98 +2130,20 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     None,
                 )
                 .await?;
-            // Deliberately NO `Event::HarnessItemAdded` for a plan row (#1255),
-            // and the absence is the contract, not an oversight:
-            //
-            // - Nothing reads plan rows. No UI renders them, so there is nothing
-            //   to invalidate. `harness.item.added` invalidates
-            //   `['harness-items', cardId]` (fe/core/events/invalidation-plan.ts),
-            //   which refetches a 300-row page — per plan frame, for data nobody
-            //   renders.
-            // - It is not free on the truth side either: `HarnessItemAdded` is
-            //   *not* in the skip list in `calm-truth/src/track_vcs/commit.rs`,
-            //   and `track_vcs/delta.rs` maps it to `add_card_runtime_paths`, so
-            //   every plan frame would append a track-vcs commit re-rendering
-            //   `cards/<id>/.payload.json` + `runtime.json`.
-            // - Skipping it is not a truth-spine violation: `harness_items` is
-            //   out-of-domain storage written directly, not event-sourced, so a
-            //   row without an event is a legal state here.
-            //
-            // The UI slice MUST revisit this and choose knowingly between
-            // (a) emitting `HarnessItemAdded` per plan update at the cost above,
-            // and (b) letting plan rows ride the refresh that real item rows
-            // already trigger.
-            //
-            // It will also need a way to *read* these rows: the transcript feed
-            // (`GET /api/cards/:id/harness/items`) now narrows to `item/*` in
-            // SQL, because its `limit` is the page budget of a reader that
-            // renders only those. Give plans a read path of their own; do not
-            // widen that query back to unfiltered
-            // (`RepoRead::harness_item_list_transcript_by_card` says the same
-            // where the filter lives).
+            // Deliberately NO `Event::HarnessItemAdded` for a plan row: nothing reads plan rows, and the
+            // event would append a track-vcs commit per plan frame. `harness_items` is out-of-domain
+            // storage, so a row without an event is legal here.
         }
-        // `thread/tokenUsage/updated` — how full the model's context is
-        // (#1255 S3). Pushed after every upstream response; wire shape and the
-        // `total` vs `last` trap are documented in `harness/token_usage.rs`,
-        // which is where the parse and the arithmetic live. The one-line
-        // version, because it is the mistake this arm exists to prevent:
-        // `tokenUsage.total` is a LIFETIME sum over every response in the
-        // thread and routinely exceeds the window; `tokenUsage.last` is the
-        // occupancy proxy.
-        //
-        // Storage is the runtime snapshot, not the transcript table. The reading is
-        // latest-wins — one value per runtime, superseded on every response —
-        // which is exactly what `worker_sessions.handle_state` already is:
-        // rewritten in place by `persist_snapshot_inner`, no event, no track-vcs
-        // commit. Appending a row per response instead would need either its
-        // own `Event` (a track-vcs commit plus a 300-row transcript refetch, per
-        // model response) or no event at all, in which case nothing would ever
-        // invalidate and no reader would see it. S2 appended to `harness_items`
-        // because it was gathering evidence for a UI it could not yet design;
-        // that reason does not transfer to a value whose whole content is
-        // "the current number".
-        //
-        // CROSS-THREAD GATE. `PlannerHarness::run` subscribes to the daemon's
-        // *global* notification broadcast, so every harness on this box sees
-        // every `thread/tokenUsage/updated` frame from every thread. The only
-        // thing keeping card A's meter from showing card B's context is
-        // `on_notification`'s prologue — `notif.thread_id() != current_thread`
-        // — and its failure mode is a plausible-looking wrong number, never an
-        // error. `token_usage_from_a_foreign_thread_is_ignored` in
-        // `tests/cases/planner_harness_token_usage.rs` is the test that holds it.
-        //
-        // One lenient edge, recorded because it is real and NOT worth building
-        // machinery for: `other_thread_id` returns `None` for a frame with no
-        // `threadId`, so a frame lacking the key compares equal to a harness
-        // whose `inner.thread_id` is still `None` (pre-`thread/started`) and
-        // would be ingested by an unrelated harness. `threadId` is REQUIRED in
-        // the generated schema (see `harness/token_usage.rs` for the command
-        // that prints it), so reaching this needs upstream protocol drift.
-        // Note it; do not guard it.
-        //
-        // Note the deliberate absence of a `persist_snapshot` call in this arm:
-        // the terminal `persist_snapshot(inner)` below runs for every
-        // notification and serialises the whole snapshot, this field included.
-        // Calling it here as well would write the same row twice per frame.
+        // `thread/tokenUsage/updated`: `tokenUsage.total` is a LIFETIME sum and routinely exceeds the
+        // window; `tokenUsage.last` is the occupancy proxy. Storage is the runtime snapshot (latest-wins).
+        // The prologue's thread-id check is the only thing keeping card A's meter from showing card B's.
         Notification::Other { method, params } if method == "thread/tokenUsage/updated" => {
             match TokenUsage::from_params(&params, crate::model::now_ms()) {
                 Some(incoming) => {
                     let mut slot = inner.token_usage.lock().await;
                     let merged = incoming.sticky_merge(slot.as_ref());
-                    // Logged at ingest rather than inside `TokenUsage::percent`
-                    // on purpose. `percent` is called once per `GET /planner/run`,
-                    // i.e. once per client poll, so warning there would emit
-                    // the same line forever for one bad frame. Here it fires
-                    // once per frame that is actually anomalous, and the frame
-                    // is still in hand to log against.
-                    //
-                    // This is not a formality: it is the alarm for our
-                    // occupancy proxy being wrong, and it is calibrated. In
-                    // 181_344 real usage frames on this box, `last` exceeded
-                    // the window in 4 (0.002%, one session) — so this line
-                    // firing is genuinely news, not noise. `percent` withholds
-                    // the percentage in that case (it does NOT clamp to 100% —
-                    // see its docs); this line is how anyone finds out.
+                    // Logged at ingest rather than in `TokenUsage::percent`, which runs once per client poll and
+                    // would emit the same line forever for one bad frame.
                     if merged.exceeds_window() {
                         tracing::warn!(
                             target: "planner.harness.token_usage",
@@ -2836,12 +2158,8 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     }
                     *slot = Some(merged);
                 }
-                // `last.totalTokens` is the only required part of the frame,
-                // and a frame without a usable one — absent, non-integer, or
-                // negative — yields no reading at all. Storing a zero would
-                // claim an empty context, which is a stronger and possibly
-                // false statement than "unknown"; the previous reading is left
-                // in place instead. See `TokenUsage::from_params`.
+                // A frame without a usable `last.totalTokens` yields no reading; storing a zero would claim
+                // an empty context, so the previous reading is left in place.
                 None => tracing::warn!(
                     target: "planner.harness.token_usage",
                     runtime_id = %inner.worker_session_id,
@@ -2878,21 +2196,14 @@ fn should_persist_item_method(method: &str) -> bool {
     matches!(method, "item/started" | "item/completed")
 }
 
-/// Both spellings, for the same reason `fe/core/domain/conversation.ts`
-/// accepts both: live codex sends `userMessage`; the kernel stores
-/// `item.type` verbatim and its own tests have used the snake case.
+/// Live codex sends `userMessage`; the kernel stores `item.type` verbatim and tests have used snake case.
 fn is_user_message_type(item_type: Option<&str>) -> bool {
     matches!(item_type, Some("userMessage" | "user_message"))
 }
 
-/// One transcript row for a codex `item/*` notification, exactly as this
-/// file inserted it before #1625 P2. `input_segments` is NULL here for
-/// every turn this binary issued: the segments of a batch live on the
-/// projection row the drain wrote, and an echo that reaches this insert is
-/// one no projection claims. The one exception is `legacy_segments_json`,
-/// the pre-P2 slot's segments for the turn the previous binary left in
-/// flight (`HarnessSnapshot::issued_input_segments`), which ride on the
-/// echo row the way they did before this slice.
+/// One transcript row for a codex `item/*` notification. `input_segments` is NULL for every
+/// turn this binary issued (they live on the projection row); `legacy_segments_json` is the
+/// exception for an older binary's in-flight turn.
 #[allow(clippy::too_many_arguments)]
 async fn insert_item_row(
     inner: &Arc<Inner>,
@@ -2954,44 +2265,9 @@ async fn emit_item_added(
     Ok(())
 }
 
-/// #1625 P2 (#1475) — the drained batch, written to the transcript BEFORE
-/// `turn/start` goes out.
-///
-/// Until this row exists the person's own sentence is readable from nowhere
-/// but the tab that sent it: the queue read (`GET /planner/run`) stops
-/// listing an entry the moment it drains, and the transcript used to gain a
-/// row only when codex echoed the turn back. Reload, or a second device, saw
-/// an empty thread beside a `Working` dot for as long as codex took — or for
-/// ever, when the turn never came back.
-///
-/// The row is a `userMessage` in the shape codex will echo (schema:
-/// `UserMessageThreadItem { id, clientId, type, content: [TextUserInput] }`),
-/// keyed so the echo can find it: `item_uuid` = `client_id`, which is what
-/// the drain sends codex as `clientUserMessageId` and codex sends back as
-/// `item.clientId`; `turn_id` NULL, because there is no turn yet; `method`
-/// `item/completed`, because that is the only method a user message renders
-/// under. `_projection: true` marks the params as kernel-written until the
-/// echo replaces them. `input_segments` carries the per-entry segments, with
-/// attachments — the column the transcript renders a user row from.
-///
-/// One row per drained turn, not per entry: the drain joins every entry into
-/// ONE `InputItem::Text` (#1505 GAP-A3), so codex echoes ONE `userMessage`
-/// per turn with ONE `clientId`. `client_id` is the key `maybe_issue_turn`
-/// decided for the batch (the first user entry's id on a first issuance);
-/// the other entries are readable through `input_segments`.
-///
-/// A projection with this key may already stand. The snapshot persisted at
-/// the top of `maybe_issue_turn` still lists the batch AND carries this key
-/// (`HarnessSnapshot::projection_client_id`), so a harness restarted between
-/// that write and `persist_issuance_outcome` drains the same entries again
-/// under the same key — the slot outranks the queue, so a sentence that
-/// arrived after the restart and before the re-drain does not re-key the
-/// batch (`state_from_snapshot`: an `IssuingTurn` phase comes back as
-/// `TurnCompleted`/`Resumed`, and the queue is intact); a failed
-/// `turn/start` whose delete failed leaves one too. Either way it is stale
-/// — this drain is the batch's current issuance — so it is replaced, not
-/// joined. That is also why the delete in the failure arm of
-/// `maybe_issue_turn` only warns when it fails.
+/// The drained batch, written to the transcript BEFORE `turn/start` goes out, in the shape
+/// codex will echo and keyed by `client_id` (= `clientUserMessageId`), `turn_id` NULL. One row
+/// per drained turn. A stale projection under the same key is replaced, not joined.
 async fn write_projection_row(
     inner: &Arc<Inner>,
     thread_id: &str,
@@ -2999,10 +2275,7 @@ async fn write_projection_row(
     segments: &[HarnessInputSegment],
 ) -> Result<i64> {
     let item_db_id = insert_projection_row(inner, thread_id, client_id, segments).await?;
-    // The existing per-row event, so every client refetches the transcript
-    // now rather than at the echo (`fe/core/events/invalidation-plan.ts`
-    // maps `harness.item.added` to `['harness-items', card_id]`). No new
-    // event kind, no change to the invalidation plan.
+    // The existing per-row event, so every client refetches the transcript now rather than at the echo.
     emit_item_added(
         inner,
         item_db_id,
@@ -3015,15 +2288,8 @@ async fn write_projection_row(
     Ok(item_db_id)
 }
 
-/// The row half of [`write_projection_row`], without the announcement.
-///
-/// #1625 P3 splits it out because a steer writes the same row at a different
-/// moment — once codex has taken the input (`handle_steer`), where the drain
-/// writes before `turn/start` — and announces it together with the
-/// departure rather than through this function. The drain announces
-/// immediately (`write_projection_row`), since its row stands until
-/// `turn/start` fails, and that failure has a phase change to carry the
-/// retraction.
+/// The row half of [`write_projection_row`], without the announcement; a steer writes the same
+/// row once codex has taken the input and announces it with the departure.
 async fn insert_projection_row(
     inner: &Arc<Inner>,
     thread_id: &str,
@@ -3043,9 +2309,8 @@ async fn insert_projection_row(
             "planner harness replaced a stale user-message projection"
         );
     }
-    // Without the diff block: that block is context the kernel prepends for
-    // codex, and no transcript reader wants it (both frontends strip it from
-    // the echo; here there is nothing to strip).
+    // Without the diff block: it is context the kernel prepends for codex, and no transcript
+    // reader wants it.
     let text = segments
         .iter()
         .map(|segment| segment.text.as_str())
@@ -3080,65 +2345,26 @@ async fn insert_projection_row(
     Ok(item_db_id)
 }
 
-/// 5s defensive cap on the track-vcs diff-block fetch inside `maybe_issue_turn`.
-/// The diff block is a context augmentation prepended to planner turn
-/// observations (#595 PR2); it is never a correctness requirement. If the
-/// underlying sqlite SELECT chain stalls (issue #639 — silent stuck-turn
-/// hypothesis), this ceiling converts an unobservable hang into a logged
-/// warn + a degraded-but-functional turn issuance.
+/// Defensive cap on the track-vcs diff-block fetch; the diff block is never a correctness
+/// requirement, so a stalled SELECT becomes a warn and a degraded turn.
 const SINCE_LAST_TURN_DIFF_TIMEOUT: Duration = Duration::from_secs(5);
 const TRANSCRIPT_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
 const SINCE_LAST_TURN_HEAD_FALLBACK_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// How long the two codex reads that a model resolution may need are allowed
-/// to take, together.
-///
-/// One budget for the pair, not one each, so the number below is the number a
-/// stalled daemon can add to a turn. It is generous next to
-/// `GET /api/models`'s eight seconds because nobody is watching a spinner
-/// here — the cost of elapsing is a refused turn the person then has to
-/// retry, which is worse than waiting a little longer for an answer.
-///
-/// Both reads only happen on the rare branch: a card that once had an
-/// explicit model or effort and has since been set back to "follow the
-/// default". A card that has never touched the picker resolves from its own
-/// payload and never reaches this constant.
+/// Budget for the two codex reads a model resolution may need, together. Generous because
+/// elapsing costs a refused turn the person then has to retry.
 const MODEL_RESOLUTION_BUDGET: Duration = Duration::from_secs(15);
 
-/// How long to leave a card alone after an attempt that could still succeed on
-/// its own — briefing read failure, codex unreachable, or `turn/start` refused.
-///
-/// See [`Inner::issuance_retry_after`]. Short enough that a codex restart costs
-/// the reader a pause rather than a stall, long enough that an outage does not
-/// turn the 50 ms tick into a write-transaction storm. Without it a
-/// re-buffered batch re-arms `hard_fire` and the next tick tries again 50 ms
-/// later, which is roughly twenty RPCs and forty persist writes a second for
-/// as long as the condition lasts.
+/// How long to leave a card alone after an attempt that could still succeed on its own; without
+/// it the re-buffered batch re-arms `hard_fire` and the next tick tries again 50 ms later.
 const TRANSIENT_RETRY_DELAY: Duration = Duration::from_secs(2);
 
-/// The same, for an attempt that CANNOT succeed until a person changes
-/// something.
-///
-/// Polling fast buys nothing here — no amount of waiting makes codex's config
-/// name a model — so the interval is long and the reader is told instead
-/// ([`Inner::issuance_block`]). It stays a poll rather than a full stop
-/// because the fix may arrive from outside this process, and because a harness
-/// that stops trying is the wedge whose absence of an exit was the last
-/// round's BLOCKER. `PUT /planner/model` clears the pause, so a person who
-/// acts on the message does not then wait out this interval.
+/// The same, for an attempt that CANNOT succeed until a person changes something. Still a poll
+/// rather than a full stop because the fix may arrive from outside this process.
 const NEEDS_A_CHOICE_RETRY_DELAY: Duration = Duration::from_secs(30);
 
-/// Read the card as it stands *now* and work out what the turn about to be
-/// issued must tell codex about the model.
-///
-/// Separate from [`resolve_model_selection`] only so the read and the rule sit
-/// together at the one call site that may perform them: this is the last
-/// moment before the frame is built, and reading any earlier is the staleness
-/// bug this function exists to prevent.
-///
-/// A card that has vanished between the top of `maybe_issue_turn` and here is
-/// an `Err`, not an empty selection: there is no conversation left to answer
-/// and no payload to answer it from.
+/// Read the card as it stands NOW — the last moment before the frame is built; reading any
+/// earlier is the staleness bug this exists to prevent. A vanished card is an `Err`.
 async fn resolve_model_selection_for_issue(
     inner: &Arc<Inner>,
 ) -> std::result::Result<TurnModelSelection, IssuanceRefusal> {
@@ -3149,10 +2375,8 @@ async fn resolve_model_selection_for_issue(
                 "could not re-read the card to resolve its model: {e}"
             )));
         }
-        // A card that is gone is not coming back, but there is also nobody
-        // left to tell — the conversation it belonged to is gone with it.
-        // Transient keeps the loop cheap without putting a message on a
-        // surface no one is looking at.
+        // A card that is gone has nobody left to tell; transient keeps the loop cheap without
+        // putting a message on a surface no one is looking at.
         Ok(None) => {
             return Err(IssuanceRefusal::retryable(
                 "the card this conversation belongs to no longer exists".into(),
@@ -3169,47 +2393,14 @@ struct IssuanceRefusal {
     kind: FailureKind,
     /// For the log. No advice, no audience.
     log: String,
-    /// For the reader. Used by every kind except [`FailureKind::Retryable`],
-    /// which supplies its own text on its own schedule — see `apply_refusal`
-    /// and [`Inner::issuance_block`].
-    ///
-    /// It said "only `NeedsAChoice`" until `Rejected` was added and read it
-    /// too, 145 lines below the sentence. Left empty for `Retryable`, whose
-    /// `apply_refusal` arm calls `transient_notice` instead and never looks at
-    /// this field — so nothing reads that emptiness and it carries no meaning.
+    /// For the reader. Used by every kind except [`FailureKind::Retryable`], which supplies its
+    /// own text via `transient_notice`.
     reader: String,
 }
 
-/// Classify a codex call that failed: codex ANSWERING with a refusal becomes
-/// `refused(log)`, and every other failure is retryable.
-///
-/// **Every codex call on the issuance path goes through this** — `config/read`,
-/// `model/list` and `turn/start`. It is written as a universal because it was
-/// briefly false: `CodexRefused` was minted so `turn/start` could stop
-/// promising delivery it could not make, and then only `turn/start` consulted
-/// it, so a refused `config/read` or `model/list` still produced "your message
-/// is still queued and will be sent when it answers" about a turn that could
-/// not go out. Routing all three here is what stops the next call site
-/// forgetting.
-///
-/// What each passes as `refused`:
-///
-/// | call | refused (`CodexRefused`) | could not ask |
-/// |---|---|---|
-/// | `config/read` | `NeedsAChoice`, naming the half that forced the read | `Retryable` |
-/// | `model/list` | `NeedsAChoice` — only the effort can want the catalog | `Retryable` |
-/// | `turn/start` | `Rejected` — no choice is KNOWN to remove the need | `Retryable` |
-///
-/// The first two are `NeedsAChoice` because a choice can genuinely remove the
-/// need for the read — but WHICH choice depends on why the read happened, so
-/// `config/read`'s sentence is derived from
-/// [`CardModelSelection::defaults_needed_for`] rather than fixed. An explicit
-/// model does NOT by itself skip `config/read`: the read is entered by a
-/// disjunction, and a card with an explicit model and an effort following the
-/// default still enters it.
-///
-/// Non-codex reads on this path (`card_get`, `track_get`) cannot be refused —
-/// they have no peer to refuse them — and are `Retryable` on any failure.
+/// Classify a codex call that failed: codex ANSWERING with a refusal becomes `refused(log)`,
+/// every other failure is retryable. Every codex call on the issuance path (`config/read`,
+/// `model/list`, `turn/start`) goes through this.
 fn classify_codex_failure(
     e: &CalmError,
     log: String,
@@ -3252,21 +2443,9 @@ impl IssuanceRefusal {
     }
 }
 
-/// Work out what this turn must tell codex about the model, from the card's
-/// payload plus — only where the payload cannot answer alone — codex's own
-/// effective config and catalog.
-///
-/// Returns `Err` when the answer cannot be established. The caller does not
-/// send the turn on that: see [`crate::planner_model`]'s header for why
-/// running under an unknown model is worse than not running.
-///
-/// The refusal carries BOTH a log line and, for the kinds a person has to act
-/// on, a sentence for the reader that reaches them as
-/// `GET /planner/run`'s `blocked_reason`. This doc previously said the reason
-/// was "a LOG line, not advice to a reader … there is nothing for anyone to be
-/// told to do" — written when every refusal was a silent retry, and left
-/// standing when `blocked_reason` was added, so it denied the existence of the
-/// field two commits of this PR are about.
+/// Work out what this turn must tell codex about the model, from the card's payload plus —
+/// only where the payload cannot answer alone — codex's own config and catalog. `Err` when the
+/// answer cannot be established; the turn is not sent under an unknown model.
 async fn resolve_model_selection(
     inner: &Arc<Inner>,
     payload: &Value,
@@ -3287,22 +2466,15 @@ async fn resolve_model_selection(
 
     let deadline = tokio::time::Instant::now() + MODEL_RESOLUTION_BUDGET;
     let cwd = installation_cwd(inner).await?;
-    // Codex not answering and codex answering "no model" are different facts
-    // and must not collapse into one. Only the first is worth waiting out, so
-    // the read's failure returns here rather than degrading to `None` and
-    // being mistaken for an answer further down.
+    // Codex not answering and codex answering "no model" are different facts; only the first
+    // is worth waiting out, so the read's failure returns here rather than degrading to `None`.
     let config = inner
         .daemon
         .config_read(Some(cwd.as_str()), deadline)
         .await
         .map_err(|e| {
-            // The sentence is DERIVED. This branch is entered by a disjunction
-            // — the model follows the default, or the effort does, or both —
-            // and a fixed string is right for at most one of them. It said
-            // "Pick a model explicitly" for a card whose model was already
-            // explicit and whose EFFORT followed the default: the reader
-            // re-picked what they already had, the disjunct stayed true, and
-            // the next tick refused identically.
+            // The sentence is DERIVED: this branch is entered by a disjunction (model, effort, or both
+            // follow the default) and a fixed string is right for at most one of them.
             let needed = card.defaults_needed_for();
             let reader = match (needed.subject(), needed.choice_to_make()) {
                 (Some(subject), Some(choice)) => format!(
@@ -3342,28 +2514,19 @@ async fn resolve_model_selection(
     resolve_turn_selection(&card, defaults.as_ref(), catalog_effort.as_deref()).map_err(unresolved)
 }
 
-/// Every refusal `resolve_turn_selection` can produce is one a person has to
-/// act on: it is only reached once codex has answered, so getting here means
-/// the answer did not name a model.
+/// Only reached once codex has answered, so the answer did not name a model — a person must act.
 fn unresolved(e: crate::planner_model::UnresolvedSelection) -> IssuanceRefusal {
     IssuanceRefusal::needs_a_choice(e.log_reason().to_string(), e.reason().to_string())
 }
 
-/// Record a refusal: how long before the next attempt, and what (if anything)
-/// the reader is told.
-///
-/// One place, because the arms that refuse must not drift into different
-/// answers for the same fact — they already had, once, when only one of them
-/// was paced.
+/// Record a refusal: how long before the next attempt, and what (if anything) the reader is told.
 async fn apply_refusal(inner: &Arc<Inner>, failure: &IssuanceRefusal) {
     let (delay, notice) = match failure.kind {
         // Nobody can act, and repeating may work. Silent while that is
         // plausibly still true; see `transient_notice`.
         FailureKind::Retryable => (TRANSIENT_RETRY_DELAY, transient_notice(inner).await),
-        // Codex saw the input and said no. Retried slowly rather than not at
-        // all — the person may change the model from another tab, and a
-        // harness that stops trying is the wedge with no exit — but the reader
-        // is told now, and told the truth: nothing is on its way.
+        // Codex saw the input and said no. Retried slowly rather than not at all (the person may
+        // change the model from another tab), but the reader is told now.
         FailureKind::Rejected => (NEEDS_A_CHOICE_RETRY_DELAY, Some(failure.reader.clone())),
         FailureKind::NeedsAChoice => (NEEDS_A_CHOICE_RETRY_DELAY, Some(failure.reader.clone())),
     };
@@ -3371,26 +2534,9 @@ async fn apply_refusal(inner: &Arc<Inner>, failure: &IssuanceRefusal) {
     *inner.issuance_block.lock().await = notice;
 }
 
-/// What to tell the reader about a run of RETRYABLE refusals — nothing at
-/// first, and then that the conversation is waiting.
-///
-/// Only this arm is silent at first. A refusal codex actually answered, and a
-/// selection nobody can determine, are said immediately: neither gets better
-/// by itself, so there is no brief window in which saying nothing is honest.
-///
-/// Silence is right for a codex restart: it lasts seconds, nobody can act on
-/// it, and a notice for it would train the reader to ignore the field. Silence
-/// stops being right when it stops being brief. Past
-/// [`HarnessConfig::transient_silence_budget`] a message that has gone nowhere
-/// for that long is indistinguishable, from the reader's side, from one that
-/// will never go anywhere — so the conversation says it is waiting.
-///
-/// Pacing the retry bounded its RATE; this bounds its SILENCE. The two are
-/// different guarantees, and the first was mistaken for the second.
-///
-/// It names no action, because there is none to name; it exists so that
-/// "queued" stops being the only thing on screen. The retry continues
-/// underneath, so the notice clears itself the moment codex answers.
+/// What to tell the reader about a run of RETRYABLE refusals — nothing at first (a codex
+/// restart lasts seconds), then past `transient_silence_budget` that the conversation is waiting.
+/// Pacing bounded the retry's RATE; this bounds its SILENCE.
 async fn transient_notice(inner: &Arc<Inner>) -> Option<String> {
     let now = Instant::now();
     let began = {
@@ -3404,26 +2550,9 @@ async fn transient_notice(inner: &Arc<Inner>) -> Option<String> {
     })
 }
 
-/// #1505 S4 review r4 — park between the card read and the track read, so a
-/// test can order "the track is deleted" strictly between them.
-///
-/// The window is real and is NOT forbidden by the schema, which is the
-/// argument an earlier round got backwards. `cards` holds a foreign key to
-/// `tracks`, so "card row present, track row absent" cannot exist at any
-/// single database INSTANT — but this path reads at two instants with an
-/// `.await` between them, and the foreign key says nothing about that. The
-/// card read succeeds, `track_delete_tx` commits and takes the card with it,
-/// and the track read then answers `Ok(None)` to a harness whose
-/// `inner.track_id` names a track that is gone. The earlier claim that the
-/// card-existence check "has already returned" by then was backwards: its
-/// having returned IS the window.
-///
-/// The general form, because it will recur: a foreign key is an invariant over
-/// one transaction, never over a read-then-read across an await.
-///
-/// Same convention as [`PlannerHarnessDrainRaceHook`]: the struct, the
-/// registry and the wait are `fixtures`-only, and in a release build the call
-/// site collapses to `let _ = worker_session_id;`.
+/// Fixtures-only: park between the card read and the track read, so a test can order "the
+/// track is deleted" between them. The window is real: a foreign key is an invariant over one
+/// transaction, never over a read-then-read across an await.
 #[cfg(feature = "fixtures")]
 #[derive(Clone)]
 pub struct PlannerHarnessCwdRaceHook {
@@ -3466,34 +2595,17 @@ async fn wait_at_planner_harness_cwd_race_hook(worker_session_id: &str) {
     let _ = worker_session_id;
 }
 
-/// The workspace whose config layers apply to this conversation's thread.
-///
-/// It must be the path `thread/start` was given, or `config/read` folds in a
-/// different set of project layers and answers a question we did not ask.
-///
-/// A track that cannot be read is therefore an `Err`, not a `None`. It used to
-/// be a `None`, which `config_read` accepts by reading only the layers that
-/// apply everywhere — a global answer handed back as this card's. That
-/// sentence survived the fix that removed the behaviour and sat here
-/// describing it as current; it is spelled out in the past tense now because
-/// re-reading it as an instruction is how the bug comes back.
+/// The workspace whose config layers apply to this thread. It must be the path `thread/start`
+/// was given, or `config/read` answers a question we did not ask; an unreadable track is an
+/// `Err`, not a `None`.
 async fn installation_cwd(inner: &Arc<Inner>) -> std::result::Result<String, IssuanceRefusal> {
     // Deterministic card-read-then-track-read window. No-op in production.
     wait_at_planner_harness_cwd_race_hook(inner.worker_session_id.as_str()).await;
     match inner.repo.track_get(inner.track_id.as_str()).await {
         Ok(Some(track)) => Ok(track.workspace.path),
-        // Both of these used to return `None`, which `config_read` accepts and
-        // answers WITHOUT the project layers — a global answer handed back as
-        // if it were this card's. That is the same collapse as the one below:
-        // "there is no workspace" and "we could not read the workspace" are
-        // different facts, and neither of them means "read the global layers
-        // instead". A card whose track cannot be read is retried, not answered
-        // from the wrong scope.
-        //
-        // `Ok(None)` is REACHABLE, and an earlier round of this PR argued
-        // the opposite from a foreign key. See this function's header: the FK
-        // constrains one transaction, this path reads at two instants, and a
-        // `track_delete_tx` committing between them produces exactly this.
+        // "There is no workspace" and "we could not read the workspace" are different facts, and
+        // neither means "read the global layers instead". `Ok(None)` IS reachable: a
+        // `track_delete_tx` can commit between the card read and this one.
         Ok(None) => Err(IssuanceRefusal::retryable(format!(
             "track {} is not readable, so this conversation's config scope is unknown",
             inner.track_id
@@ -3504,20 +2616,8 @@ async fn installation_cwd(inner: &Arc<Inner>) -> std::result::Result<String, Iss
     }
 }
 
-/// Codex's own preset effort for the model that will actually run.
-///
-/// `UnresolvedSelection::Effort` is the alternative, so this is the last thing
-/// standing between "the person set an effort once and has since chosen the
-/// default" and a stalled conversation. It is codex's number, never one we
-/// picked.
-///
-/// **`Ok(None)` means the catalog genuinely has no answer; a read that failed
-/// is an `Err`.** Collapsing the two into one `None` is what let a `model/list`
-/// timeout be reported to the reader as "Pick a reasoning effort to start it
-/// again" — advice for a hiccup that would have cleared itself, and a retry
-/// interval fifteen times longer than the one it deserved. `config/read` had
-/// the same collapse one call above and was fixed alone; this is the rest of
-/// the class.
+/// Codex's own preset effort for the model that will actually run. `Ok(None)` means the
+/// catalog genuinely has no answer; a read that failed is an `Err`.
 async fn catalog_default_effort(
     inner: &Arc<Inner>,
     card: &CardModelSelection,
@@ -3534,9 +2634,7 @@ async fn catalog_default_effort(
             .into_iter()
             .find(|m| m.model == slug)
             .map(|m| m.default_reasoning_effort)),
-        // Only the effort can want the catalog (`needs_catalog`), so unlike
-        // `config/read` this one has a single reason and a fixed sentence is
-        // honest.
+        // Only the effort can want the catalog, so a fixed sentence is honest here.
         Err(e) => Err(classify_codex_failure(
             &e,
             format!("model/list failed while resolving this conversation's default effort: {e}"),
@@ -3553,10 +2651,8 @@ async fn catalog_default_effort(
     }
 }
 
-/// Consume only successful bookkeeping for a Done Track. Both live delivery
-/// and persisted replay reach this boundary. The event log and already accepted
-/// push watermark stay intact; failures, user intent and other observations
-/// retain their queue order and normal delivery semantics.
+/// Consume only successful bookkeeping for a Done Track; the event log and accepted push
+/// watermark stay intact, other observations keep their queue order.
 async fn consume_completed_worktree_commits(inner: &Arc<Inner>) -> Result<()> {
     let is_commit = |entry: &QueueEntry| {
         matches!(entry, QueueEntry::System {
@@ -3600,10 +2696,7 @@ async fn consume_completed_worktree_commits(inner: &Arc<Inner>) -> Result<()> {
     Ok(())
 }
 
-/// #1667 D2 — true iff the queue is non-empty and EVERY entry is a
-/// `ReportEdited` observation. A single user message, task receipt or any
-/// other observation in the queue makes this false, and the ordinary
-/// debounce pair applies to the whole batch.
+/// True iff the queue is non-empty and EVERY entry is a `ReportEdited` observation.
 fn queue_is_only_report_edits(queue: &VecDeque<QueueEntry>) -> bool {
     !queue.is_empty()
         && queue.iter().all(|entry| {
@@ -3617,15 +2710,8 @@ fn queue_is_only_report_edits(queue: &VecDeque<QueueEntry>) -> bool {
         })
 }
 
-/// #1667 round-2 F3 / round-4 M3 — true iff the queue is non-empty and
-/// EVERY entry is a `ReportEdited` observation that carries its
-/// `body_before`, i.e. every entry renders a block-level diff and the
-/// since-last-turn unified patch may be omitted as the same change told
-/// twice. A pre-#1667 entry (`body_before: None`, a queue persisted before
-/// the upgrade) renders the old re-read sentence and no diff, so for it
-/// the unified patch is the only place its edit is visible: such a batch
-/// is still a quiet turn (`queue_is_only_report_edits`) but keeps the
-/// patch.
+/// True iff the queue is non-empty and EVERY entry is a `ReportEdited` carrying its
+/// `body_before`, so the since-last-turn unified patch may be omitted as the same change told twice.
 fn queue_report_edits_all_carry_diffs(queue: &VecDeque<QueueEntry>) -> bool {
     !queue.is_empty()
         && queue.iter().all(|entry| {
@@ -3642,33 +2728,17 @@ fn queue_report_edits_all_carry_diffs(queue: &VecDeque<QueueEntry>) -> bool {
         })
 }
 
-/// #1678 A1 — the turn's type and its one channel to the user, in the
-/// input itself: the rule at the moment the planner decides.
-///
-/// A statement about the BATCH, not about any one edit (#1678 review
-/// round 1): the front end folds a turn away only when every segment is a
-/// report edit (`fe/core/domain/conversation.ts`, the same predicate as
-/// `queue_is_only_report_edits`), so a user message drained together
-/// with an edit opens an ordinary turn — and per-observation text saying
-/// "end silently" there would tell the planner to swallow the user's
-/// request. Hence it is appended once, at the end of the batch, by
-/// [`append_report_edit_batch_channel_line`], and only when
-/// [`queue_report_edits_all_carry_diffs`] holds.
+/// The turn's channel statement, appended once at the end of the batch (a user message drained
+/// with an edit opens an ordinary turn, so per-observation text would tell the planner to
+/// swallow the request) and only when `queue_report_edits_all_carry_diffs` holds.
 const REPORT_EDIT_BATCH_CHANNEL_LINE: &str = "This is a background sync turn: \
     an ordinary reply here is folded away by the front end. \
     Call calm.user.notify only for a conflict with work still in flight, \
     data you cannot parse, or a decision only the user can make; \
     otherwise end the turn silently.\n";
 
-/// Close a batch that is nothing but report edits (each with its diff)
-/// with [`REPORT_EDIT_BATCH_CHANNEL_LINE`], on the last segment so the
-/// line reads after the last diff and travels with the projection row the
-/// fold shows. The caller decides `all_report_edits_with_diffs` from the
-/// same flag that omits the unified patch, so "the patch is omitted" and
-/// "the channel line is present" are one fact about the batch, not two:
-/// a mixed batch (`[User, ReportEdited]`, a task receipt beside an edit)
-/// and a batch holding a pre-#1667 entry (`body_before: None`, which
-/// renders no diff) get neither.
+/// Close a batch that is nothing but report edits (each with its diff) with the channel line on
+/// the last segment; "the patch is omitted" and "the channel line is present" are one fact.
 fn append_report_edit_batch_channel_line(
     segments: &mut [HarnessInputSegment],
     all_report_edits_with_diffs: bool,
@@ -3686,8 +2756,7 @@ fn append_report_edit_batch_channel_line(
 }
 
 async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
-    // Issue #682 review — dev-forced harnesses run against the replay
-    // binary's stub app-server; see `PlannerHarness::pause_issuance_for_dev`.
+    // Dev-forced harnesses run against the replay binary's stub app-server.
     if inner.issuance_paused.load(Ordering::SeqCst) {
         return Ok(());
     }
@@ -3704,9 +2773,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     if queue_len == 0 {
         return Ok(());
     }
-    // #1505 S4 review — see `Inner::model_resolution_retry_after`. Checked
-    // here, before any of the work below, because the point is to skip that
-    // work and not merely to skip the codex call at the end of it.
+    // Checked before any of the work below, because the point is to skip that work.
     if let Some(retry_after) = *inner.issuance_retry_after.lock().await
         && Instant::now() < retry_after
     {
@@ -3720,9 +2787,6 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             debounce.last_pending_at,
         )
     };
-    // No state snapshot here: the gating-reason logs below already cover the
-    // state-blocked case, and the happy path logs the state implicitly through
-    // the "calling daemon.turn_start" → "daemon.turn_start ok" pair.
     tracing::debug!(
         target: "calm_server::planner_harness_issue",
         runtime_id = %inner.worker_session_id,
@@ -3734,10 +2798,8 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     );
 
     let now = Instant::now();
-    // #1667 D2 — a queue that is nothing but report edits waits for the
-    // editor to go quiet (one wake per edit, not per save); any other
-    // soft entry keeps the ordinary pair. `hard_fire` is checked first
-    // and wins outright, so this only ever lengthens a wait.
+    // A queue that is nothing but report edits waits for the editor to go quiet; `hard_fire` is
+    // checked first and wins outright, so this only ever lengthens a wait.
     let (min_idle, max_wait) = if only_report_edits {
         (
             inner.config.report_edit_min_idle,
@@ -3806,30 +2868,9 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             return Ok(());
         }
     }
-    // #1449 — the DURABLE half of "may I still speak for this card", and it is
-    // not redundant with the `shutting_down` flag consulted further down.
-    //
-    // `shutting_down` is process memory, set by `PlannerHarness::shutdown`. A
-    // runtime can be retired in the DATABASE with its run loop perfectly
-    // healthy and unaware: `prepare_tx` supersedes the card's live predecessor
-    // and takes its pending queue, and nothing stops the predecessor's handle
-    // until a later step of the same operation tears it down. In that window
-    // the predecessor would issue a turn for a queue its successor is also
-    // carrying.
-    //
-    // Placed HERE, above the work, rather than beside the drain: below this
-    // point every tick pays a card/role lookup, a track-level transcript WRITE
-    // transaction and a diff. A runtime refused at the drain kept paying all
-    // of that, every 50ms, for as long as it lived. Above it, a refused
-    // runtime pays one indexed read by id per tick and nothing else.
-    //
-    // The refusal declines to issue and returns; it does NOT wind the handle
-    // down. A handle that stopped would still be registered, and
-    // `ensure_live_planner_harness` does not health-check a registered handle,
-    // so a predecessor a failed mint later restored would answer `Conflict` on
-    // every send with no way back but `/planner/reset`. Stopping also raced
-    // the durable-observation path, which reads `shutting_down` under a lock
-    // this had no reason to hold.
+    // The DURABLE half of "may I still speak for this card": a runtime can be retired in the
+    // DATABASE with its run loop healthy and unaware. Placed above the work so a refused runtime
+    // pays one indexed read per tick. The refusal does NOT wind the handle down.
     if !runtime_is_still_the_live_carrier(inner).await? {
         tracing::debug!(
             target: "calm_server::planner_harness_issue",
@@ -3840,84 +2881,13 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         );
         return Ok(());
     }
-    // Two independent per-turn decisions that used to ride on one boolean
-    // (#1189 review A6). Splitting them is the whole point:
-    //
-    // * `skip_transcript_refresh` — skip the track-level
-    //   `snapshot_transcripts_for_cards_in_track` WRITE transaction below.
-    // * `skip_track_diff` — issue the turn with no "track state changes since
-    //   your last turn" block at all.
-    //
-    // An area chat skips both: it lives alone on a hidden scaffolding track, so
-    // there is nothing to snapshot and nothing to diff.
-    //
-    // A track assistant skips only the first, and the asymmetry is deliberate.
-    //   - Skipping the WRITE: the refresh commits a track-scoped track-vcs
-    //     commit before every turn, and #1189's premise is N conversations on
-    //     one track, so keeping it would multiply that write by N and make every
-    //     assistant turn contend for the same sqlite write lock as the planner
-    //     harness's own per-turn refresh.
-    //
-    //     This is a REAL, BOUNDED degradation — not "nothing is lost" — and the
-    //     boundary is written out here because widening the skip is only safe
-    //     inside it:
-    //       * `cards/<id>/events.json` and `cards/<id>/conversation.md` are
-    //         dirtied by exactly two places in the tree, both via
-    //         `track_vcs::delta::add_card_event_paths`: `add_card_paths`
-    //         (reachable only from `CardAdded` / `CardUpdated`, i.e. card
-    //         creation) and `snapshot_transcripts_for_cards_in_track` — this
-    //         very refresh. The ordinary event-driven commit path does NOT keep
-    //         them current: `HarnessItemAdded` / `HarnessPhaseChanged` /
-    //         `HarnessTranscriptCleared` / `HarnessUserMessageEnqueued` dirty
-    //         only `.payload.json` + `runtime.json`, and `CodexHook` /
-    //         `ClaudeHook` produce an EMPTY delta (`track_vcs/delta.rs`).
-    //         `planner_harness_track_vcs.rs::
-    //         since_last_turn_override_fences_post_refresh_hook_commit` pins
-    //         that fact directly: a post-refresh hook commit advances HEAD and
-    //         still does not contain its own transcript.
-    //       * So on this track the freshness of BOTH transcript paths is
-    //         maintained solely by the planner harness's own per-turn refresh. The
-    //         event-driven path still keeps `report.md`, `runs/*`,
-    //         `cards/<id>/.payload.json`, `cards/<id>/runtime.json` and newly
-    //         added cards current; the skip degrades transcripts and nothing
-    //         else.
-    //
-    //     Why that degradation is acceptable for THIS role and only this role:
-    //     an assistant cannot read those paths at all. `track_file` (ls/cat) and
-    //     `track_history` are `require_role_any([Planner, Worker])`, so an
-    //     Assistant card is rejected by role; its track-fs surface is
-    //     `track_report*` (`[Planner, Assistant]`), and `report.md` IS kept fresh by
-    //     the event-driven path. The collaboration channel this design gives the
-    //     assistant is the report block, not the transcript.
-    //
-    //     Consequences for whoever touches this next: (a) do NOT extend the skip
-    //     to Planner or Worker cards — they can `track_file cat`
-    //     `conversation.md`/`events.json` and would read a stale HEAD; (b) if
-    //     the planner harness of this track ever stops refreshing per turn, these
-    //     two paths have no writer left and go stale for everyone. The root fix
-    //     is to make the hook / harness-item event transactions dirty the
-    //     transcript paths too; that changes `track_vcs` delta semantics for all
-    //     cards and is deliberately out of scope here.
-    //   - Keeping the DIFF: this is what the assistant must not lose. It is the
-    //     track's report patch plus the paths that changed since this
-    //     conversation's last turn — for a card whose entire job is answering
-    //     questions about the track and editing its report, that block is the
-    //     context, not decoration. `since_last_turn_block` with no
-    //     `current_override` simply reads the track's current head, so dropping
-    //     the refresh costs at most the freshness a concurrent refresh would
-    //     have added, never the block itself.
-    //
-    // #1505 S4-3's card-existence check rides on this same read. The model
-    // SELECTION deliberately does not: it is read again, much later, at the
-    // moment the batch is handed to codex — see `resolve_model_selection`'s
-    // call site for why this row is too old to decide it.
+    // Two independent per-turn decisions: `skip_transcript_refresh` skips the track-level WRITE
+    // transaction; `skip_track_diff` issues with no since-last-turn block. An area chat skips both;
+    // a track assistant skips only the refresh (it cannot read transcripts; the diff IS its context).
+    // Do NOT extend the refresh skip to Planner or Worker cards — they would read a stale HEAD.
     let Some(card) = inner.repo.card_get(inner.card_id.as_str()).await? else {
-        // #1505 S4-3 narrows the old `(false, false)` here. A card that is
-        // gone has no model selection to resolve and no conversation left to
-        // answer, so issuing a turn for it spends a model call on nobody. The
-        // queue is not drained and the state is not touched: a card that
-        // reappears (a racing delete-then-restore, a read against a replica
-        // mid-write) issues on the next tick exactly as before.
+        // A card that is gone has no conversation left to answer. The queue is not drained and the
+        // state is not touched, so a card that reappears issues on the next tick.
         tracing::warn!(
             target: "calm_server::planner_harness_issue",
             worker_session_id = %inner.worker_session_id,
@@ -3971,14 +2941,8 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         refresh_head = ?refresh_head.as_deref(),
         "fetching since-last-turn diff"
     );
-    // #1667 round-2 F3 — a batch that is nothing but report edits, each
-    // carrying its diff, issues a turn whose input IS the block-level diff
-    // of those edits; the since-last-turn block then names `report.md` but
-    // does not repeat the change as a unified patch. Round-4 M3 — a
-    // pre-#1667 entry in the batch renders no diff, so the patch stays
-    // (`queue_report_edits_all_carry_diffs`). The flag was read with the
-    // queue at the top of this function and the queue does not change
-    // between there and the drain below (see `client_id`).
+    // A batch of report edits each carrying its diff issues a turn whose input IS the diff, so the
+    // since-last-turn block omits the unified patch; a pre-diff entry keeps it.
     let report_patch = if report_edits_carry_diffs {
         track_vcs::ReportPatch::Omit
     } else {
@@ -3989,20 +2953,14 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     } else {
         diff_with_timeout(inner, refresh_head.as_ref(), report_patch).await
     };
-    // Deterministic drain-vs-supersede window for #1449. No-op in production.
+    // Deterministic drain-vs-supersede window. No-op in production.
     wait_at_planner_harness_drain_race_hook(&inner.worker_session_id).await;
     let _issuance_guard = inner.issuance.lock().await;
     if inner.shutting_down.load(Ordering::SeqCst) {
         return Ok(());
     }
-    // #1449 — asked a SECOND time, here, and the two are not redundant.
-    //
-    // The check above runs before the transcript refresh and the diff so a
-    // retired runtime does not pay for them; but that leaves the
-    // whole of that work between the answer and the queue being taken, and a
-    // fence landing inside that gap is exactly the case this is about. This
-    // one is immediately before the drain and costs one indexed read per turn
-    // actually being issued.
+    // Asked a SECOND time, immediately before the drain: a fence landing during the refresh and
+    // diff above is exactly the case this is about.
     if !runtime_is_still_the_live_carrier(inner).await? {
         tracing::debug!(
             target: "calm_server::planner_harness_issue",
@@ -4063,43 +3021,11 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     };
     *inner.issued_turn_id.lock().await = None;
     *inner.issued_turn_head.lock().await = None;
-    // A new batch supersedes the pre-P2 slot, as it did before this slice: a
-    // turn can only be issued once the previous one completed, and by then
-    // that turn's echo has either consumed the slot or is not coming.
+    // A new batch supersedes the legacy slot: by now that turn's echo has either consumed the slot
+    // or is not coming.
     *inner.legacy_issued_input_segments.lock().await = None;
-    // #1625 P2 — the key shared by the projection row and `turn/start`'s
-    // `clientUserMessageId`, decided HERE so that the snapshot written next
-    // carries it: a harness restarted between that write and
-    // `persist_issuance_outcome` re-drains the same batch (the queue is
-    // intact in that snapshot) and must project it under the SAME key, or
-    // the stale-row replacement in `write_projection_row` matches nothing and
-    // the batch stands on the transcript twice.
-    //
-    // In order: the key an earlier issuance of this batch already used — the
-    // slot survives a re-buffer and a restart precisely so the batch is not
-    // re-keyed; else the first entry that has an id — a person's sentence
-    // keeps its own id as the row's `item_uuid`, which the queue already
-    // persists; else a fresh mint, for a batch of system entries alone (a
-    // commit notification, a task result) on its first issuance. Read from
-    // the queue rather than from `drained` because the queue does not change
-    // between here and the drain below: every enqueue and every re-buffer
-    // runs on this task.
-    //
-    // The slot outranks the queue (review round 2). The slot is `Some` only
-    // from a drain's key decision until that batch's issuance outcome clears
-    // it, and the batch stays at the head of the queue for that whole span
-    // (each failure exit past this point re-buffers what it drained), so a
-    // set slot always names the batch about to be drained, and the row its
-    // predecessor may have written under it.
-    // The queue can have GROWN by then: a sentence enqueued after a restart
-    // and before this re-drain sits behind the recovered batch, and keying
-    // by that sentence's id would leave the predecessor's row standing
-    // beside the new one, because `write_projection_row` replaces under one
-    // key only. What the recovered key names is the batch, not any entry
-    // still in it: a person who deletes the sentence a re-buffered key came
-    // from leaves the next drain keyed by an id no entry carries, which is
-    // an identity and nothing more (no row stands under it — the failure
-    // arm below deleted it).
+    // The key shared by the projection row and `turn/start`'s `clientUserMessageId`, decided HERE
+    // so the snapshot written next carries it and a restart re-drains the batch under the SAME key.
     let client_id = {
         let from_queue = inner
             .pending_queue
@@ -4130,12 +3056,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         return Ok(());
     }
     *inner.debounce.lock().await = DebounceState::default();
-    // #1505 S6 — segments are built from the ENTRIES, not from observations.
-    // An `Observation` cannot carry an attachment; the queue entry can, and
-    // the bind put them there. `input_segments_for_entries` still delegates
-    // the presentation and the rendered text to
-    // `Observation::input_segments_for`, so this is not a second copy of that
-    // table.
+    // Segments are built from the ENTRIES, not observations: an `Observation` cannot carry an attachment.
     let prepared = async {
         let semantic = match inner.thread_id.read().await.clone() {
             Some(thread) => {
@@ -4192,10 +3113,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     };
 
     let mut prepared = prepared;
-    // #1678 A1 — the channel statement is the batch's, appended once here
-    // rather than rendered per observation; same flag as `report_patch`
-    // above, so a batch tells the planner "end silently" exactly when the
-    // front end will fold its reply (see the constant's doc).
+    // The channel statement is the batch's, appended once here; same flag as `report_patch`.
     append_report_edit_batch_channel_line(&mut prepared.segments, report_edits_carry_diffs);
     let joined_observation_text = prepared
         .segments
@@ -4222,43 +3140,15 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         "calling daemon.turn_start"
     );
 
-    // ── The model is resolved HERE, and the lateness is the whole point ────
-    //
-    // #1505 S4 review. This used to run off the `card_get` near the top of
-    // this function, which is up to twenty-five seconds older than this line:
-    // a transcript-refresh write transaction (bounded by
-    // `TRANSCRIPT_REFRESH_TIMEOUT`, contending the single sqlite writer) and a
-    // since-last-turn diff both sit in between. A person who changed the model
-    // inside that window got a 200, saw the pill update, and then watched the
-    // turn run under the model they had just replaced — with nothing on screen
-    // saying so. Reading the row again here costs one primary-key lookup per
-    // issued turn and closes it.
-    //
-    // The window that remains, stated exactly: from this read to the frame
-    // leaving the process. For a card carrying an explicit slug that is the
-    // few microseconds it takes to build the frame. For a card that follows
-    // the default *and has chosen one before*, it also covers one
-    // `config/read` (and, rarer still, one `model/list`) — a change landing
-    // inside those RPCs is sent on the following turn rather than this one,
-    // which is the same promise a change made mid-turn already carries.
+    // The model is resolved HERE, as late as possible: the transcript refresh and diff above can
+    // be tens of seconds, and a person who changed the model inside that window would otherwise
+    // watch the turn run under the model they just replaced.
     let selection = match resolve_model_selection_for_issue(inner).await {
         Ok(selection) => selection,
         Err(failure) => {
-            // Not a wedge, whichever kind this is. That is a correctness
-            // claim rather than a preference: `HarnessState::Wedged` has no
-            // exit in this tree (`can_issue_turn` admits only
-            // `Idle | TurnCompleted`, every assignment back to `Idle` is
-            // guarded on a different phase, and a snapshot restore rehydrates
-            // `Wedged` as `Wedged`). Wedging on a codex restart ended the
-            // conversation permanently for a condition that resolves itself in
-            // seconds, which was #1505 S4's first BLOCKER.
-            //
-            // But "not a wedge" is not the same as "retry and say nothing",
-            // and treating it as such was the SECOND one. Only some of the
-            // failures reachable here clear themselves; the rest need a person,
-            // and retrying those in silence leaves a queued sentence rendering
-            // as healthy forever. So the two are separated below rather than
-            // both being answered with a timer.
+            // Not a wedge: `HarnessState::Wedged` has no exit in this tree, and wedging on a codex restart
+            // ended the conversation permanently. But not every failure here clears itself, so the kinds
+            // are separated below rather than all answered with a timer.
             tracing::warn!(
                 target: "calm_server::planner_harness_issue",
                 worker_session_id = %inner.worker_session_id,
@@ -4267,11 +3157,8 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 kind = ?failure.kind,
                 "not issuing this turn: the model to run it under is undetermined; will retry"
             );
-            // The two arms differ in what waiting is worth, so they differ in
-            // how long we wait and in whether the reader is told. A codex
-            // restart is nobody's problem to act on; a config that names no
-            // model is nothing BUT the reader's, and staying quiet about it is
-            // how a queued sentence sits there looking healthy forever.
+            // The two arms differ in what waiting is worth, so they differ in how long we wait and in
+            // whether the reader is told.
             apply_refusal(inner, &failure).await;
             #[cfg(feature = "fixtures")]
             inner.refused_issuances.fetch_add(1, Ordering::SeqCst);
@@ -4286,18 +3173,8 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     };
     *inner.issuance_retry_after.lock().await = None;
 
-    // Text first, then one `localImage` per attachment, in queue order.
-    //
-    // Every path here is a string recorded at bind time and verified then;
-    // this builds no path and touches no disk, which is the property that
-    // makes a re-buffered batch safe — `rebuffer_head` below puts these same
-    // entries back, and their attachments are exactly where they were.
-    //
-    // What is lost, and is worth naming: when several queued messages are
-    // drained together their texts are joined into one string, so the payload
-    // codex receives no longer says which image belonged to which sentence.
-    // #1505 GAP-A3. The transcript is unaffected — `input_segments` keeps one
-    // segment per entry, each with its own attachments.
+    // Text first, then one `localImage` per attachment, in queue order. Every path was recorded and
+    // verified at bind time; this builds no path and touches no disk, so a re-buffered batch is safe.
     let mut items = vec![InputItem::text(text)];
     items.extend(
         drained
@@ -4305,12 +3182,8 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             .flat_map(QueueEntry::attachments)
             .map(|attachment| InputItem::local_image(attachment.path.clone())),
     );
-    // The two failures this block can end in are told apart because they are
-    // opposite facts about the batch: a projection row that could not be
-    // written is a LOCAL failure before codex was asked anything, and a
-    // refused `turn/start` is codex's answer. Both re-buffer (below), but the
-    // log must not call the first "turn/start failed" — the operator reading
-    // it would look at codex for a fault in sqlite.
+    // A projection row that could not be written is a LOCAL failure before codex was asked; a
+    // refused `turn/start` is codex's answer. The log must not call the first "turn/start failed".
     enum IssueFailure {
         ProjectionWrite(CalmError),
         TurnStart(CalmError),
@@ -4323,13 +3196,8 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 &prepared.actions,
             )
         {
-            // Known cosmetic gap: a fragment/value mismatch here (our bug,
-            // `CalmError::Internal`) lands in the `Err` arm below and is
-            // worded as a codex turn/start refusal, not as the briefing
-            // preparation failure it is; the `prepared` arm is unreachable
-            // from here without hoisting this step above `items`. (With
-            // #1625 P2's typed split it is `IssueFailure::TurnStart`, which
-            // is that same wording — the gap is unchanged, not widened.)
+            // Known cosmetic gap: a fragment/value mismatch here (our bug) is worded as a codex
+            // turn/start refusal rather than the briefing preparation failure it is.
             prepared
                 .use_exact_interface(problem)
                 .map_err(IssueFailure::TurnStart)?;
@@ -4394,47 +3262,14 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             *inner.last_turn_id.lock().await = Some(turn_id.clone());
             *inner.issued_turn_id.lock().await = Some(turn_id.clone());
             *inner.issued_turn_head.lock().await = diff.current_head.clone();
-            // The batch is out and its row is keyed; the next batch decides
-            // its own key. Cleared in the same snapshot that empties the
-            // queue, so no restart can pair this key with a later batch.
+            // Cleared in the same snapshot that empties the queue, so no restart can pair this key with a later batch.
             *inner.projection_client_id.lock().await = None;
             persist_issuance_outcome(inner).await?;
         }
         Err(failure) => {
-            // #1505 S4 review round 2 — paced, like the refusal above.
-            //
-            // This arm is older than #1505 and was unpaced: `rebuffer_head`
-            // arms `hard_fire`, so the next 50 ms tick re-issued, which is
-            // roughly twenty `turn/start` RPCs and forty persist writes a
-            // second for as long as codex kept refusing. That was tolerable
-            // only while reaching it needed an operator. It does not any more:
-            // `PUT /planner/model` stores a slug codex does not know BY DESIGN
-            // ("a hint, not a refusal"), so picking one from the picker is now
-            // a supported way for a person to make every `turn/start` fail.
-            // Pacing it is part of shipping that picker, not a drive-by.
-            //
-            // Codex refusing this input and codex being unreachable are
-            // opposite facts, and the reader is owed opposite sentences, so the
-            // split is made on the TYPED error rather than on its text:
-            // `CalmError::CodexRefused` exists only at the one place the
-            // distinction is still known. The comment that stood here said the
-            // two were indistinguishable from this arm — true of the error type
-            // as it stood, and the fix was to change the type rather than to
-            // match on a formatted string.
-            //
-            // It matters because `PUT /planner/model` stores a slug codex has
-            // never heard of BY DESIGN, so an unaccepted model is a menu click
-            // away, and calling that transient told the person their message
-            // "will be sent when it answers" about a turn that will never go
-            // out. Naming the real cause of a failed turn is still #1507's;
-            // this only stops promising delivery that cannot happen.
-            // Through the same classifier as `config/read` and `model/list`,
-            // so "every codex call on this path goes through it" is a fact
-            // rather than a wish — it was written as one while this site still
-            // re-implemented the check inline. `Rejected` rather than
-            // `NeedsAChoice`: no choice the reader can make is KNOWN to remove
-            // the need for `turn/start`, so its sentence names no certain
-            // remedy the way the other two do.
+            // Paced, like the refusal above: `rebuffer_head` arms `hard_fire`, and `PUT /planner/model`
+            // can store a slug codex does not know, so an unpaced retry was twenty RPCs a second. The split
+            // is on the TYPED error: `Rejected` because no choice is KNOWN to remove the need for `turn/start`.
             let (e, stage) = match failure {
                 IssueFailure::ProjectionWrite(e) => {
                     (e, "projection row write failed before turn/start was sent")
@@ -4446,25 +3281,9 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             apply_refusal(inner, &refusal).await;
             #[cfg(feature = "fixtures")]
             inner.refused_issuances.fetch_add(1, Ordering::SeqCst);
-            // #1625 P2 — the batch goes back on the queue, so the row that
-            // said it was sent goes too; the queue region lists it again.
-            // A failed delete is logged, not propagated: the next drain of
-            // this batch replaces the row (`write_projection_row`), under
-            // the same key because `projection_client_id` is kept across the
-            // re-buffer. (On a projection-write failure there may be no row
-            // to delete, or a row whose event never went out; the delete is
-            // right either way.)
-            //
-            // How a reader learns the row is gone: the delete emits no event
-            // of its own. The phase change that follows the re-buffer —
-            // `IssuingTurn → TurnCompleted`, written by
-            // `persist_issuance_outcome` below — is the signal, and
-            // `fe/core/events/invalidation-plan.ts` maps
-            // `harness.phase.changed` to `['harness-items', card_id]` for
-            // it. Legacy `web/` (`usePlannerChatHistory`, being deleted under
-            // #1334) fetches only rows above its last id and never drops one,
-            // so it keeps showing the deleted row until a reload; declared,
-            // not fixed.
+            // The batch goes back on the queue, so the row that said it was sent goes too. A failed delete
+            // is logged: the next drain replaces the row under the same key. The phase change that follows
+            // the re-buffer is what tells a reader the row is gone.
             if let Err(delete_error) = inner
                 .repo
                 .transcript_projection_delete(inner.card_id.as_str(), client_id.as_str())
@@ -4536,9 +3355,7 @@ where
     }
 }
 
-/// Wrap `since_last_turn_diff_block` in a 5s timeout. On timeout, log a warn
-/// and fall through without a diff block so the turn still issues — the diff
-/// block is contextual augmentation, never a correctness requirement (#639).
+/// Wrap `since_last_turn_diff_block` in a 5s timeout; on timeout the turn still issues without a diff block.
 async fn diff_with_timeout(
     inner: &Arc<Inner>,
     current_override: Option<&track_vcs::CommitHash>,
@@ -4687,10 +3504,7 @@ fn prepend_diff_block(diff_block: Option<String>, observation_text: String) -> S
 
 async fn rebuffer_head(inner: &Arc<Inner>, drained: Vec<QueueEntry>) {
     let mut queue = inner.pending_queue.lock().await;
-    // #1449 — a re-buffered batch keeps the ids it was drained with: it is the
-    // same instances going back, not new ones. #1505 PR1 makes that free —
-    // the ids ride inside the entry, so there is no second array a re-buffer
-    // could put back in a different order.
+    // A re-buffered batch keeps the ids it was drained with: the same instances going back.
     for entry in drained.into_iter().rev() {
         queue.push_front(entry);
     }
@@ -4864,22 +3678,9 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
     snapshot
 }
 
-/// #1449 — is this runtime still the row the card is being driven from?
-///
-/// A pool read of one row by id. NOT `write_in_tx_typed`, which opens with
-/// `BEGIN IMMEDIATE` and takes SQLite's single writer lock; this runs on every
-/// issuance attempt, and behind the writer lock it starved other writers
-/// (`token_usage_round_trips_through_the_persisted_runtime_snapshot` went red
-/// in a full-suite run while it was one). NOT `session_projection_by_id`
-/// either: that SELECT is card-backed, so a row the card has moved off answers
-/// `None`, and a `None` here refuses — which would refuse every runtime whose
-/// card has moved on, live or not.
-///
-/// A missing row is refused. The rows are deleted by card, track and area
-/// deletion, by a start's compensation, and by the dev replay reset; that list
-/// comes from scanning every `DELETE FROM worker_sessions` in the tree and is
-/// not ratcheted — `worker_sessions_row_disappearance.rs` freezes the FK
-/// cascades and triggers, which is a different set.
+/// Is this runtime still the row the card is being driven from? A pool read of one row by id —
+/// NOT `write_in_tx_typed` (takes the single writer lock on every tick) and NOT
+/// `session_projection_by_id` (card-backed, so a row the card moved off answers `None`).
 async fn runtime_is_still_the_live_carrier(inner: &Arc<Inner>) -> Result<bool> {
     let state = inner
         .repo
@@ -4891,35 +3692,13 @@ async fn runtime_is_still_the_live_carrier(inner: &Arc<Inner>) -> Result<bool> {
     })
 }
 
-/// #1449 — persist what the runtime owes after an issuance resolved, on a row
-/// the ordinary writer may already refuse.
-///
-/// Two independent gates make the ordinary [`persist_snapshot`] a no-op exactly
-/// when this write matters most, and BOTH are set by the re-point fence before
-/// the run loop reaches this point:
-///
-/// * `persist_snapshot_inner` returns early once `shutting_down` is set, and
-///   `shutdown_inner` sets that flag BEFORE it queues behind `inner.issuance`;
-/// * `session_set_handle_state_tx` carries
-///   `AND state IN ('starting','running','idle','turn_pending')`, and the
-///   fence's transaction commits `superseded` before it touches the process.
-///
-/// So the last thing ever written about a fenced runtime is the pre-drain
-/// snapshot — "the batch is still queued" — no matter what happened to the
-/// batch. That was invisible while nothing read an abandoned snapshot; it is
-/// the whole basis of the harvest now. `session_set_handle_state_of_retired_runtime_tx`
-/// is the narrow exception: `handle_state_json` and `updated_at_ms`, retired
-/// rows only.
-///
-/// It runs after the ordinary write, not instead of it — and only when that
-/// write cannot have landed, so a live runtime does not open a second
-/// transaction per turn to discover it matched nothing.
+/// Persist what the runtime owes after an issuance resolved, on a row the ordinary writer may
+/// already refuse: `persist_snapshot` is a no-op once `shutting_down` is set or the row left the
+/// active set, and both are set by the re-point fence. Runs after the ordinary write, not instead.
 async fn persist_issuance_outcome(inner: &Arc<Inner>) -> Result<()> {
     persist_snapshot(inner).await?;
-    // Only the runtimes that can actually need it open the second transaction.
-    // For a live runtime the ordinary write above is the one that lands and
-    // this one matches zero rows, so opening a write transaction to discover
-    // that on every turn is pure contention on the single writer lock.
+    // Only the runtimes that can actually need it open the second transaction; for a live runtime
+    // it would match zero rows and only contend on the writer lock.
     if !inner.shutting_down.load(Ordering::SeqCst)
         && runtime_is_still_the_live_carrier(inner).await?
     {
@@ -4943,12 +3722,8 @@ async fn persist_issuance_outcome(inner: &Arc<Inner>) -> Result<()> {
     })
     .await?;
     if !written {
-        // Neither writer matched: the row flipped back into the active set
-        // between the ordinary write and this one (`restore_old_runtime`), so
-        // it still carries its PRE-drain queue. Once a restore clears its
-        // marker that queue is harvestable again — the same sentence twice.
-        // Logged rather than returned: this runs after the daemon already has
-        // the batch, so failing here would undo nothing.
+        // Neither writer matched: the row flipped back into the active set between the two writes, so
+        // it still carries its PRE-drain queue. Logged: the daemon already has the batch.
         tracing::warn!(
             target: "calm_server::planner_harness_issue",
             worker_session_id = %inner.worker_session_id,
@@ -4960,38 +3735,12 @@ async fn persist_issuance_outcome(inner: &Arc<Inner>) -> Result<()> {
     Ok(())
 }
 
-/// #1625 P1 — make a turn's terminal status durable and readable.
-///
-/// One transcript row per finished turn, `method = "turn/completed"`,
-/// `params` = codex's final `turn` object minus `items` / `itemsView` (the
-/// items are already rows of their own; what is new here is `status`,
-/// `error { message, codexErrorInfo }` and the timings). Written from the
-/// `TurnCompleted` arm only, AFTER its non-target and stale-completion gates —
-/// a completion the FSM ignores leaves no row — and BEFORE
-/// `persist_snapshot_stamping_issued_head`, so by the time the resulting
-/// `HarnessPhaseChanged` reaches a client the row is already there to fetch.
-/// That ordering is what lets the phase event double as the delivery signal:
-/// no item-added event is emitted for this row (one fewer track-vcs commit
-/// per turn), and `fe/core/events/invalidation-plan.ts` invalidates
-/// `['harness-items', card_id]` on `harness.phase.changed` instead.
-///
-/// `turn_id` is the id the arm accepted the completion under — the frame's
-/// own `id`, or `last_turn_id` when the frame carries none — and not a
-/// re-read of the frame: the arm's fallback is what lets an id-less
-/// completion advance the FSM, and a row written under the same resolution
-/// is the only row that names the turn the FSM actually finished. The id is
-/// the row's whole identity (a later per-turn grouping keys on it), so it is
-/// the row's `turn_id` column even when `params` has none.
-///
-/// Best-effort on purpose: a failed insert is logged, never propagated. The
-/// FSM has already moved to `TurnCompleted` and the snapshot commit that
-/// follows is what unblocks the next turn; a missing outcome line must not
-/// stall the harness.
+/// Make a turn's terminal status durable: one `turn/completed` row per finished turn, written
+/// AFTER the arm's gates and BEFORE `persist_snapshot_stamping_issued_head`, so the phase event
+/// doubles as the delivery signal (no item-added event). Best-effort: a failed insert is logged.
 async fn persist_turn_outcome(inner: &Arc<Inner>, turn_id: &str, turn: &Value) -> Option<i64> {
-    // Same guard as the `turn/plan/updated` arm: the transcript table's
-    // `thread_id` column is NOT NULL, and `Notification::TurnCompleted.thread_id` is
-    // `unwrap_or_default()` upstream, so the harness's own thread is the only
-    // value that is never `""`.
+    // `thread_id` is NOT NULL and `Notification::TurnCompleted.thread_id` is `unwrap_or_default()`
+    // upstream, so the harness's own thread is the only value that is never `""`.
     let Some(thread_id) = inner.thread_id.read().await.clone() else {
         tracing::warn!(
             worker_session_id = %inner.worker_session_id,
@@ -5053,28 +3802,9 @@ async fn persist_snapshot(inner: &Arc<Inner>) -> Result<()> {
     persist_snapshot_inner(inner, None).await.map(|_| ())
 }
 
-/// #1449 — persist a durable user send, and REFUSE it if the row was not
-/// written.
-///
-/// `session_set_handle_state_tx` carries
-/// `AND state IN ('starting','running','idle','turn_pending')`, so the write
-/// matches nothing once the row leaves that set — and it used to report success
-/// anyway. That is how a sentence got a 201, an `harness.user_message.enqueued`
-/// row, and no durable home.
-///
-/// The write can miss for four reasons, and only one of them has a successor:
-/// the row is `superseded` (a mint took over), `failed`/`exited`/`completed`,
-/// the row was deleted, or `shutting_down` short-circuited the write. The
-/// message therefore says "retry" without promising where it lands.
-///
-/// The `shutting_down` case is not reachable from HERE, and the argument is
-/// specific: its only setter, `shutdown_inner`, takes `inner.durable_observation`
-/// first, and `observe_durable_entries` holds that same lock across both
-/// the send and its confirmation.
-///
-/// Writing through the retired-row writer instead would not help for the
-/// `superseded` case: that row is stamped, so what landed on it would not be
-/// read again.
+/// Persist a durable user send, and REFUSE it if the row was not written: the writer matches
+/// nothing once the row leaves the active set.
+/// `shutting_down` is not reachable from here — `shutdown_inner` takes `durable_observation` first.
 async fn persist_snapshot_for_durable_send(inner: &Arc<Inner>) -> Result<()> {
     if persist_snapshot_inner(inner, None).await? {
         return Ok(());
@@ -5104,12 +3834,8 @@ async fn persist_snapshot_inner(
     if inner.shutting_down.load(Ordering::SeqCst) {
         return Ok(false);
     }
-    // #1505 PR2b — the truncation's record goes in BEFORE the truncation does.
-    // `?` and not a warn: a write that proceeded here would make a discarded
-    // user message permanently gone with nothing saying so, and the caller
-    // would report success for it. Refusing leaves the untruncated row as it
-    // was — see `flush_dropped_announcements` for what that does and does not
-    // guarantee about those entries being read again.
+    // The truncation's record goes in BEFORE the truncation does. `?` and not a warn: a write that
+    // proceeded would make a discarded user message permanently gone with nothing saying so.
     flush_dropped_announcements(inner).await?;
     let mut snapshot = snapshot_for(inner).await;
     if let Some(head) = last_seen_head_override {
@@ -5187,10 +3913,8 @@ async fn persist_snapshot_inner(
                 error = %e,
                 "planner harness phase event persist failed after snapshot commit; retaining previous phase for retry"
             );
-            // The snapshot transaction above is already committed. Phase audit
-            // is intentionally retryable/best-effort here: reporting failure
-            // would make durable ingress roll back memory after its message was
-            // durably accepted, allowing a later snapshot to erase it.
+            // The snapshot transaction is already committed; reporting failure here would make durable
+            // ingress roll back memory after its message was accepted.
             return Ok(written);
         }
         *last_phase = new_phase;
@@ -5420,10 +4144,6 @@ mod tests {
         assert_eq!(queue[0].envelope_id(), Some(1));
     }
 
-    /// #1678 A1 (review round 1) — the channel line is decided over the
-    /// batch by the predicate that also omits the unified patch, and lands
-    /// once on the last segment. Pure batch: yes; a user message beside an
-    /// edit, or a pre-#1667 entry without its diff: no.
     #[test]
     fn report_edit_batch_channel_line_follows_the_omit_predicate() {
         use super::{

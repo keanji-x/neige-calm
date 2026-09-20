@@ -1,29 +1,6 @@
-// #1505 S6 — images a person attaches to a planner message.
-//
-// ── What an attachment is, in this UI ──────────────────────────────────────
-//
-// It is a thing that already exists on the server before it is part of a
-// message. Picking a file uploads it immediately and the server answers with
-// an id and a url; the strip below the composer is a list of those answers,
-// not a list of local files waiting for a send. Two things follow, and both
-// are the reason it is built this way:
-//
-// **The preview is the server's own copy.** `<img src>` points at the
-// read-back endpoint, so what the reader is looking at before they send is the
-// exact bytes codex will be handed. Nothing here calls `URL.createObjectURL`,
-// reads a `FileReader` data url, or holds a second representation that could
-// disagree with the first — and nothing here calls `crypto.randomUUID` either.
-// Ids are minted by the server. (Production is plain-http LAN, where the
-// secure-context-only web APIs are simply absent; jsdom is a secure context,
-// so a test passing proves nothing about that. The design here does not
-// depend on the distinction, which is the point.)
-//
-// **Removing one before sending is a local forget, not a delete.** There is no
-// server-side delete: an uploaded attachment that is never named by a message
-// stays in the server's staging area and is reclaimed after its orphan TTL. So
-// `remove` drops it from this list and lets it expire. It costs the card's
-// attachment budget until then (#1505 GAP-A12), which is a cost worth naming
-// rather than a bug to fix here.
+// Images a person attaches to a planner message. Picking a file uploads it immediately; the strip
+// is a list of the server's answers, and the preview is the server's own copy. Removing one before
+// sending is a local forget, not a delete: the server reclaims orphans after their TTL.
 
 import { useCallback, useEffect, useRef } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
@@ -44,29 +21,13 @@ import {
 } from '../../../../core/domain/conversation.js';
 import styles from './attachments.module.css';
 
-/**
- * One upload, already bound to a card.
- *
- * A function rather than a transport, because `performApiRequest` has exactly
- * two sanctioned call sites in this app (`app/providers/queries.ts` and the
- * session probe) and a feature module is neither. The store hands this down;
- * what arrives here is the answer or a throw.
- */
+/** One upload, already bound to a card. A function rather than a transport: `performApiRequest` has two sanctioned call sites and a feature module is neither. */
 // Capture before file reading, then consume synchronously after the final await.
 // The returned reader checks the same admission before exposing server facts.
 export type UploadAttachment = (readBytes: () => Promise<Uint8Array>, contentType: string)
 => Promise<() => UploadAttachmentResponse>;
 
-/**
- * Why a track can have no attachment surface at all.
- *
- * Attachments are written into `<workspace>/.neige/`, and a track whose
- * workspace is a directory the person already owns is one neige never writes
- * into. The server answers 400 there. Saying so up front — a disabled control
- * with a reason — is the acceptance condition rather than a nicety: half the
- * tracks in production were created with a `cwd` and are attached, so a
- * silently-failing paperclip would be the common case, not the edge.
- */
+/** Why a track can have no attachment surface: attachments are written into `<workspace>/.neige/`, and a workspace the person already owns is one neige never writes into (the server answers 400). */
 export type AttachmentSupport = Readonly<{ available: boolean; reason?: string }>;
 
 export const ATTACHED_WORKSPACE_REASON =
@@ -90,13 +51,7 @@ function refusalFor(contentType: string): string | null {
   return 'That file is not one of PNG, JPEG, GIF or WebP.';
 }
 
-/**
- * The composer's attachment state for one card.
- *
- * Uploads run one at a time and in pick order. The server serializes a card's
- * uploads behind its own lock anyway, so firing several at once would only
- * make the strip fill in an order the reader did not choose.
- */
+/** The composer's attachment state for one card. Uploads run one at a time and in pick order. */
 export function usePlannerAttachments(
   upload: UploadAttachment,
   cardId: string,
@@ -104,29 +59,19 @@ export function usePlannerAttachments(
   const [items, setItems] = useState<readonly PlannerAttachment[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  /* Read inside `attach`, which closes over a render's `items` otherwise and
-     would let two quick picks both see an empty list and both pass the cap. */
+  /* Read inside `attach`: closing over a render's `items` would let two quick picks both see an empty list and both pass the cap. */
   const live = useRef<readonly PlannerAttachment[]>([]);
   live.current = items;
 
-  /* Bumped on every card change. An in-flight upload captures the value it
-     started under and refuses to adopt its own answer if it no longer
-     matches — see `attach`. */
+  /* Bumped on every card change; an in-flight upload refuses to adopt its own answer if it no longer matches. */
   const generation = useRef(0);
 
-  /* A picked image belongs to the card it was uploaded to — its bytes live
-     under that card's directory and the server refuses it anywhere else — so
-     moving to another conversation drops the strip rather than carrying it. */
+  /* A picked image's bytes live under its card's directory and the server refuses it anywhere else, so moving to another conversation drops the strip. */
   useEffect(() => {
     generation.current += 1;
     setItems([]);
     setError(null);
-    /* `busy` belongs to the same rule as the other two, and leaving it out was
-       the rule stated and then not applied: an upload in flight when the
-       reader moves on left the NEW card's composer showing a disabled
-       paperclip and a spinner for work that was never its own. The in-flight
-       request cannot be cancelled, but its answer is already refused by the
-       generation check in `attach`, so nothing here is waiting for it. */
+    /* The in-flight request cannot be cancelled, but its answer is already refused by the generation check in `attach`. */
     setBusy(false);
   }, [cardId]);
 
@@ -142,19 +87,7 @@ export function usePlannerAttachments(
     const startedAt = generation.current;
     try {
       const consume = await upload(async () => new Uint8Array(await file.arrayBuffer()), file.type);
-      /*
-       * #1505 S6 review — an upload that lands after the reader moved on
-       * belongs to the card it was started for, not to whichever card is open
-       * now.
-       *
-       * The card-change effect below clears the list, but it cannot cancel a
-       * request already in flight: without this check the answer appended to
-       * the NEW card's composer, showing card A's picture under card B's
-       * message and earning a cross-card refusal on send. The generation
-       * counter is compared rather than the card id because the id can repeat
-       * (leave a card and come back) and a stale answer must not be adopted
-       * then either.
-       */
+      /* An upload that lands after the reader moved on belongs to the card it was started for. The generation counter is compared rather than the card id because the id can repeat (leave a card and come back). */
       if (generation.current !== startedAt) return;
       const uploaded = consume();
       setItems((current) => [...current, {
@@ -162,13 +95,7 @@ export function usePlannerAttachments(
         size: uploaded.size, url: uploaded.url,
       }]);
     } catch (cause) {
-      /* Same ownership rule as the success branch: a refusal earned by the
-         card the reader has left is not a message to put in front of them
-         about the card they are on. */
       if (generation.current !== startedAt) return;
-      /* The server's own sentence when it has one — it says which of the four
-         refusals this was (wrong format, attached workspace, budget, size),
-         and every one of those is something the reader can act on. */
       setError(cause instanceof Error && cause.message !== ''
         ? cause.message : 'The image could not be uploaded.');
     } finally {
@@ -193,22 +120,7 @@ export function usePlannerAttachments(
   };
 }
 
-/**
- * The attach control, in the composer's `headerActions` slot.
- *
- * An `IconButton` because that is what the slot is specified to hold — Astryx's
- * own note on it reads "left header actions (attach, mention); icon-only sm
- * buttons" — and a hidden `<input type="file">` behind it, opened by `click()`.
- * The design system's own `FileInput` opens its picker exactly this way; a
- * click handler running inside a real user gesture is user-initiated, and this
- * is what buys the button an accessible name, a focus ring, a disabled state
- * and a keyboard-reachable reason, none of which a bare `<label>` had.
- *
- * The reason for being unavailable rides on `tooltip` rather than `title`.
- * Astryx switches a tooltipped disabled button to `aria-disabled` so it stays
- * focusable — which is the difference between a reason a keyboard user can
- * reach and one only a mouse can.
- */
+/** The attach control: an `IconButton` with a hidden `<input type="file">` behind it, opened by `click()`. The unavailable reason rides on `tooltip` rather than `title`: Astryx switches a tooltipped disabled button to `aria-disabled` so it stays focusable. */
 export function PlannerAttachButton({ attachments, support, disabled = false }: {
   attachments: PlannerAttachments;
   support: AttachmentSupport;
@@ -217,9 +129,6 @@ export function PlannerAttachButton({ attachments, support, disabled = false }: 
   const picker = useRef<HTMLInputElement | null>(null);
   const unavailable = !support.available;
   const blocked = disabled || unavailable || attachments.busy || attachments.atCapacity;
-  /* Only the two refusals a reader can act on get a tooltip. "Attach an image"
-     is already the button's label, and repeating it in a tooltip is a hover
-     that says nothing. */
   const tooltip = unavailable
     ? (support.reason ?? ATTACHED_WORKSPACE_REASON)
     : attachments.atCapacity
@@ -233,8 +142,6 @@ export function PlannerAttachButton({ attachments, support, disabled = false }: 
         variant="ghost"
         size="sm"
         isDisabled={blocked}
-        /* The spinner belongs to the control that started the upload; the
-           strip below shows the same wait as a skeleton tile. */
         isLoading={attachments.busy}
         tooltip={tooltip}
         onClick={() => { picker.current?.click(); }}
@@ -244,15 +151,12 @@ export function PlannerAttachButton({ attachments, support, disabled = false }: 
         className={styles.attachInput}
         type="file"
         accept={ATTACHABLE_IMAGE_TYPES.join(',')}
-        /* The button above is the control: it carries the name, the state and
-           the focus. This is machinery, and a second announced file input
-           beside it would be a second thing to tab to that does nothing. */
+        /* The button above is the control; a second announced file input would be a second thing to tab to that does nothing. */
         aria-hidden="true"
         tabIndex={-1}
         onChange={(event) => {
           const file = event.target.files?.[0];
-          /* Cleared unconditionally so picking the same file twice in a row
-             still fires a change event. */
+          /* Cleared unconditionally so picking the same file twice in a row still fires a change event. */
           event.target.value = '';
           if (file !== undefined) void attachments.attach(file);
         }}
@@ -261,17 +165,7 @@ export function PlannerAttachButton({ attachments, support, disabled = false }: 
   );
 }
 
-/**
- * The strip of pending images, in the composer's drawer slot.
- *
- * `Thumbnail` rather than a hand-rolled tile: it is the design system's
- * component for exactly this — a square preview with an overlaid remove
- * button — and it samples the image behind that button (APCA) so the button
- * stays legible on a light picture and a dark one alike. The version this
- * replaced painted a fixed `rgb(0 0 0 / 55%)` disc, which is a constant answer
- * to a question whose answer depends on the picture, and it did not follow the
- * theme.
- */
+/** The strip of pending images. `Thumbnail` samples the image behind its remove button (APCA) so the button stays legible on any picture. */
 export function PlannerAttachmentDrawer({ attachments }: { attachments: PlannerAttachments }) {
   const { items, busy, error } = attachments;
   if (items.length === 0 && error === null && !busy) return null;
@@ -283,25 +177,17 @@ export function PlannerAttachmentDrawer({ attachments }: { attachments: PlannerA
             <Thumbnail
               key={item.id}
               src={item.url}
-              /* The picture is the reader's own and was chosen a second ago;
-                 there is nothing true to say about its contents that they do
-                 not already know. The position is what tells two of them
-                 apart, and it is what the remove button is named after. */
               label={`Image ${index + 1}`}
               onRemove={() => { attachments.remove(item.id); }}
             />
           ))}
-          {/* An upload in flight has no url yet, so it is a tile with no src
-              and `isLoading` — the strip grows when the pick happens rather
-              than when the server answers, which is when the reader did it. */}
+          {/* An upload in flight has no url yet: the strip grows when the pick happens, not when the server answers. */}
           {busy && <Thumbnail isLoading label="Uploading" />}
         </HStack>
         {error !== null && (
           <Banner
             status="error"
             title="That image was not attached"
-            /* The server's own sentence, which says which of the four refusals
-               this was. */
             description={error}
           />
         )}

@@ -1,18 +1,4 @@
 // @vitest-environment jsdom
-//
-// The configuration pane, driven the way an operator drives it.
-//
-// Two disciplines this file holds to, both because the alternative has bitten
-// this repository before:
-//
-//   * **nothing here re-implements what it asserts.** The wording of a refusal
-//     and of a restart outcome comes from `core/domain/plugins` — the same
-//     functions the pane calls — so the tests state kernel-shaped *inputs*
-//     (a code, a state, a `last_error`) and assert what the reader sees. A test
-//     that built the finished sentence itself would pass against a pane that
-//     never called the table at all.
-//   * **the patch is asserted as sent**, not as computed. Every §2.2.5 claim
-//     below reads the argument the pane handed to `onSave`.
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -20,24 +6,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PluginDetail } from '../../../../core/domain/plugins.ts';
 import { PluginConfigPane, type PluginConfigPaneProps } from './plugin-config.tsx';
 
-/**
- * The pane's verdict about the last write, located by its **text**.
- *
- * Not by `getByRole('status' | 'alert')`: astryx mounts a hidden live region
- * inside every `Button` and `NumberInput`, so a bare role query on this pane
- * matches four or five elements, none of which is the message. Locating the
- * sentence and then asserting the role of the element carrying it keeps both
- * halves of the claim — that the reader can read it, and that a screen reader
- * is told it — without depending on how many controls happen to be on screen.
- */
+/** The pane's verdict, located by text: astryx mounts a hidden live region inside every `Button` and `NumberInput`, so a bare role query matches several. */
 async function verdict(text: string | RegExp): Promise<HTMLElement> {
   return screen.findByText(text);
 }
 
 beforeEach(() => {
-  // Astryx's Spinner calls `matchMedia` unguarded and jsdom has none. Stubbed
-  // here and never globally: `app/theme` deliberately branches on `matchMedia`
-  // being absent, and a global polyfill would hide that path.
+  // Astryx's Spinner calls `matchMedia` unguarded and jsdom has none. Stubbed here, never globally:
+  // `app/theme` deliberately branches on `matchMedia` being absent.
   vi.stubGlobal('matchMedia', vi.fn(() => ({
     matches: false,
     addEventListener: vi.fn(),
@@ -107,7 +83,6 @@ describe('the form a config_schema asks for', () => {
   it('shows a default as a placeholder and never as a value', () => {
     render(<PluginConfigPane {...props()} />);
     const field = screen.getByLabelText<HTMLInputElement>('base_url');
-    // The distinction the whole of §2.2.4 rests on: an example, not a value.
     expect(field.value).toBe('');
     expect(field.placeholder).toBe('https://api.github.com');
     expect(screen.getByLabelText<HTMLInputElement>('retries').value).toBe('');
@@ -149,8 +124,6 @@ describe('a Save carries the edited keys and nothing else (§2.2.5)', () => {
     const onSave = vi.fn().mockResolvedValue({ ok: true });
     render(<PluginConfigPane {...props({ onSave })} />);
     const save = screen.getByRole('button', { name: 'Save' });
-    // A pane the reader has only looked at has nothing to commit, and a Save
-    // that posted its effective state would have plenty.
     expect(save.getAttribute('disabled')).not.toBeNull();
     await userEvent.click(save);
     expect(onSave).not.toHaveBeenCalled();
@@ -166,12 +139,6 @@ describe('a Save carries the edited keys and nothing else (§2.2.5)', () => {
   });
 
   it('leaves every untouched default out of the payload', async () => {
-    /*
-     * The load-bearing case for §2.2.4: four of the five fields have manifest
-     * defaults and none is stored. If this payload ever grows `base_url`,
-     * `mode`, `verbose` or `retries`, a manifest that later changes one of
-     * those defaults can never again reach a plugin anyone configured.
-     */
     const onSave = vi.fn().mockResolvedValue({ ok: true });
     render(<PluginConfigPane {...props({ onSave })} />);
     await userEvent.type(screen.getByLabelText('token'), 'abc');
@@ -197,7 +164,6 @@ describe('a Save carries the edited keys and nothing else (§2.2.5)', () => {
     const verbose = screen.getByRole('switch', { name: 'verbose' });
     await userEvent.click(verbose);
     await userEvent.click(verbose);
-    // Back at the default it was showing, which was never a value.
     expect(screen.getByRole('button', { name: 'Save' }).getAttribute('disabled')).not.toBeNull();
     await userEvent.click(screen.getByRole('switch', { name: 'verbose' }));
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
@@ -217,8 +183,6 @@ describe('a Save carries the edited keys and nothing else (§2.2.5)', () => {
     render(<PluginConfigPane {...props()} />);
     await userEvent.type(screen.getByLabelText('token'), 'abc');
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
-    // §2.4 — a stored configuration is not a running one, and the plugin has
-    // to be told to restart before it is.
     const status = await verdict('Saved. Apply & restart to run with it.');
     expect(status.getAttribute('role')).toBe('status');
   });
@@ -236,7 +200,6 @@ describe('a refused write, as something to act on', () => {
 
     const alert = await verdict('expected integer, found a string');
     expect(alert.getAttribute('role')).toBe('alert');
-    // On the row for `retries` — not in a banner that could be about anything.
     expect(alert.closest('li')).toBe(screen.getByLabelText('retries').closest('li'));
   });
 
@@ -250,16 +213,10 @@ describe('a refused write, as something to act on', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
     const alert = await verdict(/nothing was saved/);
     expect(alert.getAttribute('role')).toBe('alert');
-    /* Pane-level: a held lock is not about any one field, and there is no
-       control it could point at. */
     expect(alert.closest('li')).toBeNull();
   });
 
   it('turns a corrupt stored document into a button, not a dead end', async () => {
-    /* 409 `plugin_config_corrupt` — the kernel refuses to merge into a
-       `user_config` that is not an object, and `?reset=true` is the exit it
-       provides. The exit is destructive, so it is offered by name and the
-       operator's typing survives into it. */
     const onSave = vi.fn()
       .mockResolvedValueOnce({
         ok: false,
@@ -276,9 +233,6 @@ describe('a refused write, as something to act on', () => {
   });
 
   it('starts a known-corrupt row on the destructive Save, before any refusal', async () => {
-    /* The detail already says the stored document is unreadable, so an ordinary
-       patch cannot succeed. Naming the button up front is the difference
-       between one refused request and none. */
     const onSave = vi.fn().mockResolvedValue({ ok: true });
     render(<PluginConfigPane {...props({
       detail: detail({ user_config: 'not an object' }), onSave,
@@ -323,17 +277,11 @@ describe('Apply & restart, and the three ways it ends (§2.4)', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Apply & restart' }));
     const status = await verdict(/restart could not run/);
     expect(status.textContent).toMatch(/saved/i);
-    /* Both halves matter: the configuration is in the database, and the plugin
-       is still on the old one. A message that said only "busy" would leave the
-       operator guessing which. */
     expect(status.textContent).toMatch(/still running its previous configuration/);
     expect(status.textContent).toMatch(/again in a moment/);
   });
 
   it('reproduces last_error when the plugin did not come up', async () => {
-    /* A connector's normal terminal state. The reason names an upstream this
-       screen knows nothing about, so it is shown word for word rather than
-       summarised — and it is not painted as a kernel error. */
     const reason = 'mcp-http: connect to https://api.example.com failed: connection refused';
     const onApplyRestart = vi.fn().mockResolvedValue({
       saved: true,
@@ -393,7 +341,6 @@ describe('Apply & restart, and the three ways it ends (§2.4)', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
     await verdict('Saved. Apply & restart to run with it.');
     await userEvent.type(screen.getByLabelText('token'), 'd');
-    // A tick beside a value that was never sent is a lie about what is stored.
     await waitFor(() => {
       expect(screen.queryByText('Saved. Apply & restart to run with it.')).toBeNull();
     });

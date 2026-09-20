@@ -44,13 +44,6 @@ describe('TrackPage header', () => {
     expect(screen.getAllByRole('status', { name: 'Track lifecycle: Draft' })).toHaveLength(2);
   });
 
-  /*
-   * #1722 §5.3 — the desktop head carries the same indicator as the rail, from
-   * the same overlay-derived state (INV-APP-118): nothing for a quiet track
-   * whatever its phase, a spinner for work in flight, the failed dot for a
-   * broken one. Exactly one indicator: the mobile head (`MobileHeader` meta,
-   * the second lifecycle status below) is a declared exception and paints none.
-   */
   it('paints one activity indicator beside the title, from the overlay rather than the lifecycle', () => {
     const view = renderPage({ track: track({ lifecycle: 'working', working: false }) });
     expect(view.container.querySelector('[data-nc-activity]')).toBeNull();
@@ -122,11 +115,6 @@ describe('TrackPage header', () => {
     expect(screen.getByRole('button', { name: 'Rename track' }).textContent).toBe('Untitled track');
   });
 
-  /* The header is one row now. It used to carry "Today / ● atlas" above the
-     title, restating in chrome what the rail states permanently — so the crumb,
-     its back button and the area dot are gone, and with them the page's whole
-     reason to know which area it is in. This asserts the *absence*, because the
-     row is the kind of thing that gets added back by reflex. */
   it('carries no ancestor navigation of its own', () => {
     renderPage({ track: track({ title: 'Ship the rewrite' }) });
     expect(screen.queryByRole('button', { name: 'Back to area' })).toBeNull();
@@ -221,9 +209,7 @@ describe('TrackPage header', () => {
 });
 
 describe('TrackPage task inventory', () => {
-  /* A declaration nobody has dispatched: no status, so no dot. A withdrawn or
-     unreadable declaration also has no worker kind — see `deriveReportTasks` —
-     which is what leaves those rows with no card affordance at all. */
+  /* A declaration nobody has dispatched: no status. A withdrawn or unreadable declaration also has no worker kind. */
   const task = (
     key: string,
     state: 'ready' | 'not-ready' | 'withdrawn' | 'unreadable',
@@ -236,9 +222,7 @@ describe('TrackPage task inventory', () => {
     pendingReason: null,
   });
 
-  /** A task the kernel has a `tasks` row for: a status, and maybe a card. The
-   *  kernel's reason for that status is the last, optional argument — it is
-   *  what the failed row's dot has to say beyond the word `failed`. */
+  /** A task the kernel has a `tasks` row for: a status, maybe a card, and optionally the kernel's reason. */
   const running = (
     key: string,
     status: string,
@@ -250,14 +234,7 @@ describe('TrackPage task inventory', () => {
     pendingReason: null,
   });
 
-  /*
-   * #1722 §5.3 / INV-APP-118 — a row's indicator is the kernel's per-card
-   * verdict (`Track.cards`) and nothing else. The phase word stays: a card
-   * whose runtime says `running` and a task whose execution says `running`
-   * both print the word, and neither gets a spinner unless the kernel listed
-   * the card. A task is keyed by its worker card, so a task with none has no
-   * indicator whatever its status.
-   */
+  /* A row's indicator is the kernel's per-card verdict; a task is keyed by its worker card, so a task with none has no indicator. */
   it('card and task rows paint activity.cards, not runtime status', () => {
     const cards = [
       card({ id: 'busy', title: 'Busy worker', kind: 'codex',
@@ -280,7 +257,6 @@ describe('TrackPage task inventory', () => {
       track: track({ cards: { busy: 'working', asking: 'input' } }),
     });
     const desktop = container.querySelector('[data-nc-desktop-panel]')!;
-    /* Static selectors (`no-class-dom-query`): one map over every marked row. */
     const rows = [...desktop.querySelectorAll('[data-nc-row]')];
     const indicators = Object.fromEntries(rows.map((row): [string, string | null] => [
       row.getAttribute('data-nc-row') ?? '', row.querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity') ?? null,
@@ -301,13 +277,6 @@ describe('TrackPage task inventory', () => {
     });
   });
 
-  /*
-   * #1722 S2b r1 (Codex P2-3) — the indicator on a card or task row is
-   * `aria-hidden` and no control on the row names the verdict (the status
-   * word is the phase, a different fact), so the row speaks it: the same
-   * vocabulary as the conversation row's description (`activityLabelOf`).
-   * A row the kernel listed nothing for says nothing.
-   */
   it('card and task rows speak the kernel verdict', () => {
     const cards = [
       card({ id: 'busy', title: 'Busy worker', kind: 'codex',
@@ -331,8 +300,6 @@ describe('TrackPage task inventory', () => {
     expect(within(row('broken')).getByText('Needs attention')).toBeTruthy();
     expect(within(row('b-impl')).getByText('Working')).toBeTruthy();
     expect(within(row('b-doc')).getByText('Needs attention')).toBeTruthy();
-    /* The spoken word is not the visual marker: one marker per row, and the
-       word is its own element after it. */
     expect(row('busy').querySelectorAll('[data-nc-activity]')).toHaveLength(1);
     expect(within(row('busy')).getByText('Working').getAttribute('data-nc-activity')).toBeNull();
     for (const id of ['quiet', 'b-plain']) {
@@ -340,11 +307,6 @@ describe('TrackPage task inventory', () => {
     }
   });
 
-  /* FOLDER used to hold this slot and was removed, not moved: `area/new-track`
-     omits `cwd` from the create POST, so the kernel persists `$HOME` and every
-     track this front-end makes reported the same constant. The assertion is on
-     the *label* rather than on the path, because the defect it guards against
-     is the module coming back, not any particular path being shown. */
   it('has no Folder module: nobody chooses a track cwd any more', () => {
     renderPage({ tasks: [] });
     expect(screen.queryByText('Folder')).toBeNull();
@@ -356,9 +318,6 @@ describe('TrackPage task inventory', () => {
     expect(screen.getByText('No tasks declared yet.')).toBeTruthy();
   });
 
-  /* `Ready` is the ordinary case and prints nothing: a column in which every
-     row carries a word is a column nobody reads. What the row must carry is the
-     two states a reader would otherwise have to open the document to find. */
   it('names only the states that are not the ordinary one', () => {
     renderPage({ tasks: [task('alpha', 'ready'), task('beta', 'not-ready'), task('gone', 'withdrawn')] });
     expect(screen.getByRole('button', { name: 'alpha' })).toBeTruthy();
@@ -367,23 +326,13 @@ describe('TrackPage task inventory', () => {
     expect(screen.queryByText('Ready')).toBeNull();
   });
 
-  /*
-   * The fourth state, which the review found had no test at all: a task whose
-   * payload this build cannot parse. `deriveReportTasks` names it by its block
-   * id — the one literal still true about it — and the row says so rather than
-   * pretending it is merely not ready. Deleting that branch left every other
-   * case green.
-   */
   it('names an unreadable task by its block id and says so', () => {
     renderPage({ tasks: [task('b_bf88', 'unreadable', 'b_bf88')] });
     const row = screen.getByRole('button', { name: /b_bf88.*Unreadable/ });
     expect(row).toBeTruthy();
-    /* Not the word used for a task the agent simply has not finished. */
     expect(screen.queryByText('Not ready')).toBeNull();
   });
 
-  /* The row is a pointer to the block, not a copy of it — it hands back the
-     *block* id, which is what the reveal path takes, and not the task key. */
   it('opens a task by its block id, not by its key', async () => {
     const onOpenTask = vi.fn();
     renderPage({ tasks: [task('alpha', 'ready', 'b-17')], onOpenTask });
@@ -391,15 +340,7 @@ describe('TrackPage task inventory', () => {
     expect(onOpenTask).toHaveBeenCalledWith('b-17');
   });
 
-  /*
-   * The runtime column. Before it, four dispatched tasks were four identical
-   * rows: the panel could say what had been declared and nothing about what was
-   * happening. Each of these words answers a different question a user staring
-   * at a working track actually has.
-   */
-  /* The visible word is hidden from the accessibility tree to avoid duplicate
-     speech; the same complete phrase stays on the reveal control's accessible
-     description. */
+  /* The visible word is `aria-hidden`; the same complete phrase stays on the reveal control's accessible description. */
   it('keeps the full status on the reveal control without a duplicate status graphic', () => {
     const { container } = renderPage({
       tasks: [
@@ -457,18 +398,7 @@ describe('TrackPage task inventory', () => {
       .toBe('failed — track 9a4c is not a git repository');
   });
 
-  /*
-   * **The same reason, on the phone**, and written beside the desktop assertion
-   * on purpose — the two are each other's control.
-   *
-   * The desktop attaches the kernel's reason to the reveal button's accessible
-   * description. Astryx lays the mobile row's meta lane out as a sibling of its
-   * invisible button, so leaving the phrase on the visible carrier alone would
-   * leave the focused control named `delta` and nothing more:
-   * `failed — track 9a4c is not a git repository` would be on screen and
-   * unreachable. It arrives as the control's accessible **description** instead,
-   * which adds the reason without overwriting the visible key.
-   */
+  /* Astryx lays the mobile row's meta lane out as a sibling of its invisible button, so the phrase arrives as the control's accessible description. */
   it('gives the mobile Task row the same reason, as its control’s description', () => {
     const { container } = renderPage({
       tasks: [running('delta', 'failed', 'card-4', 'codex', 'track 9a4c is not a git repository')],
@@ -477,8 +407,6 @@ describe('TrackPage task inventory', () => {
     const row = container.querySelector('[data-nc-mobile-panel] [data-nc-row="b-delta"]');
     expect(row, 'the mobile task row must be on the page').not.toBeNull();
     const control = within(row as HTMLElement).getByRole('button');
-    /* The name is the visible key, unchanged — this is a description, not a
-       second label. */
     expect(control.textContent).toBe('delta');
     const described = control.getAttribute('aria-describedby');
     expect(described, 'the mobile reveal control must carry a description').not.toBeNull();
@@ -486,26 +414,12 @@ describe('TrackPage task inventory', () => {
       .toBe('failed — track 9a4c is not a git repository');
   });
 
-  /* A row with no run has no status carrier: `Not ready` belongs to the
-     declaration and must not pretend work was dispatched. */
   it('draws no status carrier for a declaration the kernel has not dispatched', () => {
     renderPage({ tasks: [task('alpha', 'ready'), task('beta', 'not-ready'), task('gone', 'withdrawn')] });
-    /* By name, not by role alone: the header's lifecycle badge is a named
-       graphic too, and asserting "no img on the page" would pass for the wrong
-       reason the day it moved. */
+    /* By name, not by role alone: the header's lifecycle badge is a named graphic too. */
     expect(screen.queryAllByRole('img', { name: /^Status: / })).toEqual([]);
   });
 
-  /*
-   * The click-through, and the change #1149 makes to it: the *kind* is the card
-   * affordance, not the row. "Which card is doing this" and "what does this
-   * task say" are two questions, and the row used to answer only whichever one
-   * the join decided — once a task was dispatched its declaration became
-   * unreachable from the panel.
-   *
-   * Still a `<button>` and a callback (INV-A11Y-061), and still not nested:
-   * this one is a sibling of the row's reveal button, not inside it.
-   */
   it('opens the worker card from the kind, and only from the kind', async () => {
     const onOpenCard = vi.fn();
     const onOpenTask = vi.fn();
@@ -515,8 +429,6 @@ describe('TrackPage task inventory', () => {
     expect(onOpenTask).not.toHaveBeenCalled();
   });
 
-  /* And the rest of the row still reveals the block — for an assigned task too,
-     which is the row that used to lose that landing entirely. */
   it('reveals the block from the row even when the task has a worker card', async () => {
     const onOpenCard = vi.fn();
     const onOpenTask = vi.fn();
@@ -526,32 +438,6 @@ describe('TrackPage task inventory', () => {
     expect(onOpenCard).not.toHaveBeenCalled();
   });
 
-  /*
-   * The kind is a *label* when there is no card behind it. `app/router` clears
-   * `workerCardId` for any card the registry cannot draw — a worker card of a
-   * kind no entry claims, which is what a kernel newer than this bundle stamps
-   * — and a button there would bounce the reader off the URL and land them
-   * nowhere. `TrackPage` is a pure renderer, so what it legislates is the
-   * `workerCardId === null` branch itself, whichever kind arrives in it.
-   */
-  /*
-   * ── CHANGED EXPECTATION ──────────────────────────────────────────────────
-   *
-   * This test used to close by asserting `onOpenTask` was NOT called either,
-   * and called that inertness deliberate ("a click on the row's padding").
-   * That was the dead zone, written down as the contract: the row's whole
-   * premise is that clicking it reveals the block, and kind-as-label is a state
-   * any dispatched row can be in, so the panel had a word sitting in a
-   * clickable row doing nothing.
-   *
-   * What is actually true is that the kind stops being a *control* — no button
-   * role, no card — while the row underneath it keeps its own action. The
-   * second half of that is a layout fact (`.taskReveal::before` covers the row;
-   * the span is deliberately left unpositioned so the sheet lies over it) and
-   * jsdom has no layout, so it is asserted in `task-row.browser.test.tsx` by
-   * hit test. What is left here is the half jsdom can see, and it is written so
-   * it cannot silently become the old claim again.
-   */
   it('renders the kind as plain text, not a control, when there is no card to open', async () => {
     const onOpenCard = vi.fn();
     const onOpenTask = vi.fn();
@@ -563,9 +449,6 @@ describe('TrackPage task inventory', () => {
     expect(onOpenCard).not.toHaveBeenCalled();
   });
 
-  /* A withdrawn row carries no kind at all, so there is nothing on it that
-     could ever offer a card — the strongest form of "no card affordance", and
-     the one that does not depend on `workerCardId` being cleared. */
   it('offers no kind and no card control on a withdrawn row', () => {
     renderPage({ tasks: [task('gone', 'withdrawn')] });
     expect(screen.queryByText('codex')).toBeNull();
@@ -573,12 +456,6 @@ describe('TrackPage task inventory', () => {
     expect(screen.getAllByRole('button', { name: /gone/ }).length).toBe(1);
   });
 
-  /*
-   * The strike-through belongs to the *declaration*: `Withdrawn` is struck
-   * because the block is struck. It cannot collide with a run —
-   * `deriveReportTasks` hands a withdrawn row no status at all — and the
-   * declaration slot no longer carries runtime words in any case.
-   */
   it('strikes through a withdrawn declaration but not an ordinary one', () => {
     renderPage({ tasks: [task('gone', 'withdrawn')] });
     expect(screen.getByText('Withdrawn').className).toContain('taskWithdrawn');
@@ -610,18 +487,6 @@ describe('TrackPage card inventory', () => {
     expect(onOpenTask).toHaveBeenCalledWith('task-1');
   });
 
-  /*
-   * **The mobile Task row is still a landing** (#1234 S1b-4b). The case above
-   * looks like it covers this and does not: `mobile-layout` as an exact
-   * accessible name matches the *desktop* reveal button, whose name is the task
-   * key alone — the mobile row's name has always carried its meta lane too. So
-   * the click reaches the row this test scopes to, inside the mobile panel.
-   *
-   * Interactivity is the one thing the projection declines to look at (§6.3:
-   * Astryx generates the element the painter cannot reach), and `reveal-block`
-   * is the single action this surface supports — so if it stopped being wired,
-   * every projection assertion in `mobile-projection.test.tsx` would stay green.
-   */
   it('reveals the block when a mobile Task row is tapped', async () => {
     const onOpenTask = vi.fn();
     const { container } = renderPage({
@@ -639,28 +504,6 @@ describe('TrackPage card inventory', () => {
     expect(onOpenTask).toHaveBeenCalledTimes(1);
   });
 
-  /*
-   * ── Δ2: the mobile module sequence has a carrier (#1234 S1b-4b) ───────────
-   *
-   * **What these two cases lock, and why they are not the menu restated.** On
-   * the desktop the row modules are a DOM sequence and `paintPanel` walks it, so
-   * "both surfaces show the same modules in the same order" is held by the
-   * traversal. Mobile drills into one module at a time, so that sequence lives
-   * in this menu — and until this slice it was two hand-written entries that
-   * merely *happened* to agree with `deriveTrackPageView`. Nothing compared them,
-   * so the statement had no carrier on this side at all.
-   *
-   * Both halves are needed. The first compares the menu's labels against the
-   * derivation's `title`s, so a module added, dropped or reordered upstream
-   * moves the menu or goes red. The second follows each entry into the page it
-   * opens and reads the painted module's key, so an entry whose *label* is right
-   * and whose destination is not is caught too — a label sequence alone would be
-   * satisfied by two entries that both open Cards.
-   *
-   * `Outline` and `Conversations` are asserted in position as well: they are not
-   * row modules, and their staying put is the other half of "the derived entries
-   * go exactly here".
-   */
   const MENU_CARDS = [card({ id: 'card-1', kind: 'terminal', title: 'Build log' })];
   const MENU_TASKS: readonly ReportTaskRow[] = [{
     blockId: 'block-1', key: 'alpha-impl', state: 'ready', declaration: null,
@@ -674,8 +517,6 @@ describe('TrackPage card inventory', () => {
       outlineItems: [{ blockId: 'section-1', label: 'What changed', number: 1, children: [] }],
     });
     const modules = deriveTrackPageView({ cards: MENU_CARDS, tasks: MENU_TASKS, activity: NEUTRAL_ACTIVITY, openableCards: new Set(['card-1']) }).rowModules;
-    /* Not vacuous: a one-module derivation would make "the order matches" an
-       assertion about nothing. */
     expect(modules.length).toBeGreaterThan(1);
 
     await userEvent.click(screen.getByRole('button', { name: 'Track actions' }));
@@ -701,38 +542,7 @@ describe('TrackPage card inventory', () => {
     }
   });
 
-  /*
-   * ── The drill-down dispatch has no default arm (#1234 S1b-4b review) ──────
-   *
-   * **The case above cannot see this.** It walks the modules the derivation has
-   * *today*, and a per-key dispatch names each of those explicitly, so that case
-   * is green under either shape of renderer — one that special-cases `cards` and
-   * `tasks`, and one that special-cases nothing but `outline` and
-   * `conversations`. The defect it misses lives outside today's two keys: with a
-   * trailing `else` for Conversations — which is what this file's renderer used
-   * to have — any panel value the dispatch does not name lands on the
-   * Conversations page. `tsc` has nothing to say about it: the `else` is total.
-   *
-   * **What this case does and does not claim.** It is deliberately narrow: a
-   * panel value the renderer does not special-case reaches the *row-module
-   * lookup* rather than the Conversations arm. `rowModule`'s error is the whole
-   * of the evidence — the only way to raise "has no … module" is to have gone
-   * through the lookup — and the value used is one that is not, and is not
-   * meant to become, a module key. So this asserts nothing about what the
-   * painter then draws, and nothing about a *future* `RowModuleView['key']`
-   * member: if the derivation ever gains one, the right behaviour is to paint
-   * it, and this case keeps holding unchanged because `no-such-module` still is
-   * not in `rowModules`. Widening the property to "every unnamed kind is
-   * painted" would need an injectable dispatch and a real third module; that is
-   * not bought here.
-   *
-   * The cast is only how an out-of-union runtime value is handed to a typed
-   * prop. The value is constructed *here*, by the test: the URL cannot produce
-   * it, because every production path into this prop runs through
-   * `asMobilePanel`, which folds anything outside the union to `null`. What it
-   * stands in for is a caller outside the type system — an unchecked dispatch
-   * site, or a `MobilePanelKind` member this file has not been taught.
-   */
+  /* A panel value the renderer does not special-case must reach the row-module lookup, not a trailing Conversations arm; the cast hands in an out-of-union value that `asMobilePanel` would fold to `null` in production. */
   it('routes an unrecognised panel value into the row-module lookup, not Conversations', () => {
     const unknown = 'no-such-module' as NonNullable<TrackPageProps['panel']>;
     expect(() => renderPage({ cards: MENU_CARDS, tasks: MENU_TASKS, panel: unknown }))
@@ -753,12 +563,6 @@ describe('TrackPage card inventory', () => {
     expect(screen.getByRole('heading', { name: 'Outline' })).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Read path benchmark' }));
     expect(onOpenOutline).toHaveBeenCalledWith('benchmark');
-    /*
-     * The panel closes because the anchor navigation drops `?panel=` (#1191
-     * §1.4) — one move, not a local flag plus a navigation. The page is a pure
-     * renderer of `panel`, so the closing is asserted where the URL is real:
-     * `app/router/mobile-report-navigation.test.tsx`.
-     */
   });
 
   it('keeps quick Chat floating on Report and leaves Conversations as history only', async () => {
@@ -793,12 +597,6 @@ describe('TrackPage card inventory', () => {
     expect(panel?.getAttribute('data-nc-mobile-page')).toBe('closed');
   });
 
-  /*
-   * The shell used to reach in through a `window` event to shut this panel.
-   * It is a prop now: whoever owns the URL takes `?panel=` away, and the page
-   * renders what it is given — including a POP the reader triggered with the
-   * hardware Back button, which no event bus could have delivered.
-   */
   it('keeps a source-obscured mobile panel inaccessible even when no conversation is open', () => {
     vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })));
     try {
@@ -823,29 +621,15 @@ describe('TrackPage card inventory', () => {
     expect(container.querySelector('[data-nc-mobile-page]')?.getAttribute('data-nc-mobile-page')).toBe('closed');
   });
 
-  // §5.3 caps an empty state at one short sentence, so the old
-  // "This track has no cards yet" became "No cards yet." The assertion is on the
-  // rendered string because that string *is* the contract here.
   it('says the track has no cards yet when the list is empty', () => {
     renderPage({ cards: [] });
     expect(screen.getByText('No cards yet.')).toBeTruthy();
   });
 
-  /*
-   * CHANGED EXPECTATION — this used to assert the row printed the title *and
-   * not* the kind, on the reasoning that a titled card says the same thing
-   * twice. That held while the only titled cards were ones a user had named.
-   * #1149 titles every worker card after its task key, so `title ?? kind`
-   * deleted the words `codex` / `claude` / `terminal` from the panel on
-   * precisely the rows where the kind is the fact the reader needs: three
-   * workers named after three slices are otherwise indistinguishable. The name
-   * leads and the kind follows in the quiet rank.
-   */
   it('labels a card by its title and keeps the kind beside it', () => {
     renderPage({ cards: [card({ id: 'k1', kind: 'terminal', title: 'Build log' })] });
     expect(screen.getByText('Build log')).toBeTruthy();
     expect(screen.getByText('terminal')).toBeTruthy();
-    // One row, both words — not two rows, and not a kind that escaped the row.
     expect(screen.getByRole('button', { name: /^Build log.?terminal$/ })).toBeTruthy();
   });
 
@@ -859,23 +643,6 @@ describe('TrackPage card inventory', () => {
     expect(onOpenCard).toHaveBeenCalledWith('k1');
   });
 
-  /*
-   * REPLACES "opens a mobile Card detail page without entering Grid" (#1234
-   * S1b-4a). The detail page is gone, and so is the row that opened it: opening
-   * a card is not offered on this viewport at all (`mobile-painter.tsx`'s
-   * capability table), so the mobile Cards row is not a control.
-   *
-   * What survives of the old case's intent is its first assertion — the mobile
-   * row must not reach `onOpenCard` — and it is stronger now: within the mobile
-   * panel there is no button bearing this row's visible name. That is this
-   * line's reach, and no more: a control renamed away from `/Build log/` would
-   * slip past it. The name-independent guarantee — *no* button under any
-   * `[data-nc-row]`, on a render where the desktop's row actions do exist — is
-   * the pair of button counts in `mobile-projection.test.tsx`'s "offers no card
-   * affordance" case. This case keeps the behavioural half here, where the
-   * desktop's own `onOpenCard` wiring is asserted one test above, so the two
-   * surfaces' opposite answers to the same prop sit side by side.
-   */
   it('offers no card control on the mobile page: the row is text, not a landing', async () => {
     const onOpenCard = vi.fn();
     renderPage({ cards: [card({ id: 'k1', title: 'Build log' })], onOpenCard });
@@ -884,8 +651,6 @@ describe('TrackPage card inventory', () => {
     expect(panel?.textContent).toContain('Build log');
     expect(within(panel as HTMLElement).queryByRole('button', { name: /Build log/ })).toBeNull();
     expect(onOpenCard).not.toHaveBeenCalled();
-    /* Still a pushed page with its own return to Report — that half of the old
-       case is about the panel, not about the card. */
     expect(document.querySelector('[data-nc-mobile-page]')?.getAttribute('data-nc-mobile-page')).toBe('open');
     await userEvent.click(screen.getByRole('button', { name: 'Back to Report' }));
     expect(document.querySelector('[data-nc-mobile-page]')?.getAttribute('data-nc-mobile-page')).toBe('closed');
@@ -903,7 +668,6 @@ describe('TrackPage card inventory', () => {
       onResumeTrack={vi.fn()}
       onDeleteTrack={vi.fn()}
     />);
-    // Exactly once: with no title the kind stands alone rather than twice.
     expect(container.textContent).toContain('notes');
     expect(screen.getAllByText('notes').length).toBe(1);
   });
@@ -913,13 +677,6 @@ describe('TrackPage card inventory', () => {
     expect(screen.getAllByText('kernel-owned').length).toBe(1);
   });
 
-  /*
-   * ── The row's delete ──────────────────────────────────────────────────────
-   *
-   * Three claims, one per case, because they fail independently: the control
-   * exists only where the caller offers one, it addresses the row it sits on,
-   * and the kernel's `deletable: false` withholds it.
-   */
   it('offers no delete when the caller supplies no onDeleteCard', () => {
     renderPage({ cards: [card({ id: 'k1', title: 'Build log' })] });
     expect(screen.queryByRole('button', { name: 'Delete card Build log' })).toBeNull();
@@ -936,12 +693,7 @@ describe('TrackPage card inventory', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Delete card Notes' }));
     expect(onDeleteCard).toHaveBeenCalledWith('k2');
     expect(onDeleteCard).toHaveBeenCalledTimes(1);
-    // The row button itself must not have fired: the delete is a *sibling* of it
-    // rather than a child, precisely so one gesture cannot do two things. The
-    // call count above cannot see that — it only counts deletes — so
-    // `onOpenCard` is supplied for this one assertion. Without it in the props
-    // there is no callback for a nested-interaction regression to reach, and
-    // the claim would be about something the page never had.
+    // The row button itself must not have fired: the delete is a sibling of it, so one gesture cannot do two things.
     expect(onOpenCard).not.toHaveBeenCalled();
   });
 
@@ -962,9 +714,6 @@ describe('TrackPage card inventory', () => {
     expect(screen.getByRole('button', { name: 'Delete card notes' })).toBeTruthy();
   });
 
-  // Deliberately gone. §5.3: an unbuilt region shows the *shape* of what is
-  // coming, and nothing else — "no module path, no slice name, no apology".
-  // The card list is built; there is nothing here to apologise for.
   it('does not apologise for unbuilt slices in the card panel', () => {
     const { container } = renderPage({ cards: [card({ id: 'k1' })] });
     expect(container.textContent).not.toMatch(/later slice/i);

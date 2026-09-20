@@ -1,29 +1,4 @@
-//! Integration tests for the area ↔ folder mapping surface introduced
-//! in issue #250 PR 1.
-//!
-//! Coverage matrix (18 cases):
-//!
-//!   1. `post_then_get_returns_the_folder`
-//!   2. `post_same_path_twice_409_equal`
-//!   3. `post_ancestor_when_descendant_exists_409_ancestor`
-//!   4. `post_descendant_when_ancestor_exists_409_descendant`
-//!   5. `post_non_absolute_path_400`
-//!   6. `post_trailing_slash_is_normalized_and_conflicts`
-//!   7. `delete_removes_the_folder`
-//!   8. `resolve_hits_self`
-//!   9. `resolve_hits_descendant`
-//!  10. `resolve_tolerates_corrupt_overlapping_rows`
-//!  11. `resolve_miss_returns_200_null`
-//!  12. `resolve_non_absolute_path_400`
-//!  13. `cascade_delete_area_drops_its_folders`
-//!  14. `post_to_unknown_area_returns_404`
-//!  15. `get_returns_only_own_area_folders`
-//!  16. `cross_area_overlap_409_descendant`
-//!  17. `delete_with_mismatched_area_id_returns_404`
-//!  18. `overlapping_claim_cannot_slip_between_scan_and_insert`
-//!
-//! No daemon binary is required — area_folders is pure CRUD against
-//! the sqlite repo, no card / terminal side-effects.
+//! Integration tests for the area ↔ folder mapping surface; pure CRUD, no daemon binary required.
 
 #![cfg(unix)]
 
@@ -69,9 +44,7 @@ async fn boot() -> Boot {
         .await
         .unwrap();
 
-    // `area_folders` never needs the session daemon — the DaemonClient
-    // here is a stub pointing at /dev/null. Boot mirrors
-    // `cards_deletable.rs` so future contributors recognize the shape.
+    // `area_folders` never needs the session daemon — the DaemonClient is a stub pointing at /dev/null.
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
         proc_supervisor_sock: None,
@@ -164,8 +137,6 @@ async fn delete(app: axum::Router, uri: &str) -> StatusCode {
     resp.status()
 }
 
-// (1) ---------------------------------------------------------------
-
 #[tokio::test]
 async fn post_then_get_returns_the_folder() {
     let b = boot().await;
@@ -185,8 +156,6 @@ async fn post_then_get_returns_the_folder() {
     assert_eq!(body[0]["path"].as_str().unwrap(), "/a");
 }
 
-// (2) ---------------------------------------------------------------
-
 #[tokio::test]
 async fn post_same_path_twice_409_equal() {
     let b = boot().await;
@@ -200,8 +169,6 @@ async fn post_same_path_twice_409_equal() {
     assert!(body["folder_id"].is_number());
 }
 
-// (3) ---------------------------------------------------------------
-
 #[tokio::test]
 async fn post_ancestor_when_descendant_exists_409_ancestor() {
     let b = boot().await;
@@ -214,8 +181,6 @@ async fn post_ancestor_when_descendant_exists_409_ancestor() {
     assert_eq!(body["conflict_path"].as_str().unwrap(), "/a/b");
 }
 
-// (4) ---------------------------------------------------------------
-
 #[tokio::test]
 async fn post_descendant_when_ancestor_exists_409_descendant() {
     let b = boot().await;
@@ -227,8 +192,6 @@ async fn post_descendant_when_ancestor_exists_409_descendant() {
     assert_eq!(body["conflict_kind"].as_str().unwrap(), "descendant");
     assert_eq!(body["conflict_path"].as_str().unwrap(), "/a");
 }
-
-// (5) ---------------------------------------------------------------
 
 #[tokio::test]
 async fn post_non_absolute_path_400() {
@@ -243,23 +206,18 @@ async fn post_non_absolute_path_400() {
     assert_eq!(body["code"].as_str().unwrap(), "bad_request");
 }
 
-// (6) ---------------------------------------------------------------
-
 #[tokio::test]
 async fn post_trailing_slash_is_normalized_and_conflicts() {
     let b = boot().await;
     let uri = format!("/api/areas/{}/folders", b.area_id);
     let (s1, body1) = post(b.app.clone(), &uri, json!({"path": "/a/"})).await;
     assert_eq!(s1, StatusCode::CREATED);
-    // Server normalizes — the stored path drops the trailing slash.
     assert_eq!(body1["path"].as_str().unwrap(), "/a");
 
     let (s2, body2) = post(b.app.clone(), &uri, json!({"path": "/a"})).await;
     assert_eq!(s2, StatusCode::CONFLICT);
     assert_eq!(body2["conflict_kind"].as_str().unwrap(), "equal");
 }
-
-// (7) ---------------------------------------------------------------
 
 #[tokio::test]
 async fn delete_removes_the_folder() {
@@ -279,8 +237,6 @@ async fn delete_removes_the_folder() {
     assert_eq!(list.as_array().unwrap().len(), 0);
 }
 
-// (8) ---------------------------------------------------------------
-
 #[tokio::test]
 async fn resolve_hits_self() {
     let b = boot().await;
@@ -299,8 +255,6 @@ async fn resolve_hits_self() {
     assert_eq!(body["folder_path"].as_str().unwrap(), "/a");
 }
 
-// (9) ---------------------------------------------------------------
-
 #[tokio::test]
 async fn resolve_hits_descendant() {
     let b = boot().await;
@@ -316,24 +270,10 @@ async fn resolve_hits_descendant() {
     assert_eq!(body["folder_path"].as_str().unwrap(), "/a");
 }
 
-// (10) --------------------------------------------------------------
-
 #[tokio::test]
 async fn resolve_tolerates_corrupt_overlapping_rows() {
-    // `area_folder_create_checked` rejects ancestor/descendant overlap
-    // inside the same transaction as its INSERT, so `/a` and `/a/b` can
-    // never both be present via the public HTTP surface — `find_owner`
-    // is a uniqueness oracle and carries no tiebreak (#275). This test
-    // seeds both rows through the raw repo (the unchecked primitive: a
-    // state only a corrupted / hand-edited DB could reach) to pin the
-    // degenerate answer.
-    //
-    // The winner IS a contract, and it is `/a`: `area_folders_list_all`
-    // is `ORDER BY path ASC` and `find_owner` takes the first match. It
-    // must be pinned because `resolve_and_track_create_agree_on_overlapping_rows`
-    // depends on both resolvers landing on the *same* row — changing the
-    // ORDER BY (or reintroducing a tiebreak on one side only) must break
-    // a test rather than silently re-split the two answers.
+    // Both rows are seeded through the unchecked repo primitive (a state only a corrupted DB reaches). The winner
+    // `/a` IS a contract: `area_folders_list_all` is `ORDER BY path ASC` and `find_owner` takes the first match.
     let b = boot().await;
     b.repo.area_folder_create(&b.area_id, "/a").await.unwrap();
     b.repo.area_folder_create(&b.area_id, "/a/b").await.unwrap();
@@ -348,26 +288,9 @@ async fn resolve_tolerates_corrupt_overlapping_rows() {
     assert_eq!(body["area_id"].as_str().unwrap(), b.area_id);
 }
 
-// (18) --------------------------------------------------------------
-
-/// #275 — the conflict scan and the INSERT must share ONE
-/// `BEGIN IMMEDIATE` transaction. Split across two pooled connections,
-/// two concurrent requests claiming `/a` and `/a/b` both pass a scan
-/// that saw an empty table and both commit: `UNIQUE(area_folders.path)`
-/// only rejects *equal* paths, never overlap.
-///
-/// Forced deterministically rather than by racing threads: another
-/// connection holds an open `BEGIN IMMEDIATE` that has already inserted
-/// `/a/b` but not committed, then the claim for the overlapping `/a` is
-/// issued. An atomic writer cannot begin until that commit lands, so it
-/// sees `/a/b` and reports a conflict. A writer that scans first on a
-/// separate connection reads the pre-commit snapshot (WAL readers don't
-/// block), sees nothing, and then inserts `/a` once the lock frees —
-/// leaving two rows that both cover `/a/b/c`.
-///
-/// On-disk DB on purpose: it is the production shape, and shared-cache
-/// `sqlite::memory:` gives readers table-level locks that would mask the
-/// difference this test is trying to observe.
+/// The conflict scan and the INSERT must share ONE `BEGIN IMMEDIATE` transaction: `UNIQUE(path)` rejects only
+/// equal paths, never overlap. On-disk DB on purpose — shared-cache `sqlite::memory:` gives readers table-level
+/// locks that would mask the difference.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn overlapping_claim_cannot_slip_between_scan_and_insert() {
     use calm_server::area_folder_claim::AreaFolderClaim;
@@ -386,7 +309,6 @@ async fn overlapping_claim_cannot_slip_between_scan_and_insert() {
         .unwrap();
     let area_id = area.id.to_string();
 
-    // Writer A: holds the writer lock with `/a/b` staged but uncommitted.
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
     sqlx::query("INSERT INTO area_folders (area_id, path, created_at) VALUES (?1, ?2, ?3)")
         .bind(&area_id)
@@ -396,29 +318,12 @@ async fn overlapping_claim_cannot_slip_between_scan_and_insert() {
         .await
         .unwrap();
 
-    // Writer B: claims the overlapping ancestor `/a` through the real
-    // repo method the route uses.
     let repo_b = repo.clone();
     let area_b = area_id.clone();
     let claim = tokio::spawn(async move { repo_b.area_folder_create_checked(&area_b, "/a").await });
 
-    // Let B get as far as it can, then release the lock.
-    //
-    // The sleep is load-bearing ONLY for the mutant. The green path does
-    // not depend on it: `area_folder_create_checked` takes the writer lock
-    // *before* its scan, so however this sleep is scheduled, B's SELECT can
-    // only run after this commit and must see `/a/b`. (No leak either way —
-    // `calm_truth::db::sqlite::SQLITE_BUSY_TIMEOUT_MS` plus
-    // `begin_immediate_tx`'s ~560 ms retry backoff leave ample headroom over
-    // these 150 ms.) The sleep exists so that a
-    // *non-atomic* implementation — scan on one pooled connection, insert on
-    // another — reliably lands on the wrong side of the race: it gets its
-    // pre-commit empty-table snapshot in, then inserts `/a` once the lock
-    // frees. Without the pause the mutant would sometimes serialize by luck
-    // and the test would pass against a broken implementation. There is no
-    // deterministic barrier available here: B blocks inside SQLite's own
-    // lock acquisition, which exposes no observable "now waiting" edge
-    // without adding a test-only hook to production code.
+    // The sleep is load-bearing only for a non-atomic mutant (scan on one connection, insert on another): it lets
+    // the pre-commit snapshot land first. B blocks inside SQLite's own lock, which exposes no observable edge.
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
     tx.commit().await.unwrap();
 
@@ -438,18 +343,13 @@ async fn overlapping_claim_cannot_slip_between_scan_and_insert() {
     );
 }
 
-// (11) --------------------------------------------------------------
-
 #[tokio::test]
 async fn resolve_miss_returns_200_null() {
     let b = boot().await;
-    // No claims at all — resolve should still return 200 with body == null.
     let (status, body) = get(b.app.clone(), "/api/areas/resolve?path=/anywhere").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.is_null(), "expected null body, got {body}");
 }
-
-// (12) --------------------------------------------------------------
 
 #[tokio::test]
 async fn resolve_non_absolute_path_400() {
@@ -458,8 +358,6 @@ async fn resolve_non_absolute_path_400() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["code"].as_str().unwrap(), "bad_request");
 }
-
-// (13) --------------------------------------------------------------
 
 #[tokio::test]
 async fn cascade_delete_area_drops_its_folders() {
@@ -471,13 +369,10 @@ async fn cascade_delete_area_drops_its_folders() {
     )
     .await;
 
-    // Sanity-check the row exists before the area deletion.
     let pre = b.repo.area_folders_by_area(&b.area_id).await.unwrap();
     assert_eq!(pre.len(), 1);
 
-    // Drop the area via the REST surface (the route handler does the
-    // terminal-reap + area_delete dance; area_folders rows ride the
-    // FK cascade declared in migration 0015).
+    // area_folders rows ride the FK cascade.
     let status = delete(b.app.clone(), &format!("/api/areas/{}", b.area_id)).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
@@ -489,15 +384,10 @@ async fn cascade_delete_area_drops_its_folders() {
     );
 }
 
-// (14) --------------------------------------------------------------
-
 #[tokio::test]
 async fn post_to_unknown_area_returns_404() {
     let b = boot().await;
-    // The area_id in the path is a well-formed UUID that simply has
-    // no row in `areas`. The repo layer surfaces this as NotFound
-    // (see sqlite::area_folder_create) instead of leaking the raw FK
-    // error to the REST caller.
+    // A well-formed UUID with no row: the repo surfaces NotFound instead of leaking the raw FK error.
     let bogus = "00000000-0000-0000-0000-000000000000";
     let (status, _) = post(
         b.app.clone(),
@@ -508,13 +398,9 @@ async fn post_to_unknown_area_returns_404() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
-// (15) --------------------------------------------------------------
-
 #[tokio::test]
 async fn get_returns_only_own_area_folders() {
     let b = boot().await;
-    // Boot already created area A (`b.area_id`); add a second area B
-    // alongside it and claim a non-overlapping path under each.
     let area_b = b
         .repo
         .area_create(NewArea {
@@ -556,19 +442,8 @@ async fn get_returns_only_own_area_folders() {
     assert_eq!(arr_b[0]["area_id"].as_str().unwrap(), area_b_id);
 }
 
-// (16) --------------------------------------------------------------
-
 #[tokio::test]
 async fn cross_area_overlap_409_descendant() {
-    // Cases (3) and (4) already cover ancestor/descendant overlap
-    // within a single area; this case pins that the conflict check
-    // is correctly area-agnostic — i.e. area B cannot claim a path
-    // that overlaps with a claim already held by area A. Was
-    // previously covered only by an e2e test; folded down to a Rust
-    // integration test to keep the conflict-invariant coverage in
-    // one place (see also the dropped `create-folder refuses
-    // ancestor/descendant overlap` block in
-    // `web/e2e/a11y-cwd-resolve.spec.ts`).
     let b = boot().await;
     let area_b = b
         .repo
@@ -581,7 +456,6 @@ async fn cross_area_overlap_409_descendant() {
         .unwrap();
     let area_b_id = area_b.id.to_string();
 
-    // Area A claims the parent.
     let (s1, _) = post(
         b.app.clone(),
         &format!("/api/areas/{}/folders", b.area_id),
@@ -590,7 +464,6 @@ async fn cross_area_overlap_409_descendant() {
     .await;
     assert_eq!(s1, StatusCode::CREATED);
 
-    // Area B tries to claim a descendant of area A's path → 409.
     let (s2, body) = post(
         b.app.clone(),
         &format!("/api/areas/{area_b_id}/folders"),
@@ -599,14 +472,10 @@ async fn cross_area_overlap_409_descendant() {
     .await;
     assert_eq!(s2, StatusCode::CONFLICT);
     assert_eq!(body["conflict_kind"].as_str().unwrap(), "descendant");
-    // The conflict body names the existing claim's area (A), not
-    // the caller's area (B) — the frontend needs this to render a
-    // meaningful "owned by <other area>" message.
+    // The conflict body names the existing claim's area, not the caller's.
     assert_eq!(body["area_id"].as_str().unwrap(), b.area_id);
     assert_eq!(body["conflict_path"].as_str().unwrap(), "/cross/parent");
 
-    // Reverse direction: area B tries to claim an ancestor of an
-    // existing area-A deep claim → 409 ancestor.
     let (s3, _) = post(
         b.app.clone(),
         &format!("/api/areas/{}/folders", b.area_id),
@@ -626,12 +495,9 @@ async fn cross_area_overlap_409_descendant() {
     assert_eq!(body["conflict_path"].as_str().unwrap(), "/cross/deep/inner");
 }
 
-// (17) --------------------------------------------------------------
-
 #[tokio::test]
 async fn delete_with_mismatched_area_id_returns_404() {
     let b = boot().await;
-    // Area A is `b.area_id`; add a second area B to mismatch against.
     let area_b = b
         .repo
         .area_create(NewArea {
@@ -643,7 +509,6 @@ async fn delete_with_mismatched_area_id_returns_404() {
         .unwrap();
     let area_b_id = area_b.id.to_string();
 
-    // Claim a folder under area A.
     let (_, body) = post(
         b.app.clone(),
         &format!("/api/areas/{}/folders", b.area_id),
@@ -652,9 +517,7 @@ async fn delete_with_mismatched_area_id_returns_404() {
     .await;
     let folder_id = body["id"].as_i64().unwrap();
 
-    // Deleting via area B's URL must not succeed — the route checks
-    // the folder's area_id matches the path segment and surfaces a
-    // mismatch as NotFound (intentionally not 403, see route doc).
+    // An area_id mismatch surfaces as NotFound, intentionally not 403.
     let status = delete(
         b.app.clone(),
         &format!("/api/areas/{area_b_id}/folders/{folder_id}"),
@@ -662,7 +525,6 @@ async fn delete_with_mismatched_area_id_returns_404() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
-    // The folder still exists under area A.
     let (_, list) = get(b.app.clone(), &format!("/api/areas/{}/folders", b.area_id)).await;
     let arr = list.as_array().unwrap();
     assert_eq!(arr.len(), 1);

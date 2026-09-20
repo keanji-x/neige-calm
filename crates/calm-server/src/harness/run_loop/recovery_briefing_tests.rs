@@ -129,7 +129,7 @@ async fn recovery_briefing_states_legacy_executor_route_not_isolated_envelope() 
     maybe_issue_turn(inner).await.unwrap();
     assert_eq!(inner.daemon.turn_start_count_for_test(), 1);
     // Locate the kernel-snapshot JSON through the briefing fragment's own
-    // frame, never through a copy of its wording (#1635 S1c).
+    // frame, never through a copy of its wording.
     let (head, tail) = crate::harness::recovery_briefing::BRIEFING
         .split_once("{briefing_json}")
         .unwrap();

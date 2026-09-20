@@ -7,7 +7,7 @@
   why: >
     Bridge 一挂载就在 useEffect 里开 /api/events WebSocket 并把每一帧灌进 Query cache；在 compat 检查跑完之前开
     socket，等于让一个不兼容的前端去解析它读不懂的 kernel 帧。issue #198 concern 1 明写此约束。
-  source: fe/web/src/app/providers/public.tsx:1-101 ; fe/core/keys/storage.ts:1-31
+  source: fe/web/src/app/providers/public.tsx:1-66 ; fe/core/keys/storage.ts:1-26
   authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1 + fe/web/src/app/providers/public.test.tsx:1
   owner_slice: app/providers
   intentional_omission: false
@@ -23,7 +23,7 @@
   why: >
     冷启动窗口里要让路由树从持久化 cache 立刻上色（不能被 version 查询阻塞）， 同时又绝不能在 compat 裁决落地前尝试 WS 连接。两个诉求同时成立的唯一形状就是 "children 渲染 +
     bridge 不挂"。
-  source: fe/web/src/app/providers/public.tsx:1-101 ; fe/core/keys/storage.ts:1-31
+  source: fe/web/src/app/providers/public.tsx:1-66 ; fe/core/keys/storage.ts:1-26
   authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1 + fe/web/src/app/providers/public.test.tsx:1
   owner_slice: app/providers
   intentional_omission: false
@@ -40,7 +40,7 @@
   why: >
     dbInstanceId 是服务端每次进程启动新铸的 UUID v4（不落库）。值变了说明底层 sqlite 被重建（`make dev RESET_DB=1`、迁移分支切换），持久化的 cache 与
     cursor 里全是 已不存在的行 id。
-  source: fe/web/src/app/providers/public.tsx:1-101 ; fe/core/keys/storage.ts:1-31
+  source: fe/web/src/app/providers/public.tsx:1-66 ; fe/core/keys/storage.ts:1-26
   authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1 + fe/web/src/app/providers/public.test.tsx:1
   owner_slice: app/providers
   intentional_omission: false
@@ -55,7 +55,7 @@
     缓存爆破必须**静默**执行 —— 不得弹确认框、不得询问用户。
   why: |
     没有任何客户端自有状态会丢（一切都在服务端），确认框是纯摩擦。代码注释明写 "silently, because there's no client-owned state to lose"。
-  source: fe/web/src/app/providers/public.tsx:1-101 ; fe/core/keys/storage.ts:1-31
+  source: fe/web/src/app/providers/public.tsx:1-66 ; fe/core/keys/storage.ts:1-26
   authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1 + fe/web/src/app/providers/public.test.tsx:1
   owner_slice: app/providers
   intentional_omission: true
@@ -70,7 +70,7 @@
     dbInstanceId 相同时，必须保留 Query cache、WS cursor（`calm:sync:cursor`）和 IDB blob —— 三者一个都不能动。
   why: |
     对称防"爆破过度"回归：匹配路径上误删 cursor 会丢掉自启动以来的全部事件， 误删 cache/IDB 会白掉首屏。
-  source: fe/web/src/app/providers/public.tsx:1-101 ; fe/core/keys/storage.ts:1-31
+  source: fe/web/src/app/providers/public.tsx:1-66 ; fe/core/keys/storage.ts:1-26
   authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1 + fe/web/src/app/providers/public.test.tsx:1
   owner_slice: app/providers
   intentional_omission: false
@@ -85,7 +85,7 @@
     首次访问（runtime.storage 无历史 id）必须只通过 safeWrite 写入当前 id 并继续渲染，不得触发任何清理或 reload。
   why: |
     没有 previous 值就没有"变化"可言；把首访当成爆破会让每个新用户第一次打开就白屏刷新一次。
-  source: fe/web/src/app/providers/public.tsx:1-101 ; fe/core/keys/storage.ts:1-31
+  source: fe/web/src/app/providers/public.tsx:1-66 ; fe/core/keys/storage.ts:1-26
   authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1 + fe/web/src/app/providers/public.test.tsx:1
   owner_slice: app/providers
   intentional_omission: false
@@ -100,7 +100,7 @@
     `busted`（reload 已发起）期间必须渲染 `null`，不得渲染 children。
   why: |
     浏览器马上就要导航走；此刻渲染 children 会闪一帧"cache 已清空"的空态。
-  source: fe/web/src/app/providers/public.tsx:1-101 ; fe/core/keys/storage.ts:1-31
+  source: fe/web/src/app/providers/public.tsx:1-66 ; fe/core/keys/storage.ts:1-26
   authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1 + fe/web/src/app/providers/public.test.tsx:1
   owner_slice: app/providers
   intentional_omission: false
@@ -120,8 +120,8 @@
     （Sidebar 的 useAreasQuery）在下一次渲染就看到新名字，不依赖 HTTP。
     朴素的 `setQueryData([updated])` 会静默丢掉其他 area；事件与 HTTP 的到达顺序也不稳定，
     所以"保留其他行"和"保留更高版本"必须一起锁。
-  source: fe/core/domain/area.ts:60-70; fe/web/src/app/events/query-invalidation-adapter.ts:98-108
-  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:151-210
+  source: fe/core/domain/area.ts:51-56; fe/web/src/app/events/query-invalidation-adapter.ts:61-70
+  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:130-189
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
   runtime_layer: app
@@ -139,8 +139,8 @@
     issue #288 防御分支：客户端从未 fetch 过（或已被 GC）的 area，事件 payload 不是
     完整真相来源；凭它塞一行进列表会画出一个幻影。正确路径是等旁路的 invalidate 触发
     refetch 把真相拉回来。
-  source: fe/web/src/app/events/query-invalidation-adapter.ts:113-123
-  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:225-253
+  source: fe/web/src/app/events/query-invalidation-adapter.ts:75-85
+  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:204-232
   owner_slice: app/events-glue/invalidation
   intentional_omission: true
   runtime_layer: app
@@ -159,8 +159,8 @@
     track 的四个可见投影分别由这四个 key 驱动（侧栏列表 / 详情页 / 报告文件树 / 日历区间视图），
     少一个就出现某一处静默陈旧。lifecycle 事件本身不证明 task policy 改变；把 report
     刷新限定到 `track.updated` 可避免独立 lifecycle 消息触发昂贵的整份报告重算。
-  source: fe/core/events/invalidation-plan.ts:202-220
-  authoritative_test: fe/core/events/invalidation-plan.test.ts:61-83
+  source: fe/core/events/invalidation-plan.ts:127-143
+  authoritative_test: fe/core/events/invalidation-plan.test.ts:28-50
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
   runtime_layer: app
@@ -180,8 +180,8 @@
     继续作为 placeholder 上色。删除 tree member 也会改变剩余成员的 B/N budget share，
     所以仍存活的 task verdict 查询必须重新读取服务端重投影结果；删除目标自己的 report
     endpoint 已经是 404，必须先从 cache 移除，不能被 prefix refetch 命中。
-  source: fe/core/events/invalidation-plan.ts:211-218; fe/web/src/app/events/query-invalidation-adapter.ts:91-104
-  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:300
+  source: fe/core/events/invalidation-plan.ts:134-141; fe/web/src/app/events/query-invalidation-adapter.ts:56-66
+  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:271
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
   runtime_layer: app
@@ -198,8 +198,8 @@
   why: >
     `calm.plan.cancel` 将 pending task 改为 canceled 时只发送 `plan.updated`；pending 状态不轮询，
     缺少该失效会让 TASKS 面板永久保留旧状态和旧 pending reason，直到整页重载。
-  source: fe/core/events/invalidation-plan.ts:356-358
-  authoritative_test: fe/web/src/app/events/event-bridge.contract.test.tsx:243-249
+  source: fe/core/events/invalidation-plan.ts:227-229
+  authoritative_test: fe/web/src/app/events/event-bridge.contract.test.tsx:238-244
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
   runtime_layer: app
@@ -218,7 +218,7 @@
     kernel 用 entity_kind + entity_id 寻址 overlay，光看事件 payload 无从知道该失效哪个 track。
     没有 track 被加载时，用户根本看不到那个 track 的 card overlay 变化，等下次 track detail
     refetch 捡起来即可 —— 这是被明确判定为无害的降级。
-  source: fe/web/src/app/events/track-lookup.ts:7-17; fe/core/events/invalidation-plan.ts:320-339
+  source: fe/web/src/app/events/track-lookup.ts:7-17; fe/core/events/invalidation-plan.ts:192-211
   authoritative_test: fe/web/src/app/events/track-lookup.test.ts:7-17
   owner_slice: app/events-glue/invalidation
   intentional_omission: true
@@ -237,8 +237,8 @@
   why: >
     runs/* 与 cards/* 的 hook 视图都从 kernel 投影的 track 文件派生；反查失败时宁可
     宽失效也不能静默不失效（否则报告侧栏永远看不到新产物）。
-  source: fe/core/events/invalidation-plan.ts:46-73
-  authoritative_test: fe/core/events/invalidation-plan.test.ts:67; fe/core/events/invalidation-plan.contract.test.ts:36
+  source: fe/core/events/invalidation-plan.ts:46-68
+  authoritative_test: fe/core/events/invalidation-plan.test.ts:34; fe/core/events/invalidation-plan.contract.test.ts:36
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
   runtime_layer: app
@@ -254,8 +254,8 @@
     所属 track detail、`['overlays','card']` 与该 track 的 track-files。
   why: >
     runtime 状态同时驱动卡片详情、卡片状态角标（overlay 快照）和 runtime.json 投影三处 UI。
-  source: fe/core/events/invalidation-plan.ts:184-191,246-248; fe/web/src/app/events/track-lookup.ts:7-17
-  authoritative_test: fe/core/events/invalidation-plan.test.ts:155-167
+  source: fe/core/events/invalidation-plan.ts:110-116,163-165; fe/web/src/app/events/track-lookup.ts:7-17
+  authoritative_test: fe/core/events/invalidation-plan.test.ts:122-125
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
   runtime_layer: app
@@ -277,7 +277,7 @@
     `['today-launchpad']` 是空态判据被读出的键；缺任一个，点了「写今日进度」页面就
     不动。`PolicyMap` 只对 event kind 穷举、不对 query key 穷举，所以删掉任一行都不会
     有 golden 变红 —— 只有 authoritative_test 里那份逐字键表拦得住。
-  source: fe/core/events/invalidation-plan.ts:316-319
+  source: fe/core/events/invalidation-plan.ts:191
   authoritative_test: fe/core/events/invalidation-plan.contract.test.ts:24-36
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
@@ -340,7 +340,7 @@
     `retryUnless401` 必须被导出，供需要自定义 staleTime 等选项的调用点组合复用同一策略。
   why: |
     每个 per-query override 若各自重写 retry，就会绕开 401 不重试的约束，401 处理退化成 "默认路径才对"。
-  source: fe/web/src/app/providers/public.tsx:1-101 ; fe/core/keys/storage.ts:1-31
+  source: fe/web/src/app/providers/public.tsx:1-66 ; fe/core/keys/storage.ts:1-26
   authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:8
   owner_slice: app/providers
   intentional_omission: false
@@ -357,7 +357,7 @@
   why: >
     上一会话的 `since` 游标若留着，下一个用户立刻登录就会把旧事件重播进新会话；
     游标本来就是单用户的，丢弃才正确。IDB 同理 —— 死行 id 不得上色。
-  source: fe/web/src/app/auth/session-gate.tsx:22-30,61-69 ; fe/web/src/app/auth/production-app.tsx:55-69 ; fe/web/src/app/events/browser-cursor-store.ts:1,83-89 ; fe/core/keys/storage.ts:12-14
+  source: fe/web/src/app/auth/session-gate.tsx:17-25,56-64 ; fe/web/src/app/auth/production-app.tsx:55-69 ; fe/web/src/app/events/browser-cursor-store.ts:1,83-89 ; fe/core/keys/storage.ts:12-14
   authoritative_test: fe/web/src/app/auth/session-gate.contract.test.tsx:62-93 ; fe/web/src/app/auth/production-app.contract.test.tsx:30-67
   owner_slice: features/auth/session
   intentional_omission: false
@@ -374,7 +374,7 @@
     再把会话态翻回 unauthed。
   why: >
     Query cache 是完整 unauthorized 清理链的第一步；上一用户的私有 query 数据不得在登录页后留存。
-  source: fe/web/src/app/auth/session-gate.tsx:22-34,61-69
+  source: fe/web/src/app/auth/session-gate.tsx:17-29,56-64
   authoritative_test: fe/web/src/app/auth/session-gate.contract.test.tsx:41-60
   owner_slice: features/auth/session
   intentional_omission: false
@@ -390,7 +390,7 @@
     storage(`calm.theme`) 的读与写都必须 try/catch；读到非法值必须回落 `'system'`。
   why: |
     跨域 iframe / private mode 下 localStorage 会抛。写失败时状态更新仍然生效， 只是不跨 reload 存活 —— 这是刻意的降级取舍。
-  source: fe/web/src/app/theme/public.tsx:1-69 ; fe/core/keys/storage.ts:1-31
+  source: fe/web/src/app/theme/public.tsx:1-69 ; fe/core/keys/storage.ts:1-26
   authoritative_test: fe/web/src/app/theme/public.contract.test.tsx:1 + fe/web/src/app/theme/public.test.tsx:1
   owner_slice: app/theme
   intentional_omission: false
@@ -406,7 +406,7 @@
     时必须拆掉该订阅，OS 变化不得再影响 `resolved`。
   why: |
     用户显式选择就是显式退出 OS 跟踪；留着监听会有陈旧 `setSystemPref` 在用户已经 opt-out 后仍然触发。
-  source: fe/web/src/app/theme/public.tsx:1-69 ; fe/core/keys/storage.ts:1-31
+  source: fe/web/src/app/theme/public.tsx:1-69 ; fe/core/keys/storage.ts:1-26
   authoritative_test: fe/web/src/app/theme/public.contract.test.tsx:1 + fe/web/src/app/theme/public.test.tsx:1
   owner_slice: app/theme
   intentional_omission: false
@@ -421,7 +421,7 @@
     仅当 URL 带 `?testMounts=1` 时才挂 `window.__calmSetTheme`；卸载时必须只在 引用仍是自己时才 delete。
   why: |
     issue #177 的 Playwright 仪器：e2e 需要在**不导航**的前提下翻主题 —— 导航会卸载被观测的 track 页 XtermView，整个观测就失效了。生产用户不应看到该全局。
-  source: fe/web/src/app/theme/public.tsx:1-69 ; fe/core/keys/storage.ts:1-31
+  source: fe/web/src/app/theme/public.tsx:1-69 ; fe/core/keys/storage.ts:1-26
   authoritative_test: fe/web/src/app/theme/theme.browser.test.tsx:1
   owner_slice: app/theme
   intentional_omission: false
@@ -436,7 +436,7 @@
     `window` / `matchMedia` / `document` 缺席时 provider 仍必须能渲染，默认落到 'system' → 'light'。
   why: |
     Vitest/jsdom 角落场景与未来可能的 SSR pass 都要求 provider 不能因为全局缺席而崩。
-  source: fe/web/src/app/theme/public.tsx:1-69 ; fe/core/keys/storage.ts:1-31
+  source: fe/web/src/app/theme/public.tsx:1-69 ; fe/core/keys/storage.ts:1-26
   authoritative_test: fe/web/src/app/theme/public.ssr.contract.test.tsx:1
   owner_slice: app/theme
   intentional_omission: false
@@ -451,7 +451,7 @@
     `useTheme()` 在 ThemeProvider 之外调用必须抛出**指名 ThemeProvider 与 app/providers/public.tsx 的**描述性错误。
   why: |
     静默返回默认值会让"provider 装错位置"变成难查的视觉 bug；错误文案里带修复位置 是刻意的可诊断性设计。
-  source: fe/web/src/app/theme/public.tsx:1-69 ; fe/core/keys/storage.ts:1-31
+  source: fe/web/src/app/theme/public.tsx:1-69 ; fe/core/keys/storage.ts:1-26
   authoritative_test: fe/web/src/app/theme/public.contract.test.tsx:1 + fe/web/src/app/theme/public.test.tsx:1
   owner_slice: app/theme
   intentional_omission: false
@@ -484,7 +484,7 @@
     storage 读写是 best-effort，异常不得逃逸且内存值继续保持权威。
   why: >
     这些约束共同阻止跨数据库 cursor 重放、旧 idle 续体复活 cursor，以及实例切换首帧先建连。
-  source: fe/web/src/app/events/browser-cursor-store.ts:24-91; fe/web/src/app/providers/public.tsx:47-76
+  source: fe/web/src/app/events/browser-cursor-store.ts:24-91; fe/web/src/app/providers/public.tsx:18-44
   authoritative_test: fe/web/src/app/events/browser-cursor-store.test.ts:1 + fe/web/src/app/providers/public.test.tsx:1
   owner_slice: app/events-glue/event-bridge
   runtime_layer: app
@@ -602,9 +602,9 @@
   why: >
     HTTP 响应与事件流没有固定到达顺序。尤其 Area 创建响应返回前，另一窗口可以先更新同一 Area；
     若创建响应无条件替换 cache，编辑后的默认 template/cwd 会在 refetch 前回滚并被 New Track 快照。
-  source: fe/core/domain/area.ts:60-70; fe/web/src/app/providers/queries.ts:907-948
-  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:179-210;
-    fe/web/src/app/providers/queries.contract.test.ts:246-292,315-353
+  source: fe/core/domain/area.ts:51-56; fe/web/src/app/providers/queries.ts:578-603
+  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:158-189;
+    fe/web/src/app/providers/queries.contract.test.ts:246-292,315-352
   owner_slice: app/providers
   runtime_layer: app
   verification_owner: unit
@@ -623,7 +623,7 @@
     响应可能在服务端提交后丢失。等待 refetch 可让错误/重试界面先观察最新 Area 列表，并让更新后的
     template/cwd 回到 cache。创建重试另由已协商的服务器幂等能力与稳定操作键保护；
     refetch 不通过同名查找推断某次创建是否提交。
-  source: fe/web/src/app/providers/queries.ts:1052-1104
+  source: fe/web/src/app/providers/queries.ts:693-740
   authoritative_test: fe/web/src/app/providers/queries.contract.test.ts:259-305
   owner_slice: app/providers
   runtime_layer: app
@@ -647,21 +647,21 @@
     #1722：rail 里「股票持仓表」`data-nc-activity=working` 而其 planner 已 idle 三天——FE 用 `isRunning(lifecycle)`
     当「在动」、用 lifecycle ∨ `anyCardNeedsInput` 当「等你」，与内核从持久行算出的结论不一致；判定收敛到内核一处
     （`track_activity.rs`），FE 只解码 overlay。第二套推导必然再度分叉。
-  source: fe/core/domain/activity.ts:40-48; fe/core/domain/track.ts:779-806;
-    fe/web/src/app/providers/ui-preferences.tsx:82-130; fe/web/src/ui/activity-indicator/activity-indicator.module.css:7-8;
-    fe/web/src/features/chat/list/public.tsx:55-142; fe/core/view/track-page.ts:87-91,199-201,264-265,285,305,327;
-    fe/web/src/systems/cards/builtins/terminal-card.tsx:15-113;
-    fe/web/src/app/shell/mobile-tracks.tsx:73-97; fe/web/src/app/shell/public.tsx:385-388
-  authoritative_test: fe/core/domain/activity.test.ts:10-45; fe/core/domain/track.test.ts:184-230;
-    fe/web/src/features/track/row/public.test.tsx:136-211; fe/web/src/app/providers/ui-preferences.test.tsx:114-166;
-    fe/web/src/app/shell/mobile-tracks.test.tsx:94-162; fe/web/src/app/shell/responsive.contract.test.tsx:106-132;
-    fe/web/src/ui/activity-indicator/activity-indicator.browser.test.tsx:59-87;
-    fe/web/src/features/chat/list/public.test.tsx:38-94; fe/web/src/app/router/track-conversation.test.tsx:2331-2416;
-    fe/web/src/app/router/today-conversation.test.tsx:230-253; fe/web/src/features/chat/thread/public.test.tsx:676-761;
-    fe/web/src/features/track/page/public.test.tsx:261-341; fe/web/src/features/track/page/mobile-projection.test.tsx:408-436;
-    fe/core/view/track-page.test.ts:292-319; fe/web/src/app/router/track-cards-panel.test.tsx:498-524;
-    fe/web/src/systems/cards/builtins/terminal-lifecycle.test.tsx:104-120;
-    fe/web/src/systems/cards/builtins/terminal-head-activity.test.tsx:58-85
+  source: fe/core/domain/activity.ts:28-36; fe/core/domain/track.ts:506-529;
+    fe/web/src/app/providers/ui-preferences.tsx:69-105; fe/web/src/ui/activity-indicator/activity-indicator.module.css:7-8;
+    fe/web/src/features/chat/list/public.tsx:32-88; fe/core/view/track-page.ts:14-18,59-61,69-70,90,107,119;
+    fe/web/src/systems/cards/builtins/terminal-card.tsx:12-87;
+    fe/web/src/app/shell/mobile-tracks.tsx:73-89; fe/web/src/app/shell/public.tsx:353
+  authoritative_test: fe/core/domain/activity.test.ts:10-37; fe/core/domain/track.test.ts:174-216;
+    fe/web/src/features/track/row/public.test.tsx:124-181; fe/web/src/app/providers/ui-preferences.test.tsx:112-157;
+    fe/web/src/app/shell/mobile-tracks.test.tsx:95-146; fe/web/src/app/shell/responsive.contract.test.tsx:104-123;
+    fe/web/src/ui/activity-indicator/activity-indicator.browser.test.tsx:56-77;
+    fe/web/src/features/chat/list/public.test.tsx:32-88; fe/web/src/app/router/track-conversation.test.tsx:1924-2009;
+    fe/web/src/app/router/today-conversation.test.tsx:188-211; fe/web/src/features/chat/thread/public.test.tsx:534-599;
+    fe/web/src/features/track/page/public.test.tsx:238-308; fe/web/src/features/track/page/mobile-projection.test.tsx:255-283;
+    fe/core/view/track-page.test.ts:239-266; fe/web/src/app/router/track-cards-panel.test.tsx:391-416;
+    fe/web/src/systems/cards/builtins/terminal-lifecycle.test.tsx:95-111;
+    fe/web/src/systems/cards/builtins/terminal-head-activity.test.tsx:48-75
   owner_slice: core/domain/overlay
   runtime_layer: core
   verification_owner: unit
@@ -676,7 +676,7 @@
   statement: 当 minWebCompatVersion 高于 WEB_COMPAT_VERSION 时，RefreshRequiredOverlay 必须阻止旧客户端操作，显示两侧版本号并提供 Refresh now 按钮。
   why: |
     issue #45 / docs/upgrade-stability.md Tier B：前后端 skew 时用户必须被明确阻断， 并且运维式的 "compat v3 vs v1" 对照要一眼可见。
-  source: fe/web/src/app/providers/public.tsx:1-113
+  source: fe/web/src/app/providers/public.tsx:1-76
   authoritative_test: fe/web/src/app/providers/providers.browser.test.tsx:1-30
   owner_slice: app/providers
   intentional_omission: false
@@ -692,8 +692,8 @@
     issue #198 followup / PR #215：以前 `sharedEventStream()` 会自动 start， ServerCompatGate 提前渲染的 children 一调它就在
     compat 裁决前开了 socket。 改成惰性单例后，"不兼容前端永不打开 /api/events" 才从"实践上成立"变成"构造上成立"。 【新架构】typestate **不覆盖此条**：同一
     Unconfigured 实例可被多次 configure， 也可能产生多个持有 start() 的 handle。仍需 ownership 约束 + architecture test。
-  source: fe/web/src/app/events/event-bridge.tsx:1-72
-  authoritative_test: fe/web/src/app/events/event-bridge.contract.test.tsx:1-361
+  source: fe/web/src/app/events/event-bridge.tsx:3-57
+  authoritative_test: fe/web/src/app/events/event-bridge.contract.test.tsx:1-356
   owner_slice: app/events-glue/event-bridge
   intentional_omission: false
   runtime_layer: app
@@ -763,7 +763,7 @@
   why: >
     issue #189：401 表示会话 cookie 已消失（过期、服务端重启、兄弟标签页登出）。 重试只会拖慢 SessionProvider 的 onUnauthorized 清理 → LoginPage
     跳转 （`api/calm.ts` 的 request() 已经发过信号了），期间还堆一个注定失败的第二请求。
-  source: fe/web/src/app/providers/public.tsx:1-113
+  source: fe/web/src/app/providers/public.tsx:1-76
   authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1-33
   owner_slice: app/providers
   intentional_omission: false
@@ -777,8 +777,8 @@
   statement: harness.item.added 必须失效同 card 的 harness-items；harness.transcript.cleared 必须同时失效同 card 的
     harness-items 与 planner-run。applyEventEffects 必须把这些计划键映射为现行查询键，不能丢弃。
   why: 转录新增与清空必须刷新可见投影。旧界面的本地 seq 状态实现已退役；新版由 core 计划和 app 查询适配器共同履行此约束。
-  source: fe/core/events/invalidation-plan.ts:247-281 ; fe/web/src/app/events/query-invalidation-adapter.ts:30-134
-  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:286-316
+  source: fe/core/events/invalidation-plan.ts:164-178 ; fe/web/src/app/events/query-invalidation-adapter.ts:19-96
+  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:257-287
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
   runtime_layer: app

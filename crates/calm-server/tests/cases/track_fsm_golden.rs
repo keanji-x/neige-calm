@@ -1,24 +1,6 @@
-//! Issue #679 PR0-B — data-driven golden for the track lifecycle FSM edge table.
-//!
-//! `tests/goldens/track_fsm_edges.json` enumerates the FULL decision space of
-//! `track_lifecycle::validate_transition`: 9 from-states × 9 to-states × 4
-//! actor kinds = 324 rows, each mapped to `"ok"` / `"illegal_edge"` /
-//! `"not_authorized"`. The file was generated from the implementation and
-//! hand-checked against the rule table in `track_lifecycle.rs` docs (45 `ok`
-//! rows = 27 distinct legal edges [incl. #741-4 dead-root draft→failed +
-//! planning→failed, and the Planner-feedback-#3 self-executed
-//! planning→reviewing] + 9×2 same-state idempotent shortcuts;
-//! Worker/Other are denied everywhere). It is now the contract: any change
-//! to the validator's answer for any cell fails this test and requires a
-//! conscious golden update.
-//!
-//! Regenerate after an *intentional* FSM change with:
-//!
-//! ```sh
-//! REGEN_TRACK_FSM_GOLDEN=1 cargo test -p calm-server --test track_suite track_fsm_golden::
-//! ```
-//!
-//! then diff + hand-verify the result before committing.
+//! Data-driven golden for the track lifecycle FSM edge table (`tests/goldens/track_fsm_edges.json`,
+//! 9 from × 9 to × 4 actor kinds). Regenerate after an intentional FSM change with
+//! `REGEN_TRACK_FSM_GOLDEN=1 cargo test -p calm-server --test track_suite track_fsm_golden::`, then hand-verify the diff.
 
 use calm_server::ids::{ActorId, CardId};
 use calm_server::model::TrackLifecycle;
@@ -53,10 +35,8 @@ fn golden_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/goldens/track_fsm_edges.json")
 }
 
-/// Every `ActorId` that classifies into the given golden actor-kind label.
-/// The golden is keyed on the semantic kind; asserting through ALL concrete
-/// representatives also pins `actor_kind()`'s classification (Kernel and
-/// KernelDispatcher behave as PlannerAgent, AiClaude as Worker, ...).
+/// Every `ActorId` that classifies into the given golden actor-kind label; asserting through ALL concrete
+/// representatives also pins `actor_kind()`'s classification.
 fn representatives(kind: &str) -> Vec<ActorId> {
     match kind {
         "user" => vec![ActorId::User],
@@ -92,9 +72,8 @@ fn outcome_of(res: &Result<(), TransitionError>) -> &'static str {
     }
 }
 
-/// Recompute the full edge table from the current implementation, in the
-/// golden's canonical row order. Uses the first representative per kind;
-/// the verification test cross-checks the remaining representatives.
+/// Recompute the full edge table from the current implementation, in the golden's canonical row order,
+/// using the first representative per kind.
 fn compute_table() -> Vec<EdgeRow> {
     let mut rows = Vec::with_capacity(ALL_STATES.len() * ALL_STATES.len() * ALL_KINDS.len());
     for from in ALL_STATES {
@@ -163,8 +142,7 @@ fn edge_table_matches_golden() {
         "workers and plugins must be denied everywhere"
     );
 
-    // Cell-by-cell: implementation must answer exactly what the golden says,
-    // for EVERY concrete ActorId that maps to the row's actor kind.
+    // Cell-by-cell, for EVERY concrete ActorId that maps to the row's actor kind.
     let computed = compute_table();
     assert_eq!(computed.len(), golden.len());
     for (row, comp) in golden.iter().zip(&computed) {

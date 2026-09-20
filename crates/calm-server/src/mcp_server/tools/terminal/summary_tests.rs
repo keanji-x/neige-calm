@@ -1,8 +1,5 @@
 use super::*;
 
-/// #1620 F6 — an image failure after creation, claim and text readback
-/// keeps the text state, the claim and the ids, drops the PNG and reports
-/// the reason; an image success replaces state and PNG.
 #[test]
 fn open_image_failure_keeps_the_text_state_and_reports_image_unavailable() {
     let text = json!({"terminal_id":"t-1","text":["READY"],"role":"owner","control_id":"c-1"});
@@ -41,8 +38,6 @@ fn open_image_failure_keeps_the_text_state_and_reports_image_unavailable() {
     assert_eq!(png, Some(vec![9]));
 }
 
-/// #1704 S1 — the rule counts join the open's summary line only when the
-/// state carries the echoed block, before the structuredContent pointer.
 #[test]
 fn open_summary_names_the_permission_counts_only_when_the_block_is_echoed() {
     let mut state = json!({"terminal_id":"t-1","observation_id":"o-1","observation_revision":3,
@@ -61,8 +56,6 @@ fn open_summary_names_the_permission_counts_only_when_the_block_is_echoed() {
         "terminal t-1 observation o-1 revision 3 owner 80x24 cursor 1,2 wait elapsed \
          permissions allow 2 ask 1 deny 0; full state in structuredContent"
     );
-    // #1704 S2 — the source follows the counts when the card carries it
-    // (a pre-S2 card has none: the line is S1's).
     state["claude_permissions_source"] = json!("declared_within_policy");
     assert_eq!(
         observation_summary(&state),
@@ -78,8 +71,6 @@ fn open_summary_names_the_permission_counts_only_when_the_block_is_echoed() {
     );
 }
 
-/// #1710 — an observe that searched the history names the verdict and the
-/// row on the returned screen; the segment is absent without a search.
 #[test]
 fn observe_summary_names_the_history_search_verdict_only_when_present() {
     let mut state = json!({"terminal_id":"t-1","observation_id":"o-1","observation_revision":3,
@@ -103,8 +94,6 @@ fn observe_summary_names_the_history_search_verdict_only_when_present() {
     );
 }
 
-/// #1710 — the invalid-params table of the history search arguments, before
-/// any service call.
 #[test]
 fn scroll_to_request_refuses_the_coupled_and_malformed_shapes() {
     let text = |value: &str| Some(value.to_owned());

@@ -16,15 +16,10 @@ fn periodic_reconcile_sweeps_context_before_scheduler() {
 }
 use calm_types::worker::WorkerSessionId;
 
-/// Env-override permits parsing — covers the four cases the helper
-/// documents (unset, empty, unparseable, zero, valid).
 #[test]
 fn permits_from_env_fallback_paths() {
-    // Save + restore so this test doesn't disturb its neighbors.
     let saved = std::env::var("NEIGE_DISPATCHER_PERMITS").ok();
 
-    // Use a sub-fn so the unsafe SAFETY blocks are scoped tightly.
-    // `set_var` / `remove_var` are unsafe in 2024-edition Rust.
     fn set(k: &str, v: &str) {
         // SAFETY: single-threaded test; no other reader of this env
         // var is racing.
@@ -50,16 +45,11 @@ fn permits_from_env_fallback_paths() {
     set("NEIGE_DISPATCHER_PERMITS", "3");
     assert_eq!(Dispatcher::permits_from_env(8), 3, "valid → override");
 
-    // Restore.
     match saved {
         Some(v) => set("NEIGE_DISPATCHER_PERMITS", &v),
         None => remove("NEIGE_DISPATCHER_PERMITS"),
     }
 }
-
-// ---------------------------------------------------------------
-// #293 PR3b — push path: filter coverage and author gating.
-// ---------------------------------------------------------------
 
 use crate::card_role_cache::CardRoleCache;
 use crate::event::{ArtifactRef, BroadcastEnvelope, EventScope};
@@ -73,13 +63,7 @@ fn track_scope(track: &TrackId, area: &AreaId) -> EventScope {
     }
 }
 
-/// The dispatcher's `SubscribeFilter` must match only the push and
-/// scheduler trigger kinds. The filter under test is built from the SAME
-/// `dispatcher_subscription_kinds()` the spawn site reads (#1727 S1 fix
-/// H4 — the previous hand-copied list had silently fallen behind the
-/// production one), and `matches()` is asserted per kind, plus retired
-/// request kinds and non-matching kinds to prove the list is still a
-/// closed allowlist (not "match everything").
+/// Built from the same `dispatcher_subscription_kinds()` the spawn site reads.
 #[test]
 fn dispatcher_filter_matches_push_kinds() {
     let filter = SubscribeFilter {
@@ -99,7 +83,6 @@ fn dispatcher_filter_matches_push_kinds() {
         event: ev,
     };
 
-    // The retired worker_requested kinds no longer match.
     assert!(!filter.matches(&env(Event::CodexWorkerRequested {
         idempotency_key: "k".into(),
         goal: "g".into(),
@@ -113,7 +96,6 @@ fn dispatcher_filter_matches_push_kinds() {
         cwd: None,
         agent_message: None,
     })));
-    // The push kinds match.
     assert!(filter.matches(&env(Event::TaskCompleted {
         idempotency_key: "k".into(),
         result: serde_json::Value::Null,
@@ -126,7 +108,6 @@ fn dispatcher_filter_matches_push_kinds() {
         details: None,
         agent_message: None,
     })));
-    // The three settlement kinds share the task-terminal arm.
     assert!(filter.matches(&env(Event::TaskExecutionSettled {
         task_id: "w:k".into(),
         operation_id: "op-exec".into(),
@@ -141,8 +122,6 @@ fn dispatcher_filter_matches_push_kinds() {
             operation_id: "op-cand".into(),
         }))
     );
-    // Issue #644 PR-C — gate verdicts route to the push branch
-    // (and poke the scheduler).
     assert!(filter.matches(&env(Event::TaskGateResult {
         task_id: "w:k".into(),
         idempotency_key: "w:k".into(),
@@ -166,9 +145,6 @@ fn dispatcher_filter_matches_push_kinds() {
         body_after: String::new(),
         agent_message: None,
     })));
-    // #1727 S1 — the five quiet kinds are not subscribed at all: the push
-    // predicate is a constant `false` for them and nothing else in the
-    // dispatcher reacts to them.
     assert!(!filter.matches(&env(Event::WorkspaceLeased {
         track_id: track.clone(),
         card_id: CardId::from("worker"),
@@ -274,7 +250,6 @@ fn dispatcher_filter_matches_push_kinds() {
         hook_idempotency_key: "hook-claude".into(),
         payload: serde_json::Value::Null,
     })));
-    // Issue #644 PR-B — the scheduler trigger kinds match.
     assert!(filter.matches(&env(Event::PlanUpdated {
         track_id: track.clone(),
         changed_keys: vec!["impl-parser".into()],
@@ -287,8 +262,6 @@ fn dispatcher_filter_matches_push_kinds() {
         to: crate::model::TrackLifecycle::Planning,
         agent_message: None,
     })));
-    // Round-2 review F4 — budget PATCHes emit only `track.updated`
-    // when the lifecycle is unchanged; it must reach the poke arm.
     assert!(filter.matches(&env(Event::TrackUpdated(
         crate::event::TrackUpdatedPayload::new(
             crate::model::Track {
@@ -315,22 +288,17 @@ fn dispatcher_filter_matches_push_kinds() {
             None,
         )
     ))));
-    // The deletion sweeps (`track.deleted` / `area.deleted`) are
-    // subscribed too: the task-context monitor sweep runs off them.
     assert!(filter.matches(&env(Event::TrackDeleted {
         id: track.clone(),
         area_id: area.clone(),
     })));
     assert!(filter.matches(&env(Event::AreaDeleted { id: area.clone() })));
-    // `task.dispatched` is emitted BY the scheduler inside its claim
-    // tx and deliberately NOT subscribed (§5.1).
+    // `task.dispatched` is emitted BY the scheduler inside its claim tx and deliberately NOT subscribed.
     assert!(!filter.matches(&env(Event::TaskDispatched {
         idempotency_key: "w:k".into(),
         kind: "codex".into(),
         agent_message: None,
     })));
-    // A kind NOT in the list must not match — the filter is still a
-    // closed allowlist.
     assert!(!filter.matches(&env(Event::CardDeleted {
         id: CardId::from("card"),
         track_id: track.clone(),
@@ -341,15 +309,8 @@ fn dispatcher_filter_matches_push_kinds() {
     })));
 }
 
-/// #1727 S1 fix H4 — the live subscription is exactly "every kind the push
-/// predicate can answer `true` for" (the `expect_push = true` rows of the
-/// shared wiring table, i.e. `PLANNER_CATCH_UP_KINDS`) ∪
-/// `SCHEDULER_TRIGGER_KINDS`, the two parts disjoint, and every subscribed
-/// kind lands in a real `handle_envelope` arm rather than the trailing
-/// "no handler; filter widened unexpectedly" warn arm — while every kind in
-/// that warn arm is NOT subscribed. Deleting a kind from either const now
-/// fails here (and, for a push kind, in the filter test above), instead of
-/// leaving every test green while live pushes for it silently stop.
+/// Subscription == push-capable kinds ∪ scheduler kinds, disjoint; every subscribed kind lands
+/// in a real `handle_envelope` arm and every warn-arm kind is unsubscribed.
 #[tokio::test]
 async fn dispatcher_subscription_is_push_kinds_plus_scheduler_kinds() {
     use std::collections::{BTreeMap, BTreeSet};
@@ -399,12 +360,8 @@ async fn dispatcher_subscription_is_push_kinds_plus_scheduler_kinds() {
         subscribed.difference(&expected).collect::<Vec<_>>()
     );
 
-    // (2) every subscribed kind has a non-warn arm in `handle_envelope`, and
-    // every kind in the warn arm is unsubscribed. The wiring table holds one
-    // sample `Event` per census kind, so its `Debug` rendering gives the
-    // variant name each kind tag maps to; the warn arm's pattern is read
-    // from the source (same anchoring as
-    // `periodic_reconcile_sweeps_context_before_scheduler`).
+    // (2) every subscribed kind has a non-warn arm in `handle_envelope`; the warn arm's pattern
+    // is read from the source.
     let variant_of: BTreeMap<String, String> = table
         .rows
         .iter()
@@ -477,9 +434,6 @@ async fn dispatcher_subscription_is_push_kinds_plus_scheduler_kinds() {
         subscribed_but_warn.is_empty(),
         "subscribed kinds that fall into handle_envelope's warn arm (no handler): {subscribed_but_warn:?}"
     );
-    // The handled set is exactly the subscription: everything not
-    // subscribed is in the warn arm, so no arm does work for an
-    // unsubscribed kind and no subscribed kind is left unhandled.
     let handled: BTreeSet<String> = all_variants.difference(&warn_variants).cloned().collect();
     assert_eq!(
         handled,
@@ -491,11 +445,6 @@ async fn dispatcher_subscription_is_push_kinds_plus_scheduler_kinds() {
     );
 }
 
-/// The push branch in `handle_envelope` acts on a User-authored
-/// `track.report_edited` and ignores Planner/Kernel ones. The gating is a
-/// simple `author == EditAuthor::User` check; assert that predicate
-/// directly against each variant (the branch itself is exercised
-/// end-to-end by the gated e2e).
 #[test]
 fn track_report_edited_author_gating() {
     assert!(EditAuthor::User == EditAuthor::User);
@@ -503,16 +452,6 @@ fn track_report_edited_author_gating() {
     assert!(EditAuthor::Kernel != EditAuthor::User);
 }
 
-/// Issue #644 PR-C (§6.5) — the gated-self-report predicate the
-/// live push branch and the boot replay both consult: TRUE exactly
-/// for a `task.completed` whose key resolves to a tasks row with
-/// `gate_json` set, plus (round-3 review F1) a `task.failed` for a
-/// gated row that did NOT land a pre-gate failure on the row
-/// (stale/retried report while the gate is in flight or decided).
-/// Ungated rows, legacy keys (no row), genuine pre-gate failures
-/// (`failed` + `worker-reported`/`spawn-failed`/`worker-timeout`),
-/// and the gate
-/// result itself all push.
 #[tokio::test]
 async fn gated_self_report_predicate() {
     let repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
@@ -556,16 +495,14 @@ async fn gated_self_report_predicate() {
     let mut gated_spawn_failed = mk_task("gated-spawn-failed", gate_json());
     gated_spawn_failed.status = crate::model::TaskStatus::Failed;
     gated_spawn_failed.status_detail = Some("spawn-failed".into());
-    // #1147 ① — production now writes the classifier PLUS a reason
-    // tail; the pre-gate classification must survive it.
+    // Production writes the classifier PLUS a reason tail; the pre-gate classification must survive it.
     let mut gated_spawn_failed_reason = mk_task("gated-spawn-failed-reason", gate_json());
     gated_spawn_failed_reason.status = crate::model::TaskStatus::Failed;
     gated_spawn_failed_reason.status_detail = Some(crate::db::sqlite::status_detail_with_reason(
         "spawn-failed",
         "track w cwd /home/kenji is not a git repository: fatal: not a git repository",
     ));
-    // ...and a gate detail carrying a reason tail stays suppressed:
-    // the vocabulary lives in the class, not anywhere in the string.
+    // A gate detail carrying a reason tail stays suppressed: the vocabulary lives in the class.
     let mut gated_gate_failed_reason = mk_task("gated-gate-failed-reason", gate_json());
     gated_gate_failed_reason.status = crate::model::TaskStatus::Failed;
     gated_gate_failed_reason.status_detail = Some(crate::db::sqlite::status_detail_with_reason(
@@ -627,7 +564,6 @@ async fn gated_self_report_predicate() {
         !is_gated_self_report(&repo, &completed("legacy-no-row")).await,
         "legacy keys with no tasks row push as today"
     );
-    // Round-3 review F1 — gated `task.failed` matrix.
     assert!(
         is_gated_self_report(&repo, &failed("gated")).await,
         "stale task.failed while the gate is in flight (`verifying`) is suppressed"
@@ -689,11 +625,8 @@ async fn gated_self_report_predicate() {
     );
 }
 
-/// #1727 S1 — the stale-worker-stop consultation, per tasks-row state.
-/// The sync predicate already said "worker stop hook"; this decides whether
-/// the row still needs the wake. Lookup errors are produced the way
-/// production produces them: two rows claiming the same worker card make
-/// `task_for_worker_card` return `Conflict`.
+/// Lookup errors are produced the way production produces them: two rows claiming the same
+/// worker card make `task_for_worker_card` return `Conflict`.
 #[tokio::test]
 async fn stale_worker_stop_hook_consultation_per_task_status() {
     let repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
@@ -861,8 +794,6 @@ async fn task_recovery_gate_observation_resolves_opaque_execution_identity() {
     );
 }
 
-/// Issue #644 PR-C — `task.gate_result` maps to the hard-fire
-/// `Observation::TaskGateResult`, with the explicitly resolved author key.
 #[test]
 fn gate_result_maps_to_hard_fire_observation_with_plan_key() {
     let track = TrackId::from("track-1");
@@ -954,9 +885,6 @@ fn event_warrants_planner_push_covers_push_allowlist() {
         &write
     ));
 
-    // Issue #644 PR-C — the gate verdict always warrants a push
-    // (kernel-only kind; the gated-self-report consultation is a
-    // separate async predicate).
     let gate_result = Event::TaskGateResult {
         task_id: "w:k".into(),
         idempotency_key: "w:k".into(),
@@ -991,18 +919,11 @@ fn event_warrants_planner_push_covers_push_allowlist() {
         &ActorId::User,
         &write
     ));
-    // Issue #955 §5.7 — plugin-authored edits (proposal accept's Batch
-    // apply; envelope actor is Kernel, attribution rides on `author`)
-    // wake the planner exactly like user edits.
     assert!(event_warrants_planner_push(
         &report(EditAuthor::Plugin),
         &ActorId::Kernel,
         &write
     ));
-    // #1189 §3.4 — an assistant session editing the report is a *different*
-    // session writing the planner's work product, so it wakes the planner for the
-    // same reason a user or plugin edit does. Leaving it out would mean the
-    // planner keeps reasoning from a report that changed under it.
     assert!(event_warrants_planner_push(
         &report(EditAuthor::Assistant),
         &ActorId::AiCodex(worker.clone()),
@@ -1019,10 +940,6 @@ fn event_warrants_planner_push_covers_push_allowlist() {
         &write
     ));
 
-    // #1727 S1 — workspace lease / worktree lifecycle notices and the
-    // planner-authored `review.round` no longer wake the planner: the facts
-    // stay in the events table and the track views. (Issue #760 slice ⑦
-    // used to push all of these unconditionally.)
     for quiet_event in [
         Event::WorkspaceLeased {
             track_id: track.clone(),
@@ -1206,12 +1123,6 @@ fn event_warrants_planner_push_covers_push_allowlist() {
     ));
 }
 
-/// #679 PR0-E — actor-matrix pin for task terminal events plus the
-/// request-kind exclusion. `event_warrants_planner_push_covers_push_allowlist`
-/// above pins the AiCodex/AiPlanner rows; this pins the remaining actor
-/// variants (only `AiPlanner` is excluded — everything else pushes) and
-/// that the two `*.worker_requested` kinds never push back to the planner
-/// regardless of actor.
 #[test]
 fn event_warrants_planner_push_task_actor_matrix_and_request_kinds_pin() {
     let cache = CardRoleCache::new();
@@ -1234,9 +1145,8 @@ fn event_warrants_planner_push_task_actor_matrix_and_request_kinds_pin() {
         details: None,
         agent_message: None,
     };
-    // Every non-AiPlanner actor warrants a push for task terminal events —
-    // including the kernel dispatcher itself (its spawn-failure
-    // `task.failed` fallback must wake the planner).
+    // Every non-AiPlanner actor pushes — including the kernel dispatcher's spawn-failure
+    // `task.failed` fallback.
     for actor in [
         ActorId::User,
         ActorId::Kernel,
@@ -1269,8 +1179,7 @@ fn event_warrants_planner_push_task_actor_matrix_and_request_kinds_pin() {
         );
     }
 
-    // The two request kinds are dispatcher *inputs*, never planner pushes
-    // — for any actor, including the planner that authored them.
+    // The two request kinds are dispatcher inputs, never planner pushes — for any actor.
     let codex_req = Event::CodexWorkerRequested {
         idempotency_key: "k".into(),
         goal: "g".into(),
@@ -1301,11 +1210,6 @@ fn event_warrants_planner_push_task_actor_matrix_and_request_kinds_pin() {
     }
 }
 
-/// #679 PR0-E — characterization golden for the event → harness
-/// observation mapping. Both the live push path and the boot-recovery
-/// replay (`harness::replay_harness_events_since`) funnel through
-/// `harness_observation_from_event`; PR5-8 must preserve this mapping
-/// byte-for-byte or consciously edit this pin.
 #[test]
 fn harness_observation_from_event_mapping_pin() {
     let track = TrackId::from("track-map");
@@ -1347,9 +1251,7 @@ fn harness_observation_from_event_mapping_pin() {
         })
     );
 
-    // track.report_edited — body_after verbatim + its sha256 (golden hex
-    // computed externally, NOT via the same sha256_hex helper); #1667 D1
-    // carries `body_before` through verbatim as well.
+    // track.report_edited — body_after verbatim + its sha256 (golden hex computed externally).
     assert_eq!(
         harness_observation_from_event(
             &track,
@@ -1685,13 +1587,8 @@ fn harness_observation_from_event_mapping_pin() {
     );
 }
 
-/// One consistency-table row: a representative event + actor and the
-/// expected verdict at BOTH #828 seams. `expect_push` and
-/// `expect_observation` are separate fields (not one bool) because the
-/// invariant is one-directional — predicate ⇒ mapping. Conditional
-/// kinds carry false-side rows where the observation stays `Some`
-/// (the mapping is per-kind; the predicate additionally gates on
-/// actor/author/role).
+/// `expect_push` and `expect_observation` are separate fields because the invariant is
+/// one-directional — predicate ⇒ mapping.
 struct PlannerPushWiringRow {
     event: Event,
     actor: ActorId,
@@ -1802,15 +1699,8 @@ async fn planner_push_candidate_fixture() -> (crate::db::sqlite::SqlxRepo, Event
     )
 }
 
-/// Canonical census of every `Event` kind tag, derived from the
-/// derived deserializer's unknown-variant diagnostic: serde lists the
-/// complete accepted-tag set when asked to parse an unknown `ev`, so
-/// this census cannot drift from the enum — adding a variant grows
-/// the set automatically, and the completeness assertion in
-/// `planner_push_predicate_and_observation_mapping_agree` then fails
-/// until the table gains a row. The canary assert fails loudly (with
-/// the raw diagnostic) if serde's message shape ever changes, rather
-/// than letting the census silently shrink.
+/// Census of every `Event` kind tag, derived from serde's unknown-variant diagnostic so it
+/// cannot drift from the enum.
 fn all_event_kind_tags() -> std::collections::BTreeSet<String> {
     let err = Event::from_kind_and_payload("__not_an_event_kind__", serde_json::Value::Null)
         .expect_err("an unknown kind tag must fail to deserialize");
@@ -1826,12 +1716,8 @@ fn all_event_kind_tags() -> std::collections::BTreeSet<String> {
         .step_by(2)
         .map(str::to_string)
         .collect();
-    // The diagnostic also lists `#[serde(alias)]` spellings —
-    // alternate names for kinds already counted (the deprecated
-    // pre-#644 `*.job_requested` tags kept for old-log replay), not
-    // kinds of their own: `kind_tag()` never emits them, so a table
-    // row can never cover them. Strip the known ones; a FUTURE alias
-    // fails the completeness assertion loudly until recorded here.
+    // The diagnostic also lists `#[serde(alias)]` spellings, which `kind_tag()` never emits;
+    // strip the known ones.
     for alias in ["codex.job_requested", "terminal.job_requested"] {
         assert!(
             tags.remove(alias),
@@ -1845,12 +1731,8 @@ fn all_event_kind_tags() -> std::collections::BTreeSet<String> {
     tags
 }
 
-/// The per-kind push/observation expectation table
-/// `planner_push_predicate_and_observation_mapping_agree` evaluates, plus
-/// the contexts its rows are evaluated against. Shared with
-/// `planner_catch_up_kinds_equal_the_push_capable_kinds` so the catch-up
-/// kind list is pinned against the SAME rows, not a second hand-written
-/// mirror of them.
+/// Shared with `planner_catch_up_kinds_equal_the_push_capable_kinds` so the catch-up list is
+/// pinned against the same rows.
 struct PlannerPushWiringTable {
     write: WriteContext,
     track: TrackId,
@@ -1928,8 +1810,7 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
     };
 
     let mut rows: Vec<PlannerPushWiringRow> = vec![
-        // -- Push-capable kinds, push-side rows: predicate true ⇒
-        //    mapping Some. ------------------------------------------
+        // Push-capable kinds, push-side rows: predicate true ⇒ mapping Some.
         row(
             task_completed(),
             ActorId::AiCodex(worker.clone()),
@@ -1954,18 +1835,14 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
             true,
         ),
         row(report_edited(EditAuthor::User), ActorId::User, true, true),
-        // #955 §5.7 — plugin-authored report edit pushes like a user
-        // edit; the accept tx emits it with the Kernel envelope actor.
         row(
             report_edited(EditAuthor::Plugin),
             ActorId::Kernel,
             true,
             true,
         ),
-        // #1727 S1 — workspace / worktree lifecycle notices and the
-        // planner-authored `review.round` keep their observation mapping
-        // (old snapshots may still hold queued entries) but no longer
-        // pass the push predicate.
+        // Lifecycle notices keep their observation mapping (old snapshots may still hold queued
+        // entries) but do not pass the push predicate.
         row(
             Event::WorkspaceLeased {
                 track_id: track.clone(),
@@ -2114,9 +1991,7 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
             true,
             true,
         ),
-        // -- Conditional kinds, false side: predicate false while the
-        //    kind-scoped mapping stays Some — the exact asymmetry a
-        //    single shared bool could not express. -------------------
+        // Conditional kinds, false side: predicate false while the kind-scoped mapping stays Some.
         row(
             task_completed(),
             ActorId::AiPlanner(planner.clone()),
@@ -2165,8 +2040,7 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
             false,
             true,
         ),
-        // Non-stop hooks map to nothing on either seam — both
-        // providers.
+        // Non-stop hooks map to nothing on either seam.
         row(
             codex_hook(&worker, "hook.codex.permission_request"),
             ActorId::User,
@@ -2179,7 +2053,7 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
             false,
             false,
         ),
-        // -- Never-push kinds: explicit-false on both seams. ---------
+        // Never-push kinds: explicit-false on both seams.
         row(
             Event::AreaUpdated(crate::model::Area {
                 id: area.clone(),
@@ -2240,9 +2114,6 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
             false,
             false,
         ),
-        // #955 — proposal lifecycle records never push; the planner wakes
-        // on the plugin-authored `track.report_edited` the accept tx
-        // emits alongside instead.
         row(
             Event::ProposalSubmitted {
                 track_id: track.clone(),
@@ -2384,11 +2255,8 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
             false,
             false,
         ),
-        // #1505 PR2. Neither a push nor an observation: this event REPORTS a
-        // change to the queue the planner is already going to read, and the
-        // change has been applied to that queue before the event is written.
-        // Waking the planner on it would deliver a turn built from the queue it
-        // is describing, one tick early and for no new input.
+        // Neither a push nor an observation: the queue change is applied before the event is
+        // written, so a wake would deliver a turn for no new input.
         row(
             Event::HarnessQueueChanged {
                 worker_session_id: "rt".into(),
@@ -2603,28 +2471,8 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
     }
 }
 
-/// #828 slice 1 — predicate⇒mapping consistency table over EVERY
-/// event kind. Each row checks the push predicate
-/// (`event_warrants_planner_push`) and the harness-observation mapping
-/// (`harness_observation_from_event`, or the actual repo-enriched resolver for
-/// file publication settlement) jointly, and the
-/// `all_event_kind_tags` census asserts the table covers every kind:
-/// a new `Event` variant breaks compilation at the two exhaustive
-/// seams AND fails this test until a row records its expected wiring
-/// — so a variant wired predicate=true / mapping=None while fixing
-/// the seam compile errors can no longer slip through by convention.
-///
-/// The invariant is one-directional (predicate ⇒ mapping), enforced
-/// structurally on the expectations themselves: a row that expects
-/// push without an observation is rejected before the seams are even
-/// consulted. Conditional kinds carry false-side rows (planner-actor
-/// task terminals, planner-authored report edit, stop hooks on
-/// planner/unknown-role cards, non-stop hooks for both providers) whose
-/// observation column shows the mapping staying `Some` where it is
-/// kind-scoped. The exhaustive actor/author/role matrices remain
-/// pinned in `event_warrants_planner_push_covers_push_allowlist` and
-/// `event_warrants_planner_push_task_actor_matrix_and_request_kinds_pin`;
-/// this table owns per-kind coverage and cross-seam agreement.
+/// Predicate⇒mapping consistency table over every event kind; the census asserts every kind
+/// has a row, and a row expecting a push without an observation is rejected outright.
 #[tokio::test]
 async fn planner_push_predicate_and_observation_mapping_agree() {
     let PlannerPushWiringTable {
@@ -2638,9 +2486,6 @@ async fn planner_push_predicate_and_observation_mapping_agree() {
     for row in &rows {
         let kind = row.event.kind_tag();
         covered.insert(kind.to_string());
-        // Reject rows that would record predicate⇒mapping drift as
-        // an expectation: expecting a push without an observation is
-        // exactly the silent-wiring class #828 pins against.
         assert!(
             !row.expect_push || row.expect_observation,
             "row for {kind} violates predicate⇒mapping: expect_push without expect_observation"
@@ -2689,9 +2534,7 @@ async fn planner_push_predicate_and_observation_mapping_agree() {
         );
     }
 
-    // Completeness: every Event kind must have at least one row. A
-    // new variant fails here (its serde tag joins the census
-    // automatically) until its wiring expectation is recorded above.
+    // Completeness: every Event kind must have at least one row.
     let all = all_event_kind_tags();
     let missing: Vec<_> = all.difference(&covered).collect();
     assert!(
@@ -2707,14 +2550,7 @@ async fn planner_push_predicate_and_observation_mapping_agree() {
     );
 }
 
-/// #1727 S1 (fix round 1, F7) — `PLANNER_CATCH_UP_KINDS` (what boot
-/// catch-up reads back from the events table) must be EXACTLY the kinds the
-/// push predicate can answer `true` for under some actor / author / role:
-/// the set of kinds with any `expect_push = true` row in the shared wiring
-/// table. A kind in the const the predicate never pushes is wasted boot
-/// I/O and a live/catch-up divergence in waiting; a push-capable kind
-/// missing from the const is a wake that live dispatch delivers and a
-/// crash-restart silently drops. Every kind in the census is classified.
+/// `PLANNER_CATCH_UP_KINDS` must be exactly the kinds with any `expect_push = true` row.
 #[tokio::test]
 async fn planner_catch_up_kinds_equal_the_push_capable_kinds() {
     let table = planner_push_wiring_table().await;
@@ -2751,16 +2587,8 @@ async fn planner_catch_up_kinds_equal_the_push_capable_kinds() {
     assert_eq!(catch_up, push_capable);
 }
 
-/// #313 round-2 (B3) — the per-track push lock map must serialize
-/// concurrent acquisitions for the SAME track (so boot takeover's
-/// `Dispatcher::push_lock` and the live `push_to_planner`'s lock cannot run
-/// the dedup-check-and-deliver body concurrently — which would lose
-/// events in the seed→insert window). DIFFERENT tracks must remain
-/// independent so a slow takeover for track A doesn't block live
-/// pushes for track B.
-///
-/// Models the `DashMap::entry(...).or_insert_with(Arc::new Mutex)` +
-/// `clone().lock_owned().await` pattern `Inner::acquire_push_lock` uses.
+/// Same-track acquisitions must serialize (a concurrent dedup-check-and-deliver would lose
+/// events in the seed→insert window); different tracks stay independent.
 #[tokio::test]
 async fn per_track_push_lock_serializes_same_track_runs_in_parallel_across_tracks() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2788,9 +2616,6 @@ async fn per_track_push_lock_serializes_same_track_runs_in_parallel_across_track
             let _g = lock.lock_owned().await;
             let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
             max_in_flight.fetch_max(now, Ordering::SeqCst);
-            // Simulate the dedup-check-and-deliver body holding the
-            // lock for a few yields (representative of `push_to_planner`'s
-            // async work).
             tokio::task::yield_now().await;
             tokio::time::sleep(std::time::Duration::from_millis(2 * (i as u64 + 1))).await;
             in_flight.fetch_sub(1, Ordering::SeqCst);
@@ -2825,19 +2650,12 @@ async fn per_track_push_lock_serializes_same_track_runs_in_parallel_across_track
     for h in handles {
         h.await.unwrap();
     }
-    // We expect parallelism > 1 across distinct track keys (otherwise
-    // the per-track keying is broken). With 6 spawns and ~15ms each on a
-    // multi-threaded runtime they should overlap routinely.
     assert!(
         max_in_flight_total.load(Ordering::SeqCst) > 1,
         "different-track locks must allow parallel runs; observed serialization"
     );
 }
 
-// ---------------------------------------------------------------
-// #1667 round-2 F1 — block ids / revs / docRev on the ReportEdited
-// observation, read from the report card at resolve time.
-// ---------------------------------------------------------------
 mod report_edit_block_refs {
     use super::*;
     use crate::db::{ServerRepoSyncDomainRawExt, sqlite::SqlxRepo};
@@ -2900,9 +2718,7 @@ mod report_edit_block_refs {
         }
     }
 
-    /// Persist `body` through the production writer and return the
-    /// `track.report_edited` it broadcast — the very event the dispatcher
-    /// resolves.
+    /// Persist `body` through the production writer and return the `track.report_edited` it broadcast.
     async fn persist_and_capture(fx: &Fixture, body: &str) -> Event {
         let mut rx = fx.events.subscribe();
         let (track, card, current) = resolve_report_for_track(&fx.repo, fx.track_id.as_str())
@@ -2949,9 +2765,6 @@ mod report_edit_block_refs {
         }
     }
 
-    /// The report as read after the edit projects to the event's
-    /// `body_after`: the observation names every block by the id / rev
-    /// `calm.report.read` would return, and carries that read's `docRev`.
     #[tokio::test]
     async fn resolved_edit_carries_the_reads_doc_rev_and_block_refs() {
         let fx = fixture().await;
@@ -2980,9 +2793,7 @@ mod report_edit_block_refs {
         assert_eq!(blocks_after, Some(expected));
     }
 
-    /// A later write landed before the push was resolved (same block
-    /// layout, different text): the read no longer projects to the
-    /// event's body, so NO ids are attached — not the newer ones.
+    /// The read no longer projects to the event's body, so NO ids are attached — not the newer ones.
     #[tokio::test]
     async fn resolved_edit_omits_refs_when_a_later_write_landed() {
         let fx = fixture().await;

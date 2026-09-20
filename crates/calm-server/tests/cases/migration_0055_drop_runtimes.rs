@@ -1,4 +1,4 @@
-//! PR9b-iv (#758): migration 0055 retires the runtime mirror table.
+//! Migration 0055 retires the runtime mirror table.
 
 use sqlx::{Row, SqlitePool, sqlite::SqliteConnectOptions};
 use std::str::FromStr;

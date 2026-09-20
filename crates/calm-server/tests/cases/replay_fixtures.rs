@@ -1,47 +1,5 @@
-//! Replay-based regression tests — the **first feature riding on the full
-//! sync engine**. Per design doc §6.3, fixtures live under
-//! `tests/fixtures/events/` as JSON traces. A test loads each fixture,
-//! raw-inserts the events into a fresh in-memory server, connects a WS
-//! subscriber with `since=0`, drains the replay window, then asserts that
-//! the resulting state — both event sequence and any final overlay
-//! payloads — matches the fixture's `expected` block.
-//!
-//! Scope E ships just one fixture (`track-grid-layout-trace`) — the track-
-//! grid layout migration's smoke trace. The infrastructure here is the
-//! seed for the broader "bug report = file + one replay command" story:
-//! future bugs become reproducible artifacts in the same shape.
-//!
-//! Why a separate test file from `sync_engine.rs`: that file exercises
-//! the write-side atomicity / replay-then-live ordering of the sync
-//! engine itself (Scope A's contracts). This file is about the *consumer*
-//! side — given a known-good event log, the system converges to a known
-//! state. The two halves share the same WS protocol but the test
-//! ergonomics are different (fixture loader vs hand-driven writes).
-//!
-//! ## Fixture format
-//!
-//! ```json
-//! {
-//!   "name": "...",                  // descriptive — surfaces in test output
-//!   "description": "...",           // free-form notes
-//!   "events": [                     // inserted in order via Repo::log_pure_event
-//!     { "kind": "card.added", "actor": "user", "payload": { ... } },
-//!     ...
-//!   ],
-//!   "expected": {
-//!     "last_event_kind": "overlay.set",
-//!     "layout_positions": { "<card_id>": { x, y, w, h }, ... }
-//!   }
-//! }
-//! ```
-//!
-//! We seed events via `Repo::log_pure_event` rather than the
-//! `#[cfg(test)]`-gated `SqlxRepo::event_append_fixture` (that helper
-//! is private to crate-internal unit tests; integration tests live in
-//! a separate compilation unit and can't reach it). `log_pure_event`
-//! is the same shape — it persists an event row + broadcasts on the
-//! bus — and gives us deterministic `events.id`s in append order
-//! without dragging in entity-table writes the fixture doesn't need.
+//! Replay-based regression tests: fixtures under `tests/fixtures/events/` are
+//! raw-inserted into a fresh in-memory server and drained over WS with `since=0`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -70,12 +28,6 @@ use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message as TMessage;
 use tower::ServiceExt;
-
-// ---------------------------------------------------------------------------
-// Fixture loader — fixture types + parser live in `calm_server::replay`
-// so the `replay` bin and this test share one definition. This file
-// only adds the per-test "load by relative name under tests/fixtures/events".
-// ---------------------------------------------------------------------------
 
 fn load_fixture(name: &str) -> Fixture {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -150,12 +102,6 @@ async fn seed_rooted_track(repo: &SqlxRepo) {
     assert_eq!(root.as_deref(), Some(runtime.id.as_str()));
 }
 
-// ---------------------------------------------------------------------------
-// In-memory server boot — WS-only router. The full-router variant lives
-// in `src/bin/replay.rs`; this test only asserts on WS replay so we keep
-// the surface narrow.
-// ---------------------------------------------------------------------------
-
 async fn boot() -> (std::net::SocketAddr, Arc<SqlxRepo>, EventBus) {
     let (repo, events, state) = replay::boot_in_memory()
         .await
@@ -172,8 +118,7 @@ async fn boot() -> (std::net::SocketAddr, Arc<SqlxRepo>, EventBus) {
         .await
         .unwrap();
     });
-    // Tiny grace for the listener task to start accepting before we
-    // open a WS — mirrors the wait in `ws_replay.rs`.
+    // Tiny grace for the listener task to start accepting before we open a WS.
     tokio::time::sleep(Duration::from_millis(50)).await;
     (addr, repo, events)
 }
@@ -210,10 +155,6 @@ where
     serde_json::from_str(&t).expect("non-JSON frame")
 }
 
-// ---------------------------------------------------------------------------
-// Test
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn replay_track_grid_layout_trace() {
     let fixture = load_fixture("track-grid-layout-trace.events.json");
@@ -225,7 +166,6 @@ async fn replay_track_grid_layout_trace() {
         "all fixture events inserted"
     );
 
-    // Open WS, replay everything from id=0.
     let url = format!("ws://{}/api/events", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url)
         .await
@@ -234,10 +174,7 @@ async fn replay_track_grid_layout_trace() {
         .await
         .expect("send sub");
 
-    // Drain replay frames, capture the last `overlay.set` payload, and
-    // stop when `_replay_complete` arrives. The fixture lays down the
-    // layout overlay twice (initial + move); the *second* one is the
-    // canonical post-replay state — that's what the assertions check.
+    // The fixture lays down the layout overlay twice (initial + move); the second is the canonical post-replay state.
     let mut received: Vec<(i64, String)> = Vec::new();
     let mut last_layout_payload: Option<serde_json::Value> = None;
 
@@ -257,7 +194,6 @@ async fn replay_track_grid_layout_trace() {
         received.push((id, kind));
     }
 
-    // Every fixture event arrived, in id order, exactly once.
     assert_eq!(received.len(), fixture.events.len(), "frame count");
     for w in received.windows(2) {
         assert!(w[0].0 < w[1].0, "monotonic ids: {:?}", received);
@@ -266,9 +202,6 @@ async fn replay_track_grid_layout_trace() {
         assert_eq!(kind, &fix_ev.kind, "frame kind matches fixture order");
     }
 
-    // Last replayed event matches the fixture's `expected.last_event_kind`.
-    // The shared `FixtureExpected.last_event_kind` is `Option<String>` so
-    // partial fixtures can omit it; this fixture has it set.
     let last_kind = &received.last().expect("at least one frame").1;
     let expected_last_kind = fixture
         .expected
@@ -277,10 +210,6 @@ async fn replay_track_grid_layout_trace() {
         .expect("fixture sets last_event_kind");
     assert_eq!(last_kind, expected_last_kind, "last event kind");
 
-    // Final layout-overlay payload (after replaying both `overlay.set`
-    // frames) carries the expected positions. The second `overlay.set`
-    // in the fixture is the "move card_2" step; the assertion proves
-    // upsert ordering survives replay.
     let last_layout = last_layout_payload.expect("layout overlay present in replay");
     let actual_positions = last_layout
         .get("positions")
@@ -323,10 +252,7 @@ async fn replay_router_terminal_card_create_persists_without_supervisor() {
             area_id: area.id.clone(),
             title: "replay-terminal".into(),
             sort: None,
-            // #1147 S6 — the dispatcher's terminal worker defaults its cwd to
-            // the track's workspace, and the kernel refuses to open a terminal
-            // in an empty one. Production tracks always have a path; so does
-            // this fixture.
+            // The kernel refuses to open a terminal in an empty cwd; production tracks always have a path.
             cwd: "/neige-fixture-workspace".into(),
             template_id: None,
             plugin_scope: None,
@@ -469,35 +395,17 @@ async fn replay_router_terminal_card_create_persists_without_supervisor() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// F1 — RECORD_SESSION ↔ loader round-trip
-// ---------------------------------------------------------------------------
-//
-// The `RECORD_SESSION=<path>` env hook writes one NDJSON line per emitted
-// event. `load_fixture_from_path` must accept that file directly so the
-// "bug report = file + one `replay --assert` command" promise holds (design
-// doc §6.3).
-//
-// Test shape: stand up `boot_in_memory`, attach the recorder, drive a few
-// `log_pure_event` calls through the bus, give the recorder a moment to
-// flush, then drop the bus to close the recorder loop and re-parse the
-// file with `load_fixture_from_path`. The parsed fixture must contain the
-// same number of events in the same kind order.
 #[tokio::test]
 async fn record_session_roundtrips_through_loader() {
     let (repo, bus, _state) = replay::boot_in_memory()
         .await
         .expect("boot in-memory replay state");
 
-    // Recorder appends to this path; use a tempfile to keep CI clean.
     let tmpdir = tempfile::tempdir().expect("tempdir");
     let session_path = tmpdir.path().join("recorded.events.json");
     replay::spawn_session_recorder(&bus, session_path.clone());
 
-    // Recorder subscribes synchronously inside `spawn_session_recorder`
-    // (the `bus.subscribe()` call is before the `tokio::spawn`), so any
-    // event broadcast after this point lands in the recorder's receive
-    // buffer — no race against the recorder task starting.
+    // The recorder subscribes before the `tokio::spawn`, so there is no race against the recorder task starting.
     let events: Vec<Event> = vec![
         Event::OverlaySet(Overlay {
             id: "ov-1".into(),
@@ -531,9 +439,7 @@ async fn record_session_roundtrips_through_loader() {
         .expect("log_pure_event");
     }
 
-    // The recorder writes line-by-line and flushes on each event, but the
-    // write happens off the broadcast task. Poll the file until it has
-    // the expected line count or we hit a deadline.
+    // The write happens off the broadcast task; poll the file until it has the expected line count.
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     loop {
         if let Ok(text) = std::fs::read_to_string(&session_path)
@@ -551,7 +457,6 @@ async fn record_session_roundtrips_through_loader() {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 
-    // Re-parse via the public loader — this is the round-trip claim.
     let fixture =
         replay::load_fixture_from_path(&session_path).expect("loader accepts recorded NDJSON");
     assert_eq!(
@@ -562,9 +467,7 @@ async fn record_session_roundtrips_through_loader() {
     for (got, want) in fixture.events.iter().zip(want_kinds.iter()) {
         assert_eq!(&got.kind, *want, "round-trip preserves event kind order");
     }
-    // The loader synthesizes a `name` from the filename stem and an
-    // empty `expected` block when the file is NDJSON. Sanity-check both
-    // so a future regression that silently swaps the branches surfaces.
+    // The loader synthesizes a `name` from the filename stem and an empty `expected` block for NDJSON.
     assert_eq!(fixture.name, "recorded.events");
     assert!(
         fixture.expected.last_event_kind.is_none() && fixture.expected.layout_positions.is_empty(),
@@ -572,15 +475,6 @@ async fn record_session_roundtrips_through_loader() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// F4 — `derive_layout_positions` fold handles `Event::OverlayDeleted`
-// ---------------------------------------------------------------------------
-//
-// Set → Delete → Set. The fold must end up at the *second* Set's positions,
-// not at the first Set merged into the second Set (the original bug was
-// that Delete was ignored, so a delete-between-sets had no effect and the
-// fold returned whichever Set the loop visited last regardless of any
-// intervening Delete).
 #[test]
 fn fold_layout_positions_respects_overlay_deleted() {
     let track_id = "track-1";
@@ -610,8 +504,6 @@ fn fold_layout_positions_respects_overlay_deleted() {
         updated_at: 3,
     });
 
-    // Set → Delete → Set: end state is set_b alone (the delete cleared
-    // set_a's contribution before set_b overwrote).
     let got =
         replay::fold_layout_positions([set_a.clone(), delete.clone(), set_b.clone()], track_id)
             .expect("set after delete still produces Some");
@@ -619,16 +511,12 @@ fn fold_layout_positions_respects_overlay_deleted() {
     assert!(got.contains_key("card_9"));
     assert!(!got.contains_key("card_1"));
 
-    // Set → Delete: end state is None (delete is terminal until next set).
     let got = replay::fold_layout_positions([set_a.clone(), delete.clone()], track_id);
     assert!(got.is_none(), "delete after lone set yields None");
 
-    // Delete-only on an empty stream is still None (no panic, no spurious
-    // entry).
     let got = replay::fold_layout_positions([delete], track_id);
     assert!(got.is_none(), "lone delete yields None");
 
-    // Wrong-track delete must not affect the running state.
     let delete_other = Event::OverlayDeleted {
         plugin_id: "core".into(),
         entity_kind: "view".into(),
@@ -637,27 +525,9 @@ fn fold_layout_positions_respects_overlay_deleted() {
     };
     let got = replay::fold_layout_positions([set_a.clone(), delete_other, set_b.clone()], track_id)
         .expect("unrelated delete must not clear");
-    // set_a's positions merged with set_b via the `.or(current)` fold —
-    // this is the existing upsert semantics and not in scope of the
-    // delete-fix, but assert the post-state is non-empty.
     assert!(got.contains_key("card_9"));
 }
 
-// ---------------------------------------------------------------------------
-// `reset_from_fixture` — wipe + reseed contract
-// ---------------------------------------------------------------------------
-//
-// Issue #56 followup: the `POST /dev/reset` endpoint in `bin/replay.rs`
-// calls into `reset_from_fixture` to give the Playwright `a11y` project
-// a hermetic per-test starting state. The test below locks the contract:
-//
-//   1. Seed a fixture once; verify the event log has `N` rows.
-//   2. Mutate the repo via the eventized write path (drop in a new
-//      `log_pure_event` for an `overlay.set`) so the log grows past
-//      what the fixture seeded.
-//   3. Call `reset_from_fixture`; verify the log is back to exactly
-//      the fixture's events, in fixture order, and the highest event
-//      id is back to `N` (the `sqlite_sequence` reset path).
 #[tokio::test]
 async fn reset_from_fixture_wipes_and_reseeds() {
     let fixture = load_fixture("track-grid-layout-trace.events.json");
@@ -676,8 +546,6 @@ async fn reset_from_fixture_wipes_and_reseeds() {
         "initial seed assigns ids 1..=N because sqlite_sequence starts fresh"
     );
 
-    // Mutate via the eventized write path: drop in one extra
-    // `overlay.set` so the event log grows past the fixture tip.
     let extra = Event::OverlaySet(Overlay {
         id: "ov-extra".into(),
         plugin_id: "core".into(),
@@ -701,9 +569,7 @@ async fn reset_from_fixture_wipes_and_reseeds() {
         .expect("log extra event");
     assert_eq!(extra_id, n + 1, "extra event sits at id=N+1");
 
-    // Issue #644 review: `tasks` deliberately has no FK to `tracks`, so a
-    // track wipe alone would never cascade here. Seed one row directly and
-    // assert the reset's explicit `DELETE FROM tasks` clears it.
+    // `tasks` has no FK to `tracks`, so a track wipe alone would never cascade here.
     sqlx::query(
         "INSERT INTO tasks (id, track_id, key, kind, goal, context_json, \
          created_at_ms, updated_at_ms) \
@@ -713,13 +579,9 @@ async fn reset_from_fixture_wipes_and_reseeds() {
     .await
     .expect("seed leftover tasks row");
 
-    // PR7b-i review blocker: a rooted track used to make the structural
-    // wipe fail when `DELETE FROM worker_sessions` ran while
-    // `tracks.root_session_id` still pointed at the root session.
+    // A rooted track: `DELETE FROM worker_sessions` must cope with `tracks.root_session_id` still pointing at the root session.
     seed_rooted_track(&repo).await;
 
-    // Reset: drop everything, reseed from the fixture, assert ids
-    // re-start at 1 and the log carries exactly the fixture again.
     let reseeded = replay::reset_from_fixture(&repo, &bus, &fixture)
         .await
         .expect("reset succeeds");
@@ -739,7 +601,6 @@ async fn reset_from_fixture_wipes_and_reseeds() {
         "reset wipes sqlite_sequence — last event id is N (no carry-over from the extra)"
     );
 
-    // Verify the persisted log shape matches the fixture.
     let log = repo
         .events_since(0, i64::MAX)
         .await
@@ -760,29 +621,8 @@ async fn reset_from_fixture_wipes_and_reseeds() {
     }
 }
 
-/// #1428 — `/dev/reset` still works with migration 0093's fence installed, and
-/// this is executed rather than argued.
-///
-/// The fence aborts any `DELETE` that reaches an `operations` row carrying an
-/// `idempotency_key`, including a bare `DELETE FROM operations` (a row trigger
-/// disables SQLite's truncate optimization). `reset_from_fixture` is the
-/// widest table-wipe in the tree and the engine behind the replay binary's
-/// `POST /dev/reset`, which every Playwright `beforeEach` calls — so if the
-/// fence were going to break something, this is what it would break.
-///
-/// Reading its statement list and observing that `operations` is absent from it
-/// is not the same as running it: the list is a literal array today, but the
-/// claim being tested is about the *reset*, not about the array. So a keyed row
-/// is planted first, which is the only state that can trip the fence, and the
-/// reset is executed over it.
-///
-/// The row surviving is the correct outcome, not a leak: `reset_from_fixture`
-/// never claimed to wipe `operations`, and a keyed operation row is permanent
-/// by construction (`docs/design-1428-idempotency-retention.md` §3).
-///
-/// Mutation that must redden it: add `"DELETE FROM operations"` to
-/// `reset_from_fixture`'s statement list — the reset then aborts on the planted
-/// row, which is exactly the alarm the fence exists to raise.
+/// The fence aborts any `DELETE` that reaches an `operations` row carrying an `idempotency_key`,
+/// including a bare `DELETE FROM operations`. The planted row surviving is the correct outcome.
 #[tokio::test]
 async fn dev_reset_survives_the_keyed_operations_fence() {
     let fixture = load_fixture("track-grid-layout-trace.events.json");
@@ -820,49 +660,6 @@ async fn dev_reset_survives_the_keyed_operations_fence() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Issue #199 — schemaVersion forward-compat: both read paths drop future.
-// ---------------------------------------------------------------------------
-//
-// The contract this test pins is the kernel's *acceptance criterion*
-// from issue #199: an unsupported future-`schemaVersion` overlay
-// payload must NOT be silently consumed by the frontend. The two
-// client-facing read paths for overlay state are:
-//
-//   1. **WS `/api/events` replay** — historically streamed the raw
-//      persisted envelope verbatim. PR #214 added a read-side guard on
-//      `GET /api/overlays` + `GET /api/tracks/{id}`; PR #220 closed the
-//      leak on the third surface by extending the same per-row
-//      predicate (`crate::validation::should_skip_event_for_overlay_version`)
-//      to both the live-broadcast and the cursor-replay legs of
-//      `ws::events`. So replay now drops `Event::OverlaySet` rows whose
-//      payload `schemaVersion` exceeds what this binary supports for
-//      the kind — advancing `last_id` past dropped rows so a client
-//      never re-polls them on reconnect.
-//
-//   2. **REST `/api/overlays`** — same guard, applied row-by-row by
-//      `routes::overlays::filter_unsupported_overlay_versions` (now a
-//      thin wrapper around the shared `should_skip_overlay`).
-//
-// Why this *strengthens* the #199 acceptance: previously the contract
-// was asymmetric (replay transparent, REST strict), which left the
-// frontend's resilience-on-replay path on the hook for handling
-// unknown-version envelopes. Post-#220 both read paths agree — the
-// frontend literally cannot observe a v999 overlay over either surface
-// — so "unsupported future payload is not silently consumed" is
-// enforced by the kernel on every client-facing read, not just the
-// REST audit list.
-//
-// The fixture (`schema_forward_compat.events.json`) carries both
-// shapes back-to-back. Neither WS replay nor `GET /api/overlays`
-// surfaces the v999 row; both surface the v1 one.
-//
-// Why one combined test instead of two: the contract is "future
-// versions are dropped on every kernel→client read path" — splitting
-// the surfaces would let a regression on one path still tick the
-// other green. Composing them in one flow pins the invariant across
-// both paths the frontend can observe.
-
 #[tokio::test]
 async fn schema_version_future_dropped_on_both_replay_and_rest_read() {
     use axum::body::Body;
@@ -876,10 +673,6 @@ async fn schema_version_future_dropped_on_both_replay_and_rest_read() {
 
     let fixture = load_fixture("schema_forward_compat.events.json");
 
-    // Sanity: helper reads `1` for the missing-field shape and `999`
-    // for the future-shape. These are the inputs to the read-side
-    // guard, so locking them here surfaces a payload_schema_version()
-    // refactor that drifts away from "absent → 1".
     let v1_payload = &fixture.events[2].payload["payload"];
     let v999_payload = &fixture.events[3].payload["payload"];
     assert_eq!(
@@ -898,28 +691,10 @@ async fn schema_version_future_dropped_on_both_replay_and_rest_read() {
         "the kernel's status overlay support ceiling drives what the read guard accepts"
     );
 
-    // ---- Replay arm: seed both events, drain over WS, assert ONLY
-    //                  the v1 overlay.set frame surfaces. Post-#220 the
-    //                  WS replay path runs each row through
-    //                  `should_skip_event_for_overlay_version` and
-    //                  drops `Event::OverlaySet` envelopes whose
-    //                  payload `schemaVersion` exceeds the kernel's
-    //                  ceiling for the kind. Pre-#220 the regression
-    //                  was the opposite shape: the wire kept the v999
-    //                  envelope verbatim. We now lock in the stricter
-    //                  invariant on this surface too.
     let (addr, repo, bus) = boot().await;
     let ids = raw_insert_fixture_events(&repo, &bus, &fixture).await;
     assert_eq!(ids.len(), fixture.events.len(), "seed inserted all events");
 
-    // Pre-check the events table directly to pin the failure layer if
-    // the WS assertion below misfires. The WS replay path is
-    // `events_since(0) → filter via should_skip_event_for_overlay_version →
-    // render_envelope → tx.send`; if the DB-side has both overlay.set
-    // rows but the WS frame count diverges from the expected
-    // post-filter count, the regression is unambiguously in
-    // `ws::events::run_replay` (either the filter is missing or it's
-    // over-filtering).
     let db_rows = repo
         .events_since(0, i64::MAX)
         .await
@@ -947,14 +722,6 @@ async fn schema_version_future_dropped_on_both_replay_and_rest_read() {
         .await
         .expect("send sub");
 
-    // Drain every frame in the replay window into `all_frames` so on
-    // failure we can print exactly what the server sent. The contract
-    // under test (post-#220) is "the replay window contains exactly
-    // the v1 overlay.set envelope — the v999 row is filtered server-
-    // side — terminated by `_replay_complete`". The `recv_json` helper
-    // bounds each per-frame wait at 2s, so a missing trailing frame
-    // surfaces as a timeout panic with the frames-so-far visible in
-    // `all_frames` via the assertion message.
     let mut all_frames: Vec<serde_json::Value> = Vec::new();
     let mut overlay_frames: Vec<serde_json::Value> = Vec::new();
     loop {
@@ -987,34 +754,14 @@ async fn schema_version_future_dropped_on_both_replay_and_rest_read() {
          All frames: {:#?}",
         all_frames,
     );
-    // And the v1 row genuinely has no schemaVersion key — guards
-    // against a regression that secretly coerces missing → 1 on the
-    // wire.
+    // The v1 row genuinely has no schemaVersion key: guards against a regression that coerces missing → 1 on the wire.
     assert!(
         v1_frame["data"]["payload"].get("schemaVersion").is_none(),
         "v1 frame retains its missing-field shape (not coerced to {{schemaVersion: 1}})"
     );
 
-    // ---- Read-side arm: the WS arm above pinned that the replay path
-    // drops the v999 envelope before it reaches the client. To
-    // exercise the REST read guard on the *other* client-facing read
-    // surface, we need the same shapes to also live in the OVERLAYS
-    // table. The fixture's `overlay.set` events only write to the
-    // events log, not the overlays table (the route handler does the
-    // upsert separately). So we mirror them via the repo's
-    // `overlay_upsert` to set up the read-side test bed. The write
-    // path's `validate_overlay_payload` would refuse the v999
-    // payload, which is exactly why we go through the repo trait
-    // directly — to simulate a "row written by a future kernel"
-    // scenario.
-    // Use two distinct overlay `kind`s so they coexist (the unique
-    // key on the overlays table is (plugin_id, entity_kind,
-    // entity_id, kind) — upserting the same kind would replace,
-    // not co-store).
-    //
-    //   * `status` v1 — the legacy row, no schemaVersion field
-    //   * `progress` v999 — the future-kernel row whose schemaVersion
-    //     exceeds the kernel's ceiling (both kinds cap at v1 today)
+    // The write path's `validate_overlay_payload` would refuse the v999 payload, so go through the repo directly.
+    // Two distinct overlay `kind`s so they coexist under the (plugin_id, entity_kind, entity_id, kind) unique key.
     repo.overlay_upsert(NewOverlay {
         plugin_id: "core".into(),
         entity_kind: "track".into(),
@@ -1029,12 +776,6 @@ async fn schema_version_future_dropped_on_both_replay_and_rest_read() {
         entity_kind: "track".into(),
         entity_id: "track-fwd".into(),
         kind: "progress".into(),
-        // The route's write-side validator (`validate_overlay_payload`)
-        // would reject this; going through `repo.overlay_upsert`
-        // bypasses the route layer on purpose — we're simulating "row
-        // landed via a future kernel binary writing the same DB" so
-        // the read-side guard's drop path actually has something to
-        // drop.
         payload: serde_json::json!({
             "value": 0.5,
             "schemaVersion": 999,
@@ -1044,8 +785,7 @@ async fn schema_version_future_dropped_on_both_replay_and_rest_read() {
     .await
     .expect("upsert v999 progress overlay (future-kernel simulation)");
 
-    // Verify the raw repo returns BOTH rows — the filter is a route-
-    // layer concern, not a repo concern.
+    // The raw repo returns BOTH rows: the filter is a route-layer concern.
     let raw = repo
         .overlays_for("track", "track-fwd")
         .await
@@ -1056,10 +796,7 @@ async fn schema_version_future_dropped_on_both_replay_and_rest_read() {
         "repo.overlays_for returns the raw row count (filter happens at the route layer)"
     );
 
-    // Mount the full router with the AppState the route handlers need.
-    // We can't reuse `boot()` here — it stands up a WS-only router.
-    // Build the full stack from `boot_in_memory` (re-using the same
-    // repo so the data we inserted above is visible).
+    // `boot()` stands up a WS-only router; the REST arm needs the full stack over the same repo.
     let app = build_full_app(repo.clone(), bus.clone());
 
     let resp = app
@@ -1093,11 +830,7 @@ async fn schema_version_future_dropped_on_both_replay_and_rest_read() {
     );
 }
 
-/// Build the full kernel HTTP router (REST + WS + plugins + …) against
-/// an existing in-memory `SqlxRepo` and `EventBus`. Mirrors what
-/// `boot_in_memory()` does internally but with the repo + bus the
-/// caller already has — so the data inserted via the repo above is
-/// visible to the route handlers.
+/// The full kernel HTTP router against an existing in-memory `SqlxRepo` and `EventBus`.
 fn build_full_app(repo: Arc<calm_server::db::sqlite::SqlxRepo>, events: EventBus) -> axum::Router {
     use calm_server::card_role_cache::CardRoleCache;
     use calm_server::plugin_host::{PluginHost, PluginRegistry};
@@ -1131,7 +864,7 @@ fn build_full_app(repo: Arc<calm_server::db::sqlite::SqlxRepo>, events: EventBus
         .with_state(state)
 }
 
-/// A2's event-linked receipt must leave before its event in the actual reset.
+/// An event-linked receipt must leave before its event in the reset.
 #[tokio::test]
 async fn reset_from_fixture_with_candidate_decision_receipt() {
     let fixture = load_fixture("track-grid-layout-trace.events.json");
@@ -1143,7 +876,6 @@ async fn reset_from_fixture_with_candidate_decision_receipt() {
         .await
         .unwrap();
     sqlx::query("INSERT INTO task_candidate_decisions(event_id,track_id,producer_attempt_id,event_json) VALUES(?1,?2,'retained-producer','{}')").bind(ids[0]).bind(track).execute(repo.pool()).await.unwrap();
-    // Retained FK-complete rows are reset input, not qualification fixtures.
     for (id, kind) in [
         ("reset-publication", "task-file-publication"),
         ("reset-verification", "candidate-verify"),

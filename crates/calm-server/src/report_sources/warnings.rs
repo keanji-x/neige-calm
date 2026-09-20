@@ -1,9 +1,4 @@
-//! #1669 §2.3 — receipt warnings: `neige://source/…` links in the prose
-//! blocks a write touched that point at a source or anchor this track does
-//! not have — a malformed id or anchor included, since the page will show
-//! those as missing too. Computed after the persist transaction committed,
-//! from the final snapshot plus one `report_sources` read; the write itself
-//! is never blocked (§7 default 1).
+//! Receipt warnings: `neige://source/…` links in touched prose blocks that point at a source or anchor this track does not have (malformed ids included). Computed after the persist transaction committed; the write itself is never blocked.
 
 use std::collections::{HashMap, HashSet};
 
@@ -137,8 +132,7 @@ mod tests {
         );
     }
 
-    /// Design §5: a malformed id or anchor is a citation the page cannot
-    /// open, so it is warned about like a missing one.
+    /// A malformed id or anchor is a citation the page cannot open, so it is warned about like a missing one.
     #[test]
     fn malformed_ids_and_anchors_are_unresolved() {
         let blocks = vec![prose(

@@ -3,12 +3,7 @@ import { createArea } from './helpers/seed.js';
 
 const createdAreaIds: string[] = [];
 
-/* The two strings the composer's task field answers to. astryx puts `label` on
-   the `contenteditable` as `aria-label`, so the browser-level check that the
-   field is still *named* is exactly this locator resolving; the placeholder is
-   the empty-state prompt beside it. Kept as literals so the checks below are
-   about *those strings* and not about "some textbox" (#1211 S2 deleted the
-   title field, not this one — the sentence is the track's intent now). */
+/* astryx puts `label` on the `contenteditable` as `aria-label`; the placeholder is the empty-state prompt beside it. */
 const TASK_LABEL = 'What this track should do';
 const TASK_PLACEHOLDER = 'What should this track do?';
 
@@ -25,55 +20,20 @@ test.afterEach(async ({ request }) => {
   createdAreaIds.length = 0;
 });
 
-/*
- * #1211 — a track is created without *naming* it first.
- *
- * Nothing here collects a title any more: the title is not the intent (S2), the
- * kernel takes `#[serde(default)]` for it, and the planner agent names the track
- * through `calm.track.rename` once it knows what the track is for — which only
- * works while the stored title is empty. So this case asserts the `title`
- * **key** is absent from the POST rather than asserting a value: an empty
- * string reaches the same stored title but says this client decided the name,
- * and the whole point is that it did not.
- *
- * What the reader does type is the track's *intent*, into the composer this page
- * became (S3). It travels as `first_message` on this same create (#1299), which
- * is asserted on the request and counted at the end of this case.
- */
+/* Asserts the `title` KEY is absent from the POST, not a value: an empty string reaches the same
+ * stored title but says this client decided the name. */
 test('creates a track from an Area group with no title, and persists it', async ({ page, request }) => {
   const errors = captureBrowserErrors(page);
-  /* Every create this page emits, not just the one `waitForRequest` returns.
-     The sentence rides on the create and the create carries no idempotency key
-     (#1384), so a second POST is a second track *and* a second delivery of the
-     same sentence — countable here and nowhere else in this file. */
+  /* Every create this page emits: the create carries no idempotency key, so a second POST is a
+       second track AND a second delivery of the same sentence. */
   const creates: Request[] = [];
   page.on('request', (pending) => {
     if (pending.method() === 'POST' && new URL(pending.url()).pathname === '/api/tracks') {
       creates.push(pending);
     }
   });
-  /*
-   * The kernel's own account of the delivery, over the socket the app is
-   * already on (#1299).
-   *
-   * `harness.user_message.enqueued` is emitted where the message is queued onto
-   * the harness — not by this page, and not by the HTTP response — so it is the
-   * one signal at this tier that says the *server* did the thing rather than
-   * that the browser asked for it. It carries `track_id` and `char_count` and
-   * no text, which is exactly enough: the track it names is the one just
-   * created, and the count is the length of what was typed.
-   *
-   * It does **not** replace the in-process assertion in
-   * `crates/calm-server/tests/cases/track_create_first_message.rs`: enqueued is
-   * not "reached the agent's turn input", and only that suite can see the turn.
-   * What this adds is that the browser's create really produced the kernel-side
-   * enqueue, once, for this track.
-   *
-   * Registered before `goto` because the app opens the socket on first paint,
-   * and it subscribes to `['*']` with a replay cursor, so an event emitted
-   * during the create arrives here even though the page did not know the track
-   * id when it subscribed.
-   */
+  /* `harness.user_message.enqueued` is the one signal at this tier that the SERVER queued the message.
+   * Registered before `goto`: the app subscribes to `['*']` with a replay cursor on first paint. */
   const frames: Record<string, unknown>[] = [];
   page.on('websocket', (socket) => {
     if (new URL(socket.url()).pathname !== '/api/events') return;
@@ -83,8 +43,7 @@ test('creates a track from an Area group with no title, and persists it', async 
         const parsed: unknown = JSON.parse(frame.payload);
         if (typeof parsed === 'object' && parsed !== null) frames.push(parsed as Record<string, unknown>);
       } catch {
-        /* Not JSON — a keepalive or a partial frame. The assertion below counts
-           what did parse, so junk cannot make it pass. */
+        /* Not JSON — a keepalive or a partial frame. */
       }
     });
   });
@@ -93,38 +52,17 @@ test('creates a track from an Area group with no title, and persists it', async 
   await page.goto('/next/');
   await page.getByRole('button', { name: `New track in ${area.name}` }).click();
 
-  /* #1211 — a route, not a modal. `waitForURL` is the surface being ready;
-     the composer being visible is the surface being *usable*, and both are
-     asserted because a route that renders an error box would satisfy only the
-     first. The dialog count is the negative half of the same statement: main's
-     `getByRole('dialog', { name: 'New track' })` scope has no successor here. */
+  /* `waitForURL` is the surface being ready; the composer visible is it being usable. */
   await page.waitForURL(/\/area\/[^/]+\/new$/);
   await expect(page.getByRole('dialog')).toHaveCount(0);
   const message = `FE e2e track ${Date.now()}`;
   await expect(page.getByLabel(TASK_LABEL)).toBeVisible();
-  // The empty-state prompt, by the other string the field answers to.
   await expect(page.getByText(TASK_PLACEHOLDER)).toBeVisible();
-  // #1147 S3 — the Folder control is present and **optional**. This test walks
-  // the default path (nothing picked), which must stay byte-identical to the
-  // #1131 body: the kernel keys its managed-workspace branch on the absence of
-  // `cwd`, so a control that defaulted to `$HOME` or to `""` would silently
-  // move every track onto the attached branch.
-  // #1228/#1211 — the control names itself, so there is no outer label to find
-  // it by. Unset, its text is the **default** it is holding ("Neige workspace")
-  // and its accessible name says which control that is; they are two different
-  // strings on purpose.
+  // The default path must stay byte-identical: the kernel keys its managed-workspace branch on the
+  // absence of `cwd`, so a control defaulting to `$HOME` or `""` would silently attach every track.
   await expect(page.getByRole('button', { name: 'Folder: Neige workspace' })).toBeVisible();
-  // #1209 — no template is the default and is left alone here: this case is
-  // the pre-template create, and the assertions below say the picker added no
-  // field to it. The picker is collapsed, so "what is selected" is read off the
-  // trigger's accessible name rather than a checked row — and since #1211 that
-  // name states the default rather than asking a question.
+  // The picker is collapsed, so "what is selected" is read off the trigger's accessible name.
   await expect(page.getByRole('button', { name: 'Template: No template' })).toBeVisible();
-  /* Create is gated on the sentence, which is where #1211 S3 differs from S2:
-     the composer *is* the page, so submitting an empty one would create a track
-     with nothing in it and nothing on screen to say why it was allowed. S2's
-     "Create is live with nothing typed" belonged to a dialog that collected no
-     sentence at all. */
   await expect(page.getByRole('button', { name: 'Create track' })).toBeDisabled();
   await page.getByLabel(TASK_LABEL).fill(message);
   await expect(page.getByRole('button', { name: 'Create track' })).toBeEnabled();
@@ -135,34 +73,19 @@ test('creates a track from an Area group with no title, and persists it', async 
   const body = createRequest.postDataJSON() as Record<string, unknown>;
   expect(body).toMatchObject({ area_id: area.id });
   expect(body).toHaveProperty('theme');
-  /* #1211 — the sentence is the track's intent, not its name. The kernel stores
-     the empty string and the planner agent renames later via `calm.track.rename`. */
   expect(body).not.toHaveProperty('title');
-  /* #1299 — and it is on this create, under the key the kernel seeds into the
-     `planner-harness-start` transaction. Asserted against the *typed* string,
-     so a create that posted some other text (or a trimmed-to-nothing one) is
-     not confused with delivery. */
+  /* Asserted against the typed string, so a create that posted other text is not confused with delivery. */
   expect(body).toMatchObject({ first_message: message });
-  /* The real kernel accepted it. 201 and not merely "some 2xx": `first_message`
-     is validated before anything is minted, so a rejected sentence is a 400
-     here — this is the assertion that separates "the browser sent the key" from
-     "the server took it". */
+  /* 201, not "some 2xx": `first_message` is validated before anything is minted, so a rejected sentence is a 400. */
   expect((await createRequest.response())?.status(), 'the create carrying the sentence must be accepted').toBe(201);
   expect(body).not.toHaveProperty('cwd');
   expect(body).not.toHaveProperty('attach_folder');
-  // `toMatchObject` above would not notice these, and no-template must not send
-  // them: the kernel 400s an empty `template_id` and the body is
-  // `deny_unknown_fields`.
+  // No-template must not send these: the kernel 400s an empty `template_id` and the body is `deny_unknown_fields`.
   expect(body).not.toHaveProperty('template_id');
   expect(body).not.toHaveProperty('template_input');
 
   await expect(page).toHaveURL(/\/track\/[0-9a-f-]+$/i);
-  /* Untitled is the *normal* landing state now, so the page title is the
-     display fallback (#409) rather than anything the reader typed. Asserted
-     because "the header renders something readable for a blank title" is
-     exactly what stops being exercised once the title field is gone — and it
-     is a *placeholder*, so the rename box opens blank rather than pre-filled
-     with it (#1211 S2). */
+  /* Untitled is the normal landing state; the fallback is a placeholder, so the rename box opens blank. */
   await expect(page.locator('[data-nc-page-title]')).toHaveText(/Untitled track/);
   const trackId = /\/track\/([0-9a-f-]+)$/i.exec(page.url())?.[1];
   expect(trackId).toBeTruthy();
@@ -173,18 +96,6 @@ test('creates a track from an Area group with no title, and persists it', async 
   expect(await response.json() as { id: string; title: string }[]).toEqual(
     expect.arrayContaining([expect.objectContaining({ id: trackId, title: '' })]),
   );
-  /*
-   * #1299 — the agent the sentence was delivered to exists on the track.
-   *
-   * What proves the delivery reaches the agent exactly once is in-process,
-   * against a harness this tier cannot reach:
-   * `crates/calm-server/tests/cases/track_create_first_message.rs`
-   * (`the_first_message_reaches_the_agent_exactly_once`). What this case owns is
-   * the browser half — the sentence is on the create, the kernel took it, and
-   * the create happened once — plus, since #1625 P2, the one thing this tier
-   * CAN see over HTTP: the row the kernel writes for the sentence when the
-   * queue drains it into a turn (below).
-   */
   const detail = await request.get(`/api/tracks/${trackId ?? ''}`);
   expect(detail.ok()).toBe(true);
   const cards = (await detail.json() as { cards: { id: string; kind: string; payload: unknown }[] }).cards;
@@ -193,31 +104,9 @@ test('creates a track from an Area group with no title, and persists it', async 
     && (card.payload as { planner_harness?: unknown }).planner_harness === true);
   expect(plannerCard, 'the created track must carry a planner card').toBeTruthy();
 
-  /*
-   * ── #1449, then #1625 P2 — the sentence that made the track is on screen,
-   *    and it is the server's own row ──────────────────────────────────────
-   *
-   * The landing opens the planner conversation (#1211 S2). #1449 put the
-   * sentence on screen from a tab-local placeholder, because the transcript
-   * gained a row only when the app-server echoed the turn back. #1625 P2
-   * moved the sentence into the kernel: when the queue drains it into a turn,
-   * the kernel writes a transcript row for it BEFORE `turn/start` goes out —
-   * a completed `userMessage` with no turn yet (`turn_id: null`), keyed by the
-   * queue entry id and marked `_projection` — and the browser reads that row
-   * like any other. There is no placeholder any more.
-   *
-   * This tier is the one place that can show it against a real kernel and a
-   * real read: the `osc-probe-child` fixture answers `turn/start` and emits
-   * no items at all (`e2e/README.md`), so the row below is the kernel's and
-   * nobody else's — no echo has upgraded it, which is exactly the window
-   * #1475 was about. Both halves are asserted: the words are on screen, and
-   * the item read carries the row they came from.
-   *
-   * The drawer is located by the control only it has rather than by its name:
-   * on a real kernel the planner card is minted with no title, so the name is
-   * whatever the conversation derives from its turns, which is the thing under
-   * test.
-   */
+  /* The kernel writes the drained sentence as a `userMessage` row (`turn_id: null`, `_projection`) before
+   * `turn/start`; the fixture emits no items, so the row read back is the kernel's own. The drawer is
+   * located by the control only it has: its name derives from its turns, which is the thing under test. */
   const drawer = page.locator('[role="complementary"]')
     .filter({ has: page.getByRole('button', { name: 'Close conversation' }) });
   await expect(drawer).toBeVisible();
@@ -240,28 +129,12 @@ test('creates a track from an Area group with no title, and persists it', async 
   expect(projectionParams._projection, 'the row is the kernel\'s own, not an echo').toBe(true);
   expect(projectionParams.item?.clientId, 'keyed by the id the drain sent codex').toBe(projection?.item_uuid);
 
-  /*
-   * Once, and still once after the interaction settles.
-   *
-   * `waitForRequest` returned on the *first* create, so the count taken at that
-   * moment cannot see a second one emitted a tick later — which is exactly the
-   * shape a retry-on-settle bug has, and with the sentence on the body it
-   * double-delivers rather than merely double-creating. So: give the page a
-   * bounded moment to finish misbehaving, then count. Same two-step as
-   * `track-conversation-create.spec.ts`.
-   */
+  /* `waitForRequest` returned on the first create; give the page a bounded moment, then count again. */
   await page.waitForTimeout(1_000);
   expect(creates, 'the create carrying the sentence must happen exactly once').toHaveLength(1);
   expect((creates[0]?.postDataJSON() as { first_message?: unknown }).first_message).toBe(message);
 
-  /*
-   * And the kernel enqueued it onto the harness — exactly once, for this track.
-   *
-   * Counted after the same settle window as the creates above, and for the same
-   * reason: a second create would show up here as a second enqueue. `char_count`
-   * is asserted too, because a delivery of some *other* text would otherwise be
-   * indistinguishable from this one (the event carries no message body).
-   */
+  /* `char_count` is asserted because the event carries no message body. */
   const enqueued = frames.filter((frame) => frame.ev === 'harness.user_message.enqueued'
     && (frame.data as { track_id?: unknown } | undefined)?.track_id === trackId);
   expect(
@@ -276,18 +149,7 @@ test('creates a track from an Area group with no title, and persists it', async 
   expect(errors).toEqual([]);
 });
 
-/*
- * #1209 — a template on the wire, against the real kernel.
- *
- * `small-change` and not `issue-development`: it is a template in every
- * environment, bound to no plugin, so the case does not depend on git-forge
- * running.
- *
- * #1300 — the track it creates no longer *forks* anything. A template is a
- * read-only recipe instantiated inside the create transaction, not a hidden
- * track to copy. The assertions below moved with it: they check the report the
- * new track actually holds, which is what this case's name always promised.
- */
+/* `small-change` is a template in every environment, bound to no plugin, so this does not depend on git-forge. */
 test('creates a track from a template and seeds its report', async ({ page, request }) => {
   const errors = captureBrowserErrors(page);
   const area = await createArea(request);
@@ -305,28 +167,12 @@ test('creates a track from a template and seeds its report', async ({ page, requ
   await page.getByLabel(TASK_LABEL).fill(message);
   await page.getByRole('button', { name: /^Template: / }).click();
 
-  /* #1209 — the option says what the template pre-sets, and it says it from
-     the kernel's own plan: `small-change` seeds inspect → implement → verify.
-     The option itself is the hover trigger now — there is no separate
-     "N tasks" label, and therefore no extra tab stop inside the menu.
-     Hovering opens the card in a real browser, which is the part jsdom cannot
-     prove (the layer is a `popover`, hidden by the UA stylesheet until then). */
+  /* The option itself is the hover trigger; hovering opens a `popover` layer, which jsdom cannot prove. */
   const option = page.getByRole('menuitem', { name: /^Small change/ });
   await expect(option).toBeVisible();
   await expect(page.getByText(/^\d+ tasks?$/)).toHaveCount(0);
-  /* The card is addressed through the option, never guessed at by role.
-     `getByRole('dialog')` is the wrong handle even now that the surface is a
-     page: `HoverCard` renders its layer *inline* with `role="dialog"`, and
-     Playwright's `hasText` reads `textContent` without skipping
-     `display:none`, so a closed card's text still counts towards its ancestor.
-     `aria-describedby` has no such ambiguity: `HoverCard` writes the layer's
-     own id onto its trigger, `DropdownMenuItem` sets no `aria-describedby` of
-     its own, so this attribute is exactly one id, and an id matches exactly one
-     element.
-     `[id="…"]` and not `#…`: the id comes from React's `useId`, which is
-     `«r0»`-shaped — an attribute selector does not care.
-     Not runnable on the dev box (the stack is docker + a 0-swap prod host);
-     this case is verified in CI. */
+  /* Addressed via `aria-describedby`, not `getByRole('dialog')`: `HoverCard` renders its layer inline and
+       Playwright's `hasText` reads `textContent` through `display:none`. `[id="…"]` because `useId` ids are `«r0»`-shaped. */
   await option.hover();
   const cardId = await option.getAttribute('aria-describedby');
   expect(cardId, 'the option must describe its hover card').toBeTruthy();
@@ -345,9 +191,7 @@ test('creates a track from a template and seeds its report', async ({ page, requ
     page.getByRole('button', { name: 'Create track' }).click(),
   ]);
   const body = createRequest.postDataJSON() as Record<string, unknown>;
-  /* #1299 — a template create carries the sentence too. The kernel runs the
-     same harness start for both, so a create path that dropped the key only
-     when a template was chosen would leave the case above green. */
+  /* A template create carries the sentence too; the kernel runs the same harness start for both. */
   expect(body).toMatchObject({ area_id: area.id, template_id: 'small-change', first_message: message });
   expect(body).not.toHaveProperty('title');
   // Unbound template: the kernel rejects `template_input` against it.
@@ -355,9 +199,6 @@ test('creates a track from a template and seeds its report', async ({ page, requ
 
   await expect(page).toHaveURL(/\/track\/[0-9a-f-]+$/i);
   await expect(page.locator('[data-nc-page-title]', { hasText: 'Untitled track' })).toBeVisible();
-  // The kernel accepted the template and stored the binding — the assertion
-  // that separates "the picker put a field on the wire" from "the track was
-  // actually created from that template".
   const trackId = /\/track\/([0-9a-f-]+)$/i.exec(page.url())?.[1];
   expect(trackId).toBeTruthy();
   const detail = await request.get(`/api/tracks/${trackId}`);
@@ -368,21 +209,8 @@ test('creates a track from a template and seeds its report', async ({ page, requ
   };
   expect(detailBody.track.template_id).toBe('small-change');
 
-  /* #1300 — the assertion this case's name always claimed and never made.
-     `template_id` on the track row says the kernel accepted the binding; it says
-     nothing about the report, which is the thing "seeds its report" is about.
-     Before #1300 the report came from forking a hidden system-area track the
-     kernel lazily seeded; it now comes from instantiating a Rust constant in
-     the create transaction. Both produce the same document — that equivalence
-     is pinned in-process by
-     `track_template_tracks.rs::creating_from_a_template_instantiates_its_recipe`
-     — and this is the live-stack half: through the real kernel, over HTTP, on
-     the track the browser actually created.
-
-     `ready: false` is asserted alongside the keys because it is the difference
-     between "the plan is present" and "the plan is running". A template's tasks
-     are pre-set, not released; an instantiation that shipped them ready would
-     start dispatching work nobody approved. */
+  /* `template_id` on the row says the kernel accepted the binding, not that the report was seeded.
+       `ready: false` is asserted because tasks are pre-set, not released. */
   const report = detailBody.cards.find((card) => card.kind === 'track-report');
   expect(report, 'the created track must have a track-report card').toBeTruthy();
   const reportBody = report?.payload.body ?? '';
@@ -396,8 +224,7 @@ test('creates a track from a template and seeds its report', async ({ page, requ
 });
 
 test('creates the planner with the model and effort selected beside Send', async ({ page, request }) => {
-  // A deterministic roster for the UI; creation and the persisted planner read
-  // still use the real kernel and the stack's fixture daemon.
+  // A deterministic roster for the UI; creation and the persisted planner read still use the real kernel.
   await page.route('**/api/models', (route) => route.fulfill({ json: {
     models: [{ id: 'e2e-model', model: 'e2e-model', display_name: 'E2E model', description: '',
       is_default: false, default_reasoning_effort: 'low', supported_reasoning_efforts: [

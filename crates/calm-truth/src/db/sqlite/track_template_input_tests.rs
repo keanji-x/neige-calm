@@ -3,9 +3,7 @@ use crate::db::RepoRead;
 use crate::model::{NewArea, NewTrack, RequestTheme};
 use serde_json::json;
 
-/// #891 — `template_input` INSERT → SELECT round-trip: the JSON blob
-/// persists verbatim (TEXT column, `#[sqlx(json(nullable))]` decode) and
-/// a `None` input stays `None`.
+/// The JSON blob persists verbatim (TEXT column, `#[sqlx(json(nullable))]` decode); a `None` input stays `None`.
 #[tokio::test]
 async fn track_create_round_trips_template_input() {
     let repo = SqlxRepo::open("sqlite::memory:").await.expect("open repo");

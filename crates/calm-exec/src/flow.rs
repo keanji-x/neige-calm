@@ -24,9 +24,7 @@ pub trait WorkerFlowItemSink: Send + Sync {
 pub trait WorkerFlowSource: Send + Sync {
     fn provider(&self) -> WorkerProviderKind;
 
-    /// Passive: drain the worker's wire, normalize, push to `sink` until the
-    /// session ends. Opens no model connection, sends no turn, advances no
-    /// FSM.
+    /// Passive: drain the worker's wire into `sink` until the session ends; opens no model connection, sends no turn, advances no FSM.
     async fn capture(
         &self,
         session: &WorkerSession,

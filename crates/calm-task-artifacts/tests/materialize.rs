@@ -101,10 +101,8 @@ fn materialized_reconciliation_reopens_exact_published_inputs_without_replacemen
     assert_eq!(fs::metadata(file).unwrap().ino(), inode);
 }
 
-/// #1636: mkdir(2) beneath a setgid directory yields `0o2700`, not the requested
-/// `0o700` (CI's self-hosted `$RUNNER_TEMP` is such a directory). The store owns
-/// the final mode of every directory it creates, so the exact-mode fence in
-/// preparation and reconciliation passes wherever the store root lives.
+/// mkdir(2) beneath a setgid directory yields `0o2700`, not the requested `0o700`;
+/// the store owns the final mode of every directory it creates.
 #[test]
 fn materialization_owns_exact_directory_modes_beneath_setgid_parent() {
     let temp = tempfile::tempdir().unwrap();

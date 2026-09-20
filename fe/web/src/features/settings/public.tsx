@@ -1,41 +1,5 @@
 // Settings — workspace preferences, and the one row grammar every pane uses.
-//
-// Presentational and props-driven throughout: nothing here calls an API.
-// Loading, saving and error state all arrive as props, and the patch a pane
-// builds leaves through `onSave` (features must not import app).
-//
-// ## The standard this file defines
-//
-// One nav column, one pane per group, and **one row shape**. A row is:
-//
-//     title                                                    [ control ]
-//     one sentence
-//
-// left-aligned text, right-aligned control, both flush with the pane's edges, a
-// hairline between rows and nothing else. That is `SettingRow`, and it is the
-// only way to put anything on a settings pane — so a text field, a dropdown, a
-// toggle and a drill-in all sit between the same two edges and read as one
-// screen rather than as four screens that happen to be adjacent.
-//
-// A row is **either** something you set (`control`) **or** somewhere you go
-// (`onOpen`), never both: the type below makes the pair unrepresentable, and
-// astryx's list guidance rejects an interactive control inside an interactive
-// row for the same reason — two targets for one intent.
-//
-// ## Hierarchy
-//
-// Three levels, and only three: the dialog's title (`Settings`), the pane's
-// heading plus its one-sentence lede, and the rows. Group headings *inside* a
-// pane are gone — a pane holding three headed groups is the shape that made the
-// old General pane read as a pile. Anything that wants a heading of its own is
-// a section in the nav column instead, which is why Network / Appearance /
-// About are now three entries rather than three stacked groups.
-//
-// ## Icons
-//
-// From astryx's built-in registry only; the app does not draw its own for this.
-// That set is small and has no "network" or "appearance", so each section takes
-// the nearest available sense and says why at the point of choice.
+// A row is either something you set (`control`) or somewhere you go (`onOpen`), never both.
 
 import { Heading as AstryxHeading } from '@astryxdesign/core/Heading';
 import { List as AstryxList, ListItem as AstryxListItem } from '@astryxdesign/core/List';
@@ -65,23 +29,7 @@ export type SettingsSurfaceProps = Readonly<{
   children: ReactNode;
 }>;
 
-/**
- * The two-column frame every Settings route renders inside.
- *
- * Built from astryx's `SideNav` / `SideNavItem isSelected` rather than
- * hand-written rows: the design system ships this component, and the
- * hand-rolled version was a worse copy of it whose selected pill hung outside
- * the column on a negative margin, where the dialog body's `overflow: auto`
- * clipped half of it away.
- *
- * `SideNavItem` renders a `<button>` for an `onClick` without an `href`, which
- * keeps INV-A11Y-061; `aria-current="page"` is stamped on top, because
- * `isSelected` is a visual state and the current *route* is a fact a screen
- * reader has to be told.
- *
- * The dialog above supplies the title and the `×`, so this has neither — there
- * is exactly one close affordance on screen.
- */
+/** The two-column frame every Settings route renders inside. `aria-current="page"` is stamped on top of `isSelected`: the current route is a fact a screen reader has to be told. */
 export function SettingsSurface({ presentation, section, onSelectSection, children }: SettingsSurfaceProps) {
   return (
     <div className={`${styles.surface} ${presentation === 'desktop' ? '' : styles.mobileSurface} ${presentation === 'mobile-detail' ? styles.mobileDetail : ''}`}>
@@ -98,12 +46,7 @@ export function SettingsSurface({ presentation, section, onSelectSection, childr
   );
 }
 
-/**
- * A pane: its heading, one sentence saying what the group is for, and its rows.
- *
- * The lede is required. A settings group that cannot be described in one
- * sentence is two groups, and the nav column is where the second one goes.
- */
+/** A pane: its heading, one sentence saying what the group is for, and its rows. */
 export function SettingsPane({ title, lede, children, category }: Readonly<{
   title: string;
   /** Present only on a top-level category; drill-ins keep their own heading. */
@@ -128,24 +71,10 @@ export function SettingsList({ children }: Readonly<{ children: ReactNode }>) {
   return <AstryxList hasDividers density="balanced" className={styles.list}>{children}</AstryxList>;
 }
 
-/**
- * One row.
- *
- * `control` and `onOpen` are mutually exclusive *by type*: a row you set and a
- * row you walk into are different things, and a row that is both is two click
- * targets for one intent.
- */
+/** One row. `control` and `onOpen` are mutually exclusive by type. */
 export type SettingRowProps = Readonly<{
   title: string;
-  /**
-   * A quiet second mark **on the title line** — a version, a count, a unit.
-   *
-   * Not a second title, and not a place for a sentence: it is set at the
-   * description's size and colour so the title still reads as one thing. It
-   * exists because a version belongs beside the name it versions, and pushing
-   * it into `description` made the row's second line a list of unrelated
-   * fragments (see the plugin row, which is where this came from).
-   */
+  /** A quiet second mark on the title line — a version, a count, a unit. Not a place for a sentence. */
   titleSuffix?: ReactNode;
   /** One sentence. Omitted when the title already says everything. */
   description?: ReactNode;
@@ -162,13 +91,7 @@ export function SettingRow({
   return (
     <AstryxListItem
       className={`${styles.row} ${onOpen === undefined ? styles.controlRow : ''}`}
-      /* Plain string unless a suffix was asked for: the wrapper is only there
-         to hold the second mark, and a row without one must not inherit a
-         layout box it does not need. */
       label={titleSuffix === undefined ? title : (
-        /* The locator is what lets a test ask "are these two on one line"
-           without reaching for a presentation class, which the DOM-query rule
-           forbids for the usual reason: a class is free to move. */
         <span className={styles.rowTitle} data-nc-row-title="">
           {title}
           <span className={styles.rowTitleSuffix}>{titleSuffix}</span>
@@ -176,19 +99,13 @@ export function SettingRow({
       )}
       description={description}
       startContent={startContent}
-      /* A drill-in row ends in a chevron and the whole row is the target; a
-         setting row ends in its own control and the row is not clickable. */
       endContent={onOpen === undefined ? control : <Icon name="chevron-right" />}
       onClick={onOpen}
     />
   );
 }
 
-/**
- * Mirrors `app/theme`'s mode union by value. `features/**` must not import
- * `app/**`, so the union is declared here and the app layer adapts to it; the
- * two are kept in step by the router wiring, not by a type import.
- */
+/** Mirrors `app/theme`'s mode union by value: `features/**` must not import `app/**`. */
 export type ThemeMode = 'light' | 'dark' | 'system';
 
 const THEME_OPTIONS = Object.freeze([
@@ -199,19 +116,8 @@ const THEME_OPTIONS = Object.freeze([
 
 const SAVED_NOTICE_MS = 4000;
 
-/**
- * Every right-hand control is this wide, so the pane has one trailing edge.
- *
- * Exported for the plugin configuration pane, which renders controls this
- * module does not know the shape of (they come from a manifest's
- * `config_schema`) and must still land on the same edge. A second constant
- * there would be a second trailing edge as soon as either moved.
- */
+/** Every right-hand control is this wide, so the pane has one trailing edge. Exported for the plugin configuration pane. */
 export const CONTROL_WIDTH = 260;
-
-// ---------------------------------------------------------------------------
-// General
-// ---------------------------------------------------------------------------
 
 export type GeneralPaneProps = Readonly<{
   /** `undefined` means "still loading" — never render a guessed control. */
@@ -363,20 +269,12 @@ export function GeneralPane({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Network
-// ---------------------------------------------------------------------------
-
 export type NetworkPaneProps = Readonly<{
   onOpenMobile: () => void;
   /** `undefined` means "still loading" — never render an empty form for it. */
   settings: Readonly<Record<string, string>> | undefined;
   loadError: string | null;
-  /**
-   * Commits one key. The returned promise **is** the row's status: this pane
-   * follows it per field, so the confirmation and the failure belong to the
-   * request they came from.
-   */
+  /** Commits one key. The returned promise is the row's status: this pane follows it per field. */
   onSave: (patch: SettingsPatch) => void | Promise<void>;
   onRetryLoad: () => void;
   /** Tests shorten the confirmation window; production uses the default. */
@@ -400,26 +298,7 @@ const PROXY_LABEL_OF: Readonly<Record<ProxyField, string>> = Object.freeze({
   https: 'HTTPS proxy',
 });
 
-/**
- * What one row's last commit is doing.
- *
- * Per field, and derived from that field's own promise — **not** from a
- * pane-level `saving` / `saveError` / `savedAt` triple with a single "which row
- * was it" pointer beside it. That shape was wrong in three measurable ways, all
- * reproduced before this was written:
- *
- *   * commit HTTP, then commit HTTPS, then HTTP's request fails ⇒ the failure
- *     painted on the **HTTPS** row, and HTTP's failure was never shown at all,
- *     so the reader left believing a proxy was saved that was not;
- *   * a still-unretired confirmation from HTTP's save turned into a green tick
- *     on HTTPS the moment HTTPS was committed — before its request resolved;
- *   * `saving` cleared when the first of two flights settled, so the busy
- *     marker lied about the other.
- *
- * `seq` is what makes a stale response harmless: a second commit on the same
- * field bumps it, and a response whose sequence is no longer current is
- * dropped rather than allowed to overwrite the newer one's outcome.
- */
+/** What one row's last commit is doing, per field and derived from that field's own promise. A response whose sequence is no longer current is dropped rather than overwriting the newer outcome. */
 type RowStatus =
   | Readonly<{ phase: 'idle' }>
   | Readonly<{ phase: 'saving'; value: string }>
@@ -455,22 +334,10 @@ export function NetworkPane({
     https: settings?.[HTTPS_PROXY_KEY] ?? '',
   };
 
-  // Seeding compares by *value*, not by object identity: a parent that hands
-  // back a fresh object on every render (a query cache does) must not wipe out
-  // what the reader is typing. A genuine server change does re-seed.
+  // Seeding compares by value, not object identity: a query cache hands back a fresh object on every render.
   const [seed, setSeed] = useState<Draft | null>(null);
   const [draft, setDraft] = useState<Draft>({ http: '', https: '' });
-  /**
-   * What this pane last *told* the server for each field, or `null` when it has
-   * told it nothing since the bag it is holding.
-   *
-   * The commit guard cannot compare against `base` alone: `base` only moves
-   * when the server's bag comes back, so between a commit and its echo the same
-   * value looked "changed" and was sent again — Enter followed by Tab wrote
-   * twice, and closing the dialog on an in-flight commit re-sent it. Cleared
-   * whenever a genuinely new bag arrives, at which point `base` is the truth
-   * again.
-   */
+  /** What this pane last told the server for each field, or `null` when nothing since the bag it holds: between a commit and its echo `base` alone would call the same value "changed". */
   const sent = useRef<Record<ProxyField, string | null>>({ http: null, https: null });
 
   const [status, setStatus] = useState<Readonly<Record<ProxyField, RowStatus>>>(
@@ -485,18 +352,7 @@ export function NetworkPane({
   if (loaded && (seed === null || seed.http !== incoming.http || seed.https !== incoming.https)) {
     const previous = seed;
     setSeed(incoming);
-    /*
-     * A new bag makes the server's word the reference again — **except** for a
-     * field whose write is still out, whose reference is what that write said.
-     *
-     * Two shapes were tried and were wrong. Clearing unconditionally dropped
-     * the reference mid-flight, so the next blur or the close cleanup sent the
-     * same value twice. Clearing only when the bag *equals* what was sent
-     * looked safer and was worse: a server that normalises the value, or
-     * another client writing meanwhile, means no bag ever equals it, and the
-     * stale entry then outranks every future bag — after which retyping that
-     * exact value is a silent no-op forever.
-     */
+    /* A new bag makes the server's word the reference again — except for a field whose write is still out. */
     for (const field of PROXY_FIELDS) {
       if (statusRef.current[field].phase !== 'saving') sent.current[field] = null;
     }
@@ -525,20 +381,7 @@ export function NetworkPane({
   const sequence = useRef<Record<ProxyField, number>>({ http: 0, https: 0 });
   const referenceFor = (field: ProxyField) => sent.current[field] ?? base[field];
 
-  /**
-   * Commit on **blur and Enter, never per keystroke.**
-   *
-   * There is no Save button: a proxy is one value, and a settings screen that
-   * asks you to press Save for one value is asking you to do the app's
-   * bookkeeping. But a half-typed URL is not a value — saving per keystroke
-   * would PUT `h`, `ht`, `htt`… and leave whatever the reader stopped at as the
-   * workspace's proxy if they walked away mid-word. Leaving the field is the
-   * moment the value is finished, and Enter is the same intent stated
-   * explicitly.
-   *
-   * A value equal to the last one the server gave us commits nothing: focusing
-   * and leaving a field the reader never edited must not write.
-   */
+  /** Commit on blur and Enter, never per keystroke; a value equal to the reference commits nothing. */
   const commit = (field: ProxyField, value: string) => {
     if (value === referenceFor(field)) return;
     sent.current[field] = value;
@@ -547,12 +390,7 @@ export function NetworkPane({
     const settle = (next: RowStatus) => {
       // A response for a superseded commit says nothing about the current one.
       if (sequence.current[field] !== ticket) return;
-      /*
-       * The reference rolls back **here**, inside the ticket check, and not in
-       * the `catch`: an older request failing after a newer one went out would
-       * otherwise wipe the reference belonging to the newer, still-in-flight
-       * value, and the next blur — or the close cleanup — would send it twice.
-       */
+      /* Rolled back inside the ticket check, not in the `catch`: an older request failing must not wipe the reference of a newer in-flight value. */
       if (next.phase === 'failed') sent.current[field] = null;
       setStatus((current) => ({ ...current, [field]: next }));
     };
@@ -560,24 +398,12 @@ export function NetworkPane({
     void Promise.resolve(onSave({ [PROXY_KEY_OF[field]]: value === '' ? null : value }))
       .then(() => { settle({ phase: 'saved', at: Date.now(), value }); })
       .catch((error: unknown) => {
-        /* `settle` rolls the reference back when this failure is the current
-           one: `sent` records what the server was told and *took*, and leaving
-           a failed value in it made the obvious retry — refocus, Enter — a
-           no-op, so a failed save could not be retried at all. */
+        /* Clearing `sent` on failure is what lets the reader retry with refocus + Enter. */
         settle({ phase: 'failed', message: error instanceof Error ? error.message : 'Save failed.', value });
       });
   };
 
-  /*
-   * Closing the dialog commits what is in the fields.
-   *
-   * Escape and a backdrop click unmount the focused input, and removing a
-   * focused element fires **no** blur — so without this the reader's typing
-   * left with the dialog, silently, on a screen whose whole premise is that it
-   * saves itself. The refs are what make it correct at unmount time: the
-   * cleanup runs once, after the last render, and must read the values from
-   * then rather than the ones captured when the effect was created.
-   */
+  /* Closing the dialog commits what is in the fields: unmounting a focused input fires no blur. The refs make the cleanup read the last render's values. */
   const pending = useRef({ draft, base, onSave });
   pending.current = { draft, base, onSave };
   useEffect(() => () => {
@@ -586,58 +412,28 @@ export function NetworkPane({
       // The same guard the blur path uses: what was already sent is not resent
       // just because the bag has not echoed it back yet.
       if (last[field] === (sent.current[field] ?? seeded[field])) continue;
-      /*
-       * And never the value the reader just watched fail. Clearing `sent` on a
-       * failure is what makes an explicit retry — refocus, Enter — work; it
-       * must not also turn *closing the dialog* into a silent retry, landing a
-       * write the reader was told had not happened, with nothing mounted to
-       * tell them it since had.
-       */
+      /* Never the value the reader just watched fail: closing the dialog must not become a silent retry. */
       const verdict = statusRef.current[field];
       if (verdict.phase === 'failed' && verdict.value === last[field]) continue;
       const value = last[field];
       void Promise.resolve(save({ [PROXY_KEY_OF[field]]: value === '' ? null : value })).catch(() => {
-        // Nothing is mounted to report to. The write still went out; the next
-        // visit re-reads the bag and shows whatever actually landed.
+        // Nothing is mounted to report to; the next visit re-reads the bag.
       });
     }
   }, []);
 
-  /*
-   * Per row, and keyed on *that row's* saved timestamp.
-   *
-   * One effect over the whole `status` object restarted the single shared timer
-   * every time the other row changed, so HTTPS going busy could hold HTTP's
-   * tick on screen for far longer than the notice window.
-   */
+  /* Per row, keyed on that row's saved timestamp: one shared timer restarted whenever the other row changed. */
   useRetiringNotice('http', status.http, setStatus, savedNoticeMs);
   useRetiringNotice('https', status.https, setStatus, savedNoticeMs);
 
-  /**
-   * The confirmation is the **tick and nothing else**.
-   *
-   * "Saved." beside a green tick is the tick said twice, and the word costs the
-   * row a line that then reflows the rows under it every time you leave a
-   * field. A failure keeps its sentence, because "something went wrong" is not
-   * a thing a mark can say.
-   *
-   * The word does not disappear for a screen reader: it goes to the
-   * always-mounted live region beside the field. Always-mounted matters —
-   * screen readers commonly do not announce a region that arrives in the same
-   * mutation as its text, so the region has to exist before it has something
-   * to say.
-   */
+  /** The confirmation is the tick and nothing else; the word goes to the always-mounted live region beside the field. */
   const statusFor = (field: ProxyField) => {
     if (changedElsewhere[field] && draft[field] !== base[field]) {
       return { type: 'warning' as const, message: 'Changed elsewhere. Your edit is not saved.' };
     }
     const row = status[field];
     if (row.phase === 'idle') return undefined;
-    /* A verdict describes **the value it was for**. Once the reader has moved
-       the field on, neither the tick nor the error is about what is on screen:
-       a response that settled while they were typing the next value used to
-       paint a tick — and announce "Saved." — beside a value that was never
-       sent. */
+    /* A verdict describes the value it was for: once the draft moved on, neither the tick nor the error is about what is on screen. */
     if (row.value !== draft[field]) return undefined;
     if (row.phase === 'failed') return { type: 'error' as const, message: row.message };
     if (row.phase === 'saved') return { type: 'success' as const };
@@ -662,14 +458,7 @@ export function NetworkPane({
             status={statusFor(field)}
             onChange={(value) => {
               setDraft({ ...draft, [field]: value });
-              /*
-                * Withdrawn, not hidden. Value-tagging alone only *hid* a
-                * settled verdict while the draft differed, so typing away from
-                * a failed value and back again brought the old error back —
-                * and, for a success, re-announced "Saved." to a screen reader
-                * with no request behind it. An in-flight commit keeps its
-                * status: it is still about to say something.
-                */
+              /* Withdrawn, not hidden: typing away from a failed value and back must not bring the old verdict back. An in-flight commit keeps its status. */
               setStatus((current) => {
                 const row = current[field];
                 if (row.phase === 'idle' || row.phase === 'saving') return current;
@@ -679,9 +468,7 @@ export function NetworkPane({
             onBlur={() => commit(field, draft[field])}
             onKeyDown={(event) => { if (event.key === 'Enter') commit(field, draft[field]); }}
             width={CONTROL_WIDTH}
-            /* The field stays editable while its write is in flight: a proxy
-               save is one request, and blocking the field would drop the next
-               keystroke. */
+            /* The field stays editable while its write is in flight: blocking it would drop the next keystroke. */
             data-nc-state={status[field].phase === 'saving' ? 'busy' : undefined}
           />
         </>
@@ -696,8 +483,7 @@ export function NetworkPane({
       lede="Connect your phone and configure proxies used when launching new agent cards. Proxy changes save when you leave the field."
     >
       {loadError !== null && <ErrorBox message={loadError} onRetry={onRetryLoad} />}
-      {/* INV-SETTINGS-002 — a loading line, never an empty field: an empty form
-          would let the reader save blanks over real values. */}
+      {/* A loading line, never an empty field: an empty form would let the reader save blanks over real values. */}
       {!loaded && loadError === null && <AstryxText as="p" color="secondary">Loading settings…</AstryxText>}
       {loaded && <SettingsList>
         {PROXY_FIELDS.map((field) => proxyRow(field))}
@@ -706,10 +492,6 @@ export function NetworkPane({
     </SettingsPane>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Appearance
-// ---------------------------------------------------------------------------
 
 export function AppearancePane({ themeMode, onThemeModeChange }: Readonly<{
   themeMode: ThemeMode;
@@ -722,12 +504,6 @@ export function AppearancePane({ themeMode, onThemeModeChange }: Readonly<{
           title="Theme"
           description="System follows your operating system's setting."
           control={(
-            /* A dropdown, not three segments. Three fixed segments spend the
-               row's whole trailing edge showing two options nobody picked, and
-               they cannot grow — a fourth theme would have to change the
-               control. A `Selector` states the current value and keeps the
-               alternatives until asked, which is what the rest of the rows on
-               this screen do too. */
             <AstryxSelector
               label="Theme"
               isLabelHidden
@@ -746,10 +522,6 @@ export function AppearancePane({ themeMode, onThemeModeChange }: Readonly<{
 function asThemeMode(value: string): ThemeMode {
   return value === 'light' || value === 'dark' ? value : 'system';
 }
-
-// ---------------------------------------------------------------------------
-// About
-// ---------------------------------------------------------------------------
 
 export function AboutPane() {
   return (

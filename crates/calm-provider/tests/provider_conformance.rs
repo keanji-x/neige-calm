@@ -44,10 +44,7 @@ async fn codex_provider_conformance_unknown_without_supervisor() {
     calm_truth_test_harness::provider_conformance(CodexProvider::new(sock, daemon)).await;
 }
 
-/// #868: local copy of calm-server's `support::codex_fixture::resolve_codex_bin`
-/// (different crate, so the shared test-support module is unreachable) with
-/// the SAME no-fallback semantics — env `NEIGE_CODEX_BIN` only, `None` ⇒
-/// self-skip. Tests must never fall back to a PATH/home codex binary.
+/// Env `NEIGE_CODEX_BIN` only, `None` ⇒ self-skip. Tests must never fall back to a PATH/home codex binary.
 #[cfg(all(unix, feature = "codex-e2e"))]
 fn resolve_codex_bin() -> Option<PathBuf> {
     let raw = std::env::var("NEIGE_CODEX_BIN").ok()?;

@@ -1,5 +1,4 @@
-//! #1147 S1 — migration 0077 backfill (design D9) and the single-writer
-//! projection it hands over to.
+//! Migration 0077 backfill and the single-writer projection it hands over to.
 
 use std::borrow::Cow;
 
@@ -20,11 +19,8 @@ fn migrator_through(version: i64) -> sqlx::migrate::Migrator {
     }
 }
 
-/// Design D9: every pre-#1147 track becomes `attached`, pointing at its own
-/// `cwd`, frozen at `created_at` — including the `$HOME` / `/tmp` / `/` rows
-/// that #1131 left behind, which are deliberately backfilled rather than
-/// repaired, and including the `cwd = ''` rows that migration 0018's own
-/// backfill produced.
+/// Every pre-migration track becomes `attached`, pointing at its own `cwd`,
+/// frozen at `created_at` — including the `cwd = ''` rows migration 0018 produced.
 #[tokio::test]
 async fn migration_0077_backfills_existing_tracks_as_frozen_attached() {
     let pool = SqlitePoolOptions::new()
@@ -44,8 +40,6 @@ async fn migration_0077_backfills_existing_tracks_as_frozen_attached() {
     .execute(&pool)
     .await
     .expect("seed area");
-    // The kernel-owned system area (#175) and the legacy `Today` track that
-    // `today_launchpad_ensure_tx` adopts and re-points.
     sqlx::query(
         "INSERT INTO coves (id, name, color, sort, kind, created_at, updated_at)
          VALUES ('area-system', 'system', '#000', -1, 'system', 1, 1)",
@@ -61,8 +55,6 @@ async fn migration_0077_backfills_existing_tracks_as_frozen_attached() {
     .await
     .expect("seed legacy Today track");
 
-    // (id, cwd, created_at) — a real project dir, the three #1131 casualties,
-    // and a pre-#250 row whose cwd never got one.
     let seeds = [
         ("w-repo", "/home/kenji/neige-calm", 1000_i64),
         ("w-home", "/home/kenji", 2000),
@@ -106,12 +98,8 @@ async fn migration_0077_backfills_existing_tracks_as_frozen_attached() {
         );
     }
 
-    // D9's exception. The system area's track stays re-pointable, because
-    // `today_launchpad_ensure_tx` re-points it. Freezing it here would put the
-    // adopt branch in the position of either violating the latch or clearing a
-    // stamp — the second is the subtler one, and it is what a blanket
-    // `frozen_at = created_at` would have caused on any deployment that has a
-    // legacy `Today` track.
+    // The system area's track stays re-pointable: `today_launchpad_ensure_tx`
+    // re-points it, and a blanket `frozen_at = created_at` would break that.
     let today: (String, String, Option<i64>) = sqlx::query_as(
         "SELECT workspace_kind, workspace_path, workspace_frozen_at FROM waves WHERE id='w-today'",
     )
@@ -125,8 +113,6 @@ async fn migration_0077_backfills_existing_tracks_as_frozen_attached() {
         "the system area's track must stay unfrozen (design D9 exception)"
     );
 
-    // …and the exception is scoped: nothing outside the system area escaped
-    // the freeze.
     let unfrozen_outside_system: Vec<(String,)> = sqlx::query_as(
         "SELECT w.id FROM waves w JOIN coves c ON c.id = w.cove_id \
          WHERE w.workspace_frozen_at IS NULL AND c.kind != 'system'",
@@ -140,10 +126,6 @@ async fn migration_0077_backfills_existing_tracks_as_frozen_attached() {
     );
 }
 
-/// After migration 0077 there is one stored path. This pins that every way of
-/// getting at it — the create return value, a fresh repo read, and the raw
-/// column — yields the same bytes, and that the wire alias is computed from it
-/// rather than from a second column (there is no second column).
 #[tokio::test]
 async fn workspace_writer_sets_kind_path_and_stamp_together() {
     let repo = super::SqlxRepo::open("sqlite::memory:")
@@ -180,8 +162,6 @@ async fn workspace_writer_sets_kind_path_and_stamp_together() {
     .expect("create track");
     tx.commit().await.expect("commit");
 
-    // S1: tracks minted here (user areas) are attached and frozen at creation.
-    // The launchpad track is the D9 exception and is not created through this path.
     assert_eq!(track.workspace.kind, TrackWorkspaceKind::Attached);
     assert_eq!(track.workspace.path, "/home/kenji/neige-calm");
     assert_eq!(
@@ -189,8 +169,6 @@ async fn workspace_writer_sets_kind_path_and_stamp_together() {
         Some(track.created_at),
         "user-area tracks are minted already frozen (design D9 + D6: attached never re-points)"
     );
-    // The wire alias is computed from the one stored column, not read from a
-    // second one — `tracks.cwd` no longer exists.
     assert_eq!(track.cwd_wire_alias, track.workspace.path);
 
     let row: (String, String, Option<i64>) = sqlx::query_as(
@@ -204,10 +182,7 @@ async fn workspace_writer_sets_kind_path_and_stamp_together() {
     assert_eq!(row.1, "/home/kenji/neige-calm");
     assert_eq!(row.2, Some(track.created_at));
 
-    // #1147 S3 — the freeze latch. This row is frozen (attached tracks are
-    // minted frozen), and the writer now refuses it. That refusal is the whole
-    // reason `PATCH /api/tracks/{id}` can be believed when it says a workspace
-    // is immutable: the latch lives at the bottom write, not at the route.
+    // The latch lives at the bottom write, not at the route.
     let mut tx = repo.pool.begin().await.expect("begin");
     let refused = super::track_workspace::track_workspace_write_tx(
         &mut tx,
@@ -226,18 +201,14 @@ async fn workspace_writer_sets_kind_path_and_stamp_together() {
     );
     tx.rollback().await.expect("rollback");
 
-    // Open the latch to exercise the rewrite. Raw SQL on purpose: the writer
-    // has no un-freeze path — by design, `track_workspace_freeze_tx` can only
-    // ever write a stamp — so a fixture that needs an unfrozen row has to say
-    // so out of band. Registered in `tests/track_write_point_registry.rs`.
+    // Raw SQL on purpose: the writer has no un-freeze path.
+    // Registered in `tests/track_write_point_registry.rs`.
     sqlx::query("UPDATE tracks SET workspace_frozen_at = NULL WHERE id = ?1")
         .bind(track.id.as_str())
         .execute(&repo.pool)
         .await
         .expect("clear the freeze stamp");
 
-    // Re-pointing through the writer moves both columns together; that is the
-    // whole point of it being one statement.
     let mut tx = repo.pool.begin().await.expect("begin");
     super::track_workspace::track_workspace_write_tx(
         &mut tx,
@@ -263,9 +234,8 @@ async fn workspace_writer_sets_kind_path_and_stamp_together() {
     assert_eq!(row.1, "/srv/neige-workspaces/area-1/w");
     assert_eq!(row.2, None);
 
-    // A read through the repo must surface the same thing — this is the
-    // `SELECT` column-list trap (`query_as` binds by name at runtime): the
-    // read path is what would blow up if a column list had gone stale.
+    // `query_as` binds by name at runtime, so the read path is what would blow up
+    // if a column list had gone stale.
     let read = crate::db::RepoRead::track_get(&repo, track.id.as_str())
         .await
         .expect("track_get")
@@ -276,10 +246,7 @@ async fn workspace_writer_sets_kind_path_and_stamp_together() {
     assert_eq!(read.cwd_wire_alias, read.workspace.path);
 }
 
-/// `track_update_tx` reads the row back through `TrackRow` and rewrites it. It
-/// must not touch the workspace — the freeze stamp and path survive a title
-/// patch untouched. (A stale SELECT column list here would panic at runtime,
-/// not compile time.)
+/// A stale SELECT column list here would panic at runtime, not compile time.
 #[tokio::test]
 async fn track_update_tx_leaves_the_workspace_alone() {
     let repo = super::SqlxRepo::open("sqlite::memory:")
@@ -331,27 +298,9 @@ async fn track_update_tx_leaves_the_workspace_alone() {
     assert_eq!(patched.cwd_wire_alias, track.cwd_wire_alias);
 }
 
-/// #1147 S1 — dropping `tracks.cwd` must not move the **model layer's** answer.
-///
-/// Scope, stated precisely because an earlier version of this comment
-/// overclaimed: this test lives in `calm-truth` and touches no `calm-server`
-/// code. It covers the model-layer surfaces only — the stored column, the
-/// `TrackRow` SELECT, `Track::workspace`, the `cwd` serialization alias, and the
-/// JSON round trip.
-///
-/// It does **not** cover the raw-SQL readers in `calm-server`
-/// (`workspace_lease`, `task_verify_adapter`, `child_track_adapter`), which the
-/// compiler also cannot check because they name the column in a string. Those
-/// are covered by `operation::workspace_lease::tests::`
-/// `track_sweep_uses_persisted_lease_paths_when_track_cwd_is_deleted` and
-/// `track_release_sweeps_worktrees_plain_dirs_and_branches_post_commit`, both of
-/// which go red if `workspace_lease/mod.rs`'s `row.try_get("workspace_path")`
-/// is pointed back at `"cwd"` — that mutation is how the by-name read was
-/// caught in the first place.
-///
-/// Compiling is not the evidence for what this test does cover:
-/// `Track::cwd_wire_alias` is a serialization alias that a typo could point at
-/// the wrong string, so the assertions are on *values*.
+/// Dropping `tracks.cwd` must not move the model layer's answer. Assertions
+/// are on *values*: `cwd_wire_alias` is a serialization alias a typo could
+/// point at the wrong string.
 #[tokio::test]
 async fn every_path_reader_resolves_to_the_one_stored_column() {
     let repo = super::SqlxRepo::open("sqlite::memory:")
@@ -389,7 +338,6 @@ async fn every_path_reader_resolves_to_the_one_stored_column() {
     .expect("create track");
     tx.commit().await.expect("commit");
 
-    // 1. The stored column — the single source.
     let stored: String = sqlx::query_scalar("SELECT workspace_path FROM tracks WHERE id = ?1")
         .bind(created.id.as_str())
         .fetch_one(&repo.pool)
@@ -397,8 +345,7 @@ async fn every_path_reader_resolves_to_the_one_stored_column() {
         .expect("read stored column");
     assert_eq!(stored, PATH);
 
-    // 2. `tracks.cwd` is gone — not shadowed, not defaulted, gone. If it still
-    //    existed, some reader could keep answering from a stale copy.
+    // `tracks.cwd` is gone — not shadowed, not defaulted, gone.
     let columns: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info('tracks')")
         .fetch_all(&repo.pool)
         .await
@@ -408,30 +355,21 @@ async fn every_path_reader_resolves_to_the_one_stored_column() {
         "tracks.cwd still exists; migration 0077 did not drop it. Columns: {columns:?}"
     );
 
-    // 3. The create return value.
     assert_eq!(created.workspace.path, PATH);
-    // 4. The wire alias on that same object. NOTE: this one is redundant given
-    //    (3) — `cwd_wire_alias` is `workspace_path.clone()` inside
-    //    `From<TrackRow>`, read here without going through serde, so it is
-    //    near-tautological. It is kept only to document the field's existence.
-    //    The assertion that actually carries weight is (6), which reads the
-    //    key out of serialized JSON.
     assert_eq!(created.cwd_wire_alias, PATH);
-    // 5. A fresh read through the repo — the `TrackRow` SELECT column list.
     let read = crate::db::RepoRead::track_get(&repo, created.id.as_str())
         .await
         .expect("track_get")
         .expect("track exists");
     assert_eq!(read.workspace.path, PATH);
     assert_eq!(read.cwd_wire_alias, PATH);
-    // 6. The JSON wire shape old clients parse: still a top-level `cwd`.
+    // The JSON wire shape old clients parse: still a top-level `cwd`.
     let wire = serde_json::to_value(&read).expect("serialize track");
     assert_eq!(
         wire["cwd"], PATH,
         "the `cwd` wire key must survive the column being dropped: {wire}"
     );
     assert_eq!(wire["workspace"]["path"], PATH, "{wire}");
-    // 7. …and round-trips back, so a client echoing a track still parses.
     let back: crate::model::Track = serde_json::from_value(wire).expect("deserialize track");
     assert_eq!(back.workspace.path, PATH);
 }

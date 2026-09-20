@@ -18,7 +18,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-# The counters and the observation helpers they read (one program, two files).
 from planner_claude_ux_metrics import *  # noqa: F401,F403
 
 
@@ -31,8 +30,7 @@ def scrub(value):
             try:
                 image = base64.b64decode(value["data"], validate=True)
             except ValueError:
-                # Failure evidence must remain writable even if the offending
-                # transcript contains invalid base64; never preserve those bytes.
+                # Failure evidence must remain writable even for invalid base64; never preserve those bytes.
                 return {"type": "image", "invalid_base64": True, "encoded_bytes": len(value["data"])}
             return {"type": "image", "mimeType": value.get("mimeType"),
                     "bytes": len(image), "sha256": hashlib.sha256(image).hexdigest()}
@@ -177,10 +175,7 @@ def observation_refused(call):
             part = require_object(part, "MCP error content item")
             if part.get("type") == "text":
                 messages.append(part.get("text"))
-    # Exact production refusals in terminal_interaction/operations.rs. A broad
-    # word-order regex misses the revision fence and counts unrelated errors.
-    # The surface fence message continues with the changed properties; its
-    # prefix is stable.
+    # Exact production refusals; a broad regex would count unrelated errors.
     refusals = ("observation expired; observe again",
                 "observation belongs to another connection or expired",
                 "terminal changed since observation; observe again",
@@ -229,8 +224,7 @@ def metrics(rows):
                 requested_presses += repeat
                 extra_presses += repeat - 1
             else:
-                # Preserve the refused caller request and interview; an invalid
-                # count is unmeasured, never silently treated as one press.
+                # An invalid count is unmeasured, never silently treated as one press.
                 unmeasured_requests += 1
     return {"mcp_tool_calls": len(calls), "terminal_tool_calls": len(terminal),
             "image_count": len(images), "image_bytes": sum(image["bytes"] for image in images),
@@ -262,10 +256,6 @@ def terminal_evidence(rows, binding=None):
         args = call.get("arguments", {})
         if not isinstance(args, dict):
             raise EvidenceError("terminal call arguments are malformed")
-        # `observation_id` may be omitted (#1618 C3); the receipt's
-        # `observation_id_used` is informational and not checked here.
-        # A `wait.outcome` of `signal` (#1620 hook signal) and a `submit`
-        # action are ordinary observations/inputs; neither is checked here.
         # A fresh readback is observable state even when the physical receipt
         # remains unknown/refused. Do not rewrite or infer application completion.
         data = observed_state(call, metadata(call))
@@ -279,9 +269,7 @@ def terminal_evidence(rows, binding=None):
                 raise EvidenceError("terminal or session changed during UX round")
             lines = data.get("text")  # Frame.text is Vec<String>, not a scalar.
             if lines is None and isinstance(data.get("text_omitted"), str):
-                # A release readback of a screen unchanged since the previous
-                # observation (#1618 rounds 07/08) carries no text on purpose;
-                # its identity was checked above but it adds no view.
+                # A readback of an unchanged screen carries no text on purpose; it adds no view.
                 pass
             elif not isinstance(lines, list) or not all(isinstance(line, str) for line in lines):
                 raise EvidenceError("terminal observation text must be an array of strings")
@@ -299,13 +287,10 @@ def check_scenario(name, rows, binding):
     actions = [call.get("arguments", {}).get("action", {}) for call in calls
                if call["tool"] == "calm.terminal.input"]
     # These answers are deliberately absent from the supplied TUI prompts.
-    # A matching answer is still only supporting evidence, never rewind proof.
     answer = {"short": "3141", "edit": "7219", "rewind": "9123"}[name]
     if not any(re.search(rf"(?<!\d){answer}(?!\d)", view["text"]) for view in observations):
         raise EvidenceError(f"{name}: actual terminal answer absent")
-    # A correction is an editing key, sent on its own or as a step of a
-    # `sequence` (#1666: one bounded edit in one write), or a `replace`
-    # (#1677: the server erases `from` and writes `to`).
+    # A correction is an editing key, sent on its own, as a step of a `sequence`, or as a `replace`.
     def corrects(action):
         if action.get("type") == "sequence" and isinstance(action.get("steps"), list):
             return any(isinstance(step, dict) and corrects(step) for step in action["steps"])
@@ -314,7 +299,7 @@ def check_scenario(name, rows, binding):
         return action.get("type") == "key" and action.get("key") in ("Backspace", "Delete", "Ctrl+U")
     if name == "edit" and not any(corrects(action) for action in actions):
         raise EvidenceError("edit: no actual input correction action")
-    # `submit` (#1620: one write with a trailing CR) counts like `text` + Enter.
+    # `submit` counts like `text` + Enter.
     if name == "rewind" and not any(action.get("type") in ("text", "submit")
                                     and str(action.get("text", "")).strip() == "/rewind" for action in actions):
         raise EvidenceError("rewind: actual /rewind input absent")
@@ -399,7 +384,7 @@ class Round:
             "source_sha": args.source_sha, "server": version,
             "claude_version": args.claude_version, "codex_version": args.codex_version,
             "track_id": track["id"], "planner_card_id": self.card})
-        # #1211: Track title is a label. Only normal user input starts a turn.
+        # Track title is a label. Only normal user input starts a turn.
         self.send("bootstrap", "Disposable Planner terminal usability test. Do not dispatch workers "
                   "or modify files. Reply ready and wait for the next instruction.")
         common = ("This is an authorized disposable usability test. Operate the actual Claude TUI "
@@ -438,8 +423,7 @@ class Round:
             except EvidenceError as error:
                 findings[name] = {"status": "incomplete", "reason": str(error)}
                 break
-        # Interview the very same Planner after success OR a scenario-level
-        # failure, while the original tool experience is still in its context.
+        # Interview the same Planner while the tool experience is still in its context.
         interview = self.send("interview", "Stop terminal actions. Based only on your actual "
                               "experience in this round, explain in Chinese: which operations "
                               "succeeded or failed; every cumbersome/redundant step; when an image "

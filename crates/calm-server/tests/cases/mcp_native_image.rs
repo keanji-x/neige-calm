@@ -1,4 +1,4 @@
-//! S0: image results must survive the real authenticated MCP transport.
+//! Image results must survive the real authenticated MCP transport.
 use super::*;
 use base64::Engine;
 use calm_server::mcp_server::result::ToolResult;

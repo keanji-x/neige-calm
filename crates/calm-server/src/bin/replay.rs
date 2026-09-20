@@ -1,22 +1,5 @@
 //! `cargo run --bin replay -- --file <fixture> [--serve | --assert]`
-//!
-//! Replay loader for sync-engine event-trace fixtures (design doc §6.3).
-//! Boots an in-memory `calm-server` with the fixture's event log
-//! preloaded via `Repo::log_pure_event`, then either:
-//!
-//!   * `--serve`  — keep the full REST + WS router running so a developer
-//!     can poke the resulting state from a browser / Playwright run.
-//!     Default port: `127.0.0.1:4040` (override with `--port`).
-//!
-//!   * `--assert` — verify the fixture's `expected` block (last event
-//!     kind, layout positions) against the seeded state. Exits 0 on
-//!     match, non-zero on mismatch; prints a one-line summary + per-
-//!     check detail to stdout.
-//!
-//! The boot + seed pipeline is shared with `tests/replay_fixtures.rs`
-//! via `calm_server::replay`. The binary mounts the full app router
-//! (REST + WS) on top of the seeded repo so `curl /api/areas`, `curl
-//! /api/tracks`, etc. all work against the playback state.
+//! Replay loader for event-trace fixtures: boots an in-memory `calm-server` with the fixture preloaded, then serves the full REST + WS router or asserts the fixture's `expected` block.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -39,8 +22,7 @@ macro_rules! safe_println {
     ($($arg:tt)*) => {{
         use std::io::Write as _;
 
-        // SIGPIPE SIG_IGN stops the kernel signal, but `println!` still
-        // panics on BrokenPipe; drop stdout write errors here for #628.
+        // SIGPIPE is ignored, but `println!` still panics on BrokenPipe; drop stdout write errors here.
         let mut stdout = std::io::stdout().lock();
         let _ = writeln!(&mut stdout, $($arg)*);
     }};
@@ -52,42 +34,27 @@ macro_rules! safe_println {
     about = "Replay an event-trace fixture into an in-memory calm-server"
 )]
 struct Args {
-    /// Path to the fixture JSON file (e.g.
-    /// `crates/calm-server/tests/fixtures/events/<name>.events.json`).
+    /// Path to the fixture JSON file.
     #[arg(long)]
     file: PathBuf,
 
     /// Boot the server with the fixture preloaded and keep it running.
-    /// Mutually exclusive with `--assert`.
     #[arg(long, conflicts_with = "assert")]
     serve: bool,
 
-    /// Verify the fixture's `expected` block against the seeded state.
-    /// Exits 0 on match, non-zero on mismatch. Mutually exclusive with
-    /// `--serve`.
+    /// Verify the fixture's `expected` block against the seeded state; exits non-zero on mismatch.
     #[arg(long)]
     assert: bool,
 
-    /// Override the listen port in `--serve` mode. Defaults to 4040 —
-    /// matches the regular `calm-server` default so the same web-calm
-    /// dev frontend talks to the replay server without reconfiguration.
+    /// Listen port in `--serve` mode; 4040 matches the regular `calm-server` default.
     #[arg(long, default_value_t = 4040)]
     port: u16,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // CI tests pipe stdout/stderr through Node Playwright's setup
-    // worker, which exits immediately after spawning us and dropping
-    // its read end of the pipes. Without this guard, the first
-    // `tracing::info!` write to stderr returns EPIPE, Rust's default
-    // SIGPIPE handling on stdio writes kills the process, and clients
-    // see `socket hang up` mid-response (root-caused in debug PR
-    // #191). Ignoring SIGPIPE makes those writes return `EPIPE` to
-    // the writer; `tracing-subscriber` silently drops the failing
-    // write and the server keeps serving. This applies only to the
-    // replay (dev/CI) binary — production `calm-server` keeps the
-    // conventional shell-idiom SIGPIPE behavior.
+    // CI pipes stdio through a Playwright setup worker that exits right after spawning us; without SIG_IGN the first stderr write gets EPIPE and the default SIGPIPE handling kills the process.
+    // Dev/CI binary only — production `calm-server` keeps the conventional SIGPIPE behavior.
     #[cfg(unix)]
     {
         use nix::sys::signal::{SigHandler, Signal, signal};
@@ -98,9 +65,6 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // tracing-subscriber pulled in for `--serve` mode (the kernel
-    // emits info-level logs from the routes; --assert mode is silent
-    // unless something blows up). Filter mirrors `main.rs`'s default.
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -131,27 +95,10 @@ async fn main() -> anyhow::Result<()> {
         return run_assert(&repo, &fixture, &args, last_id).await;
     }
 
-    // Wrap the fixture in `Arc` so the `/dev/reset` handler holds its own
-    // cheap reference. We keep the fixture in memory (the binary is dev-
-    // only and fixtures are KB-scale) rather than re-reading from disk
-    // on reset — `--file` may have been edited or deleted between boot
-    // and reset, and we want reset to be deterministic w.r.t. whatever
-    // the original `--serve` boot loaded. See `DevResetState`.
+    // Kept in memory so `/dev/reset` reseeds deterministically from whatever the `--serve` boot loaded, even if `--file` was edited or deleted since.
     let fixture = Arc::new(fixture);
 
-    // Mirror `main.rs`: honor `RECORD_SESSION=<path>` so a developer can
-    // boot `--serve`, drive a few writes from a browser or curl, and
-    // capture the resulting event stream into a new fixture file.
-    //
-    // Subscribed **after** `seed_events` so the recorded file contains
-    // only operator-driven events, not the seeded fixture's. The
-    // operator-driven session is the interesting artifact — the seed
-    // is already on disk in the source file.
-    //
-    // `--assert` mode skips this branch: assertion runs are pure reads
-    // after seed and emit nothing new; recording would produce an
-    // empty file. (Recorder is only meaningful while the server is
-    // being driven through REST/WS, which is `--serve`-only.)
+    // Mirror `main.rs`: honor `RECORD_SESSION=<path>`. Subscribed after `seed_events` so the recorded file holds only operator-driven events; `--assert` runs emit nothing, so recording is `--serve`-only.
     if let Ok(path) = std::env::var("RECORD_SESSION") {
         replay::spawn_session_recorder(&state.events, path.into());
     }
@@ -207,31 +154,8 @@ async fn run_serve(
     seeded_count: usize,
     last_id: i64,
 ) -> anyhow::Result<()> {
-    // Mount the full app router — both REST and WS. `--serve` mode is
-    // about letting a developer / Playwright session poke the seeded
-    // state interactively, so every read-side endpoint must be live.
-    //
-    // REST handlers extract `Actor` via `FromRequestParts`, which reads
-    // a request extension that the `actor_middleware` layer populates.
-    // Without that layer, any REST *write* (curl POST /api/areas, etc.)
-    // 500s with "actor middleware not applied" — so we mirror main.rs
-    // and attach the middleware to the REST sub-router. Callers that
-    // want non-default attribution still pass `X-Calm-Actor`; absent
-    // header → default `user` actor per the middleware contract.
-    //
-    // CORS is intentionally still skipped — `--serve` is a single-
-    // developer debugging tool, not an externally reachable surface,
-    // and binding the same `4040` port as the real server means the
-    // dev frontend (same-origin) doesn't need CORS anyway.
-    // Dev-only `POST /dev/reset` sub-router. Lives outside the REST
-    // sub-router so it (a) doesn't pick up the actor middleware (the
-    // reset is conceptually a fresh boot, not an audited write), and
-    // (b) carries its own `(repo, bus, fixture)` state independent of
-    // `AppState`. The handler itself reseeds the in-memory repo from
-    // the fixture loaded at `--serve` startup. See `replay::reset_from_fixture`
-    // for the wipe + reseed contract. Only mounted in `--serve` (this
-    // binary is itself dev-only — design doc §6.3); production
-    // `calm-server` never sees this route.
+    // Full app router, REST and WS. The actor middleware must be attached to the REST sub-router or every REST write 500s with "actor middleware not applied". CORS is skipped: same-origin dev tool.
+    // The `/dev/*` sub-router lives outside the REST sub-router so it skips the actor middleware (a reset is a fresh boot, not an audited write) and carries its own state.
     let dev_state = DevResetState {
         repo,
         bus,
@@ -246,22 +170,8 @@ async fn run_serve(
         )
         .route("/dev/force-planner-phase", post(dev_force_planner_phase))
         .with_state(dev_state);
-    // Issue #189 — the production `main.rs` mounts an auth router
-    // (`/api/auth/{login,whoami,logout}`) so the frontend's `SessionProvider`
-    // can probe `whoami` on boot and decide whether to render the login
-    // page or the app. The replay binary's `routes::router()` is the
-    // legacy combined router that predates the auth split and does NOT
-    // include those endpoints; without them, the frontend's whoami probe
-    // 404s, throws, and parks `SessionProvider` in the `error` branch
-    // (the a11y Playwright suite then times out waiting for the sidebar
-    // to appear). Mount `auth::router` here with `dev_autologin = true`
-    // so every request is auto-promoted to owner and whoami returns 200
-    // without a session cookie — replay is dev/test-only, exactly the
-    // surface dev_autologin is meant for. Attach `require_session` to
-    // the REST subtree so handlers that extract `Principal` behave as
-    // they do in production. Because dev_autologin always resolves an
-    // owner principal, the middleware remains non-blocking and every
-    // replay REST drive continues to work without a session cookie.
+    // Mount `auth::router` with `dev_autologin = true` so the frontend's boot-time whoami probe returns 200 without a session cookie;
+    // `require_session` on the REST subtree keeps `Principal` extraction working as in production and never blocks under dev_autologin.
     let replay_auth_config = AuthConfig {
         username: None,
         password: None,
@@ -288,8 +198,6 @@ async fn run_serve(
     let addr = format!("127.0.0.1:{}", args.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
-    // Banner mirrors the example in design doc §6.3 so the operator
-    // sees the exact format the docs promise.
     let last_kind = if last_id > 0 {
         fixture
             .events
@@ -318,47 +226,19 @@ async fn run_serve(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// `POST /dev/reset` — dev-only, `--serve` mode only.
-//
-// Why this exists: the Playwright `a11y` project spawns one replay
-// binary that serves every test in the suite. Without a reset hook,
-// per-test mutations (new tracks, new cards, rename edits, view-mode
-// toggles, …) accumulate across tests in the same run, which makes
-// previously-green specs flake when their predicates collide with
-// state seeded by an earlier test. The endpoint reseeds the in-memory
-// repo from the same `Fixture` the binary booted with, restoring the
-// "fresh boot" starting state. Each `a11y` test calls it from
-// `beforeEach`.
-//
-// Scope: this binary is itself dev-only (design doc §6.3 — it has
-// `--serve` and `--assert` modes, both meant for developer drives /
-// CI). No additional feature flag is needed because production
-// `calm-server` (the real entrypoint via `src/main.rs`) doesn't share
-// this binary's routes. If we ever needed a similar surface on the
-// real server it would be gated behind a `--dev` flag, not exposed
-// here.
-// ---------------------------------------------------------------------------
+// `POST /dev/reset` — dev-only, `--serve` mode only: reseeds the in-memory repo from the boot fixture so per-test mutations do not accumulate across a Playwright suite.
 
 #[derive(Clone)]
 struct DevResetState {
     repo: Arc<SqlxRepo>,
     bus: EventBus,
     fixture: Arc<replay::Fixture>,
-    /// Shared app state used by `/dev/force-track-lifecycle` so the
-    /// forced transition writes through the same `write_with_events_typed`
-    /// path as `routes::tracks::update_track` — same caches, same event bus,
-    /// same role-gate enforcement.
+    /// Shared app state so the forced transition writes through the same `write_with_events_typed` path as `routes::tracks::update_track`.
     app: calm_server::state::AppState,
 }
 
 async fn dev_reset(State(s): State<DevResetState>) -> (StatusCode, axum::Json<serde_json::Value>) {
-    // Issue #682 review — drain `/dev/force-planner-phase`-stood-up harnesses
-    // BEFORE reseeding: the reseed wipes their runtime rows, and a harness
-    // left registered would survive as an orphaned 50ms-tick task whose
-    // persists warn forever ("runtime … not found"), accumulating across a
-    // Playwright suite's per-test resets. Shutting down first (while the
-    // rows still exist) keeps the final snapshot persist clean.
+    // Drain stood-up harnesses BEFORE reseeding: the reseed wipes their runtime rows, and an orphaned harness would keep ticking and warning forever.
     let drained = replay::shutdown_registered_harnesses(&s.app).await;
     if drained > 0 {
         tracing::info!(drained, "dev reset: shut down registered planner harnesses");
@@ -373,10 +253,7 @@ async fn dev_reset(State(s): State<DevResetState>) -> (StatusCode, axum::Json<se
             })),
         ),
         Err(e) => {
-            // Reset failure is unexpected (in-memory sqlite, no I/O) but
-            // surface a structured error so the Playwright `beforeEach`
-            // can fail loudly rather than continue against a half-reset
-            // repo.
+            // Reset failure is unexpected (in-memory sqlite) but surfaced structurally so a Playwright `beforeEach` fails loudly.
             tracing::error!(error = %e, "POST /dev/reset failed");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -389,33 +266,8 @@ async fn dev_reset(State(s): State<DevResetState>) -> (StatusCode, axum::Json<se
     }
 }
 
-// ---------------------------------------------------------------------------
-// `POST /dev/force-track-lifecycle` — dev-only, `--serve` mode only.
-//
-// Issue #269 P1 — the planner daemon does NOT run in the replay binary
-// (`DaemonClient::new_stub()` + `CodexClient::new_stub()`), so the planner-
-// only lifecycle progressions (`planning → dispatching → working →
-// reviewing → done`) can never happen organically in an a11y / replay
-// run. The Playwright track-lifecycle suite needs to drive those edges
-// to assert the kernel's terminal_at stamp + TrackLifecycleChanged
-// event behavior end-to-end.
-//
-// This handler stamps the transition as `ActorId::Kernel`, which
-// `track_lifecycle::actor_kind` classifies as `PlannerAgent`. The same
-// `validate_transition` + `write_with_events_typed` pipeline as
-// `routes::tracks::update_track` runs — illegal edges (e.g. draft →
-// done) still reject with 403, and a successful transition emits the
-// same paired `TrackLifecycleChanged` + `TrackUpdated` events on the bus
-// that the production path emits. The only thing this endpoint changes
-// is **who** drives the edge, not whether the edge is legal.
-//
-// Scope: only mounted in `--serve` mode of the replay binary (this
-// binary is itself dev-only — design doc §6.3). Production
-// `calm-server` never sees this route. The actor middleware is
-// intentionally not in front of it (mirrors `/dev/reset`); the body
-// declares the transition target only, the actor is hardcoded to
-// `Kernel`.
-// ---------------------------------------------------------------------------
+// `POST /dev/force-track-lifecycle` — dev-only, `--serve` mode only. The planner daemon does not run here, so planner-only lifecycle edges can never happen organically.
+// Stamps the transition as `ActorId::Kernel` through the same `validate_transition` + `write_with_events_typed` pipeline as the production route: it changes who drives the edge, not whether the edge is legal.
 
 #[derive(Debug, Deserialize)]
 struct ForceLifecycleBody {
@@ -427,8 +279,7 @@ async fn dev_force_track_lifecycle(
     State(s): State<DevResetState>,
     axum::Json(body): axum::Json<ForceLifecycleBody>,
 ) -> Result<axum::Json<serde_json::Value>, (StatusCode, axum::Json<serde_json::Value>)> {
-    // Read the existing row outside the tx — `update_track` does the same
-    // (area_id is immutable so a cross-tx read is safe).
+    // Read the existing row outside the tx, as `update_track` does (area_id is immutable, so a cross-tx read is safe).
     let existing = s
         .app
         .repo
@@ -449,9 +300,7 @@ async fn dev_force_track_lifecycle(
     let to = body.to;
     let actor = ActorId::Kernel;
 
-    // Run the same validator as the production route — illegal kernel
-    // transitions (e.g. `draft → done`) still reject so this endpoint
-    // can't be used to put the track into an impossible state.
+    // Same validator as the production route, so this endpoint cannot put the track into an impossible state.
     if let Err(e) = validate_transition(from, to, &actor) {
         return Err((
             StatusCode::FORBIDDEN,
@@ -464,9 +313,7 @@ async fn dev_force_track_lifecycle(
         ));
     }
 
-    // Idempotent same-state: short-circuit without emitting any events
-    // (mirrors `update_track`'s same-state shortcut). Return the existing
-    // row so the test can still inspect `terminal_at` etc.
+    // Idempotent same-state: short-circuit without emitting events, mirroring `update_track`.
     if from == to {
         return Ok(axum::Json(serde_json::json!({
             "ok": true,
@@ -540,34 +387,8 @@ async fn dev_force_track_lifecycle(
     }
 }
 
-// ---------------------------------------------------------------------------
-// `POST /dev/force-planner-phase` — dev-only, `--serve` mode only.
-//
-// Issue #682 PR-1 — the planner harness FSM can never progress organically in
-// a replay run: the shared codex app-server is a stub (`is_running()` ==
-// false), so the `planner-harness-start` operation submitted by `POST
-// /api/tracks` fails at validate and the planner card sits with no runtime row
-// and no registered harness (Step-0 probe, pinned by
-// `tests/replay_force_planner_phase.rs`). Playwright e2e for PlannerCurrentRun
-// (#676 Stop-chip seed path, #657 typing indicator) needs to drive
-// `GET /planner/run` + `harness.phase.changed` anyway.
-//
-// The handler delegates to `calm_server::replay::force_planner_phase`
-// (fixtures-gated — the `replay` [[bin]] declares
-// `required-features = ["fixtures"]`): card guards mirror the production
-// `/planner/*` routes (404 unknown / 403 non-planner-codex), a missing runtime
-// row + harness is stood up via the boot-recovery seam, and the phase
-// force itself reuses the harness run_loop's `persist_snapshot` path —
-// the single write point that keeps `GET /planner/run`, the WS event, and
-// the DB snapshot consistent. Forcing the same phase twice emits no
-// duplicate event.
-//
-// Body: `{card_id, to}` with `to` as the snake_case `HarnessPhaseTag`
-// (`idle`, `issuing_turn`, `turn_running`, ...). `wedged` is rejected
-// with 400 — persisting it marks the runtime failed, which the active-
-// runtime read path no longer projects (review finding, #684). Response:
-// `{ok, card_id, worker_session_id, old_phase, new_phase}`.
-// ---------------------------------------------------------------------------
+// `POST /dev/force-planner-phase` — dev-only, `--serve` mode only. The codex app-server is a stub here, so the harness FSM never progresses organically.
+// Delegates to `calm_server::replay::force_planner_phase` (fixtures-gated), which reuses the harness `persist_snapshot` path; body `{card_id, to}`, `wedged` is rejected with 400.
 
 #[derive(Debug, Deserialize)]
 struct ForcePlannerPhaseBody {

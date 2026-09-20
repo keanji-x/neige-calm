@@ -1,14 +1,6 @@
 #!/usr/bin/env bash
-# #923 F1 — regression for entry.sh's fence VERDICT + preflight EXIT contract.
-#
-# The fence must FAIL CLOSED: a denied target passes ONLY on our gate's
-# deterministic 403. A timeout / empty / 400 / 502 / dead-proxy answer (or an
-# established 200) must NOT read as "denied" — the old bug counted any non-200
-# as "refused", so a DOWN proxy passed the fence (fail OPEN).
-#
-# Pure shell, NO docker: source entry.sh (its BASH_SOURCE guard suppresses
-# main), stub proxy_connect to yield a chosen STATUS, and assert the verdict
-# functions + the fence_preflight exit codes.
+# Regression for entry.sh's fence VERDICT + preflight EXIT contract. The fence must FAIL CLOSED: a denied target passes ONLY on the gate's deterministic 403; a timeout / empty / 400 / 502 / dead-proxy answer must NOT read as "denied".
+# Pure shell, no docker: source entry.sh, stub proxy_connect to yield a chosen STATUS, and assert the verdict functions and the preflight exit codes.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,10 +8,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=entry.sh
 source "$SCRIPT_DIR/entry.sh"
 
-# Sourcing entry.sh turns on `set -e`; the assertions below intentionally drive
-# functions that return non-zero, so disable it for the test body. (entry.sh's
-# own log/die/fail helpers are LEFT intact — fence_preflight relies on `fail`
-# actually calling exit, which the preflight exit-code cases below assert.)
+# Sourcing entry.sh turns on `set -e`; the assertions drive functions that return non-zero. Its log/die/fail helpers are left intact — the preflight exit-code cases rely on `fail` actually exiting.
 set +e
 
 FAILS=0
@@ -42,9 +31,7 @@ proxy_connect() {
 # Make the canary retry-sleep instant so the dead-chain case does not stall.
 sleep() { :; }
 
-# ---- parser: parse_http_status accepts ONLY a well-formed first status line -
-# Exercises the REAL parse (not a stubbed STATUS): a malformed/garbage first
-# line must yield "" so it can never be mistaken for our gate's 403.
+# parser: parse_http_status accepts ONLY a well-formed first status line
 check_parse() { # $1 label  $2 raw-response  $3 want-code
     local got; got="$(parse_http_status "$2")"
     if [ "$got" = "$3" ]; then ok "parse: $1 -> '${got:-empty}'"
@@ -60,7 +47,7 @@ check_parse "junk first, 403 later"  "$(printf 'garbage\r\nHTTP/1.1 403 Forbidde
 check_parse "wrong proto"            "$(printf 'ICAP/1.0 403 x\r\n')"                         ""
 check_parse "code-with-trailer"      "$(printf 'HTTP/1.1 403\r\n')"                          403
 
-# ---- verdict: fence_assert_denied passes ONLY on an explicit 403 ----------
+# verdict: fence_assert_denied passes ONLY on an explicit 403
 for s in "" 400 502 200; do
     STUB_DENY="$s"
     if fence_assert_denied "denied.example:443"; then
@@ -76,7 +63,7 @@ else
     bad "fence_assert_denied must accept an explicit 403"
 fi
 
-# ---- verdict: canary passes ONLY on 200 -----------------------------------
+# verdict: canary passes ONLY on 200
 for s in "" 400 403 502; do
     STUB_CANARY="$s"
     if fence_assert_allowed "$FENCE_CANARY"; then
@@ -92,9 +79,7 @@ else
     bad "canary must accept 200"
 fi
 
-# ---- preflight EXIT contract (subshell captures the exit code) ------------
-# fence_preflight calls entry.sh's real `fail`, which exits; run it in a
-# subshell so we can read the code instead of exiting this harness.
+# preflight EXIT contract (subshell captures the exit code)
 run_preflight() { # $1 canary-status $2 deny-status -> echoes the exit code
     STUB_CANARY="$1"
     STUB_DENY="$2"

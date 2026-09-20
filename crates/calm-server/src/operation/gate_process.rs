@@ -4,37 +4,15 @@ use crate::error::{CalmError, Result};
 use serde_json::Value;
 use std::path::Path;
 const LOG_TAIL_BYTES: u64 = 8 * 1024;
-/// Extra margin read beyond the tail for the `::gate-step` sentinel
-/// scan (PR #685 F9): verdict derivation reads only the last
-/// `LOG_TAIL_BYTES + LOG_SENTINEL_MARGIN_BYTES` of the log instead of
-/// the whole file. The LAST sentinel is what attributes the failing
-/// step, and the wrapper stops at the first failure, so it sits near
-/// EOF; a step that alone prints >64KiB after its sentinel loses
-/// attribution (`failing_step: None`) — acceptable for an advisory
-/// field (§6.3: logs are not verdict inputs).
+/// Extra margin beyond the tail for the `::gate-step` sentinel scan; a step that alone prints >64KiB after its sentinel loses attribution (`failing_step: None`), acceptable for an advisory field.
 const LOG_SENTINEL_MARGIN_BYTES: u64 = 64 * 1024;
 /// POSIX single-quote escaping: `'` → `'\''`.
 fn sh_single_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// Render the per-attempt POSIX wrapper (design §6.2 step 2 + #653
-/// §6.1 step 3). First action is the release handshake — kernel death
-/// before release EOFs the pipe and the held child exits 75 having
-/// executed nothing. The exit code is written via tmp + `rename(2)` as
-/// the last action so a mid-write SIGKILL leaves no file, never a
-/// truncated one. The exit path rides the `NEIGE_GATE_EXIT_PATH` env
-/// var to avoid path quoting in the script body; the wrapper captures
-/// it into an UNexported shell variable and `unset`s the env var
-/// before any step runs, so step children (untrusted repo code — the
-/// tests/build scripts a gate executes) never learn the verdict-file
-/// path (§6.7).
-///
-/// Each step body runs in a subshell `( … )`: a step is a free-form
-/// shell snippet, and a top-level `exit`, `exec`, or `set -e` inside
-/// it must end the STEP (its rc feeding `neige_gate_finish`), never
-/// bypass the finish handler — crashed-kernel recovery depends on the
-/// exit file existing for completed wrappers.
+/// First action is the release handshake (kernel death before release EOFs the pipe and the held child exits 75 having executed nothing);
+/// the exit code is written via tmp + `rename(2)` last, the exit path is `unset` before any step runs, and each step runs in a subshell so a top-level `exit`/`exec`/`set -e` ends the STEP, never bypasses the finish handler.
 pub(crate) fn render_gate_wrapper(steps: &[GateStep]) -> String {
     let mut script = String::new();
     script.push_str("#!/bin/sh\n");
@@ -67,10 +45,6 @@ pub(crate) fn render_gate_wrapper(steps: &[GateStep]) -> String {
     script
 }
 
-// ---------------------------------------------------------------------------
-// Verdict derivation
-// ---------------------------------------------------------------------------
-
 /// Last `::gate-step <name>` sentinel in the log, if any.
 fn last_gate_step_sentinel(log_text: &str) -> Option<String> {
     log_text
@@ -101,13 +75,7 @@ pub(crate) fn read_log_tail(log_path: &Path) -> (String, Option<String>) {
     (tail, sentinel)
 }
 
-/// Parse the wrapper-written exit file — the crashed-kernel recovery
-/// hint, consulted ONLY for dead work (§6.7: a same-user worker can
-/// read the wrapper script and forge this file, so it is never
-/// trusted while a wait status exists or the gate is alive).
-/// `Ok(None)` = absent; `Err(())` = present but unparseable — a
-/// foreign artifact (§6.1 step 3 tmp+rename excludes truncation),
-/// fail loudly rather than guess.
+/// The wrapper-written exit file is consulted ONLY for dead work (a same-user worker can forge it); `Err(())` = present but unparseable, a foreign artifact, fail loudly.
 pub(crate) fn read_exit_file(exit_path: &Path) -> std::result::Result<Option<i32>, ()> {
     match std::fs::read_to_string(exit_path) {
         Ok(content) => content.trim().parse::<i32>().map(Some).map_err(|_| ()),
@@ -117,8 +85,7 @@ pub(crate) fn read_exit_file(exit_path: &Path) -> std::result::Result<Option<i32
     }
 }
 
-/// Derive the verdict from a wrapper exit code (the live wait status,
-/// or — for dead recovered work only — the exit file's value).
+/// From the live wait status, or — for dead recovered work only — the exit file's value.
 pub(crate) fn verdict_from_exit_code(exit_code: i32, log_path: &Path, attempt: i64) -> GateVerdict {
     let (log_tail, sentinel) = read_log_tail(log_path);
     if exit_code == 0 {
@@ -132,8 +99,7 @@ pub(crate) fn verdict_from_exit_code(exit_code: i32, log_path: &Path, attempt: i
             attempt,
         };
     }
-    // A wrapper exit with no `::gate-step` sentinel never ran a step
-    // (e.g. the handshake `read` hit EOF → exit 75) → infra, not red.
+    // No `::gate-step` sentinel means no step ever ran (e.g. the handshake `read` hit EOF → exit 75) → infra, not red.
     let status_detail = if sentinel.is_some() {
         "gate-red"
     } else {
@@ -205,53 +171,11 @@ pub(crate) async fn spawn_held(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::from(log_file))
         .stderr(std::process::Stdio::from(log_file_err))
-        // §6.3: minimal kernel env + proxy settings — start from an
-        // EMPTY environment, not the kernel's. In particular no
-        // `NEIGE_MCP_SOCKET`/`NEIGE_MCP_TOKEN` (the gate cannot
-        // write kernel state) and no incidental kernel secrets.
+        // Start from an EMPTY environment: no `NEIGE_MCP_SOCKET`/`NEIGE_MCP_TOKEN` (the gate cannot write kernel state) and no incidental kernel secrets.
         .env_clear()
         .env("NEIGE_GATE_EXIT_PATH", exit_path);
-    // Deliberately NO `kill_on_drop` (PR #685 round-2 F1): dropping
-    // the observer — a graceful kernel shutdown drops every spawned
-    // task — must leave the gate RUNNING so boot recovery can
-    // reattach (#653 §6.3). `kill_on_drop` would SIGKILL only the
-    // `/bin/sh` wrapper, never its group, manufacturing exactly the
-    // half-dead state recovery cannot handle: boot probes the dead
-    // wrapper pid, must skip the now-unverifiable group kill, and
-    // flips the row gate-infra while orphaned steps keep mutating
-    // the checkout. Every kernel-side kill instead targets the
-    // recorded process GROUP (`signal_process_group` gated on the
-    // leader's `verify_owned_pid` triple), never the bare child
-    // handle.
-    //
-    // Observer-drop state walk — every path that drops the observer
-    // (and with it the `Child` handle), and why none can end
-    // "wrapper dead, group alive, row flipped":
-    // * Graceful shutdown / kernel restart: nothing is killed; the
-    //   whole group survives intact. Boot `recover_parked`
-    //   reattaches (alive) or recovers the exit file (dead); the
-    //   row flips only when a verdict lands.
-    // * `set_parked` lost (artifact fence / lost lease): the
-    //   observer is dropped UN-spawned and
-    //   `fail_with_compensation` runs `kill_gate_group`, which
-    //   group-kills via the op artifacts AND the tasks-row triple
-    //   (both recorded before release), then flips the row
-    //   gate-infra — group dead before the flip.
-    // * Superseded attempt: the next attempt's kill-prior
-    //   group-kills via the recorded artifacts; the prior observer
-    //   (if still running) merely reaps the wrapper and its
-    //   verdict misses the row guard (the bump moved
-    //   `gate_attempt` on). No row write.
-    // * Past-deadline / pre-deadline enforcement: the sweep
-    //   group-kills a live group (verified leader) BEFORE failing
-    //   the op; the reconcile flips the row after.
-    // * External wrapper-only death (e.g. the OOM killer takes
-    //   just `sh`): the leader triple is the only ownership proof,
-    //   so the group can no longer be verified-killed; recovery
-    //   fails the op gate-infra and surviving step children are
-    //   outside kernel control. That is the pre-existing
-    //   best-effort boundary of pid-triple ownership — an external
-    //   actor's doing, not a state this code can create.
+    // Deliberately NO `kill_on_drop`: a graceful kernel shutdown drops the observer and must leave the gate RUNNING so boot recovery can reattach.
+    // `kill_on_drop` would SIGKILL only the `/bin/sh` wrapper, never its group; every kernel-side kill targets the recorded process GROUP instead.
     for key in ["PATH", "HOME", "LANG", "LC_ALL", "TERM"] {
         if let Some(v) = std::env::var_os(key) {
             cmd.env(key, v);
@@ -295,7 +219,6 @@ impl GateObservation {
     }
 }
 
-/// Ordinary gate caller retains its existing result/adapter boundary.
 pub(crate) async fn wait_verdict(
     child: tokio::process::Child,
     artifacts: super::SpawnArtifacts,
@@ -318,9 +241,7 @@ pub(crate) async fn observe_verdict(
     timeout_secs: i64,
 ) -> GateObservation {
     use std::time::Duration;
-    // Do not poll Child::wait/try_wait until group cleanup: Tokio reaps on
-    // poll/drop, losing the leader identity even when descendants still run.
-    // WNOWAIT keeps the zombie leader (and its PID) owned until we signal.
+    // Do not poll Child::wait/try_wait until group cleanup: Tokio reaps on poll/drop, losing the leader identity; WNOWAIT keeps the zombie leader owned until we signal.
     #[cfg(target_os = "linux")]
     let wait = tokio::time::timeout(Duration::from_secs(timeout_secs as u64), async {
         loop {
@@ -359,8 +280,7 @@ pub(crate) async fn observe_verdict(
     })
     .await;
     kill(&artifacts);
-    // A signal being delivered is not proof of stop. Keep the leader until
-    // descendants have stopped; candidate completion independently rechecks.
+    // A signal being delivered is not proof of stop; keep the leader until descendants have stopped.
     let cleanup = wait_group_stopped(&artifacts).await;
     if let Err(error) = cleanup {
         tracing::warn!(%error, "gate group cleanup remains unresolved; preserving actual wait evidence");
@@ -376,9 +296,7 @@ pub(crate) async fn observe_verdict(
     GateObservation { child, verdict }
 }
 
-/// Prove quiescence in the recorded group, even when its leader has disappeared.
-/// Never infer cleanup from a missing leader or signal an unauthenticated PGID.
-/// Zombies cannot execute; inability to inspect the group fails closed.
+/// Never infer cleanup from a missing leader or signal an unauthenticated PGID; inability to inspect the group fails closed.
 pub(crate) fn group_stopped(artifacts: &super::SpawnArtifacts) -> Result<bool> {
     let boot = crate::proc_identity::read_boot_id()
         .ok_or_else(|| CalmError::Conflict("gate cleanup boot identity unavailable".into()))?;

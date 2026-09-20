@@ -1,9 +1,5 @@
-//! #1704 S2 — `tracks.claude_permissions_policy`: the shared writer
-//! (`track_update_tx`), every `TrackRow` reader that splices one of the two
-//! column consts, and the root-resolving ceiling read.
-//!
-//! Everything here drives the production functions; no fixture re-implements
-//! the walk or the decode.
+//! `tracks.claude_permissions_policy`: the shared writer, every `TrackRow`
+//! reader, and the root-resolving ceiling read, all driven through production code.
 
 use serde_json::json;
 
@@ -30,7 +26,6 @@ async fn seed_area(repo: &SqlxRepo) -> String {
     area.id.to_string()
 }
 
-/// Production track creation: the writer the `child-track` operation uses.
 async fn seed_track(repo: &SqlxRepo, area_id: &str, title: &str) -> String {
     let mut tx = repo.pool().begin().await.unwrap();
     let track = track_create_tx(
@@ -112,9 +107,6 @@ fn policy() -> ClaudePermissionsScope {
     }
 }
 
-/// The column is born NULL, a `Some(Some)` patch writes it and EVERY
-/// `TrackRow` reader (both column consts) reads it back, a title patch leaves
-/// it alone, `Some(None)` clears it.
 #[tokio::test]
 async fn policy_round_trips_through_every_track_row_reader() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -148,15 +140,12 @@ async fn policy_round_trips_through_every_track_row_reader() {
     // `TRACK_SELECT_COLUMNS_W`: track_detail.
     let detail = repo.track_detail(&root).await.unwrap().unwrap();
     assert_eq!(detail.track.claude_permissions_policy, Some(policy()));
-    // The wire carries the key (`null` when absent, the `recipe_id` rule).
     let wire = serde_json::to_value(&detail.track).unwrap();
     assert_eq!(
         wire["claude_permissions_policy"],
         json!({"edit":["src/**","tests/**"],"bash":["git","python3 -m unittest"],"deny":["git rebase"]})
     );
 
-    // A patch that omits the field leaves it alone; the returned row (the
-    // writer's own `TRACK_SELECT_COLUMNS` read) carries it too.
     let mut tx = repo.pool().begin().await.unwrap();
     let after_title = track_update_tx(
         &mut tx,
@@ -180,7 +169,6 @@ async fn policy_round_trips_through_every_track_row_reader() {
         Some(policy())
     );
 
-    // A present null clears.
     patch(&repo, &root, Some(None)).await.unwrap();
     assert_eq!(column(&repo, &root).await, None);
     let cleared = repo.track_get(&root).await.unwrap().unwrap();
@@ -200,9 +188,6 @@ async fn policy_round_trips_through_every_track_row_reader() {
     );
 }
 
-/// Root-only, enforced by the shared in-tx writer: a child PATCH is a
-/// `Conflict` naming the root and the column stays untouched; the same patch
-/// on the root succeeds.
 #[tokio::test]
 async fn policy_patch_on_a_child_is_refused_by_the_shared_writer() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -228,7 +213,6 @@ async fn policy_patch_on_a_child_is_refused_by_the_shared_writer() {
         "{message}"
     );
     assert_eq!(column(&repo, &child).await, None);
-    // Clearing a child is refused the same way (the shape, not the value).
     let error = patch(&repo, &child, Some(None)).await.unwrap_err();
     assert!(error.to_string().contains("tree-root-only"), "{error}");
     assert_eq!(column(&repo, &child).await, None);
@@ -244,10 +228,6 @@ async fn policy_patch_on_a_child_is_refused_by_the_shared_writer() {
     );
 }
 
-/// The ceiling read resolves the ROOT: depth 0 (the root itself), 1 and 2
-/// all see the root's policy, a child created AFTER the root's policy was
-/// set too, and the child rows themselves stay NULL. A bare root is `None`;
-/// a cycle is a `Conflict`, never "no ceiling".
 #[tokio::test]
 async fn ceiling_read_resolves_the_tree_root() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -270,8 +250,6 @@ async fn ceiling_read_resolves_the_tree_root() {
             "{track}"
         );
     }
-    // A child created after the root's policy was set resolves to it as well;
-    // its own row (the raw column every `Track` read returns) is NULL.
     let late = seed_track(&repo, &area, "late").await;
     link(&repo, &late, &grandchild).await;
     assert_eq!(ceiling(&repo, &late).await.unwrap(), Some(policy()));
@@ -288,7 +266,6 @@ async fn ceiling_read_resolves_the_tree_root() {
         );
     }
 
-    // Clearing the root clears the ceiling of the whole tree.
     patch(&repo, &root, Some(None)).await.unwrap();
     for track in [&root, &child, &grandchild, &late] {
         assert_eq!(ceiling(&repo, track).await.unwrap(), None, "{track}");
@@ -322,12 +299,8 @@ async fn ceiling_read_resolves_the_tree_root() {
     assert!(error.to_string().contains("root unresolved"), "{error}");
 }
 
-/// The stored value is decoded by the lenient derive: a key this binary does
-/// not know (a row written by a newer one) still decodes, on the row reader
-/// and on the ceiling read alike; a value the scope derive cannot decode
-/// fails both, never reading as "no policy" (the derive is lenient about
-/// unknown keys and, like any serde struct, accepts a positional array, so
-/// the undecodable probe is an array of strings).
+/// The scope derive is lenient about unknown keys and, like any serde struct,
+/// accepts a positional array, so the undecodable probe is an array of strings.
 #[tokio::test]
 async fn stored_policy_tolerates_unknown_keys_and_refuses_non_objects() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -368,10 +341,8 @@ async fn stored_policy_tolerates_unknown_keys_and_refuses_non_objects() {
     );
 }
 
-/// A patch that does not name the policy leaves the stored TEXT byte-for-byte:
-/// the writer never re-serializes the column from its lenient row decode, so
-/// a title patch by an older binary keeps a key only a newer one knows. A
-/// patch that names the policy replaces the whole value.
+/// The writer never re-serializes the column from its lenient row decode, so a
+/// title patch by an older binary keeps a key only a newer one knows.
 #[tokio::test]
 async fn a_patch_without_the_policy_keeps_unknown_keys_of_the_stored_value() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();

@@ -9,31 +9,23 @@ use tokio::task::JoinHandle;
 
 use super::{PtyWrite, SupervisorControl};
 
-/// #1725 — the gap between the two physical writes of a
-/// [`WriteShape::SplitTrailingCr`] item: after the supervisor acknowledged
-/// the text, the writer sleeps this long before it sends the CR. Claude
-/// Code classifies one stdin run of more than ~62 characters as a paste and
-/// keeps a CR inside the run as part of it; a CR that arrives as its own
-/// read is an Enter. Measured floor 2 ms; the issue asks for at least 20 ms.
-/// The `wait_plan.rs` const assert keeps it well under the default settle.
+/// Gap between the two physical writes of a [`WriteShape::SplitTrailingCr`] item. Claude Code
+/// classifies one stdin run of more than ~62 characters as a paste and keeps a CR inside the run
+/// as part of it; a CR that arrives as its own read is an Enter.
 pub const SUBMIT_CR_GAP: Duration = Duration::from_millis(40);
 
-/// How the writer hands a [`PtyWrite`]'s bytes to the supervisor (#1725).
-/// Set by the kernel's encoder for `submit` only; every wire frame and every
-/// other action is [`WriteShape::Verbatim`].
+/// How the writer hands a [`PtyWrite`]'s bytes to the supervisor. Set by the kernel's
+/// encoder for `submit` only; everything else is [`WriteShape::Verbatim`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WriteShape {
     /// One `WriteStdin` carrying every byte as sent.
     Verbatim,
-    /// The bytes before the trailing CR as one `WriteStdin`, then after
-    /// [`SUBMIT_CR_GAP`] the CR as a second one: one admission, one input
-    /// sequence, one acknowledgement after the last `WriteAck`. A payload
-    /// that does not end with a CR, or is the lone CR, is written verbatim.
+    /// The bytes before the trailing CR as one `WriteStdin`, then after [`SUBMIT_CR_GAP`] the CR
+    /// as a second one. A payload that does not end with a CR, or is the lone CR, is written verbatim.
     SplitTrailingCr,
 }
 
 /// The physical writes of one item: the bytes as sent, or text then CR.
-/// Never loses or invents a byte.
 fn write_parts(data: Vec<u8>, shape: WriteShape) -> Vec<Vec<u8>> {
     match shape {
         WriteShape::Verbatim => vec![data],
@@ -52,14 +44,11 @@ fn write_parts(data: Vec<u8>, shape: WriteShape) -> Vec<Vec<u8>> {
     }
 }
 
-/// Message of the `NotOwner` protocol error an admitted-then-revoked input
-/// receives from the writer (the input's lease or scope went away before the
-/// physical write). Kernel clients match on it to tell an input refusal apart
-/// from an ownership-claim refusal.
+/// Message of the `NotOwner` protocol error an admitted-then-revoked input receives from the
+/// writer. Kernel clients match on it to tell an input refusal apart from an ownership-claim refusal.
 pub const INPUT_REVOKED_BEFORE_WRITE: &str =
     "terminal input control or scope was revoked before write";
 
-// Copied from crates/calm-session/src/bin/daemon.rs::spawn_supervisor_control_writer as part of #388 Phase 3a lift. Daemon binary retires in 3c; until then we live with duplication.
 pub fn spawn_supervisor_control_writer(
     mut control_conn: UnixStream,
     proc_id: String,
@@ -87,10 +76,8 @@ pub fn spawn_supervisor_control_writer(
                         }
                         continue;
                     };
-                    // #1725 — one admitted item may be two physical writes
-                    // (text, gap, CR); both sequence numbers are reserved
-                    // before the first byte, and the one 5 s budget, the one
-                    // guard and the one InputAck span both round trips.
+                    // One admitted item may be two physical writes (text, gap, CR); both sequence numbers are
+                    // reserved before the first byte, and the one 5 s budget, guard and InputAck span both round trips.
                     let parts = write_parts(data, shape);
                     let first = physical_sequence;
                     let Some(last) = physical_sequence.checked_add(parts.len() as u64) else {

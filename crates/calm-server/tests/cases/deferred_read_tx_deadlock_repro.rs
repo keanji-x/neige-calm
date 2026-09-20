@@ -1,123 +1,6 @@
-//! Issue #1016 — regression guard, originally the FAILING REPRO for the
-//! `READ_ONLY_DEFERRED_ALLOWLIST` justification in
-//! `tests/cases/deferred_write_tx_invariant.rs`.
-//!
-//! That allowlist used to exempt three deferred (`pool.begin()`)
-//! transactions on the grounds that
-//!
-//!   > A deferred transaction that performs no writes never competes for
-//!   > the shared-cache writer slot, so it cannot be a hold-and-wait party.
-//!
-//! The premise is wrong. Closing a shared-cache wait cycle does not require
-//! competing for the *writer slot*; it only requires being a lock-HOLDING
-//! waiter. `calm_truth::db::sqlite::deadlock_semantics_tests` already pins
-//! the correct rule:
-//!
-//!   > The deadlock cycle requires a lock-HOLDING waiter — i.e. a reader
-//!   > (or a deferred tx that acquired read locks before writing).
-//!
-//! A multi-table read-only deferred tx holds R locks on every table it has
-//! already SELECTed while it parks on the next one. Those R locks block an
-//! IMMEDIATE writer's W request just as effectively as a W lock would.
-//!
-//! This test drives the REAL production reader `Repo::track_detail`
-//! (`calm-truth/src/db/sqlite/read.rs`, allowlist entry
-//! `async fn track_detail(`) against the REAL production writer sequence of
-//! `DELETE /api/tracks/:id` (`calm-server/src/routes/tracks.rs`):
-//! `write_with_events_typed` (= `begin_immediate_tx`) →
-//! `overlay_delete_card_overlays_by_track_tx` →
-//! `overlay_delete_by_entity_tx` ×2 → `track_delete_tx`. Slow process/socket
-//! teardown happens before this writer tx.
-//!
-//! (`release_workspace_leases_for_track_tx` sits between the overlay deletes
-//! and `track_delete_tx` in the route but is `pub(crate)` to calm-server, so
-//! it is not callable from an integration test. It only touches
-//! `workspace_leases`, which neither side of this cycle reads, so its
-//! absence cannot manufacture the deadlock.)
-//!
-//! Interleaving — pinned by LOCKS plus two oneshot channels, not by
-//! sleep-and-hope:
-//!
-//!   1. writer: BEGIN IMMEDIATE, run the three overlay deletes → holds
-//!      W(overlays); signals `overlays_locked`, then parks on `go`.
-//!   2. test: spawns the reader `repo.track_detail(id)`. It takes R(tracks),
-//!      R(cards), then MUST park on `overlays` — the writer holds W there.
-//!      Under the pre-fix deferred tx the reader is at this point a
-//!      lock-HOLDING waiter; under the fix it has already released
-//!      everything.
-//!   3. test: releases `go`.
-//!   4. writer: `track_delete_tx` walks down to `DELETE FROM tracks`, which
-//!      needs W(tracks) — held R by the parked reader in the pre-fix shape.
-//!      Cycle closed, code 6.
-//!
-//! The test asserts the invariant the allowlist CLAIMED to hold — that no
-//! such cycle can form. It was RED when written (the writer's
-//! `track_delete_tx` failed with sqlite extended-result code **6**,
-//! `SQLITE_LOCKED` "database is deadlocked" — the non-retryable cycle
-//! abort #930 set out to eliminate, not the retryable code 5
-//! `SQLITE_BUSY`). The fix dropped the explicit transaction from
-//! `track_detail` and collapsed its three SELECTs into ONE statement: a
-//! single statement is AUTOCOMMIT (a blocked autocommit statement unwinds
-//! its implicit transaction, releasing every table lock it took, before
-//! parking in `unlock_notify` — so it can never be the lock-HOLDING
-//! waiter) and is simultaneously one implicit transaction (so the read
-//! keeps its snapshot). The reader still PARKS on `overlays`, it just
-//! holds nothing while parked, so the writer walks through.
-//!
-//! Non-vacuity. `!reader.is_finished()` alone proves nothing — it holds
-//! for a task the runtime has not polled yet, and the headline assertion
-//! is a NEGATIVE one (`code != 6`) that a never-scheduled reader would
-//! satisfy trivially. Four positive facts pin the reader to its park
-//! point instead:
-//!   1. it signals `entered` from inside the spawned task before calling
-//!      `track_detail`, and the test awaits that signal BEFORE releasing
-//!      the writer. That rules out "never polled";
-//!   2. it HOLDS a checked-out sqlite connection while the writer is still
-//!      parked — the pool shows two connections in use, writer plus
-//!      reader. The test does not sample-and-hope for this: it WAITS for
-//!      the observation and fails if it never arrives. A reader still
-//!      sitting in `pool.acquire()` holds none;
-//!   3. it stays unfinished for at least `PARK_FLOOR_RATIO` times the
-//!      measured uncontended `track_detail` latency (floor
-//!      `MIN_PARK_FLOOR`). The baseline is taken on this same track, on
-//!      this machine, before the writer takes any lock — so "the reader
-//!      is merely slow" is quantified away rather than assumed, and a
-//!      slow machine scales the bar instead of flaking;
-//!   4. it comes back with BOTH overlay rows. The writer had deleted them
-//!      (uncommitted) before the reader started and only restored them by
-//!      rolling back, so observing them is proof the reader's `overlays`
-//!      read landed after the writer released the lock — it queued, it did
-//!      not skip.
-//!
-//! Honest limit of that evidence. (2) proves the reader owns a connection,
-//! not that it has already handed a statement to sqlite; nothing in
-//! userspace can distinguish those two, precisely BECAUSE the fix makes a
-//! parked reader hold no table locks and therefore leave no observable
-//! trace. What closes the gap is (4) combined with (3): the reader was
-//! inside `track_detail` for two orders of magnitude longer than the read
-//! costs uncontended, holding a connection the whole time, and the rows it
-//! returned exist only on the far side of the writer's rollback. The one
-//! interleaving that would make `code != 6` vacuous — a reader that never
-//! touched `overlays` while the writer ran — is excluded by (4) alone.
-//!
-//! Sibling reader. `read.rs::task_diagnostics` took the same route and has
-//! no dynamic repro of its own, deliberately. What a repro can establish is
-//! the MECHANISM — that a deferred tx really closes a cycle and that
-//! autocommit really does not — and that is call-site independent; it is
-//! pinned here and in `calm_truth::db::sqlite::deadlock_semantics_tests`.
-//! What guards the call sites is
-//! `deferred_write_tx_invariant::production_deferred_transactions_are_read_only_allowlisted`,
-//! whose allowlist is now EMPTY: any `.begin(` reappearing anywhere under
-//! `calm-server/src` or `calm-truth/src` fails it. That is a universal
-//! fail-closed negative over both readers, strictly wider than a
-//! per-call-site test could be.
-//!
-//! Scope note: the app's in-memory sqlite (`db_url=mock`, CI and
-//! `make dev-fresh`) is a shared-cache database with table-granularity
-//! locks, which is exactly where this cycle lives. The production file
-//! database (PRIVATECACHE + WAL) hands readers an MVCC snapshot and never
-//! forms this cycle at all — which is why the fix had to be one that costs
-//! production nothing.
+//! A multi-table read-only deferred tx holds R locks while parked, so it can close a
+//! shared-cache deadlock cycle (`SQLITE_LOCKED`, code 6) against an IMMEDIATE writer; the
+//! production reader `track_detail` must therefore be a single autocommit statement.
 
 #![cfg(unix)]
 
@@ -138,35 +21,20 @@ use calm_server::model::{NewArea, NewCard, NewOverlay, NewTrack};
 use serde_json::json;
 use tokio::sync::oneshot;
 
-/// How much longer than an UNCONTENDED `track_detail` the reader must stay
-/// unfinished before the writer is released.
-///
-/// Deliberately a ratio against a baseline measured on this track, on this
-/// machine, moments earlier — not a wall-clock constant. A fixed window is
-/// the classic CI flake: too short on a loaded box and the test fails for
-/// scheduling reasons, too long and it wastes CI time everywhere. A ratio
-/// also states the actual claim: the reader is not slow, it is BLOCKED.
+/// How much longer than an UNCONTENDED `track_detail` the reader must stay unfinished before
+/// the writer is released; a ratio against a measured baseline, not a wall-clock constant.
 const PARK_FLOOR_RATIO: u32 = 50;
 
 /// Floor under `PARK_FLOOR_RATIO × baseline`, for the case where the
 /// baseline read is so fast that 50× is still microseconds.
 const MIN_PARK_FLOOR: Duration = Duration::from_millis(250);
 
-/// Hard cap on waiting for the "reader holds a checked-out connection"
-/// observation. Reaching it is a FAILURE, not a fallback: it means the
-/// reader never got a connection, which would make the headline `code != 6`
-/// assertion vacuous. Generous, because overshooting costs nothing on a
-/// healthy machine (the observation normally lands in milliseconds) while a
-/// tight value is exactly what turns a slow box into a red build.
+/// Hard cap on waiting for the "reader holds a checked-out connection" observation;
+/// reaching it is a failure, not a fallback.
 const CHECKOUT_OBSERVE_CAP: Duration = Duration::from_secs(30);
 
-/// Connections in use right now, per the pool's own counters.
-///
-/// `num_idle()` is documented as APPROXIMATE and may transiently exceed
-/// `size()`, so the subtraction saturates — an unsigned underflow here would
-/// panic the test in debug builds for reasons that have nothing to do with
-/// the invariant under test. Saturating can only UNDER-report, which makes
-/// the caller wait one more iteration rather than pass wrongly.
+/// Connections in use right now. `num_idle()` is approximate and may transiently exceed
+/// `size()`, so the subtraction saturates (which can only under-report).
 fn connections_in_use(pool: &sqlx::SqlitePool) -> usize {
     (pool.size() as usize).saturating_sub(pool.num_idle())
 }
@@ -251,10 +119,8 @@ async fn read_only_deferred_track_detail_closes_a_deadlock_cycle_with_the_track_
     .await
     .expect("card overlay");
 
-    // Baseline: what does this exact `track_detail` cost with NOBODY holding
-    // a lock, on this machine, right now? Evidence #3 below is expressed as
-    // a multiple of this, so "the reader is just slow" stops being a
-    // hand-wave and a loaded CI box raises the bar instead of flaking.
+    // Baseline: what this `track_detail` costs with nobody holding a lock, so "the reader is
+    // just slow" is quantified away.
     let mut baseline = Duration::ZERO;
     for _ in 0..5 {
         let started = std::time::Instant::now();
@@ -277,7 +143,7 @@ async fn read_only_deferred_track_detail_closes_a_deadlock_cycle_with_the_track_
     let (go_tx, go_rx) = oneshot::channel::<()>();
     let (outcome_tx, outcome_rx) = oneshot::channel::<WriterOutcome>();
 
-    // ---- writer: the DELETE /api/tracks/:id transaction, verbatim --------
+    // writer: the DELETE /api/tracks/:id transaction, verbatim
     let repo_w = Arc::clone(&repo);
     let track_id_w = track_id.clone();
     let area_cache_w = area_cache.clone();
@@ -316,9 +182,7 @@ async fn read_only_deferred_track_detail_closes_a_deadlock_cycle_with_the_track_
                     };
                     let _ = outcome_tx.send(outcome);
 
-                    // Always abort: this repro must never commit, and the
-                    // rollback is the production error path that unparks
-                    // the reader.
+                    // Always abort: the rollback is the production error path that unparks the reader.
                     let out: Result<((), Vec<(EventScope, Event)>)> = Err(CalmError::Internal(
                         "deadlock repro: transaction intentionally rolled back".into(),
                     ));
@@ -329,7 +193,7 @@ async fn read_only_deferred_track_detail_closes_a_deadlock_cycle_with_the_track_
         .await
     });
 
-    // ---- reader: the REAL allowlisted deferred read tx -------------------
+    // reader: the production `track_detail`
     overlays_locked_rx
         .await
         .expect("writer must reach the overlay-locked seam");
@@ -338,10 +202,7 @@ async fn read_only_deferred_track_detail_closes_a_deadlock_cycle_with_the_track_
     let track_id_r = track_id.clone();
     let (entered_tx, entered_rx) = oneshot::channel::<()>();
     let reader = tokio::spawn(async move {
-        // Positive evidence #1: the reader task was actually polled and is
-        // inside `track_detail`. Without this the `!is_finished()` check
-        // below is vacuous — it holds just as well for a task the runtime
-        // has not touched yet.
+        // The reader task was actually polled; without this `!is_finished()` is vacuous.
         entered_tx.send(()).expect("test task must be listening");
         let out = repo_r.track_detail(&track_id_r).await;
         (out, std::time::Instant::now())
@@ -352,17 +213,8 @@ async fn read_only_deferred_track_detail_closes_a_deadlock_cycle_with_the_track_
         .expect("reader task must not be dropped");
     let entered_at = std::time::Instant::now();
 
-    // Positive evidence #2: the reader holds a checked-out sqlite connection
-    // while the writer is still parked, so the pool shows two in use (writer
-    // + reader). WAITED FOR, not sampled: a reader still inside
-    // `pool.acquire()` simply has not produced the evidence yet, and giving
-    // up early would be the flake. Blowing the cap is a hard failure.
-    //
-    // Positive evidence #3: the reader must then stay unfinished for
-    // `park_floor` — 50× the uncontended baseline measured above — while
-    // being handed scheduling opportunities on every iteration. That is the
-    // difference between "blocked" and "slow", stated in units this machine
-    // just calibrated.
+    // Wait (not sample) for the reader to hold a checked-out connection, then require it to
+    // stay unfinished for `park_floor` — the difference between "blocked" and "slow".
     let pool = repo.pool();
     let mut peak_in_use = 0usize;
     let mut checked_out_at = None;
@@ -379,10 +231,10 @@ async fn read_only_deferred_track_detail_closes_a_deadlock_cycle_with_the_track_
             checked_out_at = Some(std::time::Instant::now());
         }
         match checked_out_at {
-            // Evidence #2 in hand — hold for the calibrated park floor.
+            // Connection observed — hold for the calibrated park floor.
             Some(seen_at) if seen_at.elapsed() >= park_floor => break,
             Some(_) => {}
-            // Still waiting for evidence #2.
+            // Still waiting for the connection checkout.
             None => assert!(
                 entered_at.elapsed() < CHECKOUT_OBSERVE_CAP,
                 "the reader never held a checked-out sqlite connection \
@@ -412,13 +264,7 @@ async fn read_only_deferred_track_detail_closes_a_deadlock_cycle_with_the_track_
         outcome.code, outcome.message
     );
 
-    // THE INVARIANT UNDER TEST (violated when this repro was written; #1016
-    // closed the gap by removing the explicit tx). The allowlist in
-    // `deferred_write_tx_invariant.rs` asserted that a read-only deferred tx
-    // "cannot be a hold-and-wait party". If that were true, no interleaving of `track_detail` with the
-    // track-delete writer could ever produce sqlite's non-retryable cycle
-    // abort, `SQLITE_LOCKED` (6). Code 5 (`SQLITE_BUSY`) would be fine —
-    // that one is retryable and is not what #930 set out to kill.
+    // Code 5 (`SQLITE_BUSY`) is retryable and fine; code 6 (`SQLITE_LOCKED`) is the cycle abort.
     assert_ne!(
         outcome.code.as_deref(),
         Some("6"),
@@ -434,24 +280,8 @@ async fn read_only_deferred_track_detail_closes_a_deadlock_cycle_with_the_track_
          Observed: {outcome:?}"
     );
 
-    // ---- positive evidence that the reader really went through `overlays`
-    //
-    // The reader entered `track_detail` while the writer's IMMEDIATE tx held
-    // W(overlays) with both seeded overlay rows DELETEd but not committed
-    // (the route issues three overlay DELETE statements — card-scoped,
-    // track-scoped, view-scoped — but only two rows exist to be hit; the
-    // "view" delete is a legitimate no-op, and adding a third row would not
-    // strengthen anything the cycle depends on). The writer then rolls back,
-    // restoring them. So a reader that observes both overlay rows can only
-    // have read `overlays` AFTER that rollback — i.e. it was serialized
-    // behind the writer's lock. A reader that was never scheduled, or that
-    // somehow read through the lock, cannot produce this result: it would
-    // have to see 0 overlays (uncommitted delete visible) or never reach the
-    // assertion at all.
-    //
-    // This is evidence #4, and it is what makes the `assert_ne!(code, "6")`
-    // above non-vacuous: the writer succeeded *while a live reader was
-    // parked on its lock*, not because the reader had wandered off.
+    // The writer DELETEd both overlay rows uncommitted, then rolled back, so a reader that
+    // observes both rows can only have read `overlays` after being serialized behind the lock.
     let (detail, finished_at) = tokio::time::timeout(Duration::from_secs(30), reader)
         .await
         .expect("reader must not stall forever")
@@ -477,10 +307,7 @@ async fn read_only_deferred_track_detail_closes_a_deadlock_cycle_with_the_track_
         "reader must have completed only after the writer was released; \
          completing earlier would mean it never contended for `overlays`"
     );
-    // Evidence #3, cashed out: the reader spent orders of magnitude longer
-    // inside `track_detail` than the same read costs uncontended on this
-    // machine. `park_floor` is derived from the baseline measured above, so
-    // this scales with the box instead of encoding a wall-clock guess.
+    // The reader spent orders of magnitude longer inside `track_detail` than the uncontended baseline.
     let reader_wall = finished_at.duration_since(entered_at);
     assert!(
         reader_wall >= park_floor,
@@ -491,6 +318,5 @@ async fn read_only_deferred_track_detail_closes_a_deadlock_cycle_with_the_track_
          W(overlays)"
     );
 
-    // Housekeeping: let the writer finish so the runtime shuts down clean.
     let _ = tokio::time::timeout(Duration::from_secs(30), writer).await;
 }

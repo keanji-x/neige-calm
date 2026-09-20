@@ -91,21 +91,12 @@ describe('MobileTracks', () => {
     expect(onRetryRead).toHaveBeenCalledOnce();
   });
 
-  /*
-   * INV-APP-118 on the phone's Track list: the trailing dot and the activity
-   * bit in the row's name come from the kernel's activity overlay plus the
-   * reader's receipt, never from the lifecycle. The fixtures disagree with the
-   * lifecycle in both directions, so a row that fell back to
-   * `isRunning(lifecycle)` reddens here: `planning` with nothing in flight is
-   * quiet and unnamed; `done` with work in flight spins and says so; and a
-   * `working` phase with an idle planner (the #1722 §1 bug) shows NOTHING.
-   */
+  // The fixtures disagree with the lifecycle in both directions, so a row that fell back to `isRunning(lifecycle)` reddens here.
   it('track rows carry the activity indicator and name bit from the overlay, never the lifecycle', () => {
     const marker = () => screen.getByRole('button', { name: /^Responsive mobile UI/ })
       .querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity') ?? null;
     const name = () => screen.getByRole('button', { name: /^Responsive mobile UI/ }).getAttribute('aria-label');
-    /* What the row is described by (`aria-describedby` → an element's text),
-       or `null` when nothing describes it. */
+    /* What the row is described by (`aria-describedby` → an element's text), or `null`. */
     const description = () => {
       const id = screen.getByRole('button', { name: /^Responsive mobile UI/ }).getAttribute('aria-describedby');
       return id === null ? null : document.getElementById(id)?.textContent ?? null;
@@ -133,26 +124,19 @@ describe('MobileTracks', () => {
     expect(marker()).toBe('failed');
     expect(name()).toBe('Responsive mobile UI, needs attention');
 
-    // The receipt is the caller's verdict (`activityAt` newer than what this
-    // reader has seen): a blue dot, nothing added to the name — and, as on the
-    // rail row, the fact is the button's description (#1722 S2b r2, Codex
-    // P2-1): without it an unread row reads exactly like a quiet one.
+    // Unread: a blue dot, nothing added to the name, and the fact is the button's description.
     view.rerender(mount({ activityAt: 150 }, (candidate) => (candidate.activityAt ?? 0) > 100));
     expect(marker()).toBe('unread');
     expect(name()).toBe('Responsive mobile UI');
     expect(description()).toBe('Unread updates');
 
-    // The description hangs on the FOLDED state, not on the receipt (#1722
-    // §5.3, the same rule as the rail row): unread under working is "working"
-    // — the dot and the name say so — and nothing describes it. The receipt
-    // is not said twice.
+    // The description hangs on the FOLDED state, not on the receipt: unread under working is "working" and nothing describes it.
     view.rerender(mount({ activityAt: 150, working: true }, (candidate) => (candidate.activityAt ?? 0) > 100));
     expect(marker()).toBe('working');
     expect(name()).toBe('Responsive mobile UI, working');
     expect(description()).toBeNull();
 
-    // The must-red for a lifecycle-driven spinner: a running phase with an
-    // idle planner is the #1722 §1 bug, and it shows nothing at all.
+    // A running phase with an idle planner shows nothing at all.
     view.rerender(mount({ lifecycle: 'working', working: false }));
     expect(marker()).toBeNull();
     expect(name()).toBe('Responsive mobile UI');

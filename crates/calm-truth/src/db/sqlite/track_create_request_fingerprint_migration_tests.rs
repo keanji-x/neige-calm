@@ -1,4 +1,4 @@
-//! #1434 — forward-only request-fingerprint migration for track-create keys.
+//! Forward-only request-fingerprint migration for track-create keys.
 
 use std::borrow::Cow;
 

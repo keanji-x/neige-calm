@@ -150,10 +150,8 @@ impl ArtifactStore {
         Flock::lock(file, FlockArg::LockExclusive).map_err(|(_, e)| std::io::Error::from(e).into())
     }
 
-    /// Freeze raw candidate bytes and declared slots. Once the request is frozen,
-    /// repeating its key/request returns that original snapshot without re-reading
-    /// the source, even after source deletion. A changed boundary/output contract conflicts.
-    /// A failure after durable freeze is recoverable by retrying the same request.
+    /// Freeze raw candidate bytes and declared slots. A frozen key replays the original snapshot without re-reading the
+    /// source, even after source deletion; a changed boundary/output contract conflicts.
     pub fn capture(&self, request: CaptureRequest<'_>) -> Result<CaptureReceipt> {
         self.capture_inner(request, |_| Ok(()))
     }
@@ -267,9 +265,8 @@ impl ArtifactStore {
             Err(e) => return Err(e),
         }
         disk::sync_dir(&self.root.join("snapshots"))?;
-        // Only the verified, durable canonical copy permits disposal. An earlier
-        // recursive deletion may have left arbitrary portions of this redundant
-        // copy absent; those bytes no longer decide whether replay can complete.
+        // Only the verified, durable canonical copy permits disposal; an earlier recursive deletion may have left this
+        // redundant copy partially absent.
         match disk::open_dir(&staged) {
             Ok(_) => {
                 checkpoint(CapturePoint::RedundantCleanup)?;

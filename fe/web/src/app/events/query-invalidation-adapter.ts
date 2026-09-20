@@ -1,23 +1,12 @@
-// The single module in the tree that turns reducer effects into TanStack cache
-// operations. `core/events` deliberately never imports a QueryClient: the pure
-// layer plans *what* is stale, this adapter decides *how* that becomes a cache
-// call, and `event-bridge.tsx` owns the stream lifecycle around it.
-//
-// Every key the pure plan emits is a legacy key shape. This module is the one
-// place that translates those shapes into `queryKeys` from app/providers; it
-// must never invent a key shape of its own, and a plan key with no query behind
-// it is dropped here rather than turned into a fabricated key.
+// The single module that turns reducer effects into TanStack cache operations. It translates the
+// plan's legacy key shapes into `queryKeys`; a plan key with no query behind it is dropped, never fabricated.
 
 import { newestArea, toArea } from '../../../../core/domain/area.ts';
 import type { QueryKey } from '../../../../core/events/invalidation-plan.ts';
 import type { EventEffect } from '../../../../core/events/reducer.ts';
 import { queryKeys } from '../providers/queries.ts';
 
-/**
- * The slice of `QueryClient` the adapter is allowed to use. Narrowing it keeps
- * the module unit-testable with a recording fake and makes the blast radius of
- * an event frame readable.
- */
+/** The slice of `QueryClient` the adapter is allowed to use. */
 export interface QueryCachePort {
   cancelQueries(filters: { queryKey: readonly unknown[] }): Promise<unknown>;
   invalidateQueries(filters?: { queryKey?: readonly unknown[] }): unknown;
@@ -28,10 +17,8 @@ export interface QueryCachePort {
 }
 
 /**
- * TanStack reuses an in-flight initial fetch when its cache has no data, even
- * after `invalidateQueries`; the stale response then clears `isInvalidated`.
- * Task verdicts do not all poll, so that race can be permanent. Cancel the
- * matching report fetch first, then invalidate to guarantee a fresh request.
+ * TanStack reuses an in-flight initial fetch even after `invalidateQueries`, and the stale response
+ * then clears `isInvalidated`; task verdicts do not all poll, so cancel the report fetch first.
  */
 function invalidateMappedQuery(client: QueryCachePort, queryKey: readonly unknown[]): void {
   if (queryKey[0] !== 'track-report') {
@@ -41,11 +28,7 @@ function invalidateMappedQuery(client: QueryCachePort, queryKey: readonly unknow
   void client.cancelQueries({ queryKey }).then(() => client.invalidateQueries({ queryKey }));
 }
 
-/**
- * Translates one planned key onto a `queryKeys` key, or `null` when the built
- * surface has no query for it. See README.md for the per-kind table and the
- * reason behind each drop.
- */
+/** Translates one planned key onto a `queryKeys` key, or `null` when the built surface has no query for it. */
 export function mapPlannedQueryKey(key: QueryKey): readonly unknown[] | null {
   const [head, first, second] = key;
   if (head === 'areas' && key.length === 1) return queryKeys.areas();
@@ -54,29 +37,11 @@ export function mapPlannedQueryKey(key: QueryKey): readonly unknown[] | null {
   if (head === 'overlays' && (first === 'track' || first === 'card')) return queryKeys.overlaysByKind(first);
   if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);
   if (head === 'planner-run' && typeof first === 'string' && key.length === 2) return queryKeys.plannerRun(first);
-  /* The track's task verdicts. Both arities are mapped, and the bare one is not
-     an oversight: the four `task.*` events carry no track-id *field*, so
-     `derivedTrackId` cannot name one and the plan emits the prefix. (Their
-     `idempotency_key` is the task id, which embeds the track id — the plan
-     declines to parse it; see `queryKeys.trackReportPrefix` for why.) Dropping
-     the prefix would leave the TASKS panel dead for exactly the events that
-     change it. */
+  /* Both arities: the `task.*` events carry no track-id field (the plan declines to parse the task id),
+       so dropping the prefix would leave the TASKS panel dead for exactly the events that change it. */
   if (head === 'track-report' && key.length === 1) return queryKeys.trackReportPrefix();
   if (head === 'track-report' && typeof first === 'string' && key.length === 2) return queryKeys.trackReport(first);
-  /* One track's conversation list. Both arities are mapped, same as
-     `track-report` above: the plan names the track whenever `derivedTrackId`
-     resolves one and falls back to the prefix when a `runtime.*` event's card
-     belongs to a track no cached detail owns.
-
-     The query behind these keys arrives in S5. Mapping them now is harmless —
-     invalidating a key with no mounted query neither marks nor refetches
-     anything — and mapping them *later* is what would be dangerous: a mounted
-     query with no adapter arm is a list that silently never refreshes. */
-  /* #1253 §6 — the Today resolve. One entry with no id: the kernel's partial
-     unique index makes `purpose = 'launchpad'` a singleton, and the id is what
-     that query is fetching. Without this arm `track.report_edited`'s
-     `['today-launchpad']` is dropped right here and the page never learns the
-     report stopped being empty. */
+  /* One entry with no id: `purpose = 'launchpad'` is a singleton on the kernel side. */
   if (head === 'today-launchpad' && key.length === 1) return queryKeys.todayLaunchpad();
   if (head === 'track-conversations' && key.length === 1) return queryKeys.trackConversationsPrefix();
   if (head === 'track-conversations' && typeof first === 'string' && key.length === 2) {
@@ -86,10 +51,8 @@ export function mapPlannedQueryKey(key: QueryKey): readonly unknown[] | null {
 }
 
 /**
- * Applies the effects of one reduction. `persist-cursor` and `reconnect` are
- * stream lifecycle, not cache work, so the bridge handles them. Write-through
- * updates only an existing cached area; a missing row remains absent until the
- * accompanying invalidation refetches authoritative data.
+ * Applies the effects of one reduction; stream lifecycle effects are the bridge's. Write-through
+ * updates only an existing cached area; a missing row stays absent until the invalidation refetches.
  */
 export function applyEventEffects(client: QueryCachePort, effects: readonly EventEffect[]): void {
   for (const effect of effects) {
@@ -98,8 +61,7 @@ export function applyEventEffects(client: QueryCachePort, effects: readonly Even
       continue;
     }
     if (effect.type === 'invalidate') {
-      // A null key set is the reducer's "everything is suspect" signal after a
-      // replay: invalidate the whole cache rather than guessing a key list.
+      // A null key set is the reducer's "everything is suspect" signal after a replay.
       if (effect.keys === null) {
         void client.invalidateQueries();
         continue;

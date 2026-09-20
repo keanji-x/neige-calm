@@ -65,19 +65,16 @@ pub(crate) async fn task_recovery_view_tx(
         .map(|(view, _)| view)
 }
 
-/// A refused admission together with the Track row admission itself read
-/// under the transaction. Guidance derives lifecycle wording from this
-/// Track, never from a snapshot resolved before the transaction opened.
+/// A refused admission together with the Track row read under the transaction;
+/// guidance derives lifecycle wording from this Track, never from an earlier snapshot.
 #[derive(Clone, Debug)]
 pub(crate) struct RefusedRecovery {
     pub refusal: RecoveryRefusal,
     pub track: Track,
 }
 
-/// The view plus the typed admission refusal behind a refused `recovery`
-/// capability, for projections that add guidance without re-deriving the
-/// code from the wire string. `None` when recovery is allowed or the
-/// capability is not an admission refusal (`not_started`, `not_failed`).
+/// The view plus the typed admission refusal behind a refused `recovery` capability;
+/// `None` when recovery is allowed or the capability is not an admission refusal.
 pub(crate) async fn task_recovery_view_with_refusal_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     track_id: &TrackId,
@@ -98,7 +95,6 @@ pub(crate) async fn task_recovery_view_with_refusal_tx(
     admission::authorize_tx(tx, actor, &scope, &event).await?;
     let Some(mut allocation) = task_attempt_current_tx(tx, track_id.as_str(), key).await? else {
         // A valid authored task can await release/admission before its first row.
-        // Resolve existence from the same authoritative source used by projection.
         let (declarations, diagnostics) =
             crate::track_report::task_projection_source_tx(tx, track_id.as_str())
                 .await?

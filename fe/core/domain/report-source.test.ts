@@ -63,9 +63,8 @@ describe('parseReportSourceLink', () => {
   });
 });
 
-/* #1687 — a table cell is one citation iff the prose's own parser reads it
-   as exactly one paragraph holding exactly one link under the source scheme.
-   The parser, not a pattern, so the cell and the prose beside it agree. */
+/* A table cell is one citation iff the prose's own parser reads it as exactly one paragraph
+   holding exactly one link under the source scheme — the parser, not a pattern. */
 describe('parseSourceCitationCell', () => {
   const TARGET = { destination: 'neige://source/src_ddef99cc#q1', sourceId: 'src_ddef99cc', quoteId: 'q1' };
 

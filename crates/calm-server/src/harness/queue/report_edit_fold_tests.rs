@@ -1,9 +1,5 @@
-//! #1667 A2 — the `ReportEdited` fold keeps the FIRST entry's
-//! `body_before` and the NEWEST entry's `body` / `body_sha256` / `author`
-//! (round-2 F1: and `doc_rev_after` / `blocks_after`, which describe
-//! `body`), so the diff the planner reads spans every save in the fold.
-//! Round-4 M2: only a CONTIGUOUS save folds (`body_before` equal to the
-//! held body); round-4 M3: a legacy first entry keeps `body_before: None`.
+//! The `ReportEdited` fold keeps the FIRST entry's `body_before` and the NEWEST entry's body,
+//! attribution and refs; only a CONTIGUOUS save folds.
 
 use std::collections::VecDeque;
 
@@ -83,12 +79,8 @@ fn three_report_edits_fold_to_first_before_and_newest_after() {
     assert_eq!(author, Some(EditAuthor::Assistant), "the NEWEST author");
 }
 
-/// Round-4 M3 — a pre-#1667 first entry has no `body_before`, and the
-/// fold leaves it that way: adopting the incoming `Some(v1)` would start
-/// the diff at v1 and drop the v0 -> v1 edit from everywhere the planner
-/// can see it (the survivor renders a diff, and `run_loop` omits the
-/// unified patch for a diff-carrying batch). `None` keeps the survivor on
-/// the re-read sentence, which covers both edits.
+/// Adopting the incoming `Some(v1)` would start the diff at v1 and drop the v0 -> v1 edit
+/// from everywhere the planner can see it.
 #[test]
 fn a_legacy_first_entry_keeps_body_before_none() {
     let mut queue = VecDeque::from(vec![edit(EditAuthor::User, None, "v1")]);
@@ -110,11 +102,8 @@ fn a_legacy_first_entry_keeps_body_before_none() {
     assert_eq!(body, "v2", "the NEWEST save's after");
 }
 
-/// Round-4 M2 — a save whose `body_before` is not the held body does not
-/// continue the held edit: something else wrote the report in between
-/// (a planner write, which does not wake the planner), and a fold across
-/// it would attribute that write's lines to the user. Both entries keep
-/// their slots.
+/// Something else wrote the report in between; a fold across it would attribute that write's
+/// lines to the user.
 #[test]
 fn a_non_contiguous_report_edit_does_not_fold() {
     let mut queue = VecDeque::from(vec![edit(EditAuthor::User, Some("v0"), "v1")]);
@@ -144,9 +133,7 @@ fn a_non_contiguous_report_edit_does_not_fold() {
     assert_eq!(queue.len(), 1);
 }
 
-/// #1667 round-2 F1 — `doc_rev_after` / `blocks_after` describe `body`,
-/// so the fold takes the NEWEST entry's pair, including `None` when the
-/// newest save had no aligned refs.
+/// `doc_rev_after` / `blocks_after` describe `body`, so the fold takes the NEWEST entry's pair.
 #[test]
 fn fold_takes_the_newest_doc_rev_and_block_refs() {
     let mut queue = VecDeque::from(vec![edit_with_refs(

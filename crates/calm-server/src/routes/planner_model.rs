@@ -1,39 +1,6 @@
-//! #1505 S4-3 — `PUT /api/cards/{id}/planner/model`.
-//!
-//! The write port for "which model does this conversation run with". Its read
-//! twin is `GET /api/models`, which lists what can be chosen and which default
-//! this installation follows; this one records a card's answer.
-//!
-//! Four decisions are worth reading before the code.
-//!
-//! **Both keys are required, and `null` is a value.** This is a PUT, so the
-//! body states the whole selection: `{"model": null, "reasoning_effort":
-//! null}` means "follow the installation default for both" and a body that
-//! omits `reasoning_effort` is refused rather than read as that. A partial
-//! update would be a PATCH, and inventing one here would give the request
-//! three states (absent / null / value) where the stored selection only has
-//! two — the third would have to be resolved by a rule nobody wrote down.
-//! Plain `Option<String>` fields would have accepted the omission silently:
-//! serde treats a syntactically-`Option` field as optional unless something
-//! stops it, which is what [`required_nullable`] is for.
-//!
-//! **An unknown slug is reported, not refused.** `unknown_model` says the slug
-//! is not in the catalog codex just gave us. It is deliberately not a 400: the
-//! catalog can be the five bundled presets (a signed-out daemon), and refusing
-//! then would block a model this account can actually run. The person is told
-//! and keeps the choice.
-//!
-//! **An effort the chosen model does not support is moved, and said so.** It
-//! lands on that model's own `defaultReasoningEffort` and the response carries
-//! `effort_adjusted: true`. Silently storing an unsupported pair, or silently
-//! correcting it, both leave the UI showing something that is not what will
-//! run.
-//!
-//! **The write reads its own base inside the transaction.** `CardPatch`
-//! replaces the whole `payload` column, so a base captured before the codex
-//! round trips above would drop every key another writer added in between —
-//! the exact defect #1505 S4-1 fixed in the harness-start adapter. See
-//! `card_apply_harness_start_payload_tx`.
+//! `PUT /api/cards/{id}/planner/model` — records which model a card's conversation
+//! runs with. Both keys are required and `null` is a value; an unknown slug is
+//! reported, not refused; an unsupported effort is moved to the model's default.
 
 use axum::extract::{Path, State};
 use axum::{Json, http::StatusCode};
@@ -56,21 +23,11 @@ use crate::routes::track_report_blocks::require_rest_user_actor_for;
 use crate::state::{CodexShellState, RouteState, WorkerState};
 
 const ACTOR_SUBJECT: &str = "planner model selection";
-/// The third argument of `require_rest_user_actor_for`, named for ITS
-/// parameter (`redirect`). Two of that function's three parameters are
-/// `&str`, so swapping them compiles and produces a 403 that names the wrong
-/// subsystem — read the call site back against these names, not against the
-/// build.
 const ACTOR_REDIRECT: &str = "Which model a person's conversation runs with is their own choice; agents have no write \
      path to it.";
 
-/// Accept `null`, refuse absence.
-///
-/// A field typed `Option<T>` is optional to serde: a missing key deserializes
-/// to `None` with no complaint. Naming a `deserialize_with` takes that
-/// special case away and the field becomes required, while still accepting an
-/// explicit `null` as `None`. That is exactly the contract this body wants,
-/// and it is pinned by `omitting_a_key_is_refused_and_changes_nothing`.
+/// Accept `null`, refuse absence: a `deserialize_with` makes the `Option<T>` field
+/// required to serde while still accepting an explicit `null`.
 fn required_nullable<'de, D, T>(deserializer: D) -> std::result::Result<Option<T>, D::Error>
 where
     D: Deserializer<'de>,
@@ -82,30 +39,14 @@ where
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SetPlannerModelBody {
-    /// The model **slug** to run with, or `null` to follow the installation
-    /// default. Required — see the module header.
-    ///
-    /// A slug, never a catalog entry's `id`: `GET /api/models` returns both
-    /// and only `model` is the one codex is invoked by.
-    ///
-    /// `#[schema(required = true)]` is not decoration and not a duplicate of
-    /// [`required_nullable`]. The two live in different worlds: serde decides
-    /// what the handler accepts, utoipa decides what the published
-    /// OpenAPI document promises, and utoipa derives optionality from the `Option<T>` in the
-    /// field type alone — it cannot see a `deserialize_with`. Without this the
-    /// document said both fields were optional while the handler answered 422
-    /// for omitting one, so a client generated from either checked-in copy was
-    /// conforming and broken at the same time.
+    /// The model **slug** to run with (never a catalog entry's `id`), or `null` to follow
+    /// the installation default. `#[schema(required = true)]` is needed because utoipa
+    /// derives optionality from the `Option<T>` alone and cannot see `deserialize_with`.
     #[schema(required = true)]
     #[serde(deserialize_with = "required_nullable")]
     pub model: Option<String>,
-    /// The reasoning effort, or `null` to follow the default. Required.
-    ///
-    /// A bare string rather than a closed set: codex accepts any non-empty
-    /// effort, so an enum here would start refusing values the day codex ships
-    /// a new one.
-    ///
-    /// `#[schema(required = true)]` for the same reason as `model` above.
+    /// The reasoning effort, or `null` to follow the default. Required. A bare string:
+    /// codex accepts any non-empty effort.
     #[schema(required = true)]
     #[serde(deserialize_with = "required_nullable")]
     pub reasoning_effort: Option<String>,
@@ -119,14 +60,11 @@ pub struct SetPlannerModelResponse {
     pub model: Option<String>,
     /// The stored effort. Differs from the request when `effort_adjusted`.
     pub reasoning_effort: Option<String>,
-    /// The requested effort was not among the chosen model's supported ones
-    /// and was moved to that model's own default. Never done silently — a
-    /// caller that ignores this flag shows a value that will not run.
+    /// The requested effort was not supported by the chosen model and was moved to that
+    /// model's own default.
     pub effort_adjusted: bool,
-    /// The slug is not in the catalog codex currently reports. A hint, not a
-    /// refusal: the stored value is the requested one either way. Always
-    /// `false` when the catalog could not be read, because "we could not ask"
-    /// is not evidence of absence.
+    /// The slug is not in the catalog codex currently reports. A hint, not a refusal;
+    /// always `false` when the catalog could not be read.
     pub unknown_model: bool,
 }
 
@@ -154,8 +92,7 @@ pub(crate) async fn set_planner_model(
     Path(id): Path<String>,
     Json(body): Json<SetPlannerModelBody>,
 ) -> Result<(StatusCode, Json<SetPlannerModelResponse>)> {
-    // Ordering matches `planner_input::resolve`: the actor check runs first,
-    // so an agent probing card ids learns nothing from the status it gets.
+    // The actor check runs first, so an agent probing card ids learns nothing from the status.
     require_rest_user_actor_for(&actor, ACTOR_SUBJECT, ACTOR_REDIRECT)?;
 
     let card = s
@@ -198,8 +135,7 @@ pub(crate) async fn set_planner_model(
             let card_id = card_id.to_string();
             move |tx| {
                 Box::pin(async move {
-                    // Read-modify-write inside the transaction. See the module
-                    // header: the payload column is replaced wholesale.
+                    // Read-modify-write inside the transaction: the payload column is replaced wholesale.
                     let mut payload = card_payload_get_tx(tx, &card_id).await?;
                     let map = payload.as_object_mut().ok_or_else(|| {
                         CalmError::Internal(format!(
@@ -230,11 +166,8 @@ pub(crate) async fn set_planner_model(
     )
     .await?;
 
-    // A refusal the kernel could not resolve told the reader to pick a model.
-    // They just did, so the harness must stop waiting out its 30 s interval
-    // rather than making them watch their sentence sit there having done the
-    // thing they were asked to do. Best-effort by construction: no live
-    // harness means nothing was waiting.
+    // A model was just picked, so a harness waiting out its refusal interval must stop
+    // waiting. Best-effort: no live harness means nothing was waiting.
     if let Ok(Some(runtime)) = s
         .repo
         .session_projection_active_for_card(&card_id.to_string())
@@ -269,28 +202,19 @@ pub(crate) async fn set_planner_model(
 /// What the catalog says about a requested selection.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(super) struct CatalogAdvice {
-    /// `Some(effort)` when the requested effort is not supported by the chosen
-    /// model and must land on that model's own default instead.
+    /// `Some(effort)` when the requested effort is not supported by the chosen model.
     pub(super) adjusted_to: Option<String>,
     unknown_model: bool,
 }
 
-/// Ask codex's catalog about the requested pair.
-///
-/// Every failure to ask yields [`CatalogAdvice::default`] — no adjustment, not
-/// unknown. That is the fail-safe direction for a hint: claiming a model is
-/// unknown because we could not reach a daemon would put a warning next to a
-/// perfectly good choice, and moving somebody's effort on the strength of a
-/// catalog we never read would be worse still. The stored selection is the
-/// requested one in every one of these branches.
+/// Ask codex's catalog about the requested pair. Every failure to ask yields
+/// [`CatalogAdvice::default`] — no adjustment, not unknown.
 pub(super) async fn catalog_advice(
     codex: &CodexShellState,
     model: Option<&str>,
     reasoning_effort: Option<&str>,
 ) -> CatalogAdvice {
-    // With no model chosen there is no catalog entry to judge against: the
-    // effort is being applied to whatever the installation default resolves
-    // to at turn time, which this handler does not get to see.
+    // With no model chosen there is no catalog entry to judge against.
     let Some(model) = model else {
         return CatalogAdvice::default();
     };

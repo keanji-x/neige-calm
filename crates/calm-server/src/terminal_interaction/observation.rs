@@ -6,10 +6,8 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::OnceCell;
 
-/// #1709 — a wall-clock fact of an observation (the capture instant, the
-/// exit instant) as milliseconds since the Unix epoch. A time before the
-/// epoch (a clock set back past 1970; never seen in practice) is 0, not a
-/// panic and not a negative number.
+/// A wall-clock fact of an observation as milliseconds since the Unix epoch. A time before
+/// the epoch is 0, not a panic and not a negative number.
 pub(super) fn epoch_ms(time: SystemTime) -> i64 {
     time.duration_since(UNIX_EPOCH)
         .map(|since| i64::try_from(since.as_millis()).unwrap_or(i64::MAX))
@@ -55,7 +53,6 @@ mod tests {
     use super::*;
     use calm_terminal_view::TerminalView;
 
-    /// #1709 — the epoch, a later instant and a pre-epoch instant.
     #[test]
     fn epoch_ms_is_milliseconds_since_the_epoch_and_never_negative() {
         assert_eq!(epoch_ms(UNIX_EPOCH), 0);

@@ -1,38 +1,25 @@
-//! #1669 — extraction of `neige://source/<source_id>[#q<n>]` links from
-//! report markdown.
-//!
-//! A sibling of [`crate::report_links`], not an extension of it: that
-//! scanner's records mean track/block references and feed task-dependency
-//! projection, frozen task context and backlinks. Source citations must
-//! never reach any of those (#1669 I5), so they get their own prefix, their
-//! own scan, and no shared record type. Same parser, same options, same
-//! rule that code spans and fenced code are not links.
+//! Extraction of `neige://source/<source_id>[#q<n>]` links from report markdown. A sibling of
+//! [`crate::report_links`], not an extension: source citations must never reach task-dependency
+//! projection, frozen task context or backlinks.
 
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
 pub const SOURCE_LINK_PREFIX: &str = "neige://source/";
 
-/// One `neige://source/…` link, in document order — well-formed or not.
-/// A malformed citation is still a citation the author wrote (design §5:
-/// `neige://source/src_dead` must be warned about, not silently ignored),
-/// so the scanner keeps every destination under the prefix and lets the
-/// consumer decide what a malformed one means.
+/// One `neige://source/…` link, in document order — well-formed or not; a malformed citation is
+/// still one the author wrote, so the consumer decides what it means.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceLinkRef {
     /// The destination exactly as pulldown-cmark decoded it.
     pub destination: String,
-    /// `Some` when the `<source_id>` segment is well-formed
-    /// (`src_` + 8 lowercase hex).
+    /// `Some` when the `<source_id>` segment is well-formed (`src_` + 8 lowercase hex).
     pub source_id: Option<String>,
-    /// The text after `#`, verbatim, when the destination carries a `#`
-    /// (an empty fragment is `Some("")`). Well-formedness is
-    /// [`Self::quote_id`]'s call.
+    /// The text after `#`, verbatim, when the destination carries a `#` (an empty fragment is `Some("")`).
     pub fragment: Option<String>,
 }
 
 impl SourceLinkRef {
-    /// The anchor as a `q<n>` id: `Some` only when a fragment is present
-    /// and well-formed.
+    /// The anchor as a `q<n>` id: `Some` only when a fragment is present and well-formed.
     pub fn quote_id(&self) -> Option<&str> {
         self.fragment
             .as_deref()
@@ -64,11 +51,8 @@ pub fn is_quote_id(id: &str) -> bool {
         && digits.bytes().all(|byte| byte.is_ascii_digit())
 }
 
-/// `neige://source/<source_id>[#<fragment>]` → a [`SourceLinkRef`]; `None`
-/// only when the destination is not under the source prefix at all.
-/// Unlike `report_links::parse_destination` (whose bad fragment degrades
-/// to a whole-report link), nothing here is dropped: a malformed id or
-/// anchor is reported as such.
+/// `neige://source/<source_id>[#<fragment>]` → a [`SourceLinkRef`]; `None` only when the
+/// destination is not under the source prefix at all. Nothing is dropped: a malformed id or anchor is reported as such.
 pub fn parse_source_destination(destination: &str) -> Option<SourceLinkRef> {
     let path = destination.strip_prefix(SOURCE_LINK_PREFIX)?;
     let (source_id, fragment) = match path.split_once('#') {
@@ -91,10 +75,8 @@ pub fn format_source_destination(source_id: &str, quote_id: Option<&str>) -> Str
     destination
 }
 
-/// Every `neige://source/…` link in `markdown`, in document order,
-/// malformed ones included. Inline, reference-style and autolinks all
-/// count; links inside code spans and fenced code do not (they are text
-/// there).
+/// Every `neige://source/…` link in `markdown`, in document order, malformed ones included; links
+/// inside code spans and fenced code do not count.
 pub fn scan(markdown: &str) -> Vec<SourceLinkRef> {
     let opts = Options::ENABLE_TABLES
         | Options::ENABLE_FOOTNOTES
@@ -160,9 +142,6 @@ mod tests {
         assert!(scan("```md\n[x](neige://source/src_2c9e0a1b#q1)\n```\n").is_empty());
     }
 
-    /// Design §5 counterexample: `neige://source/src_dead` is a citation
-    /// the author wrote and must reach the consumer as a malformed one,
-    /// never vanish. Other schemes are not source links at all.
     #[test]
     fn malformed_source_ids_are_kept_and_flagged() {
         for destination in [
@@ -205,7 +184,6 @@ mod tests {
         assert!(bare[0].is_well_formed());
     }
 
-    /// The two scanners are disjoint: neither sees the other's scheme.
     #[test]
     fn track_links_are_invisible_here_and_source_links_are_invisible_to_track_links() {
         let track_link = crate::report_links::format_track_destination("w1", Some("b_1f3a"));

@@ -1,4 +1,4 @@
-//! Execution allocations outlive the deletable pending task projection (#1501).
+//! Execution allocations outlive the deletable pending task projection.
 //! Caller authority and declaration admission belong to the server service.
 
 use calm_types::ids::ActorId;
@@ -74,9 +74,7 @@ pub async fn task_attempt_current_pool(
     current_on(&mut *pool.acquire().await?, track_id, key).await
 }
 
-/// Bounded current allocation inventory, including withdrawn/missing pending
-/// projections. Page in logical key order, passing the last key as the next
-/// exclusive cursor. Scheduling continues to consume current task rows only.
+/// Page in logical key order, passing the last key as the next exclusive cursor.
 async fn current_by_track_on(
     conn: &mut SqliteConnection,
     track_id: &str,

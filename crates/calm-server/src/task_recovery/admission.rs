@@ -1,7 +1,5 @@
-//! Admission checks are read-only and run under the writer transaction.
-//! Every refusal is a typed [`RecoveryRefusal`] decided at its site: the
-//! read side takes its code, its continuation and its sentence from the
-//! type and never from the message text or the task shape.
+//! Admission checks are read-only and run under the writer transaction. Every refusal is
+//! a typed [`RecoveryRefusal`] decided at its site, never from the message text or task shape.
 
 use super::refusal::{
     Admission, AdmissionError, RecoveryRefusal, RecoveryRefusalCode, RefusalSite,
@@ -129,8 +127,6 @@ pub(super) async fn recovery_policy(
     Ok(())
 }
 
-/// The actor-dependent policy, then the actor-independent contract and
-/// predecessor checks, with the same `?` at each step as before the split.
 pub(super) async fn admit_recovery_tx(
     tx: &mut Tx<'_>,
     track: &Track,
@@ -143,12 +139,7 @@ pub(super) async fn admit_recovery_tx(
     admit_contract_and_predecessor_tx(tx, track, previous).await
 }
 
-/// Everything after the policy: claim constraint, its shape, the current
-/// declaration and frozen references, the predecessor fence, the frozen
-/// file-delivery input. Actor-independent and read-only, so
-/// `calm.plan.list` guidance re-runs it behind a policy refusal: the
-/// continuation it then advertises is the one the kernel would decide for
-/// any actor.
+/// Actor-independent and read-only, so `calm.plan.list` guidance re-runs it behind a policy refusal.
 pub(crate) async fn admit_contract_and_predecessor_tx(
     tx: &mut Tx<'_>,
     track: &Track,
@@ -427,26 +418,14 @@ pub(super) async fn check_constraint_tx(
     Ok(())
 }
 
-/// Prepared isolated executions require their retained namespace stop proof.
-/// Every other prepared worker (shared codex, claude, terminal — whatever
-/// card kind) retains the pre-preparation fence: a PTY leader exit, terminal
-/// session state or released lease does not prove descendants stopped
-/// writing, so once such a worker was prepared the same key is never
-/// recoverable; the way forward is a new task key.
-///
-/// Actor-independent and read-only: `calm.plan.list` guidance re-evaluates it
-/// (through `admit_contract_and_predecessor_tx`) behind an actor-dependent
-/// policy refusal so a continuation it advertises is one the kernel would
-/// decide for any actor.
+/// Prepared isolated executions require their retained namespace stop proof; any other
+/// prepared worker retains the pre-preparation fence, so its key is never recoverable.
 pub(super) async fn require_recoverable_predecessor_tx(
     tx: &mut Tx<'_>,
     task: &Task,
 ) -> Admission<()> {
-    // Keyed Operation rows are permanent (migration 0093). Prepared targets and
-    // tx_output remain evidence even if worker cards/sessions were later deleted.
-    // Read every operation sharing the execution key, including a foreign kind
-    // that could have caused a scheduler payload collision; do not infer no work
-    // merely because the expected worker adapter cannot be found.
+    // Keyed Operation rows are permanent. Read every operation sharing the key, including a
+    // foreign kind; do not infer no work merely because the expected adapter cannot be found.
     let operations: Vec<PredecessorOperation> = sqlx::query_as(
         "SELECT id,kind,phase,phase_detail_json,target_type,target_id,tx_output_json,spawn_artifacts_json,compensation_state \
          FROM operations WHERE idempotency_key=?1 \
@@ -521,9 +500,8 @@ pub(super) async fn require_recoverable_predecessor_tx(
                 .is_some_and(|detail| {
                     detail.get("from_phase").and_then(serde_json::Value::as_str) == Some("pending")
                 });
-        // Before preparation the payload only identifies its parent Track.
-        // prepare_tx_and_advance atomically replaces that with the worker card
-        // target and tx_output; a missing card row must not erase this evidence.
+        // Before preparation the payload only identifies its parent Track; a missing card row
+        // must not erase this evidence.
         let initial_target = operation.target_type == "track"
             && operation.target_id.as_deref() == Some(task.track_id.as_str());
         if !worker_kind
@@ -540,42 +518,24 @@ pub(super) async fn require_recoverable_predecessor_tx(
             ));
         }
     }
-    // A still-pending predecessor Operation cannot race into a new process:
-    // prepare rechecks the failed terminal row/current generation under this
-    // same serialized writer boundary and refuses obsolete attempts.
+    // A still-pending predecessor cannot race into a new process: prepare rechecks under this
+    // same serialized writer boundary.
     Ok(())
 }
 
-/// A prepared isolated execution whose key also carries other operations or
-/// verification effects: the kernel cannot tell which process the stop proof
-/// would cover, and no settlement briefing re-opens this.
 pub(crate) const ISOLATED_AMBIGUOUS_OPERATIONS: &str = "predecessor isolated execution has ambiguous operations or verification effects on its key; \
      the namespace stop proof cannot be attributed, so same-key recovery is permanently \
      unavailable and no settlement briefing re-opens it";
 
-/// A worker card was prepared for the key (`worker_card_id` is set) with no
-/// isolated preparation receipt on the key — whatever the declaration's
-/// context shape says — so nothing proves its descendants stopped writing.
-/// `calm.plan.list` guidance carries the retained worktree path when a lease
-/// exists.
 pub(crate) const ORDINARY_WORKER_PREPARED_NO_STOP_PROOF: &str = "an ordinary worker was prepared for this key and has no stop proof; same-key recovery is \
      unavailable. Continue by declaring a new task (new key).";
 
-/// Verification effects (`gate_attempt`, `gate_pid`, `gate_result_json`)
-/// exist for the key but no worker card was prepared: a detached verifier
-/// descendant may still write.
 pub(crate) const VERIFICATION_EFFECTS_NO_STOP_PROOF: &str = "verification effects were recorded for this key with no worker stop proof; same-key recovery \
      is unavailable. Continue by declaring a new task (new key).";
 
-/// The failure is not a spawn failure yet neither a worker card nor
-/// verification effects remain: the kernel holds no stop proof and does not
-/// claim to know whether a preparation happened.
 pub(crate) const NOT_SPAWN_FAILED_NO_STOP_PROOF: &str = "the failed execution was not a spawn failure and has no stop proof; same-key recovery is \
      unavailable. Continue by declaring a new task (new key).";
 
-/// A keyed operation whose recorded shape is not a pre-preparation failure
-/// (foreign kind, advanced phase, prepared target, output, artifacts or
-/// compensation): its external effects are uncertain.
 pub(crate) const OPERATION_UNCERTAIN_EXTERNAL_EFFECTS: &str = "predecessor operation has uncertain external effects; recovery currently requires a failure \
      before worker preparation, so same-key recovery is unavailable. Continue by declaring a new \
      task (new key).";
@@ -626,10 +586,8 @@ pub(crate) async fn check_recovery_attempt_tx(tx: &mut Tx<'_>, task_id: &str) ->
                 "recovery predecessor row is missing; the accepted recovery cannot start",
             )
         })?;
-    // Allocation + its scoped decision event is the accepted delegation.
-    // The admitting actor remains immutable provenance; retiring its session or
-    // card does not withdraw work already accepted by the kernel. New commands
-    // still pass authorize_tx with their live identity at the service boundary.
+    // The admitting actor remains immutable provenance; retiring its session or card does
+    // not withdraw work already accepted by the kernel.
     if !matches!(
         actor,
         ActorId::User | ActorId::AiPlanner(_) | ActorId::AiPlannerSession(_)
@@ -652,9 +610,8 @@ pub(crate) async fn check_recovery_attempt_tx(tx: &mut Tx<'_>, task_id: &str) ->
             ),
         ));
     }
-    // Current author/ready/release/policy and frozen contract are the withdrawal
-    // fences. declare-and-wait may be satisfied by an explicit current release;
-    // the initial Planner retry limit was consumed at allocation admission.
+    // declare-and-wait may be satisfied by an explicit current release; the initial Planner
+    // retry limit was consumed at allocation admission.
     check_constraint_tx(tx, &track, &allocation.key, &constraint).await?;
     require_recoverable_predecessor_tx(tx, &previous).await
 }

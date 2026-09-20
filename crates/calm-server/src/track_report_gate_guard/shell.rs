@@ -1,6 +1,5 @@
-//! Read the literal arguments of the first simple shell command without
-//! executing it. Expansions, substitutions, heredocs and compound syntax are
-//! deliberately unknown; they must never become grounds for rejecting a gate.
+//! Read the literal arguments of the first simple shell command without executing it.
+//! Expansions, substitutions, heredocs and compound syntax must never become grounds for rejecting a gate.
 
 fn finish_word(
     words: &mut Vec<String>,

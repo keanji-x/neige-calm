@@ -1,49 +1,4 @@
-// The directory browser: an editable absolute path that is also a combobox
-// over the listing it names.
-//
-// ## What this revision is (#1228)
-//
-// Only the rendering. The props surface, the port, and every keyboard rule
-// below are the frozen §6.7a contract and are untouched; what the first cut
-// deliberately left undone was the visual layer — its class names were
-// placeholders with no CSS behind them, so the control shipped as unstyled
-// browser defaults inside an otherwise finished dialog.
-//
-// ## Built from `@astryxdesign/core`, with the listbox kept local
-//
-// astryx is this repo's component library and it owns everything here that is
-// a plain control: the path field, the parent button, and the two actions. It
-// does *not* own the option list. `List`/`Item` hard-code their roles, and
-// this list is a `role="listbox"` driven by `aria-activedescendant` from an
-// input that keeps DOM focus — the one shape astryx has no component for. So
-// the rows stay local markup with a CSS module, and only the chrome around
-// them is astryx.
-//
-// Two seams that follow from that choice, both deliberate:
-//
-//   * Every astryx `Button` renders its own always-present
-//     `<VisuallyHidden role="status">` loading region (`Button.tsx`). Three
-//     buttons therefore put three status nodes on this surface, so the
-//     loading row cannot be found by `role="status"` alone any more — the
-//     test names it by its text instead. The row is still a live region; it
-//     is just no longer the only one.
-//   * The path input's own font comes from astryx (`--font-family-body`), and
-//     the module overrides it to `--font-mono` — which works without a
-//     specificity fight because the `ui` layer sorts after `astryx` in
-//     `entry.css`. Mono is for the value, not for the look: a path is read by
-//     its separators, and a proportional font puts every `/` at a different
-//     offset down a list of them. (An earlier draft of this comment cited
-//     "fe-design.md:869" for the rule, copied from `new-track/public.tsx`. That
-//     citation is dangling — the design doc is 188 lines since #1181 trimmed
-//     it, and it carries no rule about mono in fields at all.)
-//
-// ## The parent button is new, and it is not a new behaviour
-//
-// `DirectoryListing.parent` has always been part of the frozen port and this
-// component has always ignored it: going up meant editing the text by hand.
-// The button issues exactly the `load(parent)` that typing the parent path
-// and pressing Enter already issued, so it adds a pointer affordance to an
-// existing navigation, not a new one.
+// The directory browser: an editable absolute path that is also a combobox over the listing it names. The listbox stays local markup: astryx's `List`/`Item` hard-code roles and cannot host an `aria-activedescendant` list driven from a focused input.
 
 import { useEffect, useId, useMemo, useRef, type KeyboardEvent } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
@@ -95,18 +50,7 @@ export function DirectoryBrowser({ listDirectory, initialPath, onCancel, onSelec
   };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- initialPath is a mount-time seed; navigation owns all later loads.
   useEffect(() => { load(initialPath ?? undefined); }, []);
-  /*
-   * The highlight has to stay on screen, and this is the revision that made
-   * that possible to get wrong: the list is now a bounded scrolling window
-   * (`directory-browser.module.css`), so past about nine entries `ArrowDown`
-   * would move `activeIndex` under the fold and leave Enter and `/` acting on
-   * a row nobody can see. Arrow keys move `aria-activedescendant`, not DOM
-   * focus, so no browser scrolls anything on our behalf here.
-   *
-   * `block: 'nearest'` scrolls only when the option is actually out of view,
-   * which is what keeps a pointer-driven hover from yanking the list. The
-   * `typeof` guard is for jsdom, which implements no scrolling at all.
-   */
+  /* Arrow keys move `aria-activedescendant`, not DOM focus, so nothing scrolls the bounded list for us; `block: 'nearest'` keeps hover from yanking it, and the `typeof` guard is for jsdom. */
   useEffect(() => {
     if (activeIndex === null) return;
     const option = document.getElementById(`${optionsId}-option-${activeIndex}`);
@@ -138,10 +82,7 @@ export function DirectoryBrowser({ listDirectory, initialPath, onCancel, onSelec
   const empty = listing !== null && listing.entries.length === 0;
   return (
     <section className={styles.browser}>
-      {/* A grid and not astryx's `HStack`: the field has to take the rest of
-          the row, and `TextInput` sizes itself through `width` on its own
-          `Field` wrapper — `1fr` is the only place that width can come from
-          without hard-coding one. */}
+      {/* A grid and not `HStack`: `TextInput` sizes through its own `Field` wrapper, so `1fr` is the only place its width can come from. */}
       <div className={styles.head}>
         <Button
           type="button"
@@ -169,15 +110,7 @@ export function DirectoryBrowser({ listDirectory, initialPath, onCancel, onSelec
         />
       </div>
 
-      {/* The list keeps rendering the entries it already has while the next
-          listing loads, so this is a status *beside* it rather than a state
-          that replaces it — a reload must not blank the rows under the
-          pointer.
-
-          Text and no spinner: astryx's `Spinner` paints itself on a `<canvas>`
-          through `useTheme`, so it needs `matchMedia` and a 2D context that the
-          jsdom tier has neither of, and a control this small does not earn a
-          browser-tier test of its own to buy one. */}
+      {/* A status beside the list, not replacing it: a reload must not blank the rows under the pointer. No spinner — astryx's paints on a canvas jsdom lacks. */}
       {loading && <p className={styles.status} role="status">Loading…</p>}
       {error !== null && <Banner status="error" title={error} />}
 
@@ -201,11 +134,7 @@ export function DirectoryBrowser({ listDirectory, initialPath, onCancel, onSelec
             </button>
           </li>
         ))}
-        {/* `role="none"` for both: a listbox owns options, and neither of these
-            rows is one. They are two different facts — "this directory holds
-            nothing" and "what you typed matches nothing in it" — and telling
-            them apart is the difference between navigating on and backing up a
-            character. */}
+        {/* `role="none"`: a listbox owns options, and neither placeholder row is one. */}
         {listing !== null && !loading && visible.length === 0 && (
           <li className={styles.placeholder} role="none">
             {empty ? 'Empty directory' : 'No matches'}

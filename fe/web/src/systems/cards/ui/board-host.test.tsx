@@ -263,15 +263,6 @@ describe('BoardHost lifecycle', () => {
   });
 });
 
-/*
- * ── The head's delete ───────────────────────────────────────────────────────
- *
- * `onRemove` reaches the component **already resolved**: the entry is never
- * asked to decide whether the card may be deleted, so these cases assert on the
- * prop the component receives rather than on any bit it reads for itself. That
- * is what keeps one rule ("the kernel owns `deletable`") in one place instead of
- * once per card kind.
- */
 describe('BoardHost card removal', () => {
   const removable: CardEntry = {
     ...entry,
@@ -326,10 +317,7 @@ describe('BoardHost card removal', () => {
     expect(screen.queryByRole('button', { name: 'Delete card Build log' })).toBeNull();
   });
 
-  /* A wire row from a server newer than this bundle carries no `deletable`
-     field at all. `cardWireSchema` reads that omission as "user-deletable", and
-     the board must not read it as the opposite — a card nobody can delete and
-     no entry can draw is unreachable in both directions. */
+  /* `cardWireSchema` reads an absent `deletable` (newer server) as user-deletable; the board must not read it as the opposite. */
   it('treats an absent deletable bit as deletable', async () => {
     const onRemoveCard = vi.fn();
     renderRemovable({ onRemoveCard });
@@ -337,9 +325,6 @@ describe('BoardHost card removal', () => {
     expect(onRemoveCard).toHaveBeenCalledWith('card-a');
   });
 
-  /* The unknown-card fallback draws its own head, so it needs its own case:
-     no entry claims this kind, which makes the × the only control on the board
-     that can act on it at all. */
   it('puts a delete on the unknown-card fallback head', async () => {
     const onRemoveCard = vi.fn();
     const registry = createCardRegistry();

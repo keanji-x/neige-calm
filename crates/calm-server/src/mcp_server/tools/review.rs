@@ -1,13 +1,5 @@
-//! Review/ratify workflow tools for issue #760 slice 5b.
-//!
-//! `calm.review.round` records the planner's dual-channel review round as a
-//! typed track-scoped event. The event log is the durable store, so the tool
-//! enforces a strict monotonic round number per logical subject before
-//! appending.
-//!
-//! `calm.ratify.request` is the planner-authored half of the human ratify gate:
-//! it records the request and parks a working track in `blocked` in the same
-//! eventized transaction.
+//! Review/ratify workflow tools: `calm.review.round` (strictly monotonic round number per subject)
+//! and `calm.ratify.request` (records the request and parks the track in `blocked` in one tx).
 
 use crate::db::write_with_actor_events_typed;
 use crate::error::CalmError;
@@ -31,9 +23,7 @@ pub const TOOL_REVIEW_ROUND: &str = "calm.review.round";
 pub const TOOL_RATIFY_REQUEST: &str = "calm.ratify.request";
 
 const FIRST_REVIEW_ROUND_N: u32 = 1;
-/// Cap raise authorized by one post-exhaustion ratify grant. Must match the
-/// git-forge descriptor prose ("previous cap plus exactly 2",
-/// plugins/git-forge/manifest.json) pinned by the manifest needle test.
+/// Must match the git-forge descriptor prose ("previous cap plus exactly 2", plugins/git-forge/manifest.json).
 const CAP_EXTENSION_PER_GRANT: u32 = 2;
 const REVIEW_ROUND_DUPLICATE_RACE: &str = "__review_round_duplicate_race__";
 
@@ -380,10 +370,7 @@ fn classify_review_round(
     args: &ReviewRoundArgs,
     idempotency_key: &str,
 ) -> ReviewRoundWriteDecision {
-    // `prev` = the prior round with maximal n; among tied-n rows, the one with
-    // the greatest event row id (ties are impossible through this tool — the
-    // greatest-row-id pick is deterministic recovery behavior for non-tool
-    // writes; #888 design §3.1).
+    // `prev` = the prior round with maximal n; among tied-n rows, the greatest event row id.
     let mut prev: Option<(i64, u32, u32)> = None; // (row id, n, cap)
     let mut same_n_same_payload = false;
     for (row_id, event) in &history.rounds {
@@ -423,8 +410,7 @@ fn classify_review_round(
         None => FIRST_REVIEW_ROUND_N,
         Some((_, prev_n, _)) => match prev_n.checked_add(1) {
             Some(next_n) => next_n,
-            // u32 space exhausted: a saturated expected-n would re-admit
-            // further distinct rows at n == u32::MAX (INV-CAP-EXT breach).
+            // u32 space exhausted: a saturated expected-n would re-admit further distinct rows at n == u32::MAX.
             None => {
                 return ReviewRoundWriteDecision::Reject(format!(
                     "review_round: round numbering exhausted for subject phase={} slice_id={} pr_number={:?}",
@@ -440,13 +426,10 @@ fn classify_review_round(
         ));
     }
 
-    // Cap-consistency arm (#888): per subject, cap must not shrink, and may
-    // rise only by exactly CAP_EXTENSION_PER_GRANT immediately after the
-    // previous window is exhausted (prev.n == prev.cap), backed by a
-    // `ratify.resolved { grant }` strictly newer than the exhausting round.
+    // Per subject, cap must not shrink, and may rise only by exactly CAP_EXTENSION_PER_GRANT right after the
+    // previous window is exhausted, backed by a `ratify.resolved { grant }` strictly newer than the exhausting round.
     let Some((prev_id, prev_n, prev_cap)) = prev else {
-        // First round of the subject: cap unconstrained by the kernel (the
-        // descriptor pins the first-window cap).
+        // First round of the subject: cap unconstrained by the kernel.
         return ReviewRoundWriteDecision::Append;
     };
     if args.cap == prev_cap {
@@ -473,9 +456,7 @@ fn classify_review_round(
             args.subject.phase, args.subject.slice_id, args.subject.pr_number,
         ));
     }
-    // u32 space exhausted: a saturated expected-cap would accept a +1
-    // "extension" to u32::MAX from prev_cap == u32::MAX - 1 (INV-CAP-EXT
-    // breach — the raise must be exactly CAP_EXTENSION_PER_GRANT or nothing).
+    // u32 space exhausted: a saturated expected-cap would accept a +1 "extension" to u32::MAX.
     let Some(expected_cap) = prev_cap.checked_add(CAP_EXTENSION_PER_GRANT) else {
         return ReviewRoundWriteDecision::Reject(format!(
             "review_round: cap extension space exhausted for subject phase={} slice_id={} pr_number={:?}: previous cap={prev_cap} cannot rise by {CAP_EXTENSION_PER_GRANT}",
@@ -492,13 +473,11 @@ fn classify_review_round(
     ReviewRoundWriteDecision::Append
 }
 
-/// Subject-scoped review history + track-scoped grant watermark, identically
-/// shaped on the pre-tx (RouteRepo) and in-tx (raw SQL) paths.
+/// Identically shaped on the pre-tx (RouteRepo) and in-tx (raw SQL) paths.
 struct SubjectReviewHistory {
     /// `review.round` events for this subject, ascending event row id.
     rounds: Vec<(i64, Event)>,
-    /// Max row id of any `ratify.resolved { decision: Grant }` in the track.
-    /// Deny rows are ignored here (#888 design §3.7).
+    /// Max row id of any `ratify.resolved { decision: Grant }` in the track; deny rows are ignored.
     latest_grant_id: Option<i64>,
 }
 

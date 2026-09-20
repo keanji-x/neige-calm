@@ -28,12 +28,7 @@ export function MobilePages({ areas, areaId, tracks, onOpenTrack, onBack, onNewT
   readLoading?: boolean;
   onRetryRead?: () => void;
 }> & MobileNavigationActions) {
-  /*
-   * E2E-INV-SHELL-003 — the same second layer of defence the sidebar applies:
-   * a track whose area is not user-visible does not belong on a list a person
-   * reads, and filtering tracks alone (what this list used to do) let the
-   * kernel's system area through if an unfiltered list ever reached here.
-   */
+  /* Second layer of defence, as on the sidebar: filtering tracks alone lets the kernel's system area through if an unfiltered list ever reaches here. */
   const visible = userVisibleTracks(tracks, areas);
   const shownAreas = visibleAreas(areas);
   const pinned = visible

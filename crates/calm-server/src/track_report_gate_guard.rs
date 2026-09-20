@@ -1,8 +1,5 @@
-//! Early diagnostics for newly authored gate requirements (#1492).
-//!
-//! This is deliberately not shell validation or a security boundary. We can
-//! identify a direct Neige CLI call, but not what scripts, aliases or dynamic
-//! commands will do. The verifier's empty environment remains authoritative.
+//! Early diagnostics for newly authored gate requirements; deliberately not shell validation or a
+//! security boundary — the verifier's empty environment remains authoritative.
 
 use std::collections::HashMap;
 
@@ -54,9 +51,8 @@ pub(crate) fn check_changed_task_gates(
     Ok(())
 }
 
-/// Recognize only direct, literal calls, including a literal executable path.
-/// Do not search arbitrary command text: `rg neige README.md` and quoted
-/// fixture data are valid verification inputs, not kernel capability requests.
+/// Recognize only direct, literal calls; `rg neige README.md` and quoted fixture data are valid
+/// verification inputs, not kernel capability requests.
 fn direct_kernel_cli(command: &str) -> bool {
     let Some(words) = shell::first_literal_command(command) else {
         return false;

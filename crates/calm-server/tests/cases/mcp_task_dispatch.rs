@@ -8,8 +8,6 @@ use serde_json::{Value, json};
 
 pub(super) async fn boot() -> Boot {
     let b = report_boot().await;
-    // This older report fixture seeds session rows only. Exercise the production
-    // runtime mirror to establish the current-card link required by dispatch.
     bind_planner(&b, &planner_identity(&b).session_id, false).await;
     b
 }
@@ -83,8 +81,6 @@ pub(super) async fn policy(b: &Boot, policy: &str, budget: i64) {
         .unwrap();
 }
 
-/// Planner feedback #3 — once a task is declared, `calm.track.state.next`
-/// also lists the task-scoped lifecycle carriers (verdict / cancel).
 #[tokio::test]
 async fn track_state_next_lists_verdict_and_cancel_once_a_task_is_declared() {
     use calm_server::mcp_server::tools::track_state::TOOL_TRACK_STATE;

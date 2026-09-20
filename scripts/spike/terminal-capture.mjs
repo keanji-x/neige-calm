@@ -1,6 +1,5 @@
 #!/usr/bin/env node
-// Developer-only S0 probe. Attach to an explicitly supplied managed browser;
-// capture one existing terminal without navigating, resizing, or sending input.
+// Developer-only probe: attach to an explicitly supplied managed browser and capture one existing terminal without navigating, resizing, or sending input.
 import { createRequire } from 'node:module';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -34,8 +33,7 @@ export async function captureTerminal(page, terminalId) {
   if (await terminal.count() !== 1) throw new Error('Expected exactly one bound terminal');
   // Reject offscreen targets before capturing; never auto-scroll the page.
   const before = await inspectSurface(terminal);
-  // Browser-native clipping also captures the canvas/WebGL renderer. It does
-  // not read canvas.toDataURL or recreate terminal glyphs from a text dump.
+  // Browser-native clipping also captures the canvas/WebGL renderer.
   const png = await page.screenshot({ type: 'png', clip: before.bounds, timeout: 5000 });
   const after = await inspectSurface(terminal);
   if (JSON.stringify(after.bounds) !== JSON.stringify(before.bounds)) {

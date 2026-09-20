@@ -54,12 +54,8 @@ pub(super) async fn clear_track_root_session_refs_for_worker_session_delete_tx(
     Ok(())
 }
 
-/// PR6b (#679) — mirror the per-card MCP hash onto the same-id worker_sessions
-/// row. POPULATE-ONLY: never read for authz (the handshake reads
-/// card_mcp_tokens). Fail-closed: the same-id mirror row MUST exist
-/// (created by session_start_runtime_tx -> session_start_mirror_tx in the same spawn);
-/// a missing row means the dual-write ordering drifted, so fail the spawn
-/// rather than silently half-mint.
+/// POPULATE-ONLY mirror of the per-card MCP hash; never read for authz. Fail
+/// closed: a missing same-id row means the dual-write ordering drifted.
 pub async fn session_mcp_token_set_tx(
     tx: &mut Transaction<'_, Sqlite>,
     session_id: &str,
@@ -145,8 +141,8 @@ pub(super) fn agent_provider_to_db(provider: &AgentProvider) -> &'static str {
     }
 }
 
-// PR3b-i (#679): derives the provisional NOT NULL worker-session identity
-// from the runtime row's own kind. PR6 overwrites these in place at mint.
+// Provisional NOT NULL worker-session identity from the runtime row's kind;
+// overwritten in place at mint.
 pub(crate) fn derive_session_identity(
     kind: &WorkerSessionKind,
 ) -> (WorkerProviderKind, SessionMode, WorkerContract) {
@@ -347,14 +343,8 @@ pub async fn session_set_liveness_tx(
     Ok(Some(session))
 }
 
-/// T2 durable codex worker-liveness feeder (#741 §1.3). Stamps the push-fed
-/// `last_activity_ms` / `last_thread_status` columns on an *active* session.
-///
-/// Like `session_set_liveness_tx` these are observation columns on
-/// `worker_sessions`, so this MUST NOT touch `updated_at_ms`: projection reads
-/// select the active session per card with `ORDER BY ws.updated_at_ms DESC`, and
-/// an observation-only bump could reorder which session wins. 0 rows affected
-/// is benign — the session is terminal or missing — and returns `Ok(())`.
+/// Observation columns only: MUST NOT touch `updated_at_ms`, since projection
+/// reads pick the active session per card by `ORDER BY ws.updated_at_ms DESC`.
 pub async fn session_record_activity_tx(
     tx: &mut SessionTx<'_>,
     id: &WorkerSessionId,
@@ -383,24 +373,10 @@ pub async fn session_record_activity_tx(
     Ok(())
 }
 
-/// T2 durable codex worker-liveness feeder (#741 §1.3), keyed by codex
-/// `thread_id` instead of the internal session id. The durable notification
-/// subscriber sees only thread ids, so this is the path it writes through.
-///
-/// Like [`session_record_activity_tx`] these are observation columns on
-/// `worker_sessions`, so this MUST NOT touch `updated_at_ms`: projection reads
-/// select the active session per card with `ORDER BY ws.updated_at_ms DESC`, and
-/// an observation-only bump could reorder which session wins. The match is also
-/// pinned to `provider='codex'` (thread ids are codex-scoped). 0 rows affected
-/// is benign — no active codex session owns the thread — and returns `Ok(())`.
-///
-/// `turn_completed_ms` (#1722 §4.2.1 (2)) is `Some(at)` ONLY for a
-/// `turn/completed` whose `turn.status` is `completed`; the same UPDATE then
-/// raises `last_turn_completed_ms` to `MAX(COALESCE(last_turn_completed_ms, 0),
-/// at)` — monotone, never lowered by a late replay. `None` (a status stamp, a
-/// `turn/started`, an interrupted or failed turn) leaves the column alone.
-/// The feeder is the column's only writer; the track activity projector reads
-/// it as completion evidence E6 for interactive shared-daemon cards.
+/// Keyed by codex `thread_id`; MUST NOT touch `updated_at_ms` (see
+/// [`session_record_activity_tx`]). `turn_completed_ms` is `Some` ONLY for a
+/// `turn/completed` with status `completed`; the column is raised monotonically
+/// and never lowered by a late replay.
 pub async fn session_record_activity_by_thread_tx(
     tx: &mut SessionTx<'_>,
     thread_id: &str,

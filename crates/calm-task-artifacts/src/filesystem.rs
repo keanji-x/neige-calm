@@ -86,11 +86,8 @@ pub(crate) fn private_dir(path: &Path) -> Result<()> {
     require_private_dir(path)
 }
 
-/// The mode passed to mkdir(2) is only a request: a setgid parent adds S_ISGID
-/// to every directory created beneath it and the umask may clear bits. This
-/// crate verifies prepared trees with an exact `mode & 0o7777 == 0o700` fence,
-/// so every directory it creates sets its final mode on the created directory
-/// itself instead of trusting the creation mode (#1636).
+/// The mode passed to mkdir(2) is only a request (setgid parents add S_ISGID, umask clears bits); the prepared-tree
+/// fence is exact `mode & 0o7777 == 0o700`, so the final mode is set on the created directory itself.
 pub(crate) fn own_private_mode(path: &Path) -> Result<()> {
     set_mode(&open_dir(path)?, 0o700)
 }

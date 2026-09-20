@@ -1,8 +1,5 @@
-//! #1669 §2.3 — receipt `warnings`: the `neige://source/` links in the
-//! prose a write touched that this track cannot resolve, on each of the
-//! five agent write doors (`calm.report.commit`, `calm.report.blocks.upsert`,
-//! `calm.report.write_markdown`, `calm.report.write`, `calm.report.edit`),
-//! malformed citations included. The write is never blocked.
+//! Receipt `warnings`: the `neige://source/` links in touched prose that this track cannot
+//! resolve, on each of the five agent write doors. The write is never blocked.
 
 #![cfg(unix)]
 
@@ -212,9 +209,8 @@ async fn summary_only_commit_carries_no_warnings_even_with_dangling_links_in_pla
     assert_eq!(receipt["warnings"], json!([]), "{receipt}");
 }
 
-/// Design §5 counterexample: `neige://source/src_dead` is not a valid id
-/// and `#q0` is not a valid anchor; both must be warned about, not
-/// silently dropped by the scanner.
+/// `neige://source/src_dead` is not a valid id and `#q0` is not a valid anchor; both must be
+/// warned about, not silently dropped by the scanner.
 #[tokio::test]
 async fn malformed_ids_and_anchors_are_warned_about() {
     let boot = boot().await;
@@ -253,9 +249,7 @@ async fn malformed_ids_and_anchors_are_warned_about() {
     );
 }
 
-/// `calm.report.write` (whole body) and `calm.report.edit` (string
-/// replace) are the two remaining planner doors into `commit_report_op`;
-/// they carry the same `warnings` as the block tools.
+/// `calm.report.write` and `calm.report.edit` are the two remaining planner doors into `commit_report_op`.
 #[tokio::test]
 async fn report_write_and_edit_carry_warnings_too() {
     let boot = boot().await;

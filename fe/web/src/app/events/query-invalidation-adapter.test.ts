@@ -50,17 +50,7 @@ describe('query invalidation adapter', () => {
     }
   });
 
-  /*
-   * #1253 §6 — the whole chain from "an agent wrote the report" to "Today
-   * redraws", asserted end to end through the pure plan and this adapter.
-   *
-   * Two links, and each is silent when it breaks. The plan has to emit
-   * `['today-launchpad']` and `['track', id]` for `track.report_edited`
-   * (`PolicyMap` is exhaustive over event kinds, not query keys, so their
-   * absence fails no golden), and this module has to map both rather than drop
-   * them — an unmapped key is discarded here without a warning. Either gap
-   * leaves the Today trigger looking like it did nothing.
-   */
+  /* Both links are silent when they break: an unmapped key is discarded here without a warning. */
   it('turns a report edit into a refresh of the Today document and its resolve', () => {
     const event = wireEventSchema.parse({
       ev: 'track.report_edited',
@@ -76,19 +66,8 @@ describe('query invalidation adapter', () => {
     expect(mapped).toContainEqual(queryKeys.trackDetail('lp'));
   });
 
-  /*
-   * The track-report key is mapped in BOTH arities, and the bare one is the
-   * point: dropping it — the treatment every other bare key gets — would leave
-   * the TASKS panel dead for exactly the four events that change it.
-   *
-   * These four payloads are the ones the kernel actually emits, and they go
-   * through `wireEventSchema` rather than a cast so a hand-written shape cannot
-   * stand in for the wire. Note what they carry: `idempotency_key` is the task
-   * id, and a task id is `"{track_id}:{key}"`. The track id is therefore present
-   * in the bytes — the plan's `derivedTrackId` reads named fields only and does
-   * not take an opaque id apart, which is why the *plan* cannot key these by
-   * track. "Carries no track id at all" would be the wrong reason.
-   */
+  /* The bare track-report key is the point: dropping it would leave the TASKS panel dead for these
+   * events. Parsed through `wireEventSchema`; the track id is only inside the opaque task id. */
   it.each([
     ['task.dispatched', { idempotency_key: 'w-7:alpha', kind: 'codex' }],
     ['task.completed', { idempotency_key: 'w-7:alpha', result: null, artifacts: [] }],
@@ -273,16 +252,8 @@ describe('query invalidation adapter', () => {
     expect(calls).toEqual([{ op: 'invalidate', queryKey: queryKeys.areas() }]);
   });
 
-  /*
-   * The harness kinds, end to end and by exact list.
-   *
-   * The payloads go through `wireEventSchema` rather than a cast, and that is
-   * load-bearing here: `track_id` is a *required* field on all four of these on
-   * the wire, and an earlier version of this test cast a `{ card_id }` stub
-   * instead — which planned `['track-conversations', undefined]`, mapped to
-   * nothing, and froze the missing conversation arms into the expectation as if
-   * a bare `planner-run` were the correct answer for `harness.phase.changed`.
-   */
+  /* Parsed through `wireEventSchema`, not cast: `track_id` is required on the wire, and a `{ card_id }`
+   * stub once planned `['track-conversations', undefined]` and froze the wrong expectation. */
   it('turns each real harness plan into its exact live query invalidations', () => {
     const base = { worker_session_id: 'r-1', card_id: 'card-1', track_id: 'track-1' } as const;
     const expected = [
@@ -316,16 +287,7 @@ describe('query invalidation adapter', () => {
     }
   });
 
-  /*
-   * The whole chain for the conversation lists: real event → plan → adapter →
-   * `invalidateQueries`.
-   *
-   * The two set assertions in `invalidation-plan.test.ts` close the planner
-   * from both sides, and they were green while this key reached no query at
-   * Each case is asserted as an exact call list rather than a `toContainEqual`:
-   * "the key is in there somewhere" is what let the seam open in the first
-   * place.
-   */
+  /* Exact call lists, not `toContainEqual`: "the key is in there somewhere" is what let the seam open. */
   it('drives the conversation-list keys all the way onto the query client', async () => {
     const event = wireEventSchema.parse({
       ev: 'worker_session.started',
@@ -346,12 +308,7 @@ describe('query invalidation adapter', () => {
     ]);
   });
 
-  /*
-   * The unresolvable-card fallback, also end to end. A `runtime.*` event whose
-   * card belongs to no cached track detail plans the bare `track-conversations`
-   * prefix, and that arity must reach the client too — dropping it would leave
-   * an open list stale for exactly the transitions that move a row's `state`.
-   */
+  /* The bare prefix arity must reach the client too, or an open list stays stale for the transitions that move a row's `state`. */
   it('drives the bare track-conversations prefix onto the client when no track resolves', async () => {
     const event = wireEventSchema.parse({
       ev: 'worker_session.status_changed',

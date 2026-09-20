@@ -1,22 +1,6 @@
-//! G-B (#1189 §7) — the full role verdict for a `CardRole::Assistant` MCP
-//! token: which tools it may call, which it may not, and the meta-test that
-//! keeps the two lists a *partition* of the tool registry.
-//!
-//! The assertion deliberately does **not** inspect `tools/list`:
-//! `visible_to_roles` only governs discovery (see the note on
-//! `ToolDescriptor` — "Wire-level `tools/call` still routes by name
-//! regardless"), so pinning "the assistant's tool list is missing
-//! `calm.plan.cancel`" would be a tautology about the wrong object. An
-//! assistant's token can name any tool it likes on the wire.
-//!
-//! What actually carries the weight is the `require_role` line at the top
-//! of each handler. So these tests skip discovery entirely and issue a raw
-//! `tools/call` per denied tool, asserting the JSON-RPC error is
-//! `-32602` **and** that its message is the role refusal (`"tool requires
-//! role"`). The message check is load-bearing: a malformed-arguments
-//! rejection is *also* `-32602`, so a code-only assertion would stay green
-//! even if the role gate were removed and the call fell through to
-//! argument parsing.
+//! The full role verdict for a `CardRole::Assistant` MCP token. Discovery is not inspected:
+//! `tools/call` routes by name regardless, so each denied tool gets a raw call asserting `-32602`
+//! AND the role-refusal message (a malformed-arguments rejection is also `-32602`).
 
 #![cfg(unix)]
 
@@ -26,21 +10,9 @@ use calm_server::model::CardRole;
 use serde_json::json;
 use support::mcp::{boot_with_role, connect, handshake, recv_frame, send_frame};
 
-/// Tools an Assistant token may call.
-///
-/// `calm.report.read` is the *only* source of `docRev` and the per-block
-/// `rev`s (every block-channel write takes `if_doc_rev` / `if_rev`), so an
-/// assistant locked out of it could never form a CAS write at all. The
-/// report **write** channel (`calm.report.write` / `.edit`, which can carry
-/// lifecycle) stays denied — that is the §3.2 dividing line, not "reports
-/// are planner property".
-///
-/// #1189 S2 (§3.2b) opened the block channel too: `blocks.*` and
-/// `write_markdown` are the only write surface an assistant has. Their
-/// optional `lifecycle` argument is refused per-argument for a non-Planner
-/// caller (`mcp_track_report_blocks::assistant_cannot_pass_lifecycle_on_block_tools`).
-/// What keeps the channel from being a state-machine grant lives below the
-/// entry gate — no auto-promote, and the task-block guard — not in this list.
+/// Tools an Assistant token may call. `calm.report.read` is the only source of `docRev` and
+/// per-block `rev`s, so without it no CAS write is possible; the report write channel carries
+/// lifecycle and stays denied.
 const ASSISTANT_ALLOWED_TOOLS: &[&str] = &[
     "calm.report.read",
     "calm.report.blocks.kinds",
@@ -50,29 +22,24 @@ const ASSISTANT_ALLOWED_TOOLS: &[&str] = &[
     "calm.report.write_markdown",
 ];
 
-/// Denied tools whose handler a **Planner** token gets past. Used both as the
-/// negative list for the assistant and as the control list below.
+/// Denied tools whose handler a **Planner** token gets past; also the control list below.
 const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
-    // Report write channel — carries lifecycle, hence planner-only (§3.2).
+    // Report write channel — carries lifecycle, hence planner-only.
     "calm.report.write",
     "calm.report.edit",
     "calm.report.commit",
     // Cross-track / cross-area report discovery reads.
     "calm.area.outline",
     "calm.report.links.backlinks",
-    // #1669 — captured sources are the planner's evidence: capturing one
-    // vouches for a plugin call only the planner made, listing them is the
-    // planner's citation index (design §2.2 / §6, v1 planner-only).
+    // Captured sources are the planner's evidence.
     "calm.source.capture",
     "calm.source.list",
     // Track state + verdict.
     "calm.track.state",
     "calm.task.verdict",
-    // #1211 S3 — naming the track is a planner judgement about what the track is;
-    // an assistant has no plan of its own to name.
+    // Naming the track is a planner judgement.
     "calm.track.rename",
-    // #1667 D3 — speaking from a background sync turn is a planner action;
-    // an assistant talks to its user in its own transcript.
+    // Speaking from a background sync turn is a planner action.
     "calm.user.notify",
     "calm.terminal.open",
     "calm.terminal.resolve",
@@ -97,16 +64,14 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     "calm.ratify.request",
     "calm.admin.track_gc",
     "calm.admin.vacuum",
-    // Hidden deprecated aliases delegate to the handler above, so the role
-    // refusal must survive the rename path too.
+    // Hidden deprecated aliases delegate to the handler above, so the role refusal must survive them too.
     "calm.get_track_state",
     "calm.update_task_meta",
     "calm.dispatch_request",
 ];
 
-/// Denied tools that only a **Worker** token gets past — the completion
-/// pair and its aliases. Split out because the Planner control below would
-/// otherwise be asserting something false about them.
+/// Denied tools that only a **Worker** token gets past, so the Planner control does not assert
+/// something false about them.
 const ASSISTANT_DENIED_TOOLS_WORKER_REACHABLE: &[&str] = &[
     "calm.task.complete",
     "calm.task.fail",
@@ -122,15 +87,8 @@ fn assistant_denied_tools() -> Vec<&'static str> {
         .collect()
 }
 
-/// #1189 F2 — the allowed/denied lists above are hand-written, and a
-/// hand-written list of tools is exactly the thing that silently rots when
-/// someone registers tool #33. This asserts the two lists are a *partition*
-/// of the real registry: disjoint, and their union is set-equal to every
-/// registered name (aliases included — they route to a handler and so carry
-/// a role verdict of their own).
-///
-/// A new tool with no assistant verdict therefore fails here rather than
-/// landing in the gap between two tests that each only check what they list.
+/// The two hand-written lists must be a *partition* of the real registry (aliases included), so
+/// a new tool with no assistant verdict fails here.
 #[test]
 fn assistant_verdict_covers_every_registered_tool() {
     let registry = calm_server::mcp_server::build_default_registry();
@@ -208,14 +166,7 @@ async fn assistant_token_cannot_call_denied_tools_by_name() {
     let _ = (&boot.server, &boot.repo);
 }
 
-/// #1189 F1 — the positive half, and the precondition for S2's CAS block
-/// channel: an assistant token calling `calm.report.read` gets a real
-/// answer, with the concurrency tokens in it.
-///
-/// The field assertions are the point. "not an error" would stay green if
-/// the handler started returning `{}`, which is exactly the failure mode
-/// that would strand S2 (a write needs `if_doc_rev` from `docRev` and
-/// `if_rev` from `blocks[].rev`; neither exists anywhere else).
+/// The field assertions are the point: "not an error" would stay green if the handler returned `{}`.
 #[tokio::test]
 async fn assistant_token_can_read_the_report_with_concurrency_tokens() {
     let boot = boot_with_role(CardRole::Assistant).await;
@@ -239,25 +190,19 @@ async fn assistant_token_can_read_the_report_with_concurrency_tokens() {
         "calm.report.read must serve an assistant caller: {resp:#?}"
     );
 
-    // Tool results come back as MCP content frames; the structured payload
-    // is the JSON text of the single content item.
+    // The structured payload is the JSON text of the single content item.
     let payload = tool_result_payload(&resp);
 
-    // G5 — the exact value, not "present and numeric". The fixture wrote
-    // the report twice through the persist boundary, so a correct `docRev`
-    // can only come from the CRDT root register; a handler that hardcoded
-    // it (or a fixture that fell back onto the NULL-CRDT legacy branch,
-    // where `doc_rev` is the literal 0) fails here.
+    // The exact value: the fixture wrote twice through the persist boundary, so a correct `docRev`
+    // can only come from the CRDT root register (the NULL-CRDT legacy branch returns 0).
     assert_eq!(
         payload.get("docRev").and_then(serde_json::Value::as_u64),
         Some(SEEDED_DOC_REV),
         "`docRev` must be the CRDT-derived revision — it is the only \
          `if_doc_rev` source a block-channel write has: {payload:#?}"
     );
-    // G1 — `taskDiagnostics` is dispatched-task runtime state (status,
-    // gate result, worker card id, child track id): the very class
-    // `calm.plan.list` stays Planner-only to withhold. Opening `report.read`
-    // to the assistant must not smuggle it out the side.
+    // `taskDiagnostics` is dispatched-task runtime state, the class `calm.plan.list` stays
+    // Planner-only to withhold; it must not leak out the side.
     assert!(
         payload.get("taskDiagnostics").is_none(),
         "`taskDiagnostics` must be withheld from an assistant caller: {payload:#?}"
@@ -298,11 +243,7 @@ async fn assistant_token_can_read_the_report_with_concurrency_tokens() {
     let _ = (&boot.server, &boot.repo);
 }
 
-/// G1 control — the trim is a *role* decision, not a field that quietly
-/// stopped being produced. The identical call from a Planner token still
-/// carries `taskDiagnostics`, and the seeded live task block makes it a
-/// non-empty array, so the assistant assertion above is withholding
-/// something real rather than an always-empty key.
+/// Control: the trim is a *role* decision, not a field that quietly stopped being produced.
 #[tokio::test]
 async fn planner_token_still_gets_task_diagnostics_from_the_report_read() {
     let boot = boot_with_role(CardRole::Planner).await;
@@ -342,21 +283,9 @@ async fn planner_token_still_gets_task_diagnostics_from_the_report_read() {
     let _ = (&boot.server, &boot.repo);
 }
 
-/// `boot_with_role` mints cards straight through `card_with_codex_create_tx`
-/// and so skips the track-report card `routes::tracks::create_track` mints. Add
-/// it back the way production does — `card_create_with_id_tx` with
-/// `CardRole::ReportCard`, writing through the SAME role cache the booted
-/// server gates on (#1189 review round 2, G6: a report card with no cached
-/// role is not the shape `enforce_assistant_scope` will meet in S2, whose
-/// "may I write here" test is precisely `cache.get(target) == ReportCard`).
-///
-/// Then push real content through the report persist boundary — twice — so
-/// the row carries a genuine `body_crdt` and the read path returns a
-/// CRDT-derived `docRev` of [`SEEDED_DOC_REV`] instead of the `doc_rev: 0`
-/// literal the NULL-CRDT legacy branch hands back (G5: on the legacy branch
-/// every `docRev` assertion is vacuous). The body carries a live task fence
-/// so `taskDiagnostics` is non-empty and the G1 trim below has something
-/// real to withhold.
+/// `boot_with_role` skips the track-report card production mints; add it back through the SAME
+/// role cache the server gates on, then persist real content twice so `docRev` is CRDT-derived
+/// ([`SEEDED_DOC_REV`], not the legacy `0`) and the body carries a live task fence.
 async fn seed_track_report_card(boot: &support::mcp::CardBoot) -> String {
     let report_card_id = calm_server::model::new_id();
     let mut tx = boot
@@ -432,10 +361,8 @@ async fn seed_track_report_card(boot: &support::mcp::CardBoot) -> String {
     report_card_id
 }
 
-/// Two persists through the report boundary, each incrementing the CRDT
-/// root's `doc_rev` register — so the read path's `docRev` is a value only
-/// the CRDT can produce (the legacy NULL-CRDT branch returns `0`, and a
-/// single write would return `1`, which is too easy to hit by accident).
+/// Two persists, each incrementing the CRDT root's `doc_rev`: the legacy branch returns `0` and
+/// a single write `1`, which is too easy to hit by accident.
 const SEEDED_DOC_REV: u64 = 2;
 
 /// Pull the structured tool payload out of an MCP `tools/call` result.
@@ -451,12 +378,7 @@ fn tool_result_payload(resp: &serde_json::Value) -> serde_json::Value {
         .unwrap_or_else(|e| panic!("tool result text is not JSON ({e}): {text}"))
 }
 
-/// Control for the negative test: the refusals must be a *role* decision,
-/// not "this wire path refuses everything". The identical call sequence
-/// from a Planner token gets past every `require_role` — the calls may still
-/// fail on arguments, but never with the role message. Without this
-/// control, a broken handshake or a blanket deny would make the negative
-/// test pass vacuously.
+/// Control: the refusals must be a *role* decision, not "this wire path refuses everything".
 #[tokio::test]
 async fn planner_token_is_never_refused_for_the_role_reason() {
     assert_role_reason_absent(
@@ -467,8 +389,7 @@ async fn planner_token_is_never_refused_for_the_role_reason() {
     .await;
 }
 
-/// Same control for the worker-only completion pair, which a Planner token
-/// legitimately *is* refused for the role reason.
+/// Same control for the worker-only completion pair.
 #[tokio::test]
 async fn worker_token_is_never_refused_for_the_role_reason() {
     assert_role_reason_absent(

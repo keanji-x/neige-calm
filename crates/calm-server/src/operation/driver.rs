@@ -24,9 +24,7 @@ use super::{
     idempotency_payload_conflict, operation_result_from, parked_artifacts_alive, required_output,
 };
 
-/// Completion fan-out uses a broadcast channel rather than a oneshot map.
-/// That lets `wait()` first check the durable row, then subscribe without
-/// losing a completion that raced just before the waiter arrived.
+/// A broadcast channel rather than a oneshot map, so `wait()` can check the durable row first, then subscribe without losing a completion that raced just before.
 #[derive(Clone)]
 pub struct OperationCompletionBus {
     tx: broadcast::Sender<OperationResult>,
@@ -59,7 +57,6 @@ pub struct OperationRuntime {
     completion: OperationCompletionBus,
     events: EventBus,
     spawn_ctx: SpawnCtx,
-    // PR2: replace with a singleton background driver loop per design §B.3.
     drive_mutex: Arc<Mutex<()>>,
     wait_entered_test_hook: std::sync::Mutex<Option<Arc<tokio::sync::Notify>>>,
 }
@@ -70,11 +67,7 @@ impl OperationRuntime {
         self.kinds.keys().copied()
     }
 
-    /// Stop every operation phase while a single-track DELETE snapshots and
-    /// tears down its externally running resources. Operations are the common
-    /// funnel for planner resets, scheduler workers, and terminal/card starts;
-    /// sharing this existing serialization boundary prevents any of them from
-    /// creating a runtime behind deletion's snapshot.
+    /// Operations are the common funnel for planner resets, scheduler workers, and terminal/card starts; holding this keeps any of them from creating a runtime behind deletion's snapshot.
     pub(crate) async fn lock_for_track_delete(&self) -> tokio::sync::OwnedMutexGuard<()> {
         self.drive_mutex.clone().lock_owned().await
     }
@@ -134,20 +127,8 @@ impl OperationRuntime {
         payload: Value,
     ) -> Result<OperationId> {
         let adapter = self.adapter(kind)?;
-        // #1428 REVERSE ANCHOR — read before adding any `operations` retention
-        // pass. This short-circuit is the reason a keyed `operations` row is
-        // PERMANENT, not merely long-lived: it is the only thing that stops a
-        // byte-identical retry from re-running an operation that already
-        // succeeded. For `planner-harness-start` that re-run seeds
-        // `Observation::UserMessage` again, so a reaped row means the user's
-        // first message is delivered twice — traced end to end in
-        // `docs/design-1428-idempotency-retention.md` §3.1.
-        //
-        // The lookup is generic over `kind` and matches on the
-        // `idempotency_key` column, which is what makes the fence's criterion
-        // exact rather than a guess about which kinds matter: every non-NULL
-        // key is a live wall here, and a NULL one can never be found by this
-        // call. Migration 0093 enforces it in the database.
+        // A keyed `operations` row is PERMANENT: this short-circuit is the only thing that stops a byte-identical retry from re-running an
+        // operation that already succeeded (for `planner-harness-start`, delivering the user's first message twice). Never add a retention pass over keyed rows.
         if let Some(existing) = self.repo.find_by_idempotency_key(kind, &key).await? {
             if existing.payload_hash == key.payload_hash {
                 let op_id = existing.id;
@@ -171,11 +152,7 @@ impl OperationRuntime {
         self.submit(kind, key, payload).await
     }
 
-    /// Issue #644 PR-B — look up an operation row by
-    /// `(kind, idempotency_key)`. Used by the scheduler's sweep to
-    /// correlate a `dispatched`/`running` task row with its worker-spawn
-    /// operation (the task-to-operation relation is the idempotency-key
-    /// convention, design §2.2; no `spawn_op_id` column exists).
+    /// The task-to-operation relation is the idempotency-key convention; no `spawn_op_id` column exists.
     pub async fn find_by_kind_and_idempotency(
         &self,
         kind: &str,
@@ -470,9 +447,7 @@ impl OperationRuntime {
                 Ok(())
             }
             Phase::TxCommitted => {
-                // Intentionally fail closed for every committed adapter, including
-                // TxCommitted -> SpawnStarted adapters such as child-track: a
-                // successfully prepared operation must always persist tx_output.
+                // Fail closed for every committed adapter: a successfully prepared operation must always persist tx_output.
                 let output = required_output(&op)?.clone();
                 if adapter.phases().contains(&PhaseTag::AppServerInteract) {
                     let kind = adapter.app_server_interact_kind(&output, &op)?;
@@ -909,18 +884,8 @@ impl OperationRuntime {
             ParkedRecovery::Complete(outcome) => {
                 self.complete_parked_and_publish(&op.id, &outcome).await?;
             }
-            // Dead work with NO recoverable outcome fails now (PR #685
-            // round-2 F2): leaving it parked would sit until
-            // `parked_deadline_ms` and then be misclassified as a
-            // deadline failure (class `parked_deadline` — for the gate
-            // adapter, `gate-timeout` instead of the true
-            // `gate-infra`). Class `parked_dead` matches the boot-arm
-            // semantics for the same state. Racing a live observer's
-            // in-flight completion is interlocked exactly like the
-            // past-deadline arm (#653 §4.4 orderings): a verdict that
-            // commits first makes this claim miss; once the claim
-            // lands, the lease-fenced `mark_failed` wins and the
-            // observer's completion rolls back on `AlreadyResolved`.
+            // Dead work with NO recoverable outcome fails now; leaving it parked would later be misclassified as a deadline failure.
+            // A verdict that commits first makes this claim miss; once the claim lands, the lease-fenced `mark_failed` wins and the observer's completion rolls back on `AlreadyResolved`.
             ParkedRecovery::Fail { reason } => {
                 let Some(claimed) = self.claim_parked_with_mode(&op.id, claim_mode).await? else {
                     return Ok(());
@@ -1285,8 +1250,6 @@ fn client_failure_parts(error: &CalmError) -> Option<(String, &'static str)> {
         CalmError::Forbidden(message) => Some((message.clone(), "forbidden")),
         CalmError::Conflict(message) => Some((message.clone(), "conflict")),
         CalmError::Unauthorized => Some(("unauthorized".into(), "unauthorized")),
-        // PR2: extend when codex/claude adapters land and can raise
-        // plugin/reset-specific client errors from prepare-time validation.
         _ => None,
     }
 }

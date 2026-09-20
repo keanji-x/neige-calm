@@ -1,5 +1,4 @@
-//! #1628 S2 — in-flight keys and lanes, with the resolver STARTED (real
-//! drain tasks): design §6 A9, A9g, A9i, A9d, A9f.
+//! In-flight keys and lanes, with the resolver STARTED (real drain tasks).
 
 #![cfg(unix)]
 
@@ -22,16 +21,11 @@ fn started(timeout: Duration) -> FixtureOptions {
     }
 }
 
-// ---------------------------------------------------------------------------
-// A9 — ten enqueues of one key, one job
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn refresh_is_deduplicated_per_key() {
     let fx = SeriesFixture::boot(started(Duration::from_millis(400))).await;
     let block_id = fx.write_series_block(seam_fixture()["block"].clone()).await;
-    // The plugin holds the first call for the whole timeout, so the key stays
-    // in flight while the other nine enqueues arrive.
+    // The plugin holds the first call for the whole timeout, so the key stays in flight while the other nine arrive.
     fx.reply_hang();
     let mut outcomes = Vec::new();
     for _ in 0..10 {
@@ -49,11 +43,6 @@ async fn refresh_is_deduplicated_per_key() {
     assert_eq!(fx.call_count(), 1, "one job, one call");
 }
 
-// ---------------------------------------------------------------------------
-// A9g — a block rewritten while its job waits keeps ONE queued job, and the
-// job resolves the payload current at dequeue time
-// ---------------------------------------------------------------------------
-
 struct RewriteRun {
     fx: SeriesFixture,
     versions: Vec<Vec<&'static str>>,
@@ -64,8 +53,7 @@ struct RewriteRun {
 
 async fn rewrite_five_times_behind_a_hung_call() -> RewriteRun {
     let fx = SeriesFixture::boot(started(Duration::from_millis(800))).await;
-    // Block X occupies the lane: the plugin never answers its call, so the
-    // lane is busy until the 800ms timeout.
+    // Block X occupies the lane: the plugin never answers its call, so the lane is busy until the 800ms timeout.
     let x = fx
         .write_series_block(json!({ "source": SOURCE, "series": ["US:X"], "as_of": "2026-09-10" }))
         .await;
@@ -100,7 +88,6 @@ async fn rewrite_five_times_behind_a_hung_call() -> RewriteRun {
     }
     let inflight_while_queued = fx.resolver().inflight_len();
     let queue_while_queued = fx.resolver().lane_queue_len(MARKET_PLUGIN_ID);
-    // X times out, Y dequeues and is answered.
     fx.wait_for_calls(2, Duration::from_secs(5)).await;
     fx.wait_for_row(&y, Duration::from_secs(5)).await;
     RewriteRun {
@@ -162,11 +149,6 @@ async fn dequeued_job_resolves_current_payload() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// A9i — check-and-insert is one step: a reader held inside the pre-check
-// already owns the key
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn concurrent_enqueue_admits_exactly_one() {
     let fx = SeriesFixture::boot(FixtureOptions::default()).await;
@@ -205,10 +187,6 @@ async fn concurrent_enqueue_admits_exactly_one() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// A9d — a panicked drain task is replaced on the next enqueue
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn panicked_lane_is_rebuilt() {
     let fx = SeriesFixture::boot(started(Duration::from_secs(5))).await;
@@ -234,11 +212,6 @@ async fn panicked_lane_is_rebuilt() {
     assert_eq!(row.status, "ok");
 }
 
-// ---------------------------------------------------------------------------
-// A9f — the rebuild happens under the `lanes` lock, and one lane serves
-// concurrent enqueues
-// ---------------------------------------------------------------------------
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rebuild_holds_the_lanes_lock() {
     let fx = SeriesFixture::boot(started(Duration::from_secs(5))).await;
@@ -246,7 +219,6 @@ async fn rebuild_holds_the_lanes_lock() {
     fx.reply_structured(seam_fixture()["reply"].clone());
     let resolver = fx.resolver().clone();
 
-    // Kill the lane once.
     resolver.failpoints.panic_drain_once();
     assert_eq!(fx.enqueue(&first).await, Enqueue::Queued);
     let spawned_before = resolver.failpoints.drain_spawned();
@@ -255,8 +227,7 @@ async fn rebuild_holds_the_lanes_lock() {
     })
     .await;
 
-    // Task A enqueues into the dead lane and is held inside the rebuild,
-    // blocking its worker thread while it holds the `lanes` lock.
+    // Task A is held inside the rebuild, blocking its worker thread while it holds the `lanes` lock.
     resolver.failpoints.hold_in_rebuild();
     let resolver_a = resolver.clone();
     let ctx_a = fx.ctx().clone();
@@ -272,9 +243,7 @@ async fn rebuild_holds_the_lanes_lock() {
         resolver.failpoints.rebuild_entered() == 1
     })
     .await;
-    // Sample the lock BEFORE releasing A: a held lock is the witness. The
-    // release comes before the assertion so a red run does not leave A
-    // blocked on a worker thread forever.
+    // Sample the lock BEFORE releasing A; the release comes before the assertion so a red run does not leave A blocked forever.
     let lock_was_free = resolver.lanes_try_lock();
     resolver.failpoints.release_rebuild();
     assert!(
@@ -289,8 +258,6 @@ async fn rebuild_holds_the_lanes_lock() {
     );
     fx.wait_for_calls(1, Duration::from_secs(5)).await;
 
-    // Eight concurrent enqueues on the same plugin, different blocks: still
-    // that one lane, and the plugin sees eight calls.
     let mut blocks = Vec::new();
     for i in 0..8 {
         blocks.push(

@@ -49,11 +49,8 @@ const LEGACY_ENVIRONMENT_NOTE: &str =
 const LEGACY_RECOVER_CHANGES: &str = "Recovery re-runs on the same executor as the failed attempt with its unchanged environment and capabilities. It cannot resolve a failure caused by a missing capability; change the task's goal or inputs instead.";
 
 /// Executor statement for the attempt `task` describes. The route is decided by
-/// `isolated_codex::selected`, the same pure predicate over the frozen task row
-/// that `scheduler::build_worker_payload` branches on, so the statement cannot
-/// disagree with the adapter that will run the attempt. Only the isolated Codex
-/// route carries the fixed envelope; legacy routes name their executor and
-/// promise nothing about workspace freshness, network or tools.
+/// `isolated_codex::selected`, the same predicate the scheduler branches on, so the statement
+/// cannot disagree with the adapter that will run the attempt.
 pub(crate) fn executor_statement(task: &Task) -> Result<ExecutorStatement> {
     if crate::isolated_codex::selected(task)? {
         return Ok(ExecutorStatement {
@@ -81,10 +78,8 @@ pub(crate) fn executor_statement(task: &Task) -> Result<ExecutorStatement> {
     })
 }
 
-/// Statement for the replacement attempt a receipt names. The replacement row
-/// is projected in the recovery transaction; when admission capacity withheld
-/// it (`awaiting_projection`), the previous attempt carries the same frozen
-/// contract and therefore the same route.
+/// Statement for the replacement attempt a receipt names; when admission withheld the
+/// replacement row, the previous attempt carries the same frozen contract and route.
 pub(crate) async fn executor_statement_for_receipt(
     repo: &dyn RepoEventWrite,
     receipt: &TaskRecoveryReceipt,

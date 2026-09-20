@@ -1,21 +1,11 @@
-//! Rendering of agent-facing prose fragments that are assembled at runtime
-//! (#1635 S1c).
-//!
-//! The fragments live under `crates/calm-server/prompts/` and are embedded
-//! with `include_str!` next to their one use site. Rust keeps the protocol —
-//! which branch is taken, which values are bound — and the `.md` keeps the
-//! sentences. [`render_named`] is the seam between the two, and it checks
-//! the placeholder set in BOTH directions so that a fragment and its call
-//! site cannot drift apart silently: a placeholder the code stopped filling
-//! and a value the fragment stopped naming are each a hard error, never a
-//! stray `{name}` or a silently dropped fact in the agent's input.
+//! Rendering of agent-facing prose fragments (under `crates/calm-server/prompts/`, embedded with `include_str!`) that are assembled at runtime.
+//! `render_named` checks the placeholder set in BOTH directions so a fragment and its call site cannot drift apart silently.
 
 use std::fmt;
 
 use crate::error::CalmError;
 
-/// Why a fragment could not be rendered. Every variant is a defect in this
-/// binary (fragment and call site disagree), never in a caller's input.
+/// Why a fragment could not be rendered; every variant is a defect in this binary, never in a caller's input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RenderError {
     /// The template names `{name}` and the call site supplied no value for it.
@@ -47,22 +37,8 @@ impl From<RenderError> for CalmError {
     }
 }
 
-/// Substitute `{name}` placeholders in `template` with the matching `values`.
-///
-/// A placeholder is exactly `{` + `[a-z_]+` + `}`. Any other brace sequence —
-/// `{}`, `{"path": …}`, `{ x }`, `{Name}` — is not a placeholder and passes
-/// through untouched, which is what lets JSON sit in a template or in a value.
-/// Values are inserted verbatim and never re-scanned, so a value that happens
-/// to contain `{kind}` stays literal. There is no escape: `{{x}}` is a literal
-/// `{` followed by the placeholder `{x}` and a `}`, so a fragment cannot emit
-/// a literal `{lowercase}` of its own.
-///
-/// Errors when the template names a placeholder that `values` does not supply
-/// ([`RenderError::Missing`]) or when `values` supplies a name the template
-/// never uses ([`RenderError::Unused`]). Both directions are checked so that
-/// neither side of the seam can change without the other noticing. A name
-/// listed twice in `values` binds its first entry and the second is reported
-/// as [`RenderError::Unused`].
+/// Substitute `{name}` placeholders (exactly `{` + `[a-z_]+` + `}`) with the matching `values`; any other brace sequence passes through, so JSON can sit in a template or a value.
+/// Values are inserted verbatim and never re-scanned. Both directions are checked: a placeholder without a value and a value without a placeholder are each an error.
 pub(crate) fn render_named(template: &str, values: &[(&str, &str)]) -> Result<String, RenderError> {
     let mut out = String::with_capacity(template.len());
     let mut used = vec![false; values.len()];

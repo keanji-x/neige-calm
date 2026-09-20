@@ -273,10 +273,7 @@ async fn sweep_deadline_uses_recoverable_verdict_instead_of_deadline_failure() {
     ));
 }
 
-/// PR #685 round-2 F2: the pre-deadline dead-probe lands a recovered
-/// verdict as a completion AND fails dead work with no recoverable
-/// outcome NOW (class `parked_dead`), instead of leaving it parked to
-/// be misclassified as a deadline failure later.
+/// Dead work fails NOW (class `parked_dead`) instead of staying parked to be misclassified as a deadline failure later.
 #[tokio::test]
 async fn sweep_pre_deadline_dead_probe_completes_verdict_and_fails_dead_work() {
     let adapter = Arc::new(QueuedRecoveryAdapter::new(vec![

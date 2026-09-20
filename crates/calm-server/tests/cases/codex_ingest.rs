@@ -1,11 +1,5 @@
-//! Verifies the codex hook ingest path: POSTing a fake codex hook
-//! payload to the internal endpoint produces a `codex.hook` event on the
-//! bus, with the snake_case `hook.codex.<event>` discriminator.
-//!
-//! Doesn't spawn an actual `codex` CLI — the hook source itself lives in
-//! `docker/codex-requirements.toml` (policy-managed, bind-mounted into
-//! the container), and the snake_case derivation is covered by the unit
-//! tests in `routes/codex.rs::tests`.
+//! Codex hook ingest: POSTing a fake hook payload produces a `codex.hook` event with the snake_case
+//! `hook.codex.<event>` discriminator. No real `codex` CLI is spawned.
 
 use std::sync::Arc;
 
@@ -286,7 +280,7 @@ async fn codex_hook_rejects_absent_card_id_with_forbidden() {
     )
     .await;
 
-    // PR10-a: absent card_id unified to 403/EmptyAiCardId (was 400 axum missing-field); latent — no producer omits card_id.
+    // Absent card_id is 403/EmptyAiCardId, not axum's 400 missing-field.
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     assert!(matches!(
         rx.try_recv(),
@@ -325,10 +319,7 @@ async fn test_app() -> (axum::Router, Arc<SqlxRepo>, EventBus, String) {
         Some(cache),
         Some(track_area_cache),
     );
-    // Scope β: the actor middleware must be present — the `ingest_hook`
-    // handler now extracts `Actor` from request extensions to honor the
-    // `X-Calm-Actor` header the bridge sends. Without the middleware the
-    // extractor returns 500 ("middleware not applied").
+    // The actor middleware must be present: `ingest_hook` extracts `Actor` from request extensions and 500s without it.
     let app = axum::Router::new()
         .merge(routes::router())
         .layer(axum::middleware::from_fn(actor_middleware))
@@ -338,9 +329,7 @@ async fn test_app() -> (axum::Router, Arc<SqlxRepo>, EventBus, String) {
 }
 
 async fn create_codex_card(repo: &SqlxRepo) -> Card {
-    // PR3 (#136) — the ingest path stamps `ActorId::AiCodex(card_id)` and
-    // the role gate refuses unknown cards. Seed a real card so the gate
-    // lets the write through.
+    // The ingest path stamps `AiCodex(card_id)` and the role gate refuses unknown cards, so seed a real card.
     let area = repo
         .area_create(NewArea {
             name: "c".into(),

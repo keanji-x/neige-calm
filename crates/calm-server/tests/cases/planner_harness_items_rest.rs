@@ -432,25 +432,14 @@ async fn transcript_route_preserves_mcp_tool_call_camelcase() {
     assert_eq!(completed_params["item"]["status"], "completed");
 }
 
-/// A stored `turn/plan/updated` row must not occupy a slot in the transcript's
-/// page budget (#1255).
-///
-/// The frontend asks for `HARNESS_ITEMS_PAGE_LIMIT` (300) rows and only then
-/// drops what it cannot render, so an unfiltered query lets every captured plan
-/// frame push one real transcript row behind "Load earlier"; a plan-heavy card
-/// could render a first screen with almost no transcript on it. Rows stay
-/// *stored* either way — that is the point of the capture — so this pins the
-/// read, using a small `limit` as a stand-in for the 300-row one.
+/// The frontend asks for `HARNESS_ITEMS_PAGE_LIMIT` rows and only then drops what it cannot render, so an unfiltered
+/// query lets every plan frame push a real transcript row behind "Load earlier"; a small `limit` stands in for the 300-row one.
 #[tokio::test]
 async fn transcript_route_page_budget_skips_plan_rows() {
     let boot = boot().await;
     let mut item_ids = Vec::new();
     let mut plan_ids = Vec::new();
-    // Interleaved, plan first, so an unfiltered page of 4 would be
-    // [plan, item, plan, item] and only two real rows would reach the reader.
-    // One construction site for a ten-argument call that was written twice
-    // here, differing in four arguments. Written out twice, a change to the
-    // row shape has two places to be made and one place to be forgotten.
+    // Interleaved, plan first, so an unfiltered page of 4 would be [plan, item, plan, item].
     let insert =
         async |uuid: Option<String>, item_type: Option<&str>, method: &str, params: String| {
             boot.repo
@@ -521,8 +510,7 @@ async fn transcript_route_page_budget_skips_plan_rows() {
             .collect::<Vec<_>>()
     );
 
-    // Same from the newest end, which is the direction the frontend actually
-    // pages in.
+    // Same from the newest end, the direction the frontend actually pages in.
     let (status, body) = get(
         boot.app.clone(),
         format!(
@@ -539,9 +527,7 @@ async fn transcript_route_page_budget_skips_plan_rows() {
         "the newest page must hold the newest two renderable rows, not the newest two rows"
     );
 
-    // And the plan rows are still THERE — filtering the transcript feed must not
-    // be mistaken for dropping the capture. This raw read is what a later
-    // `SELECT params FROM harness_items WHERE method='turn/plan/updated'` sees.
+    // The plan rows are still THERE: filtering the transcript feed must not be mistaken for dropping the capture.
     let all = boot
         .repo
         .harness_item_list_by_card(boot.planner_card.id.as_str(), 0, 100, false)
@@ -557,10 +543,7 @@ async fn transcript_route_page_budget_skips_plan_rows() {
     );
 }
 
-/// #1625 P1 — a stored `turn/completed` row reaches the transcript feed over
-/// REST, in page order with the `item/*` rows, while a plan row still does
-/// not. The predicate is an allowlist of three methods, not "everything but
-/// plans": the third row here is a method nobody renders and it must stay out.
+/// The predicate is an allowlist of three methods, not "everything but plans": the third row here is a method nobody renders and it must stay out.
 #[tokio::test]
 async fn transcript_route_returns_turn_outcome_rows() {
     let boot = boot().await;

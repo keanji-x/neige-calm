@@ -1,24 +1,4 @@
-//! #996: 已退出的 pty `ProcEntry` 必须被回收 —— `ByteRing`（默认 1 MiB/终端）、
-//! broadcast 通道与 pty master/writer fd 不能随终端创建次数线性泄漏。
-//!
-//! 方案是"到期整条移除"，不是墓碑：
-//!
-//! * **宽限期内**，entry 完整保留 —— 刚断开的客户端重连仍拿得到最后一屏 replay
-//!   与 sticky exit（`replay_and_sticky_exit_survive_within_grace`）。
-//! * **宽限期后**，整条 entry 从 registry 移除，资源由 Rust 所有权一次性释放；
-//!   证据是 `/proc/self/fd` 的真实计数，不是查某个 `Option`
-//!   （`expired_pty_entries_are_removed_and_release_ring_and_fds`）。
-//!   此后 attach 得到 `UnknownProc` —— 不丢信息：终端退出状态由 `calm-server`
-//!   在退出当时落库（`terminal_set_exit`），数据库才是权威记录。
-//! * **slave 仍被持有时不移除**：移除谓词看的是"master 读到过 EOF"
-//!   （`eof_reached`），不是"reader 线程结束了"（#993 的 `PtyDrainGate` —— 它
-//!   在 read 错误 / panic 上也会落闸）。于是 `portable-pty`
-//!   `UnixMasterWriter::drop` 注入的 `\n`+VEOF 绝不会打到活着的孙子进程 stdin
-//!   上。两条测试分工：
-//!   `entry_removal_reaps_even_when_the_grandchild_holds_the_pty` 锁资源追踪
-//!   （并在 #1013 之后一并锁「最坏滞留场景下 leader 僵尸终会被收」），
-//!   `no_eof_is_injected_when_the_pty_reader_dies_without_eof` 锁注入本身
-//!   （reader 已死 ⇒ 所有权层不再兜底，断言真能证伪）。
+//! 已退出的 pty `ProcEntry` 必须被回收：宽限期内整条保留（replay + sticky exit），宽限期后整条移除；slave 仍被持有时不移除。
 
 use calm_proc_supervisor::test_support::InProcessProcSupervisor;
 use calm_session::control::{
@@ -34,8 +14,6 @@ use tokio::net::UnixStream;
 const NOISY_BYTES: usize = 200_000;
 const REPLAY_BYTES: usize = 1024 * 1024;
 
-/// 宽限期内 entry **完整**保留：新 attach 既拿得到最后一屏 replay，也拿得到
-/// sticky exit。这条锁住"不降级、不半死"——回收只有"还在"和"整条没了"两态。
 #[tokio::test]
 async fn replay_and_sticky_exit_survive_within_grace() {
     let supervisor = InProcessProcSupervisor::start_with_grace(Duration::from_secs(30))
@@ -87,11 +65,7 @@ async fn replay_and_sticky_exit_survive_within_grace() {
     assert_eq!(exited, (Some(7), false));
 }
 
-/// 宽限期后整条 entry 被移除，ring 与 fd **真的**回到基线。
-///
-/// fd 的证据是 `/proc/self/fd` 的计数：supervisor 与测试同进程，8 个 pty 各自
-/// 持有 master + reader dup + writer dup，泄漏会直接体现在这个数字上。墓碑方案
-/// 下"查 `Option` 是否为 None"是假绿 —— entry 还在，broadcast 通道也还在。
+/// fd 的证据是 `/proc/self/fd` 的计数：supervisor 与测试同进程，泄漏会直接体现在这个数字上。
 #[tokio::test]
 async fn expired_pty_entries_are_removed_and_release_ring_and_fds() {
     let grace = Duration::from_millis(300);
@@ -147,8 +121,6 @@ async fn expired_pty_entries_are_removed_and_release_ring_and_fds() {
         "pty fd 随终端数线性泄漏：before={fds_before} after={fds_after}（8 个已退出终端）"
     );
 
-    // 移除之后 attach 得到 UnknownProc —— 新契约，退出状态改由 calm-server 侧
-    // 的终端行（`terminal_set_exit`）负责，registry 只缓存活着的进程。
     let mut stream = UnixStream::connect(supervisor.sock())
         .await
         .expect("connect attach");
@@ -168,24 +140,8 @@ async fn expired_pty_entries_are_removed_and_release_ring_and_fds() {
     }
 }
 
-/// 孙子进程攥着 slave 时，entry 必须留在 registry 里（`eof_reached` 尚未置位），
-/// 而且到期后能被正常收掉 —— 不是永久泄漏。
-///
-/// **这条测试覆盖的是"资源追踪"，不是"EOF 注入"。** 说清楚为什么：这里 reader
-/// 线程还活着（阻塞在 `read()` 上），它自己持有一份 `Arc<ProcEntry>`，所以即便
-/// 移除谓词判错、registry 提前撒手，writer 也不会归零，`UnixMasterWriter::drop`
-/// 的 `\n`+VEOF 根本不会发生 —— 在这条路径上断言"孙子进程还活着"是空转的。
-/// 真正能证伪注入的场景是"reader 已死 + slave 仍被持有"，见下面那条
-/// `no_eof_is_injected_when_the_pty_reader_dies_without_eof`。
-///
-/// 断言分三段（第 3 段是 #1013 T4 加的）：
-/// 1. 远超宽限期后，entry 仍在（谓词没有把"进程退出"当成"可以撒手"）；
-/// 2. 杀掉孙子进程后 master EOF，entry 随即被清扫掉 —— 第 1 段不是永久泄漏；
-/// 3. **entry 一走，被钉住的 leader 僵尸也被收掉、pin 计数归零。**
-///
-/// 第 3 段为什么挂在这条测试上：这是本仓里滞留最久的那个场景 —— 孙子进程攥着
-/// slave 时 entry 可以留到 supervisor 退出为止，于是"僵尸也留那么久"是 #1013
-/// 最贵的一格成本。锁住"最坏滞留场景下也终会收尸"，才谈得上这不是泄漏。
+/// 覆盖的是"资源追踪"，不是"EOF 注入"：reader 线程还活着并持有一份 `Arc<ProcEntry>`，writer 不会归零；真正能证伪注入的是下面 reader 已死的那条。
+/// 第 3 段：entry 一走，被钉住的 leader 僵尸也被收掉、pin 计数归零。
 #[tokio::test]
 async fn entry_removal_reaps_even_when_the_grandchild_holds_the_pty() {
     let grace = Duration::from_millis(300);
@@ -219,8 +175,7 @@ async fn entry_removal_reaps_even_when_the_grandchild_holds_the_pty() {
         supervisor.registry().debug_entry_stats(proc_id).is_some(),
         "孙子进程仍持有 pty 时 entry 不得被移除（移除会 drop writer 并注入 \\n+VEOF）"
     );
-    // #1013 T4 的建立步：entry 被保留期间，leader 必须是一个仍属于本进程的僵尸。
-    // 没有这一条，下面第 3 段可能因为"pid 早就被释放了"而假绿。
+    // 建立步：entry 被保留期间，leader 必须是一个仍属于本进程的僵尸，否则第 3 段可能假绿。
     assert_eq!(
         proc_state(leader).as_deref(),
         Some("Z"),
@@ -232,9 +187,7 @@ async fn entry_removal_reaps_even_when_the_grandchild_holds_the_pty() {
     kill_pid(grandchild);
     await_entry_gone(supervisor.registry(), proc_id).await;
 
-    // #1013 T4 主断言：entry 没了 ⇒ 僵尸也没了 ⇒ pin 计数归零。
-    // 轮询而不是即时断言，理由与 T2 相同：registry 撒手的那一瞬，reader 线程与
-    // 清扫器的 doomed vec 还各持一份 Arc，`Drop for ProcEntry` 尚未跑。
+    // 轮询而不是即时断言：registry 撒手的那一瞬，reader 线程与清扫器的 doomed vec 还各持一份 Arc。
     assert!(
         poll_until(Duration::from_secs(5), || {
             supervisor.registry().debug_pin_count() == 0
@@ -255,9 +208,7 @@ fn proc_state(pid: i32) -> Option<String> {
     rest.split_whitespace().next().map(str::to_owned)
 }
 
-/// **`async` + `tokio::time::sleep` 是必须的**：`#[tokio::test]` 是
-/// current-thread runtime，阻塞这根线程等于把 supervisor 的 serve 循环
-/// （含周期性清扫器）一并冻住，条件永远不会成立。
+/// 必须 `async` + `tokio::time::sleep`：current-thread runtime 下阻塞这根线程会把 serve 循环（含清扫器）一并冻住。
 async fn poll_until(budget: Duration, mut cond: impl FnMut() -> bool) -> bool {
     let deadline = std::time::Instant::now() + budget;
     while std::time::Instant::now() < deadline {
@@ -269,20 +220,8 @@ async fn poll_until(budget: Duration, mut cond: impl FnMut() -> bool) -> bool {
     cond()
 }
 
-/// 真正可证伪的那条：**reader 已死，slave 仍被孙子进程持有**。
-///
-/// 为什么它不空转 —— 这里 reader 线程已经退出，它那份 `Arc<ProcEntry>` 也已归
-/// 还，registry 就是最后一个持有者。谓词一旦判错（例如把"reader 结束"
-/// `PtyDrainGate::is_drained()` 当成"slave 全关"），清扫器移除 entry → 最后一个
-/// `Arc` 归零 → `UnixMasterWriter::drop` 往 master 写 `['\n', VEOF]`
-/// （portable-pty-0.9/src/unix.rs:393-405）→ 孙子进程的 `read` 拿到 EOF 退出。
-/// 所以这条测试的第一句断言（孙子进程还活着）**直接**观测注入本身，故意排在
-/// "entry 还在"之前，免得被前一条断言抢先炸掉。
-///
-/// 怎么制造"reader 已死但没 EOF"：把 master 置成 `O_NONBLOCK`，reader 的下一次
-/// `read()` 拿到 `EAGAIN` 走 `Err(e)` 分支退出（`DrainGuard` 照常落闸，
-/// `eof_reached` 保持 false）。这是生产代码里真实存在的那条错误路径，不是给测
-/// 试开的旁门。
+/// 真正可证伪的那条：reader 已死，slave 仍被孙子进程持有 —— registry 是最后一个 `Arc` 持有者，谓词判错就会 drop writer 并注入 `\n`+VEOF。
+/// 第一句断言（孙子进程还活着）直接观测注入本身，故意排在"entry 还在"之前。
 #[tokio::test]
 async fn no_eof_is_injected_when_the_pty_reader_dies_without_eof() {
     let grace = Duration::from_millis(300);
@@ -330,23 +269,12 @@ async fn no_eof_is_injected_when_the_pty_reader_dies_without_eof() {
         "reader 因 read 错误退出、slave 仍被持有时，entry 不得被移除"
     );
 
-    // 收尾：杀掉孙子进程。注意这条 entry 此后也不会自己消失 —— reader 已死，
-    // `eof_reached` 再也置不上，连 `Cleanup` 也只会"排期"而不移除。这是本修法
-    // 明确接受的代价：宁可在一条实际不可达的错误路径上留一条 entry（Linux 上
-    // slave 全关走的是 `Ok(0)`，不是 `Err`），也不可能踢死一个活着的终端。
-    // 整条 entry 最终随 supervisor 一起释放。
+    // 收尾。这条 entry 此后不会自己消失（reader 已死，`eof_reached` 再也置不上），随 supervisor 一起释放。
     kill_pid(grandchild);
 }
 
-/// `Cleanup` 跳过的是**宽限期**，不是安全闸：走的仍是同一个谓词（sticky exit
-/// 已落定、master 已 EOF）。
-///
-/// 断言写成"远早于宽限期就消失"，不是"回复到手的那一瞬间就消失"：`CleanupOk`
-/// 的语义是"已排期"（见 `ControlReply::CleanupOk`），安全闸未满足时移除落到后
-/// 续某次周期性清扫 —— 而 master EOF 是否已经发生取决于 reader 线程有没有在
-/// `PTY_DRAIN_GRACE`(50ms) 内被调度到，高负载 CI 上并不保证。用 600s 宽限期与
-/// 20s 轮询上限拉开三个数量级的差距，"跳过宽限期"这件事仍被牢牢锁住，同时不
-/// 引入任何时序假红（本 PR 的上游 #993 正是为消除 flake 而做）。
+/// `Cleanup` 跳过的是宽限期，不是安全闸。
+/// 断言写成"远早于宽限期就消失"而非"回复到手就消失"：`CleanupOk` 只是"已排期"，master EOF 取决于 reader 是否在 `PTY_DRAIN_GRACE` 内被调度到。
 #[tokio::test]
 async fn cleanup_removes_the_entry_without_waiting_for_the_grace() {
     let supervisor = InProcessProcSupervisor::start_with_grace(Duration::from_secs(600))
@@ -385,18 +313,8 @@ async fn cleanup_removes_the_entry_without_waiting_for_the_grace() {
     await_entry_gone(supervisor.registry(), proc_id).await;
 }
 
-/// 父进程后台起一个子 shell，用 `exec < /dev/tty` 把 stdin 重新指回 pty slave
-/// （POSIX 下非交互 shell 的 `&` 会把 stdin 改成 /dev/null，不重开就读不到注入
-/// 的字节，测试会假绿），然后阻塞在 `read` 上。父进程把它的 pid 写进
-/// `pid_file` 后退出。
-///
-/// `trap '' HUP` 是必需的：pty child 是会话首进程，它退出时内核会给整个前台
-/// 进程组发 SIGHUP。没有 trap 孙子进程会随父一起死，master 立刻 EOF，这条测试
-/// 就悄悄退化成 happy path。`sleep 0.3` 关掉 fork/trap 竞争窗口。
-///
-/// 于是孙子进程满足两件事：**持有 slave**（master 不会 EOF），且 **stdin 是
-/// pty**（任何 `\n`+VEOF 注入都会让它的 `read` 拿到 EOF 从而退出）。它是 EOF
-/// 注入的直接探测器。
+/// 后台子 shell 用 `exec < /dev/tty` 把 stdin 重新指回 pty slave（`&` 会把 stdin 改成 /dev/null），然后阻塞在 `read` 上；父进程写下它的 pid 后退出。
+/// `trap '' HUP` 是必需的：会话首进程退出时内核给前台进程组发 SIGHUP，没有 trap 孙子进程会随父一起死，测试退化成 happy path。
 fn grandchild_script(pid_file: &Path) -> String {
     format!(
         "read x; (trap '' HUP; exec < /dev/tty; while read _; do :; done) & \
@@ -431,8 +349,7 @@ fn kill_pid(pid: i32) {
     }
 }
 
-/// 轮询到 entry 真的从 registry 消失（或超时失败）。清扫是周期性的，所以断言
-/// 必须等它一拍，而不是睡一个魔数。
+/// 轮询到 entry 真的从 registry 消失；清扫是周期性的，断言必须等它一拍。
 async fn await_entry_gone(registry: &calm_proc_supervisor::ProcRegistry, proc_id: &str) {
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     while std::time::Instant::now() < deadline {
@@ -457,8 +374,7 @@ async fn ensure_noisy_pty(sock: &Path, proc_id: &str) {
     .await;
 }
 
-/// 返回 `Spawned.pid`（= pty leader 的 pid）。#1013 T4 需要它去看
-/// `/proc/<leader>` 的状态。
+/// 返回 `Spawned.pid`（= pty leader 的 pid）。
 async fn ensure_pty(sock: &Path, proc_id: &str, args: &[&str], replay_bytes: usize) -> i32 {
     let mut stream = UnixStream::connect(sock).await.expect("connect ensure");
     write_frame(

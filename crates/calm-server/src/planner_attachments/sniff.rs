@@ -1,25 +1,11 @@
-//! Magic-number sniffing. The declared `Content-Type` is never the judgement.
-//!
-//! A header is whatever the client typed; the bytes are what codex will try to
-//! decode. When they disagree the bytes win, and the extension the file is
-//! stored under — hence the `Content-Type` a later read-back sends — comes from
-//! here. That is also what makes an SVG uploaded as `image/png` harmless: it is
-//! refused unless it actually begins with PNG's magic number, and if it does,
-//! it is served as `image/png` with `nosniff` and a sandbox CSP, so no browser
-//! is ever invited to run it as markup.
+//! Magic-number sniffing. The declared `Content-Type` is never the judgement; the extension the file is stored under, and hence the read-back `Content-Type`, comes from here.
 
 use calm_types::planner_attachment::AttachmentFormat;
 
-/// Bytes needed before [`sniff`] can answer for every format. WebP is the
-/// longest: `RIFF` at 0, `WEBP` at 8.
+/// Bytes needed before [`sniff`] can answer for every format; WebP is the longest (`RIFF` at 0, `WEBP` at 8).
 pub const SNIFF_PREFIX_BYTES: usize = 12;
 
-/// Identify one of the four accepted formats from a file's leading bytes.
-///
-/// `None` means "not one of the four" and is the answer for SVG, BMP, ICO,
-/// PDF, a truncated file, and anything else. There is no fallback branch: a
-/// format we cannot name is a format codex would silently re-encode or replace
-/// with placeholder text, and neither is visible to the person who uploaded it.
+/// Identify one of the four accepted formats from a file's leading bytes. No fallback branch: a format we cannot name is one codex would silently re-encode or replace with placeholder text.
 pub fn sniff(prefix: &[u8]) -> Option<AttachmentFormat> {
     const PNG: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
     const JPEG: &[u8] = &[0xFF, 0xD8, 0xFF];
@@ -62,9 +48,7 @@ mod tests {
 
     #[test]
     fn refused_formats_have_no_fallback_branch() {
-        // SVG is the one that matters: it is an executable document, and
-        // `readfile-raw`'s extension table still serves `image/svg+xml`. The
-        // narrowing is on this upload path, not on that reader.
+        // SVG is the one that matters: an executable document that `readfile-raw`'s extension table still serves as `image/svg+xml`.
         assert_eq!(sniff(b"<svg xmlns=\"http://www.w3.org/2000/svg\">"), None);
         assert_eq!(sniff(b"<?xml version=\"1.0\"?><svg/>"), None);
         assert_eq!(sniff(b"BM\x36\x00\x00\x00"), None, "bmp");

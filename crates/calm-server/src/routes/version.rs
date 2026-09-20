@@ -1,13 +1,7 @@
 //! `GET /api/version` — kernel + protocol version metadata.
 //!
-//! Each field tracks an independent compatibility boundary:
-//!
-//! API, sync-event, web, MCP, plugin MCP, supervisor, and kernel versions may
-//! evolve independently. `dbInstanceId` changes on every process boot so the
-//! browser can discard state that belongs to a replaced database; `databaseId`
-//! (#1722 S1b) is the database's own stable id so the browser can keep
-//! per-database state across boots; `nowMs` is the server clock at response
-//! time, the baseline a client stamps when it first meets a database.
+//! `dbInstanceId` changes on every process boot; `databaseId` is the database's own
+//! stable id; `nowMs` is the server clock at response time.
 
 use crate::event::SYNC_EVENT_VERSION;
 use crate::mcp_server::transport::KERNEL_MCP_PROTOCOL_VERSION;
@@ -18,139 +12,13 @@ use calm_session::SUPERVISOR_CONTROL_VERSION;
 use serde::Serialize;
 use utoipa::ToSchema;
 
-/// Diagnostic only; clients gate on web and sync-event compatibility instead.
-///
-/// #1209 PR-2 bumped `"1"` -> `"2"`: the `POST /api/tracks` request body renamed
-/// its two template fields to `template_id` / `template_input`. Despite
-/// the "diagnostic only" wording above, `neige-app`'s `compute_verdict` really
-/// does compare this string against the installed release (it is one of the
-/// nine compatibility fields), so leaving it at `"1"` across a REST body rename
-/// would be a contract constant contradicted by behaviour.
-///
-/// #1300 S1 bumped `"2"` -> `"3"`: `PUT /api/track-templates/{id}` is **gone**,
-/// not renamed. That is strictly a larger break than #1209's field rename — a
-/// client holding the old contract gets a 404 with no field to correct — so
-/// leaving this at `"2"` would repeat exactly the contradiction the paragraph
-/// above records.
-///
-/// #1354 bumps `"3"` -> `"4"`: the Area conversations GET/POST endpoints and
-/// chat-track ensure endpoint are gone with the Area page. Cached clients that
-/// still call them must be rejected by the compatibility gate rather than
-/// discovering the break as a 404 after the reader starts an action.
-///
-/// #1450 bumps `"4"` -> `"5"`: Track detail gains the required `can_resume`
-/// capability. A newer bundle cannot parse an older server's response without
-/// that field, so web-only/server-only upgrades must be rejected instead of
-/// passing preflight and failing later in the Track route.
-///
-/// #1316 S4b bumps `"5"` -> `"6"`: three REST response bodies renamed a field.
-/// `POST /api/cards/{id}/planner/input`, `POST /api/cards/{id}/planner/interrupt`
-/// and `GET /api/cards/{id}/planner/run` now answer `worker_session_id` where
-/// they answered `runtime_id`. Unlike a removed endpoint this is silent on the
-/// wire — the request still 200s and the old client reads `undefined` — so the
-/// compatibility gate is the only thing that can turn it into a visible refusal.
-/// Revision 7 adds `headers`/`tools_all` and the unsaved MCP Check endpoint.
-/// Old request bodies remain valid, but web-only updates must reject a kernel
-/// that would silently ignore the new fields. The shared constant also pins
-/// the installer's production preflight regression to what this server emits.
-///
-/// #1625 P3 bumps `"7"` -> `"8"`: `POST /api/cards/{id}/planner/input/{entry_id}/steer`
-/// is new. The queue strip's "Say it now" calls it, and against an older
-/// kernel the answer is a 404 the client reads as "the entry is gone" — so a
-/// web-only update onto such a kernel must be refused, not left to fail in
-/// the composer.
-///
-/// #1722 S1b bumps `"8"` -> `"9"`: two responses gain required fields — the
-/// #1450 shape. `GET /api/tracks/{id}/conversations` rows carry
-/// `lastTurnCompletedAt` (nullable, always present) and `GET /api/version`
-/// carries `databaseId` and `nowMs`. A newer bundle's row parser requires the
-/// first, so against an older kernel every conversation list is rejected;
-/// preflight must refuse that pairing instead of letting the list go blank.
-/// `CardRuntimeView.last_turn_completed_ms` rides along optional and needs no
-/// bump of its own.
-///
-/// Revision 10 combines those required fields with #1712 scan-only enrollment.
-/// Both branches used revision 9 independently; neither alone supplies the union.
+/// Diagnostic only on the wire, but `neige-app`'s `compute_verdict` compares it against
+/// the installed release, so a REST contract break must bump it.
 pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 
-/// Monotonically increasing frontend compatibility floor.
-///
-/// This value must equal `WEB_COMPAT_VERSION` in **both** bundles —
-/// `web/src/api/version.ts` and `fe/web/src/app/providers/public.tsx`. Nothing
-/// in the type system relates the three; the `web compat version lockstep gate
-/// (#1209 PR-2)` step in `.github/workflows/ci.yml` compares them textually.
-/// Before that gate existed all three drift directions were CI-green.
-///
-/// #1209 PR-2 bumped 16 -> 17 so cached bundles at 16 get the hard refresh
-/// curtain instead of sending the pre-rename track-create field spellings and
-/// taking a 400 on every attempt.
-///
-/// #1300 S1 bumped 17 -> 18 for the same reason in a new shape: a cached bundle
-/// at 17 still renders Settings › Templates, and its Save now 404s. The failure
-/// is worse than the #1209 one it mirrors, because it is silent until the user
-/// has typed an edit and pressed the button.
-///
-/// #1316 S1 bumps 18 -> 19: `Cove` became `Area` across the whole stack, so a
-/// cached bundle at 18 is wrong in three independent ways at once — it calls
-/// `/api/coves*` (now 404), reads a `cove_id` field the server no longer emits,
-/// and gates its event stream on `cove.updated` / `cove.deleted` discriminators
-/// that migration 0080 rewrote. Any one of those alone would justify the bump;
-/// together they would produce a bundle that renders an empty, silent shell.
-///
-/// #1354 bumps 20 -> 21 with API v4 so both cached bundles show the hard refresh
-/// curtain before they can navigate to the retired Area page or call its
-/// conversation endpoints.
-///
-/// #1450 bumps 21 -> 22 with API v5. Cached bundles at 21 do not carry the
-/// required Track-detail `can_resume` contract and must refresh before they
-/// communicate with this server.
-///
-/// #1456 bumps 22 -> 23: terminal task blocks now carry `command` instead of
-/// the shared `goal`. Cached bundles at 22 parse that known block as invalid
-/// and disable report UI unless the compatibility curtain stops them first.
-///
-/// #1316 S4b bumps 23 -> 24 with API v6: `runtime_id` is retired from the
-/// kernel-owned typed carriers — three planner REST responses, and the payloads
-/// of the nine event kinds migration 0094 rewrites (`worker_session.started` /
-/// `.status_changed` / `.superseded`, the last of which carries two renamed
-/// keys; `harness.item.added` / `.phase.changed` / `.transcript.cleared` /
-/// `.user_message.enqueued`; and the `runtime` object inside `card.added` /
-/// `card.updated`). 0094 rewrote the stored rows to match, so a cached bundle
-/// at 23 meets the new spelling on live frames and on replay alike.
-///
-/// It fails differently on the two surfaces, and neither failure is loud:
-///
-/// * REST — `web/src/api/calm.ts` types these three responses with a TypeScript
-///   generic and does not validate them at runtime, so the field simply reads
-///   `undefined`.
-/// * Events — the v23 zod union still requires the old key, so `safeParse`
-///   rejects the frame. `web/src/api/events.ts` advances the cursor BEFORE
-///   parsing (deliberately, so one bad frame cannot pin the cursor), which means
-///   the rejected row is skipped permanently rather than retried. The three
-///   renamed `worker_session.*` discriminators are rejected by that same union.
-///
-/// A dropped row and an `undefined` field both leave a plausible-looking UI, so
-/// the refresh curtain is what has to stop such a bundle from connecting.
-// MCP JSON setup requires explicit all-tools/header support and the Check
-// endpoint. A separately updated bundled frontend must refuse v26 servers,
-// which otherwise silently ignore the new install fields.
-//
-// #1625 P3 bumps 27 -> 28: `harness.queue.changed` gained the value
-// `restored` (a steered entry back in the queue). The v27 zod union in both
-// bundles rejects a frame carrying it, and `reduceEventFrame` advances the
-// cursor past a rejected frame without invalidating anything — the #1316
-// S4b shape above, one enum value wide — so a v27 bundle left running
-// against this kernel keeps showing a restored entry as sent. The curtain
-// is what stops it. (The same slice also bumped API v7 -> v8 for the steer
-// route itself; that is the REST side of the same pairing rule.)
-//
-// #1722 S1b bumps 28 -> 29 with API v9: the v29 bundle's conversation-row
-// parser requires `lastTurnCompletedAt`, which a v8 kernel does not send, so
-// a bundled client ahead of its kernel must sit behind the `server-update`
-// curtain rather than fail every conversation list; and the raised floor
-// keeps a v28 bundle off this kernel.
-// #1712 retains floor 30 for scan-only v2 enrollment's claim/redeem endpoints;
-// the combined required-field and enrollment contract is REST revision 10.
+/// Monotonically increasing frontend compatibility floor. Must equal `WEB_COMPAT_VERSION`
+/// in both bundles (`web/src/api/version.ts`, `fe/web/src/app/providers/public.tsx`);
+/// only a textual CI gate relates the three.
 pub const WEB_COMPAT_VERSION: u32 = 30;
 
 /// Kernel compatibility values sourced from live constants.
@@ -186,8 +54,7 @@ pub fn router() -> Router<AppState> {
     Router::new().route("/api/version", get(get_version))
 }
 
-/// Response shape for `GET /api/version`. camelCase on the wire so it lines
-/// up with the rest of the TypeScript-facing surface.
+/// Response shape for `GET /api/version`; camelCase on the wire.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct VersionInfo {
@@ -196,10 +63,8 @@ pub struct VersionInfo {
     /// First-message model selection is part of atomic conversation creation.
     pub conversation_create_model: bool,
     pub kernel_version: String,
-    /// REST contract version. Diagnostic-only on the wire — the frontend
-    /// gates compatibility on `min_web_compat_version` (whole bundle) and
-    /// `sync_event_version` (per-event-frame). See `API_VERSION` for the
-    /// rationale. (Issue #198, concern 3.)
+    /// REST contract version. Diagnostic-only on the wire — the frontend gates on
+    /// `min_web_compat_version` and `sync_event_version`.
     pub api_version: String,
     pub sync_event_version: u32,
     pub mcp_protocol_version: String,
@@ -208,13 +73,12 @@ pub struct VersionInfo {
     pub min_web_compat_version: u32,
     pub supervisor_control_version: u32,
     pub build_sha: Option<String>,
-    /// UUID v4 minted once per process boot. See module doc.
+    /// UUID v4 minted once per process boot.
     pub db_instance_id: String,
-    /// #1722 S1b — the database's stable id: minted once into the one-row
-    /// `database_identity` table (migration 0110) and read back on every
-    /// boot, so it survives restarts where `db_instance_id` does not.
+    /// The database's stable id, minted once into the one-row `database_identity` table;
+    /// survives restarts where `db_instance_id` does not.
     pub database_id: String,
-    /// #1722 S1b — the server clock (unix ms) when this response was built.
+    /// The server clock (unix ms) when this response was built.
     pub now_ms: i64,
 }
 
@@ -257,13 +121,7 @@ pub(crate) async fn get_version(State(state): State<RouteState>) -> Json<Version
 mod tests {
     use super::*;
 
-    /// The wire field must echo the constant verbatim. Catches the
-    /// failure mode of bumping `WEB_COMPAT_VERSION` (or the response
-    /// builder) without bumping the other. The handler is now state-aware
-    /// (it pulls `db_instance_id` off `AppState`); we exercise the body
-    /// construction directly with a fixed instance id to keep this unit
-    /// test free of the heavy `AppState::from_parts` plumbing — the HTTP
-    /// integration test in `tests/version.rs` covers the request path.
+    /// The wire field must echo the constant verbatim.
     #[test]
     fn min_web_compat_version_matches_constant() {
         let body = VersionInfo {

@@ -110,12 +110,9 @@ func (r *realTailnetRuntime) Logout(ctx context.Context) error {
 	}
 	prefs.WantRunning = false
 	prefs.LoggedOut = true
-	// SDK Logout returns early when there is no persisted node key, even if
-	// its control client is still registering. Start replaces that client with
-	// a stopped, keyless-auth client, preserving the SDK's current Persist.
-	// The second Logout expires any identity committed between the first
-	// early return and that replacement. Registered logout still uses the
-	// original authenticated control client before dropping its auth key.
+	// SDK Logout returns early when there is no persisted node key, even if its control client is
+	// still registering; Start replaces that client with a stopped, keyless-auth one, and the second
+	// Logout expires any identity committed between the first early return and that replacement.
 	if err := r.local.Start(ctx, ipn.Options{UpdatePrefs: prefs}); err != nil {
 		return err
 	}

@@ -1,29 +1,5 @@
-//! Calm kernel — minimal container/PTY core. Business semantics (tasks,
-//! calendar, plans, git, ...) live in out-of-process plugins reached via MCP.
-//!
-//! Module map:
-//! ```text
-//! model         entity types + DTOs (Area/Track/Card/Overlay/Terminal/Plugin)
-//! error         CalmError + Result alias + IntoResponse
-//! event         Event enum + EventBus (broadcast fan-out)
-//! db            Repo trait
-//!   ├ mod.rs    `Repo` trait + helper free fns
-//!   └ sqlite.rs SqlxRepo (production + in-memory dev/test default via
-//!               `sqlite::memory:`)
-//! routes        HTTP API
-//!   ├ areas.rs       (track B)
-//!   ├ tracks.rs       (track B)
-//!   ├ cards.rs       (track B)
-//!   ├ overlays.rs    (track B)
-//!   ├ plugins.rs     (M2 stub)
-//!   └ terminal.rs    (track D, REST half)
-//! ws            WebSocket endpoints
-//!   ├ events.rs      (track C)
-//!   └ terminal.rs    (track D, WS half)
-//! plugin_host   M2 placeholder
-//! state         AppState (Arc<Repo>, EventBus, DaemonClient, PluginHost)
-//! config        Config (CLI / env)
-//! ```
+//! Calm kernel — minimal container/PTY core. Business semantics (tasks, calendar, plans,
+//! git, ...) live in out-of-process plugins reached via MCP.
 
 pub mod actor;
 pub mod auth;
@@ -36,10 +12,8 @@ pub mod plain_chat;
 pub mod provider_registry;
 pub mod reaper;
 mod state_clients;
-// If this module is ever re-gated for integration-test reuse, revisit its
-// nested `cfg(test)` interceptor and test-module gates at the same time:
-// integration tests compile the library without `cfg(test)`, so both would
-// otherwise disappear from that configuration.
+// Integration tests compile the library without `cfg(test)`, so re-gating this module for
+// them must also revisit its nested `cfg(test)` interceptor and test-module gates.
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod worker_flow;
@@ -49,15 +23,12 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Purpose marker on retired Area-conversation tracks. Kept so historical rows
-/// remain hidden from public Track lists and retain safe recovery behaviour.
+/// Purpose marker on retired Area-conversation tracks; historical rows stay hidden from public
+/// Track lists.
 pub use calm_types::model::AREA_CHAT_PURPOSE;
 
-/// #388 Phase 3b — reconcile DB rows that still look live with the
-/// process supervisor's PTY registry. Production no longer respawns
-/// daemon binaries at boot. If the supervisor does not know a supposedly
-/// running terminal, mark the row exited with the stale-row sentinel `-1`
-/// and move on.
+/// Reconcile DB rows that still look live with the process supervisor's PTY registry: a
+/// supposedly running terminal the supervisor does not know is marked exited with sentinel `-1`.
 pub async fn reconcile_supervisor_on_boot(state: &state::AppState) {
     let rows = match state.repo.terminals_running().await {
         Ok(rs) => rs,
@@ -80,12 +51,8 @@ pub async fn reconcile_supervisor_on_boot(state: &state::AppState) {
                     terminal_id = %term.id,
                     "terminal row is running in DB but supervisor has no live PTY; marking exited",
                 );
-                // Boot is the most lock-contended window the DB sees
-                // (issue #854: `database is locked (code 5)` here left
-                // terminals half-completed — row exited, projection not).
-                // Retry both writes through the busy/locked window; if the
-                // budget exhausts, scream at error level so the
-                // inconsistency is operator-visible, but keep boot alive.
+                // Boot is the most lock-contended window the DB sees; retry both writes through the
+                // busy/locked window, and if the budget exhausts log at error level but keep boot alive.
                 if let Err(e) =
                     retry_on_sqlite_busy(|| state.repo.terminal_set_exit(&term.id, Some(-1), false))
                         .await
@@ -127,17 +94,9 @@ pub async fn reconcile_supervisor_on_boot(state: &state::AppState) {
     tracing::info!(running, stale, "reconcile_supervisor_on_boot: complete",);
 }
 
-/// Bounded busy/locked retry for boot-reconcile writes. Mirrors the
-/// backoff schedule of `calm_truth::db::sqlite::begin_immediate_tx`, but
-/// wraps whole repo calls: the reconcile writes run outside any
-/// caller-held transaction, so re-issuing the call is safe. Non-busy
-/// errors pass through untouched on the first attempt.
-///
-/// Composes with `begin_immediate_tx`'s internal bounded retry (7
-/// attempts, 10-250ms backoff,
-/// [`calm_truth::db::sqlite::SQLITE_BUSY_TIMEOUT_MS`] busy timeout per attempt):
-/// worst-case error surfacing at boot under sustained writer starvation is
-/// minutes — bounded and accepted (#930 review note).
+/// Bounded busy/locked retry for boot-reconcile writes, which run outside any caller-held
+/// transaction so re-issuing the call is safe. Composes with `begin_immediate_tx`'s own retry:
+/// worst-case error surfacing under sustained writer starvation is minutes.
 async fn retry_on_sqlite_busy<T, E, F, Fut>(op: F) -> Result<T, E>
 where
     E: SqliteBusyClass + std::fmt::Display,
@@ -166,9 +125,8 @@ where
     unreachable!("bounded retry loop must return or error");
 }
 
-/// "Is this error a transient SQLITE_BUSY / SQLITE_LOCKED?" — the two
-/// reconcile writes surface different error types, and only one of them
-/// keeps the driver error structured, so classification is per-type.
+/// Is this error a transient SQLITE_BUSY / SQLITE_LOCKED? Only one of the two reconcile
+/// error types keeps the driver error structured, so classification is per-type.
 trait SqliteBusyClass {
     fn is_sqlite_busy(&self) -> bool;
 }
@@ -195,17 +153,8 @@ fn sqlite_busy_message(message: &str) -> bool {
 }
 
 impl SqliteBusyClass for crate::session_projection_repo::WorkerSessionProjectionRepoError {
-    // This error type stringifies driver errors at the repo boundary, so
-    // the result code is gone by the time it reaches us: most paths fold
-    // `From<sqlx::Error>` into `Message`, while the three #930-converted
-    // projection writers (which start via `begin_immediate_tx`) surface
-    // begin errors through `From<CalmError>` as
-    // `"database error: <sqlx text>"`. Match sqlite's canonical BUSY /
-    // LOCKED message texts instead — a pure substring test, so the added
-    // `"database error: "` prefix doesn't affect it: `SQLITE_BUSY_*`
-    // extended codes (including `SQLITE_BUSY_SNAPSHOT`) all render
-    // "database is locked", and `SQLITE_LOCKED` renders "database table
-    // is locked".
+    // This error type stringifies driver errors at the repo boundary, so match sqlite's
+    // canonical BUSY / LOCKED message texts as substrings instead.
     fn is_sqlite_busy(&self) -> bool {
         matches!(
             self,
@@ -228,17 +177,9 @@ pub async fn assert_worker_sessions_card_id_complete_on_boot(
         .map_err(Into::into)
 }
 
-/// #275 / #1109 — boot fence for overlapping `area_folders` claims.
-///
-/// `find_owner` resolves a cwd by taking the first matching row, which
-/// is only sound because the atomic claim writer makes overlap
-/// unreachable. Legacy databases predate that writer and can hold
-/// overlap; on such a table the answer differs from the longest-prefix
-/// rule those rows were written under, i.e. a track would silently land
-/// in the wrong area. `?`-propagated from `main` so serving never starts
-/// on an unresolvable folder table — see
-/// [`calm_truth::db::sqlite::assert_area_folders_disjoint`] for why the
-/// fence refuses instead of repairing.
+/// Boot fence for overlapping `area_folders` claims. `find_owner` takes the first matching
+/// row, which is only sound without overlap; legacy databases can hold it, so serving never
+/// starts on an unresolvable folder table.
 pub async fn assert_area_folders_disjoint_on_boot(
     state: &state::AppState,
 ) -> crate::error::Result<()> {
@@ -260,23 +201,15 @@ pub async fn recover_operations_on_boot(state: &state::AppState) -> crate::error
     state.operation_runtime.apply_recovery(plan).await
 }
 
-/// Issue #644 PR-B — boot scheduler sweep (design §8). MUST run after
-/// `recover_operations_on_boot`: operation recovery is synchronous
-/// apply-then-drive, so by the time the sweep reads an operation row it
-/// reflects the recovered state (a `dispatched` task whose worker op
-/// recovery already completed reconciles immediately instead of
-/// re-driving). The boot order is asserted in `boot_order_tests`.
-///
-/// Uses `sweep_boot` (review F7): the reconcile arms stay synchronous
-/// in boot order, but pending-arm dispatching is poked onto background
-/// tasks so the HTTP server start never waits on full schedule passes.
+/// Boot scheduler sweep. MUST run after `recover_operations_on_boot` so the sweep reads
+/// recovered operation rows; `sweep_boot` pokes pending-arm dispatching onto background tasks
+/// so the HTTP server start never waits on full schedule passes.
 pub async fn scheduler_sweep_on_boot(state: &state::AppState) {
     state.dispatcher.scheduler().sweep_boot().await;
 }
 
-/// #985 PR3a correctness sweep. Boot runs this before operation recovery
-/// so a context verdict caused by downtime edits is durable before any
-/// pending operation can cross its `prepare_tx` admission point.
+/// Runs before operation recovery so a context verdict caused by downtime edits is durable
+/// before any pending operation can cross its `prepare_tx` admission point.
 pub async fn task_context_sweep_on_boot(state: &state::AppState) -> crate::error::Result<()> {
     task_context::sweep_with_timeout(
         state.dispatcher.context_monitor().as_ref(),
@@ -595,17 +528,14 @@ pub(crate) async fn probe_supervisor_for_terminal_at(
     }
 }
 
-/// #1253 D4 — the Today summary's activity source. One caller
-/// (`routes::today_summary`), no MCP surface; see the module docs.
+/// The Today summary's activity source; one caller (`routes::today_summary`), no MCP surface.
 pub mod activity_window;
 pub mod card_fsm;
 pub mod card_role_cache;
 pub mod codex_appserver;
 pub mod config;
 pub mod dedicated_codex;
-/// Issue #275 — area folder claim rules (path normalization, overlap
-/// classification, the one covering-scan). Re-exported at the old crate
-/// path so routes and tests don't reach across into `calm_truth`.
+/// Area folder claim rules, re-exported at the old crate path.
 pub use calm_truth::area_folder_claim;
 pub mod conversation_keys;
 pub mod db;
@@ -615,8 +545,6 @@ pub mod error;
 pub mod event;
 pub mod event_cursor;
 pub mod events_prune;
-// #679 PR1 — `ids` moved wholesale to calm-types; the re-export keeps every
-// `calm_server::ids::…` / `crate::ids::…` path working unchanged.
 pub use calm_types::ids;
 pub mod mcp_server;
 pub mod model;
@@ -627,14 +555,12 @@ pub(crate) mod per_card_lock;
 pub mod planner_appserver;
 pub mod planner_attachments;
 pub mod planner_card;
-// #1505 S4-3 — which model a planner conversation's turns run with.
 pub mod planner_model;
 pub mod plugin_host;
 pub mod plugin_results;
 pub mod proc_identity;
 pub(crate) mod proc_supervisor;
-/// #1635 S1c — runtime-assembled agent prose: `prompts/**.md` fragments
-/// rendered through a placeholder seam that is checked in both directions.
+/// Runtime-assembled agent prose: `prompts/**.md` fragments rendered through a placeholder seam.
 pub(crate) mod prompts;
 pub mod provider_impls;
 pub(crate) mod ratify_state;
@@ -661,75 +587,15 @@ pub mod test_seams;
 pub mod track_activity;
 pub mod track_area_cache;
 pub mod validation;
-// #1147 S2 — managed workspace root derivation + materialization (D2/D3).
 pub mod workspace_materialize;
-// #1147 S5 — safe recycling of managed track workspaces (design §生命周期).
 pub mod workspace_recycle;
-// #1147 S3 — the "is anything on disk" predicate that gates a workspace
-// re-point (design §更换与冻结).
 pub mod workspace_repoint;
-// #679 PR1 — `track_fs_dto` moved wholesale to calm-types (pure TS DTOs).
 pub use calm_types::track_fs_dto;
 pub mod report_backlinks;
 pub mod report_series;
 pub mod report_sources;
-/// The template roster: the built-in template files (`templates/builtin/*.md`,
-/// #1635 S4), parsed once, plus — when the process runs with `--templates-dir`
-/// — the operator's `*.md` files as `site/<stem>` entries (#1635 S5).
-///
-/// `pub` for the same reason `routes::tracks::planner_harness_card_payload` is: an
-/// integration test that transcribes kilobytes of production prose by hand
-/// stops being a test of that prose and becomes a change detector. #1300 S2's
-/// characterization test (`track_template_tracks::
-/// listed_template_keys_create_their_exact_recipes`) therefore **derives** the
-/// report a template must instantiate to from this module's roster — that is,
-/// from the file's bytes after its front matter (`Template::recipe`: `body` is
-/// exactly those bytes, `summary` is the front matter `title`).
-///
-/// What that oracle can and cannot see, stated exactly, because the derivation
-/// is what limits it:
-///
-///   * **Can see** — any divergence between the *value* the roster serves
-///     and what a created track actually ends up holding: a dropped field, a
-///     lost fence, a missing contract prefix, a normalization applied to the
-///     wrong thing.
-///   * **Cannot see** — anything that moves *both* sides at once, because both
-///     sides go through the same `TemplateRoster::get`, the same file, and the
-///     shared `split_body` / `parse_fence` / `render_fence`. Concretely:
-///     two files' bodies swapped under their front matter, a file's body
-///     rewritten, a file retitled, or a fence renderer that drops the same
-///     field on both roads.
-///
-/// It compares values, not provenance — which is why the first bullet says
-/// *value* and not "reads these files". Repoint the instantiation path at
-/// a second source (a database row, a second map) whose bytes happen to equal
-/// these files today and the comparison still holds; it only goes red once
-/// that other source drifts. "Production reads exactly this module" is not an
-/// oracle-visible property.
-///
-/// Part of the second bullet is closed, and part is accepted. `track_template_tracks::
-/// listed_template_keys_create_their_exact_recipes` holds a small hand-written table of
-/// `(key, title, ordered task keys)` — the one table in that file not derived
-/// from production — and checks it against both the picker read and a real
-/// create. That catches two files' bodies swapped, a retitled file, and a
-/// reordered or renamed task.
-///
-/// It does **not** catch the rest of the bullet. A file rewritten wholesale
-/// into a different workflow that keeps its title and its ordered task keys —
-/// new goals, new acceptance criteria, new `context`, new dependency semantics
-/// — moves the derived oracle with production and passes the anchors too. Nor
-/// does it catch a prose rewrite, or a fence renderer dropping the same field
-/// on both roads. Its roster-size check (`anchors.len() ==
-/// roster.entries().len()`) only stops a one-sided add or remove; editing the
-/// table and the roster together passes by construction, because the table is
-/// hand-maintained and nothing but human review reads it. (The other
-/// one-sidedness — a file dropped into `templates/builtin/` without a
-/// `BUILTIN_SOURCES` entry, or listed under a stem that is not its `id` — is
-/// `templates::tests::builtin_directory_and_roster_are_the_same_set`'s.)
-/// Closing any of this would mean transcribing the recipes by hand, which is
-/// the change detector this whole arrangement exists to avoid — so the table
-/// stays at identities only, and those gaps are a decision rather than an
-/// oversight.
+/// The template roster: built-in template files parsed once, plus the operator's `*.md` files
+/// as `site/<stem>` entries when the process runs with `--templates-dir`.
 pub mod templates;
 pub(crate) mod track_binding;
 pub mod track_fs_view;
@@ -739,7 +605,7 @@ pub mod track_report_doc;
 mod track_report_edit_guard;
 mod track_report_gate_guard;
 mod track_report_guard;
-/// #1252 S1 step 1 — write-origin vocabulary. Not wired into production yet.
+/// Write-origin vocabulary. Not wired into production yet.
 pub mod track_report_origin;
 pub mod track_report_read;
 pub mod track_vcs;
@@ -761,14 +627,10 @@ pub async fn recover_harnesses_after_daemon_boot(
                 error = %e,
                 "shared codex app-server start/takeover failed; continuing boot"
             );
-            // #953 §5 — deferred, not skipped forever: the heal loop armed
-            // by the failed spawn keeps retrying, and the first observed
-            // Running triggers a claim-based recovery pass that never
-            // stomps a runtime the user resumed in the meantime.
+            // Deferred, not skipped forever: the first observed Running triggers a claim-based recovery
+            // pass that never stomps a runtime the user resumed in the meantime.
             tracing::warn!("deferring planner harness recovery until the shared daemon self-heals");
-            // The JoinHandle is intentionally detached: the task owns every
-            // part it needs (Arc-cloned out of AppState) and lives until a
-            // recovery pass completes or process teardown.
+            // The JoinHandle is intentionally detached: the task owns every part it needs.
             state.arm_deferred_harness_recovery();
             Ok(0)
         }
@@ -818,9 +680,8 @@ mod boot_order_tests {
         assert!(card_id_assert < recover);
     }
 
-    /// #275 / #1109 — the area_folders fence must be wired into main and
-    /// must be fatal. A warn-and-continue variant would leave folder
-    /// resolution silently picking an arbitrary owner.
+    /// The area_folders fence must be fatal: warn-and-continue would leave folder resolution
+    /// silently picking an arbitrary owner.
     #[test]
     fn boot_area_folders_fence_is_wired_and_fatal() {
         let main_rs = include_str!("main.rs");
@@ -861,12 +722,8 @@ mod boot_order_tests {
         );
     }
 
-    /// Issue #644 PR-B — the scheduler's boot sweep runs AFTER operation
-    /// recovery (design §8: harness recovery → supervisor reconcile →
-    /// runtime orphans → operations → scheduler sweep). Operation recovery is
-    /// synchronous apply-then-drive, so the sweep's
-    /// `dispatched` arm reads already-recovered operation rows instead
-    /// of racing the recovery's re-drive.
+    /// The scheduler's boot sweep runs AFTER operation recovery, so its `dispatched` arm reads
+    /// already-recovered operation rows instead of racing the recovery's re-drive.
     #[test]
     fn boot_order_scheduler_sweep_after_operation_recovery() {
         let main_rs = include_str!("main.rs");
@@ -924,9 +781,8 @@ mod boot_reconcile_retry_tests {
     use calm_truth::TruthError;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// Minimal `DatabaseError` carrying SQLITE_BUSY's primary code, so the
-    /// retry predicate exercises the same `code()`-based classification the
-    /// real sqlx sqlite driver feeds it — without a contention harness.
+    /// Minimal `DatabaseError` carrying SQLITE_BUSY's primary code, so the retry predicate
+    /// exercises the same `code()`-based classification the real driver feeds it.
     #[derive(Debug)]
     struct FakeBusy;
 
@@ -1024,10 +880,8 @@ mod boot_reconcile_retry_tests {
 
     #[tokio::test(start_paused = true)]
     async fn projection_repo_stringified_lock_error_retries() {
-        // `WorkerSessionProjectionRepoError` loses the sqlite result code
-        // at the repo boundary; classification falls back to sqlite's
-        // canonical message text. This is the exact error shape the #854
-        // boot failure surfaced ("database is locked (code 5)").
+        // `WorkerSessionProjectionRepoError` loses the sqlite result code at the repo boundary;
+        // classification falls back to sqlite's canonical message text.
         let calls = AtomicUsize::new(0);
         let out = retry_on_sqlite_busy(|| {
             let n = calls.fetch_add(1, Ordering::SeqCst);

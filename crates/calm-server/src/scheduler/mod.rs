@@ -1,43 +1,6 @@
-//! Kernel task scheduler (issue #644 PR-B, design §5).
-//!
-//! Owned by the dispatcher construction site (same process, same
-//! `Weak<OperationRuntime>` discipline). The scheduler is the only
-//! component that moves plan tasks `pending → dispatched → running`;
-//! worker reports move them onward inside the `calm.task.complete` /
-//! `calm.task.fail` emit tx (`mcp_server::tools::emit`), and terminal
-//! exits go through [`TerminalTaskHook`] / the sweep's running-terminal
-//! arm — both share [`complete_terminal_task`].
-//!
-//! ## Policy-free guarantee (§5.4)
-//!
-//! The scheduler never re-runs a `failed` task, never reorders beyond
-//! `(priority DESC, created_at ASC, key ASC)`, never edits the plan,
-//! and never garbage-collects. Retry is the planner inserting a new task.
-//! The only runtime judgment it holds is the persisted agent-worker
-//! liveness deadline; terminal workers remain mechanically reconciled
-//! by exit status.
-//!
-//! ## Triggers (§5.1)
-//!
-//! Envelopes (`plan.updated`, `track.lifecycle_changed`,
-//! `task.completed`, `task.failed`) poke [`Scheduler::poke`] from the
-//! dispatcher's subscription loop. The bus is lossy, so liveness is
-//! backstopped by [`Scheduler::sweep_all`] — run at boot (after
-//! operation recovery), on `RecvError::Lagged`, and on a slow periodic
-//! reconcile tick (`NEIGE_SCHEDULER_RECONCILE_SECS`, default 300).
-//! Every sweep arm is guarded and idempotent, so a sweep racing live
-//! handling is a no-op. The tick/Lagged backstops are boot-gated:
-//! [`Scheduler::sweep_all`] no-ops until the boot funnel's
-//! [`Scheduler::sweep_boot`] completes, preserving the documented
-//! recovery → scheduler-sweep boot order.
-//!
-//! ## Single-winner claim (§5.4/§5.5)
-//!
-//! Per-track mutex + dirty flag serialize scheduling passes; the claim
-//! UPDATE (`WHERE status = 'pending'`) is the single-winner primitive;
-//! the operations `(kind, idempotency_key)` unique index is the final
-//! backstop. `Event::TaskDispatched` is appended IN the claim tx so
-//! projections stay purely event-sourced (§5.6).
+//! Kernel task scheduler: the only component that moves plan tasks
+//! `pending → dispatched → running`. Policy-free: it never re-runs a `failed` task,
+//! never reorders beyond `(priority DESC, created_at ASC, key ASC)`, never edits the plan.
 
 mod file_delivery;
 mod worker_failure;
@@ -80,24 +43,19 @@ use crate::state::WriteContext;
 use crate::task_context::{ContextMetrics, TaskContextMonitor, context_ref};
 use crate::track_lifecycle::auto_transition_if_current_in_tx;
 
-/// Kernel default per-track task budget when `tracks.task_budget` is NULL
-/// and `NEIGE_TRACK_TASK_BUDGET` is unset/invalid. **1 is deliberate**
-/// (§5.3): workers and gates share one directory tree today (no
-/// worktrees, risk R2); >1 is opt-in per track.
+/// Kernel default per-track task budget when `tracks.task_budget` is NULL and
+/// `NEIGE_TRACK_TASK_BUDGET` is unset/invalid. 1 because workers and gates share one directory tree.
 pub const DEFAULT_TRACK_TASK_BUDGET: i64 = 1;
 
-/// Default reconcile-tick period (§5.1 liveness backstop).
+/// Default reconcile-tick period (liveness backstop).
 pub const DEFAULT_RECONCILE_SECS: u64 = 300;
 
 /// Default wall-clock window for agent workers to report task
 /// completion/failure after the running stamp.
 pub const DEFAULT_TASK_RUN_TIMEOUT_SECS: u64 = 7200;
 
-/// Internal sentinel: a guarded flip affected 0 rows because another
-/// writer (claim race, fast worker report, earlier sweep) won. Carried
-/// through `CalmError::Conflict` so the eventized-write helper rolls
-/// the tx back without persisting events; callers translate it back
-/// into a silent no-op.
+/// Sentinel: a guarded flip affected 0 rows because another writer won; carried through
+/// `CalmError::Conflict` so the eventized-write helper rolls back without persisting events.
 const RACE_LOST: &str = "scheduler: race lost (guarded write no-op)";
 
 pub(crate) fn race_lost_err() -> CalmError {
@@ -146,10 +104,7 @@ async fn mark_running_timeout_cleanup_tx(
     Ok(rows)
 }
 
-/// §5.2 lifecycle gating: schedule only while the track is in an active
-/// lifecycle. `Draft` (user hasn't kicked off), `Blocked` (needs user),
-/// and the terminal states hold *new* claims; in-flight tasks are
-/// unaffected (no interruption — out of scope).
+/// Schedule only while the track is in an active lifecycle; in-flight tasks are unaffected.
 pub fn lifecycle_allows_scheduling(lifecycle: TrackLifecycle) -> bool {
     matches!(
         lifecycle,
@@ -160,21 +115,8 @@ pub fn lifecycle_allows_scheduling(lifecycle: TrackLifecycle) -> bool {
     )
 }
 
-/// §5.2 ready-set computation over one track's plan rows (already in
-/// scheduler order: `priority DESC, created_at_ms ASC, key ASC`).
-///
-/// `running_cost` counts `dispatched`/`running`/`verifying` —
-/// `verifying` deliberately occupies budget (gates are heavy and share
-/// the checkout; future-proofed here even though no task reaches
-/// `verifying` before PR-C). Deps are satisfied **only** by `done`
-/// siblings: `canceled`/`failed` never satisfy a dependency (§3.1), so
-/// successors sit `pending` until the planner revises the plan.
-///
-/// Issue #760 slice 1: resource disjointness for `budget > 1` is not a
-/// second scheduler predicate. Codex tasks acquire a durable workspace
-/// lease at operation claim time, and the lease path is
-/// `.claude/worktrees/<track>/<card>`, so concurrent claims are disjoint by
-/// construction. This function intentionally remains budget arithmetic.
+/// Ready-set computation over one track's plan rows (already in scheduler order).
+/// `verifying` deliberately occupies budget; deps are satisfied only by `done` siblings.
 fn track_capacity(tasks: &[Task], budget: i64) -> usize {
     let running_cost = tasks
         .iter()
@@ -209,10 +151,8 @@ pub fn compute_ready(tasks: &[Task], budget: i64) -> Vec<Task> {
         .collect()
 }
 
-/// Build the worker-operation payload as a **pure function of the
-/// frozen task row** (§5.4 step 2): `stable_payload_hash` is then
-/// deterministic, so a post-crash resubmit always idempotency-matches
-/// the original operation instead of conflicting on payload hash.
+/// Build the worker-operation payload as a pure function of the frozen task row, so a
+/// post-crash resubmit idempotency-matches the original instead of conflicting on payload hash.
 pub fn build_worker_payload(task: &Task) -> Result<(&'static str, Value)> {
     if crate::isolated_codex::selected(task)? {
         return Ok((
@@ -231,13 +171,8 @@ fn build_legacy_worker_payload(task: &Task) -> Result<(&'static str, Value)> {
                 track_id: task.track_id.clone(),
                 idempotency_key: task.id.clone(),
                 goal: task.goal.clone(),
-                // The workspace lease path created in
-                // `CodexWorkerAdapter::prepare_tx` is the authoritative
-                // worker cwd. `task.cwd` is intentionally not serialized:
-                // prepare_tx would ignore it anyway, and including it would
-                // change `stable_payload_hash` for in-flight Codex tasks
-                // created by older builds when `plan.upsert` supplied a cwd,
-                // causing a foreign-operation conflict after upgrade.
+                // The lease path from `prepare_tx` is the authoritative cwd; serializing `task.cwd`
+                // would change `stable_payload_hash` for in-flight tasks created by older builds.
                 cwd: None,
                 context: serde_json::from_str(&task.context_json).unwrap_or(Value::Null),
                 acceptance_criteria: task.acceptance_criteria.clone(),
@@ -250,10 +185,7 @@ fn build_legacy_worker_payload(task: &Task) -> Result<(&'static str, Value)> {
                 track_id: task.track_id.clone(),
                 idempotency_key: task.id.clone(),
                 goal: task.goal.clone(),
-                // The workspace lease path created in
-                // `ClaudeWorkerAdapter::prepare_tx` is the authoritative
-                // worker cwd. Keep task.cwd out of the payload hash just
-                // like codex-worker.
+                // Same as codex-worker: keep `task.cwd` out of the payload hash.
                 cwd: None,
                 context: serde_json::from_str(&task.context_json).unwrap_or(Value::Null),
                 acceptance_criteria: task.acceptance_criteria.clone(),
@@ -266,16 +198,8 @@ fn build_legacy_worker_payload(task: &Task) -> Result<(&'static str, Value)> {
                 track_id: task.track_id.clone(),
                 idempotency_key: task.id.clone(),
                 cmd: task.goal.clone(),
-                // Row value AS-IS — `None` stays `None` (#644 followup):
-                // materializing `default_cwd()` (HOME/current dir) here
-                // would make the payload — and therefore
-                // `stable_payload_hash` — depend on process env, so a
-                // restart under a different HOME would make
-                // `resume_dispatched` see its OWN operation as a foreign
-                // payload-hash conflict and permanently fail the task.
-                // The terminal adapter resolves the default at spawn
-                // time (`terminal_cwd_or_track_workspace` in `prepare_tx`),
-                // which since #1147 S6 means the track's workspace.
+                // Row value AS-IS: materializing `default_cwd()` here would make `stable_payload_hash`
+                // depend on process env, so a restart under a different HOME would fail the task.
                 cwd: task.cwd.clone(),
             })?;
             Ok(("terminal-worker", payload))
@@ -313,11 +237,8 @@ fn duration_ms_i64(duration: Duration) -> i64 {
     i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
 }
 
-/// RAII guard for the per-task single-flight map: at most one in-process
-/// driver (live scheduling pass OR sweep) submits/waits a given task's
-/// worker operation at a time. Losing a slot is always safe — the holder
-/// performs the same guarded writes — this just avoids duplicate
-/// `wait()` polling.
+/// RAII guard for the per-task single-flight map. Losing a slot is always safe — the
+/// holder performs the same guarded writes; this just avoids duplicate `wait()` polling.
 struct InflightGuard {
     map: Arc<DashMap<String, ()>>,
     key: String,
@@ -439,8 +360,7 @@ async fn guarded_child_success_flip_tx(
     .rows_affected())
 }
 
-/// Final pending-incomplete compare-and-set. Kept separate from the success
-/// flip so each Done recheck has its own behavior oracle and mutation target.
+/// Final pending-incomplete compare-and-set, kept separate from the success flip.
 async fn guarded_child_incomplete_flip_tx(
     tx: &mut Tx<'_>,
     task_id: &str,
@@ -549,8 +469,8 @@ pub struct Scheduler {
     /// Same `Weak` discipline as the dispatcher's `Inner` — the
     /// scheduler must not keep AppState resources alive after shutdown.
     operation_runtime: Weak<OperationRuntime>,
-    /// The dispatcher's global spawn semaphore (§5.3): per-track budgets
-    /// cap per-track parallelism, this caps total cross-track spawn work.
+    /// The dispatcher's global spawn semaphore: per-track budgets cap per-track
+    /// parallelism, this caps total cross-track spawn work.
     semaphore: Arc<Semaphore>,
     /// Existing launch capacity, frozen at scheduler construction for durable reservations.
     candidate_verification_limit: usize,
@@ -561,7 +481,7 @@ pub struct Scheduler {
     /// Persisted running liveness window, resolved once from
     /// `NEIGE_TASK_RUN_TIMEOUT_SECS`.
     task_run_timeout: Duration,
-    /// §5.1 per-track single-flight: exactly the push-locks pattern.
+    /// Per-track single-flight: exactly the push-locks pattern.
     track_locks: DashMap<TrackId, Arc<tokio::sync::Mutex<()>>>,
     /// Dirty flags — a trigger arriving mid-pass marks dirty and the
     /// lock holder loops once more, so no envelope is ever lost to "a
@@ -569,17 +489,11 @@ pub struct Scheduler {
     track_dirty: DashMap<TrackId, Arc<AtomicBool>>,
     /// Per-task single-flight for submit/wait drives (live + sweep).
     inflight: Arc<DashMap<String, ()>>,
-    /// Round-3 review F2 — boot-order gate for the backstop sweeps.
-    /// The dispatcher spawns the reconcile tick (and the Lagged-arm
-    /// sweep) while `Dispatcher` is still being BUILT — before `main`
-    /// runs `recover_operations_on_boot` → `scheduler_sweep_on_boot` —
-    /// so an early tick/lag could run `sweep_all` against unrecovered
-    /// operation rows. Both backstops funnel through
-    /// [`Scheduler::sweep_all`], which no-ops until
-    /// [`Scheduler::sweep_boot`] completes and opens this gate.
+    /// Boot-order gate for the backstop sweeps: the reconcile tick may fire before boot
+    /// recovery, so `sweep_all` no-ops until `sweep_boot` completes.
     boot_sweep_done: AtomicBool,
-    /// #985 PR3a — dispatched recovery must not start until the boot
-    /// context sweep has persisted every material verdict.
+    /// Dispatched recovery must not start until the boot context sweep has persisted every
+    /// material verdict.
     context_sweep_boot_done: AtomicBool,
     context_metrics: Arc<ContextMetrics>,
     claim_fence_test_hook: std::sync::Mutex<Option<ClaimFenceTestHook>>,
@@ -786,9 +700,7 @@ impl Scheduler {
         self.budget_default
     }
 
-    /// Resolve the live workspace setting over the boot-time deployment
-    /// fallback. Kept on the scheduler so admission tests exercise the same
-    /// source as production instead of duplicating settings parsing.
+    /// Resolve the live workspace setting over the boot-time deployment fallback.
     pub async fn effective_budget_default(&self) -> Result<i64> {
         let settings = crate::routes::settings::load_settings(self.repo.as_ref()).await?;
         Ok(settings.task_budget_default.unwrap_or(self.budget_default))
@@ -1031,8 +943,8 @@ impl Scheduler {
         }
     }
 
-    /// One §5.2 pass under the track lock: lifecycle gate → budget →
-    /// ready set → dispatch each ready task sequentially.
+    /// One pass under the track lock: lifecycle gate → budget → ready set → dispatch each
+    /// ready task sequentially.
     async fn schedule_pass(self: &Arc<Self>, track_id: &TrackId) -> Result<()> {
         let Some(track) = self.repo.track_get(track_id.as_str()).await? else {
             return Ok(());
@@ -1040,15 +952,9 @@ impl Scheduler {
         let tasks = self.repo.tasks_by_track(track_id.as_str()).await?;
         self.resume_candidate_allocations(track_id.as_str()).await?;
         self.drive_file_producers(&tasks);
-        // §6.2 trigger 2 — the emit-tx flip already moved gated rows to
-        // `verifying`; this pass (poked by the `task.completed`
-        // envelope) drives each one's gate. Fire-and-forget: a gate can
-        // run for minutes-to-hours and must never block the track lock;
-        // `drive_gate`'s single-flight guard collapses duplicates.
-        // Deliberately BEFORE the lifecycle gate (PR #685 F6): §5.2
-        // scopes lifecycle gating to NEW claims; a gate for a task that
-        // reported while the track is Blocked is in-flight machinery and
-        // must not wait for the reconcile tick.
+        // Drive each `verifying` task's gate, fire-and-forget: a gate can run for hours and
+        // must never block the track lock. Deliberately BEFORE the lifecycle gate: lifecycle
+        // gating scopes NEW claims only.
         for task in tasks
             .iter()
             .filter(|t| t.status == TaskStatus::Verifying)
@@ -1082,7 +988,7 @@ impl Scheduler {
         Ok(())
     }
 
-    /// `COALESCE(tracks.task_budget, live setting, deployment default)` (§5.3).
+    /// `COALESCE(tracks.task_budget, live setting, deployment default)`.
     async fn track_budget(&self, track_id: &TrackId) -> Result<i64> {
         let budget_default = self.effective_budget_default().await?;
         let pool = self
@@ -1100,9 +1006,8 @@ impl Scheduler {
             .max(0))
     }
 
-    /// §5.4 — claim one ready task and drive its worker spawn. Every
-    /// failure mode is contained here (logged, row reconciled); the
-    /// pass continues with its remaining ready tasks.
+    /// Claim one ready task and drive its worker spawn. Every failure mode is contained
+    /// here; the pass continues with its remaining ready tasks.
     async fn dispatch_task(self: &Arc<Self>, task: Task, track: &Track) -> bool {
         let Some(_inflight) = InflightGuard::acquire(&self.inflight, &task.id) else {
             tracing::debug!(task_id = %task.id, "scheduler: task already in flight; skipping");
@@ -1117,12 +1022,9 @@ impl Scheduler {
                 return false;
             }
         };
-        // The spawn is driven off the row the claim tx itself re-read
-        // AFTER winning (review F2): the semaphore wait above leaves an
-        // unbounded window in which a still-pending row can be revised
-        // or re-kinded, so the pre-claim snapshot must never feed the
-        // payload. Post-claim the row is frozen — every plan mutation
-        // path is `WHERE status = 'pending'`.
+        // The spawn is driven off the row the claim tx re-read AFTER winning: the semaphore
+        // wait leaves an unbounded window in which a still-pending row can be revised, so the
+        // pre-claim snapshot must never feed the payload.
         let pre_claim_task_id = task.id.clone();
         let frozen = match self.claim_task(task, track).await {
             Ok(Some(frozen)) => frozen,
@@ -1178,24 +1080,10 @@ impl Scheduler {
         true
     }
 
-    /// The claim tx (§5.4 step 1, one eventized write): in-tx lifecycle
-    /// re-check, single-winner `pending → dispatched` UPDATE,
-    /// `Event::TaskDispatched` (§5.6), and the lifecycle auto-promotion
-    /// to `Working`, all in one tx.
-    ///
-    /// Returns the post-claim re-read of the row — the **frozen** task
-    /// (review F2): pending rows are mutable right up to the claim, so
-    /// the dispatch payload must be built from what was actually
-    /// claimed, never from the caller's pre-claim snapshot. Post-claim
-    /// the row cannot change shape (all plan mutation paths are
-    /// `WHERE status = 'pending'`), so a post-crash sweep resubmit
-    /// rebuilds the byte-identical payload.
-    ///
-    /// `Ok(None)` = race lost: another claimer won, the track's
-    /// lifecycle left the schedulable set since the ready-set pass
-    /// (review F4), the frozen row's ready predicate no longer holds
-    /// (round-2 review F1), or the track row was deleted. No event is
-    /// persisted.
+    /// The claim tx, one eventized write: in-tx lifecycle re-check, single-winner
+    /// `pending → dispatched` UPDATE, `Event::TaskDispatched`, and the auto-promotion to
+    /// `Working`. Returns the post-claim re-read (the frozen row); `Ok(None)` = race lost,
+    /// no event persisted.
     async fn claim_task(&self, task: Task, track: &Track) -> Result<Option<Task>> {
         let monitor = TaskContextMonitor::new_with_metrics(
             Arc::clone(&self.repo),
@@ -1249,11 +1137,8 @@ impl Scheduler {
                 &self.write,
                 move |tx| {
                     Box::pin(async move {
-                        // §5.2 lifecycle gate, re-checked IN the claim tx
-                        // (review F4): the pass's pre-claim read can go
-                        // stale across the semaphore wait, and a track moved
-                        // to Blocked/Canceled/Done must not have new work
-                        // claimed. Loss is silent (race-lost, no event).
+                        // Lifecycle gate, re-checked IN the claim tx: the pre-claim read can go stale across
+                        // the semaphore wait. Loss is silent (race-lost, no event).
                         let (lifecycle, task_budget) =
                             track_lifecycle_and_budget_tx(tx, track_id.as_str())
                                 .await?
@@ -1261,9 +1146,8 @@ impl Scheduler {
                         if !lifecycle_allows_scheduling(lifecycle) {
                             return Err(race_lost_err());
                         }
-                        // §5.2 claim fence: missing track/report, a changed root, or any
-                        // changed report doc_rev is a silent race loss. This runs before
-                        // the pending -> dispatched state flip.
+                        // Claim fence: missing track/report, a changed root, or any changed report doc_rev is
+                        // a silent race loss; runs before the pending -> dispatched flip.
                         for (frozen_track, frozen_rev) in &claim_doc_revs {
                             let current: Option<Option<i64>> = match sqlx::query_as::<_, (Option<i64>,)>(
                                 "SELECT json_extract(c.payload, '$.docRev') FROM cards c \
@@ -1324,22 +1208,13 @@ impl Scheduler {
                         if rows == 0 {
                             return Err(race_lost_err());
                         }
-                        // Post-claim re-read = the frozen row (review F2).
-                        // Gone row = concurrent track delete; treat as lost.
+                        // Post-claim re-read = the frozen row. Gone row = concurrent track delete; treat as lost.
                         let frozen = task_get_tx(tx, &task_id).await?.ok_or_else(race_lost_err)?;
                         if crate::file_delivery::bind_claim_tx(tx, &frozen).await.is_err() {
                             return Err(race_lost_err());
                         }
-                        // Round-2 review F1: revalidate the §5.2 ready
-                        // predicate against the track's CURRENT plan in the
-                        // same tx. The pass's ready set was computed before
-                        // the semaphore wait, so a `plan.updated` that added
-                        // a dependency or a PATCH that shrank the budget
-                        // mid-window must abort the claim (race-lost, the
-                        // rollback un-flips the row, the next poke
-                        // re-evaluates). Strict priority ORDER is
-                        // deliberately NOT revalidated — the design only
-                        // fixes the ready-set order per pass (§5.4).
+                        // Revalidate the ready predicate against the CURRENT plan in the same tx: a dependency
+                        // added mid-window must abort the claim. Priority ORDER is deliberately NOT revalidated.
                         let siblings = tasks_by_track_tx(tx, track_id.as_str()).await?;
                         let done_keys: BTreeSet<&str> = siblings
                             .iter()
@@ -1353,10 +1228,8 @@ impl Scheduler {
                         {
                             return Err(race_lost_err());
                         }
-                        // The pre-claim pass may have waited on the global
-                        // semaphore. Re-read the live default in this same
-                        // write transaction so a concurrent Settings change
-                        // is fenced just like a per-track budget patch.
+                        // Re-read the live default in this same write transaction so a concurrent Settings
+                        // change is fenced just like a per-track budget patch.
                         let configured_default: Option<String> = sqlx::query_scalar(
                             "SELECT value FROM settings WHERE key = ?1",
                         )
@@ -1414,22 +1287,9 @@ impl Scheduler {
                                 },
                             ),
                         ];
-                        // Same pre-spawn ordering rationale as the legacy
-                        // dispatch path: promote before the worker exists so
-                        // a fast report's Working → Reviewing promotion can
-                        // never race ahead of this one. §5.2 deliberately
-                        // schedules Planning tracks (review F5) — a track the
-                        // planner never moved past Planning is promoted along
-                        // the legal kernel chain Planning → Dispatching →
-                        // Working here. §5.2 also keeps Reviewing in the
-                        // schedulable set (round-5 review F1): a dependent
-                        // task that becomes ready after the first worker's
-                        // completion promoted the track to Reviewing is
-                        // claimed from Reviewing, so the legal Reviewing →
-                        // Working edge rides the same claim tx. A
-                        // successful claim therefore always leaves the track
-                        // `Working` and the later Working → Reviewing
-                        // auto-transition can fire again.
+                        // Promote before the worker exists so a fast report's Working → Reviewing promotion
+                        // can never race ahead of this one. Reviewing stays schedulable, so the Reviewing →
+                        // Working edge rides the same claim tx; a successful claim always leaves the track `Working`.
                         for (from, to) in [
                             (TrackLifecycle::Reviewing, TrackLifecycle::Working),
                             (TrackLifecycle::Planning, TrackLifecycle::Dispatching),
@@ -1462,18 +1322,9 @@ impl Scheduler {
         }
     }
 
-    /// §5.4 steps 2-3 — build the deterministic payload, submit the
-    /// worker operation (`idempotency_key = task.id`; duplicate submits
-    /// dedupe on the operations unique index), `wait()` it to a
-    /// terminal phase, then reconcile the task row with guarded writes.
-    ///
-    /// Shared verbatim between the live dispatch path and the sweep's
-    /// `dispatched` arm: `submit` on an existing key returns the
-    /// existing op id (missing → resubmit), and `wait()` is the
-    /// steady-state re-drive — the one public API that re-polls
-    /// `drive()` until the op is terminal (no background driver exists,
-    /// §8). The drive lease (60s, `claim_drive_batch`) makes concurrent
-    /// drivers execute no phase twice.
+    /// Build the deterministic payload, submit the worker operation (`idempotency_key =
+    /// task.id`), `wait()` it to a terminal phase, then reconcile the row with guarded
+    /// writes. Shared between the live dispatch path and the sweep's `dispatched` arm.
     async fn drive_spawn(&self, task: &Task, track: &Track) -> Result<()> {
         if task.spawn == calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE {
             crate::isolated_codex::selected(task)?;
@@ -1538,17 +1389,8 @@ impl Scheduler {
             .await
         {
             Ok(op_id) => op_id,
-            // Round-3 review F1 — error classification. The idempotency
-            // payload-hash conflict is PERMANENT: `build_worker_payload`
-            // is a pure function of the frozen post-claim row, so OUR
-            // resubmits always hash-match the original operation; a
-            // mismatch under this task's key can only be a foreign
-            // operation (e.g. a legacy `calm.task.dispatch` spawn that
-            // already used the task id) — it will never self-heal, and
-            // leaving the row `dispatched` would retry the same error
-            // every sweep while pinning the track budget forever. Run the
-            // same spawn-failure path as an op Failed/Stuck outcome:
-            // guarded `failed('spawn-failed')` + kernel `task.failed`.
+            // The idempotency payload-hash conflict is PERMANENT: our resubmits always hash-match,
+            // so a mismatch is a foreign operation and would retry every sweep while pinning the budget.
             Err(e) if crate::operation::is_idempotency_payload_conflict(&e) => {
                 tracing::warn!(
                     task_id = %task.id,
@@ -1655,8 +1497,7 @@ impl Scheduler {
             create_card: None,
             first_message: None,
             create_request_sha256: None,
-            // #1343 — not a conversation create; nothing to brief. `None` is
-            // skipped by serde, so this payload's bytes are unchanged.
+            // Not a conversation create; nothing to brief.
             opening_briefing: None,
         };
         let bootstrap_payload = serde_json::to_value(&bootstrap)?;
@@ -1665,17 +1506,8 @@ impl Scheduler {
                 "planner-harness-start",
                 OperationKey {
                     operation_key: new_id(),
-                    // #1147 S4 — the key carries a digest of the cwd, the same
-                    // rule S2 landed for the launchpad's `planner-harness-start`.
-                    // The payload includes `cwd`, and the operation runtime
-                    // refuses "same idempotency key, different payload hash"
-                    // permanently. A child whose workspace was re-pointed by
-                    // the N11 repair (from its parent's directory to its own)
-                    // would otherwise submit a new cwd under the old key on
-                    // any re-drive and fail that task forever, with no
-                    // self-healing path because operation rows are never
-                    // deleted. Distinct paths mint distinct keys; within one
-                    // path idempotency is unchanged.
+                    // The key carries a digest of the cwd: the runtime refuses "same key, different
+                    // payload hash" permanently, so a re-pointed child would otherwise fail forever.
                     idempotency_key: Some(format!(
                         "child-track:{child_id}:bootstrap:{}",
                         crate::workspace_materialize::workspace_key_digest(cwd)
@@ -1735,11 +1567,8 @@ impl Scheduler {
             &self.write,
             move |tx| {
                 Box::pin(async move {
-                    // The child-track operation may fail after prepare_tx has
-                    // committed the child and stamped this row. Always derive
-                    // cleanup ownership from durable task state in the same
-                    // transaction as the parent failure flip; callers cannot
-                    // reliably infer child existence from an operation phase.
+                    // The child-track operation may fail after prepare_tx has committed the child, so
+                    // derive cleanup ownership from durable task state in the same transaction as the flip.
                     let child_id: Option<String> = sqlx::query_scalar(
                         "SELECT child_track_id FROM tasks WHERE id=?1 AND track_id=?2",
                     )
@@ -1834,21 +1663,13 @@ impl Scheduler {
         match outcome {
             OperationOutcome::Succeeded { result }
             | OperationOutcome::SucceededViaCollision { result, .. } => {
-                // §3: guarded `dispatched → running` + two-sided
-                // `worker_card_id` stamp. The op result for the worker
-                // kinds is the created card row; a missing id leaves the
+                // Guarded `dispatched → running` + `worker_card_id` stamp; a missing id leaves the
                 // stamp to the report tx's COALESCE.
                 let worker_card_id = result.get("id").and_then(Value::as_str).map(str::to_string);
                 self.mark_running(&task.id, worker_card_id.as_deref())
                     .await?;
-                // Review F6: a terminal task resumed by the boot sweep
-                // may already carry a recorded exit (the PTY died while
-                // the kernel was down and the supervisor reconcile
-                // persisted it). Reconcile right now instead of leaving
-                // the row `running` until the next periodic sweep. The
-                // live spawn path shares this check harmlessly — a
-                // just-spawned terminal has no exit record, so it
-                // no-ops.
+                // A terminal task resumed by the boot sweep may already carry a recorded exit;
+                // reconcile now instead of waiting for the next sweep. A just-spawned terminal no-ops.
                 if task.kind == TaskKind::Terminal {
                     match self.repo.task_get(&task.id).await {
                         Ok(Some(row)) if row.status == TaskStatus::Running => {
@@ -1875,10 +1696,8 @@ impl Scheduler {
         Ok(())
     }
 
-    /// Guarded running stamp. No event rides along (the dispatch record
-    /// already landed in the claim tx), so this is a plain guarded
-    /// UPDATE: 0 rows = a fast worker report already advanced the row —
-    /// by design, not an error.
+    /// Guarded running stamp, no event: 0 rows = a fast worker report already advanced
+    /// the row — by design, not an error.
     async fn mark_running(&self, task_id: &str, worker_card_id: Option<&str>) -> Result<()> {
         let pool = self
             .repo
@@ -1902,20 +1721,9 @@ impl Scheduler {
         Ok(())
     }
 
-    /// Spawn failure/stuck (§5.4 step 3): guarded
-    /// `dispatched/running → failed('spawn-failed')` + kernel
-    /// `task.failed` (actor `KernelDispatcher`) in one tx so the planner
-    /// gets pushed, + the same `Working → Reviewing` promotion the
-    /// legacy spawn-failure path performs. 0-row flip → the row already
-    /// moved on; no event is emitted.
-    ///
-    /// Issue #1147 slice ① — the operation's `last_error`/`Stuck` reason
-    /// rides along into `status_detail` as `"spawn-failed: <reason>"`.
-    /// The bare classifier left the only readable diagnosis (e.g. "track
-    /// … cwd … is not a git repository") stranded in the operation's
-    /// `phase_detail_json`, which neither the planner nor the FE reads.
-    /// The `spawn-failed` CLASSIFIER stays the prefix — everything that
-    /// dispatches on the vocabulary goes through `status_detail_class`.
+    /// Spawn failure/stuck: guarded `dispatched/running → failed('spawn-failed: <reason>')` plus
+    /// kernel `task.failed` in one tx, plus the `Working → Reviewing` promotion. 0-row
+    /// flip → the row already moved on; no event. The `spawn-failed` CLASSIFIER stays the prefix.
     async fn fail_spawn(&self, task: &Task, track: &Track, reason: &str) -> Result<()> {
         let task = task.clone();
         let track = track.clone();
@@ -1941,34 +1749,9 @@ impl Scheduler {
         }
     }
 
-    /// §8 sweep body — shared between boot (after operation recovery),
-    /// the periodic reconcile tick, and `Lagged`. Arms for this slice:
-    ///
-    /// - `pending`: recompute ready sets and dispatch (per track).
-    /// - `dispatched`: resubmit/re-drive the worker op and reconcile
-    ///   the row ([`Scheduler::drive_spawn`] — `submit` dedupes on the
-    ///   idempotency key, `wait()` re-drives non-terminal ops, the
-    ///   guarded writes reconcile terminal outcomes).
-    /// - `running` + terminal kind: mechanically reconcilable — the
-    ///   boot supervisor reconcile has already persisted dead PTYs as
-    ///   `terminals.exit_code = -1`, so a recorded exit runs the same
-    ///   guarded completion tx as the live exit hook.
-    /// - `running` + codex kind: fail only after the persisted
-    ///   wall-clock liveness deadline, CAS first, then teardown.
-    /// - `verifying`: drive the current gate attempt
-    ///   ([`Scheduler::drive_gate`] — submit when missing, `wait()`
-    ///   re-drive when non-terminal, outcome copy when terminal); the
-    ///   parked-op enforcement arms (dead probe / deadline) run via
-    ///   `OperationRuntime::sweep_parked` at the top of the body.
-    ///
-    /// Boot-gated (round-3 review F2): both backstop callers — the
-    /// reconcile tick and the Lagged arm — are spawned during
-    /// `Dispatcher` construction, BEFORE `main`'s
-    /// `recover_operations_on_boot` → `scheduler_sweep_on_boot` funnel,
-    /// so a sweep here before [`Scheduler::sweep_boot`] completes could
-    /// re-drive dispatched rows against unrecovered operation rows.
-    /// Until the gate opens this is a no-op; nothing is lost — the boot
-    /// sweep itself covers everything an early tick/lag would have.
+    /// Sweep body shared between boot, the periodic reconcile tick, and `Lagged`.
+    /// Boot-gated: both backstop callers are spawned before boot recovery, so until
+    /// `sweep_boot` completes this is a no-op.
     pub async fn sweep_all(self: &Arc<Self>) {
         if !self.boot_sweep_done.load(Ordering::SeqCst) {
             tracing::debug!(
@@ -1982,17 +1765,9 @@ impl Scheduler {
         }
     }
 
-    /// Boot-time sweep (§8 + review F7): the reconcile arms
-    /// (`dispatched` re-drive, `running`-terminal recorded-exit) run
-    /// synchronously — they must complete in boot order, after
-    /// operation recovery — but pending-arm dispatching goes through
-    /// the normal async [`Scheduler::poke`] path so boot never blocks
-    /// the HTTP server behind full schedule passes (claim + spawn
-    /// `wait()` per track).
-    ///
-    /// Completing this sweep opens the boot gate (round-3 review F2):
-    /// from here on the periodic reconcile tick and Lagged-arm
-    /// [`Scheduler::sweep_all`] calls run for real.
+    /// Boot-time sweep: the reconcile arms run synchronously (after operation recovery) but
+    /// pending-arm dispatching goes through async `poke` so boot never blocks the HTTP
+    /// server. Completing it opens the boot gate.
     pub async fn sweep_boot(self: &Arc<Self>) {
         let pending_tracks = self.sweep_reconcile().await;
         for track_id in pending_tracks {
@@ -2001,16 +1776,12 @@ impl Scheduler {
         self.boot_sweep_done.store(true, Ordering::SeqCst);
     }
 
-    /// Round-3 review F2 — whether the boot gate is open (the boot
-    /// sweep completed). Exposed for test assertions.
+    /// Whether the boot gate is open. Exposed for test assertions.
     pub fn boot_sweep_completed(&self) -> bool {
         self.boot_sweep_done.load(Ordering::SeqCst)
     }
 
-    /// TEST seam: open the boot gate without running a boot sweep, for
-    /// suites that drive [`Scheduler::sweep_all`] / scheduling passes
-    /// directly. Production only opens the gate via
-    /// [`Scheduler::sweep_boot`] (the `scheduler_sweep_on_boot` funnel).
+    /// TEST seam: open the boot gate without running a boot sweep.
     pub fn mark_boot_sweep_complete(&self) {
         self.boot_sweep_done.store(true, Ordering::SeqCst);
     }
@@ -2035,16 +1806,11 @@ impl Scheduler {
         opened
     }
 
-    /// Shared sweep body: runs the reconcile arms inline and returns
-    /// the set of tracks holding `pending` rows for the caller to
-    /// dispatch (blocking in [`Scheduler::sweep_all`], fire-and-forget
-    /// in [`Scheduler::sweep_boot`]).
+    /// Shared sweep body: runs the reconcile arms inline and returns the set of tracks
+    /// holding `pending` rows for the caller to dispatch.
     async fn sweep_reconcile(self: &Arc<Self>) -> BTreeSet<String> {
-        // #653 §4.4 call-site (c): the consumer reconcile tick runs the
-        // saga's parked sweep — recovers durable verdicts from dead
-        // gates (pre-deadline dead-probe) and kill-fails past-deadline
-        // work. Every arm is fenced single-winner, so racing the live
-        // observer / boot recovery is safe.
+        // The parked sweep recovers durable verdicts from dead gates and kill-fails
+        // past-deadline work; every arm is fenced single-winner, so racing the live observer is safe.
         if let Some(runtime) = self.operation_runtime.upgrade()
             && let Err(e) = runtime.sweep_parked().await
         {
@@ -2140,13 +1906,8 @@ impl Scheduler {
                     }
                 }
                 TaskStatus::Running => {}
-                // §8 verifying arm (parked formulation): drive the
-                // current gate attempt — op missing → submit,
-                // non-terminal → single-flight `wait()` re-drive
-                // (doubles as the parked-deadline watcher), terminal →
-                // copy the outcome to the row. Spawned because a gate
-                // watch can outlive the sweep by hours; dead-parked
-                // enforcement itself is `sweep_parked`'s job above.
+                // Drive the current gate attempt. Spawned because a gate watch can outlive the sweep
+                // by hours; dead-parked enforcement is `sweep_parked`'s job above.
                 TaskStatus::Verifying => {
                     let this = Arc::clone(self);
                     tokio::spawn(async move {
@@ -2439,11 +2200,8 @@ impl Scheduler {
             .and_then(|op| op.target_id)
     }
 
-    /// Sweep `dispatched` arm (§5.5/§8): the claim landed but the spawn
-    /// outcome was never reconciled (crash between claim and op insert,
-    /// between op success and the running stamp, or a lost completion).
-    /// `drive_spawn` covers every sub-case via submit-dedupe + `wait()`
-    /// + guarded reconcile writes.
+    /// Sweep `dispatched` arm: the claim landed but the spawn outcome was never reconciled.
+    /// `drive_spawn` covers every sub-case via submit-dedupe + `wait()` + guarded writes.
     async fn resume_dispatched(self: &Arc<Self>, task: Task) {
         if !self.context_sweep_boot_done.load(Ordering::SeqCst) {
             tracing::debug!(
@@ -2482,16 +2240,13 @@ impl Scheduler {
         }
     }
 
-    /// Sweep `running`-terminal arm (§8/M2 downtime path): a `running`
-    /// terminal task whose terminal row has a recorded exit gets the
-    /// SAME guarded completion tx as the live exit hook. First writer
-    /// wins via the status guard; live/sweep duplication is impossible.
+    /// Sweep `running`-terminal arm: a recorded exit gets the SAME guarded completion tx as
+    /// the live exit hook; first writer wins via the status guard.
     async fn reconcile_running_terminal(&self, task: Task) {
         let worker_card_id = match &task.worker_card_id {
             Some(id) => Some(id.clone()),
-            // Crash between op success and the running stamp can leave
-            // the card unstamped; recover it from the operation row
-            // (idempotency-key convention, §2.2).
+            // Crash between op success and the running stamp can leave the card unstamped;
+            // recover it from the operation row (idempotency-key convention).
             None => match self.operation_runtime.upgrade() {
                 Some(runtime) => runtime
                     .find_by_kind_and_idempotency("terminal-worker", &task.id)
@@ -2551,15 +2306,9 @@ impl Scheduler {
         }
     }
 
-    /// Drive one `verifying` task's gate (issue #644 PR-C, §6.2 trigger
-    /// 2 + the §8 verifying arms in the #653 parked formulation).
-    /// Single-flight per task (`"gate:{task.id}"` — disjoint from the
-    /// worker-spawn keyspace so a sweep gate drive never starves a
-    /// spawn drive of the same task id, and vice versa); shared
-    /// verbatim between the live pass (poked by `task.completed`) and
-    /// the sweep arm. Deliberately does NOT hold the dispatch
-    /// semaphore: the `wait()` below can span a multi-hour gate, and
-    /// the real spawn work is bounded by the saga's own drive lease.
+    /// Drive one `verifying` task's gate. Single-flight per task under `"gate:{task.id}"`,
+    /// disjoint from the worker-spawn keyspace. Deliberately does NOT hold the dispatch
+    /// semaphore: the `wait()` can span a multi-hour gate.
     async fn drive_gate(self: &Arc<Self>, task: Task) {
         let inflight_key = format!("gate:{}", task.id);
         let Some(_inflight) = InflightGuard::acquire(&self.inflight, &inflight_key) else {
@@ -2582,21 +2331,9 @@ impl Scheduler {
         }
     }
 
-    /// The §8 arm body. Resolution order (parked formulation):
-    ///
-    /// 1. `gate_attempt >= 1` and the op `"{task.id}#g{attempt}"`
-    ///    exists → `wait()` it (terminal rows return immediately;
-    ///    non-terminal ops get the single-flight re-drive — the one
-    ///    public API that re-polls `drive()` — and a *parked* op's
-    ///    wait-poll doubles as its deadline watcher, #653 §4.3), then
-    ///    copy the outcome to the row iff it is still `verifying` at
-    ///    that attempt (the live observer's one-tx completion normally
-    ///    got there first and the guard misses — by design).
-    /// 2. Op missing (or `gate_attempt == 0`, no attempt ever
-    ///    prepared) → submit `#g{gate_attempt + 1}` and watch it the
-    ///    same way. Racing submitters compute the same key and dedupe
-    ///    on the operations unique index; the adapter's `prepare_tx`
-    ///    bump admits exactly one op per attempt number.
+    /// If the current attempt's op exists, `wait()` it and copy the outcome iff the row is
+    /// still `verifying` at that attempt; otherwise submit `#g{gate_attempt + 1}`. Racing
+    /// submitters compute the same key and dedupe on the operations unique index.
     async fn drive_gate_inner(&self, runtime: &Arc<OperationRuntime>, task: &Task) -> Result<()> {
         if task.gate_attempt >= 1 {
             let key = gate_attempt_key(&task.id, task.gate_attempt);
@@ -2639,25 +2376,9 @@ impl Scheduler {
             .await
     }
 
-    /// The consumer reconcile arm kept from #653 §6.2: "row
-    /// `verifying`, op terminal → copy the outcome to the row". Needed
-    /// because op-only terminal writes exist — boot recovery's
-    /// `VerifyParked` Complete/Fail arms and `sweep_parked`'s
-    /// enforcement write the *operation* without touching consumer
-    /// tables (#653 §4.2). The copy runs the SAME one-tx body as the
-    /// live observer (guarded flip + `task.gate_result` + lifecycle
-    /// promotion), so first writer wins on the
-    /// `status='verifying' AND gate_attempt=N` guard and duplication
-    /// is impossible.
-    ///
-    /// Outcome mapping: op succeeded → its result IS the recorded
-    /// `GateVerdict` (the observer/recovery spliced it into
-    /// `tx_output.result`); op failed `parked_deadline` →
-    /// `gate-timeout`; any other failure / stuck / unparseable result
-    /// → `gate-infra`. A benignly-failed attempt (lost `prepare_tx`
-    /// bump — its Conflict error fails the op) can never mis-fail the
-    /// row: losing the bump means the row's `gate_attempt` never
-    /// reached this op's attempt number, so the in-tx guard misses.
+    /// "Row `verifying`, op terminal → copy the outcome to the row"; needed because op-only
+    /// terminal writes exist. Same one-tx body as the live observer, so first writer wins
+    /// on the `status='verifying' AND gate_attempt=N` guard.
     async fn reconcile_gate_outcome(
         &self,
         task: &Task,
@@ -2665,11 +2386,8 @@ impl Scheduler {
         log_path: &str,
         outcome: OperationOutcome,
     ) -> Result<()> {
-        // PR #685 review F4 — whether the op terminal-FAILED (vs
-        // succeeded with a recorded verdict). Only a failed/stuck op is
-        // eligible for the pre-bump fallback below: an op that reached
-        // a verdict necessarily ran `prepare_tx`'s bump first, so its
-        // eq-attempt guard is the only correct one.
+        // Only a failed/stuck op is eligible for the pre-bump fallback below: an op that
+        // reached a verdict necessarily ran `prepare_tx`'s bump first.
         let op_terminal_failed = matches!(
             outcome,
             OperationOutcome::Failed { .. } | OperationOutcome::Stuck { .. }
@@ -2736,18 +2454,9 @@ impl Scheduler {
         let mut tx = begin_immediate_tx(&pool).await?;
         let mut envelopes = apply_gate_result_in_tx(&mut tx, &rctx, &verdict).await?;
         if envelopes.is_empty() && op_terminal_failed && verdict.attempt >= 1 {
-            // PR #685 review F4 — the pre-bump failure arm. A client
-            // error in `prepare_tx` BEFORE the guarded bump (track row
-            // gone → Conflict) terminal-fails op `#gN` while the row
-            // stays `verifying@N-1`; every later drive recomputes the
-            // same key, dedupes onto the dead op, and the eq-attempt
-            // guard above misses forever — a permanent loop with no
-            // outcome, no event, and no operator escape. Flip the row
-            // at its pre-bump attempt instead: the failed op can never
-            // bump it, no second op for attempt N can exist (operations
-            // unique index), and a row that DID reach attempt N makes
-            // this relaxed guard miss, so a benignly-failed attempt
-            // still cannot mis-fail a row another op owns.
+            // Pre-bump failure arm: a `prepare_tx` error BEFORE the bump terminal-fails op `#gN`
+            // while the row stays `verifying@N-1`, and the eq-attempt guard would miss forever.
+            // Flip at the pre-bump attempt; a row that DID reach attempt N makes this guard miss.
             envelopes = crate::operation::task_verify_adapter::apply_gate_result_with_guard_in_tx(
                 &mut tx,
                 &rctx,
@@ -2770,13 +2479,8 @@ impl Scheduler {
     }
 }
 
-/// Terminal-exit completion bundle (issue #644 M2, live path). Threaded
-/// from the dispatcher construction site into
-/// [`crate::terminal_renderer::TerminalRendererRegistry`] so the
-/// attach-reader exit branch can resolve terminal → card → payload
-/// `idempotency_key` and run the shared guarded completion tx. Carries
-/// the same set the dispatcher's `Inner` owns: repo + EventBus + role
-/// caches (`WriteContext`).
+/// Terminal-exit completion bundle (live path), threaded into the terminal renderer
+/// registry so the attach-reader exit branch can run the shared guarded completion tx.
 pub struct TerminalTaskHook {
     repo: Arc<dyn Repo>,
     events: EventBus,
@@ -2792,16 +2496,9 @@ impl TerminalTaskHook {
         })
     }
 
-    /// Live exit path. Resolves the exited terminal to a plan-task row
-    /// (terminal → card → payload `idempotency_key` — stamped at worker
-    /// create time, so this works even when the exit beats the
-    /// scheduler's `worker_card_id` stamp) and, if one exists, runs the
-    /// shared guarded completion tx. The payload walk only FINDS the
-    /// candidate row; ownership is proven inside the tx against the
-    /// worker operation's immutable target card (round-4 review F2 —
-    /// card payloads are patchable, so they are not proof). Terminals
-    /// with no task row (user terminals, legacy `calm.task.dispatch`
-    /// workers, planner terminals) no-op here.
+    /// Live exit path: resolve terminal → card → payload `idempotency_key` to a plan-task row
+    /// and run the shared guarded completion tx. The payload walk only FINDS the candidate;
+    /// ownership is proven inside the tx (card payloads are patchable, so they are not proof).
     pub async fn on_terminal_exit(
         &self,
         terminal_id: &str,
@@ -2846,13 +2543,8 @@ impl TerminalTaskHook {
         if task.status.is_terminal() {
             return;
         }
-        // Review F1: only TERMINAL-kind tasks are mechanically
-        // reconcilable from a PTY exit code. Codex worker cards are
-        // also terminal-row-backed and carry the task id in their
-        // payload `idempotency_key`, but a codex PTY exiting 0 says
-        // nothing about the task — completion must come from the
-        // worker's `calm.task.complete` report (mirrors the sweep's
-        // kind-gated running arm).
+        // Only TERMINAL-kind tasks are mechanically reconcilable from a PTY exit code; a codex
+        // PTY exiting 0 says nothing about the task.
         if task.kind != TaskKind::Terminal {
             return;
         }
@@ -2880,16 +2572,9 @@ impl TerminalTaskHook {
     }
 }
 
-/// The ONE guarded terminal-completion function (issue #644 M2) — both
-/// the live attach-reader exit hook and the sweep's running-terminal
-/// arm run exactly this tx; first writer wins via the
-/// `status IN ('dispatched','running')` guard, the second no-ops.
-///
-/// Exit 0 → `task.completed`; non-zero / signal / synthetic `-1` →
-/// `task.failed`. Every event uses actor `ActorId::KernelDispatcher`
-/// (so `is_planner_verdict_event` never classifies it as a planner verdict)
-/// at track scope, stamps `worker_card_id` via COALESCE, and carries the
-/// same `Working → Reviewing` promotion as a worker self-report (§3).
+/// The ONE guarded terminal-completion function — the live exit hook and the sweep arm
+/// run exactly this tx; first writer wins via the `status IN ('dispatched','running')`
+/// guard. Exit 0 → `task.completed`; non-zero / signal / synthetic `-1` → `task.failed`.
 #[allow(clippy::too_many_arguments)]
 pub async fn complete_terminal_task(
     repo: &dyn Repo,
@@ -2919,25 +2604,17 @@ pub async fn complete_terminal_task(
     let result = write_with_actor_events_typed::<(), _>(repo, None, events, write, move |tx| {
         Box::pin(async move {
             let now = now_ms();
-            // Round-4 review F2: the live hook resolves the task from
-            // the exiting card's PAYLOAD `idempotency_key`, which is
-            // mutable via `PATCH /api/cards/{id}` — so it is NOT proof
-            // of ownership. Prove it against the immutable worker-spawn
-            // operation target instead: only the card the op actually
-            // created may flip an UNSTAMPED row. Stamped rows are still
-            // guarded by `worker_card_id = card` (the sweep arm's
-            // row-stamp resolution rides that side); a forged-payload
-            // card fails both sides → 0 rows → no event.
+            // The payload `idempotency_key` is mutable via `PATCH /api/cards/{id}`, so it is NOT
+            // proof of ownership: only the card the worker-spawn op actually created may flip an
+            // UNSTAMPED row; a forged-payload card fails both sides → 0 rows → no event.
             let owns_key =
                 crate::db::sqlite::worker_op_targets_card_tx(tx, &task_id, &worker_card_id).await?;
             let reporter = TaskReporter::Card {
                 card_id: worker_card_id.as_str(),
                 owns_key,
             };
-            // Issue #644 PR-C (§3): a gated terminal task's clean exit
-            // is still a self-report — the row goes to `verifying` and
-            // the `Working → Reviewing` promotion is suppressed (the
-            // gate-result tx promotes instead).
+            // A gated terminal task's clean exit is still a self-report: the row goes to
+            // `verifying` and the `Working → Reviewing` promotion is suppressed.
             let mut suppress_promotion = false;
             let (rows, event) = if success {
                 let flip =
@@ -2978,9 +2655,7 @@ pub async fn complete_terminal_task(
                     }
                 };
                 (
-                    // #1147 ① — the same interpreted reason the event
-                    // carries lands on the row, so a worker that died
-                    // after starting is as readable as a spawn failure.
+                    // The same interpreted reason the event carries lands on the row.
                     task_fail_from_worker_tx(
                         tx,
                         &task_id,

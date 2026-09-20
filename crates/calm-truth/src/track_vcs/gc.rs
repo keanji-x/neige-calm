@@ -19,13 +19,8 @@ pub(super) const TRACK_HISTORY_PRUNE_INTERVAL_SECS_ENV: &str = "NEIGE_TRACK_PRUN
 pub(super) const TRACK_HISTORY_PRUNE_KEEP_ENV: &str = "NEIGE_TRACK_PRUNE_KEEP";
 
 /// Prune old linear track history while preserving every commit an active
-/// harness may still need for endpoint-only `diff(previous_endpoint, HEAD)`.
-///
-/// The grace floor is the minimum `created_at` among all protected commits,
-/// not a maximum. Keeping every commit at or after the oldest protected
-/// endpoint is intentionally conservative: it preserves the contiguous suffix
-/// anchored at HEAD and errs toward keeping more history instead of deleting a
-/// commit an active session may still reference.
+/// harness may still need. The grace floor is the MINIMUM `created_at` among
+/// protected commits: keep the contiguous suffix anchored at HEAD.
 pub async fn prune_track_history_tx(
     tx: &mut Transaction<'_, Sqlite>,
     track_id: &TrackId,
@@ -104,8 +99,7 @@ pub async fn prune_track_history_tx(
     Ok(result.rows_affected())
 }
 
-/// Spawn the track-history pruner. It runs the same keep-N prune used by the
-/// manual admin GC path, across all tracks, without running VACUUM.
+/// Keep-N prune across all tracks, without VACUUM.
 pub fn spawn_track_history_pruner(pool: SqlitePool) {
     let Some((interval, keep)) = track_history_pruner_config_from_env() else {
         tracing::info!("track_vcs: history pruner disabled");
@@ -114,8 +108,7 @@ pub fn spawn_track_history_pruner(pool: SqlitePool) {
 
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(interval);
-        // Match the object sweeper: skip the immediate boot tick and let the
-        // server settle before taking SQLite writer locks for cleanup.
+        // Skip the immediate boot tick so the server settles before taking writer locks.
         tick.tick().await;
         loop {
             tick.tick().await;
@@ -145,8 +138,6 @@ pub(super) fn track_history_pruner_config_from_env() -> Option<(Duration, usize)
     Some((interval, keep))
 }
 
-/// One all-track history prune pass. Public so integration tests can drive
-/// cleanup deterministically without waiting for the scheduled task.
 pub async fn prune_all_tracks_once(pool: &SqlitePool, keep: usize) -> Result<u64> {
     let track_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM tracks ORDER BY id")
         .fetch_all(pool)
@@ -202,14 +193,12 @@ pub async fn prune_all_tracks_once(pool: &SqlitePool, keep: usize) -> Result<u64
     Ok(total_pruned)
 }
 
-/// Spawn the unreferenced-object sweeper. Content-addressed objects are not
-/// deleted by `track_delete_tx` / `area_delete_tx` because blobs can be shared
-/// across tracks; this hourly fallback reclaims rows no live commit references.
+/// Content-addressed objects are not deleted by track/area delete because
+/// blobs can be shared across tracks; this fallback reclaims unreferenced rows.
 pub fn spawn_unreferenced_object_sweeper(pool: SqlitePool) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(OBJECT_SWEEP_INTERVAL);
-        // Match the terminal sweeper: skip the immediate boot tick and let the
-        // server settle before taking the SQLite writer lock for cleanup.
+        // Skip the immediate boot tick so the server settles before taking the writer lock.
         tick.tick().await;
         loop {
             tick.tick().await;
@@ -220,12 +209,8 @@ pub fn spawn_unreferenced_object_sweeper(pool: SqlitePool) {
     });
 }
 
-/// One unreferenced-object sweep pass. Public so integration tests can drive
-/// cleanup deterministically without waiting for the hourly task.
-///
-/// This deliberately performs one `O(commits)` scan inside the writer
-/// transaction to seed live tree refs. It is single-writer fallback GC; revisit
-/// with streaming/snapshot+reverify if commit counts grow.
+/// One `O(commits)` scan inside the writer transaction to seed live tree
+/// refs; revisit with streaming if commit counts grow.
 pub async fn sweep_unreferenced_objects_once(pool: &SqlitePool) -> Result<u64> {
     let cutoff_ms = now_ms().saturating_sub(OBJECT_SWEEP_GRACE_MS);
     let mut tx = begin_immediate_tx(pool).await?;
@@ -259,10 +244,8 @@ async fn sweep_unreferenced_objects_tx(
     sqlx::query("DELETE FROM track_vcs_sweep_refs")
         .execute(&mut **tx)
         .await?;
-    // Re-rooted on HEAD refs (#722 B.2). Tree-rooted
-    // `SELECT DISTINCT tree_hash` would keep trees of pruned-but-not-yet-swept
-    // commit rows alive across a partial prune; ref-rooting matches the
-    // prune's reachability so orphaned objects are actually reclaimed.
+    // Rooted on HEAD refs, not `SELECT DISTINCT tree_hash`: tree-rooting would
+    // keep trees of pruned-but-not-yet-swept commits alive across a partial prune.
     sqlx::query(
         r#"INSERT OR IGNORE INTO track_vcs_sweep_refs(hash)
            SELECT DISTINCT c.tree_hash

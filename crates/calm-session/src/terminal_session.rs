@@ -1,45 +1,5 @@
-//! Pure, IO-free terminal-mode protocol state machine (v2).
-//!
-//! This module is the testable core of the per-client protocol that runs in
-//! calm-server's terminal renderer. The renderer's IO shell owns the PTY
-//! attachment, WebSocket bridge, tokio tasks, and broadcast channels. Each
-//! [`ClientMsg`] it reads off a client connection — and each PTY chunk /
-//! child-exit event it observes — is fed into one of the types here, which
-//! decide what to do and emit a list of [`Effect`]s for the shell to enact.
-//!
-//! Keeping the protocol layer free of tokio / sockets / fds lets us assert
-//! on its transitions in plain unit tests instead of by forking the real
-//! binary and polling timing-sensitive sockets.
-//!
-//! ## Layering
-//!
-//! - [`TerminalSessionState`] — one instance per attached client connection.
-//!   Owns whether the [`ClientMsg::ClientHello`] handshake has completed,
-//!   tracks the client's role / resize epoch, and decides what to emit on
-//!   each subsequent frame.
-//! - [`OwnerRegistry`] — single instance per daemon. Tracks the current
-//!   owner across all connected clients. Concurrent-safe access is the
-//!   shell's responsibility (typically a `Mutex` wrapper).
-//! - [`RenderPlane`] (PR-2) — single global instance per terminal-mode
-//!   daemon. Owns the [`TerminalModel`] (VT-driven grid + scrollback) and
-//!   the [`ByteRing`] transcript. Produces `Broadcast(RenderPatch)` on
-//!   each PTY chunk, `Broadcast(RenderSnapshot)` on resize, and
-//!   `Broadcast(TerminalExited)` on child exit. Maintains `pty_seq`
-//!   independently of `render_rev` (the latter comes from the model).
-//! - [`PtyBroadcaster`] — legacy single global instance per daemon.
-//!   Replaced by [`RenderPlane`] for terminal-mode daemons in PR-2.
-//!   Retained as the test fixture for the protocol state machine
-//!   (`tests/v2_protocol.rs`).
-//! - [`ByteRing`] — chunk-granular ring of recent PTY output, sized in
-//!   bytes. Drops whole chunks (never splits an escape sequence) from the
-//!   front when over budget.
-//!
-//! ## Non-goals
-//!
-//! - No tokio types. No OS resources. No `Arc`/`Mutex`.
-//! - `RenderPatch.data` remains raw PTY bytes (`encoding = Vt`) so
-//!   xterm.js can drive its own grid; cell-grid diff encoding is a
-//!   follow-up.
+//! Pure, IO-free terminal-mode protocol state machine: each client frame / PTY chunk / child exit is fed in and
+//! a list of [`Effect`]s comes out for the IO shell to enact. No tokio types, no OS resources, no `Arc`/`Mutex`.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -55,83 +15,39 @@ use crate::{
     RenderEncoding, RenderPatch, RenderSnapshot, Role,
 };
 
-/// How long `render_rev` must remain stable (no further bumps) after at
-/// least one PTY chunk has been observed before [`RenderPlane`] reports
-/// the child as input-ready. Tuned for typical shell prompts which paint
-/// PS1 in a single CSI burst and then idle; agent CLIs (Claude / codex /
-/// gemini) also tend to render their startup banner in one go then wait
-/// for input. 100ms is long enough to coalesce a multi-chunk paint
-/// without making the kernel wait noticeably before injecting stdin.
+/// How long `render_rev` must stay stable after at least one PTY chunk before [`RenderPlane`] reports the child input-ready; long enough to coalesce a multi-chunk prompt paint.
 pub const CHILD_READY_QUIESCENT_MS: u64 = 100;
 
-/// Side-effects emitted by the protocol layer for the IO shell to enact.
-///
-/// All variants are passive descriptions — the state machine never performs
-/// IO itself. The shell receives a `Vec<Effect>` per pumped event and
-/// translates each variant into a socket write, channel send, or syscall.
+/// Side-effects emitted by the protocol layer for the IO shell to enact; the state machine never performs IO itself.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Effect {
-    /// Send a single [`DaemonMsg`] to the client whose frame produced this
-    /// effect. Used for [`DaemonMsg::ServerHello`] after a successful
-    /// handshake.
+    /// Send a single [`DaemonMsg`] to the client whose frame produced this effect.
     SendToClient(DaemonMsg),
-    /// Broadcast a [`DaemonMsg`] to every attached client. Used for live
-    /// `RenderPatch` / `ResizeApplied` / `TerminalExited` / `OwnerChanged`.
+    /// Broadcast a [`DaemonMsg`] to every attached client.
     Broadcast(DaemonMsg),
-    /// Resize the PTY master. The shell is free to ignore cols/rows == 0
-    /// (the existing `apply_resize` keeps that guard).
+    /// Resize the PTY master. The shell is free to ignore cols/rows == 0.
     ResizePty { cols: u16, rows: u16 },
-    /// Write bytes to the PTY stdin.
-    ///
-    /// `input_seq` mirrors the [`ClientMsg::Input`] field that produced
-    /// this effect. The shell uses it to drive a per-write ack: after
-    /// the PTY master write returns successfully, the shell emits a
-    /// [`DaemonMsg::InputAck`] back to the originating connection
-    /// carrying this seq. `input_seq == 0` means the client did not
-    /// request an ack — the shell still performs the write but does not
-    /// emit any ack frame. See [`ClientMsg::Input`] and
-    /// [`DaemonMsg::InputAck`] for the wire-level contract.
+    /// Write bytes to the PTY stdin; `input_seq` mirrors the [`ClientMsg::Input`] field, and the shell emits
+    /// [`DaemonMsg::InputAck`] with it after a successful write when it is non-zero.
     WriteToPty { data: Vec<u8>, input_seq: u64 },
-    /// Tear down the child process (SIGHUP the pgid, then SIGKILL fallback;
-    /// the shell still owns that policy).
+    /// Tear down the child process (SIGHUP the pgid, then SIGKILL fallback; the shell owns that policy).
     KillChild,
-    /// Send a typed v2 protocol error to the client. Used in place of the
-    /// legacy [`Self::ProtocolViolation`] whenever the state machine wants
-    /// to deliver the error as a [`DaemonMsg::ProtocolError`] frame on the
-    /// wire before closing.
+    /// Send a typed v2 protocol error to the client as a [`DaemonMsg::ProtocolError`] frame before closing.
     SendProtocolError {
         code: ProtocolErrorCode,
         message: String,
         expected_version: Option<u16>,
     },
-    /// Drop the client connection after any preceding `SendProtocolError`
-    /// has been flushed. Distinct from a generic "violation" so the shell
-    /// can choose to send a graceful close frame first.
+    /// Drop the client connection after any preceding `SendProtocolError` has been flushed.
     CloseConnection,
-    /// Daemon-level owner registry transition produced as a side-effect of
-    /// a successful `OwnerClaim` / `OwnerRelease`. The shell broadcasts
-    /// [`DaemonMsg::OwnerChanged`] derived from this; we emit both
-    /// `AssignOwner` (registry update intent — purely a marker for
-    /// observability and future hooks) and `BroadcastOwnerChanged`
-    /// (broadcast intent) so the shell does not have to reach into the
-    /// registry to figure out who's owner now.
+    /// Owner registry transition from a successful `OwnerClaim` / `OwnerRelease`; a marker for observability, paired with `BroadcastOwnerChanged`.
     AssignOwner(Option<Uuid>),
-    /// Tell the shell to broadcast a [`DaemonMsg::OwnerChanged`] with the
-    /// current owner (or `None` after a release).
+    /// Tell the shell to broadcast a [`DaemonMsg::OwnerChanged`] with the current owner (or `None` after a release).
     BroadcastOwnerChanged(Option<Uuid>),
-    /// Legacy: the client violated the protocol — typically by sending a
-    /// non-`ClientHello` frame as the first message. Kept for the
-    /// pre-existing tests but new v2 paths emit
-    /// [`Self::SendProtocolError`] + [`Self::CloseConnection`] instead.
+    /// Legacy: the client violated the protocol; new v2 paths emit `SendProtocolError` + `CloseConnection` instead.
     ProtocolViolation(&'static str),
-    /// Update the daemon-side default fg/bg used to answer OSC 10/11
-    /// color queries, and nudge a focus-aware TUI to re-query (#177,
-    /// refined by #305). The shell calls `RenderPlane::set_default_colors`
-    /// and, when the child has DECSET 1004 enabled, writes `ESC[I` to
-    /// the PTY; crossterm-based TUIs (codex, claude-tui) re-emit
-    /// `OSC 10;? + OSC 11;?` on `FocusGained`, and the daemon's vte
-    /// parser synthesizes the solicited reply from the just-updated
-    /// defaults.
+    /// Update the daemon-side default fg/bg used to answer OSC 10/11 and, when the child has DECSET 1004 enabled,
+    /// write `ESC[I` so a focus-aware TUI re-queries them.
     TerminalThemeUpdate { fg: (u8, u8, u8), bg: (u8, u8, u8) },
 }
 
@@ -143,12 +59,8 @@ pub enum InputPermission {
     Denied,
 }
 
-/// Chunk-granular byte ring used to seed a fresh client's render snapshot.
-///
-/// Each `append` pushes one whole chunk (typically one PTY read). When the
-/// total goes over `max_bytes` we drop chunks from the front, never
-/// splitting one — that way the replay always starts on a chunk boundary
-/// and we never slice through a multi-byte escape sequence.
+/// Chunk-granular byte ring used to seed a fresh client's render snapshot; eviction drops whole chunks so
+/// replay always starts on a chunk boundary and never slices a multi-byte escape sequence.
 pub struct ByteRing {
     chunks: VecDeque<Vec<u8>>,
     total_bytes: usize,
@@ -164,8 +76,7 @@ impl ByteRing {
         }
     }
 
-    /// Push one chunk. If the buffer is now over budget, evict whole chunks
-    /// from the front until either we fit, or only one chunk remains.
+    /// Push one chunk; over budget, evict whole chunks from the front until we fit or one chunk remains.
     pub fn append(&mut self, bytes: Vec<u8>) {
         self.total_bytes += bytes.len();
         self.chunks.push_back(bytes);
@@ -175,8 +86,7 @@ impl ByteRing {
         }
     }
 
-    /// Concatenated copy of every chunk currently buffered. Only called on
-    /// the attach path so a per-call `Vec` clone is fine.
+    /// Concatenated copy of every chunk currently buffered.
     pub fn snapshot(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.total_bytes);
         for c in &self.chunks {
@@ -185,86 +95,48 @@ impl ByteRing {
         out
     }
 
-    /// Sum of every buffered chunk's length. Mostly for tests / metrics.
     pub fn total_bytes(&self) -> usize {
         self.total_bytes
     }
 }
 
-/// Context the shell threads through `on_client_frame`. Keeping this in one
-/// struct (rather than a long function-argument list) means new daemon
-/// metadata doesn't bloat every call site.
+/// Context the shell threads through `on_client_frame`.
 #[derive(Debug, Clone)]
 pub struct SessionContext<'a> {
-    /// Terminal id the daemon was launched for. Used for the
-    /// `ClientHello.terminal_id` mismatch check.
+    /// Terminal id the daemon was launched for, checked against `ClientHello.terminal_id`.
     pub terminal_id: &'a str,
-    /// UUID that rolls on every daemon respawn. Sent back in
-    /// `ServerHello.session_id` so a client knows whether the underlying
-    /// PTY is the same as its last attach or a fresh one.
+    /// UUID that rolls on every daemon respawn, so a client knows whether the PTY is the same as its last attach.
     pub session_id: Uuid,
-    /// Current PTY viewport. The state machine doesn't mutate the master;
-    /// it only reports what's there back to the client.
+    /// Current PTY viewport; the state machine only reports it, never mutates the master.
     pub pty_size: PtySize,
     /// PTY byte sequence head (oldest still in history).
     pub pty_seq_head: u32,
-    /// PTY byte sequence tail (most recent). The shell increments this as
-    /// chunks land via `PtyBroadcaster::on_pty_chunk`.
+    /// PTY byte sequence tail (most recent).
     pub pty_seq_tail: u32,
-    /// Current render revision (mirrors `pty_seq_tail` in this PR).
+    /// Current render revision.
     pub render_rev: u32,
-    /// Snapshot of `RenderPlane::child_ready_fired()` captured at the
-    /// moment the daemon built this context. Threaded into
-    /// `DaemonMsg::ServerHello.is_child_ready` so a late-joining client
-    /// (e.g. the kernel's transient input-injection connection) knows
-    /// whether the one-shot `ChildReady` broadcast has already fired.
-    ///
-    /// Defaults to `false` (the safe "wait for ready" assumption) on
-    /// call sites that don't track child-readiness — notably the legacy
-    /// [`PtyBroadcaster`]-backed unit tests in `tests/v2_protocol.rs`.
+    /// Snapshot of `RenderPlane::child_ready_fired()` for `ServerHello.is_child_ready`; defaults to `false` (wait for ready) on call sites that don't track readiness.
     pub is_child_ready: bool,
-    /// Default foreground/background colors the daemon currently
-    /// advertises on OSC 10/11 (mirrors `RenderPlane::default_fg/_bg`).
-    /// Used by the `TerminalThemeUpdate` handler to suppress a redundant
-    /// theme update whose colors already match what the daemon is
-    /// serving (the New-terminal mount case — fix A for the OSC-echo
-    /// bug). `None` on call sites that pre-date theming (the legacy
-    /// `PtyBroadcaster` unit-test fixture), which makes the equality
-    /// check below fall through to "treat as a real change" — i.e. the
-    /// suppression is opt-in and never silently swallows a toggle when
-    /// the daemon's current colors are unknown.
+    /// Default fg/bg the daemon currently advertises on OSC 10/11, used to suppress a redundant `TerminalThemeUpdate`;
+    /// `None` means unknown, and the suppression falls through so a real toggle is never swallowed.
     pub current_default_fg: Option<(u8, u8, u8)>,
     pub current_default_bg: Option<(u8, u8, u8)>,
 }
 
 /// Single-client protocol state machine. One instance per accepted socket.
-///
-/// Tracks whether the [`ClientMsg::ClientHello`] handshake has completed,
-/// the role assigned by the [`OwnerRegistry`], and the latest committed
-/// resize epoch. Every [`ClientMsg`] is run through [`on_client_frame`]
-/// which returns the side-effects the shell needs to enact.
-///
-/// [`on_client_frame`]: TerminalSessionState::on_client_frame
 pub struct TerminalSessionState {
     /// True once a valid `ClientHello` has been processed.
     attached: bool,
     /// Client UUID from the successful `ClientHello`. `None` pre-handshake.
     client_id: Option<Uuid>,
-    /// Role assigned by the `OwnerRegistry` at handshake time, mutated on
-    /// successful `OwnerClaim` / `OwnerRelease` from this connection.
+    /// Role assigned by the `OwnerRegistry` at handshake time, mutated on successful `OwnerClaim` / `OwnerRelease`.
     role: Option<Role>,
     owner_lease: Option<OwnerLease>,
-    /// Latest accepted resize epoch from the owner. Frames with `epoch <=
-    /// resize_epoch` are stale and silently dropped.
+    /// Latest accepted resize epoch; frames with `epoch <= resize_epoch` are stale and silently dropped.
     resize_epoch: u32,
-    /// Last `render_rev` the client acknowledged. Plumbed in but not used
-    /// for back-pressure decisions in this PR (a follow-up wires it into
-    /// `Backpressure` emission).
+    /// Last `render_rev` the client acknowledged; not used for back-pressure decisions yet.
     last_render_acked_rev: Option<u32>,
-    /// Capabilities the client advertised in its `ClientHello`. Cached
-    /// here so post-handshake frame handlers can branch on flags like
-    /// `kernel_originated_input` without rethreading the original hello.
-    /// `None` pre-handshake.
+    /// Capabilities the client advertised in its `ClientHello`, cached for post-handshake gating. `None` pre-handshake.
     capabilities: Option<ClientCapabilities>,
 }
 
@@ -281,7 +153,6 @@ impl TerminalSessionState {
         }
     }
 
-    /// True once we have seen the initial `ClientHello`.
     pub fn is_attached(&self) -> bool {
         self.attached
     }
@@ -329,43 +200,9 @@ impl TerminalSessionState {
         released
     }
 
-    /// Translate one incoming client frame into a list of side-effects.
-    ///
-    /// The first frame on a connection MUST be [`ClientMsg::ClientHello`];
-    /// anything else yields a typed
-    /// [`Effect::SendProtocolError`]+[`Effect::CloseConnection`] pair and
-    /// the shell must close the socket.
-    ///
-    /// Handshake checks (in order):
-    /// 1. `protocol_version == PROTOCOL_VERSION` else `UnsupportedVersion`.
-    /// 2. `terminal_id == ctx.terminal_id` else `BadHandshake`.
-    /// 3. `capabilities.render_encodings` contains `Vt` else
-    ///    `UnsupportedEncoding`.
-    ///
-    /// On success: register the client in `registry`, capture the
-    /// returned `Role`, and emit `ServerHello` with the current snapshot.
-    /// A handshake is read-only with respect to PTY geometry. In particular,
-    /// reconnecting/remounting a terminal must not reshape the shared render
-    /// model before its recovery snapshot is built. Owners resize explicitly
-    /// with `ResizeCommit` after attachment.
-    ///
-    /// Post-handshake routing:
-    /// - `Input{ data, input_seq }` → owner / kernel-input observer:
-    ///   `WriteToPty { data, input_seq }`; observer without kernel-input:
-    ///   `NotOwner` error. The seq is forwarded verbatim; the shell uses
-    ///   it post-write to emit `DaemonMsg::InputAck` to the originating
-    ///   connection (when seq > 0). The state machine never validates or
-    ///   tracks ordering.
-    /// - `ResizeCommit{epoch,..}` → owner: bump epoch if `>` current,
-    ///   emit `ResizePty` + broadcast `ResizeApplied`; stale epoch is a
-    ///   silent no-op. Observer → `NotOwner`.
-    /// - `OwnerClaim` → fresh connection lease; acknowledge every claim with
-    ///   `AssignOwner` + `BroadcastOwnerChanged` and bump this state's
-    ///   role to `Owner`.
-    /// - `OwnerRelease` → registry clear; mirror role to Observer.
-    /// - `RenderAck` → update `last_render_acked_rev` (no other effect).
-    /// - `Kill` → owner: `KillChild`; observer: `NotOwner`.
-    /// - unknown / forward-compatibility variants → silent no-op.
+    /// Translate one incoming client frame into a list of side-effects. The first frame MUST be `ClientHello`.
+    /// A handshake is read-only with respect to PTY geometry: a remount must not reshape the shared model before its
+    /// recovery snapshot is built; owners resize explicitly with `ResizeCommit` after attachment.
     pub fn on_client_frame(
         &mut self,
         msg: ClientMsg,
@@ -386,26 +223,13 @@ impl TerminalSessionState {
 
         match msg {
             ClientMsg::Input { data, input_seq } => {
-                // Two paths can authorize input:
-                // (1) Owner role — the default.
-                // (2) kernel_originated_input capability — only set by
-                //     the kernel's own DaemonClient over the
-                //     kernel-private unix socket (see field docs in
-                //     `crate::ClientCapabilities`). NOT extended to
-                //     ResizeCommit / Kill on purpose; the kernel relays
-                //     input but is not the source of truth for viewport
-                //     / lifecycle.
+                // Input is authorized by owner role OR the `kernel_originated_input` capability; the latter is NOT extended to ResizeCommit / Kill on purpose.
                 let kernel_input = self
                     .capabilities
                     .as_ref()
                     .map(|c| c.kernel_originated_input)
                     .unwrap_or(false);
                 if self.role == Some(Role::Owner) || kernel_input {
-                    // `input_seq` is forwarded into the effect verbatim;
-                    // the shell will emit `DaemonMsg::InputAck` after
-                    // the actual PTY write completes when seq > 0. seq
-                    // == 0 means "no ack requested" — the browser path's
-                    // wire default.
                     vec![Effect::WriteToPty { data, input_seq }]
                 } else {
                     vec![not_owner_error(INPUT_REQUIRES_OWNER_ROLE)]
@@ -474,8 +298,7 @@ impl TerminalSessionState {
                     vec![not_owner_error("Kill requires owner role")]
                 }
             }
-            // A second `ClientHello` on the same connection is a protocol
-            // violation; the specification is "one hello per connection".
+            // A second `ClientHello` on the same connection is a protocol violation.
             ClientMsg::ClientHello { .. } => {
                 vec![
                     Effect::SendProtocolError {
@@ -487,44 +310,17 @@ impl TerminalSessionState {
                 ]
             }
             ClientMsg::TerminalThemeUpdate { fg, bg } => {
-                // Fix A — drop the redundant mount-time theme update.
-                //
-                // `web/src/XtermView.tsx`'s theme effect fires on EVERY
-                // mount (deliberately, so a real toggle while the WS was
-                // down still reaches the daemon), so a freshly-opened
-                // New-terminal card always POSTs a `TerminalThemeUpdate`
-                // carrying the host's current theme. But the daemon was
-                // spawned with that exact theme via `--terminal-fg/-bg`
-                // (see daemon.rs `with_colors`), so this first update is
-                // a no-op color-wise. Pre-#305 the daemon still wrote
-                // a synthetic `OSC 10/11 + focus-in` blob; a shell at
-                // its prompt runs ZLE/readline in raw mode (ECHO off,
-                // ICANON off) and treated the injected bytes as INPUT,
-                // redrawing them as `^[]10;rgb:…` glyphs (#295).
-                //
-                // Suppress this no-op before the role gate (#359) so an
-                // observer's benign #177 mount-time re-POST does not
-                // surface as a NotOwner protocol error. This is safe:
-                // the unchanged path emits no effect, writes nothing to
-                // the PTY, and changes no state, so no authorization is
-                // bypassed. A genuine toggle (colors actually differ)
-                // still flows through to the authorization check below.
-                // We only suppress when `current_default_*` is known
-                // (`Some`); an unknown current color (legacy fixtures)
-                // falls through to the original always-emit behaviour,
-                // so we never swallow a real change.
+                // Drop a theme update whose colors already match: the browser re-POSTs the host theme on EVERY mount, and the
+                // daemon was spawned with that exact theme. Suppressed before the role gate so an observer's benign mount-time
+                // re-POST does not surface as NotOwner; the unchanged path emits no effect, so no authorization is bypassed.
                 let unchanged =
                     ctx.current_default_fg == Some(fg) && ctx.current_default_bg == Some(bg);
                 if unchanged {
                     return vec![];
                 }
 
-                // Same authorization shape as `Input`: owner OR
-                // kernel-input observer. This flips the daemon's
-                // advertised OSC 10/11 colors and (under DECSET 1004)
-                // writes `ESC[I` to the PTY, so we MUST NOT let an
-                // observer rewrite another user's terminal colors
-                // through a forged WS frame.
+                // Same authorization shape as `Input`: this flips the advertised OSC 10/11 colors and may write `ESC[I` to the PTY,
+                // so an observer MUST NOT rewrite another user's terminal colors through a forged WS frame.
                 let kernel_input = self
                     .capabilities
                     .as_ref()
@@ -537,14 +333,11 @@ impl TerminalSessionState {
                 }
                 vec![Effect::TerminalThemeUpdate { fg, bg }]
             }
-            // Question-answer frames are consumed by higher-level agent
-            // plumbing and have no terminal-session side effect.
+            // Question-answer frames are consumed by higher-level agent plumbing; no terminal-session side effect.
             ClientMsg::AnswerQuestion { .. } => vec![],
         }
     }
 
-    /// Process the very first frame on a connection. Splits out of
-    /// `on_client_frame` only for readability.
     fn process_hello(
         &mut self,
         msg: ClientMsg,
@@ -564,7 +357,6 @@ impl TerminalSessionState {
                 role_hint,
                 capabilities,
             } => {
-                // 1. Version match — must be exactly PROTOCOL_VERSION.
                 if protocol_version != PROTOCOL_VERSION {
                     return vec![
                         Effect::SendProtocolError {
@@ -577,7 +369,6 @@ impl TerminalSessionState {
                         Effect::CloseConnection,
                     ];
                 }
-                // 2. Terminal id match.
                 if terminal_id != ctx.terminal_id {
                     return vec![
                         Effect::SendProtocolError {
@@ -591,7 +382,6 @@ impl TerminalSessionState {
                         Effect::CloseConnection,
                     ];
                 }
-                // 3. Capability intersection (must include Vt).
                 if !capabilities.render_encodings.contains(&RenderEncoding::Vt) {
                     return vec![
                         Effect::SendProtocolError {
@@ -603,7 +393,6 @@ impl TerminalSessionState {
                     ];
                 }
 
-                // Handshake passed — register, build snapshot, reply.
                 let role = registry.on_attach(client_id, role_hint);
                 self.attached = true;
                 self.client_id = Some(client_id);
@@ -613,13 +402,9 @@ impl TerminalSessionState {
                 } else {
                     None
                 };
-                // Cache capabilities for post-handshake gating
-                // (kernel_originated_input on Input frames, etc.).
                 self.capabilities = Some(capabilities.clone());
 
-                // In this PR the render plane is byte-passthrough: the
-                // snapshot's `data` is the ring's full content (raw PTY
-                // bytes). PR-2 will replace this with a VT-model render.
+                // The snapshot's `data` is the ring's full content (raw PTY bytes).
                 let snapshot_bytes = buffer.snapshot();
                 let scrollback = match initial_scrollback {
                     InitialScrollbackEcho::None => None,
@@ -651,11 +436,8 @@ impl TerminalSessionState {
                     is_child_ready: ctx.is_child_ready,
                 };
 
-                // `desired_size` binds this client's recovery snapshot at
-                // the server edge, but ClientHello itself must not mutate
-                // the shared PTY/model. A page remount is a reconnect, not
-                // an explicit resize intent; resizing here used to destroy
-                // content before ServerHello could restore it.
+                // `desired_size` must not mutate the shared PTY/model: a page remount is a reconnect, not a resize intent, and
+                // resizing here destroyed content before ServerHello could restore it.
                 let _ = desired_size;
                 vec![Effect::SendToClient(server_hello)]
             }
@@ -671,14 +453,10 @@ impl TerminalSessionState {
     }
 }
 
-// Internal alias so `process_hello`'s match doesn't have to re-import
-// `crate::InitialScrollback` (its `None`/`All`/`Lines` are
-// indistinguishable from the bare scope below otherwise).
+// Alias so `process_hello`'s match doesn't shadow `None`/`All`/`Lines`.
 use crate::InitialScrollback as InitialScrollbackEcho;
 
-/// Message of the [`ProtocolErrorCode::NotOwner`] error that refuses a
-/// [`ClientMsg::Input`] from a non-owner. Kernel clients match on it to tell an
-/// input refusal apart from an ownership-claim refusal (both use `NotOwner`).
+/// Kernel clients match on this message to tell an input refusal apart from an ownership-claim refusal (both use `NotOwner`).
 pub const INPUT_REQUIRES_OWNER_ROLE: &str =
     "Input requires owner role or kernel_originated_input capability";
 
@@ -696,25 +474,14 @@ impl Default for TerminalSessionState {
     }
 }
 
-/// PTY-byte plane: owns the [`ByteRing`] and produces the broadcast
-/// effects for raw PTY chunks and for the child's exit code. Maintains the
-/// `pty_seq` and (in this PR identically) the `render_rev` counters.
-///
-/// One instance per daemon, shared between the PTY-reader thread and the
-/// child-waiter task in the shell layer.
+/// PTY-byte plane: owns the [`ByteRing`] and produces the broadcast effects for raw PTY chunks and child exit. Legacy; retained as the protocol test fixture.
 pub struct PtyBroadcaster {
     buffer: ByteRing,
-    /// Monotonic per-chunk counter. Bumped once per `on_pty_chunk` call —
-    /// chunk-granularity, not byte-granularity. PR-2 may switch to
-    /// byte-granularity if/when the VT model produces per-glyph patches.
+    /// Monotonic per-chunk counter (chunk-granularity, not byte-granularity).
     pty_seq: u32,
-    /// Monotonic render revision. In this PR every PTY chunk also bumps
-    /// the render rev by 1 — render plane and PTY plane are pinned together
-    /// until the VT model lands.
+    /// Monotonic render revision; here every PTY chunk also bumps it by 1.
     render_rev: u32,
-    /// PTY history low-water mark. We never evict the seq below this — it
-    /// indicates the oldest sequence number still represented in the
-    /// `ByteRing`. Bumped when a chunk is evicted.
+    /// Oldest sequence number still represented in the `ByteRing`; bumped when a chunk is evicted.
     pty_seq_head: u32,
 }
 
@@ -728,15 +495,10 @@ impl PtyBroadcaster {
         }
     }
 
-    /// One PTY chunk arrived. Append to the replay ring (evicting old
-    /// chunks as needed, bumping `pty_seq_head`), bump `pty_seq` +
-    /// `render_rev`, and emit a `Broadcast(RenderPatch{..})` for every
-    /// attached client.
+    /// One PTY chunk arrived: append to the replay ring, bump `pty_seq` + `render_rev`, and broadcast a `RenderPatch`.
     pub fn on_pty_chunk(&mut self, bytes: Vec<u8>) -> Vec<Effect> {
         let prev_render_rev = self.render_rev;
-        // Manual append-with-eviction-tracking: a chunk drop here also
-        // moves the seq-head forward (each evicted chunk == one earlier
-        // seq increment that's no longer in history).
+        // Manual append so an evicted chunk also moves the seq-head forward.
         let chunk_len = bytes.len();
         self.buffer.total_bytes += chunk_len;
         self.buffer.chunks.push_back(bytes.clone());
@@ -758,9 +520,7 @@ impl PtyBroadcaster {
         }))]
     }
 
-    /// Child exited with the given exit code. Emit a `TerminalExited` to
-    /// every client carrying the final `pty_seq` / `render_rev` so the
-    /// client can confirm it didn't miss any output.
+    /// Child exited; broadcast `TerminalExited` carrying the final cursors so clients can confirm they missed no output.
     pub fn on_child_exit(&mut self, code: Option<i32>) -> Vec<Effect> {
         vec![Effect::Broadcast(DaemonMsg::TerminalExited {
             code,
@@ -769,9 +529,7 @@ impl PtyBroadcaster {
         })]
     }
 
-    /// Read-only handle on the ring. The shell hands this to
-    /// [`TerminalSessionState::on_client_frame`] when serving a handshake
-    /// so the state machine can snapshot it into `ServerHello.snapshot.data`.
+    /// Read-only handle on the ring, snapshotted into `ServerHello.snapshot.data` at handshake.
     pub fn buffer(&self) -> &ByteRing {
         &self.buffer
     }
@@ -789,29 +547,6 @@ impl PtyBroadcaster {
     }
 }
 
-// ---- Render plane (PR-2) ------------------------------------------------
-
-/// Server-side render plane: owns the [`TerminalModel`] (VT-driven grid +
-/// scrollback) plus the byte-passthrough transcript ring. Replaces
-/// [`PtyBroadcaster`] for terminal-mode daemons in PR-2; the existing
-/// protocol unit tests keep using `PtyBroadcaster`.
-///
-/// ## `pty_seq` vs `render_rev` (PR-2 divergence)
-///
-/// - `pty_seq` is bumped **once per PTY chunk**. It tracks bytes
-///   delivered, regardless of whether they changed anything visible.
-/// - `render_rev` comes from `TerminalModel::rev()`. It only bumps when
-///   the grid / cursor / SGR actually changed.
-///
-/// Consequences:
-/// - A no-op chunk (e.g. pure SGR toggle that flips back, or DECSET that
-///   we treat as noop) bumps `pty_seq` but may leave `render_rev`
-///   unchanged.
-/// - A `resize` bumps `render_rev` (the model considers any geometry
-///   change a state change) but doesn't touch `pty_seq`.
-///
-/// Each emitted `RenderPatch` carries both cursors; clients can resync
-/// against whichever is more useful.
 /// An optional read-only client projection installed before output is ingested.
 /// The render plane remains the sole source of terminal protocol replies.
 pub trait RenderObserver: Send + Sync {
@@ -827,33 +562,15 @@ pub struct RenderPlane {
     transcript: ByteRing,
     pty_seq: u32,
     /// Latest viewport (cols, rows) the daemon believes the PTY is at.
-    /// Updated by `on_resize`; surfaced to clients in `RenderSnapshot`
-    /// when their `desired_size` is `None`-equivalent.
     cols: u16,
     rows: u16,
-    /// Backstop: tracks the previous `render_rev` we emitted so each
-    /// `RenderPatch.prev_render_rev` is correctly chained.
+    /// Previous `render_rev` emitted, so each `RenderPatch.prev_render_rev` is correctly chained.
     last_emitted_render_rev: u32,
-    /// Wall-clock instant of the most recent `render_rev` increase.
-    /// `None` until the first PTY chunk has been observed; reset on
-    /// every subsequent chunk that bumps the model's `rev()`. Drives
-    /// the [`detect_ready`] quiescent-window check.
-    ///
-    /// [`detect_ready`]: RenderPlane::detect_ready
+    /// Instant of the most recent `render_rev` increase; `None` until the first PTY chunk. Drives `detect_ready`.
     last_rev_change_at: Option<Instant>,
-    /// `true` once [`detect_ready`] has fired `ChildReady`; suppresses
-    /// duplicate emissions. One-shot per session by design (the kernel
-    /// only needs the first ready signal — subsequent quiescent windows
-    /// are normal shell idle, not interesting).
-    ///
-    /// [`detect_ready`]: RenderPlane::detect_ready
+    /// `true` once `detect_ready` has fired `ChildReady`; one-shot per session.
     child_ready_fired: bool,
-    /// Injectable clock used everywhere RenderPlane needs "now". Production
-    /// goes through [`Self::new`], which wires this to `Instant::now`; tests
-    /// use [`Self::with_clock`] to provide an `AtomicU64`-backed mock so
-    /// the quiescent-window detector can be exercised without wall-clock
-    /// sleeps. See [`Self::with_clock`] for the contract on adding new
-    /// wall-clock call sites.
+    /// Injectable clock; every wall-clock "now" read in `RenderPlane` MUST route through this or a mock clock diverges from real time.
     now: Box<dyn Fn() -> Instant + Send + Sync>,
 }
 
@@ -888,11 +605,7 @@ impl RenderPlane {
         )
     }
 
-    /// Same as [`Self::new`] but pre-seeds the model's OSC 10/11 reply
-    /// colors. The daemon passes the host browser's theme RGB here on
-    /// spawn so codex's startup probe gets an authoritative answer
-    /// before the first PTY chunk lands. See
-    /// [`crate::TerminalTheme`] / `--terminal-fg` / `--terminal-bg`.
+    /// Same as [`Self::new`] but pre-seeds the model's OSC 10/11 reply colors, so a child's startup probe gets an authoritative answer before the first PTY chunk.
     pub fn with_colors(
         cols: u16,
         rows: u16,
@@ -906,10 +619,7 @@ impl RenderPlane {
         rp
     }
 
-    /// Replace the default fg/bg the model advertises on OSC 10/11
-    /// query. Drives the mid-session theme-toggle path (#177): the
-    /// session-frame handler updates the model, then writes a synthetic
-    /// OSC reply to the PTY master.
+    /// Replace the default fg/bg the model advertises on OSC 10/11 query.
     pub fn set_default_colors(&mut self, fg: Option<(u8, u8, u8)>, bg: Option<(u8, u8, u8)>) {
         if let Some(observer) = &mut self.observer {
             observer.colors(fg, bg);
@@ -917,54 +627,24 @@ impl RenderPlane {
         self.model.set_default_colors(fg, bg);
     }
 
-    /// Current default foreground the model advertises on an OSC 10
-    /// query. Read by the daemon when building `SessionContext` so the
-    /// session state machine can drop a redundant `TerminalThemeUpdate`
-    /// whose colors already match (the New-terminal mount case — see
-    /// `TerminalSessionState::on_client_frame`).
+    /// Current default foreground the model advertises on OSC 10; lets the session state drop a redundant `TerminalThemeUpdate`.
     pub fn default_fg(&self) -> Option<(u8, u8, u8)> {
         self.model.default_fg()
     }
 
-    /// Current default background the model advertises on an OSC 11
-    /// query. See [`Self::default_fg`].
+    /// Current default background the model advertises on OSC 11.
     pub fn default_bg(&self) -> Option<(u8, u8, u8)> {
         self.model.default_bg()
     }
 
-    /// Whether the PTY child has enabled DECSET 1004 (focus event
-    /// reporting). The daemon reads this to gate the mid-session
-    /// `ESC[I` write on theme toggle: only a focus-aware TUI (codex
-    /// opts in on startup) will treat it as `FocusGained` and
-    /// re-query OSC 10/11; a shell's line editor sits in raw mode but
-    /// never enables 1004, so a stray `ESC[I` would land in its line
-    /// buffer. See `daemon.rs` `Effect::TerminalThemeUpdate`.
+    /// Whether the child has enabled DECSET 1004; gates the mid-session `ESC[I` write on theme toggle, since a shell's
+    /// line editor never enables 1004 and a stray `ESC[I` would land in its line buffer.
     pub fn focus_event_tracking(&self) -> bool {
         self.model.focus_event_tracking()
     }
 
-    /// Constructor with an injected clock (test use). Production goes
-    /// through [`Self::new`].
-    ///
-    /// # Time injection
-    ///
-    /// Production code path uses [`Self::new`], which wires `now` to
-    /// [`Instant::now`]. Tests use this constructor with a mock clock
-    /// (typically an `Arc<AtomicU64>` of "virtual milliseconds since
-    /// base") so the quiescent-window detector can be driven without
-    /// real `tokio::time::sleep`.
-    ///
-    /// **Contract for future maintainers:** every wall-clock "now"
-    /// read inside `RenderPlane` MUST route through `self.now` —
-    /// including the `Instant::elapsed()` comparison inside
-    /// [`Self::detect_ready`], which is really `Instant::now() -
-    /// last`. If a mock clock writes a virtual instant via `self.now`
-    /// but a comparison elsewhere reads `Instant::now()` directly, the
-    /// virtual and real time bases diverge and the detector either
-    /// fires instantly (real now ≫ virtual base) or never (real now
-    /// drifts past virtual deadline). Any new wall-clock call site you
-    /// add to this type must go through `self.now` or the test suite's
-    /// virtual-time guarantee is broken.
+    /// Constructor with an injected clock (test use). Every wall-clock read inside `RenderPlane` MUST go through
+    /// `self.now`, or the virtual and real time bases diverge and the ready detector fires instantly or never.
     pub fn with_clock(
         cols: u16,
         rows: u16,
@@ -986,41 +666,24 @@ impl RenderPlane {
         }
     }
 
-    /// One PTY chunk arrived. Feed the model (which updates the grid +
-    /// bumps `rev` if anything visible changed), append to transcript,
-    /// and emit a `Broadcast(RenderPatch{ encoding: Vt, data: raw bytes,
-    /// render_rev: model.rev(), prev_render_rev: previous,
-    /// pty_seq: bumped })`.
-    ///
-    /// Also bookkeeps [`Self::last_rev_change_at`] for the `ChildReady`
-    /// quiescent-window detector — whenever the model's `rev()` actually
-    /// bumps, the timer resets to "now", which keeps
-    /// [`Self::detect_ready`] from firing while the prompt is still
-    /// being painted.
+    /// One PTY chunk arrived: feed the model, append to the transcript, broadcast a `RenderPatch`, and reset the
+    /// `ChildReady` quiescent timer whenever the model's `rev()` actually bumped.
     pub fn on_pty_chunk(&mut self, bytes: Vec<u8>) -> Vec<Effect> {
         let prev_rev = self.model.rev();
 
-        // 1. Feed model. `rev()` may or may not bump.
         if let Some(observer) = &mut self.observer {
             observer.output(&bytes);
         }
         self.model.feed(&bytes);
 
-        // 2. Transcript bookkeeping (mirrors v1 `ByteRing::append`).
         self.transcript.append(bytes.clone());
 
-        // 3. Cursors.
         self.pty_seq = self.pty_seq.saturating_add(1);
         let new_rev = self.model.rev();
         let prev = self.last_emitted_render_rev;
         self.last_emitted_render_rev = new_rev;
 
-        // 4. ChildReady quiescent timer: reset whenever the model's
-        //    `rev()` actually bumped. `detect_ready` then fires once
-        //    the timer has been idle for `CHILD_READY_QUIESCENT_MS`.
-        //    A no-op chunk (pure C0/SGR that flips back to the same
-        //    state) leaves the timer alone — which is what we want:
-        //    a child that's silently echoing nothing visible IS idle.
+        // A no-op chunk leaves the timer alone: a child echoing nothing visible IS idle.
         if new_rev != prev_rev {
             self.last_rev_change_at = Some((self.now)());
         }
@@ -1033,12 +696,7 @@ impl RenderPlane {
             encoding: RenderEncoding::Vt,
             data: bytes,
         })));
-        // 5. Drain OSC 10/11 reply bytes the model produced this feed
-        //    (codex's startup probe lands inside the very first chunk).
-        //    Routed back to the PTY master via Effect::WriteToPty so
-        //    crossterm's stdin event queue sees the answer.
-        //    `input_seq: 0` — the daemon doesn't want an ack for its
-        //    own synthesized writes; this is fire-and-forget.
+        // Route the model's OSC reply bytes back to the PTY master; `input_seq: 0` because the daemon wants no ack for its own writes.
         let replies = self.model.take_pending_osc_replies();
         if !replies.is_empty() {
             effects.push(Effect::WriteToPty {
@@ -1049,21 +707,8 @@ impl RenderPlane {
         effects
     }
 
-    /// Poll for the one-shot `ChildReady` signal. Returns `Some(Effect)`
-    /// the *first* time the quiescent window has elapsed since the last
-    /// `render_rev` change AND at least one PTY chunk has been observed;
-    /// returns `None` on every subsequent call (or before the window
-    /// elapses).
-    ///
-    /// Driver: the daemon shell calls this on a 50ms `tokio::time::interval`
-    /// in terminal mode. Chat mode never calls it. The poll-based shape
-    /// avoids spawning a deadline task per chunk (which would race the
-    /// next chunk's reset of `last_rev_change_at`).
-    ///
-    /// Returns `Effect::Broadcast(DaemonMsg::ChildReady { ... })` carrying
-    /// the snapshot of `pty_seq` and `render_rev` at the moment of
-    /// detection — the client can correlate against its own cursors to
-    /// know exactly what state the child reached "ready" in.
+    /// Poll for the one-shot `ChildReady` signal: `Some` the first time the quiescent window has elapsed since the last
+    /// `render_rev` change AND at least one PTY chunk was observed. Poll-based to avoid a deadline task per chunk racing the timer reset.
     pub fn detect_ready(&mut self) -> Option<Effect> {
         if self.child_ready_fired {
             return None;
@@ -1079,18 +724,12 @@ impl RenderPlane {
         None
     }
 
-    /// Whether `ChildReady` has already been fired this session.
-    /// Production code shouldn't branch on this — call
-    /// [`Self::detect_ready`] and act on the returned `Option`; the
-    /// accessor is here for acceptance tests that want to assert the
-    /// one-shot state machine without polling the channel.
+    /// Whether `ChildReady` has already fired; for acceptance tests, production should call [`Self::detect_ready`].
     pub fn child_ready_fired(&self) -> bool {
         self.child_ready_fired
     }
 
-    /// Child exited. Emit `TerminalExited` carrying current cursors so
-    /// the client can confirm it didn't drop output between the last
-    /// patch and the exit.
+    /// Child exited; broadcast `TerminalExited` carrying current cursors.
     pub fn on_child_exit(&mut self, code: Option<i32>) -> Vec<Effect> {
         vec![Effect::Broadcast(DaemonMsg::TerminalExited {
             code,
@@ -1099,10 +738,7 @@ impl RenderPlane {
         })]
     }
 
-    /// PTY (and model) was resized. Updates internal cols/rows and feeds
-    /// the model so the grid re-shapes (bumping `rev`). Emits a fresh
-    /// `RenderSnapshot` broadcast: clients use it to repaint at the new
-    /// geometry instead of accumulating mis-sized patches.
+    /// PTY (and model) was resized; broadcasts a fresh `RenderSnapshot` so clients repaint instead of accumulating mis-sized patches.
     pub fn on_resize(&mut self, cols: u16, rows: u16) -> Vec<Effect> {
         self.cols = cols;
         self.rows = rows;
@@ -1115,9 +751,7 @@ impl RenderPlane {
         vec![Effect::Broadcast(DaemonMsg::RenderSnapshot(snap))]
     }
 
-    /// Build a snapshot bound to the client's desired geometry. Called
-    /// at `ClientHello` time and whenever the daemon decides to issue a
-    /// hard resync (e.g. broadcast Lagged → `SnapshotRequired`).
+    /// Build a snapshot bound to the client's desired geometry.
     pub fn build_snapshot(
         &self,
         target_cols: u16,
@@ -1148,11 +782,7 @@ impl RenderPlane {
     }
 
     pub fn pty_seq_head(&self) -> u32 {
-        // Transcript ring runs without per-chunk seq tracking in PR-2;
-        // history-gap detection on the wire side stays "always full snapshot"
-        // (`HistoryGap::requires_snapshot = true`). Surface 0 here — the
-        // wire field is still populated in `ServerHello.pty_seq_head` for
-        // schema compatibility.
+        // The transcript ring has no per-chunk seq tracking; history-gap detection is always "full snapshot", so surface 0 for schema compatibility.
         0
     }
 
@@ -1169,9 +799,7 @@ impl RenderPlane {
         }
     }
 
-    /// Read-only handle on the transcript ring (for parity with
-    /// [`PtyBroadcaster::buffer`]; legacy callers that still want raw
-    /// bytes can use this. New code goes through `build_snapshot`.).
+    /// Read-only handle on the transcript ring; new code goes through `build_snapshot`.
     pub fn transcript(&self) -> &ByteRing {
         &self.transcript
     }

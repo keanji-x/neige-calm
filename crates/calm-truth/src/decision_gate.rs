@@ -18,15 +18,8 @@ mod sealed {
     pub trait Sealed {}
 }
 
-/// Transaction capability accepted by [`DecisionGate`].
-///
-/// This intentionally hides the concrete SQL transaction type from the gate
-/// signature while still letting truth-layer impls run in the caller's write
-/// transaction. PR2 only provides the sqlite implementation; later gates can
-/// add more truth-owned transaction adapters without changing conformance
-/// call sites.
-///
-/// This is the substrate PR7b's Principal gate will use.
+/// Transaction capability accepted by [`DecisionGate`]; hides the concrete SQL
+/// transaction type while still running in the caller's write transaction.
 #[async_trait]
 pub trait WriteTx: sealed::Sealed + Send {
     async fn read_track_root_session_id(
@@ -41,26 +34,16 @@ pub trait WriteTx: sealed::Sealed + Send {
 
     async fn read_card_role(&mut self, card: &CardId) -> Result<Option<CardRole>>;
 
-    /// #1189 §3.6 — the card's home track, the load-bearing half of the
-    /// recorder criterion. Same shape as [`WriteTx::read_card_role`]: a
-    /// live `cards` read inside the caller's write transaction, `None`
-    /// for a row that isn't there (deny, never assume).
+    /// The card's home track: a live `cards` read in the caller's write
+    /// transaction, `None` for a missing row (deny, never assume).
     async fn read_card_track(&mut self, card: &CardId) -> Result<Option<TrackId>>;
 
     async fn read_track_area(&mut self, track: &TrackId) -> Result<Option<AreaId>>;
 }
 
 /// Resolve session-keyed actors through the live `worker_sessions` row, then
-/// reuse the sync role gate for the final containment decision.
-///
-/// This is HP1-a-2's option (b) seam: session→card is a live DB read at gate
-/// time, not the option-(a) session→card cache, so deleted, unknown, or
-/// never-committed sessions deny by construction. Once a session resolves to a
-/// bound card, card→{role,track,area} still comes from the existing
-/// `CardRoleCache` and `TrackAreaCache` through [`enforce_role`]. That keeps a
-/// session actor's decision identical to the equivalent card-keyed actor's
-/// decision, with no duplicate containment logic. All ambiguous states deny
-/// closed, and cardless authority remains denied until PR11 lands.
+/// reuse [`enforce_role`] for the containment decision. Session→card is a live
+/// DB read, so deleted, unknown or never-committed sessions deny by construction.
 pub async fn enforce_role_resolving_session<T: WriteTx + ?Sized + Send>(
     tx: &mut T,
     actor: &ActorId,
@@ -106,11 +89,8 @@ pub async fn enforce_role_resolving_session<T: WriteTx + ?Sized + Send>(
 
     let synthetic = match actor {
         ActorId::AiPlannerSession(_) => {
-            // Live read gave ground-truth card_id; the AiPlanner path in enforce_role
-            // does not re-check role/scope for ordinary events, so verify the card
-            // is actually Planner-roled before granting planner authority. Fail-closed on
-            // non-Planner or unknown card. Worker variants below stay delegated;
-            // enforce_role's self-scope/UnknownCard arms already cover every role.
+            // enforce_role does not re-check role for the AiPlanner path, so verify the
+            // card is Planner-roled before granting planner authority; fail closed.
             if cache.get(&card_id) != Some(CardRole::Planner) {
                 return Err(RoleViolation::SessionPlannerRoleMismatch {
                     session: session_id,
@@ -127,51 +107,19 @@ pub async fn enforce_role_resolving_session<T: WriteTx + ?Sized + Send>(
     enforce_role(&synthetic, event, scope, cache, track_area_cache)
 }
 
-/// Same policy as [`enforce_role_resolving_session`], with `card → {role,
-/// home track}` and `track → area` read live from the caller's write
-/// transaction instead of from the write-through
-/// [`CardRoleCache`] / [`TrackAreaCache`] pair.
-///
-/// ## Why a transaction read instead of the caches
-///
-/// The caches are a *performance* substrate, not a *correctness* substrate:
-/// [`WriteTx::read_card_role`] already runs `SELECT role FROM cards WHERE
-/// id = ?1` inside the caller's transaction, so a role written earlier in the
-/// same transaction (e.g. by `card_create_with_id_tx`) is visible to it — the
-/// transaction read is at least as fresh as the write-through cache. It is
-/// also immune to the two `CardRoleCache` instances in the tree (`SqlxRepo`
-/// holds one, `AppState::new` allocates another) drifting apart, which a
-/// seam that grabbed whichever cache was nearest would silently suffer.
-///
-/// Cost, inside the write lock: at most nine primary-key `SELECT`s per event.
-/// The bound is `2` session reads (one here to find the hydration key, one
-/// authoritative read in `enforce_role_resolving_session`) + `2 cards × 2`
-/// (`role` and `track_id`, for the actor-or-session card and a distinct
-/// `scope.card`) + `3 tracks × 1` (`scope.track` plus each card's home track).
-/// The common shapes are far cheaper: a cardless actor (`User`, `Kernel`,
-/// `KernelDispatcher`) with a card scope costs at most four, and the same
-/// actor with a system scope costs none.
-///
-/// ## Why this is a substitution and not a re-implementation
-///
-/// This function does not restate any of the gate's branches. It hydrates two
-/// throwaway cache instances from the transaction and then calls
-/// [`enforce_role_resolving_session`] — the original — to make the decision.
-/// See [`hydrate_role_caches_from_tx`] for why the hydrated key set is
-/// complete by construction rather than by mirroring the gate's logic.
+/// Same policy as [`enforce_role_resolving_session`], with `card → {role, home
+/// track}` and `track → area` read live from the caller's write transaction.
+/// Hydrates two throwaway caches and calls the original; at most nine
+/// primary-key `SELECT`s per event inside the write lock.
 pub async fn enforce_role_resolving_session_from_tx<T: WriteTx + ?Sized + Send>(
     tx: &mut T,
     actor: &ActorId,
     event: &Event,
     scope: &EventScope,
 ) -> std::result::Result<(), RoleViolation> {
-    // A session actor resolves to a card that the syntactic closure of
-    // `(actor, scope)` cannot see, so look it up first and hand it to the
-    // hydrator as an extra key. Errors and absences are deliberately
-    // *not* interpreted here: `enforce_role_resolving_session` below does
-    // the authoritative session read and owns every deny reason for it.
-    // Reading it twice costs one extra `SELECT` and keeps the decision in
-    // exactly one place.
+    // A session actor's card is outside the syntactic closure of `(actor, scope)`,
+    // so look it up as an extra key. Errors are not interpreted here: the
+    // authoritative session read below owns every deny reason.
     let session_card = match actor {
         ActorId::AiPlannerSession(session)
         | ActorId::AiCodexSession(session)
@@ -191,11 +139,8 @@ pub async fn enforce_role_resolving_session_from_tx<T: WriteTx + ?Sized + Send>(
     enforce_role_resolving_session(tx, actor, event, scope, &cache, &track_area_cache).await
 }
 
-/// The `CardId` an actor carries, if its variant carries one.
-///
 /// Session variants carry a `WorkerSessionId`, not a card; their card is
-/// resolved from `worker_sessions` and passed to
-/// [`hydrate_role_caches_from_tx`] as `extra_card`.
+/// resolved from `worker_sessions` and passed as `extra_card`.
 fn actor_card_id(actor: &ActorId) -> Option<&CardId> {
     match actor {
         ActorId::AiCodex(card) | ActorId::AiClaude(card) | ActorId::AiPlanner(card) => Some(card),
@@ -209,88 +154,11 @@ fn actor_card_id(actor: &ActorId) -> Option<&CardId> {
     }
 }
 
-/// Fill throwaway [`CardRoleCache`] / [`TrackAreaCache`] instances from the
-/// caller's transaction with every row [`enforce_role`] can key on.
-///
-/// ## Completeness (why this is not a mirror of the gate's branches)
-///
-/// [`enforce_role`] is a pure function of `(actor, event, scope, cache,
-/// track_area_cache)`, and the only cache keys it can name are identifiers it
-/// can *reach*:
-///
-///   * `cache.get(card)` / `cache.track_of(card)` are only ever called with
-///     the `CardId` carried by `actor` or the `CardId` carried by `scope`
-///     (`EventScope::Card { card, .. }`, via `enforce_card_scope`'s `target`);
-///   * `track_area_cache.area_of(track)` is only ever called with a home track
-///     that came out of `cache.track_of(..)`;
-///   * no cache key is ever derived from the event payload.
-///
-/// So the syntactic closure of `actor ∪ scope ∪ {resolved session card}` under
-/// `card → home track → area` is a superset of the gate's key set for *any*
-/// branch it takes, present or future-added, as long as the gate keeps keying
-/// only on identifiers reachable from its arguments. `scope`'s own track is
-/// hydrated too, which costs one `SELECT` and removes the need to reason about
-/// which side of a `scope.track` comparison is read from where.
-///
-/// A row that is absent from the transaction is left absent from the cache,
-/// and `enforce_role` denies on that miss for AI worker actors.
-///
-/// ## Why reading the transaction is safe: **the verdict and the event share
-/// one transaction**
-///
-/// Every row this function reads comes out of the caller's `tx` — the three
-/// reads below are `tx.read_card_role`, `tx.read_card_track` and
-/// `tx.read_track_area`. On the production entrance that is the *same*
-/// transaction the event is inserted into: `append_decision_event_in_tx` and
-/// its batch form (`db/sqlite/events.rs`) pass one `&mut Transaction` first to
-/// `gated::authorize` — which calls
-/// [`enforce_role_resolving_session_from_tx`], hence this hydrator — and then
-/// to `SqlxRepo::event_append_in_tx`.
-///
-/// So the verdict is computed from the same view of `cards` / `tracks` that
-/// the `events` row is written into: the committed tables as amended by this
-/// transaction's own pending writes. Every row the gate read was therefore
-/// either already committed, or a pending write of this same transaction — and
-/// in the second case it commits exactly when the event commits and rolls back
-/// exactly when the event rolls back. **The event can never be committed on
-/// the strength of a row state that never committed. That is the entire safety
-/// argument, and it does not appeal to any direction of disagreement with the
-/// write-through caches.**
-///
-/// ## Evidence that the caches lack this property: they diverge **both** ways
-///
-/// "Absent from the DB ⇒ absent from the cache" is *not* true of
-/// `CardRoleCache` / `TrackAreaCache`, so this substrate is not equivalent to
-/// them on every possible state — and the disagreement is not one-directional:
-///
-///   * **Rolled-back create ⇒ the cache is the more permissive side.**
-///     `card_create_with_id_tx` (`db/sqlite/card.rs`) inserts into
-///     `CardRoleCache` before commit, and its comment records that "a txn
-///     rollback leaves a stale entry". The cached gate can then admit an
-///     `AiCodex` / `AiClaude` actor for a card that has no row, while this
-///     hydrator finds no row, leaves the card out, and that same arm of
-///     `enforce_role` (`role_gate.rs`) returns `UnknownCard`.
-///   * **Rolled-back delete ⇒ the cache is the more restrictive side.**
-///     `card_delete_tx` (`db/sqlite/card.rs`) calls `card_role_cache.remove`
-///     before commit, and its comment records that "a txn rollback would leave
-///     the cache temporarily missing an entry". In that state the cached gate
-///     denies an `AiCodex` / `AiClaude` actor with `UnknownCard` although the
-///     card's row is still there, while this hydrator reads that row, so the
-///     miss-deny never fires here. `track_delete_tx` (`db/sqlite/track.rs`)
-///     removes from `TrackAreaCache` before commit in the same shape one level
-///     up. That one is *not* a divergence: `enforce_card_scope`
-///     (`role_gate.rs`) reaches the track→area lookup through a fail-closed
-///     `let ... else` that denies with `RoleLookupFailed` (#1381), and this
-///     hydrator leaves the same entry out when the `tracks` read returns no
-///     row, so both substrates deny alike on a track→area miss.
-///
-/// These two are recorded as *evidence*, not as the argument: because the
-/// caches can drift either way, "the transaction read is always the stricter
-/// side" would be false, which is exactly why the safety argument above is
-/// stated against the transaction's own view of the tables instead. The
-/// equivalence matrix in this file's tests can see neither case — both of its
-/// substrates are projected from one consistent `World` — so they are recorded
-/// here rather than asserted there.
+/// Fill throwaway caches from the caller's transaction with every row
+/// [`enforce_role`] can key on: the gate only keys on identifiers reachable from
+/// `actor ∪ scope ∪ {session card}` under `card → home track → area`. Safe
+/// because the verdict and the `events` insert share one transaction; the
+/// write-through caches can drift from the DB in either direction after a rollback.
 async fn hydrate_role_caches_from_tx<T: WriteTx + ?Sized + Send>(
     tx: &mut T,
     actor: &ActorId,
@@ -420,18 +288,8 @@ impl GateDecision {
     }
 }
 
-/// Pluggable "should this write be allowed" policy.
-///
-/// **Test-only abstraction.** After #1252 S3′ there is no production
-/// implementor and no production consumer: the event-append seam takes its
-/// decision from [`enforce_role_resolving_session_from_tx`] instead of from an
-/// injected gate, and the only implementors left in the tree
-/// (`PermissiveGate` here, `DenyGate` / `DenyOnRoot` / `RootOnlyGate` in
-/// `calm-truth-test-harness`) exist to drive invariant fixtures. It is kept
-/// behind `cfg(any(test, feature = "test-helpers"))` so a permissive stub
-/// cannot be handed to a production write path again — a seam you *cannot*
-/// pass "no policy" to is stronger than a seam whose default policy is a real
-/// gate.
+/// Pluggable "should this write be allowed" policy. **Test-only**: kept behind
+/// `cfg(test-helpers)` so a permissive stub cannot reach a production write path.
 #[cfg(any(test, feature = "test-helpers"))]
 #[async_trait]
 pub trait DecisionGate: Send + Sync {
@@ -446,8 +304,7 @@ pub trait DecisionGate: Send + Sync {
         T: WriteTx + ?Sized + Send;
 }
 
-/// Allow-everything [`DecisionGate`]. Test scaffolding only — see the trait's
-/// note. Gated for the same reason.
+/// Allow-everything [`DecisionGate`]. Test scaffolding only.
 #[cfg(any(test, feature = "test-helpers"))]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct PermissiveGate;
@@ -479,53 +336,10 @@ impl PrincipalDecisionGate {
         Self { principal }
     }
 
-    /// #1189 §3.6 — may this agent session record into `track`'s report?
-    ///
-    /// The criterion is **the session's card**, not the track's root session:
-    /// `card.track_id == track` ∧ `role ∈ {Planner, Assistant}`.
-    ///
-    /// The two halves carry different weight and are worth naming:
-    ///
-    /// * `role ∈ {Planner, Assistant}` keeps worker-card sessions out (G-A).
-    ///   The MCP entry points have a `require_role` of their own, so a
-    ///   mutation here is masked on the production path — this half is
-    ///   pinned at the gate-unit level only, and that is admitted.
-    /// * `card.track_id == track` is the load-bearing half (G-A'): once the
-    ///   role whitelist admits N assistant cards, nothing else stops one
-    ///   track's assistant from recording into another track's report.
-    ///
-    /// **The old `session_id == tracks.root_session_id` criterion is gone,
-    /// not OR-ed in.** Keeping it as an extra allow-arm would have been a
-    /// bypass of the role whitelist rather than a compatibility shim:
-    /// `session_mark_track_root_tx` never checks the root session's card
-    /// role or home track, so a root-marked worker session would sail
-    /// straight past the very check G-A exists to make. The root session
-    /// of a track is bound to that track's Planner card, so it is covered by
-    /// the new criterion on its own merits; what it loses is the ability
-    /// to be the *only* planner-roled session that may record, which #1189
-    /// deliberately gives up (an assistant is by construction not root).
-    ///
-    /// Liveness is checked explicitly, mirroring
-    /// [`enforce_role_resolving_session`]: `session_get_tx` is a plain
-    /// `WHERE id = ?1` with no state filter, so a `superseded`/`exited`
-    /// row still resolves and still carries its `card_id`. Production reaches
-    /// this state on every resume: `session_supersede_active_tx` — reached
-    /// through `session_supersede_and_start_tx` — only flips
-    /// `worker_sessions.state` to `superseded`. The row stays, bound to the
-    /// same card on the same track, so both halves of the card criterion still
-    /// admit the predecessor.
-    ///
-    /// Moving `tracks.root_session_id` is a *separate and conditional* path,
-    /// not part of the supersede: `session_repoint_current_links_tx` calls
-    /// `session_mark_track_root_tx` only when the successor is a `Planner` in
-    /// an active-authority state. So the old root-session criterion got
-    /// liveness for free only on that path (a Planner resume moves the pointer
-    /// off the predecessor); the card criterion never gets it, on any path, so
-    /// the check has to be written down.
-    ///
-    /// Every unresolvable step denies: no session row, a session that is no
-    /// longer an active authority, a cardless session, an unknown card, an
-    /// unknown card track.
+    /// May this agent session record into `track`'s report? The criterion is the
+    /// session's card — `card.track_id == track` ∧ `role ∈ {Planner, Assistant}` —
+    /// plus an explicit liveness check: `session_get_tx` has no state filter, so a
+    /// `superseded` row still resolves with its `card_id`. Every unresolvable step denies.
     pub async fn decide_recorder<T>(&self, tx: &mut T, track: &TrackId) -> Result<GateDecision>
     where
         T: WriteTx + ?Sized + Send,
@@ -585,11 +399,7 @@ impl PrincipalDecisionGate {
     }
 }
 
-/// Run `f` inside one write transaction behind a [`DecisionGate`].
-///
-/// Test-only, and gated for the same reason as the trait: it has no production
-/// call site — the invariant fixtures in `calm-truth-test-harness` are its only
-/// consumers.
+/// Run `f` inside one write transaction behind a [`DecisionGate`]. Test-only.
 #[cfg(any(test, feature = "test-helpers"))]
 #[allow(clippy::too_many_arguments)]
 pub async fn commit_decision<R, G, F>(
@@ -862,9 +672,8 @@ mod tests {
         (cache, wcc)
     }
 
-    /// #1189 §3.6 — one table for the whole recorder criterion, so the two
-    /// halves (`role ∈ {Planner, Assistant}` and `card.track_id == track`) are
-    /// each pinned by a row that flips when that half is removed.
+    /// One table for the recorder criterion, so each half is pinned by a row that
+    /// flips when that half is removed.
     async fn recorder_grant_for(
         session: &str,
         card: Option<&str>,
@@ -910,8 +719,6 @@ mod tests {
         );
     }
 
-    /// G-A. Honest about its reach: the MCP entry points carry a
-    /// `require_role` of their own, so this half is only observable here.
     #[tokio::test]
     async fn recorder_grant_refuses_a_worker_card_session() {
         assert!(
@@ -936,9 +743,6 @@ mod tests {
         );
     }
 
-    /// G-A' — the load-bearing half. Same role, same everything, different
-    /// home track: drop `card.track_id == track` from `decide_recorder` and
-    /// this is the assertion that goes red.
     #[tokio::test]
     async fn recorder_grant_refuses_a_card_from_another_track() {
         assert!(
@@ -968,7 +772,6 @@ mod tests {
 
     #[tokio::test]
     async fn recorder_grant_denies_every_unresolvable_step() {
-        // No session row at all (the fake only answers for its own id).
         let mut tx = FakeWriteTx::new();
         assert!(
             !PrincipalDecisionGate::new(agent("ghost"))
@@ -976,11 +779,9 @@ mod tests {
                 .await
                 .expect("missing session row is a denial, not an error")
         );
-        // Session row, no card binding.
         assert!(
             !recorder_grant_for("s-cardless", None, CardRole::Planner, "track-1", "track-1").await
         );
-        // Session bound to a card that has no `cards` row.
         let mut tx = FakeWriteTx::with_worker_session(worker_session(
             "s-dangling",
             Some(CardId::from("card-gone")),
@@ -993,10 +794,8 @@ mod tests {
         );
     }
 
-    /// #1189 §3.6 liveness — a session row whose card passes *both* halves of
-    /// the recorder criterion, parameterised only on `worker_sessions.state`.
-    /// `session_get_tx` is `WHERE id = ?1` with no state filter, so every one
-    /// of these rows resolves; only `is_active_authority` separates them.
+    /// Parameterised only on `worker_sessions.state`; `session_get_tx` has no
+    /// state filter, so only `is_active_authority` separates these rows.
     async fn recorder_decision_for_state(state: WorkerSessionState) -> GateDecision {
         let mut session = worker_session("s-planner", Some(CardId::from("card-planner")));
         session.state = state;
@@ -1011,16 +810,8 @@ mod tests {
             .expect("recorder decision computes")
     }
 
-    /// The predecessor row a resume leaves behind must not keep recording
-    /// rights. `session_supersede_active_tx` (reached through
-    /// `session_supersede_and_start_tx`) only flips the old row's state to
-    /// `superseded`; the row keeps its `card_id` on the same track, so the card
-    /// criterion alone still admits it. Moving `tracks.root_session_id` off the
-    /// predecessor is a different path — `session_repoint_current_links_tx` →
-    /// `session_mark_track_root_tx` — and runs only when the successor is an
-    /// active-authority `Planner`. The old root criterion therefore got this
-    /// for free only on that path; the card criterion has to check it
-    /// explicitly, on every path.
+    /// A supersede only flips the old row's state; it keeps its `card_id` on the
+    /// same track, so the card criterion alone would still admit it.
     #[tokio::test]
     async fn recorder_grant_refuses_a_session_that_is_no_longer_an_active_authority() {
         for state in [
@@ -1050,9 +841,6 @@ mod tests {
         }
     }
 
-    /// The deny message used to claim "no live session row" for a read that is
-    /// not a live query at all. The two failures are now distinct facts and
-    /// must stay distinguishable, or the message is decoration again.
     #[tokio::test]
     async fn recorder_deny_distinguishes_a_missing_row_from_a_dead_one() {
         let mut tx = FakeWriteTx::new();
@@ -1082,10 +870,8 @@ mod tests {
         );
     }
 
-    /// The root-session criterion is *gone*, not OR-ed in. Marking a
-    /// worker-card session as the track root used to be — and must not
-    /// become again — a way around the role whitelist: nothing in
-    /// `session_mark_track_root_tx` checks the root card's role.
+    /// Nothing in `session_mark_track_root_tx` checks the root card's role, so a
+    /// root-session allow-arm would bypass the role whitelist.
     #[tokio::test]
     async fn a_root_marked_worker_session_is_still_refused() {
         let mut tx = FakeWriteTx::with_worker_session(worker_session(
@@ -1463,12 +1249,8 @@ mod tests {
 
     #[tokio::test]
     async fn tx_read_gate_denies_when_home_track_row_is_missing() {
-        // #1381 — under this substrate the track→area entry exists iff
-        // `SELECT area_id FROM tracks WHERE id = ?1` returned a row, so a
-        // card whose home track row is absent leaves the lookup empty. The
-        // gate runs inside the caller's write transaction (the same one the
-        // `events` row is inserted into), so that miss has to come back as
-        // `Err`, never as a panic unwinding out of a half-written write.
+        // The gate runs inside the caller's write transaction, so a missing track row
+        // must come back as `Err`, never a panic unwinding out of a half-written write.
         let card = CardId::from("orphan");
         let mut tx = FakeWriteTx::new().with_card("orphan", CardRole::Worker, "w-gone");
 
@@ -1487,35 +1269,9 @@ mod tests {
             "unexpected violation: {err:?}"
         );
     }
-    // -----------------------------------------------------------------
-    // #1252 S3′ — equivalence matrix.
-    //
-    // `enforce_role_resolving_session_from_tx` replaces the write-through
-    // caches with live reads from the caller's transaction. That swap is only
-    // legitimate if the two substrates produce the *same verdict* on every
-    // input **whose two substrates agree**, so this matrix walks
-    // (actor × event × scope) and asserts the two functions agree exactly —
-    // including on the violation text, so a same-shape-different-reason
-    // divergence is caught too.
-    //
-    // Both substrates are projected from one `World` description, which is
-    // what makes this an equivalence test rather than two hand-written
-    // expectations that could drift together. Mutating either substrate — the
-    // hydrator's key set, the fake's rows, the cache seeding — must turn this
-    // red.
-    //
-    // What it therefore does *not* cover: states where the cache and the DB
-    // disagree. Two such states are documented and reachable — a rolled-back
-    // `card_create_with_id_tx` leaves a stale `CardRoleCache` entry, and a
-    // rolled-back `card_delete_tx` leaves that cache missing one — and the two
-    // gates genuinely differ on both, in *opposite* directions: the cache is
-    // the permissive side on the first and the restrictive side on the second.
-    // Neither direction is what makes the swap legitimate: the
-    // transaction read is safe because the verdict and the `events` insert
-    // share one transaction. See `hydrate_role_caches_from_tx`'s doc comment
-    // for both halves. A single consistent `World` cannot express either
-    // state, so the divergences live there as prose, not here as rows.
-    // -----------------------------------------------------------------
+    // Equivalence matrix: both substrates are projected from one `World`, so
+    // (actor × event × scope) must agree exactly, including the violation text.
+    // States where cache and DB disagree cannot be expressed here.
 
     /// The rows both substrates are built from.
     struct World {
@@ -1560,9 +1316,8 @@ mod tests {
                 ("report", CardRole::ReportCard, "w"),
                 ("assistant", CardRole::Assistant, "w"),
                 ("foreign-worker", CardRole::Worker, "w2"),
-                // #1381 — a card whose home track has no row / no cache
-                // entry. Both substrates must deny its own-scope write with
-                // `RoleLookupFailed` rather than one of them panicking.
+                // A card whose home track has no row: both substrates must deny with
+                // `RoleLookupFailed`, not panic.
                 ("orphan", CardRole::Worker, "w-gone"),
             ],
             tracks: vec![("w", "c"), ("w2", "c2")],
@@ -1588,8 +1343,6 @@ mod tests {
             ActorId::AiCodex(CardId::from("orphan")),
             ActorId::AiCodex(CardId::from("")),
             ActorId::AiClaude(CardId::from("worker")),
-            // Session actors: live (resolves to the planner card), unknown
-            // (no row), and empty (unresolvable).
             ActorId::AiCodexSession(WorkerSessionId::from("s-live")),
             ActorId::AiPlannerSession(WorkerSessionId::from("s-live")),
             ActorId::AiClaudeSession(WorkerSessionId::from("s-live")),
@@ -1610,12 +1363,11 @@ mod tests {
             card_scope("report", "w", "c"),
             card_scope("assistant", "w", "c"),
             card_scope("planner", "w", "c"),
-            // #232 / #234 spoof shapes: right card, wrong track / wrong area.
+            // Spoof shapes: right card, wrong track / wrong area.
             card_scope("worker", "w2", "c2"),
             card_scope("worker", "w", "c2"),
             card_scope("foreign-worker", "w2", "c2"),
             card_scope("ghost", "w", "c"),
-            // #1381 — own-scope write by a card whose home track row is gone.
             card_scope("orphan", "w-gone", "c"),
         ]
     }
@@ -1671,9 +1423,8 @@ mod tests {
         ]
     }
 
-    /// Format a verdict so "allowed" and every distinct denial reason are
-    /// separate strings — comparing `is_err()` alone would let a divergence in
-    /// *why* a write was refused slip through.
+    /// Separate strings per denial reason — `is_err()` alone would let a
+    /// divergence in *why* slip through.
     fn verdict(result: std::result::Result<(), RoleViolation>) -> String {
         match result {
             Ok(()) => "allow".to_string(),
@@ -1731,9 +1482,8 @@ mod tests {
             denials > compared / 4,
             "matrix is too permissive to be evidence: only {denials} of {compared} rows deny"
         );
-        // #1381 — the `orphan` card / `w-gone` track rows exist so that both
-        // substrates meet an empty track→area lookup. If no row reaches that
-        // denial the agreement on it is vacuous.
+        // The `orphan` / `w-gone` rows exist so both substrates meet an empty
+        // track→area lookup; without a row reaching it the agreement is vacuous.
         assert!(
             lookup_failures > 0,
             "no matrix row reached the track→area lookup miss"

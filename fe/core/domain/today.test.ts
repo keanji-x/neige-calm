@@ -8,17 +8,7 @@ import {
 import { trackConversationCardId, type Conversation } from './conversation.js';
 
 describe('the Today report reset (#1343)', () => {
-  /*
-   * The endpoint takes no request body, and this pins the absence.
-   *
-   * It is the one property of this operation worth a test. The canonical empty
-   * document is ~2.8 kB of kernel-owned text and the empty-state predicate is
-   * structural (#1635 D3), so a `body` appearing here would mean someone had
-   * started sending a client-side copy of it — which fails silently: a
-   * skeletal body flips the bit and drops the maintenance contract; content
-   * beyond the skeleton leaves a 200, a rewritten report, and an empty state
-   * that never appears.
-   */
+  /* The canonical empty document is kernel-owned; a client-side copy would flip the empty-state bit silently. */
   it('sends no document and no body at all', () => {
     const operation = todayReportResetOperation();
     expect(operation.method).toBe('POST');
@@ -33,9 +23,6 @@ describe('the Today report reset (#1343)', () => {
     expect(parsed).toEqual({ track_id: 'lp', report_has_noninitial_content: false });
   });
 
-  /* The read the page load uses is a GET, and it stays one. Stated here beside
-     the reset because the pair is the whole contract: exactly one of these two
-     writes, and it is never the one on the render path. */
   it('leaves the page-load resolve a pure read', () => {
     expect(todayLaunchpadOperation().method).toBe('GET');
   });

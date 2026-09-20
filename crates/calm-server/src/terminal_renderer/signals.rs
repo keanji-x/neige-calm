@@ -1,13 +1,6 @@
-//! Hook signals for Planner-opened terminals (#1620): a bounded ring of
-//! application lifecycle events (Claude Code hooks forwarded by the bridge)
-//! per renderer entry, plus a watch channel so a `wait_for=signal` can wake
-//! without polling.
-//!
-//! Signals are untrusted advisory telemetry: the ingest route is loopback
-//! only and keyed by card id, so any local process can forge `event` and
-//! `message`. Nothing here is consulted by an input fence (binding, control
-//! lease, revision, pending write, physical write authority); the ring is
-//! presentation for the Planner, never authority.
+//! Hook signals for Planner-opened terminals: a bounded ring per renderer entry plus a watch
+//! channel. Signals are untrusted advisory telemetry (any local process can forge them);
+//! nothing here is consulted by an input fence.
 use serde_json::{Value, json};
 use std::collections::{HashSet, VecDeque};
 use std::sync::Mutex;
@@ -16,9 +9,8 @@ use tokio::sync::watch;
 /// Ring capacity: older signals are dropped and reported as
 /// `dropped_since_previous_observation`.
 pub const SIGNAL_RING_CAPACITY: usize = 64;
-/// Recent idempotency keys kept so a duplicate delivery of the same hook
-/// (the ingest dedupe cache is check-then-insert across an await) never
-/// appends twice.
+/// Recent idempotency keys kept so a duplicate delivery of the same hook (the ingest dedupe
+/// cache is check-then-insert across an await) never appends twice.
 const RECENT_KEYS_CAPACITY: usize = 128;
 /// Longest `message` retained on a signal (characters, control chars removed).
 pub const SIGNAL_MESSAGE_MAX_CHARS: usize = 200;
@@ -72,9 +64,7 @@ struct RingState {
     last_seq: u64,
     recent_keys: VecDeque<String>,
     recent_key_set: HashSet<String>,
-    /// Published under the same lock as `last_seq` (same pattern as
-    /// `ModelView::published`); `send_modify` retains updates with zero
-    /// subscribers.
+    /// Published under the same lock as `last_seq`; `send_modify` retains updates with zero subscribers.
     published: watch::Sender<u64>,
 }
 
@@ -101,8 +91,7 @@ impl SignalRing {
         }
     }
 
-    /// Append one accepted hook. `idempotency_key` makes a duplicate delivery
-    /// a no-op (`None`); otherwise the fresh `seq` is returned. Byte-identical
+    /// Append one accepted hook; a duplicate `idempotency_key` is a no-op (`None`). Byte-identical
     /// bodies under different keys are distinct events.
     pub fn push(
         &self,
@@ -147,8 +136,7 @@ impl SignalRing {
             .subscribe()
     }
 
-    /// Live signal subscribers: a signal wait counts from the moment it
-    /// subscribes until it returns. Test observability of a wait in progress.
+    /// Live signal subscribers. Test observability of a wait in progress.
     pub fn signal_waiters(&self) -> usize {
         self.state
             .lock()
@@ -169,9 +157,8 @@ impl SignalRing {
         self.last_seq() > 0
     }
 
-    /// The most recent `limit` signals with `seq > baseline`, together with
-    /// the ring's `last_seq` read under the same lock, so a caller that
-    /// advances its baseline to `last_seq` cannot skip an unseen signal.
+    /// The most recent `limit` signals with `seq > baseline`, with `last_seq` read under the same
+    /// lock, so a caller that advances its baseline to `last_seq` cannot skip an unseen signal.
     pub fn since(&self, baseline: u64, limit: usize) -> SignalsSince {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let available: Vec<Signal> = state
@@ -238,8 +225,7 @@ mod tests {
         let since = ring.since(0, 20);
         assert_eq!(since.last_seq, SIGNAL_RING_CAPACITY as u64 + 10);
         assert_eq!(since.signals.len(), 20);
-        // The most recent 20 are listed; everything else since the baseline
-        // is reported as dropped.
+        // Everything since the baseline beyond the 20 listed is reported as dropped.
         assert_eq!(since.signals.last().unwrap().seq, since.last_seq);
         assert_eq!(since.dropped, since.last_seq - 20);
         let recent = ring.since(since.last_seq - 3, 20);

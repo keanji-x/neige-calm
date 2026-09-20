@@ -1,5 +1,5 @@
-//! #1704 S2 — `claude_permissions_policy` on `PATCH /api/tracks/:id`: the
-//! production route, the shared writer's root-only rule, the wire.
+//! `claude_permissions_policy` on `PATCH /api/tracks/:id`: the production route, the shared writer's
+//! root-only rule, the wire.
 
 use std::sync::Arc;
 
@@ -148,10 +148,6 @@ fn policy() -> Value {
     })
 }
 
-/// A user PATCH writes the policy (trimmed), every read carries it (the
-/// PATCH body, the detail, the area list, the window list), exactly one
-/// `track.updated` lands; a policy-only PATCH is never short-circuited; a
-/// present null clears it.
 #[tokio::test]
 async fn user_patch_writes_the_policy_and_every_read_carries_it() {
     let (state, track_id, area_id, repo) = boot().await;
@@ -221,10 +217,6 @@ async fn user_patch_writes_the_policy_and_every_read_carries_it() {
     assert_eq!(detail["track"]["claude_permissions_policy"], Value::Null);
 }
 
-/// The value is refused under its own name: an empty policy is 400
-/// (`declares nothing`), S1's scope rules are 400 with S1's reason under
-/// `claude_permissions_policy`, a wrong shape is the body rejection (422)
-/// naming the field. Nothing is written and no event lands.
 #[tokio::test]
 async fn invalid_policies_are_refused_under_the_field_name() {
     let (state, track_id, _, repo) = boot().await;
@@ -277,9 +269,7 @@ async fn invalid_policies_are_refused_under_the_field_name() {
     assert_eq!(event_count(&repo).await, before);
 }
 
-/// User-only (the reason is asserted, not just the status: an `ai:codex`
-/// REST request is refused further downstream too); a workspace re-point
-/// travels alone; a child track is 409 naming the root.
+/// The reason is asserted, not just the status: an `ai:codex` REST request is refused further downstream too.
 #[tokio::test]
 async fn policy_is_user_only_travels_alone_and_is_tree_root_only() {
     let (state, track_id, area_id, repo) = boot().await;

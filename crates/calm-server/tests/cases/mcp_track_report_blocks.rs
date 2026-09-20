@@ -1,24 +1,4 @@
-//! Issue #960 PR2 — typed `calm.report.blocks.*` + `write_markdown`
-//! integration coverage.
-//!
-//! Reuses the `mcp_track_report` fixture (in-memory `SqlxRepo`,
-//! pre-seeded role cache, direct handler invocation). Coverage:
-//!
-//!   1. `blocks.kinds` returns the prose schema.
-//!   2. `read` returns the `blocks` index + `text`/`body` alias;
-//!      `with_markers` injects marker lines, default output is clean.
-//!   3. `blocks.upsert` create / insert-at-position / replace-with-
-//!      `if_rev`; missing `if_rev` on replace and non-prose kinds are
-//!      invalid-params; a rev conflict returns `-32001`, writes
-//!      nothing and emits nothing.
-//!   4. `blocks.move` reorders (rev untouched) and honors `if_rev`.
-//!   5. `blocks.delete` requires `if_rev` and honors it.
-//!   6. Dual-event invariant: one successful block op → exactly one
-//!      `CardUpdated` + one `TrackReportEdited` with flat-projection
-//!      bodies and an unchanged summary.
-//!   7. `write_markdown`: marker lines pin block ids and are stripped
-//!      from storage + events (hard assertion), markerless bodies fall
-//!      back to LCS alignment.
+//! Typed `calm.report.blocks.*` + `write_markdown` integration coverage on the `mcp_track_report` fixture.
 
 #![cfg(unix)]
 
@@ -39,21 +19,14 @@ use calm_server::track_report::TrackReportPayload;
 use serde_json::{Value, json};
 
 const TOOL_REPORT_READ: &str = "calm.report.read";
-/// The birth body, read at runtime rather than re-transcribed. #1185 made it a
-/// five-block structural skeleton; a test that copies the constant only proves
-/// the copy matches itself.
+/// The birth body, read at runtime rather than re-transcribed.
 fn seed_body() -> &'static str {
     static BODY: std::sync::LazyLock<String> =
         std::sync::LazyLock::new(|| TrackReportPayload::initial().body);
     &BODY
 }
 
-/// Position of the block whose text starts with `head`, within the block index
-/// a `calm.report.read` just returned.
-///
-/// #1185 turned the birth body into five blocks. Tests address blocks by
-/// content, never by a fresh constant subscript: `blocks[5]` would just defer
-/// the same brittleness to the next skeleton change.
+/// Position of the block whose text starts with `head`, within the block index a `calm.report.read` just returned.
 fn position_of_block_starting_with(read_out: &Value, head: &str) -> usize {
     let text = read_out["text"].as_str().expect("read returns text");
     calm_types::report_blocks::split_body(text)
@@ -251,10 +224,6 @@ async fn old_create_and_move_shapes_return_self_healing_invalid_params() {
     assert_eq!(moved["docRev"], current["docRev"].as_u64().unwrap() + 1);
 }
 
-// ---------------------------------------------------------------------------
-// blocks.kinds
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn kinds_returns_all_six_schemas() {
     let boot = boot().await;
@@ -385,12 +354,8 @@ async fn kinds_returns_all_six_schemas() {
         "chart.candles usage points at chart.series"
     );
     let table = &kinds[3];
-    // Two mutually exclusive forms, and the exclusion is the point: a payload
-    // that both named a source and carried rows would have two answers to
-    // what the table shows. Assert each branch's `required` AND its `not`,
-    // because a `oneOf` that only listed the required keys would admit
-    // exactly the payload the kernel's validator rejects — an agent would
-    // then self-correct against a schema that disagrees with the write end.
+    // Assert each branch's `required` AND its `not`: a `oneOf` listing only required keys would admit
+    // the payload the kernel's validator rejects.
     assert_eq!(
         table.pointer("/schema/oneOf/0/required").unwrap(),
         &json!(["columns", "rows"]),
@@ -411,9 +376,7 @@ async fn kinds_returns_all_six_schemas() {
             { "required": ["highlight"] },
         ]),
     );
-    // The live `source` pattern is the schema's copy of
-    // `report_blocks::validate_live_source`; pin it so the two cannot drift
-    // into disagreeing about what an agent may write.
+    // The live `source` pattern is the schema's copy of `report_blocks::validate_live_source`; pin it so they cannot drift.
     assert_eq!(
         table
             .pointer("/schema/properties/source/pattern")
@@ -437,9 +400,7 @@ async fn kinds_returns_all_six_schemas() {
         Some(&json!(["spec", "user"]))
     );
 
-    // #960 PR3 review round 1: advertised limits mirror the Rust
-    // validator (calm_types::report_blocks::kinds) so agents can
-    // self-limit before the round-trip.
+    // Advertised limits mirror the Rust validator (`calm_types::report_blocks::kinds`).
     assert_eq!(
         chart
             .pointer("/schema/properties/candles/maxItems")
@@ -505,10 +466,6 @@ async fn kinds_refuses_worker() {
     assert_eq!(err.code, RpcError::INVALID_PARAMS);
 }
 
-// ---------------------------------------------------------------------------
-// read: blocks index + markers
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn read_returns_blocks_index_and_clean_text_by_default() {
     let boot = boot().await;
@@ -518,18 +475,14 @@ async fn read_returns_blocks_index_and_clean_text_by_default() {
         out.get("body").is_none(),
         "#1727 S2: the legacy `body` alias is gone; got {out}",
     );
-    // `<!-- neige:b_` is the marker shape (`marker_line_id`); the birth body's
-    // first line is the `<!-- neige:contract … -->` header (#1635 D2), which
-    // shares the `neige:` namespace but is document content, not a marker.
+    // `<!-- neige:b_` is the marker shape (`marker_line_id`); the birth body's first line is the
+    // `<!-- neige:contract … -->` header, which shares the `neige:` namespace but is document content, not a marker.
     assert!(
         !out["text"].as_str().unwrap().contains("<!-- neige:b_"),
         "default read output must be marker-free",
     );
     let index = index_of(&out);
-    // #1185 — the literal 5 is deliberate and is the ONLY end-to-end
-    // (boot → real card → `calm.report.read`) pin of the birth block count.
-    // `split_body(&initial().body).len()` would move with the constant and
-    // stay green even if `initial()` reverted to a one-line placeholder.
+    // The literal 5 is deliberate: the only end-to-end pin of the birth block count.
     assert_eq!(
         index.len(),
         5,
@@ -546,9 +499,7 @@ async fn read_returns_blocks_index_and_clean_text_by_default() {
             Some("prose"),
         );
     }
-    // The maintenance contract leads the document and closes before the first
-    // H1 — that is what makes it invisible on both frontends and what makes
-    // block 0 the contract rather than a section.
+    // The maintenance contract leads the document and closes before the first H1, which makes block 0 the contract rather than a section.
     let text = out["text"].as_str().unwrap();
     assert!(
         text.starts_with(calm_types::report_contract::HEADER_OPEN),
@@ -582,14 +533,9 @@ async fn read_with_markers_injects_marker_lines_but_never_stores_them() {
     // Markers exist only in the read output — storage stays clean.
     let payload = current_payload(&boot).await;
     assert!(!payload.body.contains("<!-- neige:"));
-    // And a plain read right after is clean too.
     let plain = read(&boot, json!({})).await;
     assert!(!plain["text"].as_str().unwrap().contains("<!-- neige:"));
 }
-
-// ---------------------------------------------------------------------------
-// blocks.upsert
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn upsert_new_block_appends_and_emits_both_events() {
@@ -616,8 +562,6 @@ async fn upsert_new_block_appends_and_emits_both_events() {
     assert!(out.get("updated_at").and_then(Value::as_i64).is_some());
     assert_eq!(out.get("docRev").and_then(Value::as_u64), Some(1));
 
-    // Dual-event invariant: exactly one CardUpdated + one
-    // TrackReportEdited, flat projections, summary untouched.
     let envs = sub.await.expect("collector ok");
     assert_eq!(envs.len(), 2, "got {envs:?}");
     assert!(matches!(envs[0].event, Event::CardUpdated(_)));
@@ -639,7 +583,6 @@ async fn upsert_new_block_appends_and_emits_both_events() {
         other => panic!("expected TrackReportEdited, got {other:?}"),
     }
 
-    // JSON cache mirrors the append.
     let payload = current_payload(&boot).await;
     assert_eq!(payload.body, format!("{}# 新块\n\ncontent\n", seed_body()));
     let blocks = payload.blocks.expect("blocks cache");
@@ -673,7 +616,6 @@ async fn upsert_new_block_at_position_inserts() {
     let payload = current_payload(&boot).await;
     assert!(payload.body.starts_with("# 首块\n\nfirst\n# A\n"));
 
-    // Out-of-range position is refused.
     let err = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
@@ -689,12 +631,9 @@ async fn upsert_new_block_at_position_inserts() {
 #[tokio::test]
 async fn upsert_replace_with_if_rev_bumps_rev() {
     let boot = boot().await;
-    // The id handed out by `read` on a never-persisted card must be a
-    // valid target: the CRDT seed mints the same deterministic ids.
+    // The id `read` hands out on a never-persisted card must be a valid target: the CRDT seed mints the same deterministic ids.
     let read_out = read(&boot, json!({})).await;
     let index = index_of(&read_out);
-    // #1185: block 0 is the maintenance contract now — target the summary
-    // section by content, which is what this test was always about.
     let at = position_of_block_starting_with(&read_out, "# 概要");
     let (id, rev) = index[at].clone();
     assert_eq!(rev, 1);
@@ -711,7 +650,6 @@ async fn upsert_replace_with_if_rev_bumps_rev() {
     assert_eq!(out.get("rev").and_then(Value::as_u64), Some(2));
 
     let payload = current_payload(&boot).await;
-    // Body is the untouched blocks with the replaced one spliced back in.
     let expected: String = calm_types::report_blocks::split_body(seed_body())
         .iter()
         .enumerate()
@@ -803,10 +741,8 @@ async fn upsert_rev_conflict_returns_32001_and_writes_nothing() {
         "msg = {err:?}",
     );
 
-    // Nothing written…
     let after = current_payload(&boot).await;
     assert_eq!(after, before, "conflict must not write");
-    // …and nothing emitted (tx aborted before the event append).
     let no_event = tokio::time::timeout(Duration::from_millis(150), rx.recv()).await;
     assert!(no_event.is_err(), "conflict emitted event: {no_event:?}");
 }
@@ -815,7 +751,6 @@ async fn upsert_rev_conflict_returns_32001_and_writes_nothing() {
 async fn upsert_rejects_unknown_kind_and_invalid_payloads() {
     let boot = boot().await;
     let before = current_payload(&boot).await;
-    // Unknown kind.
     let err = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
@@ -826,7 +761,6 @@ async fn upsert_rejects_unknown_kind_and_invalid_payloads() {
     .expect_err("unknown kind must be rejected");
     assert_eq!(err.code, RpcError::INVALID_PARAMS);
     assert!(err.message.contains("unknown kind"), "msg = {err:?}");
-    // Data kind without payload / with markdown.
     let err = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
@@ -850,7 +784,6 @@ async fn upsert_rejects_unknown_kind_and_invalid_payloads() {
         err.message.contains("only valid for kind=prose"),
         "msg = {err:?}"
     );
-    // Schema violations carry field-level paths.
     let err = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
@@ -867,8 +800,7 @@ async fn upsert_rejects_unknown_kind_and_invalid_payloads() {
     );
     for src in [
         "https://evil.example/x",
-        // Backslash bypass (#960 PR3 review round 1): browsers
-        // normalize `/\host` into a protocol-relative URL.
+        // Backslash bypass: browsers normalize `/\host` into a protocol-relative URL.
         "/\\evil.example/x",
         "/apps\\x",
     ] {
@@ -883,7 +815,6 @@ async fn upsert_rejects_unknown_kind_and_invalid_payloads() {
         assert_eq!(err.code, RpcError::INVALID_PARAMS);
         assert!(err.message.contains("src"), "{src} → {err:?}");
     }
-    // Oversized payload: limit named in the error (-32602 path).
     let candles: Vec<Value> = (0..5001i64).map(|i| json!([i, 1, 2, 0, 1])).collect();
     let err = call_tool(
         &boot,
@@ -895,7 +826,6 @@ async fn upsert_rejects_unknown_kind_and_invalid_payloads() {
     .expect_err("over-cap candles");
     assert_eq!(err.code, RpcError::INVALID_PARAMS);
     assert!(err.message.contains("limit is 5000"), "msg = {err:?}");
-    // Nothing was written by any of the rejected calls.
     assert_eq!(current_payload(&boot).await, before);
 }
 
@@ -903,7 +833,6 @@ async fn upsert_rejects_unknown_kind_and_invalid_payloads() {
 async fn upsert_prose_rejects_embedded_neige_fences() {
     let boot = boot().await;
     for markdown in [
-        // Well-formed fence smuggled inside prose.
         "# A\n```neige-block app\n{\"src\": \"/x\"}\n```\n",
         // Typo'd fence (bad JSON) — must not silently persist as prose.
         "# A\n```neige-block app\nnot json\n```\n",
@@ -935,10 +864,6 @@ async fn upsert_refuses_worker() {
     assert_eq!(err.code, RpcError::INVALID_PARAMS);
     assert!(err.message.contains("Planner"), "msg = {err:?}");
 }
-
-// ---------------------------------------------------------------------------
-// blocks.move
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn move_reorders_without_touching_rev() {
@@ -1010,16 +935,11 @@ async fn move_doc_rev_conflict_returns_32001_and_moves_nothing() {
     assert_eq!(err.code, RpcError::INVALID_PARAMS);
 }
 
-// ---------------------------------------------------------------------------
-// blocks.delete
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn delete_requires_if_rev_and_honors_it() {
     let boot = boot().await;
     let ids = seed_two_blocks(&boot).await;
 
-    // Missing if_rev → invalid_params.
     let err = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_DELETE,
@@ -1031,7 +951,6 @@ async fn delete_requires_if_rev_and_honors_it() {
     assert_eq!(err.code, RpcError::INVALID_PARAMS);
     assert!(err.message.contains("if_rev"), "msg = {err:?}");
 
-    // Stale if_rev → -32001, nothing deleted.
     let before = current_payload(&boot).await;
     let err = call_tool(
         &boot,
@@ -1045,7 +964,6 @@ async fn delete_requires_if_rev_and_honors_it() {
     assert!(err.message.contains("rev conflict"), "msg = {err:?}");
     assert_eq!(current_payload(&boot).await, before);
 
-    // Matching if_rev deletes.
     let out = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_DELETE,
@@ -1060,10 +978,6 @@ async fn delete_requires_if_rev_and_honors_it() {
     let index = index_of(&read(&boot, json!({})).await);
     assert_eq!(index, vec![(ids[1].0.clone(), ids[1].1)]);
 }
-
-// ---------------------------------------------------------------------------
-// write_markdown
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn write_markdown_requires_if_doc_rev_and_maps_stale_revision_to_conflict() {
@@ -1110,7 +1024,6 @@ async fn write_markdown_with_markers_reuses_ids_and_strips_them() {
     let sub = tokio::spawn(async move { collect_n(&events, 2).await });
     tokio::time::sleep(Duration::from_millis(20)).await;
 
-    // Round-trip the with_markers read, editing only block B's text.
     let body = format!(
         "<!-- neige:{} -->\n# A\n\nalpha\n\n<!-- neige:{} -->\n# B\n\nbeta edited\n",
         ids[0].0, ids[1].0
@@ -1124,7 +1037,6 @@ async fn write_markdown_with_markers_reuses_ids_and_strips_them() {
     .await
     .expect("write_markdown succeeds");
 
-    // Ids survive; only the edited block's rev bumps.
     let index = index_of(&read(&boot, json!({})).await);
     assert_eq!(
         index,
@@ -1134,7 +1046,6 @@ async fn write_markdown_with_markers_reuses_ids_and_strips_them() {
         ],
     );
 
-    // Hard assertion: markers never reach storage nor the event log.
     let payload = current_payload(&boot).await;
     assert_eq!(out["docRev"], payload.doc_rev);
     assert_eq!(payload.body, "# A\n\nalpha\n\n# B\n\nbeta edited\n");
@@ -1162,8 +1073,7 @@ async fn write_markdown_with_markers_reuses_ids_and_strips_them() {
 
 #[tokio::test]
 async fn write_markdown_markers_make_duplicate_blocks_addressable() {
-    // Two byte-identical blocks — undecidable without markers — must
-    // resolve exactly when markers pin them (design §3.4 / §4).
+    // Two byte-identical blocks are undecidable without markers; markers must pin them exactly.
     let boot = boot().await;
     call_tool(
         &boot,
@@ -1180,7 +1090,6 @@ async fn write_markdown_markers_make_duplicate_blocks_addressable() {
     let ids = index_of(&read(&boot, json!({})).await);
     assert_eq!(ids.len(), 2);
 
-    // Swap the two identical blocks by marker; edit the (now) second.
     let body = format!(
         "<!-- neige:{} -->\n# A\nsame\n<!-- neige:{} -->\n# A\nsame edited\n",
         ids[1].0, ids[0].0
@@ -1232,10 +1141,7 @@ async fn write_markdown_without_markers_falls_back_to_lcs() {
 
 #[tokio::test]
 async fn upsert_identical_content_keeps_rev_and_still_emits_events() {
-    // #960 PR2 review: a byte-identical replace is idempotent — the
-    // rev must NOT bump (a retried request would otherwise silently
-    // invalidate the caller's if_rev anchor). The persist boundary
-    // still runs: dual events fire with body_before == body_after.
+    // A byte-identical replace must not bump the rev: a retried request would otherwise invalidate the caller's `if_rev` anchor.
     let boot = boot().await;
     let ids = seed_two_blocks(&boot).await;
     let (id, rev) = ids[0].clone();
@@ -1259,7 +1165,6 @@ async fn upsert_identical_content_keeps_rev_and_still_emits_events() {
         "identical content: rev unchanged"
     );
 
-    // Dual-event invariant holds even for the no-op write.
     let envs = sub.await.expect("collector ok");
     assert_eq!(envs.len(), 2, "got {envs:?}");
     assert!(matches!(envs[0].event, Event::CardUpdated(_)));
@@ -1272,8 +1177,6 @@ async fn upsert_identical_content_keeps_rev_and_still_emits_events() {
         other => panic!("expected TrackReportEdited, got {other:?}"),
     }
 
-    // The unchanged rev is still a valid anchor: a real edit with the
-    // SAME if_rev succeeds and bumps to rev+1.
     let out = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
@@ -1289,15 +1192,11 @@ async fn upsert_identical_content_keeps_rev_and_still_emits_events() {
 
 #[tokio::test]
 async fn read_blocks_index_comes_from_crdt_truth_when_cache_missing() {
-    // #960 PR2 review: when a v2 row's JSON `blocks` cache is missing
-    // (dropped by a pre-#960 binary — design D8), `read` must serve
-    // the index from the CRDT doc, not re-derive ids from the flat
-    // body (re-derivation mints position-dependent ids that diverge
-    // from the doc after a `blocks.move` — handing out dead targets).
+    // With the JSON `blocks` cache missing, `read` must serve the index from the CRDT doc: re-deriving from
+    // the flat body mints position-dependent ids that diverge after a `blocks.move`.
     let boot = boot().await;
     let ids = seed_two_blocks(&boot).await;
-    // Move B to the front so the CRDT order/ids can no longer be
-    // reproduced by deriving from the flat body.
+    // Move B to the front so the CRDT order/ids can no longer be reproduced from the flat body.
     call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_MOVE,
@@ -1309,7 +1208,6 @@ async fn read_blocks_index_comes_from_crdt_truth_when_cache_missing() {
     let truth = index_of(&read(&boot, json!({})).await);
     assert_eq!(truth[0].0, ids[1].0, "B moved to front");
 
-    // Simulate the dropped cache: rewrite the payload without `blocks`.
     let card = boot
         .repo
         .card_get(boot.report_card_id.as_str())
@@ -1324,11 +1222,9 @@ async fn read_blocks_index_comes_from_crdt_truth_when_cache_missing() {
         .expect("blocks cache was present");
     overwrite_report_payload_cache(&boot, payload).await;
 
-    // Read must serve the CRDT truth (same ids/revs/order as before).
     let out = read(&boot, json!({})).await;
     assert_eq!(index_of(&out), truth, "index comes from the CRDT doc");
 
-    // And the handed-out id/rev is a live target: upsert succeeds.
     let (id, rev) = truth[0].clone();
     let out = call_tool(
         &boot,
@@ -1343,11 +1239,8 @@ async fn read_blocks_index_comes_from_crdt_truth_when_cache_missing() {
 
 #[tokio::test]
 async fn read_serves_one_self_consistent_snapshot_when_cache_missing() {
-    // #960 PR2 review round 2: when the JSON cache is unusable, EVERY
-    // read field (summary, text, blocks) must come from the same CRDT
-    // doc — never text from the stale payload.body with a block index
-    // from the doc. Make payload.body/summary diverge hard from the
-    // CRDT and assert the doc wins everywhere.
+    // When the JSON cache is unusable, every read field must come from the same CRDT doc — never text
+    // from the stale `payload.body` with a block index from the doc.
     let boot = boot().await;
     let ids = seed_two_blocks(&boot).await;
     call_tool(
@@ -1361,7 +1254,6 @@ async fn read_serves_one_self_consistent_snapshot_when_cache_missing() {
     let crdt_body = "# B\n\nbeta\n# A\n\nalpha\n\n";
     let truth = index_of(&read(&boot, json!({})).await);
 
-    // Stale cache row: body/summary rewritten, blocks dropped.
     overwrite_report_payload_cache(
         &boot,
         json!({
@@ -1385,8 +1277,6 @@ async fn read_serves_one_self_consistent_snapshot_when_cache_missing() {
     );
     assert_eq!(index_of(&out), truth, "block index from the same doc");
 
-    // with_markers: text is the concatenation of the SAME blocks the
-    // index lists — flatten(blocks) == body self-consistency.
     let marked = read(&boot, json!({ "with_markers": true })).await;
     let text = marked.get("text").and_then(Value::as_str).unwrap();
     assert_eq!(
@@ -1398,10 +1288,6 @@ async fn read_serves_one_self_consistent_snapshot_when_cache_missing() {
     );
     assert_eq!(index_of(&marked), truth);
 }
-
-// ---------------------------------------------------------------------------
-// #960 PR3 — data kinds end-to-end + prose-shim stomp guard
-// ---------------------------------------------------------------------------
 
 const CHART_PAYLOAD_V1: &str = r#"{
     "symbol": "0700.HK",
@@ -1437,17 +1323,13 @@ async fn upsert_chart_block_projects_canonical_fence_and_typed_payload() {
     let (id, rev) = upsert_chart(&boot, payload.clone()).await;
     assert_eq!(rev, 1);
 
-    // Flat body carries the canonical fence (no id/rev inside — D9).
+    // Flat body carries the canonical fence (no id/rev inside).
     let stored = current_payload(&boot).await;
     let fence = calm_types::report_blocks::render_fence("chart.candles", &payload);
     assert_eq!(stored.body, format!("{}{fence}", seed_body()));
     assert!(!fence.contains(&id), "fence must not embed the block id");
 
-    // JSON blocks cache mirrors the typed payload (what the frontend
-    // zod schema will consume), not a `{ markdown }` wrapper.
     let blocks = stored.blocks.expect("blocks cache");
-    // Address the chart by kind, not by subscript: the skeleton's block count
-    // is not this test's subject (#1185 §4.3).
     let chart = blocks
         .iter()
         .find(|b| b.kind == "chart.candles")
@@ -1455,7 +1337,6 @@ async fn upsert_chart_block_projects_canonical_fence_and_typed_payload() {
     assert_eq!(chart.id, id);
     assert_eq!(chart.payload, payload);
 
-    // read index reports the kind; with_markers text embeds the fence.
     let out = read(&boot, json!({ "with_markers": true })).await;
     assert_eq!(
         out["blocks"]
@@ -1471,7 +1352,6 @@ async fn upsert_chart_block_projects_canonical_fence_and_typed_payload() {
     assert!(text.contains(&fence), "marker read embeds the fence");
     assert!(text.contains(&format!("<!-- neige:{id} -->")));
 
-    // Replacing with different params bumps rev and changes the body.
     let mut v2 = payload.clone();
     v2["overlays"] = json!(["ma20", "ma60"]);
     let out = call_tool(
@@ -1487,16 +1367,13 @@ async fn upsert_chart_block_projects_canonical_fence_and_typed_payload() {
 
 #[tokio::test]
 async fn chart_param_change_yields_a_distinct_body_for_observation_hashing() {
-    // Hard acceptance (design §3.5 / B-5): two documents that differ
-    // ONLY in a chart parameter must produce different flat bodies —
-    // the dispatcher's SHA256 observation fingerprint is taken over
-    // `body_after`, so byte-equality here would merge distinct states.
+    // Two documents that differ only in a chart parameter must produce different flat bodies: the
+    // dispatcher's SHA256 observation fingerprint is taken over `body_after`.
     let boot_a = boot().await;
     let boot_b = boot().await;
     let payload: Value = serde_json::from_str(CHART_PAYLOAD_V1).unwrap();
     upsert_chart(&boot_a, payload.clone()).await;
     let mut tweaked = payload;
-    // One candle close price differs.
     tweaked["candles"][1][4] = json!(379.9);
     upsert_chart(&boot_b, tweaked).await;
 
@@ -1513,7 +1390,6 @@ async fn write_and_edit_stomping_a_data_block_fail_32602_and_write_nothing() {
     let before = current_payload(&boot).await;
     let mut rx = boot.ctx.events.subscribe();
 
-    // write: fence dropped.
     let err = call_tool(
         &boot,
         TOOL_REPORT_WRITE,
@@ -1526,7 +1402,6 @@ async fn write_and_edit_stomping_a_data_block_fail_32602_and_write_nothing() {
     assert!(err.message.contains(&id), "msg = {err:?}");
     assert!(err.message.contains("blocks.upsert"), "guidance: {err:?}");
 
-    // edit: old_string lands inside the fence JSON.
     let err = call_tool(
         &boot,
         TOOL_REPORT_EDIT,
@@ -1538,7 +1413,6 @@ async fn write_and_edit_stomping_a_data_block_fail_32602_and_write_nothing() {
     assert_eq!(err.code, RpcError::INVALID_PARAMS);
     assert!(err.message.contains(&id), "msg = {err:?}");
 
-    // Storage unchanged, zero events (tx aborted).
     assert_eq!(current_payload(&boot).await, before);
     let no_event = tokio::time::timeout(Duration::from_millis(150), rx.recv()).await;
     assert!(
@@ -1554,8 +1428,6 @@ async fn write_preserving_the_fence_verbatim_passes_and_holds_id_rev() {
     let (id, rev) = upsert_chart(&boot, payload.clone()).await;
     let fence = calm_types::report_blocks::render_fence("chart.candles", &payload);
 
-    // Whole-document rewrite via the prose shim carrying the fence
-    // through byte-for-byte: legal.
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
@@ -1585,13 +1457,10 @@ async fn write_markdown_edits_fence_params_with_rev_bump_and_rejects_bad_fences(
     let (id, rev) = upsert_chart(&boot, payload.clone()).await;
     let read_out = read(&boot, json!({})).await;
     let prose_index = index_of(&read_out);
-    // #1185: `index[0]` is the maintenance contract now. This test's subject
-    // is "the summary section was not touched", so address it by content.
     let summary_at = position_of_block_starting_with(&read_out, "# 概要");
     let (prose_id, prose_rev) = prose_index[summary_at].clone();
     let fence = calm_types::report_blocks::render_fence("chart.candles", &payload);
 
-    // Malformed fence JSON: whole write rejected, nothing lands.
     let before = current_payload(&boot).await;
     let err = call_tool(
         &boot,
@@ -1605,8 +1474,6 @@ async fn write_markdown_edits_fence_params_with_rev_bump_and_rejects_bad_fences(
     assert!(err.message.contains("neige-block"), "msg = {err:?}");
     assert_eq!(current_payload(&boot).await, before);
 
-    // Editing the fence JSON through write_markdown: that block gets
-    // rev+1, the prose block is untouched.
     let edited = fence.replace("\"ma20\"", "\"ma20\", \"ma60\"");
     call_tool(
         &boot,
@@ -1649,15 +1516,7 @@ async fn write_markdown_refuses_worker() {
     assert_eq!(err.code, RpcError::INVALID_PARAMS);
 }
 
-// ---------------------------------------------------------------------------
-// #1179 — task deletion must go through the block-level DELETE path for
-// *every* author, not just the user. `write_markdown` is a whole-document
-// write: a body that simply omits a task fence used to drop the block (and
-// with it the projected `tasks` row) silently.
-// ---------------------------------------------------------------------------
-
-/// A schedulable planner task declaration: the full shape the projection
-/// materializes into a `tasks` row.
+/// A schedulable planner task declaration: the full shape the projection materializes into a `tasks` row.
 fn planner_task_payload(key: &str, goal: &str) -> Value {
     json!({
         "key": key, "kind": "codex", "goal": goal,
@@ -1849,13 +1708,6 @@ async fn planner_block_level_delete_of_its_own_task_still_succeeds() {
     assert!(task_keys(&boot).await.is_empty(), "task row is withdrawn");
 }
 
-/// #1185 §4.4(D) — a whole-document write that CHANGES one section must leave
-/// the maintenance contract byte-identical.
-///
-/// An identity round-trip only proves the marker channel does not eat the
-/// comment. The real risk is the agent rewriting a section and reflowing the
-/// contract along with it: the contract is the only carrier of the document's
-/// policy, so losing it silently un-governs the report on every later turn.
 #[tokio::test]
 async fn write_markdown_changing_one_section_leaves_the_contract_byte_identical() {
     let boot = boot().await;
@@ -1873,7 +1725,6 @@ async fn write_markdown_changing_one_section_leaves_the_contract_byte_identical(
         text.contains("<!-- 报告维护契约"),
         "the marker read hands the contract back to the agent verbatim"
     );
-    // Edit exactly one section's prose, the way a planner agent would.
     let edited = text.replacen("# 概要\n", "# 概要\n\n当前进展一句话。\n", 1);
     assert_ne!(edited, text, "the fixture must actually change something");
 
@@ -1917,11 +1768,6 @@ mod boundaries;
 #[path = "report_block_upgrade.rs"]
 mod upgrade;
 
-// ---------------------------------------------------------------------------
-// calm.report.commit — planner feedback #1: blocks + summary + lifecycle in
-// ONE call under ONE `if_doc_rev`.
-// ---------------------------------------------------------------------------
-
 async fn track_lifecycle(boot: &Boot) -> TrackLifecycle {
     boot.repo
         .track_get(boot.track_id.as_str())
@@ -1931,8 +1777,7 @@ async fn track_lifecycle(boot: &Boot) -> TrackLifecycle {
         .lifecycle
 }
 
-/// Drain everything the bus delivers within a short quiet window, so a test
-/// can assert an exact event count (not just "at least n").
+/// Drain everything the bus delivers within a short quiet window so a test can assert an exact event count.
 async fn drain_events(
     rx: &mut tokio::sync::broadcast::Receiver<calm_server::event::BroadcastEnvelope>,
 ) -> Vec<calm_server::event::BroadcastEnvelope> {
@@ -1981,7 +1826,6 @@ async fn commit_three_ops_summary_and_lifecycle_land_atomically_with_one_doc_rev
     .await
     .expect("commit succeeds");
 
-    // Response: one docRev bump for the whole batch, full post-commit index.
     assert_eq!(
         out["docRev"].as_u64(),
         Some(2),
@@ -2004,7 +1848,6 @@ async fn commit_three_ops_summary_and_lifecycle_land_atomically_with_one_doc_rev
     );
     assert!(blocks.iter().all(|b| b["id"] != json!(b_id)), "B deleted");
 
-    // Persisted truth agrees with the response.
     let after = current_payload(&boot).await;
     assert_eq!(after.doc_rev, 2);
     assert_eq!(after.summary, "新摘要");
@@ -2013,7 +1856,6 @@ async fn commit_three_ops_summary_and_lifecycle_land_atomically_with_one_doc_rev
     assert_eq!(index_of(&read).len(), 2);
     assert_eq!(track_lifecycle(&boot).await, TrackLifecycle::Dispatching);
 
-    // Events: lifecycle pair + exactly one CardUpdated + one TrackReportEdited.
     let envs = drain_events(&mut rx).await;
     let kinds: Vec<&str> = envs
         .iter()
@@ -2137,7 +1979,6 @@ async fn commit_stale_block_rev_in_second_op_rolls_back_the_first_op() {
         "names the failing op: {err:?}"
     );
 
-    // Op 1 was valid on its own and must NOT have landed.
     let after = current_payload(&boot).await;
     assert_eq!(after.doc_rev, before.doc_rev);
     assert_eq!(after.body, before.body, "op 1 rolled back with the batch");
@@ -2218,7 +2059,6 @@ async fn commit_summary_only_with_empty_ops_bumps_doc_rev_and_keeps_blocks() {
     assert_eq!(after.summary, "摘要 v2");
     assert_eq!(after.body, before.body);
 
-    // Also the omitted-`ops` spelling.
     call_tool(
         &boot,
         TOOL_REPORT_COMMIT,
@@ -2357,7 +2197,6 @@ async fn commit_is_planner_only_and_assistant_cannot_pass_lifecycle_on_block_too
     let before = current_payload(&boot).await;
     let mut rx = boot.ctx.events.subscribe();
 
-    // The batched tool itself: planner-only at the entry.
     for identity in [assistant_identity(&boot), worker_identity(&boot)] {
         let role = identity.role;
         let err = call_tool(
@@ -2369,14 +2208,12 @@ async fn commit_is_planner_only_and_assistant_cannot_pass_lifecycle_on_block_too
         .await
         .err()
         .unwrap_or_else(|| panic!("{role:?} must be refused"));
-        // `require_role` reports a role mismatch as invalid params, the same
-        // code every other planner-only tool returns for it.
+        // `require_role` reports a role mismatch as invalid params, the same code every other planner-only tool returns.
         assert_eq!(err.code, -32602, "{role:?}: {err:?}");
         assert!(err.message.contains("requires role=Planner"), "{err:?}");
     }
 
-    // The block tools stay open to the assistant, the `lifecycle` field does
-    // not — refused before anything is resolved, nothing written.
+    // The block tools stay open to the assistant; the `lifecycle` field does not.
     let err = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
@@ -2406,7 +2243,6 @@ async fn commit_is_planner_only_and_assistant_cannot_pass_lifecycle_on_block_too
     assert_eq!(track_lifecycle(&boot).await, TrackLifecycle::Planning);
     assert!(drain_events(&mut rx).await.is_empty(), "nothing emitted");
 
-    // …while an assistant `message` (no lifecycle) still lands as agent_message.
     let out = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
@@ -2487,7 +2323,6 @@ async fn upsert_and_write_markdown_carry_message_and_lifecycle_for_the_planner()
         other => panic!("expected TrackReportEdited, got {other:?}"),
     }
 
-    // An illegal edge on the block tools rolls the content back too.
     let before = current_payload(&boot).await;
     let err = call_tool(
         &boot,
@@ -2507,7 +2342,6 @@ async fn upsert_and_write_markdown_carry_message_and_lifecycle_for_the_planner()
     assert_eq!(track_lifecycle(&boot).await, TrackLifecycle::Working);
     assert!(drain_events(&mut rx).await.is_empty());
 
-    // An empty `message` is refused on the block tools, like on write/edit.
     let err = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
@@ -2527,8 +2361,7 @@ async fn commit_touching_a_task_block_illegally_is_refused_as_a_whole() {
     let before = current_payload(&boot).await;
     let mut rx = boot.ctx.events.subscribe();
 
-    // (a) A batch delete carries no live-task exemption (#1179): the task
-    //     block may only leave through `calm.report.blocks.delete`.
+    // A batch delete carries no live-task exemption: the task block may only leave through `calm.report.blocks.delete`.
     let err = call_tool(
         &boot,
         TOOL_REPORT_COMMIT,
@@ -2550,7 +2383,6 @@ async fn commit_touching_a_task_block_illegally_is_refused_as_a_whole() {
         "{err:?}"
     );
 
-    // (b) Rewriting an immutable provenance field inside a batch.
     let mut flipped = planner_task_payload("batch-task", "build it");
     flipped["declared_by"] = json!("user");
     let err = call_tool(
@@ -2578,8 +2410,6 @@ async fn commit_touching_a_task_block_illegally_is_refused_as_a_whole() {
     assert_eq!(task_keys(&boot).await, vec!["batch-task".to_string()]);
     assert!(drain_events(&mut rx).await.is_empty(), "nothing emitted");
 
-    // (c) The legal shape still works in a batch: a planner-declared task may
-    //     be tombstoned in place alongside a prose edit.
     let seeded = planner_task_payload("batch-task", "build it");
     let tombstone = json!({
         "key": "batch-task", "tombstone": { "reason": "done with it" },
@@ -2612,9 +2442,7 @@ async fn commit_rejects_duplicate_block_ids_before_touching_the_doc() {
     assert_eq!(before.doc_rev, 1);
     let mut rx = boot.ctx.events.subscribe();
 
-    // The reviewer's shape: a content-changing upsert would bump A to rev
-    // 2, so the delete's `if_rev: 1` could never be right — the batch is
-    // refused up front instead of failing -32001 on an unknowable rev.
+    // A content-changing upsert would bump A to rev 2, so the delete's `if_rev: 1` could never be right — refused up front instead of failing -32001.
     let cases: Vec<(&str, Value)> = vec![
         (
             "upsert then delete the same id",
@@ -2694,9 +2522,7 @@ async fn commit_same_state_lifecycle_reports_null_bumps_doc_rev_and_emits_no_lif
     assert_eq!(track_lifecycle(&boot).await, TrackLifecycle::Planning);
     let mut rx = boot.ctx.events.subscribe();
 
-    // Lifecycle-only commit asking for the state the track is already in:
-    // no transition applies, and the response says so instead of echoing
-    // the request. The doc still moves (docRev + the event pair).
+    // Lifecycle-only commit asking for the state the track is already in: no transition applies, but the doc still moves.
     let out = call_tool(
         &boot,
         TOOL_REPORT_COMMIT,
@@ -2726,7 +2552,6 @@ async fn commit_same_state_lifecycle_reports_null_bumps_doc_rev_and_emits_no_lif
         .collect();
     assert_eq!(kinds, vec!["card_updated", "report_edited"], "got {envs:?}");
 
-    // A real transition in the same shape is reported as applied.
     let out = call_tool(
         &boot,
         TOOL_REPORT_COMMIT,
@@ -2797,17 +2622,7 @@ async fn move_and_delete_refuse_message_and_lifecycle_with_32602() {
     assert!(drain_events(&mut rx).await.is_empty(), "nothing emitted");
 }
 
-// ---------------------------------------------------------------------------
-// #1635 S2c — the contract-header funnel. Every persist lands through
-// `write_report_row_and_project_tx`, which runs `check_document` on the flat
-// projection once, inside the transaction, before the row write. These
-// tests drive real tool handlers so the rejection is observed where it
-// matters: nothing lands, nothing is emitted, no audit row.
-// ---------------------------------------------------------------------------
-
-/// A one-section header as a caller might spell it — keys out of declaration
-/// order and an explicit `"omit_if_empty":false` — so a stored canonical line
-/// proves the ingress rewrote it rather than passed it through.
+/// Keys out of declaration order and an explicit `"omit_if_empty":false`, so a stored canonical line proves the ingress rewrote it.
 const NON_CANONICAL_HEADER: &str = "<!-- neige:contract {\"sections\":[{\"omit_if_empty\":false,\"h1\":\"概要\"}],\"version\":1} -->";
 
 fn one_section_header() -> calm_types::report_contract::ContractHeader {
@@ -2824,9 +2639,7 @@ fn first_line(body: &str) -> &str {
     body.split('\n').next().unwrap_or_default()
 }
 
-/// Persisted `track.report_edited` rows — the audit-log view of "did a write
-/// land". The broadcast check beside it would stay silent if the bus were
-/// skipped; the row would not.
+/// Persisted `track.report_edited` rows — the audit-log view of "did a write land".
 async fn report_edited_rows(boot: &Boot) -> i64 {
     sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'track.report_edited'")
         .fetch_one(&boot.repo.sqlite_pool().expect("fixture repo is sqlite"))
@@ -2834,9 +2647,7 @@ async fn report_edited_rows(boot: &Boot) -> i64 {
         .expect("count persisted report edits")
 }
 
-/// D2 (a): the birth body's block 0 leads with the header, and a move that
-/// puts another block above it leaves the header on a later line. The op
-/// itself is well-formed — it is the *document* the funnel refuses.
+/// The op itself is well-formed — it is the *document* the funnel refuses.
 #[tokio::test]
 async fn move_that_displaces_the_contract_block_is_rejected_by_the_funnel() {
     let boot = boot().await;
@@ -2884,8 +2695,6 @@ async fn move_that_displaces_the_contract_block_is_rejected_by_the_funnel() {
     );
     assert!(drain_events(&mut rx).await.is_empty(), "nothing broadcast");
 
-    // The positive twin: the same block to any index that leaves block 0
-    // where it is.
     call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_MOVE,
@@ -2897,10 +2706,6 @@ async fn move_that_displaces_the_contract_block_is_rejected_by_the_funnel() {
     assert_eq!(current_payload(&boot).await.doc_rev, 2);
 }
 
-/// D2 (b)+(c): a prose block carrying a header, inserted at position 0, is
-/// the one way a headerless document gains a header — accepted, and stored
-/// canonical because the block ingress normalized it. On a document that
-/// already has one it is a second header: `Duplicate`, nothing lands.
 #[tokio::test]
 async fn upsert_prose_at_position_0_with_a_header_is_accepted_only_when_the_doc_has_none() {
     use calm_types::report_contract::{canonical_line, check_document};
@@ -2957,9 +2762,7 @@ async fn upsert_prose_at_position_0_with_a_header_is_accepted_only_when_the_doc_
     assert_eq!(report_edited_rows(&birth).await, edits_before);
 }
 
-/// The funnel judges the document a batch leaves behind, not its steps: an
-/// upsert that puts a header on line 1 followed by a move that pushes it
-/// down is two individually valid steps and one refused commit.
+/// The funnel judges the document a batch leaves behind, not its steps.
 #[tokio::test]
 async fn commit_whose_steps_leave_the_header_off_line_1_is_rejected_as_a_whole() {
     use calm_types::report_contract::canonical_line;
@@ -2995,7 +2798,6 @@ async fn commit_whose_steps_leave_the_header_off_line_1_is_rejected_as_a_whole()
     assert_eq!(report_edited_rows(&boot).await, edits_before);
     assert!(drain_events(&mut rx).await.is_empty(), "nothing emitted");
 
-    // The first step on its own is the accepted shape.
     let out = call_tool(
         &boot,
         TOOL_REPORT_COMMIT,

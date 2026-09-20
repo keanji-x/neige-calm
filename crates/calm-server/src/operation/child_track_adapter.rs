@@ -23,10 +23,7 @@ use super::{
 
 pub const CHILD_TRACK_KIND: &str = "child-track";
 
-/// PR-B moved every bounded track-tree walk into one module in `calm-truth`,
-/// so the schedulability predicate (which lives there) and this operation
-/// share the same fragments AND the same static gate. Re-exported here
-/// because the tree depth bound is part of this adapter's public contract.
+/// Re-exported because the tree depth bound is part of this adapter's public contract.
 pub use calm_truth::db::sqlite::{MAX_TRACK_TREE_DEPTH, TRACK_ROOT_DEPTH_SQL};
 use calm_truth::db::sqlite::{
     TRACK_BOUNDED_PATH_SQL, can_add_tree_member, track_tree_budget, track_tree_member_count,
@@ -51,8 +48,7 @@ pub struct ChildTrackOperationPayload {
     pub cwd: Option<String>,
 }
 
-/// Stable first observation for the child planner. This function has no report
-/// reader: all four fields come from the post-claim task row.
+/// Stable first observation for the child planner; all four fields come from the post-claim task row, never a report reader.
 pub fn render_child_seed(payload: &ChildTrackOperationPayload) -> String {
     let acceptance = payload.acceptance.as_deref().unwrap_or("Not specified");
     let task_cwd = payload.cwd.as_deref().unwrap_or("Not specified");
@@ -68,8 +64,7 @@ pub fn render_child_seed(payload: &ChildTrackOperationPayload) -> String {
 pub struct ChildTrackAdapter {
     card_role_cache: crate::card_role_cache::CardRoleCache,
     track_area_cache: crate::track_area_cache::TrackAreaCache,
-    /// #1147 D2/D7 — the managed workspace root. The child's own workspace is
-    /// derived under it and materialized in `prepare_tx`.
+    /// The managed workspace root; the child's own workspace is derived under it and materialized in `prepare_tx`.
     workspace_root: std::path::PathBuf,
 }
 
@@ -87,26 +82,8 @@ impl ChildTrackAdapter {
     }
 }
 
-/// #1147 S4 (design D7, amended) — a child track's workspace plan, by the
-/// parent's `kind`.
-///
-/// The original D7 said "a child must always allocate independently". That
-/// conclusion was drawn from one hazard — deleting a child `rm -rf`s the
-/// parent's repository — and that hazard exists **only for a managed parent**,
-/// because S5 recycles `kind = managed` directories and nothing else. Stated
-/// unconditionally it also broke the feature: a sub-track of an attached track
-/// would get an empty repository and could not see the code it was spawned to
-/// work on, which is the normal reason to spawn one.
-///
-/// * **Managed parent** → the child allocates its own managed workspace,
-///   frozen at creation. Two rows must never share a *managed* directory.
-/// * **Attached parent** → the child inherits the same attached path, frozen
-///   at creation. Nothing recycles it, and several tracks pointing at one
-///   checkout is an ordinary, pre-existing state.
-///
-/// Frozen on both branches: a child is machine-created inside a running planner
-/// and its harness bootstraps on this path immediately, so there is no window
-/// in which re-pointing it would be safe.
+/// Managed parent → the child allocates its own managed workspace (two rows must never share a managed directory, recycling is by directory).
+/// Attached parent → the child inherits the same attached path. Frozen on both branches: the harness bootstraps on this path immediately.
 fn child_workspace_plan(
     parent: &TrackWorkspace,
     workspace_root: &std::path::Path,
@@ -115,12 +92,7 @@ fn child_workspace_plan(
         TrackWorkspaceKind::Managed => {
             TrackWorkspacePlan::ManagedFrozenUnder(workspace_root.to_path_buf())
         }
-        // `AttachedInheritedPath::new` refuses a path inside the managed root:
-        // recycling works on directories, not rows, so an attached track living
-        // under the root would lose its workspace when the managed track owning
-        // that directory is deleted. Unreachable from here (an attached parent
-        // under the root is already an invariant violation), and checked
-        // anyway because the check belongs to the type, not to this caller.
+        // `AttachedInheritedPath::new` refuses a path inside the managed root; unreachable from here, checked anyway because the check belongs to the type.
         TrackWorkspaceKind::Attached => TrackWorkspacePlan::InheritAttachedFrozen(
             AttachedInheritedPath::new(parent.path.clone(), workspace_root)?,
         ),
@@ -189,8 +161,7 @@ impl ProviderAdapter for ChildTrackAdapter {
     ) -> Result<TxOutput> {
         let payload: ChildTrackOperationPayload = serde_json::from_value(input.clone())?;
 
-        // Fifth task-bound decision point. This is deliberately the first DB
-        // action: a materialized frozen context may not create a child skeleton.
+        // Deliberately the first DB action: a materialized frozen context may not create a child skeleton.
         refuse_if_context_stale(tx, Some(&payload.task_id)).await?;
 
         let (root_id, parent_depth) = root_and_depth(tx, &payload.parent_track_id).await?;
@@ -198,12 +169,8 @@ impl ProviderAdapter for ChildTrackAdapter {
             return Err(CalmError::Conflict("sub-track-depth-exceeded".into()));
         }
 
-        // Enforcement point one for the tree budget (#985 §8). The whole tree's
-        // non-terminal `declared_by='spec'` inventory — NOT this track's — gates
-        // child creation. The claiming parent task is itself one of those rows,
-        // so `>=` (not `>`) is the right comparison: admitting a child at
-        // `count == budget` would let the tree grow past its bound before any
-        // schedulability verdict could see it.
+        // The whole tree's non-terminal `declared_by='spec'` inventory gates child creation. The claiming parent task is itself one of
+        // those rows, so `>=` (not `>`): admitting a child at `count == budget` would let the tree grow past its bound.
         let budget = track_tree_budget(tx, &root_id).await?;
         let inventory = track_tree_planner_inventory(tx, &root_id).await?;
         if inventory >= budget {
@@ -221,10 +188,7 @@ impl ProviderAdapter for ChildTrackAdapter {
             )));
         }
 
-        // #1147 S4 — the parent's WORKSPACE KIND decides the child's plan, so
-        // it is read here together with the area and the plugin scope. The
-        // parent's *path* is read on exactly one branch (attached) and is
-        // otherwise unused; see `child_workspace_plan`.
+        // The parent's WORKSPACE KIND decides the child's plan; the parent's path is read only on the attached branch.
         let parent: Option<(String, Option<String>, String, String)> = sqlx::query_as(
             "SELECT area_id, plugin_scope, workspace_kind, workspace_path FROM tracks WHERE id=?1",
         )
@@ -242,8 +206,7 @@ impl ProviderAdapter for ChildTrackAdapter {
             kind: TrackWorkspaceKind::try_from(parent_workspace_kind)
                 .map_err(CalmError::Internal)?,
             path: parent_workspace_path,
-            // Not read by `child_workspace_plan`; the child's own stamp is set
-            // by the plan, not copied.
+            // Not read by `child_workspace_plan`; the child's own stamp is set by the plan, not copied.
             frozen_at: None,
         };
         let plan = child_workspace_plan(&parent_workspace, &self.workspace_root)?;
@@ -254,12 +217,7 @@ impl ProviderAdapter for ChildTrackAdapter {
                 area_id: area_id.into(),
                 title: payload.goal.clone(),
                 sort: None,
-                // Ignored by both plans this adapter can pick: the managed
-                // path is derived from the id (which does not exist until
-                // `track_create_tx` mints it) and the attached path travels
-                // inside `InheritAttachedFrozen`. Empty rather than the
-                // parent's path so no plan can pick up an inherited path
-                // through a field that is supposed to be dead here.
+                // Ignored by both plans; empty rather than the parent's path so no plan can pick up an inherited path through a dead field.
                 cwd: String::new(),
                 template_id: None,
                 plugin_scope: parent_plugin_scope,
@@ -269,42 +227,19 @@ impl ProviderAdapter for ChildTrackAdapter {
             },
             None,
             &plan,
-            // #1292 S3 — a child track is spawned by its parent's plan, not
-            // instantiated from a user recipe. A parent that was itself made
-            // from one deliberately does not pass its origin down: the child's
-            // report is the parent's task goal, so a recipe id here would claim
-            // the child carries content it never got.
+            // A parent made from a recipe does not pass its origin down: a recipe id here would claim the child carries content it never got.
             None,
             &self.track_area_cache,
         )
         .await?;
-        // #1147 S4 — the child-track adapter, one of the four track-create entry
-        // points (`POST /api/tracks`, area chat, launchpad, child track; template
-        // seeding was a fifth until #1300 S2 deleted it). The enumeration lives
-        // once, in `tests/cases/track_workspace_materialize.rs`; this comment
-        // and `routes/today.rs` both used to call themselves "the fifth",
-        // which is why neither carries an ordinal any more. On the
-        // managed branch
-        // it does real work (the child's directory is its own, so nothing else
-        // has created it); on the attached branch it is a no-op by contract —
-        // `materialize_workspace` never creates, `git init`s or writes to a
-        // directory the user owns.
-        //
-        // On the managed branch the ownership marker names the CHILD, which is
-        // what makes the allocation checkable rather than merely intended: the
-        // same marker check that refuses a third-party repository also refuses
-        // a directory already owned by another track, so "the child quietly
-        // ended up on the parent's managed path" cannot survive this call.
-        // Under S2 the marker had to name the *parent* precisely because the
-        // path was the parent's — that asymmetry was the shape of the bug
-        // (issue #1147 N11).
+        // Managed branch: real work, and the ownership marker names the CHILD, so a child that ended up on the parent's managed path is refused here.
+        // Attached branch: a no-op by contract — `materialize_workspace` never creates, `git init`s or writes to a directory the user owns.
         crate::workspace_materialize::materialize_workspace(
             &child.workspace,
             &self.workspace_root,
             child.id.as_str(),
         )?;
-        // The child must inherit its parent's area. A cross-area parent edge
-        // makes area deletion fail its NO ACTION self-FK (tripwire test #21c).
+        // The child must inherit its parent's area: a cross-area parent edge makes area deletion fail its NO ACTION self-FK.
         sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
             .bind(&payload.parent_track_id)
             .bind(child.id.as_str())
@@ -372,9 +307,7 @@ impl ProviderAdapter for ChildTrackAdapter {
             )));
         }
 
-        // `N` has changed, so every old member's deterministic share may have
-        // shrunk. Reuse the same bounded whole-tree routine as a root budget
-        // PATCH before this transaction can expose the child.
+        // `N` has changed, so every old member's deterministic share may have shrunk; rebuild the whole tree before this transaction can expose the child.
         let projections = tasks_rebuild_tree_tx(tx, &root_id).await?;
 
         let actor = ActorId::KernelDispatcher;
@@ -437,14 +370,8 @@ impl ProviderAdapter for ChildTrackAdapter {
             });
         }
 
-        // #1147 S4 — `cwd` here is not a convenience copy. The scheduler's
-        // child-track bootstrap (`scheduler::drive_child_track`) never re-reads
-        // the track row: it takes `cwd` from THIS result — including from the
-        // persisted `tx_output` of an older operation on an idempotency
-        // collision — and hands it to `planner-harness-start`. Changing the
-        // adapter's allocation without changing this field would leave the
-        // child's harness anchored on the parent's directory, which is the
-        // adapter-only half of the same bug.
+        // `cwd` here is not a convenience copy: `scheduler::drive_child_track` never re-reads the track row, it takes `cwd` from THIS result
+        // (including the persisted `tx_output` of an older operation on an idempotency collision) and hands it to `planner-harness-start`.
         let result = json!({
             "child_track_id": child.id,
             "planner_card_id": CardId::from(planner_card_id),
@@ -550,18 +477,8 @@ mod tests {
         }
     }
 
-    /// #1147 S4 — a REAL workspace root for adapter fixtures.
-    ///
-    /// Under S2 this was a path that did not exist, because a child inherited
-    /// its (attached) parent's workspace and materialization was a no-op. Since
-    /// S4 every child allocates and materializes its own managed directory, so
-    /// every one of these tests now writes real repositories — a fake root
-    /// would turn them all into materialization failures.
-    ///
-    /// One process-wide `TempDir`, deliberately never dropped: adapter tests
-    /// only ever write ids under it, so they cannot collide, and keeping it
-    /// alive means no test can observe a root that was removed by another
-    /// test's teardown. It lives in the OS temp dir, never in `$HOME`.
+    /// A REAL workspace root: every child materializes its own managed directory, so a fake root would fail materialization.
+    /// One process-wide `TempDir`, deliberately never dropped, so no test can observe a root removed by another test's teardown.
     fn test_workspace_root() -> std::path::PathBuf {
         static ROOT: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
         ROOT.get_or_init(|| tempfile::TempDir::new().expect("adapter test workspace root"))
@@ -602,9 +519,7 @@ mod tests {
         .await
         .unwrap();
         if non_default_lifecycle_metadata {
-            // Acceptance #5 alone needs negative inheritance sentinels. Other
-            // adapter tests keep a live Draft parent so their fixtures do not
-            // normalize "terminal parents may spawn children" as valid.
+            // Only this acceptance needs negative inheritance sentinels; other tests keep a live Draft parent.
             sqlx::query(
                 "UPDATE tracks SET archived_at=101,pinned_at=102,lifecycle='done',terminal_at=103 \
                  WHERE id=?1",
@@ -808,17 +723,7 @@ mod tests {
         }
     }
 
-    /// #1147 S4 (design D7) — the child-track adapter is one of the four
-    /// track-create entry points and does not go through
-    /// `create_track_structure`, so it carries its own allocation and its own
-    /// materialize call.
-    ///
-    /// What is asserted: the child's directory is ITS OWN
-    /// (`<root>/<area>/<child_id>`, not the parent's), it is frozen at
-    /// creation (design "更换与冻结": freeze before any non-re-anchorable cwd
-    /// consumer, and child creation is named there), the row says `managed`,
-    /// and the directory is a real repository with a resolvable `HEAD` — i.e.
-    /// the child's first codex worker can `git worktree add` in it.
+    /// The child's directory is ITS OWN, frozen at creation, `managed`, and a real repository with a resolvable `HEAD`.
     #[tokio::test]
     async fn child_allocates_and_materializes_its_own_frozen_managed_workspace() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -859,9 +764,7 @@ mod tests {
         .unwrap();
         tx.commit().await.unwrap();
         assert_eq!(parent.workspace.kind, TrackWorkspaceKind::Managed);
-        // The parent was minted through the DB writer directly, so nothing has
-        // materialized it yet — that is what the route does. Do it here so the
-        // child's own call is exercised against the real steady state.
+        // The parent was minted through the DB writer directly, so materialize it here the way the route would.
         crate::workspace_materialize::materialize_workspace(
             &parent.workspace,
             &workspace_root,
@@ -937,29 +840,8 @@ mod tests {
         );
     }
 
-    /// **#1147 N11 — REPLACES the S2 gap test of the same subject.**
-    ///
-    /// The pinned gap asserted the hazard itself: S2's adapter wrote child rows
-    /// with `kind = managed` and a path equal to the parent's directory, so
-    /// S5's recycle would destroy the parent's repository when a child was
-    /// deleted. This test asserts the fixed behaviour instead.
-    ///
-    /// No data migration accompanies it, and that is a checked fact rather than
-    /// an omission: the hazardous row can only be produced by S2's adapter, S2
-    /// was never deployed (both live databases sit below it with zero child
-    /// tracks), and S2 and S4 ship together — see the N11 row in the design's
-    /// 已知缺口 table, including the ordering constraint it records.
-    ///
-    /// Two assertions, both of which the S2 shape fails:
-    ///
-    /// * no two track rows share a **managed** workspace path — checked over the
-    ///   WHOLE table, not just this pair, because "the child got its own
-    ///   directory" is only worth anything as a table-wide invariant. Scoped to
-    ///   managed because attached sharing is legal and pre-existing (see
-    ///   `child_of_an_attached_parent_shares_the_parents_path`);
-    /// * removing the child's directory (what S5 will do) leaves the parent's
-    ///   repository usable — the design's acceptance line
-    ///   "删除子 track 后父仓库仍可用", executed rather than argued.
+    /// No two track rows share a MANAGED workspace path (table-wide; attached sharing is legal), and removing the
+    /// child's directory leaves the parent's repository usable.
     #[tokio::test]
     async fn n11_deleting_a_child_workspace_cannot_destroy_the_parents_repository() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -1005,9 +887,7 @@ mod tests {
             parent.id.as_str(),
         )
         .unwrap();
-        // Real parent work: a commit that must still be there afterwards, so
-        // "the parent repository survived" is a claim about its history and
-        // not merely about a directory still existing.
+        // A commit that must still be there afterwards, so "the parent repository survived" is a claim about its history.
         std::fs::write(
             std::path::Path::new(&parent.workspace.path).join("parent-work.txt"),
             "parent work",
@@ -1035,13 +915,7 @@ mod tests {
                 .await
                 .unwrap();
 
-        // The invariant is scoped to MANAGED paths, and the scope is the S4
-        // amendment to design D7: sharing is a hazard only where recycling can
-        // reach, and S5 recycles `kind = managed` exclusively. Attached paths
-        // are shared today in production (several tracks open the same
-        // checkout), so an unscoped version of this assertion would call a
-        // long-standing legal state a violation — see
-        // `child_of_an_attached_parent_shares_the_parents_path`.
+        // Scoped to MANAGED paths: attached paths are shared today in production (several tracks open the same checkout).
         let shared: Vec<(String, i64)> = sqlx::query_as(
             "SELECT workspace_path, count(*) FROM tracks WHERE workspace_kind='managed' \
              GROUP BY workspace_path HAVING count(*) > 1",
@@ -1054,7 +928,7 @@ mod tests {
             "two track rows share a MANAGED workspace path: {shared:?}"
         );
 
-        // What S5 will do to a deleted child.
+        // What recycling will do to a deleted child.
         std::fs::remove_dir_all(&child_path).unwrap();
         assert!(
             std::path::Path::new(&parent.workspace.path)
@@ -1074,22 +948,13 @@ mod tests {
             "recycling the child's workspace destroyed the parent's repository"
         );
 
-        // The scheduler bootstraps the child's planner harness from THIS field,
-        // never from the track row.
+        // The scheduler bootstraps the child's planner harness from THIS field, never from the track row.
         assert_eq!(output.data["cwd"], child_path);
         assert_eq!(output.result["cwd"], child_path);
     }
 
-    /// #1147 S4 — an attached path INSIDE the managed workspace root may not
-    /// be inherited.
-    ///
-    /// "Attached rows are never recycled" is a claim about the row; S5 recycles
-    /// by DIRECTORY. An attached track parked under `<workspace-root>` loses its
-    /// workspace as collateral when the managed track owning that directory is
-    /// deleted. Unreachable from the adapter (an attached parent under the root
-    /// is already an invariant violation elsewhere), so the guard lives in
-    /// `AttachedInheritedPath::new` where a cross-crate caller also hits it —
-    /// this test drives that constructor through the plan chooser.
+    /// Recycling is by DIRECTORY, so an attached track parked under `<workspace-root>` would lose its workspace as collateral;
+    /// the guard lives in `AttachedInheritedPath::new` and this test drives it through the plan chooser.
     #[test]
     fn an_attached_path_inside_the_managed_root_cannot_be_inherited() {
         let root = tempfile::TempDir::new().unwrap();
@@ -1110,7 +975,6 @@ mod tests {
             "{error}"
         );
 
-        // The ordinary case still works, and a managed parent is unaffected.
         let outside = tempfile::TempDir::new().unwrap();
         assert!(matches!(
             child_workspace_plan(
@@ -1138,22 +1002,8 @@ mod tests {
         ));
     }
 
-    /// #1147 S4 amendment to design D7 — the child of an ATTACHED parent
-    /// inherits the parent's path, and that is the correct answer, not a
-    /// leftover of the S2 bug.
-    ///
-    /// This is a POSITIVE case: sharing an attached directory is legal, and
-    /// pre-existing in production (several tracks are pointed at the same
-    /// checkout today). D7's "always allocate independently" was derived from
-    /// one hazard — a deleted child recycling its parent's repository — and
-    /// S5 recycles `kind = managed` only, so the derivation does not reach
-    /// attached parents. Stated unconditionally it also broke the feature: a
-    /// sub-track spawned to work on the parent's code would be handed an empty
-    /// repository instead.
-    ///
-    /// Asserted here: same path, `kind = attached`, frozen at creation, the
-    /// scheduler's bootstrap cwd is that same path, and the user's directory
-    /// was NOT touched — no `git init`, no ownership marker, nothing created.
+    /// POSITIVE case: sharing an attached directory is legal and pre-existing in production; a sub-track spawned to work on
+    /// the parent's code must see it. The user's directory is NOT touched.
     #[tokio::test]
     async fn child_of_an_attached_parent_shares_the_parents_path() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -1225,16 +1075,14 @@ mod tests {
         assert_eq!(output.data["cwd"], user_path);
         assert_eq!(output.result["cwd"], user_path);
 
-        // The user's directory is untouched: attached means the server never
-        // creates, `git init`s, marks or writes anything here.
+        // Attached means the server never creates, `git init`s, marks or writes anything here.
         assert_eq!(
             std::fs::read_dir(&user_path).unwrap().count(),
             0,
             "materialization wrote into a user-owned attached directory"
         );
 
-        // And the narrowed invariant still holds over the whole table: the
-        // shared path is attached, so no MANAGED path is shared.
+        // The shared path is attached, so no MANAGED path is shared.
         let shared_managed: Vec<(String, i64)> = sqlx::query_as(
             "SELECT workspace_path, count(*) FROM tracks WHERE workspace_kind='managed' \
              GROUP BY workspace_path HAVING count(*) > 1",
@@ -1245,9 +1093,7 @@ mod tests {
         assert!(shared_managed.is_empty(), "{shared_managed:?}");
     }
 
-    /// Both fragments this adapter runs keep their only cycle-termination
-    /// guard. The crate-wide property gate independently scans every SQL
-    /// string touching `parent_track_id`; there is intentionally no registry.
+    /// The crate-wide property gate independently scans every SQL string touching `parent_track_id`; there is intentionally no registry.
     #[test]
     fn upward_cte_keeps_its_only_cycle_termination_guard() {
         for sql in [TRACK_ROOT_DEPTH_SQL, TRACK_BOUNDED_PATH_SQL] {
@@ -1261,10 +1107,7 @@ mod tests {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let parent = seed_parent(&repo, true).await;
         let task = seed_task(&repo, &parent, false).await;
-        // The live report deliberately disagrees with every frozen field,
-        // without marking the task stale. This DB seam proves that the real
-        // adapter consumes the operation payload frozen from `tasks`, rather
-        // than re-reading the current declaration.
+        // The live report deliberately disagrees with every frozen field, without marking the task stale: the adapter must consume the payload frozen from `tasks`.
         let report = TrackReportPayload {
             schema_version: TrackReportPayload::SCHEMA_VERSION,
             doc_rev: 9,
@@ -1332,13 +1175,7 @@ mod tests {
             );
         }
         let child_id = output.data["child_track_id"].as_str().unwrap();
-        // #1147 S4 (D7 as amended) — this parent is ATTACHED (`/parent-cwd`, a
-        // directory the user owns), so the child inherits that path and stays
-        // attached. Sharing an attached directory arms nothing: S5 recycles
-        // `kind = managed` only. The alternative — handing the child an empty
-        // managed repository — would mean a sub-track spawned to work on the
-        // parent's code cannot see it, which is what this test's `cwd`
-        // assertions exist to keep visible.
+        // This parent is ATTACHED (`/parent-cwd`, a directory the user owns), so the child inherits that path and stays attached.
         let expected_child_workspace = "/parent-cwd".to_string();
         assert_eq!(output.data["cwd"], expected_child_workspace);
         assert_eq!(
@@ -1390,8 +1227,7 @@ mod tests {
         assert_eq!(inherited.7, None, "pinned_at must not inherit");
         assert_eq!(inherited.8, None, "terminal_at must not inherit");
 
-        // §6.2 hole: child of Only(X) must not become All. Column copy plus
-        // the gate reading plugin_scope is the composition; pin the gate.
+        // Child of Only(X) must not become All; pin the gate reading plugin_scope.
         let _trusted = trust_inherited_plugin().await;
         let repo = Arc::new(repo);
         let (host, _tmp) = plugin_host_with_id(repo.clone(), "must-inherit-plugin").await;
@@ -1511,8 +1347,7 @@ mod tests {
         .unwrap();
         assert_eq!(cross_area_edges, 0);
 
-        // The unrelated area is independently deletable: the adapter did not
-        // accidentally route its child there and create a NO ACTION tripwire.
+        // The unrelated area is independently deletable: the adapter did not route its child there.
         let mut tx = repo.pool().begin().await.unwrap();
         area_delete_tx(&mut tx, &second_area).await.unwrap();
         tx.commit().await.unwrap();
@@ -1566,11 +1401,7 @@ mod tests {
         );
     }
 
-    /// PR-B enforcement point one. The inventory counted is the WHOLE tree's
-    /// non-terminal planner rows. At B=2, inventory is exactly 2 while member
-    /// admission N=1 -> 2 is legal, so ONLY the inventory guard can refuse.
-    /// At B=3 both guards admit. This keeps the inventory `>=` tripwire
-    /// independent from the later member-count guard.
+    /// At B=2, inventory is exactly 2 while member admission N=1 -> 2 is legal, so ONLY the inventory guard can refuse.
     #[tokio::test]
     async fn acceptance_tree_budget_refuses_child_creation_when_the_tree_is_full() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -1612,7 +1443,7 @@ mod tests {
         assert_eq!(before, after, "a refused creation must write nothing");
         tx.rollback().await.unwrap();
 
-        // Raising the ROOT's budget (the only place it lives) admits it.
+        // The budget lives only on the ROOT.
         sqlx::query("UPDATE tracks SET tree_task_budget=3 WHERE id=?1")
             .bind(&parent)
             .execute(repo.pool())
@@ -1637,10 +1468,7 @@ mod tests {
         );
     }
 
-    /// Compatibility of the two enforcement points: after the first child is
-    /// admitted under B=2 and its parent task finishes, inventory alone would
-    /// allow another child. The member bound must still refuse it because an
-    /// admitted N=3 tree would assign a zero share.
+    /// After the first child's parent task finishes, inventory alone would allow another child; the member bound must still refuse a zero share.
     #[tokio::test]
     async fn acceptance_tree_budget_never_admits_a_zero_share_member() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -1696,16 +1524,10 @@ mod tests {
         tx.rollback().await.unwrap();
     }
 
-    /// Load-bearing D.4 #7 acceptance. Both cases use only the production
-    /// projection, claim, admission predicates, and child adapter. They are
-    /// the review counterexamples: without the post-create whole-tree
-    /// reprojection they finish at 9/8 and 15/12 respectively.
+    /// Without the post-create whole-tree reprojection these finish at 9/8 and 15/12 respectively.
     #[tokio::test]
     async fn whole_tree_live_planner_never_exceeds_budget_across_admitted_growth_sequences() {
-        // B=8: root keeps three rows; a four-row first child supplies the
-        // second child-track operation. N=3 shrinks that member's share to 3,
-        // so the shared rebuild must cull one pending row before child 2 can
-        // consume its two-row share.
+        // B=8: N=3 shrinks the first child's share to 3, so the shared rebuild must cull one pending row before child 2 can consume its share.
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let root = seed_parent(&repo, false).await;
         let mut tx = repo.pool().begin().await.unwrap();
@@ -1734,9 +1556,7 @@ mod tests {
             .await
             .unwrap();
 
-        // B=12: three already-claimed root declarations create three siblings.
-        // The final N=4 rebuild shrinks root from six live rows to share=3;
-        // each child may then independently consume its three-row share.
+        // B=12: the final N=4 rebuild shrinks root from six live rows to share=3.
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let root = seed_parent(&repo, false).await;
         let mut tx = repo.pool().begin().await.unwrap();
@@ -1773,11 +1593,8 @@ mod tests {
         );
     }
 
-    /// The member postcondition is the only guard that can reject this legal
-    /// point-one admission: inventory 5 < B=8 and N+1=2 <= B, but the new
-    /// two-member share is 4 while all five root rows are already in-flight.
-    /// The adapter must surface Conflict and its enclosing transaction must be
-    /// rollback-clean (the HTTP operation layer maps Conflict to 409).
+    /// Inventory 5 < B=8 and N+1=2 <= B, but the new two-member share is 4 while all five root rows are already in-flight;
+    /// the enclosing transaction must be rollback-clean.
     #[tokio::test]
     async fn child_creation_409s_when_inflight_member_exceeds_its_new_share() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -1842,9 +1659,7 @@ mod tests {
         );
     }
 
-    /// A singleton with equal numeric ceiling and budget reports both binding
-    /// settings. The ordinary and whole-tree rebuild entrypoints must produce
-    /// the same codes for the same report.
+    /// The ordinary and whole-tree rebuild entrypoints must produce the same codes for the same report.
     #[tokio::test]
     async fn singleton_rebuild_entrypoints_agree_when_budget_equals_ceiling() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -1926,11 +1741,8 @@ mod tests {
 
     const INHERITED_PLUGIN_ID: &str = "must-inherit-plugin";
 
-    /// #1321 S1 第一轮评审 MINOR-4 — takes the crate-wide env lock
-    /// (`forge_trust::trusted_forge_plugins_env_lock`) because this is the
-    /// *second* writer of `NEIGE_TRUSTED_FORGE_PLUGINS` inside the lib-test
-    /// binary; `track_binding::tests::TrustGuard` is the other, and its own
-    /// module-private lock could not see this one.
+    /// Takes the crate-wide env lock: this is the second writer of `NEIGE_TRUSTED_FORGE_PLUGINS` in the lib-test binary
+    /// (`track_binding::tests::TrustGuard` is the other).
     async fn trust_inherited_plugin() -> InheritedTrustGuard {
         let lock = crate::forge_trust::trusted_forge_plugins_env_lock()
             .lock()

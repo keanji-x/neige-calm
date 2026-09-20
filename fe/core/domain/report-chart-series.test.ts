@@ -3,14 +3,6 @@ import { describe, expect, it } from 'vitest';
 import { isCalendarDate, readTrackReport, TRACK_REPORT_CARD_KIND } from './report.js';
 import type { CardWire } from './track.js';
 
-/*
- * `chart.series` (#1628 S1) through the same entrance the renderer uses:
- * `readTrackReport` over a track-report card. Every case here is a wire block
- * the kernel would have accepted or refused for the same reason, so a payload
- * the kernel stores is exactly one this reads, and a payload the kernel
- * refuses degrades to `unsupported` here rather than reaching a renderer.
- */
-
 const SOURCE = 'neige://plugin/dev-neige-market/market.series';
 
 function card(payload: unknown): CardWire {
@@ -37,9 +29,6 @@ describe('readTrackReport — chart.series', () => {
     });
   });
 
-  // #1628 S4 — the data request is bound to the block revision, so a series
-  // block is the one kind that carries `rev` out of the wire. Without one it
-  // cannot ask for anything and degrades like an unreadable payload.
   it('carries the wire rev on a series block and degrades one without it', () => {
     const report = readTrackReport([card({
       body: 'x',
@@ -62,8 +51,7 @@ describe('readTrackReport — chart.series', () => {
       .toBe('chart.series');
   });
 
-  // The calendar, not a `Date`: `new Date('2026-02-30')` rolls over to March
-  // and would accept exactly the payload the kernel refuses.
+  // `new Date('2026-02-30')` rolls over to March and would accept exactly the payload the kernel refuses.
   it('degrades a cutoff that is not a calendar day to unsupported', () => {
     expect(readSeries({ source: SOURCE, series: ['US:NVDA'], as_of: '2026-02-30' }))
       .toEqual({ id: 'b-1', kind: 'unsupported', declaredKind: 'chart.series' });

@@ -356,13 +356,7 @@ async fn lifecycle_changes(repo: &SqlxRepo, track_id: &TrackId) -> Vec<Event> {
         .collect()
 }
 
-// ----- #741-4 dead-root convergence test helpers -----------------------
-
-/// Insert a `planner-harness-start` operation for `track_id` and stamp its
-/// terminal `phase` (DR-4's positive dead signal keys on `phase='failed'`).
-/// The payload carries `track_id` at top level — the immutable op→track link
-/// `dead_root_candidates` queries via `json_extract(payload_json,
-/// '$.track_id')`.
+/// Insert a `planner-harness-start` operation for `track_id` and stamp its terminal `phase`; the payload's top-level `track_id` is the op→track link `dead_root_candidates` queries.
 async fn insert_planner_harness_start_op(repo: &SqlxRepo, track_id: &TrackId, phase: &str) {
     let planner_card_id: String =
         sqlx::query_scalar("SELECT id FROM cards WHERE track_id = ?1 AND role = 'planner'")
@@ -390,11 +384,7 @@ async fn insert_harness_start_op_for_card(
             },
             json!({
                 "actor": ActorId::KernelDispatcher,
-                // The FROZEN persisted spelling — `PlannerHarnessStartOperationPayload`
-                // serializes as `wave_id` / `spec_card_id` because the payload is
-                // hashed into `operations.payload_hash`. Seeding the Rust spelling
-                // here would make this fixture disagree with every real row, and the
-                // reaper's `$.wave_id` predicate would silently match nothing.
+                // The FROZEN persisted spelling (`wave_id` / `spec_card_id`): the payload is hashed into `operations.payload_hash`, and the reaper's `$.wave_id` predicate would silently match nothing otherwise.
                 "wave_id": track_id.as_str(),
                 "spec_card_id": card_id,
                 "cwd": "/tmp",
@@ -402,9 +392,7 @@ async fn insert_harness_start_op_for_card(
         )
         .await
         .expect("insert planner-harness-start operation");
-    // `insert_operation` always lands `phase='pending'`; advance to the
-    // requested terminal phase (mirrors `mark_failed`, which sets `phase`
-    // and a completed timestamp without touching target columns).
+    // `insert_operation` always lands `phase='pending'`; advance to the requested terminal phase.
     sqlx::query("UPDATE operations SET phase = ?1, completed_at_ms = ?2 WHERE id = ?3")
         .bind(phase)
         .bind(if matches!(phase, "failed" | "succeeded") {
@@ -496,17 +484,13 @@ async fn track_lifecycle_now(repo: &SqlxRepo, track_id: &TrackId) -> TrackLifecy
         .lifecycle
 }
 
-/// DR-4 failed-start: a `Draft` track whose `planner-harness-start` op resolved
-/// to `phase='failed'`, with NO active planner session, converges
-/// `Draft → Failed` — exactly one `TrackLifecycleChanged` (KernelDispatcher),
-/// and NO `TaskFailed` (a dead root has no task row).
+/// A failed start with NO active planner session converges `Draft → Failed`: exactly one `TrackLifecycleChanged`, and NO `TaskFailed` (a dead root has no task row).
 #[tokio::test]
 async fn sweep_dead_roots_failed_start_draft_converges_to_failed() {
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
     let (repo, track_id) = seeded_repo().await;
-    // Track starts Draft (default); record a FAILED start-op for it.
     assert_eq!(
         track_lifecycle_now(&repo, &track_id).await,
         TrackLifecycle::Draft
@@ -539,7 +523,6 @@ async fn sweep_dead_roots_failed_start_draft_converges_to_failed() {
         }
         other => panic!("expected lifecycle change, got {other:?}"),
     }
-    // No task row, so no TaskFailed event anywhere.
     let task_failed = RepoEventWrite::events_since(repo.as_ref(), 0, i64::MAX)
         .await
         .expect("events")
@@ -591,8 +574,7 @@ async fn sweep_dead_roots_failed_worker_start_stays_draft() {
     reset_reaper_boot_gate_for_test();
 }
 
-/// INV-CHAT-017(a,c): the compatibility fence still protects a retired Area
-/// chat track whose failed start points at its own real planner card.
+/// The compatibility fence still protects a retired Area chat track whose failed start points at its own real planner card.
 #[tokio::test]
 async fn sweep_dead_roots_legacy_area_chat_failed_true_planner_stays_draft() {
     let _guard = REAPER_TEST_LOCK.lock().await;
@@ -620,8 +602,7 @@ async fn sweep_dead_roots_legacy_area_chat_failed_true_planner_stays_draft() {
     reset_reaper_boot_gate_for_test();
 }
 
-/// INV-CHAT-017(b,c): the lost-root Planning arm independently excludes the
-/// legacy chat container so old rows do not get terminalized on boot.
+/// The lost-root Planning arm independently excludes the legacy chat container so old rows do not get terminalized on boot.
 #[tokio::test]
 async fn sweep_dead_roots_chat_planning_null_root_stays_nonterminal() {
     let _guard = REAPER_TEST_LOCK.lock().await;
@@ -657,8 +638,7 @@ async fn sweep_dead_roots_chat_planning_null_root_stays_nonterminal() {
     reset_reaper_boot_gate_for_test();
 }
 
-/// A newer Worker/chat start must not mask an older failed true-root start:
-/// the MAX(rowid) subquery considers only start ops for this track's planner card.
+/// The MAX(rowid) subquery considers only start ops for this track's planner card.
 #[tokio::test]
 async fn sweep_dead_roots_newer_worker_start_does_not_hide_failed_true_root() {
     let _guard = REAPER_TEST_LOCK.lock().await;
@@ -697,8 +677,7 @@ async fn sweep_dead_roots_newer_worker_start_does_not_hide_failed_true_root() {
     reset_reaper_boot_gate_for_test();
 }
 
-/// Non-string `planner_card_id` payloads are not true-root evidence. This pins
-/// the fail-closed type guard in the inner latest-true-root-op filter.
+/// Pins the fail-closed type guard in the inner latest-true-root-op filter.
 #[tokio::test]
 async fn sweep_dead_roots_non_text_planner_card_id_fails_closed() {
     let _guard = REAPER_TEST_LOCK.lock().await;
@@ -734,23 +713,17 @@ async fn sweep_dead_roots_non_text_planner_card_id_fails_closed() {
     reset_reaper_boot_gate_for_test();
 }
 
-/// DR-4 SAFETY (the false-converge guard): a fresh `Draft` track whose
-/// start-op is PENDING (or SUCCEEDED, or absent) is NOT a positive dead
-/// signal — it must stay `Draft`.
+/// A PENDING, SUCCEEDED, or absent start-op is NOT a positive dead signal.
 #[tokio::test]
 async fn sweep_dead_roots_draft_pending_or_succeeded_or_absent_start_op_not_converged() {
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
-    // (a) pending start-op
     let (repo_pending, track_pending) = seeded_repo().await;
     insert_planner_harness_start_op(&repo_pending, &track_pending, "pending").await;
-    // (b) succeeded start-op (the track hasn't advanced past Draft yet, but
-    //     the start succeeded — definitely not dead).
     let (repo_succeeded, track_succeeded) = seeded_repo().await;
     insert_planner_harness_start_op(&repo_succeeded, &track_succeeded, "succeeded").await;
-    // (c) NO start-op row at all (just-created / in-flight — absence is
-    //     ambiguous, must NOT converge).
+    // (c) absence is ambiguous (just-created / in-flight), must NOT converge.
     let (repo_absent, track_absent) = seeded_repo().await;
 
     for (repo, track_id, label) in [
@@ -785,26 +758,15 @@ async fn sweep_dead_roots_draft_pending_or_succeeded_or_absent_start_op_not_conv
     reset_reaper_boot_gate_for_test();
 }
 
-/// DR-4 latest-start-op guard (the stale-failed-plus-newer-retry hole):
-/// start/reset re-submit `planner-harness-start` with a FRESH op id, so a
-/// Draft track can carry a STALE `failed` start-op AND a NEWER retry
-/// (`pending` or `succeeded`) start-op simultaneously. During the retry's
-/// setup window the planner session is not yet created, so the
-/// `no_active_planner` guard is momentarily true — convergence must still
-/// be refused because the LATEST start-op is non-failed. Keying on the
-/// most-recent start-op (max `rowid`) closes the false-converge hole.
+/// start/reset re-submit `planner-harness-start` with a FRESH op id, so a Draft track can carry a STALE `failed` start-op AND a NEWER retry while the planner session is not yet created; the LATEST start-op (max `rowid`) decides.
 #[tokio::test]
 async fn sweep_dead_roots_stale_failed_plus_newer_retry_start_op_not_converged() {
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
-    // (a) STALE failed start-op, then a NEWER pending retry start-op
-    //     (retry in flight, planner session not yet created).
     let (repo_pending, track_pending) = seeded_repo().await;
     insert_planner_harness_start_op(&repo_pending, &track_pending, "failed").await;
     insert_planner_harness_start_op(&repo_pending, &track_pending, "pending").await;
-    // (b) STALE failed start-op, then a NEWER succeeded retry start-op
-    //     (start ultimately succeeded — definitely not dead).
     let (repo_succeeded, track_succeeded) = seeded_repo().await;
     insert_planner_harness_start_op(&repo_succeeded, &track_succeeded, "failed").await;
     insert_planner_harness_start_op(&repo_succeeded, &track_succeeded, "succeeded").await;
@@ -845,15 +807,12 @@ async fn sweep_dead_roots_stale_failed_plus_newer_retry_start_op_not_converged()
     reset_reaper_boot_gate_for_test();
 }
 
-/// DR-4 mid-respawn exclusion: a Draft (failed start-op) OR Planning
-/// (NULL root) track that has an ACTIVE planner-contract session is NOT
-/// converged — a respawn is in flight.
+/// An ACTIVE planner-contract session means a respawn is in flight: no convergence.
 #[tokio::test]
 async fn sweep_dead_roots_active_planner_session_excludes_convergence() {
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
-    // Draft + failed start-op, but a fresh planner session is `running`.
     let (repo_draft, track_draft) = seeded_repo().await;
     insert_planner_harness_start_op(&repo_draft, &track_draft, "failed").await;
     insert_planner_session(
@@ -865,7 +824,6 @@ async fn sweep_dead_roots_active_planner_session_excludes_convergence() {
     )
     .await;
 
-    // Planning + NULL root, but a planner session is `starting` (respawn).
     let (repo_planning, track_planning) = seeded_repo().await;
     set_track_lifecycle(&repo_planning, &track_planning, TrackLifecycle::Planning).await;
     insert_planner_session(
@@ -904,8 +862,6 @@ async fn sweep_dead_roots_active_planner_session_excludes_convergence() {
     reset_reaper_boot_gate_for_test();
 }
 
-/// DR-4 lost-root: a `Planning` track whose root session is TERMINAL
-/// (failed) with no active planner session converges `Planning → Failed`.
 #[tokio::test]
 async fn sweep_dead_roots_lost_root_terminal_session_planning_converges() {
     let _guard = REAPER_TEST_LOCK.lock().await;
@@ -913,8 +869,7 @@ async fn sweep_dead_roots_lost_root_terminal_session_planning_converges() {
 
     let (repo, track_id) = seeded_repo().await;
     set_track_lifecycle(&repo, &track_id, TrackLifecycle::Planning).await;
-    // Root session exists but is TERMINAL (Failed) — the worker reaper
-    // already terminalized it (S1/S2 for codex). No active planner.
+    // Root session is TERMINAL: the worker reaper already terminalized it.
     insert_planner_session(
         &repo,
         "planner-dead-root",
@@ -954,8 +909,6 @@ async fn sweep_dead_roots_lost_root_terminal_session_planning_converges() {
     reset_reaper_boot_gate_for_test();
 }
 
-/// DR-4 lost-root NULL: a `Planning` track whose `root_session_id IS NULL`
-/// with no active planner session converges `Planning → Failed`.
 #[tokio::test]
 async fn sweep_dead_roots_lost_root_null_planning_converges() {
     let _guard = REAPER_TEST_LOCK.lock().await;
@@ -963,7 +916,6 @@ async fn sweep_dead_roots_lost_root_null_planning_converges() {
 
     let (repo, track_id) = seeded_repo().await;
     set_track_lifecycle(&repo, &track_id, TrackLifecycle::Planning).await;
-    // No root session at all, no active planner — a lost root.
 
     let fake = Arc::new(FakeProvider::new());
     let repo_dyn: Arc<dyn Repo> = repo.clone();
@@ -987,14 +939,12 @@ async fn sweep_dead_roots_lost_root_null_planning_converges() {
     reset_reaper_boot_gate_for_test();
 }
 
-/// DR-5 boot gate: `sweep_dead_roots` no-ops until `reaper_on_boot`.
 #[tokio::test]
 async fn sweep_dead_roots_noops_until_reaper_on_boot_opens_gate() {
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
     let (repo, track_id) = seeded_repo().await;
-    // A genuinely-dead failed-start root that WOULD converge post-boot.
     insert_planner_harness_start_op(&repo, &track_id, "failed").await;
 
     let fake = Arc::new(FakeProvider::new());
@@ -1006,7 +956,6 @@ async fn sweep_dead_roots_noops_until_reaper_on_boot_opens_gate() {
         write_context(&repo).await,
     );
 
-    // Gate closed: must NOT converge.
     reaper.sweep_dead_roots().await;
     assert_eq!(
         track_lifecycle_now(&repo, &track_id).await,
@@ -1015,7 +964,6 @@ async fn sweep_dead_roots_noops_until_reaper_on_boot_opens_gate() {
     );
     assert_eq!(lifecycle_changes(&repo, &track_id).await.len(), 0);
 
-    // Gate open: now it converges.
     reaper_on_boot();
     reaper.sweep_dead_roots().await;
     assert_eq!(
@@ -1158,9 +1106,7 @@ async fn sweep_exited_failed_converges_dead_worker_task_and_parks_reviewing() {
         .expect("task get")
         .expect("task exists");
     assert_eq!(task_row.status, TaskStatus::Failed);
-    // #1147 ① — the reaper's interpreted reason reaches the ROW, not just
-    // the event. (The `spawn-failed` classifier is knowingly wrong for a
-    // runtime death; re-classifying it is out of scope for #1147 ①.)
+    // The `spawn-failed` classifier is knowingly wrong for a runtime death; only the reason tail is asserted.
     let detail = task_row.status_detail.clone().unwrap_or_default();
     assert_eq!(status_detail_class(&detail), "spawn-failed");
     assert!(
@@ -1178,9 +1124,7 @@ async fn sweep_exited_failed_converges_dead_worker_task_and_parks_reviewing() {
             ..
         } => {
             assert_eq!(idempotency_key, &task.id);
-            // FIX 3: the provider's interpreted reason flows through, not
-            // the kernel's old `"exit Some(..)"` format. The probe-sourced
-            // evidence hides the exit sentinel behind "outcome unknown".
+            // The probe-sourced evidence hides the exit sentinel behind 'outcome unknown'.
             assert!(
                 reason.contains("outcome unknown") && reason.contains("supervisor probe"),
                 "expected provider reason, got {reason:?}"
@@ -1210,11 +1154,7 @@ async fn sweep_exited_failed_converges_dead_worker_task_and_parks_reviewing() {
     reset_reaper_boot_gate_for_test();
 }
 
-/// #741-3 (a): a CODEX (`SessionMode::Resumable`) session observed `Exited`
-/// whose death arbiter returns `Dead` (with a stale `last_activity_ms` so
-/// the §1.1(d) pre-gate lets it through) MUST converge — mirroring the
-/// ephemeral convergence: cardless `TaskFailed`, park Working→Reviewing,
-/// session terminalized.
+/// A stale `last_activity_ms` lets the pre-gate through; a `Dead` verdict must converge like the ephemeral path.
 #[tokio::test]
 async fn sweep_resumable_codex_exited_arbiter_dead_converges() {
     let _guard = REAPER_TEST_LOCK.lock().await;
@@ -1224,8 +1164,7 @@ async fn sweep_resumable_codex_exited_arbiter_dead_converges() {
     set_track_lifecycle(&repo, &track_id, TrackLifecycle::Working).await;
     let task = insert_task(&repo, &track_id, "codex-dead", TaskStatus::Running).await;
     let op_id = insert_spawn_operation(&repo, Some(&task.id), None).await;
-    // `created_at_ms = 1` ⇒ `now - last` (NULL last_activity ⇒ created_at)
-    // is far past the deadline, so the pre-gate does not short-circuit.
+    // `created_at_ms = 1` (NULL last_activity ⇒ created_at) is far past the deadline, so the pre-gate does not short-circuit.
     let mut worker = session("ws-codex-dead", track_id.clone(), 1);
     worker.provider = WorkerProviderKind::Codex;
     worker.mode = SessionMode::Resumable;
@@ -1274,7 +1213,6 @@ async fn sweep_resumable_codex_exited_arbiter_dead_converges() {
         .expect("task get")
         .expect("task exists");
     assert_eq!(task_row.status, TaskStatus::Failed);
-    // #1147 ① — same row-level readability for the arbiter-declared death.
     let detail = task_row.status_detail.clone().unwrap_or_default();
     assert_eq!(status_detail_class(&detail), "spawn-failed");
     let event_reason = match &task_failed_events(&repo, &task.id).await[0] {
@@ -1442,8 +1380,6 @@ async fn converge_dead_worker_without_spawn_op_releases_workspace_lease() {
     assert_eq!(removed_events, 0);
 }
 
-/// #741-3 (b): a resumable Exited whose arbiter returns `Alive` records a
-/// T2 liveness observation and does NOT converge.
 #[tokio::test]
 async fn sweep_resumable_codex_exited_arbiter_alive_records_t2_only() {
     let _guard = REAPER_TEST_LOCK.lock().await;
@@ -1508,8 +1444,6 @@ async fn sweep_resumable_codex_exited_arbiter_alive_records_t2_only() {
     reset_reaper_boot_gate_for_test();
 }
 
-/// #741-3 (c): a resumable Exited whose arbiter returns `Unknown` records a
-/// T2 liveness observation and does NOT converge.
 #[tokio::test]
 async fn sweep_resumable_codex_exited_arbiter_unknown_records_t2_only() {
     let _guard = REAPER_TEST_LOCK.lock().await;
@@ -1568,9 +1502,7 @@ async fn sweep_resumable_codex_exited_arbiter_unknown_records_t2_only() {
     reset_reaper_boot_gate_for_test();
 }
 
-/// #741-3 (d): a resumable Exited whose `last_activity_ms` is RECENT — the
-/// §1.1(d) pre-gate short-circuits to a T2 observation WITHOUT consulting
-/// the arbiter (no RPC). Arbiter would say `Dead`, but it is never asked.
+/// Arbiter would say `Dead`, but the pre-gate never asks it.
 #[tokio::test]
 async fn sweep_resumable_codex_exited_recent_activity_pregate_skips_arbiter() {
     let _guard = REAPER_TEST_LOCK.lock().await;
@@ -1584,7 +1516,6 @@ async fn sweep_resumable_codex_exited_recent_activity_pregate_skips_arbiter() {
     worker.provider = WorkerProviderKind::Codex;
     worker.mode = SessionMode::Resumable;
     worker.thread_id = Some("t-codex-recent".into());
-    // RECENT activity: well within the default 15-min deadline window.
     worker.last_activity_ms = Some(now_ms());
     worker.spawn_op_id = Some(op_id);
     insert_session(&repo, worker).await;
@@ -1635,13 +1566,7 @@ async fn sweep_resumable_codex_exited_recent_activity_pregate_skips_arbiter() {
     reset_reaper_boot_gate_for_test();
 }
 
-/// P2 (spawn-window false-convergence): an EPHEMERAL (terminal) session
-/// still in the `starting` state observed `Exited` must NOT converge — a
-/// supervisor `proc_running:false` in the spawn window means "not
-/// registered YET", not "exited". The reaper records the liveness as a T2
-/// observation (`liveness` column set) and leaves the session in `starting`
-/// with no `TaskFailed` and no lifecycle change; the spawn operation owns
-/// convergence for `starting` sessions.
+/// A supervisor `proc_running:false` in the spawn window means 'not registered YET', not 'exited': liveness is recorded and the spawn operation owns convergence.
 #[tokio::test]
 async fn sweep_exited_starting_session_records_liveness_without_convergence() {
     let _guard = REAPER_TEST_LOCK.lock().await;
@@ -1652,10 +1577,6 @@ async fn sweep_exited_starting_session_records_liveness_without_convergence() {
     let task = insert_task(&repo, &track_id, "spawn-window", TaskStatus::Running).await;
     let op_id = insert_spawn_operation(&repo, Some(&task.id), None).await;
     let mut worker = session("ws-starting", track_id.clone(), 1);
-    // EPHEMERAL terminal worker still in the spawn/startup window: the
-    // `worker_session` row exists before the PTY registers with the
-    // proc-supervisor, so the probe's `proc_running:false` is "not spawned
-    // YET", not "exited".
     worker.state = WorkerSessionState::Starting;
     worker.spawn_op_id = Some(op_id);
     insert_session(&repo, worker).await;
@@ -1678,7 +1599,6 @@ async fn sweep_exited_starting_session_records_liveness_without_convergence() {
         .await
         .expect("session get")
         .expect("session exists");
-    // T2 observation recorded: liveness column set, NOT terminalized.
     assert_eq!(worker.liveness, LivenessTag::Exited);
     assert!(worker.liveness_probed_at_ms.is_some());
     assert_eq!(
@@ -1690,7 +1610,6 @@ async fn sweep_exited_starting_session_records_liveness_without_convergence() {
     assert_eq!(worker.exit_interpretation, None);
     assert!(worker.completed_at_ms.is_none());
 
-    // No convergence: no task.failed, task stays running, track stays Working.
     assert_eq!(task_failed_events(&repo, &task.id).await.len(), 0);
     assert_eq!(lifecycle_changes(&repo, &track_id).await.len(), 0);
     let task_row = repo

@@ -1,18 +1,5 @@
-//! Issue #1505 S4-2 — `GET /api/models`.
-//!
-//! Every test drives the real `SharedCodexAppServer`, the real
-//! `CodexAppServer` WebSocket-over-UDS client, and a fake `codex app-server`
-//! child process that answers `model/list` / `config/read` from sidecar files
-//! next to its listen socket (`tests/fixtures/osc-probe-child/appserver.rs`).
-//! Nothing in the assertions re-implements what the handler computes.
-//!
-//! **Which router each test mounts, precisely.** The behaviour tests mount
-//! `routes::router()` plus `actor_middleware` — that is the whole handler
-//! path but NOT the session gate, so they say nothing about authentication.
-//! `models_read_is_behind_the_session_gate` is the one that mounts the
-//! production assembly `routes::application_router`, and it is the only thing
-//! standing between `models::router()` and a future move into
-//! `public_router()`.
+//! `GET /api/models` driven through the real `SharedCodexAppServer` and a fake `codex app-server`
+//! child that answers `model/list` / `config/read` from sidecar files next to its listen socket.
 
 mod common;
 
@@ -62,33 +49,8 @@ impl Boot {
             .collect()
     }
 
-    /// Blocks the CALLING THREAD until the fake daemon has appended at least
-    /// `count` lines equal to `method` to `<sock>.methods`, then returns the
-    /// whole file.
-    ///
-    /// `<sock>.methods` is written by the fake daemon, which is a separate
-    /// PROCESS: `request_until` in `codex_appserver.rs` writes its frame under
-    /// the sink lock and only then awaits the response, so a frame our request
-    /// issued is in the socket's kernel buffer by the time the request
-    /// returns — but the daemon still has to be scheduled, read it and append
-    /// the line. Sampling the file once right after the request therefore
-    /// races that append; on a loaded runner it lost (CI job 101403060498 saw
-    /// `["initialize"]`). This waits for the append instead.
-    ///
-    /// Two properties of the wait matter:
-    ///
-    ///   * It uses `std::time::Instant` / `std::thread::sleep`, not tokio
-    ///     timers, so it elapses in real time whatever a caller has done to
-    ///     tokio's clock. A `tokio::time::sleep` poll loop under
-    ///     `tokio::time::pause()` would burn its whole budget in zero
-    ///     wall-clock time and reintroduce the race it exists to close.
-    ///   * It never `.await`s, so the runtime does not park while it runs.
-    ///     Blocking the runtime is safe here precisely because the thing it
-    ///     waits for runs in another process.
-    ///
-    /// The deadline is a failure ceiling, not a measurement: it exists so a
-    /// daemon that never records the frame fails the test with the recorded
-    /// contents instead of hanging.
+    /// Blocks the calling thread until the fake daemon (a separate process) has recorded `count` lines equal
+    /// to `method`. Uses std sleeps, not tokio timers, so it elapses in real time under `tokio::time::pause()`.
     fn wait_for_recorded(&self, method: &str, count: usize, why: &str) -> Vec<String> {
         let ceiling = Duration::from_secs(30);
         let started = std::time::Instant::now();
@@ -123,11 +85,7 @@ fn cfg(root: &TempDir) -> Config {
     ])
 }
 
-/// Build the whole REST surface over a real (or deliberately unstarted)
-/// shared codex daemon.
-///
-/// `scripted` is applied to the sidecar files **before** the daemon boots, so
-/// the fixture's first `model/list` already sees them.
+/// `scripted` is applied to the sidecar files before the daemon boots, so its first `model/list` already sees them.
 async fn boot(start_daemon: bool, scripted: impl FnOnce(&PathBuf)) -> Boot {
     let tmp = TempDir::new().expect("tempdir");
     let repo = Arc::new(
@@ -288,15 +246,6 @@ fn catalog() -> Value {
     })
 }
 
-// ---------------------------------------------------------------------------
-// Design test 8 — no daemon: 200, `unavailable`, empty catalog, and a default
-// that still comes back (from our own `config.toml`).
-// ---------------------------------------------------------------------------
-
-/// UNIQUELY PINS: an unreachable codex must not become an error and must not
-/// become an invented catalog, and `default` / `default_source` must survive
-/// the outage — S4-4 disables the picker on `unavailable` and has nothing
-/// left to show if the default disappears with the list.
 #[tokio::test]
 async fn models_read_reports_unavailable_without_a_daemon() {
     let boot = boot(false, |_sock| {}).await;
@@ -321,15 +270,6 @@ async fn models_read_reports_unavailable_without_a_daemon() {
     assert_eq!(body["fetched_at_ms"], Value::Null);
 }
 
-// ---------------------------------------------------------------------------
-// Design test 9 — `default` comes from `config/read`, never from `isDefault`.
-// ---------------------------------------------------------------------------
-
-/// UNIQUELY PINS: the two "default"s are different questions. Codex's
-/// `isDefault` marks the picker's highlighted entry; the value this
-/// installation actually follows is the layer-merged `config/read`. It also
-/// pins the snake_case key spelling inside `config` (`ConfigReadResponse` is
-/// camelCase, the `Config` it wraps is not).
 #[tokio::test]
 async fn models_read_takes_the_default_from_config_read_not_is_default() {
     let boot = boot(true, |sock| {
@@ -363,9 +303,6 @@ async fn models_read_takes_the_default_from_config_read_not_is_default() {
     );
 }
 
-/// UNIQUELY PINS: what travels on our wire as a selectable model is the
-/// **slug**, not the preset id, and an unknown reasoning-effort string
-/// survives the round trip instead of being rejected by a closed enum.
 #[tokio::test]
 async fn models_read_carries_the_slug_and_passes_unknown_efforts_through() {
     let boot = boot(true, |sock| {
@@ -388,8 +325,6 @@ async fn models_read_carries_the_slug_and_passes_unknown_efforts_through() {
     );
 }
 
-/// §3.3(e): a connected daemon that answers with an empty catalog is NOT the
-/// same fact as an unreachable one, and the response has to say so.
 #[tokio::test]
 async fn models_read_distinguishes_an_empty_live_catalog_from_an_outage() {
     let boot = boot(true, |sock| {
@@ -408,9 +343,6 @@ async fn models_read_distinguishes_an_empty_live_catalog_from_an_outage() {
     assert_eq!(body["models"], json!([]));
 }
 
-/// Without a card there is no workspace, so there are no project layers to
-/// resolve and the endpoint must say `unknown` rather than pass a global-layer
-/// value off as this card's default.
 #[tokio::test]
 async fn models_read_reports_unknown_default_without_a_card() {
     let boot = boot(true, |sock| {
@@ -430,16 +362,7 @@ async fn models_read_reports_unknown_default_without_a_card() {
     assert_eq!(body["default"]["model"], Value::Null);
 }
 
-// ---------------------------------------------------------------------------
-// Design test 12 — the call-site timeout.
-// ---------------------------------------------------------------------------
-
-/// UNIQUELY PINS: `model/list` is bounded at the call site, and the bound is
-/// long enough that codex's own 5 s catalog-fetch ceiling gets to answer
-/// first.
-///
-/// The clock is paused *after* the daemon has booted, so the real socket work
-/// is done under real time and only the two deadlines below are virtual.
+/// The clock is paused after the daemon has booted, so only the two deadlines below are virtual.
 #[tokio::test]
 async fn model_list_is_bounded_at_the_call_site() {
     let boot = boot(true, |sock| {
@@ -452,9 +375,7 @@ async fn model_list_is_bounded_at_the_call_site() {
     let started = tokio::time::Instant::now();
     let mut request = Box::pin(get_models(&app, ""));
 
-    // Auto-advance jumps to the nearest deadline; racing the request against a
-    // 5 s timer therefore asks "was it still waiting at 5 s?" without any
-    // wall-clock wait.
+    // Auto-advance jumps to the nearest deadline, so this asks "still waiting at 5 s?" with no wall-clock wait.
     assert!(
         tokio::time::timeout(Duration::from_secs(5), &mut request)
             .await
@@ -469,11 +390,7 @@ async fn model_list_is_bounded_at_the_call_site() {
     assert_eq!(status, StatusCode::OK, "body: {body}");
     assert_eq!(body["source"], "unavailable");
     assert_eq!(body["models"], json!([]));
-    // Upper bound, not a stopwatch: a paused clock also advances whenever the
-    // runtime parks on real IO. It is meaningful here because this request
-    // issues exactly one frame and then has nothing but our deadline to wait
-    // on. See `config_read_shares_the_one_request_budget` for why a test with
-    // two reads cannot assert on virtual elapsed at all.
+    // Upper bound, not a stopwatch: a paused clock also advances whenever the runtime parks on real IO.
     assert!(
         elapsed <= Duration::from_millis(8_100),
         "degraded after {elapsed:?}; the call-site bound must fire by 8s \
@@ -487,17 +404,7 @@ async fn model_list_is_bounded_at_the_call_site() {
     drop(boot);
 }
 
-// ---------------------------------------------------------------------------
-// Design test 13 (GET half) — the endpoint sits behind the session gate.
-// ---------------------------------------------------------------------------
-
-/// UNIQUELY PINS: `GET /api/models` is reachable only with a session.
-///
-/// Every other test in this file mounts `routes::router()`, which merges the
-/// protected, internal and public trees with no gate at all — so none of them
-/// can tell whether this route is protected. This one mounts the production
-/// assembly, which is the only place `require_session` exists. Without it,
-/// moving `.merge(models::router())` into `public_router()` would be green.
+/// The only test that mounts the production assembly (`routes::application_router`), where `require_session` lives.
 #[tokio::test]
 async fn models_read_is_behind_the_session_gate() {
     let boot = boot(false, |_sock| {}).await;
@@ -568,20 +475,7 @@ async fn models_read_is_behind_the_session_gate() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// The default source hangs on the CONNECTION, not on `model/list` succeeding.
-// ---------------------------------------------------------------------------
-
-/// UNIQUELY PINS: a live daemon whose catalog we cannot read must still have
-/// its default resolved through `config/read`.
-///
-/// `source` collapses three facts into `unavailable` (no connection, an
-/// RPC/decode failure, a timeout). Deriving the default branch from it would
-/// send a *connected* installation to `config.toml` — the source the design
-/// calls the wrong one, because a managed-config layer merges above the user
-/// layer and can name a different model. The `config.toml` written below is
-/// the decoy: if it ever shows up in the answer, we reported a model this
-/// installation does not follow.
+/// The `config.toml` written below is a decoy: if it shows up in the answer, the default came from the wrong source.
 #[tokio::test]
 async fn default_stays_on_config_read_when_the_catalog_page_is_undecodable() {
     let boot = boot(true, |sock| {
@@ -627,13 +521,6 @@ async fn default_stays_on_config_read_when_the_catalog_page_is_undecodable() {
     );
 }
 
-/// UNIQUELY PINS: one preset this build cannot decode costs that preset, not
-/// the catalog.
-///
-/// An all-or-nothing page decode would render identically to a dormant daemon
-/// — empty list, "codex is not running" — while codex is running turns. Codex
-/// ships five `#[serde(default)]` attributes on its own `Model` precisely
-/// because this catalog is expected to grow.
 #[tokio::test]
 async fn one_undecodable_preset_does_not_empty_the_catalog() {
     let boot = boot(true, |sock| {
@@ -662,10 +549,6 @@ async fn one_undecodable_preset_does_not_empty_the_catalog() {
     assert_eq!(body["models"][0]["model"], "gpt-5-pro");
 }
 
-/// A complete `config/read` whose merged config sets no model is `config_read`
-/// + `null`, not `unknown`: we read it successfully and the answer is "nothing
-/// configured". Codex builds that member from the *effective* merged layers,
-/// so an unset `model` there is a real state, not a gap in our read.
 #[tokio::test]
 async fn an_unset_model_in_config_read_is_a_read_default_not_unknown() {
     let boot = boot(true, |sock| {
@@ -686,15 +569,6 @@ async fn an_unset_model_in_config_read_is_a_read_default_not_unknown() {
     assert_eq!(body["default"]["reasoning_effort"], Value::Null);
 }
 
-// ---------------------------------------------------------------------------
-// Pagination, the whole-request budget, and the 404 path.
-// ---------------------------------------------------------------------------
-
-/// UNIQUELY PINS: the pagination cursor is actually followed.
-///
-/// Nothing else in this suite pages — the default fixture answers
-/// `"nextCursor": null` — so replacing the drain loop with "return after the
-/// first page" was previously green across the whole file.
 #[tokio::test]
 async fn model_list_pagination_cursor_is_followed() {
     let boot = boot(true, |sock| {
@@ -722,12 +596,6 @@ async fn model_list_pagination_cursor_is_followed() {
     );
 }
 
-/// UNIQUELY PINS: a peer that never clears `nextCursor` is an error, not a
-/// silently truncated catalog.
-///
-/// Answering `Ok` with the pages collected so far would present an incomplete
-/// list as a complete one — a model the account really has would just be
-/// missing from the picker, with nothing in the response saying so.
 #[tokio::test]
 async fn endless_pagination_degrades_instead_of_truncating() {
     let boot = boot(true, |sock| {
@@ -754,40 +622,8 @@ async fn endless_pagination_degrades_instead_of_truncating() {
     );
 }
 
-/// UNIQUELY PINS: `CODEX_READ_TIMEOUT` is one budget for the **whole
-/// request**, not one per codex read. It is also the only coverage of the
-/// `config/read` bound at all.
-///
-/// The evidence is the frames on the wire, and the clock this test runs on is
-/// the REAL one. Two earlier shapes failed, both of them clock shapes:
-///
-///   * Measuring virtual elapsed under `tokio::time::pause()`. The paused
-///     clock auto-advances whenever the runtime parks, and this harness parks
-///     on a real socket and on the daemon supervisor's own timers — the
-///     measurement read 12.9s and then 14.0s of virtual time for an 8s
-///     budget, and stayed green when `CODEX_READ_TIMEOUT` was shortened to
-///     3s. It was insensitive to the constant it claimed to pin.
-///   * Keeping `pause()` for speed after every assertion had moved to the
-///     wire. Pausing virtualizes EVERY tokio timer in the request path, not
-///     just the deadlines this test cares about — including the 30s
-///     pool-acquire timeout in `SqlxRepo::open`, which a paused clock can
-///     elapse the moment the runtime parks on the sqlite worker thread — no
-///     wall-clock wait required. Two CI reruns of the
-///     same commit failed at opposite ends of that: once on the recorded
-///     frame, once with `500 db_error: pool timed out while waiting for an
-///     open connection` from the `card_id` lookup.
-///
-/// So this test pays a real `CODEX_READ_TIMEOUT` (~8s of wall clock): that is
-/// the price of driving the one shared budget with a daemon that never
-/// answers, and it buys a request path whose timers are all real. The claim
-/// needs no timer of its own — with one shared budget the catalog read spends
-/// it and `config/read` is never issued at all, and two independent budgets
-/// would put that frame on the socket.
-///
-/// Reading the wire still needs a barrier, because the fake daemon records
-/// frames from another PROCESS: see [`Boot::wait_for_recorded`] for the race a
-/// single sample lost on CI, and the barrier read below for how "nothing more
-/// is coming" is established without a settle delay.
+/// Runs on the REAL clock and pays a real `CODEX_READ_TIMEOUT` (~8 s): `tokio::time::pause()` also
+/// virtualizes the sqlx pool-acquire timeout, and virtual elapsed was insensitive to the budget.
 #[tokio::test]
 async fn config_read_shares_the_one_request_budget() {
     let boot = boot(true, |sock| {
@@ -798,9 +634,6 @@ async fn config_read_shares_the_one_request_budget() {
     let app = boot.app.clone();
     let query = format!("?card_id={}", boot.card_id);
 
-    // No timing assertion, and no `tokio::time::pause()` — see the doc comment
-    // for why each was tried and dropped. An assertion that cannot fail is
-    // worse than no assertion: the evidence below is on the wire.
     let (status, body) = get_models(&app, &query).await;
 
     assert_eq!(status, StatusCode::OK, "body: {body}");
@@ -810,16 +643,8 @@ async fn config_read_shares_the_one_request_budget() {
         "a default we could not read is `unknown`, never a guess"
     );
 
-    // BARRIER, not a settle. `get_models` has returned, so every frame the
-    // request issued was written to the socket under the sink lock before it
-    // returned (`request_until` writes, THEN awaits). The fake daemon reads
-    // and records one connection's frames in order (`serve_conn`), so one more
-    // `model/list` issued now — on that same connection, behind everything the
-    // request wrote — is recorded after all of them. Once the daemon has
-    // recorded that second `model/list`, it has recorded everything the
-    // request issued, and a `config/read` still absent from the lines ahead of
-    // it was never issued. No duration is being waited out: this is an
-    // ordering fact about one FIFO connection.
+    // Barrier, not a settle: the daemon records one connection's frames in FIFO order, so once this extra
+    // `model/list` is recorded, everything the request issued is recorded ahead of it.
     boot.state
         .shared_codex_appserver
         .model_list(tokio::time::Instant::now() + Duration::from_millis(200))
@@ -854,9 +679,6 @@ async fn config_read_shares_the_one_request_budget() {
     drop(boot);
 }
 
-/// A `card_id` naming no card is a malformed request and answers 404 — the
-/// documented narrowing of the design's "always 200". Silently degrading it to
-/// `unknown` would hide a caller bug.
 #[tokio::test]
 async fn an_unknown_card_id_is_a_404() {
     let boot = boot(false, |_sock| {}).await;
@@ -866,9 +688,6 @@ async fn an_unknown_card_id_is_a_404() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
-/// A blank `card_id=` is what a UI sends with nothing selected. It means "no
-/// card", not "a card that is missing", so it takes the cardless path rather
-/// than 404ing.
 #[tokio::test]
 async fn a_blank_card_id_takes_the_cardless_path() {
     let boot = boot(true, |sock| {

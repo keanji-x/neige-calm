@@ -130,8 +130,6 @@ pub(super) async fn project_runs_tx(
                     ),
                 );
             }
-            // Issue #644 PR-B — scheduler claim record; merged below as
-            // the §5.6 requested-record fallback.
             Event::TaskDispatched {
                 idempotency_key,
                 kind,
@@ -172,8 +170,6 @@ pub(super) async fn project_runs_tx(
         }
     }
 
-    // §5.6 fallback: keys with a dispatch record but no
-    // `*.worker_requested` event use it as their requested-record.
     for (key, event) in dispatched {
         requested.entry(key).or_insert(event);
     }
@@ -251,8 +247,6 @@ pub(super) async fn project_run_by_key_tx(
 
     for row in events {
         match &row.event {
-            // Issue #644 PR-B — scheduler claim record; §5.6 fallback
-            // applied after the loop when no `*.worker_requested` landed.
             Event::TaskDispatched { kind, .. } => {
                 dispatched_kind = Some(track_fs_view::run_kind_static(kind));
                 let event = run_event(row.id, row.at, "task.dispatched", row.event.payload_value());
@@ -333,8 +327,6 @@ pub(super) async fn project_run_by_key_tx(
         }
     }
 
-    // §5.6 fallback: the dispatch record stands in for a missing
-    // `*.worker_requested` event.
     if requested_event.is_none() {
         requested_event = dispatched_event;
     }
@@ -556,7 +548,6 @@ pub(super) fn idempotency_key_from_payload(payload: &Value) -> Option<&str> {
 
 fn run_key_is_visible(key: &str) -> bool {
     if track_fs_view::is_reserved_run_key(key) {
-        // Deliberate VCS/live-view divergence; see `insert_run_entries`.
         tracing::error!(
             target: "track_vcs",
             idempotency_key = %key,

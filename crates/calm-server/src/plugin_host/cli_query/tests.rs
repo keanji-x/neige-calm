@@ -1,8 +1,4 @@
 //! Tests for the `cli-query` runtime and its bring-up.
-//!
-//! Split out of the module body (rather than inlined) for the same reason
-//! `forge_action_adapter` does it: the production halves stay readable and
-//! inside the per-file size governance.
 
 use super::bringup::*;
 use super::*;
@@ -31,19 +27,10 @@ fn block(v: Value) -> CliQueryBlock {
     serde_json::from_value(v).unwrap()
 }
 
-/// "This connector has no configuration in force." Spelled out rather than
-/// `Default::default()` at each call site so the tests that DO configure
-/// something stand out from the ones that never did.
 fn no_config() -> BTreeMap<String, String> {
     BTreeMap::new()
 }
 
-// ---- argv templating ----------------------------------------------
-
-/// A `{{slot}}` element is replaced WHOLESALE, and only when it is the
-/// whole element. `--sym={{symbol}}` stays literal — there is no string
-/// concatenation in this templater, which is what keeps a value from ever
-/// being parsed as anything but one argv element.
 #[test]
 fn a_slot_is_substituted_only_as_a_whole_argv_element() {
     let t = tool(&["quote", "{{symbol}}", "--sym={{symbol}}", "--json"]);
@@ -55,8 +42,6 @@ fn a_slot_is_substituted_only_as_a_whole_argv_element() {
     );
 }
 
-/// The value lands as ONE element even when it contains shell metacharacters
-/// and whitespace — the whole reason there is no `/bin/sh` here.
 #[test]
 fn a_value_with_shell_metacharacters_is_one_literal_argv_element() {
     let t = tool(&["quote", "{{symbol}}"]);
@@ -70,8 +55,6 @@ fn a_value_with_shell_metacharacters_is_one_literal_argv_element() {
     assert_eq!(argv[1], "a b; rm -rf / && echo $HOME");
 }
 
-/// A missing slot is a refusal that NAMES the slot — never an empty argv
-/// element, which the child would read as a real (empty) argument.
 #[test]
 fn a_missing_slot_is_refused_by_name_not_rendered_as_an_empty_element() {
     let t = tool(&["quote", "{{symbol}}"]);
@@ -105,12 +88,9 @@ fn arrays_and_objects_are_refused() {
             .expect_err(&format!("{value} must be refused"));
         assert!(err.contains("symbol"), "{err}");
     }
-    // …and a non-object `arguments` payload entirely.
     assert!(render_argv(&t, &json!("nope"), &no_config()).is_err());
 }
 
-/// v0 does not do full JSON-Schema validation; an unknown key is simply
-/// never referenced, so it cannot reach the child.
 #[test]
 fn unknown_argument_keys_are_ignored() {
     let t = tool(&["quote", "{{symbol}}"]);
@@ -118,8 +98,6 @@ fn unknown_argument_keys_are_ignored() {
     assert_eq!(argv, vec!["quote", "X"]);
     assert!(!argv.iter().any(|a| a == "Y"));
 }
-
-// ---- output capping -------------------------------------------------
 
 #[test]
 fn output_under_the_cap_is_untouched_and_unmarked() {
@@ -137,14 +115,11 @@ fn output_over_the_cap_is_truncated_with_an_explicit_marker() {
         out.contains("[truncated at 40 bytes"),
         "the cut must be announced: {out}"
     );
-    // The marker must NOT claim a total: the tail is drained uncounted, so
-    // any "of M" here would be a number nobody measured.
+    // The marker must NOT claim a total: the tail is drained uncounted.
     assert!(!out.contains("of 100"), "{out}");
 }
 
-/// The cap is a BYTE bound, but the result must be valid UTF-8: cutting at
-/// byte 4 of `"aa中文"` lands inside the first multi-byte character. The
-/// window backs off to the boundary instead of emitting a U+FFFD.
+/// Cutting at byte 4 of `"aa中文"` lands inside the first multi-byte character.
 #[test]
 fn truncation_never_splits_a_multi_byte_character() {
     // b"aa" + 3-byte 中 + 3-byte 文 = 8 bytes.
@@ -168,12 +143,7 @@ fn truncation_never_splits_a_multi_byte_character() {
     assert!(capped_text(&src, 5).starts_with("aa\u{4e2d}"));
 }
 
-// ---- environment ----------------------------------------------------
-
-/// A service environment that has EVERY forge passthrough key set —
-/// credential and non-credential alike, driven off the production
-/// constants, so a key added to either bucket is automatically in the
-/// fixture instead of silently untested.
+/// Every forge passthrough key set, driven off the production constants so a key added to either bucket is automatically in the fixture.
 fn service_env() -> BTreeMap<String, String> {
     let mut env: BTreeMap<String, String> = [
         ("PATH", "/usr/bin:/bin"),
@@ -218,24 +188,13 @@ fn child_env_is_the_base_set_plus_allow_plus_secrets() {
     assert_eq!(env.get("LANG").unwrap(), "C.UTF-8");
     assert_eq!(env.get("TZ").unwrap(), "UTC");
     assert_eq!(env.get("LB_TOKEN").unwrap(), "sk-lb");
-    // An allowlisted key the service does not have is simply not forwarded.
     assert!(!env.contains_key("ABSENT_FROM_SERVICE"));
-    // Nothing outside the enumeration.
     assert!(!env.contains_key("NOT_ALLOWED"));
     let mut keys: Vec<&str> = env.keys().map(String::as_str).collect();
     keys.sort_unstable();
     assert_eq!(keys, vec!["HOME", "LANG", "LB_TOKEN", "PATH", "TZ"]);
 }
 
-/// Design §4 acceptance #4 — the forge credential passthrough must never
-/// reach a `cli-query` child, **even when the service environment has all
-/// four set**. A connector is not a forge action: it is authored in a
-/// manifest and callable by any agent that can see its tools.
-///
-/// Asserted twice on purpose: once for the plain manifest, and once for a
-/// manifest that explicitly ASKS for them via `env_allow`/`secret_env` —
-/// because "nobody requested them" is a property of the fixture, while
-/// "requesting them does not get them" is a property of the code.
 #[test]
 fn no_forge_credential_ever_reaches_the_child_env() {
     let svc = service_env();
@@ -251,10 +210,7 @@ fn no_forge_credential_ever_reaches_the_child_env() {
         "command": "longbridge",
         "tools": [{ "name": "q", "input_schema": {}, "args": [] }],
     }));
-    // …and the manifest that ASKS for all of them. This is the arm the
-    // previous round documented and never wrote: "nobody requested them" is
-    // a property of the fixture; "requesting them does not get them" is a
-    // property of the code.
+    // …and the manifest that ASKS for all of them: "requesting them does not get them" is a property of the code, not the fixture.
     let greedy = block(json!({
         "command": "longbridge",
         "env_allow": FORGE_CREDENTIAL_ENV_KEYS,
@@ -285,10 +241,6 @@ fn no_forge_credential_ever_reaches_the_child_env() {
     }
 }
 
-/// One key per denylist entry, refused at MANIFEST PARSE time — the
-/// earliest and loudest place, so install/reload never produces such a
-/// connector at all. Driven off the production constant, so the quantifier
-/// covers a key added to it tomorrow.
 #[test]
 fn a_manifest_whose_env_allow_names_a_forge_key_is_refused_at_parse_time() {
     use super::super::manifest::Manifest;
@@ -310,8 +262,7 @@ fn a_manifest_whose_env_allow_names_a_forge_key_is_refused_at_parse_time() {
         .to_string()
     };
 
-    // The control: a benign allowlist LOADS, so the refusals below are not
-    // "cli-query manifests never parse".
+    // The control: a benign allowlist LOADS.
     Manifest::parse(&manifest(json!(["TZ"])))
         .expect("a benign env_allow must still load; otherwise this test proves nothing");
 
@@ -327,12 +278,7 @@ fn a_manifest_whose_env_allow_names_a_forge_key_is_refused_at_parse_time() {
         );
     }
 
-    // …and the NON-credential half of the forge passthrough set must LOAD
-    // (r2 G4). `no_proxy` is an ordinary need for a query CLI behind a
-    // proxy; refusing it was both a false claim ("a forge credential") and
-    // incoherent, since `HTTP_PROXY` was never on the list at all. Every
-    // key in the denylist can also retroactively invalidate an installed
-    // manifest at boot, so only real credentials may be in it.
+    // …and the NON-credential half of the forge passthrough set must LOAD: `no_proxy` is an ordinary need behind a proxy.
     for key in FORGE_NONCREDENTIAL_ENV_KEYS {
         let parsed = Manifest::parse(&manifest(json!(["TZ", key])));
         assert!(
@@ -341,8 +287,7 @@ fn a_manifest_whose_env_allow_names_a_forge_key_is_refused_at_parse_time() {
             parsed.err()
         );
     }
-    // The proxy variables that were never denied — named explicitly so the
-    // incoherence cannot come back unnoticed.
+    // The proxy variables that were never denied.
     for key in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"] {
         assert!(
             Manifest::parse(&manifest(json!([key]))).is_ok(),
@@ -351,10 +296,6 @@ fn a_manifest_whose_env_allow_names_a_forge_key_is_refused_at_parse_time() {
     }
 }
 
-/// The runtime filter mirrors the parse-time denylist exactly: a
-/// non-credential key that the manifest is ALLOWED to name must actually be
-/// forwarded. A filter that silently dropped it would make the manifest a
-/// lie in the other direction.
 #[test]
 fn a_non_credential_forge_key_named_by_env_allow_is_forwarded() {
     assert!(!FORGE_NONCREDENTIAL_ENV_KEYS.is_empty());
@@ -374,10 +315,6 @@ fn a_non_credential_forge_key_named_by_env_allow_is_forwarded() {
     }
 }
 
-/// `secret_env` is deliberately NOT denylisted: those values come from the
-/// connector's own `secrets.json`, which the operator authored, so there is
-/// no escalation from the SERVICE identity. Locked down so the asymmetry
-/// cannot be "fixed" by accident.
 #[test]
 fn secret_env_may_name_a_forge_key_and_gets_the_operators_own_value() {
     let b = block(json!({
@@ -398,9 +335,6 @@ fn secret_env_may_name_a_forge_key_and_gets_the_operators_own_value() {
     );
 }
 
-/// A `secret_env` key with no secret behind it fails bring-up loudly, and
-/// the message names both the key and the file — an env var that is simply
-/// absent turns into a per-call auth failure nobody can trace back here.
 #[test]
 fn a_secret_env_key_with_no_secret_is_a_bring_up_failure() {
     let b = block(json!({
@@ -421,16 +355,7 @@ fn a_secret_env_key_with_no_secret_is_a_bring_up_failure() {
     assert!(err.contains("/plugins/lb/secrets.json"), "{err}");
 }
 
-/// Neither `env_allow` nor `secret_env` may revert the per-connector PATH the
-/// command was pinned against — **one block per source**, on purpose.
-///
-/// These two used to be one fixture declaring `PATH` in `env_allow` AND in
-/// `secret_env`. #1284 §2.3(b)'s duplicate-target rule now refuses exactly that
-/// shape at parse time, so the combined fixture guarded a state no loadable
-/// manifest can reach; it only stayed green because `block` is a bare
-/// `serde_json::from_value` that never calls `validate` (S3a review P1). Split,
-/// each half is a manifest the parser admits, so both sources keep a
-/// reachable — and therefore non-vacuous — witness that PATH survives them.
+/// One block per source on purpose: a fixture naming `PATH` in both `env_allow` and `secret_env` is refused at parse time, so a combined fixture would guard an unreachable state.
 #[test]
 fn path_cannot_be_overridden_by_env_allow() {
     let b = block(json!({
@@ -472,10 +397,6 @@ fn path_cannot_be_overridden_by_secret_env() {
     assert_eq!(env.get("PATH").unwrap(), "/opt/lb/bin");
 }
 
-// ---- #1284 S3a: config_env ------------------------------------------
-
-/// The injection itself: a manifest-declared key, valued from the plugin's
-/// effective configuration.
 #[test]
 fn config_env_carries_the_operators_value_into_a_manifest_declared_key() {
     let b = block(json!({
@@ -498,10 +419,6 @@ fn config_env_carries_the_operators_value_into_a_manifest_declared_key() {
     assert_eq!(env.get("LB_ACCOUNT").map(String::as_str), Some("acct-42"));
 }
 
-/// The other half of "the manifest owns the key": a configuration key the
-/// manifest did NOT list in `config_env` reaches the child under no name at
-/// all. Without this, "config_env declares the keys" would be satisfied by an
-/// implementation that exports the whole configuration.
 #[test]
 fn a_configuration_key_the_manifest_did_not_declare_reaches_the_child_under_no_name() {
     let b = block(json!({
@@ -532,12 +449,6 @@ fn a_configuration_key_the_manifest_did_not_declare_reaches_the_child_under_no_n
     );
 }
 
-/// A declared key with no value in force is simply not forwarded — unlike a
-/// missing `secret_env` key, which is a bring-up failure. The asymmetry is the
-/// §2.2 v6 adjudication: `config_schema.required` is where a manifest says a
-/// configuration key is mandatory, and `missing_required` refuses the bring-up
-/// before this function runs, so a second (silent, uncoordinated) mandatory
-/// rule here would fire on keys the author deliberately left optional.
 #[test]
 fn a_config_env_key_with_no_value_in_force_is_absent_rather_than_a_failure() {
     let b = block(json!({
@@ -557,10 +468,6 @@ fn a_config_env_key_with_no_value_in_force_is_absent_rather_than_a_failure() {
     assert!(!env.contains_key("LB_ACCOUNT"), "{env:?}");
 }
 
-/// The flatten step: scalars become the same strings the argv renderer
-/// produces, `null` is "no value", and a container is a bring-up refusal that
-/// names the key (the `config_schema` subset cannot declare one, so reaching
-/// this arm means a row edited outside the API).
 #[test]
 fn configuration_values_flatten_to_one_string_or_refuse() {
     let effective: Map<String, Value> = serde_json::from_value(json!({
@@ -579,14 +486,7 @@ fn configuration_values_flatten_to_one_string_or_refuse() {
     assert!(err.contains("list"), "{err}");
 }
 
-// ---- #1284 S3a: config argv slots -----------------------------------
-
-/// The namespace isolation, at the renderer. Paired on purpose (§4.4): the
-/// configuration slot takes the OPERATOR's value (positive), and the very same
-/// call supplies an argument literally named `config.endpoint`, which lands
-/// nowhere (negative). One assertion without the other proves nothing — a
-/// renderer that merged the two maps passes the positive half whenever the
-/// agent happens not to collide.
+/// Paired on purpose: one assertion without the other proves nothing, since a renderer that merged the two maps passes the positive half whenever the agent happens not to collide.
 #[test]
 fn an_agent_argument_cannot_displace_a_configuration_slot() {
     let t: CliQueryTool = serde_json::from_value(json!({
@@ -620,9 +520,6 @@ fn an_agent_argument_cannot_displace_a_configuration_slot() {
     );
 }
 
-/// The mirror image: a configuration key is not reachable as a tool argument
-/// either. The two directions are one namespace, and a fallback lookup in
-/// EITHER direction would make the map a merge.
 #[test]
 fn a_configuration_value_never_fills_an_argument_slot() {
     let t: CliQueryTool = serde_json::from_value(json!({
@@ -642,9 +539,6 @@ fn a_configuration_value_never_fills_an_argument_slot() {
     assert!(err.contains("endpoint"), "{err}");
 }
 
-/// A configuration slot with no value in force is refused by name, and the
-/// message points at the restart that makes a fix take effect (§2.4) rather
-/// than handing the child an empty argv element.
 #[test]
 fn a_configuration_slot_with_no_value_is_refused_by_name() {
     let t: CliQueryTool = serde_json::from_value(json!({
@@ -658,26 +552,12 @@ fn a_configuration_slot_with_no_value_is_refused_by_name() {
     assert!(err.contains("restart"), "{err}");
 }
 
-/// **The decisive one for "no fallback"** (S3a review P2-2).
-///
-/// Every other test in this file feeds the config map a value for the slot, or
-/// feeds `arguments` the *prefixed* key `config.endpoint` — and neither can see
-/// the one implementation the slice's core claim actually forbids:
-/// `config.get(key).or_else(|| obj.and_then(|m| m.get(key)))`. Under that
-/// mutation an agent supplies the BARE key and, for a slot the operator has not
-/// configured, wins outright. The whole suite stayed green against it; this is
-/// the input that does not.
-///
-/// So: nothing in `config`, and `arguments` carrying `endpoint` (bare). The
-/// refusal must stand and the attacker's value must reach no argv element —
-/// which also rules out the weaker "falls back but renders it somewhere else"
-/// shape.
+/// The one input that catches `config.get(key).or_else(|| obj.get(key))`: nothing in `config`, and `arguments` carrying the BARE key.
 #[test]
 fn a_bare_argument_may_not_back_fill_an_unconfigured_configuration_slot() {
     let t: CliQueryTool = serde_json::from_value(json!({
         "name": "quote",
-        // Not `config.endpoint` — the manifest validator refuses that name, so
-        // the reachable shape is a property named exactly like the config KEY.
+        // Not `config.endpoint` — the manifest validator refuses that name.
         "input_schema": { "type": "object", "properties": { "endpoint": { "type": "string" } } },
         "args": ["quote", "--url", "{{config.endpoint}}"],
     }))
@@ -698,9 +578,7 @@ fn a_bare_argument_may_not_back_fill_an_unconfigured_configuration_slot() {
         "not even the diagnostic should echo the agent's value: {err}"
     );
 
-    // …and the positive control: the SAME call renders fine once the operator
-    // configures the key, and renders the OPERATOR's value. Without this leg,
-    // "it was refused" is satisfiable by a renderer that refuses everything.
+    // Positive control: the SAME call renders the OPERATOR's value once configured.
     let config: BTreeMap<String, String> = [(
         "endpoint".to_string(),
         "https://operator.example".to_string(),
@@ -720,13 +598,6 @@ fn a_bare_argument_may_not_back_fill_an_unconfigured_configuration_slot() {
     );
 }
 
-/// S3a review P3 — a NUL inside a configured value is refused at flatten time,
-/// naming the KEY.
-///
-/// JSON can carry it and the write path stores it; `Command`'s `CString`
-/// conversion cannot. Without this the operator's only diagnostic is a spawn
-/// error naming the program (`nul byte found in provided data`), which points
-/// at the binary rather than at the configuration that broke it.
 #[test]
 fn a_nul_in_a_configured_value_is_refused_by_key_not_at_exec_time() {
     let effective: Map<String, Value> =
@@ -735,8 +606,7 @@ fn a_nul_in_a_configured_value_is_refused_by_key_not_at_exec_time() {
     assert!(err.contains("endpoint"), "must name the key: {err}");
     assert!(err.contains("NUL"), "{err}");
 
-    // Other control characters are NOT refused: `execve` carries them, and a
-    // newline in a configured value is unusual but legal.
+    // Other control characters are NOT refused.
     let ok: Map<String, Value> =
         serde_json::from_value(json!({ "banner": "line1\nline2\ttabbed" })).unwrap();
     let flat = flatten_config(&ok).expect("only NUL is unrepresentable");
@@ -746,18 +616,6 @@ fn a_nul_in_a_configured_value_is_refused_by_key_not_at_exec_time() {
     );
 }
 
-/// S3a review P2-3 — an argv configuration slot with no value in force fails
-/// **bring-up**, not every later call.
-///
-/// The asymmetry with `config_env` (a declared env key with no value is simply
-/// absent, see
-/// `a_config_env_key_with_no_value_in_force_is_absent_rather_than_a_failure`)
-/// is deliberate and is the point of this pair: "absent" is a representable
-/// state for an env key and is not one for an argv element. A manifest that
-/// declares `{{config.endpoint}}` with neither a `default` nor a
-/// `config_schema.required` entry would otherwise resolve, enable, publish as
-/// `Running`, and answer every `tools/call` with `invalid_params` — the exact
-/// anti-pattern `probe_fingerprint` refuses one field over.
 #[cfg(unix)]
 #[tokio::test]
 async fn an_argv_configuration_slot_with_no_value_fails_bring_up_not_every_call() {
@@ -772,8 +630,7 @@ async fn an_argv_configuration_slot_with_no_value_fails_bring_up_not_every_call(
         }],
     }));
 
-    // `CliQueryRuntime` has no `Debug` on purpose (it holds secret values), so
-    // this cannot be an `expect_err`.
+    // `CliQueryRuntime` has no `Debug` on purpose (it holds secret values), so this cannot be an `expect_err`.
     let Err(err) = bring_up("cli-test", &b, tmp.path(), &Map::new()).await else {
         panic!("an unfillable argv slot must not come up as Running");
     };
@@ -783,9 +640,7 @@ async fn an_argv_configuration_slot_with_no_value_fails_bring_up_not_every_call(
         "must name the tool that cannot be called: {err}"
     );
 
-    // The positive control, same manifest: once the key has a value in force
-    // the connector comes up and the call renders. Without it, "bring-up fails"
-    // is satisfiable by a check that refuses every configuration slot.
+    // Positive control, same manifest: once the key has a value in force the connector comes up.
     let effective: Map<String, Value> =
         serde_json::from_value(json!({ "endpoint": "https://operator.example" })).unwrap();
     let rt = bring_up("cli-test", &b, tmp.path(), &effective)
@@ -795,16 +650,12 @@ async fn an_argv_configuration_slot_with_no_value_fails_bring_up_not_every_call(
     assert_eq!(res.is_error, Some(false));
 }
 
-// ---- PATH resolution ------------------------------------------------
-
 #[test]
 fn extras_are_searched_before_the_service_path() {
     let svc = per_connector_path("/usr/bin:/bin", &["/opt/lb/bin".to_string()]);
     assert_eq!(svc, "/opt/lb/bin:/usr/bin:/bin");
 }
 
-/// Design R5 — a docker preview stack with no such binary must be able to
-/// see WHY from the reason alone.
 #[test]
 fn an_unresolvable_bare_command_names_the_path_and_every_directory_searched() {
     let service_path = "/usr/bin:/bin";
@@ -864,12 +715,7 @@ fn a_relative_path_command_is_refused() {
     assert!(err.contains("absolute"), "{err}");
 }
 
-/// #1164 P3 F6 — a "pinned" path must be absolute, which the SEARCH ENTRIES
-/// decide as much as the command does. A `PATH` of `.` or `bin` would yield
-/// a relative program whose meaning depends on the cwd at exec time.
-///
-/// Driven with a BARE command name on purpose: every other resolution
-/// fixture passes an absolute path, which returns before this code runs.
+/// Driven with a BARE command name on purpose: an absolute path returns before this code runs.
 #[cfg(unix)]
 #[test]
 fn a_non_absolute_search_entry_is_skipped_and_the_reason_says_so() {
@@ -881,21 +727,15 @@ fn a_non_absolute_search_entry_is_skipped_and_the_reason_says_so() {
     std::fs::write(&p, "#!/bin/sh\n").unwrap();
     std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-    // The only entries that could resolve `mytool` are relative ones, and
-    // they are relative to a cwd we deliberately do not control.
     let err =
         resolve_command("mytool", &[".".to_string(), "bin".to_string()], "bin:.").unwrap_err();
-    // The load-bearing half: no relative candidate was ever STAT'd, so no
-    // relative candidate could ever have been RETURNED. Asserting only on
-    // the word "SKIPPED" passes with the skip deleted — that literal is in
-    // the format string unconditionally.
+    // Asserting only on the word "SKIPPED" passes with the skip deleted — that literal is in the format string unconditionally.
     for relative in ["\"./mytool\"", "\"bin/mytool\""] {
         assert!(
             !err.contains(relative),
             "a relative candidate was searched: {err}"
         );
     }
-    // …and the operator is told which entries were dropped, and why.
     for entry in ["\".\"", "\"bin\""] {
         assert!(
             err.contains(entry),
@@ -907,14 +747,10 @@ fn a_non_absolute_search_entry_is_skipped_and_the_reason_says_so() {
         "the reason must say WHY: {err}"
     );
 
-    // …and the same name DOES resolve once the entry is absolute, so the
-    // skip is about absoluteness and not about the fixture being broken.
     let ok = resolve_command("mytool", &[sub.display().to_string()], "").unwrap();
     assert_eq!(ok, p);
     assert!(ok.is_absolute());
 }
-
-// ---- execution ------------------------------------------------------
 
 #[cfg(unix)]
 fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
@@ -941,9 +777,7 @@ fn runtime_for(program: PathBuf, args: &[&str], timeout_ms: u64, cap: usize) -> 
     }
 }
 
-/// Make a FIFO whose parent-held read/write descriptor keeps both opens
-/// non-blocking. A fixture can then block in `read` until the test writes one
-/// line, giving process tests an event gate instead of a guessed `sleep`.
+/// A FIFO whose parent-held read/write descriptor keeps both opens non-blocking, giving process tests an event gate instead of a guessed `sleep`.
 #[cfg(unix)]
 fn fifo_gate(path: &Path) -> std::fs::File {
     let raw = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
@@ -957,9 +791,7 @@ fn fifo_gate(path: &Path) -> std::fs::File {
         .unwrap()
 }
 
-/// Poll `future` until the selected real-child phase starts. The production
-/// helper freezes Tokio's clock at that event; advancing to its absolute
-/// deadline therefore tests budget identity without measuring host time.
+/// Poll `future` until the selected real-child phase starts; the production helper freezes Tokio's clock at that event.
 #[cfg(unix)]
 async fn complete_at_observed_deadline<T>(
     observer: &'static tokio::task::LocalKey<TestPhaseObserver>,
@@ -992,8 +824,7 @@ async fn complete_at_observed_deadline<T>(
         .await
 }
 
-/// Release a child only after the runtime has drained its closed output and
-/// started waiting for its real exit status.
+/// Release a child only after the runtime has drained its closed output and started waiting for its exit status.
 #[cfg(unix)]
 async fn call_released_after_reap_starts(
     rt: &CliQueryRuntime,
@@ -1075,12 +906,6 @@ async fn stdout_over_the_cap_is_truncated_with_the_marker() {
     assert!(text.starts_with(&"a".repeat(16)));
 }
 
-/// A child whose output dwarfs both the cap AND the 64 KiB pipe buffer must
-/// still return a TRUNCATED ANSWER, not a budget-expiry error: the tail is
-/// drained (and discarded) so the child is never blocked on a full pipe.
-///
-/// Mutation witness: delete the drain loop in `read_capped` and this goes
-/// red with "exceeded its … budget" instead of a result.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_child_far_over_the_pipe_buffer_still_answers_truncated() {
@@ -1096,18 +921,10 @@ async fn a_child_far_over_the_pipe_buffer_still_answers_truncated() {
     assert_eq!(res.is_error, Some(false));
     let text = res.content[0].text.clone().unwrap();
     assert!(text.contains("[truncated at 64 bytes"), "{text:?}");
-    // The whole answer is the cap plus one short marker line — nothing
-    // close to the 2 MiB the child wrote.
     assert!(text.len() < 512, "materialised {} bytes", text.len());
 }
 
-/// #1164 P3 F4 — the budget kill must reach the child's DESCENDANTS. A
-/// wrapper that backgrounds work is the normal shape of a query CLI, and
-/// `Child::kill`/`kill_on_drop` reach only the direct child: the reviewer
-/// observed `sleep 30` still alive with PPID 1 after this call returned.
-///
-/// The assertion is on the grandchild's pid, not on the call's error: the
-/// old test passed with the kill deleted entirely.
+/// The assertion is on the grandchild's pid, not on the call's error: the old test passed with the kill deleted entirely.
 #[cfg(unix)]
 #[tokio::test]
 async fn the_budget_kill_reaches_the_childs_descendants() {
@@ -1128,11 +945,7 @@ async fn the_budget_kill_reaches_the_childs_descendants() {
     assert_recorded_descendant_dies(&pidfile, "the budget kill").await;
 }
 
-/// Poll the pid a fixture wrote until it is gone or has exited, then fail
-/// loudly (and clean up) if it never does.
-///
-/// The pid is the assertion. "the call returned an error in ~200 ms" is
-/// not: the previous round's test passed with the kill deleted entirely.
+/// Poll the pid a fixture wrote until it is gone or has exited, then fail loudly (and clean up).
 #[cfg(unix)]
 async fn assert_recorded_descendant_dies(pidfile: &Path, what: &str) {
     let pid: i32 = std::fs::read_to_string(pidfile)
@@ -1148,23 +961,6 @@ async fn assert_recorded_descendant_dies(pidfile: &Path, what: &str) {
     .await;
 }
 
-/// #1164 P3 r2 G3 — the guarantee must hold on the SUCCESS path too.
-///
-/// A wrapper that backgrounds a daemon with its own stdout and then exits 0
-/// escaped the timeout-only kill by simply succeeding: reaped, reported
-/// `is_error: false`, and left a process holding every `secret_env` value for
-/// as long as it felt like.
-///
-/// **Mutation witness: delete the `kill_process_group(pgid)` line in phase 4 of
-/// `tools_call`.** That is the whole of the steady-state sweep, because
-/// `wait_and_release_group` has already disarmed `GroupChild`'s own teardown.
-///
-/// The round-2 docstring here named a witness that did NOT hold — moving the
-/// kill into the budget-expiry arm left this green, because the guard was still
-/// armed and `Drop` did the same work microseconds later. This test was
-/// therefore a second, weaker witness for `Drop` and said nothing about the
-/// step it claimed to cover (r3 H1). Separating release from sweep is what
-/// makes the two distinguishable at all.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_backgrounded_daemon_does_not_survive_a_successful_call() {
@@ -1173,8 +969,7 @@ async fn a_backgrounded_daemon_does_not_survive_a_successful_call() {
     let p = script(
         tmp.path(),
         "daemonize.sh",
-        // stdout/stderr detached, so the pipes reach EOF the moment the
-        // wrapper exits — exactly the shape that used to escape.
+        // stdout/stderr detached, so the pipes reach EOF the moment the wrapper exits.
         "#!/bin/sh\nsleep 30 >/dev/null 2>&1 &\necho $! > \"$1\"\necho ok\nexit 0\n",
     );
     let rt = runtime_for(p, &["{{symbol}}"], 20_000, 4096);
@@ -1183,28 +978,14 @@ async fn a_backgrounded_daemon_does_not_survive_a_successful_call() {
         .await
         .unwrap();
 
-    // The success verdict must be UNCHANGED by the kill: the leader is
-    // already a zombie when the signal lands, so its real exit status is
-    // what `wait()` reports.
+    // The leader is already a zombie when the signal lands, so its real exit status is what `wait()` reports.
     assert_eq!(res.is_error, Some(false), "{:?}", res.content);
     assert_eq!(res.content[0].text.as_deref(), Some("ok\n"));
 
     assert_recorded_descendant_dies(&pidfile, "a successful call").await;
 }
 
-/// #1164 P3 r3 H2 — exit-status fidelity for a tool that closes its output and
-/// then keeps working.
-///
-/// A child closes both pipes, then blocks on a FIFO. The test releases that
-/// gate only after observing the reap phase, so EOF is guaranteed to precede
-/// exit without relying on a wall-clock sleep. Round 2 swept the process group
-/// at EOF, which SIGKILLed the leader and reported `signal: 9` /
-/// `is_error: true` for what was a perfectly successful call. Reaping before
-/// sweeping is what makes the reported status the child's own.
-///
-/// Mutation witness: move the phase-4 sweep back above the `wait`, i.e. sweep
-/// the group before `wait_and_release_group`, and this goes red with
-/// `is_error: Some(true)`.
+/// The FIFO gate is released only after observing the reap phase, so EOF is guaranteed to precede exit without a wall-clock sleep.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_tool_that_closes_its_output_then_exits_reports_its_real_status() {
@@ -1240,9 +1021,6 @@ async fn a_tool_that_closes_its_output_then_exits_reports_its_real_status() {
     );
 }
 
-/// …and the same for a NON-zero exit, so the fix is "report the truth", not
-/// "report success". A pre-reap sweep would flatten both of these into
-/// `signal: 9`.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_tool_that_closes_its_output_then_fails_reports_its_real_code() {
@@ -1270,16 +1048,7 @@ async fn a_tool_that_closes_its_output_then_fails_reports_its_real_code() {
     );
 }
 
-/// #1164 P3 r2 G6 — the cancellation guarantee `GroupChild`'s `Drop`
-/// advertises had zero coverage: every tested path took the pgid first, so
-/// emptying the whole `Drop` body left the suite fully green.
-///
-/// Here the inner budget is 30 s and an OUTER timeout of 300 ms drops the
-/// `tools_call` future — a client hangup or a task abort, which is the only
-/// path `Drop` is responsible for. No `wait()` has run, so the sweep provably
-/// precedes any reap and the pgid is unambiguous.
-///
-/// Mutation witness: empty `GroupChild`'s `Drop` body (`self.pgid = None;`).
+/// An OUTER timeout drops the `tools_call` future before any `wait()` has run, so the sweep provably precedes any reap.
 #[cfg(unix)]
 #[tokio::test]
 async fn dropping_the_call_future_kills_the_process_group() {
@@ -1290,8 +1059,7 @@ async fn dropping_the_call_future_kills_the_process_group() {
         "wrapper.sh",
         "#!/bin/sh\nsleep 30 >/dev/null 2>&1 &\necho $! > \"$1\"\nsleep 30\n",
     );
-    // Inner budget far longer than the outer one, so the call is CANCELLED
-    // rather than expiring — `kill_now` must not be what saves us.
+    // Inner budget far longer than the outer one, so the call is CANCELLED rather than expiring.
     let rt = runtime_for(p, &["{{symbol}}"], 30_000, 4096);
     let outcome = tokio::time::timeout(
         Duration::from_millis(300),
@@ -1306,16 +1074,6 @@ async fn dropping_the_call_future_kills_the_process_group() {
     assert_recorded_descendant_dies(&pidfile, "dropping the call future").await;
 }
 
-/// #1164 P3 r2 G1 — `cap + 1` overflowed. `usize::MAX` used to load from a
-/// manifest; in debug it panicked the request task, and in release it
-/// wrapped to `take(0)`, which returned an EMPTY answer with
-/// `is_error: false` and skipped the drain too.
-///
-/// The manifest now has a ceiling, so this drives the runtime directly —
-/// the arithmetic must be safe for any cap that reaches it.
-///
-/// Mutation witness: `cap + 1` in `read_capped` and this panics with
-/// "attempt to add with overflow".
 #[cfg(unix)]
 #[tokio::test]
 async fn a_saturating_cap_returns_the_whole_answer_instead_of_overflowing() {
@@ -1331,9 +1089,6 @@ async fn a_saturating_cap_returns_the_whole_answer_instead_of_overflowing() {
     );
 }
 
-/// …and the same at the real manifest ceiling, driven end to end through
-/// `Manifest::parse` → `bring_up` → `tools_call`, because "it loads" is not
-/// the property that broke — "it runs" is.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_manifest_at_the_output_ceiling_loads_and_executes() {
@@ -1368,12 +1123,7 @@ async fn a_manifest_at_the_output_ceiling_loads_and_executes() {
     assert_eq!(res.is_error, Some(false));
     assert_eq!(res.content[0].text.as_deref(), Some("hello\n"));
 
-    // …and an over-ceiling value LOADS and is CLAMPED (r3 H7). It must not be
-    // refused at parse time: `registry::load_from_dir` re-parses every
-    // installed manifest at boot and only `warn!`s past a failure, so a
-    // parse-time refusal would make a connector that worked yesterday silently
-    // vanish — the exact retroactive-invalidation hazard this module refuses to
-    // accept for the `env_allow` denylist.
+    // An over-ceiling value LOADS and is CLAMPED: `registry::load_from_dir` re-parses every installed manifest at boot and only `warn!`s past a failure, so a parse-time refusal would make a working connector silently vanish.
     for over in [
         json!(CLI_QUERY_MAX_OUTPUT_BYTES_CEILING as u64 + 1),
         json!(u64::MAX),
@@ -1388,12 +1138,7 @@ async fn a_manifest_at_the_output_ceiling_loads_and_executes() {
             CLI_QUERY_MAX_OUTPUT_BYTES_CEILING,
             "{over} must be clamped to the ceiling"
         );
-        // …and the RUNTIME carries the clamped number, not the raw field.
-        //
-        // This is the assertion that pins `bring_up` to the clamping getter
-        // (r4 I3). The execution check below cannot: `"hello\n"` is under both
-        // the ceiling and `usize::MAX`, so reading the raw `Option<usize>`
-        // instead would leave it perfectly green.
+        // The RUNTIME carries the clamped number, not the raw field; the execution check below cannot see the difference.
         let rt = bring_up("cli-test", block, tmp.path(), &Map::new())
             .await
             .unwrap();
@@ -1459,12 +1204,6 @@ async fn bring_up_pins_an_absolute_path_and_records_a_fingerprint() {
     assert_eq!(rt.fingerprint(), "--version: mytool 1.2.3");
 }
 
-/// #1164 P3 F5 — the fingerprint probe runs with the BASE environment only.
-/// Its stdout is logged verbatim, so a CLI that echoes its configuration on
-/// `--version` would otherwise put a `secret_env` value in the log.
-///
-/// Mutation witness: pass `&env` instead of `&base_child_env(..)` in
-/// `bring_up` and the fingerprint becomes `--version: v1 token=sk-secret`.
 #[cfg(unix)]
 #[tokio::test]
 async fn the_version_probe_never_sees_a_secret_env_value() {
@@ -1492,13 +1231,10 @@ async fn the_version_probe_never_sees_a_secret_env_value() {
         "--version: v1 token=[]",
         "the probe must run with the base environment only"
     );
-    // …while the CALL environment still has it: the probe is restricted,
-    // the connector is not broken.
+    // …while the CALL environment still has it: the probe is restricted, the connector is not broken.
     assert!(rt.env_keys().contains(&"LB_TOKEN"));
 }
 
-/// A `--version` that fails must NOT fail bring-up — the fingerprint is
-/// informational.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_failing_version_probe_falls_back_instead_of_failing_bring_up() {
@@ -1518,21 +1254,10 @@ async fn a_failing_version_probe_falls_back_instead_of_failing_bring_up() {
     );
 }
 
-/// #1164 P3 r2 G7 — a `--version` that HANGS must cost
-/// [`VERSION_PROBE_BUDGET`] and then fall back, not consume the whole
-/// bring-up. Only `exit 1` was covered before, which the outer budget would
-/// have masked entirely.
-///
-/// Mutation witness: raise `VERSION_PROBE_BUDGET` above
-/// [`CLI_QUERY_BRINGUP_BUDGET`] and the relationship assertion goes red.
-/// Reset either phase to a fresh allowance and the virtual clock finishes past
-/// the absolute deadline observed from the real probe.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_hanging_version_probe_costs_the_sub_budget_and_falls_back() {
-    // The relationship that matters is the TOTAL the probe can cost, not one
-    // term of it (r3 H3). `complete_at_observed_deadline` below separately
-    // proves the drain uses this exact absolute deadline.
+    // The relationship that matters is the TOTAL the probe can cost, not one term of it.
     assert!(
         VERSION_PROBE_BUDGET < CLI_QUERY_BRINGUP_BUDGET,
         "the sub-budget must be strictly smaller, or a hung probe takes the enable down"
@@ -1563,17 +1288,7 @@ async fn a_hanging_version_probe_costs_the_sub_budget_and_falls_back() {
     );
 }
 
-/// #1164 P3 r3 H3 — the REAP phase must be inside the sub-budget too.
-///
-/// The hanging-probe test above never reaches the reap: its child holds stdout
-/// open, so the drain expires first. This shape does reach it — stdout closes
-/// immediately, so the drain succeeds, and then the child lingers. Round 2 gave
-/// that phase its own 5 s grace on top of the 2 s sub-budget, so a probe wedged
-/// after EOF cost 7 s, the 5 s outer bring-up budget fired first, and the
-/// connector went `Unavailable`.
-///
-/// Mutation witness: give `finish_within`'s reap phase a fresh five-second
-/// relative timeout instead of its supplied absolute deadline.
+/// The hanging-probe test never reaches the reap (its child holds stdout open); here stdout closes immediately and the child lingers.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_version_probe_that_lingers_after_closing_stdout_stays_in_the_sub_budget() {
@@ -1606,16 +1321,7 @@ async fn a_version_probe_that_lingers_after_closing_stdout_stays_in_the_sub_budg
     );
 }
 
-/// …and the same on the CALL path: worst-case latency must be
-/// `cli_query.timeout_ms`, not `timeout_ms` plus a reap grace, because that is
-/// what the budget-expiry error text promises the caller.
-///
-/// `a_child_that_outlives_its_budget_is_killed_and_named` cannot see this
-/// either — its child holds stdout open, so the drain expires first and the
-/// reap is never reached.
-///
-/// Mutation witness: give `finish_within`'s reap phase a fresh five-second
-/// relative timeout instead of its supplied absolute deadline.
+/// `a_child_that_outlives_its_budget_is_killed_and_named` cannot see this: its child holds stdout open, so the drain expires first.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_call_that_lingers_after_closing_its_output_still_honours_its_budget() {
@@ -1641,27 +1347,7 @@ async fn a_call_that_lingers_after_closing_its_output_still_honours_its_budget()
     assert!(err.message.contains("budget"), "{}", err.message);
 }
 
-/// #1164 P3 r2 G5 — resolution only checks that SOME execute bit is set, so
-/// a file we cannot actually exec resolves, enables, publishes as `Running`
-/// and then fails every single call.
-///
-/// Two spawn failures, both reachable without root: mode `0o011` gives
-/// group/other the execute bit but not the owner, and Linux checks the
-/// owner class first (`EACCES`); a `#!` line naming an interpreter that
-/// does not exist is `ENOENT` even though the file itself is right there.
-///
-/// **`ENOEXEC` is deliberately not one of the cases.** Measured, not
-/// assumed: Rust's `Command::spawn` always goes through `execvp`, and
-/// glibc's `execvp` implements the POSIX `ENOEXEC` fallback — a text file
-/// with no shebang and no ELF header is silently re-exec'd under `/bin/sh`,
-/// so the spawn SUCCEEDS and the file merely exits 127. It therefore lands
-/// in the informational arm, and a connector pointed at garbage still
-/// enables. That residual stands on purpose: a non-zero `--version` cannot
-/// be a bring-up failure, because a CLI is entitled not to have one.
-///
-/// Mutation witness: map the spawn error back onto the size+mtime fallback
-/// and this goes red while `a_failing_version_probe_falls_back…` stays
-/// green — the two arms must not collapse into one.
+/// Two spawn failures reachable without root: mode `0o011` (owner class is checked first, `EACCES`) and a `#!` naming a missing interpreter (`ENOENT`). `ENOEXEC` is not one: `execvp` re-execs under `/bin/sh`, so the spawn succeeds and exits 127.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_binary_that_cannot_be_executed_fails_bring_up_instead_of_enabling() {
@@ -1705,21 +1391,7 @@ async fn a_binary_that_cannot_be_executed_fails_bring_up_instead_of_enabling() {
     }
 }
 
-/// #1164 P3 r3 H6 — only a FILE-shaped spawn failure may refuse an enable.
-///
-/// `fork`/`execve` also fails for reasons that are about the machine, not the
-/// binary: `EAGAIN`/`ENOMEM` under `RLIMIT_NPROC` or memory pressure,
-/// `EMFILE`/`ENFILE` on descriptor exhaustion, `ETXTBSY` while an upgrade
-/// rewrites the file. Bring-up runs inline at boot while every other connector
-/// is spawning, so fork pressure there is expected — and refusing on it would
-/// leave a perfectly good connector permanently `Unavailable` with nothing to
-/// retry it, a regression against the pre-round-2 behaviour.
-///
-/// Driven through the real classifier rather than a re-implementation of it, so
-/// the table below is the production decision.
-///
-/// Mutation witness: widen `is_permanent_spawn_failure` to `true` (or add
-/// `WouldBlock`/`OutOfMemory` to it) and the transient rows go red.
+/// Driven through the real classifier rather than a re-implementation of it, so the table below is the production decision.
 #[test]
 fn only_file_shaped_spawn_failures_refuse_an_enable() {
     use std::io::ErrorKind::*;
@@ -1745,8 +1417,7 @@ fn only_file_shaped_spawn_failures_refuse_an_enable() {
              Unavailable with nothing to retry it"
         );
     }
-    // EMFILE/ENFILE have no stable `ErrorKind` mapping across releases, so
-    // assert on the raw errno the kernel actually returns.
+    // EMFILE/ENFILE have no stable `ErrorKind` mapping across releases, so assert on the raw errno.
     for errno in [libc::EMFILE, libc::ENFILE, libc::EAGAIN] {
         assert!(
             !is_permanent_spawn_failure(&std::io::Error::from_raw_os_error(errno)),
@@ -1755,17 +1426,7 @@ fn only_file_shaped_spawn_failures_refuse_an_enable() {
     }
 }
 
-/// #1164 P3 r2 G2 — the child's PATH must carry the same absoluteness rule
-/// resolution applies. Refusing to PIN `.` and then exec'ing the child with
-/// `PATH=".:…"` just moves the problem: a query CLI that shells out to
-/// `git`/`jq` resolves it against the server's working directory, with this
-/// connector's secrets already in its environment.
-///
-/// Asserted on the FINAL child environment, not on `resolve_command`: the
-/// existing resolution test passed throughout this defect.
-///
-/// Mutation witness: drop the `is_absolute` filter from
-/// `per_connector_path` and this goes red.
+/// Asserted on the FINAL child environment, not on `resolve_command`.
 #[cfg(unix)]
 #[tokio::test]
 async fn the_childs_path_never_contains_a_relative_entry() {
@@ -1787,23 +1448,14 @@ async fn the_childs_path_never_contains_a_relative_entry() {
             "the child's PATH carries the relative entry {entry:?}: {path}"
         );
     }
-    // …and the absolute extra survived, so the filter is not "drop
-    // everything".
+    // …and the absolute extra survived, so the filter is not "drop everything".
     assert!(
         path.split(':').any(|e| e == "/opt/lb/bin"),
         "the absolute extra must still be first-class: {path}"
     );
 }
 
-/// #1164 P3 F7 — `std::env::vars()` PANICS on a non-UTF-8 variable, which
-/// would turn every `cli-query` enable into a panic on the boot path.
-///
-/// Deterministic despite touching the process environment: nextest runs
-/// each test in its own process, and the variable is set before any runtime
-/// thread exists, so nothing else can observe it.
-///
-/// Mutation witness: `std::env::vars()` in `bring_up` and this panics with
-/// "environment variable was not valid unicode".
+/// Deterministic despite touching the process environment: nextest runs each test in its own process, and the variable is set before any runtime thread exists.
 #[cfg(unix)]
 #[test]
 fn a_non_utf8_service_env_variable_does_not_panic_bring_up() {
@@ -1812,14 +1464,8 @@ fn a_non_utf8_service_env_variable_does_not_panic_bring_up() {
 
     // SAFETY: `set_var` is sound only with no concurrent reader of `environ`,
     // and nothing here is concurrent yet — no runtime has been built.
-    //
-    // The CROSS-TEST half of that requirement is not free: every sibling
-    // `bring_up` test calls `std::env::vars_os()`, so under a plain
-    // `cargo test --lib` (one process, many threads) this would race an
-    // `environ` realloc against a live reader — real UB, not a style
-    // objection. It is sound because the repo's gate is `cargo nextest`, which
-    // runs each test in its own process. If that ever changes, this test moves
-    // to its own integration binary rather than losing the assertion (r3 H8).
+    // Cross-test it is sound only because the gate is `cargo nextest` (one process per test): sibling
+    // `bring_up` tests call `std::env::vars_os()`, and under `cargo test --lib` this would be real UB.
     unsafe {
         std::env::set_var(OsStr::from_bytes(b"CLI_QUERY_BAD_\xff"), "x");
         std::env::set_var("CLI_QUERY_BAD_VALUE", OsStr::from_bytes(b"v\xff"));
@@ -1834,10 +1480,7 @@ fn a_non_utf8_service_env_variable_does_not_panic_bring_up() {
         let tmp = tempfile::tempdir().unwrap();
         let p = script(tmp.path(), "ok.sh", "#!/bin/sh\necho hi\n");
         let b = block(json!({
-            // Named in `env_allow` ON PURPOSE. Without it the assertions below
-            // could not fail: with no `env_allow` the child environment is
-            // {PATH, HOME, LANG} by construction, so "the bad key is absent"
-            // was true of every possible implementation (r3 H8).
+            // Named in `env_allow` ON PURPOSE: with no `env_allow` the child environment is {PATH, HOME, LANG} by construction, so "the bad key is absent" would be vacuous.
             "env_allow": ["CLI_QUERY_BAD_VALUE", "CLI_QUERY_PLAIN_OK"],
             "command": p.display().to_string(),
             "tools": [{ "name": "q", "input_schema": {}, "args": [] }],
@@ -1857,8 +1500,7 @@ fn a_non_utf8_service_env_variable_does_not_panic_bring_up() {
                 .iter()
                 .any(|k| k.starts_with("CLI_QUERY_BAD_"))
         );
-        // … and an ordinary allowlisted key IS still forwarded, so the filter
-        // is not simply "drop everything".
+        // … and an ordinary allowlisted key IS still forwarded, so the filter is not simply "drop everything".
         assert!(
             rt.env_keys().contains(&"CLI_QUERY_PLAIN_OK"),
             "a decodable env_allow key must still be forwarded: {:?}",
@@ -1867,8 +1509,7 @@ fn a_non_utf8_service_env_variable_does_not_panic_bring_up() {
     });
 }
 
-/// Small helper so the missing-slot loop can report WHICH input silently
-/// succeeded rather than panicking with no context.
+/// So the missing-slot loop can report WHICH input silently succeeded.
 trait UnwrapErrOrPanic {
     fn unwrap_err_or_panic(self, ctx: &str, input: &Value) -> String;
 }

@@ -1,14 +1,6 @@
-//! Best-effort report-block identity reuse across wholesale rewrites
-//! (design §3.4) — LCS anchors + gap similarity + explicit marker
-//! hints.
-//!
-//! #960 PR3: alignment is fence-aware. Every slice and every old
-//! block is compared through its **canonical flat text** — prose is
-//! the markdown verbatim, a non-prose block is its deterministic
-//! `neige-block` fence ([`super::fence::render_fence`]) — so a fence
-//! re-serialized with different JSON formatting still matches its
-//! block exactly, and a byte-preserved fence keeps id, kind, payload
-//! and rev.
+//! Best-effort report-block identity reuse across wholesale rewrites: LCS anchors, gap similarity
+//! and explicit marker hints, compared through each block's canonical flat text (prose verbatim, or
+//! its deterministic `neige-block` fence).
 
 use super::fence::{NonProseFence, parse_fence, render_fence};
 use super::kinds::KIND_PROSE;
@@ -17,40 +9,19 @@ use crate::track_report::ReportBlock;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 
-/// Reuse ids through exact LCS anchors, then similarity-align edited
-/// slices within each unmatched gap. Remaining slices receive a new
-/// `b_ffff` id.
-///
-/// Rev semantics (#960 PR2):
-///   * matched block, canonical-identical content → `rev` unchanged;
-///   * matched block, content changed → `rev = old.rev + 1`;
-///   * unmatched (brand-new) slice → `rev = 1`.
-///
-/// Kind/payload come from the slice's own nature: a fence slice
-/// yields its parsed kind + payload, a prose slice yields
-/// `prose`/`{ markdown }`. (Server write paths guarantee a non-prose
-/// block is never stomped by a prose slice — the `Replace` guard in
-/// calm-server refuses such writes before alignment lands.)
+/// Reuse ids through exact LCS anchors, then similarity-align edited slices within each unmatched
+/// gap; remaining slices receive a new `b_ffff` id. Rev: unchanged when identical, `+1` when changed, `1` when new.
 pub fn reassign_ids(old_blocks: &[ReportBlock], new_slices: &[BlockSlice]) -> Vec<ReportBlock> {
     reassign_ids_with_hints(old_blocks, new_slices, &[])
 }
 
-/// [`reassign_ids`] with explicit per-slice id hints (#960 PR2's
-/// `write_markdown` marker channel). `hints[i] = Some(id)` pins slice
-/// `i` to the old block carrying `id` **before** the LCS/similarity
-/// passes run; hinted pairs are excluded from both passes, so markers
-/// make otherwise-undecidable inputs (duplicate content) decidable.
-///
-/// A hint is ignored (slice falls back to normal alignment) when the
-/// id does not exist among the old blocks, is duplicated there, or was
-/// already claimed by an earlier hint. `hints` may be shorter than
-/// `new_slices` (missing entries mean "no hint").
+/// [`reassign_ids`] with explicit per-slice id hints: `hints[i] = Some(id)` pins slice `i` to the
+/// old block carrying `id` before the LCS/similarity passes run.
 pub fn reassign_ids_with_hints(
     old_blocks: &[ReportBlock],
     new_slices: &[BlockSlice],
     hints: &[Option<String>],
 ) -> Vec<ReportBlock> {
-    // Per-slice nature: canonical comparison text + parsed fence.
     let fences: Vec<Option<NonProseFence>> = new_slices
         .iter()
         .map(|slice| parse_fence(&slice.raw))
@@ -64,8 +35,7 @@ pub fn reassign_ids_with_hints(
         })
         .collect();
 
-    // First-occurrence-unique old ids are the only reusable ones (a
-    // duplicated id is unattributable — same rule as before hints).
+    // First-occurrence-unique old ids are the only reusable ones; a duplicated id is unattributable.
     let mut reusable_ids = HashSet::new();
     let unique: Vec<bool> = old_blocks
         .iter()
@@ -78,7 +48,6 @@ pub fn reassign_ids_with_hints(
         .map(|(index, block)| (block.id.as_str(), index))
         .collect();
 
-    // Hint pass: pin slices to their marked old blocks, first-wins.
     let mut assignments: Vec<Option<usize>> = vec![None; new_slices.len()];
     let mut taken = vec![false; old_blocks.len()];
     for (index, hint) in hints.iter().enumerate().take(new_slices.len()) {
@@ -91,8 +60,6 @@ pub fn reassign_ids_with_hints(
         }
     }
 
-    // LCS + similarity over the *unpinned* remainder: pinned old
-    // blocks and pinned slices are masked out with `None`.
     let old_flat: Vec<Option<String>> = old_blocks
         .iter()
         .enumerate()
@@ -119,15 +86,9 @@ pub fn reassign_ids_with_hints(
         .iter()
         .chain(std::iter::once(&(old_blocks.len(), new_slices.len())))
     {
-        // Same-kind non-prose pre-pass (#960 PR3 review round 1): a
-        // heavily re-parameterized data block (e.g. a chart whose
-        // candles were all replaced) falls below the 0.5 similarity
-        // threshold on its full fence text and would mint a new id.
-        // Within this gap, when the old side has exactly ONE eligible
-        // non-prose block of kind K and the new side exactly ONE
-        // fence slice of kind K, pair them directly — identity is
-        // unambiguous regardless of content distance. More than one
-        // of the same kind falls back to the similarity logic.
+        // Same-kind non-prose pre-pass: when a gap has exactly ONE old non-prose block of kind K and exactly
+        // ONE fence slice of kind K, pair them directly — a heavily re-parameterized data block would otherwise
+        // fall below the similarity threshold.
         same_kind_pairs(
             old_blocks,
             &fences,
@@ -184,9 +145,8 @@ pub fn reassign_ids_with_hints(
         .collect()
 }
 
-/// The comparison text of an existing block: prose markdown verbatim
-/// (`None` for a malformed prose payload — never matchable, same rule
-/// as before), or the canonical fence for a non-prose block.
+/// The comparison text of an existing block: prose markdown verbatim (`None` for a malformed prose
+/// payload — never matchable), or the canonical fence for a non-prose block.
 fn comparable_flat(block: &ReportBlock) -> Option<String> {
     if block.kind == KIND_PROSE {
         block
@@ -199,9 +159,7 @@ fn comparable_flat(block: &ReportBlock) -> Option<String> {
     }
 }
 
-/// Pair the unique same-kind non-prose (old block, new fence slice)
-/// per kind within one LCS gap. Paired entries are assigned and
-/// masked out of both sides so the similarity pass skips them.
+/// Pair the unique same-kind non-prose (old block, new fence slice) per kind within one LCS gap.
 fn same_kind_pairs(
     old_blocks: &[ReportBlock],
     fences: &[Option<NonProseFence>],
@@ -244,9 +202,7 @@ fn same_kind_pairs(
 }
 
 fn lcs_matches(old: &[Option<&str>], new: &[Option<&str>]) -> Vec<(usize, usize)> {
-    // `None` on either side means "not eligible for matching" (dup /
-    // malformed old, or hint-pinned entries) — two `None`s must never
-    // compare equal, hence the explicit `is_some` guard.
+    // `None` means "not eligible for matching"; two `None`s must never compare equal.
     let eq = |old_index: usize, new_index: usize| {
         old[old_index].is_some() && old[old_index] == new[new_index]
     };
@@ -344,11 +300,8 @@ fn levenshtein(left: &[char], right: &[char]) -> usize {
     previous[right.len()]
 }
 
-/// Mint a deterministic `b_xxxx` block id from the slice content +
-/// position, probing until it misses every id in `used` (which the
-/// caller must pre-seed with all live ids and which this function
-/// extends with the returned id). Public so the CRDT layer
-/// (`calm-server::track_report_doc`) mints ids in the same style.
+/// Mint a deterministic `b_xxxx` block id from the slice content + position, probing until it
+/// misses every id in `used` (caller pre-seeds all live ids; the returned id is added).
 pub fn mint_id(raw: &str, index: usize, used: &mut HashSet<String>) -> String {
     let mut hash = 0x811c9dc5u32;
     for byte in raw.bytes().chain(index.to_le_bytes()) {
@@ -386,21 +339,18 @@ mod tests {
             "new blocks: rev=1"
         );
 
-        // Byte-identical rewrite: ids and revs both stay put.
         let same = reassign_ids(&first, &split_body("# A\nalpha\n# B\nbeta\n"));
         for (before, after) in first.iter().zip(&same) {
             assert_eq!(after.id, before.id);
             assert_eq!(after.rev, before.rev);
         }
 
-        // Editing one block bumps only that block's rev.
         let edited = reassign_ids(&same, &split_body("# A\nalpha edited\n# B\nbeta\n"));
         assert_eq!(edited[0].id, first[0].id);
         assert_eq!(edited[0].rev, 2, "edited block: rev+1");
         assert_eq!(edited[1].id, first[1].id);
         assert_eq!(edited[1].rev, 1, "untouched block: rev unchanged");
 
-        // A brand-new block starts at rev=1; survivors keep theirs.
         let grown = reassign_ids(
             &edited,
             &split_body("# A\nalpha edited\n# B\nbeta\n# C\nnew\n"),
@@ -413,9 +363,6 @@ mod tests {
 
     #[test]
     fn byte_preserved_fence_keeps_id_kind_payload_and_rev() {
-        // #960 PR3: a non-prose block's flat form IS its canonical
-        // fence. A wholesale rewrite that carries the fence through
-        // verbatim must preserve everything.
         let payload = serde_json::json!({ "src": "/apps/x", "title": "工具" });
         let old = vec![ReportBlock {
             id: "b_ap01".to_string(),
@@ -441,8 +388,6 @@ mod tests {
             rev: 5,
             payload: serde_json::json!({ "src": "/x", "height": 300 }),
         }];
-        // Same payload, hostile formatting (compact, different key
-        // order): canonical comparison must still match exactly.
         let body = "```neige-block app\n{\"height\":300,\"src\":\"/x\"}\n```\n";
         let same = reassign_ids(&old, &split_body(body));
         assert_eq!(same.len(), 1);
@@ -453,7 +398,6 @@ mod tests {
             serde_json::json!({ "src": "/x", "height": 300 })
         );
 
-        // Changed parameter: id reused (similar), rev bumps.
         let body = "```neige-block app\n{\"height\":301,\"src\":\"/x\"}\n```\n";
         let changed = reassign_ids(&old, &split_body(body));
         assert_eq!(changed[0].id, "b_ap01");
@@ -466,7 +410,6 @@ mod tests {
 
     #[test]
     fn fence_block_alignment_survives_insertions() {
-        // Non-prose blocks participate in LCS like any other slice.
         let chart = ReportBlock {
             id: "b_ch01".to_string(),
             kind: "chart.candles".to_string(),
@@ -490,11 +433,6 @@ mod tests {
 
     #[test]
     fn heavily_reparameterized_data_block_keeps_id_via_same_kind_pairing() {
-        // #960 PR3 review round 1: a large parameter edit drops fence
-        // similarity below 0.5 — the unique same-kind pre-pass must
-        // still pair the blocks (id inherited, rev+1).
-        //
-        // app: src "/x" → long path.
         let old = vec![ReportBlock {
             id: "b_ap01".to_string(),
             kind: "app".to_string(),
@@ -511,8 +449,6 @@ mod tests {
         assert_eq!(out[0].rev, 3, "changed payload: rev+1");
         assert_eq!(out[0].payload["src"], serde_json::json!(long_src));
 
-        // chart: most candles replaced, surrounded by prose that also
-        // changed — still pairs inside the gap.
         let chart = ReportBlock {
             id: "b_ch01".to_string(),
             kind: "chart.candles".to_string(),
@@ -538,9 +474,6 @@ mod tests {
         assert_eq!(out[1].id, "b_ch01", "chart id survives wholesale re-data");
         assert_eq!(out[1].rev, 5, "rev+1");
 
-        // Two same-kind blocks in one gap: ambiguity falls back to
-        // similarity — the byte-identical one is LCS-anchored, the
-        // remaining one-on-one pair still resolves via the pre-pass.
         let a = ReportBlock {
             id: "b_a".to_string(),
             kind: "app".to_string(),
@@ -568,8 +501,6 @@ mod tests {
 
     #[test]
     fn marker_hints_make_duplicate_content_decidable() {
-        // Two byte-identical blocks: without markers this input is
-        // undecidable (design §3.4); with markers it must be exact.
         let old = vec![
             ReportBlock {
                 id: "b_aaaa".to_string(),
@@ -584,7 +515,6 @@ mod tests {
                 payload: serde_json::json!({ "markdown": "# A\nsame\n" }),
             },
         ];
-        // Swap the two blocks via markers; edit the second one.
         let body = "<!-- neige:b_bbbb -->\n# A\nsame\n<!-- neige:b_aaaa -->\n# A\nsame edited\n";
         let marked = strip_markers_and_split(body);
         let out = reassign_ids_with_hints(&old, &marked.slices, &marked.hints);
@@ -597,8 +527,6 @@ mod tests {
     #[test]
     fn unhinted_slices_fall_back_to_lcs_alignment() {
         let old = reassign_ids(&[], &split_body("# A\nalpha\n# B\nbeta\n"));
-        // Marker only on A; B is edited and must still inherit via LCS
-        // gap similarity; X is brand new.
         let body = format!(
             "# X\nnew\n<!-- neige:{} -->\n# A\nalpha\n# B\nbeta edited\n",
             old[0].id
@@ -623,16 +551,12 @@ mod tests {
         let marked = strip_markers_and_split(body);
         assert_eq!(marked.hints, vec![Some("b_dead".to_string())]);
         let out = reassign_ids_with_hints(&old, &marked.slices, &marked.hints);
-        // Unknown hint id: LCS still reuses the old id (exact match).
         assert_eq!(out[0].id, old[0].id);
         assert_eq!(out[0].rev, old[0].rev);
     }
 
     #[test]
     fn duplicate_hint_ids_only_first_slice_claims_the_block() {
-        // Two slices hinting the same id: first-wins, the second falls
-        // back to normal alignment / a fresh mint — output ids stay
-        // unique (fix for #960 PR2 review failure-major 3).
         let old = reassign_ids(&[], &split_body("# A\nalpha\n"));
         let hints = vec![Some(old[0].id.clone()), Some(old[0].id.clone())];
         let slices = split_body("# A\nalpha\n# Z\nzeta\n");

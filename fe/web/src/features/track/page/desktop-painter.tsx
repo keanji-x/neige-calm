@@ -1,39 +1,5 @@
-// The desktop track panel, painted from `core/view`'s panel view model (#1234).
-//
-// This is the first production renderer on the `paintModule` / `paintPanel`
-// branch. Before it, the traversal and the projection checker existed and were
-// exercised only by synthetic painters, while `public.tsx` hand-composed the two
-// row modules — the shape §6.10 calls the false sense of safety, and the shape
-// this slice exists to remove.
-//
-// **The DOM here is the page's, moved, not redesigned.** Every class name,
-// `data-nc-role`, `aria-label` and `title` the desktop panel rendered before is
-// reproduced verbatim, because a stack of suites is measuring it:
-// `task-row.browser.test.tsx` hit-tests the task row's invisible reveal sheet
-// and compact status word, while `public.contract.test.tsx` counts the buttons inside
-// `[data-nc-task-inventory]`. What is new is the marker layer, and nothing else.
-//
-// **Why `T` is not `ReactNode`.** `RowPainter.row` is handed a `PanelRow` and
-// nothing else — no module context — but the desktop's two modules compose a row
-// differently in ways no shared shape covers: a Cards row is a body button whose
-// meta lane holds the kind tag and the ownership badge, with the delete × as a
-// sibling; a Task row is a reveal button holding the key, declaration and
-// status word, with the kind as a sibling. Deciding between them by sniffing
-// the row (`does it carry a reveal-block action?`) would make this file correct
-// only by an invariant of `track-page.ts` that nothing states, which is the
-// mistake `track-page.ts`'s own docstrings warn about twice. So a row or empty
-// leaf is a *pending* node instead: it is finished once the module it belongs
-// to says which module that is. `slot` is the second half of the same problem —
-// `paintModule` calls `empty()` exactly when a module has no rows, but the `T`
-// it hands back does not say so, and the desktop wraps rows in a `<ul>` and the
-// empty line in nothing. `DesktopLeaf` is therefore a tagged union rather than
-// one shape: a module leaf is already finished, and saying so is what keeps the
-// top level from looking a module's key up a second time (see its docstring).
-//
-// **Symbol references only.** The DOM here came out of `track/page/public.tsx`,
-// and several docstrings in this issue cited the lines it used to occupy. Every
-// one of them was stale by the next edit; they name functions and components
-// now.
+// The desktop track panel, painted from `core/view`'s panel view model.
+// A row or empty leaf is pending until its module says which module it lands in; a module leaf is finished.
 
 import { ListText } from '../../../ui/list-typography/public.tsx';
 import { Fragment, type ReactNode } from 'react';
@@ -50,41 +16,24 @@ import { Icon } from '../../../ui/icon/public.tsx';
 import { PanelEmpty, PanelModule } from '../../../ui/panel-card/public.tsx';
 import styles from './page.module.css';
 
-/**
- * A row or an empty line, painted as far as it can be here: it still needs to
- * know which module it lands in, and `module()` is the only thing that knows.
- * `paint` is called from there and nowhere else.
- */
+/** A row or an empty line, painted as far as it can be here; `paint` is called from `module()` and nowhere else. */
 type PendingLeaf = Readonly<{
   slot: 'row' | 'empty';
   group: (moduleKey: RowModuleView['key']) => InventoryGroupKey;
   paint: (moduleKey: RowModuleView['key']) => ReactNode;
 }>;
 
-/**
- * A module, which needs nothing further: `module()` was handed `parts.key` and
- * resolved its own children against it there.
- */
+/** A module, which needs nothing further. */
 type ModuleLeaf = Readonly<{ slot: 'module'; node: ReactNode }>;
 
-/**
- * **A tagged union, and the tag is the difference that matters.** A module leaf
- * is *finished*; a row or empty leaf is not. Giving both halves the same
- * `paint(moduleKey)` signature is what made the top level look the key up again
- * by position (`view.rowModules[i].key`) — re-deriving, off the view's *order*,
- * a fact `module()` had already captured from `parts.key`. Correct only because
- * `paintPanel` is order-preserving, and one fact bound to two places. The union
- * says instead that only one of the two ever needs a key, and that one never
- * reaches the top level.
- */
+/** A tagged union: only a pending leaf ever needs a key, and it never reaches the top level. */
 export type DesktopLeaf = PendingLeaf | ModuleLeaf;
 
 export type DesktopPainterDeps = Readonly<{
   onOpenCard?: (cardId: string) => void;
   onOpenTask?: (blockId: string) => void;
   onDeleteCard?: (cardId: string) => void;
-  /** The Cards module head's `+`, composed by `app/router`. A router-composed
-   *  slot, not view-model content (§3.2), so it travels as an opaque node. */
+  /** The Cards module head's `+`, composed by `app/router`; travels as an opaque node. */
   cardsAction?: ReactNode;
   /** Compact, already-derived progress for the Tasks module head. */
   taskSummary?: string | null;
@@ -92,20 +41,10 @@ export type DesktopPainterDeps = Readonly<{
   afterCards?: ReactNode;
 }>;
 
-/** One marker attribute, spelled from `MARKER` / `FIELD` so no name is retyped
- *  here. Written as a spread because the attribute name is a value. */
+/** One marker attribute, spelled from `MARKER` / `FIELD` so no name is retyped here. */
 const mark = (name: string, value: string): Readonly<Record<string, string>> => ({ [name]: value });
 
-/**
- * What a painter needs from one of a row's actions: the payload id it carries,
- * and its three wording channels.
- *
- * The lookup returns `null` when the action is absent — and it is absent for two
- * different reasons that the painter deliberately does not distinguish: the view
- * model never derived it (an undeletable card has no `delete-card`), or
- * `paintModule` filtered it out against this painter's capability table. Both
- * mean the same thing here: draw no control, and therefore no marker.
- */
+/** What a painter needs from one of a row's actions. `null` when absent — never derived, or filtered by the capability table — and both mean draw no control. */
 type Control = Readonly<{
   id: string;
   label: string | null;
@@ -126,9 +65,7 @@ function control(row: PanelRow, kind: RowAction['kind']): Control | null {
   return null;
 }
 
-/** Wording channels are exact on both sides: `null` must emit no attribute at
- *  all, because a second accessible name overrides a control's visible text
- *  (WCAG 2.5.3) and the projection asserts the absence. */
+/** `null` must emit no attribute at all: a second accessible name overrides a control's visible text (WCAG 2.5.3). */
 function wording(action: Control): Readonly<Record<string, string>> {
   return {
     ...(action.label === null ? {} : { 'aria-label': action.label }),
@@ -145,22 +82,7 @@ function cardBadge(badge: RowBadge): ReactNode {
   );
 }
 
-/**
- * A Cards row — the `<li>` the track page used to spell inline under its `Cards`
- * `PanelModule`, moved here by S1b-3b.
- *
- * The delete is a **sibling** of the row button, never a child: a `<button>`
- * inside a `<button>` is dropped by every HTML parser, and
- * `public.contract.test.tsx` holds that line for the whole page.
- *
- * The former `removable` condition was `onDeleteCard !== undefined &&
- * card.deletable`. Both halves survive, in different places: `card.deletable`
- * decides whether `track-page.ts` derives a `delete-card` action at all, and
- * `onDeleteCard !== undefined` is this painter's capability table, which
- * `paintModule` applies before `row` is called. So the control appears exactly
- * when the filtered action does — which is also what makes the marker layer able
- * to see a painter that grew a delete button the host never asked for.
- */
+/** A Cards row. The delete is a sibling of the row button, never a child: a `<button>` inside a `<button>` is dropped by every HTML parser. */
 function cardRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
   const open = control(row, 'open-card');
   const remove = control(row, 'delete-card');
@@ -174,18 +96,9 @@ function cardRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
       >
         <ListText tone="primary" className={styles.cardKind} {...mark(MARKER.field, FIELD.title)}>{row.title}</ListText>
         <span className={styles.cardMeta}>
-          {/* The kernel's verdict beside the phase word (#1722 §5.3): the
-              word says what phase or result this is, the indicator whether it
-              is in motion or needs a person — from `row.activity` alone. No
-              control on this row names the verdict (the status word is a
-              different fact), so the indicator speaks it (`activityLabelOf`). */}
           {row.activity !== null && <ActivityIndicator state={row.activity} spoken={activityLabelOf(row.activity)} />}
           {row.status !== null && <ListText tone="secondary" className={styles.cardStatus}
             {...mark(MARKER.status, row.status.token)} title={row.status.phrase}>{row.status.token}</ListText>}
-          {/* Only when a title took the name slot — an untitled card is already
-              showing its kind there, and printing it twice is noise. The
-              condition is now the view model's (`row.kind === null`), which is
-              the same rule read from one place instead of two. */}
           {row.kind !== null && (
             <ListText tone="secondary" className={styles.cardKindTag} {...mark(MARKER.field, FIELD.kind)}>{row.kind}</ListText>
           )}
@@ -208,38 +121,7 @@ function cardRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
   );
 }
 
-/**
- * A Task row — the `<li>` the track page used to spell inline under its `Tasks`
- * `PanelModule`, moved here by S1b-3b.
- *
- * **Two controls in one row, and the second is a sibling.** The row used to be
- * one `<button>` that decided for the reader which of two landings it took; a
- * dispatched task then had no way back to its declaration at all. The reveal
- * button always reveals the block; the *kind* is the worker-card affordance, and
- * only when there is a card to open. A `<button>` may not nest inside a
- * `<button>`, which is the mechanical reason the row is a plain `<li>`.
- *
- * **"The row reveals the block" is a CSS fact, not DOM containment.**
- * `.taskReveal::before` paints an invisible sheet over the whole `<li>`, while
- * the kind button keeps its separate worker-card action. That
- * claim is hit-tested in `task-row.browser.test.tsx`; jsdom reports this same
- * tree whether the sheet covers the row or nothing, which is why the geometry is
- * not asserted anywhere near here.
- *
- * **The kind carries two markers, and that is legal.** It is the `kind` field's
- * carrier *and*, when there is a card, the `open-card` host — and
- * `data-nc-row-action` is a host annotation, not a content marker, so the
- * one-content-marker-per-element rule is not engaged. The declaration badge and
- * status word sit inside the reveal button for the same reason: an action
- * host does not own the field text underneath it.
- *
- * The kind is drawn from `row.kind`, and the *control* form from the presence of
- * the `open-card` action — which the derivation produces exactly when
- * `kind !== null && workerCardId !== null`, the page's own former two nested
- * tests. If a view model ever offered `open-card` on a row with no kind, this
- * paints no host for it and the projection says `action-sequence`: unreachable
- * today, and loud rather than silent if it stops being.
- */
+/** A Task row: the reveal button always reveals the block; the kind is the worker-card affordance. A `<button>` may not nest inside a `<button>`, so the row is a plain `<li>`; "the row reveals the block" is a CSS sheet (`.taskReveal::before`), not DOM containment. */
 function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
   const reveal = control(row, 'reveal-block');
   const open = control(row, 'open-card');
@@ -250,7 +132,6 @@ function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
       {...(reveal === null ? {} : { ...mark(MARKER.action, 'reveal-block'), ...wording(reveal) })}
       onClick={reveal === null ? undefined : () => deps.onOpenTask?.(reveal.id)}
     >
-      {/* Keep the stable task key as the name, aligned with card names. */}
       <ListText tone="primary" className={styles.taskKey} {...mark(MARKER.field, FIELD.title)}>{row.title}</ListText>
       {row.badges.map((badge) => (
         <ListText tone="secondary"
@@ -259,8 +140,7 @@ function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
           {...mark(MARKER.badge, badge.id)}
         >{badge.text}</ListText>
       ))}
-      {/* Spoken for the same reason as the card row's: the status word below
-          is `aria-hidden` and names the run, not the verdict. */}
+      {/* Spoken: the status word below is `aria-hidden` and names the run, not the verdict. */}
       {row.activity !== null && <ActivityIndicator state={row.activity} spoken={activityLabelOf(row.activity)} />}
       {row.status !== null && (
         <ListText tone="secondary"
@@ -276,9 +156,7 @@ function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
   return (
     <li key={row.id} className={styles.taskRow} {...mark(MARKER.row, row.id)}>
       {revealControl}
-      {/* The kind is a word either way — what changes is whether it is a
-          control. `title` describes the destination without touching the
-          accessible name, which stays the visible word (WCAG 2.5.3). */}
+      {/* `title` describes the destination without touching the accessible name, which stays the visible word (WCAG 2.5.3). */}
       {row.kind !== null && (open === null
         ? <ListText tone="secondary" className={styles.taskKind} {...mark(MARKER.field, FIELD.kind)}>{row.kind}</ListText>
         : (
@@ -296,23 +174,7 @@ function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
   );
 }
 
-/**
- * The desktop panel's painter, rebuilt per render.
- *
- * **The capability table is computed here, from the host props**, and that is
- * the point of the factory: `delete-card`'s support is `onDeleteCard !==
- * undefined`, which is a fact about *this render*, not about the desktop. A
- * painter that hard-coded it as supported would grow a delete control on a page
- * whose host passed no handler — a control that does not exist today.
- *
- * `open-card` and `reveal-block` are unconditionally supported, and that is not
- * an oversight: the page draws both controls regardless of whether a callback
- * arrived (`onOpenCard?.(…)` is optional at the call site, and
- * `public.contract.test.tsx` counts five buttons in a task list rendered with no
- * `onOpenCard` at all). Binding support to the callback would delete controls
- * that exist today. Whether a supported action reaches a live handler is not a
- * projection obligation (§6.3).
- */
+/** The desktop panel's painter, rebuilt per render: `delete-card` support is `onDeleteCard !== undefined`, a fact about this render. `open-card` and `reveal-block` are drawn with or without a callback. */
 export function makeDesktopPainter(deps: DesktopPainterDeps): RowPainter<DesktopLeaf> {
   const deleteSupport: ActionSupport = deps.onDeleteCard === undefined
     ? { supported: false, why: 'the host passed no onDeleteCard, so this render offers no delete' }
@@ -376,14 +238,7 @@ export function makeDesktopPainter(deps: DesktopPainterDeps): RowPainter<Desktop
   };
 }
 
-/**
- * Resolve one of a module's children against the module it landed in.
- *
- * `paintModule` builds a module's children out of `row()` and `empty()` only,
- * so the module arm is unreachable — and it throws rather than rendering
- * nothing, because a module nested inside a module would be a traversal that
- * has changed shape underneath this file, not a leaf worth silently dropping.
- */
+/** Resolve one of a module's children against the module it landed in. A module leaf here means the traversal changed shape, so it throws. */
 function finish(leaf: DesktopLeaf, moduleKey: RowModuleView['key']): ReactNode {
   if (leaf.slot === 'module') {
     throw new Error(`paintModule handed the ${moduleKey} module a module leaf as a child`);
@@ -391,14 +246,7 @@ function finish(leaf: DesktopLeaf, moduleKey: RowModuleView['key']): ReactNode {
   return leaf.paint(moduleKey);
 }
 
-/**
- * `paintPanel`, unwrapped into nodes the page can render.
- *
- * The traversal is `core/view`'s, and every leaf it returns is a module that
- * `module()` already finished against its own `parts.key`. So this unwraps and
- * does nothing else: it reads no key, and therefore cannot re-bind one to the
- * view's order.
- */
+/** `paintPanel`, unwrapped into nodes the page can render. It reads no key, so it cannot re-bind one to the view's order. */
 export function paintDesktopPanel(
   painter: RowPainter<DesktopLeaf>,
   view: TrackPageView,

@@ -3,8 +3,8 @@ use super::*;
 use calm_server::codex_appserver::InputItem;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 
-/// The frame the kernel-snapshot JSON is wrapped in, taken from the briefing
-/// fragment itself so this file carries no copy of its wording (#1635 S1c).
+/// The frame the kernel-snapshot JSON is wrapped in, taken from the briefing fragment itself
+/// so this file carries no copy of its wording.
 fn briefing_frame() -> (&'static str, &'static str) {
     include_str!("../../prompts/recovery-briefing/briefing.md")
         .split_once("{briefing_json}")
@@ -32,9 +32,7 @@ async fn queued_settlement(fx: &Fixture, handle: &PlannerHarness) {
     .unwrap();
 }
 
-/// #1625 P2 — the segments the drain wrote to its projection row, read back
-/// from the transcript table (where `issued_input_segments` used to be read
-/// from the snapshot).
+/// The segments the drain wrote to its projection row, read back from the transcript table.
 async fn projected_segments(fx: &Fixture) -> Vec<calm_server::model::HarnessInputSegment> {
     calm_server::db::RepoRead::harness_item_list_by_card(
         fx.boot.repo.as_ref(),

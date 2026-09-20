@@ -1,62 +1,5 @@
-//! Issue #229 PR B — track-report MCP tools.
-//!
-//! Three tools the planner agent uses to maintain its track-report card's
-//! Markdown body. The argument shapes deliberately mimic codex's native
-//! `Read` / `Edit` / `Write` file tools 1:1 so the agent's mental model
-//! is "the report is a file I can edit," not "the report is a structured
-//! kernel object I need a special API for."
-//!
-//! ## Tool surface
-//!
-//! | Tool | Shape | Notes |
-//! |---|---|---|
-//! | `calm.report.read`  | `{ select?, with_markers?, resolve? }` | Returns `{ text, summary, schemaVersion, docRev, updated_at, blocks, taskDiagnostics }`; `select` picks `"full"` / `"index"` / `{ blocks }` (#1727 S2). |
-//! | `calm.report.write` | `{ body: String, summary?: String }` | Wholesale replace (like codex `Write`). |
-//! | `calm.report.edit`  | `{ old_string: String, new_string: String, replace_all?: bool }` | Like codex `Edit` — `old_string` must be unique unless `replace_all = true`. |
-//!
-//! ## Authorization
-//!
-//! The two write tools require the caller's per-call card to be a
-//! `CardRole::Planner`. `calm.report.read` additionally accepts
-//! `CardRole::Assistant` (#1189): it is the only source of `docRev` and
-//! the per-block `rev`s, so an assistant that could not call it could
-//! never form the `if_doc_rev` / `if_rev` a block-channel write needs.
-//! The assistant's response body is trimmed: `taskDiagnostics` (the
-//! dispatched-task runtime projection) is Planner-only, so opening the read
-//! does not hand the assistant the state `calm.plan.list` withholds.
-//! We re-use [`require_role`] / [`require_role_any`] for the soft gate; the
-//! eventized write itself routes through `card_update_tx` on the
-//! track-report card row, which doesn't itself touch the role gate (the
-//! report card emits `CardUpdated` under its own card scope, which any
-//! actor with write access to the track can do — the actual "only planner
-//! may edit the report" policy lives at the MCP entry).
-//!
-//! The track the caller's planner card belongs to is the track whose report
-//! card these tools mutate; a planner card from a different track cannot
-//! reach this track's report. The lookup-by-(caller's track_id +
-//! kind="track-report") path makes cross-track writes impossible by
-//! construction.
-//!
-//! ## Edit semantics (matched to codex's Edit)
-//!
-//!   * `old_string == new_string` → falls through to the persist
-//!     boundary as a content-equal write. Emits the same two-event pair
-//!     (`CardUpdated` + `TrackReportEdited`) as every other persist
-//!     path, with `body_before == body_after`. PR4's UI consumer can
-//!     filter no-op edits from the timeline client-side; the kernel
-//!     keeps a uniform "every persist → two events" invariant so
-//!     downstream consumers never have to second-guess whether an
-//!     event is missing.
-//!   * `old_string` not found in `body` → `-32602` "old_string not
-//!     found in body".
-//!   * `old_string` found multiple times and `replace_all` not true →
-//!     `-32602` "old_string is not unique; pass replace_all=true to
-//!     replace all matches".
-//!   * `old_string` found multiple times and `replace_all = true` →
-//!     replace every occurrence (Rust `str::replace` semantics — left
-//!     to right, no overlap).
-//!   * `old_string` found exactly once → replace it. (replace_all is
-//!     redundant in this case; we accept it for codex Edit symmetry.)
+//! Track-report MCP tools: `calm.report.read` / `.write` / `.edit`, shaped 1:1 after codex's `Read`/`Edit`/`Write` file tools.
+//! Writes are Planner-only; `read` also admits the Assistant (the only source of `docRev` / per-block `rev`).
 
 use crate::decision_sink::{CardDecisionSink, ReportOpCommit};
 use crate::error::CalmError;
@@ -86,7 +29,6 @@ pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(edit_descriptor(), wrap(report_edit));
 }
 
-/// Boxed-future wrapper, same shape as the other tool modules.
 fn wrap<F, Fut>(f: F) -> ToolHandler
 where
     F: Fn(Arc<AppContext>, ToolCallIdentity, Value) -> Fut + Send + Sync + 'static,
@@ -95,9 +37,6 @@ where
     wrap_with(f, ToolResult::structured)
 }
 
-/// `wrap` with the envelope constructor chosen by the caller. #1727 S2 —
-/// `calm.report.read` uses [`read_result`] so its `content[0].text` is one
-/// summary line instead of a second copy of the whole report.
 fn wrap_with<F, Fut>(f: F, envelope: fn(Value) -> ToolResult) -> ToolHandler
 where
     F: Fn(Arc<AppContext>, ToolCallIdentity, Value) -> Fut + Send + Sync + 'static,
@@ -109,24 +48,16 @@ where
     })
 }
 
-/// #1727 S2 — the read's envelope: one summary line in `content[0].text`
-/// (`docRev · blocks · bytes · summary; full state in structuredContent`,
-/// the convention `tools/terminal.rs` set), the document itself only in
-/// `structuredContent`. Before this the 190 KB report the #1727 forensics
-/// measured was delivered as `text` + the `body` alias + both again inside
-/// the JSON text block — four copies per read.
+/// The read's envelope: one summary line in `content[0].text`, the document itself only in `structuredContent`.
 fn read_result(value: Value) -> ToolResult {
     let summary = read_summary_line(&value);
     ToolResult::structured_with_summary(value, summary)
 }
 
-/// Longest prefix of the report summary rendered on the one-line receipt,
-/// in BYTES (the receipt's size bound is a byte bound, and the summary is
-/// Chinese by `planner.md`'s rule — 120 chars of it would be ~360 bytes).
+/// In BYTES: the receipt's size bound is a byte bound, and the summary is Chinese (120 chars would be ~360 bytes).
 const SUMMARY_LINE_BYTES: usize = 120;
 
-/// The longest prefix of `text` that fits `budget` bytes, cut on a char
-/// boundary; `None` when the whole text fits.
+/// `None` when the whole text fits.
 fn clip_to_bytes(text: &str, budget: usize) -> Option<&str> {
     if text.len() <= budget {
         return None;
@@ -157,10 +88,6 @@ fn read_summary_line(value: &Value) -> String {
         "docRev {doc_rev} · {blocks} blocks · {payload} · {summary}; full state in structuredContent"
     )
 }
-
-// ---------------------------------------------------------------------------
-// calm.report.read
-// ---------------------------------------------------------------------------
 
 fn read_descriptor() -> ToolDescriptor {
     ToolDescriptor {
@@ -219,12 +146,7 @@ pub(crate) async fn report_read(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    // #1189 — Assistant reads too. This tool is the ONLY source of
-    // `docRev` and the per-block `rev`s, and every block-channel write
-    // takes `if_doc_rev` / `if_rev`; keeping it Planner-only would leave the
-    // assistant unable to bootstrap the CAS handshake S2 opens up. The
-    // write channel (`calm.report.write` / `.edit`, which can carry
-    // lifecycle) stays Planner-only — that is the §3.2 dividing line.
+    // Assistant reads too: this is the ONLY source of `docRev` / per-block `rev`s, which every block-channel write needs. The write channel stays Planner-only.
     require_role_any(&identity, &[CardRole::Planner, CardRole::Assistant])?;
     let select = parse_select_arg(&args, "calm.report.read")?;
     let with_markers = match args.get("with_markers") {
@@ -236,9 +158,7 @@ pub(crate) async fn report_read(
             ));
         }
     };
-    // `resolve_report_for_caller` only supplies auth + the report
-    // card id; the response body comes from ONE fresh row snapshot so
-    // `summary`/`text`/`blocks` can never tear against each other.
+    // The response body comes from ONE fresh row snapshot so `summary`/`text`/`blocks` can never tear against each other.
     let resolve_modes = parse_resolve_arg(&args, "calm.report.read")?;
     let (track, _, report_card, _) = resolve_report_for_caller(&ctx, &identity).await?;
     let snapshot = load_report_read_snapshot(
@@ -248,16 +168,11 @@ pub(crate) async fn report_read(
     )
     .await
     .map_err(|e| RpcError::internal(format!("track_report: {e}")))?;
-    // #1727 S2 — `select` decides whether `text` is delivered at all and,
-    // for `{ blocks }`, which blocks it holds. The index is always present;
-    // it is what a `docRev` / `if_rev` retry needs.
+    // The index is always present; it is what a `docRev` / `if_rev` retry needs.
     let text = match &select {
         ReadSelect::Index => None,
         ReadSelect::Blocks(ids) => {
-            // Document order, each block behind its marker line (markers
-            // are unconditional here: a partial text is only addressable
-            // through them). An id the document does not hold is the
-            // caller's mistake, not an empty section.
+            // Markers are unconditional here: a partial text is only addressable through them. An unknown id is the caller's mistake.
             for id in ids {
                 if !snapshot.blocks.iter().any(|block| &block.id == id) {
                     return Err(RpcError::invalid_params(format!(
@@ -298,13 +213,9 @@ pub(crate) async fn report_read(
         }
         ReadSelect::Full => Some(snapshot.body.clone()),
     };
-    // #1628 S2 (D4) — `resolved` on `chart.series` and live `table` blocks:
-    // rows and overlays only. This read never calls a plugin and never
-    // writes; a series block without a fresh row is enqueued in memory.
+    // `resolved` is rows and overlays only; this read never calls a plugin and never writes.
     let index: Vec<Value> =
         hydrated_block_index(&ctx, track.id.as_str(), &snapshot.blocks, &resolve_modes).await;
-    // #1727 S2 — the `body` alias (same value as `text`) is gone: it doubled
-    // every read for consumers that no longer exist.
     let mut response = json!({
         "summary": snapshot.summary,
         "schemaVersion": snapshot.schema_version,
@@ -315,21 +226,13 @@ pub(crate) async fn report_read(
     if let Some(text) = text {
         response["text"] = Value::String(text);
     }
-    // #1189 review round 2 — `taskDiagnostics` is NOT report content. It
-    // is the read-time task/track-tree projection (`status`, `statusDetail`,
-    // `gateResult`, `workerCardId`, `childTrackId`), i.e. exactly the class
-    // of dispatched-task runtime state `calm.plan.list` is kept Planner-only
-    // to withhold. Opening `report.read` to the assistant must not become a
-    // side door onto it, so the assistant gets the document (`text` /
-    // `summary` / `schemaVersion` / `docRev` / `updated_at` / `blocks`)
-    // and nothing else. Planner keeps the full payload.
+    // `taskDiagnostics` is the dispatched-task runtime projection `calm.plan.list` withholds from the assistant; only the Planner gets it.
     if identity.role == CardRole::Planner {
         response["taskDiagnostics"] = json!(snapshot.task_diagnostics);
     }
     Ok(response)
 }
 
-/// #1727 S2 — the `select` argument of `calm.report.read`.
 #[derive(Debug, PartialEq, Eq)]
 enum ReadSelect {
     /// Today's shape: the whole `text` plus the index.
@@ -367,10 +270,6 @@ fn parse_select_arg(args: &Value, tool: &str) -> Result<ReadSelect, RpcError> {
         ))),
     }
 }
-
-// ---------------------------------------------------------------------------
-// calm.report.write
-// ---------------------------------------------------------------------------
 
 fn write_descriptor() -> ToolDescriptor {
     ToolDescriptor {
@@ -410,7 +309,6 @@ async fn report_write(
         .ok_or_else(|| RpcError::invalid_params("calm.report.write: missing `body` (string)"))?
         .to_string();
     let if_doc_rev = required_doc_rev(obj, "calm.report.write")?;
-    // `summary` is optional — if omitted, retain the existing one.
     let summary_override = match obj.get("summary") {
         None | Some(Value::Null) => None,
         Some(Value::String(s)) => Some(s.clone()),
@@ -422,11 +320,7 @@ async fn report_write(
     };
 
     let (track, _, report_card, current) = resolve_report_for_caller(&ctx, &identity).await?;
-    // Omitted summary = keep the existing one. The op carries `None`
-    // and the persist layer resolves it against the doc INSIDE the
-    // transaction — resolving from the `current` snapshot here would
-    // let a concurrent summary write be silently reverted (TOCTOU,
-    // #960 PR2 review).
+    // Omitted summary = keep the existing one, resolved by the persist layer INSIDE the transaction; resolving from `current` here would let a concurrent summary write be silently reverted.
     commit_report_write_for_identity(
         &ctx,
         &identity,
@@ -443,10 +337,6 @@ async fn report_write(
     )
     .await
 }
-
-// ---------------------------------------------------------------------------
-// calm.report.edit
-// ---------------------------------------------------------------------------
 
 fn edit_descriptor() -> ToolDescriptor {
     ToolDescriptor {
@@ -510,10 +400,7 @@ async fn report_edit(
     let if_doc_rev = required_doc_rev(obj, "calm.report.edit")?;
 
     let (track, _, report_card, current) = resolve_report_for_caller(&ctx, &identity).await?;
-    // Match exactly the projection served by read, including old rows whose
-    // body cache predates independent-block separators. Never construct the
-    // replacement from that obsolete cache. The snapshot revision check binds
-    // this input to the caller's read; the write still checks CAS in-tx.
+    // Match exactly the projection served by read; never construct the replacement from the obsolete body cache. The write still checks CAS in-tx.
     let snapshot = load_report_read_snapshot(
         ctx.repo.as_ref(),
         report_card.id.as_str(),
@@ -530,15 +417,7 @@ async fn report_edit(
         );
     }
 
-    // Issue #247 PR2 review: removed the `old_string == new_string`
-    // short-circuit so this handler always falls through to the
-    // persist boundary and emits the same `CardUpdated` +
-    // `TrackReportEdited` event pair as `report.write`. The asymmetry
-    // it created (write-with-identical-content → 2 events, edit-with-
-    // identical-strings → 0 events) made PR4's UI consumer have to
-    // special-case one persist path. We still validate `old_string`
-    // is present in the body — substring-not-found stays a hard
-    // error, *only* the equal-strings branch is gone.
+    // No `old_string == new_string` short-circuit: equal strings fall through to the persist boundary and emit the same event pair as `report.write`.
     let occurrences = count_matches(&snapshot.body, &old_string);
     if occurrences == 0 {
         return Err(RpcError::invalid_params(
@@ -551,20 +430,13 @@ async fn report_edit(
              pass replace_all=true to replace all matches"
         )));
     }
-    // Either occurrences == 1 (replace_all is irrelevant) or
-    // occurrences > 1 && replace_all (codex semantics: replace every
-    // occurrence left-to-right).
     let new_body = if replace_all || occurrences > 1 {
         snapshot.body.replace(&old_string, &new_string)
     } else {
-        // Single-match path. `replacen(.., 1)` is the safe choice;
-        // `replace` would also work since we already know there's
-        // exactly one match.
         snapshot.body.replacen(&old_string, &new_string, 1)
     };
 
-    // `edit` never touches the summary: `None` keeps whatever the doc
-    // holds at commit time (resolved in-tx by the persist layer).
+    // `edit` never touches the summary: `None` keeps whatever the doc holds at commit time.
     commit_report_write_for_identity(
         &ctx,
         &identity,
@@ -582,36 +454,16 @@ async fn report_edit(
     .await
 }
 
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
-
-/// Count non-overlapping occurrences of `needle` in `haystack` using
-/// `str::matches` (left-to-right, no overlap — matches `str::replace`'s
-/// scan behavior so a misleading mismatch never reaches the user).
+/// Non-overlapping, left-to-right — matches `str::replace`'s scan behavior.
 fn count_matches(haystack: &str, needle: &str) -> usize {
     if needle.is_empty() {
-        // `str::matches("")` returns infinitely many — we treat empty
-        // needle as a programmer error and refuse it upstream. Guard
-        // here so a future refactor doesn't accidentally expose it.
+        // `str::matches("")` returns infinitely many.
         return 0;
     }
     haystack.matches(needle).count()
 }
 
-/// Resolve the (track, planner card, report card, current payload) tuple
-/// for the per-call planner identity. Errors:
-///   * planner card row missing (delete-while-active race) → InternalError;
-///   * track row missing under that planner card → InternalError;
-///   * no track-report card on the track → InternalError (the invariant
-///     is "every track has exactly one report card"; failing this is a
-///     data-shape bug, not a user-visible 404);
-///   * payload deserialize fails → InternalError (a malformed row would
-///     mean someone wrote past the validator).
-///
-/// #960 PR3: `report.write` / `report.edit` land as `ReportDocOp::
-/// Replace`, whose in-tx guard (`track_report::guard_non_prose_stomp`)
-/// refuses any write that would modify or delete a non-prose block.
+/// A missing planner card, track, or report card is a data-shape bug (every track has exactly one report card), surfaced as InternalError.
 pub(crate) async fn resolve_report_for_caller(
     ctx: &Arc<AppContext>,
     identity: &ToolCallIdentity,
@@ -643,19 +495,12 @@ pub(crate) async fn resolve_report_for_caller(
     Ok((track, planner_card, report_card, payload))
 }
 
-/// Load the track-report card and current payload for an already-resolved track.
-///
-/// This helper is role-agnostic by design: callers must enforce their own MCP
-/// entry gate and track binding before reaching it.
+/// Role-agnostic by design: callers must enforce their own MCP entry gate and track binding before reaching it.
 pub(crate) async fn load_report_for_track(
     ctx: &Arc<AppContext>,
     track: &Track,
 ) -> Result<(Card, TrackReportPayload), RpcError> {
-    // Find the track-report card. Migration 0014 + `routes::tracks::create_track`
-    // guarantee exactly one per track; the partial unique index
-    // `idx_cards_one_report_per_track` from migration 0081 backstops it.
-    // Scanning every card on the track is fine — tracks are small (single
-    // digits of cards in practice).
+    // Exactly one report card per track (partial unique index `idx_cards_one_report_per_track`); scanning every card is fine, tracks are small.
     let cards = ctx
         .repo
         .cards_by_track(track.id.as_str())
@@ -680,37 +525,12 @@ pub(crate) async fn load_report_for_track(
     Ok((report_card, payload))
 }
 
-/// MCP-side thin wrapper around [`CardDecisionSink::commit_report_write`].
-///
-/// Resolves the session-shaped actor from the per-call [`ToolCallIdentity`]
-/// (Planner maps to `ActorId::AiPlannerSession`; `require_role` upstream guarantees
-/// the role is Planner by the time we reach this site), tags every write as the
-/// planner-MCP emitter inside the sink, and projects the returned
-/// `Card` into the MCP wire shape `{ updated_at, docRev }`. The error mapping
-/// reproduces the pre-PR3 contract
-/// (`CalmError::Forbidden` → `-32403`, anything else → internal).
-///
-/// Issue #247 PR3 — the heavy lifting (CRDT load / project / update /
-/// dual-event emit) lives in `crate::track_report::write::persist` so
-/// the REST user-edit endpoint (`POST /api/tracks/:id/report`) reaches
-/// the same write boundary. The two callers share one persist path;
-/// one event-pair contract; one transactional write. Anything else
-/// would be two parallel implementations of the same invariant, with
-/// the corresponding drift risk.
-///
-/// #1318 §1 — they no longer reach it through the same *function*: that
-/// writer is private to `track_report::write`, and this path enters via
-/// `write::agent_report_op` (through `decision_sink`) while the REST
-/// endpoint enters via `write::rest_user_replace`. The sharing is
-/// unchanged and the attribution got stricter — only this path can name
-/// an `EditAuthor` at all, and it takes it from the role.
+/// MCP-side thin wrapper around [`CardDecisionSink::commit_report_write`]; only this path can name an `EditAuthor`, taken from the role.
 struct ReportSinkCall {
     track: Track,
     report_card: Card,
     current_payload: TrackReportPayload,
-    /// `None` keeps the current summary, resolved by the persist
-    /// layer inside the transaction (#960 PR2 review — never snapshot
-    /// the summary outside the tx).
+    /// `None` keeps the current summary, resolved by the persist layer inside the transaction.
     summary: Option<String>,
     body: String,
     agent_message: String,
@@ -745,11 +565,6 @@ async fn commit_report_write_for_identity(
             ..
         }) => {
             let doc_rev = updated_report_doc_rev(&updated, "track_report")?;
-            // #1669 §2.3 — `Replace` rewrites the whole document, so the
-            // funnel scanned every prose block; `calm.report.edit` is the
-            // door a Planner uses to slip a `neige://source/…` link into an
-            // existing paragraph, and it gets the same receipt as the
-            // block tools.
             Ok(json!({
                 "updated_at": updated.updated_at,
                 "docRev": doc_rev,
@@ -760,9 +575,7 @@ async fn commit_report_write_for_identity(
             -32403,
             format!("track_report: forbidden: {msg}"),
         )),
-        // #960 PR3 — the in-tx guard/validation of `ReportDocOp::
-        // Replace` (non-prose stomp, malformed/invalid neige fences)
-        // surfaces as BadRequest and must map to -32602, not internal.
+        // In-tx guard/validation of `ReportDocOp::Replace` surfaces as BadRequest and must map to -32602, not internal.
         Err(CalmError::BadRequest(msg)) => {
             Err(RpcError::invalid_params(format!("track_report: {msg}")))
         }
@@ -796,8 +609,6 @@ fn required_doc_rev(obj: &serde_json::Map<String, Value>, tool: &str) -> Result<
 mod tests {
     use super::*;
 
-    /// #1727 S2 — the `select` argument, every accepted spelling and the
-    /// refusals around them.
     #[test]
     fn parse_select_arg_accepts_the_three_forms_and_refuses_the_rest() {
         let parse = |args: Value| parse_select_arg(&args, "t");
@@ -827,10 +638,6 @@ mod tests {
         }
     }
 
-    /// #1727 S2 — the one-line receipt: counts, the payload size, the
-    /// summary clipped to one line of at most `SUMMARY_LINE_BYTES` bytes
-    /// (fix round 1 F2: bytes, cut on a char boundary — the bound the size
-    /// assertion in `mcp_track_report.rs` measures is a byte bound).
     #[test]
     fn read_summary_line_is_one_short_line() {
         let line = read_summary_line(&json!({
@@ -848,8 +655,6 @@ mod tests {
             index,
             "docRev 0 · 0 blocks · index only · ; full state in structuredContent"
         );
-        // 200 three-byte chars → the longest whole-char prefix within the
-        // byte budget (40 chars = 120 bytes), then the ellipsis.
         let long = "字".repeat(200);
         let clipped = read_summary_line(&json!({"docRev": 1, "blocks": [], "summary": long}));
         assert!(
@@ -858,8 +663,6 @@ mod tests {
         );
         assert!(!clipped.contains('\n'));
         assert!(clipped.len() < SUMMARY_LINE_BYTES + 80, "{}", clipped.len());
-        // A budget that lands mid-char backs off to the char boundary; a
-        // summary that fits is not clipped at all.
         assert_eq!(clip_to_bytes("字字", 4), Some("字"));
         assert_eq!(clip_to_bytes("字字", 6), None);
         assert_eq!(clip_to_bytes("abc", 2), Some("ab"));
@@ -880,20 +683,8 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::no_effect_replace)] // The whole point of this test
-    // is to pin that `str::replace(s, s)` is the identity map — that
-    // identity is what makes the post-fix `report.edit` with equal
-    // strings produce `body_before == body_after` instead of being a
-    // bypass. The lint is exactly right that the call is a no-op;
-    // that's the assertion.
+    #[allow(clippy::no_effect_replace)] // pins that `str::replace(s, s)` is the identity map
     fn edit_equal_strings_replace_is_identity() {
-        // Sanity-pin: PR2 review removed the `old == new` short-circuit
-        // in `report_edit`, so equal strings now fall through to the
-        // normal `str::replace` path. That path is the identity map
-        // — `body.replace(s, s) == body` — which is what makes the
-        // resulting `TrackReportEdited` carry `body_before ==
-        // body_after`. End-to-end coverage lives in
-        // `tests/mcp_track_report.rs::edit_with_identical_old_and_new_still_emits_both_events`.
         let body = "the body XYZ";
         assert_eq!(body.replace("XYZ", "XYZ"), body);
         assert_eq!(body.replacen("XYZ", "XYZ", 1), body);

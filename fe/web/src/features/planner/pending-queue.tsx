@@ -1,63 +1,5 @@
-// #1505 PR4 — the messages a person typed while a turn was running.
-//
-// ── One bubble each, and one icon ─────────────────────────────────────────
-//
-// This used to be a stack of cards, each with the message in full, an inline
-// `TextArea` when you edited it, and four named buttons. In a 364px drawer,
-// directly above the thing you are typing into, that is a second composer
-// sitting on top of the first one. What a queued message needs is to be
-// recognisable — enough of its first line to know which one it is — and a way
-// out. So: one bubble, one line, ellipsis, a cross.
-//
-// **A bubble, and deliberately NOT the composer's drawer surface.** The
-// version before this one sat in `ChatComposerDrawer`, which tints, rounds and
-// tucks itself behind the field — it makes the strip read as the top of the
-// input box. These messages are not part of the box you are typing in; they
-// are things already said and waiting. Discrete bubbles floating above it say
-// that, and the composer keeps its own edges.
-//
-// There is no caption over them either. "3 messages are waiting to send when
-// this turn ends" was a sentence explaining a picture that explains itself.
-// What went with it is the words "when this turn ends", which is a real fact
-// and now goes unsaid — worth knowing that is the trade.
-//
-// ── There is no edit, and no take-back ────────────────────────────────────
-//
-// A pencil that pulled a queued message back into the composer was built,
-// reviewed three times, and removed. It is not hard because deleting is hard;
-// it is hard because the recovered words have nowhere to live. `composerDraft`
-// (`app/router/public.tsx`) is ONE string, shared across conversations and
-// cleared when the drawer closes, so a recovery has no owner: it can land in a
-// conversation it did not come from, or be wiped by a close, and the message
-// it came from is already deleted by then. Three rounds of review found five
-// distinct cells of that matrix, and the third round found them in the fixes
-// for the second.
-//
-// Binding drafts to conversations is the fix and it is a change to the
-// router's state model, not to this component. **Deferred on purpose, with the
-// owner's decision**: shipping a delete-only strip is a smaller thing that is
-// entirely true, and the alternative was an edit affordance that loses
-// messages in ways a person cannot see.
-//
-// The compare-and-swap stays: a delete carries the revision it was read at and
-// can be refused, and a refusal is shown rather than retried. `PATCH
-// .../planner/input/{id}` is still served and the browser no longer calls it,
-// the same way `POST /planner/reset` was left standing when #1139 removed its
-// last caller.
-//
-// ── "Say it now" (#1625 P3) ───────────────────────────────────────────────
-//
-// The one control added since: while a turn is running, a queued message can
-// be handed to THAT turn instead of waiting for the next one
-// (`POST .../planner/input/{id}/steer`). It is offered only when the router
-// passes `onSteer`, and the router passes it only in `turn_running` — not
-// `issuing_turn`, where the kernel would answer 409 for a turn that does not
-// exist yet, and not `issuing_interrupt`, where the turn is being stopped.
-// It can get two refusals. `not_running` is the honest answer for a press
-// that lands after the turn ended: nothing happened, the message is still
-// queued, it goes with the next turn. `unanswered` is codex never replying:
-// the message is queued again, and whether the turn ALSO got it is not known
-// — the notice says so rather than claiming nothing happened.
+// The messages a person typed while a turn was running: one bubble each, delete-only, with
+// "Say it now" offered only while the router passes `onSteer` (a running turn).
 
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
@@ -75,86 +17,38 @@ import styles from './pending-queue.module.css';
 
 export type PendingQueueProps = Readonly<{
   entries: readonly PendingQueueEntry[];
-  /**
-   * Queued user messages this page does not carry.
-   *
-   * Two different reasons land in the same count, and the server does not
-   * separate them (`page_pending_entries`, `routes/cards.rs`): an entry
-   * written before #1505 PR1, which has no id and never gains one, and an
-   * entry past the page's own length/byte budget. Neither can be addressed
-   * from what this component was given — the first has nothing to address,
-   * the second was not sent — so both are counted and neither gets buttons.
-   *
-   * Rendered rather than hidden: they are real messages that will really be
-   * sent, and a person who typed eleven and sees three has been misinformed.
-   */
+  /** Queued messages this page does not carry (no id, or past the page budget): counted, never given controls. */
   overflow: number;
   /** Blocks the controls while any write on this card is unanswered. */
   busy: boolean;
   onDelete: (entry: PendingQueueEntry) => Promise<PlannerQueueWriteOutcome>;
-  /**
-   * #1625 P3 — hand the entry to the turn that is running now. `undefined`
-   * means there is no such turn, and the control is not drawn at all: a
-   * button that could only be refused is not a control.
-   */
+  /** Hand the entry to the turn running now; `undefined` means there is no such turn and the control is not drawn. */
   onSteer?: (entry: PendingQueueEntry) => Promise<PlannerQueueWriteOutcome>;
 }>;
 
-/**
- * The last refusal, and which entry it was about.
- *
- * The `stale` variant carries the revision the server reported, and the next
- * write on that entry uses it: the page in the cache is behind by definition
- * at that moment, and the refresh that would fix it is fire-and-forget and may
- * fail, so a retry that re-sends `entry.rev` is guaranteed to lose again.
- */
+/** The last refusal and which entry it was about. A `stale` refusal carries the revision the server reported, and the next write uses it: a retry re-sending `entry.rev` is guaranteed to lose again. */
 type Refusal = Readonly<{ entryId: string; outcome: PlannerQueueWriteOutcome }>;
 
-/**
- * What a refusal says.
- *
- * All three are now about something that did not happen to a message still
- * sitting in the strip — there is no open editor left for a refusal to be
- * about, so there is no second wording and no "your text is still below".
- */
+/** What a refusal says. */
 function noticeText(outcome: PlannerQueueWriteOutcome): string | null {
   if (outcome.kind === 'stale') {
-    /* "as shown" is a promise about the bubble above this notice, and it is
-       kept: a stale refusal carries the winner's text and the row renders THAT
-       from then on (`text` below). It used to keep rendering the text this page
-       was read at, so the sentence pointed at words the server had already
-       replaced — and a retry then deleted the new message while handing back
-       the old one. */
     return 'This message changed before your change could be applied, so nothing '
       + 'happened to it. It now reads as shown; try again if you still want to.';
   }
   if (outcome.kind === 'gone') {
-    /* NOT "already sent": another actor deleting it produces this same answer,
-       and the server does not say which happened. All that is known is that
-       the queue no longer has it. */
-    /* NOT "already sent": the same answer comes back when another actor
-       removed it, and the server does not say which happened. All that is
-       known is that the queue no longer has it. */
+    /* Not "already sent": another actor removing it produces the same answer, and the server does not say which. */
     return 'This message is no longer in the queue — it has either been sent or '
       + 'been removed somewhere else, and the server does not say which.';
   }
-  /* #1625 P3 — the steer found no turn to hand the message to: the turn had
-     ended by the time the press landed, or codex declined it. Nothing was
-     lost and nothing needs doing; the sentence says exactly that. */
   if (outcome.kind === 'not_running') {
     return 'The turn ended before this message could be handed to it, so nothing '
       + 'happened. It stays queued and will go with the next turn.';
   }
-  /* #1625 P3 review round 1 — codex never answered the steer. The kernel put
-     the message back, but it cannot say whether the turn took it too, and
-     neither can this sentence: it says "not known", and what follows. */
   if (outcome.kind === 'unanswered') {
     return 'Codex did not answer in time, so it is not known whether this message '
       + 'reached the current turn. It stays queued and will go with the next turn; '
       + 'if it did reach this one, it will also show up in the conversation.';
   }
-  /* The server's own sentence and nothing added to it: a delete that failed
-     leaves the message exactly where it was, which the strip already shows. */
   if (outcome.kind === 'failed') return outcome.message;
   return null;
 }
@@ -167,13 +61,8 @@ function noticeHeading(outcome: PlannerQueueWriteOutcome): string {
   return 'Could not be changed';
 }
 
-/**
- * `stale` is a race the reader can still win by trying again; `gone` is the
- * queue having moved on without them, with nothing to retry; `not_running` is
- * the queue NOT having moved, with nothing to do; `unanswered` is a doubt the
- * reader should hold (the message may be said twice), so a warning like
- * `stale`; `failed` is the server refusing.
- */
+/** `stale` is a race the reader can win by trying again; `gone` has nothing to retry; `not_running` has nothing to do;
+ * `unanswered` is a doubt the reader should hold (the message may be said twice), so a warning like `stale`; `failed` is the server refusing. */
 function noticeStatus(outcome: PlannerQueueWriteOutcome): 'warning' | 'info' | 'error' {
   if (outcome.kind === 'stale' || outcome.kind === 'unanswered') return 'warning';
   if (outcome.kind === 'gone' || outcome.kind === 'not_running') return 'info';
@@ -185,25 +74,7 @@ export function PendingQueue({
   entries, overflow, busy, onDelete, onSteer,
 }: PendingQueueProps) {
   const [refusal, setRefusal] = useState<Refusal | null>(null);
-  /*
-   * One lock for the whole strip, not one per button.
-   *
-   * Astryx's `clickAction` disables the control it is on while its promise is
-   * unsettled, and that is all it does — which leaves every OTHER control
-   * live.
-   *
-   * **Not because one delete invalidates another's revision.** It does not:
-   * the kernel compares `queue[index].rev` per entry
-   * (`crates/calm-server/src/harness/queue.rs`), so deleting A leaves B's
-   * revision exactly as it was. The reason is this component's own state —
-   * `refusal` holds ONE entry's answer, and two writes settling together means
-   * the second silently replaces the first's notice, so one of the two
-   * refusals is never shown to the person who caused it. The write in flight
-   * is a fact about this card, so it is held for this card.
-   *
-   * **Raised in `onClick`, released in `clickAction`** — see the note on the
-   * button.
-   */
+  /* One lock for the whole strip: `refusal` holds one entry's answer, so two writes settling together would silently drop one refusal. Raised in `onClick`, released in `clickAction`. */
   const [writing, setWriting] = useState(false);
   if (entries.length === 0 && overflow === 0) return null;
 
@@ -221,26 +92,14 @@ export function PendingQueue({
             const noticeLine = shown === null
               ? null
               : noticeText(shown.outcome);
-            /* The revision the next write carries: the one the server reported
-               if it has spoken about this entry, otherwise the one this page
-               was read at. Without this a refused write retried against a
-               revision it already knew was stale, forever. */
+            /* The revision the next write carries: the one the server reported if it has spoken about this entry, otherwise the one this page was read at. */
             const refused = shown?.outcome ?? null;
             const rev = refused?.kind === 'stale' ? refused.rev : entry.rev;
-            /* And the TEXT that goes with that revision. A stale refusal is
-               the server telling us what the entry says now, so from that
-               moment the row shows the winner's words rather than the ones
-               this page was read at — which is what makes the notice's "it now
-               reads as shown" true, and what stops a reader deleting a message
-               on the strength of text the server has already replaced. */
+            /* A stale refusal carries the winner's text, so the row shows that from then on rather than words the server has already replaced. */
             const text = refused?.kind === 'stale' ? refused.text : entry.text;
             return (
               <li key={entry.entry_id} data-nc-pending-entry={entry.entry_id}>
                 <div className={styles.bubble}>
-                  {/* One line and an ellipsis. `hasTruncateTooltip` gives the
-                      whole message back on hover, and only when it was
-                      actually shortened — so a short one gets no hover that
-                      repeats what is already on screen. */}
                   <Text
                     className={styles.text}
                     maxLines={1}
@@ -250,8 +109,6 @@ export function PendingQueue({
                     {text}
                   </Text>
                   {onSteer !== undefined && (
-                    /* Same lock as the cross, raised and released the same
-                       way, for the same reason: one refusal slot per strip. */
                     <Button
                       label="Say it now"
                       variant="ghost"
@@ -274,15 +131,7 @@ export function PendingQueue({
                     variant="ghost"
                     size="sm"
                     isDisabled={blocked}
-                    /*
-                     * The lock is raised in `onClick` and released in
-                     * `clickAction`. Astryx runs `clickAction` inside
-                     * `startTransition` (`Button.tsx`), and a state update made
-                     * in a transition is non-urgent — measured: setting it
-                     * there produced no locked render at all while the request
-                     * was open, which is precisely the window it exists to
-                     * cover. `onClick` runs before that transition starts.
-                     */
+                    /* Astryx runs `clickAction` inside `startTransition`, where a state update is non-urgent and produced no locked render at all; `onClick` runs before that transition starts. */
                     onClick={() => { setWriting(true); }}
                     clickAction={async () => {
                       try {
@@ -307,11 +156,6 @@ export function PendingQueue({
           })}
         </List>
         {overflow > 0 && (
-          /* The one line of prose left, and it earns its place: these are real
-             messages that will really be sent and that nothing here can
-             address, so without it a person who typed eleven and sees three
-             has been misinformed. "more" only when there is something for them
-             to be more THAN. */
           <Text as="p" type="supporting" role="status" data-nc-pending-overflow="">
             {`${overflow} ${entries.length > 0 ? 'more ' : ''}queued message`
               + `${overflow === 1 ? ' is' : 's are'} waiting but cannot be shown or edited here.`}

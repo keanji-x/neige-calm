@@ -1,18 +1,12 @@
-//! #1669 — wire vocabulary for captured sources: what
-//! `GET /api/tracks/{id}/sources[/{source_id}]` and `calm.source.list` hand
-//! out, and the two enums the `report_sources` rows store (`provenance`,
-//! `origin`). Plain data, TS-exported so the frontend's decoder is the
-//! generator's output rather than a hand-written schema. The store, the
-//! capture tool and the quote rules live in calm-server's `report_sources`.
+//! Wire vocabulary for captured sources: what `GET /api/tracks/{id}/sources[/{source_id}]` and
+//! `calm.source.list` hand out, and the two enums the `report_sources` rows store.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use utoipa::ToSchema;
 
-/// What the body *is*: the Planner's declaration, page-visible.
-/// `full_text` / `summary` / `web_page` bodies come from a recorded plugin
-/// call (the kernel vouches for the bytes); `manual` bodies are the
-/// Planner's own and are marked as not kernel-verified.
+/// What the body *is*: the Planner's declaration, page-visible. `manual` bodies are the Planner's
+/// own and are marked as not kernel-verified.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 #[serde(rename_all = "snake_case")]
@@ -54,8 +48,7 @@ pub enum SourceOrigin {
         plugin_id: String,
         tool: String,
         args_sha256: String,
-        /// Canonicalization version behind `args_sha256` (`v1`: compact
-        /// serde_json text with sorted keys).
+        /// Canonicalization version behind `args_sha256` (`v1`: compact serde_json text with sorted keys).
         args_canon: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
@@ -89,9 +82,7 @@ impl SourceOrigin {
     }
 }
 
-/// One anchor of a source: `text` is a byte-exact substring of the body
-/// (`body[start..end]`, UTF-8 byte offsets — a kernel-side detail; the page
-/// locates the anchor by `text`).
+/// One anchor of a source: `text` is a byte-exact substring of the body (`body[start..end]`, UTF-8 byte offsets).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct SourceQuote {
@@ -130,8 +121,7 @@ pub struct TrackSourceSummary {
     pub quotes: Vec<SourceQuote>,
 }
 
-/// A captured source with its body: the raw text the kernel stored,
-/// verbatim (the panel does not render it as Markdown).
+/// A captured source with its body: the raw text the kernel stored, verbatim.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct TrackSourceDetail {

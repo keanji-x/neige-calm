@@ -1,16 +1,4 @@
-// The two CodeMirror panes: one file, and one file's two sides.
-//
-// Ported from `web/src/cards/builtins/file-viewer-codemirror.tsx` and kept
-// deliberately close to it — the editor wiring (search adapter, the empty
-// search panel, the `/` keymap at highest precedence, the language table) is
-// behaviour that was measured against real files and real engines, and
-// rewriting it would have been re-deriving it.
-//
-// Both panes are read-only. Editing a file from a card is a different feature
-// with a different failure mode (a write that races the agent working in the
-// same tree), and nothing here is prepared for it: `editable` is false at both
-// the component and the extension level so a future edit has to be a decision
-// rather than an omission.
+// The two CodeMirror panes: one file, and one file's two sides. Both are read-only.
 
 import { useEffect, useMemo, useRef } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
@@ -33,12 +21,7 @@ import {
 
 export type PaneTheme = 'light' | 'dark';
 
-/**
- * What the shared search bar drives, whatever the pane is made of. Today only
- * the code pane implements it; the type is the seam that kept the bar from
- * knowing about CodeMirror in the first place, and it is worth keeping for the
- * same reason.
- */
+/** What the shared search bar drives; the seam that keeps the bar from knowing about CodeMirror. */
 export interface PaneSearchAdapter {
   setQuery(pattern: string): void;
   next(): void;
@@ -52,7 +35,6 @@ export interface CodePaneProps {
   theme: PaneTheme;
   onSearchAdapterReady?: (adapter: PaneSearchAdapter | null) => void;
   onSearchCount?: (current: number, total: number) => void;
-  /** The reader pressed `/` inside the editor — see the keymap below. */
   onSlashOpen?: () => void;
 }
 
@@ -63,9 +45,7 @@ export interface DiffPaneProps {
   theme: PaneTheme;
 }
 
-/* An empty DOM panel handed to `search()` so CodeMirror's own search UI never
-   renders: the bar is React's, and two search boxes over one document is a
-   worse answer than either alone. */
+/* An empty panel handed to `search()` so CodeMirror's own search UI never renders; the bar is React's. */
 function emptyPanel() {
   const dom = document.createElement('div');
   dom.className = 'fv-code-search-panel-empty';
@@ -77,11 +57,7 @@ function emptyPanel() {
   };
 }
 
-/**
- * How many matches the document holds, and which one the selection is on.
- * 1-based, `0` meaning "no current match" — which is what the bar prints as an
- * empty count rather than as `0/n`.
- */
+/** 1-based; `current` of `0` means no current match. */
 function computeMatchState(view: EditorView, query: SearchQuery): { current: number; total: number } {
   if (!query.valid) return { current: 0, total: 0 };
   const cursor = query.getCursor(view.state.doc);
@@ -116,9 +92,6 @@ function buildCodeSearchAdapter(
         onCount(0, 0);
         return;
       }
-      // Landing on the first hit as you type is the whole mental model of a
-      // find bar; leaving the selection where it was would make the count a
-      // fact about a document nobody is looking at.
       findNext(view);
       emit();
     },
@@ -135,9 +108,7 @@ export function CodePane({
   path, text, theme, onSearchAdapterReady, onSearchCount, onSlashOpen,
 }: CodePaneProps) {
   const viewRef = useRef<EditorView | null>(null);
-  /* The three callbacks live in refs so that a caller re-creating them on every
-     render cannot tear the editor down: they are read at call time, and only
-     the file's identity rebuilds the extensions. */
+  /* Callbacks live in refs so a caller re-creating them per render cannot tear the editor down. */
   const onSearchAdapterReadyRef = useRef(onSearchAdapterReady);
   const onSearchCountRef = useRef(onSearchCount);
   const onSlashOpenRef = useRef(onSlashOpen);
@@ -149,8 +120,7 @@ export function CodePane({
     () => [
       ...extensionsFor(path),
       search({ createPanel: emptyPanel }),
-      /* `Prec.highest` so `/` reaches the bar before any language extension or
-         default binding claims it — and before Firefox's own quick-find. */
+      /* `Prec.highest` so `/` reaches the bar before any language/default binding — and before Firefox's quick-find. */
       Prec.highest(keymap.of([{
         key: '/',
         run: () => { onSlashOpenRef.current?.(); return true; },
@@ -170,9 +140,7 @@ export function CodePane({
       });
       onSearchAdapterReadyRef.current?.(adapter);
     };
-    /* `viewRef` is filled by `onCreateEditor`, which has not run on the first
-       pass — hence the microtask. A later file change keeps the same view, so
-       that branch wires immediately. */
+    /* `viewRef` is filled by `onCreateEditor`, which has not run on the first pass — hence the microtask. */
     if (viewRef.current !== null) wire();
     else queueMicrotask(wire);
     return () => {
@@ -195,15 +163,7 @@ export function CodePane({
   );
 }
 
-/**
- * HEAD on the left, the working tree on the right.
- *
- * The kernel sends the two texts rather than a patch, so this is a merge view
- * and not a diff parser. `null` on either side is a real state — a file that is
- * not in HEAD, or one that has been deleted — and is passed through to the DOM
- * as `data-nc-fs-empty-*` so the CSS can label the empty half instead of leaving a
- * blank pane the reader has to interpret.
- */
+/** HEAD on the left, the working tree on the right. `null` on either side is a real state (not in HEAD / deleted), exposed as `data-nc-fs-empty-*`. */
 export function DiffPane({ path, headText, workingText, theme }: DiffPaneProps) {
   const ref = useRef<HTMLDivElement | null>(null);
   const extensions = useMemo(() => extensionsFor(path, theme), [path, theme]);
@@ -244,14 +204,7 @@ function extensionsFor(path: string, theme?: PaneTheme) {
   ];
 }
 
-/**
- * Extension → language, for the extensions this product actually opens.
- *
- * Deliberately a short table and not a lookup over everything
- * `@uiw/codemirror-extensions-langs` ships: an unknown extension falls through
- * to no highlighting, which renders the file correctly, and a wrong guess
- * renders it wrongly.
- */
+/** Deliberately a short table: an unknown extension falls through to no highlighting rather than a wrong guess. */
 function languageName(path: string): string | null {
   const extension = path.split('.').pop()?.toLowerCase();
   switch (extension) {

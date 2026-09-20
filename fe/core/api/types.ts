@@ -80,15 +80,7 @@ export type ApiOperation<T> = Readonly<{
   path: string;
   responseSchema: z.ZodType<T>;
   body?: unknown;
-  /**
-   * Request headers the operation itself needs, merged over the `content-type`
-   * the client adds for a body.
-   *
-   * Here rather than folded into `body` because `POST
-   * /api/tracks/{id}/conversations` takes `Idempotency-Key` as a *header* and
-   * rejects the request without it (400) — an operation that cannot express a
-   * header cannot call it at all.
-   */
+  /** Request headers the operation itself needs, merged over the `content-type` the client adds for a body. */
   headers?: Readonly<Record<string, string>>;
   signal?: ApiAbortSignal;
 }>;

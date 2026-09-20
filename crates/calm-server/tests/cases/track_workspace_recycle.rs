@@ -1,22 +1,5 @@
-//! Issue #1147 S5 — recycling a track workspace, driven through the real
-//! `DELETE /api/tracks/{id}` and `DELETE /api/areas/{id}` routes.
-//!
-//! **These tests really delete.** That is the whole point. S4's red team
-//! established that the assertion which actually stops the accident is not a
-//! SQL query over `workspace_path` but "perform the deletion for real, then go
-//! and look at whether the other repository is still there". Every guard below
-//! is therefore stated as: run the production route, then read the filesystem.
-//!
-//! The four guards (design `docs/1147-workspace-design.md` §生命周期, and
-//! `calm_server::workspace_recycle`'s module doc):
-//!
-//!   1. `kind == Managed`
-//!   2. `canonicalize(path)` under `canonicalize(workspace_root)`
-//!   3. `.git/neige-workspace` present and equal to this track's id
-//!   4. the owning area is not the system area
-//!
-//! Each has a test here that fails if the guard is removed, and each such test
-//! asserts on *bytes on disk*, not on a decision value.
+//! Recycling a track workspace through the real `DELETE /api/tracks/{id}` and `DELETE /api/areas/{id}` routes.
+//! These tests really delete and assert on bytes on disk.
 
 #![cfg(unix)]
 
@@ -41,25 +24,11 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
-// ---------------------------------------------------------------------------
-// Harness
-// ---------------------------------------------------------------------------
-
 struct Boot {
     app: axum::Router,
     repo: Arc<SqlxRepo>,
     workspace_root: PathBuf,
-    /// #1147 S3 — the registry `delete_track`'s teardown acts on.
-    ///
-    /// Held for the same reason the re-point suite holds it: the registry is
-    /// populated naturally (creating a track registers a live planner-harness
-    /// runtime), so `teardown_track_deletion`'s `harness.get`/`shutdown`/`remove`
-    /// loop does run under test — but nothing ever inspected the slot
-    /// afterwards, so removing the loop turned nothing red. Installing a
-    /// harness under a **known** runtime id is what lets a test name it and
-    /// assert it is gone. Measured on the re-point path; this path has the
-    /// identical shape, so it is covered here too rather than left as the same
-    /// latent gap.
+    /// The registry `delete_track`'s teardown acts on; a harness under a known runtime id lets a test assert it is gone.
     harness: calm_server::harness::HarnessRegistry,
     roles: CardRoleCache,
     tracks: TrackAreaCache,
@@ -121,9 +90,7 @@ async fn boot() -> Boot {
     }
 }
 
-/// Install a real `PlannerHarness` in the registry under the track's live
-/// planner-harness runtime, and return that runtime id. Twin of the helper in
-/// `track_workspace_repoint.rs`; see `Boot::harness` for why it exists.
+/// Install a real `PlannerHarness` under the track's live planner-harness runtime and return that runtime id.
 async fn install_live_harness(b: &Boot, track_id: &str) -> String {
     let runtime_id: String = sqlx::query_scalar(
         "SELECT id FROM worker_sessions WHERE track_id=?1 \
@@ -259,10 +226,7 @@ fn user_repo(at: &Path) -> PathBuf {
         vec!["init", "-b", "main"],
         vec!["config", "user.name", "user"],
         vec!["config", "user.email", "user@example.com"],
-        // #1147 S3 — keep git from touching this repository behind our back;
-        // background maintenance after a commit leaves a lock file that a
-        // fingerprint pair can straddle. Measured on CI (git 2.55), invisible
-        // on a 2.39 host.
+        // Keep git from touching this repository behind our back: background maintenance leaves a lock file a fingerprint pair can straddle.
         vec!["config", "gc.auto", "0"],
         vec!["config", "maintenance.auto", "false"],
     ] {
@@ -312,37 +276,9 @@ async fn attached_track(b: &Boot, area_id: &str, title: &str, path: &Path) -> St
     track["id"].as_str().unwrap().to_string()
 }
 
-// ---------------------------------------------------------------------------
-// Byte-for-byte fingerprints
-// ---------------------------------------------------------------------------
-
-/// Every path under `root`, with file contents. Directories map to `None`,
-/// symlinks to their target, files to their exact bytes.
-///
-/// Comparing this before and after a delete is the assertion the brief calls
-/// for: not "the directory still exists", but "not one byte moved". It
-/// deliberately includes `.git/` — `.git/info/exclude` growing a
-/// `.claude/worktrees/` line, or a `neige-workspace` marker appearing, are both
-/// ways the server could have taken ownership of a user's repository, and both
-/// show up here as a diff.
+/// Every path under `root`, with file contents. Directories map to `None`, symlinks to their target, files to their exact bytes; `.git/` included.
 fn fingerprint(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
-    /// Git's **own** transient lock files under `.git/`, by exact name.
-    ///
-    /// Measured on CI (git 2.55) and not reproducible on this host (git 2.39):
-    /// background maintenance creates `.git/objects/maintenance.lock` after a
-    /// commit and removes it moments later, so a before/after pair straddling
-    /// that window reports `removed: …maintenance.lock` and blames the server
-    /// for a file it never saw. `user_repo` also turns maintenance off; this is
-    /// the half that does not depend on remembering to.
-    ///
-    /// **Named, and rooted at `.git/`, on purpose.** The first version matched
-    /// any `*.lock` anywhere, which was strictly wrong: it blinded the
-    /// fingerprint to `.git/config.lock` and `.git/index.lock` — the exact
-    /// files `workspace_materialize::clear_our_stale_git_locks` deletes — so
-    /// the one production routine that removes files from a repository became
-    /// invisible to the assertion whose entire job is "the server did not touch
-    /// the user's repository". It also hid a work-tree `Cargo.lock`. An
-    /// unexpected `*.lock` must fail this assertion, not be waved through.
+    /// Git's own transient lock files under `.git/`, by exact name; a broader `*.lock` match would blind the fingerprint to `config.lock`/`index.lock`.
     fn is_transient_git_lock(rel: &Path) -> bool {
         const NAMES: [&str; 2] = ["maintenance.lock", "gc.pid.lock"];
         rel.starts_with(".git")
@@ -430,10 +366,6 @@ fn trash_entry_for(workspace_root: &Path, track_id: &str) -> Option<PathBuf> {
     })
 }
 
-// ---------------------------------------------------------------------------
-// The happy path — a managed workspace is reclaimed, by moving not deleting
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn deleting_a_managed_track_moves_its_workspace_into_the_trash() {
     let b = boot().await;
@@ -465,32 +397,11 @@ async fn deleting_a_managed_track_moves_its_workspace_into_the_trash() {
         std::fs::read(trashed.join("worker-output.txt")).unwrap(),
         b"generated"
     );
-    // The `<root>/<area_id>/` layer deliberately stays: it is the namespace
-    // for every future track in an area that still exists. It is reclaimed by
-    // area deletion, not track deletion (design §生命周期).
+    // The `<root>/<area_id>/` layer stays: it is reclaimed by area deletion, not track deletion.
     assert!(b.workspace_root.join(&area_id).is_dir());
 }
 
-// ---------------------------------------------------------------------------
-// Guard 1 — `kind == Managed`
-// ---------------------------------------------------------------------------
-
-/// Deleting an **attached** track must not change a single byte of the user's
-/// repository. Stated as a full recursive fingerprint rather than
-/// `assert!(dir.exists())`, because the failure modes that matter here are
-/// partial: a `.claude/worktrees/` line appended to the user's
-/// `.git/info/exclude`, a `neige-workspace` marker dropped into their `.git/`,
-/// a working file removed by an over-broad sweep.
-///
-/// **What this test does and does not isolate.** Measured by mutation: turning
-/// guard 1 off leaves this test green, because a real attached repository is
-/// also outside the managed root (guard 2) and also carries no ownership
-/// marker (guard 3). That redundancy is the good news — three independent
-/// things have to break before a user's repository moves — but it means the
-/// single-violation fixture for guard 1 has to construct the one shape
-/// production cannot: an `Attached` row inside the root with a valid marker.
-/// That fixture is `workspace_recycle::tests::an_attached_workspace_is_refused`
-/// in the unit suite, and guard 1 is the only reason it refuses.
+/// Turning guard 1 off alone leaves this green (guards 2 and 3 also hold for a real attached repo); the single-violation fixture is in the unit suite.
 #[tokio::test]
 async fn deleting_an_attached_track_leaves_the_users_repository_byte_for_byte() {
     let b = boot().await;
@@ -530,18 +441,12 @@ async fn deleting_an_attached_track_leaves_the_users_repository_byte_for_byte() 
     );
 }
 
-// ---------------------------------------------------------------------------
-// Guard 3 — the ownership marker, and that it names THIS track
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn a_managed_workspace_without_our_marker_is_left_on_disk() {
     let b = boot().await;
     let area_id = create_area(&b, "Atlas").await;
     let (track_id, path) = managed_track(&b, &area_id, "research").await;
-    // Design gap N5 in the flesh: a partial restore, or a stray cleanup, took
-    // the marker. We can no longer prove the directory is ours, so we do not
-    // touch it — the row still goes away, so the track stays deletable.
+    // The marker is gone, so the directory cannot be proven ours and is left alone; the row still goes away.
     std::fs::remove_file(path.join(".git/neige-workspace")).unwrap();
     let before = fingerprint(&path);
 
@@ -567,9 +472,7 @@ async fn a_managed_workspace_whose_marker_names_another_track_is_left_on_disk() 
     let area_id = create_area(&b, "Atlas").await;
     let (track_id, path) = managed_track(&b, &area_id, "research").await;
     let (other_id, _) = managed_track(&b, &area_id, "neighbour").await;
-    // The shape S4 exists to make unconstructible: a row pointing at another
-    // track's managed directory. If it ever occurs again, the marker is the
-    // thing that stops the delete.
+    // A row pointing at another track's managed directory: the marker is what stops the delete.
     std::fs::write(path.join(".git/neige-workspace"), format!("{other_id}\n")).unwrap();
     let before = fingerprint(&path);
 
@@ -583,22 +486,14 @@ async fn a_managed_workspace_whose_marker_names_another_track_is_left_on_disk() 
     assert!(trash_entry_for(&b.workspace_root, &track_id).is_none());
 }
 
-// ---------------------------------------------------------------------------
-// Guard 2 — canonical containment, not a lexical prefix
-// ---------------------------------------------------------------------------
-
 /// The stored path is lexically under the managed root; the bytes are not.
-/// A `starts_with` check on the stored string passes and the user's repository
-/// outside the root gets moved away.
 #[tokio::test]
 async fn a_symlinked_workspace_resolving_outside_the_root_is_left_on_disk() {
     let b = boot().await;
     let area_id = create_area(&b, "Atlas").await;
     let (track_id, path) = managed_track(&b, &area_id, "research").await;
 
-    // Relocate the real repository outside the root and leave a symlink at the
-    // stored path. The marker still names this track, so containment is the only
-    // guard between the delete and the outside directory.
+    // The marker still names this track, so containment is the only guard between the delete and the outside directory.
     let outside = b.tmp.path().join("outside-the-root");
     std::fs::rename(&path, &outside).unwrap();
     std::os::unix::fs::symlink(&outside, &path).unwrap();
@@ -618,19 +513,7 @@ async fn a_symlinked_workspace_resolving_outside_the_root_is_left_on_disk() {
     assert!(trash_entries(&b.workspace_root).is_empty());
 }
 
-// ---------------------------------------------------------------------------
-// Guard 4 — the system area, at both layers
-// ---------------------------------------------------------------------------
-
-/// The row layer. `DELETE /api/areas/{id}` already 403s a system area; this
-/// route used to be the asymmetric one, deleting a system-area track row and
-/// returning 204 while the directory (correctly, via guard 4) survived.
-///
-/// **That combination is the actual leak.** Reclaiming a managed directory
-/// requires the track row that names it, so a deleted row makes its directory
-/// unreachable forever — every launchpad delete + `ensure` cycle would strand
-/// one more orphan repository under the managed root. The 403 closes it: the
-/// row and the directory now agree.
+/// Reclaiming a managed directory requires the track row that names it, so deleting a system-area row would strand its directory.
 #[tokio::test]
 async fn a_system_area_track_cannot_be_deleted_through_the_public_route() {
     let b = boot().await;
@@ -648,8 +531,6 @@ async fn a_system_area_track_cannot_be_deleted_through_the_public_route() {
     let (status, body) = delete_track(&b, &track_id).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
 
-    // Both halves, because either alone is the broken state: the row is what
-    // keeps the directory reclaimable, and the directory is the kernel's.
     let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks WHERE id=?1")
         .bind(&track_id)
         .fetch_one(b.repo.pool())
@@ -663,11 +544,7 @@ async fn a_system_area_track_cannot_be_deleted_through_the_public_route() {
     assert!(trash_entries(&b.workspace_root).is_empty());
 }
 
-/// Single-violation fixture for the 403 above: the *same* track, moved to a
-/// user area, deletes fine. Without this, the assertion could be passing
-/// because the launchpad is undeletable for some unrelated reason (a child
-/// track, an in-flight forge action, a lifecycle state) rather than because it
-/// is system-owned.
+/// Control for the 403 above: the same track, moved to a user area, deletes fine.
 #[tokio::test]
 async fn the_same_track_in_a_user_area_deletes_normally() {
     let b = boot().await;
@@ -682,8 +559,6 @@ async fn the_same_track_in_a_user_area_deletes_normally() {
         "precondition: it is refused while system-owned"
     );
 
-    // Flip only the owning area's kind. Everything else about the track — its
-    // cards, its workspace, its lifecycle — is untouched.
     let user_area = create_area(&b, "Atlas").await;
     sqlx::query("UPDATE tracks SET area_id=?1 WHERE id=?2")
         .bind(&user_area)
@@ -698,19 +573,11 @@ async fn the_same_track_in_a_user_area_deletes_normally() {
         StatusCode::NO_CONTENT,
         "the 403 is not about system ownership after all: body={body}"
     );
-    // And with the row gone through a legitimate path, guard 4 no longer
-    // applies either, so the directory is reclaimed rather than stranded.
     assert!(!path.exists());
     assert!(trash_entry_for(&b.workspace_root, &track_id).is_some());
 }
 
-// ---------------------------------------------------------------------------
-// Child tracks — S4's two shapes, from the recycling side
-// ---------------------------------------------------------------------------
-
-/// Parent `attached` ⇒ the child shares the parent's path (S4's amended D7).
-/// Deleting the child must not touch it: guard 1 alone carries this, because
-/// the child row is `attached` too.
+/// Parent `attached` ⇒ the child shares the parent's path; guard 1 alone carries this.
 #[tokio::test]
 async fn deleting_a_child_of_an_attached_parent_leaves_the_shared_repository() {
     let b = boot().await;
@@ -741,8 +608,6 @@ async fn deleting_a_child_of_an_attached_parent_leaves_the_shared_repository() {
     );
 }
 
-/// Parent `managed` ⇒ the child owns a separate managed directory. Deleting
-/// the child recycles that one and leaves the parent's repository working.
 #[tokio::test]
 async fn deleting_a_child_of_a_managed_parent_leaves_the_parent_repository() {
     let b = boot().await;
@@ -770,10 +635,6 @@ async fn deleting_a_child_of_a_managed_parent_leaves_the_parent_repository() {
     assert_eq!(head(&parent_path).as_deref(), Some(parent_head.as_str()));
 }
 
-/// A deletion only reduces tree membership and must remain possible when an
-/// upgraded tree was already admission-frozen. The survivor's immutable work
-/// remains, new admission stays frozen, and no fallible postcondition may run
-/// after the victim's workspace has been recycled.
 #[tokio::test]
 async fn deleting_a_leaf_from_a_frozen_tree_commits_after_recycling_its_workspace() {
     let b = boot().await;
@@ -825,9 +686,6 @@ async fn deleting_a_leaf_from_a_frozen_tree_commits_after_recycling_its_workspac
     assert_eq!(survivor_status, "running");
 }
 
-/// A malformed surviving report must fail before the victim's runtime or
-/// workspace is touched. The compensation path remains a last-resort fence for
-/// a concurrent failure after this preflight, not the ordinary error path.
 #[tokio::test]
 async fn invalid_survivor_report_fails_before_teardown_or_recycling() {
     let b = boot().await;
@@ -868,8 +726,6 @@ async fn invalid_survivor_report_fails_before_teardown_or_recycling() {
     );
 }
 
-/// The multi-stage delete is serialized per track. A concurrent loser must
-/// observe the committed absence before it can move or compensate anything.
 #[tokio::test]
 async fn concurrent_deletes_cannot_resurrect_the_winners_workspace_or_cache_entry() {
     let b = boot().await;
@@ -927,8 +783,6 @@ async fn concurrent_deletes_cannot_resurrect_the_winners_workspace_or_cache_entr
     );
 }
 
-/// Once the managed workspace has moved, dropping the HTTP request must not
-/// drop the only owner of the remaining database commit and compensation.
 #[tokio::test]
 async fn canceling_the_request_after_recycle_still_converges_the_delete_saga() {
     let b = boot().await;
@@ -1007,9 +861,6 @@ async fn panicking_track_commit_restores_the_owned_workspace_and_cache() {
     );
 }
 
-/// The delete fence is shared with harness installation, not merely with a
-/// second DELETE. A reset that starts after the teardown snapshot must wait;
-/// otherwise it can install a runtime the snapshot never knew to stop.
 #[tokio::test]
 async fn planner_reset_cannot_install_a_harness_behind_track_deletion() {
     let b = boot().await;
@@ -1076,8 +927,7 @@ async fn planner_reset_cannot_install_a_harness_behind_track_deletion() {
     );
 }
 
-/// Registry membership is the teardown source of truth. A failed DB status
-/// does not prove the in-memory run loop exited.
+/// A failed DB status does not prove the in-memory run loop exited.
 #[tokio::test]
 async fn deletion_shuts_down_a_live_harness_even_when_its_session_is_failed() {
     let b = boot().await;
@@ -1096,9 +946,6 @@ async fn deletion_shuts_down_a_live_harness_even_when_its_session_is_failed() {
     assert!(b.harness.get(&worker_session_id).is_none());
 }
 
-/// A turn/start RPC can be accepted before its id is returned. Deletion seals
-/// the thread and waits for issuance, so the late id is interrupted before the
-/// workspace or owning row disappears.
 #[tokio::test]
 async fn deletion_interrupts_a_turn_whose_start_response_arrives_late() {
     let b = boot().await;
@@ -1166,9 +1013,6 @@ async fn deletion_interrupts_a_turn_whose_start_response_arrives_late() {
     assert!(b.harness.get(&worker_session_id).is_none());
 }
 
-/// A failed interrupt must keep the late turn id available for retry and roll
-/// back every pre-recycle seal. The DELETE fails closed with the row and owned
-/// workspace intact instead of moving a directory under a live writer.
 #[tokio::test]
 async fn failed_late_turn_interrupt_aborts_delete_and_releases_pre_recycle_seals() {
     let b = boot().await;
@@ -1232,9 +1076,6 @@ async fn failed_late_turn_interrupt_aborts_delete_and_releases_pre_recycle_seals
     );
 }
 
-/// Area deletion uses the same operation fence as a track saga. It cannot
-/// erase ownership rows while a failed track transaction is deciding whether
-/// to restore its recycled workspace.
 #[tokio::test]
 async fn area_delete_waits_for_track_delete_compensation_to_finish() {
     let b = boot().await;
@@ -1315,8 +1156,6 @@ async fn area_delete_waits_for_track_delete_compensation_to_finish() {
     );
 }
 
-/// Once an area has moved any workspace, request cancellation cannot drop the
-/// only owner of the remaining commit/rollback decisions.
 #[tokio::test]
 async fn canceling_the_request_after_area_recycle_still_finishes_the_owned_saga() {
     let b = boot().await;
@@ -1370,9 +1209,6 @@ async fn canceling_the_request_after_area_recycle_still_finishes_the_owned_saga(
     assert_eq!(b.tracks.area_of(&track_id), None);
 }
 
-/// The area guard covers the complete direct-create unit: row, workspace and
-/// planner start. A creator arriving after deletion's snapshot must wait and
-/// then observe that the area is gone.
 #[tokio::test]
 async fn first_message_track_create_cannot_commit_behind_an_area_deletion_snapshot() {
     let b = boot().await;
@@ -1520,9 +1356,7 @@ async fn failed_area_workspace_restore_keeps_the_surviving_thread_sealed() {
         0,
         "unsafe sealed runtime must not be recovered"
     );
-    // Process restart loses the in-memory seal. The managed ownership marker
-    // is the durable quarantine: the occupied original path must still make the
-    // common boot/lazy recovery boundary abstain.
+    // Process restart loses the in-memory seal; the managed ownership marker is the durable quarantine.
     let runtime = b
         .repo
         .session_projection_by_id(&worker_session_id)
@@ -1577,10 +1411,7 @@ async fn panicking_area_commit_restores_every_owned_workspace() {
     );
 }
 
-/// Drive the production child-track creation path. Copied in shape from
-/// `today_launchpad.rs`: the parent task row is seeded directly because the
-/// adapter only reads frozen task fields from it, while every decision about
-/// the child's workspace runs in production code.
+/// Drive the production child-track creation path; the parent task row is seeded directly because the adapter only reads frozen fields from it.
 async fn support_child_track(b: &Boot, parent_track_id: &str) -> String {
     use calm_server::operation::child_track_adapter::{
         ChildTrackAdapter, ChildTrackOperationPayload,
@@ -1647,13 +1478,6 @@ async fn support_child_track(b: &Boot, parent_track_id: &str) -> String {
     output.data["child_track_id"].as_str().unwrap().to_string()
 }
 
-// ---------------------------------------------------------------------------
-// Area deletion
-// ---------------------------------------------------------------------------
-
-/// Before this slice, `DELETE /api/areas/{id}` left every managed repository
-/// under the area on disk with no row pointing at it. Now the managed ones are
-/// recycled and the attached one is not touched at all.
 #[tokio::test]
 async fn deleting_a_area_recycles_its_managed_workspaces_and_spares_attached_ones() {
     let b = boot().await;
@@ -1680,8 +1504,6 @@ async fn deleting_a_area_recycles_its_managed_workspaces_and_spares_attached_one
         changes.is_empty(),
         "the user's repository changed: {changes:?}"
     );
-    // The `<root>/<area_id>/` layer goes too — that is the orphan tree this
-    // route used to leave behind.
     assert!(
         !b.workspace_root.join(&area_id).exists(),
         "the area directory survived: {:?}",
@@ -1690,10 +1512,7 @@ async fn deleting_a_area_recycles_its_managed_workspaces_and_spares_attached_one
     );
 }
 
-/// An area holding one recyclable and one un-provable workspace: the provable
-/// one goes, the other stays, and so does the area directory that contains it.
-/// `remove_dir` is non-recursive precisely so this cannot come out any other
-/// way.
+/// `remove_dir` is non-recursive, so the area directory holding the un-provable workspace must survive.
 #[tokio::test]
 async fn a_area_directory_with_an_unrecyclable_track_survives() {
     let b = boot().await;
@@ -1712,13 +1531,6 @@ async fn a_area_directory_with_an_unrecyclable_track_survives() {
     assert!(b.workspace_root.join(&area_id).is_dir());
 }
 
-// ---------------------------------------------------------------------------
-// Trash GC, through the routes
-// ---------------------------------------------------------------------------
-
-/// The retention policy is time-based and swept on each recycle. Proven end to
-/// end: an entry stamped beyond the window is gone after the next delete, an
-/// entry inside the window survives it.
 #[tokio::test]
 async fn the_trash_gc_expires_old_entries_on_the_next_delete() {
     let b = boot().await;
@@ -1749,20 +1561,7 @@ async fn the_trash_gc_expires_old_entries_on_the_next_delete() {
     assert!(trash_entry_for(&b.workspace_root, &second_id).is_some());
 }
 
-/// `DELETE /api/tracks/{id}` must take the track's live planner harness out of the
-/// registry before it moves the directory.
-///
-/// Same shape, same latent gap as the re-point path, and the gap is an absent
-/// **assertion** rather than absent execution — a probe showed the loop runs in
-/// tests that install nothing, because creating a track registers a live
-/// planner-harness runtime by itself. Nothing checked the slot afterwards, so
-/// deleting `teardown_track_deletion`'s `harness.get` → `shutdown` → `remove`
-/// turned nothing red. A surviving harness is a live run loop whose process cwd
-/// follows the inode — it keeps writing into the directory after it has been
-/// renamed into `.trash`, until the GC erases the lot.
-///
-/// Running a subset of this suite locally: pass `--no-fail-fast`, or a stop at
-/// the first failure will under-report which tests a mutation actually kills.
+/// A surviving harness is a live run loop whose cwd follows the inode: it keeps writing into the directory after it is renamed into `.trash`.
 #[tokio::test]
 async fn deleting_a_track_takes_its_live_harness_out_of_the_registry() {
     let b = boot().await;

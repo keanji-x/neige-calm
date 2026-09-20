@@ -35,14 +35,12 @@ const SECRET_NAME: &str = "plugin.dev.echo_secret";
 const COLLIDING_PLUGIN_ID: &str = "dev";
 const COLLIDING_TOOL_NAME: &str = "echo.do.thing";
 const COLLIDING_EXPOSED_NAME: &str = "plugin.dev_echo.do.thing";
-// #891 slice ④ fixtures — a trusted plugin owning a template, plus a track
-// bound to that template. NOT the shipped git-forge manifest: the id merely
-// reuses the default trusted id so no env mutation is needed.
+// A trusted plugin owning a template, plus a track bound to that template. NOT the shipped
+// git-forge manifest: the id merely reuses the default trusted id so no env mutation is needed.
 const TEMPLATE_ID: &str = "tool-visibility-flow";
 const TRUSTED_TOOL_NAME: &str = "wf.tool";
-/// Shared-daemon token so the error-shape matrix below can drive a
-/// DaemonTrust connection (the only mode where "missing threadId" is an
-/// identity failure rather than a bound-card fallback).
+/// Shared-daemon token for a DaemonTrust connection, the only mode where "missing threadId" is
+/// an identity failure rather than a bound-card fallback.
 const DAEMON_TOKEN: &str = "mcp-plugin-tools-daemon-token";
 
 struct Fixture {
@@ -53,24 +51,19 @@ struct Fixture {
     socket_path: PathBuf,
     raw_token: String,
     thread_id: String,
-    /// The unbound track `thread_id`'s card lives in — the Track a call made
-    /// with that thread must be attributed to.
+    /// The unbound track `thread_id`'s card lives in.
     track_id: String,
-    /// The template-bound track, used to prove attribution follows the
-    /// caller's identity rather than anything in the request.
+    /// The template-bound track.
     bound_track_id: String,
-    /// Plugin id from `NEIGE_TRUSTED_FORGE_PLUGINS` (default
-    /// `dev.neige.git-forge`) — the running trusted stub that owns
-    /// [`TEMPLATE_ID`].
+    /// Plugin id from `NEIGE_TRUSTED_FORGE_PLUGINS` — the running trusted stub that owns [`TEMPLATE_ID`].
     trusted_plugin_id: String,
     /// `plugin.<trusted_plugin_id>_wf.tool`.
     trusted_exposed_name: String,
     /// Worker card token/thread minted in the template-bound track.
     bound_raw_token: String,
     bound_thread_id: String,
-    /// #1189 — Assistant card token/thread minted in the UNBOUND track, so
-    /// plugin scope allows every running plugin and the only thing left
-    /// between the caller and the plugin is `PLUGIN_TOOL_ROLES`.
+    /// Assistant card token/thread minted in the UNBOUND track, so plugin scope allows every running
+    /// plugin and only `PLUGIN_TOOL_ROLES` stands between the caller and the plugin.
     assistant_raw_token: String,
     assistant_thread_id: String,
     _tmp: TempDir,
@@ -114,9 +107,7 @@ async fn worker_mcp_discovers_and_routes_colliding_dotted_plugin_tools() {
         !names.iter().any(|name| name == SECRET_NAME),
         "undeclared plugin tool leaked into tools/list: {names:?}"
     );
-    // #891 slice ④ regression pin — an UNBOUND track keeps the historical
-    // union of every running plugin's tools, including the trusted
-    // template-owning plugin.
+    // An UNBOUND track keeps the union of every running plugin's tools.
     assert!(
         names.iter().any(|name| name == &fx.trusted_exposed_name),
         "unbound track must see the union incl. the trusted plugin tool: {names:?}"
@@ -224,23 +215,10 @@ async fn worker_mcp_discovers_and_routes_colliding_dotted_plugin_tools() {
         .expect("stop trusted template plugin");
 }
 
-/// #1189 review round 2 (G4) — the assistant's tool verdict must also hold
-/// on the path the registry meta-test cannot see.
-///
-/// `dispatch_tools_call` falls through to the dynamic `plugin.<id>_<tool>`
-/// router when the kernel registry misses, and those names are not in
-/// `build_default_registry().descriptors()` — so the
-/// allow/deny-partition meta-test in `mcp_assistant_tool_gate` is closed
-/// only over the built-in surface. What actually keeps an assistant off
-/// every plugin tool is the single `require_role_any(&identity,
-/// PLUGIN_TOOL_ROLES)` line in `transport.rs`, and adding `Assistant` to
-/// that constant would turn none of the other #1189 tests red.
-///
-/// This is that counterexample: a real running plugin tool, an Assistant
-/// token in the UNBOUND track (so plugin scope allows it and the role gate
-/// is the only thing left), called on the wire by name. The worker control
-/// below proves the tool is genuinely reachable — otherwise the refusal
-/// could be scope or existence wearing a role-shaped message.
+/// Dynamic `plugin.<id>_<tool>` names are not in the kernel registry, so the allow/deny
+/// partition meta-test cannot see them; only `require_role_any(&identity, PLUGIN_TOOL_ROLES)`
+/// in `transport.rs` keeps an assistant off plugin tools. The worker control proves the tool
+/// is genuinely reachable.
 #[tokio::test]
 async fn assistant_token_cannot_call_a_plugin_tool() {
     let fx = boot_fixture().await;
@@ -274,7 +252,7 @@ async fn assistant_token_cannot_call_a_plugin_tool() {
         "the refusal must be the *role* decision, not scope/arguments: {refused:#?}"
     );
 
-    // Control: same tool, same track, a Worker token — routes and answers.
+    // Control: same tool, same track, a Worker token.
     let (mut worker_rd, mut worker_wr) = connect(&fx.socket_path).await;
     handshake(&mut worker_rd, &mut worker_wr, &fx.raw_token).await;
     send_frame(
@@ -305,9 +283,7 @@ async fn assistant_token_cannot_call_a_plugin_tool() {
         .expect("stop trusted template plugin");
 }
 
-/// #891 slice ④ — a track bound to a template sees ONLY the owning plugin's
-/// tools (plus kernel `calm.*`) on discovery, and dispatch to another
-/// plugin's tool is refused with the same `-32601` an unknown tool gets.
+/// Dispatch to another plugin's tool is refused with the same `-32601` an unknown tool gets.
 #[tokio::test]
 async fn bound_track_scopes_plugin_tools_to_template_owner() {
     let fx = boot_fixture().await;
@@ -336,8 +312,7 @@ async fn bound_track_scopes_plugin_tools_to_template_owner() {
         "other plugin's tool leaked into bound track tools/list: {names:?}"
     );
 
-    // Discovery without a threadId on the card-bound connection resolves the
-    // same track through the bound card — same filtered result.
+    // Without a threadId the card-bound connection resolves the same track through the bound card.
     send_frame(
         &mut wr,
         json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {} }),
@@ -362,8 +337,7 @@ async fn bound_track_scopes_plugin_tools_to_template_owner() {
         "other plugin's tool leaked into no-thread tools/list: {names_no_thread:?}"
     );
 
-    // Dispatch to another running plugin's tool: method_not_found, same code
-    // as an unknown tool (no existence probe for out-of-scope tools).
+    // method_not_found, same code as an unknown tool (no existence probe for out-of-scope tools).
     send_frame(
         &mut wr,
         tools_call_frame(
@@ -405,8 +379,8 @@ async fn bound_track_scopes_plugin_tools_to_template_owner() {
         })
     );
 
-    // Fail-closed: stop the owning plugin — the bound track loses ALL plugin
-    // tools (other running plugins are not widened back in); calm.* stays.
+    // Fail-closed: stopping the owning plugin loses ALL plugin tools (other running plugins are not
+    // widened back in); calm.* stays.
     fx.plugin_host
         .stop(&fx.trusted_plugin_id)
         .await
@@ -453,14 +427,9 @@ async fn bound_track_scopes_plugin_tools_to_template_owner() {
         .expect("stop prefix-colliding plugin");
 }
 
-/// #891 review fix — the wire error object must not act as an existence
-/// oracle for plugin tools. Matrix: {existing-but-out-of-scope tool, unknown
-/// tool under a running plugin's prefix, fully-unknown bare name} ×
-/// {valid threadId, missing threadId, unknown threadId} on a DaemonTrust
-/// connection. Within each identity column the COMPLETE error object must be
-/// identical across all three names (modulo the caller's own requested name
-/// in the valid column), because identity now resolves BEFORE route lookup
-/// and unknown-route/scope-reject share one `-32601` construction.
+/// The wire error object must not act as an existence oracle: within each identity column the
+/// COMPLETE error object must be identical across all three names, because identity resolves
+/// BEFORE route lookup and unknown-route/scope-reject share one `-32601` construction.
 #[tokio::test]
 async fn plugin_tool_error_objects_are_uniform_across_tool_existence() {
     let fx = boot_fixture().await;
@@ -469,14 +438,10 @@ async fn plugin_tool_error_objects_are_uniform_across_tool_existence() {
 
     let unknown_plugin_tool = "plugin.dev.echo_no.such.tool";
     let unknown_bare_tool = "no.such.tool";
-    // EXPOSED_NAME exists and is callable by an unbound track, but the bound
-    // track's scope is Only(trusted owner) — so for the bound thread it is
-    // the "exists but cross-plugin / out of scope" probe.
+    // EXPOSED_NAME exists but is out of the bound track's scope.
     let names = [EXPOSED_NAME, unknown_plugin_tool, unknown_bare_tool];
 
-    // Column 1 — valid threadId (template-bound track): every rejection is
-    // the one shared -32601 construction; the only difference is the
-    // caller's own requested name echoed back.
+    // Column 1 — valid threadId: only the caller's own requested name differs.
     for (idx, name) in names.iter().enumerate() {
         let err = call_expect_error(
             &mut rd,
@@ -496,9 +461,7 @@ async fn plugin_tool_error_objects_are_uniform_across_tool_existence() {
         );
     }
 
-    // Column 2 — missing threadId on DaemonTrust: identity fails BEFORE any
-    // route knowledge, so the error object is byte-identical whether or not
-    // the tool exists.
+    // Column 2 — missing threadId on DaemonTrust: identity fails BEFORE any route knowledge.
     let mut missing_thread_errors = Vec::new();
     for (idx, name) in names.iter().enumerate() {
         missing_thread_errors
@@ -522,8 +485,7 @@ async fn plugin_tool_error_objects_are_uniform_across_tool_existence() {
         "missing-threadId message names the identity requirement: {missing_thread_errors:#?}"
     );
 
-    // Column 3 — unknown threadId: same uniformity; the error names the
-    // unresolved thread, never the (maybe-existing) tool.
+    // Column 3 — unknown threadId: the error names the unresolved thread, never the tool.
     let mut unknown_thread_errors = Vec::new();
     for (idx, name) in names.iter().enumerate() {
         unknown_thread_errors.push(
@@ -572,25 +534,14 @@ async fn plugin_tool_error_objects_are_uniform_across_tool_existence() {
 
 /// `tools/call` that must fail: returns the complete `error` object.
 /// `thread_id: None` sends an empty `_meta` (no threadId key).
-/// A plugin must be told which Track a `tools/call` came from — and must be
-/// told it by the KERNEL.
-///
-/// A plugin that keeps per-Track state (holdings, a watch list, anything the
-/// reader thinks of as belonging to this page) has no other trustworthy
-/// source for that: the calling agent can write whatever it likes into
-/// `arguments`, and an agent acting on a poisoned instruction would name
-/// someone else's Track. Same reasoning as `callbacks::dispatch` injecting
-/// `plugin_id` instead of reading it from params.
+/// A plugin must be told which Track a call came from by the KERNEL: `arguments` is agent-written.
 #[tokio::test]
 async fn a_plugin_tool_call_carries_the_callers_track_injected_by_the_kernel() {
     let fx = boot_fixture().await;
     let (mut rd, mut wr) = connect(&fx.socket_path).await;
     handshake(&mut rd, &mut wr, &fx.raw_token).await;
 
-    // The caller tries to name a DIFFERENT track in its own arguments. It is
-    // a real track id, so nothing downstream can reject it as malformed —
-    // the only thing standing between it and the plugin is that the kernel
-    // does not read it.
+    // The caller names a DIFFERENT, real track id in its own arguments.
     send_frame(
         &mut wr,
         tools_call_frame(
@@ -615,8 +566,7 @@ async fn a_plugin_tool_call_carries_the_callers_track_injected_by_the_kernel() {
         fx.track_id, fx.bound_track_id,
         "the fixture's two tracks must differ or this test proves nothing"
     );
-    // The forged value is still visible where the caller put it — the kernel
-    // does not sanitize `arguments`, it just never sources identity from it.
+    // The kernel does not sanitize `arguments`, it just never sources identity from it.
     assert_eq!(seen["arguments"]["track_id"], fx.bound_track_id);
     assert_eq!(
         seen["meta"]["dev.neige/track"]["id"], fx.track_id,
@@ -624,8 +574,7 @@ async fn a_plugin_tool_call_carries_the_callers_track_injected_by_the_kernel() {
     );
 }
 
-/// The same call made from the OTHER track carries that track instead —
-/// otherwise the assertion above would pass against a hard-coded value.
+/// Otherwise the assertion above would pass against a hard-coded value.
 #[tokio::test]
 async fn the_injected_track_follows_the_caller_not_the_tool() {
     let fx = boot_fixture().await;
@@ -700,12 +649,8 @@ fn tool_names_from_response(resp: &Value) -> Vec<String> {
     names
 }
 
-/// #868: the unix socket below must fit sockaddr_un's 108-byte cap, so the
-/// tempdir goes under a short base, never the repo cwd — deep
-/// checkouts/worktrees overflow the cap. `env::temp_dir()` honors `TMPDIR`,
-/// which can itself be deep, so fall back to literal `/tmp` when the ambient
-/// base is long (same guard as `forge_merge_crash_reboot::socket_safe_tempdir`
-/// and `support::codex_fixture::short_tempdir`, which is codex-e2e-gated).
+/// The unix socket must fit sockaddr_un's 108-byte cap; `env::temp_dir()` honors `TMPDIR`,
+/// which can be deep, so fall back to literal `/tmp` when the ambient base is long.
 fn socket_safe_tempdir() -> std::io::Result<TempDir> {
     let ambient = std::env::temp_dir();
     let base = if ambient.as_os_str().len() <= 40 {
@@ -755,8 +700,7 @@ async fn boot_fixture() -> Fixture {
         })
         .await
         .expect("create track");
-    // #891 slice ④ / #1110 S4 — a second track scoped to the trusted plugin.
-    // Direct repo create (route validation is out of scope here).
+    // A second track scoped to the trusted plugin. Direct repo create (route validation is out of scope).
     let bound_track = repo
         .track_create(NewTrack {
             template_input: None,
@@ -861,9 +805,8 @@ async fn boot_fixture() -> Fixture {
     }
 }
 
-/// First id from `NEIGE_TRUSTED_FORGE_PLUGINS`, defaulting to
-/// `dev.neige.git-forge` — mirrors `forge_trust::trusted_forge_plugin` so
-/// the fixture's trusted stub is trusted without mutating process env.
+/// First id from `NEIGE_TRUSTED_FORGE_PLUGINS`, defaulting to `dev.neige.git-forge`, so the
+/// fixture's trusted stub is trusted without mutating process env.
 fn configured_trusted_plugin_id() -> String {
     std::env::var("NEIGE_TRUSTED_FORGE_PLUGINS")
         .ok()
@@ -967,7 +910,7 @@ async fn boot_plugin_host(
         "permissions": {}
     });
     let manifest: Manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest parses");
-    // #1196 S0a — build-time seeding: three manifests, one consuming builder.
+    // Build-time seeding: three manifests, one consuming builder.
     let registry_builder = PluginRegistry::builder().with(manifest, Some(install_dir.clone()));
     let colliding_manifest_json = json!({
         "manifest_version": 1,
@@ -992,8 +935,7 @@ async fn boot_plugin_host(
     let registry_builder =
         registry_builder.with(colliding_manifest, Some(colliding_install_dir.clone()));
 
-    // #891 slice ④ — trusted stub plugin owning TEMPLATE_ID and exposing one
-    // tool, so bound-track scoping has an "owning plugin" to resolve.
+    // Trusted stub plugin owning TEMPLATE_ID and exposing one tool.
     let trusted_install_dir = plugins_dir.join(trusted_plugin_id);
     let trusted_bin_dir = trusted_install_dir.join("bin");
     std::fs::create_dir_all(&trusted_bin_dir).expect("create trusted plugin bin dir");

@@ -1,30 +1,5 @@
-//! `/internal/codex/hook` — receive codex CLI hook events from the bridge
-//! subprocess and re-emit them on the WS event bus.
-//!
-//! ## Why a loopback ingest
-//!
-//! Codex CLI invokes a configured "bridge" command on every lifecycle hook
-//! (SessionStart / PreToolUse / PostToolUse / Stop / …) via the policy-
-//! managed hook entries in `/etc/codex/requirements.toml` (bind-mounted
-//! via docker-compose; see `docker/codex-requirements.toml`). The bridge
-//! — `neige-codex-bridge` — POSTs the raw hook payload here; we extract
-//! `hook_event_name`, tag it `hook.codex.<snake_case_name>`, and emit
-//! `Event::CodexHook` on the bus.
-//!
-//! The handler is mounted under `/internal/*` rather than `/api/*` because
-//! the frontend never calls it directly — it's an internal contract between
-//! the codex CLI (via the bridge) and the kernel. The codex daemon is spawned
-//! with `NEIGE_CALM_BASE_URL` pointing at the server loopback, so the bridge
-//! resolves the URL from env at hook time.
-//!
-//! ## Card creation moved to `routes/codex_cards.rs`
-//!
-//! The old `POST /api/cards/:id/codex` endpoint that bound an existing card
-//! to a live codex PTY is gone (#117). The atomic
-//! `POST /api/tracks/:track_id/codex-cards` replaces it — see
-//! `routes::codex_cards`. The card-creation helpers (`host_codex_dir`,
-//! `copy_dir_recursive`, `default_cwd`) moved along with the endpoint.
-//! This file keeps only the loopback ingest.
+//! `/internal/codex/hook` — receive codex CLI hook events from the `neige-codex-bridge` subprocess and re-emit them on the WS event bus as `hook.codex.<snake_case_name>`.
+//! Mounted under `/internal/*` because the frontend never calls it; the bridge resolves the URL from `NEIGE_CALM_BASE_URL`.
 
 use crate::actor::Actor;
 use crate::error::{CalmError, Result};
@@ -48,13 +23,7 @@ use sha2::{Digest, Sha256};
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        // Loopback-only ingest. The bridge subprocess is spawned by codex
-        // itself with env vars pointing here. Not exposed under `/api/*`
-        // because the frontend never calls it directly.
-        //
-        // #293 cutover removed `/internal/codex/pending_events` — the old
-        // Stop-hook long-poll fallback. Planner agents are now driven by pushed
-        // turn inputs, so there's no pull endpoint to back.
+        // Loopback-only ingest; the bridge subprocess is spawned by codex itself with env vars pointing here.
         .route("/internal/codex/hook", post(ingest_hook))
 }
 
@@ -122,30 +91,8 @@ impl HookProvider {
     }
 }
 
-/// Loopback-only ingest. The bridge subprocess POSTs the raw codex hook
-/// payload here; we extract `hook_event_name`, tag it, and emit on the
-/// bus.
-///
-/// Scope A — codex hook events flow through the sync engine's pure-event
-/// log (`Repo::log_pure_event`) so the wire envelope carries an `_id`
-/// the same way entity-write events do. The events row records every
-/// hook payload verbatim; that's intentional — codex card UIs are
-/// append-only ephemeral on the frontend, but the persistent event log
-/// is the audit/replay store the design doc §2.3 calls out.
-///
-/// Scope β — the actor is now declarative: the codex bridge stamps
-/// `X-Calm-Actor: ai:codex` on every POST and the `actor_middleware`
-/// validates + injects an `Actor`. Pre-β this handler hardcoded `"kernel"`,
-/// which was wrong on two counts: codex's lifecycle signal is an *AI*
-/// write, not a server-internal one, and the audit log conflated the two.
-///
-/// Default-actor decision: we deliberately keep the middleware's `"user"`
-/// fallback for this route. An older bridge with no header is the only
-/// way to hit it, and tagging those hooks as `"user"` is honest — we
-/// don't actually know it was codex. The fix is to redeploy the bridge,
-/// not to silently re-attribute. (Overriding the default here would also
-/// require the middleware to admit `kernel`/`ai:codex` from this path,
-/// which conflicts with its "reserved namespace" gate.)
+/// Loopback-only ingest: extract `hook_event_name`, tag it, and emit on the bus through `Repo::log_pure_event`, so every hook payload is recorded verbatim in the audit/replay store.
+/// The middleware's `"user"` fallback is deliberately kept: an older bridge with no header is the only way to hit it, and re-attributing silently would be dishonest.
 pub(crate) async fn ingest_hook(
     State(s): State<RouteState>,
     _actor: Actor,
@@ -186,28 +133,8 @@ pub(crate) async fn ingest_provider_hook(
     let kind = format!("{}.{}", provider.kind_prefix(), to_snake_case(event_name));
     let hook_idempotency_key = hook_idempotency_key(provider, &card_id_str, &payload);
 
-    // #1620 — a hook for a Planner-opened terminal is advisory telemetry for
-    // the Planner (`wait_for=signal`), never worker state: it is appended to
-    // the live renderer entry's ring and acknowledged here, BEFORE the worker
-    // dedupe cache and the persist / FSM projection path below, so it can
-    // never move a card FSM and never occupies a slot of the bounded worker
-    // cache (a flood of terminal hooks, malformed ones included, must not
-    // evict a worker key). The ring dedupes on the same key, per terminal.
-    //
-    // Routing, in order:
-    //   1. the card payload carries `TERMINAL_SIGNALS_PAYLOAD_KEY` — stamped
-    //      at creation only by `calm.terminal.open` (`planner_hooks`). This
-    //      is the provenance the decision rests on: it survives a `kind`
-    //      PATCH (which removes neither the process nor the generated hook
-    //      settings) and the terminal row's deletion by the sweeper.
-    //   2. else `kind == "terminal"` — a human-created Terminal card; it
-    //      registers no hooks, so this branch only keeps a stray hook out of
-    //      worker state.
-    //   3. else the worker path below, exactly as before #1620.
-    // Owning a terminal row is NOT the discriminator: Codex and Claude
-    // Worker cards own one too (`card_with_codex_create_tx`,
-    // `card_with_claude_create_tx`), and their hooks must be persisted and
-    // projected.
+    // A hook for a Planner-opened terminal is advisory telemetry, never worker state: it is appended to the live renderer entry's ring and acknowledged BEFORE the worker dedupe cache and the persist / FSM path, so it can never move a card FSM or evict a worker key.
+    // The discriminator is the creation-time `TERMINAL_SIGNALS_PAYLOAD_KEY` in the card payload (survives a `kind` PATCH and the terminal row's deletion), then `kind == "terminal"`; owning a terminal row is NOT it, since Worker cards own one too.
     let card = s.repo.card_get(&card_id_str).await?;
     if card.as_ref().is_some_and(is_planner_terminal_card)
         || card.as_ref().is_some_and(|card| card.kind == "terminal")
@@ -242,20 +169,7 @@ pub(crate) async fn ingest_provider_hook(
 
     let resolved_session = cross_check_session_card(s, &card_id_str, &payload, provider).await?;
 
-    // PR3 (#136) — reattribute the hook to the codex card that produced
-    // it. PR2's stopgap stamped `ActorId::Kernel` because there was no
-    // typed card id at the ingest boundary; PR3 now resolves the card
-    // through the `card_id` query parameter and stamps
-    // `ActorId::AiCodex(CardId)`. The role gate's empty-CardId guard
-    // catches the case where `card_id` is empty / unresolvable, and
-    // the unknown-card guard catches a card that was deleted between
-    // hook fire and ingest.
-    //
-    // Scope: same as before — try to resolve `card → track → area`;
-    // fall back to `EventScope::System` when the card has been
-    // deleted. The gate's unknown-card branch then refuses the write,
-    // which is what we want: a hook for a deleted card is an audit
-    // smell.
+    // Stamp `ActorId::AiCodex(CardId)`; the role gate's empty-CardId guard catches an unresolvable `card_id`. Fall back to `EventScope::System` when the card has been deleted, and the gate then refuses the write — a hook for a deleted card is an audit smell.
     let scope = match card {
         Some(c) => match s.repo.track_get(c.track_id.as_str()).await? {
             Some(w) => EventScope::Card {
@@ -289,10 +203,7 @@ pub(crate) async fn ingest_provider_hook(
     Ok(())
 }
 
-/// #1620 — whether `card` was opened by the Planner with hook signals: the
-/// creation-time marker `TERMINAL_SIGNALS_PAYLOAD_KEY == true` in its
-/// payload (see `crate::validation`). Read from the card, never from the
-/// terminal row or the patchable `kind`.
+/// Whether `card` was opened by the Planner with hook signals: the creation-time `TERMINAL_SIGNALS_PAYLOAD_KEY == true` marker. Read from the card, never from the terminal row or the patchable `kind`.
 pub fn is_planner_terminal_card(card: &crate::model::Card) -> bool {
     card.payload
         .get(crate::validation::TERMINAL_SIGNALS_PAYLOAD_KEY)
@@ -300,12 +211,7 @@ pub fn is_planner_terminal_card(card: &crate::model::Card) -> bool {
         == Some(true)
 }
 
-/// #1620 — Terminal-card branch of [`ingest_provider_hook`]: parse, bound and
-/// append the signal to the CURRENT renderer entry. Malformed or unknown
-/// payloads are logged and acknowledged (the hook must never fail Claude); a
-/// duplicate delivery never appends twice (the ring is idempotent on the key,
-/// which covers the bridge's per-invocation `neige_hook_occurrence`). The
-/// worker `hook_ingest_cache` is never read or written here.
+/// Terminal-card branch of [`ingest_provider_hook`]: parse, bound and append the signal to the CURRENT renderer entry. Malformed payloads are logged and acknowledged (the hook must never fail Claude); the ring is idempotent on the key. The worker `hook_ingest_cache` is never touched.
 async fn ingest_terminal_signal(
     s: &RouteState,
     card_id: &str,
@@ -433,9 +339,7 @@ fn sha256_bytes(bytes: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
-/// Convert codex's `PascalCase` event names (`PreToolUse`) to snake.
-/// Keeps the same shape as Claude hook discriminators on the wire, so
-/// the frontend's pattern matching stays consistent across providers.
+/// Convert codex's `PascalCase` event names (`PreToolUse`) to snake, matching the Claude hook discriminators on the wire.
 pub(crate) fn to_snake_case(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 4);
     for (i, c) in s.chars().enumerate() {

@@ -1,14 +1,4 @@
-//! Child-process supervision for a single plugin.
-//!
-//! Each `PluginProcess` owns one running child plus its stderr capture task.
-//! The supervisor task lives in `mod.rs` — this file only deals with
-//! spawn / stop / stderr-tail; restart-backoff and crash-loop disabling are
-//! the host's concern, not the process's.
-//!
-//! Design references:
-//!   * §2.4 (shutdown ladder: notify → SIGTERM(grace) → SIGKILL)
-//!   * §2.1 (install_path vs data_dir split — we cwd into data_dir)
-//!   * §6   (NEIGE_PLUGIN_TOKEN / NEIGE_PLUGIN_ID env injection)
+//! Child-process supervision for a single plugin: spawn / stop / stderr-tail. Restart-backoff is the host's concern.
 
 use std::collections::VecDeque;
 use std::path::Path;
@@ -23,28 +13,17 @@ use tokio::task::JoinHandle;
 use super::error::ProcessError;
 use super::manifest::Manifest;
 
-/// Stderr ring buffer cap. Design doc §2.4 says "8 KiB" but in practice an
-/// entry-bounded ring (1024 lines, drop oldest) is friendlier — a single
-/// pathological line can't blow past the cap. Each line is also clipped to
-/// 4 KiB before insertion to bound the worst-case memory.
+/// Entry-bounded stderr ring (drop oldest); each line is clipped to 4 KiB before insertion.
 const STDERR_RING_CAP: usize = 1024;
 const STDERR_LINE_CLAMP: usize = 4096;
 
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
-
 pub struct PluginProcess {
-    /// Stable plugin id (matches `Manifest.id`). Cloned into log lines and
-    /// the supervisor's `RunningPlugin` so we can correlate by id everywhere.
     pub id: String,
 
-    /// The actual child. We wrap it in an `Option` + `Mutex` so `stop` can
-    /// take ownership for the wait.
+    /// `Option` + `Mutex` so `stop` can take ownership for the wait.
     child: Mutex<Option<Child>>,
 
-    /// Held only long enough for the MCP client to take over; after that
-    /// `take_stdio` returns these to the caller and the slots go `None`.
+    /// Held only until `take_stdio` hands them to the MCP client.
     stdin: Mutex<Option<ChildStdin>>,
     stdout: Mutex<Option<ChildStdout>>,
 
@@ -57,24 +36,15 @@ pub struct PluginProcess {
 }
 
 impl PluginProcess {
-    /// Spawn the manifest's entrypoint as a child process, wiring stdin/stdout
-    /// for MCP framing and capturing stderr into a bounded ring buffer.
-    ///
-    /// `plugins_data_dir` is the per-plugin mutable-state root from §2.1 —
-    /// we create `<plugins_data_dir>/<id>/` if it doesn't exist and cwd the
-    /// child into it. The install dir (where `entrypoint.command` lives) is
-    /// reached via `install_path`, which `PluginHost` resolves from the
-    /// registry before calling us.
+    /// Spawn the manifest's entrypoint, wiring stdin/stdout for MCP framing and capturing stderr into a bounded ring.
+    /// The child is cwd'd into `<plugins_data_dir>/<id>/`, created if missing.
     pub fn spawn(
         manifest: &Manifest,
         install_path: &Path,
         plugins_data_dir: &Path,
         token: &str,
     ) -> Result<Self, ProcessError> {
-        // #1164 §2.1 — `entrypoint` is optional on the manifest now, but it is
-        // required for `kind: app` (enforced by `Manifest::validate`) and this
-        // function is only reachable from the app spawn arm. Fail loudly
-        // instead of unwrapping so a future non-app caller gets a real error.
+        // `entrypoint` is required for `kind: app` and this is only reachable from the app spawn arm; fail loudly rather than unwrap.
         let entrypoint = manifest.entrypoint.as_ref().ok_or_else(|| {
             ProcessError::Spawn(std::io::Error::other(format!(
                 "plugin `{}` has no `entrypoint` (kind `{}` has no supervised process)",
@@ -88,9 +58,7 @@ impl PluginProcess {
             std::fs::create_dir_all(&plugin_data_dir).map_err(ProcessError::Spawn)?;
         }
 
-        // Resolve the entrypoint binary relative to install_path. Slice A's
-        // manifest validator already rejected absolute paths and `..` escapes,
-        // so a plain `join` is safe here.
+        // The manifest validator already rejected absolute paths and `..` escapes, so a plain `join` is safe.
         let bin = install_path.join(&entrypoint.command);
 
         let mut cmd = Command::new(&bin);
@@ -99,20 +67,16 @@ impl PluginProcess {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            // Inherit PATH + other vars by default (don't `env_clear()`); the
-            // manifest's env entries then layer on top. NEIGE_* are kernel-owned.
+            // Inherit PATH etc. (no `env_clear()`); NEIGE_* are kernel-owned.
             .envs(&entrypoint.env)
             .env("NEIGE_PLUGIN_TOKEN", token)
             .env("NEIGE_PLUGIN_ID", &manifest.id)
-            // Doc §6: we'll also redeliver the token over stdin in Slice H. For
-            // Slice B, the env is sufficient.
             .env(
                 "NEIGE_PLUGIN_DATA_DIR",
                 plugin_data_dir.to_string_lossy().to_string(),
             );
 
-        // kill_on_drop is important: if the host is dropped (panic in tests,
-        // ctrl-c during dev) we'd rather SIGKILL the child than leave orphans.
+        // kill_on_drop: if the host is dropped we'd rather SIGKILL the child than leave orphans.
         cmd.kill_on_drop(true);
 
         let mut child = cmd.spawn().map_err(|e| {
@@ -130,9 +94,7 @@ impl PluginProcess {
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
 
-        // Stderr ring buffer + drainer task. We log every line at debug so
-        // operators running with `RUST_LOG=calm_server=debug` get a live tail
-        // alongside the in-memory snapshot.
+        // Every stderr line is also logged at debug for a live tail.
         let stderr_ring: Arc<Mutex<VecDeque<String>>> =
             Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_RING_CAP)));
         let stderr_task =
@@ -156,26 +118,19 @@ impl PluginProcess {
         })
     }
 
-    /// Take ownership of the stdin/stdout pair so the MCP client can drive
-    /// them. Returns `None` if they were already taken (programming error in
-    /// the supervisor).
+    /// Returns `None` if the pair was already taken.
     pub fn take_stdio(&self) -> Option<(ChildStdin, ChildStdout)> {
         let stdin = self.stdin.lock().unwrap().take()?;
         let stdout = self.stdout.lock().unwrap().take()?;
         Some((stdin, stdout))
     }
 
-    /// PID of the spawned child. Stays `Some` for the lifetime of this
-    /// `PluginProcess`, even after the supervisor task takes the `Child` via
-    /// `take_child` — the OS pid stays meaningful for diagnostics until the
-    /// kernel reaps it, and our drop guard ensures it goes away eventually.
+    /// Stays `Some` even after `take_child`; the pid stays meaningful for diagnostics.
     pub fn pid(&self) -> Option<u32> {
         self.pid
     }
 
-    /// Snapshot the last `n` stderr lines (oldest → newest). Used by Slice D's
-    /// `GET /api/plugins/:id/log` and by the supervisor when emitting a
-    /// `Crashed{last_error}` state event.
+    /// Snapshot the last `n` stderr lines (oldest → newest).
     pub fn stderr_tail(&self, n: usize) -> Vec<String> {
         let ring = self.stderr_ring.lock().unwrap();
         let len = ring.len();
@@ -183,31 +138,21 @@ impl PluginProcess {
         ring.iter().skip(skip).cloned().collect()
     }
 
-    /// Take the underlying `Child` for the supervisor's `wait()` loop. After
-    /// this, `stop` returns `AlreadyDead`.
+    /// After this, `stop` returns `AlreadyDead`.
     pub fn take_child(&self) -> Option<Child> {
         self.child.lock().unwrap().take()
     }
 
-    /// Stop the child gracefully: SIGTERM, wait up to `grace`, then SIGKILL.
-    /// Returns the exit status the kernel saw.
-    ///
-    /// This consumes the internal `Child` handle. Subsequent calls return
-    /// `AlreadyDead`. The supervisor's wait task is expected to be cancelled
-    /// or have already noticed the exit before calling `stop` — but we don't
-    /// enforce that here; the worst case is a second `wait()` returning an
-    /// `Io` error which we surface as `Wait`.
+    /// SIGTERM, wait up to `grace`, then SIGKILL. Consumes the `Child`; later calls return `AlreadyDead`.
     pub async fn stop(&self, grace: Duration) -> Result<ExitStatus, ProcessError> {
         let mut child = match self.child.lock().unwrap().take() {
             Some(c) => c,
             None => return Err(ProcessError::AlreadyDead),
         };
 
-        // 1. Polite SIGTERM. `tokio::process::Child::kill` is SIGKILL on unix
-        //    which skips the grace period — so on unix we shell out to `nix`.
+        // `tokio::process::Child::kill` is SIGKILL on unix, which skips the grace period — so SIGTERM goes through `nix`.
         send_sigterm(&child).ok();
 
-        // 2. Wait for exit, up to `grace`.
         match tokio::time::timeout(grace, child.wait()).await {
             Ok(Ok(status)) => {
                 self.cancel_stderr_task();
@@ -223,7 +168,6 @@ impl PluginProcess {
                 Err(ProcessError::Wait(e))
             }
             Err(_grace_elapsed) => {
-                // 3. SIGKILL fallback. `tokio` Child::kill on unix is SIGKILL.
                 tracing::warn!(
                     plugin_id = %self.id,
                     grace_ms = grace.as_millis() as u64,
@@ -233,8 +177,7 @@ impl PluginProcess {
                     self.cancel_stderr_task();
                     return Err(ProcessError::Wait(e));
                 }
-                // After SIGKILL the kernel must reap within a small bound.
-                // Cap at 2s so we don't hang the host forever on a zombie.
+                // Cap the post-SIGKILL reap so a zombie can't hang the host.
                 match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
                     Ok(Ok(status)) => {
                         self.cancel_stderr_task();
@@ -262,8 +205,7 @@ impl PluginProcess {
 
 impl Drop for PluginProcess {
     fn drop(&mut self) {
-        // Belt-and-braces: tokio's `kill_on_drop` will SIGKILL the child if
-        // we still hold a `Child`, but the stderr task is ours to clean up.
+        // `kill_on_drop` handles the child; the stderr task is ours to clean up.
         if let Ok(mut slot) = self.stderr_task.lock()
             && let Some(t) = slot.take()
         {
@@ -271,10 +213,6 @@ impl Drop for PluginProcess {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Internals
-// ---------------------------------------------------------------------------
 
 fn spawn_stderr_drainer(
     plugin_id: String,
@@ -297,7 +235,6 @@ fn spawn_stderr_drainer(
                     r.push_back(line);
                 }
                 Ok(None) => {
-                    // EOF — child closed its stderr (likely exited).
                     return;
                 }
                 Err(e) => {
@@ -321,8 +258,7 @@ fn send_sigterm(child: &Child) -> Result<(), std::io::Error> {
     Ok(())
 }
 
-// On non-unix targets we don't have SIGTERM; fall back to whatever `kill`
-// does on that platform. Windows: `TerminateProcess`. No grace period there.
+// Non-unix targets have no SIGTERM and no grace period.
 #[cfg(not(unix))]
 fn send_sigterm(_child: &Child) -> Result<(), std::io::Error> {
     Ok(())

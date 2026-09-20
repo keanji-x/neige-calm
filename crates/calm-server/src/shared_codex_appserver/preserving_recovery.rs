@@ -37,11 +37,8 @@ impl SharedCodexAppServer {
             .ok_or_else(|| CalmError::Conflict("card is not a harness conversation".into()))?;
         self.validate_recovery_carrier(runtime, thread_id, &snapshot)
             .await?;
-        // Provider contract: thread/read and thread/resume share Codex's
-        // global exclusive thread queue (protocol/common.rs and
-        // app-server/request_serialization.rs). After a lost resume response,
-        // this read waits for that resume to settle before deciding whether
-        // another cold token mint is needed, including across connections.
+        // thread/read and thread/resume share Codex's global exclusive thread queue, so after a
+        // lost resume response this read waits for that resume to settle, across connections.
         let before = self.read_recovery_thread(thread_id).await?;
         let cold = match before.get("status").and_then(|s| s.get("type")).and_then(Value::as_str) {
             Some("notLoaded") => true,

@@ -1,10 +1,4 @@
-//! `POST /api/tracks/:track_id/claude-cards` — manual Claude worker card
-//! creation.
-//!
-//! This mirrors the codex card endpoint's PTY-backed shape but deliberately
-//! omits all MCP wiring. The spawned process is a resident interactive
-//! `claude` TUI with a generated `--settings <path>` file whose hooks call
-//! the existing `neige-codex-bridge` in Claude provider mode.
+//! `POST /api/tracks/:track_id/claude-cards` — manual Claude worker card creation.
 
 use crate::actor::Actor;
 use crate::error::{CalmError, ErrorBody, Result};
@@ -248,8 +242,7 @@ pub(crate) fn build_claude_settings_json(hook_command: &str) -> String {
     )
 }
 
-/// Hooks-only settings JSON registering exactly `hooks` (#1620 Planner
-/// terminals register a seven-event subset of the worker table).
+/// Hooks-only settings JSON registering exactly `hooks`.
 pub(crate) fn build_claude_settings_json_for(
     hook_command: &str,
     hooks_to_register: impl IntoIterator<Item = crate::card_fsm::ClaudeWorkerHook>,
@@ -312,10 +305,7 @@ mod tests {
             .iter()
             .map(|h| h.event_name.to_string())
             .collect();
-        // Settings must register exactly the worker hook table — every row,
-        // whether it projects a state (`state: Some`) or is event-name
-        // vocabulary only (`state: None`, #1722) — and nothing outside it.
-        // #364: this set drifted before.
+        // Settings must register exactly the worker hook table — every row, nothing else.
         assert_eq!(registered, expected);
         // Matcher presence per hook must match the table flag.
         for h in crate::card_fsm::CLAUDE_WORKER_HOOKS {

@@ -1,14 +1,6 @@
-// The layout shell every route renders inside: the workspace rail plus the
-// matched route's outlet.
-//
-// The shell owns the workspace read *and* the area/track mutations, and hands
-// the rail plain callbacks: `Sidebar` stays presentational, so a test can drive
-// it without a QueryClient. Sign-out is not implemented here — whoever owns the
-// session passes it in.
-//
-// It no longer owns a New track dialog (#1211). Starting a track is a route now
-// (`/area/{id}/new`, owned by `app/router`), and each Area group exposes the
-// route through its own `+`.
+// The layout shell every route renders inside: the workspace rail plus the matched
+// route's outlet. The shell owns the workspace read and the area/track mutations;
+// `Sidebar` stays presentational.
 
 import { Outlet } from '@tanstack/react-router';
 import { createContext, useContext, useEffect, useRef } from 'react';
@@ -110,8 +102,7 @@ export function AppShell({
   const routeFilePath = useRouteFilePath();
   const mobileOverlayRoute = typeof routeCardId === 'string' || typeof routeFilePath === 'string';
   const go = useGo();
-  // The report's panel is a history *destination* (§1.1), so the shell leaves
-  // it the same way the report does — see `clearReportPanel`.
+  // The report's panel is a history destination, so the shell leaves it the same way the report does.
   const { closePanel } = useTrackPanelNavigation();
   const readError = workspace.areasError !== null
     ? `Areas ${workspace.areas.length > 0 ? 'could not be refreshed' : 'are unavailable'}: ${workspace.areasError.message}`
@@ -123,21 +114,11 @@ export function AppShell({
     for (const area of workspace.areas) workspace.retryTracks(area.id);
   };
 
-  /*
-   * The collapsed flag lives here, not inside `Sidebar`, because collapsing is
-   * a *grid* change: the rail may swap its contents for an icon strip, but
-   * unless this element's `grid-template-columns` also changes, the column
-   * stays 200px wide and the button appears to do nothing. That was the bug.
-   *
-   * The choice is tri-state: `null` follows the viewport, while either boolean
-   * is an explicit user choice and wins at every width. Thus the narrow-screen
-   * Expand control changes the UI immediately and widening never inherits a
-   * click that appeared to do nothing.
-   */
+  /* The collapsed flag lives here because collapsing is a grid change on this
+   * element. Tri-state: `null` follows the viewport, either boolean is an explicit
+   * choice and wins at every width. */
   const preferences = useUiPreferences();
   const manualRailCollapsed = preferences.railCollapsed();
-  // The third copy of the compact-viewport subscription used to be inlined
-  // right here, under a different name (#1191 §3.2).
   const narrowRail = useCompactViewport();
   const [mobileSection, setMobileSection] = useState<MobileSection | null>(null);
   const mobileNavOpen = mobileSection !== null;
@@ -206,30 +187,16 @@ export function AppShell({
   const areaIdOf = (trackId: string): string | undefined =>
     workspace.tracks.find((track) => track.id === trackId)?.areaId;
 
-  /* #1211 — a navigation, and nothing else. It also closes any open mobile
-     sheet, for the same reason every other rail navigation does: the sheet is
-     an overlay on the surface being left. */
+  /* A navigation, and nothing else; it closes any open mobile sheet, which is an
+       overlay on the surface being left. */
   const requestNewTrack = (areaId: string) => {
     closeMobileSection();
     go({ name: 'new-track', areaId });
   };
 
-  /*
-   * Leaving the report layer drops `?panel=` (#1191 §2.1), and it is
-   * `closePanel()` — the same marker double-branch the report's own Back uses
-   * (§1.1) — not a bare `replace`.
-   *
-   * An unconditional `replace` was the §0.3 defect on this second exit: opening
-   * a panel is a `push`, `replace` does not merge with the entry before it, so
-   * every "open a panel, then press Back to Pages" cycle left one more
-   * identical `/track/w1` on the stack and cost the reader one more hardware
-   * Back to escape the report. The exit is genuinely reachable with a panel
-   * open — the report's Back button lives in `<main>`, which is only `inert`
-   * while a sheet is showing — and
-   * `mobile-report-navigation.test.tsx` drives the three-cycle gesture.
-   *
-   * Only track routes have a report panel to close.
-   */
+  /* Leaving the report layer drops `?panel=` through `closePanel()`, not a bare
+   * `replace`: opening a panel is a `push`, and `replace` does not merge with the
+   * entry before it. Only track routes have a report panel to close. */
   const clearReportPanel = () => {
     if (routeTrackId !== undefined) closePanel(routeTrackId);
   };
@@ -361,8 +328,7 @@ export function AppShell({
                 onRetryRead={retryRead}
                 onOpenTrack={(trackId) => {
                   closeMobileSection();
-                  // The sheets are the only writers of `?from=` (#1191 §1.3):
-                  // this is the surface the reader will be returned to.
+                  // The sheets are the only writers of `?from=`: the surface the reader returns to.
                   go({ name: 'track', trackId, from: 'pages' });
                 }}
               />
@@ -382,9 +348,8 @@ export function AppShell({
                 areaId={navigationArea?.id}
                 onCreateArea={requestCreateArea}
                 onEditArea={requestEditArea}
-                /* The rail's receipt, key for key (`sidebar.tsx`): opening a
-                   track on the phone clears the phone list's dot, and the
-                   rail's, and vice versa (#1722 §5.2). */
+                /* The rail's receipt, key for key: opening a track on the phone clears the
+                                   rail's dot too, and vice versa. */
                 isUnread={(track) => preferences.isUnread('track', track.id, track.activityAt ?? 0)}
                 onOpenTrack={(trackId) => {
                   closeMobileSection();
@@ -393,9 +358,6 @@ export function AppShell({
               />
             ) : null
           ) : <Sidebar
-            /* `narrowRail === false` is the branch this element is in, so the
-               two `narrowRail` tests that used to guard these were constants —
-               one always false, one never reached (#1191 §2.3). */
             collapsed={railCollapsed}
             onToggleCollapsed={() => preferences.setRailCollapsed(!railCollapsed)}
             areas={workspace.areas}

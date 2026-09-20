@@ -1,13 +1,5 @@
-//! Self-cleaning keyed async lock map.
-//!
-//! Lifted from the private `PerCardMintLocks` machinery in
-//! `operation::planner_harness_start_adapter` (issue #649 i2) so the
-//! `/planner/input` lazy-recovery path can serialize per-card work without
-//! reaching into the adapter's internals. Guards self-clean their map entry
-//! on drop, so an idle card costs nothing.
-//!
-//! Transient stale entries are possible if a waiter is canceled between
-//! strong_count snapshots; same-card locks will reuse a stale entry safely.
+//! Self-cleaning keyed async lock map; guards drop their map entry on release.
+//! Transient stale entries are possible if a waiter is canceled between strong_count snapshots; same-card locks reuse a stale entry safely.
 
 use std::sync::Arc;
 

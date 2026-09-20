@@ -1,30 +1,6 @@
-//! #1016 — `track_detail` must carry `cards.sort` back **bit-exactly**.
-//!
-//! `track_detail` is one statement that ships `cards` as a `json_group_array`
-//! blob. `cards.sort` is a REAL column and `f64` in the model, so it crosses
-//! a decimal-text boundary that the previous three-SELECT shape did not have.
-//!
-//! The hazard, in the bundled sqlite (libsqlite3-sys 0.30.1 → SQLite 3.46.0):
-//! `jsonAppendSqlValue` renders a FLOAT argument with `%!0.15g` and — unlike
-//! `sqlite3QuoteValue`, which reparses its output and falls back to
-//! `%!0.20e` when the round-trip fails — has no fallback. binary64 needs 17
-//! significant digits to round-trip, so `json_object('s', x)` silently
-//! rounds: `1.0000000000000002` comes back as `1.0`.
-//!
-//! Nothing errors when that happens. `serde_json` deserializes the rounded
-//! decimal happily, `cards.sort_by(total_cmp)` then orders two neighbouring
-//! sorts wrong, and the web client persists what it read — `TrackList.tsx`
-//! writes the displayed `sort` back through `PATCH /api/cards/:id` on
-//! reorder, turning a display-only rounding into an unlogged rewrite of
-//! stored data (and possibly a collision with another card's sort).
-//!
-//! The fix renders `sort` via `printf('%!.17g', …)` and splices it in as a
-//! JSON number with `json()`. These tests are the pin. They are RED against
-//! a plain `'sort', c.sort`.
-//!
-//! Assertions compare `f64::to_bits`, not `==`: `==` on floats would still
-//! be the right verdict here, but bit comparison states the intent (and
-//! keeps `-0.0` honest).
+//! `track_detail` must carry `cards.sort` back **bit-exactly**: sqlite's
+//! `json_object` renders a FLOAT with only 15 significant digits and binary64
+//! needs 17, so the read renders via `printf('%!.17g', …)`.
 
 use super::{SqlxRepo, area_create_tx, card_create_tx, track_create_tx};
 use crate::card_role_cache::CardRoleCache;
@@ -32,15 +8,8 @@ use crate::db::RepoRead;
 use crate::model::{NewArea, NewCard, NewTrack, RequestTheme};
 use serde_json::json;
 
-/// f64 values that cannot survive 15-significant-digit rendering.
-///
-/// Every entry is chosen so that a 15-significant-digit render (`{:.14e}`)
-/// collapses it onto a DIFFERENT f64 — i.e. each one is a live
-/// counterexample, not decoration; the test re-derives that property before
-/// touching the database. `1.0000000000000002` is the ULP-successor of `1.0`;
-/// `0.30000000000000004` is the canonical `0.1 + 0.2` repeat; the negative
-/// covers sign, and the last two cover the large-magnitude and denormal ends
-/// of the range a `PATCH /api/cards/:id` body can carry.
+/// f64 values that cannot survive 15-significant-digit rendering; the test
+/// re-derives that property before touching the database.
 const PRECISION_HOSTILE_SORTS: &[f64] = &[
     1.000_000_000_000_000_2,
     0.300_000_000_000_000_04,
@@ -103,12 +72,9 @@ async fn seed_track_with_sorts(repo: &SqlxRepo, sorts: &[f64]) -> (String, Vec<S
     (track.id.to_string(), ids)
 }
 
-/// The headline pin: every hostile `sort` comes back from `track_detail`
-/// bit-identical to what was stored.
 #[tokio::test]
 async fn track_detail_round_trips_card_sort_bit_exactly() {
-    // Guard the fixture itself: a value that survives 15 digits would make
-    // this test pass for the wrong reason.
+    // Guard the fixture itself: a value that survives 15 digits would pass for the wrong reason.
     for sort in PRECISION_HOSTILE_SORTS {
         let fifteen: f64 = format!("{sort:.14e}")
             .parse()
@@ -152,9 +118,6 @@ async fn track_detail_round_trips_card_sort_bit_exactly() {
     }
 }
 
-/// The consequence the round-trip protects: two f64s one ULP apart must stay
-/// distinct and stay ordered. Under 15-digit rendering both collapse onto
-/// `1.0`, `total_cmp` sees a tie, and the displayed order becomes arbitrary.
 #[tokio::test]
 async fn track_detail_keeps_one_ulp_apart_sorts_distinct_and_ordered() {
     let lower = 1.0_f64;
@@ -162,7 +125,6 @@ async fn track_detail_keeps_one_ulp_apart_sorts_distinct_and_ordered() {
     assert_ne!(lower, upper, "fixture must be two distinct f64s");
 
     let repo = SqlxRepo::open("sqlite::memory:").await.expect("open repo");
-    // Seeded in the WRONG order so the read path has to reorder them.
     let (track_id, card_ids) = seed_track_with_sorts(&repo, &[upper, lower]).await;
 
     let detail = repo

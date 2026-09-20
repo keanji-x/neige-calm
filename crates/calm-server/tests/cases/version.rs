@@ -1,10 +1,4 @@
-//! `GET /api/version` — surface for the kernel/REST/sync/MCP version
-//! quadruple plus optional build metadata.
-//!
-//! The endpoint is intentionally stateless, but we wire a real `AppState`
-//! so the test exercises the same router merge path the production
-//! binary uses — that's the layer where an OpenAPI / route-registration
-//! mismatch would show up.
+//! `GET /api/version` — the kernel/REST/sync/MCP version quadruple plus build metadata.
 
 use std::sync::Arc;
 
@@ -74,7 +68,6 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
-    // All version fields are present and camelCase.
     let obj = v.as_object().expect("response is a JSON object");
     for key in [
         "kernelVersion",
@@ -93,14 +86,11 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         assert!(obj.contains_key(key), "missing field: {key}");
     }
 
-    // The previous placeholder field is gone — frontends keying off the
-    // old name need to fail loudly, not silently observe `null`.
     assert!(
         !obj.contains_key("minWebBuildId"),
         "minWebBuildId should have been renamed to minWebCompatVersion"
     );
 
-    // Type correctness.
     assert!(v["kernelVersion"].is_string());
     assert!(v["apiVersion"].is_string());
     assert!(v["syncEventVersion"].is_number());
@@ -114,9 +104,7 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert!(v["databaseId"].is_string());
     assert!(v["nowMs"].is_i64());
 
-    // `dbInstanceId` is a UUID v4 (the 13th hex char is `4`, the 17th
-    // is one of `8/9/a/b`). Cheap shape check — the per-process
-    // uniqueness contract is exercised by the dedicated test below.
+    // Cheap shape check; per-process uniqueness is the dedicated test below.
     let id = v["dbInstanceId"].as_str().unwrap();
     let parsed = uuid::Uuid::parse_str(id).expect("dbInstanceId is a valid UUID");
     assert_eq!(
@@ -125,7 +113,6 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         "dbInstanceId must be UUID v4, got {parsed}",
     );
 
-    // Source agreement.
     assert_eq!(
         v["kernelVersion"].as_str().unwrap(),
         env!("CARGO_PKG_VERSION")
@@ -150,35 +137,13 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         v["syncEventVersion"].as_u64().unwrap(),
         SYNC_EVENT_VERSION as u64
     );
-    // #1501 F4: migration 0103 adds candidate verification settlement at version 20.
-    // `scripts/gate-sync-event-version-lockstep.sh` binds the constant to that
-    // literal; the assertion below is the literal number, so bumping the
-    // constant alone cannot make this file agree with itself.
+    // `scripts/gate-sync-event-version-lockstep.sh` binds the constant to this literal, so bumping the constant alone cannot make this file agree with itself.
     assert_eq!(v["syncEventVersion"].as_u64().unwrap(), 20);
 
-    // minWebCompatVersion must echo the in-process constant — the whole
-    // point of the field is to bind frontend expectations to a value the
-    // backend controls. If someone bumps `WEB_COMPAT_VERSION` without
-    // bumping the response builder (or vice-versa), this assertion
-    // catches it.
     assert_eq!(
         v["webCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    // #1456: 22 -> 23 so a cached bundle that only understands terminal task
-    // `goal` gets the refresh curtain before receiving `command`.
-    // #1316 S4b: 23 -> 24 so a cached bundle reading `runtime_id` off the
-    // planner REST responses and the rewritten event payloads gets the refresh
-    // curtain instead of rendering an undefined-shaped conversation.
-    // #1501 F4: 26 excludes bundles that cannot classify candidate verification.
-    // MCP setup requires header/all-tools support and an unsaved Check endpoint.
-    // #1625 P3: 27 -> 28 so a cached bundle whose event union does not know
-    // `harness.queue.changed` / `restored` gets the refresh curtain instead of
-    // skipping the frame and showing a restored entry as sent.
-    // #1722 S1b: 28 -> 29 so a bundle whose conversation-row parser requires
-    // `lastTurnCompletedAt` is held behind the curtain until its kernel
-    // sends it, and a v28 bundle keying receipts on `dbInstanceId` refreshes.
-    // #1712: v30 supplies scan-only claim/redeem and the desktop QR contract.
     assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 30);
     assert_eq!(
         v["minWebCompatVersion"].as_u64().unwrap(),
@@ -191,11 +156,7 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     );
 }
 
-/// `dbInstanceId` MUST be unique per `AppState` construction — that's the
-/// whole correctness contract the web client relies on for IDB cache
-/// busting on DB resets. Two fresh `AppState`s (= two simulated server
-/// boots) must produce two distinct ids; the same `AppState` queried
-/// twice must produce the same id.
+/// `dbInstanceId` is what the web client relies on for IDB cache busting on DB resets.
 #[tokio::test]
 async fn db_instance_id_changes_across_boots_stable_within_boot() {
     async fn hit(state: AppState) -> String {
@@ -235,27 +196,10 @@ async fn db_instance_id_changes_across_boots_stable_within_boot() {
     );
 }
 
-/// #1209 PR-2 (design §3.6, test #15) — the server's compatibility **floor**
-/// really moved past the bundle that predates the track-create field rename.
-///
-/// `POST /api/tracks` now rejects the pre-rename spelling with a 400
-/// (`deny_unknown_fields`). A cached bundle at 16 would therefore keep issuing
-/// requests that cannot succeed — "partially works", which
-/// `docs/upgrade-stability.md` forbids. Raising `minWebCompatVersion` above 16
-/// is what makes those bundles hit the hard refresh curtain instead.
-///
-/// The literal 16 below is a **historical** value: it is the last floor that
-/// still accepted the old spelling. Do not bump it along with
-/// `WEB_COMPAT_VERSION` — a `> WEB_COMPAT_VERSION - 1` style assertion would be
-/// self-referential and could never fail.
-///
-/// Honest scope: this sees only the server. It cannot observe either frontend
-/// bundle's constant. The three-way agreement is enforced by the `web compat
-/// version lockstep gate (#1209 PR-2)` step in `.github/workflows/ci.yml`.
+/// The literal floor is historical; do not bump it along with `WEB_COMPAT_VERSION`, or the assertion could never fail.
 #[tokio::test]
 async fn web_compat_floor_is_above_the_previous_bundle() {
-    /// Floor shipped before #1209 PR-2; the last bundle generation that spoke
-    /// the pre-rename track-create field names.
+    /// The last bundle generation that spoke the pre-rename track-create field names.
     const LAST_PRE_RENAME_FLOOR: u64 = 16;
 
     let state = fresh_state().await;
@@ -316,12 +260,7 @@ async fn web_compat_floor_excludes_track_detail_without_resume_capability() {
     );
 }
 
-/// #1625 P3 review round 2 — the last floor whose bundles did not know
-/// `harness.queue.changed` / `restored`. Such a bundle's zod union rejects
-/// the frame and `reduceEventFrame` advances the cursor without invalidating
-/// the queue, so it keeps showing a restored entry as sent. Historical
-/// literal, same discipline as the two above: do not move it with
-/// `WEB_COMPAT_VERSION`.
+/// The last floor whose bundles did not know `harness.queue.changed` / `restored`; historical literal, do not move it with `WEB_COMPAT_VERSION`.
 #[tokio::test]
 async fn web_compat_floor_excludes_bundles_that_cannot_decode_a_restored_queue_entry() {
     const LAST_FLOOR_WITHOUT_RESTORED: u64 = 27;
@@ -353,10 +292,7 @@ async fn web_compat_floor_excludes_bundles_that_cannot_decode_a_restored_queue_e
     );
 }
 
-/// #1722 S1b — the last floor whose bundles did not require
-/// `lastTurnCompletedAt` on a conversation row and keyed read receipts on the
-/// per-boot `dbInstanceId`. Historical literal, same discipline as the three
-/// above: do not move it with `WEB_COMPAT_VERSION`.
+/// The last floor whose bundles did not require `lastTurnCompletedAt`; historical literal, do not move it with `WEB_COMPAT_VERSION`.
 #[tokio::test]
 async fn web_compat_floor_excludes_bundles_without_last_turn_completed_at() {
     const LAST_FLOOR_WITHOUT_LAST_TURN_COMPLETED_AT: u64 = 28;
@@ -407,10 +343,7 @@ async fn version_body(state: AppState) -> serde_json::Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
-/// #1722 S1b — `databaseId` names the database and `dbInstanceId` names the
-/// boot: two boots of one sqlite file agree on the first and differ on the
-/// second. A mint-per-boot identity (`INSERT OR REPLACE`, or a uuid drawn in
-/// `AppState` instead of read from the repo) turns this red.
+/// `databaseId` names the database and `dbInstanceId` names the boot.
 #[tokio::test]
 async fn database_id_survives_reboot() {
     let dir = tempfile::tempdir().unwrap();

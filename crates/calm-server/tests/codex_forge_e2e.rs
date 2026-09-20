@@ -1,11 +1,4 @@
-//! Real Codex forge E2E for issue #760.
-//!
-//! Feature-gated behind `codex-e2e` and self-skipping when no real Codex
-//! binary is available. The test keeps GitHub fake via a local `gh` shim, but
-//! runs a real local Codex app-server and a real Codex worker against a local
-//! bare git origin. The worker must write a small file on its leased worktree;
-//! the kernel must then commit that leased worktree and emit
-//! `worktree.committed`.
+//! Real Codex forge E2E; feature-gated behind `codex-e2e` and self-skipping when no real Codex binary is available.
 
 #![cfg(all(unix, feature = "codex-e2e"))]
 
@@ -45,14 +38,7 @@ use tower::ServiceExt;
 
 const PR_CREATE_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.create";
 const PR_CHECKS_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.checks";
-/// #937: the review-subject `slice_id` is agent-chosen and drifts *within a run*
-/// (e.g. `marker-file` -> `inspect-issue/design`). The kernel keys review-round
-/// `n` strictly per `{phase, slice_id, pr_number}` subject, so a seeded prior
-/// round only lines up if the agent emits on the SAME slug. We therefore pin the
-/// slug via the goal and seed/wait on this exact constant. This fixes only an
-/// incidental name — the give-up/ask-human/merge decisions under test stay
-/// autonomous. Must not collide with any plan task key (inspect-issue,
-/// review-design-a/b, open-pr, review-pr-a/b, merge) and must not be a file path.
+/// The review-subject `slice_id` is agent-chosen and drifts within a run, so the goal pins it; must not collide with any plan task key or be a file path.
 const STEERED_REVIEW_SLICE: &str = "marker-slice";
 /// The d2 test's source issue. Purely an environment fact: the gh shim keeps
 /// per-repo issue state keyed by number, and any number works.
@@ -60,8 +46,6 @@ const D2_ISSUE_NUMBER: u64 = 840;
 
 #[tokio::test]
 async fn real_codex_worker_writes_code_on_leased_worktree() {
-    // This asserts the real-worker-writes-code integration seam and the #834
-    // kernel-owned deterministic commit path.
     let Some(codex_bin) = resolve_codex_bin() else {
         skip!("no codex bin");
     };
@@ -92,12 +76,7 @@ async fn real_codex_worker_writes_code_on_leased_worktree() {
     let worker_cwd = PathBuf::from(output_string(output, "cwd"));
     let worker_card_id = output_string(output, "card_id");
 
-    // The codex-worker op reaches `succeeded` at turn-START (it only awaits the
-    // initial TurnStarted), not worker-done. The real worker writes the file and
-    // reports `task.complete` tens of seconds later, after which the kernel
-    // commits and emits `worktree.committed`. So wait on that commit event (the
-    // true end-to-end completion barrier) BEFORE asserting working-tree state,
-    // otherwise the marker check races the async worker turn.
+    // The codex-worker op reaches `succeeded` at turn-START, so wait on `worktree.committed` before asserting working-tree state.
     assert_worker_commit_landed(&fx, &worker_cwd, &worker_card_id, budget).await;
     assert_worker_wrote_marker_file(&fx, &worker_cwd).await;
 
@@ -128,11 +107,7 @@ async fn real_codex_worker_opens_pr_after_committing_on_leased_worktree() {
 
     let _dispatcher = spawn_dispatcher(&fx);
     let repo_gitdir = fx.track_cwd.join(".git").display().to_string();
-    // R-d1: this is the first test where a real worker must DISCOVER+CALL
-    // annotation-less plugin forge tools (forge plugin tools are published with
-    // empty schema/annotations). If the worker fails to call them, that is a
-    // genuine finding (forge tool descriptors may need annotations), not to be
-    // worked around by scripting the call.
+    // The worker must DISCOVER and CALL the annotation-less forge tools itself; a failure here is a genuine finding, not to be scripted around.
     let goal = forge_pr_goal(&repo_gitdir);
     plan_codex_task(&fx, TASK_KEY, &goal).await;
 
@@ -146,14 +121,7 @@ async fn real_codex_worker_opens_pr_after_committing_on_leased_worktree() {
     let worker_cwd = PathBuf::from(output_string(output, "cwd"));
     let worker_card_id = output_string(output, "card_id");
 
-    // Each test boots an isolated fixture/DB. This test's fixture sees NO
-    // scripted `call_tool` for any `gh.*` or `git.commit` (its only direct
-    // tool call is the report task-block writer via the planner identity inside
-    // `plan_codex_task`; the d2 merge test scripts `gh.pr.create`/
-    // `gh.pr.checks` only against its own separate fixture). Therefore the
-    // ONLY thing that can emit `forge.pr.opened` / `forge.pr.checks` here is
-    // the real worker's own MCP `tools/call`. Assert via the `events` table
-    // (NOT `harness_items`, which is planner-thread-only).
+    // Nothing in this fixture scripts `gh.*` or `git.commit`, so only the real worker's own `tools/call` can emit `forge.pr.opened` / `forge.pr.checks`.
     let (s5_id, s5) = wait_for_first_worktree_committed_event(&fx, &task_id, budget).await;
     assert_eq!(s5.actor, ActorId::KernelDispatcher);
     assert_eq!(s5.scope_kind, "card");
@@ -185,9 +153,7 @@ async fn real_codex_worker_opens_pr_after_committing_on_leased_worktree() {
 
     let task_completed_id = wait_for_task_completed_id(&fx, budget).await;
 
-    // Enforce that the worker performed git.commit/gh.pr.create/gh.pr.checks
-    // in-turn BEFORE calm.task.complete (construction W), preventing a
-    // false-pass where the worker completes early then opens the PR afterward.
+    // The worker must commit/open/check in-turn BEFORE `calm.task.complete`.
     assert!(
         s5_id < s6_id && s6_id < s7_id && s7_id < task_completed_id,
         "expected S5 < S6 < S7 < task.completed, got S5={s5_id}, S6={s6_id}, S7={s7_id}, task.completed={task_completed_id}"
@@ -257,14 +223,9 @@ async fn real_planner_agent_autonomously_plans_from_bound_template() {
             .is_some_and(|keys| !keys.is_empty()),
         "plan.updated changed_keys must be non-empty: {plan}",
     );
-    // These preconditions prove `bound_template_descriptor` resolves the
-    // trusted bound template instead of falling back to the vanilla planner prompt.
     assert_bound_issue_development_template_preconditions(&fx).await;
 
-    // Superset-tolerant (design §1/§2): assert the kernel-deterministic
-    // Draft->Planning companion is present exactly once; the real planner may emit
-    // further lifecycle transitions (e.g. Planning->Dispatching) once it plans,
-    // so we filter rather than assert the total count.
+    // Superset-tolerant: the real planner may emit further lifecycle transitions, so filter rather than count.
     let lifecycle = lifecycle_changed_rows(&fx.repo).await;
     let draft_to_planning: Vec<&(ActorId, Value)> = lifecycle
         .iter()
@@ -341,11 +302,7 @@ async fn real_planner_agent_autonomously_emits_design_review_round_from_descript
     let harness = recover_planner_harness(&fx)
         .await
         .expect("live planner harness");
-    // Settle the planning turn before seeding so the accepted review.round is
-    // causally a response to the injected task completions, not a planning-time
-    // fabrication. R6 deliberately does not prove the planner literally read runs/:
-    // the runs/ pre-check proves the verdict data is present and readable, and
-    // this causal wake is sufficient for the autonomy thesis.
+    // Settle the planning turn before seeding so the review.round is causally a response to the injected completions.
     wait_for_planner_turn_settled(&fx, &harness, planner_planning_budget()).await;
     seed_design_channel_complete(&fx, "review-design-a", "a").await;
     seed_design_channel_complete(&fx, "review-design-b", "b").await;
@@ -381,10 +338,7 @@ async fn real_planner_gives_up_at_review_cap_from_descriptor() {
         .lock()
         .await;
 
-    // Steer the cap-exhaust GIVE-UP branch (R7 design D3): GIVE-UP and
-    // ASK-HUMAN are mutually exclusive terminal branches of one track, so the
-    // goal fixes coverage on this branch; branch choice is descriptor-legal
-    // either way and the protocol mechanics stay autonomous.
+    // Steer the cap-exhaust GIVE-UP branch: GIVE-UP and ASK-HUMAN are mutually exclusive terminal branches of one track.
     let goal = format!(
         "Plan the smallest issue-development template for adding one marker file, \
                 then drive design review. If design review cannot converge at the review \
@@ -420,22 +374,16 @@ async fn real_planner_gives_up_at_review_cap_from_descriptor() {
         matches!(plan_actor, ActorId::AiPlannerSession(_)),
         "plan.updated actor must be the real planner session, got {plan_actor:?}"
     );
-    // #937: pin the review subject to the steered slug (see STEERED_REVIEW_SLICE).
-    // `changed_keys[0]` is the first plan TASK key, not the review SUBJECT slug the
-    // agent emits — they are different namespaces and the agent's slug drifts.
+    // `changed_keys[0]` is the first plan TASK key, not the review SUBJECT slug — different namespaces.
     let slice_id = STEERED_REVIEW_SLICE.to_string();
 
     let harness = recover_planner_harness(&fx)
         .await
         .expect("live planner harness");
-    // Settle the planning turn before seeding (R6 causality guard): the
-    // accepted give-up sequence must be causally a response to the injected
-    // observations below, not a planning-time fabrication.
+    // Settle the planning turn before seeding so the give-up is causally a response to the injected observations.
     wait_for_planner_turn_settled(&fx, &harness, planner_planning_budget()).await;
 
-    // Pre-position the track at `reviewing` via a raw TrackPatch (precedent:
-    // crates/calm-server/tests/review_ratify.rs `set_track_lifecycle`) —
-    // walking planning -> ... -> reviewing by real turns is capstone scope.
+    // Pre-position the track at `reviewing` via a raw TrackPatch; walking there by real turns is capstone scope.
     fx.repo_dyn
         .track_update(
             fx.track_id.as_str(),
@@ -449,15 +397,7 @@ async fn real_planner_gives_up_at_review_cap_from_descriptor() {
 
     seed_design_channel_changes_requested(&fx, "review-design-a", "a").await;
     seed_design_channel_changes_requested(&fx, "review-design-b", "b").await;
-    // Seed ONE prior round ALREADY AT the cap (n=8/cap=8, design D2): the
-    // kernel's monotonic check reads max(n) from the event log, so no further
-    // round is legal on this subject (n=9 > cap is rejected; n=8 is a duplicate
-    // key). The real agent therefore cannot run "one more round" and must
-    // escalate directly — the give-up branch under test. (#943: seeding n=7
-    // deadlocks this dispatcher-less planner-harness, because the agent correctly
-    // re-dispatches a legitimate round-8 whose reviewer tasks nothing here can
-    // complete.) role_gate rule 2.8 makes AiPlanner(planner card) the ONLY legal
-    // author for review.round — KernelDispatcher (R6's seed actor) is rejected.
+    // Seed ONE prior round ALREADY AT the cap (n=8/cap=8): no further round is kernel-legal, so the agent must escalate directly (seeding n=7 deadlocks this dispatcher-less harness).
     seed_prior_design_review_round(&fx, &slice_id, 8, 8).await;
 
     let floor = max_event_id(&fx.repo).await;
@@ -468,21 +408,12 @@ async fn real_planner_gives_up_at_review_cap_from_descriptor() {
         "exactly the one seeded review.round may exist pre-wake (proof-validity guard): {pre_wake_rounds:?}"
     );
 
-    // Wake: both channels changes_requested + the prior-round state, injected
-    // exactly as the prod dispatcher's `harness_observation_from_event` would
-    // push them (design D5; no dispatcher runs in the planner-harness E2E).
+    // Wake: inject exactly what the prod dispatcher's `harness_observation_from_event` would push (no dispatcher runs here).
     inject_task_changes_requested(&harness, &task_id(&fx, "review-design-a")).await;
     inject_task_changes_requested(&harness, &task_id(&fx, "review-design-b")).await;
     inject_design_review_round_observation(&harness, &fx, &slice_id, 8, 8, false).await;
 
-    // Oracle (a): the FSM's give-up edge, planner-only-legal. The *edge* lives in
-    // the static prompt, but the *when* — escalate at the cap instead of
-    // ratifying — comes only from the descriptor. The subject is seeded already
-    // at the cap (n=8/cap=8), so no further review.round is kernel-legal and the
-    // agent must escalate directly; we wait from the pre-wake `floor` (there is
-    // no planner-authored cap round to pin ordering against). #943: seeding n=7
-    // deadlocks here — the agent re-dispatches a legitimate round-8 whose
-    // reviewers the dispatcher-less harness can never complete.
+    // Oracle (a): the FSM's give-up edge; the *when* (escalate at the cap instead of ratifying) comes only from the descriptor.
     let (edge_actor, edge) = wait_for_track_failed_edge(&fx, floor, review_budget()).await;
     assert_eq!(
         edge["from"],
@@ -503,9 +434,7 @@ async fn real_planner_gives_up_at_review_cap_from_descriptor() {
         .expect("select track lifecycle");
     assert_eq!(lifecycle, "failed", "track row lifecycle must be failed");
 
-    // Oracle (c): branch purity, asserted AFTER the give-up edge (terminal
-    // state + teardown follows, so no window ambiguity): the steered run
-    // must neither merge nor ask for ratification.
+    // Oracle (c): branch purity — the steered run must neither merge nor ask for ratification.
     assert_eq!(event_payloads(&fx.repo, "forge.pr.merged").await.len(), 0);
     assert_eq!(
         event_payloads(&fx.repo, "ratify.requested").await.len(),
@@ -537,10 +466,7 @@ async fn real_planner_requests_ratification_at_cap_and_resumes_on_grant() {
         .lock()
         .await;
 
-    // Steer the cap-exhaust ASK-HUMAN branch (R7 design D4): GIVE-UP and
-    // ASK-HUMAN are mutually exclusive terminal branches of one track, so the
-    // goal fixes coverage on this branch; branch choice is descriptor-legal
-    // either way and the protocol mechanics stay autonomous.
+    // Steer the cap-exhaust ASK-HUMAN branch: GIVE-UP and ASK-HUMAN are mutually exclusive terminal branches of one track.
     let goal = format!(
         "Plan the smallest issue-development template for adding one marker file, \
                 then drive design review. If design review cannot converge at the review \
@@ -576,22 +502,16 @@ async fn real_planner_requests_ratification_at_cap_and_resumes_on_grant() {
         matches!(plan_actor, ActorId::AiPlannerSession(_)),
         "plan.updated actor must be the real planner session, got {plan_actor:?}"
     );
-    // #937: pin the review subject to the steered slug (see STEERED_REVIEW_SLICE).
-    // `changed_keys[0]` is the first plan TASK key, not the review SUBJECT slug the
-    // agent emits — they are different namespaces and the agent's slug drifts.
+    // `changed_keys[0]` is the first plan TASK key, not the review SUBJECT slug — different namespaces.
     let slice_id = STEERED_REVIEW_SLICE.to_string();
 
     let harness = recover_planner_harness(&fx)
         .await
         .expect("live planner harness");
-    // Settle the planning turn before seeding (R6 causality guard): the
-    // accepted ASK-HUMAN sequence must be causally a response to the injected
-    // observations below, not a planning-time fabrication.
+    // Settle the planning turn before seeding so the ASK-HUMAN sequence is causally a response to the injected observations.
     wait_for_planner_turn_settled(&fx, &harness, planner_planning_budget()).await;
 
-    // Pre-position the track at `reviewing` via a raw TrackPatch (precedent:
-    // crates/calm-server/tests/review_ratify.rs `set_track_lifecycle`) —
-    // walking planning -> ... -> reviewing by real turns is capstone scope.
+    // Pre-position the track at `reviewing` via a raw TrackPatch; walking there by real turns is capstone scope.
     fx.repo_dyn
         .track_update(
             fx.track_id.as_str(),
@@ -605,13 +525,7 @@ async fn real_planner_requests_ratification_at_cap_and_resumes_on_grant() {
 
     seed_design_channel_changes_requested(&fx, "review-design-a", "a").await;
     seed_design_channel_changes_requested(&fx, "review-design-b", "b").await;
-    // Seed ONE prior round ALREADY AT the cap (n=8/cap=8, design D2): the
-    // kernel's monotonic check reads max(n) from the event log, so no further
-    // round is legal on this subject (n=9 > cap is rejected; n=8 is a duplicate
-    // key). The real agent therefore cannot run "one more round" and must
-    // escalate directly to the ask-human branch under test. (#943: seeding n=7
-    // deadlocks this dispatcher-less planner-harness — the agent re-dispatches a
-    // legitimate round-8 whose reviewer tasks nothing here can complete.)
+    // Seed ONE prior round ALREADY AT the cap (n=8/cap=8): no further round is kernel-legal, so the agent must escalate directly (seeding n=7 deadlocks this dispatcher-less harness).
     seed_prior_design_review_round(&fx, &slice_id, 8, 8).await;
 
     let floor = max_event_id(&fx.repo).await;
@@ -622,22 +536,12 @@ async fn real_planner_requests_ratification_at_cap_and_resumes_on_grant() {
         "exactly the one seeded review.round may exist pre-wake (proof-validity guard): {pre_wake_rounds:?}"
     );
 
-    // Wake: both channels changes_requested + the prior-round state, injected
-    // exactly as the prod dispatcher's `harness_observation_from_event` would
-    // push them (design D5; no dispatcher runs in the planner-harness E2E).
+    // Wake: inject exactly what the prod dispatcher's `harness_observation_from_event` would push (no dispatcher runs here).
     inject_task_changes_requested(&harness, &task_id(&fx, "review-design-a")).await;
     inject_task_changes_requested(&harness, &task_id(&fx, "review-design-b")).await;
     inject_design_review_round_observation(&harness, &fx, &slice_id, 8, 8, false).await;
 
-    // Oracle phase 1 (a): the ordered ASK-HUMAN chain. The subject is seeded
-    // already at the cap (n=8/cap=8), so no further review.round is kernel-legal
-    // and the planner must escalate directly rather than run another round; we wait
-    // from the pre-wake `floor` and the edges still rise monotonically below.
-    // #943: seeding n=7 deadlocks here — the agent re-dispatches a legitimate
-    // round-8 the dispatcher-less harness can never complete.
-    // `calm.ratify.request` demands lifecycle==Working, so the planner must first
-    // leave `reviewing`; the tool then emits working->blocked + ratify.requested
-    // in ONE tx (mcp_server/tools/review.rs), so both must appear.
+    // Oracle phase 1 (a): the ordered ASK-HUMAN chain. `calm.ratify.request` demands lifecycle==Working and emits working->blocked + ratify.requested in ONE tx, so both must appear.
     let (rw_id, rw_actor, rw_edge) =
         wait_for_track_lifecycle_edge(&fx, floor, "reviewing", "working", ratify_budget()).await;
     assert!(
@@ -650,9 +554,7 @@ async fn real_planner_requests_ratification_at_cap_and_resumes_on_grant() {
         matches!(wb_actor, ActorId::AiPlannerSession(_)),
         "working->blocked edge actor must be AiPlannerSession, got {wb_actor:?} for {wb_edge}"
     );
-    // The request is REAL and structurally unforgeable: role_gate rule 2.8
-    // makes ratify.requested planner-session-only and this test never calls
-    // calm.ratify.request — only the real planner's own tool call can emit it.
+    // The request is structurally unforgeable: role_gate makes ratify.requested planner-session-only and this test never calls `calm.ratify.request`.
     let (req_id, req_actor, req) = wait_for_ratify_requested(&fx, wb_id, ratify_budget()).await;
     assert!(
         matches!(req_actor, ActorId::AiPlannerSession(_)),
@@ -674,12 +576,7 @@ async fn real_planner_requests_ratification_at_cap_and_resumes_on_grant() {
         "track row must be blocked while awaiting ratification"
     );
 
-    // Grant = PRODUCTION HTTP route via in-process router-oneshot (design D4;
-    // precedent tests/review_ratify.rs). actor_middleware defaults an absent
-    // X-Calm-Actor header to the authenticated user; the route enforces the
-    // pending request and emits blocked->working + ratify.resolved{grant}
-    // same-tx as ActorId::User — a log_pure_event shortcut is User-only at the
-    // role gate AND would have to hand-roll the tracks-row flip.
+    // Grant through the PRODUCTION HTTP route (in-process oneshot): a `log_pure_event` shortcut is User-only at the role gate and would have to hand-roll the tracks-row flip.
     let app = fixture_router(&fx);
     let body = serde_json::to_vec(&json!({ "decision": "grant" })).expect("grant body");
     let resp = app
@@ -762,18 +659,10 @@ async fn real_planner_requests_ratification_at_cap_and_resumes_on_grant() {
         "grant blocked->working edge actor must be User: {grant_edges:?}"
     );
 
-    // Recovery wake: the same Observation the prod dispatcher's
-    // `harness_observation_from_event` would push for ratify.resolved
-    // (design D5; hard-fire).
+    // Recovery wake: the same Observation the prod dispatcher would push for ratify.resolved.
     inject_ratify_resolved_grant(&harness, &fx).await;
 
-    // Oracle phase 2 — PRIMARY resumption signal (independent checker's pin):
-    // the real planner re-enters review, working->reviewing, after the grant.
-    // Since #888 the descriptor states the track is already back in `working`
-    // after a grant and instructs a plain working->reviewing resume (the
-    // historical "blocked->working->reviewing" wording produced a tolerated
-    // illegal working->working attempt, now fixed); resumption is proven by
-    // the working->reviewing edge alone.
+    // Oracle phase 2 — resumption: the real planner re-enters review (working->reviewing) after the grant.
     let (_resume_id, resume_actor, resume_edge) =
         wait_for_track_lifecycle_edge(&fx, resolved_id, "working", "reviewing", ratify_budget())
             .await;
@@ -782,15 +671,7 @@ async fn real_planner_requests_ratification_at_cap_and_resumes_on_grant() {
         "post-grant working->reviewing edge actor must be AiPlannerSession, got {resume_actor:?} for {resume_edge}"
     );
 
-    // Post-grant convergence/merge is deliberately NOT asserted here: this
-    // subject is design-phase (pr_number: null — no PR exists in this
-    // fixture) and no post-grant channel verdicts are injected. The #888
-    // kernel cap-extension arm resolved the old cap contradiction (the next
-    // round n=9/cap=10 is now kernel-legal after the grant); the extension →
-    // convergence → merge finish is exercised by the R7c E2E
-    // (`real_planner_extends_cap_after_grant_converges_and_merges`) on a
-    // real-PR impl subject. Merge must still be absent — structurally
-    // impossible without a PR in this fixture.
+    // Post-grant convergence/merge is deliberately NOT asserted: this subject is design-phase with no PR, and no post-grant verdicts are injected.
     assert_eq!(event_payloads(&fx.repo, "forge.pr.merged").await.len(), 0);
 
     assert!(
@@ -806,34 +687,8 @@ async fn real_planner_requests_ratification_at_cap_and_resumes_on_grant() {
     shutdown_shared_codex(&fx.shared).await;
 }
 
-// #840 slice (d2) — S11/S12: the real planner session, woken only by injected
-// observations, obeys merge fence F4 (call gh.pr.merge for a subject ONLY
-// when that subject's latest review.round has converged:true, passing
-// expected_head_sha equal to that round's head_sha) and then closes the
-// source issue, merge-before-close.
-//
-// Seat caveat (design pin): the seat was steered by goal text — the
-// production descriptor's merge step is kind:codex, so a real production run
-// may DISPATCH a worker to execute the merge instead of the planner calling
-// gh.pr.merge itself; the worker-executed merge topology stays open for
-// slice (e)/capstone. The goal ALSO restates F4's WHEN trigger ("once the
-// impl review round reports converged, execute the merge step"), so for the
-// WHEN half of F4, descriptor-obedience and goal-obedience are
-// indistinguishable here. The genuinely unsteered F4 autonomy content is the
-// expected_head_sha selection: the goal never mentions any sha, so choosing
-// the converged round's head_sha (observed, not given) is the planner's own.
-//
-// Seat proof, construction W (d1 precedent) — LOAD-BEARING: no scripted call
-// to `gh.pr.merge` or `gh.issue.close` exists in this file beyond this
-// comment — scripted setup stops at `gh.pr.create`/`gh.pr.checks` (against
-// this test's isolated fixture only). The only possible emitter of
-// `forge.pr.merged` / `forge.issue.closed` is therefore the real planner
-// session's own MCP `tools/call`. The oracle's forge-action op idem-key
-// checks CORROBORATE only on the worker-seat axis (the embedded caller card
-// id excludes other-card callers); they cannot discriminate
-// scripted-vs-autonomous, because scripted setup calls use the same planner
-// thread → same planner card → a hypothetical scripted merge would produce a
-// byte-identical key.
+// The only possible emitter of `forge.pr.merged` / `forge.issue.closed` is the real planner's own `tools/call`: scripted setup stops at `gh.pr.create`/`gh.pr.checks`.
+// The op idem-key checks pin the caller card only; scripted setup uses the same planner thread, so they cannot discriminate scripted-vs-autonomous.
 #[tokio::test]
 async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descriptor() {
     let Some(codex_bin) = resolve_codex_bin() else {
@@ -845,14 +700,7 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
         .lock()
         .await;
 
-    // Goal carries environment facts only (repo gitdir + issue number,
-    // forge_pr_goal precedent) plus descriptor-legal branch steering. The
-    // pr_number and head_sha must reach the planner ONLY via observations —
-    // never as pre-chewed tool args. The goal needs the fixture's origin
-    // path, which only exists post-boot, so it flows through the
-    // planner-harness start op (the planner's actual TrackGoal source,
-    // `initial_snapshot_with_goal`); `FixtureSpec.goal` only mirrors into
-    // the card payload `prompt`, which the planner-harness path never reads.
+    // The goal carries environment facts only; pr_number and head_sha must reach the planner ONLY via observations. It flows through the planner-harness start op because `FixtureSpec.goal` is never read by that path.
     let fx = match boot_forge_e2e_fixture(
         FixtureSpec {
             goal: None,
@@ -881,21 +729,16 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
         matches!(plan_actor, ActorId::AiPlannerSession(_)),
         "plan.updated actor must be the real planner session, got {plan_actor:?}"
     );
-    // #937: pin the review subject to the steered slug (see STEERED_REVIEW_SLICE).
-    // `changed_keys[0]` is the first plan TASK key, not the review SUBJECT slug the
-    // agent emits — they are different namespaces and the agent's slug drifts.
+    // `changed_keys[0]` is the first plan TASK key, not the review SUBJECT slug — different namespaces.
     let slice_id = STEERED_REVIEW_SLICE.to_string();
 
     let harness = recover_planner_harness(&fx)
         .await
         .expect("live planner harness");
-    // Settle the planning turn before setup/seeding (R6 causality guard): the
-    // accepted merge+close must be causally a response to the injected
-    // observations below, not a planning-time fabrication.
+    // Settle the planning turn before setup/seeding so the merge+close is causally a response to the injected observations.
     wait_for_planner_turn_settled(&fx, &harness, planner_planning_budget()).await;
 
-    // Pre-position the track at `reviewing` via a raw TrackPatch (R7a
-    // precedent) — walking the FSM by real turns is capstone scope.
+    // Pre-position the track at `reviewing` via a raw TrackPatch.
     fx.repo_dyn
         .track_update(
             fx.track_id.as_str(),
@@ -907,12 +750,7 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
         .await
         .expect("pre-position track lifecycle to reviewing");
 
-    // Scripted REAL PR setup (setup, not the proof): branch + commit in the
-    // track cwd with raw git, push to the bare origin, then scripted MCP
-    // tools/call of gh.pr.create + gh.pr.checks through the daemon socket
-    // (identity = the live planner thread) so GENUINE forge.pr.opened /
-    // forge.pr.checks events back the injected observations — the events go
-    // through the real plugin lowering, not fabricated shim state.
+    // Scripted REAL PR setup (setup, not the proof): raw git branch + push, then scripted `gh.pr.create` + `gh.pr.checks` through the daemon socket so genuine events back the injected observations.
     let branch = "neige-d2-impl-slice";
     run_git(&fx.track_cwd, ["checkout", "-B", branch, "origin/main"]);
     stage_git_change(&fx.track_cwd, "FORGE_E2E_D2.md", "forge-e2e-d2\n");
@@ -1008,18 +846,12 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
     )
     .await;
 
-    // Seed ONE converged typed impl review.round carrying the REAL branch tip
-    // (push precedes seeding so the round carries the real tip sha). Actor
-    // MUST be AiPlanner(planner card) + track scope: role_gate rule 2.8 makes
-    // review.round planner-only, and the seeded AiPlanner row stays
-    // actor-distinguishable from anything the real AiPlannerSession emits.
+    // Seed ONE converged impl review.round carrying the REAL branch tip; the actor MUST be AiPlanner(planner card) because role_gate makes review.round planner-only.
     seed_converged_impl_review_round(&fx, &slice_id, pr_number, &head_sha).await;
     let round_id = latest_event_id_of_kind(&fx, "review.round").await;
 
     let floor = max_event_id(&fx.repo).await;
-    // Proof-validity guards: nothing merged yet, and exactly the one seeded
-    // round exists — a planning-time merge or fabricated round would poison
-    // the F4 evidence.
+    // Proof-validity guards: nothing merged yet, and exactly the one seeded round exists.
     assert_eq!(
         event_payloads(&fx.repo, "forge.pr.merged").await.len(),
         0,
@@ -1032,12 +864,7 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
         "exactly the one seeded review.round may exist pre-wake (proof-validity guard): {pre_wake_rounds:?}"
     );
 
-    // Wake: inject exactly what the prod dispatcher's
-    // `harness_observation_from_event` would push for the rows that exist
-    // (dispatcher.rs shapes; no dispatcher runs in the planner-harness E2E).
-    // The converged ReviewRound observation is the F4 trigger and the planner's
-    // ONLY channel for pr_number/head_sha selection (rounds have no runs/
-    // projection).
+    // Wake: inject what the prod dispatcher would push; the converged ReviewRound observation is the planner's ONLY channel for pr_number/head_sha.
     for key in ["implement-change", "open-pr"] {
         inject_observation(
             &harness,
@@ -1090,13 +917,7 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
     )
     .await;
 
-    // Oracle (a): the S11 merge event. All forge.* events are appended by the
-    // kernel's forge-action observer as ActorId::KernelDispatcher
-    // (forge_action_adapter.rs `complete_forge_op_succeeded`) — event actor
-    // therefore CANNOT attribute the seat; the load-bearing attribution is
-    // construction W (no scripted merge/close call in this file), with the
-    // oracle (b) op idem-key check corroborating on the worker-seat axis
-    // only (it pins the caller card, not scripted-vs-autonomous).
+    // Oracle (a): the merge event. All forge.* events are appended by the kernel as KernelDispatcher, so the event actor cannot attribute the seat.
     let (merged_id, merged_actor, merged) = wait_for_track_forge_event(
         &fx,
         "forge.pr.merged",
@@ -1139,20 +960,7 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
         "merged subject pr: {merged}"
     );
 
-    // Oracle (b) — the F4 proof: the planner must have passed expected_head_sha.
-    // The forge-action op idempotency key is
-    // `{plugin}:{track}:{caller card}:{plugin idem}` (transport.rs
-    // `submit_forge_action`), and the plugin idem is the WITH-sha shape
-    // `gh.pr.merge:{repo}:{pr}:{expected_head_sha}` only when
-    // expected_head_sha was passed (plugins/git-forge/main.rs
-    // `lower_gh_pr_merge`) — an omitted-sha merge produces
-    // `gh.pr.merge:{repo}:{pr}` and MUST fail this assert. The embedded card
-    // id corroborates the seat on the worker-exclusion axis ONLY: it proves
-    // the caller was the planner card, but scripted setup calls use the same
-    // planner thread (`planner_session_thread_id`) → same card → a scripted merge
-    // would produce a byte-identical key, so construction W (file-level
-    // comment above the test) stays the sole scripted-vs-autonomous
-    // discriminator.
+    // Oracle (b) — the F4 proof: the plugin idem is `gh.pr.merge:{repo}:{pr}:{expected_head_sha}` only when expected_head_sha was passed; an omitted-sha merge MUST fail this.
     let expected_merge_key = format!(
         "{PLUGIN_ID}:{}:{}:gh.pr.merge:{}:{}:{}",
         fx.track_id.as_str(),
@@ -1173,10 +981,7 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
         );
     }
 
-    // Oracle (c) — ordering (oracle-only; no kernel check ties gh.pr.merge to
-    // review.round): the converged round precedes the merge (F4), and the
-    // checks event precedes the merge (attribute to setup ordering, not planner
-    // autonomy — S7 is d1's theorem).
+    // Oracle (c) — ordering: the converged round and the checks event precede the merge.
     assert!(
         round_id < merged_id,
         "converged review.round (id={round_id}) must precede forge.pr.merged (id={merged_id})"
@@ -1186,10 +991,7 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
         "forge.pr.checks (id={checks_id}) must precede forge.pr.merged (id={merged_id})"
     );
 
-    // Oracle (d): S12 — the issue close FOLLOWS the merge (#840 §4 invariant
-    // 5, oracle-only), on the right issue; the op idem key corroborates the
-    // caller card (worker-seat exclusion; construction W carries the
-    // scripted-vs-autonomous axis).
+    // Oracle (d): the issue close FOLLOWS the merge, on the right issue.
     let (closed_id, closed_actor, closed) = wait_for_track_forge_event(
         &fx,
         "forge.issue.closed",
@@ -1245,8 +1047,7 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
         "exactly one forge.issue.closed event"
     );
 
-    // Oracle (e): shim counters — the remote side effect happened exactly
-    // once (the shim is idempotent and counts real merges/closes only).
+    // Oracle (e): shim counters — the remote side effect happened exactly once.
     let shim_state = PathBuf::from(format!("{repo_arg}.shimstate"));
     assert_eq!(
         shim_counter(&shim_state.join("pr_merge_count")),
@@ -1259,9 +1060,7 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
         "gh shim must record exactly one real issue close"
     );
 
-    // Oracle (f): purity. Happy path needs no ratification grant; extra
-    // lifecycle transitions (e.g. reviewing->done) are tolerated, but the
-    // track must not have failed; the plan must be the planner's own.
+    // Oracle (f): purity — no ratification grant, the track must not have failed, the plan must be the planner's own.
     assert_eq!(
         event_payloads(&fx.repo, "ratify.requested").await.len(),
         0,
@@ -1286,27 +1085,8 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
     shutdown_shared_codex(&fx.shared).await;
 }
 
-// #888 R7c — post-grant cap extension to the F4 finish. The real planner,
-// cap-exhausted on a real-PR impl subject (seeded prior round already AT the
-// cap, n=8/cap=8 non-converged, so no further pre-grant round is kernel-legal
-// and the planner escalates directly — #943), walks the full ASK-HUMAN chain; a
-// human grant (production HTTP route) then authorizes the descriptor's
-// "previous cap plus exactly 2" window, and the planner's SINGLE post-grant
-// round is both the extension AND the convergence (n=9, cap=10,
-// converged:true on the real branch tip — approved verdicts are injected
-// post-grant, before the planner's next round). Kernel acceptance of that
-// n=9/cap=10 row IS the E2E proof of the #888 extension arm and of
-// descriptor satisfiability; the merge then lands through the planner's own
-// gh.pr.merge (F4). In-window multi-round continuation after an extension is
-// unit-tested (review_ratify.rs t2), deliberately not E2E'd here.
-//
-// Composition = R7b's ratify flow ⊕ the d2 merge test's PR scaffolding. The
-// d2 seat caveat + construction W carry over verbatim: no scripted call to
-// `gh.pr.merge` exists in this file — scripted setup stops at
-// `gh.pr.create`/`gh.pr.checks` against this test's isolated fixture, so the
-// only possible emitter of `forge.pr.merged` is the real planner session's own
-// MCP `tools/call`. No dependency on #863: the planner executes gh.pr.merge
-// through its own MCP socket exactly as the merged d2 test does.
+// Post-grant cap extension to the F4 finish: the planner's SINGLE post-grant round is both the extension (n=9, cap=10) and the convergence; kernel acceptance of that row is the proof.
+// No scripted `gh.pr.merge` exists in this file, so the only possible emitter of `forge.pr.merged` is the real planner's own `tools/call`.
 #[tokio::test]
 async fn real_planner_extends_cap_after_grant_converges_and_merges() {
     let Some(codex_bin) = resolve_codex_bin() else {
@@ -1346,18 +1126,16 @@ async fn real_planner_extends_cap_after_grant_converges_and_merges() {
         matches!(plan_actor, ActorId::AiPlannerSession(_)),
         "plan.updated actor must be the real planner session, got {plan_actor:?}"
     );
-    // #937: pin the review subject to the steered slug (see STEERED_REVIEW_SLICE).
-    // `changed_keys[0]` is the first plan TASK key, not the review SUBJECT slug the
-    // agent emits — they are different namespaces and the agent's slug drifts.
+    // `changed_keys[0]` is the first plan TASK key, not the review SUBJECT slug — different namespaces.
     let slice_id = STEERED_REVIEW_SLICE.to_string();
 
     let harness = recover_planner_harness(&fx)
         .await
         .expect("live planner harness");
-    // Settle the planning turn before setup/seeding (R6 causality guard).
+    // Settle the planning turn before setup/seeding.
     wait_for_planner_turn_settled(&fx, &harness, planner_planning_budget()).await;
 
-    // Pre-position the track at `reviewing` (R7a/R7b precedent).
+    // Pre-position the track at `reviewing`.
     fx.repo_dyn
         .track_update(
             fx.track_id.as_str(),
@@ -1369,8 +1147,7 @@ async fn real_planner_extends_cap_after_grant_converges_and_merges() {
         .await
         .expect("pre-position track lifecycle to reviewing");
 
-    // Scripted REAL PR setup (d2 precedent; setup, not the proof): genuine
-    // forge.pr.opened/checks events back the injected observations.
+    // Scripted REAL PR setup (setup, not the proof).
     let branch = "neige-r7c-impl-slice";
     run_git(&fx.track_cwd, ["checkout", "-B", branch, "origin/main"]);
     stage_git_change(&fx.track_cwd, "FORGE_E2E_R7C.md", "forge-e2e-r7c\n");
@@ -1451,13 +1228,7 @@ async fn real_planner_extends_cap_after_grant_converges_and_merges() {
         .await;
     }
 
-    // Seed ONE prior impl round ALREADY AT the cap (n=8/cap=8) carrying the REAL
-    // branch tip + pr_number: no further round is kernel-legal pre-grant (n=9 >
-    // cap), so the planner must escalate to ask-human directly rather than run
-    // another round. (#943: seeding n=7 deadlocks — the agent re-dispatches a
-    // legitimate round-8 the dispatcher-less harness cannot complete.) The
-    // post-grant cap extension (+2) still makes n=9/cap=10 the single legal
-    // round, so the extension oracle below is unchanged.
+    // Seed ONE prior impl round ALREADY AT the cap (n=8/cap=8) carrying the REAL tip: no further round is legal pre-grant, and the +2 extension makes n=9/cap=10 the single legal round after.
     seed_prior_impl_review_round(&fx, &slice_id, pr_number, &head_sha, 8, 8).await;
 
     let floor = max_event_id(&fx.repo).await;
@@ -1473,8 +1244,7 @@ async fn real_planner_extends_cap_after_grant_converges_and_merges() {
         "proof-validity guard: no forge.pr.merged may exist pre-wake"
     );
 
-    // Wake: dispatcher-shaped observations only (design D5; no dispatcher
-    // runs in the planner-harness E2E).
+    // Wake: dispatcher-shaped observations only (no dispatcher runs here).
     inject_task_changes_requested(&harness, &task_id(&fx, "review-pr-a")).await;
     inject_task_changes_requested(&harness, &task_id(&fx, "review-pr-b")).await;
     inject_observation(
@@ -1509,13 +1279,7 @@ async fn real_planner_extends_cap_after_grant_converges_and_merges() {
     )
     .await;
 
-    // Phase 1 (a) — the ordered ASK-HUMAN chain (rising floors, R7b oracle).
-    // The subject is seeded already at the cap (n=8/cap=8), so no further round
-    // is kernel-legal pre-grant and the planner escalates directly; we wait from
-    // the pre-wake `floor`. #943: seeding n=7 deadlocks here — the agent
-    // re-dispatches a legitimate round-8 the dispatcher-less harness cannot
-    // complete. The single planner-authored round is the post-grant extension
-    // (n=9/cap=10), asserted below.
+    // Phase 1 (a) — the ordered ASK-HUMAN chain, waited from the pre-wake `floor`.
     let (rw_id, rw_actor, rw_edge) =
         wait_for_track_lifecycle_edge(&fx, floor, "reviewing", "working", ratify_budget()).await;
     assert!(
@@ -1542,8 +1306,7 @@ async fn real_planner_extends_cap_after_grant_converges_and_merges() {
         "track row must be blocked while awaiting ratification"
     );
 
-    // Grant = PRODUCTION HTTP route via in-process router-oneshot (R7b
-    // precedent): blocked->working + ratify.resolved{grant}, both User.
+    // Grant through the PRODUCTION HTTP route: blocked->working + ratify.resolved{grant}, both User.
     let app = fixture_router(&fx);
     let body = serde_json::to_vec(&json!({ "decision": "grant" })).expect("grant body");
     let resp = app
@@ -1615,10 +1378,7 @@ async fn real_planner_extends_cap_after_grant_converges_and_merges() {
         "grant blocked->working edge actor must be User: {grant_edges:?}"
     );
 
-    // Recovery wake + post-grant APPROVED verdicts for both channels,
-    // injected BEFORE the planner's next round so its single post-grant round is
-    // both the extension and the convergence (design C1 resolution;
-    // merge-test observation shapes).
+    // Recovery wake + post-grant APPROVED verdicts, injected BEFORE the planner's next round so that round is both the extension and the convergence.
     inject_ratify_resolved_grant(&harness, &fx).await;
     for (key, chan) in [("review-pr-a", "a"), ("review-pr-b", "b")] {
         inject_observation(
@@ -1631,11 +1391,7 @@ async fn real_planner_extends_cap_after_grant_converges_and_merges() {
         .await;
     }
 
-    // Oracle 1 — THE extension round: n=9 (= old cap + 1), cap=10 (= old cap
-    // + 2), converged, both channels approved, real branch tip, planner-authored.
-    // Kernel acceptance of this row is the E2E proof of the #888 arm.
-    // #937: this oracle requires the steered slug to survive the grant re-wake,
-    // the exact boundary where the within-run review-subject drift was observed.
+    // Oracle 1 — THE extension round: n=9 (= old cap + 1), cap=10 (= old cap + 2), converged, planner-authored.
     let (ext_round_id, ext_round_actor, ext_round) = wait_for_impl_review_round_on_subject(
         &fx,
         resolved_id,
@@ -1749,17 +1505,14 @@ async fn real_planner_extends_cap_after_grant_converges_and_merges() {
         "exactly one post-grant review.round on the impl subject (the extension round)"
     );
 
-    // Oracle 4 — ordering by row id: ratify.requested < ratify.resolved{grant}
-    // < extension round < forge.pr.merged. (Oracle 5, actor shapes, is asserted
-    // at each wait above.)
+    // Oracle 4 — ordering by row id: ratify.requested < ratify.resolved{grant} < extension round < forge.pr.merged.
     assert!(
         req_id < resolved_id && resolved_id < ext_round_id && ext_round_id < merged_id,
         "ordering violated: requested={req_id}, resolved={resolved_id}, \
          extension={ext_round_id}, merged={merged_id}"
     );
 
-    // Oracle 6 — full-history INV-CAP-EXT validation by adjacent pairs:
-    // exactly ONE extension on the impl subject, zero on every other subject.
+    // Oracle 6 — exactly ONE cap extension on the impl subject, zero on every other subject.
     let extensions = assert_cap_extension_history(&fx.repo, fx.track_id.as_str()).await;
     let impl_subject = SubjectKey {
         phase: "impl".into(),
@@ -1794,11 +1547,7 @@ async fn real_planner_extends_cap_after_grant_converges_and_merges() {
     shutdown_shared_codex(&fx.shared).await;
 }
 
-/// R7c goal (#888): environment facts (repo selector) + descriptor-legal
-/// steering of the ASK-HUMAN branch (R7b precedent) + the restated merge
-/// trigger (d2 merge-test precedent, seat caveat carried over). The `+2`
-/// cap-extension rule itself is deliberately NOT restated: obeying it
-/// post-grant must come from the bound template descriptor.
+/// Environment facts plus descriptor-legal ASK-HUMAN steering; the `+2` cap-extension rule is deliberately NOT restated and must come from the descriptor.
 fn extension_merge_goal(repo_gitdir: &str) -> String {
     format!(
         "Drive the tail of the issue-development template. Environment facts: the `repo` \
@@ -1815,13 +1564,7 @@ fn extension_merge_goal(repo_gitdir: &str) -> String {
     )
 }
 
-/// Seed ONE prior non-converged typed impl `review.round` at `n`/`cap`
-/// carrying the REAL branch tip + pr_number (#888 R7c; shape =
-/// `seed_prior_design_review_round` × the impl subject/idem-key shape of
-/// `seed_converged_impl_review_round`). Actor MUST be
-/// `ActorId::AiPlanner(planner card)` with `EventScope::Track`: role_gate rule 2.8
-/// makes review.round planner-only, and the seeded AiPlanner row stays
-/// actor-distinguishable from the real planner's AiPlannerSession rows.
+/// Seed ONE prior non-converged impl `review.round` at `n`/`cap` carrying the REAL tip; actor MUST be `AiPlanner(planner card)` with `EventScope::Track` (role_gate makes review.round planner-only).
 async fn seed_prior_impl_review_round(
     fx: &Fixture,
     slice_id: &str,
@@ -1864,9 +1607,7 @@ async fn seed_prior_impl_review_round(
                     },
                 ],
                 root_cause: None,
-                // Canonical shape from `review_round_idempotency_key`
-                // (mcp_server/tools/review.rs): PR subjects carry the pr
-                // number in the pr slot.
+                // Canonical shape from `review_round_idempotency_key`: PR subjects carry the pr number in the pr slot.
                 idempotency_key: format!(
                     "review.round:{}:impl:{}:{}:{}",
                     fx.track_id.as_str(),
@@ -1880,7 +1621,7 @@ async fn seed_prior_impl_review_round(
         .expect("log seeded prior impl review.round");
 }
 
-/// #937 timeout diagnostic for review-round subjects observed after a floor.
+/// Timeout diagnostic for review-round subjects observed after a floor.
 async fn review_round_subjects_after(fx: &Fixture, floor: i64) -> Vec<String> {
     let rows: Vec<String> = sqlx::query_scalar(
         "SELECT payload FROM events \
@@ -1908,10 +1649,7 @@ async fn review_round_subjects_after(fx: &Fixture, floor: i64) -> Vec<String> {
     subjects
 }
 
-/// First post-floor `review.round` on the seeded impl subject (phase, slice
-/// AND pr_number — the kernel keys review history by the FULL subject, so a
-/// pr-less round is a different stream and must not be returned). Returns the
-/// event id so callers can pin ordering invariants against it.
+/// First post-floor `review.round` on the FULL impl subject (a pr-less round is a different stream); returns the event id.
 async fn wait_for_impl_review_round_on_subject(
     fx: &Fixture,
     floor: i64,
@@ -1959,59 +1697,8 @@ async fn wait_for_impl_review_round_on_subject(
     }
 }
 
-// ======================= #840 CAPSTONE (S0–S13) =========================
-//
-// One REAL run of the full issue→PR→merge→close backbone. The fixture serves
-// a real (non-toy) code task from a shim-served issue body, and everything
-// between the goal and the oracle is production machinery: real planner turns
-// via the `planner-harness-start` op, a LIVE kernel dispatcher (scheduler
-// claims, workspace lease + git worktree, real codex workers for
-// inspect / design-review ×2 / implement / open-pr / review-pr ×2 / merge,
-// kernel commit, env-cleared gate run), and planner wake-ups EXCLUSIVELY via the
-// dispatcher's `harness_observation_from_event` push path (the dispatcher is
-// spawned with the FIXTURE's HarnessRegistry — `spawn_dispatcher_with_harness`
-// — so pushes reach the harness the start op registered). ZERO injected
-// observations, ZERO seeded task/review rows, ZERO TrackPatch lifecycle
-// pre-positioning — R6/R7/d2 injected only because no dispatcher ran there.
-//
-// Shimmed (the sanctioned #840 §5 set ONLY): the GitHub remote (gh shim), CI
-// conclusion (statusCheckRollup hardwired "success"), the fixture issue body
-// (shim-served seeded file), and human ratification — avoided entirely: the
-// goal steers the failure branch to GIVE-UP, and ANY `ratify.requested` fails
-// the test (purity, asserted continuously in every stage wait and post-run).
-//
-// Gate honesty (checker pin a): the task-verify runner resolves its cwd as
-// `gate.cwd → task.cwd → tracks.cwd` (task_verify_adapter.rs §6.4) and nothing
-// ever writes `task.cwd` back, so the patched `sh ./e2e-gate.sh` gate
-// compiles/runs the SEEDED `src/lib.rs` in the track clone — NOT the worker's
-// branch content. The gate therefore proves the pipeline edge (commit →
-// verifying → task.gate_result{passed} → merge fence ordering); the CONTENT
-// proof lives in the oracle's diff invariant: the merged head's diff against
-// the seeded base must add `is_palindrome` to `src/lib.rs`.
-//
-// No-cargo discipline (P1 + checker pin d): #1110 S5 dropped descriptor
-// gates. Task-level `gate_json` is still asserted cargo-free by the
-// post-run oracle. A bare `cargo test` gate dispatched from inside this
-// suite is the #863-B recursive-suite amplifier.
-//
-// Run discipline (#863-D): the REAL capstone run happens ONLY inside the #863
-// isolation wrapper, setsid-detached, never harness-tracked, never on the
-// shared production box (memories `project_e2e_ingest_kills_production`,
-// `feedback_real_codex_e2e_crashes_harness`). In deterministic contexts this
-// test self-skips (no NEIGE_CODEX_BIN).
-//
-// Report card: the fixture now always mints it (production `create_track` mints
-// it atomically for every track); it is setup, not proof.
-//
-// Steering vs autonomy: the track goal carries environment facts (repo
-// selector = the CLONE gitdir, issue number, base sha — `forge_pr_goal`
-// precedent) plus descriptor-legal planning steering (deferred task blocks:
-// unknown dependencies stay diagnostic-only, so review-pr-a/b
-// AND merge are added together in ONE batch once the PR coordinates exist —
-// checker pin b; open-pr is likewise deferred until the implement branch is
-// known, killing the goal-rewrite dispatch race). Round counts, fix loops,
-// reviewer wording, plan shape, and extra events are all tolerated; the
-// invariants live in the oracle.
+// CAPSTONE: one REAL run of the full issue→PR→merge→close backbone with a LIVE dispatcher — zero injected observations, zero seeded rows, zero lifecycle pre-positioning; ANY `ratify.requested` fails the test.
+// Real runs happen ONLY inside the isolation wrapper, never on the shared production box; without NEIGE_CODEX_BIN this self-skips.
 
 /// The capstone's source issue number. An environment fact for the gh shim
 /// (state keyed per repo selector); any number works.
@@ -2056,11 +1743,7 @@ async fn real_planner_drives_issue_to_close_capstone() {
         }
     };
 
-    // P4: dispatcher permits 4 so the design/PR reviewer pairs can run in
-    // parallel — but the SCHEDULER also enforces the per-track task budget
-    // (kernel default 1). Raise it to match; codex tasks lease disjoint
-    // worktrees, and the seeded gate script pid-suffixes its output binary so
-    // concurrent gate runs in the shared tracks.cwd cannot collide.
+    // Dispatcher permits 4 so reviewer pairs run in parallel; the scheduler also enforces the per-track task budget (default 1), so raise it to match.
     fx.repo_dyn
         .track_update(
             fx.track_id.as_str(),
@@ -2078,10 +1761,7 @@ async fn real_planner_drives_issue_to_close_capstone() {
     let goal = capstone_goal(&repo_gitdir, CAPSTONE_ISSUE_NUMBER, &fx.origin_main_initial);
     boot_planner_harness_via_start_op(&fx, goal).await;
 
-    // P7 bounding: every stage gets its own ≥480s floor (checker pin c —
-    // substantial workers run for minutes each per d1), all under one overall
-    // NEIGE_CAPSTONE_BUDGET deadline (default 3600s). A stage whose budget is
-    // exhausted panics through `panic_with_agent_diag` (#866 rollout dumps).
+    // Every stage gets its own ≥480s floor under one overall NEIGE_CAPSTONE_BUDGET deadline (default 3600s).
     let overall_deadline = Instant::now() + capstone_budget();
     let st = move || capstone_stage_budget().min(remaining(overall_deadline));
 
@@ -2123,9 +1803,7 @@ async fn real_planner_drives_issue_to_close_capstone() {
         "issue read artifact must carry the shim-seeded fixture body (S0)"
     );
 
-    // S2/S9 (design phase) — the planner records a design review round after the
-    // real design reviewer workers complete. Convergence/round count is
-    // tolerated here; presence is skeleton-required.
+    // S2/S9 — the planner records a design review round after the real reviewer workers complete; round count is tolerated.
     let (_design_round_id, design_round_actor, design_round) = wait_capstone_event(
         &fx,
         "review.round",
@@ -2204,17 +1882,7 @@ async fn real_planner_drives_issue_to_close_capstone() {
     )
     .await;
 
-    // S8 — THE capstone-critical seam: a real reviewer worker reads the real
-    // merge-base diff via gh.pr.diff (fixture verdicts satisfy S2/S9/S10, NOT
-    // S8; zero forge.pr.diff.read fails the run). Seat tightening (review
-    // channel A, item 3): this diff.read PRECEDES the converged impl round it
-    // feeds (the round wait floors on diff_id), the open-pr goal FORBIDS
-    // gh.pr.diff, the implement worker finishes before the PR exists, and the
-    // merge worker dispatches only after the round — leaving the reviewer
-    // workers (or the planner itself, an equally-real unscripted read) as the
-    // only possible emitters. The event is card-anonymous, so exact reviewer
-    // attribution stays tolerated (construction W: nothing scripted calls
-    // gh.pr.diff in this file).
+    // S8 — a real reviewer worker reads the merge-base diff via gh.pr.diff; zero `forge.pr.diff.read` fails the run. The event is card-anonymous, so exact reviewer attribution is tolerated.
     let (diff_id, diff_actor, diff_read) = wait_capstone_event(
         &fx,
         "forge.pr.diff.read",
@@ -2226,11 +1894,7 @@ async fn real_planner_drives_issue_to_close_capstone() {
     .await;
     assert_eq!(diff_actor, ActorId::KernelDispatcher, "{diff_read}");
 
-    // S9/S10 — the planner records the converged impl review round for this PR.
-    // The manifest planner_instructions mark subject.pr_number OPTIONAL for
-    // review rounds and the goal never pins it, so a real planner omitting it
-    // emits a perfectly legal round — tolerate absent/null, require equality
-    // only when present (review channel A, item 1).
+    // S9/S10 — the converged impl review round. `subject.pr_number` is OPTIONAL per the manifest, so tolerate absent/null and require equality only when present.
     let (round_id, round_actor, round) = wait_capstone_event(
         &fx,
         "review.round",
@@ -2269,11 +1933,7 @@ async fn real_planner_drives_issue_to_close_capstone() {
         .unwrap_or_else(|| panic!("forge.pr.merged missing head_sha: {merged}"))
         .to_string();
     assert!(is_hex_sha(&merged_head), "{merged}");
-    // F4 direct assert, bound to the LATEST (max-n) pre-merge round on the
-    // subject — NOT the first converged one the stage wait matched: a
-    // converge → late-fix → re-converge run merges on the newer head, which
-    // is legitimate and must pass (review channel A, item 2; consistent with
-    // `assert_subject_keyed_cap_enforcement` / 6a semantics).
+    // F4 direct assert against the LATEST (max-n) pre-merge round: a converge → late-fix → re-converge run legitimately merges on the newer head.
     let fence_round = latest_impl_round_before_merge(&fx, merged_id, &round_slice, pr_number).await;
     assert_eq!(
         fence_round["converged"],
@@ -2320,14 +1980,10 @@ async fn real_planner_drives_issue_to_close_capstone() {
         "→done lifecycle edge actor must be AiPlannerSession, got {done_actor:?} for {done_edge}"
     );
 
-    // ------------------------- post-run oracle -------------------------
+    // Post-run oracle.
     capstone_oracle(&fx, pr_number, &merged_head, &subject, &repo_gitdir).await;
 
-    // Teardown per P4: dispatcher handle first, then harness, plugin, codex.
-    // Panic paths (incl. every stage-wait timeout) do NOT run this teardown
-    // and leak the shared appserver pgid — the suite-wide pre-existing
-    // pattern, acceptable because real runs happen only inside the #863
-    // isolation wrapper, which reaps the whole session process group.
+    // Teardown: dispatcher handle first, then harness, plugin, codex. Panic paths skip this and leak the shared appserver pgid; the isolation wrapper reaps the session process group.
     drop(dispatcher);
     shutdown_planner_harness_if_registered(&fx).await;
     fx.plugin_host
@@ -2341,9 +1997,7 @@ fn remaining(deadline: Instant) -> Duration {
     deadline.saturating_duration_since(Instant::now())
 }
 
-/// Review-round subject tolerance (review channel A, item 1): the descriptor
-/// marks `subject.pr_number` optional, so absent/null is legal; when present
-/// it must match the capstone PR.
+/// `subject.pr_number` is optional per the descriptor, so absent/null is legal; when present it must match.
 fn subject_pr_absent_or_matches(subject: &Value, pr_number: u64) -> bool {
     match subject.get("pr_number") {
         None => true,
@@ -2352,11 +2006,7 @@ fn subject_pr_absent_or_matches(subject: &Value, pr_number: u64) -> bool {
     }
 }
 
-/// The F4 fence round: the max-n impl `review.round` on `slice_id`
-/// (pr_number absent-or-matching) with event id strictly BEFORE the merge —
-/// i.e. the round the merge's expected_head_sha must have been built on.
-/// Latest-n, not first-converged: a converge → late-fix → re-converge run
-/// legitimately merges on the newer head (review channel A, item 2).
+/// The F4 fence round: the max-n impl `review.round` on `slice_id` with event id strictly BEFORE the merge (latest-n, not first-converged).
 async fn latest_impl_round_before_merge(
     fx: &Fixture,
     merged_id: i64,
@@ -2380,12 +2030,7 @@ async fn latest_impl_round_before_merge(
         })
 }
 
-/// Track goal for the capstone: environment facts (forge_pr_goal precedent —
-/// repo selector, issue number, base sha are facts only the fixture knows)
-/// plus descriptor-legal planning steering (dependency-ordered task blocks
-/// per P5's dispatch-race analysis; GIVE-UP failure terminator per P3).
-/// The PR coordinates themselves must flow through observations/runs — they
-/// do not exist when this goal is written.
+/// Capstone track goal: environment facts plus descriptor-legal planning steering; PR coordinates must flow through observations/runs.
 fn capstone_goal(repo_gitdir: &str, issue_number: u64, base_sha: &str) -> String {
     format!(
         "Drive the bound issue-development template END-TO-END for issue #{issue_number}: read \
@@ -2436,11 +2081,7 @@ fn capstone_goal(repo_gitdir: &str, issue_number: u64, base_sha: &str) -> String
     )
 }
 
-/// Floor-based capstone stage wait with the failure terminator folded in:
-/// `ratify.requested` at ANY point is a purity violation (the goal steers
-/// GIVE-UP), and a track that lands `failed` is a legitimate agent outcome but
-/// a capstone FAILURE — both fail fast with full agent diagnostics instead of
-/// burning the stage budget.
+/// Stage wait with the failure terminator folded in: `ratify.requested` at ANY point or a `failed` track fails fast with agent diagnostics.
 async fn wait_capstone_event(
     fx: &Fixture,
     kind: &str,
@@ -2558,11 +2199,7 @@ async fn capstone_oracle(
     )
     .await;
 
-    // Orderings 1, 4, 5 (first-matching happens-before). Ordering 2 (latest
-    // converged design round < first impl-task dispatch) is deliberately NOT
-    // asserted: the scheduler never reads review state (scheduler.rs
-    // compute_ready — deps-Done only) and the plan shape is
-    // invariant-tolerated, so the edge is soft/unidentifiable by design.
+    // Ordering 2 (latest converged design round < first impl dispatch) is deliberately NOT asserted: the scheduler never reads review state.
     assert_ordering(
         &fx.repo,
         &[
@@ -2592,13 +2229,7 @@ async fn capstone_oracle(
     // precedes worker_session.started for every card that has both.
     assert_provisioned_before_worker_session_started_per_card(fx).await;
 
-    // Fence 6: subject-keyed cap enforcement + 6a existence (converged
-    // subject must actually have a head-matching merge). 6a keys merges by
-    // the FULL subject; when the planner legally omitted pr_number from its
-    // round subjects (item-1 tolerance) the round subject can never equal
-    // the merge subject (which always carries pr_number from the tool args),
-    // so 6a is replaced by the direct latest-fence assert already made
-    // in-line (merged head == latest pre-merge converged round head).
+    // Fence 6: subject-keyed cap enforcement. 6a (merge keyed by FULL subject) is replaced by the in-line latest-fence assert because a round may legally omit pr_number.
     assert_subject_keyed_cap_enforcement(&fx.repo, fx.track_id.as_str()).await;
     if subject.pr_number.is_some() {
         assert_converged_subject_has_merge(&fx.repo, subject).await;
@@ -2627,14 +2258,7 @@ async fn capstone_oracle(
         }
     }
 
-    // F4 idem-key shape (d2 helper): the forge-action op idempotency key is
-    // `{plugin}:{track}:{caller card}:{plugin idem}` and the plugin idem is
-    // `gh.pr.merge:{repo}:{pr}:{expected_head_sha}` ONLY when
-    // expected_head_sha was passed — an omitted-sha merge produces
-    // `gh.pr.merge:{repo}:{pr}` and fails here. The caller card is NOT pinned
-    // (the descriptor merge task is kind:codex, so a merge-worker seat is as
-    // legal as the planner seat); the with-sha suffix is the load-bearing F4
-    // content.
+    // F4 idem-key shape: the plugin idem carries `:{expected_head_sha}` ONLY when it was passed. The caller card is NOT pinned: a merge-worker seat is as legal as the planner seat.
     let merge_keys = forge_action_idem_keys_containing(fx, ":gh.pr.merge:").await;
     assert!(
         !merge_keys.is_empty(),
@@ -2675,11 +2299,7 @@ async fn capstone_oracle(
         );
     }
 
-    // Content invariant (P2 + pin a): the MERGED head's diff against the
-    // seeded base touches src/lib.rs and adds the issue-contract function +
-    // a test. The PR head commit lives in the track clone's object db (worker
-    // worktrees are `git -C {tracks.cwd} worktree add`, so branches/objects
-    // share the clone gitdir; no push involved).
+    // Content invariant: the MERGED head's diff against the seeded base adds the issue-contract function. Worker worktrees share the clone gitdir, so no push is involved.
     let content_diff = git_stdout(
         &fx.track_cwd,
         [
@@ -2754,10 +2374,7 @@ async fn capstone_oracle(
     );
 }
 
-/// Ordering 3 (kernel-forced): for every card that has BOTH events, the first
-/// `worktree.provisioned` precedes the first `worker_session.started` (the
-/// planner card has worker_session.started but no worktree — vacuously
-/// skipped).
+/// For every card with BOTH events, the first `worktree.provisioned` precedes the first `worker_session.started` (the planner card has no worktree — vacuously skipped).
 async fn assert_provisioned_before_worker_session_started_per_card(fx: &Fixture) {
     let provisioned = event_rows(&fx.repo, "worktree.provisioned").await;
     let started = event_rows(&fx.repo, "worker_session.started").await;
@@ -2793,15 +2410,9 @@ async fn assert_provisioned_before_worker_session_started_per_card(fx: &Fixture)
     );
 }
 
-// --------------- #840 capstone deterministic support gates ---------------
-// These run WITHOUT a codex binary (no skip!) so `cargo test --features
-// codex-e2e --test codex_forge_e2e` deterministically gates the capstone's
-// support seams: the hermetic gate script, the descriptor gate patch + cargo
-// guard, and the gh shim's seeded-issue-body branch.
+// Capstone deterministic support gates: these run WITHOUT a codex binary (no skip).
 
-/// The seeded gate script must pass under the task-verify wrapper's EXACT
-/// conditions (`/bin/sh`, cleared env, repo cwd) and must be cargo-free with
-/// no Cargo.toml anywhere in the seeded repo (P1/P2 + pin d).
+/// The seeded gate script must pass under the task-verify wrapper's EXACT conditions (`/bin/sh`, cleared env, repo cwd) and be cargo-free.
 #[test]
 fn capstone_gate_script_is_hermetic_and_cargo_free() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -2839,8 +2450,7 @@ fn capstone_gate_script_is_hermetic_and_cargo_free() {
     );
 }
 
-/// #1110 S5 — shipped git-forge `templates[]` is an id handle only. Gate
-/// cmds live in report task blocks (S6 templates), not the descriptor.
+/// Shipped git-forge `templates[]` is an id handle only; gate cmds live in report task blocks, not the descriptor.
 #[test]
 fn shipped_git_forge_templates_are_id_only() {
     let raw = std::fs::read_to_string(manifest_path()).expect("read git-forge manifest");
@@ -2901,13 +2511,7 @@ fn gh_shim_issue_view_prefers_seeded_body_file() {
     );
 }
 
-/// #900 regression: in a multi-threaded test process, a child forked by
-/// another thread can hold a fork-inherited write fd to the freshly written
-/// shim's inode until it execs, so a direct spawn can fail ETXTBSY. Model
-/// that race deterministically with a held write fd: the raw spawn must fail
-/// with ExecutableFileBusy, and `run_gh` must retry until the fd is released
-/// and then succeed. Linux-only: the repro relies on the kernel enforcing
-/// ETXTBSY at execve of a file open for writing, which macOS does not.
+/// A child forked by another thread can hold a fork-inherited write fd to the shim until it execs, so a direct spawn can fail ETXTBSY; `run_gh` must retry. Linux-only: macOS does not enforce ETXTBSY.
 #[cfg(target_os = "linux")]
 #[test]
 fn gh_shim_spawn_retries_transient_etxtbsy() {
@@ -2958,9 +2562,7 @@ async fn seed_design_channel_changes_requested(fx: &Fixture, key: &str, chan: &s
     seed_design_channel_verdict(fx, key, chan, "changes_requested").await;
 }
 
-/// Seed a design review-channel task pair (dispatched + completed) carrying
-/// `verdict`, then fail fast unless the runs/ projection surfaces that exact
-/// verdict — the real planner reads runs/ to learn the channel outcomes.
+/// Seed a design review-channel task pair carrying `verdict`, then fail fast unless the runs/ projection surfaces it.
 async fn seed_design_channel_verdict(fx: &Fixture, key: &str, chan: &str, verdict: &str) {
     seed_completed_task_pair(
         fx,
@@ -2975,10 +2577,7 @@ async fn seed_design_channel_verdict(fx: &Fixture, key: &str, chan: &str, verdic
     .await
 }
 
-/// Seed a pipeline task pair (dispatched + completed) whose completion carries
-/// `result`, then fail fast unless the runs/ projection surfaces the exact
-/// `expected_summary` — the real planner reads runs/ to learn task outcomes.
-/// (Generalized from R6's design-channel helper for #840 d2.)
+/// Seed a pipeline task pair whose completion carries `result`, then fail fast unless the runs/ projection surfaces `expected_summary`.
 async fn seed_completed_task_pair(fx: &Fixture, key: &str, result: Value, expected_summary: &str) {
     let verdict = expected_summary;
     let task_id = task_id(fx, key);
@@ -3034,11 +2633,7 @@ async fn seed_completed_task_pair(fx: &Fixture, key: &str, result: Value, expect
     .await
     .expect("log seeded dispatch + context freeze batch");
 
-    // The seeded fixture shortcut does not mint a real worker session, so
-    // author the completion as KernelDispatcher (gate-unrestricted per
-    // role_gate rule 5). Card scope alone routes it to the completed bucket
-    // (is_planner_verdict_event is false for non-Track scope), so runs/ surfaces
-    // the summary the real planner reads.
+    // The fixture shortcut mints no real worker session, so the completion is authored as KernelDispatcher; card scope alone routes it to the completed bucket.
     let card_scope = EventScope::Card {
         card: fx.planner_card_id.clone(),
         track: fx.track_id.clone(),
@@ -3190,11 +2785,7 @@ async fn inject_task_changes_requested(_h: &PlannerHarness, _idem_key: &str) {
     panic!("inject_task_changes_requested requires the fixtures feature");
 }
 
-/// Inject the same `Observation::ReviewRound` the prod dispatcher's
-/// `harness_observation_from_event` would push for the seeded prior round —
-/// the planner cannot learn prior rounds from runs//track-fs (no review.round
-/// projection exists), so this observation turn text is its ONLY channel for
-/// round state, exactly as in production.
+/// Inject the same `Observation::ReviewRound` the prod dispatcher would push; no review.round projection exists, so this is the planner's ONLY channel for round state.
 #[cfg(feature = "fixtures")]
 async fn inject_design_review_round_observation(
     h: &PlannerHarness,
@@ -3232,12 +2823,7 @@ async fn inject_design_review_round_observation(
     panic!("inject_design_review_round_observation requires the fixtures feature");
 }
 
-/// Seed one prior non-converged design review.round as typed
-/// `Event::ReviewRound` (typed-seeding precedent:
-/// crates/calm-truth/src/track_vcs.rs review/ratify batch test). Actor MUST be
-/// `ActorId::AiPlanner(planner card)` with `EventScope::Track`: role_gate rule 2.8
-/// makes review.round planner-only, and the seeded AiPlanner rows stay
-/// actor-distinguishable from the real planner's AiPlannerSession rows.
+/// Seed one prior non-converged design review.round; actor MUST be `AiPlanner(planner card)` with `EventScope::Track` (role_gate makes review.round planner-only).
 async fn seed_prior_design_review_round(fx: &Fixture, slice_id: &str, n: u32, cap: u32) {
     let track_scope = EventScope::Track {
         track: fx.track_id.clone(),
@@ -3273,9 +2859,7 @@ async fn seed_prior_design_review_round(fx: &Fixture, slice_id: &str, n: u32, ca
                     },
                 ],
                 root_cause: None,
-                // Canonical shape from `review_round_idempotency_key`
-                // (mcp_server/tools/review.rs): design subjects use the
-                // literal "design" in the pr slot.
+                // Canonical shape from `review_round_idempotency_key`: design subjects use the literal "design" in the pr slot.
                 idempotency_key: format!(
                     "review.round:{}:design:{}:design:{}",
                     fx.track_id.as_str(),
@@ -3328,10 +2912,7 @@ async fn wait_for_track_failed_edge(
     }
 }
 
-/// First post-floor `track.lifecycle_changed` matching `from -> to` for the
-/// fixture track. Other lifecycle transitions and other tracks are tolerated.
-/// Returns the event id so callers can chain rising-floor ordering
-/// invariants.
+/// First post-floor `track.lifecycle_changed` matching `from -> to` for the fixture track; returns the event id.
 async fn wait_for_track_lifecycle_edge(
     fx: &Fixture,
     floor: i64,
@@ -3402,9 +2983,7 @@ async fn lifecycle_changed_rows_between(
         .collect()
 }
 
-/// First post-floor `ratify.requested`. Never emitted by this test: role_gate
-/// rule 2.8 makes it planner-session-only, so an observed row proves the real
-/// planner's own `calm.ratify.request` tool call.
+/// First post-floor `ratify.requested`; role_gate makes it planner-session-only, so an observed row proves the real planner's own tool call.
 async fn wait_for_ratify_requested(
     fx: &Fixture,
     floor: i64,
@@ -3446,10 +3025,7 @@ async fn track_lifecycle_row(fx: &Fixture) -> String {
         .expect("select track lifecycle")
 }
 
-/// The production HTTP grant seam (design D4): the real `routes::router()`
-/// behind `actor_middleware`, over the fixture's LIVE parts (repo, event bus,
-/// role/track-area caches), driven in-process via `tower::ServiceExt::oneshot`
-/// — exact precedent tests/review_ratify.rs.
+/// The production HTTP grant seam: the real `routes::router()` behind `actor_middleware` over the fixture's live parts, driven via `oneshot`.
 fn fixture_router(fx: &Fixture) -> axum::Router {
     let state = AppState::from_parts(
         fx.repo_dyn.clone(),
@@ -3467,9 +3043,7 @@ fn fixture_router(fx: &Fixture) -> axum::Router {
         .with_state(state)
 }
 
-/// Inject the same `Observation::RatifyResolved` the prod dispatcher's
-/// `harness_observation_from_event` would push for the grant's
-/// ratify.resolved event (hard-fire).
+/// Inject the same `Observation::RatifyResolved` the prod dispatcher would push for the grant.
 #[cfg(feature = "fixtures")]
 async fn inject_ratify_resolved_grant(h: &PlannerHarness, fx: &Fixture) {
     h.observe_for_test(
@@ -3715,9 +3289,7 @@ fn merge_close_goal(repo_gitdir: &str, issue_number: u64) -> String {
     )
 }
 
-/// The live planner session's bound codex thread id — the identity handle for
-/// scripted daemon-socket `tools/call`s (identical wire to the real planner's
-/// own calls, so scripted setup events go through the real plugin lowering).
+/// The live planner session's bound codex thread id, the identity for scripted daemon-socket `tools/call`s.
 async fn planner_session_thread_id(fx: &Fixture) -> String {
     fx.repo
         .session_projection_active_for_card(&fx.planner_card_id.to_string())
@@ -3745,9 +3317,7 @@ fn assert_forge_tool_accepted(resp: &Value, label: &str) {
     );
 }
 
-/// First `kind` event on the fixture track with id > `floor` matching
-/// `predicate`; superset-tolerant (other events/subjects are skipped, not
-/// failed). Returns the event id so callers can pin ordering invariants.
+/// First `kind` event on the fixture track with id > `floor` matching `predicate`; superset-tolerant. Returns the event id.
 async fn wait_for_track_forge_event(
     fx: &Fixture,
     kind: &str,
@@ -3791,11 +3361,7 @@ async fn wait_for_track_forge_event(
     }
 }
 
-/// Seed the ONE converged typed impl review.round (d2 design D2): actor MUST
-/// be `ActorId::AiPlanner(planner card)` with `EventScope::Track` — role_gate rule
-/// 2.8 makes review.round planner-only, and the seeded AiPlanner row stays
-/// actor-distinguishable from the real planner's AiPlannerSession rows. Phase
-/// literal is "impl" (forge_template_e2e `impl_round` precedent).
+/// Seed the ONE converged impl review.round; actor MUST be `AiPlanner(planner card)` with `EventScope::Track` (role_gate makes review.round planner-only).
 async fn seed_converged_impl_review_round(
     fx: &Fixture,
     slice_id: &str,
@@ -3836,9 +3402,7 @@ async fn seed_converged_impl_review_round(
                     },
                 ],
                 root_cause: None,
-                // Canonical shape from `review_round_idempotency_key`
-                // (mcp_server/tools/review.rs): PR subjects carry the pr
-                // number in the pr slot.
+                // Canonical shape from `review_round_idempotency_key`: PR subjects carry the pr number in the pr slot.
                 idempotency_key: format!(
                     "review.round:{}:impl:{}:{}:1",
                     fx.track_id.as_str(),
@@ -3859,10 +3423,7 @@ async fn latest_event_id_of_kind(fx: &Fixture, kind: &str) -> i64 {
         .unwrap_or_else(|e| panic!("max {kind} event id: {e}"))
 }
 
-/// All forge-action operation idempotency keys containing `needle`, oldest
-/// first. The key shape is `{plugin}:{track}:{caller card}:{plugin idem}`
-/// (mcp_server/transport.rs `submit_forge_action`), so it pins BOTH the
-/// caller seat and the plugin-level idem (incl. F4's expected_head_sha).
+/// All forge-action op idempotency keys containing `needle`, oldest first; the shape `{plugin}:{track}:{caller card}:{plugin idem}` pins both the seat and the plugin idem.
 async fn forge_action_idem_keys_containing(fx: &Fixture, needle: &str) -> Vec<String> {
     sqlx::query_scalar(
         "SELECT idempotency_key FROM operations \
@@ -3897,13 +3458,11 @@ fn review_budget() -> Duration {
         .ok()
         .and_then(|raw| raw.parse::<u64>().ok())
         .map(Duration::from_secs)
-        // Default doubled vs planner_planning_budget — the review wait includes the planner's autonomous runs/ read round-trip and 1/5 stability runs exceeded 240s (design §6 headroom).
+        // Doubled vs planner_planning_budget: the review wait includes the planner's autonomous runs/ read round-trip.
         .unwrap_or_else(|| Duration::from_secs(480))
 }
 
-/// Budget for the ASK-HUMAN request-wait and the post-grant resume-wait
-/// (R7 design D6): each spans a full real planner turn, so it gets the same
-/// headroom as `review_budget`.
+/// Budget for the ASK-HUMAN request-wait and the post-grant resume-wait; each spans a full real planner turn.
 fn ratify_budget() -> Duration {
     std::env::var("NEIGE_PLANNER_RATIFY_BUDGET")
         .ok()

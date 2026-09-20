@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
-# Classify a NUL-delimited git path stream conservatively for CI fan-out.
-#
-# Each mode names an independently executable CI surface. A path returns false
-# only when it belongs to a known-unrelated tree; unknown paths, an empty diff,
-# and unavailable comparison SHAs fail open to the broadest safe coverage.
-# `docs/oracle/**` is documentation for ordinary code jobs but executable input
-# to the mutation catalog, so mutation mode deliberately treats it as relevant.
+# Classify a NUL-delimited git path stream conservatively for CI fan-out: unknown paths, an empty diff and unavailable
+# comparison SHAs fail open to the broadest coverage. `docs/oracle/**` is executable input to the mutation catalog, so mutation mode treats it as relevant.
 set -euo pipefail
 
 mode="${1:-code}"

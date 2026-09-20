@@ -209,9 +209,7 @@ impl CandidateMachinePolicy {
                     "{path}.cmd must not contain ASCII control characters"
                 ));
             }
-            // The shared gate log reader trims sentinel labels. Reject names
-            // that would become ambiguous there, without rewriting either name
-            // or command bytes in the frozen policy.
+            // The shared gate log reader trims sentinel labels; reject names that would become ambiguous there.
             if let Some(previous) = names.insert(step.name.trim(), index) {
                 return Err(format!(
                     "{path}.name duplicates {PATH}.steps[{previous}].name"
@@ -290,8 +288,7 @@ impl IsolatedCodexSelection {
                 if entries.len() + 1 > 64 {
                     return Err(invalid());
                 }
-                // Manifest repeats declared paths in outputs and entries. Reserve
-                // bounded metadata (digest, mode, byte length) before launching work.
+                // Manifest repeats declared paths in outputs and entries; reserve bounded metadata before launching work.
                 let encoded_paths = paths
                     .iter()
                     .map(|p| serde_json::to_string(p).map(|s| s.len()))

@@ -1,20 +1,4 @@
-//! Microbenchmark for `Repo::write_with_event` overhead — design doc §6.4.
-//!
-//! **Target: <50µs added per call against `sqlite::memory:`.**
-//!
-//! Two groups are measured side-by-side:
-//!
-//!   * `write_with_event_area_create` — full sync engine write path
-//!     (txn open → entity `_tx` → event insert → commit → broadcast).
-//!   * `baseline_area_create_no_event_log` — pre-Scope-A path (entity
-//!     write only, no event row, no broadcast).
-//!
-//! The **delta** between the two is the cost the design budgets at
-//! <50µs in-memory. Wall-clock numbers themselves vary with the
-//! runtime (current_thread vs multi-thread) and the sqlx pool's per-
-//! connection setup; what matters for the PR gate is "no regression
-//! worse than +20% on the delta" (design §6.4 verbatim).
-//!
+//! Microbenchmark for `Repo::write_with_event` overhead: the delta between the event-logged and baseline groups is what matters.
 //! Run with `cargo bench -p calm-server --bench event_append`.
 
 use std::sync::Arc;
@@ -28,9 +12,7 @@ use calm_server::model::NewArea;
 use criterion::{Criterion, criterion_group, criterion_main};
 
 fn event_append_bench(c: &mut Criterion) {
-    // Single tokio runtime shared across all sample runs — avoids the
-    // per-iteration runtime spin-up cost which would dominate the
-    // measurement we care about.
+    // One runtime across all sample runs, so runtime spin-up does not dominate the measurement.
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -45,12 +27,7 @@ fn event_append_bench(c: &mut Criterion) {
         (r, EventBus::new())
     });
 
-    // Pre-subscribe so the broadcast send doesn't take the "no subscribers"
-    // fast path (which would understate the cost of a real production
-    // emit). We don't drain the receiver — the broadcast channel buffers
-    // up to BUS_CAPACITY (1024) before lagging. We re-subscribe between
-    // groups to keep the buffer fresh; one group of 100 iterations is
-    // well under the cap.
+    // Pre-subscribe so the broadcast send does not take the "no subscribers" fast path; the receiver is never drained and one group stays well under BUS_CAPACITY.
     let _sub = bus.subscribe();
 
     c.bench_function("write_with_event_area_create", |b| {
@@ -87,10 +64,7 @@ fn event_append_bench(c: &mut Criterion) {
         });
     });
 
-    // Baseline: same area_create, but bypassing write_with_event — runs
-    // the entity insert in a plain `Repo::area_create` (its own txn, no
-    // event log row). Lets reviewers compare the +event-row overhead
-    // directly against the existing pre-Scope-A cost.
+    // Baseline: same area_create via plain `Repo::area_create` (own txn, no event log row).
     c.bench_function("baseline_area_create_no_event_log", |b| {
         b.to_async(&rt).iter(|| {
             let repo = Arc::clone(&repo);

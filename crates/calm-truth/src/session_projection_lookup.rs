@@ -13,8 +13,6 @@ use crate::session_projection_repo::{
 use crate::worker::WorkerSessionId;
 use serde_json::Value;
 
-/// Resolve an active codex thread for a card. Worker sessions are the source of
-/// truth.
 pub async fn resolve_active_thread_for_card(
     repo: &dyn RouteRepo,
     card_id: &str,
@@ -28,8 +26,6 @@ pub async fn resolve_active_thread_for_card(
     Ok(non_empty(runtime.thread_id.as_deref()).map(ToOwned::to_owned))
 }
 
-/// Resolve the owning card for a provider thread id. Worker sessions are the
-/// source of truth.
 pub async fn resolve_card_for_thread(
     repo: &dyn RouteRepo,
     provider: AgentProvider,
@@ -40,8 +36,6 @@ pub async fn resolve_card_for_thread(
         .map(|(_session_id, card_id)| card_id))
 }
 
-/// Resolve the active worker session and owning card for a provider thread id.
-/// Worker sessions are the source of truth.
 pub async fn resolve_session_for_thread(
     repo: &dyn RouteRepo,
     provider: AgentProvider,
@@ -60,9 +54,7 @@ pub async fn resolve_session_for_thread(
     Ok(active.map(|runtime| (WorkerSessionId::from(runtime.id), runtime.card_id)))
 }
 
-/// Resolve a Claude session for a card. Worker sessions are the source of truth;
-/// `cards.payload.claude_session_id` is a transitional fallback for
-/// pre-backfill rows and tracked edge cases.
+/// `cards.payload.claude_session_id` is a transitional fallback for pre-backfill rows.
 pub async fn resolve_claude_session_for_card(
     repo: &dyn RouteRepo,
     card_id: &str,
@@ -95,7 +87,6 @@ pub async fn resolve_claude_session_for_card(
     Ok(legacy_session)
 }
 
-/// Return active shared codex thread attribution from worker sessions.
 pub async fn merge_active_shared_thread_attribution(
     repo: &dyn RouteRepo,
 ) -> Result<HashMap<String, String>> {
@@ -109,16 +100,9 @@ pub async fn merge_active_shared_thread_attribution(
     Ok(merged)
 }
 
-/// Project active runtime identity onto a `Card`'s payload for API/WS compatibility.
-///
-/// Until the frontend reads directly from runtime fields, the payload must still
-/// carry `terminal_id`, `claude_session_id`, `codex_thread_id`, `codex_source`,
-/// and `codex_thread_status` for in-flight UI cases. This helper looks up the
-/// projectable runtime and patches those keys into payload before serialization.
-///
-/// Runtime row is SOT; fields the runtime knows are overwritten in payload to
-/// reflect runtime truth. Fields the runtime has no opinion on are left
-/// untouched.
+/// Patch active runtime identity into a `Card`'s payload for API/WS
+/// compatibility. The runtime row is SOT; fields it has no opinion on are
+/// left untouched.
 pub async fn project_runtime_into_card_payload<R: WorkerSessionProjectionRepo + ?Sized>(
     repo: &R,
     card: &mut Card,
@@ -243,11 +227,8 @@ fn projected_thread_status(runtime: &WorkerSessionProjection) -> Option<&'static
     }
 }
 
-/// Runtime-first shared-codex discriminator. When no active runtime is
-/// available, falls back to the legacy payload stamp.
-///
-/// Returns true for any active codex card with a thread id; post-PR2a all codex
-/// traffic routes through the shared daemon, not only planner-card launches.
+/// Runtime-first shared-codex discriminator; falls back to the legacy payload
+/// stamp when no active runtime is available.
 pub fn card_is_shared_planner(card: &Card, runtime: Option<&WorkerSessionProjection>) -> bool {
     if let Some(runtime) = runtime {
         return runtime_marks_shared(runtime);

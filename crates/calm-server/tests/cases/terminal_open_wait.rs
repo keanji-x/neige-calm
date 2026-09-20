@@ -1,6 +1,5 @@
-//! #1677 S1 — `calm.terminal.open` waits like a readback: the observe wait
-//! arguments run as the open's final observation, after the claim when there
-//! is one, through the real MCP tools, renderer and PTY.
+//! `calm.terminal.open` waits like a readback: the observe wait arguments run as the open's final
+//! observation, after the claim when there is one.
 use crate::terminal_support::{Harness, human_takeover};
 use calm_server::db::prelude::*;
 use serde_json::{Value, json};
@@ -49,9 +48,8 @@ async fn terminal_cards(h: &Harness) -> usize {
         .filter(|card| card.kind == "terminal")
         .count()
 }
-/// Run `call` and write `marker` once the call's wait has subscribed to the
-/// projection (the same device as the text-wait tests), so the program's
-/// output lands after the wait began.
+/// Run `call` and write `marker` once the call's wait has subscribed to the projection, so the
+/// program's output lands after the wait began.
 async fn call_then_release(
     h: &Harness,
     terminal: &str,
@@ -76,10 +74,6 @@ async fn call_then_release(
     response
 }
 
-/// One call starts the program and returns its first screen: the dialog is
-/// painted 300 ms after the open, the wait names the pattern and the
-/// returned text shows it. With `claim:true` the waited state is the
-/// owner's (the wait ran after the claim), with the claim attached.
 #[tokio::test]
 async fn open_with_program_and_text_wait_returns_the_first_screen_in_one_call() {
     let h = Harness::start().await;
@@ -154,9 +148,6 @@ async fn open_with_program_and_text_wait_returns_the_first_screen_in_one_call() 
     h.stop(&first).await;
 }
 
-/// A human holds control: the replayed open's claim is unavailable and the
-/// waited state is still returned (observer role, the LATER line the wait
-/// ended on), on the same terminal without a second create.
 #[tokio::test]
 async fn open_with_claim_while_a_human_holds_control_returns_the_waited_state() {
     let h = Harness::start().await;
@@ -212,10 +203,7 @@ async fn open_with_claim_while_a_human_holds_control_returns_the_waited_state() 
     h.stop(&terminal).await;
 }
 
-/// A change wait on the default shell: the wait runs with the change
-/// contract (either outcome is legitimate on a shell that may or may not
-/// still be painting its prompt); without wait arguments an open returns at
-/// once as before.
+/// Either change-wait outcome is legitimate on a shell that may or may not still be painting its prompt.
 #[tokio::test]
 async fn open_with_change_wait_on_the_default_shell_runs_the_wait() {
     let h = Harness::start().await;
@@ -254,8 +242,6 @@ async fn open_with_change_wait_on_the_default_shell_runs_the_wait() {
     h.stop(&terminal).await;
 }
 
-/// The wait arguments are validated as on observe, before the create: an
-/// invalid open creates no card.
 #[tokio::test]
 async fn open_wait_argument_validation_matches_observe_and_creates_nothing() {
     let h = Harness::start().await;
@@ -318,10 +304,6 @@ async fn open_wait_argument_validation_matches_observe_and_creates_nothing() {
     h.stop(opened["terminal_id"].as_str().unwrap()).await;
 }
 
-/// The wait arguments never enter the idempotency hash: a replayed
-/// request_id with another wait returns the same terminal (no second
-/// create) and runs the wait it asked for; `format=image` with a wait is one
-/// capture whose `wait` block is the waited one.
 #[tokio::test]
 async fn replayed_open_with_a_different_wait_reuses_the_terminal_and_waits() {
     let h = Harness::start().await;

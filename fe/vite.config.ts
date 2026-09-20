@@ -10,7 +10,7 @@ const apiProxyTarget = process.env.FE_API_PROXY_TARGET ?? 'http://127.0.0.1:4041
 const devPort = Number(process.env.FE_DEV_PORT ?? 5180);
 const devHost = process.env.FE_DEV_HOST ?? 'localhost';
 
-// §0.5 — version and build are build-time facts, not API fields: `wire.ts` has
+// Version and build are build-time facts, not API fields: `wire.ts` has
 // no such columns, so Settings' ABOUT section reads these two defines.
 const manifest = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string };
 const version = manifest.version;

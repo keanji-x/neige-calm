@@ -210,11 +210,8 @@ async fn expect_denied(fx: &Fixture, task: &Task, label: &str) {
     assert_eq!(count, 1, "{label}: rejection must not allocate");
 }
 
-/// The two sites `task_recovery/tests.rs` also reaches in process
-/// (`IsolatedStopUnconfirmed`, `IsolatedStopIdentityMismatch`) are permanent
-/// denials: `calm.plan.list` guidance says so on the wire. The Planner is
-/// refused by policy first (user-owned task), so the re-check's sentence is
-/// appended after the policy one.
+/// `IsolatedStopUnconfirmed` / `IsolatedStopIdentityMismatch` are permanent denials. The
+/// Planner is refused by policy first (user-owned task), so the re-check's sentence is appended.
 async fn expect_no_continuation(fx: &Fixture, label: &str, sentence: &str) {
     let list = crate::mcp_track_report::call_tool(
         &fx.boot,

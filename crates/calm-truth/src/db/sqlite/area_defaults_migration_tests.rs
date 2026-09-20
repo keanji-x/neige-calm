@@ -1,4 +1,4 @@
-//! Issue #1370 — forward-only Area default columns.
+//! Forward-only Area default columns migration.
 
 use std::borrow::Cow;
 

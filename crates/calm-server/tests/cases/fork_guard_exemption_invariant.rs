@@ -8,41 +8,21 @@ use syn::{Item, ItemMod, UseTree, Visibility};
 const EXPORTED_ENTRY: &str = "guard_forked_blocks";
 const PRIVATE_IMPL: &str = "guard_forked_blocks_impl";
 
-/// #1252 S2 — the structural door of the report write boundary, and the struct
-/// carrying its whole argument set.
+/// The structural door of the report write boundary, and the struct carrying its argument set.
 const STRUCTURAL_DOOR: &str = "structural_init_report_tx";
 const STRUCTURAL_TARGET: &str = "InitialReportTarget";
 
-/// The structural door's parameter list, `(name, type-as-written)`, in order.
-///
-/// The types are here because a previous version of this gate pinned only the
-/// names, and a review channel walked through it by keeping every pinned name
-/// and swapping the type underneath: `tx: &mut StructuralTx<'_, '_>`, where
-/// `StructuralTx` is a one-line newtype in the same file holding
-/// `{ inner: &mut Transaction<..>, who: ActorId }`. The name `tx` was
-/// unchanged, the ident `ActorId` never appeared in this function's signature,
-/// and all four tests in this file stayed green.
+/// The structural door's parameter list, `(name, type-as-written)`, in order. Types are pinned
+/// too: a newtype under an unchanged parameter name would otherwise pass.
 const DOOR_PARAMETERS: &[(&str, &str)] = &[
     ("tx", "&mut sqlx::Transaction<'_, sqlx::Sqlite>"),
     ("target", "InitialReportTarget<'_>"),
 ];
 
 /// The structural door's return type, as written.
-///
-/// Half of the same bypass: `Emitted` was a file-local
-/// `type Emitted = Vec<Event>;` and the door returned
-/// `(Card, TaskProjectionOutcome, Emitted)`. No ident `Event` appears in the
-/// signature, so the name list below never saw it.
 const DOOR_RETURN: &str = "Result<(Card, TaskProjectionOutcome), CalmError>";
 
 /// Every field of the door's argument struct, `name -> type-as-written`.
-///
-/// The other bypass: field name `payload` kept, its type changed to
-/// `&'a InitContent<'a>` where `InitContent` is
-/// `{ inner: &'a TrackReportPayload, by: EditAuthor }`. That is #1115's hole
-/// re-opened — the door body could then call
-/// `guard_task_declarations(.., target.payload.by, ..)` — under a field name
-/// this gate already expected.
 const DOOR_TARGET_FIELDS: &[(&str, &str)] = &[
     ("report_card_id", "&'a str"),
     ("track_id", "&'a str"),
@@ -58,36 +38,20 @@ const DOOR_TARGET_FIELDS: &[(&str, &str)] = &[
     ),
 ];
 
-/// Every name that must not appear anywhere in the structural door's signature
-/// or in the struct that carries its arguments.
-///
-/// This is the gate's **second** line of defence, behind the three tables
-/// above. The tables catch a pinned name with a different type under it; this
-/// list catches a concept arriving somewhere the tables have no row for — an
-/// added parameter, a seventh field, a changed generic — and names the concept
-/// in the failure message.
-///
-/// Both spellings of each concept, because the mutation this list exists to
-/// catch can arrive as either: the type (`EditAuthor`) or the parameter /
-/// field name it would land under (`author`). A future rename that keeps the
-/// concept has to be added here, which is the point — the list is the
-/// statement of what this door may not be able to say.
+/// Every name that must not appear anywhere in the structural door's signature or its argument
+/// struct; both the type and the parameter/field name each concept would land under.
 const FORBIDDEN_IN_THE_DOOR: &[&str] = &[
-    // #1115 — attribution in any shape. `Option<EditAuthor>` is the same hole
-    // with a nullable type, and both halves of it are named here.
+    // Attribution in any shape; `Option<EditAuthor>` is the same hole with a nullable type.
     "EditAuthor",
     "author",
     "WriteAttribution",
     "attribution",
-    // The runtime enum this door was explicitly ruled not to take, plus the
-    // value it would be matched out of.
     "WritePolicy",
     "WriteOrigin",
     "policy",
     "origin",
-    // Q12 — no bus and no actor named in the signature. Not "no event
-    // anywhere": the pinned `TaskProjectionOutcome` carries a `kernel_events`
-    // vector, which the door's own body refuses when non-empty (#1252 R1/F3).
+    // No bus and no actor in the signature; the `kernel_events` vector in `TaskProjectionOutcome`
+    // is refused by the door's own body when non-empty.
     "EventBus",
     "Event",
     "events",
@@ -108,16 +72,9 @@ const FORBIDDEN_IN_THE_DOOR: &[&str] = &[
     "probe",
 ];
 
-/// For every spelling the three tables above use, the canonical path it is
-/// supposed to mean: `(canonical path, spelling as write.rs writes it)`.
-///
-/// `write.rs` carries one `const _: fn() = || { … };` block holding a
-/// `let _: fn(canonical) -> spelling = identical;` line per row, and `identical`
-/// is `fn identical<T>(T) -> T`, so each line compiles only while the two sides
-/// are the same type. That is what turns the text comparison the tables do into
-/// a statement about types: a `struct TrackReportPayload` defined in `write.rs`
-/// (the R3 bypass — same rendered text, a `by: EditAuthor` field inside) is a
-/// compile error at that line rather than a green table.
+/// For every spelling the tables above use, the canonical path it means. `write.rs` carries a
+/// `let _: fn(canonical) -> spelling = identical;` line per row, so each compiles only while the
+/// two sides are the same type — a local `struct TrackReportPayload` is a compile error.
 const RESOLUTION_ANCHORS: &[(&str, &str)] = &[
     (
         "::sqlx::Transaction<'static, ::sqlx::Sqlite>",
@@ -148,11 +105,6 @@ const RESOLUTION_ANCHORS: &[(&str, &str)] = &[
 ];
 
 /// Every identifier appearing anywhere under a piece of syntax.
-///
-/// Used for the name checks, which are the ones that have to reach *inside* a
-/// type — `Option<EditAuthor>` nested in some position no table has a row for.
-/// [`rendered`] is the complementary tool: exact text for the positions that
-/// are pinned exactly.
 #[derive(Default)]
 struct Idents(BTreeSet<String>);
 
@@ -163,9 +115,6 @@ impl<'ast> Visit<'ast> for Idents {
 }
 
 /// Every identifier under a *type*, lifetimes excluded.
-///
-/// Separate from [`Idents`] because the pinned types carry `'a` and `'_`, and a
-/// lifetime name is not a name anything can be bound to at a file's top level.
 #[derive(Default)]
 struct TypeIdents(BTreeSet<String>);
 
@@ -177,11 +126,7 @@ impl<'ast> Visit<'ast> for TypeIdents {
     }
 }
 
-/// Every name a file's top-level items bind: what they declare, plus what their
-/// `use` statements bring into scope under either its own name or a rename.
-///
-/// This is the set that can shadow a glob import, which is why the shadowing
-/// check reads it rather than the declarations alone.
+/// Every name a file's top-level items bind, `use` renames included — the set that can shadow a glob import.
 fn top_level_bindings(items: &[Item]) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     for item in items {
@@ -234,12 +179,7 @@ fn top_level_bindings(items: &[Item]) -> BTreeSet<String> {
     names
 }
 
-/// Every free function *called* under a piece of syntax, by its last path
-/// segment.
-///
-/// Distinct from [`Idents`], which sees a bare mention. `let _ =
-/// guard_forked_blocks;` puts the ident in the body and takes the call out of
-/// the program; only this visitor tells the two apart.
+/// Every free function *called* under a piece of syntax; `let _ = f;` is a mention, not a call.
 #[derive(Default)]
 struct Calls(BTreeSet<String>);
 
@@ -254,33 +194,9 @@ impl<'ast> Visit<'ast> for Calls {
     }
 }
 
-/// The functions `body` calls in the shape `f(args)?;` — an unconditional
-/// statement of `body` itself, the `?` applied, at least one argument, and no
-/// argument that is an empty literal slice.
-///
-/// Each clause is here because a review channel wrote the version without it
-/// and stayed green while the belt was off the execution path. In order:
-///
-/// * *a call, not a mention* — `let _ = guard_forked_blocks;` (#1252 R1/F6);
-/// * *a statement of this body* — `if false { guard_forked_blocks(&blocks)?; }`
-///   and `match 0 { _ => { guard_forked_blocks(&blocks)?; } }` (#1252 R1/F6,
-///   R2);
-/// * *in expression position with `?`* — `let _ = guard_forked_blocks(&[]);`
-///   is an unconditional `let` whose initializer is a call, and it discards the
-///   `Err` the belt exists to produce (#1252 R3/C);
-/// * *not fed an empty literal* — `guard_forked_blocks(&[])?;` keeps the shape
-///   and hands the belt nothing to inspect (#1252 R3/C).
-///
-/// This is a list of refused shapes, not a proof that the belt runs: a call
-/// fed a variable this function never checks the provenance of is still green
-/// here, and so is one whose argument was emptied upstream. The behavioural
-/// half is stated on the test below, along with the measurement showing there
-/// is no behavioural detector for the call site itself.
-///
-/// The cost of the statement clause is that legitimately moving the belt under
-/// a condition, or binding its result, is red here too. That is the intended
-/// trade — the belt is an unconditional `?` today, and changing that is
-/// precisely the edit that should stop a reviewer.
+/// The functions `body` calls in the shape `f(args)?;` — an unconditional statement of `body`
+/// itself, `?` applied, at least one argument, and no empty literal slice argument. Each clause
+/// refuses a hollowed-out shape (`let _ = f;`, `if false { f()? }`, `let _ = f(&[]);`, `f(&[])?;`).
 fn unconditional_checked_calls(body: &syn::Block) -> BTreeSet<String> {
     fn peel(expr: &syn::Expr) -> &syn::Expr {
         match expr {
@@ -323,19 +239,8 @@ fn unconditional_checked_calls(body: &syn::Block) -> BTreeSet<String> {
     called
 }
 
-/// A piece of syntax as it is *written*, with every space removed.
-///
-/// Whitespace goes so that the expected spellings in the tables above can be
-/// written the way a human writes them (`&mut sqlx::Transaction<'_,
-/// sqlx::Sqlite>`) while the comparison stays immune to rustfmt's line
-/// wrapping and to `quote`'s own token spacing.
-///
-/// This compares *spelling*, not resolved meaning: it reads the path
-/// `sqlx::Transaction` as the string `sqlx::Transaction` and would not notice
-/// that path being re-exported onto something else inside the `sqlx` crate.
-/// What it does notice is any change to what is written in this repository's
-/// own `write.rs`, which is where a new type has to be introduced for the door
-/// to acquire an argument it must not have.
+/// A piece of syntax as written, with every space removed, so expected spellings survive rustfmt
+/// wrapping. This compares spelling, not resolved meaning.
 fn rendered(tokens: &impl ToTokens) -> String {
     tokens
         .to_token_stream()
@@ -345,41 +250,9 @@ fn rendered(tokens: &impl ToTokens) -> String {
         .collect()
 }
 
-/// #1252 S2 — the six absences on `track_report::write::structural_init_report_tx`
-/// are the whole content of that door, so they are a gate rather than a comment.
-///
-/// The door writes a forked or templated report onto the report card inside the
-/// track-creation transaction. What makes it safe is not something it does; it
-/// is what its argument set is: two parameters and six fields, each pinned here
-/// **by name and by written type**, plus a pinned return type. So the door has
-/// no author to give `guard_task_declarations` (#1115), no `EventBus` and no
-/// `ActorId` (Q12 — the `kernel_events` half of what it *returns* is refused by
-/// a guard in the door's own body, not by this signature; see `write.rs`), no
-/// prior revision to compare against, and no lifecycle, auto-promote or
-/// recorder-probe leg.
-///
-/// # What this test does and does not close
-///
-/// It closes **this signature drifting**: any change to either parameter's name
-/// or type, to any of the six fields' names or types, or to the return type,
-/// is red here, and a reviewer has to come back to this file and say why.
-/// That is a stronger statement than the one this test made before #1252 R1/F1,
-/// which pinned names only — and which a review channel walked past twice, in
-/// both cases by keeping every pinned name and defining one newtype in
-/// `write.rs` to change what the name stood for (see `DOOR_PARAMETERS` and
-/// `DOOR_TARGET_FIELDS` for the two constructions verbatim).
-///
-/// It does **not** close "the door cannot express an author" as a statement
-/// about the language. Rendered token text is not resolved types: a pinned
-/// spelling like `sqlx::Transaction` says nothing about what that path resolves
-/// to elsewhere, and nothing here constrains what a *pinned* type such as
-/// `ReportDoc` or `TrackReportPayload` may grow inside its own definition. The
-/// property under test is the shape of the signature as written, which is a
-/// syntactic fact — and drift in it is the failure mode this gate exists for.
-///
-/// It reads the file rather than the compiled crate on purpose: the door is
-/// `pub(crate)`, so no integration test can name it, and the property under
-/// test is the *shape of the signature*, which is a syntactic fact.
+/// The door's argument set is pinned by name AND written type, plus the return type, so it can
+/// name no author, bus, actor, prior revision, lifecycle, or recorder probe. Reads the file
+/// rather than the compiled crate because the door is `pub(crate)`.
 #[test]
 fn the_structural_door_cannot_name_an_author_an_actor_or_a_revision() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/track_report/write.rs");
@@ -397,10 +270,7 @@ fn the_structural_door_cannot_name_an_author_an_actor_or_a_revision() {
         })
         .unwrap_or_else(|| panic!("`{STRUCTURAL_DOOR}` vanished from {}", path.display()));
 
-    // The parameter list itself, name *and* written type. This is the
-    // assertion that bites on an added argument even if its type is spelled in
-    // a way the name list below has never heard of — and, since R1/F1, on an
-    // argument that keeps its name and changes what that name stands for.
+    // The parameter list itself, name *and* written type.
     let parameters: Vec<(String, String)> = door
         .sig
         .inputs
@@ -430,9 +300,7 @@ fn the_structural_door_cannot_name_an_author_an_actor_or_a_revision() {
          under a new name nor under a new type wearing one of these two names"
     );
 
-    // The return type, for the same reason: `TaskProjectionOutcome` is what
-    // this door hands back, and a third tuple member is how an event vector
-    // leaves it without any parameter changing.
+    // The return type: a third tuple member is how an event vector leaves without any parameter changing.
     let return_type = match &door.sig.output {
         syn::ReturnType::Default => "()".to_string(),
         syn::ReturnType::Type(_, ty) => rendered(ty),
@@ -455,9 +323,7 @@ fn the_structural_door_cannot_name_an_author_an_actor_or_a_revision() {
         })
         .unwrap_or_else(|| panic!("`{STRUCTURAL_TARGET}` vanished from {}", path.display()));
 
-    // Fields, pinned name-to-written-type for the same reason: an added field
-    // is how an argument arrives once the parameter list is pinned, and a
-    // retyped field is how one arrives once the field names are pinned too.
+    // Fields, pinned name-to-written-type.
     let fields: BTreeMap<String, String> = target
         .fields
         .iter()
@@ -486,9 +352,7 @@ fn the_structural_door_cannot_name_an_author_an_actor_or_a_revision() {
          six types around something that does"
     );
 
-    // And the name check over both, which is what catches the same concept
-    // arriving under a field this test already expects (a `payload` typed
-    // `WritePolicy`, say) or inside the return type.
+    // The name check over both catches the same concept arriving under an already-expected field.
     let mut names = Idents::default();
     names.visit_signature(&door.sig);
     names.visit_item_struct(target);
@@ -505,37 +369,9 @@ fn the_structural_door_cannot_name_an_author_an_actor_or_a_revision() {
     );
 }
 
-/// #1252 R3/A — the two ways the sibling test's text comparison can be walked
-/// past inside `write.rs`, closed.
-///
-/// The sibling test compares rendered token text. A review channel kept every
-/// pinned name *and* every pinned rendered type and still gave the door an
-/// author, by defining in `write.rs`
-///
-/// ```ignore
-/// pub(crate) struct TrackReportPayload {
-///     pub inner: calm_types::track_report::TrackReportPayload,
-///     pub by: EditAuthor,
-/// }
-/// ```
-///
-/// which shadows what `use super::*` brings in. `&'a TrackReportPayload`
-/// renders byte-for-byte the same, so the field table was green, and the door's
-/// body could call `guard_task_declarations(.., target.payload.by, ..)`.
-///
-/// Shadowing a glob import requires a binding at the shadowing file's top
-/// level, so this test takes both halves of that:
-///
-/// 1. no top-level item of `write.rs`, and no name it binds with a `use`, is
-///    spelled like a type the tables pin (`InitialReportTarget` excepted — the
-///    table for its fields is what pins that one);
-/// 2. the resolution anchors are present and cover every spelling in the
-///    tables, so the pinned spellings are checked by the compiler and not only
-///    by string comparison.
-///
-/// The second is the load-bearing one and the first is a faster failure
-/// message. Neither says anything about what a pinned type may grow inside its
-/// own definition, which stays what the sibling test's doc says it is.
+/// A `struct TrackReportPayload` defined in `write.rs` shadows the glob import and renders
+/// byte-for-byte the same, so: no top-level binding of `write.rs` may be spelled like a pinned
+/// type, and the resolution anchors must be present for every pinned spelling.
 #[test]
 fn the_pinned_spellings_resolve_to_the_types_they_name() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/track_report/write.rs");
@@ -564,10 +400,8 @@ fn the_pinned_spellings_resolve_to_the_types_they_name() {
         path.display()
     );
 
-    // rustfmt wraps the longer anchors, and a wrapped `fn(A,) -> B` renders with
-    // a trailing comma the expected spelling below does not have. Dropping `,)`
-    // is the whole normalization needed; it is not a token the pinned types use
-    // for anything else.
+    // rustfmt wraps the longer anchors, and a wrapped `fn(A,) -> B` renders with a trailing comma;
+    // dropping `,)` is the whole normalization needed.
     let anchors: String = syntax
         .items
         .iter()
@@ -653,46 +487,10 @@ fn fork_rule_one_exemption_has_one_structural_entry() {
     );
 }
 
-/// Issue #1115 / #1252 S2 — the release belt stays in `prepare_fork_report`,
-/// upstream of the shared structural door.
-///
-/// # Why this is a syntactic assertion and not a behavioural one
-///
-/// Because a behavioural one does not exist, and that was established by
-/// running it rather than by argument. **Measured**: deleting the
-/// `guard_forked_blocks(&blocks)?` call from `prepare_fork_report` leaves the
-/// whole `calm-server` package green — 1259 tests, 0 failures. That is not a
-/// coverage hole to be patched with a better fixture; it is what the belt *is*.
-/// `normalize_task_privilege_fields` runs over every block first and strips
-/// `released_by_user` from every live task, and the tombstone arm's residues are
-/// refused earlier still by `validate_payload`, so no production input reaches
-/// the belt with the flag set. `fork_guard.rs` says this in its own words: "that
-/// no-op is the intended steady state, not evidence the rule is vacuous."
-///
-/// What the belt buys is measurable, just not from its own call site: delete the
-/// `payload.remove("released_by_user")` in `normalize_task_privilege_fields` and
-/// a fork sent with **no `X-Calm-Actor` header** — the #1115 accident's original
-/// shape, a browser fork — answers 400 carrying the belt's own message, red in
-/// `track_report_fork::forked_task_does_not_inherit_the_source_users_release`.
-/// That is the belt firing for a `User` author, which is the whole difference
-/// from §3.7 Rule 5. Re-branching it on the author instead reds
-/// `routes::tracks::fork_guard::tests::
-/// fork_guard_exempts_rule_one_but_belts_release_for_every_author`.
-///
-/// So the failure modes with no behavioural detector are the ones this test
-/// takes: the call disappearing, the call being *hollowed out* where it stands
-/// (#1252 R1/F6 — `let _ = guard_forked_blocks;` and `if false { … }` both left
-/// the earlier "the ident appears in the body" version of this assertion
-/// green), and the belt migrating onto the shared door.
-/// The second is the one #1252 S2 makes newly possible and explicitly vetoed —
-/// `track_report::write::structural_init_report_tx` serves `TrackInit::Template`
-/// as well as `TrackInit::Fork`, so a belt hung there would give template
-/// instantiation a guard it has never had, and would separate the belt from the
-/// normalization it belts. Both are one-line edits; both are red here.
-///
-/// It reads the source rather than linking against the symbols because both are
-/// module-private (`pub(in crate::routes::tracks)` and `pub(crate)`), which is
-/// the same reason the sibling test in this file parses `write.rs`.
+/// The release belt stays in `prepare_fork_report`, upstream of the shared structural door.
+/// Syntactic on purpose: `normalize_task_privilege_fields` strips the flag first, so deleting the
+/// belt call leaves the whole package green; a belt on the shared door would also guard template
+/// instantiation, which has never had one.
 #[test]
 fn the_release_belt_stays_next_to_the_normalization_it_belts() {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -710,10 +508,7 @@ fn the_release_belt_stays_next_to_the_normalization_it_belts() {
             _ => None,
         })
         .expect("`prepare_fork_report` vanished from routes/tracks.rs");
-    // The belt: `guard_forked_blocks(<something not an empty literal>)?;` as an
-    // unconditional statement of the function body. See
-    // `unconditional_checked_calls` for the four hollowed-out shapes that were
-    // each green against an earlier, weaker version of this line.
+    // The belt: `guard_forked_blocks(<something not an empty literal>)?;` as an unconditional statement.
     assert!(
         unconditional_checked_calls(&prepare.block).contains(EXPORTED_ENTRY),
         "`prepare_fork_report` must call `{EXPORTED_ENTRY}(…)?` from an unconditional statement \
@@ -723,9 +518,7 @@ fn the_release_belt_stays_next_to_the_normalization_it_belts() {
          empty slice is not the belt a fork passes through"
     );
 
-    // The normalization it belts runs per block, so its call is inside the
-    // loop and the statement-level rule does not apply to it. Call position is
-    // still stronger than a bare mention.
+    // The normalization runs per block, inside the loop, so the statement-level rule does not apply.
     let mut prepare_calls = Calls::default();
     prepare_calls.visit_block(&prepare.block);
     assert!(
@@ -750,9 +543,7 @@ fn the_release_belt_stays_next_to_the_normalization_it_belts() {
     );
 }
 
-/// INV-1110-005 (partial, S5): `TemplateDescriptor` is an id handle. Do not
-/// grow a public descriptor body (plan_template / gates / planner_instructions /
-/// card_kinds / leftover input_schema) or add sibling public template types.
+/// `TemplateDescriptor` is an id handle: no public descriptor body and no sibling public template types.
 #[test]
 fn template_descriptor_surface_is_id_only() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/plugin_host/manifest.rs");
@@ -802,9 +593,7 @@ fn template_descriptor_surface_is_id_only() {
         if name == "TemplateDescriptor" {
             continue;
         }
-        // Both spellings: #1268 renamed the type, but the ban has to keep
-        // catching a type reintroduced under the retired prefix — otherwise
-        // the rename would have quietly reopened the hole this test closes.
+        // Both spellings, so a type reintroduced under the retired `Workflow` prefix is still caught.
         if name.contains("Workflow") || name.contains("Template") || name.ends_with("Descriptor") {
             public_template_types.insert(name);
         }

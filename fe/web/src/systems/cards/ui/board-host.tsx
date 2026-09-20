@@ -48,22 +48,9 @@ export type BoardHostItem = Readonly<{
   card: RegisteredCard;
   title: string;
   originalIndex: number;
-  /**
-   * The kernel's `deletable` bit, carried through unchanged. `false` is the
-   * kernel saying it owns this row, and a card head that offered a × the kernel
-   * would refuse is worse than one that offers nothing — the refusal would
-   * arrive as an error on a gesture the UI had already promised.
-   *
-   * Optional, and absent means deletable: a wire payload from a pre-#229 server
-   * omits the field, and the same "undefined is user-deletable" reading is what
-   * `cardWireSchema`'s `.default(true)` already encodes.
-   */
+  /** The kernel's `deletable` bit; absent means deletable (older servers omit it, matching `cardWireSchema`'s `.default(true)`). */
   deletable?: boolean;
-  /**
-   * The kernel's activity verdict for this card, or `null` — see
-   * `CardComponentProps.activity`. Required: a board with no overlay to read
-   * says so with `null`, not by leaving the field out.
-   */
+  /** The kernel's activity verdict, or `null` when the board has no overlay to read. */
   activity: CardActivity | null;
 }>;
 
@@ -80,11 +67,7 @@ export function BoardHost({ host, items, activeCardId, visible, onRemoveCard }: 
   items: readonly BoardHostItem[];
   activeCardId: string | null;
   visible: boolean;
-  /**
-   * Supplying this puts a × on the head of every deletable card. The board does
-   * not delete anything itself — the caller owns the confirm and the mutation,
-   * exactly as the CARDS panel's row does, so both gestures land on one dialog.
-   */
+  /** Puts a × on every deletable card's head; the caller owns the confirm and the mutation. */
   onRemoveCard?: (cardId: string) => void;
 }) {
   const { width, containerRef, mounted } = useContainerWidth();
@@ -153,14 +136,7 @@ export function BoardHost({ host, items, activeCardId, visible, onRemoveCard }: 
     }
   }, []);
 
-  /*
-   * A selected card is a navigation destination, not only a lifecycle bit.
-   * RGL applies its transformed placement after the parent commit and then
-   * persists one layout frame later, so an immediate scroll is overwritten.
-   * Waiting two frames lands after both passes. Only the board's own scrollport
-   * moves: `scrollIntoView` would also walk the report and page ancestors.
-   * The no-rAF branch remains synchronous for jsdom and non-browser hosts.
-   */
+  /* RGL applies its placement after the parent commit and persists a frame later, so an immediate scroll is overwritten; two frames lands after both. Only the board's own scrollport moves. */
   useLayoutEffect(() => {
     if (!visible || !mounted || activeCardId === null) return;
     const reveal = () => {
@@ -264,10 +240,7 @@ function BoardCell({ host, item, focused, visible, onRemove }: {
   if (Component === undefined || capabilities === null) {
     return (
       <div className="term">
-        {/* An unknown card is exactly the one a reader most needs to be able to
-            get rid of: no entry claims it, so nothing else on this board can
-            act on it. The × is drawn here rather than left to the (absent)
-            component. */}
+        {/* No entry claims an unknown card, so the × is drawn here rather than by the absent component. */}
         <CardHead
           className="card-drag-handle"
           title={item.title}

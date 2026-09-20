@@ -67,11 +67,7 @@ impl TurnLaunch {
     pub async fn issue(self) -> Result<TurnStartResult> {
         match tokio::time::timeout(
             self.timeout,
-            // #1505 S4-3: an isolated task's thread is minted for that one
-            // task and no picker ever addresses it, so this kernel has never
-            // put a sticky model override on it. `inherit` is that fact
-            // spelled out, and it is byte-identical to the frame this call
-            // sent before the selection existed.
+            // An isolated task's thread is minted for that one task and no picker ever addresses it, so no sticky model override exists; `inherit` is that fact spelled out.
             self.client.turn_start(
                 &self.thread_id,
                 vec![InputItem::text(self.prompt)],

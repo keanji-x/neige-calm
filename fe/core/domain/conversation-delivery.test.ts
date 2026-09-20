@@ -26,12 +26,6 @@ describe('failed conversation delivery', () => {
     expect(hasUnseenMatchingConversationMessage([{ id: '6', author: 'you', text: '', atMs: 1 }], { ...echo, text: '' })).toBe(false);
   });
 
-  /*
-   * #1505 S6 review — an image with no words is the one message shape this
-   * slice exists to add, and the text criterion answered `false` for it
-   * unconditionally. The reader was therefore never told "we may already have
-   * it" for exactly the message most likely to be re-sent by hand.
-   */
   describe('an image with no words', () => {
     const image = (id: string) => ({
       id, contentType: 'image/png', size: 3, url: `/api/cards/c/planner/attachments/${id}`,

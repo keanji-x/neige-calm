@@ -1,28 +1,4 @@
-//! #293 cutover — integration test for the `neige-codex-bridge` Stop hook.
-//!
-//! The bridge is a small CLI that codex spawns per hook event. Before the
-//! #293 push cutover, the `Stop` event was special-cased: it long-polled
-//! `GET /internal/codex/pending_events` and emitted
-//! `{"decision":"block","reason":...}` when events came back (the pull
-//! model). Pull is gone — planner agents are now driven by observations pushed
-//! onto their codex thread by the kernel — so `Stop` no longer special-cases
-//! anything. It takes the same fire-and-forget path every other hook does:
-//!
-//!   * POST the raw payload to `POST /internal/codex/hook?card_id=...`, and
-//!   * print `{}` to stdout (the codex hook contract for "continue").
-//!
-//! Strategy:
-//!   1. Spin up a tiny tokio TCP listener that captures the request line +
-//!      headers and answers a `204 No Content` (what `/internal/codex/hook`
-//!      returns).
-//!   2. Spawn the compiled bridge binary (via `env!("CARGO_BIN_EXE_<name>")`)
-//!      with `NEIGE_CARD_ID` + `NEIGE_CALM_BASE_URL` pointing at the stub.
-//!   3. Pipe `Stop` hook JSON on stdin, assert stdout is `{}`, exit 0, and
-//!      the request hit `/internal/codex/hook` (NOT the removed
-//!      `/internal/codex/pending_events`).
-//!
-//! Tests use a 10s wall-clock cap on the whole bridge process so a hung test
-//! doesn't strand the suite.
+//! Integration test for the `neige-codex-bridge` Stop hook against a stub TCP listener.
 
 use std::io::{ErrorKind, Write};
 use std::process::Stdio;
@@ -34,9 +10,6 @@ use tokio::net::TcpListener;
 
 const TEST_BUDGET: Duration = Duration::from_secs(10);
 
-/// Bind a tokio TCP listener on an ephemeral port and return both the
-/// listener and the address. We pass the address into the bridge as
-/// `NEIGE_CALM_BASE_URL=http://<addr>`.
 async fn bind_stub() -> Option<(TcpListener, String)> {
     let listener = match TcpListener::bind("127.0.0.1:0").await {
         Ok(listener) => listener,
@@ -51,9 +24,7 @@ async fn bind_stub() -> Option<(TcpListener, String)> {
     Some((listener, base))
 }
 
-/// Accept exactly one connection, capture the raw request bytes into
-/// `captured`, and answer `204 No Content` (what `/internal/codex/hook`
-/// returns on success).
+/// Accept exactly one connection, capture the raw request bytes, answer `204 No Content`.
 async fn serve_one_hook(listener: TcpListener, captured: Arc<Mutex<String>>) {
     let (mut stream, _) = listener.accept().await.expect("accept stub conn");
     let mut req_buf = vec![0u8; 8192];
@@ -71,8 +42,6 @@ async fn serve_one_hook(listener: TcpListener, captured: Arc<Mutex<String>>) {
     let _ = stream.shutdown().await;
 }
 
-/// Spawn the bridge as a subprocess with a `Stop` hook payload on stdin.
-/// Returns `(stdout_string, exit_status, stderr_string)`.
 fn spawn_bridge_with_stop(
     base_url: &str,
     provider: Option<&str>,
@@ -127,13 +96,6 @@ fn wait_with_timeout(mut child: std::process::Child, timeout: Duration) -> std::
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-/// #293 — Stop takes the fire-and-forget POST path: it POSTs the payload to
-/// `/internal/codex/hook` and prints `{}` (no `decision:"block"`, no
-/// long-poll against the removed `/internal/codex/pending_events`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stop_posts_to_hook_and_emits_empty_object() {
     let Some((listener, base)) = bind_stub().await else {
@@ -152,7 +114,6 @@ async fn stop_posts_to_hook_and_emits_empty_object() {
 
     assert!(status.success(), "bridge must exit 0 (got {status:?})");
 
-    // stdout is the bare `{}` continue contract — never a `decision:"block"`.
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|_| panic!("bridge stdout is JSON; got: {stdout}"));
     assert!(
@@ -160,8 +121,6 @@ async fn stop_posts_to_hook_and_emits_empty_object() {
         "Stop must print bare `{{}}` (fire-and-forget); got: {stdout}",
     );
 
-    // The request went to /internal/codex/hook (the ingest route), NOT the
-    // removed pending_events long-poll endpoint.
     let req = captured.lock().unwrap().clone();
     assert!(
         req.contains("POST /internal/codex/hook"),

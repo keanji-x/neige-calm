@@ -1,23 +1,4 @@
-//! Issue #1147 S2 — managed workspace allocation + materialization through
-//! `POST /api/tracks`.
-//!
-//! Design `docs/1147-workspace-design.md` D2/D3/D5 and §5 test 5. The
-//! properties this file owns:
-//!
-//!   * a title-only create (the #1131 shape the new FE sends) allocates a
-//!     managed workspace under the configured root and leaves a repository
-//!     there that the **first worker can actually use** — without it, every
-//!     codex task on that track dies in `git rev-parse --show-toplevel` or in
-//!     `git worktree add`, which is #1147. "Usable" is measured by running the
-//!     production provisioning, not by predicates on the directory: see
-//!     `assert_workspace_is_usable_by_the_first_worker` and the escape
-//!     construction it is written against (#1318 item 4);
-//!   * the same holds for a create that carries a `template_id` and no `cwd`,
-//!     which is a distinct branch of the request shape and, since #1300 removed
-//!     template seeding, a branch nothing else in the suite drives;
-//!   * a materialization failure is a **non-2xx**, not a 201 with a warning in
-//!     the log. The latter reproduces #1147 one layer down: the track looks
-//!     fine and the first worker dies.
+//! Managed workspace allocation and materialization through `POST /api/tracks`.
 
 #![cfg(unix)]
 
@@ -125,9 +106,7 @@ fn theme() -> Value {
     json!({"fg": [255, 255, 255], "bg": [0, 0, 0]})
 }
 
-/// The card a hypothetical first worker holds its lease for. Any valid path
-/// segment does — the lease target is derived from `<track_id>/<card_id>`, and
-/// no card row is read.
+/// Any valid path segment does: the lease target is derived from `<track_id>/<card_id>` and no card row is read.
 const CARD_ID: &str = "card0000000000000000000000000001";
 
 fn head_resolves(path: &std::path::Path) -> bool {
@@ -140,20 +119,7 @@ fn head_resolves(path: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
-/// The materialization bar this file asserts (#1318 item 4).
-///
-/// It used to be `.git` exists + `HEAD` resolves, and those two are necessary
-/// but nowhere near sufficient: `git branch -m neige` inside a freshly
-/// materialized workspace satisfies both and still leaves every codex task on
-/// the track dying in `git worktree add`, which is #1147 verbatim — see
-/// `a_materialized_workspace_can_pass_the_git_and_head_checks_and_still_fail_the_first_worker`,
-/// which pins that construction. Any bar phrased as properties of the directory
-/// is a guess at what provisioning needs; the only bar that cannot be escaped
-/// that way is provisioning itself, so this drives the real thing:
-/// `prepare_workspace_lease_target_tx` → commit → `provision_workspace_worktree`,
-/// the order `operation::codex_adapter` takes when the first worker starts.
-///
-/// Do not weaken this back to directory predicates.
+/// Drives the real first-worker provisioning; do not weaken this back to `.git` + `HEAD` predicates.
 async fn assert_workspace_is_usable_by_the_first_worker(b: &Boot, track_id: &str) {
     let (_, path, _) = workspace_row(&b.repo, track_id).await;
     let path = PathBuf::from(path);
@@ -211,35 +177,6 @@ async fn workspace_row(repo: &SqlxRepo, track_id: &str) -> (String, String, Opti
     .unwrap()
 }
 
-/// Entry point 1 of 3: `POST /api/tracks` with no `cwd` — the #1131 title-only
-/// create the new FE sends.
-///
-/// The remaining track-create entry points are
-/// line 76 enumerates are, by name rather than by ordinal (an ordinal spread
-/// across three files is what drifted last time — `today.rs` and
-/// `child_track_adapter.rs` both called themselves "the fifth"):
-///
-///   1. `POST /api/tracks` — this case and the two below it;
-///   2. Today/launchpad (`routes::today`), which raw-`INSERT`s and carries its
-///      own materialize call;
-///   3. child track (`operation::child_track_adapter`), likewise, covered by
-///      `child_allocates_and_materializes_its_own_frozen_managed_workspace`.
-///
-/// #1300 — this enumeration said "of 5" until template seeding was removed.
-/// The one that went was `seed_template_track` (design line 76 lists it second,
-/// as "workflow/template" — it is named rather than numbered here for the same
-/// reason as the four above), and the case that covered it (`seeded_template_tracks_are_materialized`) is
-/// gone with the function: a template is a Rust constant now, so creating from
-/// one mints exactly the track the caller asked for and there is no second,
-/// hidden workspace to materialize. The count is corrected rather than left at
-/// 5, because an enumeration that claims more coverage than it has is worse
-/// than none.
-///
-/// What did **not** go away with it is that a `template_id` create is still a
-/// create and still needs a workspace —
-/// `template_create_without_cwd_allocates_and_materializes_a_managed_workspace`
-/// below owns that half, which the deleted case had been covering as a
-/// side-effect.
 #[tokio::test]
 async fn title_only_create_allocates_and_materializes_a_managed_workspace() {
     let b = boot().await;
@@ -267,9 +204,7 @@ async fn title_only_create_allocates_and_materializes_a_managed_workspace() {
     );
 
     let path = PathBuf::from(path);
-    // D3 step 4: the exclusion lives in `.git/info/exclude`, and the fresh
-    // workspace must look empty to design D4's predicate. Read before the bar
-    // below provisions a worktree into `.claude/worktrees/`.
+    // Read before the bar below provisions a worktree into `.claude/worktrees/`.
     let exclude = std::fs::read_to_string(path.join(".git/info/exclude")).unwrap();
     assert!(exclude.lines().any(|l| l.trim() == ".claude/worktrees/"));
     assert!(!path.join(".gitignore").exists());
@@ -277,27 +212,6 @@ async fn title_only_create_allocates_and_materializes_a_managed_workspace() {
     assert_workspace_is_usable_by_the_first_worker(&b, track_id).await;
 }
 
-/// Entry point 1, template branch: a `template_id` create that omits `cwd` gets
-/// the same managed workspace, materialized, as a title-only one.
-///
-/// ## Why this is a separate case and not a parameter of the one above
-///
-/// #1300 deleted `seeded_template_tracks_are_materialized`, and rightly: its
-/// subject — the three hidden system-area template tracks — no longer exists.
-/// But that case was two properties in one, and only one of them died with the
-/// seeding. The survivor is this: the track the **user** asked for, when it
-/// carries a `template_id` and no `cwd`, must still come out of create with a
-/// managed directory holding a usable Git repository. Nothing else in the suite
-/// held it — the case above never sends a `template_id`, every Rust template
-/// case in `track_template_tracks.rs` boots without a workspace root and only
-/// reads the report, and the e2e never looks at the workspace at all.
-///
-/// The escape construction that motivated it, and that this case was
-/// mutation-verified against: guard the `materialize_workspace` call in
-/// `create_track_structure` with `if track.template_id.is_none()`. Every other
-/// test in the repository stays green; the first codex worker on any
-/// template-created track then dies in `git rev-parse --show-toplevel`, which is
-/// #1147 verbatim.
 #[tokio::test]
 async fn template_create_without_cwd_allocates_and_materializes_a_managed_workspace() {
     let b = boot().await;
@@ -321,10 +235,7 @@ async fn template_create_without_cwd_allocates_and_materializes_a_managed_worksp
     );
     let track_id = track["id"].as_str().unwrap();
 
-    // Exactly one track exists: no hidden template track was minted alongside it
-    // (that property's own home is `creating_from_a_template_mints_no_hidden_track`;
-    // pinned here too because the loop below would otherwise be satisfiable by a
-    // second, differently-materialized row).
+    // Exactly one track: the loop below would otherwise be satisfiable by a second, differently-materialized row.
     let rows: Vec<(String, String, String)> =
         sqlx::query_as("SELECT id, workspace_kind, workspace_path FROM tracks")
             .fetch_all(b.repo.pool())
@@ -355,15 +266,10 @@ async fn template_create_without_cwd_allocates_and_materializes_a_managed_worksp
     assert_workspace_is_usable_by_the_first_worker(&b, track_id).await;
 }
 
-/// An explicit `cwd` is the attached branch: the user pointed at that
-/// directory, so the server records it and never creates or `git init`s it.
 #[tokio::test]
 async fn explicit_cwd_stays_attached_and_is_never_git_inited() {
     let b = boot().await;
-    // #1147 S3 — an attached `cwd` must be inside a Git work tree now, so
-    // point at a *sub-directory* of one. `git rev-parse` accepts it, and
-    // `target/.git` still not existing is exactly what proves the server did
-    // not `git init` the directory the user pointed at.
+    // An attached `cwd` must be inside a Git work tree, so point at a sub-directory of one.
     let user_repo = PathBuf::from(attached_repo_fixture(
         "workspace-materialize-users-own-repo",
     ));
@@ -399,13 +305,7 @@ async fn explicit_cwd_stays_attached_and_is_never_git_inited() {
     );
 }
 
-/// §5 test 5 — materialization failure must surface as a non-2xx carrying the
-/// real error, not a 201 whose first worker then dies with `spawn-failed`.
-///
-/// The injection is a **plain file** where `<root>/<area_id>` must be a
-/// directory, so `mkdir` returns `ENOTDIR`. Deliberately not a read-only
-/// parent (`chmod 0555`): CI runs as root, for whom mode bits are advisory,
-/// and that injection would pass vacuously.
+/// The injection is a plain file where a directory is needed (`ENOTDIR`), not a read-only parent: CI runs as root, for whom mode bits are advisory.
 #[tokio::test]
 async fn materialize_failure_fails_the_create() {
     let b = boot().await;
@@ -428,20 +328,7 @@ async fn materialize_failure_fails_the_create() {
         "the response must carry the real error, not a generic one: {body}"
     );
 
-    // ---- known state, deliberately pinned (S2 review ruling ④) ----
-    //
-    // Materialization runs *after* the track transaction commits, because design
-    // D5 requires it outside the tx: the managed path is derived from the track
-    // id, which does not exist until the insert. So a failure leaves the track
-    // row behind, pointing at a directory that does not exist. S2 does NOT
-    // compensate — deleting the track here would have to emit `TrackDeleted` and
-    // tear down the two cards minted in the same tx, which is a bigger change
-    // than this slice carries.
-    //
-    // This is asserted rather than tolerated silently: if a later slice adds
-    // compensating deletion, this test fails and the author decides
-    // deliberately instead of discovering it. Do not "fix" a failure here by
-    // loosening the assertion.
+    // Known state, deliberately pinned: materialization runs after the commit, so a failure leaves the track row behind; do not loosen this.
     let orphans: Vec<(String, String)> =
         sqlx::query_as("SELECT id, workspace_path FROM tracks WHERE title='doomed'")
             .fetch_all(b.repo.pool())
@@ -459,8 +346,6 @@ async fn materialize_failure_fails_the_create() {
          what it claims: {orphans:?}"
     );
 
-    // And the injection really is what broke it: with the obstruction removed
-    // the identical request succeeds.
     std::fs::remove_file(b.workspace_root.join(&b.area_id)).unwrap();
     let (status, body) = post(
         b.app,
@@ -471,25 +356,7 @@ async fn materialize_failure_fails_the_create() {
     assert_eq!(status, StatusCode::CREATED, "body={body}");
 }
 
-/// #1318 item 4 — the escape construction that shows `.git` + `HEAD` is not a
-/// materialization bar: a workspace that passes both checks can still be
-/// unusable by the first worker.
-///
-/// Construction: rename the materialized workspace's only branch to `neige`
-/// (`git branch -m neige`). `.git` is still a directory and `HEAD` still
-/// resolves, so **every** assertion the entry-point cases in this file make
-/// about a materialized workspace keeps passing. But `refs/heads/neige` now
-/// exists as a *file*, so the first worker's
-/// `git worktree add -b neige/<track_id>/<card_id>` cannot create
-/// `refs/heads/neige/…` under it, and the track is #1147 all over again: every
-/// codex task on it dies with nothing but `spawn-failed` visible.
-///
-/// This case pins both halves — the two old checks passing AND the production
-/// lease path failing — so that the "real provisioning" assertions the other
-/// cases now carry cannot be weakened back to `.git` + `HEAD` without a red
-/// test naming the exact gap. It is deliberately NOT a claim that production
-/// should tolerate this state: nothing in the server renames that branch, the
-/// construction is adversarial, and the fix belongs in what the tests assert.
+/// Construction: `git branch -m neige` leaves `.git` and `HEAD` intact, but `refs/heads/neige` as a file blocks `git worktree add -b neige/<track>/<card>`.
 #[tokio::test]
 async fn a_materialized_workspace_can_pass_the_git_and_head_checks_and_still_fail_the_first_worker()
 {
@@ -506,7 +373,6 @@ async fn a_materialized_workspace_can_pass_the_git_and_head_checks_and_still_fai
     let (_, path, _) = workspace_row(&b.repo, &track_id).await;
     let path = PathBuf::from(path);
 
-    // The construction.
     let renamed = Command::new("git")
         .arg("-C")
         .arg(&path)
@@ -530,8 +396,7 @@ async fn a_materialized_workspace_can_pass_the_git_and_head_checks_and_still_fai
          the case no longer demonstrates that `.git` + HEAD is a weak bar"
     );
 
-    // Half 2: the production first-worker path (prepare lease target → commit →
-    // provision worktree, the `operation::codex_adapter` order) fails.
+    // Half 2: the production first-worker path fails.
     let err = calm_server::test_seams::provision_workspace_lease_for_test(
         b.repo.pool(),
         &track_id,
@@ -558,16 +423,6 @@ async fn a_materialized_workspace_can_pass_the_git_and_head_checks_and_still_fai
     );
 }
 
-/// #1147 S2 (red-team B5) — an orphaned track heals when a worker takes its
-/// lease, instead of `spawn-failed`-ing forever.
-///
-/// Create materializes *after* its transaction commits (design D5 requires it
-/// outside the tx), so a failure there leaves a committed track row pointing at
-/// a directory that does not exist — the known state pinned by
-/// `materialize_failure_fails_the_create`. Before this slice nothing would ever
-/// retry it, so every `kind: codex` task on that track died in
-/// `git rev-parse --show-toplevel` with only `spawn-failed` visible. That is
-/// bug #1147, re-created by the slice meant to fix it.
 #[tokio::test]
 async fn an_unmaterialized_managed_track_heals_when_a_worker_takes_its_lease() {
     let b = boot().await;
@@ -602,34 +457,11 @@ async fn an_unmaterialized_managed_track_heals_when_a_worker_takes_its_lease() {
     tx.commit().await.unwrap();
 
     assert_eq!(repo_root, std::fs::canonicalize(&path).unwrap());
-    // "Usable repository" measured by use, not by predicate (#1318 item 4):
-    // healing that produces a directory the first worker cannot provision a
-    // worktree in has healed nothing. `prepare_…` is idempotent, so re-running
-    // it inside the bar is the same repair a second worker would drive.
+    // `prepare_…` is idempotent, so re-running it inside the bar is the same repair a second worker would drive.
     assert_workspace_is_usable_by_the_first_worker(&b, &track_id).await;
 }
 
-// ---------------------------------------------------------------------------
-// #1387 — the *attached* twin of the `refs/heads/neige` conflict above.
-//
-// `a_materialized_workspace_can_pass_the_git_and_head_checks_and_still_fail_the_first_worker`
-// pins the managed shape, whose `refs/heads/neige` is production-unreachable:
-// materialization runs `git init -c init.defaultBranch=main` and the only
-// thing the server ever creates under `neige/` is a slice branch. An
-// **attached** workspace is the user's own repository, where a branch named
-// `neige` is an ordinary thing to have — and the derivation that trips over it
-// (`workspace_slice_branch_for`) is shared: `prepare_workspace_lease_target_tx`
-// skips materialization for attached tracks but derives the same
-// `neige/<track>/<card>`.
-// ---------------------------------------------------------------------------
-
-/// Build a repository shaped like a user's own — a `main` branch with one
-/// commit — in a directory the server neither creates nor owns.
-///
-/// A commit is required, not decoration: `git worktree add` on a repository
-/// with an unborn HEAD fails with `not a valid object name: 'HEAD'`, which is a
-/// *different* failure from the ref conflict these cases are about and would
-/// let them pass vacuously.
+/// A `main` branch with one commit: `git worktree add` on an unborn HEAD fails differently and would let these cases pass vacuously.
 fn init_user_repo(dir: &std::path::Path) {
     std::fs::create_dir_all(dir).unwrap();
     run_git(dir, &["init", "-b", "main"]);
@@ -666,17 +498,7 @@ fn run_git(dir: &std::path::Path, args: &[&str]) {
     );
 }
 
-/// #1387 — the admission check. An attached directory whose repository already
-/// holds a branch named `neige` is refused at the moment the user names it,
-/// with an error that says which ref is in the way.
-///
-/// Before `ensure_slice_branch_namespace_is_free` this create returned 201 and
-/// the failure surfaced only when the first worker ran — measured on this exact
-/// fixture, as `internal: git worktree add failed …: cannot lock ref
-/// 'refs/heads/neige/<track>/<card>': 'refs/heads/neige' exists`.
-///
-/// The assertions name the ref rather than the prose: git's wording is
-/// localized, `refs/heads/neige` is not.
+/// The assertions name the ref rather than the prose: git's wording is localized, `refs/heads/neige` is not.
 #[tokio::test]
 async fn attaching_a_repo_that_already_has_a_neige_branch_is_refused() {
     let b = boot().await;
@@ -715,14 +537,7 @@ async fn attaching_a_repo_that_already_has_a_neige_branch_is_refused() {
     );
 }
 
-/// #1387 — a repository that grows a `neige` branch *after* it was attached
-/// still kills the first worker. This is the mechanism the admission check
-/// above exists to move earlier, pinned on its own so that weakening the check
-/// cannot quietly take the evidence with it.
-///
-/// It is also the honest statement of what the check does *not* cover: the
-/// repository is the user's, and nothing stops them creating that branch a
-/// minute after attaching. Admission is a point-in-time answer.
+/// Admission is a point-in-time answer; nothing stops the user creating the branch after attaching.
 #[tokio::test]
 async fn a_neige_branch_created_after_attach_still_blocks_the_first_worker() {
     let b = boot().await;

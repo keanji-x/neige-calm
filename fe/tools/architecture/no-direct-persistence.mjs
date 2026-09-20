@@ -1,11 +1,6 @@
 /**
- * Keep browser persistence behind core/keys/storage.ts so callers depend on a
- * storage port instead of a synchronous browser singleton.
- *
- * Known escape: values passed through an untyped function or imported alias
- * need type/data-flow analysis. Direct globals, global object members,
- * destructuring, aliases initialized from those members, and IndexedDB entry
- * calls are rejected at their source.
+ * Browser persistence stays behind core/keys/storage.ts. Known escape: values passed through an
+ * untyped function or imported alias are not followed.
  */
 
 const persistenceNames = new Set(['localStorage', 'sessionStorage', 'indexedDB', 'IndexedDB']);

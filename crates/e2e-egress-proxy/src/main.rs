@@ -1,10 +1,6 @@
-//! `e2e-egress-proxy` — the host-side CONNECT gate binary (see lib docs).
-//!
-//! Usage:
-//!   e2e-egress-proxy <listen-unix-socket> [upstream host:port]
-//!
-//! Or via env (argv wins): `E2E_EGRESS_PROXY_SOCK`, `E2E_EGRESS_PROXY_UPSTREAM`.
-//! Upstream defaults to sing-box on host loopback ([`DEFAULT_UPSTREAM`]).
+//! `e2e-egress-proxy` — the host-side CONNECT gate binary.
+//! Usage: `e2e-egress-proxy <listen-unix-socket> [upstream host:port]`; env fallback
+//! `E2E_EGRESS_PROXY_SOCK` / `E2E_EGRESS_PROXY_UPSTREAM` (argv wins).
 
 use std::os::unix::fs::PermissionsExt;
 use std::process::ExitCode;

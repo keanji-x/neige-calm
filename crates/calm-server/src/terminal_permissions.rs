@@ -1,39 +1,8 @@
-//! #1704 S1 — `claude_permissions` on `calm.terminal.open`.
-//!
-//! The Planner declares the permission rules for Claude Code in a terminal:
-//! `edit` globs relative to the terminal cwd, `bash` command prefixes and
-//! `deny` prefixes. The kernel validates the declaration ([`validate_scope`]),
-//! renders it into Claude Code's `permissions` block
-//! ([`render_claude_permissions`]) and writes that ONE value
-//! ([`EffectiveClaudePermissions`]) to the generated settings file, the card
-//! payload and the open result.
-//!
-//! Whenever a scope is declared the floor is appended as `ask`, never `deny`:
-//! Claude Code evaluates `deny`, then `ask`, then `allow` over the merged rule
-//! set, so an `ask` rule prompts even when an `allow` rule also matches, and a
-//! dialog reaches the Planner as a `permission_request` signal. The floor
-//! therefore never widens a scope; a Planner `deny` on the same rule still
-//! wins. Every rule matches its usual spelling only (`git -C . push` is not
-//! `Bash(git push *)`), and an action no rule matches keeps Claude Code's
-//! usual permission behaviour. One exception (#1729): a `git <rest>` prefix
-//! in any of the three lists is rendered twice, as `Bash(git <rest> *)` and
-//! as `Bash(git -C /<cwd> <rest> *)` for the terminal's own absolute cwd,
-//! the spelling Claude Code actually runs — only when that cwd carries no
-//! whitespace and no quote character (a space in the path shifts the token
-//! boundaries and would let an `allow` variant admit a denied subcommand;
-//! such a cwd keeps exactly main's rules, bare spellings only, and a bare
-//! `git` allow admits `-C` spellings there as it does anywhere — S1 known
-//! gap); no other prefix, no other directory and not a bare `git`.
-//! `Edit(...)` rules are
-//! anchored with `//` (an absolute path) because a single leading slash
-//! anchors at the settings file's own directory. No `defaultMode`,
-//! `bypassPermissions`, `additionalDirectories` or `Read(...)` rule is ever
-//! written; a terminal opened without a scope gets the hooks-only file.
-//!
-//! #1704 S2 — the Track tree's policy (`tracks.claude_permissions_policy`)
-//! is the ceiling of every Planner-opened Claude in that tree: [`policy`]
-//! holds the containment rules and the merge that produces the ONE scope
-//! rendered here.
+//! `claude_permissions` on `calm.terminal.open`: validate the Planner's declared scope and
+//! render it into Claude Code's `permissions` block. The floor is appended as `ask`, never
+//! `deny`: Claude Code evaluates `deny`, then `ask`, then `allow`, so an `ask` rule prompts even
+//! when an `allow` rule also matches. `Edit(...)` rules are anchored with `//` (absolute)
+//! because a single leading slash anchors at the settings file's own directory.
 use crate::error::{CalmError, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -46,10 +15,8 @@ pub use calm_types::claude_permissions::{
 pub use policy::{CeilingCheckedHook, install_ceiling_checked_hook_for_test};
 pub use policy::{apply_policy, wait_at_ceiling_checked_hook};
 
-/// Bash prefixes rendered as `ask` rules whenever a scope is declared
-/// (together with `Edit(//<cwd>/.git/**)`): in their usual spellings they
-/// prompt even when a `bash` prefix admits them; other spellings are not
-/// matched.
+/// Bash prefixes rendered as `ask` rules whenever a scope is declared: in their usual spellings
+/// they prompt even when a `bash` prefix admits them.
 pub const CLAUDE_PERMISSIONS_FLOOR_BASH: [&str; 7] = [
     "git push",
     "git reset --hard",
@@ -81,32 +48,21 @@ pub struct EffectiveClaudePermissions {
     pub deny: Vec<String>,
 }
 
-/// Parse the tool argument into a scope, enforcing exactly the advertised
-/// shape with a reason under `claude_permissions`: an object (not an array,
-/// string or null) whose keys are among `edit`, `bash`, `deny`, each an array
-/// of strings (`null` is a wrong type, not an absent key). The serde derive on
-/// [`ClaudePermissionsScope`] is for storage and the hash view only: a derive
-/// alone would also accept a JSON array through `visit_seq` and read
-/// `deny: null` as absent. `parse_scope(v) == parse_scope_named(
-/// "claude_permissions", v)`; the Track PATCH runs the same parser under
-/// `claude_permissions_policy`.
+/// Parse the tool argument into a scope. The serde derive on [`ClaudePermissionsScope`] is for
+/// storage only: a derive alone would also accept a JSON array and read `deny: null` as absent.
 pub fn parse_scope(value: &Value) -> std::result::Result<ClaudePermissionsScope, String> {
     parse_scope_named("claude_permissions", value)
 }
 
-/// Validate a declared scope; `Ok` is the trimmed scope (whitespace-trimmed
-/// entries, an empty `deny` dropped), `Err` names the offending key or entry
-/// (`claude_permissions.bash[2]: ...`) for `invalid_params`.
-/// `validate_scope(s) == validate_scope_named("claude_permissions", s)`.
+/// Validate a declared scope; `Ok` is the trimmed scope, `Err` names the offending key or entry.
 pub fn validate_scope(
     scope: &ClaudePermissionsScope,
 ) -> std::result::Result<ClaudePermissionsScope, String> {
     validate_scope_named("claude_permissions", scope)
 }
 
-/// [`validate_scope`] with the reasons written under `field`: the same
-/// rules for the Track policy (`claude_permissions_policy`, #1704 S2) — a
-/// policy therefore never admits what a declaration could not.
+/// [`validate_scope`] with the reasons written under `field`; the Track policy runs the same
+/// rules, so a policy never admits what a declaration could not.
 pub fn validate_scope_named(
     field: &str,
     scope: &ClaudePermissionsScope,
@@ -267,10 +223,8 @@ fn command_entry(
     Ok(())
 }
 
-/// Render a validated scope for a terminal whose working directory is `cwd`
-/// (absolute; a trailing `/` is ignored). Rules written by hand are not
-/// escaped by Claude Code, so a cwd carrying glob or rule characters is
-/// refused rather than rendered into a rule that matches something else.
+/// Render a validated scope for a terminal whose cwd is `cwd`. Rules written by hand are not
+/// escaped by Claude Code, so a cwd carrying glob or rule characters is refused.
 pub fn render_claude_permissions(
     cwd: &str,
     scope: &ClaudePermissionsScope,
@@ -297,21 +251,10 @@ pub fn render_claude_permissions(
     Ok(EffectiveClaudePermissions { allow, ask, deny })
 }
 
-/// The `Bash(...)` rules of one validated prefix: `Bash(<prefix> *)`, and
-/// for a `git <rest>` prefix (the literal ASCII `git ` followed by a
-/// non-empty rest; a `git\u{a0}status` prefix is one shell token and gets
-/// nothing) also `Bash(git -C /<root> <rest> *)` right after it (#1729) —
-/// the spelling Claude Code runs from a terminal whose cwd is `/<root>`. The
-/// variant is emitted only when `root` carries no whitespace and none of
-/// `'`, `"`, `\`: with a space in the path (`/w push`) the tokens shift and
-/// the `allow` variant of `git status` would read as `git -C /w push status`,
-/// admitting a push the `deny` variant does not match; such a root keeps
-/// exactly main's rules (bare spellings only; no error, no quoting), and a
-/// bare `git` allow admits `-C` spellings there as it does anywhere (S1
-/// known gap). A bare `git` gets no variant (`Bash(git *)` admits every
-/// spelling); a `-C` to any other directory matches no rule. Used for
-/// `allow`, the floor's `ask` and `deny` alike, so within one cwd the
-/// variant is in exactly the lists its bare rule is in.
+/// `Bash(<prefix> *)`, and for a `git <rest>` prefix also `Bash(git -C /<root> <rest> *)` —
+/// the spelling Claude Code runs from the terminal's cwd. The variant is emitted only when
+/// `root` carries no whitespace or quote: with a space in the path the tokens shift and the
+/// `allow` variant of `git status` would admit a push the `deny` variant does not match.
 fn bash_rules(prefix: &str, root: &str) -> Vec<String> {
     let mut rules = vec![format!("Bash({prefix} *)")];
     let root_is_one_token = !root

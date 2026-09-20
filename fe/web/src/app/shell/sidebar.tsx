@@ -1,7 +1,4 @@
-// The workspace rail. Three sections in a fixed order; see INV-SIDEBAR-007.
-//
-// Text roles share ui/list-typography with the right-side context panels.
-// Status icons are provided by the shared TrackRow activity indicator.
+// The workspace rail: three sections in a fixed order.
 
 import { ListText } from '../../ui/list-typography/public.tsx';
 import { useEffect, useRef } from 'react';
@@ -34,9 +31,7 @@ export type SidebarProps = Readonly<{
   onRequestCreateArea: () => void;
   onRequestEditArea: (area: Area) => void;
   onDeleteArea: (areaId: string, signal: AbortSignal) => void | Promise<void>;
-  /** Goes to the new-track page for this area. The rail does not own that
-   *  page — it is the route `/area/{id}/new` (#1211) — and it reaches it
-   *  through the shell, which is the nearest owner both `+` surfaces share. */
+  /** Goes to the new-track page for this area, through the shell. */
   onNewTrack: (areaId: string) => void;
   onSetPinned: (trackId: string, pinned: boolean) => void | Promise<void>;
   onDeleteTrack: (trackId: string, signal: AbortSignal) => void | Promise<void>;
@@ -63,24 +58,10 @@ export function initialsOf(label: string): string {
 }
 
 /**
- * INV-SIDEBAR-007 — the three sections render in this order, and **pinning is
- * not relocation**: a pinned track appears in the Pinned section *and* in its
- * area's inline list, and if it also needs attention it appears in "Waiting on
- * you" as well. Waiting deliberately includes pinned attention tracks.
- *
- * INV-A11Y-058 — there is **intentionally no skip-to-main link**. The rail is
- * short enough that it has not been raised as a pain point (a11y contract
- * §3.1/§9). If a second rail section with many rows lands, re-evaluate.
- *
- * INV-SIDEBAR-012 — every row's pin button is hover-revealed while the track is
- * unpinned and permanently visible once it is pinned; the reveal itself is CSS
- * (`features/track/row/row.module.css`), so a jsdom test can only prove the
- * control is always in the accessibility tree and carries `aria-pressed`.
- *
- * E2E-INV-SHELL-003 — `userVisibleTracks` filters the kernel system area here
- * as well as in the query layer, so scaffolding cannot reach the rail even if a
- * caller hands over an unfiltered list. It is the same function mobile Pages
- * uses, so the two surfaces cannot drift (#1191 §3.1).
+ * Pinning is not relocation: a pinned track appears in Pinned and in its area's
+ * list, and in "Waiting on you" too if it needs attention. There is intentionally
+ * no skip-to-main link. `userVisibleTracks` filters the kernel system area here
+ * as well as in the query layer.
  */
 export function Sidebar({
   areas, tracksByArea, tracks, currentPath, onGo,
@@ -99,8 +80,7 @@ export function Sidebar({
 
   const userAreas = visibleAreas(areas);
   const userTracks = userVisibleTracks(tracks, areas);
-  // "Waiting on you" is what the kernel says needs a person: input or repair
-  // (#1722 §5.1) — the same predicate pair `lifecycleRank` puts first.
+  // "Waiting on you" is what the kernel says needs a person: input or repair.
   const waiting = userTracks.filter((track) => needsUserAttention(track) || hasFailed(track));
   const pinned = userTracks.filter((track) => track.pinnedAt !== null)
     .toSorted((left, right) => (right.pinnedAt ?? 0) - (left.pinnedAt ?? 0));
@@ -123,13 +103,9 @@ export function Sidebar({
       ?.scrollIntoView?.({ block: 'nearest' });
   }, [activeTrackId, collapsed, activeAreaExpanded]);
 
-  /* A collapsed Area initial is an entrance into the expanded tree, not a
-     destination of its own. Restore focus to the disclosure it reveals and
-     bring that row into view; otherwise activating the unmounted initial drops
-     keyboard focus onto <body>, and a long rail may reveal no trace of the Area
-     the reader chose. This deliberately runs after the current-Track scroll
-     above, so a Track in another Area cannot steal the final scroll position
-     during the same collapsed → expanded commit. */
+  /* A collapsed Area initial is an entrance into the expanded tree: restore focus
+       to the disclosure it reveals, or activating the unmounted initial drops focus
+       onto <body>. Runs after the current-Track scroll above on purpose. */
   useEffect(() => {
     if (collapsed) return;
     const areaId = pendingAreaFocusRef.current;
@@ -142,9 +118,8 @@ export function Sidebar({
 
   const rowProps = {
     currentPath,
-    // The receipt compares the overlay's completion high-water mark, not the
-    // row's `updatedAt` (which moves on every rename and pin). `null` — the
-    // kernel has recorded no completion yet — is never unread (#1722 §5.2).
+    // The receipt compares the overlay's completion high-water mark, not `updatedAt`
+    // (which moves on every rename and pin); `null` is never unread.
     isUnread: (track: Track) => preferences.isUnread('track', track.id, track.activityAt ?? 0),
     onGo,
     nowMs,
@@ -199,24 +174,15 @@ export function Sidebar({
 
       {collapsed ? (
         <>
-          {/* The rail's colours belong only to the indicator vocabulary
-              (`ui/activity-indicator`: warn = waiting on you, error = broken,
-              accent = unread, grey = in motion) and to the current location
-              (`--accent-soft`); titles never carry a state colour; area
-              identity does not enter the rail. */}
+          {/* The rail's colours belong only to the indicator vocabulary and the current
+                        location; titles never carry a state colour. */}
           {waiting.length > 0 && (
             <div className={styles.stripWaiting} aria-label={`${waiting.length} waiting on you`}>
               {waiting.length}
             </div>
           )}
-          {/* An initial, not a colour chip. Eight area hues stacked down a 44px
-              strip turned navigation into a palette — and they were the app's
-              only use of `--area-*` outside the surfaces that genuinely mix
-              areas (Today's agenda, the calendar day dot). A letter says which
-              area without spending the channel the indicator vocabulary
-              reserves for state (see the note above), and the current one is
-              still marked the way every other row marks it: `--accent-soft`
-              fill. */}
+          {/* An initial, not a colour chip: a letter says which area without spending the
+                        channel the indicator vocabulary reserves for state. */}
           {userAreas.map((area) => (
             <button
               key={area.id}
@@ -293,14 +259,6 @@ export function Sidebar({
 
       <div className={styles.userRow}>
             <Menu
-              /*
-               * Two destinations and the way out. The theme cycler that used to
-               * sit on top is gone: it was the only item here that *did*
-               * something instead of taking you somewhere, it cycled blind
-               * through three modes with the result off-screen behind the
-               * menu, and Settings › General states the same preference as
-               * three labelled options you can see the effect of.
-               */
               items={[
                 { label: 'Settings', onSelect: onOpenSettings },
                 { label: 'Plugins', onSelect: onOpenPlugins },
@@ -335,8 +293,8 @@ export function Sidebar({
       />
       <OperationFeedback feedback={trackConfirm.feedback} />
       <OperationFeedback feedback={areaConfirm.feedback} />
-      {/* Deleting an area cascades to every track inside it: the one operation in
-          the product that earns a typed confirm (§4.3). */}
+      {/* Deleting an area cascades to every track inside it: the one operation that
+                earns a typed confirm. */}
       <ConfirmDialog
         open={areaConfirm.open}
         title={areaCopy.title}
@@ -367,19 +325,7 @@ type RowProps = Readonly<{
   onDelete: (trackId: string) => void;
 }>;
 
-/** A section with no rows does not render at all — no label, no dashed box.
- *  That absence is why the rail looks empty when nothing needs you (§6.1). */
-/**
- * "Waiting on you" and "Pinned" — the two shortcut sections.
- *
- * Their rows are **never marked current**, and that is the one thing worth
- * saying about them. A track that is open, pinned, and waiting used to light up
- * three times in one 200px column, which does not tell you where you are three
- * times as well — it tells you three different places are where you are. These
- * sections are shortcuts *into* the tree; the tree is where a location is
- * shown, and the area list is the tree. One place to look, and it is the one
- * that also says which area the track belongs to.
- */
+/** The two shortcut sections: a section with no rows does not render at all, and their rows are never marked current. */
 function TrackSection({ title, tracks, areas, onGo, nowMs, onSetPinned, onDelete, isUnread }: RowProps & {
   title: string;
   tracks: readonly Track[];
@@ -409,26 +355,10 @@ function TrackSection({ title, tracks, areas, onGo, nowMs, onSetPinned, onDelete
 }
 
 /**
- * INV-A11Y-061 — navigation is `<button>` + `onGo`, never a native `<a href>`.
- * That holds for the `+` too, and since #1211 it is the *only* reason: the `+`
- * now goes to `/area/{id}/new`, so a real URL does exist and an `<a href>`
- * would work. It stays a button because this rail does not mix the two
- * activation models — see the rule above. The cost is real and worth naming:
- * middle-click, open-in-new-tab and copy-link do not work on it.
- *
- * The Area row is a disclosure, not navigation: one click toggles its Tracks.
- * Editing belongs to the permanently visible actions menu, so the row has one
- * immediate primary action and no single/double-click ambiguity.
- *
- * INV-SIDEBAR-013 — the row carries **two permanently visible** trailing
- * controls. Starting a Track and managing its Area are both first-class
- * actions; neither depends on discovering a hover state.
- *
- * They do not share a slot, and neither ever moves: `+` sits at the trailing
- * edge, actions one control-step inboard, and the row reserves both gutters.
- * The track row's status dot/delete pair *does* share one slot — that
- * works because the two marks are the same size and mean the same place. Two
- * live buttons cannot do that, so this row spends the second 20px instead.
+ * Navigation is `<button>` + `onGo`, never `<a href>`, the `+` included: this rail
+ * does not mix the two activation models. The Area row is a disclosure, not
+ * navigation. `+` and the actions menu are both permanently visible and never
+ * share a slot.
  */
 function AreaGroup({
   area, areaTracks, expanded, onToggle, disclosureRef, onEdit, onRequestDelete, onNewTrack,
@@ -479,11 +409,8 @@ function AreaGroup({
             <DropdownMenuItem label="Delete area" onClick={() => onRequestDelete(area.id)} />
           </DropdownMenu>
         </span>
-        {/* The accessible name names the area, and it has to: the rail now
-            carries one of these per area, and N controls all called "New track"
-            is a list a screen-reader user cannot choose from. `title` is the
-            sighted hover label — §4.4 requires both, because a tooltip may not
-            stand in for the accessible name. */}
+        {/* The accessible name names the area: N controls all called "New track" is a
+                    list a screen-reader user cannot choose from. `title` is the sighted hover label. */}
         <button
           type="button"
           data-nc-role="icon"

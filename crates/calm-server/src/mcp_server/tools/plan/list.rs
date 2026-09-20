@@ -119,8 +119,7 @@ pub(super) fn summary(entry: &Value) -> Value {
             "worktree/removed",
             "recovery/guidance/blocking_condition",
             "recovery/guidance/supported_continuation",
-            // The whole object: every retained field is optional and an empty
-            // `{}` (terminal worker, no lease) must survive the summary.
+            // An empty `{}` (terminal worker, no lease) must survive the summary.
             "recovery/guidance/retained",
             "gate_result/passed",
             "gate_result/status",
@@ -226,9 +225,7 @@ pub(super) fn summary(entry: &Value) -> Value {
     }
     let mut omitted_fields = Vec::new();
     omitted(entry, &result, "", &mut omitted_fields);
-    // The lightweight constructor never copies these full-entry values. Keep
-    // their paths in sync with task_list_entry; registry tests compare both views.
-    // Even the full missing-projection fallback supplies id, but no task fields.
+    // Keep these paths in sync with task_list_entry; registry tests compare both views.
     omitted_fields.push("/id".into());
     if entry.get("task_projection").is_none() {
         omitted_fields.extend(

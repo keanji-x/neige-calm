@@ -110,12 +110,7 @@ async fn boot_assert_card_id_complete_still_runs_post_9b_iv() {
     );
 }
 
-/// Seed `n` areas and give each one the matching path via the
-/// **unchecked** repo primitive (`area_folder_create`), which is exactly
-/// the writer that a pre-#275 database's overlapping rows came from —
-/// today's `area_folder_create_checked` would refuse them, so the fence
-/// could not be tested through it.
-/// Returns the seeded `area_id`s, positionally matching `paths`.
+/// Seed via the **unchecked** repo primitive, since the checked writer would refuse overlapping rows.
 async fn seed_folders(repo: &SqlxRepo, paths: &[&str]) -> Vec<String> {
     let mut area_ids = Vec::new();
     for (i, path) in paths.iter().enumerate() {
@@ -149,8 +144,7 @@ async fn boot_fence_rejects_overlapping_area_folder_claims() {
         msg.contains("area_folders boot fence failed"),
         "unexpected fence error: {msg}"
     );
-    // Actionability: both sides of the pair must be nameable by an
-    // operator straight from the message.
+    // Both sides of the pair must be nameable by an operator straight from the message.
     assert!(msg.contains("path=`/a`"), "fence must name /a: {msg}");
     assert!(msg.contains("path=`/a/b`"), "fence must name /a/b: {msg}");
     for area_id in &area_ids {
@@ -175,9 +169,7 @@ async fn boot_fence_passes_on_disjoint_area_folder_claims() {
         .expect("disjoint area_folders claims must pass the boot fence");
 }
 
-/// The adjacent case the fence must NOT trip on: sibling paths that
-/// share a *string* prefix but not a *path* prefix. Tripping here would
-/// brick booting on a perfectly valid table.
+/// Sibling paths that share a *string* prefix but not a *path* prefix must not trip the fence.
 #[tokio::test]
 async fn boot_fence_passes_on_string_prefix_siblings() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -199,10 +191,7 @@ async fn boot_fence_passes_on_empty_area_folders() {
         .expect("empty area_folders must pass the boot fence");
 }
 
-/// `UNIQUE(area_folders.path)` makes the exact-equal overlap
-/// unreachable even through the unchecked primitive. Pinning that here
-/// documents *why* the DB-level fence test cannot cover `Equal` (the
-/// pure-function test in `area_folder_claim` does).
+/// `UNIQUE(area_folders.path)` makes the exact-equal overlap unreachable even through the unchecked primitive.
 #[tokio::test]
 async fn equal_paths_are_unreachable_even_through_the_unchecked_primitive() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());

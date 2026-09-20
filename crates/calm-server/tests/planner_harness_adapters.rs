@@ -37,10 +37,7 @@ use tracing_subscriber::layer::Context as TracingContext;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{Layer, registry as tracing_registry};
 
-/// Serializes intra-binary tests that toggle `FAKE_CODEX_CAPTURE_REQUESTS`
-/// (or any other process env read by the fake codex shim). Peer test
-/// binaries keep their own `ENV_LOCK` because each test binary is a separate
-/// process.
+/// Serializes tests that toggle process env read by the fake codex shim.
 static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 struct EnvGuard(&'static str);
@@ -243,8 +240,7 @@ async fn seed_plain_chat_card(
     tx.commit().await.unwrap();
 }
 
-/// The track-assistant twin of [`seed_plain_chat_card`]: the same shape the
-/// #1189 mint writes — `CardRole::Assistant` plus the `assistant` marker.
+/// The track-assistant twin of [`seed_plain_chat_card`]: `CardRole::Assistant` plus the `assistant` marker.
 async fn seed_assistant_card(
     repo: &SqlxRepo,
     role_cache: &CardRoleCache,
@@ -660,29 +656,6 @@ async fn fresh_thread_sends_per_card_mcp_config_and_rotates_hash() {
     assert_ne!(first_token, second_token);
 }
 
-/// #838 (lean Move 1) planner-path point-of-use test.
-///
-/// The sibling of `worker_exec_shell_env.rs::worker_thread_start_carries_neige_mcp_exec_shell_env`
-/// for the PLANNER spawn path. It drives the production `planner-harness-start`
-/// operation end-to-end through the operation runtime against a live fake
-/// codex app-server, captures the inbound `thread/start` request, and asserts
-/// the planner `thread/start` carries the channel-3 MCP exec-shell env in
-/// `/params/config/shell_environment_policy/set` — `NEIGE_MCP_SOCKET`
-/// value-pinned to the socket the planner path actually resolves, and a
-/// non-empty `NEIGE_MCP_TOKEN`.
-///
-/// `thread/start` `config.shell_environment_policy.set` is THE ONLY channel
-/// reaching the AI exec-shell, so this pins the byte shape at the planner
-/// point-of-use. Before #838-2 the planner path built this shape via its own
-/// parallel `PlannerThread*` structs; after the refactor it goes through the
-/// shared `card_mcp_thread_start_config` helper. This test characterizes the
-/// behavior and must stay GREEN across that migration (shape preserved).
-///
-/// In this harness the planner adapter is wired via `AppState::from_parts` with
-/// no live `McpServer`, so `mcp_socket_path_for_thread()` resolves through the
-/// `fixtures`-gated `fixture_socket_path()` — the value we pin against here,
-/// the planner analogue of the worker sibling pinning to
-/// `server.shim_config.socket_path`.
 #[tokio::test]
 async fn planner_thread_start_carries_neige_mcp_exec_shell_env() {
     let _guard = ENV_LOCK.lock().await;
@@ -728,8 +701,7 @@ async fn planner_thread_start_carries_neige_mcp_exec_shell_env() {
     );
     let thread_start = starts[0];
 
-    // #1578: this is the actual operation's provider request. Truthful write
-    // annotations plus approvalPolicy=never otherwise stop before tools/call.
+    // Truthful write annotations plus approvalPolicy=never otherwise stop before tools/call.
     assert_eq!(
         thread_start.pointer("/params/approvalPolicy"),
         Some(&json!("never"))
@@ -749,9 +721,6 @@ async fn planner_thread_start_carries_neige_mcp_exec_shell_env() {
             .is_none()
     );
 
-    // The #838 planner-path channel-3 assertions: the planner thread/start must
-    // carry the MCP exec-shell env in shell_environment_policy.set so the
-    // planner AI exec-shell can reach + authenticate to the MCP socket.
     let mcp_socket = thread_start
         .pointer("/params/config/shell_environment_policy/set/NEIGE_MCP_SOCKET")
         .and_then(Value::as_str);
@@ -782,8 +751,6 @@ async fn planner_thread_start_carries_neige_mcp_exec_shell_env() {
          shell_environment_policy.set — otherwise the planner AI exec-shell \
          cannot authenticate to the MCP socket. Captured request: {thread_start}"
     );
-    // The token shipped on the wire must be the freshly minted raw token whose
-    // hash is persisted for the card (parity with `thread_start_token` usage).
     let card_hash = card_mcp_hash(&repo, &card_id)
         .await
         .expect("planner mint stores card MCP hash");
@@ -829,10 +796,7 @@ async fn plain_chat_thread_start_has_no_mcp_config() {
             .shared_codex_appserver
             .started_thread_params_for_test(),
         vec![(None, true, None)],
-        // The deferred mint API does not receive a card role, so this path can
-        // only observe developer instructions and ThreadConfig::NoMcp. Role is
-        // observable only on the non-deferred path and is locked by
-        // plain_chat_non_deferred_thread_start_uses_worker_role.
+        // The deferred mint API receives no card role, so only developer instructions and ThreadConfig::NoMcp are observable here.
         "plain-chat thread/start must select ThreadConfig::NoMcp"
     );
     assert_eq!(
@@ -858,22 +822,6 @@ async fn plain_chat_thread_start_has_no_mcp_config() {
     );
 }
 
-/// #1189 A2 — the assistant's `thread/start` is the plain chat's opposite, item
-/// for item.
-///
-/// The sibling above pins `(None, true, None)`: no developer instructions,
-/// `ThreadConfig::NoMcp`. This one pins `(Some(assistant prompt), false, None)`
-/// on the SAME observable, which is the only place in the process where the two
-/// profiles are distinguishable.
-///
-/// Why not assert on `card_mcp_tokens` / `worker_sessions.mcp_token_hash`
-/// instead: those rows prove nothing here. `mint_card_mcp_token_pair()` and the
-/// `new_mcp_token_hash` write in `planner_harness_start_adapter` run for EVERY
-/// profile — the plain-chat sibling above asserts the same non-null hash — and
-/// the profile decides only whether the raw token reaches `ThreadConfig`. Move
-/// `HarnessProfile::Assistant` into the `NoMcp` arm and every token-row
-/// assertion in the suite stays green while the assistant's only write channel
-/// is severed. `is_no_mcp` in this tuple is the assertion that turns red.
 #[tokio::test]
 async fn assistant_thread_start_carries_mcp_config_and_the_assistant_prompt() {
     let (state, repo, role_cache) = state_with_fake_daemon().await;
@@ -916,13 +864,9 @@ async fn assistant_thread_start_carries_mcp_config_and_the_assistant_prompt() {
             .started_thread_params_for_test(),
         vec![(Some(expected_prompt), false, None)],
         // `false` is `is_no_mcp`: the assistant must get ThreadConfig::McpShell.
-        // The prompt is pinned by equality, not by a substring, so wiring the
-        // assistant to the PLANNER prompt is red here too.
         "assistant thread/start must carry MCP config and the assistant prompt"
     );
 
-    // The rest of the mint contract, restated as the plain-chat sibling's
-    // point-for-point opposite.
     let card = repo
         .card_get(&card_id)
         .await
@@ -1441,21 +1385,8 @@ async fn card_payload(repo: &SqlxRepo, card_id: &str) -> Value {
     serde_json::from_str(&raw).unwrap()
 }
 
-/// #1505 S4-1 — the app-server-interact writeback must not clobber payload keys
-/// that landed after the phase-1 snapshot was taken.
-///
-/// The adapter reads a card snapshot out of `TxOutput::result`, which the
-/// PREVIOUS transactional phase produced. Between that snapshot and the
-/// writeback sit a cross-process `thread/start` call and — because an
-/// operation is a durable resumable entity — a possible process restart, so
-/// the snapshot can be arbitrarily old. This test reproduces exactly that
-/// window: run the operation to completion, capture the card as the snapshot
-/// saw it, let another writer put keys into the payload, then rewind the
-/// operation to `app_server_interact` with the STALE `tx_output` and replay.
-///
-/// The old code copied the stale snapshot's payload and handed the whole thing
-/// to `card_update_tx`, which replaces the card's `payload` column wholesale,
-/// so the probe keys vanished.
+/// The adapter's card snapshot comes from the previous phase's `TxOutput::result` and can be arbitrarily
+/// stale: a cross-process `thread/start` and a possible process restart sit between it and the writeback.
 #[tokio::test]
 async fn recovery_writeback_keeps_payload_keys_written_after_the_snapshot() {
     let (state, repo, role_cache) = state_with_fake_daemon().await;
@@ -1510,9 +1441,7 @@ async fn recovery_writeback_keeps_payload_keys_written_after_the_snapshot() {
         "the snapshot must predate the concurrent write"
     );
 
-    // A concurrent writer (in production: `PATCH /api/cards/:id`, or the #1505
-    // model/effort selector) lands after the snapshot and before the replay.
-    // It also plants the four runtime keys the adapter is supposed to clear.
+    // A concurrent writer lands after the snapshot and before the replay; it also plants the four runtime keys the adapter clears.
     let mut concurrent_payload = card_payload(&repo, &card_id).await;
     {
         let map = concurrent_payload.as_object_mut().unwrap();
@@ -1539,9 +1468,7 @@ async fn recovery_writeback_keeps_payload_keys_written_after_the_snapshot() {
     .unwrap();
     tx.commit().await.unwrap();
 
-    // Rewind to the app-server-interact phase carrying the STALE tx_output:
-    // `codex_thread_id` is absent from `data` (phase 1 had not reached the
-    // mint yet), and `result` is the pre-concurrent-write card.
+    // Rewind to the app-server-interact phase carrying the STALE tx_output.
     stale_output["result"] = stale_card;
     stale_output["data"]
         .as_object_mut()
@@ -1982,11 +1909,7 @@ async fn start_adapter_mints_new_thread_when_runtime_lacks_thread_id() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// #1098 §5.6 — lazy chat-card minting (`create_card`). `validate` runs before
-// the operation row is inserted, so each rejection below surfaces straight out
-// of `submit`.
-// ---------------------------------------------------------------------------
+// Lazy chat-card minting: `validate` runs before the operation row is inserted, so each rejection surfaces straight out of `submit`.
 
 async fn chat_track(repo: &SqlxRepo) -> Track {
     let track = seed_track(repo).await;
@@ -2099,10 +2022,8 @@ async fn lazy_mint_refuses_to_adopt_an_existing_card() {
     assert_eq!(card.payload.get("harness_profile"), None);
 }
 
-/// Positive control for the three refusals above, and the shape pin for the
-/// minted card: Worker/codex, kernel-owned, marked, and carrying NO
-/// `planner_harness` key (INV-CHAT-016 — the old FE's planner renderer claims any
-/// card that has one).
+/// Positive control for the three refusals above; the minted card must carry NO `planner_harness` key
+/// (the old FE's planner renderer claims any card that has one).
 #[tokio::test]
 async fn lazy_mint_creates_a_marked_kernel_owned_worker_card() {
     let (state, repo, role_cache) = state_with_fake_daemon().await;
@@ -2148,8 +2069,6 @@ async fn lazy_mint_creates_a_marked_kernel_owned_worker_card() {
     }
 }
 
-/// INV-CHAT-013(a) at the adapter boundary: a `thread/start` failure takes the
-/// lazily minted card back out, along with its session row.
 #[tokio::test]
 async fn lazy_mint_is_compensated_away_when_thread_start_fails() {
     let (state, repo, _role_cache) = state_with_fake_daemon().await;
@@ -2185,10 +2104,6 @@ async fn lazy_mint_is_compensated_away_when_thread_start_fails() {
     assert_eq!(sessions, 0);
 }
 
-/// The lazy-mint branch keeps the ordinary branch's daemon preflight. Without
-/// it a down app-server would still mint and commit the card (broadcasting
-/// `card.added`), fail at `thread/start`, and only then compensate it away —
-/// a visible flicker and a 500 in place of a clean rejection.
 #[tokio::test]
 async fn lazy_mint_refuses_to_mint_while_the_app_server_is_down() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());

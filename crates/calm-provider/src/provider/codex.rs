@@ -12,41 +12,28 @@ use calm_types::worker::{
 use super::supervisor::probe_terminal_liveness;
 use super::terminal::failed_reason;
 
-/// calm-provider-local mirror of the wire `ThreadStatus` (#741 §1.3), keyed
-/// to exactly what the death arbiter discriminates on. The daemon-probe impl
-/// (calm-server) maps the upstream `thread/read` status into this; the
-/// arbiter only ever asks "is it `Active`?".
+/// calm-provider-local mirror of the wire `ThreadStatus`; the arbiter only ever asks "is it `Active`?".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreadStatusLite {
     NotLoaded,
     Idle,
     SystemError,
-    /// A turn is running or blocked on a human (`waitingOnUserInput` /
-    /// `waitingOnApproval`). Either flag ⇒ never reap (design §1.4).
+    /// A turn is running or blocked on a human (`waitingOnUserInput` / `waitingOnApproval`). Either flag ⇒ never reap.
     Active {
         waiting_on_user_input: bool,
         waiting_on_approval: bool,
     },
 }
 
-/// The liveness facts the death arbiter needs from a live `thread/read`
-/// (#741 §1.3). Returned by [`CodexDaemonProbe::read_liveness_facts`];
-/// `None` from that call means the RPC was unreachable (can't rule out a
-/// live turn → `Unknown`).
+/// The liveness facts the death arbiter needs from a live `thread/read`; `None` from the probe means the RPC was unreachable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CodexLivenessFacts {
-    /// Whether the thread is currently loaded in daemon memory
-    /// (`thread/loaded/list`). Secondary signal; the arbiter keys on
-    /// `status` + `last_turn_completed_at`.
+    /// Whether the thread is loaded in daemon memory. Secondary signal; the arbiter keys on `status` + `last_turn_completed_at`.
     pub loaded: bool,
     /// The thread's current status.
     pub status: ThreadStatusLite,
-    /// The MOST RECENT turn's `completed_at`, design §0.1:
-    /// * `None`            — no turns at all (no positive signal).
-    /// * `Some(None)`      — last turn started but never finished
-    ///   (died-mid-turn — the positive death signal).
-    /// * `Some(Some(ts))`  — last turn finished cleanly OR was deliberately
-    ///   aborted (both carry a timestamp) — NOT a death.
+    /// The MOST RECENT turn's `completed_at`: `None` = no turns at all; `Some(None)` = started but never finished (the positive death signal);
+    /// `Some(Some(ts))` = finished cleanly or deliberately aborted — not a death.
     pub last_turn_completed_at: Option<Option<i64>>,
 }
 
@@ -56,16 +43,10 @@ pub trait CodexDaemonProbe: Send + Sync {
     fn active_turn_id_for_thread(&self, thread_id: &str) -> Option<String>;
     fn remote_uri(&self) -> String;
 
-    /// Wall-clock ms of the most recent successful daemon (re)connect (#741
-    /// §1.3). Feeds the 741-3 reaper's `REBUILD_GRACE` — within the grace the
-    /// loaded-thread roster isn't stable yet so S2 pulls are held off. Nothing
-    /// consumes this until 741-3; it is tracked always-on in the connect path.
+    /// Wall-clock ms of the most recent successful daemon (re)connect; within the rebuild grace the loaded-thread roster is not stable yet.
     fn daemon_connected_at_ms(&self) -> TimestampMs;
 
-    /// Pull the §1.3 liveness facts for `thread_id` via a live `thread/read`
-    /// (+ optional `thread/loaded/list`). Returns `None` on ANY RPC
-    /// error / unreachable daemon — the arbiter treats that as "can't rule
-    /// out a live turn" → `Unknown`.
+    /// Returns `None` on ANY RPC error / unreachable daemon — the arbiter treats that as "can't rule out a live turn".
     async fn read_liveness_facts(&self, thread_id: &str) -> Option<CodexLivenessFacts>;
 }
 
@@ -127,8 +108,7 @@ impl WorkerProvider for CodexProvider {
         Ok(codex_interpret_exit(evidence))
     }
 
-    /// The codex worker death-arbiter (#741 §1.1 truth table). DORMANT:
-    /// nothing calls this outside tests until 741-3 wires it into the reaper.
+    /// The codex worker death-arbiter. Dormant: nothing calls this outside tests yet.
     async fn confirm_durable_death(
         &self,
         thread_id: &str,
@@ -153,7 +133,6 @@ impl WorkerProvider for CodexProvider {
         Some(self.daemon.daemon_connected_at_ms())
     }
 
-    /// PR8 will wire the returned command into the terminal/renderer spawn path.
     async fn resume(
         &self,
         session: &WorkerSession,
@@ -208,23 +187,17 @@ pub(crate) fn codex_interpret_exit(evidence: &ExitEvidence) -> ExitInterpretatio
     }
 }
 
-/// The S2 leaf of the §1.1 truth table: given the facts pulled from a live,
-/// past-grace daemon (or `None` if the pull was unreachable), decide the
-/// verdict. Factored out so the truth table is unit-testable without a
-/// daemon. The S1 (daemon-down) and within-grace branches live in
-/// [`CodexProvider::confirm_durable_death`] above.
+/// The S2 leaf of the truth table, factored out so it is unit-testable without a daemon.
 pub(crate) fn verdict_from_facts(facts: Option<CodexLivenessFacts>) -> DeathVerdict {
     let Some(facts) = facts else {
         // RPC unreachable — can't rule out a live turn.
         return DeathVerdict::Unknown;
     };
-    // A turn is running OR blocked on a human ⇒ never reap (idle-worker
-    // guard, §1.4). ANY flag still counts as Active.
+    // A turn is running OR blocked on a human ⇒ never reap. ANY flag still counts as Active.
     if matches!(facts.status, ThreadStatusLite::Active { .. }) {
         return DeathVerdict::Alive;
     }
-    // Idle | SystemError | NotLoaded: no turn running. The DISCRIMINATOR is
-    // the last turn's completed_at, NOT the status (§0.1).
+    // Idle | SystemError | NotLoaded: no turn running. The discriminator is the last turn's completed_at, NOT the status.
     match facts.last_turn_completed_at {
         // S2: died-mid-turn — started, never finished, won't re-drive.
         Some(None) => DeathVerdict::Dead,
@@ -272,13 +245,7 @@ mod tests {
         }
     }
 
-    // ===================================================================
-    // confirm_durable_death — the #741 §1.1 truth table (the specification).
-    // ===================================================================
-
-    /// Scriptable [`CodexDaemonProbe`]: returns a fixed `is_running` and a
-    /// fixed `read_liveness_facts` result, so each truth-table row can be
-    /// driven through the real `CodexProvider::confirm_durable_death`.
+    /// Scriptable [`CodexDaemonProbe`] with a fixed `is_running` and `read_liveness_facts` result.
     struct FakeCodexDaemonProbe {
         running: bool,
         facts: Option<CodexLivenessFacts>,
@@ -318,7 +285,7 @@ mod tests {
         }
     }
 
-    const GRACE: i64 = 300_000; // 5 min, design D-2.
+    const GRACE: i64 = 300_000; // 5 min
 
     /// Helper: now well past grace so S2 is reached (when daemon up).
     async fn verdict(running: bool, facts: Option<CodexLivenessFacts>) -> DeathVerdict {
@@ -329,7 +296,6 @@ mod tests {
 
     #[tokio::test]
     async fn arbiter_s1_daemon_down_is_dead() {
-        // is_running()==false ⇒ Dead, regardless of facts (no pull needed).
         assert_eq!(verdict(false, None).await, DeathVerdict::Dead);
         assert_eq!(
             verdict(false, Some(facts(ThreadStatusLite::Idle, Some(None)))).await,
@@ -339,7 +305,6 @@ mod tests {
 
     #[tokio::test]
     async fn arbiter_within_rebuild_grace_is_unknown() {
-        // now - connected < grace ⇒ Unknown even with a died-mid-turn fact.
         let v = provider_with(true, Some(facts(ThreadStatusLite::Idle, Some(None))))
             .confirm_durable_death("t-1", GRACE - 1, 0, GRACE)
             .await;
@@ -348,8 +313,7 @@ mod tests {
 
     #[tokio::test]
     async fn arbiter_grace_boundary_equal_is_not_within_grace() {
-        // now - connected == grace ⇒ NOT within grace → reaches S2.
-        // Pull shows died-mid-turn ⇒ Dead (proves we crossed the boundary).
+        // now - connected == grace is NOT within grace; the died-mid-turn fact proves S2 was reached.
         let v = provider_with(true, Some(facts(ThreadStatusLite::Idle, Some(None))))
             .confirm_durable_death("t-1", GRACE, 0, GRACE)
             .await;
@@ -358,7 +322,6 @@ mod tests {
 
     #[tokio::test]
     async fn arbiter_pull_unreachable_is_unknown() {
-        // daemon up, past grace, read_liveness_facts == None ⇒ Unknown.
         assert_eq!(verdict(true, None).await, DeathVerdict::Unknown);
     }
 
@@ -401,45 +364,38 @@ mod tests {
 
     #[tokio::test]
     async fn arbiter_idle_died_mid_turn_is_dead() {
-        // Idle + last turn Some(None) (started, never finished) ⇒ S2 Dead.
         let f = facts(ThreadStatusLite::Idle, Some(None));
         assert_eq!(verdict(true, Some(f)).await, DeathVerdict::Dead);
     }
 
     #[tokio::test]
     async fn arbiter_idle_last_turn_completed_is_alive() {
-        // Idle + last turn Some(Some(ts)) — covers BOTH clean-complete AND
-        // deliberate-abort (a TurnAborted carries a timestamp) ⇒ Alive.
+        // Covers BOTH clean-complete AND deliberate-abort (a TurnAborted carries a timestamp).
         let f = facts(ThreadStatusLite::Idle, Some(Some(1700)));
         assert_eq!(verdict(true, Some(f)).await, DeathVerdict::Alive);
     }
 
     #[tokio::test]
     async fn arbiter_not_loaded_died_mid_turn_is_dead() {
-        // NotLoaded + last turn Some(None) ⇒ Dead (read-from-disk rollout).
         let f = facts(ThreadStatusLite::NotLoaded, Some(None));
         assert_eq!(verdict(true, Some(f)).await, DeathVerdict::Dead);
     }
 
     #[tokio::test]
     async fn arbiter_system_error_died_mid_turn_is_dead() {
-        // SystemError is just "no turn running" — discriminator is still
-        // completed_at; Some(None) ⇒ Dead.
         let f = facts(ThreadStatusLite::SystemError, Some(None));
         assert_eq!(verdict(true, Some(f)).await, DeathVerdict::Dead);
     }
 
     #[tokio::test]
     async fn arbiter_no_turns_at_all_is_unknown() {
-        // last_turn_completed_at == None (no turns) ⇒ conservative no-reap.
         let f = facts(ThreadStatusLite::Idle, None);
         assert_eq!(verdict(true, Some(f)).await, DeathVerdict::Unknown);
     }
 
     #[test]
     fn arbiter_default_for_non_codex_providers_is_unknown() {
-        // The WorkerProvider trait default returns Unknown — exercised here
-        // via the pure S2 leaf with no facts (the same conservative output).
+        // Exercised via the pure S2 leaf with no facts (the same conservative output as the trait default).
         assert_eq!(verdict_from_facts(None), DeathVerdict::Unknown);
     }
 

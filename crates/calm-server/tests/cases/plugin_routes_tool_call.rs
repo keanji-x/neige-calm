@@ -1,18 +1,5 @@
-//! Integration tests for M3-mcp-apps **Slice M2**: the
-//! `POST /api/tracks/:track_id/cards` route's `via_tool_call` payload variant.
-//!
-//! We boot a real `PluginHost`, install + spawn a `stub-plugin-toolcall`
-//! configured to return a deterministic `CallToolResult`, then drive the
-//! route via `tower::ServiceExt::oneshot` and assert on:
-//!
-//!   * Happy path — the route returns 201 and a Card row exists with
-//!     `kind == "ui://stub/status"` + `payload == {"msg":"hi"}`.
-//!   * Missing `_meta.ui.resourceUri` — 422 with `code: "not_a_card_tool"`.
-//!   * Manifest lacks `permissions.cards_create` — 403.
-//!
-//! Per the migration doc §6/M2 acceptance: "a stub plugin exposes a tool
-//! returning `_meta.ui.resourceUri`; hit the REST route; assert the response
-//! is 200 and a Card row exists with `kind == ui://stub/status`."
+//! Integration tests for the `POST /api/tracks/:track_id/cards` route's
+//! `via_tool_call` payload variant, against a real `stub-plugin-toolcall`.
 
 #![cfg(unix)]
 
@@ -36,13 +23,6 @@ use tower::ServiceExt;
 
 const TOOLCALL_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-toolcall");
 
-// ---------------------------------------------------------------------------
-// Fixture
-// ---------------------------------------------------------------------------
-
-/// Test fixture: an `AppState` wired to a real `PluginHost`, an in-memory
-/// `SqlxRepo` pre-seeded with one area + one track, and one installed `stub-toolcall`
-/// plugin with configurable env vars (mode / resource_uri / structured).
 struct Fixture {
     state: AppState,
     track_id: String,
@@ -94,7 +74,6 @@ async fn boot(cfg: StubConfig<'_>) -> Fixture {
         .await
         .unwrap();
 
-    // Pass STUB_TOOLCALL_MODE via manifest env so the stub child reads it.
     let perms = if cfg.cards_create {
         json!({
             "overlays_write": [],
@@ -103,7 +82,6 @@ async fn boot(cfg: StubConfig<'_>) -> Fixture {
             "events_subscribe": []
         })
     } else {
-        // cards_create defaults to false — used by the 403 test.
         json!({})
     };
     let manifest_json = json!({
@@ -121,7 +99,6 @@ async fn boot(cfg: StubConfig<'_>) -> Fixture {
 
     let registry = PluginRegistry::from_manifests([(manifest, Some(install_dir.clone()))]);
     let events = EventBus::new();
-    // Seed plugin row so plugin_token_set's FK is satisfied at spawn time.
     repo.plugin_install(calm_server::model::NewPlugin {
         id: cfg.plugin_id.into(),
         version: "0.1.0".into(),
@@ -134,8 +111,6 @@ async fn boot(cfg: StubConfig<'_>) -> Fixture {
     .expect("seed plugin row");
     let plugin_host = Arc::new(PluginHost::new_full(
         Arc::new(registry),
-        // method-call clone is a coercion site for the `Arc<dyn Repo>` →
-        // `Arc<dyn RouteRepo>` upcast (PR #41 — kernel-narrow).
         repo.clone(),
         plugins_dir,
         plugins_data_dir,
@@ -156,8 +131,8 @@ async fn boot(cfg: StubConfig<'_>) -> Fixture {
         Arc::new(DaemonClient::new_stub()),
         plugin_host,
         Arc::new(calm_server::state::CodexClient::new_stub()),
-        None, // PR3 (#136): card_role_cache — tests don't exercise role gating
-        None, // #234: track_area_cache — same rationale
+        None,
+        None,
     );
 
     Fixture {
@@ -184,8 +159,7 @@ async fn wait_for_running(host: &Arc<PluginHost>, id: &str) {
 }
 
 fn app(state: AppState) -> axum::Router {
-    // Scope G: the cards router pulls `Actor` from extensions, so the
-    // middleware that populates it must be present. Mirror main.rs.
+    // The cards router pulls `Actor` from extensions, so the middleware that populates it must be present.
     axum::Router::new()
         .merge(routes::cards::router())
         .layer(axum::middleware::from_fn(
@@ -211,10 +185,6 @@ async fn post_create(app: axum::Router, track_id: &str, body: Value) -> axum::ht
     .await
     .unwrap()
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn via_tool_call_creates_card_with_ui_resource_uri() {
@@ -244,7 +214,6 @@ async fn via_tool_call_creates_card_with_ui_resource_uri() {
     assert_eq!(body["track_id"], fx.track_id);
     assert_eq!(body["payload"], json!({ "msg": "hi" }));
 
-    // Also confirm the row landed via the repo, not just echoed back.
     let cards = fx
         .state
         .repo
@@ -284,7 +253,6 @@ async fn via_tool_call_returns_422_when_meta_ui_resource_uri_absent() {
     let body = body_to_json(resp).await;
     assert_eq!(body["code"], "not_a_card_tool");
 
-    // No row should have been inserted on the failed path.
     let cards = fx
         .state
         .repo

@@ -1,18 +1,9 @@
-/*
- * The source panel's claims that only a rendering engine can answer (#1669).
- *
- * jsdom computes no layout, so a `scrollIntoView` there is a call that
- * happened and nothing more. What the reader is promised is a *place*: the
- * quote is on screen inside the drawer's own scroller after the panel opens,
- * even when it sits far down a long body — and the body folds instead of
- * pushing the card sideways, because a captured article is prose.
- */
+/* The source panel's claims that only a rendering engine can answer: jsdom computes no layout. */
 import { act, render } from '@testing-library/react';
 import { page } from 'vitest/browser';
 import { afterEach, describe, expect, it } from 'vitest';
 
-/* The whole cascade, before the CSS Module — see the import-order note in
-   `features/chat/thread/thread.browser.test.tsx`. */
+/* The whole cascade, before the CSS Module. */
 import '../../../styles/entry.css';
 
 import type { ReportSourceLinkTarget, TrackSourceDetail } from '../../../../../core/domain/report-source.ts';
@@ -43,12 +34,7 @@ const SOURCE: TrackSourceDetail = {
 
 const TARGET: ReportSourceLinkTarget = { destination: 'neige://source/src_2c9e0a1b#q1', sourceId: 'src_2c9e0a1b', quoteId: 'q1' };
 
-/**
- * A main region for the drawer to be positioned in: the two facts of
- * `app/shell`'s `.main` the card's box depends on (a positioned, clipped
- * ancestor of a fixed height), spelled inline because a feature test may not
- * import `app/**` — the same fence the feature itself is behind.
- */
+/** A positioned, clipped, fixed-height main region for the drawer, spelled inline because a feature test may not import `app/**`. */
 function Page() {
   const [open, setOpen] = useState(false);
   return (
@@ -81,18 +67,11 @@ describe('the source panel, as the engine lays it out', () => {
     const mark = drawer.querySelector<HTMLElement>('mark[data-nc-report-source-quote="q1"]')!;
     expect(mark.textContent).toBe(QUOTE);
 
-    /* The premise: the quote is far enough down that nothing short of a
-       scroll shows it. Without this the containment below holds vacuously
-       on a short body. */
     expect(scroller.scrollHeight).toBeGreaterThan(scroller.clientHeight * 2);
     expect(scroller.scrollTop).toBeGreaterThan(0);
 
     expect(inside(mark.getBoundingClientRect(), scroller.getBoundingClientRect())).toBe(true);
-    /* And it scrolled the *scroller*, not the page: the drawer is absolute
-       inside `.main`, and a `scrollIntoView` that panned the document would
-       have moved the card with it. */
     expect(window.scrollY).toBe(0);
-    /* Painted, not merely present: a mark with no box is a highlight nobody sees. */
     const markBox = mark.getBoundingClientRect();
     expect(markBox.width).toBeGreaterThan(8);
     expect(markBox.height).toBeGreaterThan(8);
@@ -107,7 +86,6 @@ describe('the source panel, as the engine lays it out', () => {
     const body = drawer.querySelector<HTMLElement>('pre[data-nc-report-source-body]')!;
     expect(body.scrollWidth).toBe(body.clientWidth);
     expect(body.getBoundingClientRect().right).toBeLessThanOrEqual(drawer.getBoundingClientRect().right);
-    /* The badge is painted in front of the title, on its own line. */
     const badge = drawer.querySelector<HTMLElement>('[data-nc-report-source-provenance="full_text"]')!;
     const title = drawer.querySelector<HTMLElement>('h2')!;
     expect(badge.textContent).toBe('智堡全文');

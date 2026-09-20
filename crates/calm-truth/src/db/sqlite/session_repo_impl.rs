@@ -171,38 +171,10 @@ impl SessionRepo for SqlxRepo {
     }
 
     async fn dead_root_candidates(&self) -> Result<Vec<DeadRootCandidate>> {
-        // The soundness predicate lives entirely here (#741-4 DR-4). Two arms,
-        // both gated on a POSITIVE dead signal AND the mid-respawn exclusion
-        // (no active planner-contract session). NEVER converges on absence or
-        // a just-created track.
-        //
-        //  * Failed-start (Draft): the track is still `draft` AND its
-        //    *most-recent* `planner-harness-start` operation resolved to
-        //    `phase='failed'`. The op→track link is the immutable
-        //    `payload_json.track_id` (`idempotency_key` is None and
-        //    `target_type/id` is later rewritten to the planner card, so neither
-        //    is a reliable key — the payload is stamped once at insert and
-        //    never changes). Start/reset re-submit `planner-harness-start` with a
-        //    FRESH op id, so a track can carry a STALE `failed` start-op AND a
-        //    NEWER retry (`pending`/`running`/`succeeded`) start-op at once;
-        //    during the retry's setup window (new op submitted, planner session
-        //    not yet created) `no_active_planner` is momentarily true. Keying
-        //    on the LATEST start-op — `rowid = MAX(rowid)` over this track's
-        //    start-ops — closes that hole: `rowid` is SQLite's monotonic
-        //    insertion order (the `operations` table is rowid-backed, not
-        //    `WITHOUT ROWID`; `id` is a random uuid-v4 and `created_at_ms` is
-        //    wall-clock ms that can tie, so neither orders insertions
-        //    reliably). If the latest start-op is non-failed (retry in flight
-        //    or a success), or there is no start-op row yet, the signal is NOT
-        //    positive ⇒ left.
-        //  * Lost-root (Planning): the track is `planning` AND its root session
-        //    is NULL or points at a terminal/missing session. A `Resumable`
-        //    (codex) root that is still alive is `is_active_authority` ⇒ caught
-        //    by the active-planner exclusion below, so a codex root is never
-        //    declared dead on a bare PTY-`Exited` — only via its terminal
-        //    `worker_sessions.state` (set by the worker reaper's S1/S2 arbiter).
-        //
-        // Dispatching/Blocked are intentionally OUT OF SCOPE (no DR-1 edge).
+        // Both arms need a POSITIVE dead signal AND no active planner session; never
+        // converges on absence or a just-created track. Failed-start keys on the
+        // LATEST start-op by `rowid` (ids are random, `created_at_ms` can tie), so a
+        // stale failed op next to an in-flight retry is not positive.
         let active = "('starting', 'running', 'idle', 'turn_pending')";
         let no_active_planner = format!(
             "NOT EXISTS (SELECT 1 FROM worker_sessions ws \
@@ -282,22 +254,10 @@ impl SessionRepo for SqlxRepo {
     }
 }
 
-// ---------------------------------------------------------------------------
-// RepoSyncDomainRaw — raw entity writes for the in-scope sync domain.
-// Gated: not reachable via the `RouteRepo` trait object that handlers see;
-// only callable via the explicit `AppState::raw_repo()` escape hatch.
-//
-// #930 uniform rule: every writing transaction begins with
-// `begin_immediate_tx` (BEGIN IMMEDIATE). Some of these `_tx` helpers read
-// before writing (e.g. sort computation); a deferred read→write upgrade
-// under shared-cache sqlite can close a lock cycle with a concurrent
-// IMMEDIATE writer ("database is deadlocked"), while a second IMMEDIATE
-// parks at BEGIN holding nothing.
-// ---------------------------------------------------------------------------
+// RepoSyncDomainRaw is gated: only reachable via `AppState::raw_repo()`.
 
 #[async_trait]
 impl RepoSyncDomainRaw for SqlxRepo {
-    // ---------------------------------------------------------------- areas
     async fn area_create(&self, p: NewArea) -> Result<Area> {
         let mut tx = begin_immediate_tx(&self.pool).await?;
         let out = area_create_tx(&mut tx, p).await?;
@@ -321,7 +281,6 @@ impl RepoSyncDomainRaw for SqlxRepo {
         Ok(())
     }
 
-    // ---------------------------------------------------------------- tracks
     async fn track_create(&self, p: NewTrack) -> Result<Track> {
         let mut tx = begin_immediate_tx(&self.pool).await?;
         let out = track_create_tx(
@@ -354,13 +313,9 @@ impl RepoSyncDomainRaw for SqlxRepo {
         Ok(())
     }
 
-    // ---------------------------------------------------------------- cards
     async fn card_create(&self, p: NewCard) -> Result<Card> {
         let mut tx = begin_immediate_tx(&self.pool).await?;
         let out = if p.kind == "track-report" {
-            // Raw domain fixtures and kernel-side callers have no role
-            // parameter; preserve their report-mint semantics by making the
-            // required role explicit at the guarded insert boundary.
             card_create_with_id_tx(
                 &mut tx,
                 new_id(),
@@ -391,7 +346,6 @@ impl RepoSyncDomainRaw for SqlxRepo {
         Ok(())
     }
 
-    // -------------------------------------------------------------- overlays
     async fn overlay_upsert(&self, p: NewOverlay) -> Result<Overlay> {
         let mut tx = begin_immediate_tx(&self.pool).await?;
         let out = overlay_upsert_tx(&mut tx, p).await?;

@@ -2002,9 +2002,7 @@ async fn codex_prompt_recovery_with_turn_started_marker_times_out_without_lifecy
         .recover_on_boot()
         .await
         .unwrap();
-    // The production 30s default is pinned beside the timeout helper. This integration case needs
-    // the timeout transition and rollback semantics, so use the fixtures-only adapter override
-    // instead of sleeping for the wall-clock budget on every CI run.
+    // Use the fixtures-only adapter override instead of sleeping for the production 30s timeout budget.
     let rt = boot.state.operation_runtime.clone();
     let recovery = tokio::spawn(async move {
         rt.apply_recovery(plan).await.unwrap();
@@ -2860,11 +2858,7 @@ async fn init_git_repo_for_track(boot: &Boot, name: &str) -> PathBuf {
     std::fs::write(repo_path.join("README.md"), "initial\n").expect("write readme");
     run_git(&repo_path, ["add", "README.md"]);
     run_git(&repo_path, ["commit", "-m", "initial"]);
-    // #1147 S3 — written directly rather than through the production writer:
-    // this forces "attached, frozen, pointing at a real repository", and the
-    // writer refuses a frozen row (the freeze latch) while `boot()`'s track may
-    // already carry a stamp. Registered in
-    // `calm-truth/tests/track_write_point_registry.rs`.
+    // Written directly rather than through the production writer, which refuses a frozen row (the freeze latch).
     sqlx::query(
         "UPDATE tracks SET workspace_kind='attached', workspace_path=?1, workspace_frozen_at=1 WHERE id=?2",
     )

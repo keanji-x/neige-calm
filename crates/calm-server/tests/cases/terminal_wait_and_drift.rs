@@ -1,7 +1,5 @@
-//! #1618: change waiting, drift-tolerant input, implicit observation, receipt
-//! wording, one copy of the state, and the round 07/08 slice: structured
-//! stale refusals, baseline transparency and release readback economy.
-//! Actual MCP server, renderer and PTY.
+//! Change waiting, drift-tolerant input, implicit observation, receipt wording, structured stale
+//! refusals, baseline transparency and release readback economy. Actual MCP server, renderer and PTY.
 use crate::terminal_support::Harness;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -87,10 +85,8 @@ async fn claim(h: &Harness, terminal: &str) -> Value {
     )
     .await
 }
-/// Run `call` and write `marker` into the workspace only once the call's
-/// change wait has subscribed to the projection, so a program that polls for
-/// the marker starts producing after the wait began, whatever the RPC
-/// latency was.
+/// Run `call` and write `marker` into the workspace only once the call's change wait has subscribed
+/// to the projection, so a program that polls for the marker starts producing after the wait began.
 async fn call_then_release(
     h: &Harness,
     terminal: &str,
@@ -191,7 +187,7 @@ async fn observe_change_wait_on_quiet_shell_reports_unchanged_at_budget() {
         view["observation_revision"],
         settled["observation_revision"]
     );
-    // G2: both baselines are named and, on a quiet screen, coincide.
+    // Both baselines are named and, on a quiet screen, coincide.
     assert_eq!(
         view["wait"]["baseline_revision"],
         settled["observation_revision"]
@@ -235,19 +231,14 @@ async fn input_readback_change_wait_starts_from_the_pre_write_screen() {
     .await;
     let claimed = claim(&h, &terminal).await;
     assert!(has_line(observation(&claimed), "READY"));
-    // Hold the physical write barrier so the write cannot complete, render a
-    // change while the input call is parked there, then let it through. The
-    // readback baseline is the screen just before the write, so that change
-    // counts; a baseline read after the write would already contain it and
-    // wait the whole budget.
+    // Hold the physical write barrier, render a change while the input call is parked there, then let it
+    // through: the readback baseline is the screen just before the write, so that change counts.
     let entry = h.state.terminal_renderer.get(&terminal).unwrap();
     let held = entry.handle.input_barrier.grant().await.unwrap();
     let service = h.interaction();
     let inject = async {
-        // The input reserves its sequence right after reading the baseline
-        // and before the write reaches the held barrier; injecting once that
-        // reservation is visible puts the change after the baseline, without
-        // a fixed sleep.
+        // The input reserves its sequence right after reading the baseline and before the write reaches the
+        // held barrier; injecting once that reservation is visible puts the change after the baseline.
         while !service.input_pending(&terminal).await {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -300,8 +291,8 @@ async fn input_readback_change_wait_starts_from_the_pre_write_screen() {
     );
     assert!(has_line(state, "INJECTED"), "{state}");
     assert_eq!(state["changed_since_previous_observation"], true);
-    // G2: the readback names the pre-write baseline (before the injection)
-    // and, separately, the claim readback it is compared with.
+    // The readback names the pre-write baseline (before the injection) and, separately, the claim
+    // readback it is compared with.
     let baseline: u64 = state["wait"]["baseline_revision"]
         .as_str()
         .unwrap()
@@ -365,8 +356,8 @@ async fn drift_tolerant_input_interrupts_streaming_output_but_not_a_changed_surf
         .await;
     assert_eq!(moved["wait"]["outcome"], "changed", "{moved}");
     let refused = h.call("calm.terminal.input", json!({"terminal_id":terminal,"observation_id":observed["observation_id"],"request_id":"escape","action":{"type":"key","key":"Escape"}})).await;
-    // G1: only the revision moved, so the refusal is a structured result with
-    // a fresh observation rather than an RPC error.
+    // Only the revision moved, so the refusal is a structured result with a fresh observation rather
+    // than an RPC error.
     let stale = receipt(&refused);
     assert_eq!(stale["outcome"], "stale_observation", "{stale}");
     assert_eq!(stale["observation_id_used"], observed["observation_id"]);
@@ -380,9 +371,8 @@ async fn drift_tolerant_input_interrupts_streaming_output_but_not_a_changed_surf
         observed["observation_id"]
     );
     let conflicting = h.call("calm.terminal.input", json!({"terminal_id":terminal,"observation_id":observed["observation_id"],"request_id":"escape","action":{"type":"key","key":"Escape"},"allow_output_since_observation":true})).await;
-    // The stale result above cached nothing, so the same request_id is free
-    // with different arguments; the flag is part of the fingerprint once a
-    // receipt exists.
+    // The stale result above cached nothing, so the same request_id is free with different arguments;
+    // the flag is part of the fingerprint once a receipt exists.
     let written = receipt(&conflicting);
     assert_eq!(written["outcome"], "written", "{written}");
     assert_eq!(written["output_since_observation"], true);
@@ -627,11 +617,6 @@ async fn omitted_wait_ms_in_change_mode_waits_for_a_late_reply() {
     h.stop(&terminal).await;
 }
 
-/// G1: a status-line style change between the latest observation and the
-/// next input is not an error round trip. The stale result carries a fresh
-/// observation (registered as the latest) and the same request_id can be
-/// resent with the drift flag. A change of control stays an RPC error even
-/// when the revision moved as well.
 #[tokio::test]
 async fn stale_observation_is_a_structured_result_with_a_fresh_observation() {
     let h = Harness::start().await;
@@ -714,16 +699,15 @@ async fn stale_observation_is_a_structured_result_with_a_fresh_observation() {
         )
     );
     assert_eq!(stale["summary"]["action"], "stale_observation");
-    // #1692: the screen fact and the wait outcome are two fields.
+    // The screen fact and the wait outcome are two fields.
     assert_eq!(stale["summary"]["screen"], "changed");
     assert_eq!(stale["summary"]["wait"], "elapsed");
     // Nothing was written: no reservation is pending and the screen is as
     // the fresh observation captured it.
     assert!(!h.interaction().input_pending(&terminal).await);
     assert_eq!(live_revision(&h, &terminal), revision(&fresh));
-    // Resend as advised. The fresh observation is the connection's latest
-    // and nothing was cached under "enter", so this writes rather than
-    // conflicting.
+    // Resend as advised: the fresh observation is the connection's latest and nothing was cached under
+    // "enter", so this writes rather than conflicting.
     let resent = h.call("calm.terminal.input", json!({"terminal_id":terminal,"request_id":"enter","action":{"type":"key","key":"Enter"},"allow_output_since_observation":true})).await;
     let written = receipt(&resent);
     assert_eq!(written["outcome"], "written", "{written}");
@@ -754,9 +738,6 @@ async fn stale_observation_is_a_structured_result_with_a_fresh_observation() {
     h.stop(&terminal).await;
 }
 
-/// G3: a release readback of an unchanged screen omits the text array and
-/// names the observation it repeats; after output it includes the text.
-/// Claim readbacks always include text.
 #[tokio::test]
 async fn release_readback_omits_text_only_when_unchanged_since_previous_observation() {
     let h = Harness::start().await;
@@ -823,9 +804,8 @@ async fn release_readback_omits_text_only_when_unchanged_since_previous_observat
     let state = observation(&released);
     assert!(has_line(state, "OUTPUT"), "{state}");
     assert!(state.get("text_omitted").is_none());
-    // G2 on a control readback: the wait baseline is the call-start revision
-    // (already past the injected output), while the previous-observation
-    // fields still point at the claim readback.
+    // On a control readback the wait baseline is the call-start revision (already past the injected
+    // output), while the previous-observation fields still point at the claim readback.
     assert_eq!(
         state["wait"]["baseline_revision"],
         state["observation_revision"]
@@ -838,11 +818,8 @@ async fn release_readback_omits_text_only_when_unchanged_since_previous_observat
     h.stop(&terminal).await;
 }
 
-/// The release elision compares live viewports only. The previous
-/// observation is a history view (`scroll_offset` 1) of the same revision:
-/// its text is not the live text, so the release readback on the quiet
-/// screen must carry its own text. After a live observation the elision
-/// applies again.
+/// The release elision compares live viewports only: a history view of the same revision does not
+/// count as the previous text.
 #[tokio::test]
 async fn release_readback_keeps_text_after_a_history_view_of_the_same_revision() {
     let h = Harness::start().await;
@@ -885,16 +862,14 @@ async fn release_readback_keeps_text_after_a_history_view_of_the_same_revision()
     h.stop(&terminal).await;
 }
 
-/// Forty coloured lines then a marker. Each carries an SGR, so rmux stores
-/// them to their written extent (#1696); `SCROLLBACK` above is plain text,
-/// which rmux pads itself.
+/// Forty coloured lines then a marker. Each carries an SGR, so rmux stores them to their written
+/// extent; `SCROLLBACK` above is plain text, which rmux pads itself.
 const COLOURED_SCROLLBACK: &str = concat!(
     "i=0; while [ $i -lt 40 ]; do printf \"\\033[31mline $i\\033[0m\\n\"; i=$((i+1)); done; ",
     "printf 'READY\\n'; cat >/dev/null"
 );
 
-/// #1696: a history view of coloured output (every Claude Code line) failed
-/// the whole call with `missing terminal cell`; the missing cells are blank.
+/// A history view of coloured output: the missing cells are blank.
 #[tokio::test]
 async fn history_view_of_coloured_output_pads_short_lines() {
     let h = Harness::start().await;
@@ -903,7 +878,7 @@ async fn history_view_of_coloured_output_pads_short_lines() {
     let history_rows = live["history_rows"].as_u64().unwrap() as usize;
     let rows = live["rows"].as_u64().unwrap() as usize;
     assert!(history_rows >= 1, "{live}");
-    // #1709 — a running program: a capture instant, no exit instant.
+    // A running program: a capture instant, no exit instant.
     assert!(live["observed_at_ms"].is_i64(), "{live}");
     assert_eq!(live["exited_at_ms"], Value::Null, "{live}");
     for offset in [1, 4, history_rows] {
@@ -951,10 +926,6 @@ const MARKED_SCROLLBACK: &str = concat!(
     "printf 'READY\\n'; cat >/dev/null"
 );
 
-/// #1710: `scroll_to_text` finds a history row and captures the screen with
-/// it first; `earliest` picks the top-most match; a live-screen match and
-/// no match return the live viewport; the found screen is a history view
-/// the input fence still refuses; the coupled shapes are invalid params.
 #[tokio::test]
 async fn scroll_to_text_positions_the_matching_history_row_first() {
     let h = Harness::start().await;
@@ -1115,15 +1086,8 @@ async fn scroll_to_text_positions_the_matching_history_row_first() {
     h.stop(&terminal).await;
 }
 
-/// Drift-tolerant input negative table. With `allow_output_since_observation`
-/// set, (a) an input-mode change (DECCKM) since the observation is refused by
-/// the surface fence and (b) an observation taken as a history view is
-/// refused by the live-viewport fence; a live observation of the changed
-/// surface still writes. (c) The "prior input outcome unknown" fence (a
-/// pending write whose acknowledgement was lost) is not reachable in this
-/// harness: the in-process supervisor acknowledges or refuses every write,
-/// which clears the reservation, so no tool sequence leaves `pending` set.
-/// It is covered by `input_pending` observability only, not by a table row.
+/// With `allow_output_since_observation` set, an input-mode change is refused by the surface fence and
+/// a history view by the live-viewport fence. The "prior input outcome unknown" fence is unreachable here: the in-process supervisor acknowledges or refuses every write.
 #[tokio::test]
 async fn drift_tolerant_input_refuses_mode_change_and_history_views() {
     let h = Harness::start().await;
@@ -1171,11 +1135,8 @@ async fn drift_tolerant_input_refuses_mode_change_and_history_views() {
     h.stop(&terminal).await;
 }
 
-/// #1684: a write the wide flag admitted after the revision moved lists what
-/// changed relative to the cursor, exactly as a stale result would have,
-/// plus the changed row indices; the flag still admits regardless of the
-/// comparison. Rows are painted through the render plane as a program
-/// would. An input on the exact revision carries no drift at all.
+/// Rows are painted through the render plane as a program would; an input on the exact revision
+/// carries no drift at all.
 #[tokio::test]
 async fn output_since_observation_receipt_lists_the_changed_rows() {
     let h = Harness::start().await;
@@ -1220,9 +1181,8 @@ async fn output_since_observation_receipt_lists_the_changed_rows() {
     let text = after["text"].as_array().unwrap();
     assert_eq!(text[0].as_str().unwrap().trim_end(), "Other title");
     assert_eq!(text[1].as_str().unwrap().trim_end(), "Type here: abc");
-    // The readback is the latest observation and nothing painted since: the
-    // exact-revision path admits with the flag set and reports no drift,
-    // so there is no tolerance key either.
+    // The readback is the latest observation and nothing painted since: the exact-revision path admits
+    // with the flag set and reports no drift, so there is no tolerance key either.
     let exact = h.call("calm.terminal.input", json!({"terminal_id":terminal,"request_id":"more","action":{"type":"text","text":"d"},"allow_output_since_observation":true})).await;
     let plain = receipt(&exact);
     assert_eq!(plain["outcome"], "written", "{plain}");
@@ -1238,29 +1198,22 @@ async fn output_since_observation_receipt_lists_the_changed_rows() {
     h.stop(&terminal).await;
 }
 
-/// A change wait stops when the projection is invalidated through the
-/// production route rather than idling to its budget. The supervisor output
-/// stream is severed the way a lost attach connection severs it (the attach
-/// reader's drop guard calls `RenderPlane::invalidate_observation`, which
-/// reaches `ModelView::invalidate` through `RenderObserver::unavailable`),
-/// only once the observe has subscribed to the projection; the call returns
-/// an explicit projection error long before its 10 s budget.
+/// The supervisor output stream is severed the way a lost attach connection severs it, only once the
+/// observe has subscribed to the projection; the call returns an explicit projection error long before its budget.
 #[tokio::test]
 async fn change_wait_stops_when_the_output_source_disconnects() {
     wait_stops_when_the_projection_is_invalidated("change", ProjectionLoss::Disconnect).await;
 }
 
-/// #1620 F5 — a signal wait subscribes to the projection too, so an
-/// attach-stream failure ends it (and frees the connection's input serial)
-/// instead of parking it to the budget.
+/// A signal wait subscribes to the projection too, so an attach-stream failure ends it (and frees the
+/// connection's input serial).
 #[tokio::test]
 async fn signal_wait_stops_when_the_output_source_disconnects() {
     wait_stops_when_the_projection_is_invalidated("signal", ProjectionLoss::Disconnect).await;
 }
 
-/// A supervisor replay gap invalidates the projection while the attach
-/// stream keeps running and no protocol message is sent: the revision
-/// subscription is the only wake, in both modes.
+/// A supervisor replay gap invalidates the projection while the attach stream keeps running and no
+/// protocol message is sent: the revision subscription is the only wake.
 #[tokio::test]
 async fn change_wait_stops_on_a_projection_gap() {
     wait_stops_when_the_projection_is_invalidated("change", ProjectionLoss::Gap).await;

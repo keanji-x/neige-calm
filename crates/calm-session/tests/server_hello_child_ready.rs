@@ -1,18 +1,5 @@
-//! Acceptance tests for `DaemonMsg::ServerHello.is_child_ready` — the
-//! deterministic snapshot of child-readiness that late-joining transient
-//! connections (the kernel's input-injection `DaemonClient`) use in place
-//! of the previous 600ms `tokio::time::sleep` heuristic.
-//!
-//! These tests pair the protocol state machine
-//! (`TerminalSessionState::on_client_frame`) with a real
-//! [`RenderPlane`] driven under virtual time so we can deterministically
-//! place the `ChildReady` one-shot before or after the `ClientHello`
-//! arrives, and assert what `ServerHello.is_child_ready` reflects in each
-//! case. The one-shot semantic of `detect_ready` is exercised separately
-//! in `tests/child_ready.rs`; this file only asserts the snapshot
-//! accessor's relationship to `ServerHello`.
-//!
-//! Closes part of #115.
+//! Acceptance tests for `DaemonMsg::ServerHello.is_child_ready`: the state machine paired with a real
+//! [`RenderPlane`] under virtual time, placing the `ChildReady` one-shot before or after the `ClientHello`.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -90,14 +77,10 @@ fn extract_is_child_ready(effects: &[Effect]) -> bool {
         .expect("expected SendToClient(ServerHello) in handshake effects")
 }
 
-/// Late joiner whose `ClientHello` lands BEFORE the daemon's
-/// `RenderPlane::detect_ready` poll has fired must see
-/// `is_child_ready: false`.
 #[test]
 fn server_hello_is_child_ready_false_before_child_ready_fires() {
     let (_counter, clock) = mock_clock();
     let plane = RenderPlane::with_clock(80, 24, 1024, 100, clock);
-    // No chunks fed → detector can't fire → snapshot must be false.
     assert!(!plane.child_ready_fired());
 
     let mut registry = OwnerRegistry::new();
@@ -115,16 +98,12 @@ fn server_hello_is_child_ready_false_before_child_ready_fires() {
     assert!(!extract_is_child_ready(&effects));
 }
 
-/// Late joiner whose `ClientHello` lands AFTER `ChildReady` has already
-/// fired must see `is_child_ready: true` even though the broadcast itself
-/// is one-shot and won't be re-emitted.
+/// The broadcast itself is one-shot and won't be re-emitted, so the snapshot must carry the fired state.
 #[test]
 fn server_hello_is_child_ready_true_after_child_ready_fires() {
     let (counter, clock) = mock_clock();
     let mut plane = RenderPlane::with_clock(80, 24, 1024, 100, clock);
 
-    // Drive the plane through one PTY chunk + the quiescent window so
-    // `detect_ready` fires exactly once.
     plane.on_pty_chunk(b"$ ".to_vec());
     counter.store(CHILD_READY_QUIESCENT_MS + 1, Ordering::SeqCst);
     let eff = plane.detect_ready();
@@ -132,10 +111,7 @@ fn server_hello_is_child_ready_true_after_child_ready_fires() {
         matches!(eff, Some(Effect::Broadcast(DaemonMsg::ChildReady { .. }))),
         "fixture precondition: ChildReady should fire after the quiescent window"
     );
-    // Snapshot accessor must reflect the fired state without re-firing.
     assert!(plane.child_ready_fired());
-    // And `detect_ready` must remain one-shot — calling it again returns
-    // `None`. This is the trap the task description called out.
     assert!(
         plane.detect_ready().is_none(),
         "child_ready_fired() must not consume the one-shot"
@@ -157,19 +133,9 @@ fn server_hello_is_child_ready_true_after_child_ready_fires() {
     assert!(extract_is_child_ready(&effects));
 }
 
-/// Backward-compat: a `ServerHello` deserialized from a payload that
-/// predates `is_child_ready` (i.e. older daemons that never serialized
-/// the field) MUST decode with `is_child_ready: false` thanks to
-/// `#[serde(default)]`.
-///
-/// We can't synthesize a "before" wire payload from the current
-/// `DaemonMsg` (it always serializes the field), but we can drop the key
-/// from a JSON-roundtripped value to simulate an older serializer.
+/// A `ServerHello` payload that predates `is_child_ready` MUST decode with `is_child_ready: false` via `#[serde(default)]`.
 #[test]
 fn server_hello_decodes_missing_is_child_ready_as_false() {
-    // Hand-rolled JSON missing the `is_child_ready` key — what an older
-    // daemon (pre-#115) would have emitted. The `RenderSnapshot` schema
-    // hasn't changed, so we can write it inline.
     let raw = serde_json::json!({
         "ServerHello": {
             "protocol_version": PROTOCOL_VERSION,
@@ -196,8 +162,6 @@ fn server_hello_decodes_missing_is_child_ready_as_false() {
                 "scrollback": null,
             },
             "history_gap": null,
-            // NOTE: no `is_child_ready` field — `#[serde(default)]` must
-            // synthesize `false`.
         }
     });
     let decoded: DaemonMsg = serde_json::from_value(raw).expect("decode older ServerHello");

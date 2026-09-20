@@ -1,22 +1,5 @@
-//! Issue #250 PR 2 — coverage for `Track.cwd`, `Track.terminal_at`, the
-//! `POST /api/tracks` cwd-claim handling (attach_folder + resolve),
-//! lifecycle terminal-stamp wiring inside `track_update_tx`, and the
-//! calendar window query `GET /api/tracks?since&until&area_id`.
-//!
-//! These tests boot a stub-daemon router (no real codex / no real
-//! terminal renderer) so the planner-push app-server boot fails on
-//! `POST /api/tracks`. Issue #293 / PR #311 made that boot NON-FATAL —
-//! the route now returns 201 (inert track) on that branch rather than
-//! 500 — and the track + cards + (optional) area_folder rows land at
-//! commit time regardless. The assertions below tolerate either 201 or
-//! 500 (legacy) since they target DB state, the lifecycle → terminal_at
-//! wiring, and the route-layer body shapes — none of them need the
-//! daemon to actually exec the codex binary.
-//!
-//! Tests in `track_create_sync_daemon.rs` cover the real-daemon path
-//! end-to-end (planner daemon cwd == track.cwd, codex argv carries title);
-//! this file owns the wider behavioral surface that doesn't need a
-//! real spawn.
+//! `Track.cwd`, `Track.terminal_at`, the `POST /api/tracks` cwd-claim handling, lifecycle terminal-stamp
+//! wiring and the calendar window query. Stub daemon: the app-server boot may 500 post-commit, so assertions target DB state and tolerate 201 or 500.
 
 #![cfg(unix)]
 
@@ -40,15 +23,8 @@ use tower::ServiceExt;
 
 use crate::support::git_helpers::attached_repo_fixture;
 
-/// #1147 S3 — `POST /api/tracks` now validates an explicit (attached) `cwd`
-/// *before* the area-claim scan: absolute, existing, inside a Git work tree.
-/// The claim-semantics fixtures below used invented literals (`/workspace`,
-/// `/a/b`, `/srv/projects/alpha`) that never existed on any disk, so they now
-/// name real, shared, idempotent Git work trees instead. Every ancestor /
-/// descendant / disjoint relation the assertions depend on is reproduced by
-/// construction (`attached_sub` is a real directory *inside* the named
-/// fixture repository), and every assertion compares against the bound local
-/// rather than a literal.
+/// An explicit (attached) `cwd` is validated (absolute, existing, inside a Git work tree) before the
+/// area-claim scan, so claim fixtures are real, shared, idempotent Git work trees.
 fn attached_sub(name: &str, sub: &str) -> String {
     let path = std::path::PathBuf::from(attached_repo_fixture(name)).join(sub);
     std::fs::create_dir_all(&path).unwrap_or_else(|e| panic!("create {path:?}: {e}"));
@@ -58,15 +34,12 @@ fn attached_sub(name: &str, sub: &str) -> String {
 struct Boot {
     app: axum::Router,
     area_id: String,
-    /// #1147 S2 — the managed workspace root this boot was pinned to.
+    /// The managed workspace root this boot was pinned to.
     workspace_root: std::path::PathBuf,
-    /// A second area pre-created so cross-area conflict tests have a
-    /// stable target. Used by the descendant/ancestor cases below.
+    /// A second area pre-created so cross-area conflict tests have a stable target.
     other_area_id: String,
     repo: Arc<dyn Repo>,
-    /// Concrete `SqlxRepo` handle so the window-query test can write
-    /// raw timestamps via `pool()`. The same backing pool as `repo`
-    /// (both `Arc`s point at the same `SqlxRepo`).
+    /// Concrete `SqlxRepo` handle so the window-query test can write raw timestamps via `pool()`.
     sqlx_repo: Arc<SqlxRepo>,
     _tmp: TempDir,
 }
@@ -96,11 +69,7 @@ async fn boot() -> Boot {
         .await
         .unwrap();
 
-    // Stub daemon bin — planner card daemon spawn will fail at the
-    // post-commit phase. The behaviors under test (track + folder row
-    // shape, terminal_at stamps) all execute *before* the spawn, so
-    // a 500 on the response is expected and the test asserts on DB
-    // state instead.
+    // Stub daemon bin: the planner spawn fails post-commit, so a 500 is expected and the test asserts on DB state.
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
         proc_supervisor_sock: None,
@@ -129,8 +98,7 @@ async fn boot() -> Boot {
         Some(card_role_cache.clone()),
         Some(track_area_cache.clone()),
     )
-    // #1147 S2 — omitted-cwd creates now allocate a managed workspace and
-    // `git init` it. Pin the root inside this test's TempDir.
+    // Omitted-cwd creates allocate a managed workspace and `git init` it; pin the root inside this TempDir.
     .with_workspace_root(tmp.path().join("workspaces"));
 
     let app = routes::router()
@@ -168,8 +136,7 @@ async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value) 
     (status, json)
 }
 
-/// Mirror `routes::codex_cards::default_cwd` + the route's `normalize_path`
-/// (trim one trailing slash except `/`).
+/// Mirror `routes::codex_cards::default_cwd` + the route's `normalize_path` (trim one trailing slash except `/`).
 fn expected_default_cwd() -> String {
     let raw = std::env::var("HOME")
         .ok()
@@ -204,14 +171,7 @@ async fn get(app: axum::Router, uri: &str) -> (StatusCode, Value) {
     (status, json)
 }
 
-// ---------------------------------------------------------------------------
-// POST /api/tracks — cwd validation + attach_folder path
-// ---------------------------------------------------------------------------
-
-/// Happy path 1: the body's area already claims an ancestor of cwd.
-/// `attach_folder = false` is enough — no new folder row is needed.
-/// Planner-daemon spawn will fail (stub bin); tolerate 201 or 500 but
-/// assert the track row landed with the cwd verbatim.
+/// Happy path 1: the body's area already claims an ancestor of cwd, so `attach_folder = false` is enough.
 #[tokio::test]
 async fn post_api_tracks_uses_existing_folder_claim() {
     let boot = boot().await;
@@ -249,15 +209,13 @@ async fn post_api_tracks_uses_existing_folder_claim() {
     assert_eq!(tracks[0].terminal_at, None);
     assert_eq!(tracks[0].lifecycle, TrackLifecycle::Draft);
 
-    // No extra folder row was minted (attach_folder = false +
-    // existing claim covers cwd).
+    // No extra folder row was minted.
     let folders = boot.repo.area_folders_by_area(&boot.area_id).await.unwrap();
     assert_eq!(folders.len(), 1);
     assert_eq!(folders[0].path, claimed);
 }
 
-/// Happy path 2: cwd is unclaimed, body sets `attach_folder = true`.
-/// The folder row + the track row land in the same tx.
+/// Happy path 2: cwd is unclaimed, body sets `attach_folder = true`; the folder row and the track row land in the same tx.
 #[tokio::test]
 async fn post_api_tracks_with_attach_folder_creates_folder_and_track() {
     let boot = boot().await;
@@ -288,26 +246,14 @@ async fn post_api_tracks_with_attach_folder_creates_folder_and_track() {
     assert_eq!(tracks[0].workspace.path, cwd);
 }
 
-/// Issue #275 — the area already claims *exactly* this cwd and the caller
-/// still sets `attach_folder = true`. The claim scan finds the same area as
-/// the owner, so `attach_folder` is silently ignored and no second row is
-/// minted.
-///
-/// BEHAVIOR CHANGE (deliberate). Before this fix the in-tx insert ran
-/// unconditionally on the scan result: it re-inserted `/workspace`, hit
-/// `UNIQUE(area_folders.path)`, and the whole request 409'd. A caller
-/// re-posting the folder it already owns is not a conflict, so 201 is the
-/// correct answer. This test pins the new outcome.
+/// The area already claims *exactly* this cwd and the caller still sets `attach_folder = true`: a caller
+/// re-posting the folder it already owns is not a conflict, so no second row is minted and the answer is 201.
 #[tokio::test]
 async fn post_api_tracks_attach_folder_is_idempotent_for_exact_same_area_claim() {
     let boot = boot().await;
 
-    // The pre-seeded state below already satisfies `folders.len() == 1`,
-    // so this test would also pass if folder enforcement were skipped
-    // wholesale for this area via the `is_system_area` bypass in
-    // `routes::tracks::create_track`. Pin that the area under test is NOT
-    // a system area, so the assertions can only be explained by the
-    // enforcement path actually running.
+    // The pre-seeded state already satisfies `folders.len() == 1`, so pin that the area is NOT a system area
+    // (the `is_system_area` bypass would also explain the assertions).
     let area = boot.repo.area_get(&boot.area_id).await.unwrap().unwrap();
     assert_eq!(
         area.kind,
@@ -333,8 +279,7 @@ async fn post_api_tracks_attach_folder_is_idempotent_for_exact_same_area_claim()
         }),
     )
     .await;
-    // The invariant this test defends: re-claiming your own folder is
-    // NOT a conflict. (Stub daemon may still 500 post-commit.)
+    // Re-claiming your own folder is NOT a conflict. (Stub daemon may still 500 post-commit.)
     assert_ne!(
         status,
         StatusCode::CONFLICT,
@@ -360,19 +305,8 @@ async fn post_api_tracks_attach_folder_is_idempotent_for_exact_same_area_claim()
     assert_eq!(tracks[0].workspace.path, cwd);
 }
 
-/// Issue #275 — the area claims `/a` and the caller posts `cwd: "/a/b"`
-/// with `attach_folder = true`. The scan finds the same area already
-/// covering the cwd, so nothing is minted.
-///
-/// BEHAVIOR CHANGE (deliberate), and the important one: before this fix
-/// the in-tx insert ran unconditionally on the scan result, so this
-/// request created `/a/b` alongside the existing `/a` — two rows that both
-/// cover `/a/b/...`. That is precisely the overlapping-claim corruption
-/// `area_folders.rs::resolve_and_track_create_agree_on_overlapping_rows`
-/// has to seed through the raw repo primitive to reproduce; this arm
-/// handed it to any caller over plain HTTP, single-threaded, with no
-/// concurrency at all. It was the larger of the two holes in the overlap
-/// invariant (the other being the scan/insert TOCTOU).
+/// The area claims `/a` and the caller posts `cwd: "/a/b"` with `attach_folder = true`: the scan finds the
+/// same area already covering the cwd, so nothing is minted (an `/a/b` row beside `/a` would be an overlapping claim).
 #[tokio::test]
 async fn post_api_tracks_attach_folder_does_not_mint_overlapping_descendant() {
     let boot = boot().await;
@@ -489,10 +423,8 @@ async fn post_api_tracks_attach_folder_conflict_rolls_back() {
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "body = {body}");
 
-    // The structured 409 body carries the conflicting folder. Match
-    // any of `equal | ancestor | descendant` since the route may
-    // classify either side as the canonical kind; the issue's
-    // requirement is just that the conflict is precisely surfaced.
+    // The structured 409 body carries the conflicting folder; the route may classify either side as the
+    // canonical kind, so any of `equal | ancestor | descendant` is accepted.
     let kind = body
         .get("conflict_kind")
         .and_then(Value::as_str)
@@ -836,20 +768,8 @@ async fn cross_area_cwd_authorization_does_not_bypass_ancestor_conflict() {
     assert_eq!(folders[0].path, narrower);
 }
 
-/// System area (kernel-internal scaffolding) is exempt from the
-/// area_folders claim namespace: a track POST against it must not
-/// mint a area_folders row even when `attach_folder = true`, and
-/// must not poison the global descendant check for subsequent user
-/// areas. Regression for the `cwd: '/'` self-collision noticed in CI.
-///
-/// #1147 S3 — the literal `/` cannot be the system cwd any more: an explicit
-/// `cwd` is validated (absolute, exists, inside a Git work tree) *before* the
-/// system-area exemption runs, and `/` is not inside a work tree. What made
-/// `/` the sharp case was that it is an **ancestor of every other cwd**, so
-/// the system area is given a real repository root here and the user track
-/// below is given a real directory *inside* it. The poison the regression is
-/// about is reproduced exactly: had the system area claimed its root, the
-/// user create underneath it would 409.
+/// The system area is exempt from the area_folders claim namespace: a track POST against it must not mint
+/// a row even with `attach_folder = true`, and must not poison the descendant check for user areas beneath its root.
 #[tokio::test]
 async fn post_api_tracks_for_system_area_skips_folder_claim() {
     let boot = boot().await;
@@ -864,9 +784,7 @@ async fn post_api_tracks_for_system_area_skips_folder_claim() {
     let system_cwd = attached_repo_fixture("cwd-terminal-system-root");
     let user_cwd = attached_sub("cwd-terminal-system-root", "beta");
 
-    // POST a track with the system area + a `/` cwd + attach_folder=true.
-    // Pre-fix this would claim `/` for the system area and poison every
-    // subsequent user track (descendant-of-`/` 409).
+    // POST a track with the system area + its root cwd + attach_folder=true.
     let (status, _body) = post(
         boot.app.clone(),
         "/api/tracks",
@@ -895,8 +813,7 @@ async fn post_api_tracks_for_system_area_skips_folder_claim() {
         "system area must not appear in area_folders, got: {sys_folders:?}"
     );
 
-    // And a subsequent user-area track with a normal cwd works — the
-    // system area's `/` cwd is *not* a descendant-blocker.
+    // And a subsequent user-area track underneath works: the system area's root is not a descendant-blocker.
     let (status, _body) = post(
         boot.app.clone(),
         "/api/tracks",
@@ -918,22 +835,8 @@ async fn post_api_tracks_for_system_area_skips_folder_claim() {
     assert_eq!(user_folders[0].path, user_cwd);
 }
 
-/// Issue #1131 — omitted `cwd` (and `attach_folder`) is not the same as
-/// sending `cwd: "$HOME"`. Omission skips `area_folders` entirely. An
-/// *explicit* HOME path with `attach_folder: false` and no prior claim still
-/// 409s — that is `post_api_tracks_rejects_unclaimed_cwd_without_attach_folder`.
-/// Do not special-case an explicit HOME path; only omission takes this
-/// branch. Never claim `$HOME` into `area_folders` (longest-prefix
-/// would poison every other area).
-///
-/// #1147 S2 — what omission *stores* changed. It used to persist
-/// `default_cwd()` (`$HOME`), which is not a git repository, so every
-/// `kind: codex` task on such a track died in `git rev-parse --show-toplevel`
-/// with nothing but `spawn-failed` to show for it — the defect #1147 opened
-/// on. Omission is now the managed-default branch: the server allocates
-/// `<workspace-root>/<area_id>/<track_id>` and materializes it. The
-/// `area_folders`-untouched half of this test is unchanged and still the
-/// point of the #1131 branch.
+/// Omitted `cwd` (and `attach_folder`) is the managed-default branch: the server allocates
+/// `<workspace-root>/<area_id>/<track_id>` and `area_folders` is untouched. Never claim `$HOME` into `area_folders`.
 #[tokio::test]
 async fn post_api_tracks_omitted_cwd_allocates_managed_and_skips_area_folders() {
     let boot = boot().await;
@@ -1021,32 +924,8 @@ async fn post_api_tracks_omitted_cwd_allocates_managed_and_skips_area_folders() 
     );
 }
 
-/// Explicit `cwd: $HOME` is *not* the omitted-cwd branch. A user area
-/// with no claims is still refused when `attach_folder` is false —
-/// production only skips the scan when `cwd` is missing/`null`. Do not
-/// special-case HOME as a present path; that would poison every other area via
-/// longest-prefix if it ever claimed.
-///
-/// #1147 S3 — an explicit `cwd` is now validated (absolute, exists, inside a
-/// Git work tree) *before* the claim scan, and `$HOME` is a path this test
-/// does not own. On a machine whose HOME is not a work tree the request is
-/// refused at that gate with a 400 — which is the #1147 defect made eager,
-/// since the pre-S2 omitted branch stored exactly this path and every
-/// `kind: codex` worker on such a track then died in `git rev-parse` with
-/// nothing but `spawn-failed`.
-///
-/// The refusal pinned here is the 400 at the workspace gate. This used to be a
-/// `if home_is_work_tree { 409 } else { 400 }` either/or, and the 409 arm never
-/// ran: a home directory is not a Git work tree on the machines this suite
-/// runs on. All the conditional did was hide which behaviour the test actually
-/// holds. The probe survives as a *precondition assertion*: where HOME
-/// really is a work tree, this fails loudly with an explanation instead of
-/// silently exercising a different code path under the same test name.
-///
-/// The probe builds its git command the way the server does
-/// (`neige_git_command`, which scrubs `GIT_DIR` / `GIT_WORK_TREE` /
-/// `GIT_CEILING_DIRECTORIES` / `GIT_CONFIG_*`). A bare `git` here would be
-/// answering a question the server never asks.
+/// Explicit `cwd: $HOME` is *not* the omitted-cwd branch: it is refused at the workspace gate with a 400
+/// because HOME is not a Git work tree. The probe is a precondition assertion and builds its git command the way the server does (`neige_git_command`).
 #[tokio::test]
 async fn post_api_tracks_explicit_home_cwd_without_attach_folder_is_refused() {
     let boot = boot().await;
@@ -1090,9 +969,7 @@ async fn post_api_tracks_explicit_home_cwd_without_attach_folder_is_refused() {
         "explicit HOME must be refused at the attached-workspace gate, never \
          taken down the managed branch; body = {body}"
     );
-    // The server's own words, not git's — git's stderr is locale-dependent
-    // (this box answers in Chinese), so pinning that would make the test fail
-    // on a different `LANG` for no behavioural reason.
+    // The server's own words, not git's: git's stderr is locale-dependent.
     assert!(
         body.to_string().contains("is not inside a Git work tree"),
         "the 400 must come from the attached-workspace gate, not from some \
@@ -1112,8 +989,7 @@ async fn post_api_tracks_explicit_home_cwd_without_attach_folder_is_refused() {
     );
 }
 
-/// `cwd: ""` is present (Some), not omitted. Empty string is not
-/// absolute → 400, no track row. Distinct from missing/`null`.
+/// `cwd: ""` is present (Some), not omitted: not absolute, 400, no track row.
 #[tokio::test]
 async fn post_api_tracks_empty_string_cwd_is_400() {
     let boot = boot().await;
@@ -1145,8 +1021,7 @@ async fn post_api_tracks_empty_string_cwd_is_400() {
     );
 }
 
-/// Omitting cwd while sending `attach_folder: true` still cannot claim
-/// `$HOME`. `into_parts` forces attach_folder false and `FolderClaim::Skip`.
+/// Omitting cwd while sending `attach_folder: true` still cannot claim `$HOME`: `into_parts` forces `FolderClaim::Skip`.
 #[tokio::test]
 async fn post_api_tracks_omitted_cwd_ignores_attach_folder_true() {
     let boot = boot().await;
@@ -1219,13 +1094,7 @@ async fn post_api_tracks_rejects_non_absolute_cwd() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Lifecycle → terminal_at stamping (track_update_tx)
-// ---------------------------------------------------------------------------
-
-/// Helper: create a fresh track in `Draft` state via the repo (bypassing
-/// the route so we don't have to do the cwd/folder dance in every
-/// lifecycle test).
+/// Create a fresh track in `Draft` state via the repo, bypassing the route's cwd/folder dance.
 async fn seed_track(repo: &Arc<dyn Repo>, area_id: &str) -> calm_server::model::Track {
     repo.track_create(calm_server::model::NewTrack {
         template_input: None,
@@ -1242,21 +1111,13 @@ async fn seed_track(repo: &Arc<dyn Repo>, area_id: &str) -> calm_server::model::
     .unwrap()
 }
 
-/// Advance through `Draft → Planning → Dispatching → Working → Reviewing
-/// → Done` via direct `track_update_tx` calls and assert that
-/// `terminal_at` lands as `Some(_)` exactly once on the Done write.
+/// `terminal_at` lands as `Some(_)` exactly once, on the Done write.
 #[tokio::test]
 async fn lifecycle_to_done_stamps_terminal_at() {
     let boot = boot().await;
     let track = seed_track(&boot.repo, &boot.area_id).await;
-    // Route everything through `track_update` (which opens a tx and
-    // calls `track_update_tx` under the hood). The lifecycle validator
-    // runs at the *route* layer; bypassing it here is fine — we're
-    // isolating the terminal_at column write.
 
-    // Each step uses the public `track_update` (which calls
-    // `track_update_tx` under the hood). terminal_at must stay None
-    // for every non-terminal transition and become Some on Done.
+    // Each step uses the public `track_update`; the lifecycle validator runs at the route layer and is bypassed here.
     for step in [
         TrackLifecycle::Planning,
         TrackLifecycle::Dispatching,
@@ -1342,8 +1203,7 @@ async fn lifecycle_reopen_clears_terminal_at() {
         "preconditon: terminal_at stamped"
     );
 
-    // Reopen through the planning branch; Resume work covers the sibling
-    // terminal → working edge in `payload_validation`.
+    // Reopen through the planning branch.
     let reopened = boot
         .repo
         .track_update(
@@ -1389,11 +1249,8 @@ async fn lifecycle_working_to_blocked_leaves_terminal_at_unset() {
     }
 }
 
-/// Standalone tx surface check: `track_update` (which routes through
-/// `track_update_tx`) lands `terminal_at = Some(_)` in the same write
-/// as the lifecycle column. The route + MCP layers both call into
-/// this same primitive, so a single repo-level assertion locks the
-/// invariant down for every entry point.
+/// `track_update` lands `terminal_at = Some(_)` in the same write as the lifecycle column; the route and
+/// MCP layers both call into this primitive.
 #[tokio::test]
 async fn track_update_tx_stamps_terminal_at_inside_one_tx() {
     let repo = Arc::new(
@@ -1427,22 +1284,8 @@ async fn track_update_tx_stamps_terminal_at_inside_one_tx() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// GET /api/tracks window query
-// ---------------------------------------------------------------------------
-
-/// Three tracks with engineered timestamps cover every branch of the
-/// window predicate `created_at <= until AND (terminal_at IS NULL OR
-/// terminal_at >= since)`:
-///
-///   * A — created=1, terminal=2  → terminated *before* the window.
-///   * B — created=5, terminal=NULL → open across the window.
-///   * C — created=10, terminal=12 → created *after* the window.
-///
-/// Asking for `since=4, until=8` must include only B. The test forces
-/// the timestamps via raw SQL after the kernel mints the rows (the
-/// real `now_ms()` would make all three cluster within a millisecond
-/// and the window math wouldn't be stable).
+/// Three tracks cover every branch of `created_at <= until AND (terminal_at IS NULL OR terminal_at >= since)`:
+/// A terminated before the window, B open across it, C created after it; `since=4, until=8` must include only B.
 #[tokio::test]
 async fn list_tracks_window_filters_by_created_and_terminal_at() {
     let boot = boot().await;
@@ -1450,12 +1293,8 @@ async fn list_tracks_window_filters_by_created_and_terminal_at() {
     let b = seed_track(&boot.repo, &boot.area_id).await;
     let c = seed_track(&boot.repo, &boot.area_id).await;
 
-    // Pin the timestamps via raw SQL. The kernel `track_create_tx`
-    // / `track_update_tx` always stamp `now_ms()`; for the window
-    // predicate test we need stable, separated values that the
-    // boundary code never overwrites. Routing through the
-    // `SqlxRepo::pool()` accessor keeps the test out of the public
-    // trait surface — the production code path is unchanged.
+    // Pin the timestamps via raw SQL: `track_create_tx` / `track_update_tx` always stamp `now_ms()`, which
+    // would cluster all three within a millisecond.
     let pool = boot.sqlx_repo.pool();
     sqlx::query("UPDATE tracks SET created_at = ?1, terminal_at = ?2 WHERE id = ?3")
         .bind(1_i64)
@@ -1535,8 +1374,7 @@ async fn list_tracks_window_area_id_filter() {
     assert_eq!(body.as_array().map(|a| a.len()), Some(2));
 }
 
-/// INV-CHAT-005 paired route-boundary contract: NULL-purpose ordinary tracks
-/// and launchpads remain visible in all three public list URIs, while only
+/// NULL-purpose ordinary tracks and launchpads remain visible in all three public list URIs, while only
 /// area-chat is hidden. The repository still returns the full set.
 #[tokio::test]
 async fn public_track_lists_hide_only_area_chat_and_repo_keeps_full_set() {
@@ -1556,14 +1394,8 @@ async fn public_track_lists_hide_only_area_chat_and_repo_keeps_full_set() {
         .unwrap();
 
     let expected = [ordinary.id.as_str(), launchpad.id.as_str()];
-    // #1318 S2 (第一轮评审 F8) — the third URI is the bare list. The deleted
-    // `template_tracks_are_hidden_from_lists_and_visible_by_id` walked all
-    // three; this one covered only the two area-scoped ones, so retiring that
-    // test would have dropped `GET /api/tracks` with no `area_id` from every
-    // list-hiding assertion in the suite. It is the same handler and `area_id`
-    // is only an optional query filter, so this is cheap coverage rather than a
-    // new property — but "cheap" is not "already covered". Only tracks in
-    // `boot.area_id` are seeded here, so the expected set is identical.
+    // The third URI is the bare list: same handler, `area_id` is only an optional query filter, and only
+    // tracks in `boot.area_id` are seeded here, so the expected set is identical.
     for uri in [
         format!("/api/areas/{}/tracks", boot.area_id),
         format!("/api/tracks?area_id={}", boot.area_id),
@@ -1605,32 +1437,14 @@ async fn public_track_lists_hide_only_area_chat_and_repo_keeps_full_set() {
     assert!(repo_window.iter().any(|track| track.id == chat.id));
 }
 
-// ---------------------------------------------------------------------------
-// Issue #275 — the two resolvers must agree
-// ---------------------------------------------------------------------------
-
-/// `GET /api/areas/resolve` and the `POST /api/tracks` owner scan are two
-/// separate readers of the same claim table. They must pick the **same**
-/// row for the same cwd, because the UI chains them: NewTaskForm resolves
-/// the cwd, auto-selects the area it names, and posts the track with that
-/// `area_id`. A resolver that disagrees turns that chain into a 409 on a
-/// area the user never chose.
-///
-/// The claim rules make overlapping rows unreachable over HTTP, so this
-/// test seeds them through the raw repo (`area_folder_create`, the
-/// unchecked primitive) — the corrupt-DB state — and pins that even
-/// *there* the two answers are identical. This is the case that regressed
-/// when only one of the two scans dropped its longest-prefix tiebreak:
-/// resolve said `/a` (area A) while track-create said `/a/b` (area B).
+/// `GET /api/areas/resolve` and the `POST /api/tracks` owner scan must pick the **same** claim row for the
+/// same cwd, even over corrupt overlapping rows seeded through the unchecked repo primitive.
 #[tokio::test]
 async fn resolve_and_track_create_agree_on_overlapping_rows() {
     let boot = boot().await;
 
-    // Corrupt state: two claims cover `/a/b/c`, under different areas.
-    // `ORDER BY path ASC` puts `/a` first; `/a/b` is the longer prefix.
-    // `ORDER BY path ASC` still puts the outer claim first: `<root>` is a
-    // strict prefix of `<root>/b`, so it sorts before it, exactly as `/a`
-    // sorted before `/a/b`.
+    // Corrupt state: two claims cover the cwd, under different areas. `ORDER BY path ASC` puts the outer
+    // claim first: `<root>` is a strict prefix of `<root>/b`.
     let outer = attached_repo_fixture("cwd-terminal-agree");
     let inner = attached_sub("cwd-terminal-agree", "b");
     let cwd = attached_sub("cwd-terminal-agree", "b/c");
@@ -1654,8 +1468,7 @@ async fn resolve_and_track_create_agree_on_overlapping_rows() {
     );
     assert_eq!(resolved_area, boot.area_id);
 
-    // Resolver 2 — the track-create owner scan. Posting with exactly the
-    // area `/api/areas/resolve` just named must be accepted.
+    // Resolver 2 — the track-create owner scan. Posting with exactly the area the resolver named must be accepted.
     let (status, body) = post(
         boot.app.clone(),
         "/api/tracks",
@@ -1668,9 +1481,7 @@ async fn resolve_and_track_create_agree_on_overlapping_rows() {
         }),
     )
     .await;
-    // The contract under test is "not a 409" — the two resolvers agree, so
-    // the owner scan must not refuse the area the resolver just named. The
-    // 201-or-500 tolerance below is only the file's stub-daemon convention.
+    // The contract under test is "not a 409"; the 201-or-500 tolerance is only the file's stub-daemon convention.
     assert_ne!(
         status,
         StatusCode::CONFLICT,

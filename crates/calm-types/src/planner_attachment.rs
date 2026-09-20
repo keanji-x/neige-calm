@@ -1,19 +1,6 @@
-//! Planner conversation attachments — the shared wire vocabulary.
-//!
-//! Everything about an attachment's identity lives here so there is exactly one
-//! truth table for "which four image formats exist". [`AttachmentId`] carries
-//! its own extension, and [`AttachmentFormat::parse_ext`] is the only reader of
-//! that extension, so the on-disk file name, the sniffed magic number and the
-//! `Content-Type` a read-back sends can never disagree.
-//!
-//! # Why the id carries the extension
-//!
-//! `<uuid>.<ext>` makes an attachment locatable from its id alone: the server
-//! joins it onto a directory it derived itself and is done. A bare UUID would
-//! force a second, separate lookup of "which extension did this one get",
-//! duplicated at every site that needs a path. The grammar admits no `/`, no
-//! `..` and no second `.`, so a caller-supplied id cannot name anything but a
-//! direct child of the directory the server chose.
+//! Planner conversation attachments — the shared wire vocabulary. [`AttachmentId`] carries its
+//! own extension, and its grammar admits no `/`, `..` or second `.`, so an id can only name a direct
+//! child of the directory the server chose.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -21,12 +8,7 @@ use crate::ids::CardId;
 use ts_rs::TS;
 use utoipa::ToSchema;
 
-/// The image formats a planner attachment may have.
-///
-/// Deliberately a strict subset of what codex will decode: these four are the
-/// formats codex keeps the *source bytes* of. Anything else it re-encodes or
-/// silently replaces with placeholder text, and neither outcome is visible to
-/// the user, so the upload endpoint refuses it instead.
+/// The image formats a planner attachment may have: the four whose source bytes codex keeps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AttachmentFormat {
     Png,
@@ -64,10 +46,7 @@ impl AttachmentFormat {
         }
     }
 
-    /// Inverse of [`AttachmentFormat::ext`]. Exhaustive over the four; every
-    /// other spelling — including `jpeg`, `svg` and any uppercase form — is
-    /// `None`, because the extension is minted by this module and never by a
-    /// caller.
+    /// Inverse of [`AttachmentFormat::ext`]; every other spelling, including `jpeg` and uppercase, is `None`.
     pub fn parse_ext(ext: &str) -> Option<Self> {
         match ext {
             "png" => Some(AttachmentFormat::Png),
@@ -87,14 +66,8 @@ pub struct AttachmentIdError {
     pub reason: &'static str,
 }
 
-/// `<uuid-v4>.<ext>` — an attachment's id *and* its file name.
-///
-/// The inner string is private and the only constructor is
-/// [`AttachmentId::parse`], so a value of this type is always a single path
-/// segment matching
-/// `[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}.(png|jpg|gif|webp)`.
-/// `Deserialize` goes through the same gate, so an id off the wire is checked
-/// before it can reach a `join`.
+/// `<uuid-v4>.<ext>` — an attachment's id *and* its file name. The only constructor is
+/// [`AttachmentId::parse`] and `Deserialize` goes through the same gate.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 #[schema(value_type = String)]
@@ -180,12 +153,7 @@ impl<'de> Deserialize<'de> for AttachmentId {
     }
 }
 
-/// The REST path an attachment's bytes are read back from.
-///
-/// The single builder. Every place a client is handed a way to reach these
-/// bytes — the upload response, a queued message, a transcript segment — goes
-/// through this function, so no client has to compose a path of its own and
-/// there is no second spelling of the route to keep in step with the router.
+/// The REST path an attachment's bytes are read back from; the single builder of that route.
 pub fn attachment_url(card_id: &CardId, id: &AttachmentId) -> String {
     format!(
         "/api/cards/{}/planner/attachments/{}",
@@ -194,32 +162,21 @@ pub fn attachment_url(card_id: &CardId, id: &AttachmentId) -> String {
     )
 }
 
-/// One attachment as the frontend sees it in a queue entry or a transcript
-/// segment.
+/// One attachment as the frontend sees it in a queue entry or a transcript segment.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct PlannerAttachment {
     pub id: AttachmentId,
-    /// Derived from `id`, never stored separately — see
-    /// [`PlannerAttachment::new`].
+    /// Derived from `id`, never stored separately.
     pub content_type: String,
     pub size: u64,
-    /// Where to read the bytes. Also derived, by [`attachment_url`].
-    ///
-    /// #1505 S6. Carried rather than left for the client to build: the
-    /// transcript and the pending-queue read both need a way to reach these
-    /// bytes, and a client that assembles `/api/cards/{card}/planner/
-    /// attachments/{id}` for itself is a second spelling of a route only the
-    /// router should own. The host path the server holds beside this is NOT
-    /// here and must not be.
+    /// Where to read the bytes; derived by [`attachment_url`]. The server's host path is NOT here and must not be.
     pub url: String,
 }
 
 impl PlannerAttachment {
-    /// `content_type` and `url` are computed here rather than accepted, so the
-    /// only way to build one is with a `Content-Type` and a path that agree
-    /// with the id.
+    /// `content_type` and `url` are computed here rather than accepted, so they always agree with the id.
     pub fn new(card_id: &CardId, id: AttachmentId, size: u64) -> Self {
         let content_type = id.format().mime().to_string();
         let url = attachment_url(card_id, &id);
@@ -240,16 +197,8 @@ pub struct UploadAttachmentResponse {
     pub attachment_id: AttachmentId,
     pub content_type: String,
     pub size: u64,
-    /// Absolute REST path the browser reads the bytes back from. Server-built:
-    /// the client never composes a path of its own.
-    ///
-    /// Durable only once the attachment is bound. An upload lands in the
-    /// server's `staging/` directory, and a staged attachment is swept once it
-    /// is older than the 24h orphan TTL, after which this path answers 400.
-    /// Sending or queueing a message that names the id binds it — the bytes
-    /// move into `bound/`, which nothing sweeps — and from that moment this
-    /// path is stable for the life of the card. So the window in which this
-    /// url can stop working is exactly "uploaded, never sent, 24 hours".
+    /// Absolute REST path the browser reads the bytes back from. Durable only once the attachment is
+    /// bound: a staged upload never sent is swept after the 24h orphan TTL, after which this path answers 400.
     pub url: String,
 }
 
@@ -276,9 +225,6 @@ mod tests {
 
     #[test]
     fn parse_rejects_every_traversal_and_extension_shape() {
-        // Each of these is a distinct way a caller-supplied id could name
-        // something other than a direct child of the server's directory, or
-        // could name a format we do not serve.
         let bad = [
             "../0189bc3f-2b1a-4c7d-9e4f-1a2b3c4d5e6f.png",
             "0189bc3f-2b1a-4c7d-9e4f-1a2b3c4d5e6f.png/../../etc/passwd",
@@ -327,8 +273,6 @@ mod tests {
         );
     }
 
-    /// The host path is the one thing about an attachment that must never
-    /// reach a browser, and this type is the shape that reaches one.
     #[test]
     fn the_wire_shape_has_exactly_four_keys_and_no_path() {
         let id = AttachmentId::parse("0189bc3f-2b1a-4c7d-9e4f-1a2b3c4d5e6f.png").unwrap();

@@ -1,13 +1,7 @@
 /**
- * Enforce React-owned runtime boundaries through actual import bindings.
- * createContext is restricted to explicit owner files; React.useState and
- * React.useReducer must go through ui/state/public.ts so Persistent<T> cannot
- * bypass its type guard. Named/default/namespace imports, literal computed
- * members, destructuring, and one local alias are covered with shadow checks.
- *
- * Intentionally not followed: aliases stored in object properties, aliases
- * returned from functions, alias chains longer than one assignment, or even a
- * one-hop alias of the React namespace (`const R2 = React; R2.useState()`).
+ * `createContext` is restricted to owner files; React `useState`/`useReducer` must go through
+ * ui/state/public.ts. Only one local alias hop is followed; aliases through properties, returns or a
+ * re-aliased React namespace are not.
  */
 const watched = new Set(['createContext', 'useState', 'useReducer']);
 

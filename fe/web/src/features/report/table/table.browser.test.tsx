@@ -1,19 +1,9 @@
-/*
- * A table cell's citation, as the engine lays it out (#1687).
- *
- * jsdom answers whether the cell became a button; it cannot answer whether
- * that button is a painted thing a reader can hit, nor whether the panel it
- * opens scrolls the quote into its own scroller. Those are the report's
- * promise: the 「来源」 column is the same citation as the prose, and clicking
- * it lands on the highlighted sentence — the way `source.browser.test.tsx`
- * proves it for the prose.
- */
+/* A table cell's citation, as the engine lays it out: jsdom cannot say whether the button is painted or whether the panel scrolls. */
 import { act, render } from '@testing-library/react';
 import { page } from 'vitest/browser';
 import { afterEach, describe, expect, it } from 'vitest';
 
-/* The whole cascade, before the CSS Module — see the import-order note in
-   `features/chat/thread/thread.browser.test.tsx`. */
+/* The whole cascade, before the CSS Module. */
 import '../../../styles/entry.css';
 
 import type { ReportSourceLinkTarget, TrackSourceDetail } from '../../../../../core/domain/report-source.ts';
@@ -55,12 +45,7 @@ const PAYLOAD = {
   ],
 };
 
-/**
- * A main region for the drawer to be positioned in, and the same wiring the
- * app gives the document: the cell's handler sets the target, the target
- * opens the drawer with the panel. Spelled inline because a feature test may
- * not import `app/**` — the same fence the feature itself is behind.
- */
+/** A main region for the drawer plus the app's wiring, spelled inline because a feature test may not import `app/**`. */
 function Page() {
   const [target, setTarget] = useState<ReportSourceLinkTarget | null>(null);
   return (
@@ -92,13 +77,10 @@ describe('a source citation in a table cell, as the engine lays it out', () => {
     const cell = document.querySelector<HTMLElement>('tbody tr:nth-child(1) td:nth-child(3)')!;
     const citation = cell.querySelector<HTMLElement>('button[data-nc-report-source-link]')!;
     expect(citation.textContent).toBe('AP');
-    /* Painted inside its own cell, not merely present: a control with no box
-       is one nobody can click. */
     const box = citation.getBoundingClientRect();
     expect(box.width).toBeGreaterThan(8);
     expect(box.height).toBeGreaterThan(8);
     expect(inside(box, cell.getBoundingClientRect())).toBe(true);
-    /* The row beneath holds the same link with prose around it, and stays text. */
     const mixed = document.querySelector<HTMLElement>('tbody tr:nth-child(2) td:nth-child(3)')!;
     expect(mixed.querySelector('button, a')).toBeNull();
     expect(mixed.textContent).toBe('见 [AP](neige://source/src_ddef99cc#q1) 收盘');
@@ -109,8 +91,6 @@ describe('a source citation in a table cell, as the engine lays it out', () => {
     const scroller = drawer.querySelector<HTMLElement>('[data-nc-drawer-scroll]')!;
     const mark = drawer.querySelector<HTMLElement>('mark[data-nc-report-source-quote="q1"]')!;
     expect(mark.textContent).toBe(QUOTE);
-    /* The premise: the quote is far enough down that nothing short of a
-       scroll shows it. */
     expect(scroller.scrollHeight).toBeGreaterThan(scroller.clientHeight * 2);
     expect(scroller.scrollTop).toBeGreaterThan(0);
     expect(inside(mark.getBoundingClientRect(), scroller.getBoundingClientRect())).toBe(true);

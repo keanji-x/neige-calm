@@ -1,101 +1,22 @@
-//! Source-scan guard (#930): production deferred sqlite transactions must
-//! be READ-ONLY — every writing transaction begins with
-//! `begin_immediate_tx` (BEGIN IMMEDIATE).
-//!
-//! Why: the app's in-memory sqlite is a shared-cache database with
-//! table-granularity locks and a single writer slot. The cycle party is a
-//! lock-HOLDING waiter — ANY explicit transaction that already holds table
-//! locks and then parks on another table. A deferred (`pool.begin()`)
-//! transaction is exactly that: it holds every lock it has taken (R locks
-//! included) until commit, so when it parks it closes a wait cycle against
-//! any concurrent IMMEDIATE writer that takes the same tables in the
-//! opposite order — sqlite's unlock_notify then fails one side with plain
-//! `SQLITE_LOCKED` (6) "database is deadlocked" (this took down
-//! `gh.pr.merge` in CI; see `calm_truth::db::sqlite::deadlock_semantics_tests`
-//! for the pinned upstream semantics and
-//! `operation::claim_completion_deadlock_tests` for the production repro).
-//! A second IMMEDIATE instead parks at BEGIN holding nothing, so
-//! writer-vs-writer can never cycle.
-//!
-//! #1016 correction: "it only reads" is NOT an exemption. A read-only
-//! deferred tx holds R locks across statements, and an R lock blocks an
-//! IMMEDIATE writer's W request just as effectively as a W lock does —
-//! proven end-to-end by `deferred_read_tx_deadlock_repro`, where the
-//! then-allowlisted `read.rs::track_detail` held R(tracks)+R(cards), parked
-//! on `overlays`, and drove `DELETE /api/tracks/:id` into code 6.
-//!
-//! If this test starts failing, the new deferred transaction must either
-//! move to `begin_immediate_tx` (it writes) or drop the explicit
-//! transaction entirely (it only reads). An AUTOCOMMIT statement — however
-//! many tables it joins — unwinds its implicit transaction and releases
-//! every table lock it took BEFORE sqlx parks in `unlock_notify`
-//! (`deadlock_semantics_autocommit_join_y_first_no_cycle_error_unwind_releases_locks`),
-//! so it is structurally incapable of being a cycle party. That is the
-//! route both former allowlist entries took.
-//!
-//! Scanner hardening (#930 review): each file is lexically NORMALIZED
-//! before scanning — line comments (incl. doc comments), nested block
-//! comments, string literals (regular and raw, escape/hash aware) and
-//! char literals are reduced to placeholders with quotes and line
-//! structure preserved — then BOTH the `#[cfg(test)]` brace tracker and
-//! the begin-pattern matcher run on that normalized text. Matching is
-//! whitespace-collapsed (multiline call chains are caught) and flags:
-//!   * `.begin(`  — method form on any receiver (incl. let-bound aliases)
-//!   * `::begin(` — UFCS forms (`Connection::` / `Acquire::` / …)
-//!   * `begin_with(` whose first argument is anything but the literal
-//!     `"BEGIN IMMEDIATE"` (a `begin_with("BEGIN")` is a deferred tx in
-//!     disguise)
-//!
-//! `begin_immediate_tx(` is excluded from all patterns by exact-token
-//! matching; calls to the deferred `begin_read_tx(` helper are included.
-//! The allowlist is keyed by content (enclosing fn needle), not
-//! by hit count, and the `tests.rs` / `*_tests.rs` name exemption is
-//! verified fail-closed against each file's `mod` registration site.
+//! Source-scan guard: production deferred sqlite transactions must not exist — every writing
+//! transaction begins with `begin_immediate_tx`, and a read-only deferred tx still holds R locks
+//! while parked, so it can close a shared-cache deadlock cycle (`SQLITE_LOCKED`).
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-/// Production files whose every deferred-begin hit is test-gated at the
-/// MODULE REGISTRATION site (the file itself carries no `#[cfg(test)]`
-/// marker). Each entry is verified fail-closed against the registering
-/// file below.
+/// Production files whose every deferred-begin hit is test-gated at the MODULE REGISTRATION site.
 const TEST_GATED_AT_REGISTRATION: &[(&str, &str, &str)] = &[(
     "calm-truth/src/db/sqlite/runtime_read_flip_support.rs",
     "calm-truth/src/db/sqlite/mod.rs",
     "#[cfg(test)]\nmod runtime_read_flip_support;",
 )];
 
-/// Documented read-only deferred transactions, keyed by CONTENT rather
-/// than hit count (#930 review hardening): `(relative path, needle)`
-/// where the needle — the enclosing call-site `fn` name — must appear in the
-/// normalized text within `ALLOWLIST_NEEDLE_WINDOW_LINES` lines above
-/// EVERY matched begin in that file. A different deferred tx appearing
-/// elsewhere in the same file therefore fails even when the total hit
-/// count is unchanged.
-///
-/// **The allowlist is EMPTY, and that is the intended steady state**
-/// (#1016). The old justification — "a deferred transaction that performs
-/// no writes never competes for the writer slot, so it cannot be a
-/// hold-and-wait party" — was false: closing a cycle needs a lock-HOLDING
-/// waiter, not a writer-slot contender, and a multi-table read-only
-/// deferred tx is one. Its three entries (`begin_read_tx`,
-/// `read.rs::track_detail`, `read.rs::task_diagnostics`) were removed by
-/// dropping their explicit transactions, not by re-justifying them.
-///
-/// The ONLY exemption that survives the #1016 analysis is a deferred tx
-/// that can never park while holding a lock, i.e. one whose reads
-/// **touch a single table**, or whose blocking point is provably its
-/// **first** lock (`deadlock_semantics_autocommit_join_x_first_no_cycle`
-/// pins that a waiter blocked on its first lock holds nothing). "It only
-/// reads" is not, by itself, such a proof. Before adding an entry, prefer
-/// the two routes that need no proof at all: `begin_immediate_tx` if it
-/// writes, or plain autocommit statements if it does not.
+/// Documented read-only deferred transactions: `(relative path, enclosing fn needle)`. Empty on
+/// purpose; "it only reads" is not an exemption unless the tx provably cannot park while holding a lock.
 const READ_ONLY_DEFERRED_ALLOWLIST: &[(&str, &str)] = &[];
 
-/// How far above a matched begin the allowlist needle may sit. The fn
-/// signature is normally a handful of lines up (justification comment in
-/// between); 25 leaves room for comment growth without letting a needle
-/// vouch for begins in unrelated code further down the file.
+/// How far above a matched begin the allowlist needle may sit.
 const ALLOWLIST_NEEDLE_WINDOW_LINES: usize = 25;
 
 #[test]
@@ -118,12 +39,8 @@ fn production_deferred_transactions_are_read_only_allowlisted() {
                 .expect("path under crates dir")
                 .to_string_lossy()
                 .replace('\\', "/");
-            // Test modules follow the `tests.rs` / `*_tests.rs` naming
-            // convention crate-wide; they may open transactions however
-            // the scenario demands. The exemption is by file name proper
-            // (a bare `ends_with("tests.rs")` would also match e.g.
-            // `contests.rs`) and every exempted file's `mod` registration
-            // is verified `#[cfg(test)]`-gated below, fail closed.
+            // `tests.rs` / `*_tests.rs` files are exempt by file name proper (a bare `ends_with` would
+            // match `contests.rs`); their `mod` registration is verified `#[cfg(test)]`-gated below.
             if is_test_named_file(&rel) {
                 name_exempted.push((rel, path));
                 continue;
@@ -171,8 +88,7 @@ fn production_deferred_transactions_are_read_only_allowlisted() {
         }
     }
 
-    // Guard against the scan going vacuous through a path restructure
-    // (the #917 failure mode for source-scanning tests).
+    // Guard against the scan going vacuous through a path restructure.
     assert!(
         scanned > 100,
         "scan looks vacuous: only {scanned} .rs files visited"
@@ -194,10 +110,7 @@ fn production_deferred_transactions_are_read_only_allowlisted() {
         violations.join("\n  ")
     );
 
-    // Fail-closed check for the name exemption: every `tests.rs` /
-    // `*_tests.rs` file skipped above must have a `mod` registration that
-    // is `#[cfg(test)]`-gated; a findable-but-ungated registration or an
-    // unfindable one both fail loudly.
+    // Every name-exempted file must have a `#[cfg(test)]`-gated `mod` registration; unfindable fails too.
     let mut registration_violations: Vec<String> = Vec::new();
     for (rel, path) in &name_exempted {
         verify_test_registration_gated(&crates_dir, rel, path, &mut registration_violations);
@@ -209,8 +122,6 @@ fn production_deferred_transactions_are_read_only_allowlisted() {
         registration_violations.join("\n  ")
     );
 
-    // Fail-closed check for TEST_GATED_AT_REGISTRATION: the exempted
-    // files really are `#[cfg(test)]` at their `mod` site.
     for (file, registrar, needle) in TEST_GATED_AT_REGISTRATION {
         let registrar_path = crates_dir.join(registrar);
         let registrar_src = std::fs::read_to_string(&registrar_path)
@@ -229,12 +140,8 @@ fn is_test_named_file(rel: &str) -> bool {
     name == "tests.rs" || name.ends_with("_tests.rs")
 }
 
-/// Locate the `mod` registration of a name-exempted test file in its
-/// parent module (sibling `mod.rs`, the `<dir>.rs` file that owns the
-/// directory, or a crate root `lib.rs`/`main.rs`) and require it to be
-/// `#[cfg(test)]`-gated — i.e. absent from the registrar's production
-/// lines. If no candidate contains the registration at all (e.g. a
-/// `#[path]` rename), fail closed.
+/// Locate the `mod` registration of a name-exempted test file and require it to be
+/// `#[cfg(test)]`-gated; if no candidate registrar contains it at all, fail closed.
 fn verify_test_registration_gated(
     crates_dir: &Path,
     rel: &str,
@@ -286,18 +193,9 @@ fn verify_test_registration_gated(
     ));
 }
 
-// ---- lexical normalization -----------------------------------------------
-
-/// Reduce Rust source to a scan-safe form: line comments (incl. doc
-/// comments) and nested block comments become a single space; string
-/// literals (regular and raw) keep their quotes but their contents become
-/// a placeholder; char literals become `'c'`. Newlines are preserved
-/// everywhere, so the output has the SAME line numbering as the input and
-/// both the `#[cfg(test)]` brace tracker and the pattern matcher operate
-/// on identical text. One deliberate carve-out: a string literal whose
-/// content is exactly `BEGIN IMMEDIATE` is kept verbatim so the
-/// `begin_with(` first-argument check can tell the one allowed statement
-/// apart from deferred ones in disguise.
+/// Reduce Rust source to a scan-safe form with line numbering preserved: comments become a
+/// space, string/char literal contents become placeholders — except a literal `BEGIN IMMEDIATE`,
+/// which is kept so the `begin_with(` check can see it.
 pub(crate) fn normalize_source(src: &str) -> String {
     let b: Vec<char> = src.chars().collect();
     let n = b.len();
@@ -306,8 +204,6 @@ pub(crate) fn normalize_source(src: &str) -> String {
     while i < n {
         let c = b[i];
         if c == '/' && i + 1 < n && b[i + 1] == '/' {
-            // Line comment (also `///`, `//!`): drop to EOL; the newline
-            // itself is emitted by the next loop iteration.
             out.push(' ');
             i += 2;
             while i < n && b[i] != '\n' {
@@ -316,7 +212,6 @@ pub(crate) fn normalize_source(src: &str) -> String {
             continue;
         }
         if c == '/' && i + 1 < n && b[i + 1] == '*' {
-            // Block comment, nested per Rust rules (depth counter).
             out.push(' ');
             let mut depth = 1usize;
             i += 2;
@@ -348,8 +243,7 @@ pub(crate) fn normalize_source(src: &str) -> String {
             i = consume_regular_string(&b, i, &mut out);
             continue;
         }
-        // A `'` that is not a char literal is a lifetime or loop label —
-        // plain code, falls through.
+        // A `'` that is not a char literal is a lifetime or loop label.
         if c == '\''
             && let Some(next) = consume_char_literal(&b, i)
         {
@@ -402,8 +296,7 @@ fn consume_raw_string(b: &[char], start: usize, out: &mut String) -> Option<usiz
     j += 1;
     let mut content = String::new();
     while j < n {
-        // Terminator: `"` followed by `hashes` `#`s — for hash count = 0
-        // (`r"…"`; raw strings have no escapes) the FIRST `"` closes.
+        // Raw strings have no escapes, so with hash count 0 the FIRST `"` closes.
         if b[j] == '"' && j + hashes < n && b[j + 1..j + 1 + hashes].iter().all(|c| *c == '#') {
             push_string_literal_placeholder(out, &content);
             return Some(j + 1 + hashes);
@@ -411,7 +304,6 @@ fn consume_raw_string(b: &[char], start: usize, out: &mut String) -> Option<usiz
         content.push(b[j]);
         j += 1;
     }
-    // Unterminated (never for compiling sources): consume to EOF.
     push_string_literal_placeholder(out, &content);
     Some(n)
 }
@@ -440,10 +332,8 @@ fn consume_regular_string(b: &[char], start: usize, out: &mut String) -> usize {
     n
 }
 
-/// Distinguish a char literal (`'x'`, `'\n'`, `'\u{…}'`, `'{'`, `'"'`)
-/// from a lifetime/label; returns the index just past the literal. Char
-/// literals must be neutralized: `'{'` desyncs brace tracking and `'"'`
-/// would otherwise open a phantom string.
+/// Distinguish a char literal from a lifetime/label; `'{'` would desync brace tracking and
+/// `'"'` would open a phantom string.
 fn consume_char_literal(b: &[char], start: usize) -> Option<usize> {
     let n = b.len();
     if start + 1 >= n {
@@ -476,11 +366,7 @@ fn consume_char_literal(b: &[char], start: usize) -> Option<usize> {
     None
 }
 
-// ---- #[cfg(test)] production filter ---------------------------------------
-
-/// Return `(1-based line number, line)` for every line NOT inside a
-/// test-gated item (see `is_test_gated_cfg`). Runs on NORMALIZED text, so
-/// braces in strings/chars/comments can no longer desync the tracking.
+/// Return `(1-based line number, line)` for every line NOT inside a test-gated item.
 /// Rustfmt (a CI gate) keeps attributes on their own line — the skip relies on it.
 pub(crate) fn production_lines(src: &str) -> Vec<(usize, &str)> {
     let mut out = Vec::new();
@@ -491,9 +377,7 @@ pub(crate) fn production_lines(src: &str) -> Vec<(usize, &str)> {
             out.push((idx + 1, line));
             continue;
         }
-        // Skip the gated item: stacked attributes, then one item — either
-        // a `{ … }` block (fn/mod/impl) or a `;`-terminated declaration
-        // (`use …;` / `mod …;`).
+        // Skip the gated item: stacked attributes, then one `{ … }` block or `;`-terminated declaration.
         let mut depth: i64 = 0;
         let mut saw_brace = false;
         for (_, item_line) in lines.by_ref() {
@@ -517,12 +401,8 @@ pub(crate) fn production_lines(src: &str) -> Vec<(usize, &str)> {
     out
 }
 
-/// True iff the line is `#[cfg(…)]` with `test` as a STANDALONE token —
-/// not `"test-utils"`/`"testing"` (`-` is a word char) — and NO standalone
-/// token `not` (however spaced: `not(…)`, `not (…)`): negation defeats
-/// token-level reasoning (`not(any(test))` is production-only), so negated
-/// predicates count as production. Fail closed: at worst a gated file
-/// flags loudly and gets allowlisted.
+/// True iff the line is `#[cfg(…)]` with `test` as a standalone token and no `not`; negated
+/// predicates count as production, fail closed.
 fn is_test_gated_cfg(trimmed: &str) -> bool {
     let Some(pred) = trimmed.strip_prefix("#[cfg(") else {
         return false;
@@ -532,13 +412,8 @@ fn is_test_gated_cfg(trimmed: &str) -> bool {
     has_token("test") && !has_token("not")
 }
 
-// ---- whitespace-collapsed pattern matching ---------------------------------
-
-/// Flatten production lines into a whitespace-collapsed char stream with
-/// per-char line attribution, so multiline call chains
-/// (`pool\n.begin\n()`) match like single-line ones. Non-consecutive
-/// input lines (a skipped `#[cfg(test)]` region) are separated by a `\0`
-/// barrier so no pattern can straddle the gap.
+/// Flatten production lines into a whitespace-collapsed char stream with per-char line
+/// attribution; non-consecutive input lines are separated by a `\0` barrier.
 fn flatten_production(lines: &[(usize, &str)]) -> Vec<(char, usize)> {
     let mut flat: Vec<(char, usize)> = Vec::new();
     let mut prev_line: Option<usize> = None;
@@ -567,10 +442,7 @@ fn flatten_production(lines: &[(usize, &str)]) -> Vec<(char, usize)> {
     flat
 }
 
-/// Scan the flattened production stream for deferred-transaction begins.
-/// Word-exact token matching: `begin`, `begin_with`, and the centralized
-/// deferred helper `begin_read_tx` are recognized; `begin_immediate_tx(`
-/// never matches. Returns `(1-based line of the begin token, description)`.
+/// Scan for deferred-transaction begins; `begin_immediate_tx(` never matches.
 fn scan_deferred_begins(flat: &[(char, usize)]) -> Vec<(usize, &'static str)> {
     fn is_ident(c: char) -> bool {
         c.is_alphanumeric() || c == '_'
@@ -614,11 +486,8 @@ fn scan_deferred_begins(flat: &[(char, usize)]) -> Vec<(usize, &'static str)> {
                         }
                     }
                 }
-                // Only `begin_with("BEGIN IMMEDIATE")` — the literal as
-                // the first argument — is an IMMEDIATE tx; any other
-                // shape (other literal, variable, const, or the UFCS
-                // `Connection::begin_with(conn, …)` where the statement
-                // is the SECOND argument) flags, fail closed.
+                // Only `begin_with("BEGIN IMMEDIATE")` with the literal as the FIRST argument is IMMEDIATE;
+                // the UFCS form has it second and flags, fail closed.
                 "begin_with" if !begin_with_first_arg_is_immediate(flat, k) => {
                     hits.push((line, "`begin_with(` without a \"BEGIN IMMEDIATE\" literal"));
                 }
@@ -645,10 +514,7 @@ fn preceded_by_fn_keyword(flat: &[(char, usize)], start: usize) -> bool {
     flat[begin..end].iter().map(|(c, _)| *c).collect::<String>() == "fn"
 }
 
-/// True iff the argument list opening at `open_paren` starts with the
-/// literal `"BEGIN IMMEDIATE"` followed by `)` or `,`. The normalizer
-/// preserves exactly this string's content, so the check works on
-/// normalized text.
+/// True iff the argument list opening at `open_paren` starts with the literal `"BEGIN IMMEDIATE"`.
 fn begin_with_first_arg_is_immediate(flat: &[(char, usize)], open_paren: usize) -> bool {
     const LITERAL: &str = "\"BEGIN IMMEDIATE\"";
     let mut k = open_paren + 1;
@@ -667,8 +533,6 @@ fn begin_with_first_arg_is_immediate(flat: &[(char, usize)], open_paren: usize) 
     matches!(flat.get(k).map(|(c, _)| *c), Some(')') | Some(','))
 }
 
-// ---- file walk --------------------------------------------------------------
-
 pub(crate) fn rust_files(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     visit_rust_files(root, &mut out);
@@ -686,12 +550,6 @@ fn visit_rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
         }
     }
 }
-
-// ---- scanner self-tests ------------------------------------------------------
-//
-// Permanent negative/positive coverage for the hardened scanner itself;
-// the transient injected-canary protocol from the #930 review lives in
-// the PR notes, these pin the same behaviors in-tree.
 
 fn scan_snippet(src: &str) -> Vec<(usize, &'static str)> {
     let normalized = normalize_source(src);
@@ -714,8 +572,7 @@ fn scanner_flags_method_ufcs_multiline_and_disguised_begin_with() {
         "}\n",
     ));
     let lines: Vec<usize> = hits.iter().map(|(l, _)| *l).collect();
-    // Line 10 (UFCS begin_with) flags fail-closed: the IMMEDIATE literal
-    // is not the first argument there.
+    // Line 10 (UFCS begin_with) flags fail-closed.
     assert_eq!(lines, vec![2, 4, 7, 8, 9, 10], "{hits:?}");
 }
 
@@ -745,8 +602,7 @@ fn scanner_ignores_immediate_forms_comments_strings_and_test_gated() {
 
 #[test]
 fn cfg_test_brace_tracking_survives_literal_braces_in_gated_items() {
-    // Pre-hardening, the stray `}` in the string and the `{` in the char
-    // literal both desynced the gated-item skip. Normalization removes both.
+    // The stray `}` in the string and the `{` in the char literal must not desync the gated-item skip.
     let hits = scan_snippet(concat!(
         "#[cfg(test)]\n",
         "mod tests {\n",
@@ -800,7 +656,7 @@ fn normalizer_preserves_only_the_begin_immediate_literal() {
 
 #[test]
 fn normalizer_handles_zero_hash_raw_strings() {
-    // #930 round 2: hash count = 0 (`r"…"`/`br"…"` have no escapes) ends at the next `"`, no panics.
+    // Hash count 0 (`r"…"`/`br"…"` have no escapes) ends at the next `"`, no panics.
     let n = normalize_source(
         r####"let a = r""; let b = r"abc"; let c = br"x";
 let d = r#""#; let e = r##"a"#b"##;"####,
@@ -825,7 +681,7 @@ fn cfg_gate_matches_standalone_test_token_only() {
     assert!(!is_test_gated_cfg("#[cfg(not(test))]"));
     assert!(!is_test_gated_cfg("#[cfg(not(any(test)))]"));
     assert!(!is_test_gated_cfg("#[cfg(any(test, not (unix)))]"));
-    // r5: feature "test" is production; normalize_source blanks it to "s" first.
+    // Feature "test" is production; normalize_source blanks it to "s" first.
     let feat_test = normalize_source("#[cfg(feature = \"test\")]");
     assert!(!is_test_gated_cfg(&feat_test));
     // End-to-end: the `all(test, …)`-gated begin is skipped; the feature-gated one flags.

@@ -261,9 +261,7 @@ async fn post_hook_writes_fallback_after_all_retries_fail() {
             .expect("fallback json")
         })
         .collect::<Vec<_>>();
-    // The file stem ends with the hash of the body as posted: the original
-    // payload plus the #1620 occurrence id, which the replay re-posts
-    // verbatim so the server keys it exactly like the failed attempts.
+    // The file stem ends with the hash of the body as posted (original payload plus occurrence id).
     for (name, record) in file_names.iter().zip(&records) {
         let posted_hash = sha256_hex(&record["body"].to_string());
         assert!(
@@ -310,10 +308,6 @@ async fn post_hook_writes_fallback_after_all_retries_fail() {
     );
 }
 
-/// #1620 — byte-identical stdin from two bridge invocations posts two
-/// different `neige_hook_occurrence` ids (so the server sees two events),
-/// while the retries of ONE invocation repeat the same id (so a duplicate
-/// delivery stays a duplicate).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn identical_stdin_gets_a_fresh_occurrence_per_invocation_and_retries_reuse_it() {
     let Some((listener, base)) = bind_stub().await else {

@@ -1,37 +1,9 @@
-// Shared `hq.sinajs.cn` fixture rows and response builder.
-//
-// `include!`d — not `mod`-ed — by BOTH test bodies that stand a loopback
-// server in for that endpoint:
-//
-//   * `plugins/market/main.rs`'s own `#[cfg(test)]` module, and
-//   * `crates/calm-server/tests/cases/market_plugin_process.rs`.
-//
-// They used to hold two independent copies of these rows, of the GBK name
-// bytes and of the body builder. Two copies of a fixture that encodes a real
-// endpoint's wire format drift apart one edit at a time, and the drift shows
-// up as one suite passing while the other tests a format the source stopped
-// using. There is one copy now.
-//
-// Everything here is test-only. It is `include!`d inside a `#[cfg(test)]`
-// scope in the plugin and inside a test target in the process suite, so it is
-// never compiled into a shipping binary.
+// Shared `hq.sinajs.cn` fixture rows and response builder, `include!`d inside `#[cfg(test)]` by the plugin and by `crates/calm-server/tests/cases/market_plugin_process.rs`.
 
-/// 贵州癨 in GBK. The last character is `B0 5C` — a GBK character whose
-/// TRAILING byte is the ASCII backslash — so a fixture row built with it
-/// exercises the decode the parser depends on rather than a convenient
-/// all-ASCII stand-in.
+/// 贵州癨 in GBK. The last character is `B0 5C`, whose TRAILING byte is the ASCII backslash, so the row exercises the decode the parser depends on.
 const SINA_FIXTURE_GBK_NAME: &[u8] = &[0xb9, 0xf3, 0xd6, 0xdd, 0xb0, 0x5c];
 
-/// One live row per market, truncated after the fields this parser reads,
-/// copied from a real `hq.sinajs.cn` response (2026-09-07).
-///
-/// The field orders are genuinely different — US is field 1, HK is field 6,
-/// Shanghai and Shenzhen are field 3 — and the values are such that reading
-/// another market's index out of one of these rows gives a DIFFERENT answer
-/// rather than a coincidentally equal one: `gb_nvda`'s field 6 is 234.76,
-/// `hk01810`'s field 3 is 28.440, and `sh600519` has no field 6 at all.
-///
-/// `<NAME>` stands for [`SINA_FIXTURE_GBK_NAME`]'s bytes.
+/// One live row per market (2026-09-07), truncated after the fields this parser reads. Reading another market's index out of a row gives a DIFFERENT answer, not a coincidentally equal one. `<NAME>` stands for [`SINA_FIXTURE_GBK_NAME`].
 const SINA_FIXTURE_ROWS: &[(&str, &str)] = &[
     (
         "gb_nvda",
@@ -55,30 +27,8 @@ const SINA_FIXTURE_ROWS: &[(&str, &str)] = &[
     ),
 ];
 
-/// The exchange-rate rows, copied from the same live endpoint on the same day
-/// (2026-09-07) and truncated after field 9 — the current rate is field 8 and
-/// the pair's name is field 9, whose GBK bytes are kept so the FX path decodes
-/// a real row rather than a convenient all-ASCII one.
-///
-/// **`fx_susdcny` is the ONLY row that discriminates field 8 from field 1.**
-/// Its field 1 (bid, 6.7099), field 3 (previous close, 6.7108) and field 8
-/// (current, 6.7111) are three different numbers. In each of the other five
-/// rows field 1 EQUALS field 8 — that is what the endpoint served, and on a
-/// spot-quoted pair the bid and the current rate coincide — so those five say
-/// nothing about which of the two a parser read.
-///
-/// The practical consequence, registered rather than worked around: changing
-/// `SINA_FX_RATE_FIELD` from 8 to 1 turns red only the tests whose conversion
-/// runs through `fx_susdcny`. A test converting through `fx_shkdusd`,
-/// `fx_shkdcny`, `fx_scnyusd`, `fx_susdhkd` or `fx_scnyhkd` stays green under
-/// that mutation. Field 3 (the previous close) differs from field 8 in every
-/// row, so that mutation is caught everywhere.
-///
-/// Sina quotes all six ordered pairs over USD, HKD and CNY natively, which is
-/// why this plugin never divides one into another. All six are here even
-/// though only four are routed today, so a route that reached for the wrong
-/// direction gets the WRONG number out of this table rather than nothing at
-/// all.
+/// The exchange-rate rows from the same live endpoint, truncated after field 9. Only `fx_susdcny` discriminates field 8 from field 1 (bid 6.7099, current 6.7111); in the other rows they coincide.
+/// All six ordered pairs are here though only four are routed, so a route reaching for the wrong direction gets the WRONG number rather than nothing.
 const SINA_FIXTURE_FX_ROWS: &[(&str, &str)] = &[
     (
         "fx_susdcny",
@@ -106,9 +56,7 @@ const SINA_FIXTURE_FX_ROWS: &[(&str, &str)] = &[
     ),
 ];
 
-/// Every row this fixture knows — the stock rows and the exchange-rate rows.
-/// A test that prices a holding in one currency and settles in another needs
-/// both from one server, so the default table is the union.
+/// The stock rows and the exchange-rate rows together, for a test that prices in one currency and settles in another.
 fn sina_fixture_all_rows() -> Vec<(&'static str, &'static str)> {
     SINA_FIXTURE_ROWS
         .iter()
@@ -117,11 +65,7 @@ fn sina_fixture_all_rows() -> Vec<(&'static str, &'static str)> {
         .collect()
 }
 
-/// Build a Sina response for `target` out of a table of known rows, answering
-/// every symbol the request asked for and no others.
-///
-/// A symbol the table does not know gets `""`, which is what the real endpoint
-/// answers for a name it does not list (`gb_doge`, verified).
+/// Build a Sina response for `target` from a table of known rows; an unknown symbol gets `""`, as the real endpoint answers an unlisted name.
 fn sina_fixture_body(target: &str, known: &[(&str, &str)]) -> Vec<u8> {
     let list = target.split("list=").nth(1).unwrap_or_default();
     let mut body = Vec::new();

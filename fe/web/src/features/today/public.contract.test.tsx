@@ -9,9 +9,7 @@ import { TodayPage, type ScheduledEvent } from './public.tsx';
 
 import type { TodayPageProps } from './public.tsx';
 
-// A stand-in, not the real TrackRow: `features/today` may not import a sibling
-// domain, and these suites are about Today's own bucketing and layout. The real
-// row has its own tests, and `app/router` is where the two are composed.
+// A stand-in, not the real TrackRow: `features/today` may not import a sibling domain.
 const renderTrackRow: TodayPageProps['renderTrackRow'] = (track, options) => (
   <span data-nc-role="row" data-nc-state={options.variant === 'panel' ? 'selected' : undefined}>
     {options.hourLabel}{track.title}
@@ -46,10 +44,6 @@ describe('INV-TODAY-002 the scheduled-event seam', () => {
   });
 
   it('keeps both sources in the same agenda instead of letting either take over', () => {
-    // A scheduling plugin has not landed, so production always passes an empty
-    // list. Feeding a synthetic event through the seam is the only way to prove
-    // the branch still exists and still co-exists with track activity — deleting
-    // it as "dead code" is exactly the regression this locks.
     const scheduled = track({ id: 'w2', title: 'Scheduled track', createdAt: NOW - 10 * 86_400_000, terminalAt: NOW - 9 * 86_400_000 });
     const events: ScheduledEvent[] = [{ track: scheduled, date: new Date(NOW), hour: 15 }];
     render(<TodayPage activityAvailable renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} scheduledEvents={events} nowMs={NOW} />);
@@ -65,30 +59,15 @@ describe('INV-TODAY-002 the scheduled-event seam', () => {
   });
 
   it('counts a track once when both sources carry it', () => {
-    // The day cell shows how many tracks a day holds, so double-counting is the
-    // failure this locks: one track present in both sources must read as 1.
     const shared = track({ id: 'w1' });
     const events: ScheduledEvent[] = [{ track: shared, date: new Date(NOW), hour: 9 }];
     render(<TodayPage activityAvailable renderTrackRow={renderTrackRow} tracks={[shared]} areas={[area()]} scheduledEvents={events} nowMs={NOW} />);
-    // Both the drawn glyph and the accessible name say one, not two.
     const today = screen.getByRole('button', { name: 'Monday, Aug 10, 1 track' });
     expect(today.querySelector('[data-nc-day-count]')?.textContent).toBe('1');
   });
 });
 
 describe('INV-A11Y-061 navigation shape', () => {
-  /*
-   * Today's half of this invariant, and only its half: it emits no native link
-   * of its own — day cells, week arrows and section labels are all buttons or
-   * inert text.
-   *
-   * The *rows* are not asserted here on purpose. Today no longer renders one;
-   * it injects a renderer, and `features/**` may not import a sibling domain,
-   * so anything this file could render is a stand-in defined at the top of this
-   * file. A test that builds a button and then asserts a button is proof of
-   * nothing. The row's own shape is locked against the real component in
-   * `features/track/row/public.test.tsx`.
-   */
   it('emits no native link anywhere on the surface', () => {
     const { container } = render(
       <TodayPage activityAvailable renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW} />,
@@ -97,16 +76,7 @@ describe('INV-A11Y-061 navigation shape', () => {
   });
 });
 
-/*
- * #1253 §5.2 — the Today document region.
- *
- * `launchpad` is the server's answer to `GET /api/today/launchpad`, and
- * `report_has_noninitial_content` is the ONLY thing on this page that decides
- * between the document and the empty state. The stand-in document below is a
- * marker, not a report: what is under test is which branch runs, and the real
- * `ReportDocument` against a real canonical initial payload is exercised at the
- * composition layer in `app/router/today-document.test.tsx`.
- */
+/* The stand-in document is a marker, not a report: what is under test is which branch runs. */
 const DOCUMENT = <p>the day&apos;s report</p>;
 const GUIDE_LABEL = 'Getting started';
 
@@ -119,10 +89,6 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
       launchpadDocument={DOCUMENT}
     />);
     expect(screen.getByRole('region', { name: GUIDE_LABEL })).toBeTruthy();
-    // The negative half: the canonical initial report is a well-formed
-    // document — four empty H1s — so a page that decided this by looking at
-    // the document instead of at the server field would render those headings
-    // here rather than the empty state.
     expect(screen.queryByText("the day's report")).toBeNull();
   });
 
@@ -147,9 +113,6 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
   });
 
   it('says nothing at all while the resolve is still in flight', () => {
-    // "We do not know yet" and "there is nothing" are different answers, and
-    // flashing the second one while the first is true is how a page teaches
-    // people to distrust it.
     render(<TodayPage
       activityAvailable
       renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW}
@@ -160,13 +123,6 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
   });
 
   it('offers no button anywhere in the main column', () => {
-    /*
-     * The empty day offers Area/Track guidance, but creation remains in the
-     * sidebar. The retired report-writing button and Waiting-on-you controls
-     * must not return to this reading column.
-     * The column is identified as the non-panel child of `.content`, so the
-     * assertion covers the whole reading column rather than one known wrapper.
-     */
     render(<TodayPage
       activityAvailable
       renderTrackRow={renderTrackRow} tracks={[track({ lifecycle: 'blocked' })]} areas={[area()]} nowMs={NOW}
@@ -175,12 +131,9 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
     const panel = screen.getByRole('complementary');
     const content = panel.parentElement;
     expect(content).not.toBeNull();
-    // Pinned rather than assumed: if the row ever grows a third child, the
-    // "the other one" step below stops being well defined and this says so.
     expect(content?.children.length).toBe(2);
     const mainColumn = [...(content?.children ?? [])].find((child) => child !== panel);
     expect(mainColumn).toBeDefined();
-    // It is the column: it holds the document region and nothing actionable.
     expect(mainColumn?.contains(screen.getByRole('region', { name: GUIDE_LABEL }))).toBe(true);
     expect(mainColumn?.querySelectorAll('button').length).toBe(0);
   });
@@ -216,13 +169,7 @@ describe('the main column belongs to the document', () => {
 });
 
 describe('#1253 the first-run page keeps the full Today layout', () => {
-  /*
-   * `areas` is the USER-visible list: #175 filters the system area out of
-   * `GET /api/areas`, and the launchpad track lives in the system area. So
-   * "no tracks and no areas" is a perfectly ordinary state for a workspace
-   * whose only content is the day's report. It must use the normal two-column
-   * layout: an empty data set is not a reason to remove the calendar.
-   */
+  /* `areas` excludes the system area, where the launchpad track lives, so "no tracks and no areas" is an ordinary state. */
   it('keeps the calendar and one specific empty state before a launchpad exists', () => {
     render(<TodayPage
       activityAvailable
@@ -269,18 +216,6 @@ describe('#1343 the document’s action slot', () => {
   } as const;
   const ACTION = <button type="button">Reset</button>;
 
-  /*
-   * #1343 — the empty state still has no document action.
-   *
-   * A `Write` / `Rewrite today’s progress` button used to stand here. It was
-   * removed on owner call: the day’s activity now reaches an agent when a
-   * conversation is started on the launchpad, injected server-side, so the
-   * button was no longer the only route to anything.
-   *
-   * The action slot is not offered in this branch either, and that is the same
-   * ruling rather than an omission: there is nothing to reset when the report
-   * is already canonical.
-   */
   it('shows getting-started guidance without document controls when the report is empty', () => {
     render(<TodayPage
       activityAvailable
@@ -293,17 +228,9 @@ describe('#1343 the document’s action slot', () => {
     expect(screen.getByText('Area')).toBeTruthy();
     expect(screen.getByText('Track')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Reset' })).toBeNull();
-    // The deleted control, pinned by absence so it cannot drift back in
-    // without this suite noticing. A label regex, not an exact string: "Write",
-    // "Rewrite" and anything else ending in "today’s progress" are all the same
-    // growth back.
     expect(screen.queryByRole('button', { name: /today’s progress/ })).toBeNull();
   });
 
-  /* Beside a written document the slot renders exactly what the composition
-     layer put in it — the control is wired there because it is destructive and
-     needs a confirmation dialog, which is a sibling domain this one may not
-     import. */
   it('renders the composition’s action beside a written report', () => {
     render(<TodayPage
       activityAvailable
@@ -316,9 +243,6 @@ describe('#1343 the document’s action slot', () => {
     expect(screen.queryByRole('region', { name: 'Getting started' })).toBeNull();
   });
 
-  /* No slot, no control — not a disabled one. A disabled button is a promise
-     it will work later; an absent one is the honest shape for "this
-     composition has no action", which is what `features/**` alone can have. */
   it('renders nothing when no action was supplied', () => {
     render(<TodayPage
       activityAvailable
@@ -329,8 +253,6 @@ describe('#1343 the document’s action slot', () => {
     expect(screen.getByText("the day's report")).toBeTruthy();
   });
 
-  /* INV-TODAYDOC-002 — a failed resolve shows the failure and nothing else.
-     An action on a document the page could not even read has no referent. */
   it('is absent when the resolve itself failed', () => {
     render(<TodayPage
       activityAvailable

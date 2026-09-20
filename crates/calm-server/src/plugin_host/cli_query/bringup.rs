@@ -1,8 +1,4 @@
-//! `cli-query` bring-up: resolve and pin the command, build the child
-//! environment, and probe an informational fingerprint.
-//!
-//! Runs ONCE per enable, bounded by [`super::CLI_QUERY_BRINGUP_BUDGET`].
-//! Everything it can fail on produces an operator-facing reason string.
+//! `cli-query` bring-up: resolve and pin the command, build the child environment, and probe an informational fingerprint. Runs ONCE per enable, bounded by [`super::CLI_QUERY_BRINGUP_BUDGET`].
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -19,64 +15,27 @@ use super::{CliQueryRuntime, PROBE_MAX_STDOUT_BYTES, VERSION_PROBE_BUDGET, confi
 use crate::operation::forge_action_adapter::FORGE_CREDENTIAL_ENV_KEYS;
 use serde_json::{Map, Value};
 
-/// Is `key` a forge credential passthrough key — i.e. one this connector may
-/// never receive from the service environment (design §4 acceptance #4)?
-///
-/// The single source of truth is
-/// [`crate::operation::forge_action_adapter::FORGE_CREDENTIAL_ENV_KEYS`], the
-/// credential half of what the forge adapter forwards. Re-typing the list here
-/// would drift the moment that one grows — which is precisely how the previous
-/// round shipped a `#[cfg(test)]` "witness" with no mechanism behind it.
-///
-/// The NON-credential half (`GH_HOST`, `NO_PROXY`, `no_proxy`) is deliberately
-/// absent: those grant nothing, and denying them broke a query CLI behind a
-/// proxy while `HTTP_PROXY` sailed through — an incoherent policy with a real
-/// cost, since every key here can retroactively invalidate an installed
-/// manifest at boot (r2 G4).
+/// Is `key` a forge credential passthrough key — one this connector may never receive from the service environment? The non-credential half (`GH_HOST`, `NO_PROXY`) is deliberately not denied.
 fn is_forge_credential_key(key: &str) -> bool {
     FORGE_CREDENTIAL_ENV_KEYS.contains(&key)
 }
-// ---------------------------------------------------------------------------
-// Bring-up
-// ---------------------------------------------------------------------------
 
-/// Resolve, pin, environment-build and fingerprint ONE `cli-query` connector.
-///
-/// `Err` is an operator-facing reason string; the caller renders it as
-/// `Unavailable{reason}` (503). Nothing here logs or returns a secret VALUE.
-///
-/// `effective` is the plugin's effective configuration (`defaults ⊕
-/// user_config`, via `plugin_host::config::effective_config` — this module does
-/// not compose it, it consumes it). It is read here and cached in the runtime,
-/// which is the §2.4 contract in code: the child environment and the argv
-/// configuration slots are built ONCE per bring-up, so a configuration change
-/// reaches a `cli-query` connector only through a restart. There is deliberately
-/// no hot-reload path — an inconsistently half-updated environment is worse than
-/// a stale consistent one.
-///
-/// The caller bounds this whole future with [`CLI_QUERY_BRINGUP_BUDGET`].
+/// Resolve, pin, environment-build and fingerprint ONE `cli-query` connector. `Err` is an operator-facing reason string; nothing here logs or returns a secret VALUE.
+/// The child environment and argv configuration slots are built ONCE per bring-up, so a configuration change reaches a `cli-query` connector only through a restart.
 pub async fn bring_up(
     plugin_id: &str,
     block: &CliQueryBlock,
     install_path: &Path,
     effective: &Map<String, Value>,
 ) -> Result<CliQueryRuntime, String> {
-    // `std::env::vars()` PANICS on a non-UTF-8 variable. One latin-1 entry in
-    // the service environment would turn every `cli-query` enable into a panic
-    // on the boot path, where every other failure here is a reason string.
-    // `vars_os` + skip is the only shape that keeps that promise; a key we
-    // cannot represent is a key no manifest could have named anyway.
+    // `std::env::vars()` PANICS on a non-UTF-8 variable; `vars_os` + skip keeps the boot path on reason strings.
     let service_env: BTreeMap<String, String> = std::env::vars_os()
         .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
         .collect();
     let service_path = service_env.get("PATH").cloned().unwrap_or_default();
     let path_value = per_connector_path(&service_path, &block.search_path_extra);
 
-    // Resolution is a `stat(2)` per candidate directory — BLOCKING work. Run
-    // inline it parks a runtime worker, and `tokio::time::timeout` cancels only
-    // at await points, so `CLI_QUERY_BRINGUP_BUDGET` could not fire at all:
-    // `"search_path_extra": ["/mnt/dead-nfs/bin"]` would hang `AppState::new`.
-    // Exactly the defect `connector::read_secrets` already paid for.
+    // Resolution is a `stat(2)` per candidate directory: blocking work that would park a worker and outrun `CLI_QUERY_BRINGUP_BUDGET` on a dead mount.
     let program = {
         let command = block.command.clone();
         let extra = block.search_path_extra.clone();
@@ -86,19 +45,14 @@ pub async fn bring_up(
             .map_err(|e| format!("cli_query.command resolution task failed: {e}"))??
     };
 
-    // §2.4 — a wrongly-permissioned or malformed secrets file refuses the
-    // enable outright, exactly as it does for `mcp-http`. Failing open would
-    // mean an operator never learns their credential is world-readable.
+    // A wrongly-permissioned or malformed secrets file refuses the enable outright; failing open would hide a world-readable credential from the operator.
     let secrets = connector::read_secrets(install_path)
         .await
         .map_err(|e| format!("secrets.json rejected: {e}"))?
         .unwrap_or_default();
     let secrets_path = install_path.join(connector::SECRETS_FILENAME);
 
-    // Flatten the effective configuration once, and fail the bring-up rather
-    // than the call if a value cannot be carried: both consumers below (the
-    // child environment and the argv slots) need the same string for the same
-    // key, so producing it twice would be two chances to disagree.
+    // Flatten once: both the child environment and the argv slots need the same string for the same key.
     let config = flatten_config(effective)?;
     refuse_unfillable_argv_config_slots(block, &config)?;
 
@@ -111,13 +65,8 @@ pub async fn bring_up(
         &config,
     )?;
 
-    // The probe runs with the BASE environment only — no `env_allow`, no
-    // `secret_env`. The probe's stdout is logged verbatim as the fingerprint,
-    // so a CLI that echoes its config on `--version` would otherwise put a
-    // token in the log.
-    //
-    // `?` on purpose: a binary that resolves but cannot be EXECUTED fails the
-    // enable here rather than publishing as `Running` and failing every call.
+    // The probe runs with the BASE environment only: its stdout is logged verbatim, so a CLI that echoes its config on `--version` would otherwise put a token in the log.
+    // `?` on purpose: a binary that cannot be EXECUTED fails the enable here rather than every call.
     let fingerprint =
         probe_fingerprint(&program, &base_child_env(&service_env, &path_value)).await?;
     tracing::info!(
@@ -144,33 +93,7 @@ pub async fn bring_up(
     })
 }
 
-/// Refuse the bring-up when a declared `{{config.<key>}}` argv slot has no
-/// value in force (#1284 S3a review P2-3).
-///
-/// **Why this is NOT the same decision `config_env` makes.** For an env key,
-/// "no value" is a representable state: the key is simply absent from the child
-/// environment, the child sees what it would have seen before the manifest
-/// named it, and `config_schema.required` is where an author says a key is
-/// mandatory. For an argv slot there is no such state — an argv element must
-/// render to exactly one string, and the alternatives are all worse than a
-/// refusal: an empty element is a real (empty) argument, and dropping the
-/// element silently rewrites the command line. So the only thing left is the
-/// per-call `invalid_params` that `render_argv` already returns, and by then
-/// the connector is published `Running`.
-///
-/// Which makes an unfillable slot exactly the anti-pattern `probe_fingerprint`
-/// already refuses one field over: "resolve, enable, publish as `Running`, and
-/// then fail every single call". A manifest that declares `{{config.endpoint}}`
-/// with neither a `default` nor an entry in `config_schema.required` is
-/// otherwise a connector that comes up green and answers every `tools/call`
-/// with `invalid_params` — a state the operator can only diagnose by making a
-/// call. `Err` here, so they learn at enable time, with the same
-/// `unavailable` + `last_error` every other bring-up refusal uses.
-///
-/// This does not duplicate `Manifest::validate`, which checks that the slot
-/// names a **declared** `config_schema` property (a static, author-time fact).
-/// Whether that property has a VALUE is an operator-time fact and only the
-/// effective configuration knows it.
+/// Refuse the bring-up when a declared `{{config.<key>}}` argv slot has no value in force: an argv element must render to exactly one string, so unlike an absent `config_env` key there is no representable "no value", and the connector would otherwise publish `Running` and answer every call with `invalid_params`.
 fn refuse_unfillable_argv_config_slots(
     block: &CliQueryBlock,
     config: &BTreeMap<String, String>,
@@ -197,11 +120,7 @@ fn refuse_unfillable_argv_config_slots(
     Ok(())
 }
 
-/// The effective configuration, flattened to the strings a child can carry.
-///
-/// A key whose value is absent-as-`null` simply does not appear, which is the
-/// same "no value" the merge itself already means; anything the subset cannot
-/// declare is a refusal (see [`config_scalar`]).
+/// The effective configuration, flattened to the strings a child can carry; an absent-as-`null` key simply does not appear.
 pub(super) fn flatten_config(
     effective: &Map<String, Value>,
 ) -> Result<BTreeMap<String, String>, String> {
@@ -214,25 +133,8 @@ pub(super) fn flatten_config(
     Ok(out)
 }
 
-/// The PATH the child gets: `search_path_extra` **first**, then the service
-/// PATH.
-///
-/// Extras take precedence deliberately — an operator who points a connector at
-/// `/opt/longbridge/bin` means "use that one", and putting them last would let
-/// an unrelated same-named binary earlier in the service PATH win silently.
-///
-/// This value is per-connector and is only ever written into a child's
-/// environment. The process-global `PATH` is never mutated: `std::env::set_var`
-/// is process-wide and racy, and one connector's extras must not become every
-/// other connector's (or the server's) search path.
-///
-/// **Non-absolute entries are dropped, exactly as [`resolve_command`] drops
-/// them** (r2 G2). Filtering only during resolution was half a fix: the kernel
-/// would correctly refuse to PIN `.`, say so in the reason — and then hand the
-/// child `PATH=".:…"` anyway, so a query CLI that shells out to `git` or `jq`
-/// resolved it against the server's working directory, with this connector's
-/// secrets already in its environment. One filter, both places, or the
-/// invariant is only true of the half that is tested.
+/// The PATH the child gets: `search_path_extra` first, then the service PATH; the process-global `PATH` is never mutated.
+/// Non-absolute entries are dropped exactly as [`resolve_command`] drops them, or the child would get `PATH=".:…"` and resolve `git`/`jq` against the server's working directory with this connector's secrets in its environment.
 pub(super) fn per_connector_path(service_path: &str, extra: &[String]) -> String {
     let mut parts: Vec<&str> = extra.iter().map(String::as_str).collect();
     parts.extend(service_path.split(':'));
@@ -240,28 +142,8 @@ pub(super) fn per_connector_path(service_path: &str, extra: &[String]) -> String
     parts.join(":")
 }
 
-/// Resolve `command` to an absolute path.
-///
-/// An absolute path is taken as-is (after an executability check). A bare name
-/// is searched in `search_path_extra` first, then the service PATH — the same
-/// precedence [`per_connector_path`] gives the child, so "what got resolved"
-/// and "what the child would find" cannot disagree.
-///
-/// **Only ABSOLUTE search entries are considered.** A `PATH` (or
-/// `search_path_extra`) entry of `.` or `bin` would join to a RELATIVE
-/// "pinned" program whose meaning depends on the server's working directory at
-/// exec time — which is the opposite of pinning, and the same reason a relative
-/// `command` is refused outright below. Skipped entries are named in the
-/// failure reason so an operator is not left wondering why their extra was
-/// ignored.
-///
-/// **The failure reason names the service PATH and every directory searched**
-/// (design R5): the case this exists for is a docker preview stack that simply
-/// has no such binary, where "command not found" alone tells the operator
-/// nothing about where the kernel looked.
-///
-/// Synchronous on purpose: it is `stat(2)` per candidate, so [`bring_up`] runs
-/// it on `spawn_blocking` rather than on a runtime worker.
+/// Resolve `command` to an absolute path: absolute is taken as-is (after an executability check); a bare name is searched in `search_path_extra` first, then the service PATH, absolute entries only (a relative pin would depend on the server's cwd at exec time).
+/// The failure reason names every directory searched. Synchronous on purpose (`stat(2)` per candidate); run on `spawn_blocking`.
 pub(super) fn resolve_command(
     command: &str,
     search_path_extra: &[String],
@@ -331,55 +213,8 @@ fn is_executable_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Build the child environment: `env_clear()` plus exactly these keys.
-///
-/// Order is load-bearing at the ends, not in the middle:
-///
-/// 1. the base set `{PATH, HOME, LANG}` — `HOME`/`LANG` only when the service
-///    has them, since inventing a `HOME` is worse than not having one;
-/// 2. `env_allow` keys that exist in the service environment (an absent one is
-///    simply not forwarded — the manifest is asking to pass through whatever is
-///    there, not to require it);
-/// 3. `secret_env` keys, valued from `secrets.json`. A named key with no
-///    corresponding secret is a **bring-up failure**: silently omitting it would
-///    hand the child a half-authenticated environment and turn a configuration
-///    mistake into a per-call auth error nobody can trace;
-/// 4. `config_env` keys, valued from the plugin's effective configuration
-///    (#1284 §2.3(b)). An entry names both the env key and the `config_schema`
-///    property it draws from — the manifest owns the KEY, the operator owns
-///    only the VALUE, so no configuration write can introduce an environment
-///    variable the author did not declare. A declared key with no value in
-///    force is simply **not forwarded**, like an absent `env_allow` key and
-///    unlike a missing `secret_env` one: the manifest already had its chance to
-///    make the key mandatory by listing it in `config_schema.required`, and
-///    `missing_required` refuses the bring-up before this function runs.
-///    Position relative to `env_allow` and `secret_env` is not load-bearing —
-///    `validate` refuses a manifest whose three env sources name the same
-///    target — but keeping the order documented is cheaper than re-deriving
-///    that each time;
-/// 5. `PATH` re-asserted last, so none of the three sources can revert the
-///    per-connector search path this connector was pinned against.
-///
-/// **"Order carries no semantics" is true only between the three manifest
-/// sources** (S3a review P3). It is false in the two directions that bracket
-/// them, and both are deliberate:
-///
-/// * against step 5 — `PATH` is re-asserted AFTER all three, so a manifest that
-///   names `PATH` in `env_allow`/`secret_env`/`config_env` cannot move the
-///   child off the search path the command was pinned against. That is the
-///   whole point of putting it last;
-/// * against step 1 — `HOME` and `LANG` come from [`base_child_env`] and any of
-///   the three sources may overwrite them. `secret_env` can do this today, so
-///   `config_env` is not a new face on it, and there is nothing to fix: an
-///   operator who configures `HOME` for a connector means it. But it is not the
-///   "no semantics" case either, so it is written down rather than implied.
-///
-/// No forge credential reaches this map, and step 2 is **fail-closed** about
-/// it: a key in [`FORGE_CREDENTIAL_ENV_KEYS`] is dropped even though the
-/// manifest named it. `Manifest::validate` already refuses such a manifest, so
-/// nothing should reach here — this filter is the backstop for a manifest that
-/// got to the runtime by any other route (a hand-edited DB blob, a future
-/// caller that skips validation).
+/// Build the child environment: `env_clear()` plus base `{PATH, HOME, LANG}`, `env_allow` keys present in the service env, `secret_env` keys from `secrets.json` (a missing one is a bring-up failure), `config_env` keys with a value in force, then `PATH` re-asserted last so no source can move the child off the pinned search path.
+/// Forge credential keys named by `env_allow` are dropped even though `Manifest::validate` should already have refused the manifest; this filter is the backstop.
 pub(super) fn build_child_env(
     block: &CliQueryBlock,
     secrets: &BTreeMap<String, String>,
@@ -391,9 +226,7 @@ pub(super) fn build_child_env(
     let mut env = base_child_env(service_env, path_value);
     for key in &block.env_allow {
         if is_forge_credential_key(key) {
-            // Not a hard error here on purpose: the loud refusal belongs to
-            // manifest parse/validate, which fails install and reload. At
-            // runtime the invariant that matters is that the key is ABSENT.
+            // Not a hard error: the loud refusal belongs to manifest validate; at runtime the invariant is that the key is ABSENT.
             tracing::warn!(
                 key = %key,
                 "cli-query: refusing to forward a forge credential key named by env_allow \
@@ -405,12 +238,7 @@ pub(super) fn build_child_env(
             env.insert(key.clone(), v.clone());
         }
     }
-    // `secret_env` is deliberately NOT denylisted. Its values come from this
-    // connector's own `secrets.json`, which the operator authored for this
-    // connector: naming `GH_TOKEN` there sets it to whatever that file holds,
-    // which is not an escalation from the SERVICE identity — and the service
-    // identity is the only thing the `env_allow` denylist protects. The
-    // asymmetry is intentional, not an oversight.
+    // `secret_env` is deliberately NOT denylisted: its values come from this connector's own `secrets.json`, which is not an escalation from the SERVICE identity the `env_allow` denylist protects.
     for key in &block.secret_env {
         let value = secrets.get(key).ok_or_else(|| {
             // Names the key and the file, never a value.
@@ -418,7 +246,6 @@ pub(super) fn build_child_env(
         })?;
         env.insert(key.clone(), value.clone());
     }
-    // #1284 §2.3(b) — configuration VALUES into manifest-declared KEYS.
     for key in &block.config_env {
         if let Some(value) = config.get(key) {
             env.insert(key.clone(), value.clone());
@@ -428,11 +255,7 @@ pub(super) fn build_child_env(
     Ok(env)
 }
 
-/// The base environment every `cli-query` child gets: `PATH` (the pinned
-/// per-connector one) plus `HOME`/`LANG` **only when the service has them** —
-/// inventing a `HOME` is worse than not having one.
-///
-/// Split out because the `--version` probe gets this and nothing else.
+/// The base environment every `cli-query` child gets: pinned `PATH` plus `HOME`/`LANG` only when the service has them; the `--version` probe gets this and nothing else.
 pub(super) fn base_child_env(
     service_env: &BTreeMap<String, String>,
     path_value: &str,
@@ -447,34 +270,8 @@ pub(super) fn base_child_env(
     env
 }
 
-/// Probe the pinned binary: an informational fingerprint, or a REFUSAL.
-///
-/// Two failure modes, deliberately not the same outcome (r2 G5):
-///
-/// * **The spawn itself failed** — `EACCES` (the execute bit is set, but not
-///   for us), `ENOEXEC` (no valid format or shebang), `ENOENT` (a dangling
-///   interpreter). Resolution only checks that *some* execute bit is set, so
-///   these are exactly the binaries that resolve, enable, publish as `Running`,
-///   and then fail every single call. `Err` here, so the operator learns at
-///   enable time with the OS error in the reason.
-/// * **The binary ran and we simply learned nothing** — non-zero exit, empty
-///   output, or a `--version` that hung past [`VERSION_PROBE_BUDGET`]. A CLI is
-///   entitled to have no `--version`. `Ok` with the size+mtime fallback, which
-///   still lets an operator tell two deploys apart.
-///
-/// `env` must be [`base_child_env`], **not** the child environment: this
-/// probe's stdout is logged verbatim at bring-up, and a CLI that echoes its
-/// configuration on `--version` would put a `secret_env` value into the log.
-///
-/// What that excludes is `env_allow` and `secret_env` — not every path to a
-/// secret (r2 G9). `HOME` is still forwarded, because a CLI without one behaves
-/// differently enough that the fingerprint would stop describing the real
-/// deployment, so a tool that reads `$HOME/.config/<tool>` and echoes it on
-/// `--version` can still print its own credential. That residual is the
-/// R6-accepted "a connector prints its own secret"; scrubbing connector output
-/// is explicitly OUT OF SCOPE, and pattern-based redaction was rejected as
-/// false assurance. What changed is that the kernel no longer *hands* the probe
-/// the connector's secrets itself.
+/// Probe the pinned binary: an informational fingerprint, or a REFUSAL. A failed spawn (`EACCES`, dangling interpreter) is `Err` so the operator learns at enable time; a binary that ran and told us nothing is `Ok` with the size+mtime fallback.
+/// `env` must be [`base_child_env`], not the child environment: this probe's stdout is logged verbatim.
 pub(super) async fn probe_fingerprint(
     program: &Path,
     env: &BTreeMap<String, String>,
@@ -492,13 +289,7 @@ pub(super) async fn probe_fingerprint(
                 program.display()
             ));
         }
-        // Every OTHER spawn error is about the MACHINE, not the binary:
-        // `EAGAIN`/`ENOMEM` under `RLIMIT_NPROC` or memory pressure,
-        // `EMFILE`/`ENFILE` on descriptor exhaustion, `ETXTBSY` while an
-        // upgrade rewrites the file. Bring-up runs inline at boot while every
-        // other connector is spawning too, so fork pressure there is expected —
-        // and refusing on it would permanently mark a perfectly good connector
-        // `Unavailable` with nothing to retry it (r3 H6). Fall back and enable.
+        // Every OTHER spawn error is about the MACHINE (`EAGAIN`/`ENOMEM`/`EMFILE`/`ETXTBSY`); refusing would permanently mark a good connector `Unavailable` with nothing to retry it, so fall back and enable.
         Err(e) => {
             tracing::warn!(
                 program = %program.display(),
@@ -508,8 +299,7 @@ pub(super) async fn probe_fingerprint(
             );
         }
     }
-    // Blocking `stat(2)`, and the reason the budget above exists is that the
-    // path may be a dead mount — so it does not run on a runtime worker either.
+    // Blocking `stat(2)` on a path that may be a dead mount, so not on a runtime worker.
     let owned = program.to_path_buf();
     let meta = tokio::task::spawn_blocking(move || std::fs::metadata(&owned)).await;
     Ok(match meta {
@@ -526,15 +316,7 @@ pub(super) async fn probe_fingerprint(
     })
 }
 
-/// `Err` = the child could not be started at all. `Ok(None)` = it started and
-/// yielded no usable version line (including by outliving the sub-budget).
-///
-/// Same four-phase lifecycle as `tools_call`, for the same reasons documented
-/// there: spawn off the async path, drain to EOF, reap, then sweep the group.
-/// Every phase shares ONE deadline, so the whole probe costs at most
-/// [`VERSION_PROBE_BUDGET`] — a per-phase grace on top would push the total
-/// past [`super::CLI_QUERY_BRINGUP_BUDGET`] and take the enable down, which is
-/// the opposite of what the sub-budget exists for (r3 H3).
+/// `Err` = the child could not be started at all. `Ok(None)` = it started and yielded no usable version line. Every phase shares ONE deadline, so the whole probe costs at most [`VERSION_PROBE_BUDGET`].
 async fn run_version_probe(
     program: &Path,
     env: &BTreeMap<String, String>,
@@ -554,19 +336,14 @@ async fn run_version_probe(
     let mut child = match spawn_within(cmd, deadline).await {
         Ok(Ok(child)) => child,
         Ok(Err(e)) => return Err(e),
-        // A spawn that outran the sub-budget is a HANG, not a broken binary:
-        // the file is fine, something underneath it is not answering. That is
-        // "we learned nothing", not a refusal — the outer bring-up budget is
-        // what decides whether the enable survives.
+        // A spawn that outran the sub-budget is a HANG, not a broken binary: "we learned nothing", not a refusal.
         Err(SpawnTimedOut) => return Ok(None),
     };
     let Some(mut stdout) = child.stdout() else {
         return Ok(None);
     };
 
-    // `.output()` buffers UNBOUNDED inside the sub-budget: a chatty `--version`
-    // is the same memory amplifier `tools_call` had. One line is all this
-    // reads, so the cap is small.
+    // `.output()` buffers UNBOUNDED; one line is all this reads, so the cap is small.
     let mut buf = Vec::new();
     let finished = finish_within(
         deadline,
@@ -575,9 +352,7 @@ async fn run_version_probe(
     )
     .await;
 
-    // A `--version` that hung is the case `VERSION_PROBE_BUDGET` exists for: it
-    // must cost the sub-budget and then fall back, never the whole bring-up.
-    // Returning here drops `child`, which sweeps the group before any reap.
+    // A hung `--version` must cost the sub-budget and then fall back, never the whole bring-up; returning here drops `child`, which sweeps the group.
     let (status, released_pgid) = match finished {
         Ok(value) => value,
         Err(ChildFinishError::Drain(_) | ChildFinishError::TimedOut) => return Ok(None),
@@ -598,21 +373,8 @@ async fn run_version_probe(
     Ok(Some(line.to_string()))
 }
 
-/// Is this spawn failure about the FILE (so the connector can never work), or
-/// about the machine right now (so it may work on the next call)?
-///
-/// Only the file-shaped ones may refuse an enable. `PermissionDenied` is the
-/// execute bit we cannot actually use; `NotFound` — for a path that resolution
-/// just stat'd successfully — is a `#!` line naming an interpreter that is not
-/// there.
-///
-/// `ENOEXEC` is deliberately absent, because it never reaches us: Rust's
-/// `Command::spawn` goes through `execvp`, and both glibc and musl implement
-/// the POSIX `ENOEXEC` retry, silently re-exec'ing the file under `/bin/sh`.
-/// A shebang-less text file — and a wrong-architecture ELF — therefore SPAWNS
-/// fine and merely exits non-zero, landing in the informational arm. Closing
-/// that would mean treating a non-zero `--version` as fatal, which is wrong:
-/// a CLI is entitled not to have `--version` at all.
+/// Is this spawn failure about the FILE (the connector can never work) or about the machine right now? Only file-shaped ones may refuse an enable.
+/// `ENOEXEC` is deliberately absent: libc's `execvp` retries under `/bin/sh`, so a shebang-less file spawns fine and merely exits non-zero.
 pub(super) fn is_permanent_spawn_failure(e: &std::io::Error) -> bool {
     matches!(
         e.kind(),

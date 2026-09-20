@@ -4,39 +4,9 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
 /**
- * Executable pin for `run.mjs --plan`: planning must be a READ of the worktree.
- *
- * Today that holds only because mkdtempSync and every `git apply` sit textually after
- * `process.exit(0)`; hoisting any of them would silently make the plan job mutate the tree.
- *
- * WHAT THIS PINS, exactly — two assertions per checked command, no more:
- *
- *  1. END STATE (run 1, TMPDIR redirected into a private sandbox): exit 0, exactly one JSON line
- *     with the expected keys, the worktree clean afterwards, and the sandbox empty. Scoping TMPDIR
- *     to a directory this pin owns also removes the old false-RED: the previous version scanned the
- *     shared os.tmpdir() for `neige-mutation-*`, so any unrelated concurrent runner tripped it.
- *  2. TEMP-DIR USE ROUTED THROUGH TMPDIR (run 2, TMPDIR sealed read-only): the same plan JSON must
- *     still come out. Anything reaching os.tmpdir()/mkdtempSync — which honour TMPDIR — EACCESes
- *     here even if it would have cleaned up, so create-then-delete under TMPDIR cannot hide.
- *     Empirically the legitimate path is unaffected: the git subprocesses it spawns (ls-files /
- *     status / merge-base / show / diff) need no temp dir.
- *
- * WHAT THIS DOES NOT PIN — do not read assertion 2 as "the plan cannot write anywhere". Measured by
- * stubbing run.mjs six ways in review round 3, these variants stay GREEN:
- *
- *  - a worktree write-then-delete with NO temp-dir use at all (assertion 1 only sees the end state,
- *    and assertion 2 only sees TMPDIR). This is the headline gap; the process would need an fs
- *    syscall trace (or a read-only bind mount of the worktree) to catch it, which is out of scope
- *    for a gate that has to run inside a GitHub runner.
- *  - a hardcoded `mkdtempSync('/tmp/neige-mutation-')` that bypasses TMPDIR entirely.
- *  - a write-then-delete under `$HOME` or `/dev/shm`.
- *
- * A leftover (undeleted) write into the worktree IS caught, by assertion 1.
- *
- * SELF-CHECK: `fixtures/impure-plan.mjs` is a faithful plan whose single violation is exactly the
- * transient TMPDIR + worktree touch of the round-2 stub. It is driven through the same
- * `checkPurity` used for the real command and must be REPORTED AS FAILING. Without it nothing
- * proves these assertions can go red at all — both earlier review rounds had to stub by hand.
+ * Executable pin for `run.mjs --plan`: planning must be a READ of the worktree. Run 1 (private
+ * TMPDIR) checks the end state; run 2 (TMPDIR sealed read-only) catches create-then-delete under
+ * TMPDIR. Not caught: a worktree write-then-delete with no temp-dir use, or writes outside TMPDIR.
  */
 
 const feRoot = resolve(import.meta.dirname, '../..');
@@ -102,10 +72,8 @@ function checkPurity(label, args) {
     const leftover = readdirSync(writable);
     violationUnless(leftover.length === 0, `${label} left entries in its temp dir: ${leftover.join(', ')}`);
 
-    // Control: prove the seal actually denies writes before trusting run 2. `chmod 500` is a no-op
-    // for root (CAP_DAC_OVERRIDE bypasses the permission bits), so inside a root container run 2
-    // would pass no matter how impure the command is. That is an undecidable harness, not a clean
-    // plan, so fail loudly and fail closed rather than reporting a green nobody can rely on.
+    // Control: prove the seal denies writes. `chmod 500` is a no-op for root (CAP_DAC_OVERRIDE), so
+    // inside a root container run 2 would pass vacuously — fail closed instead.
     chmodSync(sealed, 0o500);
     let sealHolds = false;
     try {
@@ -147,9 +115,7 @@ function expectImpure(label, args) {
 expectPure(`${runner} --plan`, [runner, '--plan']);
 expectPure(`${runner} --plan --test-scope witness`, [runner, '--plan', '--test-scope', 'witness']);
 
-// --base exercises changedPaths / baseManifestAt — the whole PR-mode selection path, which the
-// bare --plan above never reaches. Skipped rather than failed where the ref is absent (shallow
-// clone, fork without the upstream remote); CI checks out with fetch-depth: 0, so it runs there.
+// --base exercises the whole PR-mode selection path; skipped where the ref is absent (shallow clone).
 const baseExists = spawnSync('git', ['rev-parse', '--verify', '--quiet', `${baseRef}^{commit}`],
   { cwd: feRoot, encoding: 'utf8' }).status === 0;
 if (baseExists) expectPure(`${runner} --plan --base ${baseRef}`, [runner, '--plan', '--base', baseRef]);

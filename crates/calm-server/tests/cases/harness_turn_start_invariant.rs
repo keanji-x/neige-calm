@@ -1,8 +1,5 @@
-//! Snapshot guard: planner harness turn issuance must stay behind
-//! `run_loop::IssueTurnHandle`.
-//!
-//! If this test starts failing, audit the new caller. Non-reconciliation
-//! harness turn issuance bypasses the queue/guard invariant (#550 F3).
+//! Snapshot guard: planner harness turn issuance must stay behind `run_loop::IssueTurnHandle`.
+//! If this test starts failing, audit the new caller: non-reconciliation issuance bypasses the queue/guard invariant.
 
 use std::path::{Path, PathBuf};
 

@@ -100,11 +100,8 @@ async fn terminal_actions_return_fresh_text_observations() {
         observation(&released)["connection_id"],
         before["connection_id"]
     );
-    // #1618 G3: a release readback repeats text only when the screen moved
-    // since the previous observation (the `entered` readback); the shell
-    // prompt may or may not have repainted by now, so both shapes are legal
-    // and each is checked exactly. The deterministic cases live in
-    // terminal_wait_and_drift.rs.
+    // A release readback repeats text only when the screen moved since the previous observation;
+    // the shell prompt may or may not have repainted by now, so both shapes are legal.
     let released_state = observation(&released);
     match released_state.get("text") {
         Some(_) => {
@@ -156,8 +153,8 @@ async fn changing_readback_options_replays_receipt_without_duplicate_input() {
     readback_args["wait_ms"] = json!(100);
     let repeated = h.call("calm.terminal.input", readback_args.clone()).await;
     let mut repeated_receipt = receipt(&repeated).clone();
-    // The readback and its digest (#1677 `summary`) are presentation on top
-    // of the cached physical receipt, which stays byte-identical.
+    // The readback and its digest (`summary`) are presentation on top of the cached physical
+    // receipt, which stays byte-identical.
     assert_eq!(repeated_receipt["summary"]["readback"], "available");
     assert_eq!(original_receipt["summary"]["readback"], "none");
     for presentation in ["observation", "summary"] {

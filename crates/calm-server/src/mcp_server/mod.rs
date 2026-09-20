@@ -1,21 +1,5 @@
-//! Kernel MCP server.
-//!
-//! The codex daemons spawned for Planner / Worker cards need a write path
-//! back into the kernel for dispatch, task outcomes, verdicts, and report
-//! updates. The transport is MCP over a Unix domain socket so per-card identity is
-//! cryptographic (per-card token in `card_mcp_tokens`) and the wire
-//! shape is the same JSON-RPC the plugin host already speaks.
-//!
-//! ```text
-//!   codex daemon ── stdio ──> neige-mcp-stdio-shim ── UDS ──> kernel
-//!     (initialize with                                          mcp_server
-//!      `_meta["dev.neige/auth"].token` from per-card or daemon env) │
-//!                                                                  ▼
-//!                                                            ToolRegistry
-//!                                                                  │
-//!                                                                  ▼
-//!                                                          write_with_event
-//! ```
+//! Kernel MCP server: the codex daemons' write path back into the kernel, MCP over a Unix
+//! domain socket with per-card token identity.
 
 pub mod auth;
 pub mod framing;

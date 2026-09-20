@@ -1,18 +1,4 @@
-//! #1635 S5 — operator-provided templates (`--templates-dir`) through the real
-//! routes: the picker lists them under `site/<stem>`, `POST /api/tracks`
-//! instantiates them, the area default accepts them, and an unknown `site/…`
-//! id is a 400 on both write surfaces.
-//!
-//! The roster reaches `RouteState.templates` through
-//! `AppState::with_templates_dir`, which runs the same
-//! `TemplateRoster::for_boot` `AppState::boot` runs — so this file exercises
-//! the production loader over a real directory, not a fixture roster. The
-//! fail-closed cases (bad front matter, `id ≠ stem`, a body that does not
-//! compile, …) are the loader's own unit tests in
-//! `calm_server::templates::site_dir_tests`; the boot itself — roster before
-//! storage, and the hand-over into `AppState::new` — is `main.rs`'s
-//! `a_bad_templates_dir_fails_the_boot_before_storage_exists` and
-//! `a_templates_dir_reaches_the_picker_through_the_boot`.
+//! Operator-provided templates (`--templates-dir`) through the real routes.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -47,10 +33,7 @@ const SITE_X_TITLE: &str = "Operator template X";
 const SITE_TASK_KEY: &str = "site-task";
 const SITE_TASK_GOAL: &str = "Do the operator's thing.";
 
-/// The one site template this file boots with: canonical work-brief header,
-/// a closed contract comment, prose, one canonical `task` fence. Returned as
-/// (front matter + body, body) so the create assertion can compare the
-/// instantiated report against the body *after* the front matter.
+/// The one site template this file boots with, returned as (front matter + body, body).
 fn site_template_x() -> (String, String) {
     let mut body = canonical_line(&work_brief_header());
     body.push_str("\n<!-- operator contract note: closed -->\n\n# Plan\n\nOperator prose.\n\n");
@@ -199,9 +182,6 @@ fn report_card_payload(detail: &Value) -> TrackReportPayload {
     serde_json::from_value(card["payload"].clone()).expect("report payload")
 }
 
-/// `GET /api/track-templates` lists the site entry after the builtins, under
-/// its `site/<stem>` id, with the file's title and its task projected — and
-/// the builtin entries are still there, unchanged in number and order.
 #[tokio::test]
 async fn picker_lists_the_site_template_after_the_builtins() {
     let boot = boot().await;
@@ -242,9 +222,6 @@ async fn picker_lists_the_site_template_after_the_builtins() {
     );
 }
 
-/// `POST /api/tracks {template_id: "site/x"}` → 201; the track's report is
-/// the file's body after the front matter, its summary the file's title, and
-/// `tracks.template_id` stores `site/x`.
 #[tokio::test]
 async fn create_from_a_site_template_instantiates_the_file_body() {
     let boot = boot().await;
@@ -293,8 +270,6 @@ async fn create_from_a_site_template_instantiates_the_file_body() {
     );
 }
 
-/// The unprefixed stem is not a template: `x` alone is a 400, exactly like
-/// any unknown id, and nothing is written.
 #[tokio::test]
 async fn the_bare_stem_and_an_unknown_site_id_are_400_on_create() {
     let boot = boot().await;
@@ -324,8 +299,6 @@ async fn the_bare_stem_and_an_unknown_site_id_are_400_on_create() {
     }
 }
 
-/// Areas: `default_template_id: "site/x"` is accepted on create and on patch;
-/// `site/none` is a 400 on both.
 #[tokio::test]
 async fn area_default_template_accepts_site_ids_and_refuses_unknown_ones() {
     let boot = boot().await;

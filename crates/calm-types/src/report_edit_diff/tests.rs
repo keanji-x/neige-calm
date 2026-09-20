@@ -15,8 +15,6 @@ fn task(key: &str, ready: bool, goal: &str) -> String {
     )
 }
 
-/// A1 — one block of each class, each named by heading with its own
-/// verb, and the modified one carries `-N/+M` plus the changed lines.
 #[test]
 fn diff_names_added_removed_and_modified_blocks() {
     let before = "# Title\n\nintro\n\n## Thesis\n\nold claim\nshared line\n\n## Draft\n\nscrap\n";
@@ -46,8 +44,6 @@ fn diff_names_added_removed_and_modified_blocks() {
     );
 }
 
-/// A1 — a task fence reports `ready` old -> new by name and never
-/// pastes its payload (the goal text stays out of the turn input).
 #[test]
 fn task_fence_names_ready_and_key_without_payload_text() {
     let before = format!("## Plan\n\n{}", task("build", false, "secret goal prose"));
@@ -67,8 +63,6 @@ fn task_fence_names_ready_and_key_without_payload_text() {
     assert!(!out.contains("```"), "fence text leaked: {out}");
 }
 
-/// A1 — a renamed task key is one modification (leftover tasks pair by
-/// order), with the rename spelled out.
 #[test]
 fn task_key_rename_is_one_modification() {
     let before = task("old-key", true, "g");
@@ -81,8 +75,6 @@ fn task_key_rename_is_one_modification() {
     assert!(out.contains("\nkey: \"old-key\" -> \"new-key\"\n"), "{out}");
 }
 
-/// A1 — a non-task data block: kind plus changed top-level keys, no
-/// payload lines.
 #[test]
 fn data_fence_reports_kind_and_changed_keys_only() {
     let before = render_fence("table", &json!({"caption": "a", "rows": [[1, 2]]}));
@@ -98,7 +90,6 @@ fn data_fence_reports_kind_and_changed_keys_only() {
     assert!(!out.contains("ready:"), "task-only lines on a table: {out}");
 }
 
-/// A1 — the per-block excerpt stops at `MAX_BLOCK_LINES` and says so.
 #[test]
 fn per_block_excerpt_is_capped_at_the_line_limit() {
     let before = "## Long\n\nx\n".to_string();
@@ -117,9 +108,6 @@ fn per_block_excerpt_is_capped_at_the_line_limit() {
     );
 }
 
-/// A1 — the whole rendering is bounded by `MAX_TOTAL_BYTES` and ends
-/// with the marker when cut; a single over-long line is cut at a char
-/// boundary rather than panicking.
 #[test]
 fn total_rendering_is_capped_and_ends_with_the_marker() {
     let mut before = String::new();
@@ -141,9 +129,6 @@ fn total_rendering_is_capped_and_ends_with_the_marker() {
     );
 }
 
-/// Round-4 N5 — a single line longer than the block budget still shows
-/// its head: the excerpt is the line cut to the room left (budget minus
-/// the newline) followed by the marker, never the marker alone.
 #[test]
 fn over_long_single_line_keeps_its_head_before_the_marker() {
     let before = "## Long\n\nx\n";
@@ -153,8 +138,6 @@ fn over_long_single_line_keeps_its_head_before_the_marker() {
     let added: Vec<&str> = out.lines().filter(|l| l.starts_with('+')).collect();
     assert_eq!(added.len(), 1, "{out}");
     let head = added[0];
-    // The excerpt is `-x` then the head: together they spend the whole
-    // budget, newlines counted.
     assert_eq!(
         ("-x".len() + 1) + (head.len() + 1),
         MAX_BLOCK_BYTES,
@@ -168,8 +151,6 @@ fn over_long_single_line_keeps_its_head_before_the_marker() {
     assert!(out.contains("(-1/+1 lines)"), "{out}");
 }
 
-/// Round-4 N8 — an empty document is zero blocks, not one empty prose
-/// block: the first write into an empty report is a pure addition.
 #[test]
 fn empty_body_is_no_blocks() {
     let out = render_report_diff("", "# A\n\nfirst words\n");
@@ -199,7 +180,6 @@ fn identical_bodies_say_so() {
     );
 }
 
-/// Same heading twice pairs by order of appearance.
 #[test]
 fn duplicate_headings_pair_by_order() {
     let before = "## Note\n\nfirst\n\n## Note\n\nsecond\n";
@@ -212,9 +192,6 @@ fn duplicate_headings_pair_by_order() {
     assert!(out.contains("\n-second\n+second changed\n"), "{out}");
 }
 
-/// Prose replaced by a data block under the same heading: the heading's
-/// prose is modified (its line removed) and the fence is an addition —
-/// and the fence's payload is still not pasted.
 #[test]
 fn prose_replaced_by_fence_is_a_modification_plus_an_addition() {
     let before = "## Plan\n\nprose plan\n";
@@ -254,9 +231,6 @@ fn refs(pairs: &[(&str, u32)]) -> Vec<ReportBlockRef> {
         .collect()
 }
 
-/// #1667 round-2 F1 — a snapshot that projects to exactly `after`, one
-/// block per slice, aligns by position; the last block may be
-/// unterminated and a terminated one may be followed by another.
 #[test]
 fn snapshot_that_projects_to_after_aligns_one_ref_per_slice() {
     let blocks = [
@@ -271,8 +245,6 @@ fn snapshot_that_projects_to_after_aligns_one_ref_per_slice() {
     );
 }
 
-/// F1 — the projection inserts a line break after an unterminated block;
-/// that break belongs to the preceding slice and alignment still holds.
 #[test]
 fn unterminated_middle_block_still_aligns() {
     let blocks = [
@@ -286,8 +258,6 @@ fn unterminated_middle_block_still_aligns() {
     );
 }
 
-/// F1 — a snapshot from AFTER a later write (same layout, different
-/// text) is not the body being diffed: no refs, not shifted ones.
 #[test]
 fn snapshot_of_a_later_write_yields_no_refs() {
     let blocks = [
@@ -298,8 +268,6 @@ fn snapshot_of_a_later_write_yields_no_refs() {
     assert_eq!(align_block_refs(after, &blocks), None);
 }
 
-/// F1 — a prose block that holds two headings is two slices; the id
-/// would be ambiguous, so nothing is named.
 #[test]
 fn block_that_splits_into_two_slices_yields_no_refs() {
     let blocks = [prose("b_0001", 1, "# T\n\nintro\n## Inner\n\nx\n")];
@@ -307,7 +275,6 @@ fn block_that_splits_into_two_slices_yields_no_refs() {
     assert_eq!(align_block_refs(after, &blocks), None);
 }
 
-/// F1 — an empty block is no slice at all; the sequence cannot align.
 #[test]
 fn empty_block_yields_no_refs() {
     let blocks = [prose("b_0001", 1, "# T\n"), prose("b_0002", 1, "")];
@@ -315,8 +282,6 @@ fn empty_block_yields_no_refs() {
     assert_eq!(align_block_refs(after, &blocks), None);
 }
 
-/// F1 — with refs every added / modified line carries `id (rev N)`;
-/// a removed block has no after-side identity and reads as before.
 #[test]
 fn refs_name_added_and_modified_blocks_by_id_and_rev() {
     let before = "# Title\n\nintro\n\n## Thesis\n\nold claim\n\n## Draft\n\nscrap\n";
@@ -340,7 +305,6 @@ fn refs_name_added_and_modified_blocks_by_id_and_rev() {
     );
 }
 
-/// F1 — a task fence line carries the ref too.
 #[test]
 fn refs_name_a_modified_fence() {
     let before = format!("## Plan\n\n{}", task("build", false, "g"));
@@ -353,8 +317,6 @@ fn refs_name_a_modified_fence() {
     );
 }
 
-/// F1 — a refs sequence of the wrong length is not this body's and is
-/// ignored whole rather than applied to a prefix.
 #[test]
 fn refs_of_the_wrong_length_are_ignored() {
     let before = "## A\n\nx\n";

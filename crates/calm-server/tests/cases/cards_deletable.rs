@@ -1,26 +1,5 @@
-//! Issue #229 PR A — system-card infrastructure.
-//!
-//! Coverage:
-//!
-//!   1. **Repo round-trip** — `card_create_with_id_tx` stores and
-//!      `cards_by_track` / `card_get` hydrate the `deletable` bit
-//!      correctly for both `true` and `false`.
-//!   2. **Migration backfill** — existing planner cards (minted via
-//!      `POST /api/tracks`) come back from `card_get` with
-//!      `deletable = false` after migration 0013 runs, even though no
-//!      caller passed the bit explicitly through the wire.
-//!   3. **REST DELETE guard** — `DELETE /api/cards/:id` returns 403 on
-//!      an undeletable (planner) card; 204 on a deletable worker card.
-//!   4. **Track delete cascade** — `DELETE /api/tracks/:id` still
-//!      cascades through to undeletable cards; the guard is scoped to
-//!      `/api/cards/:id` only.
-//!   5. **CardPatch deletable rejection** — `PATCH /api/cards/:id`
-//!      with `{"deletable": ...}` in the body returns 400 (the field
-//!      is not patchable from the API).
-//!
-//! Plugin-callback refusal lives next to the rest of the plugin host
-//! tests in `crates/calm-server/src/plugin_host/callbacks.rs`
-//! (mod tests).
+//! The `deletable` card bit: repo round-trip, migration backfill, the REST DELETE guard, the track-delete
+//! cascade, and PATCH rejection.
 
 #![cfg(unix)]
 
@@ -202,15 +181,8 @@ async fn insert_held_workspace_lease(
     lease_path
 }
 
-// ---------------------------------------------------------------------------
-// (1) Repo round-trip
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn card_create_with_id_tx_round_trips_deletable_bit() {
-    // Both `true` (default for user-facing Worker cards) and `false` (kernel
-    // owned) round-trip cleanly through INSERT → SELECT and through
-    // both repo accessors (`card_get`, `cards_by_track`).
     let repo = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open in-memory sqlite");
@@ -238,7 +210,6 @@ async fn card_create_with_id_tx_round_trips_deletable_bit() {
         .unwrap();
     let cache = CardRoleCache::new();
 
-    // Deletable card.
     let mut tx = repo.pool().begin().await.unwrap();
     let deletable_card = calm_server::db::sqlite::card_create_with_id_tx(
         &mut tx,
@@ -257,9 +228,7 @@ async fn card_create_with_id_tx_round_trips_deletable_bit() {
     .await
     .unwrap();
 
-    // Undeletable card. Note the role is Worker here — the test isolates
-    // the `deletable` axis from the role axis. Production callers wire
-    // `false` only on kernel-owned cards (Planner / ReportCard).
+    // Role is Worker here to isolate the `deletable` axis from the role axis.
     let undeletable_card = calm_server::db::sqlite::card_create_with_id_tx(
         &mut tx,
         calm_server::model::new_id(),
@@ -278,11 +247,9 @@ async fn card_create_with_id_tx_round_trips_deletable_bit() {
     .unwrap();
     tx.commit().await.unwrap();
 
-    // The returned struct carries the bit (constructor path).
     assert!(deletable_card.deletable);
     assert!(!undeletable_card.deletable);
 
-    // `card_get` hydrates the bit from the row.
     let got_deletable = repo
         .card_get(deletable_card.id.as_str())
         .await
@@ -296,7 +263,6 @@ async fn card_create_with_id_tx_round_trips_deletable_bit() {
         .expect("undeletable card");
     assert!(!got_undeletable.deletable);
 
-    // `cards_by_track` hydrates both.
     let listed = repo.cards_by_track(track.id.as_str()).await.unwrap();
     assert_eq!(listed.len(), 2);
     let by_id: std::collections::HashMap<_, _> = listed
@@ -306,13 +272,6 @@ async fn card_create_with_id_tx_round_trips_deletable_bit() {
     assert!(by_id.get(deletable_card.id.as_str()).unwrap().deletable);
     assert!(!by_id.get(undeletable_card.id.as_str()).unwrap().deletable);
 }
-
-// ---------------------------------------------------------------------------
-// (2) Migration backfill — planner cards minted by `POST /api/tracks` come
-// back with deletable=false. The migration's `UPDATE ... WHERE role =
-// 'planner'` covers legacy rows; the track-create route also passes
-// `deletable: false` explicitly so fresh rows inherit the same shape.
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn planner_card_minted_by_track_create_is_undeletable() {
@@ -331,10 +290,7 @@ async fn planner_card_minted_by_track_create_is_undeletable() {
         .to_string();
 
     let cards = boot.repo.cards_by_track(&track_id).await.unwrap();
-    // Issue #229 PR B — track create now mints two cards in the same tx:
-    // the planner card (PR6) and the track-report card (PR B). Both are
-    // kernel-owned (`deletable = false`); the report card sorts ahead
-    // (`sort = -1.0`) so the TrackGrid renders it at the top.
+    // Track create mints two kernel-owned cards in one tx; the report card sorts ahead (`sort = -1.0`).
     assert_eq!(
         cards.len(),
         2,
@@ -349,7 +305,6 @@ async fn planner_card_minted_by_track_create_is_undeletable() {
             .map(|c| (c.kind.clone(), c.deletable))
             .collect::<Vec<_>>(),
     );
-    // Sanity: each role is represented exactly once.
     let kinds: Vec<&str> = cards.iter().map(|c| c.kind.as_str()).collect();
     assert!(
         kinds.contains(&"codex"),
@@ -361,14 +316,9 @@ async fn planner_card_minted_by_track_create_is_undeletable() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// (3) REST DELETE guard.
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn delete_card_returns_403_for_undeletable_planner_card() {
     let boot = boot().await;
-    // Mint a track (and thus its planner card).
     let (status, body) = post(
         boot.app.clone(),
         "/api/tracks",
@@ -378,7 +328,6 @@ async fn delete_card_returns_403_for_undeletable_planner_card() {
     assert_eq!(status, StatusCode::CREATED, "track create body: {body}");
     let track_id = body["id"].as_str().unwrap().to_string();
     let cards = boot.repo.cards_by_track(&track_id).await.unwrap();
-    // Find the planner card by kind (PR B adds a track-report card alongside).
     let planner_card = cards
         .iter()
         .find(|c| c.kind == "codex")
@@ -386,7 +335,6 @@ async fn delete_card_returns_403_for_undeletable_planner_card() {
     let planner_card_id = planner_card.id.as_str().to_string();
     assert!(!planner_card.deletable);
 
-    // DELETE /api/cards/:id on the planner card → 403.
     let status = delete(boot.app.clone(), &format!("/api/cards/{planner_card_id}")).await;
     assert_eq!(
         status,
@@ -394,7 +342,6 @@ async fn delete_card_returns_403_for_undeletable_planner_card() {
         "planner card delete must be refused with 403"
     );
 
-    // The row is still there.
     let after = boot.repo.card_get(&planner_card_id).await.unwrap();
     assert!(
         after.is_some(),
@@ -405,7 +352,6 @@ async fn delete_card_returns_403_for_undeletable_planner_card() {
 #[tokio::test]
 async fn delete_card_returns_204_for_deletable_worker_card() {
     let boot = boot().await;
-    // Track + user-facing Worker card.
     let (status, body) = post(
         boot.app.clone(),
         "/api/tracks",
@@ -490,11 +436,6 @@ async fn delete_card_releases_active_workspace_lease_row_before_card_row_delete(
     assert_eq!(released_events, 1);
 }
 
-// ---------------------------------------------------------------------------
-// (4) Track delete cascade — undeletable cards still go away when their
-// parent track is deleted. The guard scopes to `/api/cards/:id` only.
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn track_delete_cascades_to_undeletable_planner_card() {
     let boot = boot().await;
@@ -514,11 +455,7 @@ async fn track_delete_cascades_to_undeletable_planner_card() {
     let planner_card_id = planner_card.id.as_str().to_string();
     assert!(!planner_card.deletable);
 
-    // The track-delete route surfaces the cascade through the FK chain.
-    // Planner cards carry a terminal, and `terminals.card_id` is ON DELETE
-    // RESTRICT (migration 0011); the route's terminal-reap step handles
-    // that. We just assert the end state: track gone, card gone, no 403
-    // leak from the per-card guard.
+    // `terminals.card_id` is ON DELETE RESTRICT; the route's terminal-reap step handles that.
     let status = delete(boot.app.clone(), &format!("/api/tracks/{track_id}")).await;
     assert_eq!(
         status,
@@ -759,11 +696,6 @@ async fn track_delete_route_sweeps_card_track_and_view_overlays() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// (5) PATCH `deletable` rejection — the field is kernel-managed and
-// must not be patchable via API.
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn patch_card_with_deletable_returns_400() {
     let boot = boot().await;
@@ -788,10 +720,7 @@ async fn patch_card_with_deletable_returns_400() {
     );
     let card_id = body["id"].as_str().unwrap().to_string();
 
-    // The route must reject any patch carrying `deletable` (even when
-    // the value matches the current row — the field is kernel-managed,
-    // not "stable-write-allowed"). Belt-and-suspenders against a future
-    // client that thinks `{"deletable": true}` is a no-op echo.
+    // Rejected even when the value matches the current row — the field is kernel-managed, not "stable-write-allowed".
     let (status, body) = patch(
         boot.app.clone(),
         &format!("/api/cards/{card_id}"),

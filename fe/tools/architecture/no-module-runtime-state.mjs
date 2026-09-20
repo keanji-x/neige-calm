@@ -3,28 +3,9 @@ import { dirname, extname, resolve } from 'node:path';
 import * as tsParser from '@typescript-eslint/parser';
 
 /**
- * Reject module-evaluation object graphs that can retain runtime state.
- *
- * Covered: declarations/assignments reached during module or namespace
- * evaluation, mutable class statics (including static blocks), default exports,
- * every `new` except an intentionally tiny immutable-constructor allowlist,
- * deep branches, and calls outside the documented pure-factory allowlist.
- *
- * Known escapes intentionally not proved: `const x = importedMutable`, a
- * getter returning `new Map`, mutation hidden inside an allowlisted factory,
- * a top-level `for (const x of [new Map()])` iterable expression, top-level
- * non-call expression statements such as `void new Map()`, tagged templates
- * such as gql templates, mutable regex literals such as `/a/g`, a namespace
- * alias such as `const R2 = React; R2.useState()`, and shadowing an allowlisted
- * global such as `Symbol`.
- * `Intl.NumberFormat` and `TextEncoder` are possible narrow immutable-
- * constructor candidates, but remain rejected until fixtures justify them.
- * Closing the other shapes needs type/data-flow analysis.
- * Type-only declarations, functions, Zod schema construction chains, React's
- * immutable component wrappers/context handles, and deeply verifiable frozen
- * static data pass.
- * TypeScript enums are currently intentionally not rejected; their emitted
- * mutable object is a known gap pending a dedicated declaration visitor.
+ * Reject module-evaluation object graphs that can retain runtime state. Known escapes needing
+ * data-flow analysis: `const x = importedMutable`, getters returning `new Map`, mutation inside an
+ * allowlisted factory, tagged templates, mutable regex literals, namespace aliases, shadowed globals, TS enums.
  */
 
 // Empty by design today: Date and boxed primitives are mutable objects too.

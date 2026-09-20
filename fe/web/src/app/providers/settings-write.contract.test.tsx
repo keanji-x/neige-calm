@@ -1,12 +1,7 @@
 // @vitest-environment jsdom
 //
-// One claim: a settings PUT's response is **not** the cache.
-//
-// It used to be written straight through, which is only sound while writes
-// cannot overlap. Settings › Network commits per field, so two writes to one
-// key overlap routinely, and the older response can land last — after which the
-// cache held a value the server had already replaced, and the field visibly
-// reverted under a green tick.
+// A settings PUT's response is NOT the cache: Settings › Network commits per field, so two writes to
+// one key overlap routinely and the older response can land last.
 import { onlineManager, QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';

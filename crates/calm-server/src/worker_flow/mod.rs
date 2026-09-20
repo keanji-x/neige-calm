@@ -331,20 +331,15 @@ impl WorkerFlowDriver {
         let Some(source_kind) = source_kind_for_runtime(&runtime) else {
             return Ok(());
         };
-        // This is the single fail-closed boundary shared by boot and every
-        // runtime/card event entry point. `source_kind_for_runtime` cannot do
-        // this because the persisted card payload is not part of its input.
+        // The single fail-closed boundary shared by boot and every runtime/card event entry point.
         let card = self
             .repo
             .card_get(&runtime.card_id)
             .await
             .map_err(|e| CoreError::Internal(format!("card_get: {e}")))?
             .ok_or_else(|| CoreError::NotFound(format!("card {}", runtime.card_id)))?;
-        // Both conversation flavours are excluded (#1189 widened this from
-        // plain chat alone). An assistant session is a `CodexCard` runtime with
-        // a codex provider, so `source_kind_for_runtime` classifies it as a
-        // worker rollout source and the flow would start ingesting a
-        // conversation as if it were a dispatched task.
+        // An assistant session is a `CodexCard` runtime with a codex provider, so `source_kind_for_runtime`
+        // would classify it as a worker rollout source and ingest a conversation as a dispatched task.
         if crate::plain_chat::card_is_lazy_conversation(&card) {
             self.cancel_card(&runtime.card_id).await;
             return Ok(());

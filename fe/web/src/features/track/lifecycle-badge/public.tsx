@@ -1,16 +1,4 @@
-// The track lifecycle control.
-//
-// INV-DUP-009 adjacent: the *phrase* comes from `lifecycleLabel` in core and
-// the *bucket* from `isWaitingForUser`. There is deliberately no second label
-// table and no second predicate here — a badge that disagreed with the sidebar
-// row about what "reviewing" means is the exact drift those core helpers exist
-// to prevent.
-//
-// #1722 §5.3 — the phase word no longer "reads as alive": whether anything is
-// moving is the activity indicator's to say (from the kernel overlay), so a
-// running-phase lifecycle is painted neutral. `failed` gets the error tone and
-// `blocked` / `reviewing` keep the warn tone — the same two hues the indicator
-// vocabulary uses for "broken" and "waiting on you".
+// The track lifecycle control: the phrase comes from `lifecycleLabel` and the bucket from `isWaitingForUser` — no second label table or predicate here.
 
 import {
   isWaitingForUser, lifecycleLabel, type TrackLifecycle,

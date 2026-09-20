@@ -1,12 +1,5 @@
-//! #1625 P2 (#1475) — the person's sentence is on the transcript from the
-//! moment the queue drains, not from the moment codex echoes it.
-//!
-//! Driven through the production drain (`maybe_issue_turn` →
-//! `write_projection_row`), the production echo arm (`on_notification`'s
-//! `item/*` arm) and the production REST read
-//! (`GET /api/cards/{id}/harness/items`), over one sqlite repo. The fake
-//! daemon accepts `turn/start` and echoes nothing until the test says so,
-//! which is exactly the window #1475 is about.
+//! The person's sentence is on the transcript from the moment the queue
+//! drains, not from the moment codex echoes it.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -38,8 +31,6 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-/// See the `SEED_THREAD_ID` note in the sibling persist suite for why every
-/// frame must carry it.
 const SEED_THREAD_ID: &str = "thread-items-projection";
 
 struct Boot {
@@ -53,8 +44,7 @@ struct Boot {
     events_rx: tokio::sync::broadcast::Receiver<BroadcastEnvelope>,
 }
 
-/// A transcript row that is already on the table when the harness boots —
-/// the leftover of a drain that a restart cut short.
+/// A transcript row already on the table when the harness boots.
 struct SeededProjection {
     client_id: String,
     text: String,
@@ -63,18 +53,11 @@ struct SeededProjection {
 struct BootPlan {
     pending: Vec<QueueEntry>,
     fail_turn_start: bool,
-    /// `HarnessSnapshot::projection_client_id` as the restarted harness reads
-    /// it back: the key its predecessor persisted before writing the row.
     projection_client_id: Option<QueueEntryId>,
     seeded: Vec<SeededProjection>,
-    /// Installed before the harness runs, so the first `turn/start` is held
-    /// inside the daemon until the test releases it.
+    /// Installed before the harness runs, so the first `turn/start` is held until the test releases it.
     turn_start_hook: Option<TurnStartReturnHook>,
-    /// The stored snapshot as a PRE-#1625-P2 binary wrote it, in place of the
-    /// one `boot_with` builds: a hand-written literal, because this binary
-    /// cannot write the key it carries. Read back through the production
-    /// loader (`HarnessSnapshot::from_value_strict`), like every other
-    /// snapshot here.
+    /// A hand-written literal: this binary cannot serialize the key it carries.
     pre_p2_snapshot_json: Option<Value>,
 }
 
@@ -91,9 +74,6 @@ impl BootPlan {
     }
 }
 
-/// One planner card with `pending` already on its harness queue, a fake
-/// daemon that answers `turn/start` (or refuses it, when `fail_turn_start`),
-/// and the REST router over the same repo.
 async fn boot(pending: Vec<QueueEntry>, fail_turn_start: bool) -> Boot {
     boot_with(BootPlan {
         fail_turn_start,
@@ -151,9 +131,6 @@ async fn boot_with(plan: BootPlan) -> Boot {
     track_area_cache.insert(track.id.clone(), area.id);
 
     let worker_session_id = new_id();
-    // The predecessor's leftovers, written the way `write_projection_row`
-    // writes them (same key shape, `turn_id` NULL, `item/completed`), before
-    // the harness that must replace them exists.
     for row in seeded {
         let params = json!({
             "item": {
@@ -190,8 +167,6 @@ async fn boot_with(plan: BootPlan) -> Boot {
             serde_json::to_value(&snapshot).unwrap()
         }
     };
-    // What the harness runs from is what the production loader makes of the
-    // stored JSON — the same read boot recovery performs (`harness/mod.rs`).
     let snapshot = HarnessSnapshot::from_value_strict(stored.clone());
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
@@ -367,10 +342,6 @@ fn user_texts(rows: &[Value]) -> Vec<String> {
         .collect()
 }
 
-/// The #1475 window, closed: the sentence is readable over REST as soon as
-/// the queue drains, before any echo; and the echo — `item/started` then
-/// `item/completed`, both naming the projection by `clientId` — leaves
-/// exactly the one row, upgraded in place.
 #[tokio::test]
 async fn drained_user_message_is_readable_before_the_echo_and_upgraded_by_it() {
     let entries = QueueEntry::entries_from_observations_for_test(vec![Observation::UserMessage {
@@ -380,7 +351,6 @@ async fn drained_user_message_is_readable_before_the_echo_and_upgraded_by_it() {
     let boot = boot(entries, false).await;
     wait_for_turn_start(&boot).await;
 
-    // Before any echo: one row, the person's words, keyed by the entry id.
     let rows = wait_for_row_count(&boot, 1).await;
     let projection = &rows[0];
     assert_eq!(projection["item_type"], "userMessage");
@@ -409,13 +379,11 @@ async fn drained_user_message_is_readable_before_the_echo_and_upgraded_by_it() {
     );
     let projection_db_id = projection["id"].as_i64().unwrap();
 
-    // `turn/start` carried the same id as `clientUserMessageId`.
     assert_eq!(
         boot.daemon.started_turn_client_ids_for_test(),
         vec![Some(entry_id.clone())]
     );
 
-    // The echo. Started first, as codex sends it; then completed.
     let echo_item = json!({
         "id": "item-user-codex-1",
         "clientId": entry_id,
@@ -450,8 +418,6 @@ async fn drained_user_message_is_readable_before_the_echo_and_upgraded_by_it() {
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     };
-    // Still one row — the started echo stored nothing, the completed echo
-    // upgraded rather than appended — and it is the same row.
     assert_eq!(
         rows.len(),
         1,
@@ -473,9 +439,6 @@ async fn drained_user_message_is_readable_before_the_echo_and_upgraded_by_it() {
     boot.harness.shutdown().await.unwrap();
 }
 
-/// A batch whose first entry has no id (a system observation) still gets one
-/// key — the first entry that HAS an id — and the projection's segments
-/// carry every entry, in order.
 #[tokio::test]
 async fn projection_key_is_the_first_entry_with_an_id_and_segments_carry_every_entry() {
     let entries = QueueEntry::entries_from_observations_for_test(vec![
@@ -515,15 +478,6 @@ async fn projection_key_is_the_first_entry_with_an_id_and_segments_carry_every_e
     boot.harness.shutdown().await.unwrap();
 }
 
-/// `turn/start` refused: the row that said "sent" goes, and the entry is
-/// back on the queue where the queue region lists it.
-///
-/// Review round 1 (B1) — and a reader is TOLD the row is gone: the delete
-/// emits no event of its own, so the signal is the phase change the
-/// re-buffer persists right after it (`IssuingTurn → TurnCompleted`, wire
-/// kind `harness.phase.changed`). The other half of that promise is
-/// `fe/core/events/invalidation-plan.ts`, whose plan for that kind carries
-/// `['harness-items', card_id]` (pinned in `invalidation-plan.test.ts`).
 #[tokio::test]
 async fn refused_turn_start_deletes_the_projection_and_rebuffers_the_entry() {
     let entries = QueueEntry::entries_from_observations_for_test(vec![Observation::UserMessage {
@@ -535,9 +489,7 @@ async fn refused_turn_start_deletes_the_projection_and_rebuffers_the_entry() {
         boot.harness.refused_issuances_for_test() >= 1
     })
     .await;
-    // Idle → IssuingTurn is the drain; the change after it is the one that
-    // follows the delete, and it must be a phase event — nothing else on
-    // the bus says "refetch the transcript" for a deleted row.
+    // The delete emits no event of its own; the phase change after the re-buffer is the signal.
     let first = next_phase_change(&mut boot).await;
     assert_eq!(first, (HarnessPhaseTag::Idle, HarnessPhaseTag::IssuingTurn));
     let after_rebuffer = next_phase_change(&mut boot).await;
@@ -551,8 +503,7 @@ async fn refused_turn_start_deletes_the_projection_and_rebuffers_the_entry() {
         Vec::<Value>::new(),
         "by the time that event is on the bus, the row is already gone"
     );
-    // The refusal is counted before the row is deleted and the batch put
-    // back; the retry is paced (2s), so this settles well inside the window.
+    // The refusal is counted before the row is deleted; the retry is paced (2s).
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         let rows = get_items(&boot).await;
@@ -580,11 +531,6 @@ async fn refused_turn_start_deletes_the_projection_and_rebuffers_the_entry() {
     boot.harness.shutdown().await.unwrap();
 }
 
-/// Review round 1 (C1) — a restart between the pre-drain snapshot and the
-/// issuance outcome. The predecessor wrote the projection row for entry X
-/// and died before `persist_issuance_outcome`; the successor reads a snapshot
-/// that still lists X and drains it again. One row for X afterwards, not two:
-/// `write_projection_row` replaces the stale row under the same key.
 #[tokio::test]
 async fn a_restarted_harness_replaces_the_stale_projection_of_a_user_entry() {
     let entries = QueueEntry::entries_from_observations_for_test(vec![Observation::UserMessage {
@@ -624,12 +570,6 @@ async fn a_restarted_harness_replaces_the_stale_projection_of_a_user_entry() {
     boot.harness.shutdown().await.unwrap();
 }
 
-/// Review round 1 (B2 + C1) — the same restart, for a batch of system
-/// observations alone. Such a batch has no entry id to key by; its key was
-/// minted by the predecessor and persisted in the snapshot
-/// (`projection_client_id`) BEFORE the row was written, so the successor
-/// re-drains it under the same key and the stale row is replaced rather than
-/// joined.
 #[tokio::test]
 async fn a_restarted_harness_replaces_the_stale_projection_of_a_system_only_batch() {
     let entries =
@@ -661,8 +601,6 @@ async fn a_restarted_harness_replaces_the_stale_projection_of_a_system_only_batc
     assert_ne!(rows[0]["worker_session_id"], "predecessor-session");
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(get_items(&boot).await.len(), 1);
-    // Once the turn is out the slot is cleared: the next batch decides its
-    // own key, and no restart can pair this one with a later batch.
     let deadline = Instant::now() + Duration::from_secs(2);
     while boot.harness.snapshot().await.projection_client_id.is_some() {
         assert!(
@@ -675,20 +613,8 @@ async fn a_restarted_harness_replaces_the_stale_projection_of_a_system_only_batc
     boot.harness.shutdown().await.unwrap();
 }
 
-/// Review round 2 (F1) — the recovered key outranks the queue. The
-/// predecessor minted K for a system-only batch, persisted it, wrote the row
-/// under K and died before the issuance outcome. A person's sentence U
-/// reached the successor before its first drain, so the queue it drains is
-/// `[system, U]`. Keying that drain by U would leave the predecessor's row
-/// standing beside the new one — `write_projection_row` replaces under ONE
-/// key. The successor keys by K instead: one row afterwards, under K, none
-/// under U, and U's words inside that row's segments.
-///
-/// The queue is seeded as `[system, U]` rather than U being enqueued live:
-/// every enqueue runs on the harness task, so nothing outside it can order a
-/// live enqueue before the first drain; and the successor persists an
-/// enqueue into the same snapshot anyway, so `[system, U]` beside key K is
-/// exactly what a restart reads from disk after such an enqueue.
+/// The queue is seeded as `[system, U]` rather than U being enqueued live: every
+/// enqueue runs on the harness task, so nothing outside it can order one before the first drain.
 #[tokio::test]
 async fn a_recovered_key_outranks_a_sentence_enqueued_before_the_re_drain() {
     let entries = QueueEntry::entries_from_observations_for_test(vec![
@@ -748,11 +674,7 @@ async fn a_recovered_key_outranks_a_sentence_enqueued_before_the_re_drain() {
     boot.harness.shutdown().await.unwrap();
 }
 
-/// Review round 1 (B2) — the key a first issuance mints for a system-only
-/// batch is on disk BEFORE the row is written, which is the only order under
-/// which a restart can find it. Read at the one moment that tells the two
-/// apart: inside `turn/start`, held open by the fake daemon, after the row
-/// and before the issuance outcome.
+/// Read inside `turn/start`, held open by the fake daemon: after the row, before the issuance outcome.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_system_only_batch_persists_its_minted_key_before_the_row() {
     let entries =
@@ -772,7 +694,6 @@ async fn a_system_only_batch_persists_its_minted_key_before_the_row() {
     .await;
     entered.notified().await;
 
-    // The row is there, keyed by a mint …
     let rows = boot
         .repo
         .harness_item_list_by_card(&boot.card_id, 0, 10, false)
@@ -783,9 +704,6 @@ async fn a_system_only_batch_persists_its_minted_key_before_the_row() {
         .item_uuid
         .clone()
         .expect("a projection row is keyed");
-    // … and the snapshot ON DISK — what a restart reads, not the live
-    // harness — already names that same mint while the batch is still listed
-    // in it: exactly the state a successor re-drains from.
     let stored = boot
         .repo
         .session_projection_by_id(&boot.worker_session_id)
@@ -808,8 +726,6 @@ async fn a_system_only_batch_persists_its_minted_key_before_the_row() {
     );
 
     release.notify_one();
-    // Once the turn is out the slot is cleared: the next batch decides its
-    // own key.
     let deadline = Instant::now() + Duration::from_secs(2);
     while boot.harness.snapshot().await.projection_client_id.is_some() {
         assert!(
@@ -822,9 +738,6 @@ async fn a_system_only_batch_persists_its_minted_key_before_the_row() {
     boot.harness.shutdown().await.unwrap();
 }
 
-/// Review round 1 (C2) — the projection key is `(card_id, client_id)`, and
-/// the `card_id` half does work: two cards can hold a projection under the
-/// same client id, and an echo on one upgrades only that one.
 #[tokio::test]
 async fn an_echo_upgrades_the_projection_of_its_own_card_only() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -867,8 +780,6 @@ async fn an_echo_upgrades_the_projection_of_its_own_card_only() {
     let (card_a, card_b) = (card_ids[0].clone(), card_ids[1].clone());
     let client_id = "shared-client-id";
     let mut row_ids = Vec::new();
-    // A first, B second: an upgrade that ignored the card would pick B's row
-    // (`ORDER BY id DESC`), which is what the mutation of this test looks like.
     for card in [&card_a, &card_b] {
         let id = repo
             .harness_item_insert(
@@ -922,7 +833,6 @@ async fn an_echo_upgrades_the_projection_of_its_own_card_only() {
     assert_eq!(b_rows[0].turn_id, None);
     assert_eq!(b_rows[0].item_uuid.as_deref(), Some(client_id));
 
-    // The delete is scoped the same way.
     assert_eq!(
         repo.transcript_projection_delete(&card_a, client_id)
             .await
@@ -938,20 +848,8 @@ async fn an_echo_upgrades_the_projection_of_its_own_card_only() {
     );
 }
 
-/// Review round 2 (F2) — a turn the PREVIOUS binary issued, echoed after the
-/// upgrade. That binary kept the batch's segments in the snapshot under
-/// `issued_input_segments`, keyed by turn, and wrote no projection row (the
-/// drain of its day wrote nothing to the transcript). The upgraded harness
-/// reads that key back and gives the echo those segments — presentation and
-/// attachments — instead of storing the echo bare, which would render the
-/// batch's system observation as the person's words. The completed echo
-/// consumes the entry, and the snapshot this binary writes does not carry
-/// the key: read once, never written.
-///
-/// The stored snapshot is a hand-written literal in the pre-P2 shape —
-/// `git show 5f39ac79^:crates/calm-server/src/harness/snapshot.rs`,
-/// `HarnessSnapshot` with `issued_input_segments: Option<IssuedInputSegments
-/// { turn_id, segments }>` — because this binary cannot serialize the key.
+/// The stored snapshot is a hand-written literal in the pre-P2 shape, because
+/// this binary cannot serialize the key.
 #[tokio::test]
 async fn an_echo_of_a_turn_issued_before_the_upgrade_takes_the_snapshots_segments() {
     let turn = "turn-issued-by-the-pre-p2-binary";
@@ -1001,8 +899,6 @@ async fn an_echo_of_a_turn_issued_before_the_upgrade_takes_the_snapshots_segment
         "no projection row: the old drain wrote none"
     );
 
-    // The echo, as codex sends it for a turn whose `turn/start` named no
-    // client id: started, then completed, no `clientId`.
     let echo_item = json!({
         "id": "item-user-codex-pre-p2",
         "type": "userMessage",
@@ -1030,9 +926,7 @@ async fn an_echo_of_a_turn_issued_before_the_upgrade_takes_the_snapshots_segment
         "the row carries the segments the previous binary persisted, attachment included"
     );
 
-    // Consumed by that completed echo: a later completed `userMessage` on
-    // the same turn (codex does not send one; this is the cheapest probe of
-    // "read once") gets nothing from the slot.
+    // Codex sends no second completed `userMessage` on a turn; this is the cheapest probe of "read once".
     boot.daemon.emit_notification_for_test(Notification::Item {
         method: "item/completed".into(),
         params: json!({
@@ -1056,8 +950,6 @@ async fn an_echo_of_a_turn_issued_before_the_upgrade_takes_the_snapshots_segment
         "the slot was consumed by the first completed echo"
     );
 
-    // Never written: the snapshot this binary persisted after the echo has
-    // no such key, whatever the old one carried.
     let persisted = boot
         .repo
         .session_projection_by_id(&boot.worker_session_id)

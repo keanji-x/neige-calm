@@ -1,4 +1,4 @@
-//! Upgrade and empty-block boundary regressions from #1501 independent review.
+//! Upgrade and empty-block boundary regressions.
 use super::*;
 
 async fn edit_preupgrade_report(missing_cache: bool, boundary_match: bool) {

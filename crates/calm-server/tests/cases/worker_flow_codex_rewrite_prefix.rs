@@ -232,12 +232,7 @@ async fn codex_rollout_rewrite_with_same_consumed_prefix_identity_does_not_reemi
 }
 
 /// Liveness wait: polls until the card holds `expected` items.
-///
-/// Deliberately takes no timeout argument. Every call site used to pass its
-/// own budget and the tightest were 120 ms — six polls at the helper's 20 ms
-/// interval, which a single CI scheduling stall could blow on a correct run.
-/// The bound is an anti-hang guard, not a latency contract, so there is nothing
-/// a caller could legitimately want to tighten it to.
+/// No timeout argument: the bound is an anti-hang guard, not a latency contract.
 async fn wait_for_item_count(repo: &SqlxRepo, card_id: &str, expected: usize) {
     wf::wait_until(wf::LIVENESS_BUDGET, || async {
         repo.worker_flow_item_list_by_card(card_id, 0, 100, false)

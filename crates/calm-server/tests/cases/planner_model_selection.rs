@@ -1,14 +1,5 @@
-//! #1505 S4-3 — choosing the model a planner conversation's turns run with,
-//! end to end.
-//!
-//! The rule table itself (which of `model` / `null` / "never set" produces
-//! which frame member) is pinned by unit tests in
-//! `calm_server::planner_model`, and the shape of the frame by unit tests in
-//! `calm_server::codex_appserver`. What can only be seen from out here is the
-//! wiring between them: that a REST write reaches the payload, that the
-//! payload reaches every `turn/start` the run loop issues, that the actor
-//! guard stands on a real request, and that a selection nobody can resolve
-//! stops the conversation instead of quietly running under something else.
+//! Choosing the model a planner conversation's turns run with, end to end: the REST write reaches the payload, the
+//! payload reaches every `turn/start`, the actor guard stands on a real request, and an unresolvable selection stops the conversation.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -59,12 +50,7 @@ async fn payload(boot: &Boot) -> Value {
     serde_json::from_str(&text).expect("a card payload is JSON")
 }
 
-/// Wait for the run loop to have issued `count` turns and return what each one
-/// told codex about the model.
-///
-/// Polls rather than sleeps a fixed time: the deadline is a failure ceiling so
-/// a turn that never issues fails with the selections seen so far, not by
-/// hanging.
+/// Wait for the run loop to have issued `count` turns and return what each one told codex about the model; the deadline is a failure ceiling.
 async fn selections_after(boot: &Boot, count: usize) -> Vec<TurnModelSelection> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -84,12 +70,7 @@ async fn phase(boot: &Boot) -> HarnessPhaseTag {
     boot.harness.snapshot().await.phase
 }
 
-/// Tell the harness the in-flight turn finished, so it can issue the next one.
-///
-/// The fixtures fake acknowledges `turn/start` and emits `turn/started`, but
-/// nothing ends the turn — a real daemon would. Without this the run loop sits
-/// in `TurnRunning` forever and a second turn is unreachable, which would make
-/// "does the model ride the SECOND turn too" untestable rather than passing.
+/// Tell the harness the in-flight turn finished: the fixtures fake never ends a turn, so a second turn is otherwise unreachable.
 async fn complete_the_running_turn(boot: &Boot) {
     let deadline = Instant::now() + Duration::from_secs(5);
     let turn_id = loop {
@@ -115,10 +96,6 @@ async fn complete_the_running_turn(boot: &Boot) {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
-
-// ---------------------------------------------------------------------------
-// The write port
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn a_selection_is_stored_on_the_card_payload() {
@@ -147,8 +124,6 @@ async fn a_selection_is_stored_on_the_card_payload() {
     assert_eq!(stored["schemaVersion"], json!(1));
 }
 
-/// The whole point of the monotone marker: choosing the default back again
-/// stores a `null` and keeps the record that a value was once chosen.
 #[tokio::test]
 async fn choosing_the_default_again_stores_null_and_keeps_the_marker() {
     let boot = boot_with(idle_snapshot(vec![])).await;
@@ -180,9 +155,7 @@ async fn choosing_the_default_again_stores_null_and_keeps_the_marker() {
     assert_eq!(stored["reasoning_effort_ever_set"], json!(true));
 }
 
-/// Both keys are required. A body that omits one is refused outright rather
-/// than read as "leave that half alone" — this is a PUT, and the stored
-/// selection has no third state for the request to mean.
+/// This is a PUT, and the stored selection has no third state for an omitted key to mean.
 #[tokio::test]
 async fn omitting_a_key_is_refused_and_changes_nothing() {
     let boot = boot_with(idle_snapshot(vec![])).await;
@@ -228,14 +201,8 @@ async fn an_agent_actor_is_refused_and_the_human_is_not() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
-    // Positional, not merely present. `require_rest_user_actor_for` formats
-    // `"{subject}: … {redirect}"` from two `&str` parameters, so swapping them
-    // compiles and still leaves the subject somewhere in the sentence — an
-    // assertion that only asked whether the subject appeared passed on the
-    // swap, and the 403 went out naming the wrong subsystem, which is a false
-    // statement in the audit log. The substring below spans the boundary
-    // between the subject slot and the fixed rule text, so only a subject
-    // actually in that slot satisfies it.
+    // Positional, not merely present: `require_rest_user_actor_for` takes two `&str`s, so a swap compiles; the
+    // substring spans the boundary between the subject slot and the fixed rule text.
     let message = body["error"].as_str().unwrap_or_default();
     assert!(
         message.contains("planner model selection: only `X-Calm-Actor: user`"),
@@ -265,9 +232,6 @@ async fn an_agent_actor_is_refused_and_the_human_is_not() {
     assert_eq!(status, StatusCode::OK);
 }
 
-/// The write goes through the event spine, so a reader that already listens
-/// for `card.updated` sees the new selection without a new event kind — and
-/// the audit row names who chose it.
 #[tokio::test]
 async fn the_write_emits_card_updated_attributed_to_the_human() {
     let boot = boot_with(idle_snapshot(vec![])).await;
@@ -300,12 +264,7 @@ async fn the_write_emits_card_updated_attributed_to_the_human() {
     );
 }
 
-/// A slug the catalog does not list is reported, never refused: the catalog
-/// can be the bundled presets of a signed-out daemon, and a 400 would then
-/// block a model this account can really run.
-///
-/// With no daemon connection there is no catalog to judge against, so the flag
-/// stays false — "we could not ask" is not evidence of absence.
+/// The catalog can be the bundled presets of a signed-out daemon, so an unknown slug is reported, never refused; with no daemon there is no catalog to judge against.
 #[tokio::test]
 async fn an_unreadable_catalog_never_claims_a_model_is_unknown() {
     let boot = boot_with(idle_snapshot(vec![])).await;
@@ -339,21 +298,8 @@ async fn a_card_id_nobody_has_is_a_404() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
-/// #1505 S4 review — the `card_runs_headless_harness` guard, which nothing
-/// used to reach.
-///
-/// The 404 above walks a different branch entirely (`card_get` returns
-/// `None`), so deleting the guard left the whole suite green. What the
-/// deletion buys, concretely: a terminal or worker card accepts and stores a
-/// selection that `turn/start` will never read, and `GET /planner/run` then
-/// reports a model that cannot possibly run — a card claiming a setting it
-/// does not have.
-///
-/// The card is turned into a non-codex one by changing its `kind` in place
-/// rather than by minting a second card: the role cache the route consults is
-/// populated by the fixture's own creation path, so a card inserted around it
-/// would answer 404 at `verify_role` and walk the branch above again instead
-/// of the one under test.
+/// The card is turned into a non-codex one by changing its `kind` in place rather than minting a second card: the
+/// role cache the route consults is populated by the fixture's creation path, so a card inserted around it would answer 404 at `verify_role`.
 #[tokio::test]
 async fn a_card_that_is_not_a_planner_codex_card_is_refused() {
     let boot = boot_with(idle_snapshot(vec![])).await;
@@ -377,15 +323,7 @@ async fn a_card_that_is_not_a_planner_codex_card_is_refused() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// The downlink
-// ---------------------------------------------------------------------------
-
-/// The frame is asserted for the FIRST and the SECOND turn. Codex's override
-/// is sticky, so an implementation that sent the model only on the turn after
-/// a change would look correct on turn one and be wrong from turn two — and it
-/// would be wrong in the direction that matters, because a daemon respawn or a
-/// resume in between silently drops the sticky value.
+/// Codex's override is sticky, so sending the model only on the turn after a change would look correct on turn one; a daemon respawn or resume silently drops the sticky value.
 #[tokio::test]
 async fn a_chosen_model_rides_every_turn_not_just_the_first() {
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
@@ -413,8 +351,6 @@ async fn a_chosen_model_rides_every_turn_not_just_the_first() {
     assert_eq!(both[1].effort.as_deref(), Some("high"));
 }
 
-/// A card whose picker was never touched must send exactly what this kernel
-/// sent before #1505: no `model` key, no `effort` key.
 #[tokio::test]
 async fn a_card_that_never_chose_anything_sends_neither_key() {
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
@@ -428,20 +364,8 @@ async fn a_card_that_never_chose_anything_sends_neither_key() {
     );
 }
 
-/// #1505 S4 review — the BLOCKER. This is the state THIS feature invents:
-/// the person picked a model and then picked "Default" again, so the card is
-/// `model_ever_set = true, model = null` and every turn now needs codex to say
-/// what the default is. The fixtures daemon answers no RPC, which is exactly a
-/// codex restart.
-///
-/// Two things have to hold, and the first one alone used to be all that was
-/// asserted — which is why the defect shipped. The turn must not go out under
-/// a model nobody chose, AND the conversation must still be alive afterwards.
-/// The first cut wedged, and `HarnessState::Wedged` has no exit in this tree:
-/// `can_issue_turn` admits only `Idle | TurnCompleted`, every assignment back
-/// to `Idle` is guarded on some other phase, and a snapshot restore rehydrates
-/// `Wedged` as `Wedged`. A transient outage therefore ended the conversation
-/// for good.
+/// `model_ever_set = true, model = null`: every turn needs codex to say what the default is, and the fixtures daemon
+/// answers no RPC, exactly a codex restart. The turn must not go out under a model nobody chose AND the conversation must stay alive.
 #[tokio::test]
 async fn an_unresolvable_default_defers_the_turn_and_recovers_when_it_becomes_resolvable() {
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
@@ -475,9 +399,7 @@ async fn an_unresolvable_default_defers_the_turn_and_recovers_when_it_becomes_re
         "the refused turn must leave the person's message queued, not drop it"
     );
 
-    // And the conversation is still able to issue. This is the half the first
-    // cut failed: any phase outside `can_issue_turn` here is a dead
-    // conversation whatever the reason string says.
+    // Any phase outside `can_issue_turn` here is a dead conversation whatever the reason string says.
     let phase_now = phase(&boot).await;
     assert!(
         matches!(
@@ -487,8 +409,6 @@ async fn an_unresolvable_default_defers_the_turn_and_recovers_when_it_becomes_re
         "a transient resolution failure must leave the harness able to issue; phase={phase_now:?}"
     );
 
-    // The recovery, driven rather than asserted about: name a model, and the
-    // message that was waiting goes out under it.
     let (status, body) = put_model(
         &boot,
         "user",
@@ -505,14 +425,7 @@ async fn an_unresolvable_default_defers_the_turn_and_recovers_when_it_becomes_re
     );
 }
 
-/// The other half of the same fix, on the other trigger: the card is left
-/// alone and codex becomes reachable. Nothing about the card changes — only
-/// the daemon — and the queued message must still go out.
-///
-/// Driven by making the payload itself resolvable again from underneath the
-/// harness, which is the same observable the daemon coming back produces: the
-/// next attempt resolves where the previous one did not. It proves the retry
-/// exists at all, which is what a wedge removed.
+/// Driven by making the payload resolvable again from underneath the harness, the same observable the daemon coming back produces.
 #[tokio::test]
 async fn a_deferred_turn_retries_without_anyone_touching_the_rest_port() {
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
@@ -534,8 +447,7 @@ async fn a_deferred_turn_retries_without_anyone_touching_the_rest_port() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(boot.daemon.started_turn_selections_for_test().is_empty());
 
-    // Repair the payload behind the harness's back — no REST call, so nothing
-    // pokes the run loop. Only its own next tick can pick this up.
+    // Repair the payload behind the harness's back — no REST call, so only its own next tick can pick this up.
     sqlx::query("UPDATE cards SET payload = json_set(payload, '$.model', 'gpt-5') WHERE id = ?1")
         .bind(boot.planner_card.id.as_str())
         .execute(boot.repo.pool())
@@ -550,20 +462,8 @@ async fn a_deferred_turn_retries_without_anyone_touching_the_rest_port() {
     );
 }
 
-/// #1505 S4 review round 2 (MAJOR) — the selection is read at the moment the
-/// batch is handed over, not from the row fetched before the transcript
-/// refresh and the diff.
-///
-/// The first attempt at this test did not discriminate: it changed the model
-/// and THEN queued, so the early `card_get` already saw the new value and the
-/// mutation "resolve from the early row" stayed green. A test whose doc
-/// describes an experiment its body does not perform is worse than no test.
-///
-/// This one performs it, using the #1449 drain-race hook — which parks the run
-/// loop after the early `card_get` and the diff, and before the drain and the
-/// resolve. That is exactly the window, so the park makes the race an
-/// ordering: the early row is read with `gpt-5`, the change to `gpt-5-codex`
-/// lands while the loop is held, and the frame must carry the second one.
+/// The selection is read at the moment the batch is handed over. The drain-race hook parks the run loop after the
+/// early `card_get` and before the resolve, so the change lands while the loop is held and the frame must carry it.
 #[tokio::test]
 async fn a_change_landing_after_the_early_read_still_ships_on_that_turn() {
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
@@ -604,18 +504,8 @@ async fn a_change_landing_after_the_early_read_still_ships_on_that_turn() {
     );
 }
 
-/// #1505 S4 review round 2 — the retry is PACED.
-///
-/// Without a pace, a re-buffered batch re-arms `hard_fire` and the next 50 ms
-/// tick tries again, which is roughly twenty codex calls and forty persist
-/// writes a second for as long as the condition lasts. Nothing tested it: the
-/// other tests wait on an outcome with a five-second deadline, which absorbs
-/// any interval smaller than itself, so deleting the constant left them green.
-///
-/// This counts attempts instead of waiting for one. `config/read` is
-/// unanswerable against the fixtures daemon, so every attempt refuses; over a
-/// second the paced loop can have made at most a couple, and the unpaced one
-/// makes tens.
+/// Without a pace, a re-buffered batch re-arms `hard_fire` every 50 ms tick. Attempts are counted: `config/read` is
+/// unanswerable against the fixtures daemon, so every attempt refuses.
 #[tokio::test]
 async fn a_refused_turn_is_retried_on_a_pace_rather_than_every_tick() {
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
@@ -633,13 +523,8 @@ async fn a_refused_turn_is_retried_on_a_pace_rather_than_every_tick() {
     .await;
     post_input(boot.app.clone(), boot.planner_card.id.as_str(), "hello").await;
 
-    // Sampled over three seconds because the pace under test is two: a window
-    // shorter than the interval cannot tell "paced" from "stopped".
-    // Sampled over seven seconds against a two-second pace. The window is wide
-    // on purpose: at three seconds the lower bound had barely a second of
-    // slack, so a busy runner starving the run loop for that long turned a
-    // correct implementation RED. A false red costs more here than a blunt
-    // bound — the upper bound is what catches the defect, and it is unaffected.
+    // Sampled over seven seconds against a two-second pace: a window barely longer than the interval turned a correct
+    // implementation red on a busy runner; the upper bound is what catches the defect.
     tokio::time::sleep(Duration::from_millis(200)).await;
     let before = boot.harness.refused_issuances_for_test();
     tokio::time::sleep(Duration::from_secs(7)).await;
@@ -657,22 +542,8 @@ async fn a_refused_turn_is_retried_on_a_pace_rather_than_every_tick() {
     );
 }
 
-/// #1505 S4 review round 2 (MAJOR) — a refusal nobody can wait out is SAID, not
-/// merely retried.
-///
-/// The round-1 fix removed the wedge, which removed the lie — and put silence
-/// in its place. The two states that reach this arm — codex's config naming no
-/// model, and a stored selection that cannot be read — are both ones no amount
-/// of waiting changes, so the conversation retried forever while the person's
-/// sentence rendered as `queued` with nothing on screen to say why. Invisible
-/// and unrecoverable is not an improvement on visible and unrecoverable.
-///
-/// Driven through the unreadable-payload state rather than the null-config
-/// one, because the fixtures daemon answers no RPC at all and so cannot
-/// produce "codex answered, and the answer named no model" — with it, every
-/// read is a transient outage instead. The two share this arm by construction
-/// (`resolve_model_selection`), and which of them a given card is in changes
-/// nothing about what the reader is told.
+/// Driven through the unreadable-payload state rather than null-config: the fixtures daemon answers no RPC and so
+/// cannot produce "codex answered, and the answer named no model". The two share this arm (`resolve_model_selection`).
 #[tokio::test]
 async fn a_refusal_that_cannot_clear_itself_tells_the_reader_what_to_do() {
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
@@ -703,7 +574,6 @@ async fn a_refusal_that_cannot_clear_itself_tells_the_reader_what_to_do() {
         "it must not offer an action that does nothing, which is what the first cut did: {reason}"
     );
 
-    // And it reaches them through the read the conversation already makes.
     let (status, run) = get(
         boot.app.clone(),
         format!("/api/cards/{}/planner/run", boot.planner_card.id.as_str()),
@@ -712,7 +582,6 @@ async fn a_refusal_that_cannot_clear_itself_tells_the_reader_what_to_do() {
     assert_eq!(status, StatusCode::OK, "body={run}");
     assert_eq!(run["blocked_reason"], json!(reason));
 
-    // Acting on it clears the message and sends the sentence that was waiting.
     put_model(
         &boot,
         "user",
@@ -728,9 +597,7 @@ async fn a_refusal_that_cannot_clear_itself_tells_the_reader_what_to_do() {
     );
 }
 
-/// A codex restart is nobody's problem to act on, so it must NOT produce a
-/// message. A field that lights up for conditions the reader can do nothing
-/// about is one they learn to ignore.
+/// A field that lights up for conditions the reader can do nothing about is one they learn to ignore.
 #[tokio::test]
 async fn a_transient_refusal_says_nothing_to_the_reader() {
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
@@ -743,11 +610,7 @@ async fn a_transient_refusal_says_nothing_to_the_reader() {
     boot.daemon.fail_turn_start_for_test();
     post_input(boot.app.clone(), boot.planner_card.id.as_str(), "hello").await;
 
-    // Read early, and "early" is defined by the retry pace rather than by the
-    // silence budget: the notice is computed ON a refusal, and refusals are two
-    // seconds apart, so at 400 ms exactly one has happened and its own run of
-    // failures is milliseconds old. A future reader shortening the pace must
-    // shorten this too.
+    // "Early" is defined by the retry pace: refusals are two seconds apart, so at 400 ms exactly one has happened. Shortening the pace must shorten this too.
     tokio::time::sleep(Duration::from_millis(400)).await;
     assert_eq!(
         boot.harness.issuance_block().await,
@@ -756,11 +619,7 @@ async fn a_transient_refusal_says_nothing_to_the_reader() {
          would train them to ignore the field"
     );
 
-    // And it is paced. This arm predates #1505 and was unpaced, which was
-    // survivable only while reaching it took an operator: `PUT /planner/model`
-    // stores a slug codex does not know BY DESIGN, so the picker turned "every
-    // turn/start fails" into a menu click. Unpaced that is the 50 ms tick
-    // issuing RPCs and persist writes at roughly twenty a second, forever.
+    // `PUT /planner/model` stores a slug codex does not know BY DESIGN, so an unpaced arm here is the 50 ms tick issuing RPCs forever.
     let before = boot.harness.refused_issuances_for_test();
     tokio::time::sleep(Duration::from_secs(7)).await;
     let attempts = boot.harness.refused_issuances_for_test() - before;
@@ -775,17 +634,7 @@ async fn a_transient_refusal_says_nothing_to_the_reader() {
     );
 }
 
-/// #1505 S4 review round 2 — the OTHER `NeedsAChoice` state, driven end to end.
-///
-/// `config.model = null` is an explicitly supported codex state: the daemon
-/// answers, and the answer names no model. It is the case the enum split
-/// exists for, and it is NOT the same code path as an unreadable payload — it
-/// only exists once codex has replied, which is why the fixtures daemon had to
-/// learn to reply at all before this could be written.
-///
-/// What the reader gets is asserted through the endpoint their composer reads,
-/// not through the enum: an internal state no surface renders is the same
-/// silence with more code in it.
+/// `config.model = null` is a supported codex state: the daemon answers, and the answer names no model. Asserted through the endpoint the composer reads, not the enum.
 #[tokio::test]
 async fn a_config_that_names_no_model_reaches_the_reader_through_planner_run() {
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
@@ -832,7 +681,6 @@ async fn a_config_that_names_no_model_reaches_the_reader_through_planner_run() {
         "and nothing may go out under a model nobody named"
     );
 
-    // Doing the one thing the message asks for sends the waiting sentence.
     put_model(
         &boot,
         "user",
@@ -843,13 +691,7 @@ async fn a_config_that_names_no_model_reaches_the_reader_through_planner_run() {
     assert_eq!(seen[0].model.as_deref(), Some("gpt-5"));
 }
 
-/// #1505 S4 review round 2 — a transient refusal has a CEILING on its silence.
-///
-/// Pacing the retry bounds its rate, not its duration: an outage that lasts an
-/// hour left the sentence sitting as `queued` for an hour, politely. Past
-/// `transient_silence_budget` the conversation says it is waiting — and keeps
-/// waiting, so the notice clears itself rather than becoming the next thing
-/// that outlives its cause.
+/// Pacing bounds the retry's rate, not its duration; past `transient_silence_budget` the conversation says it is waiting, and the notice clears itself.
 #[tokio::test]
 async fn a_transient_refusal_stops_being_silent_once_it_stops_being_brief() {
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
@@ -862,10 +704,7 @@ async fn a_transient_refusal_stops_being_silent_once_it_stops_being_brief() {
     boot.daemon.fail_turn_start_for_test();
     post_input(boot.app.clone(), boot.planner_card.id.as_str(), "hello").await;
 
-    // Silent while the outage is still brief — and "brief" is the BUDGET, not
-    // merely "the first refusal". The fixture budget (5 s) is deliberately
-    // longer than the retry pace (2 s), so by three seconds several refusals
-    // have happened and a notice here would mean the budget is being ignored.
+    // "Brief" is the BUDGET (5 s), deliberately longer than the retry pace (2 s), so by three seconds several refusals have happened.
     tokio::time::sleep(Duration::from_secs(3)).await;
     assert!(
         boot.harness.refused_issuances_for_test() >= 2,
@@ -907,16 +746,8 @@ async fn a_transient_refusal_stops_being_silent_once_it_stops_being_brief() {
     );
 }
 
-/// #1505 S4 review r3 (MAJOR) — a slug codex will never accept must not be sold
-/// as "still queued and will be sent".
-///
-/// `PUT /planner/model` stores an unknown slug BY DESIGN (`unknown_model` is a
-/// hint, not a refusal), so this is a menu click away. Classifying the refusal
-/// as retryable produced a permanent stall behind a sentence promising
-/// delivery — round 1's invisible stall made visibly reassuring, which is
-/// worse, because a person who reads it waits indefinitely. The pill's own
-/// `unknown_model` warning is ephemeral React state and is gone after a
-/// reload, so this notice is the only thing left on screen.
+/// `PUT /planner/model` stores an unknown slug BY DESIGN, so this is a menu click away; the pill's own `unknown_model`
+/// warning is ephemeral React state, so this notice is the only thing left on screen after a reload.
 #[tokio::test]
 async fn a_turn_codex_refuses_never_promises_the_message_will_be_sent() {
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
@@ -957,14 +788,12 @@ async fn a_turn_codex_refuses_never_promises_the_message_will_be_sent() {
         "and it must name the one lever the reader has: {reason}"
     );
 
-    // The reader is told at once, not after the silence budget the retryable
-    // arm waits out.
+    // The reader is told at once, not after the silence budget the retryable arm waits out.
     assert!(
         Instant::now() < deadline,
         "a refusal must not wait out the silence budget"
     );
 
-    // Changing the model clears it and the waiting sentence goes out.
     boot.daemon.clear_turn_start_failure_for_test();
     put_model(
         &boot,
@@ -977,22 +806,11 @@ async fn a_turn_codex_refuses_never_promises_the_message_will_be_sent() {
     assert_eq!(boot.harness.issuance_block().await, None);
 }
 
-/// #1505 S4 review r3 (MAJOR) — a `model/list` outage is an OUTAGE, not a
-/// selection the reader has to fix.
-///
-/// The construction is a state this feature adds: the person picked an effort
-/// and then picked "Default effort" again, so resolving needs the catalog. With
-/// `config/read` answering (the common config leaves `model_reasoning_effort`
-/// unset) and `model/list` unavailable, the old code degraded the catalog read
-/// to `None`, which is indistinguishable from "the catalog has no default" —
-/// so a hiccup was reported as "Pick a reasoning effort to start it again" and
-/// the retry slowed from two seconds to thirty.
+/// With `config/read` answering (no effort set) and `model/list` unavailable, a degraded catalog read of `None` is indistinguishable from "the catalog has no default".
 #[tokio::test]
 async fn a_catalog_outage_is_not_reported_as_a_selection_the_reader_must_fix() {
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
-    // Codex answers the config read, naming a model but no effort — the common
-    // configuration — and cannot answer `model/list`, which the fixtures
-    // daemon never can.
+    // Codex answers the config read, naming a model but no effort, and cannot answer `model/list`, which the fixtures daemon never can.
     boot.daemon.set_config_read_for_test(CodexConfig {
         model: Some("gpt-5".into()),
         model_reasoning_effort: None,
@@ -1029,24 +847,12 @@ async fn a_catalog_outage_is_not_reported_as_a_selection_the_reader_must_fix() {
     );
 }
 
-/// #1505 S4 review r4 — the workspace read is a SECOND instant, and the
-/// foreign key does not reach across it.
-///
-/// An earlier round deleted this test on the argument that `cards` holds a
-/// foreign key to `tracks`, so "card present, track absent" is not a
-/// representable state. That is true of any single database instant and
-/// irrelevant here: this path reads the card, awaits, and then reads the
-/// track. A `track_delete_tx` committing in between — taking the card with it
-/// — leaves a harness whose `inner.track_id` names a track that is gone, and
-/// the track read answers `Ok(None)`. The claim that the card check "has
-/// already returned" by then was backwards: its having returned is the window.
-///
-/// Driven, not raced: the cwd hook parks the run loop between the two reads.
+/// This path reads the card, awaits, then reads the track; a `track_delete_tx` committing in between leaves a harness
+/// whose `inner.track_id` names a track that is gone. Driven, not raced: the cwd hook parks the run loop between the two reads.
 #[tokio::test]
 async fn a_track_deleted_between_the_card_read_and_the_workspace_read_refuses() {
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
-    // Codex would answer, and would name a model — so a fallback to the global
-    // layers WOULD send a turn, which is what must not happen.
+    // Codex would name a model, so a fallback to the global layers WOULD send a turn, which is what must not happen.
     boot.daemon.set_config_read_for_test(CodexConfig {
         model: Some("gpt-5-from-the-wrong-scope".into()),
         model_reasoning_effort: None,
@@ -1075,11 +881,7 @@ async fn a_track_deleted_between_the_card_read_and_the_workspace_read_refuses() 
         .await
         .expect("the run loop must reach the workspace read");
 
-    // The card read has already succeeded. Now the track goes, through the
-    // SAME function a real delete uses (`track_delete_tx`) rather than
-    // hand-rolled SQL — one transaction, so the foreign key holds throughout,
-    // and every table that references the track is cleared the way production
-    // clears it.
+    // The track goes through the SAME function a real delete uses (`track_delete_tx`), so every referencing table is cleared the way production clears it.
     let track_id = boot.planner_card.track_id.to_string();
     let area_cache = TrackAreaCache::new();
     write_in_tx_typed(boot.repo.as_ref(), move |tx| {
@@ -1093,8 +895,7 @@ async fn a_track_deleted_between_the_card_read_and_the_workspace_read_refuses() 
     .expect("delete the track the way production does");
     hook.release.notify_one();
 
-    // Nothing may go out under a model resolved from a scope this conversation
-    // is not in.
+    // Nothing may go out under a model resolved from a scope this conversation is not in.
     tokio::time::sleep(Duration::from_secs(1)).await;
     let sent = boot.daemon.started_turn_selections_for_test();
     assert!(
@@ -1102,33 +903,15 @@ async fn a_track_deleted_between_the_card_read_and_the_workspace_read_refuses() 
         "a workspace that cannot be read must refuse, not fall back to the global config layers; \
          sent {sent:?}"
     );
-    // A weak corroboration, and labelled as one: `track_delete_tx` cascades
-    // the card away, so the next tick also refuses at the card-existence check
-    // and bumps this same counter. It does NOT pin the `Ok(None)` track arm.
-    // The discriminator is `sent.is_empty()` above — flattening that arm
-    // resolves `gpt-5-from-the-wrong-scope` and reaches `IssueTurnHandle::issue`
-    // before anything card-dependent, which is why the mutation reddens.
+    // A weak corroboration: `track_delete_tx` cascades the card away, so the next tick also refuses at the card-existence check. The discriminator is `sent.is_empty()` above.
     assert!(
         boot.harness.refused_issuances_for_test() >= 1,
         "the loop must have refused at least once"
     );
 }
 
-/// #1505 S4 review r4 (MAJOR) — `CodexRefused` was minted for `turn/start` and
-/// then consulted only there, so the same false promise survived one call
-/// above it.
-///
-/// A refused `config/read` — codex answering, and answering no, as it does for
-/// a workspace directory that has been removed — was classified retryable, so
-/// past the silence budget the reader was told "your message is still queued
-/// and will be sent when it answers" about a turn that could not go out until
-/// a person acted. That is the exact sentence `CodexRefused` exists to end.
-///
-/// It maps to `NeedsAChoice` rather than `Rejected` because a choice can
-/// genuinely remove the need for the read. Note "can": the read is entered by
-/// a disjunction, so an explicit model does not by itself skip it — a card
-/// with an explicit model whose EFFORT follows the default still enters it,
-/// which is the construction the round-5 test below is about.
+/// A refused `config/read` (codex answering no, as for a removed workspace directory) maps to `NeedsAChoice`, not
+/// `Rejected`: a choice can remove the need for the read. The read is entered by a disjunction, so an explicit model does not by itself skip it.
 #[tokio::test]
 async fn a_refused_config_read_is_not_sold_as_a_wait() {
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
@@ -1168,7 +951,6 @@ async fn a_refused_config_read_is_not_sold_as_a_wait() {
          read: {reason}"
     );
 
-    // And the choice it names works.
     put_model(
         &boot,
         "user",
@@ -1180,8 +962,6 @@ async fn a_refused_config_read_is_not_sold_as_a_wait() {
     assert_eq!(boot.harness.issuance_block().await, None);
 }
 
-/// The other half of the same split: codex being UNREACHABLE for the same read
-/// still says nothing at first, because that one does clear itself.
 #[tokio::test]
 async fn an_unreachable_config_read_still_waits_quietly() {
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
@@ -1197,8 +977,7 @@ async fn an_unreachable_config_read_still_waits_quietly() {
         json!({"model": null, "reasoning_effort": null}),
     )
     .await;
-    // No `reject_config_read_for_test`: the fixtures daemon simply cannot be
-    // asked, which is the outage case.
+    // No `reject_config_read_for_test`: the fixtures daemon simply cannot be asked, which is the outage case.
     post_input(boot.app.clone(), boot.planner_card.id.as_str(), "hello").await;
 
     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -1214,19 +993,11 @@ async fn an_unreachable_config_read_still_waits_quietly() {
     );
 }
 
-/// #1505 S4 review r4 — the THIRD codex read on this path, classified at its
-/// own call site.
-///
-/// `MUT_W2` mutates the shared classifier and so is caught by the
-/// `config/read` test; a mutation that flips only THIS call site would not be.
-/// The class criticism was "third time, same site-by-site fix", so each
-/// consumer gets its own construction rather than relying on the one helper
-/// they happen to share today.
+/// The third codex read on this path, classified at its own call site: a mutation flipping only this site would not be caught by the `config/read` test.
 #[tokio::test]
 async fn a_refused_model_list_is_not_sold_as_a_wait() {
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
-    // config/read answers and names a model but no effort — the common
-    // configuration — so resolving the effort needs the catalog.
+    // config/read answers and names a model but no effort, so resolving the effort needs the catalog.
     boot.daemon.set_config_read_for_test(CodexConfig {
         model: Some("gpt-5".into()),
         model_reasoning_effort: None,
@@ -1277,19 +1048,7 @@ async fn a_refused_model_list_is_not_sold_as_a_wait() {
     assert_eq!(boot.harness.issuance_block().await, None);
 }
 
-/// #1505 S4 review r5 (MAJOR) — the remedy must name the choice that is
-/// actually missing.
-///
-/// `config/read` is entered by a disjunction: the model follows the default,
-/// or the effort does, or both. The sentence shown on a refusal was a fixed
-/// string naming the model, which is right for one of those and actively
-/// stuck-making for another — a reader whose model is already explicit was
-/// told to pick one, re-picked what they had, and the next tick refused
-/// identically because the disjunct that was true was the effort's.
-///
-/// This is the fourth time this PR shipped reader-facing text naming an action
-/// that could not work, so the assertion is on WHICH word appears, per
-/// construction, not merely that some text does.
+/// `config/read` is entered by a disjunction (model follows the default, or effort does, or both), so the assertion is on WHICH word appears, per construction.
 #[tokio::test]
 async fn the_remedy_names_the_half_that_actually_follows_the_default() {
     // (a) the model follows the default, the effort is explicit.
@@ -1319,8 +1078,7 @@ async fn the_remedy_names_the_half_that_actually_follows_the_default() {
          already have: {reason}"
     );
 
-    // (b) the mirror image — the model is explicit, the EFFORT follows the
-    // default. This is the payload that was told to "Pick a model".
+    // (b) the mirror image: the model is explicit, the EFFORT follows the default.
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
     put_model(
         &boot,
@@ -1343,8 +1101,7 @@ async fn the_remedy_names_the_half_that_actually_follows_the_default() {
          re-picking a model they already have while the disjunct stays true: {reason}"
     );
 
-    // (c) both — fixing one still leaves the other entering the same branch, so
-    // both are named.
+    // (c) both — fixing one still leaves the other entering the same branch, so both are named.
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
     put_model(
         &boot,

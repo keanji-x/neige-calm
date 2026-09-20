@@ -6,12 +6,8 @@ import { ActivityIndicator } from './public.tsx';
 
 afterEach(cleanup);
 
-/*
- * #1722 S2b r1 — the spoken counterpart. The marker is decorative by
- * contract; `spoken` is the one way a surface with no owning control gives
- * the verdict an accessible name, and it is opt-in so the S2a contract (the
- * owning control names it) stays the default.
- */
+/* `spoken` is the one way a surface with no owning control gives the verdict an accessible name;
+   it is opt-in so the owning control naming it stays the default. */
 describe('ActivityIndicator spoken', () => {
   it('renders the given text visually hidden after the marker, and only then', () => {
     const { container } = render(<ActivityIndicator state="working" spoken="Working" />);

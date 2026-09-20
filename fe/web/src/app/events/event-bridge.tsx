@@ -1,14 +1,5 @@
-// The React glue that owns exactly one configured event stream.
-//
-// INV-APP-001 — mounted *inside* `ServerCompatGate` via its `renderEventBridge`
-// prop, so no stream can exist before the compat verdict lands.
-// INV-APP-020 — the only `start()` caller in the tree. Other consumers may
-// register handlers on the unconfigured stream; they must not connect.
-// INV-APP-021 — `configure()` is side-effect free; connecting happens in the
-// effect, on `start()`.
-// GATE-APP-079 — this slice ships no dev trace buffer at all, so there is no
-// `import.meta.env.DEV` short-circuit to write and nothing for the production
-// bundle to carry. Any future tracing must be inlined at the call site below.
+// The React glue that owns exactly one configured event stream: mounted inside `ServerCompatGate`,
+// the only `start()` caller in the tree; `configure()` is side-effect free.
 
 import type { QueryClient } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
@@ -31,15 +22,10 @@ export type EventBridgeProps = Readonly<{
   context?: InvalidationContext;
 }>;
 
-/**
- * Renders an inert marker so a contract test can assert *where* in the tree the
- * bridge sits, not merely that it ran.
- */
+/** Renders an inert marker so a contract test can assert where in the tree the bridge sits. */
 export function EventBridge({ client, stream, syncEventVersion, dbInstanceId, cursor, context }: EventBridgeProps) {
-  // The connection depends only on stream identity and the negotiated protocol
-  // ceiling. Cache client, cursor store and lookup context are read through a
-  // ref so a re-render with fresh prop identities can never tear down and
-  // reopen the socket (INV-APP-020: one start per stream instance).
+  // The connection depends only on stream identity and the protocol ceiling; everything else is read
+  // through a ref so fresh prop identities can never tear down and reopen the socket.
   const latest = useRef({ client, cursor, context, dbInstanceId });
   useEffect(() => {
     latest.current = { client, cursor, context, dbInstanceId };
@@ -48,8 +34,7 @@ export function EventBridge({ client, stream, syncEventVersion, dbInstanceId, cu
   useEffect(() => {
     latest.current.cursor.adopt(latest.current.dbInstanceId);
     let state: EventState = initialEventState(syncEventVersion, latest.current.cursor.read());
-    // configure() only freezes version/topics (INV-APP-021); nothing connects
-    // until start() below.
+    // configure() only freezes version/topics; nothing connects until start().
     const configured = stream.configure({ syncEventVersion, topics: ['*'] });
     const unsubscribe = stream.onFrame((frame) => {
       const current = latest.current;

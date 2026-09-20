@@ -1,12 +1,5 @@
-//! Integration tests for the security boundary: drive `serve_client` over a
-//! real unix socket, with a tiny in-process TCP listener standing in for
-//! sing-box. Fully hermetic — no real network, no sing-box, no DNS.
-//!
-//! The assertions ARE the fence contract (design §8.2):
-//!   - CONNECT to prod (`127.0.0.1:4040/4041`), RFC1918/link-local literals on
-//!     :443, the metadata IP, dot-anchor tricks, and a non-443 port on an
-//!     allowlisted host -> `403`, WITHOUT ever reaching the stub upstream.
-//!   - CONNECT to an allowlisted host on :443 -> `200`, reaching the stub.
+//! Integration tests for the security boundary: drive `serve_client` over a real unix socket, with a
+//! tiny in-process TCP listener standing in for sing-box. Fully hermetic.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -24,9 +17,8 @@ use tokio::net::UnixStream;
 
 use e2e_egress_proxy::serve_client;
 
-/// A stub upstream that answers every CONNECT with `200 Connection
-/// established`, then holds the tunnel. Counts how many CONNECTs it received so
-/// a test can assert a denied target NEVER reached upstream.
+/// A stub upstream that answers every CONNECT with `200 Connection established`, then holds the
+/// tunnel; counts CONNECTs so a test can assert a denied target NEVER reached upstream.
 struct StubUpstream {
     addr: String,
     connects: Arc<AtomicUsize>,
@@ -44,7 +36,6 @@ async fn spawn_stub_upstream() -> StubUpstream {
             };
             let counter = counter.clone();
             tokio::spawn(async move {
-                // Read the CONNECT head, count it, then acknowledge.
                 let mut buf = Vec::new();
                 let mut tmp = [0u8; 512];
                 loop {
@@ -69,11 +60,9 @@ async fn spawn_stub_upstream() -> StubUpstream {
     StubUpstream { addr, connects }
 }
 
-/// Bind our proxy on a short-path (/tmp) unix socket and serve it. Returns the
-/// TempDir (keep it alive) + the socket path.
+/// Bind our proxy on a short-path unix socket and serve it. Returns the TempDir (keep it alive) + the socket path.
 async fn spawn_proxy(upstream: String) -> (TempDir, PathBuf) {
-    // #1439: 短路径 socket 目录由 `calm_test_sockets` 统一发放，
-    // 与（很长的）worktree 路径或 `$TMPDIR` 无关。
+    // 短路径 socket 目录由 `calm_test_sockets` 统一发放，与 worktree 路径或 `$TMPDIR` 无关。
     let dir = calm_test_sockets::socket_dir("egp");
     let sock = calm_test_sockets::socket_path(dir.path(), "proxy.sock");
     let listener = UnixListener::bind(&sock).expect("bind proxy sock");
@@ -176,11 +165,8 @@ async fn denies_dot_anchor_tricks() {
 
 #[tokio::test]
 async fn denies_host_charset_injection_authorities() {
-    // #923 F5: authorities whose RAW suffix string-matches the allowlist (or a
-    // homograph) but whose host carries injection chars (`:` `#` `@` `/` `?`) or
-    // non-ASCII. "Deny by construction" must reject these at OUR charset gate,
-    // never forwarding them verbatim upstream on the bet that sing-box/Go's
-    // parser happens to choke on them.
+    // Authorities whose RAW suffix string-matches the allowlist but whose host carries injection chars
+    // or non-ASCII must be rejected at OUR charset gate, never forwarded upstream.
     let up = spawn_stub_upstream().await;
     let (_dir, sock) = spawn_proxy(up.addr.clone()).await;
     for t in [

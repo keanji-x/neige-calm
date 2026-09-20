@@ -1,12 +1,4 @@
-//! Runtime projection vocabulary — the data half of calm-server's
-//! `session_projection_repo` module (#679 PR1).
-//!
-//! `WorkerSessionKind` / `AgentProvider` / `WorkerSessionProjection` are
-//! TS-exported wire types, so they live here in the vocabulary crate. The
-//! `WorkerSessionProjectionRepo` trait, its error type and the sqlx `Tx`
-//! alias stay in calm-server (IO). The wire vocabulary keeps the historic
-//! runtime names, while durable execution state lives only in
-//! `worker_sessions` ([`crate::worker::WorkerSession`]).
+//! Runtime projection vocabulary: the TS-exported wire types of calm-server's session projection.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -56,12 +48,7 @@ pub struct WorkerSessionProjection {
     pub created_at_ms: TimestampMs,
     pub updated_at_ms: TimestampMs,
     pub completed_at_ms: Option<TimestampMs>,
-    /// #1722 S1b — when the card's last non-interrupted turn ended, read from
-    /// the transcript table by the projection SELECTs (one correlated
-    /// subquery, `calm_truth::session_projection_row::LAST_TURN_COMPLETED_MS_SUBQUERY`);
-    /// `None` when the card has no completed turn. Optional on the wire like
-    /// `CardRuntimeView::updated_at_ms`: projections serialized before 0110
-    /// (operation outputs) omit it.
+    /// When the card's last non-interrupted turn ended; `None` when the card has no completed turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub last_turn_completed_ms: Option<TimestampMs>,

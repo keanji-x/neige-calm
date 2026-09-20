@@ -1,13 +1,4 @@
-//! `/api/cards`, `/api/tracks/:id/cards` — Card CRUD. **Owned by Track B.**
-//!
-//! M3-mcp-apps M2: the create route accepts an optional `via_tool_call`
-//! payload variant. When present, the kernel invokes the named tool on the
-//! running plugin via standard MCP `tools/call`, extracts
-//! `_meta.ui.resourceUri` from the result, and persists a Card with that URI
-//! as `Card.kind` and `structuredContent` as the payload. The two paths
-//! (direct create vs `via_tool_call`) are mutually exclusive at runtime; when
-//! a client sends both, `via_tool_call` wins (the tool-call result overrides
-//! the direct-create fields).
+//! `/api/cards`, `/api/tracks/:id/cards` — Card CRUD. The create route accepts an optional `via_tool_call` variant, which wins over the direct-create fields when both are sent.
 
 use crate::actor::Actor;
 use crate::db::sqlite::{
@@ -55,20 +46,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use utoipa::{IntoParams, ToSchema};
 
-/// Resolve the (track, area) ancestor pair for a track id, returning a
-/// pre-built [`EventScope::Card`] for the given card. PR2 of #136 needs
-/// this at every card-emit site so the event row's `scope_*` columns
-/// carry the full ancestor chain. Looking up the track outside the txn
-/// is fine — track rows are immutable wrt their parent area.
-///
-/// # ⚠️ Do not call this from inside a transaction that has written `tracks`
-///
-/// This reads through the **pool**, i.e. a second connection. Since #1147 S6
-/// every terminal-row creation writes `tracks` (the workspace freeze), so calling
-/// this after one — in the same transaction, before it commits — deadlocks the
-/// task against its own lock. Use [`card_scope_tx`], whose doc comment states
-/// the general rule and its measurement. Resolving the scope *before* the write,
-/// which is what most adapters do, is equally correct.
+/// Resolve the (track, area) ancestor pair for a track id into an `EventScope::Card`.
+/// Do not call from inside a transaction that has written `tracks`: this reads through the pool (a second connection) and the task deadlocks against its own lock. Use `card_scope_tx`.
 pub(crate) async fn card_scope(
     repo: &dyn RepoRead,
     card: CardId,
@@ -86,44 +65,8 @@ pub(crate) async fn card_scope(
 }
 
 /// The in-transaction twin of [`card_scope`].
-///
-/// # The rule, stated at its real width (#1147 S6)
-///
-/// **A transaction must not read, off the pool, any table it has itself written,
-/// before it commits.** The pool hands out a *second* connection; under SQLite's
-/// shared cache (which every in-memory test database uses) locks are per table,
-/// so that read blocks on a lock only the caller can release and the task waits
-/// on itself forever in `sqlx_sqlite::statement::unlock_notify::wait`.
-///
-/// `tracks` is not special — it is merely the table S6 added to the write set of
-/// every terminal-creating transaction (each terminal row freezes its track's
-/// workspace). `cards` and `terminals` were already in that set. Measured:
-/// `ClaudeRestartAdapter::prepare_tx` created the terminal row and then read
-/// `tracks` through [`card_scope`], and hung
-/// `post_claude_restart_recreates_missing_terminal_row_and_resumes_session`
-/// forever.
-///
-/// Scope of the hang, stated precisely rather than generously: in-memory
-/// shared-cache databases deadlock hard. A file-backed production database runs
-/// WAL, where the pool connection reads a snapshot instead of blocking — so
-/// production gets a *pre-write read*, not a hang. Neither is acceptable and the
-/// fix is the same, but do not call this "test-only" and do not claim production
-/// hangs.
-///
-/// # No mechanical enforcement
-///
-/// Nothing scans for violations. The coverage is a single 20-second wall clock
-/// on a single flow
-/// (`claude_card_endpoint::post_claude_restart_does_not_deadlock_on_the_workspace_freeze`),
-/// which makes a regression *on that flow* a legible red test instead of a
-/// wedged job. A new adapter that mints a terminal row and then reads `tracks`
-/// off `self.repo` will hang CI with no diagnosis and no test naming the cause.
-/// The tree was swept once, at S6 — every other adapter resolves its scope
-/// BEFORE creating the card, which is equally correct — and a sweep is a
-/// measurement of one moment, not a guarantee.
-///
-/// So: any `prepare_tx` that mints a card + terminal resolves its scope through
-/// this function, or resolves it before the write.
+/// A transaction must not read, off the pool, any table it has itself written, before it commits: under SQLite's shared cache (every in-memory test DB) the read blocks on a lock only the caller can release; under WAL production gets a pre-write read instead. Every terminal-creating transaction writes `tracks`, `cards` and `terminals`.
+/// Nothing scans for violations; any `prepare_tx` that mints a card + terminal resolves its scope through this function, or before the write.
 pub(crate) async fn card_scope_tx(
     tx: &mut crate::operation::Tx<'_>,
     card: CardId,
@@ -141,14 +84,7 @@ pub(crate) async fn card_scope_tx(
     })
 }
 
-/// Whether the persisted card shape is allowed to use the headless harness
-/// routes. Unknown/malformed profile values deliberately fail closed.
-///
-/// #1189 added the assistant arm, and it is not decoration: this predicate
-/// gates `POST /api/cards/{id}/planner/input`, which is how a track conversation's
-/// messages — including the first one, sent by
-/// `POST /api/tracks/{id}/conversations` — reach the harness. Without it the
-/// endpoint mints a card it can then never talk to.
+/// Whether the persisted card shape is allowed to use the headless harness routes. Unknown/malformed profile values fail closed.
 pub(crate) fn card_runs_headless_harness(card: &Card, role: CardRole) -> bool {
     crate::harness::profile::HarnessProfile::from_card(card, role).is_some()
 }
@@ -191,9 +127,7 @@ pub(crate) async fn interrupt_shared_card_active_turn(
     }
 }
 
-/// Deletion-grade form of [`interrupt_shared_card_active_turn`]. Every lookup
-/// and interrupt failure is propagated; a destructive workspace move may only
-/// follow a confirmed quiesce, never a best-effort warning.
+/// Deletion-grade form of [`interrupt_shared_card_active_turn`]: every failure is propagated, since a destructive workspace move may only follow a confirmed quiesce.
 pub(crate) async fn quiesce_shared_card_active_turn(
     repo: &dyn RouteRepo,
     cs: &CodexShellState,
@@ -234,16 +168,12 @@ pub fn router() -> Router<AppState> {
         )
         .route("/api/cards/{id}/harness/items", get(get_harness_items))
         .route("/api/cards/{id}/planner/input", post(send_planner_input))
-        // #1505 PR2. The handlers live in `routes::planner_input`, but the
-        // route is mounted here because this router owns `/api/cards/{id}/**`
-        // and a second router on the same prefix is how two mounts start
-        // disagreeing about a middleware.
+        // Mounted here because this router owns `/api/cards/{id}/**`; a second router on the same prefix is how two mounts start disagreeing about a middleware.
         .route(
             "/api/cards/{id}/planner/input/{entry_id}",
             axum::routing::patch(crate::routes::planner_input::edit_planner_input)
                 .delete(crate::routes::planner_input::delete_planner_input),
         )
-        // #1625 P3. Same module, same reason for mounting here.
         .route(
             "/api/cards/{id}/planner/input/{entry_id}/steer",
             post(crate::routes::planner_input::steer_planner_input),
@@ -253,9 +183,6 @@ pub fn router() -> Router<AppState> {
             "/api/cards/{id}/planner/interrupt",
             post(interrupt_planner_card),
         )
-        // #1505 S4-3. Same reason as the PR2 route above: this router owns
-        // `/api/cards/{id}/**`, and a second router on the prefix is how two
-        // mounts start disagreeing about a middleware.
         .route(
             "/api/cards/{id}/planner/model",
             axum::routing::put(crate::routes::planner_model::set_planner_model),
@@ -342,49 +269,22 @@ pub(crate) async fn get_harness_items(
     let after_id = q.after_id.unwrap_or(0).max(0);
     let limit = q.limit.unwrap_or(100).clamp(0, 500);
     let descending = q.direction == HarnessItemsDirection::Desc;
-    // The transcript-only read, not the raw one (#1255). `limit` is the
-    // frontend's page budget (300 rows), and it must be spent entirely on rows
-    // the transcript renders: `harness_items` also holds captured
-    // `turn/plan/updated` frames, and every one of those returned here would
-    // displace a real transcript row behind "Load earlier". The narrowing is in
-    // the SQL — see `RepoRead::harness_item_list_transcript_by_card`, including
-    // the note for the UI slice that will want to read plan rows.
+    // The transcript-only read: `limit` is the frontend's page budget and must be spent on rows the transcript renders, not captured `turn/plan/updated` frames.
     let mut items = s
         .repo
         .harness_item_list_transcript_by_card(card.id.as_str(), after_id, limit, descending)
         .await?;
-    // #1505 S6 review — the stored blob keeps the path, the wire does not.
-    //
-    // Redacted at the serialization boundary rather than at the write, because
-    // the stored blob is a verbatim record of what codex sent and is read for
-    // replay and diagnosis; rewriting it on the way IN would make the stored
-    // row a second, quieter truth. The frontend never reads a path from
-    // here — attachments reach the transcript through
-    // `HarnessInputSegment.attachments`, as an id and a server-built url — so
-    // nothing downstream loses anything.
+    // Redacted at the serialization boundary, not at the write: the stored blob is a verbatim record of what codex sent. Attachments reach the transcript as an id and a server-built url.
     for item in &mut items {
         item.params = crate::planner_attachments::redact_local_image_paths(&item.params);
     }
     Ok(Json(items))
 }
 
-/// Body payload accepted by `POST /api/tracks/:track_id/cards`.
-///
-/// Two mutually-exclusive paths:
-///   * **Direct create** — `kind`, `sort`, `payload`, `title` set (legacy
-///     pre-M2 wire). The kernel writes the row verbatim.
-///   * **`via_tool_call`** — kernel invokes the plugin's tool, extracts the
-///     `ui://` resource URI from `_meta.ui.resourceUri`, persists a Card with
-///     `kind = <resource_uri>` and `payload = structuredContent`.
-///
-/// When both are sent, `via_tool_call` wins. Documented in this module's
-/// header. We keep the legacy fields alongside via `#[serde(flatten)]` so
-/// existing clients (web-calm AddPanel for terminal/doc cards) keep working
-/// unchanged.
+/// Body payload accepted by `POST /api/tracks/:track_id/cards`: direct create (`kind`, `sort`, `payload`, `title`) or `via_tool_call`, which wins when both are sent.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateCardBody {
-    /// Legacy direct-create fields. Mirrors `NewCard` shape; `track_id` is
-    /// taken from the path so we omit it here.
+    /// Legacy direct-create fields; `track_id` comes from the path.
     #[serde(default)]
     pub kind: Option<String>,
     #[serde(default)]
@@ -394,8 +294,7 @@ pub struct CreateCardBody {
     pub payload: Option<Value>,
     #[serde(default)]
     pub title: Option<String>,
-    /// M2: plugin tool-call descriptor. When present, the kernel calls the
-    /// plugin and the `kind` / `payload` fields above are ignored.
+    /// When present, the kernel calls the plugin and the `kind` / `payload` fields above are ignored.
     #[serde(default)]
     pub via_tool_call: Option<ViaToolCall>,
 }
@@ -433,37 +332,24 @@ pub(crate) async fn create_card(
     Path(track_id): Path<String>,
     Json(body): Json<CreateCardBody>,
 ) -> Result<Response, Response> {
-    // M2: tool-call path wins over direct-create. The tool-call branch
-    // overrides the actor to `"plugin:<id>"` (the entity actually making
-    // the kernel write) regardless of any `X-Calm-Actor` header — plugins
-    // cannot spoof their own actor via REST (design §9 bullet 2/3).
+    // The tool-call branch overrides the actor to `plugin:<id>` regardless of any `X-Calm-Actor` header — plugins cannot spoof their own actor via REST.
     if let Some(via) = body.via_tool_call {
         return create_via_tool_call(&s, track_id, via).await;
     }
 
-    // Direct-create path (legacy / pre-M2). `kind` is required here — for
-    // tool-call the kernel synthesizes it from the resource URI.
     let kind = body.kind.ok_or_else(|| {
         CalmError::BadRequest("create card body needs either `kind` or `via_tool_call`".into())
             .into_response()
     })?;
     let payload = body.payload.unwrap_or(Value::Null);
-    // #1620 / #1704 — the server-owned payload keys (hook-routing provenance,
-    // the effective permissions block) are kernel-stamped, never accepted
-    // from a client (any kind): see
-    // `validation::reject_client_supplied_server_owned_keys`.
+    // Server-owned payload keys are kernel-stamped, never accepted from a client.
     reject_client_supplied_server_owned_keys(&payload)
         .map_err(|e| CalmError::from(e).into_response())?;
-    // D4: reject malformed payloads for kernel-owned kinds. Plugin-defined
-    // (`ui://*`) kinds remain opaque per the architectural invariant.
+    // Plugin-defined (`ui://*`) kinds remain opaque.
     s.card_kind_registry()
         .validate_payload(&kind, &payload)
         .map_err(|e| CalmError::from(e).into_response())?;
-    // Pre-mint the card id so we can stamp `EventScope::Card { card, .. }`
-    // deterministically before the txn opens. The kernel's `new_id()` is
-    // a UUID — collision risk is negligible. Using
-    // `card_create_with_id_tx` (the carved-out variant the codex/terminal
-    // atomic endpoints already use) keeps the actual SQL identical.
+    // Pre-mint the card id so `EventScope::Card` is determinable before the txn opens.
     let card_id = CardId::from(new_id());
     let track_id: TrackId = track_id.into();
     let scope = card_scope(s.repo.as_ref(), card_id.clone(), track_id.clone())
@@ -487,10 +373,7 @@ pub(crate) async fn create_card(
         s.write(),
         move |tx| {
             Box::pin(async move {
-                // Issue #585 — user-driven creates mint Worker cards and are
-                // user-deletable. The `false` path is reserved for
-                // kernel-owned cards minted by internal code (planner card
-                // here in PR A; report card in PR B).
+                // User-driven creates mint user-deletable Worker cards; `false` is reserved for kernel-owned cards.
                 let card = card_create_with_id_tx(
                     tx,
                     card_id_for_tx,
@@ -513,14 +396,8 @@ pub(crate) async fn create_card(
     Ok((StatusCode::CREATED, Json(card)).into_response())
 }
 
-/// M2 handler: kernel invokes `tools/call` on the plugin, then writes a Card
-/// row keyed off `_meta.ui.resourceUri`. Error mapping per the migration
-/// doc's M2 planner:
-///   * plugin not running → 404
-///   * `permissions.cards_create` not granted → 403
-///   * tool returned `isError: true` → 502 with content joined as text
-///   * tool succeeded but omitted `_meta.ui.resourceUri` → 422
-///     `{"error":"...","code":"not_a_card_tool"}`
+/// Kernel invokes `tools/call` on the plugin, then writes a Card row keyed off `_meta.ui.resourceUri`.
+/// plugin not running → 404; `permissions.cards_create` not granted → 403; `isError: true` → 502; no `_meta.ui.resourceUri` → 422 `not_a_card_tool`.
 #[allow(deprecated)]
 #[allow(clippy::result_large_err)]
 async fn create_via_tool_call(
@@ -528,18 +405,7 @@ async fn create_via_tool_call(
     track_id: String,
     via: ViaToolCall,
 ) -> Result<Response, Response> {
-    // 1. Plugin must be a RUNNING `app`. `mcp_client` returns None when the
-    //    plugin is Disabled / Crashed / not yet spawned — and, since #1164
-    //    §2.6, also when it is a connector (`mcp-http` / `cli-query`), which
-    //    has no stdio client.
-    //
-    //    Card creation stays stdio-only on purpose: it depends on the plugin
-    //    answering with `_meta.ui.resourceUri`, i.e. on it owning a `ui://`
-    //    view, which a remote MCP server or a query CLI structurally cannot.
-    //
-    //    The two cases must NOT share an error. Telling an operator that a
-    //    demonstrably-Running connector "is not running" sends them to debug
-    //    the wrong thing (design doc §2.6, "一处措辞修正").
+    // 1. Plugin must be a RUNNING `app`. Card creation is stdio-only: it depends on the plugin owning a `ui://` view, which a connector structurally cannot. A Running connector must not be told it 'is not running'.
     let mcp = match s.plugin.mcp_client(&via.plugin_id).await {
         Some(c) => c,
         None => {
@@ -559,12 +425,7 @@ async fn create_via_tool_call(
         }
     };
 
-    // 2. Manifest-based permission gate. Mirrors the autonomous
-    //    `neige.card.create` gate in `callbacks.rs::card_create`: the
-    //    plugin must have `permissions.cards_create == true`. The
-    //    migration doc speaks of `permissions.cards.create` with `track`
-    //    scope; today's manifest shape only has a boolean — that's the
-    //    canonical gate per `perms.rs`.
+    // 2. Manifest-based permission gate, mirroring the autonomous `neige.card.create` gate in `callbacks.rs`.
     let perms = match s.plugin.registry().get(&via.plugin_id) {
         Some(m) => m.permissions,
         None => {
@@ -582,18 +443,14 @@ async fn create_via_tool_call(
         .into_response());
     }
 
-    // 3. Invoke the tool. Transport-level / RpcError failures propagate as
-    //    502 with the error message inline so the client gets a clear signal.
+    // 3. Invoke the tool. Transport-level failures propagate as 502.
     let result = mcp
-        // No Track: this path is an iframe asking its own plugin to mint a
-        // card, and the plugin already names the destination in `via`. When a
-        // view needs per-Track state, the Track should come from the view's
-        // own binding rather than be inferred here.
+        // No Track: an iframe asking its own plugin to mint a card already names the destination in `via`.
         .tools_call(&via.tool_name, via.arguments, None)
         .await
         .map_err(|e| tool_call_bad_gateway(&via.plugin_id, &via.tool_name, &e.to_string()))?;
 
-    // 4. Tool-reported failure (`isError: true`) → 502, content joined.
+    // 4. Tool-reported failure (`isError: true`) → 502.
     if matches!(result.is_error, Some(true)) {
         let joined = result
             .content
@@ -609,8 +466,7 @@ async fn create_via_tool_call(
         return Err(tool_call_bad_gateway(&via.plugin_id, &via.tool_name, &msg));
     }
 
-    // 5. Pull `_meta.ui.resourceUri`. Absent → 422; this is the "you tried
-    //    to use a non-card tool as a card-create handle" path.
+    // 5. Pull `_meta.ui.resourceUri`. Absent → 422.
     let creation = match extract_card_creation_from_tool_call_result(&result) {
         Some(c) => c,
         None => {
@@ -622,18 +478,12 @@ async fn create_via_tool_call(
         }
     };
 
-    // 6. Persist. `kind` is the bare `ui://...` URI (M4 will fully dispatch
-    //    on this); `payload` defaults to JSON null when the tool omits
-    //    `structuredContent`.
+    // 6. Persist. `kind` is the bare `ui://...` URI; `payload` defaults to null.
     let payload = creation.structured_content.unwrap_or(Value::Null);
-    // #1620 / #1704 — a plugin's `structuredContent` is client input for
-    // this purpose: the server-owned keys are never accepted from it.
+    // A plugin's `structuredContent` is client input here: server-owned keys are never accepted from it.
     reject_client_supplied_server_owned_keys(&payload)
         .map_err(|e| CalmError::from(e).into_response())?;
-    // D4: validate even on the tool-call path. In practice `ui://*` kinds
-    // are opaque so this is a no-op for plugin-defined views — but if a
-    // tool ever names a kernel kind (e.g. `"terminal"`) via resourceUri,
-    // we reject a malformed payload here rather than after the DB write.
+    // `ui://*` kinds are opaque, but a tool naming a kernel kind via resourceUri is rejected here rather than after the DB write.
     s.card_kind_registry()
         .validate_payload(&creation.resource_uri, &payload)
         .map_err(|e| CalmError::from(e).into_response())?;
@@ -644,11 +494,7 @@ async fn create_via_tool_call(
         payload,
         title: None,
     };
-    // M2 tool-call writes: actor stays `Plugin(<id>)` (the entity making
-    // the kernel write), `correlation` records the user-driven invocation
-    // so audit queries can reconstruct the causal chain (design §9 bullet 3).
-    // PR2 of #136 pre-mints the card id so `EventScope::Card { card, .. }`
-    // is determinable before the txn opens.
+    // Actor stays `Plugin(<id>)`; `correlation` records the user-driven invocation so audit queries can reconstruct the causal chain.
     let actor = ActorId::Plugin(via.plugin_id.clone());
     let correlation = format!("user_tool_call:{}", via.tool_name);
     let card_id = CardId::from(new_id());
@@ -667,10 +513,7 @@ async fn create_via_tool_call(
         s.write(),
         move |tx| {
             Box::pin(async move {
-                // Issue #585 — user-driven creates mint Worker cards and are
-                // user-deletable. The `false` path is reserved for
-                // kernel-owned cards minted by internal code (planner card
-                // here in PR A; report card in PR B).
+                // User-driven creates mint user-deletable Worker cards; `false` is reserved for kernel-owned cards.
                 let card = card_create_with_id_tx(
                     tx,
                     card_id_for_tx,
@@ -720,33 +563,19 @@ pub(crate) async fn update_card(
     Path(id): Path<String>,
     Json(p): Json<CardPatch>,
 ) -> Result<Json<Card>> {
-    // Issue #229 PR A — `deletable` is a kernel-owned bit, not patchable
-    // from the API. Reject the request loudly with 400 so a misconfigured
-    // client (or a curious script) doesn't think the field silently
-    // updated. `card_update_tx` also ignores the field as a belt-and-
-    // suspenders defense; this handler-level rejection is the primary
-    // contract.
+    // `deletable` is a kernel-owned bit, not patchable; rejected loudly with 400 so a client doesn't think it silently updated.
     if p.deletable.is_some() {
         return Err(CalmError::BadRequest(
             "`deletable` is a kernel-managed field and cannot be patched via API".into(),
         ));
     }
-    // We need the existing card's track_id for the EventScope chain
-    // regardless of whether validation needs the kind. Fetch once.
+    // The existing card's track_id is needed for the EventScope chain regardless.
     let existing = s
         .repo
         .card_get(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    // D4: if the patch carries a payload, validate it against the kind that
-    // will land in the DB. The kind is either the patch's new kind (when the
-    // patch retargets) or the existing card's kind.
-    //
-    // #1620 / #1704 — the payload may not carry a server-owned key (the
-    // hook-routing provenance marker, the effective permissions block; any
-    // kind → 400). Dropping one by omission is impossible: `card_update_tx`
-    // re-stamps every stored server-owned key onto any replacement payload
-    // (and refuses a non-object replacement).
+    // Validate the payload against the kind that will land in the DB. A server-owned key in the payload is a 400 for any kind; `card_update_tx` re-stamps every stored server-owned key onto any replacement payload.
     if let Some(payload) = p.payload.as_ref() {
         reject_client_supplied_server_owned_keys(payload)?;
         let kind = p.kind.as_deref().unwrap_or(existing.kind.as_str());
@@ -785,16 +614,8 @@ pub struct ResetPlannerCardResponse {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SendPlannerInputRequest {
     pub text: String,
-    /// #1505 S6 — ids returned by `POST /api/cards/{id}/planner/attachments`.
-    ///
-    /// Naming an attachment here is what BINDS it: the bytes move out of the
-    /// server's sweepable staging area before this request writes anything to
-    /// the queue. So a message that reaches the queue always names files that
-    /// are already permanent, and an upload that is never named expires.
-    ///
-    /// `#[serde(default)]` so every existing client keeps working unchanged.
-    /// An id belonging to another card is a 400, as is naming the same one
-    /// twice or naming more than eight.
+    /// Ids returned by `POST /api/cards/{id}/planner/attachments`. Naming an attachment here is what BINDS it: the bytes move out of the sweepable staging area before this request writes anything to the queue.
+    /// An id belonging to another card is a 400, as is naming the same one twice or naming more than eight.
     #[serde(default)]
     pub attachments: Vec<AttachmentId>,
 }
@@ -836,14 +657,7 @@ pub struct SendPlannerInputResponse {
     #[schema(value_type = String)]
     pub card_id: CardId,
     pub worker_session_id: String,
-    /// #1505 PR1 — stable id of the queue entry this text landed in, so the
-    /// client can match its optimistic echo against `GET /planner/run`'s
-    /// `pending` instead of against the text.
-    ///
-    /// Null in exactly one accepted case: the text folded into a queue entry
-    /// written before #1505 PR1, which has no id and never gains one. The other
-    /// ways a client sees no id are refusals with a non-200 status (dormant
-    /// harness, 503 saturated queue, 409 shutting down), not this field.
+    /// Stable id of the queue entry this text landed in, so the client can match its optimistic echo. Null only when the text folded into a pre-id queue entry.
     pub entry_id: Option<String>,
 }
 
@@ -852,23 +666,11 @@ pub struct InterruptPlannerCardResponse {
     #[schema(value_type = String)]
     pub card_id: CardId,
     pub worker_session_id: String,
-    /// True when a turn was actually running and an interrupt was
-    /// dispatched at it; false when the harness was idle (graceful no-op)
-    /// or a `turn/start` was still in flight (interrupt dispatched
-    /// best-effort, but not guaranteed to land — press Stop again once the
-    /// turn is running). "stopped: true" means the interrupt was *issued* —
-    /// completion is asynchronous (`turn/aborted` lands via the harness
-    /// FSM, with an interrupt-timeout watchdog as backstop).
+    /// True when a turn was running and an interrupt was dispatched at it; false when idle or a `turn/start` was still in flight. Means the interrupt was *issued* — completion is asynchronous.
     pub stopped: bool,
 }
 
-/// Issue #668 fix — current planner-harness run snapshot for a card.
-///
-/// `harness.phase.changed` is the only live phase signal, so a page opened
-/// mid-turn would otherwise sit on `phase: null` until the next transition.
-/// This read endpoint lets the client seed its initial phase. Dormancy (no
-/// active runtime row, or no registered harness) is NOT an error here —
-/// it's the `{worker_session_id: null, phase: null}` answer.
+/// Current planner-harness run snapshot for a card, so a page opened mid-turn can seed its phase. Dormancy is NOT an error: it is the `{worker_session_id: null, phase: null}` answer.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct GetPlannerRunResponse {
     #[schema(value_type = String)]
@@ -877,150 +679,46 @@ pub struct GetPlannerRunResponse {
     pub worker_session_id: Option<String>,
     /// Current harness phase, or null when the harness is dormant.
     pub phase: Option<HarnessPhaseTag>,
-    /// #1255 S3 — latest context-window usage, or null when the harness is
-    /// dormant or codex has not pushed a `thread/tokenUsage/updated` frame yet.
-    ///
-    /// Known consequence, recorded rather than fixed in this commit: a dormant
-    /// conversation reports `null` here even though the reading IS on disk in
-    /// `worker_sessions.handle_state`. This whole endpoint reads the live
-    /// in-memory harness (registry hit on the active runtime row) and answers
-    /// `phase: null` when there is none — see the handler. Token usage
-    /// inherits that exactly, so a card whose harness has been shut down shows
-    /// no meter until something respawns it. The UI slice decides whether
-    /// that is acceptable or whether the dormant path should fall back to the
-    /// persisted snapshot; the kernel slice does not pick for it.
+    /// Latest context-window usage, or null when the harness is dormant or codex has not pushed a `thread/tokenUsage/updated` frame yet. A dormant conversation reports `null` even though the reading is on disk.
     pub token_usage: Option<PlannerRunTokenUsage>,
-    /// #1505 S4-3 — the model slug this conversation's turns run with, or
-    /// `null` for "follow whatever this installation is configured to use".
-    ///
-    /// Read off the CARD, not off the harness, and therefore answered for a
-    /// dormant conversation as well: the selection is a property of the
-    /// conversation and outlives every runtime that serves it. That is the
-    /// opposite of `phase` and `token_usage` above, which are properties of a
-    /// live runtime and are `null` without one.
+    /// The model slug this conversation's turns run with, or `null` to follow the installation default. Read off the CARD, so answered for a dormant conversation too.
     pub model: Option<String>,
-    /// The chosen reasoning effort, or `null` for the default. Same source and
-    /// same reasoning as [`GetPlannerRunResponse::model`].
+    /// The chosen reasoning effort, or `null` for the default. Same source as `model`.
     pub reasoning_effort: Option<String>,
-    /// #1505 S4 — why this conversation's queue is not draining, or `null`
-    /// when there is nothing worth saying. `null` almost always.
-    ///
-    /// Three things fill it, and a client should render all three as the same
-    /// kind of standing notice rather than as an error about a request it just
-    /// made:
-    ///
-    ///  * the model or effort to run under cannot be determined (codex's
-    ///    configuration names none, or the stored selection is unreadable) —
-    ///    the text names the choice that fixes it;
-    ///  * codex refused to start the turn — the text says the message was NOT
-    ///    sent, and promises no delivery;
-    ///  * codex has been unreachable long enough that silence would look like
-    ///    a hang — the text says the message is still queued and will go out.
-    ///
-    /// A brief outage fills nothing, so this staying `null` is not evidence
-    /// that anything succeeded.
-    ///
-    /// It is not a general per-turn error channel and does not diagnose why a
-    /// model failed mid-turn; that is #1507's.
+    /// Why this conversation's queue is not draining, or `null` when there is nothing worth saying: an undeterminable model/effort, a refused turn start, or a long codex outage. A client should render it as a standing notice, not a request error.
+    /// A brief outage fills nothing, so `null` is not evidence that anything succeeded.
     pub blocked_reason: Option<String>,
-    /// #1505 PR1 — the addressable user entries still waiting for the next
-    /// turn, in queue order. Empty when the harness is dormant.
-    ///
-    /// Only entries minted at or after PR1 appear here. Dispatcher
-    /// observations never do (they are not the user's and cannot be edited),
-    /// and neither do user entries from pre-PR1 snapshots, which have no id to
-    /// address them by; both kinds of omission are counted in
-    /// `pending_overflow` only for the user-authored ones.
-    // Cost, paid now and collected in PR4 (#1514 review) — kept off the wire
-    // description because it is a note to this repo, not to an API consumer.
-    // This ships unconditionally, with full bodies, and nothing reads it yet:
-    // `fe`'s non-strict zod object strips it and the legacy `web` tree casts
-    // past it. The endpoint is invalidated after every send and every
-    // interrupt, and the server clones the texts three times on the way out
-    // (`snapshot()`, `pending_entries()`, then `to_string()` per entry). The
-    // bound is the page budget below, and a normal queue holds nought to two
-    // short entries, so this is charged rather than fixed. If it ever needs
-    // fixing the shape is an opt-in (`?include=pending`) — deliberately not
-    // done here, because a query parameter that exactly one future consumer
-    // will set is a wire change made on speculation.
+    /// The addressable user entries still waiting for the next turn, in queue order. Empty when dormant. Dispatcher observations and pre-id user entries never appear; the latter are counted in `pending_overflow`.
     pub pending: Vec<PendingQueueEntry>,
-    /// User-authored entries that exist in the queue but are NOT in `pending`:
-    /// pre-PR1 entries with no id, plus anything past the page budget. The UI
-    /// can say "N more not shown" and be honest about not offering buttons.
+    /// User-authored entries that exist in the queue but are NOT in `pending`: pre-id entries, plus anything past the page budget.
     pub pending_overflow: u32,
-    /// #1505 S6 — whether this card can take image attachments at all.
-    ///
-    /// It cannot when the track's workspace is a directory the person already
-    /// owns: attachments are written under `<workspace>/.neige/`, and neige
-    /// never writes into an attached workspace, so the upload endpoint answers
-    /// 400 there.
-    ///
-    /// Answered here rather than left for the client to work out, and answered
-    /// before the attempt rather than by the attempt. Half the tracks in
-    /// production were created with a `cwd` and are attached, so a paperclip
-    /// that looks available and then refuses would be the common case rather
-    /// than the edge. The criterion is the same function the upload runs
-    /// (`planner_attachments::attachment_root`), called rather than restated.
+    /// Whether this card can take image attachments at all: not when the track's workspace is an attached directory, since neige never writes into one. Answered by the same function the upload runs (`planner_attachments::attachment_root`).
     pub attachments_supported: bool,
 }
 
-/// #1505 PR1 — one addressable user entry from the harness pending queue.
+/// One addressable user entry from the harness pending queue.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PendingQueueEntry {
-    /// Stable identity. Never empty, and unique within one response.
-    // The reason is the read boundary, not this page: what reaches here is the
-    // `QueueEntry::User` variant, and the only way to get one is a minted uuid
-    // or a snapshot slot that `HarnessSnapshot::deserialize_pending_entry_meta`
-    // accepted — and that decoder refuses an empty or duplicated id, demoting
-    // the slot to `LegacyUser`. Without it a hand-edited `handle_state_json`
-    // could put `entry_id: ""`, or the same id twice, on the wire.
+    /// Stable identity. Never empty, and unique within one response: the snapshot decoder refuses an empty or duplicated id, demoting the slot to `LegacyUser`.
     pub entry_id: String,
-    /// The complete text. Never truncated — an entry that would not fit the
-    /// page budget is left out of the page entirely rather than shown in a
-    /// form the user cannot safely edit.
+    /// The complete text. Never truncated — an entry that would not fit the page budget is left out entirely.
     pub text: String,
-    /// CAS token for the edit/delete endpoints (#1505 PR2). Bumped whenever
-    /// the text is rewritten, folding under backpressure included.
+    /// CAS token for the edit/delete endpoints. Bumped whenever the text is rewritten, folding included.
     pub rev: u32,
     /// Wall-clock ms at which the entry entered the queue.
     pub queued_at_ms: i64,
-    /// #1505 S6 — the images this queued message carries.
-    ///
-    /// Each is already bound, so its read-back url resolves now and will keep
-    /// resolving. The absolute host path the server holds beside each of these
-    /// is deliberately not here: the client addresses an attachment by id and
-    /// reads it back through `GET /planner/attachments/{id}`.
+    /// The images this queued message carries. Each is already bound; the client addresses an attachment by id, never by host path.
     pub attachments: Vec<PlannerAttachment>,
 }
 
 /// Hard cap on entries in one `pending` page.
 const PENDING_PAGE_MAX: usize = 64;
 
-/// Soft cap on the UTF-8 size of one `pending` page.
-///
-/// The whole response is re-fetched whenever the queue changes, and a single
-/// `/planner/input` body may be `MAX_PLANNER_INPUT_CHARS` = 32_768
-/// *characters*. UTF-8 encodes a `char` in at most 4 bytes, so one body is at
-/// most `32_768 * 4` = 131_072 B = 128 KiB, and 64 of them would be
-/// `64 * 128` KiB = 8 MiB. Entries are packed whole until the next one would
-/// cross this line.
-///
-/// This is a judgement about acceptable response size, not a measurement of any
-/// real queue.
+/// Soft cap on the UTF-8 size of one `pending` page; entries are packed whole until the next one would cross it. A judgement about acceptable response size, not a measurement.
 const PENDING_PAGE_BYTES: usize = 1_536 * 1_024;
 
-/// Split the queue into one page of addressable entries plus a count of the
-/// user-authored entries that did not make it.
-///
-/// The budget ALWAYS admits at least one entry. Today that rule is unreachable:
-/// the largest single entry the fold path can build is
-/// `MAX_FOLDED_USER_MESSAGE_CHARS` = `4 * 32_768` = 131_072 characters, hence
-/// at most `131_072 * 4` = 524_288 B = 512 KiB of UTF-8, against a budget of
-/// 1.5 MiB. It is written rather than argued because the failure it prevents is
-/// severe and silent: a head entry over budget would make the whole queue
-/// unpageable, so the user could not even delete the thing that was blocking
-/// it, and the "the user can just delete it" answer that justifies the budget
-/// would be false.
+/// Split the queue into one page of addressable entries plus a count of the user-authored entries that did not make it.
+/// The budget ALWAYS admits at least one entry: a head entry over budget would make the whole queue unpageable, so the user could not delete the thing blocking it.
 fn page_pending_entries(card_id: &CardId, entries: &[QueueEntry]) -> (Vec<PendingQueueEntry>, u32) {
     let mut page = Vec::new();
     let mut used_bytes = 0usize;
@@ -1028,17 +726,13 @@ fn page_pending_entries(card_id: &CardId, entries: &[QueueEntry]) -> (Vec<Pendin
     let mut budget_exhausted = false;
     for entry in entries {
         let Some(view) = entry.user_view() else {
-            // Not addressable. A dispatcher observation is not the user's to
-            // begin with; a pre-PR1 user entry has no id, so it is counted.
+            // Not addressable. A dispatcher observation is not the user's; a pre-id user entry is counted.
             if entry.is_user_authored() {
                 overflow = overflow.saturating_add(1);
             }
             continue;
         };
-        // The page is a PREFIX of the queue, not a greedy pack: once one entry
-        // does not fit, every later one is overflow even if it would have.
-        // Packing around a hole would show the user a list whose order and
-        // adjacency lie, and "N more below" would no longer be where they are.
+        // The page is a PREFIX of the queue, not a greedy pack: packing around a hole would show a list whose order and adjacency lie.
         budget_exhausted = budget_exhausted
             || page.len() >= PENDING_PAGE_MAX
             || (!page.is_empty()
@@ -1063,47 +757,16 @@ fn page_pending_entries(card_id: &CardId, entries: &[QueueEntry]) -> (Vec<Pendin
     (page, overflow)
 }
 
-/// #1255 S3 — the context-usage half of [`GetPlannerRunResponse`].
-///
-/// A wire type distinct from the stored [`TokenUsage`], and the differences
-/// are the point rather than an accident of layering:
-///
-/// - **`percent` is computed here, on the server.** One baseline adjustment,
-///   one over-window rule, one place they can be got wrong. Shipping a
-///   numerator and a denominator instead would invite the client to divide
-///   them its own way, and the correct division is not the obvious one.
-/// - **`total_tokens` is NOT shipped.** The stored value keeps it (it is the
-///   honest lifetime cost), but `tokenUsage.total` is a cumulative sum across
-///   every response in the thread — unbounded, and measured at 253.8x the
-///   window in the captured frame this slice's tests run on — and the single
-///   most likely bug in any future UI is a meter
-///   drawn from it. Handing the frontend both numbers and trusting it to pick
-///   the right one is how that bug gets written. It cannot pick wrong if only
-///   one number crosses the wire.
+/// The context-usage half of [`GetPlannerRunResponse`]. `percent` is computed on the server so there is one place to get it wrong, and `total_tokens` is NOT shipped: it is a cumulative sum across the thread, and a meter drawn from it is the most likely UI bug.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PlannerRunTokenUsage {
-    /// Tokens in the model's context as of the most recent response
-    /// (`tokenUsage.last.totalTokens` upstream). Always present — this is the
-    /// raw evidence, and it ships even when `percent` does not.
+    /// Tokens in the model's context as of the most recent response. Always present, even when `percent` is not.
     pub used_tokens: i64,
     /// The model's context window, or null when codex has never reported one.
     pub context_window: Option<i64>,
-    /// Context occupancy as a whole percentage, `0.0..=100.0`.
-    ///
-    /// Null means "no percentage can honestly be stated": no known window, a
-    /// window at or below the 12000-token baseline, or `used_tokens` above
-    /// the window. That last case is deliberately NOT clamped to 100 — see
-    /// `TokenUsage::percent`. Render the raw count with no meter.
+    /// Context occupancy as a whole percentage, `0.0..=100.0`. Null when no percentage can honestly be stated (no window, window at or below baseline, or usage above the window — deliberately NOT clamped).
     pub percent: Option<f64>,
-    /// Wall-clock ms of the codex frame this reading came from.
-    ///
-    /// Shipped because the reading survives a reboot: it rides the runtime
-    /// snapshot, so a harness respawned by boot recovery or by lazy recovery
-    /// serves whatever number was last observed — possibly months ago — and
-    /// without this field a rehydrated reading is indistinguishable on the
-    /// wire from a live one. A UI that draws a meter needs to be able to say
-    /// "as of then", or to stop drawing it. The kernel does not pick a
-    /// staleness threshold; it ships the timestamp so a reader can.
+    /// Wall-clock ms of the codex frame this reading came from. The reading survives a reboot via the runtime snapshot, so without this a rehydrated reading is indistinguishable from a live one.
     pub at_ms: i64,
 }
 
@@ -1120,31 +783,13 @@ impl From<&TokenUsage> for PlannerRunTokenUsage {
 
 pub(crate) const MAX_PLANNER_INPUT_CHARS: usize = 32_768;
 
-/// The one body check for planner input, shared by the send route and the
-/// #1505 PR2 edit route.
-///
-/// An edit is a send by another name: the text it leaves in the queue is the
-/// text a turn will carry, so admitting through `PATCH` something `POST`
-/// refuses would make the limit a formality. Shared rather than restated —
-/// a second copy of "not empty, at most N characters" is a copy that can
-/// disagree.
+/// The one body check for planner input, shared by the send route and the edit route: an edit is a send by another name.
 pub(crate) fn validate_planner_input_text(text: &str) -> Result<usize> {
     validate_planner_input(text, false)
 }
 
-/// The same check, told whether the message carries an image.
-///
-/// #1505 S6. Pasting a screenshot and pressing enter is the single most common
-/// thing this feature is for, so an empty text beside an attachment has to be
-/// a message rather than a refusal. The length limit is unchanged and still
-/// applies to whatever text there is: an attachment does not buy room, it
-/// buys the right to send none.
-///
-/// The edit route keeps calling [`validate_planner_input_text`], i.e. keeps
-/// requiring text. `PATCH` cannot change an entry's attachments in this slice,
-/// so it has no way to tell "this message is its picture" from "this message
-/// is now empty", and clearing the text of an image message is the second of
-/// those.
+/// The same check, told whether the message carries an image: an empty text beside an attachment is a message, not a refusal. The length limit still applies to whatever text there is.
+/// The edit route keeps requiring text: `PATCH` cannot change attachments, so it cannot tell 'this message is its picture' from 'this message is now empty'.
 pub(crate) fn validate_planner_input(text: &str, has_attachments: bool) -> Result<usize> {
     if text.trim().is_empty() && !has_attachments {
         return Err(CalmError::BadRequest("text must not be empty".into()));
@@ -1161,8 +806,7 @@ pub(crate) fn validate_planner_input(text: &str, has_attachments: bool) -> Resul
 fn planner_input_audit_actor(actor: &Actor, card_id: &CardId) -> ActorId {
     match actor.to_actor_id() {
         ActorId::AiCodex(c) if c.as_str().is_empty() => ActorId::AiCodex(card_id.clone()),
-        // Middleware currently only admits `ai:codex`, but keep these
-        // branches ready if REST actor validation later gains more AI kinds.
+        // Middleware currently only admits `ai:codex`; the other branches are ready for more AI kinds.
         ActorId::AiClaude(c) if c.as_str().is_empty() => ActorId::AiClaude(card_id.clone()),
         ActorId::AiPlanner(c) if c.as_str().is_empty() => ActorId::AiPlanner(card_id.clone()),
         other => other,
@@ -1213,10 +857,7 @@ pub(crate) async fn send_planner_input(
         )));
     }
 
-    // `_recovery_guard` (Some only on the lazy-recovery path) holds the
-    // per-card recovery lock until end of handler scope, so a concurrent
-    // `/planner/reset` can't supersede the just-recovered runtime between
-    // recovery and the observe/audit below.
+    // `_recovery_guard` holds the per-card recovery lock until end of scope, so a concurrent `/planner/reset` can't supersede the just-recovered runtime before the observe/audit below.
     let (runtime, harness, _recovery_guard) =
         ensure_live_planner_harness(&s, &w, &cs, &card.id, actor.as_str() == "user").await?;
     let track = s
@@ -1229,25 +870,8 @@ pub(crate) async fn send_planner_input(
         track: track.id.clone(),
         area: track.area_id.clone(),
     };
-    // #1505 S6 — bind BEFORE the entry exists.
-    //
-    // The order is the whole of the durability argument: the bytes leave the
-    // sweepable staging directory first, so an entry that reaches the queue
-    // always names files nothing will reclaim. The reverse order would leave a
-    // window in which a queued message points at a file the orphan sweep is
-    // still entitled to remove, and codex answers an unreadable image with
-    // placeholder text and no error.
-    //
-    // The failure direction this buys is a leak: a bind that succeeds and is
-    // followed by a failed enqueue leaves bytes in `bound/` that no message
-    // names. They cost the card's budget and nothing reclaims them (#1505
-    // GAP-A12). A dangling reference would cost a silently degraded turn,
-    // which is worse and is unobservable.
-    //
-    // `attachment_root` refuses an attached workspace, so a card on a track
-    // pointed at a directory the user owns gets a 400 here — and only when it
-    // actually names an attachment. A text-only message on such a track is
-    // untouched by any of this.
+    // Bind BEFORE the entry exists: the bytes leave the sweepable staging directory first, so a queued message never names a file the orphan sweep may remove (codex answers an unreadable image with placeholder text and no error). A bind followed by a failed enqueue leaks bytes in `bound/`, which is the better failure direction.
+    // `attachment_root` refuses an attached workspace, so such a card gets a 400 here only when it actually names an attachment.
     let attachments = if attachments.is_empty() {
         Vec::new()
     } else {
@@ -1261,11 +885,7 @@ pub(crate) async fn send_planner_input(
         )
         .await?
     };
-    // Migrate ONLY the AI-header path (empty placeholder card) to the live planner
-    // session actor; the human web-UI path (`actor` == User) and any other actor
-    // MUST stay unchanged so the audit log keeps distinguishing human input from
-    // agent actions. Falls back to the existing card-shaped rebind when the
-    // runtime is not in an active-authority state.
+    // Migrate ONLY the AI-header path (empty placeholder card) to the live planner session actor; the human path MUST stay unchanged so the audit log keeps distinguishing human input from agent actions.
     let audit_actor = match actor.to_actor_id() {
         ActorId::AiCodex(c) | ActorId::AiClaude(c) | ActorId::AiPlanner(c)
             if c.as_str().is_empty() && runtime.status.is_active_authority() =>
@@ -1307,10 +927,7 @@ pub(crate) async fn send_planner_input(
         )
         .await
     {
-        // The user message (and any kernel context paired with it) is already
-        // durably accepted. Returning 500 here would invite a retry and execute
-        // the same intent twice; keep the accepted response and surface the
-        // audit failure operationally.
+        // The user message is already durably accepted; a 500 here would invite a retry that executes the same intent twice.
         tracing::error!(
             card_id = %card.id,
             runtime_id = %runtime.id,
@@ -1432,34 +1049,9 @@ pub(crate) async fn ratify_card(
     }))
 }
 
-/// Issue #668 — stop the running planner turn.
-///
-/// Guard chain mirrors `/planner/input` (card → role → kind), but deliberately
-/// WITHOUT the lazy-recovery path and its per-card lock: a harness that
-/// needs recovering has, by construction, no running turn to stop, so a
-/// registry miss (or no active runtime row) is the same typed 409
-/// `planner_harness_dormant` the input route uses — the client steers the user
-/// to Reset.
-///
-/// Idle is a graceful no-op, not an error: the harness's own
-/// `issue_interrupt` ignores interrupts when no turn is active, so the route
-/// reports `stopped: false` (decided from the harness phase just before
-/// dispatch) and skips the operation entirely. The phase read and the
-/// dispatch are not atomic — a turn could start in between — but the failure
-/// mode is benign (the user presses Stop again). `IssuingInterrupt` also
-/// reports `stopped: false`: an interrupt is already in flight and
-/// re-dispatching would be ignored by the FSM anyway.
-///
-/// `IssuingTurn` is a best-effort window, so it reports `stopped: false`
-/// too: while the `turn/start` RPC is in flight the shared app-server may
-/// not have populated `active_turn_id_for_thread` yet, so the harness's
-/// `issue_interrupt` can resolve no target and no-op — the turn would then
-/// keep running despite a `stopped: true` answer. The route still dispatches
-/// the interrupt (it lands when the app-server already knows the turn), but
-/// only `TurnRunning` — where an interrupt target is guaranteed — earns
-/// `stopped: true`. The user can press Stop again once the turn is running.
-/// Non-goal: teaching the run loop to remember a pending interrupt across
-/// the Issuing window and fire it on `turn/start` completion.
+/// Stop the running planner turn. Guard chain mirrors `/planner/input` but WITHOUT lazy recovery: a harness that needs recovering has no running turn to stop, so a registry miss is the same 409 `planner_harness_dormant`.
+/// Idle is a graceful no-op (`stopped: false`). The phase read and the dispatch are not atomic; the user presses Stop again.
+/// `IssuingTurn` also reports `stopped: false`: while `turn/start` is in flight the app-server may not know the turn yet, so the interrupt is dispatched best-effort but only `TurnRunning` guarantees a target.
 #[utoipa::path(
     post,
     path = "/api/cards/{id}/planner/interrupt",
@@ -1506,8 +1098,7 @@ pub(crate) async fn interrupt_planner_card(
     let harness = s.harness.get(&runtime.id).ok_or_else(dormant)?;
 
     let phase = harness.snapshot().await.phase;
-    // Dispatch for IssuingTurn too (best-effort), but only TurnRunning —
-    // where an interrupt target is guaranteed — reports `stopped: true`.
+    // Dispatch for IssuingTurn too (best-effort), but only TurnRunning reports `stopped: true`.
     let dispatch = matches!(
         phase,
         HarnessPhaseTag::TurnRunning | HarnessPhaseTag::IssuingTurn
@@ -1537,12 +1128,7 @@ pub(crate) async fn interrupt_planner_card(
     }))
 }
 
-/// Issue #668 fix — read the current planner-harness phase for a card.
-///
-/// Guard chain mirrors `/planner/interrupt` (card → role → kind), but unlike
-/// the write routes a dormant harness is a normal answer for a read: no
-/// active runtime row, or an active row with no registered harness, is
-/// `200 {worker_session_id: null, phase: null}` rather than a 409.
+/// Read the current planner-harness phase for a card. Unlike the write routes, a dormant harness is a normal `200 {worker_session_id: null, phase: null}`, not a 409.
 #[utoipa::path(
     get,
     path = "/api/cards/{id}/planner/run",
@@ -1574,22 +1160,15 @@ pub(crate) async fn get_planner_run(
         )));
     }
 
-    // A payload whose model keys are unreadable is reported as "no selection"
-    // by this READ rather than as a 500. The turn-issuing path refuses on the
-    // same payload (`planner_model`'s header), so the conversation still stops;
-    // making the read fail as well would only take away the surface that has
-    // to show why.
+    // Unreadable model keys are reported as 'no selection' by this READ rather than as a 500; the turn-issuing path refuses on the same payload, so the conversation still stops but this surface can show why.
     let selection =
         crate::planner_model::CardModelSelection::from_payload(&card.payload).unwrap_or_default();
-    // The same predicate the upload endpoint enforces, asked of the same
-    // function, so the answer cannot drift from the refusal.
+    // The same predicate the upload endpoint enforces, so the answer cannot drift from the refusal.
     let attachments_supported = match s.repo.track_get(card.track_id.as_str()).await? {
         Some(track) => {
             crate::planner_attachments::attachment_root(&track.workspace, &s.workspace_root).is_ok()
         }
-        // No track means no workspace to write into. A missing track is
-        // already fatal for everything else on this card, but this field is
-        // not the place to raise it, and "supported" would be the wrong guess.
+        // No track means no workspace to write into; this field is not the place to raise it, and 'supported' would be the wrong guess.
         None => false,
     };
     let mut dormant = GetPlannerRunResponse {
@@ -1598,8 +1177,7 @@ pub(crate) async fn get_planner_run(
         phase: None,
         model: selection.model.clone(),
         reasoning_effort: selection.reasoning_effort.clone(),
-        // A dormant conversation has no harness to be blocked, and nothing is
-        // waiting: there is no queue and no unsent sentence.
+        // A dormant conversation has no harness to be blocked and nothing waiting.
         blocked_reason: None,
         token_usage: None,
         pending: Vec::new(),
@@ -1627,10 +1205,7 @@ pub(crate) async fn get_planner_run(
     let Some(harness) = s.harness.get(&runtime.id) else {
         return Ok(Json(dormant));
     };
-    // One snapshot read for both fields (#1255 S3). Taking two would let the
-    // phase and the usage come from different instants for no benefit —
-    // `snapshot_for` acquires a fistful of mutexes, so it is also the cheaper
-    // way round.
+    // One snapshot read for both fields, so phase and usage come from the same instant.
     let snapshot = harness.snapshot().await;
     let (pending, pending_overflow) = page_pending_entries(&card.id, &snapshot.pending_entries());
     Ok(Json(GetPlannerRunResponse {
@@ -1650,46 +1225,9 @@ pub(crate) async fn get_planner_run(
     }))
 }
 
-/// Issue #649 i2 — resolve a live [`PlannerHarness`] handle for a planner card.
-///
-/// Fast path: active runtime row + registry hit (untouched behavior).
-///
-/// Registry miss with an active runtime row (e.g. server restart on a
-/// `done`-lifecycle track, where boot recovery deliberately skips the track)
-/// → lazily re-spawn the harness in place via
-/// [`crate::harness::spawn_recovered_harness`] — the exact function boot
-/// recovery uses (snapshot load, catch-up event replay, run, registry
-/// insert). Spawning does no Codex RPC, so recovery is cheap.
-///
-/// A human send can also recover a current `failed / wedged / system_error`
-/// carrier through `planner_recovery`: it resumes the exact provider thread
-/// and restores the existing row, retaining history and pending message IDs.
-/// Machine-authored sends cannot exercise that exception.
-///
-/// No eligible runtime row, or an active row that is unrecoverable
-/// (no thread anywhere — neither `runtime.thread_id` nor the snapshot's
-/// `last_thread_id` — from a half-failed start, or a corrupt snapshot)
-/// → typed 409 [`CalmError::PlannerHarnessDormant`] so the client can steer
-/// the user to `/planner/reset` instead of retrying.
-///
-/// Hardenings (design review):
-/// 1. per-card async lock + re-fetch/re-probe under the lock, so racing
-///    Sends can't double-spawn (the second spawn shuts the first down);
-/// 2. snapshot pre-validated with [`is_harness_snapshot_value`] — the
-///    strict deserializer panics on unknown shapes;
-/// 3. a thread must exist (row `thread_id`, or the snapshot's
-///    `last_thread_id` — the same fallback boot recovery applies), else a
-///    recovered harness would queue messages forever;
-/// 4. `/planner/reset` takes the SAME per-card lock (see
-///    [`reset_planner_card_shared`]), and the recovery path RETURNS its guard
-///    to the caller (`send_planner_input` holds it through enqueue/audit), so
-///    a reset can't supersede the runtime between the in-lock refetch here
-///    and harness registration — nor in the gap between recovery and the
-///    caller's `observe` enqueue — eliminating the resurrect-stale-session
-///    race;
-/// 5. row-intrinsic dormancy (409) is checked before daemon liveness
-///    (503), so an unrecoverable row tells the user to Reset rather than
-///    to retry.
+/// Resolve a live [`PlannerHarness`] handle for a planner card. Fast path: active runtime row + registry hit. Registry miss with an active row: lazily re-spawn via `spawn_recovered_harness` (no Codex RPC). A human send can also recover a `failed` carrier through `planner_recovery`.
+/// No eligible row, or an unrecoverable one (no thread anywhere, or a corrupt snapshot) → typed 409 `PlannerHarnessDormant` so the client steers the user to `/planner/reset`.
+/// Takes the per-card lock and re-fetches under it so racing Sends can't double-spawn; `/planner/reset` takes the SAME lock, and the guard is RETURNED so the caller holds it through enqueue/audit. Row-intrinsic dormancy (409) is checked before daemon liveness (503).
 #[allow(deprecated)]
 async fn ensure_live_planner_harness(
     s: &RouteState,
@@ -1717,9 +1255,7 @@ async fn ensure_live_planner_harness(
     }
 
     let guard = lock_card(&s.planner_recovery_locks, card_id.as_str()).await;
-    // Re-fetch under the lock and use only this row: `/planner/reset` may have
-    // superseded the pre-lock runtime, and a racing Send may have already
-    // recovered the harness.
+    // Re-fetch under the lock and use only this row: `/planner/reset` or a racing Send may have moved it.
     let runtime = super::planner_recovery::candidate(s, card_id, human_send)
         .await?
         .ok_or_else(dormant)?;
@@ -1731,46 +1267,26 @@ async fn ensure_live_planner_harness(
     if let Some(harness) = s.harness.get(&runtime.id) {
         return Ok((runtime, harness, Some(guard)));
     }
-    // #649 review round 3 — a `starting` row means `planner-harness-start` is
-    // still in flight: the adapter writes the row (and, in the deferred
-    // path, the thread id + snapshot) BEFORE `spawn_side_effect` registers
-    // the harness. Recovering here would spawn a harness the start op then
-    // shuts down and replaces, silently dropping any input queued on it.
-    // 503 so the client retries once the start lands (a failed start is
-    // compensated to `failed`/deleted, after which this 409s as dormant).
-    // Recovery below is only for statuses that imply a previously-live
-    // harness (running / idle / turn_pending).
+    // A `starting` row means `planner-harness-start` is still in flight: the adapter writes the row BEFORE the harness is registered, so recovering here would spawn a harness the start op then shuts down, dropping any queued input. 503 so the client retries.
     if runtime.status == WorkerSessionState::Starting {
         return Err(CalmError::ServiceUnavailable(
             "planner harness is starting; retry shortly".into(),
         ));
     }
-    // Row-intrinsic dormancy checks run BEFORE the daemon liveness probe:
-    // an unrecoverable row must 409 (steering the user to Reset) even when
-    // the daemon is down, instead of hiding behind a 503 "retry shortly".
-    //
-    // `HarnessSnapshot::from_value_strict` (inside recovery) panics on
-    // unknown shapes — pre-validate so a corrupt row degrades to the typed
-    // 409 instead of a 500-by-panic.
+    // Row-intrinsic dormancy runs BEFORE the daemon liveness probe, so an unrecoverable row 409s (Reset) even when the daemon is down. Pre-validate the snapshot: the strict deserializer inside recovery panics on unknown shapes.
     let snapshot_value = match runtime.handle_state_json.as_ref() {
         Some(value) if is_harness_snapshot_value(value) => value,
         _ => return Err(dormant()),
     };
-    // A half-failed start can leave an active row without a thread; a
-    // harness recovered from it would queue messages forever. Mirror boot
-    // recovery (`spawn_recovered_harness`), which falls back to the
-    // snapshot's `last_thread_id` when the row's `thread_id` is NULL —
-    // only when BOTH are absent is the row truly unrecoverable.
+    // A half-failed start can leave an active row without a thread; mirror boot recovery's fallback to the snapshot's `last_thread_id`, and only when BOTH are absent is the row unrecoverable.
     let has_thread = |t: Option<&str>| t.map(str::trim).is_some_and(|trimmed| !trimmed.is_empty());
     if !has_thread(runtime.thread_id.as_deref())
         && !has_thread(snapshot_value.get("last_thread_id").and_then(Value::as_str))
     {
         return Err(dormant());
     }
-    // A recovered harness can't issue turns without the shared app-server;
-    // surface backpressure instead of spawning a silently-wedged task.
+    // A recovered harness can't issue turns without the shared app-server; surface backpressure instead of spawning a silently-wedged task.
     if !cs.shared_codex_appserver.is_running() {
-        // #953 — same variant/status (503); message-only enrichment.
         return Err(CalmError::ServiceUnavailable(
             cs.shared_codex_appserver.not_running_message(),
         ));
@@ -1795,10 +1311,7 @@ async fn ensure_live_planner_harness(
         runtime_id = %runtime_id,
         "planner harness lazily recovered on /planner/input registry miss"
     );
-    // #649 review round 4 — return the guard so the caller keeps the
-    // per-card lock alive through `harness.observe` and the audit event;
-    // dropping it here would let a concurrent `/planner/reset` supersede the
-    // recovered runtime before the message is enqueued.
+    // Return the guard so the caller keeps the per-card lock alive through `harness.observe` and the audit event.
     Ok((runtime, harness, Some(guard)))
 }
 
@@ -1833,10 +1346,7 @@ pub(crate) async fn reset_planner_card(
             "card {id} is not a planner codex card",
         )));
     }
-    // Recovery deliberately declines malformed persisted Planner runtimes so a
-    // boot pass can continue. This user-facing reset boundary preserves the
-    // established HTTP 403 contract instead of turning that decline into a
-    // generic operation failure.
+    // Recovery declines malformed persisted Planner runtimes so a boot pass can continue; this reset boundary keeps the HTTP 403 contract rather than a generic operation failure.
     if role == CardRole::Planner {
         let track = s
             .repo
@@ -1859,16 +1369,7 @@ async fn reset_planner_card_shared(
     actor: Actor,
     card: Card,
 ) -> Result<ResetPlannerCardResponse> {
-    // #649 review round 1 — reset takes the SAME per-card lock as the
-    // `/planner/input` lazy-recovery path (`ensure_live_planner_harness`).
-    // Without it, a reset racing a registry-miss Send could supersede the
-    // runtime after recovery's in-lock refetch but before harness
-    // registration, resurrecting the reset-away session (and routing the
-    // just-sent message to the dead thread). Holding the lock across the
-    // start+shutdown operations is deadlock-free: both adapters either
-    // take no locks (shutdown) or use their own private map
-    // (`per_card_mint_locks` in the start adapter) — neither can re-enter
-    // `planner_recovery_locks`.
+    // Reset takes the SAME per-card lock as `/planner/input` lazy recovery, or a reset racing a registry-miss Send could resurrect the reset-away session. Deadlock-free: neither adapter re-enters `planner_recovery_locks`.
     let _recovery_guard = lock_card(&s.planner_recovery_locks, card.id.as_str()).await;
     let active_runtime = s
         .repo
@@ -1889,20 +1390,8 @@ async fn reset_planner_harness_card(
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("track {}", card.track_id)))?;
 
-    // #1098 §5.3 / #1189: a marked conversation card restarts under its OWN
-    // profile. Restarting an assistant under `Planner` would re-mint its thread
-    // with the planner prompt and the planner role — the card row would still say
-    // `assistant`, so the thread and the card would disagree about what the
-    // session may do.
-    //
-    // #1211 S1: no profile inherits the track title as a goal on this
-    // user-driven reset path. A seeded `Observation::TrackGoal` makes the agent
-    // speak before the user does, and this path no longer treats the title as
-    // intent — whether the title is currently blank or not, and whoever wrote
-    // it. (Child tracks are the one remaining place where a title IS intent:
-    // `operation/child_track_adapter.rs` copies the parent planner's declared task
-    // goal into it. That is machine-written and stays; it just is not read
-    // here.)
+    // A marked conversation card restarts under its OWN profile: restarting an assistant under `Planner` would re-mint its thread with the planner prompt while the card row still says `assistant`.
+    // No profile inherits the track title as a goal on this user-driven reset path.
     let role = s.write.verify_role(&card.id);
     let profile = if crate::plain_chat::card_is_plain_chat(&card, role, true) {
         HarnessProfile::PlainChat
@@ -1925,8 +1414,7 @@ async fn reset_planner_harness_card(
         create_card: None,
         first_message: None,
         create_request_sha256: None,
-        // #1343 — not a conversation create; nothing to brief. `None` is
-        // skipped by serde, so this payload's bytes are unchanged.
+        // Not a conversation create; nothing to brief. `None` is skipped by serde.
         opening_briefing: None,
     };
     let start_payload = serde_json::to_value(start_request)?;
@@ -1964,14 +1452,7 @@ async fn reset_planner_harness_card(
     })
 }
 
-/// Submit one planner-card operation and wait for it, mapping its outcome onto a
-/// `CalmError`.
-///
-/// `pub(crate)` since #1253: `routes::today_summary`'s dormant recovery
-/// re-submits `planner-harness-start` through it. Calling this rather than
-/// re-implementing the submit/wait/map is the point — an operation that mapped
-/// its failure classes differently would answer 500 where this answers 400 or
-/// 503, and the divergence would only show up under failure.
+/// Submit one planner-card operation and wait for it, mapping its outcome onto a `CalmError`. Shared with `routes::today_summary`'s dormant recovery so failure classes map identically.
 pub(crate) async fn run_planner_card_operation(
     s: &RouteState,
     kind: &str,
@@ -2030,16 +1511,12 @@ pub(crate) async fn delete_card(
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
     let _operation_guard = s.operation_runtime.lock_for_track_delete().await;
-    // Look up first so we have the track_id for the delete event.
     let card = s
         .repo
         .card_get(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    // Issue #229 PR A — kernel-owned card guard. Planner cards (and PR B's
-    // report cards) carry `deletable = false`; refuse direct REST delete.
-    // Track delete via `DELETE /api/tracks/:id` still cascades through the
-    // FK chain — the guard fires only on this `/api/cards/:id` path.
+    // Kernel-owned cards carry `deletable = false`; refuse direct REST delete. Track delete still cascades through the FK chain.
     if !card.deletable {
         return Err(CalmError::Forbidden(format!(
             "card {id} is kernel-owned and cannot be deleted via this endpoint; \
@@ -2065,22 +1542,7 @@ pub(crate) async fn delete_card(
 
     interrupt_shared_card_active_turn(s.repo.as_ref(), &cs, &card).await;
 
-    // Issue #197 — eager teardown. The `terminals.card_id` FK is
-    // `ON DELETE RESTRICT` (migration 0011); the row must be removed,
-    // and its daemon + socket reaped, *before* the card row delete
-    // fires. Pre-fetch the terminal (if any), kill the daemon, unlink
-    // the socket — all outside the write txn (no point holding it open
-    // for an I/O step that may take a few hundred ms in the worst
-    // graceful-Kill-timeout case). Then the write txn deletes both the
-    // terminal row and the card row inside one commit, keeping the
-    // audit signal coherent (`Event::CardDeleted` is the headline; the
-    // terminal row delete rides under it without a separate event —
-    // same shape as track-delete cascading through cards). If cleanup
-    // fails *before* the txn opens we surface 500; the row stays and
-    // the sweeper retries on the next tick, so we don't end up with
-    // a half-torn-down terminal. Planner cards (CardRole::Planner) take the
-    // same path: terminals share one table with no role-specific cleanup
-    // divergence.
+    // Eager teardown: `terminals.card_id` is `ON DELETE RESTRICT`, so the terminal row must be removed, and its daemon + socket reaped, before the card row delete. Cleanup runs outside the write txn; if it fails the row stays and the sweeper retries next tick. The txn then deletes both rows in one commit under `Event::CardDeleted`.
     let term = s.repo.terminal_get_by_card(card_id.as_str()).await?;
     if let Some(t) = term.as_ref() {
         reap_terminal_artifacts_with_renderer(Some(w.terminal_renderer.as_ref()), t).await;
@@ -2097,10 +1559,7 @@ pub(crate) async fn delete_card(
                     &crate::operation::terminal_disposal::Scope::Card(card_id.to_string()),
                 )
                 .await?;
-                // Drop the terminal row first so the RESTRICT FK lets the
-                // card delete through. Idempotent: NotFound is OK (the
-                // sweeper may have raced us, or the card had no terminal
-                // to begin with).
+                // Drop the terminal row first so the RESTRICT FK lets the card delete through. NotFound is OK (the sweeper may have raced us).
                 if let Some(tid) = terminal_id.as_deref() {
                     match terminal_delete_tx(tx, tid).await.map_err(CalmError::from) {
                         Ok(()) => {}
@@ -2132,14 +1591,11 @@ mod pending_page_tests {
     use crate::ids::CardId;
     use serde_json::json;
 
-    /// Any card. These cases are about which entries reach the page, not about
-    /// which card they belong to; the id only reaches the read-back urls.
     fn test_card_id() -> CardId {
         CardId::from("card-paging")
     }
 
-    /// A legacy entry built the ONLY way production can produce one: by
-    /// deserializing a row whose `pending_entry_meta` slot is absent.
+    /// A legacy entry built the ONLY way production can produce one: a row whose `pending_entry_meta` slot is absent.
     fn legacy(text: &str) -> QueueEntry {
         let row = json!({
             "schema_version": 1,
@@ -2208,13 +1664,7 @@ mod pending_page_tests {
         );
     }
 
-    /// The budget always admits the head entry, however large.
-    ///
-    /// Unreachable today — the largest entry the fold path can build is
-    /// `4 * 32_768` chars, comfortably under the budget — and written anyway,
-    /// because the failure it prevents is that an over-budget head entry makes
-    /// the whole queue unaddressable: the user could not delete the very thing
-    /// blocking the page, which is the answer this budget's design rests on.
+    /// The budget always admits the head entry, however large; unreachable today, but an over-budget head entry would make the whole queue unaddressable.
     #[test]
     fn an_over_budget_head_entry_is_still_returned_whole() {
         let huge = "y".repeat(PENDING_PAGE_BYTES + 4_096);

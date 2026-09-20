@@ -19,7 +19,7 @@
           {
             "name": "include_system",
             "in": "query",
-            "description": "When true, also include `kind='system'` areas in the response.\nDefault false — the sidebar / Today UI consume the filtered list\nand never need the system area. Documented opt-in for debug surfaces\nand integration tests.",
+            "description": "When true, also include `kind='system'` areas. Opt-in for debug surfaces and integration tests.",
             "required": false,
             "schema": {
               "type": "boolean"
@@ -135,7 +135,7 @@
           {
             "name": "path",
             "in": "query",
-            "description": "Absolute filesystem path to resolve against every area's folder\nclaims. Returns the claim that covers it, or `null` if no claim\ncovers the path. At most one claim can cover a path: the create\nendpoint rejects ancestor/descendant overlap with a 409.",
+            "description": "Absolute filesystem path to resolve against every area's folder claims; `null` if no claim covers it.",
             "required": true,
             "schema": {
               "type": "string"
@@ -188,8 +188,7 @@
         "tags": [
           "areas"
         ],
-        "summary": "Issue #175 — idempotent upsert for the singleton system area that\nhosts the default Today terminal's track + card. Returns 200 with the\nexisting row when one is present; otherwise mints a new row and\nreturns 201. The DB-level partial unique index on\n`areas(kind) WHERE kind = 'system'` enforces the at-most-one\ninvariant as a backstop, so two tabs racing this endpoint can both\nsafely call it: the loser of the write race catches the unique\nviolation, re-reads the row the winner committed, and returns 200\nto its own caller. From the frontend's perspective both racers see a\nsuccess and a populated `Area` body — the only observable difference\nis the status code (201 vs 200), and `useTodayTerminal` treats both\nas success.",
-        "description": "The endpoint exists so the frontend's `useTodayTerminal` hook can\nbootstrap a default terminal without exposing the underlying system\narea to the regular `POST /api/areas` surface (which the sidebar\n\"+ New area\" affordance consumes and which would otherwise need a\nreserved-name policy).",
+        "summary": "Idempotent upsert for the singleton system area that hosts the default Today terminal. 200 with the existing row, else mint and 201.\nThe partial unique index on `areas(kind) WHERE kind = 'system'` backstops at-most-one: the loser of a write race re-reads the winner's row and returns 200.",
         "operationId": "get_or_create_system_area",
         "responses": {
           "200": {
@@ -564,7 +563,7 @@
         "tags": [
           "terminals"
         ],
-        "summary": "Look up the Terminal row a card owns. Returns 404 if the card has no\nterminal (yet). The UI uses this to validate a card_id cached in\nlocalStorage before attempting a WS attach to its terminal.",
+        "summary": "Look up the Terminal row a card owns; 404 if the card has no terminal (yet).",
         "operationId": "get_terminal_for_card",
         "parameters": [
           {
@@ -1410,7 +1409,7 @@
         "tags": [
           "cards"
         ],
-        "summary": "#1625 P3 — the third verb on the entry, kept beside PATCH/DELETE rather than\nbehind the operation adapter for the reason the module header gives for\nthose two: `run_planner_card_operation` flattens every failure to a class\nand a message, and the two typed 409s this route answers with would not\nsurvive it.",
+        "summary": "Kept beside PATCH/DELETE rather than behind the operation adapter, which flattens\nevery failure to a class and a message and would lose the two typed 409s.",
         "operationId": "steer_planner_input",
         "parameters": [
           {
@@ -1521,8 +1520,7 @@
         "tags": [
           "cards"
         ],
-        "summary": "Issue #668 — stop the running planner turn.",
-        "description": "Guard chain mirrors `/planner/input` (card → role → kind), but deliberately\nWITHOUT the lazy-recovery path and its per-card lock: a harness that\nneeds recovering has, by construction, no running turn to stop, so a\nregistry miss (or no active runtime row) is the same typed 409\n`planner_harness_dormant` the input route uses — the client steers the user\nto Reset.\n\nIdle is a graceful no-op, not an error: the harness's own\n`issue_interrupt` ignores interrupts when no turn is active, so the route\nreports `stopped: false` (decided from the harness phase just before\ndispatch) and skips the operation entirely. The phase read and the\ndispatch are not atomic — a turn could start in between — but the failure\nmode is benign (the user presses Stop again). `IssuingInterrupt` also\nreports `stopped: false`: an interrupt is already in flight and\nre-dispatching would be ignored by the FSM anyway.\n\n`IssuingTurn` is a best-effort window, so it reports `stopped: false`\ntoo: while the `turn/start` RPC is in flight the shared app-server may\nnot have populated `active_turn_id_for_thread` yet, so the harness's\n`issue_interrupt` can resolve no target and no-op — the turn would then\nkeep running despite a `stopped: true` answer. The route still dispatches\nthe interrupt (it lands when the app-server already knows the turn), but\nonly `TurnRunning` — where an interrupt target is guaranteed — earns\n`stopped: true`. The user can press Stop again once the turn is running.\nNon-goal: teaching the run loop to remember a pending interrupt across\nthe Issuing window and fire it on `turn/start` completion.",
+        "summary": "Stop the running planner turn. Guard chain mirrors `/planner/input` but WITHOUT lazy recovery: a harness that needs recovering has no running turn to stop, so a registry miss is the same 409 `planner_harness_dormant`.\nIdle is a graceful no-op (`stopped: false`). The phase read and the dispatch are not atomic; the user presses Stop again.\n`IssuingTurn` also reports `stopped: false`: while `turn/start` is in flight the app-server may not know the turn yet, so the interrupt is dispatched best-effort but only `TurnRunning` guarantees a target.",
         "operationId": "interrupt_planner_card",
         "parameters": [
           {
@@ -1746,8 +1744,7 @@
         "tags": [
           "cards"
         ],
-        "summary": "Issue #668 fix — read the current planner-harness phase for a card.",
-        "description": "Guard chain mirrors `/planner/interrupt` (card → role → kind), but unlike\nthe write routes a dormant harness is a normal answer for a read: no\nactive runtime row, or an active row with no registered harness, is\n`200 {worker_session_id: null, phase: null}` rather than a 409.",
+        "summary": "Read the current planner-harness phase for a card. Unlike the write routes, a dormant harness is a normal `200 {worker_session_id: null, phase: null}`, not a 409.",
         "operationId": "get_planner_run",
         "parameters": [
           {
@@ -2840,7 +2837,7 @@
           {
             "name": "card_id",
             "in": "query",
-            "description": "Resolve the default against this card's workspace.\n\nConfig layers are per-directory: a project layer under the card's\nworkspace can override `model`. Without a card there is no workspace,\nso the read is made without a `cwd` and `default_source` is `unknown`\nrather than a global-layer value dressed up as this card's default.",
+            "description": "Resolve the default against this card's workspace; without one the read has no\n`cwd` and `default_source` is `unknown`.",
             "required": false,
             "schema": {
               "type": [
@@ -2902,7 +2899,7 @@
           {
             "name": "entity_id",
             "in": "query",
-            "description": "Optional. When omitted, returns every overlay of `entity_kind`\nacross the workspace — the sidebar uses this form to render\naccurate per-track status without fetching each track's detail.",
+            "description": "Optional. When omitted, returns every overlay of `entity_kind` across the workspace.",
             "required": false,
             "schema": {
               "type": [
@@ -3325,8 +3322,7 @@
         "tags": [
           "plugins"
         ],
-        "summary": "#1284 §2.2 — a real PATCH with a real validator.",
-        "description": "What this used to be: `Json<Value>` written to the row wholesale, with the\nname PATCH and the semantics of PUT and no validation of any kind. Three\nthings change, all of them observable:\n\n1. **No `config_schema` ⇒ 400.** A plugin that declares no configurable\n   surface has no key this endpoint could meaningfully store; accepting\n   arbitrary JSON there was how \"configuration\" stayed a field with no\n   semantics. This **overturns** the existing assertion in\n   `tests/cases/plugin_routes.rs::patch_config_writes_user_config`, which\n   pinned the 200; that test now drives a plugin that declares a schema,\n   and its sibling pins the 400 for one that does not.\n2. **Patch semantics** per `INV-SETTINGS-001`: absent keys keep their\n   stored value, an explicit `null` deletes the key (and thereby restores\n   its manifest default — see\n   [`effective_config`](crate::plugin_host::effective_config)).\n3. **Validation** against the manifest's `config_schema`, with the byte cap\n   `template_input` already uses.\n\n## Every branch that reaches (or refuses) the write, audited\n\nRound 2 of the S1 review, and the reason this table is in the source rather\nthan in a PR comment. Round 1 introduced two defects **of the class it was\nfixing**: guarding against \"an invisible key locks the operator out\" it\nadded a silent destructive write, and guarding against \"a coerced row\nsilently loses data\" it added a 500 that no API could clear. Patching those\ntwo cells one at a time would have been the same mistake a third time, so\nthe branches are enumerated and each is asked the two questions that\ngenerated both defects. Any cell answering \"yes\" is a bug, not a trade-off.\n\n* **(a) Can this branch lose configuration the operator did not delete?**\n* **(b) If this branch refuses, is the operator then unable to fix it\n  through any API?**\n\n| # | branch | writes? | (a) silent loss | (b) locked out | why |\n|---|---|---|---|---|---|\n| 1 | unknown id ⇒ 404 | no | no | n/a | there is no row to lose or repair |\n| 2 | registry has no `Manifest` ⇒ 409 `plugin_manifest_unloaded` | no | no | **no** | `POST /reload` re-reads the manifest; for the durable half (a `manifest.json` that fails to parse) the message names *that* as the thing to fix, because a reload alone would fail again |\n| 3 | stored `user_config` is not an object ⇒ 409 `plugin_config_corrupt` | no | no | **no** | `?reset=true` replaces it with `{}` from the API. This cell was the round-1 defect: a 500 on the only write path for this field *on an installed row* (round 3 P2-3 moved that claim onto its carrier — `plugin_install`'s upsert no longer resets `user_config`, so it no longer rests on the duplicate-id 409), so every later request failed identically and the outs were uninstall/reinstall or a hand-edited DB |\n| 4 | `?reset=true` ⇒ base is `{}` | yes | **no** | n/a | destructive, but only on an explicit query parameter — the operator *is* the deletion. Without a knob like this, cell 3 has no exit |\n| 5 | manifest declares no `config_schema` ⇒ 400 | no | no | no | permanent by construction; there is no configuration to be locked out of |\n| 6 | body is not a JSON object ⇒ 400 | no | no | no | fixed by resending |\n| 7 | request names an undeclared key ⇒ 400 | no | no | no | fixed by dropping that key; the request document is the operator's and fully visible to them |\n| 8 | request key with a non-`null` value | yes | no | n/a | overwrites exactly the key the operator named |\n| 9 | request key with `null` | yes | no | n/a | deletes exactly the key the operator named |\n| 10 | stored keys the current schema no longer declares | yes | **no** | no | they are **kept** in the row and merely excluded from what is validated. Round 1 pruned them *and wrote the pruned map back*, destroying an operator's values on an unrelated PATCH — and if the manifest ever widens back, the setting returns. `effective_config` ignores them either way, so nothing runs with them and the unlock is identical |\n| 11 | merged declared-key document violates the schema ⇒ 400 | no | no | no | the previous row stands; every key named in the error is one the form shows |\n| 12 | byte cap over the merged declared-key document ⇒ 400 | no | no | **no** | the operator shrinks or clears a declared key and the same request succeeds. It is deliberately **not** taken over the residue in cell 10: those bytes are not shrinkable by an ordinary patch, so refusing on them here would be a lockout — and they are not what a consumer reads, since `effective_config` drops them. **This bounds each write, not the row**: cell 12b is what bounds the row |\n| 12b | total cap over the whole stored document, residue included ⇒ 400 | no | no | **no** | round 3 (P1-1). Cell 12's exclusion of residue is right for *that* cap and says nothing about the total: residue only ever grows (nothing prunes it, the write is whole-document, `reload` does not touch `user_config`), so `declare {a}` → fill `a` → narrow to `{b}` → reload → fill `b` → narrow … adds ~8 KiB per turn with every step a legal 200, and the row is echoed in every detail response. The refusal names the exit and the exit is real: `?reset=true` carrying the operator's current keys keeps their configuration and drops exactly the residue, in one request. That is why this is a cap and not the lockout cell 12 avoids |\n| 13 | `plugin_update_user_config` fails ⇒ 500 | no | no | no | genuinely server-side and transient; the row is untouched |\n| 14 | another lifecycle operation holds the id ⇒ 409 `plugin_busy` | no | no | **no** | round 3 (P1-2). The handler is a read-modify-write and used to take no lock while every other lifecycle entry point does, so **(a) was \"yes\"**: two concurrent PATCHes both read the old row and the loser's key vanished from the winner's write. The other interleaving is PATCH against `reload`: judge against the registry's schema at line N, store for the schema a consumer reads at line N+1 — and `effective_config` type-checks nothing on read, so that value reaches S2/S3a/S3b verbatim. The guard closes both. Retry is the whole remedy: a refused acquisition has done nothing |\n| 15 | the `Query` / `Json` extractors reject (`?reset=x`, malformed JSON, no `application/json`) ⇒ 400 / 415 / 422 | no | no | no | **runs before cell 1** — before the handler exists — so it outranks even the 404, and its body is axum's plain text with no `code`: this row is the one place where a response from this path is *outside* the `ErrorBody` contract the rest of the table assumes. Left as-is deliberately: it is the shape of every extractor in this tree, and a rejection wrapper for one endpoint would make this route the exception rather than the rule. The `utoipa` responses list 415 and 422 so the published contract does not claim they cannot happen |\n\nThree further things the S1 review settled, all of which are semantics\nrather than plumbing:\n\n4. **The request document is judged first, values second.** A key the\n   schema does not declare is refused whatever its value — including\n   `null`. The first cut interpreted `null` as \"delete\" *before* validating\n   and so let `{\"ghost\": null}` through with a 200 on a schema that has no\n   `ghost`, which made \"the request is validated against the schema\" false\n   as written. The key-name rule comes from\n   [`reject_undeclared_keys`](crate::plugin_host::template_input::reject_undeclared_keys),\n   the same function `validate_instance` uses.\n5. **Stored keys the current schema no longer declares are excluded from\n   validation, and kept in the row.** They are residue from an older\n   manifest; [`effective_config`](crate::plugin_host::effective_config)\n   already drops them, so nothing runs with them. Carrying them into\n   validation meant that after a schema narrowed, *every* subsequent PATCH\n   — however legal — failed with \"unknown field `old`\" until the operator\n   guessed to send `{\"old\": null}` for a key no UI shows. An operator must\n   not be locked out by a key they cannot see. **Round 2 corrected the\n   remedy**: round 1 pruned the merged map and wrote the pruned result\n   back, which unlocked the write by *deleting the operator's data* on an\n   unrelated edit. Validating a pruned copy unlocks it identically and\n   keeps the row intact.\n6. **`required` is not enforced here** (design adjudication on the S1\n   review). §2.2.5 says a Save carries only the keys the operator edited,\n   so enforcing `required` on the write would make the first Save of any\n   plugin with two no-default required keys unconditionally 400 — the two\n   rules are incompatible and this is the one that gives. `required` is\n   enforced at **consumption** (S2/S3 bring-up): a plugin missing required\n   configuration does not start, and lands in the `unavailable` +\n   `last_error` terminal state §2.4 already defines. This **overturns**\n   `patch_config_enforces_required_keys_but_lets_defaults_satisfy_them`.\n   With `required` gone, the two validation passes the first cut ran\n   collapse into one — the second existed only to enforce it.\n\n## Refusal priority: `404 → 409 → 400`\n\nThe gates run in that order, and the order is part of the contract. Two\nthings sit outside it and are stated rather than hidden:\n\n* **The extractors run first** (table cell 15). `Query<ConfigPatchQuery>`\n  and `Json<Value>` reject `?reset=x`, malformed JSON and a missing\n  `application/json` before this function is entered, with axum's plain-text\n  400 / 415 / 422 and no `code`. Those responses are *not* `ErrorBody`s;\n  everything the priority list below covers is.\n* **The lifecycle guard is taken before the 404** (cell 14), the same\n  ordering `install` uses. It cannot change any answer below — a\n  nonexistent id's lock is always free — and it exists so this\n  read-modify-write cannot interleave with itself, or with a `reload`.\n\n* **404** — an unknown id is an unknown id regardless of what the body\n  says. Checking anything else first would leak \"this plugin has no config\n  schema\" for plugins that do not exist.\n* **409** — the two *state* refusals (the registry does not hold this\n  manifest; the stored row is corrupt). Both mean \"not right now, and here\n  is the action that changes that\".\n* **400** — everything about this manifest or this request being wrong:\n  no `config_schema` at all, a non-object body, an undeclared key, a value\n  the schema rejects.\n\nThe cell that decides the order is **no schema *and* a registry gap**: it\nanswers **409**, not 400, because the kernel does not know whether this\nplugin declares a schema — it has not loaded the manifest. Answering 400\nthere would tell the operator \"this plugin will never be configurable\" on\nthe strength of a document the kernel never read, which is exactly the\nwrong action (they would stop, rather than reload / fix `manifest.json`).\nThat is why the registry lookup precedes the `config_schema` check in the\nbody below and not the other way round.\n\nTiming is likewise unchanged, but the comment that used to sit in the body\noverstated it: it claimed the new config would be read \"on next spawn\",\nwhich was never true of anything — nothing read `user_config` at all.\n§2.4: the write does not touch the running process or connector, and taking\neffect needs an explicit `POST /api/plugins/{id}/reload`. For a `cli-query`\nconnector that is not a nicety — its command, PATH and entire env are built\nonce at bring-up and cached, so an un-reloaded config change is\n*completely* inert, not partly.",
+        "summary": "PATCH semantics: absent keys keep their stored value, an explicit `null` deletes the\nkey. Stored keys the schema no longer declares are kept in the row but excluded from\nvalidation. `required` is enforced at consumption, not here. Gate order is\n`404 → 409 → 400`. Taking effect needs an explicit `POST /api/plugins/{id}/reload`.",
         "operationId": "patch_plugin_config",
         "parameters": [
           {
@@ -3341,7 +3337,7 @@
           {
             "name": "reset",
             "in": "query",
-            "description": "Discard the stored `user_config` entirely and apply this patch to an\nempty object (#1284 S1 review P0-C).\n\nThe recovery action for a row whose `user_config` is not a JSON object,\nwhich the kernel otherwise refuses to merge into (409\n`plugin_config_corrupt`) precisely so it does not silently discard\ndata. Without an explicit knob that refusal is permanent: this endpoint\nis the only writer of the field on an installed row (`plugin_install`\nsets it once at row creation and its upsert path leaves it alone —\nP2-3), so no request could ever restore it.\n\nIt is destructive on purpose and never implicit — that is what makes it\ncompatible with \"a write path must never be the thing that loses\nconfiguration\": the deletion is the operator's, named in the request.\nIt works on a healthy row too, where it means \"reset this plugin to its\nmanifest defaults\".",
+            "description": "Discard the stored `user_config` entirely and apply this patch to an empty object.\nThe recovery action for a corrupt (non-object) row; on a healthy row it means\n\"reset this plugin to its manifest defaults\".",
             "required": false,
             "schema": {
               "type": "boolean"
@@ -4055,8 +4051,7 @@
         "tags": [
           "tracks"
         ],
-        "summary": "#1253 §5.1 — the read-only resolve the Today page load uses.",
-        "description": "**This handler must never reach the harness.** `ensure_today_launchpad`\nmaterializes a workspace and then submits `planner-harness-start` and\n`.wait()`s on it; putting that on the page-load path would make the whole\nToday route fail hard whenever codex is unavailable, which is strictly\nworse than the Today page this replaces (it needed nothing to render). So\nthis endpoint reads two rows and returns. It does not call `ensure`, does\nnot materialize a workspace, and submits no operation — `ensure` hangs off\nan explicit user action only (INV-TODAYDOC-001).\n\n**Routine absence is data; anomalous absence is an error.** That is the\nwhole rule, and the two branches here are the two sides of it.\n\n*No launchpad track* is the ordinary state of a fresh workspace, so it is\n`200` with a `null` body — not a 404. It was a 404 for one revision, on the\ngrounds that 404 is \"cheap and fail-closed\". That reasoning did not survive\ncontact with the fact that this is the **landing route**: every session on\na fresh workspace hit it, and the browser reports every 404 on its console\nerror stream, so an expected state was being transported as an error. CI\nfound it — two Playwright specs assert zero console errors and both load\nToday; one CI run logged the 404 thirty times, because the query refetches.\nThe alternative was allowlisting a 404 in those specs, which buys a\npermanent hole in a \"no console errors\" gate for a transient condition:\nonce #1253 PR2's trigger lands, first use mints a launchpad and the\nexemption outlives its reason.\n\n*A launchpad track with no `track-report` card* stays a `404`, and that is\nthe same rule rather than an exception to it. The track and its report card\nare created in **one transaction** (`today_launchpad_ensure_tx`), and the\nadopt-legacy branch has not yet written `purpose = 'launchpad'` when it\ncommits, so a `purpose`-keyed read cannot observe a half-built launchpad.\nThe state is unreachable, so it produces no console noise in practice — and\nif it ever does occur, an error is the correct signal.\n\nDeliberately NOT reusing `GET /api/cards/{id}/terminal`'s 404-for-absence\nidiom. That 404 is **control flow**: its consumer bootstraps on it, so the\nstatus means \"go create one\" (INV-TODAYTERM-006 pins that chain). This one\nwould mean \"render the empty state\" — pure data, no action — so borrowing\nthe shape would discard the meaning.",
+        "summary": "The read-only resolve the Today page load uses. Must never reach the harness: it\nreads two rows and returns. No launchpad track is the ordinary state of a fresh\nworkspace, so it is `200` with `null`, not a 404 — this is the landing route and\nbrowsers log every 404 as a console error.",
         "operationId": "resolve_today_launchpad",
         "responses": {
           "200": {
@@ -4134,8 +4129,7 @@
         "tags": [
           "tracks"
         ],
-        "summary": "`POST /api/today/launchpad/report/reset` — put today's report back to the\ncanonical empty document (#1343).",
-        "description": "**Why this is a server action and not a client-supplied write.** The\nexisting route `POST /api/tracks/{id}/report` can express a reset: send the\ncanonical `summary` and `body` and `report_startup_read_required` flips back\nto false. But flipping the bit is not the reset: the predicate is\nstructural (#1635 D3 — a header line plus bare declared H1s satisfies it),\nwhile the canonical empty document is the kernel's default body file\n`crates/calm-types/src/report/default.md` (a contract header line, the\nprose contract, four empty H1s) — around 2.8 kB that no client can\nreproduce without copying kernel-owned text. A client that sends less\ngets a 200, an empty state, and a report that has lost the maintenance\ncontract the agent reads; one that sends content beyond the empty\nskeleton gets a 200, an edited report, and an empty state that never\nappears — either way the reset fails *silently*. Worse, the two contract\nfragments are private and **unclosed** on purpose (`track_report.rs`), so a\nclient reassembling them wrongly ships an unterminated HTML comment —\nrejected with 400 by the persist funnel when line 1 is the header line\n(#1635 S2c), and rendered as a blank document with no diagnostic when it\nis not (a headerless body is not scanned).\n\nSo the kernel calls `TrackReportPayload::initial()` itself. Nothing about\nthe canonical content crosses the wire in either direction.\n\n**It touches the report and nothing else.** No conversation is created,\nnone is reset, no harness is started or stopped, and the launchpad is read\nrather than ensured — a workspace with no launchpad has no report to reset\nand gets a 404.\n\n**Attribution is `EditAuthor::User`**, because `rest_user_replace` is the\nentry used and its signature admits nothing else. That is the right record:\na person pressed a button, and the resulting `track.report_edited` is a\nhuman edit. It is also why the same `X-Calm-Actor: user` gate the wholesale\nreplace uses is applied here — the two write the same thing through the\nsame door.\n\n**The revision anchor is read here, not supplied by the browser.** A report\nedit can still land between this read and the write. The ordinary CRDT CAS\nthen returns 409 and writes nothing; Reset never silently overwrites an edit\nit did not read. Retrying the confirmed action reads the new revision.",
+        "summary": "`POST /api/today/launchpad/report/reset` — put today's report back to the canonical\nempty document. The kernel calls `TrackReportPayload::initial()` itself; nothing\ncrosses the wire. Touches the report and nothing else. The revision anchor is read\nhere, so an edit landing in between yields the ordinary CRDT 409 and writes nothing.",
         "operationId": "reset_today_launchpad_report",
         "responses": {
           "200": {
@@ -4207,7 +4201,6 @@
           "tracks"
         ],
         "summary": "Ask the summary conversation to write today's progress.",
-        "description": "See the module docs for the shape of the whole path; the comments below only\nsay what each step's alternative got wrong.",
         "operationId": "write_today_summary",
         "responses": {
           "200": {
@@ -4531,8 +4524,6 @@
         "tags": [
           "tracks"
         ],
-        "summary": "Issue #250 PR 2 — calendar / dashboard window query.",
-        "description": "`GET /api/tracks?since=<ms>&until=<ms>&area_id=<id>` — every\nparameter is optional. Returns the full track row (so the frontend\ncan render lifecycle / area / terminal-at without an N+1 detail\nfetch). Pre-#250 callers that hit `GET /api/tracks` would 405 on\nthe old `POST`-only route; this is an additive contract.",
         "operationId": "list_tracks_window",
         "parameters": [
           {
@@ -5279,8 +5270,7 @@
         "tags": [
           "tracks"
         ],
-        "summary": "`POST /api/tracks/:id/report` — user-driven track-report edit. The\nREST-side counterpart of the planner-MCP `calm.report.write` tool;\nboth paths funnel through the `track_report::write` module — this\none via `rest_user_replace`, the tool via `agent_report_op` — so the\ndual-event invariant (`CardUpdated` + `TrackReportEdited`) and the\nCRDT write happen identically regardless of who's editing.",
-        "description": "**Auth contract** (issue #247 PR3 acceptance):\n\n  * No session cookie → 401 (`auth::require_session` middleware\n    short-circuits before this handler runs).\n  * Authenticated session BUT non-user actor declared via\n    `X-Calm-Actor` (worker / `ai:*` / etc.) → 403. Only\n    [`ActorId::User`] is allowed. This closes the \"planner card's\n    own session cookie forwards a User edit\" hole — a future\n    surface that lets the planner card hold a session must not be\n    able to bypass the User-only contract by claiming `ai:codex`.\n  * Track doesn't exist → 404.\n  * Track exists but the track-report card is missing → 500\n    (invariant violation; PR1 backfill guarantees the row).\n\nThe response is the *projected* [`TrackReportPayload`] read back\nfrom the CRDT post-merge — not the request body verbatim — so the\nfrontend sees what every other reader will see (the JSON cache\nmirrors the CRDT projection, which under single-writer is the\nsame bytes as the input, but reading from the doc keeps the\n\"CRDT is source of truth\" contract true by construction).",
+        "summary": "`POST /api/tracks/:id/report` — user-driven track-report edit; only `ActorId::User`\nis allowed (403 otherwise). The response is the CRDT-projected payload, not the\nrequest body verbatim.",
         "operationId": "update_track_report",
         "parameters": [
           {
@@ -6691,8 +6681,7 @@
         "tags": [
           "tracks"
         ],
-        "summary": "Mint a track assistant conversation and deliver its first message.",
-        "description": "#1314 — the message is folded INTO the mint operation. `first_message`\ntravels in the `planner-harness-start` payload and\n`PlannerHarnessStartAdapter::prepare_tx` seeds the\n`Observation::UserMessage` and writes `harness.user_message.enqueued` in the\nsame transaction that mints the card and its session. There is no\npost-operation send here, and consequently no first-message claim: the two\n#1098 gaps this handler used to document — a claim that asked \"has this CARD\never had a user message enqueued?\" instead of \"has THIS request's message\nlanded?\", and evidence written outside the transaction that carried the\nmessage — are gone with the code that had them.\n\n**Nothing on this path may read that evidence row back.** A failed attempt\nis compensated by deleting the card, but its `harness.user_message.enqueued`\nrow survives (`events` is append-only and compensation only marks the\nruntime failed), while the retry re-derives the very same card id from the\nsame `Idempotency-Key`. So the row means \"a delivery was attempted\", never\n\"a delivery happened\", and treating it as a delivered-marker would turn\nevery retry-after-failure into a silently dropped message.\n`a_retry_after_a_failed_attempt_still_delivers_the_message` pins that, and a\npersisted marker that could answer the question honestly is #1384.",
+        "summary": "Mint a track assistant conversation and deliver its first message, folded into one\n`planner-harness-start` operation. Nothing on this path may read the\n`harness.user_message.enqueued` row back: a failed attempt's row survives compensation\nwhile the retry re-derives the same card id, so the row means \"attempted\", never \"delivered\".",
         "operationId": "create_track_conversation",
         "parameters": [
           {
@@ -7135,14 +7124,14 @@
               "string",
               "null"
             ],
-            "description": "Exact attached Git working directory preselected for a new Track.\n`None` keeps the server-managed Neige workspace default."
+            "description": "Exact attached Git working directory preselected for a new Track; `None` keeps the server-managed default."
           },
           "default_template_id": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Built-in Track template preselected by the official New Track surface.\n`None` keeps \"No template\" as the Area's creation default."
+            "description": "Built-in Track template preselected by the official New Track surface; `None` keeps \"No template\"."
           },
           "id": {
             "type": "string"
@@ -7165,7 +7154,7 @@
       },
       "AreaFolder": {
         "type": "object",
-        "description": "One row per claimed directory; `path` is absolute and globally\nunique across the table. A folder transparently covers every\ndescendant path — the kernel resolves a `cwd` to its owning area by\nfinding the claim that covers it (see `GET /api/areas/resolve`).\nThe create endpoint rejects ancestor/descendant overlap with a 409,\nso at most one claim can cover any given path.",
+        "description": "One row per claimed directory; `path` is absolute and globally unique across the table. A folder\ncovers every descendant path, and overlapping claims are rejected.",
         "required": [
           "id",
           "area_id",
@@ -7237,7 +7226,7 @@
       },
       "AreaResolve": {
         "type": "object",
-        "description": "Issue #250 PR 1 — 200 body for `GET /api/areas/resolve`. The\nresolve endpoint returns `null` (not 404) on miss; this struct is\nthe `Some(_)` payload.",
+        "description": "200 body for `GET /api/areas/resolve`; the endpoint returns `null` (not 404) on miss.",
         "required": [
           "area_id",
           "folder_id",
@@ -7258,7 +7247,7 @@
       },
       "AttachmentId": {
         "type": "string",
-        "description": "`<uuid-v4>.<ext>` — an attachment's id *and* its file name.\n\nThe inner string is private and the only constructor is\n[`AttachmentId::parse`], so a value of this type is always a single path\nsegment matching\n`[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}.(png|jpg|gif|webp)`.\n`Deserialize` goes through the same gate, so an id off the wire is checked\nbefore it can reach a `join`."
+        "description": "`<uuid-v4>.<ext>` — an attachment's id *and* its file name. The only constructor is\n[`AttachmentId::parse`] and `Deserialize` goes through the same gate."
       },
       "BacklinkQuote": {
         "type": "object",
@@ -7310,7 +7299,7 @@
               "string",
               "null"
             ],
-            "description": "Written after claim, so exposing it preserves the #1030 read-state\nexception. `spawn` must never be added beside it."
+            "description": "Written after claim, so exposing it preserves the read-state exception.\n`spawn` must never be added beside it."
           },
           "diagnostics": {
             "type": "array",
@@ -7329,7 +7318,7 @@
               },
               {
                 "$ref": "#/components/schemas/TaskPendingReason",
-                "description": "Server-owned explanation for a task that has not started. The tagged\nvariants keep dependency readiness, scheduler budget, and projection\nadmission distinct so clients never need to reconstruct scheduler\npolicy from `schedulable`, diagnostics, or environment defaults."
+                "description": "Server-owned explanation for a task that has not started."
               }
             ]
           },
@@ -7347,7 +7336,7 @@
               "string",
               "null"
             ],
-            "description": "Issue #1147 slice ① / #1149 — the failure classifier plus its\nhuman reason tail (`\"spawn-failed: track … is not a git\nrepository\"`). Without it a failed task reads as a bare\nclassifier on every surface and the real diagnosis stays buried\nin the operation's `phase_detail_json`."
+            "description": "Failure classifier plus its human reason tail."
           },
           "workerCardId": {
             "type": [
@@ -7375,18 +7364,18 @@
           },
           "deletable": {
             "type": "boolean",
-            "description": "Issue #229 PR A — system-card guard. `true` for user-facing cards\n(the default; all pre-#229 rows backfill via the column DEFAULT in\nmigration 0013). `false` for kernel-owned cards that the user\ncannot remove via REST / plugin callbacks — currently planner cards\n(retroactively undeletable via the same migration's UPDATE) and\nPR B's track-report cards.\n\n`#[serde(default = \"default_deletable\")]` so wire payloads emitted\nbefore #229 landed (event-log replay fixtures, old test seeds)\nparse as `true` without forcing a fixture rewrite — matches the\nDB DEFAULT (1) in migration 0013. The default-fn lives below\nbecause `bool::default()` would give `false` (the *un*safe\nfallback for a deny-by-omission auth bit)."
+            "description": "System-card guard: `true` for user-facing cards, `false` for kernel-owned cards the user cannot\nremove. Defaults to `true` because `bool::default()` is the unsafe fallback for a deny-by-omission auth bit."
           },
           "id": {
             "type": "string"
           },
           "kind": {
             "type": "string",
-            "description": "`\"terminal\"` for built-in PTY cards, `\"ui://<plugin>/<view>\"` for\nplugin-provided cards (the canonical MCP Apps resource URI). The\nkernel never interprets beyond that prefix. `[legacy]`\n`\"plugin:<plugin-id>:<view-id>\"` may still appear on persisted rows."
+            "description": "`\"terminal\"` for built-in PTY cards, `\"ui://<plugin>/<view>\"` for plugin-provided cards.\n`[legacy]` `\"plugin:<plugin-id>:<view-id>\"` may still appear on persisted rows."
           },
           "payload": {
             "type": "object",
-            "description": "Opaque JSON blob — ts-rs would otherwise emit `unknown` via the\n`serde-json-impl` feature, but we pin it explicitly so a future\nfeature-flag change can't silently widen / narrow the surface."
+            "description": "Opaque JSON blob."
           },
           "runtime": {
             "oneOf": [
@@ -7425,7 +7414,7 @@
               "boolean",
               "null"
             ],
-            "description": "Issue #229 PR A — `deletable` is **not** patchable via API. We\nsurface it here only so a client sending `{\"deletable\": ...}`\ngets a clear 400 (via the route handler's explicit check) rather\nthan a silent no-op. `card_update_tx` itself ignores this field\n(it never writes the column); the route enforces the rejection\nbefore reaching the txn."
+            "description": "Not patchable via API: surfaced only so a client sending it gets a clear\n400; `card_update_tx` never writes the column."
           },
           "kind": {
             "type": [
@@ -7466,7 +7455,7 @@
       },
       "CardRuntimeView": {
         "type": "object",
-        "description": "Live runtime projection read from `worker_sessions` when a card is fetched\nor serialized.\n\nThis view is not part of the idempotency contract: across retries the\nworker session may have advanced, so `Card.runtime` may differ between the\nfirst POST response and a retry POST response returning the same operation\nresult. Future cleanup (#581 item 4) will remove the legacy payload-key\nprojection; this typed view is the forward-compatible reader path.",
+        "description": "Live runtime projection read from `worker_sessions` when a card is fetched or serialized. Not\npart of the idempotency contract: it may differ between a first POST response and a retry.",
         "required": [
           "worker_session_id",
           "kind",
@@ -7482,7 +7471,7 @@
               "null"
             ],
             "format": "int64",
-            "description": "#1722 S1b — when the card's last non-interrupted turn ended (the newest\n`turn/completed` transcript row whose status is not `interrupted`), or\nabsent when it has none. Optional like `updated_at_ms`: this view is\npersisted inside `card.added` / `card.updated` events, and a required\nfield would invalidate every stored snapshot. A reader treats absence\nas \"never completed\" (never unread), which is the safe direction."
+            "description": "When the card's last non-interrupted turn ended, or absent when it has none."
           },
           "provider": {
             "oneOf": [
@@ -7563,15 +7552,15 @@
           },
           "id": {
             "type": "string",
-            "description": "Codex's *preset* identifier. Presentation only — a React key. It must\nnever be sent back as a model selection; the slug is\n[`CatalogModel::model`]."
+            "description": "Codex's preset identifier, presentation only; never send it back as a model selection."
           },
           "is_default": {
             "type": "boolean",
-            "description": "Codex's catalog-level default marker. Useful for ordering and\nhighlighting the list; **not** an answer to \"what am I following now\"."
+            "description": "Codex's catalog-level default marker; not \"what am I following now\"."
           },
           "model": {
             "type": "string",
-            "description": "The slug codex is invoked by. This is the value that travels to\n`turn/start`, into `cards.payload_json`, and in a selection request."
+            "description": "The slug codex is invoked by."
           },
           "supported_reasoning_efforts": {
             "type": "array",
@@ -7583,7 +7572,7 @@
       },
       "ClaudePermissionsScope": {
         "type": "object",
-        "description": "A declared Claude Code permission scope: the `claude_permissions` argument\nof `calm.terminal.open` and, since S2, the value of\n`tracks.claude_permissions_policy`.\n\nThe derive is lenient on unknown keys on purpose: it decodes stored rows\nand stored operation payloads, which a newer binary may have written with\na key this one does not know, and a list route must not fail for a whole\narea over one such row. Strictness (unknown key, wrong list type, a JSON\narray or `null` in place of the object) lives in [`parse_scope_named`],\nwhich every untrusted entry runs first.",
+        "description": "A declared Claude Code permission scope: the `claude_permissions` argument of `calm.terminal.open`\nand the value of `tracks.claude_permissions_policy`. The derive is lenient on unknown keys on\npurpose (stored rows from a newer binary); strictness lives in [`parse_scope_named`].",
         "properties": {
           "bash": {
             "type": [
@@ -7619,7 +7608,7 @@
       },
       "ConnectorInstall": {
         "type": "object",
-        "description": "The operator-supplied half of an `mcp-http` connector install.\n\nMirrors the request body of `POST /api/plugins/install` with\n`source.kind = \"mcp_http\"`. Everything the *kernel* decides — the secrets\nkey name, the manifest version, `min_kernel_version` — is a constant above,\nnot a field here.",
+        "description": "The operator-supplied half of an `mcp-http` connector install.",
         "required": [
           "id",
           "display_name",
@@ -7631,14 +7620,14 @@
               "string",
               "null"
             ],
-            "description": "The credential. Absent or empty ⇒ an unauthenticated connector, and the\nsynthesized manifest then names no `api_key_secret` and no\n`secrets.json` is written.\n\n**Never echoed.** It reaches disk in `secrets.json` and nowhere else:\nnot the manifest, not the row, not any response body."
+            "description": "The credential. Absent or empty ⇒ an unauthenticated connector. Never echoed;\nit reaches disk in `secrets.json` and nowhere else."
           },
           "api_key_in": {
             "type": [
               "string",
               "null"
             ],
-            "description": "`bearer` | `header:<name>`. Closed set enforced by\n`McpHttpBlock::validate`; `query:<name>` is refused there (#1194)."
+            "description": "`bearer` | `header:<name>`."
           },
           "bringup_timeout_ms": {
             "type": [
@@ -7669,7 +7658,7 @@
           },
           "id": {
             "type": "string",
-            "description": "Plugin id. Validated by `Manifest::parse`, not here — the manifest is\nthe single source of truth for what a legal id is."
+            "description": "Validated by `Manifest::parse`, not here."
           },
           "request_timeout_ms": {
             "type": [
@@ -7681,7 +7670,7 @@
           },
           "tools_all": {
             "type": "boolean",
-            "description": "Explicit all-tools mode. Old requests omitting this flag retain their\nstrict (possibly empty) allowlist."
+            "description": "Explicit all-tools mode; omitted ⇒ the strict (possibly empty) allowlist."
           },
           "tools_allow": {
             "type": "array",
@@ -7691,13 +7680,13 @@
           },
           "url": {
             "type": "string",
-            "description": "Absolute `http://` / `https://` endpoint. Shape-checked by\n`McpHttpBlock::validate` once the manifest is parsed."
+            "description": "Absolute `http://` / `https://` endpoint."
           }
         }
       },
       "CreateAreaRequest": {
         "type": "object",
-        "description": "User-facing Area creation. The raw sync-domain `NewArea` stays narrow for\ninternal callers; these two preferences belong to the REST product surface\nand are applied inside the same audited transaction as the Area row.\n\nDeliberately permissive about unknown JSON keys, matching the historical\n`NewArea` contract: in particular a caller-supplied `kind` must continue to\nbe ignored rather than gaining a path to create a system Area.",
+        "description": "User-facing Area creation. Deliberately permissive about unknown JSON keys: a caller-supplied `kind` must continue to be ignored rather than gaining a path to create a system Area.",
         "required": [
           "name",
           "color"
@@ -7733,14 +7722,14 @@
       },
       "CreateCardBody": {
         "type": "object",
-        "description": "Body payload accepted by `POST /api/tracks/:track_id/cards`.\n\nTwo mutually-exclusive paths:\n  * **Direct create** — `kind`, `sort`, `payload`, `title` set (legacy\n    pre-M2 wire). The kernel writes the row verbatim.\n  * **`via_tool_call`** — kernel invokes the plugin's tool, extracts the\n    `ui://` resource URI from `_meta.ui.resourceUri`, persists a Card with\n    `kind = <resource_uri>` and `payload = structuredContent`.\n\nWhen both are sent, `via_tool_call` wins. Documented in this module's\nheader. We keep the legacy fields alongside via `#[serde(flatten)]` so\nexisting clients (web-calm AddPanel for terminal/doc cards) keep working\nunchanged.",
+        "description": "Body payload accepted by `POST /api/tracks/:track_id/cards`: direct create (`kind`, `sort`, `payload`, `title`) or `via_tool_call`, which wins when both are sent.",
         "properties": {
           "kind": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Legacy direct-create fields. Mirrors `NewCard` shape; `track_id` is\ntaken from the path so we omit it here."
+            "description": "Legacy direct-create fields; `track_id` comes from the path."
           },
           "payload": {
             "type": [
@@ -7768,7 +7757,7 @@
               },
               {
                 "$ref": "#/components/schemas/ViaToolCall",
-                "description": "M2: plugin tool-call descriptor. When present, the kernel calls the\nplugin and the `kind` / `payload` fields above are ignored."
+                "description": "When present, the kernel calls the plugin and the `kind` / `payload` fields above are ignored."
               }
             ]
           }
@@ -7836,7 +7825,7 @@
               },
               {
                 "$ref": "#/components/schemas/CrossAreaCwdAuthorization",
-                "description": "Explicit authorization to create this track in `area_id` while its cwd\nremains covered by the exact conflicting claim identified here. The\nids are checked inside the create transaction, so a concurrent claim\nchange fails closed. This never creates, moves, or deletes a claim."
+                "description": "Explicit authorization to create this track in `area_id` while its cwd remains covered\nby the exact conflicting claim named here; checked inside the create transaction."
               }
             ]
           },
@@ -7851,21 +7840,21 @@
               "string",
               "null"
             ],
-            "description": "Issue #1131 — omitted / null → persist `default_cwd()` (`$HOME`, else\nprocess cwd) on the track row and skip `area_folders`. Present values\n(including the empty string) keep the pre-#1131 absolute-path + claim\nrules. The SQLite column stays NOT NULL; only the request field is\noptional."
+            "description": "Omitted / null persists `default_cwd()` and skips `area_folders`; present values\n(including the empty string) keep the absolute-path + claim rules."
           },
           "first_message": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Issue #1299 S1 — the sentence the user typed on the synthesiser page,\ndelivered to the planner agent **with** this create instead of having to\nbe retyped after landing on the track.\n\nIt becomes an `Observation::UserMessage` seeded into the harness\nsnapshot inside the `planner-harness-start` transaction — not a\n`TrackGoal`, which is a different semantic slot (see\n`PlannerHarnessStartOperationPayload::first_message`). Validated exactly\nlike `POST /api/cards/{id}/planner/input` (non-blank after trim, at most\n32768 **characters**) and validated before anything is minted.\n\nOmitting it leaves this endpoint's behaviour byte-for-byte unchanged,\ndown to the operation payload, whose `first_message` key is\n`skip_serializing_if`-omitted.\n\nSupplying it also makes `Idempotency-Key` **required** (#1384), and\nchanges what a harness-start failure means. Without it, a create whose\n`planner-harness-start` operation fails still returns 201 — \"the track\nexists, its planner agent is inert\" is a documented, recoverable state.\nWith it, that same failure is a 500, because the sentence the user typed\nwas only ever going to be written by that operation, so a 201 would\nclaim a delivery the create did not make.\n\nThe 500 does **not** undo the create: the track and its cards are\nalready committed and nothing compensates for them. Nor does it say the\nmessage was not delivered — that depends on how far the start got, and\nthis endpoint still cannot tell. A start that failed before the harness\nwas installed handed nothing to any agent; a start that failed *after*\nit (the `Stuck` outcome) has already seeded the observation and fired\nthe turn, and nothing recalls it. #1384 did not close that gap and\ndeliberately did not pretend to: `harness.user_message.enqueued` proves\nonly an *attempt* (its transaction commits before the step that can\nfail), and there is no other durable record of the turn leaving.\n\nWhat #1384 did add is the **retry**: the `Idempotency-Key` is bound to\nthe track inside the transaction that mints it, so repeating the\nidentical request under the same key creates no second track and\ndelivers no second copy. That is the actionable half, and it is all the\n500 claims — it does not promise the track is usable."
+            "description": "The user's first sentence, seeded into the planner harness as a user message. Supplying\nit makes `Idempotency-Key` required and turns a harness-start failure into a 500 (the\ncommitted track is not undone)."
           },
           "fork_report_from": {
             "type": [
               "string",
               "null"
             ],
-            "description": "One-time creation instruction: copy this track's report snapshot into\nthe new report inside the track-create transaction.\n\n#1321 S2 — a third starting point, mutually exclusive with the two\nabove. It used to *win* over both: a create naming a `template_id` and\na fork source silently took the fork while the row still recorded the\ntemplate id and its plugin owner, so `tracks.template_id` claimed a\nprovenance the report did not have (#1321 「已观察事实」§3). It is now a\n400 naming both fields."
+            "description": "One-time creation instruction: copy this track's report snapshot into the new report\ninside the track-create transaction."
           },
           "model": {
             "type": [
@@ -7886,7 +7875,7 @@
               "string",
               "null"
             ],
-            "description": "A user-defined recipe (`track_recipes` row, #1292) to start from.\n\nDeliberately **not** folded into `template_id`. That field's value\nlands on `tracks.template_id`, which the track start path later\nresolves against running plugins' manifests to recover a bound\ntemplate descriptor. A recipe id has no manifest to resolve against,\nso putting one there would make every recipe-created track log a\nresolution failure while starting — an error record for an entirely\nnormal situation.\n\nSupplying both is a 400: two starting points is not a preference to\nresolve, it is a request that does not name one thing. #1321 S2 extends\nthat from this one pair to every pair."
+            "description": "A user-defined recipe (`track_recipes` row) to start from. Not folded into\n`template_id`: a recipe has no plugin manifest to resolve against."
           },
           "sort": {
             "type": [
@@ -7900,7 +7889,7 @@
               "string",
               "null"
             ],
-            "description": "A built-in roster template (#1209) to instantiate the new track's report\nfrom — the caller's spelling, admitted against the roster before\nanything is minted; `tracks.template_id` then stores the roster's own\nkey. It is also what binds the track to a plugin (`plugin_scope`) and\nwhat makes `template_input` acceptable.\n\nOne of the three mutually exclusive starting points (`template_id`,\n`recipe_id`, `fork_report_from`); naming two of them is a 400 that names\nboth. Naming none is the ordinary blank create."
+            "description": "A built-in roster template to instantiate the report from; mutually exclusive with\n`recipe_id` and `fork_report_from` (naming two is a 400)."
           },
           "template_input": {
             "type": [
@@ -7913,7 +7902,7 @@
           },
           "title": {
             "type": "string",
-            "description": "Issue #1211 — on this user-driven create path the title is no longer\nthe track's intent, so the client may omit it entirely. Omitting it\nstores the **empty string** — there is no server-side default; the\n`Untitled track` a user sees in a list is the frontend's display\nfallback (`fe/core/domain/track.ts` `UNTITLED_TRACK_LABEL`). The planner\nagent then names the track via `calm.track.rename`, which only succeeds\nwhile the stored title is still blank. The type\nstays `String`: the empty string has always been a legal title and the\nserver applies no non-empty validation."
+            "description": "Omitted stores the empty string; the planner agent names the track via\n`calm.track.rename` while the stored title is still blank."
           }
         },
         "additionalProperties": false
@@ -7937,7 +7926,7 @@
       },
       "DefaultSource": {
         "type": "string",
-        "description": "Where [`ModelsResponse::default`] came from. Always present, including\nwhen the catalog is unavailable — the picker's own disabled state depends\non being told which answer it is looking at.",
+        "description": "Where [`ModelsResponse::default`] came from.",
         "enum": [
           "config_read",
           "config_toml",
@@ -7953,7 +7942,7 @@
           "if_entry_rev": {
             "type": "integer",
             "format": "int32",
-            "description": "The `rev` the client last read for this entry. Required — see the\nmodule header.",
+            "description": "The `rev` the client last read for this entry. Required.",
             "minimum": 0
           }
         },
@@ -7994,7 +7983,7 @@
           },
           "message": {
             "type": "string",
-            "description": "Compatibility fields for existing MCP clients. `message` is always\nrendered from `code` + `message_args`; it is never a second source."
+            "description": "Compatibility fields for existing MCP clients. `message` is always rendered from `code` + `message_args`."
           },
           "messageArgs": {
             "type": "object",
@@ -8045,12 +8034,12 @@
           "if_entry_rev": {
             "type": "integer",
             "format": "int32",
-            "description": "The `rev` the client last read for this entry. A mismatch is a 409, not\na silent overwrite.",
+            "description": "The `rev` the client last read for this entry; a mismatch is a 409.",
             "minimum": 0
           },
           "text": {
             "type": "string",
-            "description": "Replacement text. Held to the same limits as `POST /planner/input`,\nbecause it becomes the same turn input."
+            "description": "Replacement text, held to the same limits as `POST /planner/input`."
           }
         },
         "additionalProperties": false
@@ -8193,7 +8182,7 @@
       },
       "ErrorBody": {
         "type": "object",
-        "description": "JSON shape returned for every error response — `{error, code}`.\nMirrors the body produced by `CalmError::into_response`. Hand-written\nduplicate of the in-line `json!` body so OpenAPI consumers see a\nconcrete schema.",
+        "description": "JSON shape returned for every error response — `{error, code}`.",
         "required": [
           "error",
           "code"
@@ -8201,7 +8190,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Stable machine-readable code.\n\nEvery variant of `CalmError` maps to one, in `CalmError::code`:\n`not_found`, `conflict`, `idempotency_collision`,\n`idempotency_key_exhausted`, `today_summary_no_activity`,\n`bad_request`, `unauthorized`, `forbidden`, `plugin_install`,\n`plugin_permission`, `plugin_conflict`, `plugin_busy`,\n`plugin_manifest_unloaded`, `plugin_config_corrupt`,\n`plugin_config_too_large`, `plugin_kernel_too_old`,\n`planner_reset_unsupported_in_shared_mode`, `planner_harness_dormant`,\n`planner_harness_runtime_superseded`, `db_error`, `io_error`,\n`serde_error`, `codex_app_server`, `service_unavailable`, `internal`.\n\nThree more are written by routes that build the body directly rather\nthan through a `CalmError`: `forbidden_tool` (`routes/plugins.rs`),\n`not_a_card_tool` and `tool_call_failed` (`routes/cards.rs`). A client\nreading this list as closed has to include those."
+            "description": "Stable machine-readable code (see `CalmError::code`). Three more are written by routes\ndirectly: `forbidden_tool`, `not_a_card_tool`, `tool_call_failed`."
           },
           "error": {
             "type": "string",
@@ -8211,7 +8200,7 @@
       },
       "FolderConflict": {
         "type": "object",
-        "description": "Issue #250 PR 1 — 409 body for the folder-create conflict case.\nHand-written DTO so the frontend gets a structured shape rather\nthan the generic `{error, code}` envelope.",
+        "description": "409 body for the folder-create conflict case.",
         "required": [
           "folder_id",
           "area_id",
@@ -8236,7 +8225,7 @@
       },
       "FolderConflictKind": {
         "type": "string",
-        "description": "Issue #250 PR 1 — kind of overlap detected by the\n`POST /api/areas/:area_id/folders` conflict check. Surfaces in the\n409 response body so the frontend can render a precise message\nwithout re-parsing strings.",
+        "description": "Kind of overlap detected by the `POST /api/areas/:area_id/folders` conflict check.",
         "enum": [
           "equal",
           "ancestor",
@@ -8245,7 +8234,7 @@
       },
       "GetPlannerRunResponse": {
         "type": "object",
-        "description": "Issue #668 fix — current planner-harness run snapshot for a card.\n\n`harness.phase.changed` is the only live phase signal, so a page opened\nmid-turn would otherwise sit on `phase: null` until the next transition.\nThis read endpoint lets the client seed its initial phase. Dormancy (no\nactive runtime row, or no registered harness) is NOT an error here —\nit's the `{worker_session_id: null, phase: null}` answer.",
+        "description": "Current planner-harness run snapshot for a card, so a page opened mid-turn can seed its phase. Dormancy is NOT an error: it is the `{worker_session_id: null, phase: null}` answer.",
         "required": [
           "card_id",
           "pending",
@@ -8255,14 +8244,14 @@
         "properties": {
           "attachments_supported": {
             "type": "boolean",
-            "description": "#1505 S6 — whether this card can take image attachments at all.\n\nIt cannot when the track's workspace is a directory the person already\nowns: attachments are written under `<workspace>/.neige/`, and neige\nnever writes into an attached workspace, so the upload endpoint answers\n400 there.\n\nAnswered here rather than left for the client to work out, and answered\nbefore the attempt rather than by the attempt. Half the tracks in\nproduction were created with a `cwd` and are attached, so a paperclip\nthat looks available and then refuses would be the common case rather\nthan the edge. The criterion is the same function the upload runs\n(`planner_attachments::attachment_root`), called rather than restated."
+            "description": "Whether this card can take image attachments at all: not when the track's workspace is an attached directory, since neige never writes into one. Answered by the same function the upload runs (`planner_attachments::attachment_root`)."
           },
           "blocked_reason": {
             "type": [
               "string",
               "null"
             ],
-            "description": "#1505 S4 — why this conversation's queue is not draining, or `null`\nwhen there is nothing worth saying. `null` almost always.\n\nThree things fill it, and a client should render all three as the same\nkind of standing notice rather than as an error about a request it just\nmade:\n\n * the model or effort to run under cannot be determined (codex's\n   configuration names none, or the stored selection is unreadable) —\n   the text names the choice that fixes it;\n * codex refused to start the turn — the text says the message was NOT\n   sent, and promises no delivery;\n * codex has been unreachable long enough that silence would look like\n   a hang — the text says the message is still queued and will go out.\n\nA brief outage fills nothing, so this staying `null` is not evidence\nthat anything succeeded.\n\nIt is not a general per-turn error channel and does not diagnose why a\nmodel failed mid-turn; that is #1507's."
+            "description": "Why this conversation's queue is not draining, or `null` when there is nothing worth saying: an undeterminable model/effort, a refused turn start, or a long codex outage. A client should render it as a standing notice, not a request error.\nA brief outage fills nothing, so `null` is not evidence that anything succeeded."
           },
           "card_id": {
             "type": "string"
@@ -8272,19 +8261,19 @@
               "string",
               "null"
             ],
-            "description": "#1505 S4-3 — the model slug this conversation's turns run with, or\n`null` for \"follow whatever this installation is configured to use\".\n\nRead off the CARD, not off the harness, and therefore answered for a\ndormant conversation as well: the selection is a property of the\nconversation and outlives every runtime that serves it. That is the\nopposite of `phase` and `token_usage` above, which are properties of a\nlive runtime and are `null` without one."
+            "description": "The model slug this conversation's turns run with, or `null` to follow the installation default. Read off the CARD, so answered for a dormant conversation too."
           },
           "pending": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/PendingQueueEntry"
             },
-            "description": "#1505 PR1 — the addressable user entries still waiting for the next\nturn, in queue order. Empty when the harness is dormant.\n\nOnly entries minted at or after PR1 appear here. Dispatcher\nobservations never do (they are not the user's and cannot be edited),\nand neither do user entries from pre-PR1 snapshots, which have no id to\naddress them by; both kinds of omission are counted in\n`pending_overflow` only for the user-authored ones."
+            "description": "The addressable user entries still waiting for the next turn, in queue order. Empty when dormant. Dispatcher observations and pre-id user entries never appear; the latter are counted in `pending_overflow`."
           },
           "pending_overflow": {
             "type": "integer",
             "format": "int32",
-            "description": "User-authored entries that exist in the queue but are NOT in `pending`:\npre-PR1 entries with no id, plus anything past the page budget. The UI\ncan say \"N more not shown\" and be honest about not offering buttons.",
+            "description": "User-authored entries that exist in the queue but are NOT in `pending`: pre-id entries, plus anything past the page budget.",
             "minimum": 0
           },
           "phase": {
@@ -8303,7 +8292,7 @@
               "string",
               "null"
             ],
-            "description": "The chosen reasoning effort, or `null` for the default. Same source and\nsame reasoning as [`GetPlannerRunResponse::model`]."
+            "description": "The chosen reasoning effort, or `null` for the default. Same source as `model`."
           },
           "token_usage": {
             "oneOf": [
@@ -8312,7 +8301,7 @@
               },
               {
                 "$ref": "#/components/schemas/PlannerRunTokenUsage",
-                "description": "#1255 S3 — latest context-window usage, or null when the harness is\ndormant or codex has not pushed a `thread/tokenUsage/updated` frame yet.\n\nKnown consequence, recorded rather than fixed in this commit: a dormant\nconversation reports `null` here even though the reading IS on disk in\n`worker_sessions.handle_state`. This whole endpoint reads the live\nin-memory harness (registry hit on the active runtime row) and answers\n`phase: null` when there is none — see the handler. Token usage\ninherits that exactly, so a card whose harness has been shut down shows\nno meter until something respawns it. The UI slice decides whether\nthat is acceptable or whether the dormant path should fall back to the\npersisted snapshot; the kernel slice does not pick for it."
+                "description": "Latest context-window usage, or null when the harness is dormant or codex has not pushed a `thread/tokenUsage/updated` frame yet. A dormant conversation reports `null` even though the reading is on disk."
               }
             ]
           },
@@ -8402,7 +8391,7 @@
       },
       "HarnessInputPresentation": {
         "type": "string",
-        "description": "How one segment of a harness `userMessage` should be presented to a human.\n\nCodex calls every turn input a `userMessage`, including observations the\nkernel injected on the user's behalf. The rendered English in that item is\nnot a protocol: wording changes must not turn a system update into something\nthe UI attributes to the user. The harness derives one value per structured\n[`crate::observation::Observation`] before the batch is flattened for\n`turn/start`.",
+        "description": "How one segment of a harness `userMessage` should be presented to a human. The rendered English\nis not a protocol: wording changes must not turn a system update into something the UI attributes to the user.",
         "enum": [
           "user",
           "system",
@@ -8414,7 +8403,7 @@
       },
       "HarnessInputSegment": {
         "type": "object",
-        "description": "One observation in the exact order and wording sent to `turn/start`.\nKeeping the rendered text beside its typed presentation makes a mixed batch\nreversible without teaching a reader how Rust joined or phrased it.",
+        "description": "One observation in the exact order and wording sent to `turn/start`.",
         "required": [
           "presentation",
           "text"
@@ -8425,7 +8414,7 @@
             "items": {
               "$ref": "#/components/schemas/PlannerAttachment"
             },
-            "description": "#1505 S6 — the images this segment carried into `turn/start`.\n\nCarried here rather than left for the client to dig out of the\ntranscript row's own `params`. Two reasons, and the second one is why\nthe first is not merely tidier: that blob is codex's own item, and a\ntranscript rendering from it would have to turn the server's private\nnaming of the bytes back into a REST url — a second, guessable naming\nof the same thing. The id is the naming; the read-back url is built\nfrom it by the same server function the upload response used. Because\nnothing reads a path from that blob, the transcript route redacts the\none this slice put there (#1505 S6 review).\n\n`#[serde(default)]` because every segment persisted before this slice\nhas no such key, and an old transcript is a transcript with no\nattachments rather than an unreadable one."
+            "description": "The images this segment carried into `turn/start`."
           },
           "presentation": {
             "$ref": "#/components/schemas/HarnessInputPresentation"
@@ -8583,7 +8572,7 @@
             "allOf": [
               {
                 "$ref": "#/components/schemas/ConnectorInstall",
-                "description": "#1480 — an `mcp-http` connector described by the request itself. The\nkernel synthesizes the plugin tree (`manifest.json`, and `secrets.json`\nwhen a credential is given) and owns it thereafter; see\n`plugin_host::managed`.\n\nThis source family does not require a directory to exist on the server\nbeforehand, which makes \"add a connector\" expressible from the UI."
+                "description": "An `mcp-http` connector described by the request itself; the kernel synthesizes\nthe plugin tree and owns it thereafter."
               },
               {
                 "type": "object",
@@ -8600,13 +8589,13 @@
                 }
               }
             ],
-            "description": "#1480 — an `mcp-http` connector described by the request itself. The\nkernel synthesizes the plugin tree (`manifest.json`, and `secrets.json`\nwhen a credential is given) and owns it thereafter; see\n`plugin_host::managed`.\n\nThis source family does not require a directory to exist on the server\nbeforehand, which makes \"add a connector\" expressible from the UI."
+            "description": "An `mcp-http` connector described by the request itself; the kernel synthesizes\nthe plugin tree and owns it thereafter."
           },
           {
             "allOf": [
               {
                 "$ref": "#/components/schemas/ConnectorInstall",
-                "description": "JSON setup clients use a distinct source tag so older kernels reject\nthe request instead of silently ignoring `headers` and `tools_all`.\n`mcp_http` remains accepted for existing clients."
+                "description": "A distinct source tag so older kernels reject the request instead of silently\nignoring `headers` and `tools_all`; `mcp_http` remains accepted."
               },
               {
                 "type": "object",
@@ -8623,11 +8612,11 @@
                 }
               }
             ],
-            "description": "JSON setup clients use a distinct source tag so older kernels reject\nthe request instead of silently ignoring `headers` and `tools_all`.\n`mcp_http` remains accepted for existing clients."
+            "description": "A distinct source tag so older kernels reject the request instead of silently\nignoring `headers` and `tools_all`; `mcp_http` remains accepted."
           },
           {
             "type": "object",
-            "description": "Catch-all so we can return a friendly 400 for tarball/url/etc. instead\nof a serde deserialize error.",
+            "description": "Catch-all so tarball/url/etc. get a friendly 400 instead of a serde error.",
             "required": [
               "kind"
             ],
@@ -8655,7 +8644,7 @@
           },
           "stopped": {
             "type": "boolean",
-            "description": "True when a turn was actually running and an interrupt was\ndispatched at it; false when the harness was idle (graceful no-op)\nor a `turn/start` was still in flight (interrupt dispatched\nbest-effort, but not guaranteed to land — press Stop again once the\nturn is running). \"stopped: true\" means the interrupt was *issued* —\ncompletion is asynchronous (`turn/aborted` lands via the harness\nFSM, with an interrupt-timeout watchdog as backstop)."
+            "description": "True when a turn was running and an interrupt was dispatched at it; false when idle or a `turn/start` was still in flight. Means the interrupt was *issued* — completion is asynchronous."
           },
           "worker_session_id": {
             "type": "string"
@@ -8764,7 +8753,7 @@
       },
       "ModelDefaults": {
         "type": "object",
-        "description": "What a card that has selected nothing currently runs. `null` means \"not\nconfigured anywhere we could read\".",
+        "description": "What a card that has selected nothing currently runs; `null` = not configured anywhere readable.",
         "properties": {
           "model": {
             "type": [
@@ -8810,7 +8799,7 @@
               "null"
             ],
             "format": "int64",
-            "description": "Wall-clock ms at which the catalog was fetched, or `null` when it was\nnot fetched at all. There is no server-side cache — codex keeps its own\n300 s disk cache — so this is the age of this response, nothing else."
+            "description": "Wall-clock ms at which the catalog was fetched, or `null` when it was not fetched."
           },
           "models": {
             "type": "array",
@@ -8873,7 +8862,7 @@
         "properties": {
           "path": {
             "type": "string",
-            "description": "Absolute filesystem path. Must start with `/`. The server trims\na trailing slash before insert (root `/` excepted) so equality\nand prefix matching stay canonical."
+            "description": "Absolute filesystem path; the server trims a trailing slash (root `/` excepted)."
           }
         }
       },
@@ -8904,7 +8893,7 @@
           },
           "track_id": {
             "type": "string",
-            "description": "Defaulted so the REST handler can override from the `:track_id` path\nparam without forcing every client body to repeat it. Direct repo\ncallers must still set this — passing \"\" produces a NotFound."
+            "description": "Defaulted so the REST handler can override from the `:track_id` path\nparam; direct repo callers must set it."
           }
         }
       },
@@ -8966,7 +8955,7 @@
       },
       "NewCodexCardBody": {
         "type": "object",
-        "description": "Body for `POST /api/tracks/:track_id/codex-cards`.\n\nDeliberately omits `kind` (always `\"codex\"`) and `payload` (the kernel\npersists schema/UI fields). Empty `cwd` falls back to `$HOME` then the\nserver's cwd.\n\n`prompt` is the hands-free entry point: when non-empty, the kernel starts\na shared thread, binds it to the runtime row, sends the prompt via\n`turn/start`, waits for `turn/started` or `turn/completed`, and starts\nthe TUI as `codex resume <thread_id> --remote unix://...`.\n\nEmpty / absent `prompt` reverts to the user-initiated flow: codex\nboots through the shared remote, the composer is empty, the user types\nand hits Enter.\n\nNote: the old `initial_prompt` field (which had been a documented\nno-op since the codex-TUI port) was removed; serde rejects unknown\nfields with the default config, so a stale caller that still sends\nit will get a 422 — that's the intended fail-loud signal to update\nthe caller. The interactive `prompt` channel is the one place\ncallers should be putting text now.\n\n`theme` is required end-to-end (#177): callers MUST send the host\nbrowser's current foreground/background RGB. The renderer uses it so\ncodex's OSC 10/11 startup probe gets matching colors. Forcing it at\nthe type layer means a\ncaller that forgets — the exact bug that motivated this refactor —\nfails at compile time (TS) or at the deserialize step (Rust/JSON,\n422). No `Option`, no `#[serde(default)]`, no implicit fallback.",
+        "description": "Body for `POST /api/tracks/:track_id/codex-cards`. Omits `kind` and `payload` (kernel-owned). A non-empty `prompt` starts a shared thread, sends it via `turn/start`, and starts the TUI as `codex resume`; empty means the user types.\n`theme` is required with no default: a caller that forgets fails at compile time (TS) or with a 422.",
         "required": [
           "theme"
         ],
@@ -8997,7 +8986,7 @@
               "string",
               "null"
             ],
-            "description": "Hands-free seed prompt. When set and non-empty, codex boots with\nits composer pre-filled and the kernel auto-submits the composer\nonce codex's session is constructed. See the struct doc for the\nfull mechanism."
+            "description": "Hands-free seed prompt: when non-empty the kernel auto-submits it once codex's session is constructed."
           },
           "sort": {
             "type": [
@@ -9009,7 +8998,7 @@
           },
           "theme": {
             "$ref": "#/components/schemas/RequestTheme",
-            "description": "Host browser's current theme RGB (#177). Required so the terminal\nmodel answers codex's OSC 10/11 startup probe with colors matching\nthe host theme. A caller that omits this field gets 422."
+            "description": "Host browser's current theme RGB, so the terminal model answers codex's OSC 10/11 startup probe with matching colors. Omitting it is a 422."
           },
           "title": {
             "type": [
@@ -9049,14 +9038,14 @@
       },
       "NewTerminalCardBody": {
         "type": "object",
-        "description": "Body for `POST /api/tracks/:track_id/terminal-cards`.\n\nDeliberately omits `kind` (always `\"terminal\"`) and `payload` (the kernel\npersists schema payload). Empty `program` falls back to `$SHELL` then\n`/bin/sh`; empty `cwd` falls back to\nthe track's workspace (#1147 S6). `env` is merged into the daemon's environment\nas additional vars on top of `TERM` / `COLORTERM` / inherited.",
+        "description": "Body for `POST /api/tracks/:track_id/terminal-cards`. Omits `kind` (always\n`\"terminal\"`) and `payload` (the kernel persists the schema payload).",
         "required": [
           "theme"
         ],
         "properties": {
           "cwd": {
             "type": "string",
-            "description": "Empty string or missing → the track's workspace path (#1147 S6)."
+            "description": "Empty string or missing → the track's workspace path."
           },
           "env": {
             "type": "object",
@@ -9076,7 +9065,7 @@
           },
           "theme": {
             "$ref": "#/components/schemas/RequestTheme",
-            "description": "Host browser's current theme RGB (#177). Required — the kernel\nwrites it onto the terminal row inside the same transaction\nthat mints the card, and every spawn for this row reads\n`term.theme_fg/_bg` to stamp `--terminal-fg/-bg` daemon argv."
+            "description": "Host browser's current theme RGB. Required — written onto the terminal row in the\nsame transaction that mints the card; every spawn reads it for `--terminal-fg/-bg`."
           },
           "title": {
             "type": [
@@ -9100,18 +9089,18 @@
           },
           "attach_folder": {
             "type": "boolean",
-            "description": "Issue #250 PR 2 — opt-in for \"claim this `cwd` for the body's\n`area_id` as a new folder, in the same transaction as the\ntrack-create write\". Default `false`: the cwd must already be\ncovered by some existing folder under the same area. Both the\ncovering scan and the claim insert run inside that one\ntransaction (issue #275), through the same\n[`crate::area_folder_claim::find_owner`] rule\n`GET /api/areas/resolve` uses. `true` adds a `area_folder` row\nfirst and then the track; folder-conflict rules\n(equal/ancestor/descendant of any existing claim) still apply and\nroll the whole tx back on conflict."
+            "description": "Claim `cwd` for `area_id` as a new folder in the same transaction as the\ntrack create. Default `false`: the cwd must already be covered by a folder."
           },
           "cwd": {
             "type": "string",
-            "description": "Issue #250 PR 2 — absolute filesystem path the planner daemon will\nspawn under. Required (no `Option`): every track-creating path\nmust declare a cwd or the planner daemon has no defensible\nworking directory. The `POST /api/tracks` route enforces\nabsolute-path shape and the area-folder claim check; the\ninner `track_create_tx` writes whatever the route lands here\nverbatim."
+            "description": "Absolute path the planner daemon spawns under; the route validates,\n`track_create_tx` writes verbatim."
           },
           "plugin_scope": {
             "type": [
               "string",
               "null"
             ],
-            "description": "#1110 S4 — copied from the owning Manifest at create. Not accepted on\n`POST /api/tracks` (CreateTrackRequest deny_unknown_fields); the route\nstamps it from the resolved trusted plugin. `#[serde(default)]` keeps\ndirect repo callers additive under `deny_unknown_fields`."
+            "description": "Copied from the owning Manifest at create; not accepted on `POST /api/tracks`."
           },
           "sort": {
             "type": [
@@ -9131,11 +9120,11 @@
               "object",
               "null"
             ],
-            "description": "Issue #891 / #1110 S2 — JSON input for the bound template. Only\naccepted when `template_id` names a template a running trusted plugin\nbinds to and whose Manifest declares an `input_schema`; the `POST /api/tracks`\nroute validates the value against that schema before any DB write. The\nkernel never interprets the blob — it is persisted verbatim and injected\ninto the planner harness developer instructions at thread-mint time.\n`#[serde(default)]` keeps the field purely additive under\n`deny_unknown_fields`."
+            "description": "JSON input for the bound template: validated against the Manifest's\n`input_schema` by the route, persisted verbatim, never interpreted by the kernel."
           },
           "theme": {
             "$ref": "#/components/schemas/RequestTheme",
-            "description": "Host browser's current theme RGB (#177). Required end-to-end so\nthe auto-minted planner card's terminal renderer answers codex's\nOSC 10/11 startup probe with matching colors. A body\nmissing this field is rejected at the deserialize layer (422):\nthe planner card is invisible to the user and a silent fallback\nwould mean every track-from-the-UI spawned with a mis-tinted\ncomposer (the bug that motivated this refactor).\n\nDirect repo callers (`db::sqlite::track_create_tx`, used by tests\nand a couple of non-route helpers) still pass a value here even\nthough the txn-level helper does not consume it — planner-card\nspawning is owned by `routes::tracks::create_track`. Tests can\nuse `RequestTheme::default_dark()` as a no-op sentinel."
+            "description": "Host browser's theme RGB, required so the planner card's terminal answers\ncodex's OSC 10/11 probe with matching colors. Tests use `default_dark()`."
           },
           "title": {
             "type": "string"
@@ -9165,7 +9154,7 @@
           },
           "text": {
             "type": "string",
-            "description": "The first message. Validated exactly like `POST /api/cards/{id}/planner/input`\n(non-blank after trim, at most 32768 chars) and validated *before*\nanything is minted, so a rejected message leaves no card behind."
+            "description": "The first message. Validated exactly like `POST /api/cards/{id}/planner/input`, and\nbefore anything is minted, so a rejected message leaves no card behind."
           }
         }
       },
@@ -9197,7 +9186,7 @@
           },
           "payload": {
             "type": "object",
-            "description": "Opaque JSON blob — see `Card.payload` for the rationale on the\nexplicit `unknown` override."
+            "description": "Opaque JSON blob."
           },
           "plugin_id": {
             "type": "string"
@@ -9242,7 +9231,7 @@
               "string",
               "null"
             ],
-            "description": "Optional. When omitted, returns every overlay of `entity_kind`\nacross the workspace — the sidebar uses this form to render\naccurate per-track status without fetching each track's detail."
+            "description": "Optional. When omitted, returns every overlay of `entity_kind` across the workspace."
           },
           "entity_kind": {
             "type": "string"
@@ -9361,7 +9350,7 @@
       },
       "PendingQueueEntry": {
         "type": "object",
-        "description": "#1505 PR1 — one addressable user entry from the harness pending queue.",
+        "description": "One addressable user entry from the harness pending queue.",
         "required": [
           "entry_id",
           "text",
@@ -9375,11 +9364,11 @@
             "items": {
               "$ref": "#/components/schemas/PlannerAttachment"
             },
-            "description": "#1505 S6 — the images this queued message carries.\n\nEach is already bound, so its read-back url resolves now and will keep\nresolving. The absolute host path the server holds beside each of these\nis deliberately not here: the client addresses an attachment by id and\nreads it back through `GET /planner/attachments/{id}`."
+            "description": "The images this queued message carries. Each is already bound; the client addresses an attachment by id, never by host path."
           },
           "entry_id": {
             "type": "string",
-            "description": "Stable identity. Never empty, and unique within one response."
+            "description": "Stable identity. Never empty, and unique within one response: the snapshot decoder refuses an empty or duplicated id, demoting the slot to `LegacyUser`."
           },
           "queued_at_ms": {
             "type": "integer",
@@ -9389,18 +9378,18 @@
           "rev": {
             "type": "integer",
             "format": "int32",
-            "description": "CAS token for the edit/delete endpoints (#1505 PR2). Bumped whenever\nthe text is rewritten, folding under backpressure included.",
+            "description": "CAS token for the edit/delete endpoints. Bumped whenever the text is rewritten, folding included.",
             "minimum": 0
           },
           "text": {
             "type": "string",
-            "description": "The complete text. Never truncated — an entry that would not fit the\npage budget is left out of the page entirely rather than shown in a\nform the user cannot safely edit."
+            "description": "The complete text. Never truncated — an entry that would not fit the page budget is left out entirely."
           }
         }
       },
       "PlannerAttachment": {
         "type": "object",
-        "description": "One attachment as the frontend sees it in a queue entry or a transcript\nsegment.",
+        "description": "One attachment as the frontend sees it in a queue entry or a transcript segment.",
         "required": [
           "id",
           "contentType",
@@ -9410,7 +9399,7 @@
         "properties": {
           "contentType": {
             "type": "string",
-            "description": "Derived from `id`, never stored separately — see\n[`PlannerAttachment::new`]."
+            "description": "Derived from `id`, never stored separately."
           },
           "id": {
             "$ref": "#/components/schemas/AttachmentId"
@@ -9422,7 +9411,7 @@
           },
           "url": {
             "type": "string",
-            "description": "Where to read the bytes. Also derived, by [`attachment_url`].\n\n#1505 S6. Carried rather than left for the client to build: the\ntranscript and the pending-queue read both need a way to reach these\nbytes, and a client that assembles `/api/cards/{card}/planner/\nattachments/{id}` for itself is a second spelling of a route only the\nrouter should own. The host path the server holds beside this is NOT\nhere and must not be."
+            "description": "Where to read the bytes; derived by [`attachment_url`]. The server's host path is NOT here and must not be."
           }
         }
       },
@@ -9452,7 +9441,7 @@
               "string",
               "null"
             ],
-            "description": "The entry's text after an edit; null for a delete.\n\nEchoed rather than assumed: the client is then reconciling against what\nthe queue holds rather than against what it hoped it would hold. The\nqueue as a whole is deliberately NOT returned — this same mutation emits\n`harness.queue.changed`, which invalidates the planner-run query, so a\nlist attached here would be superseded before it could be used."
+            "description": "The entry's text after an edit; null for a delete."
           },
           "worker_session_id": {
             "type": "string"
@@ -9461,7 +9450,7 @@
       },
       "PlannerInputStaleBody": {
         "type": "object",
-        "description": "409 body for a compare-and-swap failure.\n\nIt carries the current text and rev because the alternative is a client\nthat has to issue a read to find out what it collided with, and the read it\nwould issue can be superseded again before it lands. The extra fields sit\nalongside `error`/`code` so a generic error handler still sees the shape it\nexpects.",
+        "description": "409 body for a compare-and-swap failure; carries the current text and rev.",
         "required": [
           "error",
           "code",
@@ -9494,7 +9483,7 @@
       },
       "PlannerRunTokenUsage": {
         "type": "object",
-        "description": "#1255 S3 — the context-usage half of [`GetPlannerRunResponse`].\n\nA wire type distinct from the stored [`TokenUsage`], and the differences\nare the point rather than an accident of layering:\n\n- **`percent` is computed here, on the server.** One baseline adjustment,\n  one over-window rule, one place they can be got wrong. Shipping a\n  numerator and a denominator instead would invite the client to divide\n  them its own way, and the correct division is not the obvious one.\n- **`total_tokens` is NOT shipped.** The stored value keeps it (it is the\n  honest lifetime cost), but `tokenUsage.total` is a cumulative sum across\n  every response in the thread — unbounded, and measured at 253.8x the\n  window in the captured frame this slice's tests run on — and the single\n  most likely bug in any future UI is a meter\n  drawn from it. Handing the frontend both numbers and trusting it to pick\n  the right one is how that bug gets written. It cannot pick wrong if only\n  one number crosses the wire.",
+        "description": "The context-usage half of [`GetPlannerRunResponse`]. `percent` is computed on the server so there is one place to get it wrong, and `total_tokens` is NOT shipped: it is a cumulative sum across the thread, and a meter drawn from it is the most likely UI bug.",
         "required": [
           "used_tokens",
           "at_ms"
@@ -9503,7 +9492,7 @@
           "at_ms": {
             "type": "integer",
             "format": "int64",
-            "description": "Wall-clock ms of the codex frame this reading came from.\n\nShipped because the reading survives a reboot: it rides the runtime\nsnapshot, so a harness respawned by boot recovery or by lazy recovery\nserves whatever number was last observed — possibly months ago — and\nwithout this field a rehydrated reading is indistinguishable on the\nwire from a live one. A UI that draws a meter needs to be able to say\n\"as of then\", or to stop drawing it. The kernel does not pick a\nstaleness threshold; it ships the timestamp so a reader can."
+            "description": "Wall-clock ms of the codex frame this reading came from. The reading survives a reboot via the runtime snapshot, so without this a rehydrated reading is indistinguishable from a live one."
           },
           "context_window": {
             "type": [
@@ -9519,12 +9508,12 @@
               "null"
             ],
             "format": "double",
-            "description": "Context occupancy as a whole percentage, `0.0..=100.0`.\n\nNull means \"no percentage can honestly be stated\": no known window, a\nwindow at or below the 12000-token baseline, or `used_tokens` above\nthe window. That last case is deliberately NOT clamped to 100 — see\n`TokenUsage::percent`. Render the raw count with no meter."
+            "description": "Context occupancy as a whole percentage, `0.0..=100.0`. Null when no percentage can honestly be stated (no window, window at or below baseline, or usage above the window — deliberately NOT clamped)."
           },
           "used_tokens": {
             "type": "integer",
             "format": "int64",
-            "description": "Tokens in the model's context as of the most recent response\n(`tokenUsage.last.totalTokens` upstream). Always present — this is the\nraw evidence, and it ships even when `percent` does not."
+            "description": "Tokens in the model's context as of the most recent response. Always present, even when `percent` is not."
           }
         }
       },
@@ -9537,11 +9526,11 @@
             "$ref": "#/components/schemas/PlannerSteerRefusedBody"
           }
         ],
-        "description": "#1625 P3 review round 1 — the steer route's 409, which has two typed\nshapes told apart by `code`: `PlannerInputStaleBody` (`planner_input_stale`,\nthe compare-and-swap lost; carries the entry's current text and rev) and\n`PlannerSteerRefusedBody` (`planner_steer_no_running_turn` /\n`planner_steer_unknown_outcome`, the entry is still queued). utoipa binds\none body per status, so the pair is declared as this untagged union; the\nstale arm is produced by `refusal_response`, shared with PATCH/DELETE, and\nthe refused arm by `steer_refused_response`. A third 409, the harness\nshutting down, is a plain `ErrorBody` with code `conflict`."
+        "description": "The steer route's 409: two typed shapes told apart by `code`. utoipa binds one\nbody per status, so the pair is declared as this untagged union."
       },
       "PlannerSteerRefusedBody": {
         "type": "object",
-        "description": "#1625 P3 — 409 body for a steer that delivered nothing, or nothing known.\n\nTwo codes. `planner_steer_no_running_turn` covers both ways of KNOWING\nnothing was delivered — the harness saw no running turn and did not ask,\nor codex was asked and said no (the turn had just ended, or a different\none was running) — because they license the same next move and nothing\nelse: the message is still queued, with the `rev` the client read, and it\ngoes with the next turn. `planner_steer_unknown_outcome` (review round 1)\nis codex NOT answering — the request timed out or the connection dropped\n— where the message is queued again just the same but may ALSO have\nreached the turn; it is its own code because \"nothing happened\" would be\na claim this side cannot make. `error` says which, for the person reading\nthe notice; `phase` is the harness's own phase at the moment it answered.",
+        "description": "409 body for a steer that delivered nothing (`planner_steer_no_running_turn`: the\nmessage is still queued with the `rev` the client read) or nothing known\n(`planner_steer_unknown_outcome`: codex did not answer, so the message is queued\nagain but may also have reached the turn).",
         "required": [
           "error",
           "code",
@@ -9566,7 +9555,7 @@
       },
       "PlannerSteerResponse": {
         "type": "object",
-        "description": "#1625 P3 — what a steer answers on success: codex has the message inside\n`turn_id`, and the entry is no longer in the queue.",
+        "description": "What a steer answers on success: codex has the message inside `turn_id`.",
         "required": [
           "card_id",
           "worker_session_id",
@@ -9583,7 +9572,7 @@
           },
           "steered": {
             "type": "boolean",
-            "description": "Always `true` on a 200, in the shape of `POST /planner/interrupt`'s\n`stopped`: the refusals are typed 409s, never a `false` here."
+            "description": "Always `true` on a 200; refusals are typed 409s, never `false` here."
           },
           "turn_id": {
             "type": "string",
@@ -9637,7 +9626,7 @@
       },
       "PluginDetail": {
         "type": "object",
-        "description": "Single-plugin detail returned by GET-by-id, install, enable, disable,\nconfig-patch, and reload. The full manifest blob rides along so the UI can\nrender version/author/views without a separate fetch.",
+        "description": "Single-plugin detail; the full manifest blob rides along.",
         "required": [
           "id",
           "version",
@@ -9652,11 +9641,11 @@
         "properties": {
           "config_schema": {
             "type": "object",
-            "description": "#1284 §2.5 / §2.7 — the schema the config form renders from, read from\nthe **registry**, i.e. from the same document the PATCH validates\nagainst and every S2/S3 consumer will read.\n\n**Which copy is which, since there are now two.** `manifest` above is\nstill the persisted `plugins.manifest` blob, verbatim, as it has always\nbeen published — it is the row, and rewriting it here would make this\nresponse a document that exists nowhere. This field is the registry's,\nand for `config_schema` specifically it is the authoritative one; when\nthe two disagree (an install by a pre-#1284 kernel dropped the key from\nthe blob; a `reload` refreshed the registry) `manifest.config_schema`\nis stale or absent and this field is not.\n\nRound 1 left this half-done and the contradiction was pinned by a test\nof its own: `has_config` and `effective_config` had moved to the\nregistry while the schema a form needs was still only reachable through\nthe blob, so the API could answer \"yes, this plugin is configurable\"\nand \"here is what is in force\" while being unable to produce the\ndocument §2.5 renders controls from.\n\n`None` means the same thing `has_config: false` means on the list row:\nno schema is in force — either the manifest declares none, or the\nkernel has not loaded it (see [`registry_manifest`])."
+            "description": "The schema the config form renders from, read from the registry — authoritative\nover `manifest.config_schema`, which is the persisted blob and may be stale.\n`None` means no schema is in force."
           },
           "effective_config": {
             "type": "object",
-            "description": "#1284 §2.3 — `defaults ⊕ user_config`, i.e. what the plugin runs with.\n\nCarried **alongside** `user_config` rather than replacing it, and that\nis a contract, not redundancy. §2.2.4 says defaults are applied on read\nand never persisted, and §2.2.5 says a Save may only carry the keys the\noperator edited; a form that could not tell \"the operator chose `dark`\"\nfrom \"the manifest defaults to `dark`\" would have to post the merged\nobject back, and its very first Save would materialize every default\ninto the DB — killing §2.2.4 outright. `user_config` answers \"what did\nthe operator choose\" (so a default renders as a placeholder and stays\nout of the payload); `effective_config` answers \"what is in force\".\nDropping `user_config` would also be a wire break for the field's\nexisting readers, for no gain."
+            "description": "`defaults ⊕ user_config`, i.e. what the plugin runs with. Carried alongside\n`user_config` so a form can tell an operator's choice from a manifest default and\nnever posts defaults back to be persisted."
           },
           "enabled": {
             "type": "boolean"
@@ -9679,7 +9668,7 @@
           },
           "state": {
             "type": "string",
-            "description": "Same wire-name set as [`PluginListItem::state`], including\n`unavailable` — which is reachable for both connectors and `app`\nplugins; see that field's doc for what the state asserts."
+            "description": "Same wire-name set as [`PluginListItem::state`]."
           },
           "updated_at": {
             "type": "integer",
@@ -9696,7 +9685,7 @@
       },
       "PluginListItem": {
         "type": "object",
-        "description": "Compact row used by `GET /api/plugins`. Pairs the persisted `Plugin` row\nwith the runtime status the supervisor knows about. The full manifest is\nexcluded here to keep the list payload cheap; callers needing the manifest\nhit `GET /api/plugins/:id`.",
+        "description": "Compact row used by `GET /api/plugins`; the full manifest is excluded to keep the list cheap.",
         "required": [
           "id",
           "version",
@@ -9711,7 +9700,7 @@
           },
           "has_config": {
             "type": "boolean",
-            "description": "#1284 §2.5 — does this plugin declare a `config_schema`?\n\nThe list deliberately does not carry the manifest (see the struct doc),\nwhich left \"this plugin has nothing to configure\" and \"the config\nscreen isn't built yet\" indistinguishable from list data alone — so the\nUI could only guess, and guessing wrong produces exactly the empty\nshell this work exists to remove. This is the one bit that makes the\nquestion decidable, read from the **registry** — the same source the\nwrite path validates against, so \"the form is offered\" and \"the write\nis accepted\" cannot disagree. A plugin whose row exists but whose\nmanifest the kernel has not loaded (see [`registry_manifest`]) reports\n`false`: the kernel knows of no configurable key for it, and its\n`PATCH` says so explicitly rather than 400-ing as \"no schema\"."
+            "description": "Does this plugin declare a `config_schema`? Read from the registry, the same source\nthe write path validates against; `false` when the manifest is not loaded."
           },
           "id": {
             "type": "string"
@@ -9733,7 +9722,7 @@
           },
           "state": {
             "type": "string",
-            "description": "Wire-name string per design §7.1, plus `unavailable` from #1164 §2.2:\n`running | spawning | crashed | unavailable | disabled | installing |\ninstalled`.\n\n`unavailable` is a NORMAL terminal state, and what it states is\nnarrower than \"something failed\": **no process was started, nothing is\nwatching, and so nothing will retry.** Unlike `crashed` there is no\nsupervisor and no backoff behind it — it stands until an operator\nintervenes, and `last_error` is their only diagnostic. It is not an\nerror state of the kernel.\n\nTwo families of plugin reach it, and the shared property above is why\nthey share the name rather than each getting one:\n\n  * a connector (`kind: mcp-http` / `cli-query`) whose bring-up failed\n    — unreachable upstream, rejected `secrets.json`, boot budget\n    exhausted (#1164 §2.2);\n  * an `app` the kernel refused to start because its stored\n    configuration is unusable — a `config_schema.required` key that\n    neither the operator nor a manifest default supplies, or a stored\n    configuration that could not be read at all (#1284 §2.4).\n\nRecovery is the same operator action in every case: fix the cause,\nthen start the plugin again."
+            "description": "Wire-name string: `running | spawning | crashed | unavailable | disabled | installing\n| installed`. `unavailable` is a normal terminal state: no process was started,\nnothing is watching, and nothing will retry until an operator intervenes."
           },
           "version": {
             "type": "string"
@@ -9811,7 +9800,7 @@
       },
       "ReasoningEffortOption": {
         "type": "object",
-        "description": "One selectable reasoning effort for a model. `description` is codex's own\ncopy, passed through verbatim.",
+        "description": "One selectable reasoning effort for a model.",
         "required": [
           "reasoning_effort",
           "description"
@@ -9884,7 +9873,7 @@
       },
       "ReportSeriesDetail": {
         "type": "string",
-        "description": "`?detail=`: `full` (the default) attaches every series' `points`;\n`summary` leaves the `data` column on disk and answers with the stored\nsummary only.",
+        "description": "`?detail=`: `full` (the default) attaches every series' `points`; `summary` answers\nwith the stored summary only.",
         "enum": [
           "full",
           "summary"
@@ -9977,7 +9966,7 @@
       },
       "ReportSeriesResolved": {
         "type": "object",
-        "description": "The flattened `resolved` object (D4) — the same shape `calm.report.read`\nattaches to a `chart.series` block, with the block's presentation\nfields (`view` / `field` / `period` / `range`) alongside.",
+        "description": "The flattened `resolved` object — the same shape `calm.report.read`\nattaches to a `chart.series` block, with the block's presentation\nfields (`view` / `field` / `period` / `range`) alongside.",
         "required": [
           "status",
           "view",
@@ -10058,7 +10047,7 @@
       },
       "RequestTheme": {
         "type": "object",
-        "description": "Wire shape of `NewCodexCardBody.theme` / `NewTrack.theme`. Matches the\n`calm_session::TerminalTheme` value type one-for-one — duplicated\nhere so the route can keep its own `ToSchema` derive (the\n`calm_session` crate is utoipa-free).",
+        "description": "Wire shape of `NewCodexCardBody.theme` / `NewTrack.theme`; duplicates\n`calm_session::TerminalTheme` so the route keeps its own `ToSchema`.",
         "required": [
           "fg",
           "bg"
@@ -10146,7 +10135,7 @@
         "properties": {
           "path": {
             "type": "string",
-            "description": "Absolute filesystem path to resolve against every area's folder\nclaims. Returns the claim that covers it, or `null` if no claim\ncovers the path. At most one claim can cover a path: the create\nendpoint rejects ancestor/descendant overlap with a 409."
+            "description": "Absolute filesystem path to resolve against every area's folder claims; `null` if no claim covers it."
           }
         }
       },
@@ -10161,7 +10150,7 @@
             "items": {
               "$ref": "#/components/schemas/AttachmentId"
             },
-            "description": "#1505 S6 — ids returned by `POST /api/cards/{id}/planner/attachments`.\n\nNaming an attachment here is what BINDS it: the bytes move out of the\nserver's sweepable staging area before this request writes anything to\nthe queue. So a message that reaches the queue always names files that\nare already permanent, and an upload that is never named expires.\n\n`#[serde(default)]` so every existing client keeps working unchanged.\nAn id belonging to another card is a 400, as is naming the same one\ntwice or naming more than eight."
+            "description": "Ids returned by `POST /api/cards/{id}/planner/attachments`. Naming an attachment here is what BINDS it: the bytes move out of the sweepable staging area before this request writes anything to the queue.\nAn id belonging to another card is a 400, as is naming the same one twice or naming more than eight."
           },
           "text": {
             "type": "string"
@@ -10183,7 +10172,7 @@
               "string",
               "null"
             ],
-            "description": "#1505 PR1 — stable id of the queue entry this text landed in, so the\nclient can match its optimistic echo against `GET /planner/run`'s\n`pending` instead of against the text.\n\nNull in exactly one accepted case: the text folded into a queue entry\nwritten before #1505 PR1, which has no id and never gains one. The other\nways a client sees no id are refusals with a non-200 status (dormant\nharness, 503 saturated queue, 409 shutting down), not this field."
+            "description": "Stable id of the queue entry this text landed in, so the client can match its optimistic echo. Null only when the text folded into a pre-id queue entry."
           },
           "worker_session_id": {
             "type": "string"
@@ -10202,14 +10191,14 @@
               "string",
               "null"
             ],
-            "description": "The model **slug** to run with, or `null` to follow the installation\ndefault. Required — see the module header.\n\nA slug, never a catalog entry's `id`: `GET /api/models` returns both\nand only `model` is the one codex is invoked by.\n\n`#[schema(required = true)]` is not decoration and not a duplicate of\n[`required_nullable`]. The two live in different worlds: serde decides\nwhat the handler accepts, utoipa decides what the published\nOpenAPI document promises, and utoipa derives optionality from the `Option<T>` in the\nfield type alone — it cannot see a `deserialize_with`. Without this the\ndocument said both fields were optional while the handler answered 422\nfor omitting one, so a client generated from either checked-in copy was\nconforming and broken at the same time."
+            "description": "The model **slug** to run with (never a catalog entry's `id`), or `null` to follow\nthe installation default. `#[schema(required = true)]` is needed because utoipa\nderives optionality from the `Option<T>` alone and cannot see `deserialize_with`."
           },
           "reasoning_effort": {
             "type": [
               "string",
               "null"
             ],
-            "description": "The reasoning effort, or `null` to follow the default. Required.\n\nA bare string rather than a closed set: codex accepts any non-empty\neffort, so an enum here would start refusing values the day codex ships\na new one.\n\n`#[schema(required = true)]` for the same reason as `model` above."
+            "description": "The reasoning effort, or `null` to follow the default. Required. A bare string:\ncodex accepts any non-empty effort."
           }
         },
         "additionalProperties": false
@@ -10227,7 +10216,7 @@
           },
           "effort_adjusted": {
             "type": "boolean",
-            "description": "The requested effort was not among the chosen model's supported ones\nand was moved to that model's own default. Never done silently — a\ncaller that ignores this flag shows a value that will not run."
+            "description": "The requested effort was not supported by the chosen model and was moved to that\nmodel's own default."
           },
           "model": {
             "type": [
@@ -10245,13 +10234,13 @@
           },
           "unknown_model": {
             "type": "boolean",
-            "description": "The slug is not in the catalog codex currently reports. A hint, not a\nrefusal: the stored value is the requested one either way. Always\n`false` when the catalog could not be read, because \"we could not ask\"\nis not evidence of absence."
+            "description": "The slug is not in the catalog codex currently reports. A hint, not a refusal;\nalways `false` when the catalog could not be read."
           }
         }
       },
       "SettingsBag": {
         "type": "object",
-        "description": "Wire-shape: a flat string map of key -> value. We use `BTreeMap` for\ndeterministic ordering in the response so the OpenAPI spec consumers\nsee stable test diffs.",
+        "description": "Wire-shape: a flat string map of key -> value; `BTreeMap` for deterministic ordering.",
         "required": [
           "settings"
         ],
@@ -10269,7 +10258,7 @@
       },
       "SettingsPutBody": {
         "type": "object",
-        "description": "Request body for `PUT /api/settings`. Values are `Option<String>` so\nthe client can clear a key by sending `null`. Empty strings are also\ntreated as deletes; see module docs for the rationale.",
+        "description": "Request body for `PUT /api/settings`. `null` and `\"\"` both clear a key.",
         "properties": {
           "settings": {
             "type": "object",
@@ -10300,7 +10289,7 @@
             "properties": {
               "args_canon": {
                 "type": "string",
-                "description": "Canonicalization version behind `args_sha256` (`v1`: compact\nserde_json text with sorted keys)."
+                "description": "Canonicalization version behind `args_sha256` (`v1`: compact serde_json text with sorted keys)."
               },
               "args_sha256": {
                 "type": "string"
@@ -10357,7 +10346,7 @@
       },
       "SourceProvenance": {
         "type": "string",
-        "description": "What the body *is*: the Planner's declaration, page-visible.\n`full_text` / `summary` / `web_page` bodies come from a recorded plugin\ncall (the kernel vouches for the bytes); `manual` bodies are the\nPlanner's own and are marked as not kernel-verified.",
+        "description": "What the body *is*: the Planner's declaration, page-visible. `manual` bodies are the Planner's\nown and are marked as not kernel-verified.",
         "enum": [
           "full_text",
           "summary",
@@ -10367,7 +10356,7 @@
       },
       "SourceQuote": {
         "type": "object",
-        "description": "One anchor of a source: `text` is a byte-exact substring of the body\n(`body[start..end]`, UTF-8 byte offsets — a kernel-side detail; the page\nlocates the anchor by `text`).",
+        "description": "One anchor of a source: `text` is a byte-exact substring of the body (`body[start..end]`, UTF-8 byte offsets).",
         "required": [
           "id",
           "text",
@@ -10436,7 +10425,7 @@
       },
       "SteerPlannerInputBody": {
         "type": "object",
-        "description": "#1625 P3 — body of `POST …/{entry_id}/steer`. The same compare-and-swap\ntoken as the delete, for the same reason: \"send the message I read\" is a\nprecondition on the text, and a steer that ignored it could deliver a\nsentence somebody else had just rewritten.",
+        "description": "Body of `POST …/{entry_id}/steer`: the same compare-and-swap token as the delete.",
         "required": [
           "if_entry_rev"
         ],
@@ -10893,7 +10882,7 @@
               "null"
             ],
             "format": "int32",
-            "description": "#306 — child exit code captured by the daemon at `child.wait()`.\n`Some(_)` means the child returned via `exit()` / main return;\n`None` means either the child hasn't exited yet, was killed by a\nsignal (see `signal_killed`), or the daemon died without writing\nthe sidecar (DaemonLost; not surfaced in v1). Required column\n(NULL-able in SQL, but always serialized) per the [Required over\nOption] policy: the absence of an exit code is itself information\nthe frontend renders, so a missing-field response is a bug.\n`required = true` flips the utoipa default (\"Option ⇒ optional\")\nso the OpenAPI schema marks the field as required-but-nullable,\nwhich `openapi-typescript` renders as `number | null` (no `?:`)\n— matching the contract intent: every response carries the\nfield, even if its value is `null`."
+            "description": "Exit code captured at `child.wait()`; `None` = not exited, signal-killed,\nor daemon lost. `required = true` makes the OpenAPI field\nrequired-but-nullable so clients get `number | null`, not `?:`."
           },
           "id": {
             "type": "string"
@@ -10904,14 +10893,14 @@
               "null"
             ],
             "format": "int64",
-            "description": "Child process id, captured after supervisor spawn. Used by the\norphan-terminal sweeper (`terminal_sweeper`) as the SIGTERM fallback\ntarget. `None` for rows that predate Scope C or for which the spawn\nreturned no pid (kernel-level edge case)."
+            "description": "Child process id; `None` for rows whose spawn returned no pid."
           },
           "program": {
             "type": "string"
           },
           "pty_output": {
             "type": "string",
-            "description": "#1456 — bounded tail of the terminal's merged PTY byte stream, decoded\nlossily as UTF-8. A PTY has no separable stdout/stderr channels."
+            "description": "Bounded tail of the merged PTY byte stream, decoded lossily as UTF-8."
           },
           "pty_output_truncated": {
             "type": "boolean",
@@ -10919,15 +10908,15 @@
           },
           "signal_killed": {
             "type": "boolean",
-            "description": "#306 — true when the child was killed by a signal (SIGTERM,\nSIGKILL, SIGSEGV, …). Mutually exclusive with `exit_code.is_some()`\nat the writer: the daemon picks one branch on the way out and\nnever both. Required (NOT NULL DEFAULT 0 in SQL) — every row\ncarries a value, even if `false`."
+            "description": "True when the child was killed by a signal; mutually exclusive with\n`exit_code.is_some()` at the writer."
           },
           "theme_bg": {
             "type": "string",
-            "description": "#177 — host browser's background RGB at row-creation time.\nMirrors `theme_fg` semantics; both columns are written together\nin the same row-creation transaction so they are never\nindependently NULL."
+            "description": "Host browser's background RGB at row-creation; written together with `theme_fg`."
           },
           "theme_fg": {
             "type": "string",
-            "description": "#177 — host browser's foreground RGB at row-creation time, as\ncomma-decimal `r,g,b` format). NOT NULL after migration 0017:\nevery spawn path reads these columns so renderer startup observes\nthe browser theme."
+            "description": "Host browser's foreground RGB at row-creation, comma-decimal `r,g,b`."
           }
         }
       },
@@ -10989,7 +10978,7 @@
         "properties": {
           "report_has_noninitial_content": {
             "type": "boolean",
-            "description": "The predicate `GET /api/today/launchpad` will now report. Always\n`false` on success — it is returned rather than assumed so a caller can\nsee the reset land without a second round trip."
+            "description": "Always `false` on success; returned rather than assumed so a caller sees the reset land."
           },
           "track_id": {
             "type": "string",
@@ -10999,7 +10988,7 @@
       },
       "TodayLaunchpadResolved": {
         "type": "object",
-        "description": "#1253 §5.1 — what the Today **page load** reads.\n\nA deliberately narrow, read-only DTO. It is not [`TodayLaunchpad`] and it\ndoes not grow into it: `ensure`'s shape is the bootstrap's, this one is the\nreader's, and the two answer different questions.\n\nThere is no `report_card_id` here on purpose. The track detail already\nreturns the track's cards and the frontend locates the report by\n`kind == \"track-report\"` (`fe/core/domain/report.ts::readTrackReport`), so\nsuch a field would have no consumer.",
+        "description": "What the Today page load reads: a narrow, read-only DTO, distinct from [`TodayLaunchpad`].",
         "required": [
           "track_id",
           "report_has_noninitial_content"
@@ -11007,7 +10996,7 @@
         "properties": {
           "report_has_noninitial_content": {
             "type": "boolean",
-            "description": "Whether this report holds content **right now** beyond the empty\nskeleton (#1635 D3): a non-empty `summary`, or a `body` whose block 0\nis more than HTML comments or whose later blocks are more than bare\n`# <h1>`s the contract header declares — or, for a\npre-header body, any byte off the frozen `LEGACY_INITIAL_V4_BODY`.\n\nIt is NOT \"has anyone ever written it\": no history is consulted, so\nnone can be reported, and restoring the text to the canonical pair\nturns this back to `false`. Do not build a \"the summary has run\" marker\non it — see the first bullet below.\n\nIt is computed server-side by\n[`TrackReportPayload::report_startup_read_required`], the kernel's one\ncanonical \"has this been written\" predicate. It is deliberately NOT\nnamed `report_started`, and the difference is not cosmetic (design D7):\n\n* **It is a statement about the report's CURRENT content, not about its\n  history.** The name says exactly that, and the name is the contract:\n  it is `has_noninitial_content`, not `has_ever_been_written`. Restoring\n  `summary` and `body` to the empty skeleton (an empty summary, only\n  HTML comments in block 0, bare declared H1s) flips it back to `false`,\n  whatever happened in between — no history is consulted, so none can\n  be reported.\n* It therefore also answers \"has *anyone* written it\", not \"has today's\n  summary run\": a user hand-editing the document flips it exactly as a\n  summary agent would, and a stale document still reads as content.\n  Anything that really needs \"did the summary run\" needs a durable\n  marker or event, not this.\n* It compares `summary + body` only; `doc_rev` and `blocks` are\n  deliberately ignored, so a canonical placeholder that CRDT has\n  already materialised still reads `false` — and so does a report whose\n  text was reverted to canonical while those two stayed non-zero.\n\nThe frontend must not re-derive this by looking at the report body:\n`readTrackReport` returns non-null for the canonical initial report\n(its body carries the maintenance-contract comment and four H1s), so a\nnull-check there renders four empty headings instead of an empty state."
+            "description": "Whether this report holds content right now beyond the empty skeleton — a statement\nabout CURRENT content, not history: restoring the canonical text flips it back to\n`false`, and a user hand-edit flips it exactly as a summary agent would. The frontend\nmust not re-derive this from the report body."
           },
           "track_id": {
             "type": "string"
@@ -11024,7 +11013,7 @@
         "properties": {
           "card_id": {
             "type": "string",
-            "description": "The summary conversation's card. Stable for the launchpad's lifetime\n(INV-TODAYDOC-011) and openable in Today's Conversations module."
+            "description": "The summary conversation's card. Stable for the launchpad's lifetime."
           },
           "track_id": {
             "type": "string",
@@ -11034,7 +11023,7 @@
       },
       "ToolCallBody": {
         "type": "object",
-        "description": "M5: AppBridge → kernel tool-call wire body. Mirrors the JSON-RPC\n`tools/call` params shape so the web-calm helper can hand it through\nverbatim from the iframe-side `app.callServerTool({ name, arguments })`.\n\nScope β: an optional `call_id` is threaded through to every event the\nkernel writes while servicing this call. Each downstream `events.row`\nrecords `correlation = \"user_tool_call:<call_id>\"` so multi-step\ndispatches (e.g. a plugin tool that issues several overlay writes) can\nbe grouped after the fact (design doc §9). The frontend mints the id;\nthe kernel never inspects its content beyond formatting it into the\ncorrelation string.",
+        "description": "AppBridge → kernel tool-call wire body, mirroring the JSON-RPC `tools/call` params\nshape. `call_id` is threaded into every event written while servicing the call as\n`correlation = \"user_tool_call:<call_id>\"`.",
         "required": [
           "name"
         ],
@@ -11047,7 +11036,7 @@
               "string",
               "null"
             ],
-            "description": "Optional caller-supplied tracing id. Omitted on legacy callers; the\nresulting events still write but with `correlation = NULL`."
+            "description": "Optional caller-supplied tracing id; absent ⇒ `correlation = NULL`."
           },
           "name": {
             "type": "string"
@@ -11082,7 +11071,7 @@
               },
               {
                 "$ref": "#/components/schemas/ClaudePermissionsScope",
-                "description": "#1704 S2 — the user-set Claude Code permission policy of this track's\nTREE, stored on the tree root only (`tracks.claude_permissions_policy`,\nmigration 0109): a child row is always `null` and a PATCH of a child\nis refused, while every CEILING read (`calm.terminal.open`) resolves\nthe root. This field is the raw column, so a child shows `null` here\neven when its root carries a policy. `null` for every track without\none; always serialized (the `recipe_id` convention)."
+                "description": "The user-set Claude Code permission policy of this track's TREE, stored on the tree root only;\na child row is always `null` here even when its root carries a policy."
               }
             ]
           },
@@ -11092,7 +11081,7 @@
           },
           "cwd": {
             "type": "string",
-            "description": "Wire-compatibility alias of `workspace.path`, serialized as `cwd`.\n\nRust readers must use `workspace.path`; this field only preserves the\nexisting wire shape."
+            "description": "Wire-compatibility alias of `workspace.path`, serialized as `cwd`; Rust readers must use `workspace.path`."
           },
           "id": {
             "type": "string"
@@ -11112,7 +11101,7 @@
               "string",
               "null"
             ],
-            "description": "The plugin that owns this track, recorded when the row is created.\n\nA separate persisted fact from the report's source: it says which plugin\nowns the track, not where the report's bytes came from. Two runtime\npaths put a plugin id here — over the crates' `src` directories, every\nother non-test hit is a read or a `None`; on writes from outside that\nset see the last paragraph — and they take it from different places:\n`POST /api/tracks` copies the plugin whose manifest claims the requested\n[`Self::template_id`] (`calm-server/src/routes/tracks.rs:778`), while a\nchild track inherits the parent's value and gets no `template_id` of its\nown (`calm-server/src/operation/child_track_adapter.rs:265`, pinned\nthere by \"plugin_scope must inherit so Only(X) does not widen to All\").\nSo a value here is not by itself a statement that this track named a\ntemplate.\n\nNot part of the ordinary track update (`calm-truth`'s `TrackUpdate`,\nINV-1110-004), so the ordinary track edit cannot change it. It is not\nimmutable in the strongest sense either: adopting an existing track as\nan area's launchpad clears it together with `template_id` and\n`template_input` (`calm-server/src/routes/today.rs:393`). Nor were the\noldest values in this column written by a runtime path at all —\nmigration 0076 added the column and backfilled the rows that already\nexisted. Deliberately no claim here about the full set of statements\nthat write it: the two runtime writers named above were found over the\ncrates' `src` directories, a set that does not contain the migrations."
+            "description": "The plugin that owns this track, recorded when the row is created."
           },
           "purpose": {
             "type": [
@@ -11126,7 +11115,7 @@
               "string",
               "null"
             ],
-            "description": "The user recipe ([`TrackRecipe`]) this track was instantiated from.\n\nDeliberately not `template_id`: that field is resolved against running\nplugins' manifests to recover a bound template descriptor, and a recipe\nhas no manifest to match, so a recipe id there would make every\nrecipe-created track report a resolution failure for an entirely normal\nsituation. It is recorded on the track rather than derived because\ninstantiation is a value copy — once the recipe is edited or deleted\nthere is nothing left to derive the origin from.\n\nMay name a recipe that no longer exists. That is not a broken link to\nrepair: it is the truthful answer to \"where did this come from\"."
+            "description": "The user recipe ([`TrackRecipe`]) this track was instantiated from; may name a recipe that no longer exists."
           },
           "recipe_revision": {
             "type": [
@@ -11134,7 +11123,7 @@
               "null"
             ],
             "format": "int64",
-            "description": "The recipe's `revision` at the moment this track was created. Frozen:\nlater edits to the recipe bump the recipe's revision and leave this\nalone, which is what makes it identify a version rather than a row."
+            "description": "The recipe's `revision` at the moment this track was created."
           },
           "sort": {
             "type": "number",
@@ -11145,14 +11134,14 @@
               "string",
               "null"
             ],
-            "description": "Template this track was created from.\n\nNames the birth snapshot only: later edits to the report do not touch\nthis column, and this column does not describe the report's current\ncontent.\n\nSeparate from [`Self::plugin_scope`], which records the owning plugin,\nand separate from where the report's bytes came from: naming a template\nhere is not by itself the statement that the report was born from that\ntemplate's recipe.\n\nThe `serde(alias)` below is a deserialization-only compatibility read\nfor pre-#1209 event-log rows; serialization emits only this name."
+            "description": "Template this track was created from. Names the birth snapshot only."
           },
           "template_input": {
             "type": [
               "object",
               "null"
             ],
-            "description": "Template input is validated at creation and otherwise remains opaque.\n\nCarries the same deserialization-only alias as `template_id`."
+            "description": "Template input is validated at creation and otherwise remains opaque."
           },
           "terminal_at": {
             "type": [
@@ -11160,7 +11149,7 @@
               "null"
             ],
             "format": "int64",
-            "description": "Issue #250 PR 2 — unix-ms timestamp the track most recently\nentered a terminal lifecycle state (Done / Canceled / Failed),\nor `None` while the track is non-terminal. Stamped inside the\nsame transaction as the `TrackLifecycleChanged` event by\n`track_update_tx`; cleared back to `None` when a terminal track\nreturns to Planning or Working. The calendar window query\n`GET /api/tracks?since&until` uses `(terminal_at IS NULL OR\nterminal_at >= since)` to keep open tracks visible across every\nday they span.\n\nBackfill semantics: rows that existed before this migration\nstay `None` even when their lifecycle is already terminal —\nthe event log carries the original transition timestamp but\nthe migration deliberately doesn't read from `events` (mixing\nmigration with replay is fragile). A user-driven reopen →\nre-Done cycle stamps the column with the current time, which\nis the first defensible point."
+            "description": "Unix-ms timestamp the track most recently entered a terminal lifecycle state, or `None` while non-terminal."
           },
           "title": {
             "type": "string"
@@ -11239,7 +11228,7 @@
       },
       "TrackConversationSummary": {
         "type": "object",
-        "description": "One row of `GET /api/tracks/{track_id}/conversations` (#1189 §4.1).",
+        "description": "One row of `GET /api/tracks/{track_id}/conversations`.",
         "required": [
           "id",
           "trackId",
@@ -11249,7 +11238,7 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "The assistant card's id. This is the conversation's identity everywhere,\nand it is also the card the CARDS panel and `/api/cards/{id}/planner/*`\naddress."
+            "description": "The assistant card's id; the conversation's identity everywhere."
           },
           "kind": {
             "type": "string",
@@ -11261,7 +11250,7 @@
               "null"
             ],
             "format": "int64",
-            "description": "#1722 S1b — when the conversation's last non-interrupted turn ended:\nthe newest `turn/completed` transcript row whose status is not\n`interrupted`, or `null` when there is none. `updated_at` keeps its\nmeaning (it drives the ordering); this is the instant a read receipt\ncompares against. Required and nullable on the wire."
+            "description": "When the conversation's last non-interrupted turn ended, or `null` when there is none."
           },
           "state": {
             "oneOf": [
@@ -11270,7 +11259,7 @@
               },
               {
                 "$ref": "#/components/schemas/WorkerSessionState",
-                "description": "The live session's state, or **null when the card has no session row**.\n\nThe query LEFT JOINs so a card whose session is gone (failed start,\nsuperseded runtime, shut down harness) stays visible. Never fill it with\nan invented value."
+                "description": "The live session's state, or **null when the card has no session row**. Never fill it with an invented value."
               }
             ]
           },
@@ -11279,11 +11268,11 @@
               "string",
               "null"
             ],
-            "description": "The conversation's own name, or null before it has one. Never the\ntrack's title."
+            "description": "The conversation's own name, or null before it has one."
           },
           "trackId": {
             "type": "string",
-            "description": "The track this conversation lives on. Always the track in the request\npath; carried so a client holding a bare row can navigate."
+            "description": "The track this conversation lives on."
           },
           "updatedAt": {
             "type": "integer",
@@ -11294,7 +11283,6 @@
       },
       "TrackDetail": {
         "type": "object",
-        "description": "What a Track detail page renders: the track itself, its server-derived\ncapabilities, its cards, and overlays scoped to the track or those cards.",
         "required": [
           "track",
           "can_resume",
@@ -11304,7 +11292,7 @@
         "properties": {
           "can_resume": {
             "type": "boolean",
-            "description": "Server-derived capability for the user-facing `Resume work` action.\nLifecycle permission and child-track structural integrity are resolved\ntogether so clients do not advertise an action the write must reject."
+            "description": "Lifecycle permission and child-track integrity resolved together so\nclients never advertise an action the write must reject."
           },
           "cards": {
             "type": "array",
@@ -11693,7 +11681,7 @@
       },
       "TrackLifecycle": {
         "type": "string",
-        "description": "Issue #145 — Track lifecycle state machine.\n\nOne explicit state per track, advanced through a typed state machine\n(see `crate::track_lifecycle`). The Planner Agent drives the happy path\n(`draft → planning → dispatching → working → reviewing → done`);\nthe user can cancel any non-terminal state and reopen terminals;\nworker cards have no authority to touch this field at all.\n\n**`archived` is intentionally NOT a lifecycle state.** Archive is\nvisibility / history management, orthogonal to execution semantics —\na `done`/`failed`/`canceled` track can also be archived without\ndestroying the lifecycle truth. Archival continues to live on the\nexisting `archived_at: Option<i64>` field.\n\nPersisted as a lowercase string in `tracks.lifecycle` (migration\n0012). The serde + sqlx `rename_all = \"lowercase\"` keeps the wire\nand storage shape stable; ts-rs exports the matching TS union into\n`fe/core/api/generated/wire.ts` so the frontend can render the\nbadge against the same vocabulary.",
+        "description": "Track lifecycle state machine. `archived` is intentionally NOT a lifecycle state: archival lives\non `archived_at`, orthogonal to execution semantics.",
         "enum": [
           "draft",
           "planning",
@@ -11708,7 +11696,7 @@
       },
       "TrackPatch": {
         "type": "object",
-        "description": "INV-1110-004: `plugin_scope` is create-time only and is not a field here.\nPATCH `/api/tracks` cannot widen or change it. Extra JSON keys are ignored\n(`deny_unknown_fields` is not set).",
+        "description": "`plugin_scope` is create-time only and is not a field here. Extra JSON keys are ignored.",
         "properties": {
           "archived_at": {
             "type": [
@@ -11723,7 +11711,7 @@
               "string",
               "null"
             ],
-            "description": "Issue #985 — per-track declaration policy. A present null resets to\nthe kernel default."
+            "description": "Per-track declaration policy. A present null resets to the kernel default."
           },
           "claude_permissions_policy": {
             "oneOf": [
@@ -11732,7 +11720,7 @@
               },
               {
                 "$ref": "#/components/schemas/ClaudePermissionsScope",
-                "description": "#1704 S2 — the Claude Code permission policy of the WHOLE track tree\n(`tracks.claude_permissions_policy`, migration 0109). Tree-root-only,\nenforced by `track_update_tx` like `tree_task_budget`: a child row is\nalways NULL and every ceiling read resolves the root. `Some(Some(scope))`\nsets it (the route validates the scope first), `Some(None)` clears it,\nomit to leave alone. The value is read through `parse_scope_named`, so\nan array, a `null` list or an unknown key is a shape error naming\n`claude_permissions_policy`, never a lenient decode."
+                "description": "Claude Code permission policy of the WHOLE track tree; tree-root-only.\n`Some(None)` clears. Read through `parse_scope_named`, so a bad shape is an\nerror naming the field, never a lenient decode."
               }
             ]
           },
@@ -11743,7 +11731,7 @@
               },
               {
                 "$ref": "#/components/schemas/TrackLifecycle",
-                "description": "Issue #145 — request a lifecycle transition. The actual\ntransition validation runs through `crate::track_lifecycle`,\ninside the write transaction. Omitting (`None`) means \"leave\nalone\"; `Some(<state>)` triggers the validator against the\n(actor, from → to) triple before any DB write or event emit."
+                "description": "Request a lifecycle transition; validated through `crate::track_lifecycle`\ninside the write transaction."
               }
             ]
           },
@@ -11761,14 +11749,14 @@
               "null"
             ],
             "format": "int64",
-            "description": "Issue #985 — maximum admitted planner-declared task inventory. A\npresent null resets to the kernel default."
+            "description": "Maximum admitted planner-declared task inventory. A present null resets to\nthe kernel default."
           },
           "require_task_gates": {
             "type": [
               "boolean",
               "null"
             ],
-            "description": "Issue #644 — track-level gate policy (`tracks.require_task_gates`,\nmigration 0041). `Some(v)` sets the flag, omit to leave alone.\nEnforced by `calm.plan.upsert` rule 6 only from PR-C onward."
+            "description": "Track-level gate policy; `Some(v)` sets the flag."
           },
           "sort": {
             "type": [
@@ -11783,7 +11771,7 @@
               "null"
             ],
             "format": "int64",
-            "description": "Issue #644 — per-track scheduler budget (`tracks.task_budget`,\nmigration 0041). Pass `Some(Some(n))` to set, `Some(None)` to\nclear back to the kernel default, or omit (`None`) to leave\nalone. Inert until the PR-B scheduler reads it."
+            "description": "Per-track scheduler budget; `Some(None)` clears back to the kernel default."
           },
           "title": {
             "type": [
@@ -11797,7 +11785,7 @@
               "null"
             ],
             "format": "int64",
-            "description": "Issue #985 slice 6 PR-B — budget for the non-terminal planner inventory of\nthe WHOLE track tree. Root-only: `track_update_tx` refuses the patch on a\ntrack with a parent, since a per-child budget would make the tree bound\nvacuous. A present null resets to the kernel default (32)."
+            "description": "Budget for the non-terminal planner inventory of the WHOLE track tree.\nRoot-only; a present null resets to the kernel default (32)."
           },
           "workspace": {
             "oneOf": [
@@ -11806,7 +11794,7 @@
               },
               {
                 "$ref": "#/components/schemas/TrackWorkspacePatch",
-                "description": "#1147 S3 — request a workspace change (design §更换与冻结).\n\nHandled entirely by `routes::tracks::update_track` and **never** by\n`track_update_tx`: a re-point is a filesystem move bracketed by two\ntransactions, not a column write, so there is nothing here for the\nmechanical row writer to apply. It is also mutually exclusive with\nevery other field in this struct — see the route."
+                "description": "Request a workspace change. Handled by the route, never by\n`track_update_tx`: a re-point is a filesystem move bracketed by two\ntransactions, and mutually exclusive with every other field here."
               }
             ]
           }
@@ -11814,7 +11802,7 @@
       },
       "TrackRecipe": {
         "type": "object",
-        "description": "A user-defined starting point for a new track.\n\nA recipe is a saved report: `title` doubles as the report summary, and\n`body`'s `neige-block` fences **are** its tasks. It is deliberately not a\ntrack — #1300 removed \"template = a hidden track\" because storing recipes\nthat way cost seven \"this track is special\" exceptions across unrelated\nsubsystems plus a kernel report write that impersonated the user. A\nrecipe row has neither problem: nothing schedules it, nothing lists it\namong tracks, and every byte in one was written by a human.\n\nThe built-in templates (`crates/calm-server/templates/builtin/*.md`,\nloaded into the roster at boot) and operator templates (`--templates-dir`,\n`site/<stem>`) are **not** rows here. Both feed the same instantiation\nseam, so \"built-in\" and \"mine\" differ only in where the payload came\nfrom — see `routes::track_recipes`.",
+        "description": "A user-defined starting point for a new track: a saved report whose `title` doubles as the\nsummary and whose `neige-block` fences are its tasks.",
         "required": [
           "id",
           "title",
@@ -11838,11 +11826,11 @@
           "revision": {
             "type": "integer",
             "format": "int64",
-            "description": "Optimistic-lock anchor. Writers pass the revision they read and the\nUPDATE validates + bumps in one statement.\n\nDeliberately not `updated_at`: a wall clock is not a version. Two\nwrites inside the same millisecond are indistinguishable by\ntimestamp, and a clock that steps backwards makes a stale write look\ncurrent."
+            "description": "Optimistic-lock anchor. Writers pass the revision they read and the UPDATE validates + bumps in one statement."
           },
           "title": {
             "type": "string",
-            "description": "Picker label *and* the instantiated report's summary. One field, not\ntwo: the three built-in templates already write the same string in\nboth places, so a second column would not preserve an existing\ndistinction — it would mint a new way for them to disagree."
+            "description": "Picker label *and* the instantiated report's summary."
           },
           "updated_at": {
             "type": "integer",
@@ -11853,7 +11841,7 @@
       },
       "TrackReportPayload": {
         "type": "object",
-        "description": "The payload persisted in a track-report card's `payload` JSON column.\n\nWire shape (camelCase to match the rest of the kernel's payloads):\n\n```json\n{\n  \"schemaVersion\": 4,\n  \"docRev\": 7,\n  \"summary\": \"Refactored the dispatcher into a typed actor\",\n  \"body\": \"# Goal\\n\\nReplace the ad-hoc loop with…\\n\\n# Progress\\n...\"\n}\n```\n\n`summary` is the one-line previewable in sidebars / list views;\n`body` is the Markdown source the TrackReportCard renders. The\nfrontend derives sections from `body` by splitting on H1 headings;\nthe storage layer does not impose a section vocabulary.",
+        "description": "The payload persisted in a track-report card's `payload` JSON column; `summary` is the one-line\npreview, `body` the Markdown source the TrackReportCard renders.",
         "required": [
           "schemaVersion",
           "docRev",
@@ -11869,27 +11857,27 @@
             "items": {
               "$ref": "#/components/schemas/ReportBlock"
             },
-            "description": "Block mirror of the authoritative CRDT block map (#960 PR2).\nSince schema v2 the CRDT `blocks`/`order` layout is the source\nof truth; this JSON field and `body` are both projections the\npersist boundary rewrites on every write. v1 rows may omit it."
+            "description": "Block mirror of the authoritative CRDT block map; this field and `body` are both projections the\npersist boundary rewrites on every write. v1 rows may omit it."
           },
           "body": {
             "type": "string",
-            "description": "Markdown source. Sections are derived at render time by\nsplitting at H1 (`^# `) headings; the kernel reads that structure\nonly to check the contract header once at the persist funnel\n(#1635 D2) and to answer `report_startup_read_required` (#1635 D3:\nunwritten iff `summary` is empty and either the body carries a\nheader, block 0 is only HTML comments and every later block is a\nbare declared `# <h1>`, or it carries no header and is byte-equal to\nthe frozen pre-header body; a body the funnel check rejects reads as\nwritten)."
+            "description": "Markdown source. Sections are derived at render time by splitting at H1 (`^# `) headings."
           },
           "docRev": {
             "type": "integer",
             "format": "int64",
-            "description": "Document-wide optimistic-concurrency revision. This is mirrored\nfrom the authoritative CRDT root and increments after every\nsuccessful report persist (whole-document or block-level).",
+            "description": "Document-wide optimistic-concurrency revision, mirrored from the authoritative CRDT root.",
             "minimum": 0
           },
           "schemaVersion": {
             "type": "integer",
             "format": "int32",
-            "description": "Tier A persistence contract — see\n`TRACK_REPORT_PAYLOAD_SCHEMA_VERSION` in calm-truth's\n`validation.rs`. `4` since #1456 discriminated terminal `command`\nfrom agent `goal`; blocks remain authoritative and `body` is their\nflat projection. Older rows remain readable and are lazily\nupgraded at the next persist via the CRDT-layer migrator\n(`ReportDoc::ensure_blocks_layout`).",
+            "description": "Tier A persistence contract; older rows remain readable and are lazily upgraded at the next persist.",
             "minimum": 0
           },
           "summary": {
             "type": "string",
-            "description": "One-line summary used by sidebars / track-list previews. Empty\nstring is valid (means \"planner agent has not produced a summary\nyet\"); the field stays a required `String` per the\n[[required-over-option]] rule."
+            "description": "One-line summary used by sidebars / track-list previews; empty string is valid."
           }
         }
       },
@@ -11936,7 +11924,7 @@
       },
       "TrackSourceDetail": {
         "type": "object",
-        "description": "A captured source with its body: the raw text the kernel stored,\nverbatim (the panel does not render it as Markdown).",
+        "description": "A captured source with its body: the raw text the kernel stored, verbatim.",
         "required": [
           "source_id",
           "provenance",
@@ -12081,7 +12069,7 @@
       },
       "TrackTemplate": {
         "type": "object",
-        "description": "One selectable starting point for a new track.\n\n\"Blank\" is not in this list and never will be: it is the *absence* of a\ntemplate (`POST /api/tracks` with no `template_id`), so the client renders it\nas its own default option rather than the server minting a pseudo-row for\nsomething that has no key, no title source, and no report to fork.",
+        "description": "One selectable starting point for a new track. \"Blank\" is not in this list: it is\nthe absence of a template, rendered by the client as its own default option.",
         "required": [
           "id",
           "title",
@@ -12090,17 +12078,17 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "Template key. Passed back verbatim as `template_id` on\n`POST /api/tracks` — see the seam note on this module."
+            "description": "Template key. Passed back verbatim as `template_id` on `POST /api/tracks`."
           },
           "input_schema": {
-            "description": "JSON Schema for `template_input`, from the manifest of the running\ntrusted plugin bound to `id`. Absent means the template takes no input;\nsending `template_input` for it is a 400 on create."
+            "description": "JSON Schema for `template_input`, from the manifest of the running trusted plugin\nbound to `id`. Absent means the template takes no input."
           },
           "tasks": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/TrackTemplateTask"
             },
-            "description": "The tasks this template pre-sets, in plan order.\n\nAlways present; **not** always non-empty. That was true while this came\nfrom the constants, but the projection drops tombstones, so retiring\nevery task of a template (through the ordinary report block DELETE)\nleaves this empty. A client must render that state rather than assume it\naway."
+            "description": "The tasks this template pre-sets, in plan order. Always present; not always non-empty."
           },
           "title": {
             "type": "string"
@@ -12109,7 +12097,7 @@
       },
       "TrackTemplateTask": {
         "type": "object",
-        "description": "One pre-set task, projected from a `task` fence in the template file's body.\n\n`key` and `goal` only: those are the two facts a person choosing a starting\npoint needs, and both are verbatim from the recipe's own `task` block.\nAcceptance criteria, dependencies and gate advice belong to the track's\nreport once it exists, not to the chooser.",
+        "description": "One pre-set task, projected from a `task` fence in the template file's body.",
         "required": [
           "key",
           "goal"
@@ -12139,7 +12127,7 @@
               "null"
             ],
             "format": "int64",
-            "description": "One-shot, monotonic. `Some` ⇒ neither `path` nor `kind` may change\nagain.\n\nThe system-area launchpad remains unfrozen because it is repointed by\n`today_launchpad_ensure_tx`."
+            "description": "One-shot, monotonic. `Some` ⇒ neither `path` nor `kind` may change again. The system-area\nlaunchpad stays unfrozen because it is repointed."
           },
           "kind": {
             "$ref": "#/components/schemas/TrackWorkspaceKind"
@@ -12160,7 +12148,7 @@
       },
       "TrackWorkspacePatch": {
         "type": "object",
-        "description": "#1147 S3 — point a track at a repository the user already has.\n\nThe only transition this expresses is `managed → attached`. There is no\n`managed → managed`: a managed path is *derived*\n(`<workspace-root>/<area_id>/<track_id>`, see\n`workspace_materialize::managed_workspace_path`) from a track's area and id,\nneither of which can change, so \"re-allocate a managed workspace\" would\nalways re-derive the same path — an in-place reset, not a change. And a\ncaller-supplied *managed* path is worse than useless: S5's recycle guard 2\nrequires exactly `<root>/<area>/<track>` depth, so any other path produces a\nrow whose directory can never be reclaimed.\n\n`attached → *` stays refused (an attached repository belongs to the user;\nthe server never moves, initializes or deletes it), which makes this a\none-way door — and the write below stamps `frozen_at` to say so.",
+        "description": "Point a track at a repository the user already has. The only transition is\n`managed → attached`: a managed path is derived from area and id, and\n`attached → *` stays refused, so this is a one-way door stamping `frozen_at`.",
         "required": [
           "kind",
           "path"
@@ -12168,7 +12156,7 @@
         "properties": {
           "attach_folder": {
             "type": "boolean",
-            "description": "Claim `path` for this track's area in the same transaction, exactly as\n`POST /api/tracks`'s field of the same name does (issue #275 rules:\nequal / ancestor / descendant of any existing claim is a structured\n409). Default `false`: an unclaimed path is refused rather than\nsilently making a homeless track."
+            "description": "Claim `path` for this track's area in the same transaction. Default\n`false`: an unclaimed path is refused rather than making a homeless track."
           },
           "kind": {
             "$ref": "#/components/schemas/TrackWorkspaceKind",
@@ -12176,14 +12164,14 @@
           },
           "path": {
             "type": "string",
-            "description": "Absolute path to an existing Git work tree. Validated — existence and\ngit-ness included — *before* anything is written, because \"the path was\nwrong\" surfacing later as a worker's `spawn-failed` is the defect\n#1147 was opened on."
+            "description": "Absolute path to an existing Git work tree, validated before anything is written."
           }
         },
         "additionalProperties": false
       },
       "TracksWindowQuery": {
         "type": "object",
-        "description": "Issue #250 PR 2 — calendar window query parameters for\n`GET /api/tracks`. Every field is optional so omitting all three\ndegenerates to \"every track in the DB\" (the route delegates to\n`Repo::tracks_window` which builds the SQL `WHERE` clause from the\nnon-`None` subset).\n\nThe semantic for `since` + `until` is **inclusive at both\nendpoints**:\n  * `created_at <= until`  — exclude tracks that hadn't been created\n    yet by the right edge of the window.\n  * `terminal_at IS NULL OR terminal_at >= since` — include any\n    track that's still open (never reached a terminal lifecycle\n    state) or whose terminal stamp lands inside / past the left\n    edge.\n\nTogether the two predicates implement the \"the track is visible on\nat least one day inside `[since, until]`\" calendar contract from\nthe issue, even when the track hasn't terminated yet.",
+        "description": "Calendar window query parameters for `GET /api/tracks`; `since` / `until` are\ninclusive at both endpoints.",
         "properties": {
           "area_id": {
             "type": [
@@ -12224,7 +12212,7 @@
           "if_revision": {
             "type": "integer",
             "format": "int64",
-            "description": "The `revision` the caller read. A mismatch is 409 — never a silent\noverwrite."
+            "description": "The `revision` the caller read. A mismatch is 409 — never a silent overwrite."
           },
           "title": {
             "type": "string"
@@ -12259,7 +12247,7 @@
       },
       "UpdateTrackReportBody": {
         "type": "object",
-        "description": "Request body for `POST /api/tracks/:id/report`.\n\n`summary` and `body` are required `String`s (per\n`TrackReportPayload`'s [[required-over-option]] rule), and\n`ifDocRev` is the required document-wide revision anchor. An empty\n`summary` is valid; the caller must commit to *some* string.\n\n**No `author` field.** Author is derived server-side from the\nauthenticated session and pinned to [`EditAuthor::User`] for this\nendpoint — accepting one on the wire would let a User forge\n`EditAuthor::Planner` and make a hand-typed edit look like the AI\ndid it. Even if a client serializes an `author` key the handler\nignores it (serde `deny_unknown_fields` would 400 it; this is the\nstricter contract that closes the spoofing risk by construction).\n\n`schemaVersion` is also intentionally absent — it's a server-managed\ninvariant pinned to [`TrackReportPayload::SCHEMA_VERSION`] and the\nprojected payload returned in the response reasserts the current\nversion. Letting clients write the version field would invite\nsilent shape drift the first time someone forgot to update both\nsides.",
+        "description": "Request body for `POST /api/tracks/:id/report`. No `author` field: it is pinned\nserver-side to `EditAuthor::User` so a User cannot forge a Planner edit;\n`schemaVersion` is server-managed too.",
         "required": [
           "ifDocRev",
           "summary",
@@ -12306,13 +12294,13 @@
           },
           "url": {
             "type": "string",
-            "description": "Absolute REST path the browser reads the bytes back from. Server-built:\nthe client never composes a path of its own.\n\nDurable only once the attachment is bound. An upload lands in the\nserver's `staging/` directory, and a staged attachment is swept once it\nis older than the 24h orphan TTL, after which this path answers 400.\nSending or queueing a message that names the id binds it — the bytes\nmove into `bound/`, which nothing sweeps — and from that moment this\npath is stable for the life of the card. So the window in which this\nurl can stop working is exactly \"uploaded, never sent, 24 hours\"."
+            "description": "Absolute REST path the browser reads the bytes back from. Durable only once the attachment is\nbound: a staged upload never sent is swept after the 24h orphan TTL, after which this path answers 400."
           }
         }
       },
       "VersionInfo": {
         "type": "object",
-        "description": "Response shape for `GET /api/version`. camelCase on the wire so it lines\nup with the rest of the TypeScript-facing surface.",
+        "description": "Response shape for `GET /api/version`; camelCase on the wire.",
         "required": [
           "areaCreateIdempotency",
           "conversationCreateModel",
@@ -12331,7 +12319,7 @@
         "properties": {
           "apiVersion": {
             "type": "string",
-            "description": "REST contract version. Diagnostic-only on the wire — the frontend\ngates compatibility on `min_web_compat_version` (whole bundle) and\n`sync_event_version` (per-event-frame). See `API_VERSION` for the\nrationale. (Issue #198, concern 3.)"
+            "description": "REST contract version. Diagnostic-only on the wire — the frontend gates on\n`min_web_compat_version` and `sync_event_version`."
           },
           "areaCreateIdempotency": {
             "type": "boolean",
@@ -12349,11 +12337,11 @@
           },
           "databaseId": {
             "type": "string",
-            "description": "#1722 S1b — the database's stable id: minted once into the one-row\n`database_identity` table (migration 0110) and read back on every\nboot, so it survives restarts where `db_instance_id` does not."
+            "description": "The database's stable id, minted once into the one-row `database_identity` table;\nsurvives restarts where `db_instance_id` does not."
           },
           "dbInstanceId": {
             "type": "string",
-            "description": "UUID v4 minted once per process boot. See module doc."
+            "description": "UUID v4 minted once per process boot."
           },
           "kernelVersion": {
             "type": "string"
@@ -12369,7 +12357,7 @@
           "nowMs": {
             "type": "integer",
             "format": "int64",
-            "description": "#1722 S1b — the server clock (unix ms) when this response was built."
+            "description": "The server clock (unix ms) when this response was built."
           },
           "pluginMcpProtocolVersion": {
             "type": "string"
@@ -12411,7 +12399,7 @@
       },
       "ViewCatalogEntry": {
         "type": "object",
-        "description": "One entry in the `/api/plugins/views` catalog. Used by Slice G's AddPanel.\n\nThe canonical identifier is the MCP Apps `ui://<plugin>/<view>` URI in\n`resource_uri`. The frontend parses the `(plugin_id, view_id)` pair off\nit lazily via `parsePluginCardKind`.",
+        "description": "One entry in the `/api/plugins/views` catalog.",
         "required": [
           "resource_uri",
           "title",
@@ -12436,11 +12424,11 @@
           },
           "resource_uri": {
             "type": "string",
-            "description": "Canonical MCP Apps URI: `ui://<plugin_id>/<view_id>`. Always present —\ncomputed kernel-side so the frontend doesn't have to redo the join."
+            "description": "Canonical MCP Apps URI: `ui://<plugin_id>/<view_id>`."
           },
           "scope": {
             "type": "string",
-            "description": "`\"card\"` for M3 — track/area are banned per design §10."
+            "description": "`\"card\"` — track/area are banned."
           },
           "title": {
             "type": "string"
@@ -12493,7 +12481,7 @@
       },
       "WorkerSessionState": {
         "type": "string",
-        "description": "Session state machine column (`worker_sessions.state`, issue #679 §1).\nSingle runtime/session state vocabulary (`worker_sessions.state`, issue #679 §1).",
+        "description": "Session state machine column (`worker_sessions.state`).",
         "enum": [
           "starting",
           "running",

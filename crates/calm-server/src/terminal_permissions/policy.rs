@@ -1,27 +1,7 @@
-//! #1704 S2 — the Track tree's Claude permission policy as the ceiling of a
-//! `calm.terminal.open` declaration.
-//!
-//! The policy (`tracks.claude_permissions_policy`, on the tree ROOT, read by
-//! `track_claude_permissions_ceiling_read`) is a scope with S1's own rules,
-//! so it can never grant what a declaration could not. [`apply_policy`]
-//! produces the ONE scope the kernel renders:
-//!
-//! | policy | declared     | rendered                                    | source                   |
-//! |--------|--------------|---------------------------------------------|--------------------------|
-//! | none   | none         | nothing (hooks-only file, S1 byte-identical) | —                        |
-//! | none   | D            | D                                           | `declared`               |
-//! | P      | none         | P                                           | `track_policy`           |
-//! | P      | D within P   | a list D omits is inherited from P, a list  | `declared_within_policy` |
-//! |        |              | D gives is checked; deny = P.deny ++ D.deny |                          |
-//! | P      | D not within | refused by name (entry + ceiling)           | —                        |
-//!
-//! "Within": every given `edit` glob is contained in some policy glob
-//! ([`edit_glob_within`]), every given `bash` prefix is covered by some
-//! policy prefix ([`bash_prefix_covered`]) and by no policy `deny` prefix (a
-//! dead allow is a lie, S1's reason). Inherited lists are the policy's own
-//! and given lists are within it, so the merge never widens; the floor stays
-//! `ask` (appended by the renderer, not here). A declared `deny` equal to an
-//! inherited allow is a legal narrowing — deny wins in Claude Code.
+//! The Track tree's Claude permission policy as the ceiling of a `calm.terminal.open`
+//! declaration. A list the declaration omits is inherited from the policy, a list it gives must
+//! be within the policy; deny = policy.deny ++ declared.deny. The merge never widens; a declared
+//! `deny` equal to an inherited allow is a legal narrowing.
 
 use calm_types::claude_permissions::{ClaudePermissionsScope, ClaudePermissionsSource};
 
@@ -35,13 +15,9 @@ use tokio::sync::Notify;
 /// How many ceiling entries a refusal names before `, … (N more)`.
 const CEILING_NAMED_MAX: usize = 6;
 
-/// Whether the declared edit glob `glob` stays within the ceiling glob
-/// `ceiling`: equal, or the ceiling is `**` (everything), or the ceiling is a
-/// directory glob `dir/**` and `glob` starts with `dir/` (the slash included:
-/// `src/**` admits `src/x.py` and `src/lib/**`, not `src2/x` and not `src`).
-/// Anything else needs equality — `**/*.py` admits only `**/*.py`, and a
-/// single-path ceiling `a/b` admits only itself (conservative: the ceiling is
-/// written by a user, the declaration by an agent).
+/// Equal, or the ceiling is `**`, or the ceiling is `dir/**` and `glob` starts with `dir/`
+/// (slash included). Anything else needs equality: the ceiling is written by a user, the
+/// declaration by an agent.
 pub(crate) fn edit_glob_within(glob: &str, ceiling: &str) -> bool {
     if glob == ceiling || ceiling == "**" {
         return true;
@@ -52,11 +28,8 @@ pub(crate) fn edit_glob_within(glob: &str, ceiling: &str) -> bool {
     false
 }
 
-/// Whether the command prefix `prefix` is covered by the ceiling prefix
-/// `ceiling`: equal, or `prefix` starts with `ceiling` followed by a space
-/// (token boundary: `git` covers `git status`, not `gitk`; `python3 -m
-/// unittest` covers `python3 -m unittest discover`, not `python3 -m
-/// unittest2` and not `python3`). Entries are single-spaced (S1).
+/// Equal, or `prefix` starts with `ceiling` followed by a space (token boundary: `git` covers
+/// `git status`, not `gitk`).
 pub(crate) fn bash_prefix_covered(prefix: &str, ceiling: &str) -> bool {
     prefix == ceiling
         || prefix
@@ -64,8 +37,7 @@ pub(crate) fn bash_prefix_covered(prefix: &str, ceiling: &str) -> bool {
             .is_some_and(|rest| rest.starts_with(' '))
 }
 
-/// `edit: src/**, tests/**` / `bash: none` / `deny: a, b, c, d, e, f, … (2
-/// more)` — the ceiling list a refusal names.
+/// The ceiling list a refusal names.
 fn ceiling_list(name: &str, entries: Option<&[String]>) -> String {
     match entries {
         None | Some([]) => format!("{name}: none"),
@@ -88,11 +60,8 @@ fn ceiling_list(name: &str, entries: Option<&[String]>) -> String {
     }
 }
 
-/// The scope to render and its source, per the module table. Both inputs
-/// are validated scopes (`validate_scope` / `validate_scope_named`: trimmed,
-/// no empty list). `Ok(None)` is the no-policy, no-declaration row; `Err`
-/// names the first exceeding declared entry and the ceiling list it exceeds,
-/// for `invalid_params`.
+/// The scope to render and its source. Both inputs are validated scopes. `Ok(None)` is the
+/// no-policy, no-declaration case; `Err` names the first exceeding declared entry.
 pub fn apply_policy(
     policy: Option<&ClaudePermissionsScope>,
     declared: Option<&ClaudePermissionsScope>,
@@ -161,10 +130,8 @@ pub fn apply_policy(
     )))
 }
 
-/// Test seam between the handler's ceiling pre-check and the operation
-/// submit: a fixture can PATCH the policy after the pre-check passed and
-/// before `prepare_tx` re-reads it inside the write transaction. Deleting the
-/// in-tx re-check makes the TOCTOU regression pass a widened open.
+/// Test seam between the handler's ceiling pre-check and the operation submit, so a fixture can
+/// PATCH the policy in between; `prepare_tx` must re-read it inside the write transaction.
 #[cfg(feature = "fixtures")]
 #[derive(Clone)]
 pub struct CeilingCheckedHook {
@@ -187,8 +154,7 @@ pub fn install_ceiling_checked_hook_for_test(track_id: &str, hook: CeilingChecke
         .insert(track_id.to_string(), hook);
 }
 
-/// Park here once per installed hook for `track_id` (fixtures only; a no-op
-/// in production).
+/// Park here once per installed hook for `track_id` (a no-op in production).
 pub async fn wait_at_ceiling_checked_hook(track_id: &str) {
     #[cfg(feature = "fixtures")]
     {
@@ -229,7 +195,6 @@ mod tests {
         }))
     }
 
-    /// The §1 truth table of `edit_glob_within`.
     #[test]
     fn edit_glob_containment_truth_table() {
         for glob in ["src/x.py", "src/**", "a b/c", "**"] {
@@ -254,7 +219,6 @@ mod tests {
         assert!(edit_glob_within("**/*.py", "**/*.py"));
     }
 
-    /// The §1 truth table of `bash_prefix_covered`, both directions.
     #[test]
     fn bash_prefix_coverage_truth_table() {
         for prefix in ["git status", "git commit", "git"] {
@@ -279,10 +243,6 @@ mod tests {
         }
     }
 
-    /// Rows 1–4: no policy is S1 (row 1 renders nothing, row 2 the
-    /// declaration as `declared`); a policy alone is the policy as
-    /// `track_policy`; a declaration within it inherits every omitted list,
-    /// keeps every given one and appends its deny, as `declared_within_policy`.
     #[test]
     fn apply_policy_rows_one_to_four() {
         assert_eq!(apply_policy(None, None), Ok(None));
@@ -356,9 +316,6 @@ mod tests {
         assert_eq!(merged.deny, None);
     }
 
-    /// Row 5: the first exceeding entry is named with the ceiling list it
-    /// exceeds; an absent policy list admits nothing; a policy deny covering
-    /// a declared bash prefix refuses it; long ceilings are cut after six.
     #[test]
     fn apply_policy_row_five_messages() {
         let cases: Vec<(Value, &str)> = vec![
@@ -370,7 +327,7 @@ mod tests {
                 json!({"edit": ["src/**", "docs/**"]}),
                 "claude_permissions.edit[1] 'docs/**' exceeds the Track policy (edit: src/**, tests/**)",
             ),
-            // (`pip install` itself is a floor command S1 refuses first.)
+            // (`pip install` itself is a floor command refused first.)
             (
                 json!({"bash": ["git status", "git diff", "git log", "pip download"]}),
                 "claude_permissions.bash[3] 'pip download' exceeds the Track policy (bash: git, python3 -m unittest)",
@@ -433,8 +390,6 @@ mod tests {
         );
     }
 
-    /// The S1 validation and shape tables hold verbatim under the policy's
-    /// field name: the only difference is the leading `claude_permissions`.
     #[test]
     fn named_validation_yields_the_s1_reasons_under_both_names() {
         let cases = [

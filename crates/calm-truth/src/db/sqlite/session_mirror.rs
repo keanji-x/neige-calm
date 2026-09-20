@@ -265,11 +265,8 @@ pub(super) async fn session_repoint_current_links_tx(
     card_id: &str,
     session: &WorkerSession,
 ) -> WorkerSessionProjectionResult<()> {
-    // Runtime/session identity invariant: whenever a runtime/session becomes
-    // current for a card, cards.session_id must follow it. Active sessions
-    // also inherit the card MCP token when doing so cannot violate ws_token_idx.
-    // Planner sessions that are live own tracks.root_session_id for recorder
-    // gating.
+    // Whenever a session becomes current for a card, cards.session_id must follow
+    // it; live planner sessions also own tracks.root_session_id.
     session_mirror_card_mcp_token_tx(tx, card_id, session).await?;
     if session.contract == WorkerContract::Planner && session.state.is_active_authority() {
         session_mark_track_root_tx(tx, &session.track_id, &session.id)
@@ -320,15 +317,8 @@ pub async fn session_prepare_deferred_planner_tx(
     .await?;
     if let Some(existing_id) = existing_active_id {
         session_supersede_active_tx(tx, &existing_id, init.now_ms).await?;
-        // #1449 — the caller of this function inherits the retired row's WHOLE
-        // pending queue into `init.handle_state_json` (that is what a dormant
-        // restart is), so the row leaves the undelivered set here and is
-        // stamped here. Stamping it in the caller instead would mean stamping
-        // whatever a *second*, differently-shaped active-runtime query returned
-        // — `ws.card_id` there against `cards.session_id` here — and the two
-        // are only guaranteed to agree while a card has exactly one active row.
-        // The row that is retired and the row that is stamped are now the same
-        // row by construction.
+        // The caller inherits the retired row's whole pending queue, so the retired
+        // row and the harvested row must be the same row by construction.
         session_mark_queue_harvested_tx(tx, &existing_id, init.now_ms).await?;
     }
     let track_id = worker_session_track_id_for_card_tx(tx, &init.card_id).await?;
@@ -475,13 +465,8 @@ pub(super) async fn session_clear_terminal_run_id_mirror_tx(
     Ok(())
 }
 
-/// Returns whether the row was actually written.
-///
-/// #1449 — the predicate means this affects zero rows once the runtime has been
-/// retired, and it reported success anyway. A durable user send persisted
-/// through here, matched nothing, was acknowledged, and the route answered 201
-/// for a sentence that existed only in process memory. A caller that promises
-/// durability has to look at this.
+/// Returns whether the row was actually written: zero rows once the runtime
+/// is retired, and a caller promising durability has to look at this.
 pub(super) async fn session_set_handle_state_mirror_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
     id: &String,

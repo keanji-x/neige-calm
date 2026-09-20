@@ -1807,21 +1807,8 @@ async fn concurrent_session_commit_exit_has_single_winner() {
     assert_eq!(session.updated_at_ms, probe_ms);
 }
 
-/// Two genuinely CONCURRENT starts on one card: two pooled connections,
-/// two `BEGIN IMMEDIATE` transactions, both released by one barrier.
-/// Exactly one commits; the other is rejected by the
-/// `ws_one_active_per_card` partial unique index.
-///
-/// `peak_in_flight` must reach 2: both tasks are past the barrier and
-/// inside their transactions at once. That rules out a serialized rewrite
-/// (and the single-never-committed-transaction shape this test had before),
-/// which tops out at 1 — it does NOT by itself prove the two transactions
-/// overlapped inside SQLite. The loser's error is raised against the
-/// winner's COMMITTED row across a connection boundary, which is the shape
-/// the production hazard has.
-///
-/// The loser parks at `BEGIN IMMEDIATE` rather than deadlocking — the #930
-/// rule; see `calm-truth`'s `deadlock_semantics_tests`.
+/// Two genuinely CONCURRENT starts on one card: two pooled connections, two `BEGIN IMMEDIATE`
+/// transactions, both released by one barrier. The loser parks at `BEGIN IMMEDIATE` rather than deadlocking.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ws_unique_active_per_card_blocks_concurrent_double_spawn() {
     let repo = Arc::new(fresh_repo().await);
@@ -1840,7 +1827,6 @@ async fn ws_unique_active_per_card_blocks_concurrent_double_spawn() {
         let in_flight = Arc::clone(&in_flight);
         let peak_in_flight = Arc::clone(&peak_in_flight);
         handles.push(tokio::spawn(async move {
-            // Nothing separates the two BEGINs but the barrier release.
             barrier.wait().await;
             let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
             peak_in_flight.fetch_max(now, Ordering::SeqCst);
@@ -1911,7 +1897,6 @@ async fn ws_unique_active_per_card_blocks_concurrent_double_spawn() {
          (`database is locked` / `deadlock`): {err:?}"
     );
 
-    // The committed state matches the winner exactly: one active row.
     let active: Vec<String> = sqlx::query_scalar(
         r#"SELECT id FROM worker_sessions
            WHERE card_id = ?1
@@ -2814,23 +2799,8 @@ async fn runtimes_active_for_kind_codex_kind_excludes_placeholder() {
     assert_ne!(rows[0].id, placeholder_id);
 }
 
-/// #1449 — the harvest predicate, row by row.
-///
-/// Everything the mint transaction relies on lives in this one statement, and
-/// every conjunct in it is a decision someone could delete without a test
-/// noticing:
-///
-/// * `state = 'superseded'` — a `failed` row is NOT harvested, because a failed
-///   create's caller re-sends its own text under a `#N` key and harvesting it
-///   would double-send;
-/// * `queue_harvested_at_ms IS NULL` — this is what makes a second restart take
-///   nothing;
-/// * `id != successor` — a deferred placeholder can be superseded by a racer and
-///   revived under the same id, so the successor must not harvest itself;
-/// * every row the read touched is stamped, INCLUDING the ones that yielded
-///   nothing (`handle_state_json IS NULL` is the reachable shape: terminal and
-///   Claude runtimes never write one), so an unreadable row is not re-examined
-///   for the rest of time.
+/// The harvest predicate, row by row: only `superseded` rows (a failed create's caller re-sends its own
+/// text), only unstamped ones, never the successor itself, and every row read is stamped even if it yielded nothing.
 #[tokio::test]
 async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
     let repo = fresh_repo().await;
@@ -2846,15 +2816,8 @@ async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
             "pending_envelope_ids": [null],
         })
     }
-    /// Start a runtime and take it out of the active set again in the same
-    /// transaction.
-    ///
-    /// One at a time, because `worker_sessions` carries a partial unique index
-    /// over the card's ACTIVE row — which is also why every production path
-    /// modelled here supersedes the predecessor in the transaction that inserts
-    /// the successor. `created_at_ms` is set explicitly and increasing so the
-    /// harvest's `ORDER BY created_at_ms, id` is a fact of the fixture rather
-    /// than of the clock's resolution.
+    /// Start a runtime and take it out of the active set again in the same transaction (`worker_sessions`
+    /// has a partial unique index over the card's ACTIVE row). `created_at_ms` is explicit and increasing.
     async fn start_then_retire(
         repo: &SqlxRepo,
         card_id: &str,
@@ -2885,7 +2848,6 @@ async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
         started.id
     }
 
-    // Four rows on one card, in creation order.
     let retired_with_a_sentence = start_then_retire(
         &repo,
         card.id.as_str(),
@@ -2910,9 +2872,7 @@ async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
         WorkerSessionState::Failed,
     )
     .await;
-    // The successor is `superseded` too, which is the reachable shape: a
-    // deferred placeholder a racer displaced, about to be revived under the
-    // same id by the insert that follows this harvest.
+    // The successor is `superseded` too: a deferred placeholder a racer displaced, about to be revived under the same id.
     let successor = start_then_retire(
         &repo,
         card.id.as_str(),
@@ -2922,8 +2882,6 @@ async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
     )
     .await;
 
-    // The production decoder's contract in miniature: take the user messages,
-    // hand back the row's snapshot with them removed.
     let extract = |_id: &str, state: &str| -> HarvestOutcome {
         let taken: Vec<HarvestedMessage> = serde_json::from_str::<serde_json::Value>(state)
             .ok()
@@ -2937,9 +2895,7 @@ async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
                     .map(|text| HarvestedMessage {
                         text: text.to_owned(),
                         ids: vec![format!("id-of-{text}")],
-                        // This fixture predates the queue having an
-                        // addressable id; `None` is what a pre-#1505 entry
-                        // carries, which is the case it is standing in for.
+                        // `None` is what a pre-addressable-id queue entry carries, which is the case this fixture stands in for.
                         entry_id: None,
                     })
             })
@@ -3014,7 +2970,6 @@ async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
         "and the successor never stamps itself"
     );
 
-    // Second pass: the stamp is what makes it take nothing.
     let mut tx = repo.pool().begin().await.unwrap();
     let again = harvest_pending_user_messages_tx(
         &mut tx,
@@ -3031,8 +2986,7 @@ async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
         "a second restart must read nothing: {again:?}"
     );
 
-    // #1449 S2 — the harvest MOVED the sentence: the source row does not keep a
-    // copy.
+    // The harvest MOVED the sentence: the source row does not keep a copy.
     let source_state: Option<String> =
         sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id = ?1")
             .bind(retired_with_a_sentence.as_str())
@@ -3045,10 +2999,7 @@ async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
          second harvest, or an operation re-driven with an older snapshot, delivers again"
     );
 
-    // Which is why clearing the marker is not by itself an undo: it makes the
-    // row eligible to be read again, it does not put anything back. The undo
-    // that matters is `return_harvested_queues_and_fail_tx`, which returns the
-    // payload and clears the marker in one transaction.
+    // Clearing the marker makes the row eligible to be read again; it does not put anything back.
     let mut tx = repo.pool().begin().await.unwrap();
     session_clear_queue_harvested_tx(&mut tx, retired_with_a_sentence.as_str())
         .await
@@ -3070,21 +3021,8 @@ async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
     );
 }
 
-/// #1449 — the marker is about the QUEUE a row is carrying, not about its id.
-///
-/// A runtime id outlives the queue it was stamped for. Two production writes
-/// hand the same row a different queue:
-///
-/// * `session_prepare_deferred_planner_tx` re-arms a `superseded` placeholder
-///   under the same id with a fresh `handle_state_json` (boot recovery and the
-///   deferred mint both do this);
-/// * `session_restore_from_superseded_tx` puts an inherited predecessor back
-///   into the active set when a start compensates, and the give-back writes a
-///   queue onto it in the same transaction.
-///
-/// If the stamp survived either one, the row's NEW queue would be permanently
-/// unharvestable — the marker would say "already taken" about sentences nobody
-/// has ever seen.
+/// The marker is about the QUEUE a row is carrying, not about its id: a re-armed placeholder or a
+/// restored predecessor gets a fresh queue under the same id, which must be harvestable.
 #[tokio::test]
 async fn re_arming_a_row_clears_the_harvest_marker() {
     let repo = fresh_repo().await;
@@ -3097,7 +3035,6 @@ async fn re_arming_a_row_clears_the_harvest_marker() {
             .unwrap()
     }
 
-    // (1) a refreshed deferred placeholder.
     let card = make_card(&repo, "codex").await;
     let mut init = runtime_init(
         card.id.to_string(),
@@ -3134,7 +3071,6 @@ async fn re_arming_a_row_clears_the_harvest_marker() {
          unharvestable for the rest of the row's life"
     );
 
-    // (2) a predecessor restored by a start's compensation.
     let other = make_card(&repo, "codex").await;
     let mut tx = repo.pool().begin().await.unwrap();
     let predecessor = session_start_runtime_tx(

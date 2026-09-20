@@ -1,21 +1,5 @@
-//! `/api/areas/:area_id/folders` + `/api/areas/resolve` — area ↔ folder
-//! mapping. **Issue #250 PR 1.**
-//!
-//! A `area_folder` claims an absolute filesystem path for an area and
-//! transparently covers every descendant. Given a `cwd`, the kernel
-//! resolves the owning area by finding the row whose claim covers it.
-//! Claims are exclusive: a path may be claimed by at most one area, and
-//! ancestor/descendant overlap is rejected at create time — *atomically*,
-//! inside the same `BEGIN IMMEDIATE` transaction as the INSERT — so the
-//! covering row is unique and needs no tiebreak (issue #275).
-//!
-//! The claim rules themselves live in [`calm_truth::area_folder_claim`]
-//! so this route and the track-create `attach_folder` path in
-//! [`crate::routes::tracks`] cannot drift apart.
-//!
-//! These endpoints sit outside the event-sourced sync domain in PR 1
-//! — folders are operational mapping state, not co-edit content. PR 2+
-//! may revisit if a replication scenario emerges.
+//! `/api/areas/:area_id/folders` + `/api/areas/resolve` — area ↔ folder mapping. A claim covers every descendant path; claims are exclusive and ancestor/descendant overlap is rejected atomically at create time, so the covering row is unique.
+//! The claim rules live in `calm_truth::area_folder_claim`, shared with the track-create `attach_folder` path.
 
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::model::{AreaFolder, AreaResolve, FolderConflict, NewAreaFolder};
@@ -33,11 +17,7 @@ use utoipa::{IntoParams, ToSchema};
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        // `/resolve` must be registered BEFORE `/{area_id}/folders/...`
-        // so axum's longest-match router doesn't capture `resolve` as
-        // an area id and fail with a path-param decode error. Mounting
-        // here at the same Router level is sufficient — axum prefers
-        // static path segments over `{param}` captures.
+        // `/resolve` must be registered BEFORE `/{area_id}/folders/...` so axum doesn't capture `resolve` as an area id.
         .route("/api/areas/resolve", get(resolve_path))
         .route(
             "/api/areas/{area_id}/folders",
@@ -49,13 +29,7 @@ pub fn router() -> Router<AppState> {
         )
 }
 
-// Path/overlap vocabulary is owned by calm-truth so the repo's atomic
-// writer and both HTTP resolvers share one definition (#275).
 pub(crate) use calm_truth::area_folder_claim::{find_owner, is_descendant_of, normalize_path};
-
-// ---------------------------------------------------------------------------
-// GET /api/areas/:area_id/folders
-// ---------------------------------------------------------------------------
 
 #[utoipa::path(
     get,
@@ -74,10 +48,6 @@ pub(crate) async fn list_folders(
     let folders = s.repo.area_folders_by_area(&area_id).await?;
     Ok(Json(folders))
 }
-
-// ---------------------------------------------------------------------------
-// POST /api/areas/:area_id/folders
-// ---------------------------------------------------------------------------
 
 #[utoipa::path(
     post,
@@ -105,15 +75,7 @@ pub(crate) async fn create_folder(
     }
     let normalized = normalize_path(&body.path);
 
-    // Conflict detection + INSERT are ONE atomic step inside the repo
-    // (#275). Doing the scan here and the insert there would put them on
-    // two different pooled connections, and `UNIQUE(area_folders.path)`
-    // only rejects an *equal* path — so concurrent `/a` and `/a/b`
-    // claims would both commit and leave two rows covering `/a/b/c`.
-    //
-    // The scan itself is still an in-memory pass over the whole table:
-    // it is tiny (a handful of folders per workspace) and that keeps the
-    // SQL free of LIKE-pattern subtleties around `_` / `%` in user paths.
+    // Conflict detection + INSERT are ONE atomic step inside the repo: `UNIQUE(area_folders.path)` only rejects an *equal* path, so concurrent `/a` and `/a/b` claims would otherwise both commit.
     match s
         .repo
         .area_folder_create_checked(&area_id, &normalized)
@@ -123,10 +85,6 @@ pub(crate) async fn create_folder(
         AreaFolderClaim::Created(folder) => Ok((StatusCode::CREATED, Json(folder)).into_response()),
     }
 }
-
-// ---------------------------------------------------------------------------
-// DELETE /api/areas/:area_id/folders/:folder_id
-// ---------------------------------------------------------------------------
 
 #[utoipa::path(
     delete,
@@ -146,9 +104,7 @@ pub(crate) async fn delete_folder(
     State(s): State<RouteState>,
     Path((area_id, folder_id)): Path<(String, i64)>,
 ) -> Result<StatusCode> {
-    // Verify the folder both exists and belongs to the area in the
-    // URL. Mismatched area_id surfaces as 404 (not 403) — leaking
-    // existence under a different area is the wrong answer here.
+    // A mismatched area_id surfaces as 404, not 403: leaking existence under a different area is the wrong answer.
     match s.repo.area_folder_get(folder_id).await? {
         Some(f) if f.area_id.as_str() == area_id => {}
         _ => return Err(CalmError::NotFound(format!("area_folder {folder_id}"))),
@@ -157,16 +113,9 @@ pub(crate) async fn delete_folder(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ---------------------------------------------------------------------------
-// GET /api/areas/resolve?path=<cwd>
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
 pub struct ResolveQuery {
-    /// Absolute filesystem path to resolve against every area's folder
-    /// claims. Returns the claim that covers it, or `null` if no claim
-    /// covers the path. At most one claim can cover a path: the create
-    /// endpoint rejects ancestor/descendant overlap with a 409.
+    /// Absolute filesystem path to resolve against every area's folder claims; `null` if no claim covers it.
     pub path: String,
 }
 
@@ -193,11 +142,7 @@ pub(crate) async fn resolve_path(
     }
     let normalized = normalize_path(&q.path);
     let folders = s.repo.area_folders_list_all().await?;
-    // `area_folder_create_checked` rejects ancestor/descendant overlap
-    // atomically, so at most one row can be an ancestor of (or equal to)
-    // the query. `find_owner` is therefore a uniqueness oracle and needs
-    // no tiebreak — and it is the *same* function the track-create owner
-    // scan calls, so the two resolvers cannot disagree (issue #275).
+    // Overlap is rejected atomically at create time, so `find_owner` is a uniqueness oracle and needs no tiebreak.
     let best = find_owner(&folders, &normalized).cloned();
     Ok(Json(best.map(|f| AreaResolve {
         area_id: f.area_id,
@@ -205,6 +150,3 @@ pub(crate) async fn resolve_path(
         folder_path: f.path,
     })))
 }
-
-// `normalize_path` / `is_descendant_of` / `find_owner` unit tests live
-// next to their definitions in `calm_truth::area_folder_claim`.

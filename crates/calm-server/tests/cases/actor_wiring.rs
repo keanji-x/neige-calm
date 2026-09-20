@@ -1,18 +1,4 @@
-//! Scope β — end-to-end wiring for `X-Calm-Actor` + plugin-tool-call
-//! correlation.
-//!
-//! Three assertions, each anchored on a real row in the `events` table:
-//!
-//!   1. The codex bridge's `X-Calm-Actor: ai:codex` header lands in
-//!      `events.actor` for the resulting `codex.hook` row. This is the
-//!      "AI write attribution" guarantee — pre-β the column read `kernel`
-//!      regardless of who wrote.
-//!   2. A `POST /api/plugins/:id/tool-call` with `call_id` in the body
-//!      threads `correlation = "user_tool_call:<call_id>"` into every
-//!      event the dispatch persists.
-//!   3. Without an `X-Calm-Actor` header the middleware's `"user"`
-//!      default applies — documented contract for older bridges or any
-//!      caller that doesn't set the header.
+//! End-to-end wiring for `X-Calm-Actor` + plugin-tool-call correlation, anchored on real `events` rows.
 
 #![cfg(unix)]
 
@@ -36,13 +22,8 @@ use tower::ServiceExt;
 
 const TOOLCALL_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-toolcall");
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 fn app(state: AppState) -> axum::Router {
-    // Mirror main.rs: REST router under the actor middleware. Without this
-    // the `Actor` extractor inside `ingest_hook` would 500.
+    // Mirror main.rs: without the middleware the `Actor` extractor inside `ingest_hook` would 500.
     axum::Router::new()
         .merge(routes::router())
         .layer(axum::middleware::from_fn(actor_middleware))
@@ -92,22 +73,11 @@ fn base_state(repo: Arc<SqlxRepo>, events: EventBus) -> AppState {
     )
 }
 
-// ---------------------------------------------------------------------------
-// Test 1 — codex bridge actor lands in events.actor
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn codex_hook_records_ai_codex_actor_from_card_id_query() {
-    // PR3 (#136) — the codex bridge ingest path now reattributes from
-    // the `card_id` query parameter via `ActorId::AiCodex(CardId)`.
-    // The role gate's empty-CardId guard catches unset card_ids; the
-    // unknown-card guard catches card_ids that aren't in the role
-    // cache (e.g. the card was deleted between hook fire and ingest).
-    // So this test must seed a real card and put it into the role
-    // cache before POSTing.
+    // The ingest path reattributes from the `card_id` query parameter, and the role gate refuses unknown cards,
+    // so a real card must be seeded and in the role cache before POSTing.
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    // Seed area + track + card so the card_id query points at a row
-    // the role cache will see.
     let area = repo
         .area_create(NewArea {
             name: "c".into(),
@@ -201,24 +171,9 @@ async fn codex_hook_records_ai_codex_actor_from_card_id_query() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Test 3 — default actor applies when header absent
-// ---------------------------------------------------------------------------
-//
-// Lives between tests 1 and 2 so the assertion sits next to its counterpart:
-// "with header → ai:codex" / "without header → user". The numbering in the
-// scope brief is a narrative order, not a file order.
-
 #[tokio::test]
 async fn codex_hook_with_missing_card_is_rejected_by_role_gate() {
-    // PR3 (#136) — even when the header is absent, the route stamps
-    // `ActorId::AiCodex(<card_id from query>)`. If the card_id
-    // references a card the role cache doesn't know (because it was
-    // never minted, or was deleted between hook fire and ingest),
-    // `enforce_role`'s unknown-card branch denies the write. This is
-    // intentional: refusing to ingest a hook for a deleted /
-    // fabricated card id is the safe default. The header's presence
-    // doesn't change the gate's behaviour at all in PR3.
+    // Even without the header the route stamps `AiCodex(<card_id>)`; an unknown card is denied by `enforce_role`.
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let events = EventBus::new();
     let app = app(base_state(repo.clone(), events.clone()));
@@ -241,7 +196,6 @@ async fn codex_hook_with_missing_card_is_rejected_by_role_gate() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 
-    // No events row should have been written.
     let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM events WHERE kind = 'codex.hook'")
         .fetch_one(repo.pool())
         .await
@@ -249,17 +203,7 @@ async fn codex_hook_with_missing_card_is_rejected_by_role_gate() {
     assert_eq!(count.0, 0);
 }
 
-// ---------------------------------------------------------------------------
-// Test 2 — plugin tool-call threads correlation
-// ---------------------------------------------------------------------------
-//
-// Boots a real `PluginHost` running `stub-plugin-toolcall` (any mode — the
-// stub answers `initialize` so the plugin reaches Running; we don't need
-// it to respond to a real tools/call because the kernel handles the
-// `neige.*` dispatch internally). Calls
-// `POST /api/plugins/<id>/tool-call` with `name = "neige.overlay.set"`
-// and `call_id = "abc-123"`; then verifies the resulting `overlay.set`
-// row in `events` carries `correlation = "user_tool_call:abc-123"`.
+// The stub answers `initialize` so the plugin reaches Running; the kernel handles `neige.*` dispatch internally.
 
 #[tokio::test]
 async fn plugin_tool_call_threads_call_id_as_correlation() {
@@ -274,7 +218,6 @@ async fn plugin_tool_call_threads_call_id_as_correlation() {
     std::os::unix::fs::symlink(Path::new(TOOLCALL_BIN), bin_dir.join("stub")).unwrap();
 
     let repo: Arc<SqlxRepo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    // Seed area + track so the plugin can overlay-set onto a real track id.
     let area = repo
         .area_create(NewArea {
             name: "demo".into(),
@@ -305,9 +248,7 @@ async fn plugin_tool_call_threads_call_id_as_correlation() {
         "min_kernel_version": "0.0.1",
         "display_name": "Call-id correlation",
         "entrypoint": { "command": "bin/stub" },
-        // #198 concern 5: per-view permissions.tools is enforced on
-        // /api/plugins/:id/tool-call. The test exercises neige.overlay.set,
-        // so grant exactly that.
+        // Per-view permissions.tools is enforced on /api/plugins/:id/tool-call; grant exactly the tool used.
         "views": [{
             "view_id": "main",
             "title": "Main",
@@ -349,7 +290,6 @@ async fn plugin_tool_call_threads_call_id_as_correlation() {
     ));
 
     plugin_host.spawn(plugin_id).await.expect("spawn");
-    // Wait-for-running mirrors plugin_routes_tool_call.rs.
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         if let Some(s) = plugin_host.status(plugin_id).await
@@ -369,8 +309,8 @@ async fn plugin_tool_call_threads_call_id_as_correlation() {
         Arc::new(DaemonClient::new_stub()),
         plugin_host.clone(),
         Arc::new(CodexClient::new_stub()),
-        None, // PR3 (#136): card_role_cache — tests don't exercise role gating
-        None, // #234: track_area_cache — same rationale
+        None, // card_role_cache: tests do not exercise role gating
+        None, // track_area_cache
     );
 
     let body = json!({
@@ -400,9 +340,6 @@ async fn plugin_tool_call_threads_call_id_as_correlation() {
 
     let id = last_event_id(&repo, "overlay.set").await;
     let (actor, correlation) = fetch_actor_correlation(&repo, id).await;
-    // PR2 of #136 typed the actor: overlay-set from the plugin callback
-    // path now lands as `ActorId::Plugin(<id>)`, serialized into the
-    // `events.actor` TEXT column as the typed JSON shape.
     let actor_json: serde_json::Value =
         serde_json::from_str(&actor).expect("events.actor is JSON-serialized ActorId");
     assert_eq!(
@@ -418,10 +355,6 @@ async fn plugin_tool_call_threads_call_id_as_correlation() {
 
     plugin_host.stop(plugin_id).await.ok();
 }
-
-// ---------------------------------------------------------------------------
-// Test 2b — omitting call_id still works (correlation NULL)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn plugin_tool_call_without_call_id_leaves_correlation_null() {
@@ -526,12 +459,11 @@ async fn plugin_tool_call_without_call_id_leaves_correlation_null() {
         Arc::new(DaemonClient::new_stub()),
         plugin_host.clone(),
         Arc::new(CodexClient::new_stub()),
-        None, // PR3 (#136): card_role_cache — tests don't exercise role gating
-        None, // #234: track_area_cache — same rationale
+        None, // card_role_cache: tests do not exercise role gating
+        None, // track_area_cache
     );
 
-    // No call_id field at all — exercises serde default + "no allocation"
-    // path of `CallbackCtx::correlation`.
+    // No call_id field at all — exercises the serde default path.
     let body = json!({
         "name": "neige.overlay.set",
         "arguments": {
@@ -566,15 +498,7 @@ async fn plugin_tool_call_without_call_id_leaves_correlation_null() {
     plugin_host.stop(plugin_id).await.ok();
 }
 
-// ---------------------------------------------------------------------------
-// Test 2c — empty-string call_id normalizes to absent
-// ---------------------------------------------------------------------------
-//
-// A buggy/legacy client that sends `call_id: ""` (e.g. an iframe that calls
-// `crypto.randomUUID()` in a context where it returned empty, or a manual
-// curl invocation) must not produce a dangling `correlation =
-// "user_tool_call:"` row. The route normalizes empty to absent before
-// threading into the callback ctx.
+// `call_id: ""` must not produce a dangling `correlation = "user_tool_call:"` row.
 
 #[tokio::test]
 async fn plugin_tool_call_treats_empty_call_id_as_absent() {
@@ -679,12 +603,10 @@ async fn plugin_tool_call_treats_empty_call_id_as_absent() {
         Arc::new(DaemonClient::new_stub()),
         plugin_host.clone(),
         Arc::new(CodexClient::new_stub()),
-        None, // PR3 (#136): card_role_cache — tests don't exercise role gating
-        None, // #234: track_area_cache — same rationale
+        None, // card_role_cache: tests do not exercise role gating
+        None, // track_area_cache
     );
 
-    // Empty-string call_id — must be normalized to absent, NOT produce
-    // `correlation = "user_tool_call:"`.
     let body = json!({
         "name": "neige.overlay.set",
         "arguments": {

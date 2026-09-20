@@ -1,15 +1,5 @@
-//! Issue #177 (PR1 of split / closes #256) — `theme` is a required
-//! field on every card-creation DTO and on `NewTrack`. A body missing
-//! `theme` is rejected at the deserialize step (422). This is the
-//! root-cause defence against the "spawn without theme" bug observed in
-//! PR #193: forcing the field at the type layer means a forgetful
-//! caller fails at the request boundary instead of silently producing
-//! a daemon that doesn't answer codex's OSC 10/11 probe.
-//!
-//! These tests are intentionally lightweight — they don't need a real
-//! daemon, they assert the route's 422 surface BEFORE any DB or spawn
-//! work runs. Boot uses a stub `CodexClient` and a non-existent daemon
-//! path; the deserialize gate runs before we'd hit either.
+//! `theme` is a required field on every card-creation DTO and on `NewTrack`; a body missing it is
+//! rejected at the deserialize step (422), before any DB or spawn work.
 
 #![cfg(unix)]
 
@@ -107,13 +97,8 @@ async fn boot() -> Boot {
     }
 }
 
-/// Returns `(status, json_or_null, raw_text)`. Axum's 422 surface from a
-/// serde-rejected `Json<T>` is `text/plain` like
-/// `"Failed to deserialize the JSON body into the target type: missing field 'theme' at line X column Y"` —
-/// not JSON. We keep both shapes: the JSON value for happy-path tests
-/// that want to drill into a structured response, and the raw text so
-/// the missing-field substring assertion below can pin `theme` as the
-/// rejected field even though the body itself isn't JSON.
+/// Returns `(status, json_or_null, raw_text)`. Axum's 422 from a serde-rejected `Json<T>` is
+/// `text/plain`, not JSON, so the raw text is kept for the missing-field substring assertion.
 async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value, String) {
     let resp = app
         .oneshot(
@@ -133,20 +118,10 @@ async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value, 
     (status, json, text)
 }
 
-/// `POST /api/tracks` with a body that omits the `theme` field must
-/// return 422 BEFORE any DB work happens. The 422 is the kernel's
-/// fail-loud signal to clients that PR1-#177 made theme required end-
-/// to-end. If this test starts succeeding (200 / 201) the type-layer
-/// guard has regressed and the original "spawn-without-theme" bug
-/// can resurface.
 #[tokio::test]
 async fn post_tracks_without_theme_is_rejected_with_422() {
     let boot = boot().await;
-    // Body includes every other required field (cwd, attach_folder) so
-    // the 422 fires on the missing `theme` and not some other field. The
-    // body-substring assertion pins `theme` as the rejected field — if
-    // someone later turns `theme: Option<>`, this test starts failing
-    // even if 422 still happens (for a different reason).
+    // Body includes every other required field so the 422 fires on the missing `theme` and not some other field.
     let (status, _body, text) = post(
         boot.app.clone(),
         "/api/tracks",
@@ -169,16 +144,11 @@ async fn post_tracks_without_theme_is_rejected_with_422() {
     );
 }
 
-/// `POST /api/tracks` with `theme: null` must also be rejected — JSON
-/// `null` should NOT deserialize into `RequestTheme` (no `Option`,
-/// no `#[serde(default)]`). Companion to the missing-field test
-/// above; together they pin the root-cause defence.
+/// JSON `null` must NOT deserialize into `RequestTheme` (no `Option`, no `#[serde(default)]`).
 #[tokio::test]
 async fn post_tracks_with_null_theme_is_rejected_with_422() {
     let boot = boot().await;
-    // Body includes every other required field so the 422 fires on
-    // `theme: null` and not a missing field. The body-substring assertion
-    // pins `theme` as the rejected field.
+    // Body includes every other required field so the 422 fires on `theme: null` and not a missing field.
     let (status, _body, text) = post(
         boot.app.clone(),
         "/api/tracks",
@@ -202,10 +172,6 @@ async fn post_tracks_with_null_theme_is_rejected_with_422() {
     );
 }
 
-/// `POST /api/tracks/:track_id/codex-cards` without theme must 422.
-/// Codex cards are the primary user-facing card-create route — this
-/// is the path the original bug shipped through (`useTodayTerminal.ts`
-/// calling `createCodexCard({})`).
 #[tokio::test]
 async fn post_codex_cards_without_theme_is_rejected_with_422() {
     let boot = boot().await;
@@ -222,8 +188,6 @@ async fn post_codex_cards_without_theme_is_rejected_with_422() {
     );
 }
 
-/// `POST /api/tracks/:track_id/terminal-cards` without theme must 422.
-/// Terminal-card route — same fail-loud contract.
 #[tokio::test]
 async fn post_terminal_cards_without_theme_is_rejected_with_422() {
     let boot = boot().await;

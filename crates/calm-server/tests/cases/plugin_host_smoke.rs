@@ -1,18 +1,5 @@
-//! Smoke tests for `PluginHost` (Slice B).
-//!
-//! These tests build two stub plugins as side-artifact binaries in the same
-//! crate (`plugin-host-stub-echo` and `plugin-host-stub-crash`) and locate
-//! them at runtime via `env!("CARGO_BIN_EXE_<name>")`. The stubs implement a
-//! minimal subset of the MCP `initialize` handshake — enough for the
-//! supervisor to flip a plugin to `Running`.
-//!
-//! Slice B's binding planner lists four assertions; this file covers all of them:
-//!
-//!   1. Spawn echo stub → `PluginRuntimeStatus::Running` within 2 s.
-//!   2. `stop()` → child exits within grace, status drops out of the table.
-//!   3. Crash stub → state transitions to `Crashed`, then auto-respawns.
-//!   4. Crash-loop disable: 5 fast crashes → status stuck at `Crashed`, no
-//!      more respawns until an explicit `spawn(id)` is invoked.
+//! Smoke tests for `PluginHost` against the stub plugin binaries
+//! (`plugin-host-stub-echo`, `plugin-host-stub-crash`).
 
 #![cfg(unix)]
 
@@ -32,18 +19,12 @@ use tokio::time::{Instant, sleep};
 const ECHO_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-echo");
 const CRASH_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-crash");
 
-/// Build a `PluginHost` rooted at a fresh temp dir, with one manifest seeded
-/// in the registry pointing at the requested stub binary.
-///
-/// We synthesize a faux install layout: `<plugins_dir>/<id>/bin/stub`. The
-/// stub binary is symlinked from the real artifact so manifest validation
-/// (which rejects absolute `entrypoint.command`) sees a sane relative path.
+/// The stub is symlinked into `<plugins_dir>/<id>/bin/stub` so manifest validation
+/// (which rejects absolute `entrypoint.command`) sees a relative path.
 async fn boot_host(plugin_id: &str, stub_bin: &str) -> (Arc<PluginHost>, TempDir, EventBus) {
     boot_host_with_min_kernel(plugin_id, stub_bin, "0.0.1").await
 }
 
-/// Same as `boot_host`, but lets the test override the manifest's
-/// `min_kernel_version`. Used by the issue-#45 spawn-refusal test.
 async fn boot_host_with_min_kernel(
     plugin_id: &str,
     stub_bin: &str,
@@ -53,8 +34,7 @@ async fn boot_host_with_min_kernel(
     (Arc::new(host), tmp, events)
 }
 
-/// The pieces every fixture in this file is built from, handed back **unbuilt**
-/// so a caller can apply a post-construction builder before wrapping in `Arc`.
+/// Handed back unbuilt so a caller can apply a post-construction builder before wrapping in `Arc`.
 async fn host_parts(
     plugin_id: &str,
     stub_bin: &str,
@@ -72,7 +52,6 @@ async fn host_parts(
     let bin_dir = install_dir.join("bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
     std::fs::create_dir_all(&plugins_data_dir).unwrap();
-    // Symlink the stub binary into bin/stub (unix-only test).
     std::os::unix::fs::symlink(Path::new(stub_bin), bin_dir.join("stub")).unwrap();
 
     let manifest_json = json!({
@@ -92,9 +71,7 @@ async fn host_parts(
             .await
             .expect("open in-memory sqlite repo"),
     );
-    // Production flow inserts the plugins row via the REST install handler
-    // before `spawn`; we bypass that here, so seed the row directly to satisfy
-    // the `plugin_tokens.plugin_id` FK at token-set time.
+    // Seed the plugins row directly to satisfy the `plugin_tokens.plugin_id` FK at token-set time.
     repo.plugin_install(calm_server::model::NewPlugin {
         id: plugin_id.into(),
         version: "0.1.0".into(),
@@ -117,16 +94,8 @@ async fn host_parts(
     (host, repo, tmp, events)
 }
 
-/// The cold `WriteContext` a `PluginHost` fixture is built with: both caches
-/// start empty and no case in `tests/plugin_suite.rs` reads them back, so one
-/// constructor serves the whole suite.
-///
-/// Shared, rather than re-spelled in each case module, for a reason that is not
-/// only tidiness: the two cache paths spell vocabulary that
-/// `scripts/gate-1316-terminology-ratchet.sh` ratchets by occurrence under
-/// `crates/`, so a new case that inlines this construction again raises those
-/// counts and fails the gate while adding no coverage at all. Call this
-/// instead; `plugin_config_delivery` does.
+/// The cold `WriteContext` every `PluginHost` fixture is built with. Call this rather than
+/// inlining: the cache paths are vocabulary the terminology-ratchet gate counts by occurrence.
 pub(super) fn test_write_context() -> calm_server::state::WriteContext {
     calm_server::state::WriteContext::new(
         calm_server::card_role_cache::CardRoleCache::new(),
@@ -134,13 +103,7 @@ pub(super) fn test_write_context() -> calm_server::state::WriteContext {
     )
 }
 
-/// #1196 acceptance 13 — [`boot_host`] with the crash-window / backoff knobs
-/// injected through the post-construction builder, and the repo handed back so
-/// the test can count the *events* rather than sample a status.
-///
-/// A builder rather than `new_full` parameters: `new_full` has ~106 call sites
-/// and none of them care. `#[cfg(test)]` was not an option — this file is an
-/// integration test, i.e. a separate crate linking the non-test lib.
+/// [`boot_host`] with the crash-window / backoff knobs injected, and the repo handed back so the test can count events.
 async fn boot_host_with_backoff(
     plugin_id: &str,
     stub_bin: &str,
@@ -178,10 +141,6 @@ async fn wait_for_status(
     }
 }
 
-// ---------------------------------------------------------------------------
-// 1. Happy path: spawn → Running.
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn echo_stub_reaches_running() {
     let (host, _tmp, _events) = boot_host("test.echo", ECHO_BIN).await;
@@ -195,17 +154,11 @@ async fn echo_stub_reaches_running() {
     .await;
     assert!(matches!(status, PluginRuntimeStatus::Running));
 
-    // PID should be populated while running.
     let live = host.status("test.echo").await.expect("status");
     assert!(live.pid.is_some(), "expected pid populated, got {:?}", live);
 
-    // Cleanup (also tests test #2 below — but stop is exercised separately).
     host.stop("test.echo").await.expect("stop");
 }
-
-// ---------------------------------------------------------------------------
-// 2. Stop within grace.
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn echo_stub_stops_within_grace() {
@@ -231,18 +184,12 @@ async fn echo_stub_stops_within_grace() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 3. Crash stub → Running → Crashed → respawned to Running.
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn crash_stub_respawns_after_first_crash() {
     let (host, _tmp, mut events_rx) = boot_host_with_subscribe("test.crash1", CRASH_BIN).await;
     host.spawn("test.crash1").await.expect("spawn");
 
-    // Drain events looking for: Running → Crashed → Running. The crash stub
-    // returns from initialize then immediately exits, so the Running phase
-    // is brief.
+    // The crash stub returns from initialize then immediately exits, so the Running phase is brief.
     let mut saw_running_first = false;
     let mut saw_crashed = false;
     let deadline = Instant::now() + Duration::from_secs(8);
@@ -261,7 +208,6 @@ async fn crash_stub_respawns_after_first_crash() {
                 ("running", false, _) => saw_running_first = true,
                 ("crashed", _, _) => saw_crashed = true,
                 ("running", true, true) => {
-                    // Respawn observed.
                     return;
                 }
                 _ => {}
@@ -273,45 +219,15 @@ async fn crash_stub_respawns_after_first_crash() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 4. Crash-loop disable: CRASH_WINDOW_LIMIT crashes → no further respawn.
-// ---------------------------------------------------------------------------
-
-/// #1196 §1.3 / acceptance 13 — **rewritten**, because the previous version was
-/// a fake gate.
-///
-/// It used to spawn the crash stub and pass if the status read `Crashed`, then
-/// still read `Crashed` three seconds later. With the production backoff pinned
-/// at 1 s (which is what the defect below caused) and a stub that re-crashes
-/// instantly, the plugin sits in `Crashed` for nearly all of any window you
-/// sample — so "still Crashed after 3 s" was satisfied by the crash **loop
-/// itself**, the very thing the test claimed to prove had stopped. It passed
-/// throughout the entire lifetime of the defect.
-///
-/// The defect: `supervise_inner` removed the live entry before respawning,
-/// while `spawn` inherited `crashes_in_window` by reading that same entry — so
-/// every respawn started from zero, `crashes_in_window` was permanently 1,
-/// `exceeded` was permanently false, and the backoff never advanced past
-/// `BACKOFF_SCHEDULE_MS[0]`. The supervisor now carries the counters across its
-/// own `remove` explicitly.
-///
-/// The gate is the **count**, not a dwell time: exactly `LIMIT` crashes, then
-/// no further `running`. The backoff schedule is injected through
-/// `with_backoff_schedule` — a construction-time seam, because this is an
-/// integration test and the lib's `#[cfg(test)]` is invisible here; falling back
-/// to "wait 15 s and look at the status" would have rebuilt the fake gate.
-///
-/// Mutation witness: drop the `carried` argument in `respawn_after_backoff`
-/// (pass `None`) and the crash count never reaches the limit — the plugin keeps
-/// respawning and the "no more than LIMIT crashes" assertion fails.
+/// The gate is the count, not a dwell time: a stub that re-crashes instantly sits in
+/// `Crashed` for nearly all of any window you sample.
 #[tokio::test]
 async fn crash_loop_stops_respawning_at_the_window_limit() {
     const LIMIT: u32 = 4;
     let (host, repo, _tmp) = boot_host_with_backoff(
         "test.crashloop",
         CRASH_BIN,
-        // Short, flat backoff: the point under test is the counter, and a
-        // production-shaped 1/2/4/8 s schedule would make this a ~15 s test.
+        // Short, flat backoff: the point under test is the counter.
         vec![80],
         Duration::from_secs(300),
         LIMIT,
@@ -320,7 +236,6 @@ async fn crash_loop_stops_respawning_at_the_window_limit() {
 
     host.spawn("test.crashloop").await.expect("spawn");
 
-    // Wait for the limit to be reached: LIMIT crash events, and no more.
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let crashes = crash_count(&repo, "test.crashloop").await;
@@ -365,14 +280,6 @@ async fn crash_count(repo: &Arc<dyn calm_server::db::Repo>, id: &str) -> usize {
         .count()
 }
 
-// ---------------------------------------------------------------------------
-// 5. Issue #45 — min_kernel_version gate refuses incompatible plugins.
-// ---------------------------------------------------------------------------
-
-/// A manifest demanding kernel 99.0.0 must fail `spawn` with `KernelTooOld`
-/// *before* any process work. We assert: (a) the error variant is right,
-/// (b) it carries both versions, and (c) no plugin row ever flipped to
-/// `Running` / `Spawning` (the spawn aborts upstream of the processes map).
 #[tokio::test]
 async fn spawn_refuses_plugin_requiring_newer_kernel() {
     let (host, _tmp, _events) = boot_host_with_min_kernel("test.toonew", ECHO_BIN, "99.0.0").await;
@@ -383,20 +290,12 @@ async fn spawn_refuses_plugin_requiring_newer_kernel() {
     match err {
         HostError::KernelTooOld(k) => {
             assert_eq!(k.required.to_string(), "99.0.0");
-            // We don't pin actual; just confirm the field is populated and is
-            // a non-99 kernel (otherwise the test environment is doing
-            // something unexpected).
             assert_ne!(k.actual.to_string(), "99.0.0");
         }
         other => panic!("expected KernelTooOld, got {other:?}"),
     }
-    // The spawn aborted before touching the processes map.
     assert!(host.status("test.toonew").await.is_none());
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 async fn boot_host_with_subscribe(
     plugin_id: &str,

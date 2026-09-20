@@ -1,21 +1,5 @@
-//! #267 E2E — `CodexClient::new_stub()` MUST scope its `codex_homes_dir`
-//! to a per-instance tempdir that disappears when the stub drops.
-//!
-//! The incident this guards against: prior to #267 the stub default was
-//! `std::env::temp_dir().join("neige-codex-homes-stub")` — a single
-//! global path every test instance wrote into and nobody cleaned up.
-//! Across enough test runs the dir accumulated codex's full per-card
-//! session state (`logs_*.sqlite`, `history`, the seeded `~/.codex`
-//! copy), eventually 134 GB observed in one incident, until the /tmp
-//! partition filled. The fix puts a `tempfile::TempDir` inside the
-//! `CodexClient` struct so when the test drops its `Arc<CodexClient>`
-//! (via `AppState`) the directory and everything under it goes away.
-//!
-//! This test exercises the property end-to-end against a real
-//! `AppState`-shaped construction (i.e. the same shape every other
-//! integration test uses), drops the state, and asserts the path is
-//! gone. Skipping the assertion would let a regression that resurrected
-//! the hardcoded path silently revive the leak.
+//! `CodexClient::new_stub()` must scope `codex_homes_dir` to a per-instance tempdir that disappears on drop;
+//! a shared global path once accumulated 134 GB of per-card codex state across test runs.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -27,8 +11,7 @@ use calm_server::event::EventBus;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 
-/// The pre-#267 hardcoded path. If a future refactor accidentally
-/// reverts the fix this constant will be the giveaway.
+/// The old hardcoded shared path; a refactor that reverts to it shows up here.
 fn old_shared_path() -> PathBuf {
     std::env::temp_dir().join("neige-codex-homes-stub")
 }
@@ -77,9 +60,7 @@ async fn codex_homes_dir_cleanup_new_stub_codex_homes_dir_exists_until_drop() {
         path.display(),
     );
 
-    // Simulate the real track-create / planner-card spawn: create a UUID
-    // named per-card subdir and a sentinel file inside it. This is the
-    // exact shape `planner_card.rs:230` / `codex_cards.rs:178` write.
+    // Simulate the planner-card spawn: a UUID-named per-card subdir with a sentinel file.
     let card_id = uuid::Uuid::new_v4().to_string();
     let card_home = path.join(&card_id);
     std::fs::create_dir_all(&card_home).expect("seed per-card codex home");
@@ -91,8 +72,6 @@ async fn codex_homes_dir_cleanup_new_stub_codex_homes_dir_exists_until_drop() {
         .expect("seed stub shared CODEX_HOME");
     assert!(shared_path.exists());
 
-    // Drop the stub — the wrapped `tempfile::TempDir` removes the entire
-    // tree, including our per-card subdir and the shared CODEX_HOME.
     drop(codex);
     assert!(
         !path.exists(),
@@ -110,23 +89,7 @@ async fn codex_homes_dir_cleanup_new_stub_codex_homes_dir_exists_until_drop() {
 
 #[tokio::test]
 async fn codex_homes_dir_cleanup_appstate_track_create_subdir_is_under_per_test_tempdir() {
-    // End-to-end: build a full `AppState` the way integration tests do
-    // (this is the construction shape `cargo test -p calm-server --test
-    // track_create_with_theme` — the test that triggered the #267
-    // incident — uses), simulate a track-create that mints a per-card
-    // codex home, and assert that subdir lives under a per-instance
-    // tempdir (i.e. NOT the pre-#267 hardcoded
-    // `temp_dir().join("neige-codex-homes-stub")`).
-    //
-    // Drop-then-assert semantics are covered by
-    // `new_stub_codex_homes_dir_exists_until_drop` (CodexClient in
-    // isolation) and `appstate_drop_removes_codex_homes_dir_on_disk`
-    // (full AppState shape — post-#272 N3 the dispatcher holds a
-    // `Weak<CodexClient>` so the cycle is broken and drop is
-    // synchronous). This test focuses narrowly on the "lives under the
-    // per-test tempdir, not the pre-#267 global path" property — i.e.
-    // the leak we close even if cleanup were to wait for process
-    // exit.
+    // Asserts only that the per-card subdir lives under the per-test tempdir; drop-then-assert is covered by the other two tests.
     let repo: Arc<dyn Repo> = Arc::new(
         SqlxRepo::open("sqlite::memory:")
             .await
@@ -161,9 +124,7 @@ async fn codex_homes_dir_cleanup_appstate_track_create_subdir_is_under_per_test_
         Some(track_area_cache),
     );
 
-    // Simulate a track-create that mints a per-card codex home — exactly
-    // what the real handlers do via `<codex_homes_dir>/<card_id>/`
-    // (see `planner_card.rs:230` and `codex_cards.rs:178`).
+    // Simulate a track-create minting `<codex_homes_dir>/<card_id>/`.
     let card_id = uuid::Uuid::new_v4().to_string();
     let card_home = state.codex.codex_homes_dir.join(&card_id);
     std::fs::create_dir_all(&card_home).expect("seed per-card codex home");
@@ -171,11 +132,6 @@ async fn codex_homes_dir_cleanup_appstate_track_create_subdir_is_under_per_test_
         .expect("seed multi-byte fake codex state file");
     assert!(card_home.exists());
 
-    // The per-card subdir is under the per-test tempdir, not the
-    // pre-#267 global path. This is the property that closes the
-    // 134 GB-per-day leak: two separate test invocations get two
-    // separate tempdirs, neither one stomps the other, and the OS
-    // reaps both on process teardown.
     let tmp_root = std::env::temp_dir();
     assert!(
         codex_homes_dir.starts_with(&tmp_root),
@@ -214,21 +170,8 @@ async fn codex_homes_dir_cleanup_appstate_track_create_subdir_is_under_per_test_
     drop(state);
 }
 
-/// #272 (N3) — verifies the property PR #271 deliberately punted on.
-/// Pre-#272 the dispatcher held a strong `Arc<CodexClient>`, cycling
-/// with the broadcast bus (the dispatcher task only ends when the bus
-/// closes, the bus only closes when its sender drops, the sender is
-/// held by the task itself). The strong ref kept the wrapped
-/// `tempfile::TempDir` alive until the *test process* exited, so the
-/// per-test cleanup #271 introduced only fired at process teardown —
-/// fine for binary lifetime, but accumulating 41 tempdirs / 8.5 MB
-/// across one workspace `cargo test` run (measured locally in the
-/// issue thread).
-///
-/// #272 N3 broke the cycle by switching `Dispatcher::Inner.codex` to
-/// `Weak<CodexClient>` — so dropping `AppState` releases the last
-/// strong ref synchronously, the `TempDir` drops, the directory is
-/// removed from disk. This test asserts that property end-to-end.
+/// The dispatcher holds a `Weak<CodexClient>`; a strong ref would cycle with the broadcast bus and keep the
+/// `TempDir` alive until process exit.
 #[tokio::test]
 async fn codex_homes_dir_cleanup_appstate_drop_removes_codex_homes_dir_on_disk() {
     let repo: Arc<dyn Repo> = Arc::new(
@@ -266,11 +209,6 @@ async fn codex_homes_dir_cleanup_appstate_drop_removes_codex_homes_dir_on_disk()
         calm_server::state::WriteContext::new(card_role_cache.clone(), track_area_cache.clone()),
     ));
 
-    // Construction-shape mirrors the integration tests that triggered
-    // the #267 incident. The dispatcher inside `from_parts` previously
-    // held a strong `Arc<CodexClient>` clone; post-#272 N3 it holds a
-    // `Weak`, so the only strong refs are (a) the `codex` binding
-    // above and (b) the `state.codex` field.
     let state = AppState::from_parts(
         repo,
         EventBus::new(),
@@ -281,17 +219,14 @@ async fn codex_homes_dir_cleanup_appstate_drop_removes_codex_homes_dir_on_disk()
         Some(track_area_cache),
     );
 
-    // Seed a per-card subdir + file so the assertion has bytes on disk
-    // to disappear, not just an empty dir.
+    // Seed bytes on disk so the assertion is not just an empty dir.
     let card_id = uuid::Uuid::new_v4().to_string();
     let card_home = state.codex.codex_homes_dir.join(&card_id);
     std::fs::create_dir_all(&card_home).expect("seed per-card codex home");
     std::fs::write(card_home.join("history"), vec![0u8; 4096]).expect("seed fake codex state file");
     assert!(card_home.exists());
 
-    // Drop `state` — its `state.codex` (the last strong ref) drops, the
-    // `Arc<CodexClient>` inner drops, `_codex_homes_tempdir` drops, the
-    // wrapped `TempDir` removes the entire tree.
+    // `state.codex` is the last strong ref; dropping it removes the tree.
     drop(state);
 
     assert!(

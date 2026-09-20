@@ -1,6 +1,6 @@
-//! Truth/substrate layer for the calm kernel (#679 PR2).
+//! Truth/substrate layer for the calm kernel.
 
-// Retained for PR6 `WorkerProvider` impls.
+// Retained for `WorkerProvider` impls.
 use calm_exec as _;
 
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");

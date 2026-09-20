@@ -1,7 +1,4 @@
-//! Issue #573 phase 1 - authenticated HTTP track file views.
-//!
-//! These tests compare the new REST endpoints against the existing MCP
-//! `calm.track.ls` / `calm.track.cat` outputs over the same in-memory repo.
+//! Authenticated HTTP track file views, compared against MCP `calm.track.ls` / `calm.track.cat` over the same repo.
 
 #![cfg(unix)]
 

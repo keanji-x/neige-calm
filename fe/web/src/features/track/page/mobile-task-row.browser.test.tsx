@@ -1,31 +1,9 @@
-/*
- * The mobile Task row's strike-through, measured (#1234 S1b-4b review).
- *
- * **What the jsdom pair does not say.** `RowBadge.struck` has no carrier in the
- * projection framework at all, so the only thing holding it on this surface is
- * `mobile-painter.test.tsx`'s class assertion — and a class assertion answers
- * "did the painter write `.mobileRowStruck`", not "is the word struck through".
- * Delete `text-decoration: line-through` from the rule and keep the class: both
- * directions of that pair stay green, and the phone shows a withdrawn
- * declaration set exactly like a live one. That is the same defect
- * `task-row.browser.test.tsx` was written for on the desktop — a test that
- * checks `className` passes whether or not a single rule ever matched.
- *
- * So this reads `text-decoration-line` back out of the cascade, in an engine,
- * at a width where the rule is even eligible: `.mobileRowStruck` lives inside
- * `@media (width < 60rem)`, and it is the **iframe** the suite renders into that
- * the query is evaluated against — see `vitest.config.ts`'s note on the two
- * viewports.
- *
- * Both directions, because a declaration struck unconditionally would satisfy
- * the positive half alone.
- */
+/* The mobile Task row's strike-through, measured: a class assertion cannot say whether the word is struck. `.mobileRowStruck` lives inside `@media (width < 60rem)`, evaluated against the iframe the suite renders into. */
 import { render } from '@testing-library/react';
 import { page as browserPage } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-/* The whole cascade, and before the CSS Module — see the import-order note in
-   `panel-sticky.browser.test.tsx`. */
+/* The whole cascade, and before the CSS Module. */
 import '../../../styles/entry.css';
 
 import type { ReportTaskRow } from '../../../../../core/domain/report.ts';
@@ -42,8 +20,7 @@ const track: Track = {
   ...NEUTRAL_ACTIVITY,
 };
 
-/** A withdrawn declaration and an ordinary one, in that order — the same pair
- *  the jsdom class assertion uses, so the two tests are about one row set. */
+/** A withdrawn declaration and an ordinary one, in that order. */
 const TASKS: readonly ReportTaskRow[] = [
   {
     blockId: 'b-gone', key: 'gamma-planner', state: 'withdrawn', declaration: 'Withdrawn',
@@ -57,13 +34,7 @@ const TASKS: readonly ReportTaskRow[] = [
 
 describe('a withdrawn declaration on the mobile Tasks page', () => {
   it('is struck through, and an ordinary declaration beside it is not', async () => {
-    /* Narrow enough for `@media (width < 60rem)`. This call is what makes the
-       case *run*, not a guard against a false green — measured by putting 1024
-       here instead: the whole mobile surface is collapsed at that width, both
-       badges measure 0 wide, and the **width premise below** is what goes red,
-       before either decoration is ever read. What excludes the false green is
-       the positive assertion at the end: `line-through` is a value nothing but
-       the rule produces. */
+    /* Narrow enough for `@media (width < 60rem)`; at 1024 the whole mobile surface is collapsed. */
     await browserPage.viewport(420, 900);
     render(
       <TrackPage
@@ -87,9 +58,7 @@ describe('a withdrawn declaration on the mobile Tasks page', () => {
     const badges = Array.from(panel!.querySelectorAll('[data-nc-badge="declaration"]'));
     expect(badges.map((badge) => badge.textContent)).toEqual(['Unreadable', 'Withdrawn']);
 
-    /* Premise: these words are laid out. A mobile panel the media query left
-       collapsed would give every reading below a computed style off a box
-       nobody can see, and the assertions would be about nothing. */
+    /* Premise: these words are laid out; a collapsed panel would give computed styles off a box nobody can see. */
     for (const badge of badges) {
       expect(badge.getBoundingClientRect().width).toBeGreaterThan(0);
     }

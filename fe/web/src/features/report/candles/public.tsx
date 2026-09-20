@@ -1,25 +1,5 @@
-// The `chart.candles` block.
-//
-// Drawn as **SVG**, not on a canvas and not by a charting library. That is a
-// deliberate departure from the legacy web's `lightweight-charts` port, and it
-// buys three things this app specifically needs:
-//
-//   * **The tokens work.** A canvas cannot read `oklch()` custom properties
-//     reliably, which is why the legacy chart carries a duplicated hex palette
-//     per theme that has to be kept in sync with the stylesheet by hand. SVG
-//     paints with `currentColor` and `var(--…)`, so the chart is themed by the
-//     same tokens as everything else and there is no second palette to drift.
-//   * **No dependency and no lazy chunk.** The reason §8.3 asks for a lazily
-//     loaded chart library is the ~45KB a report without a chart should not
-//     pay. This pays none of it, so the requirement is met by having no bytes
-//     rather than by deferring them.
-//   * **It is markup.** The candles are elements, so they inherit the app's
-//     reduced-motion and focus rules for free.
-//
-// Visual contract (unchanged from the legacy figure): CN polarity — up is red,
-// down is green — and **up candles are hollow while down candles are solid**.
-// The fill is a second encoding channel on top of hue, because red/green alone
-// is not readable under the most common colour-vision deficiency (§原则 5).
+// The `chart.candles` block, drawn as SVG so it paints from the app's tokens (a canvas cannot read
+// `oklch()` custom properties reliably). CN polarity: up is red and hollow, down is green and solid.
 
 import { useState } from '../../../ui/state/public.ts';
 import type { ChartCandlesPayload } from '../../../../../core/domain/report.ts';
@@ -56,9 +36,7 @@ export function ReportCandlesBlock({ payload }: { payload: ChartCandlesPayload }
   const visible: readonly Candle[] = days === null
     ? all
     : all.filter((candle) => candle[0] >= lastTs - days * DAY_MS);
-  // Two candles is the payload's own floor; a filtered range that falls under
-  // it draws nothing meaningful, so it falls back to the full series rather
-  // than to an empty box.
+  // Two candles is the payload's own floor; a range that falls under it falls back to the full series.
   const candles = visible.length >= 2 ? visible : all;
 
   const first = candles[0];
@@ -92,8 +70,6 @@ export function ReportCandlesBlock({ payload }: { payload: ChartCandlesPayload }
         </span>
       </figcaption>
 
-      {/* The drawing is shared with `chart.series` (`figure.tsx`, #1628 S4.5);
-          only the chrome above and the caption below are this block's. */}
       <CandlesFigure candles={candles} overlays={payload.overlays ?? []} label={payload.symbol} />
 
       {payload.caption != null && payload.caption !== '' && (

@@ -1,34 +1,5 @@
-//! `neige-codex-bridge` — hook shim invoked by codex or Claude Code for
-//! lifecycle hooks. Reads the hook JSON from stdin, forwards it to
-//! calm-server's internal ingest endpoint, and exits 0.
-//!
-//! Every hook — Stop included — takes the same fire-and-forget path: POST
-//! the payload to `/internal/codex/hook` and print `{}` (the codex hook
-//! contract for "no behavior override, continue"). Stop payloads may be
-//! enriched with `last_assistant_message` from the transcript before POST.
-//! In Claude mode, selected by `--provider claude` or
-//! `NEIGE_HOOK_PROVIDER=claude`, POST to `/internal/claude/hook` and print
-//! `{"continue":true}`. Failures are logged to stderr but never fail the hook
-//! — we don't want a flaky network call to stall the agent.
-//!
-//! #293 cutover: the Stop hook used to long-poll
-//! `/internal/codex/pending_events` and emit `{decision:"block",...}` to
-//! re-prompt the planner agent (the pull model). Pull is gone — planner agents are
-//! now driven by observations pushed onto their codex thread by the kernel —
-//! so Stop is no longer special-cased here.
-//!
-//! #1620: every invocation stamps `neige_hook_occurrence` (a per-process id)
-//! into the body before it is posted or hashed, so two hook occurrences with
-//! byte-identical bodies (Claude's `Stop` / idle `Notification` payloads are
-//! the same every turn) are distinct events at the server, while the retries
-//! and the replayable fallback file of ONE invocation keep one id and stay
-//! idempotent.
-//!
-//! Env contract (set by calm-server when spawning codex):
-//!   * `NEIGE_CARD_ID`        — legacy card uuid override (optional)
-//!   * `NEIGE_CALM_BASE_URL`  — e.g. `http://127.0.0.1:4040` (required)
-//!   * `NEIGE_HOOK_PROVIDER`  — `codex` or `claude` (optional; codex default)
-//!   * `NEIGE_HOOK_URL`       — full ingest URL override (optional)
+//! `neige-codex-bridge` — hook shim invoked by codex or Claude Code for lifecycle hooks:
+//! reads the hook JSON from stdin, POSTs it to calm-server's ingest endpoint, and exits 0.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -51,9 +22,6 @@ fn main() {
     }
 
     let provider = Provider::from_env_and_args();
-    // Read full stdin. Hooks send one JSON object per invocation; we
-    // forward it verbatim as the POST body so backend can parse it as
-    // an opaque payload and tag it with `hook_event_name`.
     let mut body = String::new();
     if let Err(e) = std::io::stdin().read_to_string(&mut body) {
         eprintln!("neige-codex-bridge: read stdin failed: {e}");
@@ -80,12 +48,8 @@ fn main() {
         }
     };
 
-    // #293 cutover: every hook (Stop included) takes the same
-    // fire-and-forget path. Stop payloads may be enriched before POST so
-    // downstream projections still read only persisted event rows.
     let post_body = maybe_enrich_stop_payload(&body).unwrap_or_else(|| body.clone());
-    // #1620 — one occurrence id per bridge process, stamped before any hash
-    // or POST so retries and the fallback file carry the same body.
+    // One occurrence id per bridge process, stamped before any hash or POST so retries and the fallback file carry the same body.
     let occurrence = hook_occurrence_id();
     let post_body = stamp_hook_occurrence(&post_body, &occurrence).unwrap_or(post_body);
     post_hook(provider, &base, &card_id, hook_url.as_deref(), &post_body);
@@ -237,7 +201,7 @@ fn maybe_enrich_stop_payload(body: &str) -> Option<String> {
     }
 }
 
-/// Key the bridge adds to every posted hook body (#1620).
+/// Key the bridge adds to every posted hook body.
 pub const HOOK_OCCURRENCE_KEY: &str = "neige_hook_occurrence";
 
 /// `<pid>-<captured_ms>-<random>`: unique per invocation, generated once.
@@ -264,9 +228,7 @@ fn random_hex() -> String {
     hex::encode(bytes)
 }
 
-/// Insert [`HOOK_OCCURRENCE_KEY`] into a JSON object body. A body that is not
-/// a JSON object is returned as `None` and posted unchanged (the server
-/// rejects it either way).
+/// A body that is not a JSON object is returned as `None` and posted unchanged.
 fn stamp_hook_occurrence(body: &str, occurrence: &str) -> Option<String> {
     let mut payload: Value = serde_json::from_str(body).ok()?;
     payload.as_object_mut()?.insert(
@@ -451,11 +413,7 @@ fn post_hook(provider: Provider, base: &str, card_id: &str, hook_url: Option<&st
         .build();
     let mut last_error = None;
     for (attempt, backoff) in POST_RETRY_BACKOFFS.iter().enumerate() {
-        // Scope β — declare the actor for every hook the bridge forwards.
-        // The kernel's `actor_middleware` reads `X-Calm-Actor`, validates it,
-        // and stamps the resulting event row with `actor = "ai:codex"`. Without
-        // this header the middleware falls back to its `"user"` default, which
-        // would misattribute codex's own lifecycle signal as a human write.
+        // Without `X-Calm-Actor` the kernel's actor middleware defaults to `"user"` and misattributes codex's own signal as a human write.
         match agent
             .post(&url)
             .set("content-type", "application/json")
@@ -566,9 +524,7 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// Bare-bones percent-encoder so we don't need a `url` dep. Card ids are
-/// uuid hex (no special chars), but we encode defensively in case the
-/// format ever widens.
+/// Bare-bones percent-encoder so we don't need a `url` dep.
 fn url_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
@@ -908,8 +864,6 @@ mod tests {
         assert_eq!(maybe_enrich_stop_payload("not-json"), None);
     }
 
-    /// #1620 — the occurrence id is stamped into object bodies only, keeps
-    /// every original key, and two generated ids differ.
     #[test]
     fn occurrence_is_stamped_into_object_bodies_and_unique_per_call() {
         let body = json!({"hook_event_name":"Stop","session_id":"s"}).to_string();

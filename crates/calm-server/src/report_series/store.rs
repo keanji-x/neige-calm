@@ -1,13 +1,5 @@
-//! `report_series` rows (#1628 D3): one per `(track, block, request_hash)`.
-//!
-//! Every reader selects by the full primary key — the hash is derived from
-//! the block's current payload first, then the row for that hash is fetched.
-//! Selecting "any row for this block" would let a pinned row for an old
-//! parameter set shadow the current one forever (G8 keeps old rows).
-//!
-//! The default (summary) read leaves the `data` column on disk: it can be
-//! up to `MAX_SERIES_ROW_BYTES` and `calm.report.read` is on the planner's
-//! CAS path.
+//! `report_series` rows: one per `(track, block, request_hash)`. Every reader selects by the full primary key; 'any row for this block' would let a pinned row for an old parameter set shadow the current one forever.
+//! The summary read leaves the `data` column on disk: `calm.report.read` is on the planner's CAS path.
 
 use serde_json::Value;
 use sqlx::{Sqlite, SqlitePool, Transaction};
@@ -78,9 +70,7 @@ fn select_sql(detail: Detail) -> String {
     format!("SELECT {columns} {BY_KEY}")
 }
 
-/// Select the row for exactly this `(track, block, hash)` on the pool: one
-/// autocommit statement, no transaction (readers and the drain-side
-/// admission both come through here).
+/// Select the row for exactly this `(track, block, hash)`: one autocommit statement, no transaction.
 pub async fn select_row(
     pool: &SqlitePool,
     track_id: &str,
@@ -109,9 +99,7 @@ pub struct NewRow {
     pub data: Option<Value>,
 }
 
-/// `INSERT … ON CONFLICT DO UPDATE … WHERE pinned = 0`: a pinned row is
-/// immutable at the DB layer, whoever tries. Returns the number of rows
-/// affected (0 when the existing row is pinned).
+/// `INSERT … ON CONFLICT DO UPDATE … WHERE pinned = 0`: a pinned row is immutable at the DB layer. Returns rows affected (0 when pinned).
 pub async fn upsert_row_tx(
     tx: &mut Transaction<'_, Sqlite>,
     track_id: &str,
@@ -159,9 +147,7 @@ pub async fn upsert_row_tx(
     Ok(result.rows_affected())
 }
 
-/// Fork (D3 / S2.13): copy every row of `source_track_id` to
-/// `target_track_id` inside the fork's own transaction. Block ids are
-/// preserved by the fork, so the rows keep their identity.
+/// Fork: copy every row of `source_track_id` to `target_track_id` inside the fork's own transaction; block ids are preserved.
 pub async fn copy_rows_tx(
     tx: &mut Transaction<'_, Sqlite>,
     source_track_id: &str,

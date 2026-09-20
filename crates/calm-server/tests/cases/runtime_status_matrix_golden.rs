@@ -1,39 +1,5 @@
-//! Issue #679 PR0-C — exit-arbitration matrix golden + terminal-absorption
-//! characterization.
-//!
-//! `runtime_status_transition_allowed` (db/sqlite.rs) is the arbitration
-//! kernel that every runtime-status writer funnels through today
-//! (`session_set_status_tx`, `session_complete_tx`, and their for-card /
-//! for-terminal wrappers). The #679 design makes it the future single exit
-//! authority, so PR0 pins the CURRENT full decision table as a golden
-//! *before* any refactor touches it.
-//!
-//! Two properties are pinned here:
-//!
-//!   1. **The full (from × to) matrix** — `goldens/runtime_status_matrix.json`
-//!      is a hand-audited 7×7 allow/deny table (14 allow / 35 deny). Every
-//!      cell is asserted black-box through the real sqlite write paths
-//!      against a real fixture row — the test imports no `fn` internals of
-//!      the kernel, only the public `*_tx` writers — so a PR3+ rewrite of
-//!      the kernel must reproduce the same observable table to stay green.
-//!
-//!   2. **Terminal absorption, first writer wins** — two writers racing to
-//!      put the same runtime row into a terminal state (the real-world race
-//!      between attach_reader EOF, the boot scan, and the terminal sweeper):
-//!      the first terminal write lands; the second resolves through the
-//!      for-card / for-terminal lookup, finds no *active* runtime, and
-//!      no-ops with `Ok(())` — no error, no row mutation. The direct by-id
-//!      path is different and also pinned: it surfaces
-//!      `IllegalStatusTransition` instead of absorbing silently.
-//!
-//! Determinism note: sqlite has a single writer lock, so any real
-//! concurrent race linearizes into one of exactly two commit orders. We
-//! drive both linearizations explicitly (Exited-then-Failed and
-//! Failed-then-Exited) with separate committed transactions per writer —
-//! same effective schedule as a live race, with zero scheduler flake.
-//!
-//! Golden discipline: any diff to `goldens/runtime_status_matrix.json` is a
-//! semantic change to exit arbitration and needs explicit review under #679.
+//! Exit-arbitration matrix golden (`goldens/runtime_status_matrix.json`) and terminal-absorption
+//! characterization for `runtime_status_transition_allowed`. Any diff to the golden is a semantic change.
 
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
@@ -49,10 +15,7 @@ use serde_json::{Value, json};
 
 const GOLDEN: &str = include_str!("../goldens/runtime_status_matrix.json");
 
-/// All `WorkerSessionState` variants paired with their pinned db string (the
-/// `runtimes.status` CHECK vocabulary from migration 0028). Order matters:
-/// it must match the golden's `statuses` array, so adding a variant without
-/// updating the golden fails loudly.
+/// Order matters: it must match the golden's `statuses` array, so adding a variant without updating the golden fails loudly.
 const ALL_STATUSES: [(&str, WorkerSessionState); 7] = [
     ("starting", WorkerSessionState::Starting),
     ("running", WorkerSessionState::Running),
@@ -125,10 +88,7 @@ enum WriterPath {
     Complete,
 }
 
-/// Seed one fresh card + one runtime row at `from`, then attempt the
-/// transition through the given writer. Returns whether the write was
-/// allowed, after asserting the row's raw db status reflects the outcome
-/// and that a deny is exactly `IllegalStatusTransition { attempted: to }`.
+/// Seed one fresh card + one runtime row at `from`, then attempt the transition through the given writer.
 async fn probe(
     repo: &SqlxRepo,
     track: &calm_server::model::Track,
@@ -152,7 +112,6 @@ async fn probe(
         session_start_runtime_tx(&mut tx, terminal_runtime_init(card.id.to_string(), from.1))
             .await
             .expect("insert probe runtime");
-    // Insert round-trip pins the from-side db string mapping.
     assert_eq!(runtime.status, from.1, "insert round-trip for {}", from.0);
 
     let res = match path {
@@ -163,8 +122,6 @@ async fn probe(
 
     match res {
         Ok(()) => {
-            // Allowed: the row really moved, and the to-side db string
-            // mapping is pinned by reading the raw column back.
             assert_eq!(
                 raw_status(repo, &runtime.id).await,
                 to.0,
@@ -177,7 +134,6 @@ async fn probe(
         Err(WorkerSessionProjectionRepoError::IllegalStatusTransition { id, attempted }) => {
             assert_eq!(id, runtime.id, "deny names the probed runtime");
             assert_eq!(attempted, to.1, "deny names the attempted status");
-            // Denied: the row must be untouched.
             assert_eq!(
                 raw_status(repo, &runtime.id).await,
                 from.0,
@@ -192,16 +148,10 @@ async fn probe(
     }
 }
 
-// ---------------------------------------------------------------------------
-// (1) The full matrix, asserted cell by cell against the golden.
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn runtime_status_matrix_matches_golden() {
     let golden: Value = serde_json::from_str(GOLDEN).expect("parse golden json");
 
-    // The golden's status vocabulary must be exactly the WorkerSessionState enum,
-    // in pinned order — a new variant cannot slip in unaudited.
     let golden_statuses: Vec<&str> = golden["statuses"]
         .as_array()
         .expect("statuses array")
@@ -214,8 +164,6 @@ async fn runtime_status_matrix_matches_golden() {
         "golden status vocabulary must match WorkerSessionState exactly"
     );
 
-    // Structural exhaustiveness: 7 from-rows × 7 to-cells, values only
-    // "allow"/"deny", and exactly 14 allow cells total.
     let matrix = golden["matrix"].as_object().expect("matrix object");
     assert_eq!(matrix.len(), 7, "matrix must have one row per status");
     let mut allow_count = 0usize;
@@ -239,8 +187,6 @@ async fn runtime_status_matrix_matches_golden() {
         "arbitration matrix has exactly 14 allow cells"
     );
 
-    // Behavioral assertion: every cell, black-box through the real write
-    // paths against a real fixture row.
     let repo = fresh_repo().await;
     let track = make_track(&repo).await;
 
@@ -248,9 +194,7 @@ async fn runtime_status_matrix_matches_golden() {
         for to in ALL_STATUSES.iter() {
             let expected_allow = matrix[from.0][to.0].as_str() == Some("allow");
 
-            // `session_set_status_tx` consults the kernel for every target
-            // (its categorical Superseded refusal coincides with the
-            // matrix's all-deny superseded column).
+            // `session_set_status_tx`'s categorical Superseded refusal coincides with the matrix's all-deny superseded column.
             let observed = probe(&repo, &track, from, to, WriterPath::SetStatus).await;
             assert_eq!(
                 observed,
@@ -261,10 +205,7 @@ async fn runtime_status_matrix_matches_golden() {
                 if expected_allow { "allow" } else { "deny" },
             );
 
-            // `session_complete_tx` is the other real writer into the
-            // kernel; it only accepts terminal targets, so cross-check the
-            // failed/exited columns through it as well — both paths must
-            // arbitrate identically.
+            // `session_complete_tx` only accepts terminal targets; both paths must arbitrate identically.
             if matches!(
                 to.1,
                 WorkerSessionState::Failed | WorkerSessionState::Exited
@@ -280,20 +221,9 @@ async fn runtime_status_matrix_matches_golden() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// (2) Terminal absorption — first writer wins, second writer no-ops.
-//
-// The production race: attach_reader EOF, the boot scan, and the terminal
-// sweeper all observe the same dying runtime and each tries to write a
-// terminal status. sqlite's single writer lock linearizes them; whichever
-// commits first wins, and the losers' for-card / for-terminal lookups no
-// longer see an *active* runtime, so they return Ok(()) without touching
-// the row. We pin both possible linearizations deterministically.
-// ---------------------------------------------------------------------------
+// sqlite's single writer lock linearizes racing terminal writers; the losers' for-card / for-terminal
+// lookups no longer see an *active* runtime and return Ok(()) without touching the row.
 
-/// Build a real codex worker card (token + terminal + runtime in one tx,
-/// the production mint path), advance its runtime to `running`, and return
-/// (repo, card, terminal, runtime_id).
 async fn running_codex_fixture() -> (
     SqlxRepo,
     calm_server::model::Card,
@@ -324,7 +254,6 @@ async fn running_codex_fixture() -> (
     )
     .await
     .expect("mint codex card");
-    // Mid-execution shape: starting -> running.
     session_set_status_for_card_tx(&mut tx, card.id.as_ref(), WorkerSessionState::Running)
         .await
         .expect("advance to running");
@@ -354,7 +283,6 @@ async fn row_snapshot(repo: &SqlxRepo, runtime_id: &str) -> (String, i64, Option
 async fn terminal_absorption_exited_first_then_failed_noops() {
     let (repo, card, term, runtime_id) = running_codex_fixture().await;
 
-    // Writer 1 (e.g. attach_reader EOF) — its own tx, commits first, wins.
     let mut tx = repo.pool().begin().await.unwrap();
     session_complete_for_card_tx(&mut tx, card.id.as_ref(), WorkerSessionState::Exited)
         .await
@@ -364,8 +292,6 @@ async fn terminal_absorption_exited_first_then_failed_noops() {
     assert_eq!(won.0, "exited");
     assert!(won.2.is_some(), "first writer stamps completed_at_ms");
 
-    // Writer 2 (e.g. terminal sweeper, via the terminal row) — separate tx,
-    // sees no active runtime, no-ops with Ok. No error, no mutation.
     let mut tx = repo.pool().begin().await.unwrap();
     session_complete_for_terminal_tx(&mut tx, &term.id, WorkerSessionState::Failed)
         .await
@@ -377,8 +303,6 @@ async fn terminal_absorption_exited_first_then_failed_noops() {
         "second writer must not touch the row (status/updated_at/completed_at)"
     );
 
-    // Writer 3 (e.g. boot scan, by card) — same absorption through the
-    // for-card wrapper.
     let mut tx = repo.pool().begin().await.unwrap();
     session_complete_for_card_tx(&mut tx, card.id.as_ref(), WorkerSessionState::Failed)
         .await
@@ -386,8 +310,7 @@ async fn terminal_absorption_exited_first_then_failed_noops() {
     tx.commit().await.unwrap();
     assert_eq!(row_snapshot(&repo, &runtime_id).await, won);
 
-    // Contrast pin: the direct by-id path does NOT absorb — a second
-    // terminal write against a known runtime id surfaces the conflict.
+    // The direct by-id path does NOT absorb.
     let mut tx = repo.pool().begin().await.unwrap();
     let err = session_complete_tx(&mut tx, &runtime_id, WorkerSessionState::Failed)
         .await
@@ -408,8 +331,7 @@ async fn terminal_absorption_exited_first_then_failed_noops() {
 
 #[tokio::test]
 async fn terminal_absorption_failed_first_then_exited_noops() {
-    // The mirrored linearization of the same race: with sqlite's single
-    // writer lock there are exactly two commit orders; this pins the other.
+    // The mirrored linearization: with sqlite's single writer lock there are exactly two commit orders.
     let (repo, card, term, runtime_id) = running_codex_fixture().await;
 
     let mut tx = repo.pool().begin().await.unwrap();

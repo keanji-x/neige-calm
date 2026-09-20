@@ -1,93 +1,10 @@
 #!/usr/bin/env bash
-# #1635 S6 — the prose ratchet: agent-facing prose must not flow back into Rust.
-#
-# S1a–S5 moved prompts, tool descriptions and templates out of `*.rs` into
-# `prompts/**/*.md` and `templates/**/*.md`. This gate keeps that direction: it
-# counts two text shapes in TRACKED `*.rs` under `crates/` and fails when either
-# count RISES above the committed baseline, or FALLS below it without the
-# baseline being tightened. It is a clone of `gate-1316-terminology-ratchet.sh`
-# (`count`, `--update-baseline`, the baseline format and the compare loop
-# copied and compacted; NOT sourced, so the two gates stay independently
-# readable and deletable). That script's header lessons apply unchanged:
-#   A BASELINE IS ONLY VALID FOR THE TREE IT WAS GENERATED ON. A merge or
-#   rebase onto `main` can move a cell either way; regenerate after every
-#   upstream sync and treat pre-rebase numbers as expired evidence.
-#   actual > baseline => FAIL, new prose entered Rust.
-#   actual < baseline => FAIL, run `--update-baseline` and commit the tsv;
-#   a baseline left high re-permits every occurrence the change just removed.
-#
-# WHAT EACH PATTERN COVERS, STATED HONESTLY
-# `cjk`  `[\x{4e00}-\x{9fff}]{4,}` — a run of at least four CJK ideographs.
-#   Each maximal run is one occurrence: `进程退出后，里保留这么久` is TWO (the
-#   comma splits it), `一个 entry` is ZERO. It deliberately does NOT catch
-#   English prose, CJK runs shorter than four (identifiers, a two-word
-#   comment), kana/hangul (outside the range), or CJK spelled as `\u{...}`.
-#   The goal is "no NEW Chinese prompt text in Rust", not "no Chinese": a
-#   short CJK comment is not prose an agent reads, and English prompt text is
-#   what `long_literal` is for. Text that only exists at run time, produced
-#   from parts each shorter than the pattern (`concat!("提示", "词散文")`), is
-#   invisible to any text count; `format!("提示词散文探针")` is counted.
-# `long_literal`  `"[^"\\]{120,}` — a `"` followed by at least 120 characters
-#   that are neither `"` nor `\`, on one line. rustfmt's default width is 100,
-#   so such a line is one rustfmt could not wrap: a literal or a comment. The
-#   unit is OCCURRENCES: two qualifying strings on one line count 2; a `\`-
-#   continuation line that carries no `"` contributes 0 however long it is.
-#   This is a text pattern, not a Rust parser, and it over-counts in the
-#   REJECT direction, knowingly: the anchoring `"` may be a CLOSING quote (a
-#   short literal followed by 120 quote-free, backslash-free characters of code
-#   or comment counts — measured as a `"` not preceded by `[\s(,=!:\[{+]`,
-#   `(?<=[^\s(,=!:\[{+])"[^"\\]{120,}`, 52 of the 333 baselined occurrences);
-#   SQL and JSON-schema literals count like prose; escaped strings are split
-#   at every `\`. The exit is the same in every case: break the line, move the
-#   text to a `prompts/` or `templates/` `.md`, or argue an enumerated raise
-#   below. No pattern here will be widened to exempt a shape.
-# SCOPE  `:(glob)crates/**/*.rs`, tracked files only (`git grep`). The
-#   `:(glob)` magic is load-bearing: without it `crates/**/*.rs` misses a
-#   tracked `crates/foo.rs` directly under `crates/`. `.md` data files under
-#   `crates/` are excluded by FILE TYPE, not by directory: they are where the
-#   prose is supposed to live. `mod tests` is not separated (#1635 §6.6).
-# LOCALE  Pinned to `LC_ALL=C.UTF-8`, and load-bearing for BOTH cells.
-#   `\x{4e00}` is above 255, which PCRE2 accepts only in UTF mode, and git
-#   takes UTF mode from the locale: under `LC_ALL=C` the `cjk` scan is a
-#   compile error (exit 128) that `count` refuses — red, not zero. The
-#   `long_literal` pattern compiles either way but counts BYTES outside UTF
-#   mode, so a CJK character is three characters wide: 336 vs 333 on the
-#   baseline tree. That drift is silent, which is why the pin is not optional.
-# BASELINE FORMAT  `term<TAB>scope<TAB>count`, LF-only, `#` comments. Every
-#   row is validated before any comparison: exactly two tabs, non-empty term
-#   and scope, a non-negative integer count of at most 12 digits, no duplicate
-#   (term, scope), no `\r` anywhere in the file. `[ "$got" -gt "$want" ]` on a
-#   non-integer — or on `9223372036854775808`, which passes `^[0-9]+$` but
-#   overflows bash's signed 64-bit compare — is a bash error (status 2) that
-#   sets NEITHER branch, so an unvalidated `824x` read as green; validation is
-#   what makes a malformed tsv red. `$got` is held to the same two rules.
-# RAISES  None taken. A raise, if ever justified, is written here 1316-style:
-#   per-file before/after counts, a closed list, one commit naming every
-#   constituent line — never a criterion a later commit can re-spend.
-# PROVE IT DISCRIMINATES  `--selftest` (assumes the tree is at baseline;
-#   refuses to run if any probe path already exists — file, index entry, or a
-#   dangling symlink — writes probes with O_EXCL so nothing is ever written
-#   through, and removes only what it created): a dangling symlink at a probe
-#   path makes a nested run refuse by name and is left untouched; a C locale
-#   makes `count` fail rather than report 0; an exact copy of the tsv is green
-#   while copies with `824x`, a 19-digit count, a CRLF line, a duplicate row
-#   and an extra column are each red BY THEIR OWN validator (via
-#   `--baseline <path>`, so deleting one guard turns exactly one case red); one
-#   7-ideograph comment plus one 130-char literal in a probe `.rs` move each
-#   cell by EXACTLY +1 — once under `calm-types/src/`, once directly under
-#   `crates/` — and the gate goes red naming both cells; the same text in a
-#   probe `.md` under `prompts/` moves neither cell; after cleanup
-#   `git status --porcelain` on the probe paths is empty. Every judgement is
-#   bash arithmetic or a `case` on captured text; no subprocess sits in an
-#   assertion path (a `printf | grep` there produced a 1-in-38 false red in an
-#   earlier gate).
-# KNOWN GAPS  Stated, not patched; nothing here is a TODO. The threat model is
-#   an unintended collision, not an adversary: a probe path created by another
-#   actor between the refusal check and the O_EXCL write is out of contract
-#   (one actor per worktree). A genuine cell of 13+ digits would be refused as
-#   malformed; no scope here can reach 10^12. `--selftest` assumes the tree is
-#   at baseline and reports the first probe's gate run as red-for-wrong-reason
-#   otherwise.
+# Prose ratchet: agent-facing prose must not flow back into Rust. Counts two text
+# shapes (`cjk`: a run of ≥4 ideographs; `long_literal`: a `"` followed by 120+ quote-free, backslash-free chars)
+# in tracked `*.rs` under `crates/` and fails when a cell rises above the committed
+# baseline or falls below it without `--update-baseline` (a baseline is only valid for the tree it was generated on).
+# `LC_ALL=C.UTF-8` is load-bearing: `\x{4e00}` needs PCRE2 UTF mode (else git grep exits 128) and `long_literal` counts BYTES outside it.
+# The `:(glob)` pathspec magic is load-bearing: without it `crates/**/*.rs` misses a tracked `crates/foo.rs`.
 
 set -uo pipefail
 
@@ -109,15 +26,13 @@ if [ "${1:-}" = '--baseline' ]; then
   shift 2
 fi
 
-# term<TAB>pattern. Reasons for each are in the header above.
+# term<TAB>pattern.
 read -r -d '' TERMS <<EOF || true
 cjk	$CJK
 long_literal	$LONG_LITERAL
 EOF
 
-# Counts OCCURRENCES, not matching lines (`-o`): appending a second literal to
-# an already-matching line must move the count. 1316's `count`, plus: git's
-# stderr is captured so that a ≥2 exit names its cause (locale, pattern).
+# Counts OCCURRENCES, not matching lines (`-o`); git's stderr is captured so a ≥2 exit names its cause.
 count() { # $1=pattern $2=pathspec
   local matches grep_status errfile
   errfile="$(mktemp)" || return 1
@@ -132,8 +47,7 @@ count() { # $1=pattern $2=pathspec
   return "$grep_status"
 }
 
-# Reads a baseline tsv into EXPECTED[term/scope]. Fails closed on ANY
-# malformed row: the compare loop's `-gt`/`-lt` cannot be trusted with one.
+# Fails closed on ANY malformed row: the compare loop's `-gt`/`-lt` cannot be trusted with one.
 declare -A EXPECTED=()
 load_baseline() { # $1=tsv path
   local line term scope want rest tabs n=0
@@ -199,9 +113,7 @@ if [ "${1:-}" = '--selftest' ]; then
       exit 1
     fi
   done
-  # `git grep` reads TRACKED paths only: each probe is `git add -N`ed so it is
-  # scanned as a committed file would be. Cleanup is per file, over the probes
-  # actually created, and ends by asserting the probe paths are clean.
+  # `git grep` reads TRACKED paths only, so each probe is `git add -N`ed.
   created=()
   make_probe() { # $1=path $2=content — O_EXCL via noclobber: an existing file or (dangling) symlink is refused, never written through
     if [ -L "$1" ] || ! ( set -o noclobber; printf '%s' "$2" >"$1" ); then echo "::error::refusing to write selftest probe '$1': something is already at that path"; return 1; fi
@@ -222,9 +134,7 @@ if [ "${1:-}" = '--selftest' ]; then
   ok() { echo "selftest ok: $1"; }
   bad() { echo "SELFTEST FAIL: $1"; fails=1; }
 
-  # A dangling symlink at a probe path is invisible to `-e` and to `git
-  # ls-files`; before this check the selftest wrote THROUGH it and then deleted
-  # it. The symlink below is this invocation's own, so removing it is allowed.
+  # A dangling symlink at a probe path is invisible to `-e` and to `git ls-files`; this one is our own, so removing it is allowed.
   ln -s "$tsvdir/dangling-target" "${PROBES[1]}" || exit 1
   symlink_output="$("./$SELF" --selftest 2>&1)" && { bad "a nested --selftest ran with a dangling symlink at ${PROBES[1]}"; }
   case "$symlink_output" in
@@ -238,9 +148,7 @@ if [ "${1:-}" = '--selftest' ]; then
   if LC_ALL=C count "$CJK" "$PATHSPEC" >/dev/null 2>&1; then bad "under LC_ALL=C the CJK scan reported a count instead of failing — a broken locale would read as clean"
   else ok "a C locale makes the CJK scan fail closed (git grep exit 128), not report 0"; fi
 
-  # Malformed baselines must be red BEFORE any comparison; an exact copy is the
-  # positive control that proves the four negatives are not "red for any
-  # reason". Each variant differs from the committed tsv in exactly one way.
+  # An exact copy is the positive control; each variant differs from the committed tsv in exactly one way.
   bad_tsv() { # $1=variant  (copy of $BASELINE on stdout, one defect applied)
     local line last=''
     while IFS= read -r line; do

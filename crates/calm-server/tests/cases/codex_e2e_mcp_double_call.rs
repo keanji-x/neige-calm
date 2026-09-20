@@ -1,63 +1,7 @@
-//! True E2E reproduction for #569's "MCP stuck in running…" symptom.
-//!
-//! ## What this test does
-//!
-//! Boots a real `SharedCodexAppServer` (codex 0.13x daemon) + a real
-//! `McpServer` (kernel-as-MCP-server) + the real `neige-mcp-stdio-shim`
-//! binary. Starts a Planner card thread, sends ONE turn with an explicit
-//! prompt forcing two `calm.task.verdict` calls. Counts
-//! `mcpToolCall` `item/started` vs `item/completed` notifications for
-//! 90 s. Asserts both calls complete.
-//!
-//! ## Current status: PASSES, regression net for #569 codex approval gap
-//!
-//! Native dotted `calm.*` `tools/call` dispatch from a codex worker → the
-//! kernel **works on codex 0.137.0** (verified by a real-codex spike for
-//! #838; see issue #838 comments). The end-to-end path is:
-//!
-//!   - kernel MCP server gets `initialize` (daemon trust) ✓
-//!   - kernel returns `tools/list` (incl. `calm.task.verdict`) ✓
-//!   - LLM returns `function_call name="calm_task_verdict"
-//!     namespace="mcp__calm"` ✓
-//!   - codex emits `McpToolCallBegin` → `item/started` ✓
-//!   - codex sends the `tools/call` to the kernel; the sanitized name
-//!     `calm_task_verdict` (ns `mcp__calm`) is correctly reverse-mapped to
-//!     the dotted `calm.task.verdict` — there is **no** `mcp__calmcalm_*`
-//!     name mangling, and the kernel does no name mangling either
-//!     (exact `registry.lookup`) ✓
-//!   - kernel runs the handler, returns a result → `McpToolCallEnd` →
-//!     `item/completed`. The spike saw `started=2 completed=2`. ✓
-//!
-//! ## #569 root cause (corrected)
-//!
-//! The original #569 "stuck in running…" symptom was **missing tool
-//! annotations**, not dotted-name mangling. Codex defaults a tool with no
-//! annotations to approval-required, which stalls the call before the
-//! `tools/call` is ever dispatched. The fix was attaching
-//! `role_gated_write_annotations()` to the `calm.*` write tools
-//! (`mcp_server/tools/emit.rs`); with annotations present there is no
-//! approval stall and the dispatch completes. The earlier hypothesis in
-//! this file's history — that codex "never sends `tools/call`" and that
-//! the sanitized-name reverse mapping produced `mcp__calmcalm_*` —
-//! is **stale and disproven on 0.137.0**.
-//!
-//! ## Why ship it
-//!
-//! Deterministic, single-shot, headless regression net: if codex ever
-//! regresses native `calm.*` dispatch (or the approval-annotation
-//! contract), this test goes RED. The `#[ignore]` gate keeps it out of
-//! normal `cargo test` runs (no codex on CI). Operator workflow:
-//!
-//! ```sh
-//! NEIGE_CODEX_BIN=/path/to/codex \
-//!   cargo test --features codex-e2e -p calm-server \
-//!     --test codex_e2e_suite codex_e2e_mcp_double_call:: -- --ignored --nocapture
-//! ```
-//!
-//! Post-mortem debug root persists at `/tmp/neige-mcp-double-call-debug`:
-//!   - `codex-home/sessions/.../*.jsonl` (codex's turn rollout)
-//!   - `codex-home/logs_2.sqlite` (codex's structured `logs` table)
-//!   - `logs/shared-codex-appserver/stderr.log` (codex stderr stream)
+//! Regression net for native `calm.*` MCP dispatch from a real codex daemon: one Planner turn forcing two
+//! `calm.task.verdict` calls must produce matching `item/started` / `item/completed` counts. A tool without
+//! annotations defaults to approval-required in codex and stalls before `tools/call` is ever dispatched.
+//! `#[ignore]`-gated; debug root persists at `/tmp/neige-mcp-double-call-debug`.
 
 #![cfg(all(unix, feature = "codex-e2e"))]
 
@@ -88,8 +32,7 @@ use calm_server::state::WriteContext;
 use calm_server::track_area_cache::TrackAreaCache;
 use clap::Parser;
 use serde_json::{Value, json};
-// #868: shared no-fallback resolver — env `NEIGE_CODEX_BIN` only, `None` ⇒
-// self-skip via `skip!`. Tests must never fall back to a PATH codex.
+// Env `NEIGE_CODEX_BIN` only; tests must never fall back to a PATH/home codex.
 use support::codex_fixture::resolve_codex_bin;
 
 const TEST_CWD: &str = "/tmp";
@@ -101,9 +44,8 @@ fn cfg(root: &std::path::Path, codex_bin: &str) -> Config {
         root.to_str().unwrap().to_string(),
         "--codex-bin".to_string(),
         codex_bin.to_string(),
-        // Test codex daemons must NEVER post hooks to the default listen address —
-        // that is the production calm-server port on shared boxes (production-kill
-        // incident, 2026-07-04); tests do not consume hook ingest.
+        // Test codex daemons must NEVER post hooks to the default listen address — that is the production
+        // calm-server port on shared boxes.
         "--codex-ingest-url".to_string(),
         "http://127.0.0.1:1/hooks-disabled-in-e2e".to_string(),
     ])
@@ -229,8 +171,7 @@ async fn codex_mcp_double_call_both_complete() {
         .with_test_writer()
         .try_init();
 
-    // Pin a known root so codex's session + daemon logs survive panic for
-    // post-mortem. Hardcoded path lets the operator just `tail` it.
+    // Pin a known root so codex's session + daemon logs survive panic for post-mortem.
     let root_path = std::path::PathBuf::from("/tmp/neige-mcp-double-call-debug");
     let _ = std::fs::remove_dir_all(&root_path);
     std::fs::create_dir_all(&root_path).expect("mkdir debug root");

@@ -1,29 +1,10 @@
-# Runtime-only docker stack. Binaries + frontend bundles are built on the host
-# (see Makefile); the containers just run them. This keeps iteration fast
-# and lets calm-server reach the host's $HOME and repo path via bind mounts,
-# so terminals/sessions/plugins see the same filesystem they would if you ran
-# the binary directly.
-#
-# Quick start:
-#   scripts/docker-up.sh                # builds binary + web, then `up -d`
-#   open http://localhost:8080/
-#
+# Runtime-only docker stack: binaries + frontend bundles are built on the host; the containers just run them.
+# Quick start: scripts/docker-up.sh (builds binary + web, then `up -d`), then open http://localhost:8080/
 # Override ports / mounts via .env (see .env.example).
-#
-# ## Networking
-#
-# Only nginx publishes a host port. The server stays on the compose bridge
-# network and listens on an internal port; nginx reaches it as `server:4041`.
-# Outbound traffic that needs the user's host-side proxy should point at
-# `host.docker.internal:<proxy port>`, provided by the server extra_hosts
-# entry below.
 
 services:
   server:
-    # Host is Debian bookworm + glibc 2.36; this slim-based image matches so
-    # the natively-compiled binary just runs, and adds git for runtime tools.
-    # If you cross-compile or upgrade the host distro, bump the base tag in
-    # docker/Dockerfile.server accordingly.
+    # Host is Debian bookworm + glibc 2.36; this slim-based image matches so the native binary just runs.
     build:
       context: .
       dockerfile: docker/Dockerfile.server
@@ -33,17 +14,8 @@ services:
         no_proxy: ${CALM_BUILD_NO_PROXY:-}
     image: neige-calm-server:local
     init: true
-    # Codex 0.13x wraps every local_shell tool call in bubblewrap. The cap_add
-    # + security_opt set below matches codex's upstream
-    # `.devcontainer/devcontainer.secure.json` so bwrap can construct its
-    # user namespace + chroot inside the container. This IS a broad dev-
-    # container relaxation (near-`--privileged` for many escape paths);
-    # adequate for the per-developer preview stack where the server already
-    # runs as the host user with $HOME bind-mounted rw, NOT for production.
-    # Production neige-app runs on bare host where the host kernel allows
-    # unprivileged userns directly. Tighten to the minimum bwrap actually
-    # requires (SETUID + SETGID + seccomp:unconfined) if we ever need to
-    # narrow the dev container.
+    # Codex wraps every local_shell tool call in bubblewrap; this near-privileged relaxation lets bwrap
+    # build its user namespace + chroot inside the container. Dev-only, NOT for production.
     cap_add:
       - SYS_ADMIN
       - SYS_CHROOT
@@ -66,127 +38,62 @@ services:
     environment:
       HOME: ${HOME}
       USER: ${USER:-calm}
-      # Internal-only API port. The host reaches it through nginx at
-      # /api; only nginx publishes CALM_PORT.
+      # Internal-only API port; only nginx publishes CALM_PORT.
       CALM_LISTEN: ${CALM_LISTEN:-0.0.0.0:4041}
-      # Dev defaults are isolated inside this container on a tmpfs so docker
-      # dev does not share DBs, PTY sockets, app-server sockets, or codex homes
-      # with cargo-run dev or another worktree. `docker compose down` removes
-      # the container and its tmpfs state.
+      # Dev state is isolated on a tmpfs so docker dev does not share DBs, sockets or codex homes with other dev runs.
       CALM_DB_URL: ${CALM_DB_URL:-sqlite:///var/lib/neige-calm/calm.db?mode=rwc}
       CALM_DATA_DIR: ${CALM_DATA_DIR:-/var/lib/neige-calm/data}
       CALM_PLUGINS_DATA_DIR: ${CALM_PLUGINS_DATA_DIR:-/var/lib/neige-calm/plugins-data}
       CALM_ALLOWED_ORIGIN: http://localhost:${CALM_PORT:-4041}
-      # Issue #189 — auth. `CALM_DEV_AUTOLOGIN` defaults to `false` so a
-      # `make dev` of this stack on an exposed origin (LAN, VPS, tailnet,
-      # accidental 0.0.0.0 bind) does NOT silently disable the login gate.
-      # The cost is that out-of-the-box `make dev` now requires a password —
-      # we provide a known dev default below (`owner` / `dev`) so the
-      # login page still works without anyone having to write a `.env`
-      # first. Override either via .env. To bypass LoginPage entirely
-      # (single-user loopback workflows), set `CALM_DEV_AUTOLOGIN=true` in
-      # .env — see .env.example for the warning about network-reachable
-      # instances.
+      # `CALM_DEV_AUTOLOGIN` defaults to `false` so this stack on an exposed origin does NOT silently
+      # disable the login gate; dev default credentials are `owner` / `dev`.
       CALM_DEV_AUTOLOGIN: ${CALM_DEV_AUTOLOGIN:-false}
       CALM_AUTH_USERNAME: ${CALM_AUTH_USERNAME:-owner}
       CALM_AUTH_PASSWORD: ${CALM_AUTH_PASSWORD:-dev}
       RUST_LOG: ${RUST_LOG:-info,calm_server=debug}
-      # Codex CLI binary. Host install path is the musl static binary
-      # under /usr/local/lib/node_modules/@openai/codex/... — we bind-mount
-      # it into the container as /usr/local/bin/codex (see volumes below).
-      # Override CALM_CODEX_BIN in .env to point at a different location.
+      # Codex CLI binary, bind-mounted as /usr/local/bin/codex (see volumes below).
       CALM_CODEX_BIN: ${CALM_CODEX_BIN:-codex}
-      # Outbound HTTP proxy. In bridge networking, 127.0.0.1 is the server
-      # container, so the default points at the host gateway alias.
-      # `host.docker.internal:CALM_FORWARDER_PORT` is served by the
-      # `calm-proxy-forwarder` container that `make proxy-forwarder-up`
-      # spawns (see Makefile + .env). CALM_CONTAINER_HTTP_PROXY can still
-      # override with a fully-formed URL if you want to skip the forwarder
-      # and point at something else.
-      # NO_PROXY keeps loopback traffic (e.g. codex hook bridge →
-      # /internal/codex/hook on 127.0.0.1) off the proxy.
+      # In bridge networking, 127.0.0.1 is the server container, so the default proxy points at the host
+      # gateway alias (served by the `calm-proxy-forwarder` container). NO_PROXY keeps loopback traffic off the proxy.
       HTTP_PROXY: ${CALM_CONTAINER_HTTP_PROXY:-http://host.docker.internal:${CALM_FORWARDER_PORT:-2081}}
       HTTPS_PROXY: ${CALM_CONTAINER_HTTPS_PROXY:-http://host.docker.internal:${CALM_FORWARDER_PORT:-2081}}
       NO_PROXY: ${CALM_CONTAINER_NO_PROXY:-localhost,127.0.0.1,::1}
       http_proxy: ${CALM_CONTAINER_HTTP_PROXY:-http://host.docker.internal:${CALM_FORWARDER_PORT:-2081}}
       https_proxy: ${CALM_CONTAINER_HTTPS_PROXY:-http://host.docker.internal:${CALM_FORWARDER_PORT:-2081}}
       no_proxy: ${CALM_CONTAINER_NO_PROXY:-localhost,127.0.0.1,::1}
-      # Slim image has no CA bundle; codex's rustls TLS client otherwise
-      # errors "no native root CA certificates found" and retries forever.
-      # Point it at the host bundle we mount below.
+      # Slim image has no CA bundle; codex's rustls TLS client otherwise errors and retries forever.
       SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
       SSL_CERT_DIR: /etc/ssl/certs
     volumes:
-      # Host CA bundle — needed because debian:bookworm-slim ships without
-      # ca-certificates and codex/reqwest/rustls all need root certs to
-      # validate TLS endpoints (OpenAI, GitHub, proxies). Read-only.
+      # Host CA bundle; debian:bookworm-slim ships without ca-certificates.
       - /etc/ssl/certs:/etc/ssl/certs:ro
-      # Codex "managed" hooks policy — auto-trusted across every spawn so
-      # we never see the /hooks trust prompt. User-level hooks.json would
-      # otherwise require manual approval the first time codex sees them.
+      # Codex "managed" hooks policy — auto-trusted so we never see the /hooks trust prompt.
       - ./docker/codex-requirements.toml:/etc/codex/requirements.toml:ro
       # The release binaries. Built on the host by `make build`.
       - ${CALM_BIN:-./target/release/calm-server}:/usr/local/bin/calm-server:ro
-      # Codex hook bridge. calm-server's CodexClient looks for it next
-      # to its own binary (see state.rs::resolve_codex_bridge_bin) so it
-      # lands at the same /usr/local/bin path.
+      # Codex hook bridge; calm-server looks for it next to its own binary.
       - ${CALM_CODEX_BRIDGE_BIN:-./target/release/neige-codex-bridge}:/usr/local/bin/neige-codex-bridge:ro
-      # Issue #236 followup — the kernel-as-MCP-server bridge. Codex inside
-      # the container spawns this binary per the `[mcp_servers.calm].command`
-      # baked into each per-card config.toml. `resolve_mcp_stdio_shim_bin`
-      # (see state.rs) looks for it as a sibling of calm-server's exe and
-      # falls back to a bare-name PATH lookup; mounting at /usr/local/bin
-      # makes both paths resolve. Without this mount the codex MCP client
-      # exits with "os error 2" on every planner/worker card spawn — the
-      # narrow #236 sync-spawn fix doesn't surface that because it only
-      # awaits the daemon socket, not the codex MCP handshake.
+      # The kernel-as-MCP-server bridge; without this mount the codex MCP client exits with "os error 2" on every card spawn.
       - ${CALM_MCP_SHIM_BIN:-./target/release/neige-mcp-stdio-shim}:/usr/local/bin/neige-mcp-stdio-shim:ro
-      # Issue #388 Phase 1 — the proc-supervisor that calm-server talks
-      # to over a control UDS for every terminal spawn.
-      # neige-app peer-supervises it; calm-server's first terminal spawn
-      # fails with `connect calm-proc-supervisor … No such file or directory`
-      # if the binary isn't reachable inside the container.
+      # The proc-supervisor calm-server talks to over a control UDS for every terminal spawn.
       - ${CALM_PROC_SUPERVISOR_BIN:-./target/release/calm-proc-supervisor}:/usr/local/bin/calm-proc-supervisor:ro
-      # Issue #339 PR B — the `neige` CLI, invoked by planner/worker agents
-      # from their terminals to read current-track file views over the
-      # per-card MCP socket. Mounting it at /usr/local/bin keeps it on
-      # PATH for the agent shell; without this mount `neige ls`/`cat`
-      # fails with `command not found` even though `make build`
-      # produced the binary on the host.
+      # The `neige` CLI, invoked by planner/worker agents from their terminals; must be on PATH.
       - ${CALM_NEIGE_CLI_BIN:-./target/release/neige}:/usr/local/bin/neige:ro
-      # Codex CLI package. `make dev` resolves the active installation on PATH;
-      # direct compose users can still override these host paths explicitly.
-      # Both executables are required: current releases defer MCP tools through
-      # `codex-code-mode-host`, so mounting `codex` alone boots app-server but
-      # makes report/tool discovery fail later inside a conversation.
-      #
-      # 0.137+ npm layout moved the binary from `.../musl/codex/codex` to
-      # `.../musl/bin/codex`. nvm users still need to override
-      # both host-bin variables to point at the nvm-versioned paths
-      # (see project_codex_npm_bin_path_change memory note).
+      # Codex CLI package. Both executables are required: current releases defer MCP tools through
+      # `codex-code-mode-host`, so mounting `codex` alone makes tool discovery fail inside a conversation.
       - ${CALM_CODEX_HOST_BIN:-/usr/local/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex}:/usr/local/bin/codex:ro
       - ${CALM_CODEX_CODE_MODE_HOST_BIN:-/usr/local/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex-code-mode-host}:/usr/local/bin/codex-code-mode-host:ro
-      # Host home, same path inside the container. calm-server's data dir,
-      # plugin install dir, and plugin state dir all default under here, so
-      # no extra env wiring is needed.
+      # Host home, same path inside the container; calm-server's data/plugin dirs default under here.
       - ${HOME}:${HOME}
-      # The repo lives outside $HOME on this machine (/mnt/data2/...) with a
-      # symlink in $HOME. Mount the real path too so the symlink resolves.
-      # Safe no-op if you don't have /mnt/data2; remove or change via .env.
+      # The repo lives outside $HOME on this machine with a symlink in $HOME; mount the real path too so
+      # the symlink resolves. Safe no-op if you don't have /mnt/data2; change via .env.
       - ${CALM_EXTRA_MOUNT:-/mnt/data2}:${CALM_EXTRA_MOUNT:-/mnt/data2}
     tmpfs:
       # Container-local dev state. The uid/gid options keep it writable while
       # the process still runs as the host user for mounted HOME/repo paths.
       - ${CALM_CONTAINER_STATE_DIR:-/var/lib/neige-calm}:uid=${UID:-1000},gid=${GID:-1000},mode=700
     # No host port mapping: nginx is the only published entrypoint.
-    #
-    # Issue #388 Phase 1 — calm-server uses `calm-proc-supervisor` over a
-    # control UDS for terminal processes. Production has neige-app
-    # peer-supervising both; in the docker dev stack we just background the
-    # supervisor before exec'ing calm-server so the first terminal spawn
-    # has someone listening. `init: true` (above) reaps the supervisor when
-    # calm-server exits. The sock path matches `proc_supervisor_sock_resolved()`
-    # default (CALM_DATA_DIR + proc-supervisor.sock).
+    # The supervisor is backgrounded before exec'ing calm-server so the first terminal spawn has someone listening; `init: true` reaps it.
     command:
       - sh
       - -c
@@ -194,10 +101,7 @@ services:
     restart: unless-stopped
 
   web:
-    # Same idea: nginx serves both pre-built bundles and reverse-proxies
-    # /api → server. No build step in docker. nginx listens on 8080 inside
-    # the container; we publish that as CALM_PORT on the host. 4040 is
-    # reserved for host prod, so docker dev defaults to 4041.
+    # nginx serves the pre-built bundles and reverse-proxies /api → server; 4040 is reserved for host prod, so docker dev defaults to 4041.
     image: nginx:1.27-alpine
     # `depends_on` without a condition just orders startup; nginx will retry
     # upstream connections while the server finishes booting.

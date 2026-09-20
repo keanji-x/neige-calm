@@ -1,8 +1,5 @@
-//! #695 PR2 — storage-layer tests for `worker_flow_items`. Mirrors the
-//! harness-item db coverage: insert via the `_tx` free fn, list/page by
-//! card, delete-by-card, and the durability guarantee that a card delete
-//! turns `card_id` NULL (FK `ON DELETE SET NULL`) instead of cascading
-//! the row away.
+//! Storage-layer tests for `worker_flow_items`: a card delete turns `card_id`
+//! NULL (FK `ON DELETE SET NULL`) instead of cascading the row away.
 use super::{
     SqlxRepo, area_create_tx, card_create_with_id_tx, session_insert_tx, track_create_tx,
     worker_flow_item_insert_tx, worker_flow_items_delete_by_card_tx,
@@ -14,8 +11,6 @@ use calm_types::worker::{
     WorkerSessionState,
 };
 
-/// Seed a real area → track → card chain through the typed `_tx` helpers
-/// (so the FKs target genuine rows) and return the card/track ids.
 async fn seed_card_and_session(repo: &SqlxRepo, session_id: &str) -> (String, String) {
     let mut tx = repo.pool().begin().await.unwrap();
     let area = area_create_tx(
@@ -106,7 +101,6 @@ async fn insert_list_paging_delete_and_set_null_on_card_delete() {
     let session_id = "rt-flow-item-1";
     let (card_id, track_id) = seed_card_and_session(&repo, session_id).await;
 
-    // Insert three flow items for the card via the `_tx` free fn.
     let mut ids = Vec::new();
     for (n, kind) in [
         (1_i64, "user_message"),
@@ -130,7 +124,6 @@ async fn insert_list_paging_delete_and_set_null_on_card_delete() {
         ids.push(id);
     }
 
-    // Ascending list returns all three in id order.
     let asc = repo
         .worker_flow_item_list_by_card(&card_id, 0, 100, false)
         .await
@@ -141,15 +134,12 @@ async fn insert_list_paging_delete_and_set_null_on_card_delete() {
     assert_eq!(asc[0].captured_session_id.as_deref(), Some(session_id));
     assert_eq!(asc[0].worker_session_id.as_deref(), Some(session_id));
 
-    // Ascending paging: after the first id, limit 1 -> the second row.
     let page = repo
         .worker_flow_item_list_by_card(&card_id, ids[0], 1, false)
         .await
         .unwrap();
     assert_eq!(page.iter().map(|r| r.id).collect::<Vec<_>>(), vec![ids[1]]);
 
-    // Descending: newest-first cursor (after_id = 0 -> from the tip),
-    // but rows still come back in ascending id order (reversed in-fn).
     let desc = repo
         .worker_flow_item_list_by_card(&card_id, 0, 2, true)
         .await
@@ -159,8 +149,6 @@ async fn insert_list_paging_delete_and_set_null_on_card_delete() {
         vec![ids[1], ids[2]]
     );
 
-    // Durability guarantee: deleting the card must NOT destroy the rows;
-    // `ON DELETE SET NULL` leaves them present with `card_id = NULL`.
     {
         let mut tx = repo.pool().begin().await.unwrap();
         super::card_delete_tx(&mut tx, &card_id, repo.card_role_cache())
@@ -168,7 +156,6 @@ async fn insert_list_paging_delete_and_set_null_on_card_delete() {
             .unwrap();
         tx.commit().await.unwrap();
     }
-    // The card-scoped query no longer matches (card_id is now NULL)...
     let after_card_delete = repo
         .worker_flow_item_list_by_card(&card_id, 0, 100, false)
         .await
@@ -177,7 +164,6 @@ async fn insert_list_paging_delete_and_set_null_on_card_delete() {
         after_card_delete.is_empty(),
         "card_id should be NULL, not match"
     );
-    // ...but the rows survive with NULL card_id.
     let (surviving, null_cards): (i64, i64) = sqlx::query_as(
         "SELECT COUNT(*), COUNT(*) FILTER (WHERE card_id IS NULL) FROM worker_flow_items",
     )
@@ -221,15 +207,8 @@ async fn delete_by_card_tx_purges_rows() {
     assert!(rows.is_empty(), "explicit delete-by-card must purge rows");
 }
 
-// ---------------------------------------------------------------------------
-// #1316 S4a — migration 0086 renames `runtime_id` to `captured_session_id`.
-//
-// This slice started as a DROP, on the claim that the column duplicated
-// `worker_session_id` and that the id was also in the payload. Two review
-// channels falsified the second half by replaying the real migration chain,
-// and the test below is that counter-example, kept as a regression pin: the
-// shape it seeds is exactly the one a drop would have destroyed.
-// ---------------------------------------------------------------------------
+// Migration 0086 renames `runtime_id` to `captured_session_id`; the shape
+// seeded below is exactly the one a DROP would have destroyed.
 
 fn migrator_through_0085() -> sqlx::migrate::Migrator {
     sqlx::migrate::Migrator {
@@ -261,13 +240,9 @@ async fn migration_0086_preserves_the_id_the_payload_does_not_carry() {
         .await
         .expect("apply migrations through 0085");
 
-    // The pre-PR5 shape, as `0049` leaves it: the resolved RUNTIME id in the
-    // un-FK'd column, no session mirror so `worker_session_id` is NULL, and a
-    // payload whose `session_id` is the PROVIDER's agent session string —
-    // a different value. `0055` then dropped `runtimes`; its step-1 bridge
-    // carries the mapping into `worker_sessions.agent_session_id`, so the id
-    // is recoverable — but only by an ambiguous join, and only while that
-    // mirror survives. This column answers it directly.
+    // The pre-0086 shape: the resolved RUNTIME id in the un-FK'd column, no
+    // session mirror, and a payload `session_id` that is the PROVIDER's string —
+    // a different value, recoverable otherwise only by an ambiguous join.
     sqlx::query(
         "INSERT INTO worker_flow_items \
          (card_id, runtime_id, track_id, worker_session_id, kind, payload, created_at_ms) \

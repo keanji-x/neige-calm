@@ -1,69 +1,8 @@
-//! Background retention pruner for the `events` table (#854 slice 2).
-//!
-//! The event log is append-only and grew unbounded in production (214k rows /
-//! 1.7GB, 99.1% of rows in a handful of transient kinds). This pruner deletes
-//! rows that match ALL of:
-//!
-//!   * an exact-kind allowlist — `claude.hook`, `codex.hook`,
-//!     `harness.phase.changed`, `harness.item.added`, `overlay.set`.
-//!     Structural kinds (`card.*`, `track.*`, `terminal.*`, …) and
-//!     `overlay.deleted` are untouchable by construction; a new transient
-//!     kind accumulates until explicitly opted in here (allowlist fails
-//!     safe, blocklist would not);
-//!   * an age horizon on `at` (default 30 days, floored at 1 day);
-//!   * for `overlay.set` only, a keep-latest carve-out: the `MAX(id)` row
-//!     per `(plugin_id, entity_kind, entity_id, kind)` quad is always kept,
-//!     so the last-writer-wins overlay fold (`derive_layout_positions` /
-//!     `fold_layout_positions` server-side, `useOverlayState` client-side)
-//!     is invariant under pruning. `overlay.deleted` tombstones are never
-//!     pruned out from under a kept older `overlay.set`. Additionally, a
-//!     quad whose LATEST row would be dropped by the read-side version
-//!     guard (`validation::should_skip_overlay` — future `schemaVersion`
-//!     written by a newer binary, or an unparseable payload) is skipped
-//!     entirely: replay would hide that latest row, so the older supported
-//!     row is the state a client actually folds and must survive. The
-//!     freeze set is recomputed inside each delete's own `BEGIN IMMEDIATE`
-//!     transaction, never cached across batches. `overlay.set` rows whose
-//!     payload is not even valid JSON (`json_valid` fails) are never
-//!     delete candidates at all — SQLite would raise from `json_extract`
-//!     on them, and a row we cannot parse is a row we do not prune.
-//!
-//! Accepted regression — what you lose after the horizon: `claude.hook` and
-//! `codex.hook` rows older than the retention horizon disappear from the two
-//! production consumers that replay them from genesis:
-//!
-//!   1. the track-fs hook transcript, `hook_events_for_card`
-//!      (crates/calm-truth/src/track_fs_view.rs), which reads both hook kinds
-//!      and loses history older than the horizon for a card's transcript
-//!      projection;
-//!   2. harness recovery catch-up, `replay_harness_events_since`
-//!      (crates/calm-server/src/harness/mod.rs), which replays both hook
-//!      kinds (among others) above a push watermark on boot recovery.
-//!
-//! Both are diagnostics-grade uses of >30-day-old data; the loss is accepted
-//! and documented in `docs/events-retention.md`.
-//!
-//! Full-write assumption: keep-MAX(id) per quad assumes the latest
-//! `overlay.set` for a quad is a FULL write. `fold_layout_positions` ignores
-//! a positions-less `overlay.set` (`.or(current)`), so if the latest kept row
-//! lacked `positions` while a pruned older row carried them, the fold would
-//! change after pruning. Today's kernel writer always sends a full positions
-//! map (`planner_harness_layout_payload`, crates/calm-server/src/routes/tracks.rs
-//! — pinned by a unit test there), and the frontend layout writer PUTs the
-//! complete map on every drag. Any future partial-write overlay producer must
-//! revisit this carve-out.
-//!
-//! The pruner never VACUUMs: freed pages are reused by new appends and the
-//! file size plateaus. Actual shrink is a manual runbook step (backup, then
-//! `neige vacuum --force`); see `docs/events-retention.md`.
-//!
-//! Replay safety: every pruning DELETE advances a durable retention
-//! watermark (`retention_meta.events_prune_watermark` = highest id ever
-//! pruned, updated in the same transaction as the DELETE). The WS replay
-//! guard sends `_snapshot_required` to any client whose `since` cursor is
-//! below the watermark, because pruned rows create interior holes that the
-//! `MIN(id)` check alone can never detect — structural events are permanent,
-//! so `events_earliest_id` never advances past the first structural row.
+//! Background retention pruner for the `events` table: deletes rows matching
+//! an exact-kind allowlist AND an age horizon, keeping the `MAX(id)`
+//! `overlay.set` row per quad so the last-writer-wins fold is invariant under
+//! pruning. Every DELETE advances a durable watermark the WS replay guard
+//! uses to force `_snapshot_required`. Never VACUUMs.
 
 use crate::db::sqlite::begin_immediate_tx;
 use crate::error::Result;
@@ -77,56 +16,32 @@ const EVENTS_RETENTION_SECS_ENV: &str = "NEIGE_EVENTS_RETENTION_SECS";
 const EVENTS_PRUNE_BATCH_ENV: &str = "NEIGE_EVENTS_PRUNE_BATCH";
 const EVENTS_PRUNE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const DEFAULT_EVENTS_RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
-/// Floor on the retention horizon: a mistyped `NEIGE_EVENTS_RETENTION_SECS`
-/// (seconds-vs-days confusion, e.g. `1`) must not wipe all allowlisted
-/// history. Values below one day clamp here with a warning.
+/// Floor on the retention horizon: a seconds-vs-days typo must not wipe all
+/// allowlisted history.
 const MIN_EVENTS_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
 const DEFAULT_EVENTS_PRUNE_BATCH: i64 = 5000;
 /// Pause between per-batch write transactions so the pruner never
 /// monopolizes SQLite's single writer slot on a bloated first pass.
 const BATCH_YIELD: Duration = Duration::from_millis(100);
 
-/// `retention_meta` key holding the highest `events.id` ever pruned. Read
-/// back by `RepoEventWrite::events_prune_watermark` for the WS replay guard.
+/// `retention_meta` key holding the highest `events.id` ever pruned.
 pub const EVENTS_PRUNE_WATERMARK_KEY: &str = "events_prune_watermark";
 
-/// Exact-kind allowlist. Only these kinds are ever eligible for pruning;
-/// everything else in the events table is permanent by construction.
-///
-/// Reverse anchor — read before adding a kind here. Some readers depend on a
-/// kind's row being *permanent*, not merely long-lived:
-///
-///   * `harness.user_message.enqueued` is the only evidence that a user message
-///     was ACCEPTED INTO THE HARNESS QUEUE of a given runtime, so it proves the
-///     observation was enqueued, not that the agent has consumed it
-///     (`calm-server/src/routes/conversations_shared.rs::user_message_enqueued_on_active_runtime`,
-///     which matches the runtime recorded in that row's payload against the
-///     card's currently active runtime). `routes::today_summary` reads it to decide whether the standing
-///     bootstrap instruction still has to be delivered to that runtime
-///     (INV-TODAYDOC-010). Adding it to this allowlist would, after the
-///     retention horizon, silently make a Today trigger against a long-lived
-///     runtime that has already been spoken to send the bootstrap again — a
-///     correctness regression with no failing test unless one is written.
-///     `first_message_dedup_kind_is_never_prunable` below is that test; it
-///     fails closed on exactly this mistake.
+/// Exact-kind allowlist; everything else is permanent by construction.
+/// `harness.user_message.enqueued` must never be added: it is the only
+/// evidence a user message was accepted into a runtime's queue, and pruning it
+/// would re-send the Today bootstrap after the horizon.
 pub const EVENTS_PRUNE_KINDS: &[&str] = &[
     "claude.hook",
     "codex.hook",
     "harness.phase.changed",
     "harness.item.added",
-    // #1505 PR2 — same class as `harness.item.added`: high-frequency,
-    // card-scoped, and replayable from the live snapshot, so nothing reads it
-    // past the retention horizon. Leaving it out of this allowlist would keep
-    // every queue edit forever, which is the failure this list exists to
-    // prevent.
     "harness.queue.changed",
     "overlay.set",
 ];
 
-/// One retention rule: a set of prunable kinds plus whether the
-/// keep-latest-per-overlay-quad carve-out applies. The `Vec<RetentionRule>`
-/// on [`EventsRetentionPolicy`] is the seam for #33 per-actor retention;
-/// today there is exactly one hardcoded rule.
+/// One retention rule: prunable kinds plus whether the keep-latest-per-quad
+/// carve-out applies.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RetentionRule {
     pub kinds: Vec<&'static str>,
@@ -163,8 +78,7 @@ pub fn spawn_events_pruner(pool: SqlitePool) {
 
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(interval);
-        // Match the track-history pruner: skip the immediate boot tick and
-        // let the server settle before taking SQLite writer locks.
+        // Skip the immediate boot tick so the server settles before taking writer locks.
         tick.tick().await;
         loop {
             tick.tick().await;
@@ -181,9 +95,8 @@ fn events_pruner_config_from_env() -> Option<(Duration, EventsRetentionPolicy)> 
             Ok(0) => return None,
             Ok(secs) => Duration::from_secs(secs),
             Err(_) => {
-                // Unparseable is NOT a disable switch: the failure direction
-                // of this knob is data deletion, so say loudly that the
-                // pruner stays ON with defaults.
+                // Unparseable is NOT a disable switch: the failure direction of this knob
+                // is data deletion.
                 tracing::warn!(
                     raw,
                     "events_prune: unparseable {EVENTS_PRUNE_INTERVAL_SECS_ENV}; \
@@ -245,22 +158,10 @@ fn events_pruner_config_from_env() -> Option<(Duration, EventsRetentionPolicy)> 
     ))
 }
 
-/// One full prune pass. Public so integration tests can drive pruning
-/// deterministically without waiting for the scheduled task. Runs one
-/// batched DELETE (LIMIT `policy.batch`) per `begin_immediate_tx`, yielding
-/// between batches, so writer-lock hold stays bounded to milliseconds. Each
-/// deleting transaction also advances the durable retention watermark (see
-/// module docs) before it commits.
-///
-/// The keep-latest `MAX(id)` subquery runs in the same immediate
-/// transaction as its DELETE: BEGIN IMMEDIATE holds the single writer lock
-/// for the whole statement, so "compute latest" and "delete the rest" are
-/// atomic. It is also guarded to `overlay.set` batches only — batches for
-/// the other allowlisted kinds never pay for it. Quads whose latest row is
-/// version-unsupported are recomputed INSIDE each `overlay.set` delete
-/// transaction (same writer-lock snapshot as the DELETE, so a future-schema
-/// write can never slip between the freeze decision and the delete) and
-/// excluded from that batch.
+/// One full prune pass: one batched DELETE per `begin_immediate_tx`, yielding
+/// between batches. The keep-latest subquery and the frozen-quad scan run in
+/// the same immediate transaction as their DELETE, so a future-schema write
+/// can never slip between the freeze decision and the delete.
 pub async fn prune_events_once(pool: &SqlitePool, policy: &EventsRetentionPolicy) -> Result<u64> {
     let started = std::time::Instant::now();
     let horizon_ms =
@@ -313,10 +214,8 @@ pub async fn prune_events_once(pool: &SqlitePool, policy: &EventsRetentionPolicy
     Ok(pruned_total)
 }
 
-/// Overlay quad key as SQLite's `json_extract` sees it — `None` when the
-/// payload lacks the field (kept as `IS`-comparable NULLs so the exclusion
-/// predicate matches exactly the rows the keep-set `GROUP BY` bucketed
-/// together).
+/// Overlay quad key as `json_extract` sees it — `None` for a missing field, so
+/// the exclusion predicate matches exactly what the keep-set `GROUP BY` bucketed.
 type OverlayQuad = (
     Option<String>,
     Option<String>,
@@ -324,16 +223,9 @@ type OverlayQuad = (
     Option<String>,
 );
 
-/// Quads whose LATEST `overlay.set` row would be dropped by the read-side
-/// version guard on replay (future `schemaVersion`, or a payload that no
-/// longer parses as an `Overlay`). Pruning older rows of such a quad would
-/// leave replay with neither the old supported state nor the new one, so
-/// the whole quad is frozen for the batch.
-///
-/// Runs INSIDE the delete's `BEGIN IMMEDIATE` transaction: the writer lock
-/// is already held, so no `overlay.set` can land between "decide which
-/// quads are frozen" and "delete" — the freeze decision and the DELETE see
-/// the same snapshot by construction.
+/// Quads whose LATEST `overlay.set` row replay would drop (future
+/// `schemaVersion`, or not an `Overlay`): pruning older rows would leave replay
+/// with neither state, so the whole quad is frozen for the batch.
 async fn overlay_quads_with_unsupported_latest_tx(
     tx: &mut Transaction<'_, Sqlite>,
 ) -> Result<Vec<OverlayQuad>> {
@@ -344,15 +236,10 @@ async fn overlay_quads_with_unsupported_latest_tx(
         Option<String>,
         String,
     );
-    // `json_valid` gates every `json_extract`: SQLite RAISES on
-    // `json_extract` over malformed JSON, and one malformed historical row
-    // would otherwise error the whole batch — disabling ALL `overlay.set`
-    // pruning until manually repaired (round-3 review). Rows failing
-    // `json_valid` never reach this scan (their quad is unknowable) and
-    // are excluded from delete candidacy entirely in `prune_batch` —
-    // conservatively kept, matching what replay folds (`events_since`
-    // skips rows whose payload cannot parse, so clients fold the newest
-    // VALID row per quad, which is exactly what the keep-set retains).
+    // `json_valid` gates every `json_extract`: SQLite RAISES on malformed JSON,
+    // and one bad historical row would otherwise error every overlay batch.
+    // Such rows are never delete candidates — a row we cannot parse is a row we
+    // do not prune.
     let rows: Vec<Row> = sqlx::query_as(
         r#"SELECT json_extract(payload, '$.plugin_id'),
                   json_extract(payload, '$.entity_kind'),
@@ -375,10 +262,7 @@ async fn overlay_quads_with_unsupported_latest_tx(
         .filter_map(|(plugin_id, entity_kind, entity_id, kind, payload)| {
             let unsupported = match serde_json::from_str::<Overlay>(&payload) {
                 Ok(overlay) => crate::validation::should_skip_overlay(&overlay),
-                // Valid JSON that is not an `Overlay` shape — replay skips
-                // the row entirely, so treat it like an unsupported
-                // version and freeze the quad. (Malformed JSON never gets
-                // here: the `json_valid` gate above filters it out.)
+                // Valid JSON that is not an `Overlay`: replay skips it, so freeze the quad.
                 Err(_) => true,
             };
             unsupported.then_some((plugin_id, entity_kind, entity_id, kind))
@@ -406,11 +290,8 @@ async fn prune_batch(
                WHERE kind = ?1 AND at < ?2"#,
     );
     if keep_latest_per_overlay_key {
-        // `json_valid` first: a malformed-JSON `overlay.set` row is never
-        // a delete candidate (keep what we cannot parse — the freeze
-        // philosophy), and the keep-set groups only valid rows so a
-        // malformed row can never claim a quad's MAX(id) slot from a
-        // valid one (round-3 review).
+        // `json_valid` first, and the keep-set groups only valid rows so a malformed
+        // row can never claim a quad's MAX(id) slot from a valid one.
         sql.push_str(
             r#"
                  AND json_valid(payload)
@@ -423,13 +304,9 @@ async fn prune_batch(
                             json_extract(payload, '$.kind'))"#,
         );
         for i in 0..frozen_quads.len() {
-            // `IS` (not `=`) so a NULL quad component matches the same
-            // rows the keep-set `GROUP BY` grouped together. The extracts
-            // are CASE-gated on `json_valid` — SQLite does not guarantee
-            // AND-term evaluation order, so the bare `json_valid(payload)`
-            // conjunct above cannot be relied on to short-circuit a
-            // raising `json_extract` on a malformed row; CASE evaluation
-            // IS guaranteed lazy.
+            // `IS` (not `=`) so a NULL quad component matches what `GROUP BY` grouped.
+            // CASE-gated on `json_valid`: SQLite does not guarantee AND-term evaluation
+            // order, but CASE evaluation IS guaranteed lazy.
             let base = 4 + i * 4;
             sql.push_str(&format!(
                 "\n                 AND NOT (CASE WHEN json_valid(payload) \
@@ -681,7 +558,6 @@ mod tests {
             "watermark is the highest id ever pruned"
         );
 
-        // A pass that prunes nothing must not move the watermark.
         prune_events_once(pool, &EventsRetentionPolicy::default())
             .await
             .expect("second prune");
@@ -696,9 +572,6 @@ mod tests {
     async fn freezes_quad_whose_latest_row_is_version_unsupported() {
         let repo = repo().await;
         let pool = repo.pool();
-        // Kernel-owned `layout` kind: supported v1 write, then a future
-        // schemaVersion write as the quad's latest — replay drops the
-        // latest on read, so the older supported row must survive too.
         let supported = insert_event(
             pool,
             "overlay.set",
@@ -725,7 +598,6 @@ mod tests {
             old(60),
         )
         .await;
-        // Control quad: normal carve-out still applies in the same pass.
         let quad_b = overlay_payload("p1", "card", "c1", "status");
         let _b1 = insert_event(pool, "overlay.set", &quad_b, old(80)).await;
         let b2 = insert_event(pool, "overlay.set", &quad_b, old(50)).await;
@@ -742,7 +614,6 @@ mod tests {
     async fn freeze_set_is_recomputed_at_delete_time_not_cached() {
         let repo = repo().await;
         let pool = repo.pool();
-        // A lone supported old row is its quad's MAX(id): kept.
         let supported = insert_event(
             pool,
             "overlay.set",
@@ -763,9 +634,8 @@ mod tests {
             0
         );
 
-        // A future-schema write lands and becomes the latest. The NEXT
-        // delete batch must see it (freeze decided inside the delete tx,
-        // never carried over from an earlier scan) and keep BOTH rows.
+        // The freeze is decided inside the delete tx, never carried over from an
+        // earlier scan, so the NEXT batch must keep BOTH rows.
         let future = insert_event(
             pool,
             "overlay.set",
@@ -787,8 +657,6 @@ mod tests {
         );
         assert_eq!(remaining_ids(pool).await, vec![supported, future]);
 
-        // Once a SUPPORTED write supersedes the future-schema row, the
-        // freeze lifts on the next batch and the stale history goes.
         let healed = insert_event(
             pool,
             "overlay.set",
@@ -815,11 +683,8 @@ mod tests {
     async fn malformed_overlay_payload_never_poisons_the_batch() {
         let repo = repo().await;
         let pool = repo.pool();
-        // Malformed JSON payload: SQLite's `json_extract` would RAISE on
-        // this row; ungated it would error every overlay batch and
-        // disable overlay.set pruning entirely (round-3 review).
+        // Malformed JSON: ungated, `json_extract` would RAISE and disable overlay pruning.
         let malformed = insert_event(pool, "overlay.set", "{not json", old(90)).await;
-        // Normal quad history alongside it: pruning must still proceed.
         let quad = overlay_payload("p1", "card", "c1", "status");
         let _superseded = insert_event(pool, "overlay.set", &quad, old(80)).await;
         let latest = insert_event(pool, "overlay.set", &quad, old(50)).await;
@@ -829,14 +694,9 @@ mod tests {
             .await
             .expect("prune must not error on a malformed overlay payload");
 
-        // superseded + hook pruned; the malformed row is conservatively
-        // KEPT (a row we cannot parse is a row we do not prune) and the
-        // valid quad's latest survives via the keep-set as usual.
         assert_eq!(pruned, 2);
         assert_eq!(remaining_ids(pool).await, vec![malformed, latest]);
 
-        // A second pass with the malformed row still present (and a fresh
-        // frozen-quad exclusion in play) stays error-free and idempotent.
         let frozen_latest = insert_event(
             pool,
             "overlay.set",
@@ -885,8 +745,6 @@ mod tests {
         set(EVENTS_PRUNE_INTERVAL_SECS_ENV, "0");
         assert_eq!(events_pruner_config_from_env(), None);
 
-        // Unparseable interval is NOT a disable: pruner stays ON, default
-        // interval (deleting data on a typo'd knob must fail conservative).
         set(EVENTS_PRUNE_INTERVAL_SECS_ENV, "off");
         assert_eq!(
             events_pruner_config_from_env(),
@@ -908,8 +766,6 @@ mod tests {
             ))
         );
 
-        // Sub-floor retention clamps to the 1-day floor (secs-vs-days
-        // confusion must not wipe all allowlisted history).
         set(EVENTS_RETENTION_SECS_ENV, "1");
         assert_eq!(
             events_pruner_config_from_env(),
@@ -923,8 +779,6 @@ mod tests {
             ))
         );
 
-        // Retention 0 / unparseable fall back to the DEFAULT horizon (not
-        // the floor); batch 0 / unparseable fall back to the default batch.
         set(EVENTS_RETENTION_SECS_ENV, "0");
         set(EVENTS_PRUNE_BATCH_ENV, "0");
         assert_eq!(
@@ -952,23 +806,8 @@ mod tests {
         }
     }
 
-    /// Fail-closed anchor for the conversation first-message read.
-    /// `user_message_enqueued_on_active_runtime` in
-    /// `calm-server/src/routes/conversations_shared.rs` answers "has a user
-    /// message been enqueued into the harness of this card's *currently active*
-    /// runtime?" from the presence of a `harness.user_message.enqueued` row
-    /// whose payload records that runtime (enqueued, not consumed by the
-    /// agent), and `routes::today_summary` is its caller. If that row can be
-    /// pruned, then after the retention horizon a Today trigger against a
-    /// runtime that outlived the horizon — a launchpad conversation's session
-    /// is exactly that shape — sends the standing bootstrap instruction AGAIN,
-    /// and nothing else in the suite would go red, because the double-send only
-    /// happens on aged data.
-    ///
-    /// Both halves are load-bearing: the constant assertion states the
-    /// contract, and the prune pass proves an *aged* row of that kind really
-    /// does survive a full default-policy pass (i.e. no rule outside
-    /// `EVENTS_PRUNE_KINDS` sweeps it up either).
+    /// `harness.user_message.enqueued` is the Today bootstrap's dedup evidence;
+    /// pruning it would double-send after the horizon with nothing else going red.
     #[tokio::test]
     async fn first_message_dedup_kind_is_never_prunable() {
         assert!(
@@ -981,8 +820,7 @@ mod tests {
         let pool = repo.pool();
         let dedup_evidence =
             insert_event(pool, "harness.user_message.enqueued", "{}", old(400)).await;
-        // A sibling `harness.*` kind that IS allowlisted, so the pass is
-        // proven to have actually done work rather than no-opped.
+        // A sibling allowlisted kind, so the pass provably did work rather than no-opped.
         insert_event(pool, "harness.item.added", "{}", old(400)).await;
 
         let pruned = prune_events_once(pool, &EventsRetentionPolicy::default())

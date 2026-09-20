@@ -1,42 +1,5 @@
-//! #1013 T5b — the lock on PR-B's one behaviour change: deleting the
-//! `exit.is_none()` filter from `terminate_all_process_groups_sync`.
-//!
-//! # Why this file has to exist
-//!
-//! Until PR-B, shutdown skipped every entry whose sticky exit had already been
-//! recorded. That was not paranoia: in that state the leader had been reaped,
-//! so its pgid was back in the kernel's allocator and signalling it was exactly
-//! the #1013 defect. The cost was a #993-shaped leak — a grandchild that
-//! outlives a *recorded* exit never gets the shutdown SIGTERM.
-//!
-//! The pin removes the reason for the filter: the leader is a zombie this
-//! process owns for the entry's whole registry lifetime, so its pgid cannot
-//! have been recycled. Deleting the filter is therefore safe *only with* the
-//! pin, which is why it could not ship in PR-A.
-//!
-//! And a claimed improvement that no test would notice being reverted is not
-//! locked at all. `terminate_all_kills_grandchild_in_drain_grace.rs` (T5)
-//! stands *inside* the drain grace, where `exit.is_none()` is still true, so it
-//! is green under both the old and the new predicate. **Reverting the deletion
-//! with the whole rest of the plan green is exactly what this file prevents.**
-//!
-//! # The state is established, not raced
-//!
-//! Every step below is a polled condition on durable state, not a sleep:
-//!
-//! * The leader exits immediately, but a grandchild holds the slave, so the
-//!   master never EOFs. The waiter's drain wait therefore **times out** — the
-//!   default 50ms grace is left alone precisely so that it does; that timeout
-//!   is a certainty here, not a race, because the reader can never see `Ok(0)`.
-//! * The waiter then unconditionally seals and stamps the sticky exit, so
-//!   `exit_recorded` becomes true and stays true. We poll for it.
-//! * `removable`'s third condition is `eof_reached`, which the same grandchild
-//!   keeps false forever, so the entry cannot be swept out from under us. A
-//!   long reclaim grace is used as well, belt and braces. We assert it rather
-//!   than assume it.
-//!
-//! If the establishment steps ever become unreliable, fix the polling. Do not
-//! "solve" it by putting the filter back.
+//! Shutdown group-SIGTERMs an entry whose sticky exit is already recorded: under the pin its pgid is still ours, and a grandchild outliving a recorded exit must not leak.
+//! The state is established by polling durable conditions, not by sleeping: the grandchild holds the slave so the drain wait times out and `eof_reached` stays false.
 
 use calm_proc_supervisor::test_support::InProcessProcSupervisor;
 use calm_session::control::{ControlMsg, ControlReply, EnsureProcRequest, IoMode};
@@ -48,22 +11,11 @@ use tokio::net::UnixStream;
 mod proc_probe;
 use proc_probe::{alive, await_death, process_group_of};
 
-/// Long enough that the entry is nowhere near the sweeper while we work, short
-/// enough that a wedged run still ends. The real guard against a sweep is
-/// `eof_reached` staying false, which is asserted.
+/// Long enough that the entry is nowhere near the sweeper, short enough that a wedged run still ends; the real guard is `eof_reached` staying false.
 const LONG_RECLAIM_GRACE: Duration = Duration::from_secs(60);
 
-/// Same shape as T5's fixture: a backgrounded subshell that ignores SIGHUP (the
-/// kernel HUPs the foreground group when the session leader exits, and without
-/// the trap the grandchild would die on its own and the test would pass while
-/// measuring nothing), announces readiness through a file, and then holds the
-/// slave open forever.
-///
-/// The pid is passed through a **file**, not through the pty. T5 parses a
-/// `GC=` line out of the attach stream because it has a 5s drain grace to do it
-/// in; here the grace is the 50ms default, so `Exited` can land before the
-/// parse finishes and there would be nothing to do but fail. A file is a
-/// durable state to poll for.
+/// A backgrounded subshell that ignores SIGHUP (the kernel HUPs the foreground group when the session leader exits), announces readiness through a file, then holds the slave open forever.
+/// The pid goes through a file, not the pty: with the 50ms drain grace `Exited` can land before a stream parse finishes.
 fn grandchild_script(ready: &Path, pid_file: &Path) -> String {
     let ready = ready.display();
     let pid_file = pid_file.display();
@@ -75,9 +27,7 @@ fn grandchild_script(ready: &Path, pid_file: &Path) -> String {
 
 #[tokio::test]
 async fn terminate_all_kills_grandchild_after_the_exit_is_recorded() {
-    // Note what is *not* widened: the drain grace stays at its 50ms default, so
-    // the waiter times out and records the sticky exit. That is the whole
-    // difference from T5.
+    // The drain grace stays at its 50ms default so the waiter times out and records the sticky exit.
     let supervisor = InProcessProcSupervisor::start_with_grace(LONG_RECLAIM_GRACE)
         .await
         .expect("start supervisor");
@@ -101,16 +51,14 @@ async fn terminate_all_kills_grandchild_after_the_exit_is_recorded() {
         grandchild, leader,
         "fixture must produce a distinct grandchild, not the leader itself"
     );
-    // Degeneracy self-check, same as T5's: the mechanism under test is "signal
-    // the *group*", so a grandchild in a different group would make this test
-    // measure nothing.
+    // Degeneracy self-check: the mechanism under test is "signal the group", so a grandchild in a different group would measure nothing.
     assert_eq!(
         process_group_of(grandchild),
         Some(leader),
         "grandchild {grandchild} must share the leader's process group ({leader})"
     );
 
-    // --- Establish "the exit has been recorded". --------------------------
+    // Establish "the exit has been recorded".
     assert!(
         poll_until(Duration::from_secs(10), || supervisor
             .registry()
@@ -120,9 +68,7 @@ async fn terminate_all_kills_grandchild_after_the_exit_is_recorded() {
         "the sticky exit was never recorded; this test never reached the state \
          it exists to cover (the newly-covered one)"
     );
-    // ...and that the entry is still registered. Guaranteed by `removable`'s
-    // `eof_reached` condition, but asserted rather than assumed — if it ever
-    // stops holding, everything below is vacuous.
+    // ...and that the entry is still registered — asserted rather than assumed, or everything below is vacuous.
     assert!(
         supervisor.registry().debug_entry_stats(proc_id).is_some(),
         "the entry must still be registered: a grandchild holds the slave, so \
@@ -134,7 +80,6 @@ async fn terminate_all_kills_grandchild_after_the_exit_is_recorded() {
          pass without terminate_all doing anything"
     );
 
-    // --- Act --------------------------------------------------------------
     supervisor.registry().terminate_all_process_groups_sync();
 
     assert!(
@@ -163,9 +108,7 @@ async fn await_pid_file(path: &Path, budget: Duration) -> u32 {
     }
 }
 
-/// **`async` and `tokio::time::sleep` on purpose**: `#[tokio::test]` runs on a
-/// current-thread runtime, so a blocking poll here would also block the
-/// supervisor's serve loop and the condition could never become true.
+/// `async` and `tokio::time::sleep` on purpose: on the current-thread runtime a blocking poll would also block the supervisor's serve loop.
 async fn poll_until(budget: Duration, mut cond: impl FnMut() -> bool) -> bool {
     let deadline = Instant::now() + budget;
     while Instant::now() < deadline {
@@ -177,8 +120,7 @@ async fn poll_until(budget: Duration, mut cond: impl FnMut() -> bool) -> bool {
     cond()
 }
 
-/// A `sleep 300` must never outlive this test, not even when an assertion
-/// panics before the terminate_all call.
+/// A `sleep 300` must never outlive this test, not even when an assertion panics first.
 struct KillOnDrop(u32);
 
 impl Drop for KillOnDrop {

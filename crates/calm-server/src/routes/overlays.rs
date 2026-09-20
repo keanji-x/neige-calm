@@ -1,14 +1,5 @@
-//! `/api/overlays` — read overlays attached to an entity.
-//! **Owned by Track B.**
-//!
-//! Writes (`upsert`, `delete`) eventually come from plugins via MCP and live
-//! in `plugin_host`. For M1 we expose write endpoints too so we can hand-test
-//! overlay rendering without a real plugin. That hand-testing affordance is
-//! bounded by [`ensure_overlay_write_allowed`] (#1297): it reaches the same
-//! surface a plugin gets, never the kernel's own reserved namespaces.
-//!
-//! Writes go through `Repo::write_with_event` via `write_with_event_typed`
-//! per Scope A — see `routes/areas.rs` for the template.
+//! `/api/overlays` — read overlays attached to an entity, plus hand-testing write
+//! endpoints bounded to the same surface a plugin gets.
 
 use crate::actor::Actor;
 use crate::db::RepoRead;
@@ -32,9 +23,8 @@ use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
 
 /// Build an `EventScope` for an overlay write keyed by `(entity_kind, entity_id)`.
-/// Missing card / track rows surface as `EventScope::System` rather than
-/// `NotFound` — overlay writes against a deleted entity are legal (the row
-/// just becomes a tombstone).
+/// Missing card / track rows surface as `EventScope::System` rather than `NotFound`:
+/// overlay writes against a deleted entity are legal (the row becomes a tombstone).
 pub(crate) async fn overlay_scope(
     repo: &dyn RepoRead,
     entity_kind: &str,
@@ -46,40 +36,10 @@ pub(crate) async fn overlay_scope(
         .map_err(Into::into)
 }
 
-/// Admission gate for the public overlay write endpoints (issue #1297).
-///
-/// Two reserved namespaces must be unforgeable from outside the process:
-///
-///   * **`entity_kind`** — `view` and `system` hold kernel projections that
-///     the kernel reads back as fact. The motivating case was the
-///     `kernel/view/template` row: it decided whether the scheduler dispatched
-///     a track's tasks at all (ready-set admission and its in-claim backstop),
-///     whether a planner harness could start, and whether the track appeared in
-///     `GET /api/tracks`. Before this gate, any client with a session could
-///     POST that row onto a *running* track and silently strand it — dispatch
-///     stops and the track vanishes from the list, with nothing in the UI to
-///     say why. **#1318 S2 retired that row and all six of its readers**, so
-///     that particular escalation no longer exists; the reserved namespace is
-///     kept because the criterion is "the kernel reads this back as fact", not
-///     "one named row is dangerous" — `kernel/view/layout` is read back the
-///     same way, and the next kernel projection under `view` would inherit the
-///     gap the moment it landed.
-///   * **`plugin_id`** — `"kernel"` is the namespace `card_fsm` stamps on
-///     its own rows precisely so they are "unambiguously kernel-owned". A
-///     client writing under it forges that ownership.
-///
-/// The `entity_kind` half is not a new criterion: the registry column it
-/// asks is the same one the plugin RPC path has always asked
-/// (`plugin_host::callbacks::overlay_set`). This endpoint simply never
-/// asked it — the gap was one entry point wide, not one rule wide.
-///
-/// Both are permission failures rather than shape failures, so they answer
-/// 403, and both run *before* `validate_overlay_payload` so a refused write
-/// never reveals whether its payload would have parsed.
-///
-/// Kernel-internal writers are unaffected: they call `overlay_upsert_tx`
-/// directly (track structure creation, `card_fsm`, `child_track_adapter`) and
-/// never traverse this router.
+/// Admission gate for the public overlay write endpoints: `plugin_id` `"kernel"` and
+/// the kernel-projection entity kinds (`view`, `system`) are unforgeable from outside.
+/// Answers 403 and runs before `validate_overlay_payload` so a refused write never
+/// reveals whether its payload would have parsed.
 fn ensure_overlay_write_allowed(plugin_id: &str, entity_kind: &str) -> Result<()> {
     if plugin_id == KERNEL_OVERLAY_PLUGIN_ID {
         return Err(CalmError::Forbidden(format!(
@@ -106,9 +66,7 @@ pub fn router() -> Router<AppState> {
 #[derive(Deserialize, IntoParams, ToSchema)]
 pub struct OverlayQuery {
     pub entity_kind: String,
-    /// Optional. When omitted, returns every overlay of `entity_kind`
-    /// across the workspace — the sidebar uses this form to render
-    /// accurate per-track status without fetching each track's detail.
+    /// Optional. When omitted, returns every overlay of `entity_kind` across the workspace.
     pub entity_id: Option<String>,
 }
 
@@ -133,34 +91,9 @@ pub(crate) async fn list_overlays(
     Ok(Json(filter_unsupported_overlay_versions(overlays)))
 }
 
-/// Tier A read-side guard (issue #198 concern 4): drop kernel-owned overlay
-/// rows whose persisted `schemaVersion` exceeds what this binary supports.
-///
-/// The write path already refuses future versions on ingest, but a row can
-/// still appear here if a newer kernel binary wrote to the same DB and then
-/// the operator downgraded (or in a split-deploy where two binaries point at
-/// one DB). Without this filter, those rows would deserialize successfully —
-/// because the `Overlay.payload` column is opaque JSON — and either fall
-/// through to the frontend (where the Tier A `schemaVersion` check would
-/// then log + skip them) or break invariants in any server consumer that
-/// inspects the payload shape.
-///
-/// Plugin-defined overlay kinds (`max_supported_overlay_schema_version`
-/// returns `None`) are passed through untouched: the kernel has no schema
-/// for them and explicitly opts out of any version policy on their payloads.
-///
-/// Visibility note: `pub(super)` so `routes::tracks::get_track_detail` can apply
-/// the same guard to overlays returned alongside the track row. The reviewer of
-/// PR #214 (issue #198 concern 4 follow-up) flagged that `GET /api/tracks/{id}`
-/// is the primary read path the frontend uses to render status/progress/eta/
-/// now overlays on a track's detail view, and a future-`schemaVersion` row
-/// would sail through that route while being correctly filtered out of
-/// `GET /api/overlays`. We keep the route-level filter co-located here so
-/// both HTTP call-sites share one implementation without expanding the
-/// `Repo` trait surface; the per-row predicate itself lives in
-/// `crate::validation::should_skip_overlay` so the WS broadcast/replay
-/// path in `ws::events` can apply the same gate to `Event::OverlaySet`
-/// frames without a routes → ws dependency.
+/// Drop kernel-owned overlay rows whose persisted `schemaVersion` exceeds what this
+/// binary supports (a newer binary wrote to the same DB). Plugin-defined kinds pass
+/// through untouched. `pub(super)` so `get_track_detail` applies the same guard.
 pub(super) fn filter_unsupported_overlay_versions(overlays: Vec<Overlay>) -> Vec<Overlay> {
     overlays
         .into_iter()
@@ -184,10 +117,9 @@ pub(crate) async fn upsert_overlay(
     actor: Actor,
     Json(p): Json<NewOverlay>,
 ) -> Result<Json<Overlay>> {
-    // #1297: reserved namespaces first — permission before shape.
+    // Reserved namespaces first — permission before shape.
     ensure_overlay_write_allowed(&p.plugin_id, &p.entity_kind)?;
-    // D4: kernel-owned overlay kinds (status/progress/eta/now) must match
-    // their shape; plugin-defined kinds stay opaque.
+    // Kernel-owned overlay kinds must match their shape; plugin-defined kinds stay opaque.
     validate_overlay_payload(&p.kind, &p.payload)?;
     let scope = overlay_scope(s.repo.as_ref(), &p.entity_kind, &p.entity_id).await?;
     let (overlay, _id) = write_with_event_typed(
@@ -232,13 +164,8 @@ pub(crate) async fn delete_overlay(
     actor: Actor,
     Json(b): Json<OverlayDeleteBody>,
 ) -> Result<StatusCode> {
-    // #1297: deleting a kernel-authored row is the second half of the forge —
-    // write a kernel projection, act, then remove the evidence. The concrete
-    // case that motivated it was `kernel/view/template`, which #1318 S2
-    // retired; the gate stays on the delete side for the same reason it stays
-    // on the write side (see `ensure_overlay_write_allowed`): the criterion is
-    // "the kernel reads this back as fact", and `kernel/view/layout` still
-    // does.
+    // Deleting a kernel-authored row is the second half of a forge, so the gate applies
+    // on the delete side too.
     ensure_overlay_write_allowed(&b.plugin_id, &b.entity_kind)?;
     let scope = overlay_scope(s.repo.as_ref(), &b.entity_kind, &b.entity_id).await?;
     let (_unit, _id) = write_with_event_typed(

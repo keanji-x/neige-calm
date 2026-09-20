@@ -65,8 +65,6 @@ fn keys(tasks: &[Task]) -> Vec<&str> {
     tasks.iter().map(|t| t.key.as_str()).collect()
 }
 
-// ---------------------------------------------------- ready set (§5.2)
-
 #[test]
 fn design_claim_resolution_failure_scope_is_consistent() {
     let design = include_str!("../../../../docs/architecture/985-doc-as-plan.md");
@@ -88,8 +86,7 @@ fn ready_set_requires_all_deps_done() {
 
 #[test]
 fn canceled_and_failed_deps_never_satisfy() {
-    // §3.1 — deps require `done`; canceled/failed block successors
-    // forever (plan-revision authority belongs to the planner).
+    // Deps require `done`; canceled/failed block successors forever.
     let tasks = vec![
         task("a", TaskStatus::Canceled, &[], 0),
         task("b", TaskStatus::Failed, &[], 0),
@@ -101,9 +98,7 @@ fn canceled_and_failed_deps_never_satisfy() {
 
 #[test]
 fn budget_counts_dispatched_running_and_verifying() {
-    // `verifying` occupies budget deliberately (§5.2) — the SQL/
-    // predicate is future-proofed even though no task reaches
-    // verifying before PR-C.
+    // `verifying` occupies budget deliberately.
     let tasks = vec![
         task("a", TaskStatus::Dispatched, &[], 0),
         task("b", TaskStatus::Running, &[], 0),
@@ -127,8 +122,7 @@ fn budget_counts_dispatched_running_and_verifying() {
 
 #[test]
 fn ready_set_preserves_scheduler_order_without_preconsuming_capacity() {
-    // Input order is the repo's `(priority DESC, created_at ASC,
-    // key ASC)`; compute_ready must not reorder (policy-free).
+    // Input order is the repo's; compute_ready must not reorder.
     let mut high = task("zz-high", TaskStatus::Pending, &[], 9);
     high.created_at_ms = 5;
     let tasks = vec![
@@ -153,8 +147,6 @@ fn zero_or_negative_capacity_dispatches_nothing() {
     );
 }
 
-// ---------------------------------------------- lifecycle gating (§5.2)
-
 #[test]
 fn lifecycle_gating_matches_design_table() {
     for allowed in [
@@ -175,8 +167,6 @@ fn lifecycle_gating_matches_design_table() {
         assert!(!lifecycle_allows_scheduling(held), "{held:?}");
     }
 }
-
-// ------------------------------------------------------- env knobs
 
 #[test]
 fn budget_from_env_fallback_paths() {
@@ -272,8 +262,6 @@ fn task_liveness_timeout_env_fallback_paths() {
     }
 }
 
-// ------------------------------------------------- payload determinism
-
 #[test]
 fn worker_payload_is_pure_function_of_the_row() {
     let codex = task("a", TaskStatus::Pending, &[], 0);
@@ -322,9 +310,7 @@ fn worker_payload_is_pure_function_of_the_row() {
     assert_eq!(p["cwd"], json!("/repo"));
 }
 
-/// The recovery executor statement and the worker payload branch on the same
-/// row predicate: every legacy kind names its adapter's executor and the
-/// isolated selection alone carries the fixed envelope.
+/// The recovery executor statement and the worker payload branch on the same row predicate.
 #[test]
 fn recovery_executor_statement_follows_the_worker_payload_route() {
     let legacy = [
@@ -459,15 +445,8 @@ fn budget_greater_than_one_relies_on_claim_time_workspace_leases() {
 
 #[test]
 fn terminal_payload_without_cwd_keeps_row_none() {
-    // #644 followup: a terminal row with `cwd = NULL` must produce
-    // `cwd: null` in the payload — the row value, NOT a materialized
-    // `default_cwd()` (HOME/current dir). Anything env-derived here
-    // would change `stable_payload_hash` across an env-changing
-    // restart, making `resume_dispatched` classify its OWN operation
-    // as a permanent foreign idempotency conflict and fail the task
-    // instead of recovering it. `cwd: null` is by construction
-    // independent of process env (no env value can be JSON null);
-    // the adapter resolves the default at spawn time instead.
+    // A terminal row with `cwd = NULL` must produce `cwd: null`, NOT a materialized
+    // `default_cwd()`: anything env-derived would change `stable_payload_hash` across a restart.
     let mut terminal = task("t", TaskStatus::Dispatched, &[], 0);
     terminal.kind = TaskKind::Terminal;
     terminal.goal = "make test".into();
@@ -475,8 +454,7 @@ fn terminal_payload_without_cwd_keeps_row_none() {
     let (kind, p1) = build_worker_payload(&terminal).unwrap();
     assert_eq!(kind, "terminal-worker");
     assert_eq!(p1["cwd"], Value::Null, "row None stays None");
-    // Restart simulation: rebuild from the same frozen row → the
-    // payload and its idempotency hash must be byte-identical.
+    // Restart simulation: the same frozen row must rebuild a byte-identical payload.
     let (_, p2) = build_worker_payload(&terminal).unwrap();
     assert_eq!(p1, p2);
     assert_eq!(
@@ -484,8 +462,6 @@ fn terminal_payload_without_cwd_keeps_row_none() {
         stable_payload_hash(&p2).unwrap()
     );
 }
-
-// ----------------------------------------------------- inflight guard
 
 #[tokio::test]
 async fn inflight_guard_is_single_flight_and_releases_on_drop() {

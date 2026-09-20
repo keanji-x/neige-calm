@@ -1,26 +1,5 @@
-// `REFERENCED BY` — who cites this track (§8.3).
-//
-// It is a module inside the panel card, not a rail section and not a page of
-// its own: "who is using this" is a fact *about this track*, and it belongs
-// next to the other facts about it. §6.5 forbids a card inside a card, so the
-// modules share one card and are separated by hairlines.
-//
-// **One row per citing track — its title, and nothing else.**
-//
-// The kernel answers per *link*, not per track, and a report that cites you
-// twice in one sentence produces two entries whose quotes are two overlapping
-// slices of that sentence. Rendering them as written printed the same words
-// twice, one under the other, in the app's narrowest column. Grouping by track
-// alone did not fix it — the duplication is *inside* a group.
-//
-// So the row is the title, on one line, and the count of citations when there
-// is more than one. The sentence a citation is written in is still worth
-// having, but not at three lines a piece in a 280 column: it rides along as
-// the row's tooltip, where it costs nothing until it is asked for.
-//
-// A knowingly incomplete list still says so. `truncated` and `skipped_sources`
-// are rendered rather than dropped: a citation list that is quietly short is
-// worse than one that admits it is short.
+// `REFERENCED BY` — who cites this track: one row per citing track, the count when there is more
+// than one, and the citing sentence as the row's tooltip. `truncated` and `skipped_sources` are rendered, not dropped.
 
 import type { TrackBacklink, TrackBacklinks } from '../../../../../core/domain/report.ts';
 import { groupBacklinks } from '../../../../../core/domain/report.ts';
@@ -40,13 +19,7 @@ function quoteText(backlink: TrackBacklink): string {
   return `${quote.head_elided ? '…' : ''}${quote.before}${quote.label}${quote.after}${quote.tail_elided ? '…' : ''}`;
 }
 
-/**
- * The distinct sentences a track cites you from.
- *
- * Two links in one paragraph are two backlinks with near-identical quotes, so
- * the tooltip dedupes by *source block* — the unit a reader would call "one
- * mention" — and not by link.
- */
+/** The distinct sentences a track cites you from, deduped by source block: two links in one paragraph are two backlinks with near-identical quotes. */
 function mentions(entries: readonly TrackBacklink[]): string[] {
   const seen = new Set<string>();
   return entries.flatMap((entry) => {
@@ -66,8 +39,6 @@ export function ReportBacklinks({ trackId, backlinks, onOpen }: ReportBacklinksP
           const quotes = mentions(group.entries);
           return (
             <li key={group.trackId}>
-              {/* INV-A11Y-061: a button and a callback, like every other
-                  navigation in the app. */}
               <button
                 type="button"
                 className={styles.row}
@@ -75,8 +46,6 @@ export function ReportBacklinks({ trackId, backlinks, onOpen }: ReportBacklinksP
                 onClick={() => onOpen(group.trackId, group.entries[0]?.src_block_id ?? '')}
               >
                 <span className={styles.title}>{group.title}</span>
-                {/* The count only appears when it says something. "1" next to
-                    every row would be a column of ones. */}
                 {quotes.length > 1 && <span className={styles.count}>{quotes.length}</span>}
               </button>
             </li>

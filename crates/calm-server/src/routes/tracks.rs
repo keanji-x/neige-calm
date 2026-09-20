@@ -1,32 +1,4 @@
-//! `/api/tracks`, `/api/areas/:id/tracks` — Track CRUD. **Owned by Track B.**
-//!
-//! Writes go through `Repo::write_with_event` (via the
-//! `write_with_event_typed` ergonomic wrapper). See `routes/areas.rs` for
-//! the migration pattern; this file follows the same shape.
-//!
-//! ## PR6 (#136) — atomic planner-card binding
-//!
-//! `create_track` now mints a track **and** a `CardRole::Planner` codex card
-//! in a single transaction via [`crate::db::write_with_events_typed`].
-//! Two events leave the tx: [`Event::TrackUpdated`] (scope = Track) and
-//! [`Event::CardAdded`] (scope = Card).
-//!
-//! ## Planner harness start
-//!
-//! Track creation now mints the kernel-owned planner card and report card, then
-//! submits the `planner-harness-start` operation. Start failures are non-fatal:
-//! the committed track remains and the planner card can recover through the
-//! harness runtime.
-//!
-//! ## Track-delete teardown (issue #197)
-//!
-//! `delete_track` first performs a best-effort descendant preflight and
-//! snapshots its teardown-owned resources. It then reaps terminals/harnesses
-//! outside SQLite and finishes the row delete in a short transaction whose
-//! descendant guard is authoritative. The `terminals.card_id` FK is
-//! `ON DELETE RESTRICT` (migration 0011),
-//! so a missed cleanup surfaces as a transaction-level error rather
-//! than a silent daemon-process leak.
+//! `/api/tracks`, `/api/areas/:id/tracks` — Track CRUD.
 
 use crate::AREA_CHAT_PURPOSE;
 use crate::actor::Actor;
@@ -101,47 +73,11 @@ mod claude_permissions;
 mod create;
 mod fork_guard;
 
-/// #1430 — the injection point that makes the cross-instance primary-key race
-/// deterministic.
-///
-/// **Why an injection point at all.** `plan_first_message` takes
-/// `conversation_first_message_locks` before either lookup and holds it through
-/// the mint, so two same-key creates served by ONE `AppState` serialize and the
-/// second takes `Resume` without ever reaching
-/// `track_create_idempotency_claim_tx`. The lock map is a per-`AppState` field
-/// (`state.rs`), not a per-process one, so two `AppState`s over one on-disk
-/// SQLite file already race — but *racing* is not *ordering*. The loser's state
-/// is precisely "lookup 1 missed, and then the mint transaction's INSERT finds
-/// the row", and firing two requests and hoping cannot construct it: a
-/// scheduler that runs the second one to completion first, or that lets it
-/// reach lookup 1 after the winner committed, produces a `Resume` and a green
-/// run in which the mapping under test was never entered. That is the vacuity
-/// that got the earlier `two_concurrent_same_key_creates_produce_one_track`
-/// deleted, and it must not come back.
-///
-/// **Why not a `Repo` decorator.** The obvious alternative — wrap `Arc<dyn
-/// Repo>` in a type that parks inside `track_create_idempotency_get` — has to
-/// implement 109 methods across the four supertraits to forward one, for the
-/// single existing impl in the tree. It also parks at the wrong layer: the
-/// window this test needs is "after lookup 1, before the mint transaction
-/// opens", which is a statement about the *route*, not about any one repo call.
-///
-/// **The shape** is `routes::today`'s [`SystemAreaMintRendezvous`] with one
-/// difference: that race is symmetric and a single [`tokio::sync::Barrier`]
-/// releases both participants together, while this one needs the winner to
-/// *finish* while the loser is held, so it takes two barriers and the caller
-/// sits on both. The field is unconditional and the `if let Some(..)` is
-/// compiled into every build; only the builder that arms it is `fixtures`-gated
-/// (`AppState::with_track_create_mint_rendezvous`).
-///
-/// [`SystemAreaMintRendezvous`]: crate::routes::today::SystemAreaMintRendezvous
+/// Test seam that makes the cross-instance same-key mint race deterministic.
 pub type TrackCreateMintRendezvous = Option<std::sync::Arc<TrackCreateMintGate>>;
 
-/// The two meeting points of [`TrackCreateMintRendezvous`].
-///
-/// **Every wait is bounded by construction.** A held request resumes on its own
-/// if the peer never arrives, so a mis-driven test fails an assertion instead of
-/// hanging a runner forever (#1453).
+/// The two meeting points of [`TrackCreateMintRendezvous`]; every wait is bounded so a
+/// mis-driven test fails an assertion instead of hanging.
 pub struct TrackCreateMintGate {
     /// The minting request has passed lookup 1 and selected the `Mint` arm; it
     /// has not opened the create transaction yet.
@@ -160,12 +96,7 @@ impl TrackCreateMintGate {
         }
     }
 
-    /// Park the minting request until the peer has committed, or until the
-    /// bound elapses.
-    ///
-    /// The bound is generous (30s) because it is a runaway guard, not a timing
-    /// assertion: no correct run reaches it, and a run that does resumes and
-    /// fails its assertions rather than wedging.
+    /// Park the minting request until the peer has committed, or until the bound elapses.
     pub(crate) async fn hold(&self) {
         const BOUND: std::time::Duration = std::time::Duration::from_secs(30);
         let _ = tokio::time::timeout(BOUND, self.reached.wait()).await;
@@ -226,11 +157,6 @@ pub struct TrackDeleteCommitHook {
 }
 
 /// Test seam for the lifecycle PATCH pre-read/transaction boundary.
-///
-/// A fixture can commit a newer lifecycle after the route has validated its
-/// first snapshot but before `BEGIN IMMEDIATE`. The in-transaction validation
-/// must then reject the stale request; deleting that production call makes the
-/// route-level race regression fail.
 #[cfg(feature = "fixtures")]
 #[derive(Clone)]
 pub struct TrackLifecyclePatchRaceHook {
@@ -343,50 +269,22 @@ async fn wait_at_track_lifecycle_patch_race_hook(track_id: &str) {
 pub struct CreateTrackRequest {
     #[schema(value_type = String)]
     pub area_id: crate::ids::AreaId,
-    /// Issue #1211 — on this user-driven create path the title is no longer
-    /// the track's intent, so the client may omit it entirely. Omitting it
-    /// stores the **empty string** — there is no server-side default; the
-    /// `Untitled track` a user sees in a list is the frontend's display
-    /// fallback (`fe/core/domain/track.ts` `UNTITLED_TRACK_LABEL`). The planner
-    /// agent then names the track via `calm.track.rename`, which only succeeds
-    /// while the stored title is still blank. The type
-    /// stays `String`: the empty string has always been a legal title and the
-    /// server applies no non-empty validation.
+    /// Omitted stores the empty string; the planner agent names the track via
+    /// `calm.track.rename` while the stored title is still blank.
     #[serde(default)]
     #[schema(required = false)]
     pub title: String,
     pub sort: Option<f64>,
-    /// Issue #1131 — omitted / null → persist `default_cwd()` (`$HOME`, else
-    /// process cwd) on the track row and skip `area_folders`. Present values
-    /// (including the empty string) keep the pre-#1131 absolute-path + claim
-    /// rules. The SQLite column stays NOT NULL; only the request field is
-    /// optional.
+    /// Omitted / null persists `default_cwd()` and skips `area_folders`; present values
+    /// (including the empty string) keep the absolute-path + claim rules.
     #[serde(default)]
     pub cwd: Option<String>,
-    /// A built-in roster template (#1209) to instantiate the new track's report
-    /// from — the caller's spelling, admitted against the roster before
-    /// anything is minted; `tracks.template_id` then stores the roster's own
-    /// key. It is also what binds the track to a plugin (`plugin_scope`) and
-    /// what makes `template_input` acceptable.
-    ///
-    /// One of the three mutually exclusive starting points (`template_id`,
-    /// `recipe_id`, `fork_report_from`); naming two of them is a 400 that names
-    /// both. Naming none is the ordinary blank create.
+    /// A built-in roster template to instantiate the report from; mutually exclusive with
+    /// `recipe_id` and `fork_report_from` (naming two is a 400).
     #[serde(default)]
     pub template_id: Option<String>,
-    /// A user-defined recipe (`track_recipes` row, #1292) to start from.
-    ///
-    /// Deliberately **not** folded into `template_id`. That field's value
-    /// lands on `tracks.template_id`, which the track start path later
-    /// resolves against running plugins' manifests to recover a bound
-    /// template descriptor. A recipe id has no manifest to resolve against,
-    /// so putting one there would make every recipe-created track log a
-    /// resolution failure while starting — an error record for an entirely
-    /// normal situation.
-    ///
-    /// Supplying both is a 400: two starting points is not a preference to
-    /// resolve, it is a request that does not name one thing. #1321 S2 extends
-    /// that from this one pair to every pair.
+    /// A user-defined recipe (`track_recipes` row) to start from. Not folded into
+    /// `template_id`: a recipe has no plugin manifest to resolve against.
     #[serde(default)]
     pub recipe_id: Option<String>,
     #[serde(default)]
@@ -394,63 +292,18 @@ pub struct CreateTrackRequest {
     pub template_input: Option<serde_json::Value>,
     #[serde(default)]
     pub attach_folder: bool,
-    /// Explicit authorization to create this track in `area_id` while its cwd
-    /// remains covered by the exact conflicting claim identified here. The
-    /// ids are checked inside the create transaction, so a concurrent claim
-    /// change fails closed. This never creates, moves, or deletes a claim.
+    /// Explicit authorization to create this track in `area_id` while its cwd remains covered
+    /// by the exact conflicting claim named here; checked inside the create transaction.
     #[serde(default)]
     pub allow_cross_area_cwd: Option<CrossAreaCwdAuthorization>,
     pub theme: RequestTheme,
-    /// One-time creation instruction: copy this track's report snapshot into
-    /// the new report inside the track-create transaction.
-    ///
-    /// #1321 S2 — a third starting point, mutually exclusive with the two
-    /// above. It used to *win* over both: a create naming a `template_id` and
-    /// a fork source silently took the fork while the row still recorded the
-    /// template id and its plugin owner, so `tracks.template_id` claimed a
-    /// provenance the report did not have (#1321 「已观察事实」§3). It is now a
-    /// 400 naming both fields.
+    /// One-time creation instruction: copy this track's report snapshot into the new report
+    /// inside the track-create transaction.
     #[serde(default)]
     pub fork_report_from: Option<String>,
-    /// Issue #1299 S1 — the sentence the user typed on the synthesiser page,
-    /// delivered to the planner agent **with** this create instead of having to
-    /// be retyped after landing on the track.
-    ///
-    /// It becomes an `Observation::UserMessage` seeded into the harness
-    /// snapshot inside the `planner-harness-start` transaction — not a
-    /// `TrackGoal`, which is a different semantic slot (see
-    /// `PlannerHarnessStartOperationPayload::first_message`). Validated exactly
-    /// like `POST /api/cards/{id}/planner/input` (non-blank after trim, at most
-    /// 32768 **characters**) and validated before anything is minted.
-    ///
-    /// Omitting it leaves this endpoint's behaviour byte-for-byte unchanged,
-    /// down to the operation payload, whose `first_message` key is
-    /// `skip_serializing_if`-omitted.
-    ///
-    /// Supplying it also makes `Idempotency-Key` **required** (#1384), and
-    /// changes what a harness-start failure means. Without it, a create whose
-    /// `planner-harness-start` operation fails still returns 201 — "the track
-    /// exists, its planner agent is inert" is a documented, recoverable state.
-    /// With it, that same failure is a 500, because the sentence the user typed
-    /// was only ever going to be written by that operation, so a 201 would
-    /// claim a delivery the create did not make.
-    ///
-    /// The 500 does **not** undo the create: the track and its cards are
-    /// already committed and nothing compensates for them. Nor does it say the
-    /// message was not delivered — that depends on how far the start got, and
-    /// this endpoint still cannot tell. A start that failed before the harness
-    /// was installed handed nothing to any agent; a start that failed *after*
-    /// it (the `Stuck` outcome) has already seeded the observation and fired
-    /// the turn, and nothing recalls it. #1384 did not close that gap and
-    /// deliberately did not pretend to: `harness.user_message.enqueued` proves
-    /// only an *attempt* (its transaction commits before the step that can
-    /// fail), and there is no other durable record of the turn leaving.
-    ///
-    /// What #1384 did add is the **retry**: the `Idempotency-Key` is bound to
-    /// the track inside the transaction that mints it, so repeating the
-    /// identical request under the same key creates no second track and
-    /// delivers no second copy. That is the actionable half, and it is all the
-    /// 500 claims — it does not promise the track is usable.
+    /// The user's first sentence, seeded into the planner harness as a user message. Supplying
+    /// it makes `Idempotency-Key` required and turns a harness-start failure into a 500 (the
+    /// committed track is not undone).
     #[serde(default)]
     pub first_message: Option<String>,
     /// Model slug for the planner's first and subsequent turns. Omitted or null
@@ -473,18 +326,8 @@ pub struct CrossAreaCwdAuthorization {
 }
 
 impl CreateTrackRequest {
-    /// `(body, named source, cwd_omitted)`. `cwd_omitted` is
-    /// true when the client sent no `cwd` / `null`; that is a different branch
-    /// from an explicit empty string, which still 400s.
-    ///
-    /// #1321 S2 — the body this returns carries **no** creation provenance:
-    /// `template_id` and `plugin_scope` are both left `None` here and are
-    /// written in exactly one later place, [`CreationSource::stamp`], off the
-    /// same value that decides which initialization runs. Until #1321 S2 this
-    /// function put the caller's `template_id` string straight onto `NewTrack`
-    /// and a second site ~80 lines into the handler overwrote it with the
-    /// admitted roster key — two writers for one column, which is the shape
-    /// #1318 S2 had already had to correct once.
+    /// `(body, named source, cwd_omitted)`. `cwd_omitted` is true when the client sent no
+    /// `cwd` / `null`; an explicit empty string still 400s. Provenance columns stay `None` here.
     fn into_parts(self) -> Result<(NewTrack, NamedSource, bool)> {
         let cwd_omitted = self.cwd.is_none();
         let source =
@@ -512,63 +355,12 @@ impl CreateTrackRequest {
 }
 
 /// The **one** starting point a create request names, before admission.
-///
-/// #1321 S2 — the three request fields that each name a starting point
-/// (`template_id`, `recipe_id`, `fork_report_from`) collapse into this enum the
-/// moment the body is destructured, so "more than one was given" is a state the
-/// rest of the handler cannot be in and the `init` decision below has no
-/// priority rule to apply.
-///
-/// ## Why all three pairs, and not only the pair #1321 names
-///
-/// #1292 already refused `template_id + recipe_id`, and the comment on that arm
-/// argued the general case: *a request naming two starting points is ambiguous
-/// whether or not it also asks for a fork, and ambiguity is not something a
-/// priority rule gets to resolve.* That argument never depended on **which**
-/// two fields were named — `recipe_id + fork_report_from` names two starting
-/// points in exactly the same way `template_id + fork_report_from` does. #1321
-/// only names the `template_id` pair because that is the pair whose silent
-/// resolution it observed (a track keeping `template_id` and `plugin_scope`
-/// while its report came from somewhere else); closing that pair alone would
-/// have left a hole of the same shape one field over.
-///
-/// Observed, not inferred — **about this repository's own callers**: neither
-/// frontend (`web/src`, `fe/`, enumerated by directory) sends
-/// `fork_report_from` at all, no Rust caller constructs a
-/// [`CreateTrackRequest`], and the MCP tool face reaches `track_create_tx`
-/// directly rather than through this body. The only producers of the
-/// two-source shape were the four tests #1321 S2 rewrote.
-///
-/// 第二轮评审 MINOR-1 (#1321 S2) — the frontend half, as a command a reader can
-/// re-run, because the shorthand this sentence used to carry ("zero hits
-/// outside the generated OpenAPI types") was falsified by this very slice:
-///
-/// ```text
-/// grep -rn fork_report_from web/src fe | grep -vE 'generated|openapi\.json'
-/// ```
-///
-/// Three hits, all of them **prose** in `fe/core/domain/track.ts`'s doc comment
-/// — this slice added them to state the exclusivity on the FE side. The nine
-/// remaining hits are three lines each in the three generated artifacts
-/// (`fe/core/api/generated/openapi.json`, `web/src/api/generated.ts`,
-/// `web/src/api/openapi.json`). No request construction on either side names
-/// the field, which is the claim above; "no occurrence of the string" is not,
-/// and never was, the same claim.
-///
-/// 第一轮评审 MINOR-5 (#1321 S2) — that is a statement about first-party
-/// clients, and it is the widest one the evidence carries. It is **not** the
-/// claim that nothing in production ever sent these combinations: the repo
-/// itself documents out-of-repo scripts against this endpoint
-/// (`docs/deploy-and-upgrade.md` §8.2, which now carries this slice's
-/// 201 → 400 entry), and no reader here can see their traffic.
 enum NamedSource {
     /// No starting point named; the track keeps the default skeleton.
     Blank,
-    /// A built-in roster template, still the **caller's** spelling — it has not
-    /// been admitted yet. [`NamedSource::resolve`] is the only thing that turns
-    /// it into a roster key.
+    /// A built-in roster template, still the caller's spelling — not yet admitted.
     Template(String),
-    /// A user-defined recipe row (#1292).
+    /// A user-defined recipe row.
     Recipe(String),
     /// An existing track whose report is copied.
     Fork(String),
@@ -576,16 +368,6 @@ enum NamedSource {
 
 impl NamedSource {
     /// Collapse the three request fields, or refuse and say which two collided.
-    ///
-    /// The message names the offending fields rather than reporting a generic
-    /// conflict: a caller that sent three fields, one of them by accident, has
-    /// to be able to tell which one to drop.
-    ///
-    /// 第一轮评审 MINOR-4 (#1321 S2) — the tail is "give **at most** one", not
-    /// "exactly one". Zero starting points is the ordinary case ([`Self::Blank`]
-    /// — it is what both frontends' default create sends), so "exactly one"
-    /// would tell a caller who sent two fields by accident that it must now
-    /// pick a template, a recipe or a fork source, which is false.
     fn from_request(
         template_id: Option<String>,
         recipe_id: Option<String>,
@@ -614,12 +396,8 @@ impl NamedSource {
         }
     }
 
-    /// Admit the named source, producing the value that decides **both** which
-    /// initialization runs and what the row records about it.
-    ///
-    /// The only fallible arm is `Template`: a roster miss is the create-time
-    /// 400 #1209 introduced. A `Recipe` row and a `Fork` source are looked up
-    /// inside the create transaction, so their absence is decided there.
+    /// Admit the named source, producing the value that decides both which initialization
+    /// runs and what the row records about it.
     async fn resolve(self, s: &RouteState) -> Result<CreationSource> {
         Ok(CreationSource {
             init: match self {
@@ -627,11 +405,8 @@ impl NamedSource {
                 Self::Recipe(recipe_id) => TrackInit::Recipe { recipe_id },
                 Self::Fork(source_track_id) => TrackInit::Fork { source_track_id },
                 Self::Template(template_id) => {
-                    // #1209 — one lookup. The template is the concept; a plugin
-                    // binding is an attribute of it, not a second way in. Roster
-                    // membership is the whole admission test: whether some plugin
-                    // claims the id, and whether that plugin is running and
-                    // trusted, cannot change the answer.
+                    // Roster membership is the whole admission test; a plugin binding is an
+                    // attribute of the template, not a second way in.
                     let admission = admit_template(s, &template_id).await.ok_or_else(|| {
                         CalmError::BadRequest(format!(
                             "track create: `template_id` must reference a known track template; got `{template_id}`"
@@ -647,41 +422,15 @@ impl NamedSource {
     }
 }
 
-/// An admitted creation source: the initialization that will run, and — derived
-/// from that same value — the provenance the `tracks` row records.
-///
-/// #1321 S2 — the point of this type is that there is nowhere to disagree.
-/// Both provenance columns are read **out of** [`Self::init`] by
-/// [`Self::stamp`] rather than carried alongside it, so "which source the
-/// create used" and "which source the row claims" are one value with one
-/// reader. Before this slice they were two: `into_parts` copied the caller's
-/// `template_id` onto `NewTrack`, the handler overwrote it with the admitted
-/// key, and the `init` match then independently decided that an explicit
-/// `fork_report_from` won — which is precisely how a row could end up stamped
-/// `template_id` + `plugin_scope` while its report had been forked from an
-/// unrelated track (#1321 「已观察事实」§3).
-///
-/// 第一轮评审 MINOR-2 (#1321 S2) — the first cut of this type kept the plugin
-/// binding as a **sibling field** of `init`, and only the `template_id` half
-/// was actually derived. `plugin_scope` came off that sibling, so
-/// `CreationSource { init: TrackInit::Fork { .. }, binding: Some(manifest) }`
-/// compiled and stamped a fork-born row with a plugin owner — the same shape
-/// as the `## KNOWN GAPS` Gap 1 on [`admit_template`], re-minted next door to
-/// it, under a doc sentence that claimed the type made it impossible. The
-/// binding now lives **inside** [`TrackInit::Template`], so that construction
-/// is a compile error rather than a sentence about today's three call sites.
+/// An admitted creation source: the initialization that will run, and — derived from that
+/// same value — the provenance the `tracks` row records.
 struct CreationSource {
     init: TrackInit,
 }
 
 impl CreationSource {
-    /// Which `template_input` owner this source presents, per #891 / #1110 S2.
-    ///
-    /// 第二轮评审 NIT-3 (#1209) — `None` binding has two different causes and
-    /// the 400 has to name the right one: no `template_id` at all, or an
-    /// admitted `template_id` whose owning plugin is not running ∧ trusted
-    /// right now. (An unknown `template_id` cannot reach here —
-    /// [`NamedSource::resolve`] already 400s.)
+    /// `None` binding has two causes the 400 must distinguish: no `template_id` at all, or an
+    /// admitted one whose owning plugin is not running and trusted.
     fn template_input_owner(&self) -> crate::plugin_host::template_input::TemplateInputOwner<'_> {
         use crate::plugin_host::template_input::TemplateInputOwner;
         match &self.init {
@@ -696,44 +445,9 @@ impl CreationSource {
         }
     }
 
-    /// Write this source's provenance onto the row about to be inserted.
-    ///
-    /// Both columns come out of one `match` arm on `init`, so they cannot name
-    /// different sources: `template_id` is the roster's own `&'static` key,
-    /// never the caller's string (see [`TemplateAdmission::key`]), and
-    /// `plugin_scope` is the binding that same admitted template carries. A
-    /// create whose report did not come from a template can leave neither.
-    ///
-    /// 第一轮评审 NIT-2 (#1321 S2) — "derived here and nowhere else" is true of
-    /// **this route**, not of the columns.
-    ///
-    /// 第二轮评审 MINOR-2 (#1321 S2) — the previous wording named only
-    /// `child_track_adapter` while reading like an enumeration. The other
-    /// writers of `tracks.plugin_scope` outside this route, from
-    /// `git grep plugin_scope -- 'crates/**/*.rs' 'crates/**/*.sql'` with test
-    /// files dropped, are:
-    ///
-    /// * `operation/child_track_adapter.rs:265` — a different creation path
-    ///   with a different provenance rule: the child inherits the parent's
-    ///   owner (read at `:229`, bound at `:234`), so it can mint a row with an
-    ///   owner and **no** `template_id`. Not a second writer racing this one.
-    /// * `routes/today.rs:393` — the launchpad adopting a legacy `Today` row
-    ///   writes `plugin_scope=NULL` (a write, even though it only clears). Its
-    ///   sibling INSERT at `:406` leaves the column off the list entirely, so a
-    ///   freshly minted launchpad defaults to NULL; `:396` / `:411` are the
-    ///   in-memory mirrors of those two, not additional SQL.
-    /// * migration `0076` (`crates/calm-truth/migrations`, the one that adds
-    ///   the column), its `SET plugin_scope = COALESCE(..)` at line 22 — the
-    ///   one-time backfill run when the column was added. Cited by number
-    ///   rather than by file name because the name carries retired
-    ///   vocabulary that the #1316 S0 terminology ratchet counts; same
-    ///   convention as `track_binding/mod.rs`'s entry 4.
-    ///
-    /// None of the three reads a create request: this route is still the only
-    /// place a *request* can decide the column's value.
+    /// Write this source's provenance onto the row; both columns come out of one `match` arm
+    /// so they cannot name different sources.
     fn stamp(&self, p: &mut NewTrack) {
-        // #1110 S4 — the owning plugin id lands in `plugin_scope` in the same
-        // insert. Unbound create leaves it None. Not a request field.
         let (template_id, plugin_scope) = match &self.init {
             TrackInit::Template { key, binding } => (
                 Some((*key).to_string()),
@@ -755,13 +469,8 @@ pub fn router() -> Router<AppState> {
                 .patch(update_track)
                 .delete(delete_track),
         )
-        // Issue #247 PR3 — user-facing track-report edit endpoint. Session-
-        // authenticated; only `ActorId::User` is accepted (worker / planner /
-        // plugin actors are rejected 403 even when carrying a valid
-        // session cookie). The MCP `calm.report.{write,edit}` path is
-        // unchanged; both paths funnel through the `track_report::write`
-        // module — different entry points, one private writer — so the
-        // dual-event invariant + CRDT write stays one boundary.
+        // Session-authenticated; only `ActorId::User` is accepted (worker / planner /
+        // plugin actors are 403).
         .route(
             "/api/tracks/{id}/report",
             get(get_track_report).post(update_track_report),
@@ -798,19 +507,8 @@ pub struct TrackFsCatQuery {
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
-// NOTE: no `Principal` extractor here.
-//
-// `update_track_report` (POST) keeps `_principal: Principal` as an implicit
-// session-middleware assertion — the route fires on user action, never
-// during a11y/replay traffic. These GET routes fire on every track page
-// mount (the report sidebar lists root on first render); the replay
-// binary intentionally does NOT attach `require_session` so its a11y
-// suite can drive REST without a session, and a `Principal` extractor
-// here would surface as a 401 → SessionProvider redirect → login page
-// during a11y replay runs. The TODO below keeps the multi-user
-// ownership hook visible without breaking the no-auth surface contract.
-//
-// TODO(#573 multi-user): ownership check
+// No `Principal` extractor here: the replay binary's a11y suite drives these GET
+// routes without a session, and a 401 would redirect it to login.
 pub(crate) async fn list_track_files(
     State(s): State<RouteState>,
     Path(id): Path<String>,
@@ -821,7 +519,7 @@ pub(crate) async fn list_track_files(
         .track_get(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("track {id}")))?;
-    // TODO(#573 multi-user): ownership check
+    // TODO(multi-user): ownership check
     let view = TrackFsView::new(s.repo.as_ref(), &s.write);
     let entries = view.ls(&track, q.path.as_deref()).await?;
     Ok(Json(entries))
@@ -841,8 +539,7 @@ pub(crate) async fn list_track_files(
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
-// See note on `list_track_files` for why `Principal` is intentionally NOT
-// extracted here. The `TODO(#573 multi-user)` lives next to `list_track_files`.
+// Intentionally no `Principal` extractor (see `list_track_files`).
 pub(crate) async fn cat_track_file(
     State(s): State<RouteState>,
     Path(id): Path<String>,
@@ -857,7 +554,7 @@ pub(crate) async fn cat_track_file(
         .track_get(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("track {id}")))?;
-    // TODO(#573 multi-user): ownership check
+    // TODO(multi-user): ownership check
     let view = TrackFsView::new(s.repo.as_ref(), &s.write);
     let content = view.cat(&track, path).await?;
     Ok(Json(content))
@@ -882,26 +579,8 @@ pub(crate) async fn list_tracks_by_area(
     Ok(Json(tracks))
 }
 
-/// Public track lists hide retired Area-conversation containers. Keep this at
-/// the route boundary: repository readers such as area deletion and backlink
-/// resolution require the complete set.
-///
-/// #1318 S2 retired the template-overlay half of this filter along with the
-/// mechanism that produced it: there is no longer any way to mark a track as a
-/// template, so there is nothing left to hide on that account. That half was
-/// the only reason the filter needed the repository, and with it gone the
-/// `async fn retain_user_visible_tracks(&dyn RepoRead, ..) -> Result<()>`
-/// wrapper was a synchronous `Vec::retain` wearing an async fallible
-/// signature: it ignored its only parameter and had no failure path, while
-/// both call sites still wrote `.await?`. Callers now retain directly
-/// (第二轮评审 MINOR-1).
-///
-/// The `match` is spelled out rather than written `!= Some(AREA_CHAT_PURPOSE)`
-/// purely for readability — both forms already keep NULL-purpose tracks
-/// visible, because Rust comparison against `Option` is total. The three-valued
-/// logic trap this must not be confused with lives in SQL, where
-/// `purpose <> 'area-chat'` drops NULL rows; the two hand-written predicates
-/// that must spell out `purpose IS NULL OR ...` are in `session_repo_impl.rs`.
+/// Public track lists hide retired Area-conversation containers; repository readers such
+/// as area deletion and backlink resolution require the complete set.
 fn user_visible_track(track: &Track) -> bool {
     match track.purpose.as_deref() {
         None => true,
@@ -909,60 +588,8 @@ fn user_visible_track(track: &Track) -> bool {
     }
 }
 
-/// Build the initial report a template instantiates to.
-///
-/// #1300 — this replaces `ensure_templates` / `lookup_template_track` /
-/// `seed_template_track` / `restamp_template_report_if_placeholder`. Those
-/// lazily minted three hidden system-area tracks and `POST /api/tracks` then
-/// forked one of them, which made a template a kind of track. It is a read-only
-/// recipe: instantiating it is structural initialization of a new track, and it
-/// reads nothing.
-///
-/// ## Why this does not go through the report-edit boundary
-///
-/// The seeding path did, and it had to name an author to do so. It named
-/// `EditAuthor::User` for a write no user made — the last production path on
-/// which the kernel wrote a report as the user, and the reason #1300 exists.
-///
-/// Naming the kernel honestly instead was not available: `guard_task_declarations`
-/// gives `EditAuthor::Kernel` no permission to author task-declaration blocks
-/// at all (`track_report_edit_guard.rs`), and every template report is a page of
-/// them. That guard is not an obstacle to route around — refusing to let
-/// non-humans declare tasks is its entire purpose.
-///
-/// So this is not a report *edit* with a better-chosen author; it is the same
-/// structural initialization the fork path performs, on the same in-transaction
-/// writer, with no author to name because no one is editing anything. That is
-/// also why a template file's task fences carry their `declared_by` as written
-/// (`templates/builtin/*.md`) instead of writing `user` and having the fork
-/// rewrite it one step later.
-///
-/// ## The single validation, and why there is not a second one
-///
-/// [`crate::track_report_guard::validate_body_fences`] is not only a fence-shape
-/// check: it runs `validate_payload` over every parseable fence in the body.
-/// So one call covers both failure modes a bad recipe constant has — a fence
-/// that does not parse (which `split_body` would otherwise demote to prose,
-/// silently dropping the task) and a fence that parses but violates its
-/// schema.
-///
-/// An earlier draft added a per-block check beside it, mirroring the two
-/// call sites inside `prepare_fork_report`. On this path that is a **vacuous
-/// guard**: the blocks come from this same body, so it can reject nothing the
-/// whole-body call has not already rejected. Two reviewers independently failed
-/// to construct an input that reaches it.
-///
-/// `Internal`, not `BadRequest`: every byte here comes from a roster file — one
-/// compiled into the binary, or (#1635 S5) an operator file under
-/// `--templates-dir` that the boot already ran through this same
-/// [`compile_template`] and would have refused to start on — and no request
-/// can influence it, so a failure is a kernel defect rather than a bad
-/// request. (`prepare_fork_report` answers `BadRequest` for the same checks
-/// because its input is another track's user content.)
-///
-/// #1635 S4 — the roster is a parameter, not a global: it is
-/// `RouteState.templates`, captured before the create transaction's closure,
-/// so the recipe lookup reads the same roster the admission did.
+/// Build the initial report a template instantiates to. `Internal`, not `BadRequest`:
+/// every byte comes from a roster file, so a failure is a kernel defect.
 fn prepare_template_report(
     templates: &'static TemplateRoster,
     key: &str,
@@ -973,41 +600,12 @@ fn prepare_template_report(
     compile_template(template)
 }
 
-/// Compile one **roster** entry: recipe bytes in, validated report plus task
-/// declarations out.
-///
-/// #1321 S3 — the one compiler for the roster half. Three callers reach it:
-/// `POST /api/tracks` through [`prepare_template_report`],
-/// `GET /api/track-templates` (`routes::track_templates::current_definition`),
-/// which projects the picker's task list off the result rather than re-parsing
-/// the rendered body, and — since #1635 S5 — the boot loader
-/// (`templates::TemplateRoster::load_site_file`), which runs it over every
-/// operator file so a `site/` entry that would 500 here never reaches the
-/// roster. Method for "three": `grep -rn "compile_template(" crates/` returns
-/// six lines — this definition, those three calls, this sentence, and one
-/// `#[cfg(test)]` call in this file's own tests — and `crates/` holds every
-/// workspace member, so a production caller cannot be outside it.
-///
-/// This governs the roster half only. User-authored recipes (#1292) are
-/// validated at their write boundary in `routes::track_recipes`, which answers
-/// `BadRequest` — a user's bad body is a bad request, while a roster recipe
-/// that does not compile is a kernel defect and stays `Internal`. Both
-/// eventually run the same [`prepare_initial_report_payload`] core; what
-/// differs is which failures each side can produce and how it answers them.
-///
-/// `pub(crate)` for the boot loader; it was `pub(super)` while the two
-/// request-time callers were the only ones.
+/// Compile one roster entry: recipe bytes in, validated report plus task declarations out.
 pub(crate) fn compile_template(template: &Template) -> Result<InitialReportSnapshot> {
     prepare_initial_report_payload(template.key(), template.recipe())
 }
 
 /// The recipe-to-snapshot core, taking the payload rather than the key.
-///
-/// Production reaches this only through [`prepare_template_report`], so it is
-/// not a test-only entrance: it is where the work happens, and the key lookup
-/// is the thin part. Splitting them this way is what lets the "a corrupt recipe
-/// is refused" cases feed a deliberately broken body — `prepare_template_report`
-/// takes a key, and there is no key for a body that no constant produces.
 fn prepare_initial_report_payload(
     label: &str,
     payload: TrackReportPayload,
@@ -1023,12 +621,8 @@ fn prepare_initial_report_payload(
     let (summary, body) = doc.project().map_err(|error| {
         CalmError::Internal(format!("track create: project template `{label}`: {error}"))
     })?;
-    // #1635 S2c — `+++` opens a template file's front matter (D1), never a
-    // report body. The recipe write boundary refuses it too; this is the
-    // fail-closed check for a stored recipe row that predates that boundary,
-    // and for a roster template (whose bytes no caller wrote — there it is a
-    // kernel defect surfacing as a refusal). The contract header itself is
-    // checked once, at the funnel.
+    // `+++` opens a template file's front matter, never a report body; fail closed for a
+    // stored recipe row that predates the write-boundary check.
     if body.starts_with("+++") {
         return Err(CalmError::BadRequest(format!(
             "track create: recipe or template `{label}` body must not start with `+++`; that \
@@ -1050,24 +644,8 @@ fn prepare_initial_report_payload(
     })
 }
 
-/// Issue #250 PR 2 — calendar window query parameters for
-/// `GET /api/tracks`. Every field is optional so omitting all three
-/// degenerates to "every track in the DB" (the route delegates to
-/// `Repo::tracks_window` which builds the SQL `WHERE` clause from the
-/// non-`None` subset).
-///
-/// The semantic for `since` + `until` is **inclusive at both
-/// endpoints**:
-///   * `created_at <= until`  — exclude tracks that hadn't been created
-///     yet by the right edge of the window.
-///   * `terminal_at IS NULL OR terminal_at >= since` — include any
-///     track that's still open (never reached a terminal lifecycle
-///     state) or whose terminal stamp lands inside / past the left
-///     edge.
-///
-/// Together the two predicates implement the "the track is visible on
-/// at least one day inside `[since, until]`" calendar contract from
-/// the issue, even when the track hasn't terminated yet.
+/// Calendar window query parameters for `GET /api/tracks`; `since` / `until` are
+/// inclusive at both endpoints.
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
 pub struct TracksWindowQuery {
     /// Lower bound (inclusive) in unix milliseconds. Track is included
@@ -1083,13 +661,6 @@ pub struct TracksWindowQuery {
     pub area_id: Option<String>,
 }
 
-/// Issue #250 PR 2 — calendar / dashboard window query.
-///
-/// `GET /api/tracks?since=<ms>&until=<ms>&area_id=<id>` — every
-/// parameter is optional. Returns the full track row (so the frontend
-/// can render lifecycle / area / terminal-at without an N+1 detail
-/// fetch). Pre-#250 callers that hit `GET /api/tracks` would 405 on
-/// the old `POST`-only route; this is an additive contract.
 #[utoipa::path(
     get,
     path = "/api/tracks",
@@ -1140,15 +711,8 @@ pub(crate) async fn get_track_detail(
         .track_detail(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("track {id}")))?;
-    // Tier A read-side guard (issue #198 concern 4) — mirror `list_overlays`
-    // so kernel-owned overlay rows with a `schemaVersion` past what this
-    // binary supports never reach the frontend through the track detail
-    // route. This is the primary path the frontend uses to render
-    // status/progress/eta/now overlays for a track (`adaptTrack(detail.track,
-    // detail.overlays)` in `web/src/app/router.tsx`); without this filter a
-    // future-version row written by a newer kernel binary would defeat the
-    // PR #214 guard for the track-rendering path while still being correctly
-    // filtered from `GET /api/overlays`. PR #214 review follow-up.
+    // Mirror `list_overlays` so kernel-owned overlay rows with a `schemaVersion` past what
+    // this binary supports never reach the frontend.
     detail.overlays = crate::routes::overlays::filter_unsupported_overlay_versions(detail.overlays);
     project_runtime_into_cards_payload(s.repo.as_ref(), &mut detail.cards).await?;
     Ok(Json(detail))
@@ -1174,8 +738,6 @@ pub(crate) async fn get_track_detail(
 pub(crate) async fn create_track(
     State(s): State<RouteState>,
     actor: Actor,
-    // #1384 — read only on the `first_message` path. A message-less create
-    // never touches it, which is what keeps the legacy path unchanged.
     headers: HeaderMap,
     State(codex): State<CodexShellState>,
     Json(mut request): Json<CreateTrackRequest>,
@@ -1186,45 +748,15 @@ pub(crate) async fn create_track(
     let create_area_id = request.area_id.clone();
     let _area_delete_guard =
         crate::per_card_lock::lock_key(&s.area_delete_locks, create_area_id.as_str()).await;
-    // #1299 S1 / #1384 — first, before every other check in this handler and
-    // therefore before every mint it can reach. A rejected first message (blank,
-    // over-long, missing `Idempotency-Key`, exhausted key) must leave no track,
-    // no cards, no folder claim and no materialized workspace behind, and this
-    // handler's own comment below explains why "non-201 ⇒ no side effect" is
-    // otherwise not one of its properties.
-    //
-    // The validation itself is the conversation route's `validate_first_message`,
-    // called not restated: a message this endpoint accepts is delivered through
-    // the same `Observation::UserMessage` slot `POST /api/cards/{id}/planner/input`
-    // writes, so one ceiling has to govern both or one of them accepts what the
-    // other later refuses.
-    //
-    // There is no create shape this endpoint accepts that skips the harness:
-    // since #1318 S2 retired `as_template`, `create_track_with_planner_harness`
-    // calls `start_planner_harness` unconditionally, so a `template_id` or
-    // `recipe_id` create delivers the message exactly like a bare one. Pinned by
-    // `track_create_first_message::a_template_create_delivers_the_first_message`
-    // and `…::a_first_message_is_delivered_once_on_a_recipe_create`.
-    //
-    // Returns `CreatePlan::Legacy` when the body carried no `first_message`,
-    // which is the pre-#1299 path verbatim: no header read, no key derived, no
-    // lookup, no binding row, and every check below in the order it always ran.
+    // First, before every other check: a rejected first message must leave no track,
+    // no cards, no folder claim and no materialized workspace behind.
     let plan = create::plan_first_message(
         &s,
         &headers,
         request.first_message.take(),
         request.area_id.as_str(),
-        // #1384 — the caller's raw strings, cloned HERE, before
-        // `into_parts()` below moves `template_id` / `recipe_id` into
-        // `NamedSource` and `source.stamp` writes the roster's own spelling
-        // onto `NewTrack.template_id`. Binding `admission.key()` instead would
-        // require running `NamedSource::resolve` — and therefore
-        // `admit_template` — before the arm decision above, which is exactly
-        // the variant-3 class this design closes: a replay whose template left
-        // the roster in the meantime would newly 400 instead of replaying.
-        // (#1321 S2 moved the overwrite from `admit_template` to `stamp`; the
-        // read this digest needs is the same one, and it still happens here.)
-        // See `create::CreateRequestShape`.
+        // The caller's raw strings, cloned here before `into_parts()` moves them; the binding
+        // must not depend on `admit_template`, so a replay whose template left the roster still replays.
         create::CreateRequestShape {
             model: request.model.clone(),
             reasoning_effort: request.reasoning_effort.clone(),
@@ -1241,25 +773,9 @@ pub(crate) async fn create_track(
         },
     )
     .await?;
-    // #1384 — the arm decision comes BEFORE the create path's request
-    // validation, not after it.
-    //
-    // Both resuming arms mint nothing: the track, its cards and its folder claim
-    // already exist, so every check below exists to protect a mint this request
-    // will not perform, and this request already passed all of them once — when
-    // it was first accepted. Re-running them re-reads **mutable** state, and that
-    // state moves: deleting the directory a successful create attached made a
-    // byte-identical replay answer 400 `attached workspace ... does not exist`
-    // forever, while the track itself was alive. See `create.rs`'s module docs.
-    //
-    // `CreatePlan::Legacy` cannot reach this branch — it is produced as soon as
-    // the request carries neither a `first_message` nor an `Idempotency-Key` —
-    // so no caller that sends no key can observe the reordering. #1426 made the
-    // *keyed* message-less create observe it, deliberately and for the same
-    // reason: its resuming arm mints nothing either.
-    //
-    // `message_less` is bound, not destructured into `options` below, because it
-    // carries the per-key claim guard that must be held until after the mint.
+    // The arm decision comes BEFORE the create path's request validation: the resuming arms
+    // mint nothing, and re-running checks against mutable state would fail a byte-identical replay.
+    // `message_less` carries the per-key claim guard that must be held until after the mint.
     let (plan, message_less) = match plan {
         create::CreatePlan::Resume(resume) => {
             return create::resume_prior_attempt(s, actor, resume).await;
@@ -1271,14 +787,6 @@ pub(crate) async fn create_track(
         create::CreatePlan::Mint(plan) => (Some(plan), None),
         create::CreatePlan::MessageLessMint(plan) => (None, Some(plan)),
     };
-    // #1292 / #1321 S2 — two starting points is not a preference to resolve, it
-    // is a request that does not name one thing. Refused inside
-    // `NamedSource::from_request`, before any other work and before any read,
-    // so no later code has a two-source state to pick a winner from.
-    //
-    // #1384 — deliberately AFTER the arm decision above: it is create-path
-    // request validation, and the resuming arms mint nothing, so re-running it
-    // on a replay is the variant-3 class this design closes.
     let allow_cross_area_cwd = request.allow_cross_area_cwd.clone();
     // Resolve mutable catalog advice only for a new mint, never on replay.
     let model = request.model.take();
@@ -1297,86 +805,21 @@ pub(crate) async fn create_track(
         )));
     }
     let (mut p, named_source, cwd_omitted) = request.into_parts()?;
-    // PR6 (#136) — track create now atomically mints a `CardRole::Planner`
-    // codex card alongside the track row. Both rows commit in one tx
-    // and both `Event::TrackUpdated` + `Event::CardAdded` envelopes
-    // emit from the same commit, each tagged with its own scope so
-    // per-track and per-card subscribers each see the relevant frame
-    // without re-routing through ancestors.
-    //
-    // Issue #250 PR 2 — the body may carry `cwd` (the track's working
-    // directory) and `attach_folder`. When `cwd` is present, it is the
-    // source of truth for the planner daemon's working directory and must
-    // either resolve to the body's `area_id` via the existing folder
-    // claims, or — when `attach_folder = true` — get atomically claimed
-    // as a new folder under that area inside the same tx that mints the
-    // track row.
-    //
-    // Issue #1131 — when the client omits `cwd` (new FE title-only
-    // create), persist `default_cwd()` and skip the claim scan entirely.
-    // Legacy clients that still send `cwd` keep the #250 rules.
 
-    // 0. Validate cwd up front before opening the tx. The route owns
-    //    every cross-area correctness check so the inner writer
-    //    (`track_create_tx`) stays a pure mechanical row insert. Order:
-    //    omitted-cwd default → absolute-path shape → normalize →
-    //    existing-claim resolution → optional folder attach.
-    //
-    //    #1209 — what "short-circuits before any DB write" actually covers.
-    //    Every 4xx this handler can decide *before opening the transaction*
-    //    (cwd shape, attached-workspace validation, area 404, unknown
-    //    template, the `template_input` binding matrix) lands before any DB
-    //    write.
-    //
-    //    #1300 rewrote the rest of this paragraph, which described a world
-    //    with a separately-committing template seed in it. There is no such
-    //    commit any more: template initialization is structural work inside
-    //    the create transaction (`TrackInit::Template` →
-    //    `prepare_template_report`, in the closure `create_track_structure`
-    //    runs). So the folder-claim 409, the in-transaction 400s for an
-    //    explicit `fork_report_from` (source missing / cross-area) and the
-    //    in-transaction 500s now all roll the *whole* create back, template
-    //    report included — there is nothing left behind for them to leave.
-    //
-    //    One failure still is not covered by that rollback, and it is the
-    //    reason "non-201 ⇒ no side effect" is not a property of this handler:
-    //    `materialize_workspace` runs *after* the transaction commits (the
-    //    managed path is derived from the track id) and returns non-2xx with
-    //    the track already persisted. Pinned by
-    //    `materialize_failure_fails_the_create`.
+    // Validate cwd before opening the tx; the route owns every cross-area check so
+    // `track_create_tx` stays a mechanical row insert. `materialize_workspace` runs after the
+    // commit, so "non-201 ⇒ no side effect" is not a property of this handler.
 
-    // #1321 S2 — the request's named source becomes the admitted source here,
-    // and this is the only place that happens. A `template_id` is admitted
-    // against the roster (#1209: roster membership is the whole admission test,
-    // so a 400 for an unknown id lands before any DB write); the other three
-    // arms carry nothing to admit.
-    //
-    // #1318 S2 — the stored `template_id` is the roster's key, not the
-    // caller's string. All three consumers of an admitted id read the same
-    // value: the recipe lookup (`TrackInit::Template { key }`), the plugin
-    // binding (`admit_template` resolves it from the roster entry), and the
-    // track row (`CreationSource::stamp`, below). Under today's exact-match
-    // `TemplateRoster::get` the two strings are equal, so that is not a behaviour
-    // change yet — it is what keeps them from diverging the moment admission
-    // stops being exact (case folding, aliases), which is precisely when a row
-    // carrying `"SMALL-CHANGE"` for roster key `"small-change"` would start
-    // meaning something different to every later reader of the column.
+    // The request's named source becomes the admitted source here, and only here.
     let source = named_source.resolve(&s).await?;
-    // #891 / #1110 S2 — `template_input` is only accepted against a bound
-    // template whose owning plugin Manifest declares an `input_schema`;
-    // validated here, before any DB write, so the inner writer persists
-    // the blob verbatim.
+    // `template_input` is only accepted against a bound template whose owning plugin
+    // Manifest declares an `input_schema`.
     validate_template_input_binding(source.template_input_owner(), p.template_input.as_ref())?;
     // Both provenance columns, from the one value that also decides the init.
     source.stamp(&mut p);
 
-    // Issue #1131 — omitted / null cwd is a new branch *before* the
-    // user-area claim scan (same spirit as the system-area exemption
-    // below): store HOME, force attach_folder=false, do not insert a
-    // area_folders row. Never claim `$HOME` — longest-prefix would
-    // poison every other area. An *explicit* `cwd: "$HOME"` with
-    // `attach_folder: false` still 409s when unclaimed; only omission
-    // takes this branch.
+    // Omitted cwd stores `default_cwd()` and skips the claim scan. Never claim `$HOME` —
+    // longest-prefix would poison every other area.
     if !cwd_omitted && !p.cwd.starts_with('/') {
         return Err(CalmError::BadRequest(format!(
             "track create: `cwd` must be absolute (start with `/`); got `{}`",
@@ -1384,39 +827,19 @@ pub(crate) async fn create_track(
         )));
     }
     let normalized_cwd = normalize_path(&p.cwd);
-    // #1147 S3 — design D3: "Attached 创建只做校验：绝对路径、目录存在、是 Git
-    // 仓库". Until this slice only the first third existed, which was
-    // survivable while the new FE had no way to attach anything; this slice
-    // adds that way, so the gap closes with it.
-    //
-    // **Before the transaction, deliberately.** `materialize_workspace` runs
-    // *after* the track transaction commits (the managed path needs the track
-    // id), and `materialize_failure_fails_the_create` pins the consequence: a
-    // failure there leaves an orphan track row behind. Validating an attached
-    // target needs none of that ordering — the path came in the request — so
-    // it happens here, where the answer is a 400 and no row exists at all.
-    // `materialize_workspace` checks it again as the single contract point for
-    // every other create entry.
+    // Validated before the transaction, deliberately: `materialize_workspace` runs after
+    // the commit, and a failure there leaves an orphan track row.
     if !cwd_omitted {
         crate::workspace_materialize::validate_attached_workspace(std::path::Path::new(
             &normalized_cwd,
         ))?;
     }
-    // Stamp the normalized cwd back onto the body before the track row
-    // is minted — the `area_folder.path` we may attach below is also
-    // the normalized form, so storing them in the same shape keeps
-    // future "resolve by exact cwd" lookups simple.
+    // Stamp the normalized cwd back before the row is minted; `area_folder.path` is the
+    // normalized form too.
     p.cwd = normalized_cwd.clone();
 
-    // Issue #250 PR 2 fix — system area (kernel-internal scaffolding,
-    // hosts the default Today terminal's track) is exempt from the
-    // area_folders claim namespace. The user can't reach it through
-    // any user-facing surface, and claiming a path under it (e.g. the
-    // initial `/` placeholder useTodayTerminal used) would poison
-    // every real area's descendant check. Look up the kind once here;
-    // if System, skip both the pre-tx folder validation and the
-    // in-tx attach. The cwd is still recorded on the track row (the
-    // planner daemon chdirs into it) but no `area_folders` row is minted.
+    // The system area is exempt from the `area_folders` claim namespace: claiming a path
+    // under it would poison every real area's descendant check.
     let area = s
         .repo
         .area_get(p.area_id.as_str())
@@ -1435,19 +858,8 @@ pub(crate) async fn create_track(
     let attach_folder = p.attach_folder;
     let body_area_id = p.area_id.as_str().to_string();
 
-    // Issue #275 — the whole cwd-vs-claim decision (covering-folder scan,
-    // reverse-overlap check, and the INSERT when `attach_folder`) now runs
-    // inside the track-create transaction. It used to be a pre-tx scan on a
-    // separate pooled connection, which let two concurrent creates for
-    // `/a` and `/a/b` both pass an empty-table scan and commit overlapping
-    // claims — `UNIQUE(area_folders.path)` only rejects *equal* paths.
-    // Overlapping rows made the two resolvers disagree, and the track
-    // create then 409'd on an area the UI had just been told to use.
-    //
-    // The tx is already `BEGIN IMMEDIATE` (see
-    // `SqlxRepo::write_with_actor_events`), so this adds one SELECT under
-    // a writer lock the create was taking anyway — it does not widen the
-    // lock window with any new I/O.
+    // The cwd-vs-claim decision runs inside the track-create transaction: a pre-tx scan let
+    // two concurrent creates for `/a` and `/a/b` commit overlapping claims.
     let conflict = FolderConflictSlot::default();
     let folder_claim = if is_system_area || cwd_omitted {
         FolderClaim::Skip
@@ -1459,24 +871,6 @@ pub(crate) async fn create_track(
         }
     };
 
-    // #1300 — the report's source, as one value; decided above, before any of
-    // these checks, because it is a property of the request body alone.
-    //
-    // #1321 S2 deleted the priority rule that used to live here — an explicit
-    // `fork_report_from` beating a `template_id` or a `recipe_id` — together
-    // with the `match` that applied it. There is no ordering left to get wrong:
-    // a request naming two starting points is refused by
-    // `NamedSource::from_request`, and what survives is a single enum arm that
-    // both selects the initialization and (via `CreationSource::stamp`) decides
-    // the row's provenance. The old fallback 400 arm inside that `match` is
-    // gone with it: it existed because the guard enforcing exclusivity sat ~180
-    // lines away with nothing mechanically tying the two together, and the
-    // enum now *is* that tie.
-    //
-    // #1209 placed the template seed here — after the cwd shape check, the
-    // attached-workspace check and the area 404 — so none of those 4xx left
-    // freshly minted tracks behind. Nothing is minted here any more, so that
-    // ordering constraint is gone with the seeding it constrained.
     let init = source.init;
 
     let workspace_root = s.workspace_root.clone();
@@ -1487,41 +881,18 @@ pub(crate) async fn create_track(
         body_area_id,
         normalized_cwd,
         init,
-        // #1147 S2 — omitting `cwd` (the #1131 title-only create, i.e. what
-        // the new FE sends) is the managed-default branch: the server picks
-        // the directory. An explicit `cwd` is the attached branch and keeps
-        // the #250 claim rules above verbatim.
+        // Omitted `cwd` is the managed-default branch (server picks the directory); an
+        // explicit `cwd` is the attached branch.
         workspace_plan: if cwd_omitted {
             TrackWorkspacePlan::ManagedUnder(workspace_root)
         } else {
             TrackWorkspacePlan::AttachedFromCwd
         },
-        // #1384 / #1426 — the binding write is conditioned on the *plan*, never
-        // on reaching `create_track_structure`'s closure: three arms reach that
-        // closure and only two of them may bind a key.
-        //
-        // `CreatePlan::Mint` sets this field later, inside
-        // `create::create_track_with_first_message`, because that function owns
-        // the message digest. `CreatePlan::MessageLessMint` sets it here,
-        // because its own mint is `create_track_with_planner_harness` — the
-        // pre-#1299 entry, which this slice deliberately does not fork. What
-        // stays `None` is `CreatePlan::Legacy`, i.e. a create that sent no
-        // `Idempotency-Key`, which has nothing to bind.
+        // Conditioned on the plan: `Mint` sets it later inside `create_track_with_first_message`;
+        // `Legacy` has nothing to bind.
         idempotency_claim: message_less.as_ref().map(create::MessageLessPlan::claim),
     };
-    // #1384 — the only fork left in this handler's tail: the resuming arms
-    // returned above, so `Some` here is always a mint. Without a `first_message`
-    // the legacy call is reached unchanged, down to the best-effort
-    // `start_planner_harness` and the `first_message`-free operation payload (the
-    // field is `skip_serializing_if`, so those payload bytes are byte-identical
-    // to what older binaries wrote).
-    //
-    // #1426 — a keyed message-less create takes that same `None` branch. The
-    // only difference it makes to the mint is `options.idempotency_claim` above:
-    // one extra INSERT inside the transaction that already mints the id. The
-    // operation payload, the best-effort start and the 201 are untouched, which
-    // is why `a_message_less_create_writes_byte_identical_payload_json` still
-    // holds for it.
+    // The resuming arms returned above, so `Some` here is always a mint.
     let created = match plan {
         None => create_track_with_planner_harness(s, actor, p, options).await,
         Some(plan) => create::create_track_with_first_message(s, actor, p, options, plan).await,
@@ -1539,34 +910,10 @@ pub(crate) async fn create_track(
     }
 }
 
-/// #1209 — the single answer to "may this id create a track", plus the optional
-/// plugin binding that comes with it.
-///
-/// The word *admission* is the point: this answers **admission**, not "what
-/// does the template look like". The authority for the latter is the roster
-/// entry's own file body (`templates::Template::recipe`, #1635 S4) — which is
-/// why there is no `title` and no report here. (#1300: before S2 the authority was a seeded
-/// system-area template track found by a database lookup, and this sentence
-/// named it. Both the track and the lookup are gone.)
+/// The single answer to "may this id create a track", plus the optional plugin binding
+/// that comes with it.
 pub(crate) struct TemplateAdmission {
-    /// The admitted roster entry itself — **not** a key copied off it.
-    ///
-    /// #1318 S2 (第二轮评审 MAJOR-2) — this used to be a `pub key: &'static
-    /// str` that `admit_template` assigned from `template.key`. Assignment is
-    /// a discipline, and a discipline is exactly what the second review round
-    /// broke: `key: if id == template.key { template.key } else {
-    /// String::leak(id.to_string()) }` compiled, reflected the caller's
-    /// spelling for every id that was *not* byte-identical to the roster's,
-    /// and left the whole suite green — because the one test guarding this
-    /// feeds a byte-identical fixture and so only ever exercises the other
-    /// branch.
-    ///
-    /// Holding the borrow removes the assignment site. There is no longer a
-    /// place to write a key, conditionally or otherwise; [`Self::key`] reads
-    /// one out of the roster entry. Together with [`Template`]'s private
-    /// fields — which make a forged entry `E0451` in this module — "the
-    /// admission's key is the roster's" stops being a property a test has to
-    /// chase and becomes the only thing the types can express.
+    /// The admitted roster entry itself — not a key copied off it.
     template: &'static Template,
     /// The owning plugin, when a running trusted one claims this id. `None` is
     /// an ordinary template, not a rejection.
@@ -1574,144 +921,16 @@ pub(crate) struct TemplateAdmission {
 }
 
 impl TemplateAdmission {
-    /// The roster's own `&'static` key, not the caller's string.
-    ///
-    /// It reaches **all three** consumers of an admitted id:
-    ///
-    ///   * the **recipe lookup** (`TemplateRoster::get`, then
-    ///     `Template::recipe`) inside the create transaction, via
-    ///     `TrackInit::Template { key }`;
-    ///   * the **track row**, since #1318 S2: `NewTrack::template_id` is
-    ///     written from `admission.key()` before the insert, so
-    ///     `tracks.template_id` stores the roster's spelling. Since #1321 S2
-    ///     that write is [`CreationSource::stamp`], which reads the key back out
-    ///     of the `TrackInit` it also produced — the column and the
-    ///     initialization can no longer name different sources;
-    ///   * the **plugin binding**, also since #1318 S2 (第一轮评审 F5):
-    ///     [`resolve_template_binding`] takes a `&'static Template` rather than
-    ///     the caller's string, so `binding` — and therefore `plugin_scope` and
-    ///     the `template_input` schema check — is decided by the same spelling
-    ///     the other two read, and can no longer be handed anything else.
-    ///
-    /// All three now read the *same borrow*, [`Self::template`], rather than
-    /// three copies of a value someone assigned.
-    ///
-    /// #1318 S2 (第三轮评审) — state precisely what that buys, because the
-    /// previous wording ("a future case-folding or aliasing admission rule
-    /// cannot hand an unnormalized key to any of them, since outside
-    /// `crate::templates` no such value can be built") claimed more than the
-    /// types deliver. What is closed is the **value of the key**: this struct
-    /// has no key assignment site, and in safe Rust outside
-    /// `crate::templates`'s subtree a `Template` carrying the caller's spelling
-    /// is `E0451`. What is **not** closed is any *decision* an admission rule
-    /// makes — `id` is necessarily in [`admit_template`]'s scope, so a
-    /// conditional on it needs no forged `Template` at all. See the
-    /// `## KNOWN GAPS` block on [`admit_template`].
-    ///
-    /// The third bullet is not decoration. Leaving the binding on the caller's
-    /// string would have re-created, between a different pair of readers, the
-    /// exact divergence the second bullet closes: under a case-folding
-    /// admission rule a `"SMALL-CHANGE"` create would resolve `binding = None`
-    /// (exact match against the manifest's `"small-change"` descriptor fails)
-    /// and store `plugin_scope = NULL`, while the planner harness's
-    /// `bound_template` — which reads the *row's* `template_id`, now normalized
-    /// — would match. Creation-time and run-time would disagree about which
-    /// plugin owns the track.
-    ///
-    /// Until #1318 S2 the second bullet read the opposite way:
-    /// `CreateTrackRequest::into_parts` put the caller's original string on
-    /// `NewTrack` and that is what landed in the column. (#1321 S2 removed the
-    /// field from `into_parts` entirely, so there is no longer a second writer
-    /// to overwrite.) The two spellings are
-    /// identical only because `TemplateRoster::get` is an exact match today, so the
-    /// overwrite changes no stored value yet — but the very rule this field
-    /// guards against would have separated them, storing `"SMALL-CHANGE"` on a
-    /// row whose report was instantiated from roster key `"small-change"`.
+    /// The roster's own `&'static` key, not the caller's string; all three consumers of an
+    /// admitted id read it.
     pub(crate) fn key(&self) -> &'static str {
         self.template.key()
     }
 }
 
-/// Admit a caller-supplied `template_id`.
-///
-/// Roster membership is the only admission test; the binding is resolved
-/// afterwards purely to be carried along. There is deliberately no fallback
-/// arm here: a running trusted plugin declaring an id the roster does not have
-/// gets `None`, i.e. a 400. That is the whole of #1209 — see §5 of
-/// `docs/architecture/1209-template-workflow-unify.md` for why the alternative
-/// (admitting it as a report-less pseudo-template) was rejected.
-///
-/// The binding is resolved from the admitted roster entry, **not** from `id`:
-/// [`resolve_template_binding`] takes a `&'static Template`, so the *argument*
-/// it receives cannot be the caller's spelling. Under today's exact-match
-/// `TemplateRoster::get` the two strings are byte-identical on every input that
-/// reaches this line, so this is not a behaviour change.
-///
-/// #1318 S2 (第二轮评审 MAJOR-2) — the admission carries the roster borrow, so
-/// this function has no key to assign. The previous shape did, and a one-line
-/// conditional there reflected the caller's spelling with the suite still
-/// green.
-///
-/// # KNOWN GAPS
-///
-/// #1318 S2 (第三轮评审) — three review-built constructions, each independently
-/// compiled or run, show that "the third consumer is closed by the type" is
-/// **not** true, and the retraction is registered here rather than chased with
-/// a fourth round of hardening. The root reason they all share: `id` is
-/// necessarily in this function's scope, and no type design prevents a
-/// conditional on a value that is in scope.
-///
-/// The threat model these gaps sit under is **unintentional drift** — the next
-/// person adding case-folding or aliasing and not noticing they split creation
-/// time from run time. It is not an adversary deliberately hiding a forgery;
-/// against that, none of this is a control at all. (Same posture as
-/// `scripts/report_write_boundary.sh`'s header in S1.)
-///
-/// **Gap 1 — a conditional on `id`, safe Rust, nothing forged.** `template` and
-/// `binding` are two independent field initializers below, and `id` is live for
-/// both. A future case-insensitive lookup admits this:
-///
-/// ```ignore
-/// binding: if id == template.key() { resolve_template_binding(s, template).await } else { None }
-/// ```
-///
-/// A `"SMALL-CHANGE"` create would then store the canonical key and the
-/// canonical recipe but `plugin_scope = NULL`, while `planner_harness_start_adapter`
-/// later finds the plugin from the row's canonical key — creation time and run
-/// time disagreeing about who owns the track, which is exactly what
-/// [`TemplateAdmission::key`]'s third bullet exists to prevent. Every existing
-/// test passes only canonical spellings, so all of them stay green.
-///
-/// **Gap 2 — a second entry point inside `crate::templates`, safe Rust; measured
-/// 68 passed, 0 failed.** `templates::tests::get_returns_the_rosters_own_borrow`
-/// guards `TemplateRoster::get`'s return path, not the module. A channel added
-/// a second entry point in `crate::templates`, a case-insensitive find that
-/// leaks a rebuilt `Template` when the spelling differs, repointed this
-/// function at it, and ran
-/// `nextest -E 'test(admission) or test(template)'`: **68/68 green**, with the
-/// caller's spelling reaching all three consumers.
-///
-/// **Gap 3 — `transmute`; measured `clippy -D warnings` clean.** The crate has
-/// no `#![forbid(unsafe_code)]` (`calm-server/src` already contains a dozen-odd
-/// `unsafe` blocks) and `transmute` does not consult field visibility, so a
-/// leaked `&'static (&'static str, &'static str)` can be reinterpreted as a
-/// `&'static Template` here. It depends on `repr(Rust)`'s unspecified layout,
-/// so it is not a sound program — but the retracted claim was about what the
-/// **compiler** admits, and the compiler and the lint gate both admit it.
-///
-/// ## Why there is no bad path today
-///
-/// Observed, not inferred: `TemplateRoster::get` is an exact `==` match, so an
-/// admitted id is byte-equal to a roster key; both surviving consumers of
-/// [`TemplateAdmission::key`] read the roster borrow; and an un-normalized key
-/// that somehow reached the create transaction would not silently mis-seed —
-/// `TemplateRoster::get`'s exact match returns `None`, so
-/// [`prepare_template_report`] raises `CalmError::Internal` and the create
-/// fails loudly instead.
-///
-/// That is a statement about **today's code**, not an impossibility proof. The
-/// day `TemplateRoster::get` stops being an exact match, all three gaps above become
-/// live, and nothing in the type system or the test suite will say so.
+/// Admit a caller-supplied `template_id`. Roster membership is the only admission test;
+/// there is deliberately no fallback for a plugin declaring an id the roster lacks. The
+/// binding is resolved from the admitted roster entry, not from `id`.
 pub(crate) async fn admit_template(s: &RouteState, id: &str) -> Option<TemplateAdmission> {
     let template = s.templates.get(id)?;
     Some(TemplateAdmission {
@@ -1720,63 +939,14 @@ pub(crate) async fn admit_template(s: &RouteState, id: &str) -> Option<TemplateA
     })
 }
 
-/// Resolve an admitted roster [`Template`] to the owning plugin Manifest iff a
-/// running **trusted** plugin registers its key — same filter as
-/// `bound_template_descriptor` on the planner harness side. `None` covers
-/// stopped and untrusted templates alike (the route deliberately does not
-/// distinguish them in the 400).
-///
-/// #1318 S2 (第一轮评审 F5) — the parameter is the roster entry, not a
-/// `&str`. It used to take the caller's `template_id` string, which was the
-/// last consumer of an admitted id still reading the caller's spelling: with
-/// `tracks.template_id` now normalized to `admission.key()`, a future
-/// case-folding or aliasing admission rule would have made creation-time
-/// binding (`plugin_scope`, `template_input` acceptance) disagree with the
-/// planner harness's run-time `bound_template`, which reads the normalized
-/// column.
-///
-/// #1318 S2 (第二轮评审 MAJOR) — this paragraph used to end "a `&'static
-/// Template` can only come from `TEMPLATES`, so the divergence is closed at
-/// compile time", and the F4 test cited that sentence to excuse itself from
-/// covering this consumer. **The sentence was false when it was written.**
-/// [`Template`]'s fields were `pub`, so `Box::leak(Box::new(Template { key:
-/// String::leak(id.to_string()), title: template.title }))` compiled here and
-/// produced a `&'static Template` carrying the caller's spelling; two review
-/// channels independently built it and the suite stayed green.
-///
-/// That *particular expression* no longer compiles, for a checkable reason
-/// rather than by assertion: `Template`'s fields are private with no
-/// constructor, so it is `E0451` in this module — and outside
-/// `crate::templates` and its descendant modules generally — and the only
-/// `&'static Template` this file can name in safe Rust is a borrow of a roster
-/// entry.
-///
-/// #1318 S2 (第三轮评审) — that is the whole of the claim, and it is narrower
-/// than it reads. Three qualifications, all of them registered under
-/// `## KNOWN GAPS` on [`admit_template`]:
-///
-///   * *safe* Rust only — `transmute` ignores field visibility and the crate
-///     does not `forbid(unsafe_code)`;
-///   * inside `crate::templates` (and its descendants) the forgery is still
-///     expressible, which is why
-///     `templates::tests::get_returns_the_rosters_own_borrow` is
-///     not redundant with it — though that test guards `TemplateRoster::get`'s
-///     return path, not the module, and a second entry point beside it went
-///     68/68 green;
-///   * and most importantly, it says nothing about a divergence built without
-///     any forged `Template` at all — a conditional on `id` in
-///     [`admit_template`], which is where the caller's spelling actually still
-///     lives.
+/// Resolve an admitted roster [`Template`] to the owning plugin Manifest iff a running
+/// trusted plugin registers its key; `None` covers stopped and untrusted alike.
 pub(crate) async fn resolve_template_binding(
     s: &RouteState,
     template: &'static Template,
 ) -> Option<Manifest> {
     let running_plugin_ids = s.plugin.running_plugin_ids().await;
     s.plugin.registry().list().into_iter().find(|manifest| {
-        // #1321 S1 — "may this plugin own a template" has one definition,
-        // shared with the per-track resolver that later re-checks the owner
-        // this line picks. Restating it here is how the two ends of the
-        // binding drifted apart in the first place.
         crate::track_binding::plugin_is_eligible_owner(&running_plugin_ids, &manifest.id)
             && manifest
                 .templates
@@ -1785,13 +955,7 @@ pub(crate) async fn resolve_template_binding(
     })
 }
 
-/// #1321 S1 — create-time `template_input` validation now *is* the shared
-/// judgement: the matrix moved to
-/// [`crate::plugin_host::template_input::validate_template_input_binding`] so
-/// the run-time owner-binding re-check calls the same function instead of
-/// restating a subset of it. This wrapper adds nothing but the route's error
-/// vocabulary, which is what keeps every pre-existing 400 body
-/// byte-identical.
+/// Adds only the route's error vocabulary to the shared `template_input` validation.
 fn validate_template_input_binding(
     owner: crate::plugin_host::template_input::TemplateInputOwner<'_>,
     input: Option<&serde_json::Value>,
@@ -1800,11 +964,9 @@ fn validate_template_input_binding(
         .map_err(|reason| CalmError::BadRequest(format!("track create: {reason}")))
 }
 
-/// Issue #275 — the cwd claim scan runs **inside** the track-create
-/// transaction, so its structured 409 (`FolderConflict`, not the generic
-/// `{error, code}` envelope) has to travel back out through `Err`. The
-/// closure parks the body here; [`create_track`] picks it up and renders
-/// it. `Mutex` is only ever locked between `await` points.
+/// The cwd claim scan runs inside the track-create transaction, so its structured 409 has
+/// to travel back out through `Err`; the closure parks the body here.
+/// `Mutex` is only ever locked between `await` points.
 #[derive(Clone, Default)]
 struct FolderConflictSlot(std::sync::Arc<std::sync::Mutex<Option<FolderConflict>>>);
 
@@ -1826,16 +988,14 @@ impl FolderConflictSlot {
     }
 }
 
-/// Issue #275 — what the track-create transaction does about `area_folders`.
+/// What the track-create transaction does about `area_folders`.
 #[derive(Clone)]
 enum FolderClaim {
     /// Don't scan, don't insert. The system area is exempt from the claim
     /// namespace entirely.
     Skip,
-    /// Scan inside the track tx (`BEGIN IMMEDIATE`, so scan and insert are
-    /// atomic against a concurrent claim) and act on the result:
-    /// `attach` mints the claim when nothing covers the cwd; without it a
-    /// cwd no area claims is refused rather than making a homeless track.
+    /// Scan inside the track tx (`BEGIN IMMEDIATE`, so scan and insert are atomic against a
+    /// concurrent claim); `attach` mints the claim when nothing covers the cwd.
     Enforce {
         attach: bool,
         allow_cross_area_cwd: Option<CrossAreaCwdAuthorization>,
@@ -1848,8 +1008,7 @@ enum FolderClaim {
 #[derive(Clone, Copy)]
 enum FolderClaimIntent {
     Create,
-    /// #1147 S3 — `PATCH /api/tracks/{id}` pointing a track at an existing
-    /// repository.
+    /// `PATCH /api/tracks/{id}` pointing a track at an existing repository.
     Repoint,
 }
 
@@ -1862,18 +1021,9 @@ impl FolderClaimIntent {
     }
 }
 
-/// #1147 S3 — whether this pass may actually mint a `area_folders` row.
-///
-/// The re-point runs the claim rules **twice**, and the first pass must not
-/// write. Its transaction commits (it is also the fence), so a claim minted
-/// there survives a later refusal — and the re-point can still refuse after it,
-/// on the pre-move re-check. That would leave the caller a 409 plus a claim
-/// they never got a track for, in a route whose whole promise is "a refusal
-/// changes nothing".
-///
-/// Measured, not reasoned about: with the first pass allowed to mint, deleting
-/// the authoritative second pass turned **no test red** — because the claim was
-/// already in the table. That is what surfaced this.
+/// Whether this pass may mint an `area_folders` row. The re-point runs the claim rules
+/// twice and the first pass's transaction commits, so a claim minted there would survive
+/// a later refusal.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FolderClaimPass {
     /// Report the same conflicts, write nothing. Fail-fast only.
@@ -1883,16 +1033,8 @@ enum FolderClaimPass {
     Authoritative,
 }
 
-/// Issue #275's claim rules, in one place.
-///
-/// Extracted verbatim from `create_track_structure` by #1147 S3 so that pointing
-/// an existing track at a directory obeys exactly the same rules as creating one
-/// there. A second copy would be a second set of rules the moment either is
-/// touched, and the invariant these enforce — *at most one claim covers any
-/// path* — is not one that survives two implementations.
-///
-/// Must run first in its transaction: every branch either rolls the tx back or
-/// leaves the claim table consistent for the write that follows.
+/// The claim rules, in one place. Must run first in its transaction: every branch either
+/// rolls back or leaves the claim table consistent for the write that follows.
 async fn enforce_folder_claim_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     claim: &FolderClaim,
@@ -1929,27 +1071,12 @@ async fn enforce_folder_claim_tx(
                 conflict_path: f.path.clone(),
                 conflict_kind: FolderConflictKind::Descendant,
             })),
-        // Same area already covers it — `attach_folder` is a no-op.
-        //
-        // #275 behavior change. Before that fix the insert ran unconditionally
-        // on the scan result, so this arm fell through into
-        // `area_folder_create_tx`:
-        //   - cwd == the existing claim → UNIQUE(path) → 409 for re-claiming
-        //     your own folder;
-        //   - cwd under the existing claim → a second, overlapping row, minted
-        //     from plain HTTP with no concurrency at all.
-        // The latter is the larger hole in the "at most one claim covers any
-        // path" invariant — bigger and far easier to reach than the
-        // scan/insert TOCTOU. Pinned by `post_api_tracks_attach_folder_*` in
-        // `tests/cases/track_cwd_terminal_at.rs`.
+        // Same area already covers it — `attach_folder` is a no-op; falling through to the
+        // insert would mint an overlapping row.
         Some(_) => Ok(()),
         None if *attach || allow_cross_area_cwd.is_some() => {
-            // No claim covers the cwd and the caller wants to mint one. Check
-            // the *reverse* overlap first: an existing folder that is a
-            // descendant of the proposed cwd (`/a/b` exists, claim `/a`).
-            // Refused for the same reason the area_folders route refuses it —
-            // silently widening a narrower claim would make resolution
-            // ambiguous.
+            // Check the reverse overlap first: an existing folder that is a descendant of the
+            // proposed cwd (`/a/b` exists, claim `/a`).
             if let Some(f) = existing
                 .iter()
                 .find(|f| is_descendant_of(normalized_cwd, &f.path))
@@ -1985,71 +1112,19 @@ async fn enforce_folder_claim_tx(
 }
 
 /// Where a new track's report comes from.
-///
-/// #1300 — this used to be `fork_report_from: Option<String>`, and "create from
-/// a template" was expressed *through* it: the route lazily seeded three hidden
-/// system-area tracks and then forked one of them. That made a template a kind
-/// of track, which is the thing #1300 removes. A template is a read-only recipe;
-/// instantiating it is structural initialization of a new track, not a copy of
-/// an existing one.
-///
-/// The two data-carrying variants deliberately stay distinct rather than
-/// collapsing into "some report snapshot". They share the *mechanism* below —
-/// `prepare_*` produces a snapshot, one in-transaction writer persists it and
-/// projects the tasks — but not the semantics: `Fork` copies a live track and
-/// must rewrite its links and re-attribute its blocks, while `Template`
-/// constructs from a constant that has no track to rewrite links against.
 enum TrackInit {
     /// No report content; the track keeps the default skeleton.
     Blank,
-    /// Instantiate a template recipe. The roster's own `&'static` key, never
-    /// the caller's string — see [`TemplateAdmission::key`].
+    /// Instantiate a template recipe; the key is the roster's own, never the caller's string.
     Template {
         key: &'static str,
-        /// The owning plugin at creation time, when the admitted template is
-        /// bound to a running ∧ trusted one.
-        ///
-        /// 第一轮评审 MINOR-2 (#1321 S2) — it lives **in this arm** rather than
-        /// beside the `TrackInit` in [`CreationSource`], so a source that is
-        /// not labelled `Template` has nowhere to put a plugin owner.
-        ///
-        /// 第二轮评审 NIT-1 (#1321 S2) — that, precisely, is the type-level
-        /// half: no other arm has a field a `Manifest` fits in, so
-        /// [`CreationSource::stamp`]'s two columns are read out of one arm and
-        /// cannot name different sources. The invariant the type pins is
-        /// therefore "anything carrying an owner is *labelled* `Template`" —
-        /// **not** "an owner implies the report came from an admitted
-        /// template". The latter is a property of today's call sites: the only
-        /// constructor of this arm is [`NamedSource::resolve`]'s template
-        /// admission, but an arm there reading
-        /// `Self::Fork(_) => TrackInit::Template { key: "issue-development",
-        /// binding: None }` type-checks — compiled, #1321 S2 第二轮
-        /// `MUTATION-1321S2R2-1`: `cargo check -p calm-server` finished with the
-        /// arm in place, and the compiler's only complaint was that
-        /// [`TrackInit::Fork`] had become unconstructed — a `dead_code` warning
-        /// (an error only because CI runs with `-D warnings`), not a type error.
-        /// Nothing but that function's own text prevents the arm.
-        ///
-        /// Scoped to tracks born on this route, like [`CreationSource::stamp`]'s
-        /// note above: `operation/child_track_adapter.rs` mints children that
-        /// inherit the parent's `plugin_scope` without a `template_id`, so
-        /// "a plugin owner implies a template source" is false of the `tracks`
-        /// table at large — it is a statement about this handler's output.
-        ///
-        /// Boxed because a `Manifest` is ~864 bytes and the other arms carry a
-        /// `String` at most; inline it and every `TrackInit` — including the
-        /// blank create's — pays that width (`clippy::large_enum_variant`).
+        /// The owning plugin at creation time, when the admitted template is bound to a running
+        /// and trusted one. Lives in this arm so a non-`Template` source has nowhere to put an
+        /// owner. Boxed: a `Manifest` is ~864 bytes (`clippy::large_enum_variant`).
         binding: Option<Box<Manifest>>,
     },
-    /// Instantiate a **user-defined** recipe (`track_recipes` row, #1292).
-    ///
-    /// Distinct from [`TrackInit::Template`] rather than folded into it,
-    /// because the two resolve from different places and only one of them
-    /// can fail at runtime: a built-in key is a `&'static` borrow out of the
-    /// roster and its payload is a file compiled into the binary, while this one is a row
-    /// that may have been deleted between the picker's read and this create.
-    /// Collapsing them would make the infallible case carry the fallible
-    /// one's error paths.
+    /// Instantiate a user-defined recipe (`track_recipes` row). Distinct from `Template`
+    /// because this row may have been deleted between the picker's read and the create.
     Recipe { recipe_id: String },
     /// Copy an existing track's report.
     Fork { source_track_id: String },
@@ -2062,40 +1137,24 @@ struct CreateTrackOptions {
     body_area_id: String,
     normalized_cwd: String,
     init: TrackInit,
-    /// #1147 S2 — managed (server allocates under the workspace root) vs
-    /// attached (the caller pointed at an existing directory). Decided by
-    /// each create entry point; `create_track_structure` materializes the
-    /// managed case right after the transaction commits.
+    /// Managed (server allocates under the workspace root) vs attached (the caller pointed
+    /// at an existing directory).
     workspace_plan: TrackWorkspacePlan,
-    /// #1384 / #1434 / #1426 — the caller's key plus the request identity that
-    /// makes binding it safe, present on exactly the two keyed minting arms
-    /// (`CreatePlan::Mint` and `CreatePlan::MessageLessMint`). Keeping them in
-    /// one type prevents a caller from asking the transaction to write an id
-    /// binding without that identity.
-    ///
-    /// `None` when the caller sent no `Idempotency-Key` at all, which is the
-    /// only remaining unbound create shape (`CreatePlan::Legacy`).
+    /// The caller's key plus the request identity that makes binding it safe; `None` when
+    /// the caller sent no `Idempotency-Key`.
     idempotency_claim: Option<TrackCreateIdempotencyClaim>,
 }
 
 pub(super) struct TrackCreateIdempotencyClaim {
     pub(super) key: String,
     pub(super) create_request_sha256: String,
-    /// `None` on the #1426 message-less arm — there was no message to digest.
-    /// It selects fingerprint version 2 in the binding row, which is what lets
-    /// the two create shapes refuse each other's keys.
+    /// `None` on the message-less arm. It selects fingerprint version 2 in the binding row,
+    /// which lets the two create shapes refuse each other's keys.
     pub(super) first_message_sha256: Option<String>,
 }
 
 #[allow(deprecated)]
-/// The message-less create, end to end.
-///
-/// #1384 moved the `first_message` half out: a create that carries one takes
-/// `CreatePlan::Mint` and goes through `create::create_track_with_first_message`
-/// instead, because it needs an operation key, a frozen `cwd` and a binding
-/// row — none of which this entry has any use for. What is left here is the
-/// pre-#1299 path exactly, including `start_planner_harness`'s deliberate
-/// `warn!` + 201 when the harness fails to start.
+/// The message-less create, end to end. A harness start failure is a `warn!` + 201.
 async fn create_track_with_planner_harness(
     s: RouteState,
     actor: Actor,
@@ -2129,10 +1188,7 @@ async fn create_track_structure(
         workspace_plan,
         idempotency_claim,
     } = options;
-    // #1147 — captured before `s` is moved into the write closure. Only the
-    // managed branch uses it; `materialize_workspace` ignores it for attached.
     let workspace_root_for_materialize = s.workspace_root.clone();
-    // #1635 S4 — `&'static`, so captured by copy; the closure below moves it.
     let templates = s.templates;
     let planner_card_id = new_id();
     let report_card_id = new_id();
@@ -2144,12 +1200,8 @@ async fn create_track_structure(
     let area_id_for_attach = body_area_id;
     let normalized_cwd_for_tx = normalized_cwd;
     let idempotency_claim_for_tx = idempotency_claim;
-    // #1115 — the fork path deliberately derives no `EditAuthor`. It used to
-    // (`User` when no `X-Calm-Actor` header was present, `Planner` otherwise) and
-    // hand it to `fork_guard::guard_forked_blocks`, which made that guard a
-    // no-op for the browser fork — the single most common fork there is. The
-    // fork's normalization and its belt are both author-independent now, so
-    // nothing here may classify the caller.
+    // The fork path deliberately derives no `EditAuthor`: the fork's normalization and
+    // guard are author-independent, so nothing here may classify the caller.
     let ((track, created), _event_ids) = write_with_actor_events_typed(
         s.repo.as_ref(),
         None,
@@ -2157,10 +1209,8 @@ async fn create_track_structure(
         &s.write,
         move |tx| {
             Box::pin(async move {
-                // #275 — claim scan + claim insert, atomic with the track
-                // row because they share this BEGIN IMMEDIATE tx. Must
-                // stay first: every branch below either rolls the tx back
-                // or leaves the claim table consistent for `track_create_tx`.
+                // Claim scan + insert, atomic with the track row; must stay first so every branch
+                // either rolls back or leaves the claim table consistent.
                 enforce_folder_claim_tx(
                     tx,
                     &folder_claim,
@@ -2171,21 +1221,9 @@ async fn create_track_structure(
                 )
                 .await?;
 
-                // #1292 S2/S3 — the recipe is read here, *before* the track
-                // row, and read once.
-                //
-                // Inside this transaction, like `Fork` and unlike `Template`:
-                // the row can be edited or deleted concurrently, so the create
-                // must see one consistent version of it rather than one read
-                // before the tx and a different reality inside.
-                //
-                // Before the insert rather than alongside the report snapshot
-                // below, because S3 stamps the recipe's `revision` onto the
-                // track row itself and that value has to be in hand when the
-                // INSERT runs. Reading it twice — once for provenance, once for
-                // the report — would let a concurrent edit land between the two
-                // and produce a track whose recorded revision does not describe
-                // the report it actually got.
+                // The recipe is read inside the transaction, once, before the INSERT: its `revision` is
+                // stamped onto the row, and reading twice would let a concurrent edit split the
+                // recorded revision from the report.
                 let recipe_source = match &init {
                     TrackInit::Recipe { recipe_id } => {
                         Some(track_recipe_get_tx(tx, recipe_id).await?.ok_or_else(|| {
@@ -2213,22 +1251,8 @@ async fn create_track_structure(
                 let track_id = track.id.clone();
                 let area_id = track.area_id.clone();
 
-                // #1384 — the `Idempotency-Key` → track binding, written HERE:
-                // in the same `BEGIN IMMEDIATE` transaction that just minted the
-                // id, with both card ids (minted before the transaction opened)
-                // already in hand.
-                //
-                // This statement is the whole fix. The `operations` row cannot
-                // carry this fact: `submit` writes it on a pooled connection
-                // after `adapter.validate` succeeds, so a daemon outage refuses
-                // before it exists and leaves the track with nothing pointing at
-                // it — one fresh track per retry, measured at `tracks=2,
-                // cards=4, operations=0`.
-                //
-                // `Some` on the two keyed minting arms only (#1426 added the
-                // message-less one). `create_track_structure` is reached by an
-                // unkeyed create too, so the condition is on the plan rather
-                // than on reaching this closure.
+                // The `Idempotency-Key` → track binding is written in the same transaction that mints
+                // the id; the `operations` row cannot carry it (written after validation on a pooled connection).
                 if let Some(claim) = idempotency_claim_for_tx.as_ref() {
                     track_create_idempotency_claim_tx(
                         tx,
@@ -2244,15 +1268,9 @@ async fn create_track_structure(
                     )
                     .await
                     .map_err(|error| {
-                        // Fail closed on the primary-key violation. In one
-                        // process `conversation_first_message_locks` serializes
-                        // two same-key creates and the second takes `Resume`
-                        // without reaching this INSERT, so this is the
-                        // cross-instance racer — and the answer it gets is an
-                        // error whose retry resolves to `Resume`, never a second
-                        // committed track. Deliberately not recovered in place:
-                        // the losing racer's transaction has already written a
-                        // track row it must not keep.
+                        // Fail closed on the primary-key violation: this is the cross-instance racer, and its
+                        // retry resolves to `Resume`. Not recovered in place because this transaction already
+                        // wrote a track row it must not keep.
                         CalmError::Internal(format!(
                             "track create: this Idempotency-Key was claimed by a concurrent \
                              create; retry, and the retry will resolve to the track that won \
@@ -2261,77 +1279,30 @@ async fn create_track_structure(
                     })?;
                 }
 
-                // #1300 — three initialization sources, one persistence
-                // mechanism. `Template` builds from a constant and needs no
-                // database read; `Fork` reads the source track inside this same
-                // transaction, exactly as before.
-                //
-                // Matched on `(&init, recipe_source)` as one value so the
-                // `Recipe` arm binds its recipe by pattern. The read has to
-                // happen above (its `revision` is needed before the INSERT, and
-                // reading twice would let a concurrent edit split the recorded
-                // revision from the report), which leaves two places that both
-                // depend on `init` being `Recipe`. Pairing them in the scrutinee
-                // is what keeps the dependency visible here instead of resting
-                // on an `expect` that reads as unconditional.
+                // Matched on `(&init, recipe_source)` as one value so the `Recipe` arm binds its
+                // recipe by pattern.
                 let init_snapshot = match (&init, recipe_source) {
                     (TrackInit::Blank, _) => None,
                     (TrackInit::Template { key, .. }, _) => {
                         Some(prepare_template_report(templates, key)?)
                     }
                     (TrackInit::Recipe { recipe_id }, None) => {
-                        // The read above is driven by the same `init`, so this
-                        // arm needs the read to have been skipped on the very
-                        // value that selects it. Not a caller error, so not a
-                        // 400.
+                        // Not a caller error, so not a 400.
                         return Err(CalmError::Internal(format!(
                             "track create: recipe `{recipe_id}` was resolved to a Recipe init \
                              without the recipe row the same `init` was supposed to read"
                         )));
                     }
                     (TrackInit::Recipe { recipe_id }, Some(recipe)) => {
-                        // The stored body is already normalized — the write
-                        // boundary did it (`routes::track_recipes`). Nothing is
-                        // re-normalized here, which is what makes "what the
-                        // picker shows" and "what create produces" the same
-                        // bytes rather than two transforms that must agree.
+                        // The stored body is already normalized by the write boundary; nothing is re-normalized here.
                         Some(prepare_initial_report_payload(
                             recipe_id,
                             TrackReportPayload::new(recipe.title, recipe.body),
                         )?)
                     }
                     (TrackInit::Fork { source_track_id }, _) => {
-                    // #1292 S3 — a fork records no recipe provenance, and that
-                    // holds even when the fork source was itself recipe-born,
-                    // which is why the `_` here is a decision rather than a
-                    // leftover. (Until #1321 S2 it also had to cover a request
-                    // that named a `recipe_id` *and* a fork source: that
-                    // combination resolved to the fork. It is a 400 now — see
-                    // `NamedSource` — so the surviving case is the recipe-born
-                    // *source*, pinned by
-                    // `a_fork_of_a_recipe_born_track_has_no_provenance`.)
-                    //
-                    // `child_track_adapter` refuses to pass provenance down
-                    // because "a recipe id here would claim the child carries
-                    // content it never got". A fork of a recipe-born track *did*
-                    // get that content, so that argument does not carry over and
-                    // the reason has to be a different one: `recipe_id` /
-                    // `recipe_revision` name the recipe this track was
-                    // instantiated from, and a fork was instantiated from a
-                    // track. Copying the id here would assert a direct
-                    // instantiation that never happened, and would go on
-                    // asserting it after the fork's report is edited away from
-                    // the recipe's content.
-                    //
-                    // The cost is real and is not being hidden: the `tracks` row
-                    // this arm creates records neither the recipe nor the source
-                    // track — no column on it names either, and this arm writes
-                    // no fork edge anywhere else. Where a fork came from is a
-                    // gap in *fork* provenance; it is a different column than
-                    // this one, and stamping a recipe id the track was not
-                    // instantiated from would not close it.
-                    //
-                    // Pinned by `a_fork_of_a_recipe_born_track_has_no_provenance`.
+                    // A fork records no recipe provenance, even when the source was recipe-born: a fork was
+                    // instantiated from a track, not from a recipe.
                     let source_track_id = source_track_id.as_str();
                     let source_id = TrackId::from(source_track_id.to_string());
                     let source_track = track_get_tx(tx, &source_id).await.map_err(|error| {
@@ -2357,24 +1328,16 @@ async fn create_track_structure(
                     }
                     let (summary, blocks) =
                         report_blocks_snapshot_tx(tx, source_track_id).await?;
-                    // #1628 S2 (D3 / S2.13) — the resolved `chart.series`
-                    // rows travel with the report, all of them: block ids
-                    // survive the fork, so the rows keep their identity, and
-                    // an unpinned frozen row is still the chart the reader
-                    // saw. Pinned rows stay immutable in the child; unpinned
-                    // rows refresh per track from here on.
+                    // The resolved `chart.series` rows travel with the report (block ids survive the fork).
+                    // Pinned rows stay immutable in the child; unpinned rows refresh per track from here on.
                     crate::report_series::store::copy_rows_tx(
                         tx,
                         source_track_id,
                         track_id.as_str(),
                     )
                     .await?;
-                    // #1669 §2.4 (I3) — the captured sources travel too,
-                    // verbatim: source ids and quote anchors are what the
-                    // copied prose links point at, so the child resolves
-                    // them independently of the parent's lifetime. A
-                    // capture made after this transaction is not in the
-                    // child (the child shows it as missing).
+                    // The captured sources travel too, verbatim, so the child resolves them independently
+                    // of the parent's lifetime.
                     crate::report_sources::store::copy_rows_tx(
                         tx,
                         source_track_id,
@@ -2408,14 +1371,8 @@ async fn create_track_structure(
                         track_id: track_id.clone(),
                         kind: "codex".into(),
                         sort: None,
-                        // #1211 S1: on this user-driven create path the track
-                        // title is no longer the track's intent, so create
-                        // seeds no `prompt` here. The parameter stays because
-                        // child tracks still pass the task goal their parent
-                        // planner declared (`operation/child_track_adapter.rs`) —
-                        // that is machine-written intent, not a title a human
-                        // typed, and it is what seeds the child's harness when
-                        // the child track starts.
+                        // Create seeds no `prompt` here; the parameter stays because child tracks pass the
+                        // task goal their parent planner declared.
                         payload: planner_payload,
                     },
                     CardRole::Planner,
@@ -2454,20 +1411,8 @@ async fn create_track_structure(
                     diagnostics,
                 }) = init_snapshot
                 {
-                    // #1252 S2 — the structural door of the report write
-                    // boundary. It takes no author, no actor, no event bus and
-                    // no CAS input, so neither of the two things this closure
-                    // must not do is expressible from here: it cannot emit a
-                    // `track.report_edited` (the report card's only event is
-                    // the `CardAdded` below) and it cannot reach
-                    // `guard_task_declarations` (#1115 — there is no author to
-                    // hand it). It is not event-free, though: the projection it
-                    // returns is what the `plan.updated` further down is built
-                    // from, and its `kernel_events` leg is refused inside the
-                    // door itself rather than published from here (#1252 R1/F3).
-                    // The fork's own release belt stays upstream in
-                    // `prepare_fork_report`, next to the normalization it
-                    // belts, so `TrackInit::Template` does not acquire it.
+                    // The structural door takes no author, actor, event bus or CAS input, so this closure
+                    // can neither emit `track.report_edited` nor reach `guard_task_declarations`.
                     let (persisted_report, projection) =
                         crate::track_report::write::structural_init_report_tx(
                             tx,
@@ -2561,15 +1506,9 @@ async fn create_track_structure(
     )
     .await?;
 
-    // #1147 S2 (design D3/D5) — materialize outside the transaction and
-    // before the planner harness starts. `Attached` is a no-op: the directory is
-    // the user's and the server never creates or `git init`s it.
-    //
-    // A failure here MUST surface as a non-2xx. The tempting shape is
-    // `tracing::warn!` + `Ok(())` (as `start_planner_harness` below does for a
-    // different, recoverable failure) — but that returns 201 for a track whose
-    // first codex worker will then die with `spawn-failed`, which is #1147
-    // itself replayed one layer down.
+    // Materialize outside the transaction and before the planner harness starts. A failure
+    // here MUST surface as a non-2xx; a 201 would leave a track whose first worker dies
+    // with `spawn-failed`.
     crate::workspace_materialize::materialize_workspace(
         &track.workspace,
         &workspace_root_for_materialize,
@@ -2588,14 +1527,8 @@ async fn create_track_structure(
     Ok((track, created, planner_card_id, report_card_id))
 }
 
-/// Start the planner harness for a create that carried **no** `first_message`.
-///
-/// Best-effort by design and unchanged since before #1299: the track is the
-/// whole deliverable here and "the track exists, its planner agent is inert" is
-/// a documented, recoverable state, so a failed start is a `warn!` and the
-/// create still answers 201. The keyed path's opposite choice — a 5xx, because
-/// the request also promised to deliver a sentence — lives in
-/// `tracks/create.rs`, which is also where its wording is justified.
+/// Start the planner harness for a create that carried no `first_message`. Best-effort:
+/// a failed start is a `warn!` and the create still answers 201.
 async fn start_planner_harness(
     s: &RouteState,
     actor: &Actor,
@@ -2603,13 +1536,7 @@ async fn start_planner_harness(
     planner_card_id: String,
     report_card_id: String,
 ) -> Result<()> {
-    // #1211 S1: no goal is seeded on this user-driven create path. An omitted
-    // title is stored as the empty string (`Untitled track` is only what the
-    // frontend shows for a blank one) and the planner agent names the track once
-    // it knows what the work is, so there is nothing here that could stand in
-    // for the user's intent. Child tracks do NOT come through here — they start their
-    // harness with the parent planner's declared task goal
-    // (`scheduler/mod.rs`, `operation/child_track_adapter.rs`).
+    // No goal is seeded on this user-driven create path; child tracks do NOT come through here.
     let request = PlannerHarnessStartOperationPayload {
         actor: actor.to_actor_id(),
         track_id: track.id.to_string(),
@@ -2622,16 +1549,11 @@ async fn start_planner_harness(
         force_new_thread: false,
         profile: Default::default(),
         create_card: None,
-        // #1299 S1 — `None` here is not "no message", it is the pre-#1299 shape
-        // verbatim: `skip_serializing_if` drops the key entirely, so a create
-        // that typed nothing writes byte-identical payload JSON and therefore
-        // the same `payload_hash` an older binary would have written. Since
-        // #1384 this call site is only ever reached by a message-less create, so
-        // there is no longer anything else it could be.
+        // `None` is `skip_serializing_if`-dropped, so a message-less create writes
+        // byte-identical payload JSON and `payload_hash`.
         first_message: None,
         create_request_sha256: None,
-        // #1343 — not a conversation create; nothing to brief. `None` is
-        // skipped by serde, so this payload's bytes are unchanged.
+        // Not a conversation create; nothing to brief.
         opening_briefing: None,
     };
     let op_payload = serde_json::to_value(&request)?;
@@ -2654,24 +1576,8 @@ async fn start_planner_harness(
     {
         Ok(op_id) => match s.operation_runtime.wait(&op_id).await {
             Ok(result) => match result.outcome {
-                // `SucceededViaCollision` is unreachable from this call site,
-                // and folding it in with `Succeeded` is only correct while that
-                // holds. Two independent reasons it does:
-                //
-                // 1. this path submits `idempotency_key: None`, and
-                //    `find_by_idempotency_key` returns `None` without looking at
-                //    the table when the key is absent, so `submit` never takes
-                //    its collision short-circuit. #1384 did NOT change this:
-                //    the keyed create is a different call site
-                //    (`tracks/create.rs`), and this one is reached only by a
-                //    message-less create, which reads no header at all;
-                // 2. the sole producer of the variant (`operation_result_from`)
-                //    needs a persisted
-                //    `phase_detail.completion == "idempotency_collision"`, which
-                //    nothing in this repository writes. This ground is global
-                //    and survives #1384 — which is why `tracks/create.rs` splits
-                //    the arm as a fail-closed statement rather than as a runtime
-                //    signal it depends on.
+                // `SucceededViaCollision` is unreachable here: this path submits `idempotency_key: None`,
+                // and nothing in this repository writes the `idempotency_collision` completion that produces it.
                 OperationOutcome::Succeeded { .. }
                 | OperationOutcome::SucceededViaCollision { .. } => {}
                 OperationOutcome::Failed {
@@ -2720,19 +1626,6 @@ async fn start_planner_harness(
 }
 
 /// The compiled starting report a create instantiates, before it is persisted.
-///
-/// #1321 S3 — a named struct rather than the 4-tuple this used to be. The
-/// producers ([`prepare_initial_report_payload`], [`prepare_fork_report`]) and
-/// its single production consumer (`structural_init_report_tx`, called from
-/// `create_track_structure`; the unit tests below read it too) all name the
-/// same four things, and a tuple made
-/// `.2` vs `.3` — declarations vs diagnostics, both `Vec`s — a positional
-/// question.
-///
-/// `pub(crate)` only because [`compile_template`] returns it and the #1635 S5
-/// boot loader (`crate::templates`) calls that; the fields stay private to
-/// this module, so outside `routes` the value can be held and dropped, not
-/// read.
 pub(crate) struct InitialReportSnapshot {
     payload: TrackReportPayload,
     doc: ReportDoc,
@@ -2741,22 +1634,8 @@ pub(crate) struct InitialReportSnapshot {
 }
 
 impl InitialReportSnapshot {
-    /// The compiled `task` blocks' payloads, in document order.
-    ///
-    /// Read off [`Self::payload`]'s blocks — the ones
-    /// [`prepare_initial_report_payload`] took from `ReportDoc`, after
-    /// `validate_body_fences` accepted the body — so a fence this returns is a
-    /// fence that parsed and passed its schema. It is not a second parse of the
-    /// body: `GET /api/track-templates` used to run one (`split_body` →
-    /// `parse_fence` → `filter_map`), where a fence that failed to parse was
-    /// silently demoted to prose and its task disappeared from the picker.
-    ///
-    /// `None` blocks is `Internal`, not an empty list: both construction sites
-    /// set them (`prepare_initial_report_payload` and `prepare_fork_report` —
-    /// the two `Ok(InitialReportSnapshot { .. })` this file contains), and in
-    /// safe Rust there can be no third anywhere else, because every field here
-    /// is private, so a struct literal outside `routes::tracks` is `E0451`.
-    /// Absence is therefore a defect rather than "this report has no tasks".
+    /// The compiled `task` blocks' payloads, in document order. `None` blocks is `Internal`,
+    /// not an empty list: both construction sites set them.
     pub(super) fn task_block_payloads(&self) -> Result<Vec<&serde_json::Value>> {
         let blocks = self.payload.blocks.as_ref().ok_or_else(|| {
             CalmError::Internal(
@@ -2770,22 +1649,11 @@ impl InitialReportSnapshot {
             .collect())
     }
 
-    /// #1635 S5 — the compiled (projected) body, the exact text the persist
-    /// funnel (`track_report::write::write_report_row_and_project_tx`) runs
-    /// `check_document` over. The boot loader checks the same text so an
-    /// operator file passes at boot iff it would pass at create.
+    /// The compiled (projected) body — the exact text the persist funnel runs `check_document` over.
     pub(crate) fn body(&self) -> &str {
         &self.payload.body
     }
 }
-
-// #1252 S2 — `persist_initial_report_and_project_tasks_tx` used to live here.
-// It was the second production caller of `card_update_with_crdt_tx`, i.e. the
-// thing that made "the create paths write the report row outside the write
-// boundary" true. It is now `track_report::write::structural_init_report_tx`,
-// the boundary's structural door, and the row write plus the task projection —
-// which have to stay in that order — are the private
-// `write_report_row_and_project_tx` that door shares with `write::persist`.
 
 fn prepare_fork_report(
     summary: String,
@@ -2822,48 +1690,9 @@ fn prepare_fork_report(
                     ),
                 }
             }
-            // #1252 S0b — this arm `continue`s past the `validate_payload`
-            // call at the bottom of the loop, so before #1252 a prose block
-            // carrying a malformed ```neige-block fence forked through
-            // verbatim and landed as prose in the target track.
-            //
-            // What `validate_body_fences` actually covers today (#1252 R1/F3
-            // corrects an earlier "every other write end" claim here, which
-            // was false at the time): its production call sites are
-            // `track_report::apply_report_op`'s two whole-body arms —
-            // `ReportDocOp::Replace` and `::WriteMarkdown` — plus this fork
-            // exit. The `UpsertBlock` arms, which this note used to record
-            // as an open *op-layer* gap, are covered since #1269 and its
-            // follow-up by a *different* check, `track_report_guard::
-            // validate_block_content`, which branches on the op's `kind`:
-            // for prose it forbids any `neige-block` fence at all (stricter
-            // than here — other fences, a ```rust code block say, still
-            // land), and for a data kind whose content is a canonical fence
-            // it schema-validates that fence's payload.
-            // `ReportDoc::upsert_block` on its own only parses the fence and
-            // matches its kind (`if kind != KIND_PROSE`), which is why both
-            // cases have to be checked in the op arm. To be exact about the
-            // reach of the *prose* gap that was closed: only a direct
-            // `apply_report_op` call exercises it — no user request can,
-            // because the MCP (#971) and REST (#990) block surfaces are the
-            // only production builders of a prose `UpsertBlock` and both
-            // refuse fenced prose at their own argument. (The same holds
-            // for the non-prose half: the fourth `UpsertBlock` builder,
-            // the task-delete rewrite, is server-synthesized and does not
-            // reach that check at all — see `track_report_guard`'s module
-            // doc, which enumerates all four construction sites.) And
-            // "fenced prose" here means a fence
-            // carried whole in one block. Projection keeps independent
-            // blocks on line boundaries; manually assembled input is still
-            // checked at the materialising whole-document write.
-            //
-            // Deliberately only the fence check here: the fork exit does not
-            // additionally run `validate_payload` on the prose block's own
-            // `{"markdown": …}` payload — that is a separate behaviour
-            // change. Nor is this the stricter prose rule the op layer and
-            // the block surfaces apply; tightening fork to refuse
-            // well-formed fences too would reject already-persisted source
-            // tracks, so it stays at "malformed / schema-invalid".
+            // This arm `continue`s past the `validate_payload` call at the bottom of the loop, so
+            // the prose fences are checked here. Deliberately only the fence check: refusing
+            // well-formed fences too would reject already-persisted source tracks.
             if let Some(markdown) = block.payload.get("markdown").and_then(|v| v.as_str()) {
                 crate::track_report_guard::validate_body_fences(markdown).map_err(|error| {
                     CalmError::BadRequest(format!(
@@ -2908,13 +1737,6 @@ fn prepare_fork_report(
                     }
                 }
             }
-            // #1292 — the three privilege fields, normalized by the one
-            // function the recipe write path also calls. The long-form
-            // rationale for each field (and for why `released_by_user` is
-            // *removed* rather than written `false`) moved to
-            // `crate::task_privilege::normalize_task_privilege_fields` with
-            // the code; this call site is byte-for-byte equivalent to the
-            // inline block it replaces.
             crate::task_privilege::normalize_task_privilege_fields(payload);
         }
 
@@ -2977,13 +1799,8 @@ fn prepare_fork_report(
     })
 }
 
-/// The payload production writes on a planner-harness card.
-///
-/// `pub` rather than `pub(crate)` so integration fixtures that seed a planner card
-/// row directly can mint the production shape instead of re-typing a partial
-/// literal: `{"schemaVersion": 1}` alone drops `codex_source` and
-/// `planner_harness`, and a future backend reader of either key would then find
-/// the fixture silently unlike production (#1189 review F2).
+/// The payload production writes on a planner-harness card. `pub` so integration
+/// fixtures can mint the production shape instead of a partial literal.
 pub fn planner_harness_card_payload(goal: Option<String>) -> serde_json::Value {
     let mut card_payload = serde_json::Map::new();
     card_payload.insert(
@@ -3018,21 +1835,8 @@ pub(crate) fn planner_harness_layout_payload(
     })
 }
 
-// ---------------------------------------------------------------------------
-// #1147 S3 — changing a track's workspace
-// ---------------------------------------------------------------------------
-
-/// Test seam for the ONE timing predicate in this design.
-///
-/// Fires in the exact window design §更换与冻结 step 2 exists to close: after
-/// the fence transaction has committed, before the pre-move re-check. A test
-/// installs a hook here, writes into the workspace when it is signalled, and
-/// then requires the re-point to answer 409. Delete the re-check and that test
-/// goes red — which is the point, because no static assertion about the
-/// database can stand in for it.
-///
-/// `fixtures`-only, exactly like `track_delete_teardown_hooks` above; a release
-/// build compiles no call, no arguments, and no map.
+/// Test seam for the one timing predicate: fires after the fence transaction has
+/// committed, before the pre-move re-check.
 #[cfg(feature = "fixtures")]
 #[derive(Clone)]
 pub struct WorkspaceRepointRaceHook {
@@ -3074,15 +1878,8 @@ async fn wait_at_workspace_repoint_race_hook(track_id: &str) {
     let _ = track_id;
 }
 
-/// Test seam for the shutdown-failure branch of the fence.
-///
-/// `PlannerHarness::shutdown` fails only on a persistence error deep inside the
-/// run loop, which an integration test cannot provoke without dismantling the
-/// runtime row the fence needs. The branch is still worth covering — it is the
-/// one that used to kill a track's planner agent outright — so the failure is
-/// injected here, the same deterministic-injection posture S5 used for N16
-/// rather than a multi-threaded hammer. `fixtures`-only; a release build
-/// compiles the bare `shutdown()` call.
+/// Test seam for the shutdown-failure branch of the fence, which an integration test
+/// cannot provoke otherwise.
 #[cfg(feature = "fixtures")]
 fn workspace_repoint_shutdown_failures() -> &'static StdMutex<HashMap<String, ()>> {
     static FAILURES: OnceLock<StdMutex<HashMap<String, ()>>> = OnceLock::new();
@@ -3131,67 +1928,11 @@ struct RepointFence {
     superseded_runtime_ids: Vec<String>,
 }
 
-/// #1147 S3 — point a track at a repository the user already has
-/// (design §更换与冻结, transition `managed → attached`).
+/// Point a track at a repository the user already has (`managed → attached`).
 ///
-/// # Why this is not a column write
-///
-/// SQLite transactions do not isolate the filesystem, so "check inside the
-/// transaction" cannot close the window between the check and the move. The
-/// planner harness is deliberately *not* frozen at this point and has run
-/// `sandbox-mode: workspace-write` since its first message, and the dispatcher
-/// pushes observations that start fresh turns. Three steps, none optional:
-///
-/// 1. **A real fence, in the same transaction as the criteria.** Every active
-///    runtime of the track is marked `superseded`, which is the state
-///    `dispatcher::harness_runtime_id_for_planner_card` reads
-///    (`session_projection_active_for_card`, `state IN
-///    ('starting','running','idle','turn_pending')`) before it will deliver an
-///    observation. After this commit a push has nowhere to land. An
-///    `interrupt` would not do: it is asynchronous and says nothing about the
-///    *next* turn. The in-memory half — `HarnessRegistry::remove` +
-///    `shutdown()` — follows immediately: since #1449 `maybe_issue_turn` does
-///    consult the database before issuing, but only twice per issuance, and a
-///    runtime that has already queued an observation can still be between those
-///    reads when this commits.
-/// 2. **The criteria are re-evaluated before anything irreversible.** Anything
-///    the in-flight turn wrote between the fence and here makes this a 409
-///    with nothing moved and no column changed.
-/// 3. **The move asserts its own preconditions.** The old managed directory
-///    goes through S5's [`workspace_recycle::recycle_track_workspace`] — the
-///    single controlled entry point — which re-checks `kind == Managed`,
-///    canonical containment in the workspace root, the exact
-///    `<root>/<area>/<track>` depth, and our ownership marker, and renames into
-///    `.trash` rather than deleting. The `TrackWorkspace` handed to it is the
-///    OLD value, read inside the fence transaction, so it describes the
-///    directory being reclaimed rather than the row's new state.
-///
-/// # Order: write the row, then move the directory
-///
-/// The opposite order is what S5 chose for `DELETE`, and for the opposite
-/// reason. There, a failure after the move would leave a track row whose
-/// directory is unreachable. Here the failure that actually happens is a
-/// **claim conflict**: `area_folders` is scanned twice — once in the fence
-/// transaction to fail fast, once authoritatively in the write transaction —
-/// and a claim minted by a concurrent request in between must be able to abort
-/// this whole request cleanly. Moving first would make that abort leave the
-/// old workspace in the trash while the row still points at it, and the next
-/// retry would then fail its emptiness check forever (a missing path is not
-/// provably empty). Writing first makes every abort a clean 409.
-///
-/// The price, stated: a crash between the commit and the rename leaves the old
-/// managed directory on disk with no row naming it. That is a leak, not a
-/// loss, and unlike S5's it is a **derivable** one —
-/// `managed_workspace_path(root, area_id, track_id)` still names it — so a
-/// future sweep can find it without any new bookkeeping.
-///
-/// # What a refusal leaves behind
-///
-/// Nothing on disk and nothing in the row. The one visible effect is that the
-/// planner harness was torn down, so this function restarts it on the **old**
-/// path before returning. That restart is the same operation
-/// `POST /api/cards/{id}/reset` performs routinely, and harness items are
-/// persisted per card, so the user's transcript survives.
+/// SQLite transactions do not isolate the filesystem: every active runtime is fenced in
+/// the same transaction as the criteria, the criteria are re-checked before the move, and
+/// the row is written before the directory moves so every abort is a clean 409.
 async fn repoint_track_workspace(
     s: &RouteState,
     w: &WorkerState,
@@ -3199,35 +1940,16 @@ async fn repoint_track_workspace(
     track: &Track,
     requested: &TrackWorkspacePatch,
 ) -> Result<Response> {
-    // Issue #985's rule, applied to a strictly more destructive field: moving
-    // a directory is a human decision. This is the only thing between an agent
-    // and pointing a track at any repository on the box.
-    //
-    // **Reachability, stated exactly** (same posture as S5's guard 4). Through
-    // HTTP this is unreachable today, and not because it is redundant: the
-    // only header form that maps to a non-`User` `ActorId` is `ai:codex`
-    // (`Actor::to_actor_id` sends every other string to `User` by a documented
-    // defensive default), and that form carries an empty card id, which a
-    // guard further out already 403s. So the header cannot produce a caller
-    // this check would be the first to stop.
-    //
-    // It lives here, inside the operation rather than in the PATCH envelope,
-    // precisely so it is not vacuous: an internal caller holding a real
-    // `ActorId::AiCodex(card)` gets it, and it has a fixture
-    // (`a_non_user_actor_may_not_change_a_workspace`, through
-    // `repoint_track_workspace_for_test`) that constructs the caller HTTP
-    // cannot.
+    // Moving a directory is a human decision. Unreachable through HTTP today (the only
+    // non-`User` header form already 403s further out); it guards internal callers holding
+    // a real `ActorId::AiCodex`.
     if !matches!(actor.to_actor_id(), ActorId::User) {
         return Err(CalmError::Forbidden(
             "track workspace changes are user-only".into(),
         ));
     }
 
-    // Scope (design §更换与冻结). `managed → attached` is the transition; there
-    // is no `managed → managed` because a managed path is derived from the
-    // area and track ids, so "re-allocate" would always re-derive the same
-    // directory. Answered explicitly rather than accepted as a no-op, so a
-    // client that asks for it learns that instead of believing it worked.
+    // There is no `managed → managed`: a managed path is derived from the area and track ids.
     if requested.kind != TrackWorkspaceKind::Attached {
         return Err(CalmError::BadRequest(
             "track workspace: only `attached` is a target — pointing a track at a repository \
@@ -3237,11 +1959,8 @@ async fn repoint_track_workspace(
         ));
     }
 
-    // The system area's launchpad path is kernel-maintained
-    // (`today_launchpad_ensure_tx` re-derives it on every `ensure`) and is the
-    // documented exception to the freeze latch. A user PATCH must not touch
-    // it. Same scope decision as S5's row-layer 403 on DELETE: the whole
-    // system area, not a `purpose = launchpad` carve-out.
+    // The system area's launchpad path is kernel-maintained and is the documented exception
+    // to the freeze latch; a user PATCH must not touch it.
     let area = s.repo.area_get(track.area_id.as_str()).await?;
     if area.as_ref().is_none_or(|c| c.kind == AreaKind::System) {
         return Err(CalmError::Forbidden(format!(
@@ -3250,10 +1969,8 @@ async fn repoint_track_workspace(
         )));
     }
 
-    // Validate the target BEFORE any write. Design D3, and the whole reason
-    // #1147 exists: a path that does not exist or is not a Git work tree must
-    // fail here with git's own words, not four steps later as a worker's
-    // `spawn-failed`.
+    // Validate the target BEFORE any write, so a bad path fails here with git's own words
+    // rather than as a worker's `spawn-failed`.
     let new_path = normalize_path(&requested.path);
     crate::workspace_materialize::validate_attached_workspace(std::path::Path::new(&new_path))?;
 
@@ -3268,7 +1985,6 @@ async fn repoint_track_workspace(
     let mut track_guard =
         Some(crate::per_card_lock::lock_key(&s.track_delete_locks, &track_id).await);
 
-    // ---- Step 1: criteria + fence, in one BEGIN IMMEDIATE -----------------
     let fence_conflict = FolderConflictSlot::default();
     let fence_track_id = track_id.clone();
     let fence_area_id = area_id.clone();
@@ -3306,21 +2022,16 @@ async fn repoint_track_workspace(
                      default that can be changed only before any work happens in it"
                 )));
             }
-            // The one predicate that does not enumerate writers: it asks the
-            // disk. Runs under the writer lock so it is decided together with
-            // the fence, and is repeated after the commit because SQLite
-            // isolates none of it.
+            // The one predicate that does not enumerate writers: it asks the disk. Repeated after
+            // the commit because SQLite isolates none of it.
             let verdict = workspace_pristine(std::path::Path::new(&old_workspace.path));
             if !verdict.is_pristine() {
                 return Err(CalmError::Conflict(
                     verdict.conflict_message(std::path::Path::new(&old_workspace.path)),
                 ));
             }
-            // Fail fast on the claim rules, WITHOUT minting anything: this
-            // transaction commits (it is also the fence), so a row written
-            // here would survive a later refusal. The write transaction runs
-            // the same rules authoritatively. Running them here as well means
-            // the common conflict is answered before the harness is torn down.
+            // Fail fast on the claim rules WITHOUT minting: this transaction commits (it is also
+            // the fence), so a row written here would survive a later refusal.
             enforce_folder_claim_tx(
                 tx,
                 &claim,
@@ -3330,10 +2041,7 @@ async fn repoint_track_workspace(
                 FolderClaimPass::ScanOnly,
             )
             .await?;
-            // THE FENCE. Every active runtime of this track, not just the planner
-            // harness: "no new turn may acquire the old path" is a statement
-            // about the track, and a rule with one named exception is the shape
-            // this design line keeps being hurt by.
+            // THE FENCE. Every active runtime of this track, not just the planner harness.
             let runtime_ids: Vec<String> = sqlx::query_scalar(
                 "SELECT id FROM worker_sessions WHERE track_id=?1 \
                  AND state IN ('starting','running','idle','turn_pending') ORDER BY id",
@@ -3358,32 +2066,10 @@ async fn repoint_track_workspace(
         Err(error) => return folder_conflict_response(&fence_conflict, error),
     };
 
-    // The in-memory half of the fence. `maybe_issue_turn` consults no durable
-    // state, so without this an observation enqueued before the commit would
-    // still become a turn — writing into a directory that is about to be
-    // renamed, and (because a process's cwd follows the inode on Linux)
-    // continuing to write into `.trash` afterwards until the GC erases it.
-    //
-    // # A shutdown failure must NOT abort this function
-    //
-    // `get` then `remove`-on-success, and the error is logged rather than
-    // propagated. Both halves of that are load bearing, and the shape this
-    // replaces got both wrong: it removed the entry FIRST and then used `?`,
-    // so a failing shutdown returned 500 having already (a) committed the
-    // fence — every runtime superseded — and (b) dropped the registry entry.
-    // The restart below never ran, and the track's planner agent was dead for
-    // good: superseded in the database, absent from the registry, with
-    // nothing left that would ever start it again. This route's whole promise
-    // is that a refusal leaves nothing behind except a re-opened harness, and
-    // that promise has to hold on the failure paths too.
-    //
-    // Keeping the entry on failure is deliberate: the run loop may still be
-    // alive, and the restart below goes through `reserve_replacing`, which
-    // supersedes whatever occupies the slot. Dropping it here would strand
-    // that loop with no handle. Continuing is also safe rather than merely
-    // convenient — the durable fence already stops any NEW turn, and an
-    // in-flight turn that refused to stop is exactly what the pre-move
-    // re-check below exists to catch.
+    // The in-memory half of the fence: `maybe_issue_turn` consults no durable state, so an
+    // observation enqueued before the commit would still become a turn.
+    // A shutdown failure must NOT abort this function: the registry entry is kept for the
+    // restart to supersede, and the pre-move re-check catches an in-flight turn.
     for runtime_id in &fence.superseded_runtime_ids {
         let Some(harness) = w.harness.get(runtime_id) else {
             continue;
@@ -3410,7 +2096,6 @@ async fn repoint_track_workspace(
     // Deterministic race window for the timing test. No-op in production.
     wait_at_workspace_repoint_race_hook(&track_id).await;
 
-    // ---- Step 2: re-check before anything irreversible --------------------
     let verdict = workspace_pristine(&old_path);
     if let PristineVerdict::Dirty { .. } = &verdict {
         drop(track_guard.take());
@@ -3419,16 +2104,11 @@ async fn repoint_track_workspace(
         return Err(CalmError::Conflict(verdict.conflict_message(&old_path)));
     }
 
-    // ---- The write: claim + workspace, one transaction --------------------
     let new_workspace = TrackWorkspace {
         kind: TrackWorkspaceKind::Attached,
         path: new_path.clone(),
-        // Frozen, one-way. Two independent reasons, either sufficient:
-        // `attached → *` is not a legal transition, so an unfrozen attached
-        // row has no legal use; and S4 pins "no attached track is ever
-        // unfrozen" over the whole table, because an unfrozen attached row is
-        // exactly what a future PATCH branch that forgot to check `kind` would
-        // relocate — i.e. would move a real user repository.
+        // Frozen, one-way: `attached → *` is not a legal transition, and an unfrozen attached
+        // row is exactly what a PATCH that forgot to check `kind` would relocate.
         frozen_at: Some(crate::model::now_ms()),
     };
     let scope = EventScope::Track {
@@ -3496,7 +2176,6 @@ async fn repoint_track_workspace(
         }
     };
 
-    // ---- Step 3: the old managed directory goes to the trash --------------
     let decision = workspace_recycle::recycle_track_workspace(
         &workspace_root,
         area.as_ref().map(|c| c.kind),
@@ -3513,11 +2192,8 @@ async fn repoint_track_workspace(
             workspace_recycle::RecycleRefusal::PathMissing,
         ))
         | Ok(workspace_recycle::RecycleDecision::Trashed { .. }) => {}
-        // The row has already moved, so this is a leak, not a failure of the
-        // re-point: the track is correctly attached to the user's repository
-        // and the stale managed directory is at a path that is still
-        // derivable. Loud, and not a 500 — telling the caller the request
-        // failed would be a lie.
+        // The row has already moved, so this is a leak, not a failure of the re-point. Loud,
+        // and not a 500.
         Ok(workspace_recycle::RecycleDecision::Refused(refusal)) => {
             tracing::error!(
                 track_id,
@@ -3539,10 +2215,8 @@ async fn repoint_track_workspace(
     }
     workspace_recycle::gc_trash_best_effort(&workspace_root, crate::model::now_ms());
 
-    // Re-open the planner thread on the new cwd. `force_new_thread` is the only
-    // mechanism that re-reads `cwd`: a resumed codex thread keeps the cwd it
-    // was minted with, so resuming here would leave the planner agent in the
-    // directory that just went to the trash.
+    // `force_new_thread` is the only mechanism that re-reads `cwd`: a resumed codex thread
+    // keeps the cwd it was minted with.
     drop(track_guard.take());
     drop(operation_guard.take());
     restart_planner_harness_at(s, actor, &updated, &updated.workspace.path).await;
@@ -3550,12 +2224,7 @@ async fn repoint_track_workspace(
     Ok(Json(updated).into_response())
 }
 
-/// #1147 S3 — reach the re-point with a caller HTTP cannot produce.
-///
-/// The user-only guard's only non-`User` HTTP form (`ai:codex`) is stopped
-/// further out by the empty-card-id check, so an integration test driving the
-/// route can never distinguish "my guard fired" from "the outer one did". This
-/// calls the operation directly with a chosen actor. `fixtures`-only.
+/// Reach the re-point with a caller HTTP cannot produce. `fixtures`-only.
 #[cfg(feature = "fixtures")]
 #[doc(hidden)]
 pub async fn repoint_track_workspace_for_test(
@@ -3568,14 +2237,8 @@ pub async fn repoint_track_workspace_for_test(
     repoint_track_workspace(s, w, actor, track, requested).await
 }
 
-/// Render a parked [`FolderConflict`] as the structured 409 the create route
-/// returns, so a client sees the same body whichever route it reached the
-/// claim rules through.
-///
-/// `FolderConflictSlot::park` stashes the body and returns a plain `Conflict`
-/// whose message is only a fallback; without this the caller would get the bare
-/// string and lose `folder_id` / `area_id` / `conflict_kind` — which is exactly
-/// what the FE needs to say *which* area already owns the directory.
+/// Render a parked [`FolderConflict`] as the structured 409 the create route returns, so
+/// the FE keeps `folder_id` / `area_id` / `conflict_kind`.
 fn folder_conflict_response(slot: &FolderConflictSlot, error: CalmError) -> Result<Response> {
     match slot.take() {
         Some(body) => Ok((StatusCode::CONFLICT, Json(body)).into_response()),
@@ -3583,17 +2246,8 @@ fn folder_conflict_response(slot: &FolderConflictSlot, error: CalmError) -> Resu
     }
 }
 
-/// Re-open the track's planner harness thread at `cwd`.
-///
-/// Best effort, and deliberately so: turning a harness hiccup into a 500 here
-/// would be worse than useless — the workspace has already moved and the row
-/// already says so, so the caller must not be told the whole operation failed.
-///
-/// `idempotency_key: None`, like every other non-launchpad planner-harness start
-/// (`routes/tracks.rs::start_planner_harness`, `routes/cards.rs`'s reset). The
-/// launchpad and child-track call sites need a workspace digest in their keys
-/// because they are re-driven with the same key; this one is minted per
-/// request and cannot collide.
+/// Re-open the track's planner harness thread at `cwd`. Best effort: the workspace has
+/// already moved, so the caller must not be told the whole operation failed.
 async fn restart_planner_harness_at(s: &RouteState, actor: &Actor, track: &Track, cwd: &str) {
     // Same resolution the dispatcher uses (`resolve_planner_card`): the role
     // cache, not a `cards.kind` guess.
@@ -3628,8 +2282,7 @@ async fn restart_planner_harness_at(s: &RouteState, actor: &Actor, track: &Track
         create_card: None,
         first_message: None,
         create_request_sha256: None,
-        // #1343 — not a conversation create; nothing to brief. `None` is
-        // skipped by serde, so this payload's bytes are unchanged.
+        // Not a conversation create; nothing to brief.
         opening_briefing: None,
     };
     let hash = match stable_payload_hash(
@@ -3707,29 +2360,17 @@ pub(crate) async fn update_track(
     Path(id): Path<String>,
     Json(p): Json<TrackPatch>,
 ) -> Result<Response> {
-    // Need area_id for the scope. Track rows are immutable wrt their
-    // parent area, so reading outside the txn is safe (same rationale as
-    // the delete path below).
+    // Track rows are immutable wrt their parent area, so reading area_id outside the txn is safe.
     let existing = s
         .repo
         .track_get(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("track {id}")))?;
 
-    // #1147 S3 — a workspace change is a filesystem move bracketed by two
-    // transactions, not a column write, so it does not compose with the
-    // mechanical row patch below. Mixing them would make a partial failure
-    // ("the title changed, the workspace did not") indistinguishable from
-    // success at the wire, so the combination is a 400 rather than an
-    // ordering puzzle nobody can reason about.
+    // A workspace change is a filesystem move bracketed by two transactions, so it does
+    // not compose with the row patch; the combination is a 400.
     if let Some(workspace) = p.workspace.as_ref() {
-        // Destructured rather than enumerated as `p.title.is_some() || …`.
-        // The rule is "the workspace travels alone", so it has to consider
-        // EVERY other field, and a hand-written list silently stops being
-        // exhaustive the day someone adds one — the omission would read as
-        // "that field may ride along", which is the opposite of the rule.
-        // Binding every field by name makes the next addition a compile
-        // error here instead.
+        // Destructured rather than enumerated so adding a field to `TrackPatch` is a compile error here.
         let TrackPatch {
             workspace: _,
             title,
@@ -3765,11 +2406,8 @@ pub(crate) async fn update_track(
         return repoint_track_workspace(&s, &w, &actor, &existing, workspace).await;
     }
 
-    // The guard fires on *mentioning* `lifecycle`, not on changing it: a PATCH
-    // that re-sends the track's current lifecycle is 403 too. That is
-    // deliberate — the chat track has no lifecycle the user may drive, so
-    // accepting a no-op write would advertise an editable field, and the FSM
-    // would then have to be trusted to keep every such write a no-op forever.
+    // The guard fires on mentioning `lifecycle`, not on changing it: accepting a no-op
+    // write would advertise an editable field.
     if existing.purpose.as_deref() == Some(AREA_CHAT_PURPOSE) && p.lifecycle.is_some() {
         return Err(CalmError::Forbidden(
             "area chat track lifecycle cannot be changed".into(),
@@ -3781,11 +2419,8 @@ pub(crate) async fn update_track(
     };
     let actor_id = actor.to_actor_id();
 
-    // Issue #985 — track-level automation controls are human decisions.
-    // Reject non-user actors before entering the eventized write so neither
-    // the row nor a TrackUpdated event can land. #1704 S2 — the Claude
-    // permission policy is one: a Planner could otherwise raise its own
-    // ceiling.
+    // Track-level automation controls are human decisions; a Planner could otherwise
+    // raise its own ceiling.
     if (p.planner_task_ceiling.is_some()
         || p.automation_policy.is_some()
         || p.tree_task_budget.is_some()
@@ -3799,22 +2434,9 @@ pub(crate) async fn update_track(
         ));
     }
 
-    // Issue #145 — lifecycle transitions go through a typed state machine.
-    // This preflight returns deterministic illegal-edge errors before opening
-    // a write transaction. The same snapshot is checked again after BEGIN
-    // IMMEDIATE below: only that in-tx check can authorize the row write and
-    // supply a truthful `from` value when another lifecycle request races us.
-    //
-    // Same-state requests (`p.lifecycle == Some(current)`) are an
-    // idempotent silent success for authorized actors: the validator
-    // returns `Ok(())`, we strip `lifecycle` from the patch (so
-    // `track_update_tx` doesn't pointlessly rewrite the column /
-    // bump `updated_at`), and we skip the `TrackLifecycleChanged`
-    // emit. If after stripping the patch has no other fields set,
-    // we return the existing row without touching the DB at all.
-    // Worker / plugin actors still hit `Forbidden` here regardless
-    // of from == to — idempotency only applies once the actor has
-    // any lifecycle authority.
+    // Lifecycle preflight: the same snapshot is checked again after BEGIN IMMEDIATE, and only
+    // that in-tx check can authorize the row write. Same-state requests are an idempotent
+    // silent success for authorized actors.
     let mut p = p;
     let lifecycle_change = if let Some(to) = p.lifecycle {
         validate_transition(existing.lifecycle, to, &actor_id)
@@ -3832,10 +2454,7 @@ pub(crate) async fn update_track(
         None
     };
 
-    // Issue #644 — scheduler budget sanity. `Some(None)` clears back to
-    // the kernel default; a present value must be non-negative (0 is a
-    // legal "hold new dispatches" budget per design §5.2's
-    // `max(0, budget - running_cost)`).
+    // `Some(None)` clears back to the kernel default; 0 is a legal "hold new dispatches" budget.
     if let Some(Some(budget)) = p.task_budget
         && budget < 0
     {
@@ -3850,9 +2469,7 @@ pub(crate) async fn update_track(
             "planner_task_ceiling must be >= 0 (got {ceiling}); pass null to reset to the kernel default"
         )));
     }
-    // Issue #985 slice 6 PR-B — same shape as `planner_task_ceiling`. 0 is legal
-    // ("no new planner inventory anywhere in this tree"); the root-only rule is
-    // enforced inside `track_update_tx`, which every writer shares.
+    // 0 is legal; the root-only rule is enforced inside `track_update_tx`.
     if let Some(Some(budget)) = p.tree_task_budget
         && !(0..=MAX_TREE_TASK_BUDGET).contains(&budget)
     {
@@ -3867,14 +2484,9 @@ pub(crate) async fn update_track(
             "automation_policy must be auto-declare or declare-and-wait (got {policy}); pass null to reset to the kernel default"
         )));
     }
-    // #1704 S2 — the policy passes S1's scope rules under its own name; the
-    // root-only rule is enforced inside `track_update_tx`.
     validate_policy_patch(&mut p)?;
 
-    // If the patch is now entirely empty (lifecycle was a no-op and
-    // no other field was supplied) there's nothing to write and
-    // nothing to emit — return the track as-is. This is the
-    // idempotent retry path for "planner re-sends the current state."
+    // An entirely empty patch is the idempotent retry path: nothing to write or emit.
     let patch_has_other_changes = p.title.is_some()
         || p.sort.is_some()
         || p.archived_at.is_some()
@@ -3889,18 +2501,12 @@ pub(crate) async fn update_track(
         return Ok(Json(existing).into_response());
     }
 
-    // When a lifecycle change is part of the patch we emit *two*
-    // events from the same txn: a `TrackLifecycleChanged` so dedicated
-    // subscribers don't have to inspect every `TrackUpdated`, plus the
-    // usual `TrackUpdated` so cache invalidation still sees the new
-    // row shape. Both share scope + actor; both land or neither does.
+    // A lifecycle change emits both `TrackLifecycleChanged` and `TrackUpdated` from the
+    // same txn; both land or neither does.
     let area_id_for_event = existing.area_id.clone();
     let track_id_for_event = existing.id.clone();
-    // Every admission policy below rebuilds its affected projection before the
-    // scheduler sees TrackUpdated. `tree_task_budget` feeds every member's
-    // deterministic share, so it rebuilds the bounded member set; the other
-    // policies are track-local. After PATCH returns, no pending row admitted by
-    // the old ceiling/gate policy can race a later claim.
+    // Every admission policy rebuilds its affected projection before the scheduler sees
+    // TrackUpdated, so no pending row admitted by the old policy can race a later claim.
     let projection_policy_changed = p.planner_task_ceiling.is_some()
         || p.automation_policy.is_some()
         || p.require_task_gates.is_some()
@@ -4052,10 +2658,8 @@ async fn preflight_track_deletion_reprojection(
     pool: &sqlx::SqlitePool,
     track_id: &TrackId,
 ) -> Result<()> {
-    // Use the repository's one transaction entry point even though this phase
-    // is read-only. It prevents a writer from changing the tree between the
-    // root lookup and survivor validation, and keeps this future compatible
-    // with a later preflight assertion that needs to write.
+    // BEGIN IMMEDIATE even though read-only: it prevents a writer from changing the tree
+    // between the root lookup and survivor validation.
     let mut tx = begin_immediate_tx(pool).await?;
     if let Some(root_id) = surviving_root_before_leaf_removal(&mut tx, track_id).await? {
         let members: Vec<(String, i64)> = sqlx::query_as(TRACK_TREE_MEMBERS_SQL)
@@ -4090,13 +2694,8 @@ async fn finish_track_deletion(
     let (sweeps, _ids) =
         write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
             Box::pin(async move {
-                // A leaf deletion changes N in the root budget's deterministic
-                // B/N split. Resolve the root while the leaf still exists, then
-                // rebuild every survivor after the row and its task inventory
-                // have gone. A structurally unresolved tree must fail closed:
-                // committing the delete without knowing which projections to
-                // refresh would leave directly claimable rows admitted under
-                // the old share.
+                // A leaf deletion changes N in the root budget's B/N split: resolve the root while the
+                // leaf still exists, then rebuild every survivor. An unresolved tree must fail closed.
                 crate::operation::terminal_disposal::require_safe_tx(
                     tx,
                     &crate::operation::terminal_disposal::Scope::Track(track_id.to_string()),
@@ -4155,32 +2754,9 @@ async fn finish_track_deletion(
     Ok(sweeps)
 }
 
-/// #1147 S5 — reclaim this track's managed workspace, between teardown and the
-/// row delete.
-///
-/// **Ordering.** Teardown has already stopped every harness and terminal, so
-/// nothing is writing into the directory; the row delete has not happened yet,
-/// so a failure here aborts the whole DELETE with the track and its directory
-/// both intact and the request retryable. The reverse order (row first) would
-/// turn a rename failure into "the track is gone, its repository is not", which
-/// is unretryable and needs a human.
-///
-/// The following database transaction may still reject the deletion (for
-/// example, an unresolved tree or unreadable surviving report). Its caller
-/// compensates a successful trash rename before returning that error, so the
-/// retained track row never points at a missing workspace.
-///
-/// Recycling is not conditional on that ordering being observed elsewhere: the
-/// guards in [`workspace_recycle`] are what make the delete safe, not the
-/// position of this call.
-///
-/// A *refusal* (guard not satisfied) is not an error — see
-/// [`workspace_recycle::recycle_track_workspace`] for why the row must stay
-/// deletable even when the directory cannot be proven ours.
-///
-/// `area_kind` is guard 4's input, read once by the caller (which needs it for
-/// the row-layer 403 anyway). `None` — an area row we could not read — is "not
-/// provably a user area", and the recycler refuses on it.
+/// Reclaim this track's managed workspace between teardown and the row delete, so a
+/// failure here leaves the track and its directory intact and retryable. A refusal
+/// (guard not satisfied) is not an error.
 fn recycle_track_workspace_for_delete(
     s: &RouteState,
     track: &Track,
@@ -4266,17 +2842,15 @@ impl RecycledTrackDeletion {
         if wait_at_track_delete_commit_hook(track.id.as_str()).await {
             panic!("fixture: panic track deletion after recycle");
         }
-        // #1444 — the Cards this transaction is about to remove. Snapshotted
-        // before `finish_track_deletion` consumes the plan; used only on the
-        // committed arm below, never on the rollback/compensation arm.
+        // Snapshotted before `finish_track_deletion` consumes the plan; used only on the committed arm.
         let deleted_card_ids: HashSet<String> = prepared
             .plan
             .cards
             .iter()
             .map(|card| card.id.to_string())
             .collect();
-        // #1620 — the Terminal cards whose generated hook settings file goes
-        // with the committed delete (kept on rollback: the card still exists).
+        // The Terminal cards whose generated hook settings file goes with the committed delete
+        // (kept on rollback: the card still exists).
         let terminal_card_ids: Vec<String> = prepared
             .plan
             .terminals
@@ -4286,19 +2860,14 @@ impl RecycledTrackDeletion {
         let sweeps = match finish_track_deletion(route, prepared.plan, actor).await {
             Ok(sweeps) => sweeps,
             Err(error) => {
-                // Another deletion boundary (notably area deletion, or another
-                // process in an unsupported multi-server deployment) may have
-                // won while this request was between teardown and its
-                // transaction. A missing row is committed deletion, not
-                // rollback: never resurrect its cache entry or workspace.
+                // Another deletion boundary may have won between teardown and this transaction. A
+                // missing row is committed deletion, not rollback: never resurrect its cache entry or workspace.
                 let track_survived = route.repo.track_get(track.id.as_str()).await?.is_some();
                 if !track_survived {
                     return Err(error);
                 }
-                // `track_delete_tx` updates this process-local cache before the
-                // surrounding transaction commits. A later projection/error
-                // rolls SQLite back but cannot roll the cache or filesystem
-                // back for us.
+                // `track_delete_tx` updates the process-local cache before commit; a rollback cannot
+                // undo the cache or filesystem, so compensate here.
                 if let Err(restore_error) = workspace_recycle::restore_recycled_workspace(&decision)
                 {
                     return Err(CalmError::Internal(format!(
@@ -4316,33 +2885,24 @@ impl RecycledTrackDeletion {
                 return Err(error);
             }
         };
-        // #1444 — the row delete has COMMITTED, so the shared daemon's
-        // in-memory `thread_id -> card_id` attribution for these Cards is now
-        // stale and would otherwise be resumed on the next daemon reconnect.
-        // Post-commit and infallible: it cannot turn into a rollback, and the
-        // error arm above deliberately does not run it.
+        // The row delete has COMMITTED, so the daemon's in-memory `thread_id -> card_id`
+        // attribution is stale. Post-commit and infallible.
         prepared
             .turn_daemon
             .forget_threads_for_deleted_cards(&deleted_card_ids)
             .await;
-        // #1553 (hygiene) — same committed arm, the two sibling maps #1444 did
-        // not converge. `sealed_thread_ids` is exactly what quiesce sealed and
-        // interrupted for this delete; the error arm above returns before
-        // reaching here and keeps both entries, because its Cards still exist.
-        // Infallible and lock-free, like every other writer of those maps.
+        // Same committed arm; the error arm keeps both entries because its Cards still exist.
         prepared
             .turn_daemon
             .forget_turn_state_for_deleted_threads(&sealed_thread_ids);
-        // #1669 §2.1 — the transient plugin-result ring is process memory
-        // keyed by track; the row is gone, so its entries are dropped here
-        // (an area-cascade delete never reaches this arm and relies on the
-        // ring's TTL; track ids are never reused). Infallible.
+        // The transient plugin-result ring is process memory keyed by track; the row is gone.
+        // An area-cascade delete never reaches this arm and relies on the ring's TTL.
         route
             .mcp_context
             .plugin_results
             .forget_track(track.id.as_str());
-        // #1620 — post-commit, best effort: `<terminal-hooks>/<card_id>.json`
-        // for every deleted Terminal card (server-derived path only).
+        // Post-commit, best effort: remove `<terminal-hooks>/<card_id>.json` for every deleted
+        // Terminal card.
         for card_id in &terminal_card_ids {
             route.terminal_renderer.remove_hook_settings(card_id);
         }
@@ -4355,12 +2915,9 @@ impl RecycledTrackDeletion {
     }
 }
 
-/// The workspace move is an external side effect that cannot be rolled back by
-/// dropping SQLite's transaction future. Once that move succeeds, transfer the
-/// remaining saga state and its per-track lock to an owned task before the next
-/// await. Axum may cancel a request future when the client disconnects; a Tokio
-/// task spawned here is detached when its `JoinHandle` is dropped and therefore
-/// still commits or runs `RecycledTrackDeletion::commit`'s compensation path.
+/// The workspace move cannot be rolled back by dropping the transaction future, so once it
+/// succeeds the remaining saga state and lock move to an owned task; Axum may cancel a
+/// request future when the client disconnects.
 async fn run_recycled_track_deletion(
     route: &RouteState,
     actor: ActorId,
@@ -4476,27 +3033,12 @@ pub(crate) async fn delete_track(
     actor: Actor,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
-    // One process owns this track's move + transaction + compensation at a
-    // time. The deployment contract is one calm-server per data directory;
-    // multi-process deletion would require a durable database lease instead.
-    // OperationRuntime is the common funnel for every normal runtime/process
-    // start. Acquire it before the per-track direct-recovery fence to establish
-    // the only lock order: operation drive → track delete.
+    // One process owns this track's move + transaction + compensation at a time.
+    // Lock order: operation drive → track delete.
     let operation_guard = s.operation_runtime.lock_for_track_delete().await;
     let delete_guard = crate::per_card_lock::lock_key(&s.track_delete_locks, &id).await;
-    // Issue #197 — eager teardown for every terminal under the track.
-    //
-    // `terminals.card_id` is now `ON DELETE RESTRICT` (migration 0011)
-    // so the prior model — let the FK cascade nuke the rows under us
-    // and let the sweeper catch the leaked daemons ~60 s later —
-    // doesn't work anymore: the cascade aborts the track-delete txn.
-    // This handler now owns the full subtree teardown:
-    //
-    //   1. Best-effort unlocked descendant preflight, then snapshot
-    //      cards/terminals/runtimes.
-    //   2. Outside SQLite: interrupt turns and stop terminal/harness processes.
-    //   3. Short IMMEDIATE tx: recheck descendants authoritatively in
-    //      `track_delete_tx`, then remove terminal rows, overlays, leases and track.
+    // Eager teardown for every terminal under the track: `terminals.card_id` is
+    // `ON DELETE RESTRICT`, so a missed cleanup aborts the delete transaction.
     let track = s
         .repo
         .track_get(&id)
@@ -4504,53 +3046,8 @@ pub(crate) async fn delete_track(
         .ok_or_else(|| CalmError::NotFound(format!("track {id}")))?;
     let track_id = track.id.clone();
 
-    // #1147 S5 — the ROW-layer half of recycle guard 4.
-    //
-    // `workspace_recycle`'s guard 4 refuses to touch a system-area workspace on
-    // disk, and `DELETE /api/areas/{id}` already 403s a system area. This route
-    // was the asymmetric one: it deleted a system-area track row and returned
-    // 204 while the directory (correctly) survived — and *that* is the leak,
-    // because reclaiming a managed directory needs the track row that names it.
-    // Once the row is gone the directory is unreachable forever, so every
-    // launchpad delete + `ensure` cycle would strand one more orphan
-    // repository.
-    //
-    // Same invariant as guard 4, one layer up: system scaffolding is
-    // kernel-owned and not user-deletable. Kernel paths that legitimately
-    // retire these rows do not come through this handler.
-    //
-    // **Scope is the whole system area, not just the launchpad — deliberately.**
-    // The rule is written over the area, not over `purpose = launchpad`,
-    // because carving out a purpose puts an exception into "the system area is
-    // kernel-owned", and an invariant with an exception is the shape this
-    // design line keeps getting hurt by. What the wide rule costs is that the
-    // launchpad track — which *is* user-visible, on Today — cannot be deleted
-    // through this handler either. That is the accepted price.
-    //
-    // What recreates the row is `routes::today::ensure_today_launchpad`, and it
-    // is reached two ways: the explicit `POST /api/today/launchpad/ensure`, and
-    // `POST /api/today/summary`, which calls it directly
-    // (`routes::today_summary::write_today_summary`). So a permitted delete
-    // would survive page loads — loading Today runs only the read-only resolve
-    // and never POSTs either endpoint (INV-TODAYDOC-001) — but the next Today
-    // summary that gets far enough to write would rebuild the launchpad
-    // underneath the user. "Far enough" is literal: `write_today_summary`
-    // computes the local day's activity window first and returns 409
-    // `TodaySummaryNoActivity` when it is empty, and only past that check does
-    // it call `ensure_today_launchpad`. On a day with no workspace activity
-    // every summary POST stops at the 409 and rebuilds nothing, however many
-    // times it is repeated; the explicit `POST /api/today/launchpad/ensure`
-    // has no such precondition and rebuilds on any day. The ruling does not
-    // rest on the deletion being hard to undo, or on it being harmless; it
-    // rests on where the ownership boundary is drawn.
-    //
-    // #1300 — this paragraph used to justify itself by the *other* residents
-    // of the system area, the three hidden template tracks `ensure_templates`
-    // seeded. Those are gone: a template is a file compiled into the binary
-    // (`crate::templates`) and creating from one mints no hidden track. The
-    // ruling did not depend on them — it is about where the boundary is drawn,
-    // not about how many rows sit behind it — so it stands unchanged with the
-    // launchpad track as today's only kernel-seeded resident.
+    // System scaffolding is kernel-owned and not user-deletable. Deleting a system-area track
+    // row would strand its managed directory forever: reclaiming it needs the row that names it.
     let owning_area = s.repo.area_get(track.area_id.as_str()).await?;
     if owning_area
         .as_ref()
@@ -4561,10 +3058,8 @@ pub(crate) async fn delete_track(
         )));
     }
 
-    // Defensive TOCTOU guard only: this non-transactional read happens before
-    // the teardown tx, so a forge-action can still become in-flight before the
-    // sweep. It shrinks the race; durable parked recovery is the backstop, and
-    // the airtight in-tx/lease-hold guard belongs to slice ⑤.
+    // Defensive TOCTOU guard only: this non-transactional read happens before the teardown
+    // tx, so a forge-action can still become in-flight before the sweep.
     let pool = w.repo.sqlite_pool().ok_or_else(|| {
         CalmError::Internal("delete_track forge-action fence requires sqlite-backed repo".into())
     })?;
@@ -4581,10 +3076,9 @@ pub(crate) async fn delete_track(
         )));
     }
 
-    // Experience-only preflight: the in-transaction guard in `track_delete_tx`
-    // remains the sole correctness boundary for this route and raw Repo calls.
-    // A child created after this read can still make the final delete return
-    // Conflict after teardown; that rare race is safe and retryable.
+    // Experience-only preflight: the in-transaction guard in `track_delete_tx` is the
+    // correctness boundary; a child created after this read makes the final delete return
+    // Conflict, which is safe and retryable.
     if let Some(child_id) =
         sqlx::query_scalar::<_, String>("SELECT id FROM tracks WHERE parent_track_id=?1 LIMIT 1")
             .bind(track_id.as_str())
@@ -4596,10 +3090,7 @@ pub(crate) async fn delete_track(
         )));
     }
 
-    // Validate every surviving report source before teardown has any external
-    // effect. Production report writers cannot commit malformed CRDT, so a
-    // later rebuild failure is then limited to a genuine concurrent/corrupting
-    // writer; the compensation below remains the last-resort fence for it.
+    // Validate every surviving report source before teardown has any external effect.
     preflight_track_deletion_reprojection(&pool, &track_id).await?;
 
     let prepared = PreparedTrackDeletion {
@@ -4613,10 +3104,6 @@ pub(crate) async fn delete_track(
     finish_prepared_track_deletion_owned(s, w, cs, actor.to_actor_id(), prepared).await?;
     Ok(StatusCode::NO_CONTENT)
 }
-
-// ---------------------------------------------------------------------------
-// Issue #247 PR3 — user-facing track-report edit endpoint
-// ---------------------------------------------------------------------------
 
 /// A report link from another track that targets this track.
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -4687,27 +3174,9 @@ pub(crate) async fn get_track_backlinks(
     Ok(Json(TrackBacklinksResponse::from(page)))
 }
 
-/// Request body for `POST /api/tracks/:id/report`.
-///
-/// `summary` and `body` are required `String`s (per
-/// `TrackReportPayload`'s [[required-over-option]] rule), and
-/// `ifDocRev` is the required document-wide revision anchor. An empty
-/// `summary` is valid; the caller must commit to *some* string.
-///
-/// **No `author` field.** Author is derived server-side from the
-/// authenticated session and pinned to [`EditAuthor::User`] for this
-/// endpoint — accepting one on the wire would let a User forge
-/// `EditAuthor::Planner` and make a hand-typed edit look like the AI
-/// did it. Even if a client serializes an `author` key the handler
-/// ignores it (serde `deny_unknown_fields` would 400 it; this is the
-/// stricter contract that closes the spoofing risk by construction).
-///
-/// `schemaVersion` is also intentionally absent — it's a server-managed
-/// invariant pinned to [`TrackReportPayload::SCHEMA_VERSION`] and the
-/// projected payload returned in the response reasserts the current
-/// version. Letting clients write the version field would invite
-/// silent shape drift the first time someone forgot to update both
-/// sides.
+/// Request body for `POST /api/tracks/:id/report`. No `author` field: it is pinned
+/// server-side to `EditAuthor::User` so a User cannot forge a Planner edit;
+/// `schemaVersion` is server-managed too.
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdateTrackReportBody {
@@ -4771,33 +3240,9 @@ pub(crate) async fn get_track_report(
         .into_response())
 }
 
-/// `POST /api/tracks/:id/report` — user-driven track-report edit. The
-/// REST-side counterpart of the planner-MCP `calm.report.write` tool;
-/// both paths funnel through the `track_report::write` module — this
-/// one via `rest_user_replace`, the tool via `agent_report_op` — so the
-/// dual-event invariant (`CardUpdated` + `TrackReportEdited`) and the
-/// CRDT write happen identically regardless of who's editing.
-///
-/// **Auth contract** (issue #247 PR3 acceptance):
-///
-///   * No session cookie → 401 (`auth::require_session` middleware
-///     short-circuits before this handler runs).
-///   * Authenticated session BUT non-user actor declared via
-///     `X-Calm-Actor` (worker / `ai:*` / etc.) → 403. Only
-///     [`ActorId::User`] is allowed. This closes the "planner card's
-///     own session cookie forwards a User edit" hole — a future
-///     surface that lets the planner card hold a session must not be
-///     able to bypass the User-only contract by claiming `ai:codex`.
-///   * Track doesn't exist → 404.
-///   * Track exists but the track-report card is missing → 500
-///     (invariant violation; PR1 backfill guarantees the row).
-///
-/// The response is the *projected* [`TrackReportPayload`] read back
-/// from the CRDT post-merge — not the request body verbatim — so the
-/// frontend sees what every other reader will see (the JSON cache
-/// mirrors the CRDT projection, which under single-writer is the
-/// same bytes as the input, but reading from the doc keeps the
-/// "CRDT is source of truth" contract true by construction).
+/// `POST /api/tracks/:id/report` — user-driven track-report edit; only `ActorId::User`
+/// is allowed (403 otherwise). The response is the CRDT-projected payload, not the
+/// request body verbatim.
 #[utoipa::path(
     post,
     path = "/api/tracks/{id}/report",
@@ -4815,72 +3260,25 @@ pub(crate) async fn get_track_report(
 )]
 pub(crate) async fn update_track_report(
     State(s): State<RouteState>,
-    // `Principal` extraction implicitly asserts the session middleware
-    // has run — a missing/invalid cookie surfaces as 401 from
-    // `auth::require_session` long before this handler is invoked.
-    // We don't read any field off `_principal` today (single-user
-    // owner model: there's exactly one User to attribute to). Held
-    // here so the future multi-user split can attribute edits via
-    // `principal.user_id` without changing the handler signature.
+    // `Principal` asserts the session middleware has run; not read today (single-user),
+    // held for the multi-user split.
     _principal: Principal,
     actor: Actor,
     Path(id): Path<String>,
     Json(body): Json<UpdateTrackReportBody>,
 ) -> Result<Response> {
-    // Server-side actor pinning. The route is gated to `ActorId::User`
-    // only — anything else (worker / planner / plugin / kernel) is 403.
-    //
-    // **Direct string check, NOT `to_actor_id()`.** The typed mapping
-    // has a defensive fallback that classifies anything outside its
-    // explicit `"user"` / `"ai:codex"` arms as `ActorId::User` (so a
-    // future relaxation can't synthesize a Kernel/Plugin identity from
-    // an attacker-controlled header — see the rationale in
-    // `actor::Actor::to_actor_id`). That fallback is the right call
-    // for *event-log attribution* — better to mis-tag as User than to
-    // forge a Kernel write — but it's the wrong shape for *gating*:
-    // an `X-Calm-Actor: ai:claude` header would pass a
-    // `matches!(actor.to_actor_id(), ActorId::User)` check and reach
-    // the persist call. Since #1318 §1 the handler cannot name an
-    // author at all — the entry point it calls fixes it
-    // — so no audit-log corruption is possible by construction rather
-    // than by a hardcoded argument a later edit could change. That
-    // still leaves the gate itself to make honest: the OpenAPI /
-    // handler doc both claim "any non-user actor → 403", and only this
-    // raw string check makes that true of the *request*, not merely of
-    // what got recorded. The only declared actor that reaches the
-    // persist entry here is exactly `"user"`. Every other validated
-    // header value (`ai:codex`, `ai:claude`, `ai:gpt5`, future `ai:*`)
-    // is 403.
+    // Direct string check, NOT `to_actor_id()`: its defensive fallback maps unknown headers
+    // to `ActorId::User`, which is right for attribution but wrong for gating.
     super::track_report_blocks::require_rest_user_actor(&actor)?;
 
-    // Resolve the track + report card + current payload. 404 on missing
-    // track; 500 (Internal) on missing report card (invariant; PR1
-    // backfill plus the partial unique index on `cards.kind =
-    // 'track-report'` guarantee one report row per track).
+    // 404 on missing track; 500 on missing report card (invariant: one report row per track).
     let target = track_report::ReportEditTarget::resolve(s.repo.as_ref(), &id).await?;
 
-    // Build the next payload from the request body. `schemaVersion` is
-    // always the current constant — the field is not on the wire shape
-    // (see `UpdateTrackReportBody` doc) so we stamp it here.
+    // `schemaVersion` is always the current constant; the field is not on the wire shape.
     let if_doc_rev = body.if_doc_rev;
     let next = TrackReportPayload::new(body.summary, body.body);
 
-    // Persist + emit. `EditAuthor::User` is the load-bearing
-    // attribution — the wire shape doesn't accept `author` (see the
-    // request-body doc), so nothing the caller sends can change it.
-    // PR5's planner system prompt will wake on
-    // `TrackReportEdited { author: User }` specifically.
-    //
-    // #1318 §1 — the constant no longer lives here. It is inside
-    // `rest_user_replace`, one of three entry points into a module
-    // whose writer is private to it; this handler cannot
-    // name an author at all, so the "any non-user actor → 403" claim in
-    // the doc above and the recorded author cannot drift apart by
-    // editing this call. Read the old wording carefully before reusing
-    // it: this was never "the only place `User` is written" — the REST
-    // block endpoints record `User` too, through the sibling entry
-    // `rest_user_block_op`, and since #1318 so would any other caller of
-    // either REST entry.
+    // The author is fixed inside `rest_user_replace`; this handler cannot name one.
     let updated = track_report::write::rest_user_replace(
         s.repo.as_ref(),
         &s.events,
@@ -4891,11 +3289,8 @@ pub(crate) async fn update_track_report(
     )
     .await?;
 
-    // Project the persisted payload out of the updated card row. This
-    // is the CRDT-projected shape (the writer
-    // re-derives summary/body from the doc post-update before writing
-    // the JSON cache), so the response matches what the next reader
-    // (frontend / other REST clients / WS subscribers) will see.
+    // Project the persisted payload out of the updated card row so the response matches
+    // what the next reader will see.
     let payload: TrackReportPayload = serde_json::from_value(updated.payload).map_err(|e| {
         CalmError::Internal(format!(
             "track-report edit: re-deserialize projected payload: {e}",
@@ -4920,21 +3315,9 @@ mod tests {
     use crate::track_report_doc::ReportDoc;
     use serde_json::json;
 
-    /// Every built-in recipe instantiates, and its declarations are the tasks
-    /// it advertises.
-    ///
-    /// This is the unit half of #1300's evidence. The integration
-    /// characterization test (`track_template_tracks.rs`) compares the created
-    /// track's *report* against the recipe; it cannot see the `declarations`
-    /// this returns, because a recipe's tasks are all `ready: false` and
-    /// `task_projection` skips the insert for anything non-schedulable
-    /// (`schedulable = ready && ..`). So the `tasks` table is empty on both
-    /// sides of the switch and proves nothing about the producer.
-    ///
-    /// Which makes this the only place "the declarations are actually
-    /// produced" is observable: replace the `project_task_declarations` call in
-    /// `prepare_initial_report_payload` with an empty vec and only this test
-    /// goes red.
+    /// Every built-in recipe instantiates, and its declarations are the tasks it advertises.
+    /// The only place "the declarations are actually produced" is observable: recipe tasks
+    /// are all `ready: false`, so the `tasks` table stays empty.
     #[test]
     fn every_recipe_instantiates_and_declares_its_tasks() {
         let roster = TemplateRoster::builtin();
@@ -4966,21 +3349,9 @@ mod tests {
         }
     }
 
-    /// #1635 S4 review — the value relation the deleted
-    /// `templates::tests::the_body_projection_matches_the_constant_task_list`
-    /// kept, restated against the files: for every builtin entry, the picker
-    /// projection (`compile_template` → `task_block_payloads` →
-    /// `task_payload_key_and_instruction`, the exact road
-    /// `routes::track_templates::current_definition` takes) yields, per key
-    /// and in order, the `goal` the fence in the file carries — and the
-    /// compiled block carries the fence's `acceptance` verbatim.
-    ///
-    /// The fences are read with the independent reader (`split_body` +
-    /// `parse_fence` straight off `Template::recipe().body`), not off the
-    /// compiled blocks, so the two sides do not share the producer. A
-    /// projection that swapped `goal` and `acceptance` — or a compiler that
-    /// restamped either — goes red here; nothing else holds the picker's
-    /// `goal` to the file's.
+    /// For every builtin entry, the picker projection yields, per key and in order, the
+    /// `goal` and `acceptance` the fence in the file carries. The fences are read with the
+    /// independent reader so the two sides do not share the producer.
     #[test]
     fn the_picker_projection_carries_each_fences_own_goal_and_acceptance() {
         use crate::templates::task_payload_key_and_instruction;
@@ -5050,28 +3421,8 @@ mod tests {
         );
     }
 
-    /// A recipe whose body does not parse is refused, not silently thinned.
-    ///
-    /// ## The two shapes, and why one guard covers both
-    ///
-    /// `validate_body_fences` runs `invalid_neige_fences` **and**
-    /// `validate_payload` over every parseable fence, so both a fence that
-    /// fails to parse and a fence that parses but violates its schema are
-    /// caught by the same call. Case A is the first, case B the second.
-    ///
-    /// Case A is the one that would otherwise be invisible: `split_body` treats
-    /// a malformed neige fence as prose, so an indented opener does not error —
-    /// it produces a report with one fewer task and no complaint anywhere.
-    ///
-    /// **The must-red is a single mutation**: delete the `validate_body_fences`
-    /// line in `prepare_initial_report_payload` and *both* cases go red. An
-    /// earlier draft claimed two independent guards with one case each; there
-    /// is only one guard on this path, and writing two must-reds against it
-    /// would have been a claim the code cannot support.
-    ///
-    /// Both feed `prepare_initial_report_payload` rather than
-    /// `prepare_template_report`: the latter takes a key, and there is no key
-    /// for a body no constant produces.
+    /// A recipe whose body does not parse is refused, not silently thinned: `split_body` treats
+    /// a malformed fence as prose, so without the check an indented opener would drop a task.
     #[test]
     fn a_recipe_that_does_not_parse_is_refused() {
         let good = TemplateRoster::builtin()
@@ -5084,10 +3435,7 @@ mod tests {
             .body
             .replacen("```neige-block task", " ```neige-block task", 1);
         assert_ne!(indented, good.body, "the fixture did not change the body");
-        // `match` rather than `expect_err`: the Ok arm carries a `ReportDoc`,
-        // which is deliberately not `Debug` (it wraps an automerge document),
-        // and deriving one on a production type to satisfy a test bound is the
-        // wrong direction.
+        // `match` rather than `expect_err`: `ReportDoc` is deliberately not `Debug`.
         let error = match prepare_initial_report_payload(
             "small-change",
             TrackReportPayload::new(good.summary.clone(), indented),
@@ -5135,15 +3483,8 @@ mod tests {
         assert!(error.to_string().contains("invalid forked report block"));
     }
 
-    /// #1252 S0b — the `KIND_PROSE` arm `continue`s past the loop's
-    /// `validate_payload`, so the fence check has to happen inside that arm.
-    /// A malformed ```` ```neige-block ```` fence in prose is refused by
-    /// `track_report_guard::validate_body_fences` at the whole-body write
-    /// ends (`ReportDocOp::Replace` / `::WriteMarkdown`), and since #1269
-    /// the prose `::UpsertBlock` arm refuses it at the op layer too — via
-    /// the stricter prose branch of `validate_block_content`, behind
-    /// MCP/REST surfaces that already refused it (#971 / #990). Forking is
-    /// a write end as well.
+    /// The `KIND_PROSE` arm `continue`s past the loop's `validate_payload`, so the fence
+    /// check has to happen inside that arm.
     #[test]
     fn fork_rejects_malformed_neige_fence_in_a_prose_block() {
         let prose = ReportBlock {
@@ -5170,9 +3511,7 @@ mod tests {
         );
     }
 
-    /// The scope fence for the check above: a prose block whose fences are
-    /// well formed still forks. Without this, "reject the fork" would pass
-    /// just as well as the real rule.
+    /// The scope fence for the check above: well-formed fences still fork.
     #[test]
     fn fork_keeps_prose_blocks_with_well_formed_fences() {
         let prose = ReportBlock {
@@ -5185,17 +3524,8 @@ mod tests {
             .expect("well-formed prose must fork");
     }
 
-    /// #1252 S2 — the structural door writes the JSON cache, the CRDT bytes and
-    /// the task projection as one operation, and the projection sees this
-    /// write's cache.
-    ///
-    /// The task block's `refs` point at the prose block of the *same* snapshot,
-    /// so it can only resolve if the payload cache already holds this write.
-    /// Swap the two statements inside `write_report_row_and_project_tx` and this
-    /// test collects a `reference_missing` diagnostic instead.
-    ///
-    /// Formerly `fork_persist_helper_writes_cache_crdt_and_projection_together`,
-    /// against `persist_initial_report_and_project_tasks_tx` in this file.
+    /// The task block's `refs` point at the prose block of the same snapshot, so it can only
+    /// resolve if the payload cache already holds this write.
     #[tokio::test]
     async fn structural_door_writes_cache_crdt_and_projection_together() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -5309,13 +3639,9 @@ mod tests {
         tx.rollback().await.unwrap();
     }
 
-    /// Pins the full-write assumption the events retention pruner's
-    /// keep-latest `overlay.set` carve-out depends on (#854 slice 2):
-    /// `fold_layout_positions` ignores a positions-less `overlay.set`
-    /// (`.or(current)`), so keeping only `MAX(id)` per overlay quad is
-    /// fold-preserving only if every kernel-emitted `view/layout`
-    /// `overlay.set` carries the complete positions map. This is that
-    /// writer. See `calm_truth::events_prune` module docs.
+    /// Pins the full-write assumption the events retention pruner's keep-latest `overlay.set`
+    /// carve-out depends on: every kernel-emitted `view/layout` `overlay.set` must carry the
+    /// complete positions map.
     #[test]
     fn planner_harness_layout_payload_is_a_full_positions_write() {
         let payload = planner_harness_layout_payload("planner-1", "report-1");
@@ -5327,10 +3653,7 @@ mod tests {
         assert!(positions.contains_key("report-1"));
     }
 
-    /// #891 / #1110 S2 — the create-time `template_input` validation
-    /// matrix. Schema-conformance details are pinned in
-    /// `plugin_host::template_input`; this covers the binding combinations
-    /// against the owning plugin Manifest.
+    /// The create-time `template_input` binding matrix against the owning plugin Manifest.
     mod template_input_binding {
         use super::super::validate_template_input_binding;
         use crate::error::CalmError;
@@ -5375,12 +3698,8 @@ mod tests {
             })
         }
 
-        /// 第二轮评审 MINOR-2 — every 400 this matrix produces ships through
-        /// `create_track`, and the route's own vocabulary (`track create: `) is
-        /// part of the body. Nothing in the repository asserted that prefix:
-        /// deleting it left the whole `--lib` suite green, because the needles
-        /// used here are all substrings of the bare reason. It is asserted on
-        /// every arm now, so the wrapper cannot silently stop wrapping.
+        /// The route prefix is part of every 400 body; asserted on every arm so the wrapper
+        /// cannot silently stop wrapping.
         const ROUTE_PREFIX: &str = "track create: ";
 
         fn expect_bad_request(owner: TemplateInputOwner<'_>, input: Option<&Value>, needle: &str) {
@@ -5405,13 +3724,8 @@ mod tests {
             );
         }
 
-        /// 第二轮评审 NIT-3 — the other cause of "no owning Manifest": the
-        /// `template_id` **was** given and the roster admits it, but no running
-        /// ∧ trusted plugin declares it. This cell used to answer "requires
-        /// `template_id`", i.e. it asked for the field the caller had already
-        /// sent. Reachable in production — `create_time_and_run_time_binding_
-        /// agree_for_a_stopped_owner` (`track_binding::tests`) drives it
-        /// through the real route.
+        /// The other cause of "no owning Manifest": the roster admits the id but no running and
+        /// trusted plugin declares it.
         #[test]
         fn input_with_a_template_whose_owner_is_not_running_names_that_cause() {
             let message = match validate_template_input_binding(
@@ -5423,11 +3737,8 @@ mod tests {
             };
             assert!(message.starts_with(ROUTE_PREFIX), "{message}");
             assert!(message.contains("running and trusted"), "{message}");
-            // 第三轮评审 MINOR — the *second* clause must stay narrow too.
-            // `NoBoundPlugin` also covers a stopped/untrusted owner whose
-            // Manifest is still in the registry and still declares this
-            // template; a bare "no plugin declares this template" would be
-            // false in exactly the case this test drives.
+            // `NoBoundPlugin` also covers a stopped/untrusted owner whose Manifest still declares
+            // this template, so the clause must stay scoped to running and trusted.
             assert!(
                 message.contains("no running and trusted plugin declares this template"),
                 "the cause clause must be scoped to running ∧ trusted, not to all \
@@ -5485,7 +3796,7 @@ mod tests {
                 Some(&json!({ "issue_url": "u", "merge_policy": "auto-merge" })),
             )
             .expect("conforming input accepted");
-            // INV-1110-003 — missing required / extra key / enum still 400.
+            // missing required / extra key / enum still 400.
             expect_bad_request(
                 owned(&p),
                 Some(&json!({ "merge_policy": "auto-merge" })),
@@ -5504,70 +3815,8 @@ mod tests {
         }
     }
 
-    /// #1318 S2 (第一轮评审 F4) — `admit_template` itself, not the two ends of
-    /// the chain it sits between.
-    ///
-    /// The first review round found the evidence chain broken exactly here.
-    /// `templates::tests::get_returns_the_rosters_own_borrow`
-    /// constrains the *lookup*, and `track_template_tracks::
-    /// create_stores_the_roster_key_as_template_id` observes the *column*;
-    /// neither can see the line in between (`key: template.key`). The reviewer
-    /// ran the adversarial construction — a naive case-insensitive
-    /// `admit_template` that reflects the caller's spelling back — and both of
-    /// those tests stayed green (1188 passed).
-    ///
-    /// So this asserts the assignment by data-pointer identity, the one form
-    /// the caller's string cannot satisfy: the fixture below is a freshly
-    /// allocated `String` with identical bytes, so an equality assertion would
-    /// pass for a reflected key and discriminate nothing.
-    ///
-    /// ## What this test can and cannot see (第二轮评审)
-    ///
-    /// The fixture is `String::from(template.key())` — byte-identical to the
-    /// roster's spelling. It therefore only ever exercises the branch where
-    /// the caller already spelled the key correctly, and an `admit_template`
-    /// that reflects the caller's string **conditionally** (`if id ==
-    /// template.key { template.key } else { String::leak(id.to_string()) }`)
-    /// stayed green under it. That is a real limitation of a pointer-identity
-    /// test fed an identical fixture, and its sister test
-    /// `track_template_tracks::create_stores_the_roster_key_as_template_id`
-    /// already said so about itself; this one did not.
-    ///
-    /// One *spelling* of the conditional mutation no longer compiles:
-    /// [`TemplateAdmission`] holds the `&'static Template` and
-    /// [`TemplateAdmission::key`] reads it, so there is no key assignment site
-    /// to make conditional, and producing one would require a forged
-    /// `Template` (`E0451` in safe Rust outside `crate::templates`). What this
-    /// test buys is the **unconditional** direction and the negative case,
-    /// cheaply, without depending on that reasoning being right.
-    ///
-    /// ## 第三轮评审 — the third-consumer claim is withdrawn
-    ///
-    /// This comment used to say the plugin binding "is closed by construction
-    /// rather than excused", because it is resolved from the same
-    /// `&'static Template` in the same expression that builds the admission.
-    /// That is not a closure. `id` is in [`admit_template`]'s scope for both
-    /// field initializers, so
-    /// `binding: if id == template.key() { resolve_template_binding(..).await } else { None }`
-    /// is ordinary safe Rust that forges nothing and leaves every test in this
-    /// repository green. Two further constructions (a second roster entry
-    /// point inside `crate::templates`, measured 68/68 green; a `transmute`
-    /// forgery, measured `clippy -D warnings` clean) make the same point from
-    /// other directions. All three are registered verbatim under
-    /// `## KNOWN GAPS` on [`admit_template`]; the binding consumer is
-    /// **untested here and knowingly so**, not closed.
-    ///
-    /// ## What the pointer assertion below does and does not discriminate
-    ///
-    /// It compares `admission.key()` against `template.key()` — both sides read
-    /// through the same accessor, so on its own it only pins that the accessor
-    /// is *pointer-stable*, not that it hands back the `static`'s bytes. The
-    /// 第二轮 refactor introduced exactly that weakening (before it, the right
-    /// side was the raw field), and a channel confirmed it by making `key()`
-    /// return an interned leak: 68/68 green. The missing half now lives where
-    /// the private field is nameable —
-    /// `templates::tests::the_accessors_hand_back_the_roster_fields_own_buffer`
-    /// — and the two together restore what the pre-refactor assertion said.
+    /// `admit_template` itself, asserted by data-pointer identity: the fixture is a freshly
+    /// allocated `String` with identical bytes, so an equality assertion would discriminate nothing.
     mod admission {
         use std::path::Path;
         use std::sync::Arc;

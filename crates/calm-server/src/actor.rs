@@ -1,36 +1,5 @@
-//! Scope G — declarative actor plumbing.
-//!
-//! Every REST write funnels through `Repo::write_with_event(actor, ...)` and
-//! the `events` table records who did what. Pre–Scope G that "who" was
-//! hardcoded to `"user"` in every handler, which made AI agent writes
-//! indistinguishable from human writes in audit. This module closes that gap.
-//!
-//! The mechanism:
-//!
-//! 1. An axum middleware ([`actor_middleware`]) reads `X-Calm-Actor` from the
-//!    incoming request headers, validates it, and injects an `Actor` into
-//!    the request extensions. When the header is absent the default is
-//!    `"user"` — preserving today's single-user local-host UX where no
-//!    header is sent.
-//!
-//! 2. Handlers add `actor: Actor` to their signature; the `FromRequestParts`
-//!    impl below plucks it from extensions. Handlers then pass `actor.0` as
-//!    the actor argument to `write_with_event_typed`.
-//!
-//! 3. The middleware refuses to forward writes whose claimed actor is
-//!    reserved for server-internal use (`kernel`, `plugin:*`). This stops
-//!    REST callers from spoofing kernel writes or impersonating plugins.
-//!    Server-internal sites (`card_fsm`, the codex hook ingest path, the
-//!    plugin callback dispatcher) reach `write_with_event_typed` without
-//!    going through the middleware, so those keep stamping `"kernel"` /
-//!    `"plugin:<id>"` directly.
-//!
-//! **Not authenticated.** See `docs/sync-engine-design.md` §1.1 — the
-//! `actor` field is a declared identity, not an authenticated one. In the
-//! single-user local-host deployment that's adequate; if neige-calm ever
-//! opens an externally-reachable surface, a separate auth layer must
-//! precede any reliance on `actor` for security decisions. Today this
-//! file is plumbing, not a security boundary.
+//! Declared actor plumbing: `X-Calm-Actor` → middleware → `Actor` extension → `write_with_event_typed`.
+//! Not authenticated — a declared identity, not a security boundary; `kernel` and `plugin:*` are refused from the header so REST callers cannot spoof server-internal writes.
 
 use axum::{
     body::Body,
@@ -44,15 +13,7 @@ use std::net::SocketAddr;
 use crate::error::CalmError;
 use crate::ids::{ActorId, CardId};
 
-/// Declared identity of an event producer. Populated by
-/// [`actor_middleware`] reading `X-Calm-Actor` from request headers; defaults
-/// to `"user"` when absent (preserves single-user local-host UX where no
-/// header is sent).
-///
-/// **Not authenticated** — this is a declared field. If neige-calm ever
-/// opens an externally-reachable surface, a separate auth design must
-/// gate writes before relying on this for security decisions. See design
-/// doc §1.1.
+/// Declared identity of an event producer; defaults to `"user"` when the header is absent. Not authenticated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Actor(pub String);
 
@@ -63,63 +24,27 @@ impl Actor {
     /// HTTP header carrying the declared actor.
     pub const HEADER: &'static str = "X-Calm-Actor";
 
-    /// Borrow the underlying string slice — convenience for passing to
-    /// `write_with_event_typed`.
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
-    /// Map the legacy stringly-typed actor to the PR2 typed [`ActorId`].
-    ///
-    /// The middleware only accepts `"user"` or `"ai:<id>"` from the
-    /// header today — `"kernel"` and `"plugin:*"` are reserved for
-    /// server-internal sites that build the `ActorId` directly. So the
-    /// mapping here only needs to cover those two header-reachable
-    /// forms plus a defensive fallback:
-    ///
-    ///   * `"user"` → [`ActorId::User`].
-    ///   * `"ai:codex"` → [`ActorId::AiCodex`] with a placeholder card id
-    ///     (the REST surface has no card context at the actor-extraction
-    ///     point; PR3+ will reattribute via the track/card the request
-    ///     touches). Other `"ai:<id>"` forms are unreachable via the
-    ///     middleware today.
-    ///   * Anything else (`"kernel"`, `"plugin:*"`, garbage) → [`ActorId::User`].
-    ///     The middleware would have already rejected these — this branch
-    ///     is defense-in-depth so a future relaxation can't quietly leak
-    ///     a malformed actor into the event log.
-    ///
-    /// Routes pass the result through to `write_with_event_typed`; the
-    /// trait then serializes it as JSON into the `events.actor` TEXT
-    /// column.
+    /// Map the header actor to a typed [`ActorId`]. Only `"user"` and `"ai:codex"` are header-reachable; anything else maps to `User` as defence in depth.
     pub fn to_actor_id(&self) -> ActorId {
         if self.0 == "user" {
             return ActorId::User;
         }
         if self.0 == "ai:codex" {
-            // No card context at REST entry — leave the carried CardId
-            // empty. This legacy bridge header intentionally stays
-            // card-shaped: middleware has no session context, and the live
-            // REST write sites reattribute downstream once they have a card
-            // and, where resolvable, an active worker session.
+            // No card context at REST entry — the carried CardId stays empty; the write sites reattribute downstream once they have a card.
             return ActorId::AiCodex(CardId::from(""));
         }
-        // Defensive default: the middleware should have already rejected
-        // anything else, but if it didn't (relaxation in some future PR),
-        // we attribute as User rather than synthesize a Kernel/Plugin
-        // identity from an attacker-controlled header.
+        // Defensive default: attribute as User rather than synthesize a Kernel/Plugin identity from an attacker-controlled header.
         ActorId::User
     }
 }
 
-/// Validation outcome for an actor string sourced from a request header.
-///
-/// Reserved actors (`kernel`, `plugin:*`) are rejected from the header —
-/// they're populated server-side by the FSM projector and the plugin
-/// callback dispatcher respectively. Allowing them via header would let any
-/// REST caller spoof kernel writes or impersonate plugins.
+/// Reserved actors (`kernel`, `plugin:*`) are rejected from the header: allowing them would let any REST caller spoof kernel writes or impersonate plugins.
 fn validate_header_actor(raw: &str) -> Result<Actor, CalmError> {
-    // Empty -> treat as missing, caller already collapses that case to the
-    // default; this branch is defense in depth.
+    // Empty -> missing; the caller already collapses that case, this is defense in depth.
     if raw.is_empty() {
         return Ok(Actor(Actor::DEFAULT.to_string()));
     }
@@ -167,19 +92,13 @@ fn is_valid_actor_id(id: &str) -> bool {
         .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
-/// Axum middleware: read `X-Calm-Actor`, validate, stash an [`Actor`] in
-/// request extensions for downstream handlers to pluck via the
-/// [`FromRequestParts`] impl below.
-///
-/// On invalid headers we short-circuit with a 400 (via [`CalmError::BadRequest`])
-/// — the handler never runs.
+/// Axum middleware: read `X-Calm-Actor`, validate, stash an [`Actor`] in request extensions; invalid headers short-circuit with a 400.
 pub async fn actor_middleware(
     headers: HeaderMap,
     mut request: Request<Body>,
     next: Next,
 ) -> Result<Response, CalmError> {
-    // Header parsing: a non-UTF-8 byte sequence is treated the same as a
-    // malformed value — 400, not silently default-to-user.
+    // A non-UTF-8 header is a malformed value — 400, not silently default-to-user.
     let raw = match headers.get(Actor::HEADER) {
         None => None,
         Some(v) => match v.to_str() {
@@ -201,11 +120,7 @@ pub async fn actor_middleware(
     Ok(next.run(request).await)
 }
 
-/// Axum middleware: require the TCP peer to be loopback.
-///
-/// Internal worker hook routes are loopback callbacks, not browser/user REST
-/// endpoints. This enforces that server-side boundary; same-host spoofing and
-/// future loopback reverse-proxy bypasses remain tracked under #362.
+/// Axum middleware: require the TCP peer to be loopback (internal worker hook routes are loopback callbacks, not user REST endpoints).
 pub async fn require_loopback_connect_info(
     request: Request<Body>,
     next: Next,
@@ -246,8 +161,6 @@ mod tests {
 
     #[test]
     fn default_when_empty() {
-        // Empty string is treated as "missing" — defense in depth on top of
-        // the middleware's header-absent branch.
         let a = validate_header_actor("").unwrap();
         assert_eq!(a, Actor("user".into()));
     }
@@ -295,8 +208,7 @@ mod tests {
     fn plugin_rejected() {
         let err = validate_header_actor("plugin:hello-world").unwrap_err();
         assert!(matches!(err, CalmError::BadRequest(_)));
-        // Bare `plugin:` (no id) is rejected by the same arm — the
-        // namespace itself is reserved, not just the id-bearing form.
+        // Bare `plugin:` is rejected too — the namespace itself is reserved.
         let err = validate_header_actor("plugin:").unwrap_err();
         assert!(matches!(err, CalmError::BadRequest(_)));
     }

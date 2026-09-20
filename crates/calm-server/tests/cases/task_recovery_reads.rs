@@ -436,14 +436,6 @@ async fn list_entry(boot: &crate::mcp_track_report::Boot, args: Value) -> Value 
         .expect("task b is listed")
 }
 
-/// #1727 S1 (fix round 1, F1) — `workspace.leased` / `worktree.committed` no
-/// longer wake the planner, so the facts they carried are read back through
-/// `calm.plan.list` as `worktree`: the lease path and state, the slice branch,
-/// and the kernel-made commit sha a Codex worker cannot self-report (it
-/// reports BEFORE the kernel commits). No lease → no key at all; a lease
-/// without a commit names the branch from the lease's own naming; a commit
-/// event supplies both `branch` and `last_commit`; `detail:"summary"` keeps
-/// all four fields.
 #[tokio::test]
 async fn task_recovery_list_carries_the_worker_worktree_facts() {
     let boot = boot().await;
@@ -466,8 +458,7 @@ async fn task_recovery_list_carries_the_worker_worktree_facts() {
         "no lease must render no worktree key: {entry}"
     );
 
-    // A lease at the canonical `<repo>/.claude/worktrees/<track>/<card>`
-    // path, through the production acquisition; no commit yet.
+    // A lease at the canonical path, through the production acquisition; no commit yet.
     let repo_root = tempfile::tempdir().expect("tempdir");
     let lease_path = repo_root
         .path()
@@ -496,9 +487,7 @@ async fn task_recovery_list_carries_the_worker_worktree_facts() {
         "lease without a commit: branch from the lease naming, no last_commit: {entry}"
     );
 
-    // The kernel's auto commit lands a `worktree.committed` event scoped to
-    // the worker card (the forge adapter's scope for `worktree.*`); the
-    // read now names its sha and branch.
+    // The kernel's auto commit lands a `worktree.committed` event scoped to the worker card.
     let sha = "0123456789abcdef0123456789abcdef01234567".to_string();
     let event_branch = format!("neige/{track}/{card}-from-event");
     let event = calm_server::event::Event::WorktreeCommitted {
@@ -547,8 +536,7 @@ async fn task_recovery_list_carries_the_worker_worktree_facts() {
     );
 }
 
-/// Append one card-scoped kernel event for the worker card, the way the
-/// forge adapter / the release paths do, and return its event id.
+/// Append one card-scoped kernel event for the worker card and return its event id.
 async fn append_worker_card_event(
     boot: &crate::mcp_track_report::Boot,
     event: calm_server::event::Event,
@@ -570,13 +558,8 @@ async fn append_worker_card_event(
     ids[0]
 }
 
-/// #1727 S1 (fix round 2, H5) — `state:"released"` plus a `path` cannot say
-/// whether the checkout still exists: `release_workspace_lease_for_card_*`
-/// only flips the row, `release_workspace_lease_by_id` removes the worktree
-/// and appends `worktree.removed`. The read carries `removed`: two released
-/// leases, one retained and one removed, read differently; a removed
-/// worktree has no `path` / `branch` but keeps `last_commit`; a
-/// `worktree.provisioned` newer than the removal puts the path back.
+/// `release_workspace_lease_for_card_*` only flips the row; `release_workspace_lease_by_id`
+/// removes the worktree and appends `worktree.removed`.
 #[tokio::test]
 async fn task_recovery_list_worktree_facts_tell_a_removed_worktree_from_a_retained_one() {
     let boot = boot().await;
@@ -601,9 +584,7 @@ async fn task_recovery_list_worktree_facts_tell_a_removed_worktree_from_a_retain
     let lease_path_json = json!(lease_path.to_string_lossy());
     let naming_branch = format!("neige/{track}/{card}");
 
-    // Lease 1: acquired, then released through the flip-only production
-    // path (`decision_sink` / reaper / scheduler shape). The directory is
-    // still there and the read says so.
+    // Lease 1: acquired, then released through the flip-only production path.
     calm_server::test_seams::acquire_workspace_lease_for_test(
         &pool,
         &card,
@@ -636,9 +617,8 @@ async fn task_recovery_list_worktree_facts_tell_a_removed_worktree_from_a_retain
         "released + retained: path and branch stay, removed:false: {entry}"
     );
 
-    // Lease 2 on the same card and path. `acquire` stamps `created_at_ms`
-    // with the wall clock and ties break on a random uuid, so push lease 1
-    // back by a tick to make "latest lease" deterministic in a sub-ms test.
+    // Lease 2 on the same card and path. `acquire` stamps `created_at_ms` with the wall clock and
+    // ties break on a random uuid, so push lease 1 back by a tick to make "latest lease" deterministic.
     sqlx::query(
         "UPDATE workspace_leases SET created_at_ms = created_at_ms - 10 WHERE card_id = ?1",
     )
@@ -687,9 +667,7 @@ async fn task_recovery_list_worktree_facts_tell_a_removed_worktree_from_a_retain
         "lease 2 held with a commit: {entry}"
     );
 
-    // Lease 2 released through the removing production path: the checkout
-    // is gone, `worktree.removed` is on the events table, and the read
-    // drops `path` / `branch` while keeping the sha.
+    // Lease 2 released through the removing production path.
     assert!(
         calm_server::test_seams::release_workspace_lease_by_id_for_test(
             &pool,
@@ -729,8 +707,7 @@ async fn task_recovery_list_worktree_facts_tell_a_removed_worktree_from_a_retain
     let compact = list_entry(&boot, json!({"detail":"summary","key":"b"})).await;
     assert_eq!(compact["worktree"], entry["worktree"], "{compact}");
 
-    // Re-provisioned after the removal (a `worktree.provisioned` newer than
-    // the `worktree.removed`): the path is back.
+    // Re-provisioned after the removal: the path is back.
     append_worker_card_event(
         &boot,
         calm_server::event::Event::WorktreeProvisioned {

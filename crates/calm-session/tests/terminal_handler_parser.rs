@@ -1,13 +1,5 @@
-//! Parser-side contract tests for [`VteProcessor`] (#69).
-//!
-//! These verify that `vte::Perform` byte sequences are translated into the
-//! correct [`TerminalHandler`] method calls — *without* touching any
-//! grid/cursor state. A `MockHandler` records every call as a tagged enum;
-//! we feed canonical byte sequences (CR/LF, CUP, ED, SGR, DECTCEM, ...)
-//! and assert on the recorded call list.
-//!
-//! See `terminal_handler_model.rs` for state-mutation tests against the
-//! real `TerminalModel` impl.
+//! Parser-side contract tests for [`VteProcessor`]: byte sequences must translate into the correct
+//! [`TerminalHandler`] calls, recorded by a `MockHandler` without touching any grid/cursor state.
 
 use calm_session::terminal_model::{EraseMode, TerminalHandler, VteProcessor};
 use vte::Parser;
@@ -125,8 +117,7 @@ impl TerminalHandler for MockHandler {
     }
 }
 
-/// Drive a fresh `vte::Parser` + `VteProcessor` over `bytes`, return the
-/// recorded call list. One helper to keep the assertion sites tight.
+/// Drive a fresh `vte::Parser` + `VteProcessor` over `bytes`, return the recorded call list.
 fn drive(bytes: &[u8]) -> Vec<Call> {
     let mut mock = MockHandler::default();
     let mut parser = Parser::new();
@@ -149,7 +140,6 @@ fn cr_lf_decomposes_into_two_calls() {
 
 #[test]
 fn c0_controls_route_to_named_methods() {
-    // BS, HT, BEL — verify each routes to the right handler method.
     assert_eq!(drive(b"\x08"), vec![Call::Backspace]);
     assert_eq!(drive(b"\x09"), vec![Call::HorizontalTab]);
     assert_eq!(drive(b"\x07"), vec![Call::Bell]);
@@ -167,7 +157,6 @@ fn ed_modes_map_to_erase_mode_enum() {
         drive(b"\x1b[1J"),
         vec![Call::EraseScreen(EraseMode::ToStart)],
     );
-    // CSI J with no param is equivalent to CSI 0 J.
     assert_eq!(drive(b"\x1b[J"), vec![Call::EraseScreen(EraseMode::ToEnd)],);
 }
 
@@ -180,13 +169,11 @@ fn el_modes_map_to_erase_mode_enum() {
 
 #[test]
 fn cup_3_5_routes_to_cursor_to_with_zero_indexed_args() {
-    // Wire is 1-indexed; trait API is 0-indexed.
     assert_eq!(drive(b"\x1b[3;5H"), vec![Call::CursorTo(2, 4)]);
 }
 
 #[test]
 fn cup_defaults_to_1_1_when_omitted() {
-    // CSI H with no params == CUP 1;1 → (0,0) at the trait API.
     assert_eq!(drive(b"\x1b[H"), vec![Call::CursorTo(0, 0)]);
 }
 
@@ -208,9 +195,7 @@ fn cursor_moves_honor_explicit_param() {
 
 #[test]
 fn cha_vpa_route_to_axis_specific_methods() {
-    // CSI 10 G — CHA → cursor_column(9) after 1-indexed conversion.
     assert_eq!(drive(b"\x1b[10G"), vec![Call::CursorColumn(9)]);
-    // CSI 7 d — VPA → cursor_row(6).
     assert_eq!(drive(b"\x1b[7d"), vec![Call::CursorRow(6)]);
 }
 
@@ -222,22 +207,18 @@ fn scroll_su_sd_route_with_default_one() {
 
 #[test]
 fn sgr_bold_red_flattens_to_param_slice() {
-    // Two params, semicolon separated → set_sgr([1, 31]).
     assert_eq!(drive(b"\x1b[1;31m"), vec![Call::SetSgr(vec![1, 31])]);
 }
 
 #[test]
 fn sgr_with_no_params_arrives_as_zero() {
-    // `vte` normalizes `CSI m` (no params) to a single 0 param —
-    // semantically equivalent to `CSI 0 m`. Either form must therefore
-    // reach the handler as `set_sgr([0])`.
+    // `vte` normalizes `CSI m` (no params) to a single 0 param.
     assert_eq!(drive(b"\x1b[m"), vec![Call::SetSgr(vec![0])]);
     assert_eq!(drive(b"\x1b[0m"), vec![Call::SetSgr(vec![0])]);
 }
 
 #[test]
 fn sgr_256_color_flattens_subparams() {
-    // 38;5;196 — flat sequence should arrive as one set_sgr call.
     assert_eq!(
         drive(b"\x1b[38;5;196m"),
         vec![Call::SetSgr(vec![38, 5, 196])],
@@ -252,8 +233,6 @@ fn dectcem_show_hide_routes_to_set_cursor_visible() {
 
 #[test]
 fn decset_1049_routes_to_enter_exit_alt_screen() {
-    // Even though the impl is a noop, the parser MUST surface these so a
-    // future PR can wire alt-screen without re-touching `VteProcessor`.
     assert_eq!(drive(b"\x1b[?1049h"), vec![Call::EnterAltScreen]);
     assert_eq!(drive(b"\x1b[?1049l"), vec![Call::ExitAltScreen]);
 }
@@ -280,9 +259,6 @@ fn decset_mouse_and_paste_route_to_mode_setters() {
 
 #[test]
 fn decset_1004_routes_to_set_focus_event_tracking() {
-    // DECSET/DECRST 1004 (focus event reporting). The daemon reads the
-    // resulting flag to gate the mid-session `ESC[I` theme nudge (#305)
-    // — only focus-aware TUIs like codex opt in.
     assert_eq!(
         drive(b"\x1b[?1004h"),
         vec![Call::SetFocusEventTracking(true)],
@@ -295,45 +271,34 @@ fn decset_1004_routes_to_set_focus_event_tracking() {
 
 #[test]
 fn unknown_csi_is_silent_noop() {
-    // CSI ?9999 h — unknown DEC private. Must NOT produce any handler
-    // call and must NOT panic.
+    // Unknown DEC private: no handler call and no panic.
     assert_eq!(drive(b"\x1b[?9999h"), vec![]);
-    // Vanilla unknown final byte.
     assert_eq!(drive(b"\x1b[1;2Z"), vec![]);
 }
 
 #[test]
 fn osc_11_query_routes_to_osc_color_query_slot_11() {
-    // ESC ] 11 ; ? ST (`ST` = ESC \). codex (#177) probes default bg
-    // this way at startup; the parser must surface it as
-    // `osc_color_query(11)` so the handler can reply.
     assert_eq!(drive(b"\x1b]11;?\x1b\\"), vec![Call::OscColorQuery(11)]);
 }
 
 #[test]
 fn osc_10_query_routes_to_osc_color_query_slot_10() {
-    // ESC ] 10 ; ? ST — default fg query. Symmetric to OSC 11.
     assert_eq!(drive(b"\x1b]10;?\x1b\\"), vec![Call::OscColorQuery(10)]);
 }
 
 #[test]
 fn osc_11_with_rgb_payload_is_not_a_query() {
-    // A reply-shaped OSC 11 (someone telling US a color, not asking)
-    // must NOT surface as `osc_color_query`. Only the literal `?`
-    // payload is a query.
+    // Only the literal `?` payload is a query; a reply-shaped OSC 11 must not surface.
     assert_eq!(drive(b"\x1b]11;rgb:0/0/0\x1b\\"), vec![]);
 }
 
 #[test]
 fn osc_unrelated_slot_with_query_payload_is_silent() {
-    // OSC 12 (cursor color) and other non-10/11 slots are not in scope
-    // for the #177 fix — must NOT surface a handler call.
     assert_eq!(drive(b"\x1b]12;?\x1b\\"), vec![]);
 }
 
 #[test]
 fn combined_sequence_text_then_clear_then_text() {
-    // Realistic snippet: print "hi", CR LF, ED 2, CUP 1;1, print "x".
     assert_eq!(
         drive(b"hi\r\n\x1b[2J\x1b[1;1Hx"),
         vec![

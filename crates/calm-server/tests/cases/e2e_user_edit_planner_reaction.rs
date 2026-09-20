@@ -1,42 +1,5 @@
-//! Issue #247 PR5 — end-to-end coverage for the user-edit → planner-reaction
-//! loop.
-//!
-//! Earlier PRs built the building blocks separately:
-//!
-//!   * PR2 (`mcp_track_report.rs`) — the planner-MCP `calm.report.{read,
-//!     write,edit}` tools persist + emit `TrackReportEdited` with
-//!     `author == Planner`.
-//!   * PR3 (`rest_track_report.rs`) — the REST `POST /api/tracks/:id/report`
-//!     endpoint persists + emits `TrackReportEdited` with
-//!     `author == User`.
-//!   * PR4 — the UI pencil/edit affordance that drives that REST POST.
-//!
-//! What's NOT covered by any of those, and what this file pins, is the
-//! whole loop end-to-end. #293 cutover: the planner daemon no longer
-//! long-polls (`calm.wait_for_events` is gone) — instead the dispatcher
-//! subscribes to the track's event stream with a `SubscribeFilter` and
-//! pushes the matching `track.report_edited` onto the planner's codex thread
-//! as a turn input. This test mirrors that delivery path by subscribing
-//! to the same bus (via `EventBus::subscribe_filtered` + the dispatcher's
-//! track-scope `SubscribeFilter`) and asserting:
-//!
-//!   1. PR3's `EditAuthor::User` actually serializes as the lowercase
-//!      `"user"` string on the wire that PR5's planner system prompt
-//!      instructs the agent to match on.
-//!   2. The CRDT merge from a user-write is visible to a subsequent
-//!      MCP `calm.report.read` (no read-after-write staleness through
-//!      the JSON-cache projection).
-//!   3. The same `TrackReportEdited` envelope reaches a track-scoped
-//!      subscriber (the dispatcher's filter must accept Card-scoped
-//!      events under the track; otherwise the user's edit silently
-//!      disappears from the push path).
-//!
-//! The negative-half also pins that planner-authored writes land with
-//! `author == "planner"` — so the planner system prompt's "ignore your own
-//! echoes" guidance (and the dispatcher's user-only push gate) is
-//! testable for regression. A future serialization break (rename of
-//! `EditAuthor` arms, change of `#[serde(rename_all = "lowercase")]`,
-//! etc.) would flip both halves at once and fail loud.
+//! End-to-end coverage for the user-edit → planner-reaction loop: a REST report edit reaches
+//! a track-scoped subscriber as `author == "user"` and a later MCP read sees the user's body.
 
 #![cfg(unix)]
 
@@ -71,13 +34,7 @@ use tower::ServiceExt;
 
 const PLANNER_SESSION_ID: &str = "planner-session";
 
-// ---------------------------------------------------------------------------
-// Fixture — shared `AppState` + `AppContext` so REST writes and MCP
-// reads/waits observe the same bus + repo. The two paths in production
-// are wired to the same `AppState.events`; we mirror that here by
-// cloning the bus into the `AppContext` (`AppContext` is the MCP
-// registry's view, `AppState` is the axum router's view).
-// ---------------------------------------------------------------------------
+// Shared `AppState` + `AppContext` so REST writes and MCP reads observe the same bus + repo.
 
 struct Boot {
     state: AppState,
@@ -173,10 +130,7 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    // Mint the planner card + track-report card the same way
-    // `routes::tracks::create_track` does. The `CardRoleCache` below
-    // carries the role pin so the MCP tools' role gate sees Planner /
-    // ReportCard correctly.
+    // Mint the planner card + track-report card the same way `routes::tracks::create_track` does.
     let planner_card = repo
         .card_create(NewCard {
             track_id: track.id.clone(),
@@ -205,8 +159,7 @@ async fn boot() -> Boot {
     )
     .await;
 
-    // Shared caches. Both AppState and AppContext must hold the same
-    // clones so a write on either side updates a single source of truth.
+    // Both AppState and AppContext must hold the same cache clones.
     let card_role_cache = CardRoleCache::new();
     card_role_cache.insert(planner_card.id.clone(), CardRole::Planner, track.id.clone());
     crate::support::mcp::set_persisted_card_role(
@@ -225,10 +178,6 @@ async fn boot() -> Boot {
 
     let events = EventBus::new();
 
-    // Build the AppState through `from_parts` with the shared bus and
-    // caches. `from_parts` accepts pre-seeded caches via `Option`s, so
-    // both the REST router and the MCP context observe the same role /
-    // track-area maps.
     let state = AppState::from_parts(
         repo.clone(),
         events.clone(),
@@ -256,8 +205,6 @@ async fn boot() -> Boot {
         display_name: "alice".into(),
     });
 
-    // MCP context — repo + the same bus the REST writes broadcast on,
-    // plus the shared role/area caches.
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     let ctx = Arc::new(AppContext {
         terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
@@ -307,9 +254,7 @@ fn planner_identity(b: &Boot) -> ToolCallIdentity {
     }
 }
 
-/// Build the same protected-router stack `main.rs` assembles (auth
-/// middleware outside, actor middleware inside). Order matches the
-/// production binary so the REST surface behaves identically.
+/// The same protected-router stack `main.rs` assembles (auth middleware outside, actor inside).
 fn app(state: AppState, auth_state: AuthState) -> axum::Router {
     let protected_rest = routes::protected_router()
         .layer(axum::middleware::from_fn(
@@ -373,12 +318,7 @@ async fn call_mcp(
         .map(calm_server::mcp_server::result::ToolResult::into_structured)
 }
 
-/// The dispatcher's push path subscribes to the track's event stream with
-/// a `SubscribeFilter` and reacts to `track.report_edited` (it pushes the
-/// matching observation onto the planner's codex thread). This helper mirrors
-/// that subscriber: it builds the same track-scoped filter and returns a
-/// receiver the test can drain, so we exercise the exact delivery path the
-/// dispatcher uses — without booting a real codex thread.
+/// Mirrors the dispatcher's push-path subscriber: the same track-scoped filter, without a real codex thread.
 fn subscribe_track_report_edits(
     boot: &Boot,
 ) -> tokio::sync::broadcast::Receiver<BroadcastEnvelope> {
@@ -393,9 +333,8 @@ fn track_report_filter(boot: &Boot) -> SubscribeFilter {
     }
 }
 
-/// Drain matching `track.report_edited` envelopes off a subscription until
-/// `want` of them have arrived or a short deadline expires, rendering each
-/// to the same `{ev, data, ...}` wire JSON the dispatcher/WS path produces.
+/// Drain matching `track.report_edited` envelopes until `want` have arrived or a short deadline
+/// expires, rendered to the same wire JSON the dispatcher/WS path produces.
 async fn drain_report_edits(
     rx: &mut tokio::sync::broadcast::Receiver<BroadcastEnvelope>,
     filter: &SubscribeFilter,
@@ -421,40 +360,17 @@ async fn drain_report_edits(
     out
 }
 
-// ---------------------------------------------------------------------------
-// Happy path — the full user-edit → planner-wake → planner-reread loop
-// ---------------------------------------------------------------------------
-
-/// The canonical loop the planner system prompt now documents (push model):
-///
-///   1. Planner seeds a known initial body via `calm.report.write`.
-///   2. A track-scoped subscriber (the dispatcher's push filter) observes
-///      the planner's own seed write as `author == "planner"`.
-///   3. User edits via REST (`POST /api/tracks/:id/report`), appending a
-///      sentinel string.
-///   4. The same subscriber observes a single `track.report_edited`
-///      envelope with `author == "user"` and the sentinel inside
-///      `body_after` — this is exactly the event the dispatcher pushes
-///      onto the planner's thread as a turn input.
-///   5. Planner calls `calm.report.read` and observes the user's body
-///      (the sentinel is in the read result, the planner's seed body is
-///      gone).
-///
-/// The assertions at step 4 are load-bearing: PR5's planner prompt tells
-/// the agent to gate the "stop and re-read" behavior on `author ==
-/// "user"`, and the dispatcher's push gate only fires for user edits, so
-/// the lowercase string spelling has to be guaranteed by this path's
-/// serde shape.
+/// The dispatcher's push gate and the planner prompt both key on the lowercase `"user"` author
+/// string, so the serde spelling has to be guaranteed by this path.
 #[tokio::test]
 async fn user_edit_via_rest_reaches_track_subscriber_and_planner_reads_back_user_body() {
     let boot = boot().await;
 
-    // Subscribe to the track's event stream BEFORE any write, exactly as
-    // the dispatcher's push path does (it subscribes once at spawn).
+    // Subscribe BEFORE any write, as the dispatcher does (once at spawn).
     let mut rx = subscribe_track_report_edits(&boot);
     let filter = track_report_filter(&boot);
 
-    // ----- step 1: planner seeds an initial body.
+    // step 1: planner seeds an initial body.
     let initial_body = "# Goal\n\nv0 initial content from planner\n";
     call_mcp(
         &boot,
@@ -470,10 +386,7 @@ async fn user_edit_via_rest_reaches_track_subscriber_and_planner_reads_back_user
     .await
     .expect("planner seeds initial body");
 
-    // ----- step 2: the subscriber observes the planner's own seed write
-    // tagged as Planner. (The dispatcher's push gate would SKIP this — it
-    // only pushes user edits — but the envelope still reaches the
-    // track-scoped subscriber, which is the surface this asserts.)
+    // step 2: the subscriber observes the planner's own seed write tagged as Planner.
     let seed_edits = drain_report_edits(&mut rx, &filter, 1).await;
     assert_eq!(
         seed_edits.len(),
@@ -485,12 +398,8 @@ async fn user_edit_via_rest_reaches_track_subscriber_and_planner_reads_back_user
         "self-write author must be lowercase \"planner\" on the wire (planner prompt matches on it); got {seed_edits:?}",
     );
 
-    // ----- step 3: user edits via REST. We POST through the live
-    // axum router so the auth + actor middleware and the
-    // `EditAuthor::User` pin all run end-to-end. #1318 §1 — that pin
-    // moved out of the handler and into the entry point it calls,
-    // `track_report::write::rest_user_replace`; driving the real route is
-    // what keeps this test covering it either way.
+    // step 3: user edits via REST, through the live router so auth + actor middleware and the
+    // `EditAuthor::User` pin all run.
     let user_body = format!("{initial_body}\n## USER ADDED SECTION\nhand-typed line\n");
     let app = app(boot.state.clone(), boot.auth_state.clone());
     let cookie = login(&app).await;
@@ -515,9 +424,7 @@ async fn user_edit_via_rest_reaches_track_subscriber_and_planner_reads_back_user
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK, "REST user edit must succeed");
 
-    // ----- step 4: the track subscriber observes the user's edit — the
-    // exact `track.report_edited` the dispatcher pushes onto the planner's
-    // thread as a turn input.
+    // step 4: the track subscriber observes the user's edit.
     let woken_events = drain_report_edits(&mut rx, &filter, 1).await;
     let user_edits: Vec<_> = woken_events
         .iter()
@@ -543,10 +450,6 @@ async fn user_edit_via_rest_reaches_track_subscriber_and_planner_reads_back_user
         boot.report_card_id.as_str(),
         "card_id on the envelope must match the report card",
     );
-    // body_before == planner's last seeded body; body_after contains the
-    // user's appended section verbatim. Pinning both ends locks in
-    // both the CRDT projection of the pre-write state and the
-    // post-write state visible to the planner's listener.
     assert_eq!(
         user_edit["data"]["body_before"], initial_body,
         "body_before must reflect the planner's pre-edit body; got {user_edit}",
@@ -563,10 +466,7 @@ async fn user_edit_via_rest_reaches_track_subscriber_and_planner_reads_back_user
         "body_after must match the REST body byte-for-byte; got: {body_after}",
     );
 
-    // ----- step 5: planner calls report.read and sees the user's body.
-    // This is the "treat user's version as ground truth" check from
-    // the PR5 prompt: a follow-up read must not see the planner's
-    // stale seed body anywhere.
+    // step 5: planner calls report.read and must not see its stale seed body anywhere.
     let read = call_mcp(&boot, TOOL_REPORT_READ, planner_identity(&boot), json!({}))
         .await
         .expect("planner reads back the user's edit");
@@ -584,7 +484,7 @@ async fn user_edit_via_rest_reaches_track_subscriber_and_planner_reads_back_user
         "planner's read result includes the user's summary",
     );
 
-    // Belt-and-suspenders: persisted DB state matches.
+    // Persisted DB state matches.
     let card = boot
         .repo
         .card_get(boot.report_card_id.as_str())
@@ -596,34 +496,16 @@ async fn user_edit_via_rest_reaches_track_subscriber_and_planner_reads_back_user
     assert_eq!(payload.summary, "user edited the report");
 }
 
-// ---------------------------------------------------------------------------
-// Negative half — planner's own writes echo back as `author == "planner"`
-// ---------------------------------------------------------------------------
-
-/// PR5's planner system prompt tells the agent to *ignore* `TrackReportEdited`
-/// events with `author == "planner"` (they're the agent's own writes echoing
-/// back via the event stream — acting on them would burn cycles and
-/// risk write loops), and the dispatcher's push gate only forwards
-/// user-authored edits for the same reason. This test pins that contract:
-/// a planner `report.write` surfaces on the track stream tagged as Planner, with
-/// the same wire spelling the prompt's instruction depends on (`"planner"`,
-/// not `"Planner"` / `"PLANNER"`).
-///
-/// A future regression that broke `EditAuthor` serialization (e.g.
-/// stripping the `#[serde(rename_all = "lowercase")]` attribute) would
-/// flip the user-half test above AND this planner-half test simultaneously
-/// — exactly the lockstep we want, so the agent's prompt instructions and
-/// the dispatcher's gate stay testable against the wire shape.
+/// A planner `report.write` surfaces on the track stream as `"planner"` (lowercase), the
+/// spelling the prompt's ignore-own-echoes instruction and the push gate depend on.
 #[tokio::test]
 async fn planner_self_write_echoes_as_author_planner_on_the_track_stream() {
     let boot = boot().await;
 
-    // Subscribe to the track stream first (as the dispatcher does).
     let mut rx = subscribe_track_report_edits(&boot);
     let filter = track_report_filter(&boot);
 
-    // A priming write, drained off the subscription so the next drain
-    // only sees what follows.
+    // A priming write, drained so the next drain only sees what follows.
     call_mcp(
         &boot,
         TOOL_REPORT_WRITE,
@@ -644,11 +526,7 @@ async fn planner_self_write_echoes_as_author_planner_on_the_track_stream() {
         "priming write surfaces once; got {primed:?}"
     );
 
-    // Now: a second planner-authored write. The stream must surface this
-    // as `author == "planner"`, NOT `"user"` (which would be a
-    // serialization regression — the planner prompt and the dispatcher's
-    // push gate would then be unable to distinguish self-echoes from
-    // user edits).
+    // A second planner-authored write must surface as `author == "planner"`, NOT `"user"`.
     call_mcp(
         &boot,
         TOOL_REPORT_WRITE,
@@ -682,8 +560,7 @@ async fn planner_self_write_echoes_as_author_planner_on_the_track_stream() {
         boot.report_card_id.as_str(),
         "card_id on the envelope must match the report card",
     );
-    // No user envelope hiding among the echoes — distinguishing the
-    // two halves is the prompt instruction's (and push gate's) whole point.
+    // No user envelope hiding among the echoes.
     assert!(
         self_echoes
             .iter()

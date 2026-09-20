@@ -1,10 +1,5 @@
-//! Issue #1027 — the diagnostics predicate must read one database snapshot.
-//!
-//! The original read path mixed the core track/task snapshot with later
-//! reference and frozen-declaration statements. A test-only seam in the real
-//! predicate pauses immediately after its fact-loading statement, so each test
-//! can deterministically commit a t0/t1 change before verdict evaluation. The
-//! seam changes no production query or decision branch.
+//! The diagnostics predicate must read one database snapshot; a test-only
+//! seam pauses right after its fact-loading statement.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -52,10 +47,8 @@ fn declaration_with_refs(
         block.payload["refs"] = json!(refs);
     }
     let (mut declarations, diagnostics) = project_task_declarations(&[block]);
-    // These DB snapshot tests deliberately include legacy and invalid reference
-    // strings. Keep their genuine raw source from the extractor; parser-level
-    // admission diagnostics are tested elsewhere, while this suite supplies its
-    // own diagnostic input to isolate reference materialization in one SQL read.
+    // Legacy and invalid reference strings are deliberate: this suite supplies
+    // its own diagnostic input to isolate reference materialization.
     assert!(
         diagnostics
             .iter()

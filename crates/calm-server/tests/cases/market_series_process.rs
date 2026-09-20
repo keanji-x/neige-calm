@@ -1,16 +1,6 @@
-//! Process-level tests for `market.series` (#1628 S3): the real `market`
-//! binary, driven by the fake kernel, against loopback stand-ins for Tencent
-//! ifzq and Binance klines.
-//!
-//! What these pin cannot be pinned from a pure function: the ORDER of the
-//! plugin's HTTP requests (probe before window, suffix discovery before the
-//! US window), how a window is paged against a source that caps a page, and
-//! what the in-memory page cache does across a UTC midnight and across a
-//! source that advanced between two calls. The fixtures therefore record
-//! every request and can be mutated between calls.
-//!
-//! Every date below is a real 2026 calendar date: 2026-09-11 is a Friday,
-//! 2026-09-13 a Sunday and 2026-09-14 a Monday.
+//! Process-level tests for `market.series`: the real `market` binary, driven by the fake kernel,
+//! against loopback stand-ins for Tencent ifzq and Binance klines. Every date below is a real
+//! 2026 calendar date: 2026-09-11 is a Friday, 2026-09-13 a Sunday and 2026-09-14 a Monday.
 
 use serde_json::{Value, json};
 
@@ -105,9 +95,7 @@ fn boot(ifzq: &IfzqServer) -> FakeKernel {
     FakeKernel::boot_series(DEAD_ENDPOINT, &ifzq.endpoint, None)
 }
 
-/// The shipped manifest parses through the kernel's validator (a manifest
-/// that does not is silently skipped at boot, F14) and exposes the tool as
-/// a read-only, open-world one with every request key required.
+/// A manifest that does not parse through the kernel's validator is silently skipped at boot.
 #[test]
 fn shipped_manifest_exposes_market_series_read_only() {
     let raw = std::fs::read_to_string(concat!(
@@ -189,9 +177,8 @@ fn series_as_of_includes_that_days_bar() {
     assert_eq!(entry["currency"], json!("HKD"));
 }
 
-/// The window is taken relative to the cutoff, not as "the newest N bars":
-/// a cutoff three years back still yields a full window even from a source
-/// that caps a windowless request at its newest 640 rows.
+/// The window is taken relative to the cutoff, not as "the newest N bars"; the source caps a
+/// windowless request at its newest 640 rows.
 #[test]
 fn old_as_of_window_is_non_empty() {
     let ifzq = ifzq_server(IfzqFixture::with_rows(
@@ -218,9 +205,8 @@ fn old_as_of_window_is_non_empty() {
     assert_eq!(dates.last().map(String::as_str), Some("2023-09-11"));
 }
 
-/// A 5Y mainland window is longer than ifzq's 640-row page: the plugin pages
-/// BACKWARDS by date — each further page ends the day before the earliest
-/// row of the previous one — and stitches the pages without duplicates.
+/// A 5Y mainland window is longer than ifzq's 640-row page: each further page ends the day
+/// before the earliest row of the previous one.
 #[test]
 fn cn_pages_backward_past_the_640_cap() {
     let rows = weekday_bars("2021-01-01", "2026-09-14", 500.0);
@@ -249,8 +235,7 @@ fn cn_pages_backward_past_the_640_cap() {
 
     let windows = ifzq.window_params();
     assert!(windows.len() >= 2, "one page cannot hold 5Y: {windows:?}");
-    // Page 1 asked for [start - 14d, as_of]; the source kept its newest 640
-    // rows; page 2 must end the day before the earliest of those.
+    // Page 1 asked for [start - 14d, as_of]; page 2 must end the day before the earliest of the 640 kept.
     let first: Vec<&str> = windows[0].split(',').collect();
     assert_eq!(first[2], "2021-08-28");
     assert_eq!(first[3], "2026-09-11");
@@ -270,8 +255,7 @@ fn cn_pages_backward_past_the_640_cap() {
     assert_eq!(second[3], day_before, "{windows:?}");
 }
 
-/// A US window is fetched under the exchange-suffixed code the bare probe
-/// revealed; the bare code is never asked for a window (it answers nothing).
+/// The bare code answers nothing for a window.
 #[test]
 fn us_window_uses_exchange_suffix_from_probe() {
     let ifzq = ifzq_server(
@@ -303,9 +287,7 @@ fn us_window_uses_exchange_suffix_from_probe() {
     );
 }
 
-/// `complete_through` is the newest DAILY bar the source lists, whatever the
-/// period and however the window was filtered — for a weekly request it is
-/// later than every point and is not a Monday.
+/// `complete_through` is the newest DAILY bar the source lists, whatever the period.
 #[test]
 fn complete_through_is_unfiltered_latest() {
     let ifzq = ifzq_server(IfzqFixture::with_rows(
@@ -333,11 +315,8 @@ fn complete_through_is_unfiltered_latest() {
     assert_eq!(dates.last().map(String::as_str), Some("2026-08-24"));
 }
 
-/// The probe runs BEFORE the window fetch. The fixture advances a day after
-/// the plugin's first request: the cutoff day's bar goes from an intraday
-/// value to its close and a later bar appears. The reply is then either
-/// "complete through D, D absent" or "complete through D+1, D at its close"
-/// — never the intraday value.
+/// The fixture advances a day after the plugin's first request; the reply is either "complete
+/// through D, D absent" or "complete through D+1, D at its close" — never the intraday value.
 #[test]
 fn probe_precedes_window_fetch() {
     const V_PARTIAL: f64 = 999.0;
@@ -372,7 +351,6 @@ fn probe_precedes_window_fetch() {
     }
 }
 
-/// A probe answering only the 2011 baseline row has shown no recent bar.
 #[test]
 fn probe_with_only_baseline_row_is_unavailable() {
     let ifzq = ifzq_server(IfzqFixture::default().with_suffix("usNVDA", "NVDA.OQ"));
@@ -387,8 +365,6 @@ fn probe_with_only_baseline_row_is_unavailable() {
     assert_eq!(ifzq.params(), vec!["usNVDA,day,,,3,qfq"]);
 }
 
-/// A week whose Sunday is after the cutoff is not emitted, however many of
-/// its days the source lists.
 #[test]
 fn aggregated_week_never_partial() {
     let ifzq = ifzq_server(IfzqFixture::with_rows(
@@ -417,8 +393,7 @@ fn aggregated_week_never_partial() {
     assert_eq!(dates.last().map(String::as_str), Some("2026-08-31"));
 }
 
-/// A period is emitted only once a LATER daily bar proves it closed: the
-/// week ending on the cutoff Sunday waits for Monday's bar.
+/// The week ending on the cutoff Sunday waits for Monday's bar.
 #[test]
 fn period_needs_a_later_daily_bar() {
     let ifzq = ifzq_server(IfzqFixture::with_rows(
@@ -455,9 +430,7 @@ fn period_needs_a_later_daily_bar() {
     assert_eq!(last[1], friday_close, "the week closes on Friday's close");
 }
 
-/// The cutoff is compared against the period's END: a live weekly request
-/// on a Wednesday (cutoff = Tuesday) does not emit the half-built week whose
-/// Monday is before the cutoff.
+/// A live weekly request on a Wednesday (cutoff = Tuesday) does not emit the half-built week.
 #[test]
 fn period_end_not_period_start_is_compared() {
     let ifzq = ifzq_server(IfzqFixture::with_rows(
@@ -487,9 +460,7 @@ fn period_end_not_period_start_is_compared() {
     );
 }
 
-/// A source whose newest bar is more than 14 days before the cutoff has a
-/// gap at the near end (delisting, a long halt, a truncating source), and the
-/// series is refused rather than drawn short.
+/// A newest bar more than 14 days before the cutoff is a gap (delisting, halt, truncating source).
 #[test]
 fn truncated_near_end_is_unavailable() {
     let ifzq = ifzq_server(IfzqFixture::with_rows(
@@ -523,8 +494,7 @@ fn lookback_exceeds_source_depth_is_unavailable() {
     assert_unavailable(&only(&reply), "lookback exceeds source depth");
 }
 
-/// The four-venue fixture for the live/frozen daily cases: every source
-/// lists bars through Thursday 2026-09-10 and nothing later.
+/// Every source lists bars through Thursday 2026-09-10 and nothing later.
 fn through_thursday() -> (IfzqServer, BinanceServer) {
     let rows = weekday_bars("2026-08-01", "2026-09-10", 100.0);
     let ifzq = ifzq_server(
@@ -541,8 +511,7 @@ fn through_thursday() -> (IfzqServer, BinanceServer) {
     (ifzq, binance)
 }
 
-/// Live daily on HK, SH and SZ includes the cutoff day's bar without a later
-/// bar: those sessions close hours before the next UTC day.
+/// HK, SH and SZ sessions close hours before the next UTC day.
 #[test]
 fn hk_and_cn_live_daily_include_yesterday() {
     let (ifzq, binance) = through_thursday();
@@ -571,9 +540,7 @@ fn hk_and_cn_live_daily_include_yesterday() {
     }
 }
 
-/// US stays on the strict arm until spike U9 proves neither source folds
-/// after-hours trades into the daily bar: the cutoff day's bar waits for a
-/// later one.
+/// US stays strict until it is proven neither source folds after-hours trades into the daily bar.
 #[test]
 fn us_live_daily_stays_strict_until_u9() {
     let (ifzq, binance) = through_thursday();
@@ -628,8 +595,6 @@ fn crypto_live_daily_stays_strict() {
     );
 }
 
-/// Under `frozen` no venue is relaxed: the same fixture drops the cutoff
-/// day's bar for all four.
 #[test]
 fn frozen_daily_needs_a_later_bar() {
     let (ifzq, binance) = through_thursday();
@@ -657,9 +622,7 @@ fn frozen_daily_needs_a_later_bar() {
     }
 }
 
-/// Monday 00:30 UTC, live weekly, cutoff = Sunday: the source has not yet
-/// published Friday's bar, so last week is a four-day half and is withheld
-/// until a later daily bar appears.
+/// Monday 00:30 UTC, cutoff = Sunday: Friday's bar is not yet published, so last week is withheld.
 #[test]
 fn live_week_needs_a_later_daily_bar() {
     let ifzq = ifzq_server(IfzqFixture::with_rows(
@@ -697,8 +660,7 @@ fn live_week_needs_a_later_daily_bar() {
     assert_eq!(last[1], friday_close);
 }
 
-/// A cached page is keyed by the UTC date it was fetched on: the same window
-/// asked again after midnight hits the source again.
+/// A cached page is keyed by the UTC date it was fetched on.
 #[test]
 fn cache_page_never_crosses_utc_midnight() {
     let ifzq = ifzq_server(IfzqFixture::with_rows(
@@ -736,9 +698,7 @@ fn cache_page_never_crosses_utc_midnight() {
     assert_eq!(ifzq.hits(), 5, "past midnight the page is fetched again");
 }
 
-/// Same UTC day, source advanced between two calls: the page covering the
-/// cutoff is refetched (its observation is behind the new probe) and the
-/// reply's `complete_through` moves; pages not covering the cutoff are reused.
+/// Same UTC day, source advanced between two calls: only the page covering the cutoff is refetched.
 #[test]
 fn near_end_page_refetched_when_probe_advances() {
     let rows = weekday_bars("2021-01-01", "2026-09-10", 500.0);
@@ -780,8 +740,6 @@ fn near_end_page_refetched_when_probe_advances() {
     );
 }
 
-/// A request whose deadline has passed is refused without touching the
-/// network.
 #[test]
 fn expired_request_does_not_hit_network() {
     let ifzq = ifzq_server(IfzqFixture::with_rows(
@@ -802,8 +760,6 @@ fn expired_request_does_not_hit_network() {
     assert!(kernel.is_responsive());
 }
 
-/// `mode` is never defaulted: a direct call without it is an error before
-/// any request goes out.
 #[test]
 fn missing_mode_is_a_tool_error() {
     let ifzq = ifzq_server(IfzqFixture::with_rows(
@@ -823,7 +779,6 @@ fn missing_mode_is_a_tool_error() {
     assert_eq!(ifzq.hits(), 0);
 }
 
-/// Nor is an unknown mode read as anything.
 #[test]
 fn mode_relaxed_is_a_tool_error() {
     let ifzq = ifzq_server(IfzqFixture::with_rows(
@@ -849,7 +804,6 @@ fn mode_relaxed_is_a_tool_error() {
     assert_eq!(ifzq.hits(), 0);
 }
 
-/// Every other key is required too, and none of them defaults.
 #[test]
 fn every_missing_key_is_a_tool_error_without_network() {
     let ifzq = ifzq_server(IfzqFixture::with_rows(
@@ -881,8 +835,7 @@ fn every_missing_key_is_a_tool_error_without_network() {
     assert_eq!(ifzq.hits(), 0);
 }
 
-/// `CN:` names no exchange, `XX:` is no venue, and a bare name is a crypto
-/// asset Binance does not list: each is `unknown_asset` for that item alone.
+/// `CN:` names no exchange, `XX:` is no venue, and a bare name is a crypto asset Binance does not list.
 #[test]
 fn unknown_asset_and_cn_prefix() {
     let ifzq = ifzq_server(IfzqFixture::with_rows(
@@ -915,7 +868,6 @@ fn unknown_asset_and_cn_prefix() {
     );
 }
 
-/// A window that yields one complete period is not a series.
 #[test]
 fn fewer_than_two_points_is_unavailable() {
     let ifzq = ifzq_server(IfzqFixture::with_rows(
@@ -939,8 +891,7 @@ fn fewer_than_two_points_is_unavailable() {
     assert_unavailable(&only(&reply), "no data in range");
 }
 
-/// Mainland answers under `qfqday`, Hong Kong under `day`; both carry the
-/// source's o,c,h,l,v column order and each value lands in its own field.
+/// Mainland answers under `qfqday`, Hong Kong under `day`; both carry the source's o,c,h,l,v order.
 #[test]
 fn qfqday_and_day_keys_both_parse_with_ochlv_reorder() {
     let sh = weekday_bars("2026-08-01", "2026-09-14", 100.0);
@@ -1030,8 +981,6 @@ fn ts_ms_is_utc_midnight_and_ascending() {
     }
 }
 
-/// One item failing leaves the others answered, in request order, each
-/// echoing its request string.
 #[test]
 fn one_failed_series_does_not_fail_the_others() {
     let ifzq = ifzq_server(

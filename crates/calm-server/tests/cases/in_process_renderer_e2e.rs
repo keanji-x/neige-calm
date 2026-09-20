@@ -23,33 +23,9 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use uuid::Uuid;
 
-/// Liveness upper bound for "wait until the expected event arrives".
-///
-/// This is **not** a contract: nothing in this file claims the renderer, the
-/// supervisor or the pty reacts within this budget. It exists only so a wedged
-/// test fails with a readable message instead of hanging until the harness
-/// kills it. On the happy path it costs exactly nothing — every wait below
-/// returns the instant its event lands.
-///
-/// Sized to be an order of magnitude above the worst plausible scheduling
-/// stall. CI is a 2-core runner with nextest saturating both cores, and these
-/// cases spawn a real `calm-proc-supervisor` plus real pty children, so the
-/// gap between "the ack was sent" and "this task got scheduled to observe it"
-/// is pure CPU contention. The previous 2s budget lost that race twice on CI
-/// (runs 30563715610 / 30627347602, `input ack timeout: Elapsed(())`, with the
-/// pty child provably already reaped) and once locally under a cold build.
-/// The budget is 120s, the `slow-timeout` of nextest `profile.ci`; the local
-/// `profile.default` warns at 60s. Both are warn-only — neither profile kills a
-/// slow test — so past this point nextest's slow-test report is the signal,
-/// not a hand-picked deadline.
-/// Measured: under artificial contention (this test pinned to one core against
-/// 12 busy loops) a 30s budget still failed 2/12 rounds while 120s passed 12/12
-/// and 300s passed 12/12 — the ack arrives, it is only ever starved, so the
-/// budget must be sized for starvation rather than for expected latency.
-///
-/// To assert that something happens *within* a deadline, do not narrow this —
-/// measure the elapsed time and assert on it explicitly (see
-/// `TERM_TO_KILL_GRACE` below for that shape).
+/// Liveness upper bound so a wedged test fails readably instead of hanging; not a contract.
+/// Sized for CPU starvation on a saturated 2-core CI runner, not for expected latency — to
+/// assert something happens *within* a deadline, measure elapsed time explicitly instead.
 const LIVENESS_BUDGET: Duration = Duration::from_secs(120);
 
 #[tokio::test]
@@ -71,14 +47,8 @@ async fn in_process_renderer_drives_real_supervisor_and_pty() {
             program: "/bin/sh".into(),
             args: vec![
                 "-c".into(),
-                // The trailing sleep MUST outlast `LIVENESS_BUDGET`. It is the
-                // only thing that distinguishes "the Ctrl-C we sent travelled
-                // the whole input path and killed the child" from "the child
-                // finished on its own while we waited": if the sleep could
-                // expire first, `wait_for_terminal_exited` below would be
-                // satisfied by the natural exit and the test would pass with
-                // the input path cut entirely (this case asserts no exit
-                // code/signal, so nothing else would catch it).
+                // The trailing sleep MUST outlast `LIVENESS_BUDGET`: otherwise a natural exit would satisfy
+                // `wait_for_terminal_exited` and the test would pass with the input path cut entirely.
                 "echo hello; printf '%085dWIDTH-MARKER\\n' 0; sleep 600".into(),
             ],
             envs: std::env::vars().collect(),
@@ -461,42 +431,10 @@ async fn wait_for_daemon_terminal_exited(rx: &mut mpsc::Receiver<DaemonMsg>) -> 
     }
 }
 
-/// Issue #993 R1: `drop_entry` must not abort the supervisor attach reader
-/// before that reader has observed `Exited` — it is the task that persists the
-/// terminal exit (`terminal_set_exit`, session-projection completion, plan-task
-/// hook).
-///
-/// The scenario that makes it bite:
-///
-/// * the pty child ignores SIGTERM, so it only dies at the SIGKILL that
-///   `drop_entry` sends after `TERM_TO_KILL_GRACE`;
-/// * it left a `setsid`'d grandchild holding the pty slave, and that grandchild
-///   is in another session so the process-group kill does not reach it. The pty
-///   master therefore never EOFs and the supervisor's waiter has to burn its
-///   whole `PTY_DRAIN_GRACE` before publishing `Exited`.
-///
-/// So `Exited` lands strictly *after* the kill. An unconditional
-/// `abort_tasks()` right after the kill drops it on the floor; waiting on the
-/// attach reader's own completion does not.
-///
-/// The registry is wired to a **real sqlite repo** and the assertion is on the
-/// persisted row (`terminal_get(...).signal_killed`), not on the in-memory
-/// `entry.exit`: `entry.exit` is stamped a few statements *before*
-/// `terminal_set_exit` runs, so asserting on it would only prove "the reader
-/// observed Exited", while R1's actual claim is that the exit reaches the
-/// database. The in-memory check is kept too, as a cheap locator.
-///
-/// Two degradation self-checks keep the test honest — without them a missing
-/// `setsid`, a shell that drops the TERM trap, or a change in process-group
-/// kill semantics would silently turn this into a happy-path test that passes
-/// with or without the fix:
-///
-/// * the `setsid`'d grandchild must still be alive after `drop_entry` returns.
-///   It is the only holder of the pty slave, so if it survived the teardown the
-///   master provably never EOFed and the supervisor's drain gate provably had
-///   to time out. This is a causal check, not a timing one.
-/// * the persisted exit must be `signal_killed`, proving the child died from
-///   the teardown's signal rather than exiting on its own.
+/// `drop_entry` must not abort the supervisor attach reader before it has observed `Exited`,
+/// since that reader is what persists the exit. The child ignores SIGTERM and leaves a `setsid`'d
+/// grandchild holding the pty slave, so `Exited` lands strictly *after* the kill; the assertion
+/// is on the persisted row, not on the in-memory `entry.exit`.
 #[tokio::test]
 async fn drop_entry_persists_the_terminal_exit_to_the_database() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -513,9 +451,8 @@ async fn drop_entry_persists_the_terminal_exit_to_the_database() {
     let terminal_id = term.id.clone();
 
     let registry = TerminalRendererRegistry::new_with_repo(route_repo);
-    // The grandchild records its own pid so the self-check below can prove it
-    // outlived the teardown. `setsid` puts it in a fresh session, so the
-    // process-group kill cannot reach it.
+    // The grandchild records its own pid so the self-check below can prove it outlived the
+    // teardown; `setsid` keeps it out of reach of the process-group kill.
     let gc_pid_file = temp.path().join("grandchild.pid");
     let entry = registry
         .ensure(RendererConfig {
@@ -528,11 +465,8 @@ async fn drop_entry_persists_the_terminal_exit_to_the_database() {
             program: "/bin/sh".into(),
             args: vec![
                 "-c".into(),
-                // The grandchild's own sleep must outlast the whole test: the
-                // degradation self-check below asserts it is *still alive*
-                // after teardown, so a grandchild that reaped itself on
-                // schedule would turn that check into a false failure on a
-                // slow box. It only lingers when the test fails anyway.
+                // The grandchild's sleep must outlast the whole test: the self-check asserts it is *still
+                // alive* after teardown.
                 format!(
                     "trap '' TERM; setsid sh -c 'echo $$ > {}; sleep 600' & echo up; sleep 30",
                     gc_pid_file.display()
@@ -562,15 +496,13 @@ async fn drop_entry_persists_the_terminal_exit_to_the_database() {
             .is_none(),
         "sanity: the row must carry no exit before teardown"
     );
-    // Written by the grandchild itself, so it is its real pid whatever `setsid`
-    // decides to do about forking.
+    // Written by the grandchild itself, so it is its real pid whatever `setsid` decides about forking.
     let grandchild_pid = wait_for_pid_file(&gc_pid_file).await;
 
     registry.drop_entry(&terminal_id).await;
 
-    // Degradation self-check: the pty slave holder outlived the teardown, so
-    // the master could not EOF and the supervisor really took the drain-grace
-    // path that R1 is about.
+    // Self-check: the pty slave holder outlived the teardown, so the master could not EOF and the
+    // supervisor really took the drain-grace path.
     assert!(
         process_is_alive(grandchild_pid),
         "this test must exercise the DEGRADED path, but the setsid'd grandchild (pid \
@@ -578,7 +510,7 @@ async fn drop_entry_persists_the_terminal_exit_to_the_database() {
          `Exited` never had to wait for the drain grace"
     );
 
-    // The load-bearing assertion, checked first: the exit reached the database.
+    // The load-bearing assertion: the exit reached the database.
     let row = repo
         .terminal_get(&terminal_id)
         .await
@@ -597,12 +529,7 @@ async fn drop_entry_persists_the_terminal_exit_to_the_database() {
         !row.pty_output_truncated,
         "the tiny fixture output fits the durable evidence cap"
     );
-    // (`row.exit_code.is_none()` used to be asserted here; #993 R3-D removed it
-    // as vacuous — the writer computes `exit_code = if signalled { None } else
-    // { .. }`, so once `signal_killed` above holds it is true by construction
-    // and can falsify nothing.)
-    // Cheap locator: `entry.exit` is stamped inside the same `Exited` arm, a few
-    // statements before the persistence calls above.
+    // Cheap locator: `entry.exit` is stamped inside the same `Exited` arm, before the persistence calls.
     assert!(
         entry.exit.lock().expect("exit mutex").is_some(),
         "issue #993 R1: drop_entry aborted the supervisor attach reader before it saw \
@@ -616,28 +543,10 @@ async fn drop_entry_persists_the_terminal_exit_to_the_database() {
 /// `TERM_TO_KILL_GRACE` in `terminal_renderer` — private there, mirrored here.
 const TERM_TO_KILL_GRACE: Duration = Duration::from_millis(200);
 
-/// Issue #993 R3-A: teardown must key on the exit being *persisted*, not on the
-/// attach reader's task handle completing.
-///
-/// The reader's loop breaks on `Err(_)` too — a read error on the attach stream
-/// (supervisor gone, connection reset) — and that arm writes nothing. Awaiting
-/// the join handle therefore reported "persisted" for a reader that had already
-/// died, with two consequences: the SIGTERM→SIGKILL grace collapsed to ~0 (the
-/// wait returned instantly), and the WARN that is supposed to make the
-/// degradation visible never fired.
-///
-/// The scenario: kill the supervisor out from under a live renderer, so the
-/// attach reader hits a stream error and ends *without* persisting. Then tear
-/// the entry down.
-///
-/// The assertion is the grace itself — `drop_entry` must still take at least
-/// `TERM_TO_KILL_GRACE` before escalating — because that is the observable the
-/// regression destroyed, and it is only ever compared in the safe direction (a
-/// slow/loaded box makes the measured elapsed time *larger*, never smaller, so
-/// this cannot flake). With the old handle-await it measured ~0.
-///
-/// Self-checks keep it honest: the supervisor must really be unreachable, and
-/// nothing may have been persisted (the sweep is the backstop for this row).
+/// Teardown must key on the exit being *persisted*, not on the attach reader's task handle:
+/// the reader also exits on a stream error having written nothing. Kill the supervisor under a
+/// live renderer, then assert `drop_entry` still takes at least `TERM_TO_KILL_GRACE` (only ever
+/// compared in the safe direction, so a loaded box cannot flake it).
 #[tokio::test]
 async fn drop_entry_keeps_the_term_grace_when_the_attach_reader_died_early() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -663,8 +572,7 @@ async fn drop_entry_keeps_the_term_grace_when_the_attach_reader_died_early() {
             terminal_fg: (216, 219, 226),
             terminal_bg: (15, 20, 24),
             program: "/bin/sh".into(),
-            // Short-lived: killing the supervisor orphans this child, so it
-            // must reap itself rather than linger for the test's benefit.
+            // Short-lived: killing the supervisor orphans this child, so it must reap itself.
             args: vec!["-c".into(), "echo up; sleep 3".into()],
             envs: std::env::vars().collect(),
             cwd: workspace_root().display().to_string(),
@@ -678,8 +586,7 @@ async fn drop_entry_keeps_the_term_grace_when_the_attach_reader_died_early() {
         .expect("initial renderer event receiver");
     wait_for_child_ready(&mut events).await;
 
-    // Break the attach stream: the supervisor dies, the reader's next
-    // `read_frame` errors out and it leaves the loop having persisted nothing.
+    // Break the attach stream: the reader's next `read_frame` errors out having persisted nothing.
     supervisor.kill().await.expect("kill supervisor");
     let _ = supervisor.wait().await;
     let deadline = tokio::time::Instant::now() + LIVENESS_BUDGET;
@@ -690,9 +597,7 @@ async fn drop_entry_keeps_the_term_grace_when_the_attach_reader_died_early() {
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    // The reader observes the peer close within microseconds; this only has to
-    // cover the wakeup so the teardown below really faces a *finished* reader
-    // rather than a still-blocked one.
+    // Only has to cover the wakeup so the teardown really faces a *finished* reader.
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     let started = std::time::Instant::now();
@@ -706,8 +611,7 @@ async fn drop_entry_keeps_the_term_grace_when_the_attach_reader_died_early() {
          {TERM_TO_KILL_GRACE:?} SIGTERM grace disappeared",
     );
 
-    // Self-check: nothing was persisted, i.e. this really is the degraded path
-    // the grace-vs-handle distinction is about.
+    // Self-check: nothing was persisted, i.e. this really is the degraded path.
     let row = repo
         .terminal_get(&terminal_id)
         .await
@@ -724,23 +628,9 @@ async fn drop_entry_keeps_the_term_grace_when_the_attach_reader_died_early() {
     );
 }
 
-/// Issue #993 R3-B: the TERM→KILL grace is now cut short by the *leader's*
-/// exit, so process-group members that outlive it are SIGKILLed earlier than
-/// under the old fixed `sleep(TERM_TO_KILL_GRACE)`. That is accepted (see the
-/// `TERM_TO_KILL_GRACE` doc), but it makes the unconditional group SIGKILL the
-/// only thing standing between a stubborn member and a leak — and that was
-/// untested.
-///
-/// Here the leader dies on SIGTERM immediately while a member of its process
-/// group ignores both TERM and HUP and would otherwise run for 600s (long
-/// enough to outlast `LIVENESS_BUDGET`; see the fixture comment below). After
-/// teardown the member must be gone, killed by the group SIGKILL that follows
-/// the (shortened) grace. Deliberately no timing assertion: the shortening is a
-/// latency property, while the invariant worth locking is "no survivor leaks".
-///
-/// Self-checks: the member must be alive right before teardown (otherwise the
-/// kill proves nothing) and the leader's exit must reach the database (which is
-/// what shortens the grace in the first place).
+/// The TERM→KILL grace is cut short by the *leader's* exit, so the unconditional group SIGKILL
+/// is the only thing between a stubborn group member and a leak. The leader dies on SIGTERM
+/// immediately while a member ignores TERM and HUP; after teardown the member must be gone.
 #[tokio::test]
 async fn drop_entry_kills_process_group_members_that_outlive_the_leader() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -770,16 +660,9 @@ async fn drop_entry_kills_process_group_members_that_outlive_the_leader() {
             args: vec![
                 "-c".into(),
                 format!(
-                    // No `setsid`: the member stays in the leader's process
-                    // group, which is exactly what the group SIGKILL must
-                    // reach. `exec` makes the `sleep` itself the leader, so it
-                    // dies on SIGTERM with no shell in the way.
-                    // The member's sleep MUST outlast the poll deadline below.
-                    // It is the only thing that distinguishes "the group
-                    // SIGKILL reaped it" from "it just finished on its own": if
-                    // the sleep could expire first, a leaked member would be
-                    // indistinguishable from a killed one and the test would
-                    // pass with the fix reverted.
+                    // No `setsid`: the member stays in the leader's process group. `exec` makes the `sleep` itself
+                    // the leader. The member's sleep MUST outlast the poll deadline below, or a leaked member would
+                    // be indistinguishable from one that finished on its own.
                     "sh -c 'trap \"\" TERM HUP; echo $$ > {}; sleep 600' & echo up; exec sleep 30",
                     member_pid_file.display()
                 ),
@@ -803,11 +686,7 @@ async fn drop_entry_kills_process_group_members_that_outlive_the_leader() {
 
     registry.drop_entry(&terminal_id).await;
 
-    // The member ignores TERM and HUP, so only the group SIGKILL can end it.
-    // Polling (rather than asserting once) covers signal delivery and reaping;
-    // a leaked member stays alive for its full 600s and blows the deadline (that
-    // sleep must outlast LIVENESS_BUDGET, or a leak would be indistinguishable
-    // from a normal exit and the test would pass with the fix reverted).
+    // Only the group SIGKILL can end the member; polling covers signal delivery and reaping.
     let deadline = tokio::time::Instant::now() + LIVENESS_BUDGET;
     while process_is_alive(member_pid) {
         assert!(
@@ -819,8 +698,7 @@ async fn drop_entry_kills_process_group_members_that_outlive_the_leader() {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 
-    // Self-check: the leader's exit really was persisted — that is the event
-    // that ends the grace early.
+    // Self-check: the leader's exit really was persisted — the event that ends the grace early.
     let row = repo
         .terminal_get(&terminal_id)
         .await
@@ -835,8 +713,7 @@ async fn drop_entry_kills_process_group_members_that_outlive_the_leader() {
     let _ = supervisor.wait().await;
 }
 
-/// Minimal area → track → card → terminal chain so `terminal_set_exit` has a row
-/// to write to.
+/// Minimal area → track → card → terminal chain so `terminal_set_exit` has a row to write to.
 pub(super) async fn seed_terminal_row(repo: &SqlxRepo) -> Terminal {
     let area = repo
         .area_create(NewArea {
@@ -899,14 +776,12 @@ pub(super) async fn wait_for_pid_file(path: &Path) -> i32 {
     }
 }
 
-/// True when `pid` still names a live (non-zombie) process. A zombie has
-/// already closed every fd it held, so it proves nothing about the pty slave.
+/// True when `pid` names a live (non-zombie) process; a zombie has already closed every fd it held.
 pub(super) fn process_is_alive(pid: i32) -> bool {
     let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
         return false;
     };
-    // `pid (comm) STATE ...`; `comm` may contain spaces and parens, so split at
-    // the LAST ')'.
+    // `comm` may contain spaces and parens, so split at the LAST ')'.
     let Some((_, rest)) = stat.rsplit_once(')') else {
         return false;
     };

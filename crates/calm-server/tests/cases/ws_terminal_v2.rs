@@ -1,9 +1,4 @@
-//! Wire-level e2e tests for the v2 terminal protocol in the WS↔daemon
-//! bridge (`pump`). Mounts the public [`calm_server::ws::terminal::pump`]
-//! function under a minimal axum router and drives it with one end of a
-//! `tokio::io::duplex` pair playing the role of the daemon socket. No
-//! terminal renderer is started — every byte of the
-//! JSON↔bincode bridge is exercised in-process.
+//! Wire-level e2e tests for the v2 terminal protocol in the WS↔daemon bridge (`pump`), with a `tokio::io::duplex` pair as the daemon socket.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -61,10 +56,7 @@ async fn boot(daemon_side: DuplexStream, terminal_id: &str) -> SocketAddr {
             let tid = tid.clone();
             async move {
                 let daemon = slot.lock().await.take().expect("pump route called twice");
-                // `pump` returns a `PumpOutcome` (post-#59) but
-                // `on_upgrade` wants a `Future<Output = ()>`. This test
-                // only cares about the v2 wire round-trip; the outcome
-                // variant is exercised separately in `pump_tests`.
+                // `pump` returns a `PumpOutcome` but `on_upgrade` wants a `Future<Output = ()>`.
                 upgrade.on_upgrade(move |socket| async move {
                     let _ = pump(socket, daemon, tid, ping, pong).await;
                 })
@@ -342,11 +334,7 @@ async fn initial_scrollback_all_round_trips_into_server_hello_snapshot() {
     }
 }
 
-/// `ws_terminal_v2` normally exercises the WS bridge. The lag-recovery bug
-/// lives one layer lower in `client_pump`, so this focused in-process test
-/// drives `run_client_pump` directly: a tiny broadcast channel is overrun
-/// while the per-client outbound queue is full, producing `RecvError::Lagged`
-/// without relying on websocket timing.
+/// Drives `run_client_pump` directly: a tiny broadcast channel is overrun while the outbound queue is full, producing `RecvError::Lagged` without websocket timing.
 #[tokio::test]
 async fn lag_recovery_snapshot_respects_initial_scrollback_all() {
     let terminal_id = Uuid::new_v4().to_string();
@@ -478,10 +466,6 @@ async fn wait_for_lag_snapshot(rx: &mut mpsc::Receiver<DaemonMsg>) -> RenderSnap
     }
 }
 
-/// Full happy-path round trip: WS client sends ClientHello → daemon side
-/// reads it as a v2 bincode frame, replies with ServerHello → WS client
-/// receives it as JSON → client sends Input → daemon reads it → daemon
-/// pushes a RenderPatch → client receives it.
 #[tokio::test]
 async fn v2_round_trip_via_pump() {
     let (mut daemon_side, server_side) = tokio::io::duplex(16 * 1024);
@@ -560,10 +544,7 @@ async fn v2_round_trip_via_pump() {
     match got_input {
         ClientMsg::Input { data, input_seq } => {
             assert_eq!(data, b"keystrokes");
-            // Browser-path default: seq 0 ("no ack requested" — option
-            // (b) from issue #115). The WS bridge must NOT synthesize a
-            // non-zero seq; if a future change adds bridge-side rewrite
-            // this assertion catches the regression.
+            // Browser-path default: seq 0 means no ack requested; the bridge must not synthesize a non-zero seq.
             assert_eq!(input_seq, 0);
         }
         other => panic!("expected Input, got {other:?}"),
@@ -594,9 +575,7 @@ async fn v2_round_trip_via_pump() {
         }
     ));
 
-    // Stale-epoch ResizeCommit goes over the wire (the daemon is the one
-    // that decides to drop it — the pump just shuttles bytes). Confirm
-    // the wire layer doesn't care.
+    // A stale-epoch ResizeCommit still goes over the wire; the daemon is the one that drops it.
     let stale = ClientMsg::ResizeCommit {
         epoch: 0,
         cols: 1,
@@ -656,14 +635,7 @@ async fn v2_round_trip_via_pump() {
     assert!(matches!(got_kill, ClientMsg::Kill));
 }
 
-/// SECURITY: the WS bridge is the untrusted-network ingress for daemon
-/// ClientMsg frames. `ClientCapabilities.kernel_originated_input` is a
-/// daemon-side trust flag — the daemon does NOT verify it, so ingress
-/// layers must sanitize. This test forges a ClientHello with
-/// `kernel_originated_input: true` from the browser side and asserts the
-/// pump zeroes the flag before forwarding to the daemon. Without this
-/// strip, a browser-connected Observer could write arbitrary bytes to
-/// another user's PTY by claiming to be a kernel-originated client.
+/// SECURITY: `kernel_originated_input` is a daemon-side trust flag the daemon does not verify, so the bridge must zero it before forwarding.
 #[tokio::test]
 async fn ws_strips_kernel_originated_input_flag() {
     let (mut daemon_side, server_side) = tokio::io::duplex(8192);
@@ -672,7 +644,6 @@ async fn ws_strips_kernel_originated_input_flag() {
     let url = format!("ws://{}/pump", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
-    // Forge a ClientHello that claims kernel-originated trust.
     let forged = ClientMsg::ClientHello {
         protocol_version: PROTOCOL_VERSION,
         terminal_id: TID.to_string(),
@@ -692,7 +663,6 @@ async fn ws_strips_kernel_originated_input_flag() {
             supports_scrollback: false,
             supports_sixel: false,
             supports_images: false,
-            // The attack: a browser asserting kernel-private trust.
             kernel_originated_input: true,
         },
     };
@@ -721,24 +691,9 @@ async fn ws_strips_kernel_originated_input_flag() {
     }
 }
 
-/// CORRECTNESS: `model::new_id()` returns the *simple* (32-hex, no dashes)
-/// UUID form. The API response leaks that verbatim to the browser; the
-/// browser sends it back inside `ClientHello.terminal_id`. The daemon, on
-/// the other hand, validates `ClientHello.terminal_id ==
-/// cli.id.to_string()` byte-for-byte, and `Uuid::to_string()` is always
-/// the hyphenated form. Without normalization at the WS bridge, every
-/// browser hello would fail with `BadHandshake` — the daemon side would
-/// see "0123456789abcdef…" but compare against "01234567-89ab-cdef-…".
-///
-/// This test forges a ClientHello whose `terminal_id` is the simple form
-/// of a valid UUID, runs it through the pump, and asserts the daemon side
-/// reads the hyphenated form. Mirrors the
-/// `ws_strips_kernel_originated_input_flag` pattern.
+/// `model::new_id()` returns the simple UUID form while the daemon compares against the hyphenated `Uuid::to_string()`, so the bridge must normalize.
 #[tokio::test]
 async fn ws_normalizes_terminal_id_to_hyphenated() {
-    // Use a deterministic UUID so the assertion can compare against a
-    // known hyphenated string. `Uuid::nil()` is trivially distinguishable;
-    // any v4 works, this one is just a literal for clarity.
     let uuid = Uuid::parse_str("da163adc-4ccf-4b50-9e2e-3248afe7dcd1").unwrap();
     let simple = uuid.simple().to_string();
     let hyphenated = uuid.to_string();
@@ -757,8 +712,6 @@ async fn ws_normalizes_terminal_id_to_hyphenated() {
     let url = format!("ws://{}/pump", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
-    // Forge a ClientHello carrying the *simple* form, exactly what the
-    // browser would send after reading the API response.
     let forged = ClientMsg::ClientHello {
         protocol_version: PROTOCOL_VERSION,
         terminal_id: simple.clone(),
@@ -807,10 +760,7 @@ async fn ws_normalizes_terminal_id_to_hyphenated() {
     }
 }
 
-/// CORRECTNESS: if the client somehow sends a `terminal_id` that isn't a
-/// valid UUID, the WS bridge must pass it through verbatim so the daemon
-/// can reject it as `BadHandshake`. Silently mangling malformed input
-/// would mask client bugs and make debugging harder.
+/// A non-UUID `terminal_id` must pass through verbatim so the daemon can reject it as `BadHandshake`.
 #[tokio::test]
 async fn ws_passes_through_malformed_terminal_id_unchanged() {
     let (mut daemon_side, server_side) = tokio::io::duplex(8192);
@@ -866,8 +816,6 @@ async fn ws_passes_through_malformed_terminal_id_unchanged() {
     }
 }
 
-/// When the daemon emits `TerminalExited`, the pump forwards it as JSON
-/// and then closes the WS — the stream drains to None.
 #[tokio::test]
 async fn pump_terminates_on_terminal_exited() {
     let (mut daemon_side, server_side) = tokio::io::duplex(8192);

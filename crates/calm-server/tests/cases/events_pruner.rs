@@ -1,17 +1,4 @@
-//! Integration tests for the events retention pruner (#854 slice 2).
-//!
-//! The must-have regression is the card-status-dot incident pinned as a
-//! test: pruning `overlay.set` history whose LATEST write per overlay quad
-//! is OLDER than the retention horizon must leave the last-writer-wins
-//! layout fold (`derive_layout_positions` / `fold_layout_positions`)
-//! byte-identical, and must never touch structural events.
-//!
-//! Also pins the test-suite seeding invariant the pruner's age-based
-//! predicate relies on (design §5): no suite outside this file seeds an
-//! ALLOWLISTED kind into the `events` table with a literal (non-`now_ms`)
-//! `at`. Background pruners are only spawned by `AppState::new` (main.rs)
-//! — no test fixture path spawns them — but the scan keeps the invariant
-//! from rotting silently if that ever changes.
+//! Integration tests for the events retention pruner.
 
 use std::sync::Arc;
 
@@ -93,8 +80,7 @@ async fn event_exists(pool: &sqlx::SqlitePool, id: i64) -> bool {
     n == 1
 }
 
-/// Seed a real area + track + card through the production write path
-/// (structural events stamped `at = now_ms()`), returning the track id.
+/// Seed a real area + track + card through the production write path, returning the track id.
 async fn seed_track_with_card(repo: &Arc<SqlxRepo>, bus: &EventBus) -> String {
     let write = calm_server::state::WriteContext::new(
         calm_server::card_role_cache::CardRoleCache::new(),
@@ -198,11 +184,6 @@ async fn seed_track_with_card(repo: &Arc<SqlxRepo>, bus: &EventBus) -> String {
     track.id.as_str().to_string()
 }
 
-// ---------------------------------------------------------------------------
-// Must-have regression (design §7): overlay.set history whose latest write
-// per quad is older than the horizon survives pruning; the layout fold is
-// byte-identical pre/post; structural events are untouched.
-// ---------------------------------------------------------------------------
 #[tokio::test]
 async fn prune_preserves_layout_fold_and_structural_events() {
     let repo = Arc::new(
@@ -214,8 +195,8 @@ async fn prune_preserves_layout_fold_and_structural_events() {
     let track_id = seed_track_with_card(&repo, &bus).await;
     let pool = repo.pool();
 
-    // Layout quad: superseded old write, then the LATEST write per quad
-    // — itself OLDER than the 30-day horizon. The carve-out must keep it.
+    // Layout quad: superseded old write, then the LATEST write per quad — itself OLDER than the
+    // horizon. The carve-out must keep it.
     let p1 = serde_json::json!({"card-a": {"x": 0, "y": 0, "w": 6, "h": 12}});
     let p2 = serde_json::json!({
         "card-a": {"x": 0, "y": 0, "w": 6, "h": 12},
@@ -228,8 +209,7 @@ async fn prune_preserves_layout_fold_and_structural_events() {
         old(90),
     )
     .await;
-    // Structural event interleaved between the overlay writes, older than
-    // the horizon — must survive (not allowlisted).
+    // Structural event older than the horizon — must survive (not allowlisted).
     let structural_old = insert_event(
         pool,
         "area.updated",
@@ -245,8 +225,7 @@ async fn prune_preserves_layout_fold_and_structural_events() {
     )
     .await;
 
-    // Card-status quad: old superseded duplicate + newer-than-horizon
-    // latest. The old duplicate goes; the newer one stays.
+    // Card-status quad: the old superseded duplicate goes; the newer-than-horizon latest stays.
     let status_old = insert_event(
         pool,
         "overlay.set",
@@ -332,8 +311,6 @@ async fn prune_preserves_layout_fold_and_structural_events() {
         "structural event count must be unchanged"
     );
 
-    // layout_old, status_old, hook_old, codex_hook_old, phase_old,
-    // item_old pruned.
     assert_eq!(pruned, 6);
     for (id, expect) in [
         (layout_old, false),
@@ -355,9 +332,8 @@ async fn prune_preserves_layout_fold_and_structural_events() {
         );
     }
 
-    // The durable retention watermark advanced to the highest pruned id,
-    // so the WS replay guard can detect the interior holes this pass
-    // punched (`MIN(id)` cannot — the structural head survives).
+    // The watermark advanced to the highest pruned id so the WS replay guard can detect interior
+    // holes (`MIN(id)` cannot — the structural head survives).
     assert_eq!(
         RepoEventWrite::events_prune_watermark(repo.as_ref())
             .await
@@ -367,15 +343,8 @@ async fn prune_preserves_layout_fold_and_structural_events() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Seeding invariant scan (design §5 / review fix 2): no test suite outside
-// this file seeds an allowlisted kind into `events` with a literal INSERT.
-// Literal INSERTs are exactly the seeding style that carries a non-`now_ms`
-// `at` (e.g. `at = 0` in sync_engine.rs); the production write path always
-// stamps `now_ms()`, which an age-horizon pruner can never touch. Best
-// effort by construction: kinds bound as parameters are invisible to the
-// scan, but parameterized seeding in-tree goes through the repo write path.
-// ---------------------------------------------------------------------------
+// Literal INSERTs are the seeding style that carries a non-`now_ms` `at`; the production write
+// path always stamps `now_ms()`, which an age-horizon pruner can never touch.
 #[test]
 fn no_other_suite_seeds_allowlisted_kinds_with_literal_inserts() {
     let tests_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
@@ -416,24 +385,8 @@ fn no_other_suite_seeds_allowlisted_kinds_with_literal_inserts() {
     );
 }
 
-/// #1253 D4 — none of the activity projection's four kinds may become prunable.
-///
-/// `activity_window`'s allowlist is chosen for permanence: it drops `turns`
-/// precisely because its only source, `harness.item.added`, IS on the list
-/// below and would decay to zero past the horizon. That reasoning is a claim
-/// about `EVENTS_PRUNE_KINDS` — a `&'static [&str]` in another module — and a
-/// doc comment cannot hold it.
-///
-/// The failure it fails closed on is quiet and one-directional: adding any of
-/// these four to the prune allowlist makes every window older than the horizon
-/// read as an empty day, and `POST /api/today/summary` refuses an empty day. A
-/// user who asked for yesterday's progress would be told nothing happened.
-///
-/// Deliberately shaped like `first_message_dedup_kind_is_never_prunable`, which
-/// guards the same premise for the first-message dedup, and deliberately
-/// iterating `ACTIVITY_KINDS` rather than restating the four strings: a list
-/// restated here would keep passing after a fifth kind was added to the
-/// projection.
+/// Adding any activity kind to the prune allowlist would make every window older than the
+/// horizon read as an empty day; iterate `ACTIVITY_KINDS` rather than restating the strings.
 #[test]
 fn activity_window_kinds_are_never_prunable() {
     for kind in calm_server::activity_window::ACTIVITY_KINDS {

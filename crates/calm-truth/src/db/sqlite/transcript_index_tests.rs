@@ -1,11 +1,5 @@
-//! #1722 S1b — `idx_transcript_card_method_created_at` (migration 0110) is
-//! the index the activity projector's per-track evidence reads (the E1 shape
-//! of the design's §4.3) and the `last_turn_completed` subquery both walk.
-//!
-//! `EXPLAIN QUERY PLAN` is the only cheap witness: a scan and an index range
-//! return the same rows, so a row-level test cannot see the difference.
-//! Dropping the index (or filtering the transcript table on `track_id`,
-//! which has no index) turns the plan into a `SCAN` and these red.
+//! `idx_transcript_card_method_created_at` query plans. `EXPLAIN QUERY PLAN` is the only cheap
+//! witness: a scan and an index range return the same rows, so a row-level test cannot see the difference.
 
 use sqlx::{Row, SqlitePool};
 
@@ -43,8 +37,7 @@ async fn e1_query_plan_uses_transcript_index() {
     );
 }
 
-/// The correlated subquery the projection SELECTs and the conversation list
-/// embed walks the same index, one range per card.
+/// The correlated subquery walks the same index, one range per card.
 #[tokio::test]
 async fn last_turn_completed_subquery_uses_transcript_index() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();

@@ -85,11 +85,8 @@ describe('INV-SIDEBAR-007 three sections, and pinning is not relocation', () => 
 });
 
 describe('INV-SIDEBAR-012 the pin button is always in the accessibility tree', () => {
-  // The *visual* reveal (opacity 0 until hover, opacity 1 once pinned) is CSS in
-  // `features/track/row/row.module.css` and is a `browser`-tier concern: jsdom
-  // does not apply CSS Modules, so this test cannot prove it. What it can prove
-  // — and what actually breaks touch users if it regresses — is that the control
-  // exists and is reachable in both states, carrying its pressed state.
+  // The visual reveal is CSS jsdom does not apply; what is provable here is that
+  // the control exists and is reachable in both states.
   it('exposes a pressed-state pin control for pinned and unpinned tracks alike', () => {
     renderSidebar({
       tracks: [track({ id: 'u', title: 'Loose' }), track({ id: 'p', title: 'Stuck', pinnedAt: 10 })],
@@ -107,13 +104,8 @@ describe('INV-SIDEBAR-013 every area row carries a permanent New track control',
   const areas = [area(), area({ id: 'c2', name: 'Reading', sort: 2 })];
   const tracksByArea = new Map([['c1', []], ['c2', []]]);
 
-  /*
-   * The rail now has one of these per area, so `"New track"` alone would be N
-   * identically-named controls — a list a screen-reader user cannot choose
-   * from. §4.4 also forbids the tooltip standing in for the accessible name, so
-   * both are asserted: the name identifies the area, the title is the sighted
-   * hover label.
-   */
+  /* One control per area, so `"New track"` alone would be N identically-named
+   * controls; the tooltip may not stand in for the accessible name. */
   it('names each one for its own area and still carries a tooltip', () => {
     renderSidebar({ areas, tracksByArea });
     for (const areaName of ['Work', 'Reading']) {
@@ -124,9 +116,7 @@ describe('INV-SIDEBAR-013 every area row carries a permanent New track control',
     expect(screen.queryByRole('button', { name: 'New track' })).toBeNull();
   });
 
-  /* Both controls are permanent but occupy different slots. jsdom cannot read
-     their positioned geometry, so this pins their separate styling hooks; the
-     browser tier owns rendered visibility and alignment. */
+  /* jsdom cannot read positioned geometry, so this pins their separate styling hooks. */
   it('keeps New track and Area actions in separate permanent control slots', () => {
     renderSidebar({ areas, tracksByArea });
     const create = screen.getByRole('button', { name: 'New track in Work' });
@@ -136,8 +126,7 @@ describe('INV-SIDEBAR-013 every area row carries a permanent New track control',
       .toBe(false);
   });
 
-  /** The collapsed rail gets none: it has room for one glyph per area, and that
-   *  glyph is the area. */
+  /** The collapsed rail has room for one glyph per area, and that glyph is the area. */
   it('offers no New track control in the collapsed icon strip', () => {
     renderSidebar({ areas, tracksByArea, collapsed: true });
     expect(screen.queryByRole('button', { name: /^New track/ })).toBeNull();
@@ -153,10 +142,8 @@ describe('E2E-INV-SHELL-003 the kernel system area never reaches the rail', () =
     });
     expect(screen.queryByRole('button', { name: /^System/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /^Track Kernel/ })).toBeNull();
-    // §5.3's strongest rule: when a region's emptiness has exactly one remedy,
-    // render that remedy's own interface where the content would have been. So
-    // there is no "No areas yet." sentence pointing at a button elsewhere —
-    // the create field is already open in the first row's place.
+    // When a region's emptiness has exactly one remedy, that remedy's own interface
+    // renders where the content would have been.
     expect(screen.queryByText(/no areas/i)).toBeNull();
     expect(screen.getByRole('button', { name: 'Create your first area' })).toBeTruthy();
   });
@@ -198,13 +185,8 @@ describe('active row', () => {
     expect(screen.getByRole('button', { name: 'Collapse area Work' }).getAttribute('aria-current')).toBeNull();
   });
 
-  /*
-   * The open track is marked in **one** place, however many sections it appears
-   * in. "Waiting on you" and "Pinned" are shortcuts into the tree; the area
-   * list is the tree, and a location is shown where the thing lives. A track
-   * that is open, pinned and blocked renders three rows here — this pins that
-   * exactly one of them claims to be the current page.
-   */
+  /* "Waiting on you" and "Pinned" are shortcuts into the tree; a location is shown
+   * where the thing lives. */
   it('marks the open track once, in its area, not in the shortcut sections', () => {
     const open = track({ id: 'w9', title: 'Row', lifecycle: 'blocked', attention: 'input', pinnedAt: 10 });
     renderSidebar({ tracks: [open], currentPath: '/track/w9' });

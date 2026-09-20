@@ -141,19 +141,8 @@ pub async fn assert_subject_keyed_cap_enforcement(repo: &SqlxRepo, track_id: &st
     }
 }
 
-/// Direct executable form of INV-CAP-EXT (#888 design §3.3/§7c′), validating
-/// the track's `review.round` rows however they were written: per subject, in
-/// event-row-id order, every adjacent pair `(prev, next)` must satisfy
-/// `n(next) == n(prev) + 1` and either `cap(next) == cap(prev)` (in-window) or
-/// all of `cap(next) == cap(prev) + 2` AND `n(prev) == cap(prev)` (prev
-/// exhausted) AND an intervening `ratify.resolved { grant }` witness row with
-/// `prev.id < g.id < next.id` authored by `ActorId::User` (role_gate 2.9 —
-/// the User-actor condition keeps the audit claim honest even against a
-/// malformed/test-seeded non-User grant). Grant non-reuse follows
-/// observationally: two extensions of one subject bracket witnesses in
-/// disjoint id intervals.
-///
-/// Returns per-subject extension counts so callers can pin exact totals.
+/// Validates the track's `review.round` rows per subject in event-row-id order: `n` rises by exactly 1, and
+/// `cap` either stays or rises by 2 only when prev was exhausted and a User-authored `ratify.resolved { grant }` intervenes.
 pub async fn assert_cap_extension_history(
     repo: &SqlxRepo,
     track_id: &str,
@@ -199,9 +188,7 @@ pub async fn assert_cap_extension_history(
             let (prev, next) = (&pair[0], &pair[1]);
             let (prev_n, prev_cap) = (review_round_n(prev), review_round_cap(prev));
             let (next_n, next_cap) = (review_round_n(next), review_round_cap(next));
-            // checked_add: on adversarial history at the u32 boundary the
-            // successor does not exist — fail the assertion cleanly (None !=
-            // Some) instead of panicking on arithmetic overflow.
+            // checked_add: at the u32 boundary fail the assertion cleanly instead of panicking on overflow.
             assert_eq!(
                 Some(next_n),
                 prev_n.checked_add(1),
@@ -247,8 +234,7 @@ pub fn first_matching_id(rows: &[EventRow], pred: impl Fn(&EventRow) -> bool) ->
     rows.iter().filter(|r| pred(r)).map(|r| r.id).min()
 }
 
-/// head_sha of the latest-n review.round for `subject`, but only if that
-/// latest round is converged (else None). Implements the 6a "converged latest".
+/// head_sha of the latest-n review.round for `subject`, only if that latest round is converged.
 pub fn latest_converged_head_sha(rounds: &[EventRow], subject: &SubjectKey) -> Option<String> {
     rounds
         .iter()
@@ -334,11 +320,7 @@ pub async fn assert_event_skeleton_superset(repo: &SqlxRepo, required: &[Require
     );
 }
 
-/// A happens-before edge: first row matching `before` (of `before_kind`) must
-/// precede first row matching `after` (of `after_kind`). Vacuously satisfied if
-/// either side is absent - presence is enforced separately via
-/// `assert_event_skeleton_superset`. The closures cover payload predicates such
-/// as `forge.pr.checks` `conclusion == "success"` (edge-4).
+/// A happens-before edge: first row matching `before` must precede first row matching `after`; vacuously satisfied if either side is absent.
 pub struct OrderingEdge {
     pub before_kind: &'static str,
     pub before: Box<dyn Fn(&EventRow) -> bool + Send + Sync>,
@@ -362,9 +344,7 @@ impl OrderingEdge {
     }
 }
 
-/// Pure core: the offending (before_id, after_id) pair if the first matching
-/// `before` row does NOT precede the first matching `after` row. None if either
-/// side is absent (vacuously satisfied) or if ordered correctly.
+/// The offending (before_id, after_id) pair if the first matching `before` row does NOT precede the first matching `after`; None if either side is absent.
 pub fn ordering_violation(
     before_rows: &[EventRow],
     before: &dyn Fn(&EventRow) -> bool,
@@ -396,9 +376,7 @@ pub async fn assert_ordering(repo: &SqlxRepo, edges: &[OrderingEdge]) {
     }
 }
 
-/// 6a existence assertion the lifted cap helper lacks (it passes vacuously with
-/// zero merges). For a converged impl `subject`, at least one `forge.pr.merged`
-/// with the latest converged round's `head_sha` MUST exist.
+/// For a converged impl `subject`, at least one `forge.pr.merged` with the latest converged round's `head_sha` MUST exist.
 pub async fn assert_converged_subject_has_merge(repo: &SqlxRepo, subject: &SubjectKey) {
     let rounds = event_rows(repo, "review.round").await;
     let merges = event_rows(repo, "forge.pr.merged").await;
@@ -464,7 +442,6 @@ mod tests {
             slice_id: "s".into(),
             pr_number: Some(7),
         };
-        // latest (n=3) converged -> Some(head3)
         let rounds = vec![
             review_row(1, "impl", "s", Some(7), 1, false, "h1"),
             review_row(2, "impl", "s", Some(7), 3, true, "h3"),
@@ -474,7 +451,6 @@ mod tests {
             latest_converged_head_sha(&rounds, &subj),
             Some("h3".to_string())
         );
-        // latest (n=3) NOT converged -> None even though an earlier round converged
         let rounds2 = vec![
             review_row(1, "impl", "s", Some(7), 2, true, "h2"),
             review_row(2, "impl", "s", Some(7), 3, false, "h3"),
@@ -501,8 +477,7 @@ mod tests {
         ];
         assert!(any_merge_for_subject_with_head(&merges, &subj, "h3"));
         assert!(!any_merge_for_subject_with_head(&merges, &subj, "hnope"));
-        // "hx" exists in the set but only for a DIFFERENT subject -> a subject-ignoring
-        // implementation would wrongly return true here.
+        // "hx" exists only for a DIFFERENT subject; a subject-ignoring implementation would return true.
         assert!(!any_merge_for_subject_with_head(&merges, &subj, "hx"));
         assert!(any_merge_for_subject_with_head(&merges, &other, "h3"));
         let other_h3_matches = merges

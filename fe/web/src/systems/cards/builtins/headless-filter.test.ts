@@ -28,9 +28,7 @@ describe('headless card filtering', () => {
     ];
     const { visible, unknown } = partitionTrackCards(bootedRegistry(), cards);
 
-    // Two headless cards sit in front. A display index would report 0 and 1
-    // here, and `detail.cards[0]` is the planner card — removing `term-1` would
-    // delete the harness instead.
+    // `originalIndex` must index the raw card list, not the visible one: removing by display index would delete the headless planner harness.
     expect(visible.map((slot) => [slot.wire.id, slot.originalIndex])).toEqual([['term-1', 2], ['term-2', 3]]);
     expect(unknown).toEqual([]);
     for (const slot of visible) expect(cards[slot.originalIndex]).toBe(slot.wire);
@@ -46,8 +44,6 @@ describe('headless card filtering', () => {
   });
 
   it('[INV-CARD-226] filters raw track-report kinds out of the unknown branch defensively', () => {
-    // With no track-report adapter registered the card would otherwise surface
-    // as a diagnosable unknown slot; the report is never a panel.
     const bare = createCardRegistry();
     const { visible, unknown } = partitionTrackCards(bare, [
       wire({ id: 'report', kind: 'track-report' }),
@@ -59,12 +55,6 @@ describe('headless card filtering', () => {
   });
 
   it('[INV-CARD-226] keeps ordinary codex cards visible, never headless', () => {
-    // The counter-example that guards the planner predicate end to end: if planner
-    // matched on `kind === 'codex'` alone these cards would resolve headless
-    // and vanish from the track entirely. Before #1150 they merely landed in
-    // `unknown` (no adapter); now the codex entry is registered ahead of planner,
-    // so the same three payloads must come out of the *visible* branch — which
-    // is also the bug #1150 fixed, checked at the partition boundary.
     const { visible, unknown } = partitionTrackCards(bootedRegistry(), [
       wire({ id: 'codex-1', kind: 'codex', payload: {} }),
       wire({ id: 'codex-2', kind: 'codex', payload: null }),
@@ -83,7 +73,6 @@ describe('headless card filtering', () => {
   });
 
   it('routes cards with a surface into the visible branch with their wire and index', () => {
-    // Extra surface adapter on top of the landed terminal entry.
     const registry = createCardRegistry();
     registerAvailableBuiltinCards(registry);
     registry.register({

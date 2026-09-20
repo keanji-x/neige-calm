@@ -1,10 +1,6 @@
-//! Change, signal and text waiting for observations: wake on renderer
-//! revisions, hook signals and client protocol events, never on a sleep-poll
-//! loop. Waiting is presentation; it never touches a receipt or the physical
-//! action. The argument contract lives in `wait_plan.rs`, the text loop in
-//! `text_wait.rs` (#1666), the repaint phase of a signal wait in
-//! `repaint.rs` (#1677 r16); this file dispatches and runs the change and
-//! signal loops.
+//! Change, signal and text waiting for observations: wake on renderer revisions, hook signals
+//! and client protocol events, never on a sleep-poll loop. Waiting is presentation; it never
+//! touches a receipt or the physical action.
 use super::client::Client;
 use super::repaint::{Repaint, settle_after_signal};
 pub use super::repaint::{RepaintOutcome, RepaintPlan, RepaintReport};
@@ -15,8 +11,7 @@ use crate::terminal_renderer::{SharedModelView, Signal};
 use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::sync::watch;
-// tokio's Instant equals std's on a live runtime and follows the paused
-// clock in tests, so the loop and its timers share one time base.
+// tokio's Instant follows the paused clock in tests, so the loop and its timers share one time base.
 use tokio::time::Instant;
 
 /// What the wait did, reported verbatim on the observation.
@@ -28,10 +23,9 @@ pub enum WaitOutcome {
     Exited,
     Elapsed,
     Signal,
-    /// Signal mode (#1692): the budget ended without a matching signal — a
-    /// fact about the ring, not about the screen (which may have moved).
+    /// Signal mode: the budget ended without a matching signal — a fact about the ring, not the screen.
     NoSignal,
-    /// Text mode (#1666): a pattern is on the live viewport.
+    /// Text mode: a pattern is on the live viewport.
     Matched,
     /// Text mode: no pattern was on the viewport when the budget ended.
     Unmatched,
@@ -41,22 +35,19 @@ pub struct WaitReport {
     pub outcome: WaitOutcome,
     pub waited: Duration,
     pub settled: bool,
-    /// The revision the wait compared against (reported in elapsed mode too,
-    /// where it is the same baseline a change wait would have used).
+    /// The revision the wait compared against (reported in elapsed mode too).
     pub baseline: u64,
-    /// The signal seq the wait compared against (every mode reports it, so a
-    /// caller can see which signals a later signal wait would consider new).
+    /// The signal seq the wait compared against (every mode reports it).
     pub signal_baseline: u64,
     /// Signal mode: the signal that ended the wait.
     pub signal: Option<Signal>,
     /// Signal mode: elapsed time when the signal arrived.
     pub signal_at: Option<Duration>,
-    /// Signal mode: what happened on the screen after the signal (#1628).
+    /// Signal mode: what happened on the screen after the signal.
     pub repaint: Option<RepaintReport>,
-    /// Text mode (#1666): the match the wait ended on, if any.
+    /// Text mode: the match the wait ended on, if any.
     pub text: Option<TextMatch>,
-    /// Text and signal modes (#1677 r16): which text conditions held on the
-    /// screen the wait (or the repaint phase) ended on.
+    /// Which text conditions held on the screen the wait (or the repaint phase) ended on.
     pub conditions: Option<ConditionState>,
 }
 pub(super) fn millis(duration: Duration) -> u64 {
@@ -104,16 +95,9 @@ impl WaitReport {
     }
 }
 
-/// Wait according to `plan` against `baseline` (the revision whose change the
-/// caller cares about) and `signal_baseline` (the signal seq a signal wait
-/// counts from). Change mode returns once the projection revision differs
-/// from the baseline and stayed quiet for `settle_ms`, or at the budget, or
-/// when the process exited / the client went away. Signal mode returns once a
-/// signal with `seq > signal_baseline` and an event in `plan.signal_events`
-/// exists, or on exit / disconnect, or at the budget — then on a frame
-/// boundary, at most `settle_ms` later (#1692). Text mode (#1666)
-/// returns once a `plan.wait_text` pattern is on a live viewport row and the
-/// screen then stayed quiet for `settle_ms`, or at the budget, or on exit.
+/// Wait according to `plan` against `baseline` (revision) and `signal_baseline` (signal seq).
+/// Every mode returns at the budget or on exit / disconnect; a signal wait that hits the budget
+/// then waits for a frame boundary, at most `settle_ms` later.
 pub async fn wait(
     client: &Client,
     plan: &WaitPlan,
@@ -157,19 +141,15 @@ pub async fn wait(
                 .unwrap_or(true)
             || projection_unavailable(&client.entry.handle.model_view)
     };
-    // Both modes subscribe to the projection: a revision is what a change
-    // wait is for, and an invalidation (`ModelView::invalidate`, e.g. the
-    // output source disconnecting) must end a signal wait too instead of
-    // leaving it — and the connection's input serial — parked to the budget.
+    // Both modes subscribe to the projection: an invalidation must end a signal wait too instead
+    // of leaving it — and the connection's input serial — parked to the budget.
     let revisions = match client.entry.handle.model_view.lock() {
         Ok(view) => view.subscribe(),
         Err(_) => {
             return report(WaitOutcome::Unchanged, started.elapsed(), false, None);
         }
     };
-    // One capture per revision wake, the view lock dropped before the rows
-    // are tested; the frame's own revision names the tested screen (text
-    // mode, and the signal repaint phase under text conditions).
+    // One capture per revision wake, the view lock dropped before the rows are tested.
     let capture = || {
         client
             .entry
@@ -215,8 +195,7 @@ pub async fn wait(
             (None, true) => WaitOutcome::Exited,
             (None, false) => WaitOutcome::NoSignal,
         };
-        // With a signal the repaint phase's verdict is the settle fact;
-        // without one it is the frame-boundary phase's (#1692).
+        // With a signal the repaint phase's verdict is the settle fact; without one the frame-boundary phase's.
         let settled = match repaint {
             Some(repaint) => matches!(
                 repaint.outcome,
@@ -276,9 +255,8 @@ pub async fn wait(
     report(outcome, started.elapsed(), settled && !exited, None)
 }
 
-/// `ModelView::invalidate` wakes revision subscribers without a new
-/// revision; a change wait must stop there (the capture after it fails
-/// explicitly) instead of idling to its budget.
+/// `ModelView::invalidate` wakes revision subscribers without a new revision; a change wait
+/// must stop there instead of idling to its budget.
 fn projection_unavailable(model_view: &SharedModelView) -> bool {
     model_view
         .lock()
@@ -296,37 +274,19 @@ pub struct SignalWait {
     pub signal_at: Option<Duration>,
     /// Present exactly when a signal was found.
     pub repaint: Option<RepaintReport>,
-    /// Which text conditions held on the last screen the repaint phase
-    /// tested (#1677 r16; null sides when there were none).
+    /// Which text conditions held on the last screen the repaint phase tested.
     pub conditions: ConditionState,
-    /// No signal (#1692): whether the screen was quiet for `settle` when the
-    /// frame-boundary phase ended. Meaningless with a signal (the repaint
-    /// verdict says it) and false on exit.
+    /// No signal: whether the screen was quiet for `settle` when the frame-boundary phase ended.
+    /// Meaningless with a signal and false on exit.
     pub settled: bool,
 }
-/// One Ink frame is written in a burst of PTY chunks a few ms apart; a gap
-/// of 30 ms separates frames, also during a spinner that repaints every
-/// ~100 ms (#1692).
+/// One Ink frame is written in a burst of PTY chunks a few ms apart; a gap of 30 ms separates
+/// frames, also during a spinner that repaints every ~100 ms.
 const FRAME_GAP: Duration = Duration::from_millis(30);
-/// The signal-mode loop (#1620), separated from the client so its timing can
-/// be tested under a paused clock. `signals` is the ring's seq channel,
-/// `revisions` the projection revision channel (a revision itself never ends
-/// a signal wait; its wake re-evaluates `stopped`, which covers projection
-/// invalidation, and is recorded for the repaint phase), `events` the
-/// client's protocol channel, `find` the ring lookup for a matching signal
-/// above the baseline. The ring is inspected before every select and again
-/// on timeout, after the seq channel version has been marked seen, so a
-/// signal that lands between the lookup and the select is never missed and
-/// one that lands as the budget expires is still reported; the timeout
-/// branch re-reads `stopped` as well, so an exit that coincides with the
-/// deadline is reported as exited, never as no signal. Once the signal is
-/// found the wait continues in [`settle_after_signal`] (#1628) unless
-/// `repaint.repaint` is zero; `capture` and `conditions` (#1677 r16) are
-/// the text conditions that phase tests, one capture per revision. A budget
-/// that ends without a signal continues in [`frame_boundary`] (#1692) so
-/// the capture that follows lands on a frame boundary whenever one occurs
-/// within the grace; a signal that lands during that grace is not looked
-/// for — the budget is over.
+/// The signal-mode loop, separated from the client so its timing can be tested under a paused
+/// clock. The ring is inspected before every select and again on timeout, after the seq channel
+/// version has been marked seen, so a signal that lands between the lookup and the select is
+/// never missed; the timeout branch re-reads `stopped` as well.
 #[allow(clippy::too_many_arguments)]
 async fn wait_for_signal(
     mut signals: watch::Receiver<u64>,
@@ -350,8 +310,7 @@ async fn wait_for_signal(
         conditions: ConditionState::default(),
         settled,
     };
-    // A matching signal wins over every other verdict; otherwise `stopped`
-    // is read at the moment the wait ends.
+    // A matching signal wins over every other verdict; otherwise `stopped` is read at the moment the wait ends.
     let signal = loop {
         signals.borrow_and_update();
         screen.observe(*revisions.borrow_and_update(), Instant::now());
@@ -414,19 +373,10 @@ async fn wait_for_signal(
     }
 }
 
-/// The frame-boundary phase of a signal wait whose budget ended without a
-/// signal (#1692). Round 19 captured a torn Ink frame because the timeout
-/// branch returned at the deadline instant, wherever the PTY chunk stream
-/// happened to be; the signal branch and the change and text modes all
-/// settle first, only this branch did not. It returns once the projection
-/// has been quiet for `min(settle, FRAME_GAP)` — a frame boundary, reached
-/// within a few tens of ms even under a spinner — or at `deadline + settle`
-/// at the latest (a streaming log never pauses). `settled` is true only
-/// when the screen was quiet for the full `settle` (an idle screen returns
-/// at the deadline itself). The ring is not inspected here: the budget is
-/// over, a signal landing now is the next wait's. Exit, disconnect,
-/// projection invalidation and a closed channel end the phase at once.
-/// Returns `(exited, settled)`.
+/// The frame-boundary phase of a signal wait whose budget ended without a signal: returning at
+/// the deadline instant captured torn Ink frames. Returns once the projection has been quiet for
+/// `min(settle, FRAME_GAP)`, or at `deadline + settle` at the latest. The ring is not inspected
+/// here. Returns `(exited, settled)`.
 async fn frame_boundary(
     revisions: &mut watch::Receiver<u64>,
     events: &mut watch::Receiver<u64>,
@@ -451,8 +401,7 @@ async fn frame_boundary(
         if quiet >= frame_gap || now >= grace_end {
             return (false, false);
         }
-        // `frame_gap <= settle`, so the frame timer is never later than the
-        // settle timer; the grace end bounds both.
+        // `frame_gap <= settle`, so the frame timer is never later than the settle timer.
         let timer = (now + (frame_gap - quiet)).min(grace_end);
         let ended = tokio::select! {
             result = revisions.changed() => result.is_err(),
@@ -471,13 +420,9 @@ struct Progress {
     exited: bool,
 }
 
-/// The change-mode loop, separated from the client so its timing can be
-/// tested under a paused clock. `revisions` is the projection revision
-/// channel, `events` the client's protocol channel (ownership, acks, exit,
-/// disconnect). Only a new revision starts or extends the quiet window; a
-/// protocol event re-evaluates `stopped` and otherwise leaves the window as
-/// it was. When the quiet timer completes, the revision and stopped state are
-/// read again before `settled` is reported: with several branches ready,
+/// The change-mode loop, separated from the client so its timing can be tested under a paused
+/// clock. Only a new revision starts or extends the quiet window. When the quiet timer
+/// completes, the revision and stopped state are read again: with several branches ready,
 /// `select!` may pick the timer although a newer revision is already waiting.
 async fn wait_for_change(
     mut revisions: watch::Receiver<u64>,
@@ -523,8 +468,7 @@ async fn wait_for_change(
             }
             _ = tokio::time::sleep_until(quiet_until) => {
                 if *revisions.borrow_and_update() != seen {
-                    // A revision landed while the timer was completing: the
-                    // window restarts at the top of the loop.
+                    // A revision landed while the timer was completing: the window restarts.
                     continue;
                 }
                 if stopped() {

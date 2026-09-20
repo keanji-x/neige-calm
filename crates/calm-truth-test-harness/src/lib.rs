@@ -1,9 +1,4 @@
-//! Scoped T1-T4 truth-layer conformance for #679 PR2.
-//!
-//! This crate intentionally sits one hop away from `calm-exec` so
-//! `cargo tree --depth 2 -p calm-exec --all-targets` keeps `sqlx` out of
-//! the `calm-exec` tree while the conformance implementation still exercises
-//! real calm-truth SQLite APIs.
+//! Truth-layer conformance; sits one hop away from `calm-exec` so `sqlx` stays out of the `calm-exec` dependency tree.
 
 pub mod fakes;
 
@@ -503,10 +498,8 @@ where
 }
 
 pub fn invariant_t4_no_operations_read_api() {
-    // #679 PR4 T4 is a doc/grep firewall: operation sagas have no public
-    // truth-layer event append entrance that skips DecisionGate. CI enforces
-    // that the retired operation-only append symbols do not exist under
-    // `crates/`; saga appends must use `append_decision_event(s)_in_tx`.
+    // A doc/grep firewall: CI enforces that no operation-only truth-layer append symbol exists under `crates/`;
+    // saga appends must use `append_decision_event(s)_in_tx`.
 }
 
 pub async fn provider_conformance<P: WorkerProvider>(p: P) {

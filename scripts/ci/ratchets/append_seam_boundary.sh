@@ -2,143 +2,10 @@
 
 set -euo pipefail
 
-# #1252 S3′ PR-B — drift detector for the append seam.
-#
-# ---------------------------------------------------------------------------
-# WHAT THIS IS, AND — MORE IMPORTANTLY — WHAT IT IS NOT
-# ---------------------------------------------------------------------------
-#
-# S3′ has two halves and they guard two different statements. Do not let this
-# file be described as proving the first one.
-#
-# **The compile-time half (not this file).** `SqlxRepo::event_append_in_tx` is a
-# private inherent method whose `(actor, scope, event)` triple was replaced by a
-# `gated::Authorized` capability with three private fields. `rustc` therefore
-# decides, and the statement it decides is narrow and exact:
-#
-#     in SAFE code, no path reaches THAT APPENDER without a gate decision on the
-#     very triple it inserts.
-#
-# It is not "the events table cannot be written" — `RepoEventWrite::write_in_tx`
-# still hands out a bare `Transaction` and `SqlxRepo::pool` still hands out the
-# pool — and it is not "in all code": `calm-truth` cannot carry
-# `#![forbid(unsafe_code)]` (its tests need `unsafe` for `std::env::set_var`), so
-# a `transmute` into `Authorized` compiles. The evidence for that half is two
-# executable artifacts, neither of which is a text scan:
-#
-#   * `mod append_seam_escape_probe` in `src/db/sqlite/events.rs`, four
-#     `#[cfg(feature)]` samples, one per bypass, asserted by CI down to the
-#     diagnostic (E0616 / E0451 / E0451 / E0061);
-#   * `crates/calm-truth/tests/append_seam_trybuild.rs`, the cross-crate half
-#     (E0603 / E0624), which `trybuild` can carry and the in-crate half cannot.
-#
-# **This file is the drift detector.** It is a text scan over three files and
-# one repository census. Its threat model is the one #1300 and #1318 wrote down
-# for themselves: it catches somebody widening the seam *without knowing it
-# exists*. It does not catch somebody working around it, and it proves nothing
-# about what `rustc` compiles. The KNOWN GAPS section says how it is beaten.
-#
-# It does carry one thing on its own, because no type does: the residual gap the
-# compile-time half explicitly leaves open — a raw `INSERT INTO events` written
-# somewhere else against a bare transaction (rule S1).
-#
-# ---------------------------------------------------------------------------
-# KNOWN GAPS — declared, not chased
-# ---------------------------------------------------------------------------
-#
-#   G1 **Proc-macros and `build.rs`.** A derive or attribute macro expands to
-#      whatever it likes, including a submodule of `events` that forges nothing
-#      but reaches the appender. There is no `ident!` for a rule to see. Unlike
-#      `report_write_boundary.sh` this gate cannot answer with a macro
-#      allowlist, because `events.rs` legitimately invokes `sqlx::query!`-family
-#      and `format!`-family macros throughout.
-#
-#   G2 **Anything needing a lexer.** The comment stripper blanks whole-line
-#      `//` and nothing else; it does not know what a string literal is.
-#      `events.rs` contains raw SQL strings by construction, so — unlike the
-#      report-write gate — raw strings cannot simply be banned here. Rule E0b
-#      bans raw *identifiers* (`r#name`) while allowing raw *strings* (`r#"`),
-#      which is the narrowest form that leaves the file writable.
-#
-#   G3 **S1 is a census, not a classifier.** It pins WHERE the string
-#      `INSERT INTO events` occurs and how often. It does not evaluate `#[cfg]`,
-#      so it cannot tell a test-only insert from a production one; the claim
-#      that today's occurrences outside `events.rs` are all prose or
-#      `#[cfg(test)]` was checked by hand when the baseline was pinned (see the
-#      annotations on EXPECTED_INSERTS) and is re-checked by a human whenever
-#      the baseline moves. It also only sees this one spelling — a query built
-#      with `QueryBuilder`, or the table name in a variable, is invisible.
-#
-#   G4 **E5 compares binding NAMES, not transactions.** Two distinct
-#      transactions both bound to a local called `tx`, in two different
-#      functions, read identical to this rule. It is a text check and is
-#      documented as one below.
-#
-# Closing G1–G4 means parsing Rust. If this boundary ever needs an adversarial
-# guarantee beyond what the capability type already gives, the answer is another
-# compile-time construction, not a longer scan.
-#
-# ---------------------------------------------------------------------------
-# WHAT IT CHECKS
-# ---------------------------------------------------------------------------
-#
-# Over `events.rs` (the file the seam lives in):
-#
-#   E0a no block comment — a line-oriented stripper cannot see through one.
-#   E0b no raw identifier (`r#name`). `r#event_append_in_tx` *is*
-#       `event_append_in_tx` to rustc and not to a rule matching on the name.
-#       Raw strings (`r#"…"#`) are allowed: the SQL needs them.
-#   E0c no `#[path]`, no `include!`, no OUT-OF-LINE `mod name;`. This is the
-#       rule that keeps "the caller set of the private appender" equal to one
-#       file. Note it is out-of-line modules that are banned, not modules: the
-#       file legitimately declares three INLINE modules (`gated`,
-#       `append_probe`, `append_seam_escape_probe`), and an inline module is
-#       still in front of the reviewer reading this file. Their set is pinned
-#       by E1 instead.
-#   E1  the inline module set is exactly the pinned three. A fourth inline
-#       module is a descendant of `events` and can therefore reach the private
-#       appender — legitimate, and it has to be reviewed as such.
-#   E2  the exported (column-0 `pub fn`) entry set is exactly the two public
-#       appenders.
-#   E3  each of those two entries has exactly its pinned signature, flattened.
-#       This is the "a `gate: &G` / `PermissiveGate` parameter must never grow
-#       back" rule; it is written as a whole-signature pin rather than as a
-#       search for `gate:` because the search only catches the spelling
-#       somebody already thought of.
-#   E4  `Authorized`'s field block and its `impl` block are exactly their
-#       pinned text: three private fields, three by-value read-only accessors.
-#       Adding `pub` to a field, a setter, or a `&mut` accessor restores
-#       retargeting, which is the load-bearing half of the compile-time
-#       property (see the module's own header).
-#   E5  every gate mint and every append in the file names the same transaction
-#       binding, `tx`. The capability binds the triple but NOT the transaction —
-#       `authorize(gate_tx, …)` then `event_append_in_tx(write_tx, …)` type
-#       checks — and no clean type fixes that (making `Authorized` borrow the
-#       transaction makes the very next line an E0499 double mutable borrow, so
-#       the seam would not compile at all). So this one is pinned textually, and
-#       G4 above says exactly how weak that is.
-#
-# Over `decision_gate.rs`:
-#
-#   D1  `DecisionGate`, `PermissiveGate`, `impl DecisionGate for PermissiveGate`
-#       and `commit_decision` each carry `#[cfg(any(test, feature =
-#       "test-helpers"))]` **in their own attribute block** (adjacency, not
-#       proximity — see `attrs_above` in lib.sh). `PermissiveGate` was the only
-#       production `impl DecisionGate` in the tree and it leaked a permissive
-#       stub into fifteen production call sites; losing the cfg puts it back.
-#
-# Over the repository:
-#
-#   S1  the `INSERT INTO events` census equals the pinned baseline, in both
-#       directions. See G3 for what this does and does not mean.
+# Drift detector for the append seam: a text scan over `events.rs`, `decision_gate.rs` and one repository census. It catches somebody widening the seam without knowing it exists; it does not catch a workaround and proves nothing about what `rustc` compiles (the compile-time half is the `Authorized` capability, the escape probe and the trybuild test).
+# Known gaps: proc-macros/`build.rs`; anything needing a lexer (only whole-line `//` comments are stripped, raw strings must stay legal); S1 is a census, not a classifier; E5 compares binding NAMES, not transactions.
 
-# Every pinned list below is a `sort`ed blob compared as text, so the collation
-# order has to be the same on every machine. It is not, by default: E5's census
-# lines differ first at `authorize|tx` vs `authorize_with_caches|tx`, and a
-# UTF-8 locale ignores the `|` while the C locale compares it as a byte (`_`
-# 0x5F sorts before `|` 0x7C). This gate was green on a developer box and RED on
-# CI for exactly that reason, on the unmodified production file — a false RED,
-# which is the more expensive kind. Pin the collation instead of guessing it.
+# Every pinned list is a `sort`ed blob compared as text; a UTF-8 locale ignores `|` while C compares it as a byte, which made this gate RED on CI on the unmodified file.
 export LC_ALL=C
 
 script_dir="${BASH_SOURCE[0]%/*}"
@@ -169,52 +36,13 @@ EXPECTED_STRUCT="pub(in crate::db::sqlite::events) struct Authorized<'a> { actor
 
 EXPECTED_IMPL="impl<'a> Authorized<'a> { pub(in crate::db::sqlite::events) fn actor(&self) -> &'a ActorId { self.actor } pub(in crate::db::sqlite::events) fn scope(&self) -> &'a EventScope { self.scope } pub(in crate::db::sqlite::events) fn event(&self) -> &'a Event { self.event } }"
 
-# `<count> <kind>|<transaction binding>`, sorted. The two `authorize` sites are
-# the public appenders; the four `authorize_with_caches` sites are the
-# `RepoEventWrite` wrappers; the eight appends are those six plus the
-# `#[cfg(test)]` fixture replay plus the `#[cfg(feature)]` escape probe's
-# deliberately-wrong call.
+# `<count> <kind>|<transaction binding>`, sorted. Two public appenders, four `RepoEventWrite` wrappers, and eight appends (those six plus the test fixture replay and the escape probe's deliberately-wrong call).
 EXPECTED_TX_CENSUS="4 authorize_with_caches|tx
 2 authorize|tx
 8 event_append_in_tx|tx"
 
-# S1 baseline: `<path>:<count-of-MATCHING-LINES>` (`grep -c` counts lines, not
-# occurrences), sorted by path. Hand-classified when pinned —
-# this is the annotation G3 refers to:
-#
-#   calm-server/src/activity_window.rs      1  inside `#[cfg(test)] mod tests`
-#   calm-server/src/task_context.rs         1  inside `#[cfg(test)] mod tests`
-#   calm-server/tests/cases/*               6  integration tests
-#   calm-server/tests/cases/
-#     migration_0094_worker_session_id.rs   1  integration test. It seeds `events`
-#                                              rows at the PRE-0094 schema so that
-#                                              migration 0094 can then be run over
-#                                              adversarial payloads. The appender
-#                                              seam writes the CURRENT schema, and
-#                                              the migration that produces that
-#                                              schema is the thing under test, so
-#                                              this fixture cannot reach the rows
-#                                              it needs through the seam.
-#   calm-server/tests/cases/
-#     rest_isolated_task_report.rs         1  adversarial report-reader fixtures:
-#                                              forged terminal-event scope/actor
-#                                              must not yield worker reports
-#                                              (#1501). Valid reports use the
-#                                              native tool/DecisionSink; hooks
-#                                              use the gated event writer. These
-#                                              invalid rows cannot enter there.
-#   calm-truth/src/db/mod.rs                2  PROSE only (module doc comments)
-#   calm-truth/src/db/sqlite/events.rs      2  the seam itself: the one real
-#                                              production INSERT, plus prose
-#   calm-truth/src/db/sqlite/mod.rs         1  PROSE only (module doc comment)
-#   calm-truth/src/db/sqlite/
-#     proposal_withdraw_upgrade_tests.rs    1  `#[cfg(test)] mod` (mod.rs:570)
-#   calm-truth/src/events_prune.rs          1  inside `#[cfg(test)] mod tests`
-#   calm-truth/tests/events_since_bound.rs  4  integration tests
-#
-# A new line here, or a changed count, is a claim that somebody writes the
-# events table outside the seam. Adding one is allowed; it has to be argued in
-# front of a reviewer, in the same PR, by editing this list.
+# S1 baseline: `<path>:<count-of-MATCHING-LINES>` (`grep -c` counts lines), sorted by path. Occurrences outside `events.rs` are prose or `#[cfg(test)]`, checked by hand when pinned.
+# A new line or a changed count is a claim that somebody writes the events table outside the seam; adding one has to be argued in the same PR by editing this list.
 EXPECTED_INSERTS="${APPEND_SEAM_INSERT_BASELINE-crates/calm-server/src/activity_window.rs:1
 crates/calm-server/src/task_context.rs:1
 crates/calm-server/tests/cases/briefing_in_mint_tx.rs:1
@@ -222,11 +50,9 @@ crates/calm-server/tests/cases/events_pruner.rs:4
 crates/calm-server/tests/cases/mcp_track_report.rs:1
 crates/calm-server/tests/cases/migration_0094_worker_session_id.rs:1
 crates/calm-server/tests/cases/rest_isolated_task_report.rs:1
-crates/calm-server/tests/cases/sync_engine.rs:5
+crates/calm-server/tests/cases/sync_engine.rs:3
 crates/calm-server/tests/cases/ws_replay.rs:1
-crates/calm-truth/src/db/mod.rs:2
-crates/calm-truth/src/db/sqlite/events.rs:2
-crates/calm-truth/src/db/sqlite/mod.rs:1
+crates/calm-truth/src/db/sqlite/events.rs:1
 crates/calm-truth/src/db/sqlite/proposal_withdraw_upgrade_tests.rs:1
 crates/calm-truth/src/events_prune.rs:1
 crates/calm-truth/tests/events_since_bound.rs:4}"
@@ -237,13 +63,7 @@ fail() {
   failures=$((failures + 1))
 }
 
-# Both subject files are read through CODE/GATE_CODE: a copy with whole-line
-# `//` comments blanked out, line numbers preserved. Both files name `mod`,
-# `#[path]`, `include!`, `pub` and `PermissiveGate` in their own prose, so
-# rules looking for those have to be blunt and the prose has to be invisible.
-# Trailing comments are deliberately NOT stripped: doing so needs a lexer, and
-# the report-write gate shipped a false GREEN the one time it tried (a `//`
-# inside a URL truncated the line and hid a `mod`).
+# Both subject files are read with whole-line `//` comments blanked (line numbers preserved): both name `mod`, `#[path]`, `include!` and `pub` in their own prose. Trailing comments are deliberately NOT stripped — that needs a lexer, and a `//` inside a URL once hid a `mod`.
 strip_comments() {
   awk '{ if ($0 ~ /^[[:space:]]*\/\//) print ""; else print }' "$1"
 }
@@ -251,39 +71,25 @@ strip_comments() {
 CODE="$(strip_comments "$EVENTS_FILE")"
 GATE_CODE="$(strip_comments "$GATE_FILE")"
 
-# Every rule below feeds these two blobs to its matcher through a HERE-STRING
-# (`rg … <<<"$CODE"`), never through `printf '%s' "$CODE" | rg …`. With `set -o
-# pipefail`, a reader that stops early — `rg -q` exits at the first match, and
-# the two `awk` helpers `exit` at the line that closes the block — kills the
-# `printf` with SIGPIPE, and 141 becomes the pipeline's status. That is a
-# timing-dependent FALSE RED: the gate aborted at E3/E4 with 141, and D1
-# reported all four of its subjects "not found" while the file was untouched.
-# A here-string is fed by the shell itself, so there is no writer to signal.
-#
-# Pipelines whose reader consumes to EOF (`rg --replace`, `tr`, `sort`) cannot
-# raise this and are left as they are.
+# Every rule feeds these blobs to its matcher through a HERE-STRING, never `printf | rg`: with `pipefail`, an early-exiting reader (`rg -q`, the `awk` helpers) kills `printf` with SIGPIPE and 141 becomes a timing-dependent FALSE RED. Readers that consume to EOF are left as pipelines.
 
-# --- E0a: no block comment ---------------------------------------------------
+# E0a: no block comment
 if rg -q '/\*|\*/' <<<"$CODE"; then
   fail "E0a: $EVENTS_FILE contains a block comment. This gate strips only whole-line \`//\` comments, so a \`/* */\` can hide a declaration from every rule below. Use \`//\`."
 fi
 
-# --- E0b: no raw identifier (raw strings are fine) ---------------------------
-#
-# `r#"` is the raw-string opener and this file is full of SQL; `r#` followed by
-# an identifier character is a raw identifier, and `r#event_append_in_tx` is
-# `event_append_in_tx` to rustc but not to E2/E3/E5.
+# E0b: no raw identifier (raw strings are fine). `r#"` opens a raw string; `r#` followed by an identifier character is a raw identifier, invisible to E2/E3/E5.
 if rg -q 'r#[A-Za-z_]' <<<"$CODE"; then
   fail "E0b: $EVENTS_FILE uses a raw identifier (\`r#name\`). It defeats every name-based rule below — \`r#event_append_in_tx\` *is* \`event_append_in_tx\` to rustc. Raw strings (\`r#\"…\"#\`) are allowed and are not what this matched."
 fi
 
-# --- E0c: no declaration that extends this module to another file ------------
+# E0c: no declaration that extends this module to another file
 escape_hatch="$(printf '%s' "$CODE" | rg --line-number '^\s*(pub(\([^)]*\))?\s+)?mod\s+[A-Za-z_][A-Za-z0-9_]*\s*;|#\[\s*path\s*=|(^|[^[:alnum:]_])include!\s*\(' || true)"
 if [ -n "$escape_hatch" ]; then
   fail "E0c: $EVENTS_FILE declares an out-of-line module / \`#[path]\` / \`include!\`. Any of them extends the private appender's caller set to source outside this file, which is the whole basis of the boundary: $escape_hatch"
 fi
 
-# --- E1: the inline module set is exactly the pinned three -------------------
+# E1: the inline module set is exactly the pinned three
 actual_modules="$(
   printf '%s' "$CODE" | rg --no-line-number --replace '$1|$2' \
     '^(pub(?:\([^)]*\))?)?\s*mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{' || true
@@ -296,12 +102,7 @@ actual:
 $actual_modules"
 fi
 
-# --- E2: the exported entry set is exactly the two appenders -----------------
-#
-# Column-0 anchored, every `pub` form, every qualifier optional and repeatable —
-# the shapes that walked past the report-write gate's first revision
-# (`pub(super)`, a non-`async` fn, a generic whose name is not followed by `(`,
-# an extra qualifier) are all matched here for the same reason.
+# E2: the exported entry set is exactly the two appenders. Column-0 anchored, every `pub` form, every qualifier optional and repeatable.
 actual_entries="$(
   printf '%s' "$CODE" | rg --no-line-number --replace '$1|$2' \
     '^(pub(?:\([^)]*\))?)\s+(?:(?:async|unsafe|const|extern\s+"[^"]*")\s+)*fn\s+([A-Za-z_][A-Za-z0-9_]*).*$' || true
@@ -314,12 +115,7 @@ actual:
 $actual_entries"
 fi
 
-# --- E3: neither appender's signature changed --------------------------------
-#
-# flatten_signature collects from the `pub async fn NAME(` line through the
-# column-0 `)` that closes the parameter list, then squeezes whitespace. Empty
-# output (the entry was renamed or removed) fails the comparison, which is the
-# behaviour we want: E2 will also be red, and both messages print.
+# E3: neither appender's signature changed
 flatten_signature() {
   awk -v pat="$1" '
     $0 ~ pat        { f = 1 }
@@ -340,13 +136,7 @@ expected: $EXPECTED_SIG_BATCH
 actual:   $actual_sig_batch"
 fi
 
-# --- E4: the capability type keeps its shape ---------------------------------
-#
-# Both blocks are pinned whole rather than probed for `pub` / `set_` / `&mut`,
-# because a probe only finds the spelling somebody already thought of, and the
-# blocks are six lines and twelve lines. `flatten_block` collects from the
-# opening line through the first line that closes at the block's own
-# indentation (4 spaces — these are items inside `mod gated`).
+# E4: the capability type keeps its shape. Both blocks are pinned whole, since a probe only finds the spelling somebody already thought of; `flatten_block` collects from the opening line through the first line closing at the block's own 4-space indentation.
 flatten_block() {
   awk -v pat="$1" '
     $0 ~ pat            { f = 1 }
@@ -367,10 +157,7 @@ expected: $EXPECTED_IMPL
 actual:   $actual_impl"
 fi
 
-# --- E5: every mint and every append names the same transaction binding ------
-#
-# Read on a whitespace-flattened copy because the calls are rustfmt-wrapped: the
-# binding is on the line after the `(` at four of the six mint sites.
+# E5: every mint and every append names the same transaction binding. Read on a whitespace-flattened copy because the calls are rustfmt-wrapped.
 FLAT="$(printf '%s' "$CODE" | tr '\n' ' ' | tr -s ' ')"
 actual_tx_census="$(
   printf '%s' "$FLAT" | rg --only-matching --replace '$1$2|$3' \
@@ -385,22 +172,14 @@ actual:
 $actual_tx_census"
 fi
 
-# --- D1: the test-only gate abstraction keeps its cfg ------------------------
+# D1: the test-only gate abstraction keeps its cfg
 d1_subject() {
   local label="$1" pattern="$2" attrs rc
   if ! rg -q "$pattern" <<<"$GATE_CODE"; then
     fail "D1: no \`$label\` declaration found in $GATE_FILE matching /$pattern/ — if it was renamed or removed, update D1 in the same PR rather than letting the rule check nothing"
     return
   fi
-  # Read into a variable, so the `rg` below is not on the end of a pipeline fed
-  # by an early-exiting reader — that is the form that made this rule report all
-  # four subjects missing at random. `attrs_above` itself no longer has an
-  # internal `printf | awk` to be SIGPIPE'd (lib.sh feeds its awk a here-string),
-  # so the 141 that used to be tolerated here can no longer arise from a healthy
-  # call, and tolerating it would only hide a real awk failure. Any non-zero
-  # status is now a gate malfunction, reported as one — that message is distinct
-  # from the D1 verdict below, so a broken gate can still never be read as a
-  # verdict on `$label`.
+  # Read into a variable, not a pipeline fed by an early-exiting reader. Any non-zero status is a gate malfunction, reported distinctly from the D1 verdict.
   set +e
   attrs="$(attrs_above "$GATE_CODE" "$pattern")"
   rc=$?
@@ -418,15 +197,7 @@ d1_subject "struct PermissiveGate" '^pub struct PermissiveGate[;[:space:]]'
 d1_subject "impl DecisionGate for PermissiveGate" '^impl DecisionGate for PermissiveGate[[:space:]{]'
 d1_subject "fn commit_decision" '^pub async fn commit_decision[<(]'
 
-# --- S1: the events-table insert census --------------------------------------
-#
-# Enumerated with `git ls-files`, not `find`: the repository has sibling git
-# worktrees under `.claude/worktrees/`, which are untracked here and which a
-# `find` would walk into, scanning other branches' code.
-#
-# The pattern is case-insensitive and whitespace-tolerant so that the trivial
-# respellings do not slip past; it still only sees this one way of naming the
-# table (G3).
+# S1: the events-table insert census. Enumerated with `git ls-files`, not `find`: sibling worktrees under `.claude/worktrees/` are untracked and a `find` would scan other branches' code.
 actual_inserts="$(
   git -C "$SCAN_ROOT" ls-files -z '*.rs' \
     | (cd "$SCAN_ROOT" && xargs -0 --no-run-if-empty grep -HEic 'insert[[:space:]]+into[[:space:]]+[`"]?events\b') \

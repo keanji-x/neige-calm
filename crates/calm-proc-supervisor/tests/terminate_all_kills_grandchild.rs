@@ -1,17 +1,5 @@
-//! #993 semantics lock, guarding the #1013 fix.
-//!
-//! `terminate_all_process_groups` signals the *process group*, not the direct
-//! child, so a surviving grandchild sharing the leader's pgid still gets the
-//! SIGTERM. #993's review rejected narrowing this to a `pty_running()`-style
-//! predicate for exactly that reason.
-//!
-//! The #1013 fix adds a liveness guard on the same code path, and the obvious
-//! wrong way to write that guard — requiring `process_group_leader()` to still
-//! report a pgid — would silently reintroduce the grandchild leak. This test
-//! is green before the fix and must stay green after it.
-//!
-//! Non-interactive `sh` has job control off, so the backgrounded `sleep` stays
-//! in the leader's process group; that shared pgid is the whole point.
+//! `terminate_all_process_groups` signals the process group, not the direct child, so a surviving grandchild sharing the leader's pgid still gets the SIGTERM.
+//! Non-interactive `sh` has job control off, so the backgrounded `sleep` stays in the leader's process group.
 
 use calm_proc_supervisor::test_support::InProcessProcSupervisor;
 use calm_session::control::{AttachRequest, ControlMsg, ControlReply, EnsureProcRequest, IoMode};
@@ -55,8 +43,7 @@ async fn terminate_all_kills_grandchild_of_live_leader() {
          applies to entries with no recorded exit"
     );
 
-    // Production shutdown wiring: `Drop` calls
-    // `terminate_all_process_groups_sync`, the same call `main.rs` makes.
+    // Production shutdown wiring: `Drop` calls `terminate_all_process_groups_sync`, the same call `main.rs` makes.
     drop(supervisor);
 
     assert!(

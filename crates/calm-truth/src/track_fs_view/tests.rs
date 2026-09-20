@@ -258,13 +258,6 @@ fn run_detail_dto_serializes_like_old_json_builder() {
     assert!(empty_value["events"]["verdict"].is_null());
 }
 
-// ------------------------------------------------------------------
-// Issue #644 PR-B — §5.6 requested-record fallback: a key with a
-// `task.dispatched` claim record but no `*.worker_requested` event
-// projects from the dispatch record (requested_at, kind, the
-// requested/running/terminal statuses).
-// ------------------------------------------------------------------
-
 fn fallback_write() -> WriteContext {
     WriteContext::new(
         crate::card_role_cache::CardRoleCache::new(),
@@ -333,8 +326,7 @@ fn project_runs_dispatched_then_completed_resolves_terminal_status() {
     let completed = track_scoped(
         6,
         600,
-        // Kernel-emitted completion (terminal-exit path) — actor
-        // KernelDispatcher means NOT a planner verdict.
+        // Actor KernelDispatcher means NOT a planner verdict.
         ActorId::KernelDispatcher,
         Event::TaskCompleted {
             idempotency_key: "w:k".into(),
@@ -395,9 +387,6 @@ fn failed_run_markdown_retains_structured_terminal_output_evidence() {
 
 #[test]
 fn project_runs_real_requested_event_wins_over_dispatch_record() {
-    // Legacy `calm.task.dispatch` keys keep their `*.worker_requested`
-    // record even if a dispatch record ever coexisted; the fallback
-    // is fallback-only.
     let write = fallback_write();
     let requested = track_scoped(
         2,
@@ -460,8 +449,6 @@ fn hook_events_dto_serializes_like_old_json_builder() {
         &json!(old_hook_events_json(&events)),
     );
 }
-
-// ---- #695 PR3: worker-flow markdown projection -------------------------
 
 fn flow_env(seq: u64, turn: u32) -> calm_types::worker_flow::FlowEnvelope {
     use calm_types::worker::{WorkerProviderKind, WorkerSessionId};
@@ -755,14 +742,8 @@ fn worker_flow_markdown_empty_reports_no_items() {
     assert!(md.contains("_No worker-flow items recorded._"), "md = {md}");
 }
 
-/// Regression for #695 PR3: a worker session with >500 flow items must
-/// render the WHOLE transcript. The db layer clamps `limit` to 500, so a
-/// single `worker_flow_item_list_by_card(.., 0, 1000, false)` returns only
-/// the OLDEST 500 rows (ascending) and DROPS the tail — including the final
-/// `AgentMessage{is_final:true}` answer. `worker_flow_rows_all` (the same
-/// paging path the `conversation.md` cat branch uses) must page through all
-/// of them. Without the fix this test fails: the final answer (highest id)
-/// lands past row 500 and never reaches the rendered markdown.
+/// The db layer clamps `limit` to 500, so a single list call drops the tail;
+/// the final answer is seeded past row 500.
 #[tokio::test]
 async fn conversation_md_paging_renders_full_transcript_over_500_items() {
     use crate::db::sqlite::{
@@ -781,10 +762,6 @@ async fn conversation_md_paging_renders_full_transcript_over_500_items() {
 
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
 
-    // Seed a real area → track → card chain (FK target) and bulk-insert
-    // 600 flow items in ONE transaction for speed: a UserMessage first,
-    // 598 CommandExecution rows, then the final AgentMessage LAST (highest
-    // id). `flow_env(seq, turn)` keeps every item in turn 1.
     let mut tx = repo.pool().begin().await.unwrap();
     let area = area_create_tx(
         &mut tx,
@@ -867,7 +844,6 @@ async fn conversation_md_paging_renders_full_transcript_over_500_items() {
     .await
     .unwrap();
 
-    // First user message (lowest id).
     let first = WorkerFlowItem::UserMessage {
         env: flow_env(0, 1),
         content: vec![MessageBlock::Text {
@@ -887,7 +863,6 @@ async fn conversation_md_paging_renders_full_transcript_over_500_items() {
     .await
     .unwrap();
 
-    // 598 command executions in the middle.
     for n in 0..598u64 {
         let item = WorkerFlowItem::CommandExecution {
             env: flow_env(n + 1, 1),
@@ -915,7 +890,6 @@ async fn conversation_md_paging_renders_full_transcript_over_500_items() {
         .unwrap();
     }
 
-    // Final answer LAST (highest id) — well past row 500.
     let final_item = WorkerFlowItem::AgentMessage {
         env: flow_env(599, 1),
         text: FINAL_ANSWER.into(),
@@ -936,7 +910,6 @@ async fn conversation_md_paging_renders_full_transcript_over_500_items() {
     .unwrap();
     tx.commit().await.unwrap();
 
-    // Render through the SAME paging path the cat branch uses.
     let rows = worker_flow_rows_all(&repo, &card_id).await.unwrap();
     assert_eq!(rows.len(), 600, "all 600 rows must be paged in");
     let items: Vec<WorkerFlowItem> = rows

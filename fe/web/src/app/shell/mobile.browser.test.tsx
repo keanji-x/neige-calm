@@ -1,22 +1,6 @@
 /*
- * The mobile presentation, rendered on the **real** `AppShell` (#1191 §4, B3).
- *
- * It used to render `MobileShellFrame`: a hand-written copy of the shell that
- * declared its own dock, its own section state and its own `inert`, with eleven
- * screenshots hanging off it. Deleting the shell's real `inert` left it green,
- * which is the definition of a stand-in — the geometry it photographed was the
- * copy's geometry, and every interaction it drove was the copy's wiring.
- *
- * So the frame is gone. The router is `createAppRouter` over a memory history,
- * exactly as `app/router/track-cards-panel.test.tsx` and
- * `mobile-report-navigation.test.tsx` drive it, and everything below is the
- * production shell, the production track route and the production URL. What is
- * left of the harness is data: a transport that answers with fixtures, which is
- * the one thing a browser cannot supply.
- *
- * `responsive.contract.test.tsx` keeps its cheap mocked `inert` assertion, and
- * `mobile-report-navigation.test.tsx` keeps the jsdom URL assertions; this file
- * is the one that measures painted boxes.
+ * The mobile presentation, rendered on the real `AppShell` over a memory history;
+ * this is the file that measures painted boxes.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
@@ -147,12 +131,8 @@ describe('Track mobile presentation', () => {
     await page.viewport(390, 844);
     setup('/track/w1');
 
-    /*
-     * Nothing is measured until the route has painted: every assertion below is
-     * a box, and a box that has not rendered has no geometry. The three-dot menu
-     * is the report's own control, so finding it is the same as "the report is
-     * up".
-     */
+    /* Nothing is measured until the route has painted: a box that has not rendered
+         has no geometry, and the three-dot menu is the report's own control. */
     const opener = page.getByRole('button', { name: 'Track actions' });
     const openerElement = await opener.findElement();
     const panel = document.querySelector<HTMLElement>('[data-nc-mobile-page]')!;
@@ -213,7 +193,6 @@ describe('Track mobile presentation', () => {
     await page.getByRole('button', { name: 'Responsive mobile UI' }).click();
     expect(document.querySelector('nav[aria-label="Primary"]')).toBeNull();
 
-    // ── The report's own panels ───────────────────────────────────────────
     await opener.click();
     expect(page.getByRole('menuitem', { name: 'Outline' })).toBeTruthy();
     expect(page.getByRole('menuitem', { name: 'Cards' })).toBeTruthy();
@@ -226,7 +205,6 @@ describe('Track mobile presentation', () => {
     await page.getByRole('menuitem', { name: 'Outline' }).click();
     await Promise.all(panel.getAnimations().map((animation) => animation.finished));
     expect(page.getByRole('heading', { name: 'Outline' })).toBeTruthy();
-    // Built from the report's own blocks, through the real route.
     expect(page.getByRole('button', { name: 'Mobile workspace direction' })).toBeTruthy();
     await settlePaint();
     await page.screenshot({ path: '../../../../test-results/mobile-outline.png' });
@@ -250,10 +228,7 @@ describe('Track mobile presentation', () => {
     await settlePaint();
     await page.screenshot({ path: '../../../../test-results/mobile-cards.png' });
 
-    /* The card detail page this walk used to push into is gone (#1234 S1b-4a):
-       opening a card is not offered on this viewport, so the row is text. What
-       is asserted instead is that the row's content is on the page and that it
-       is not a control — the same claim, from the other side. */
+    /* Opening a card is not offered on this viewport, so the row is text and not a control. */
     expect(document.querySelector('[data-nc-mobile-panel]')?.textContent)
       .toContain('Implementation terminal');
     expect(document.querySelectorAll('[data-nc-mobile-panel] [data-nc-row] button').length).toBe(0);
@@ -395,8 +370,7 @@ describe('Track mobile presentation', () => {
       await page.getByRole('button', { name: 'Back to workspace' }).click();
       await expect.poll(() => router.state.location.pathname).toBe('/area/c2/new');
       expect(router.history.location.state.__TSR_index).toBe(1);
-      // The forward index/detail entries are reused on the next visit, not
-      // accumulated as duplicate workspace destinations.
+      // The forward entries are reused on the next visit, not accumulated as duplicates.
       expect(router.history.length).toBe(4);
     }
     router.history.back();

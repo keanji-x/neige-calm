@@ -1,17 +1,5 @@
-//! Slice H integration tests — per-plugin auth tokens.
-//!
-//! Post-M5 (m3-mcp-apps) the iframe-cookie half of Slice H is gone — the
-//! `IframeCookieCache` and `iframe-write` REST route were deleted when
-//! AppBridge took over the iframe ↔ host channel (see migration doc §3.3).
-//! What remains covers the process token surface:
-//!
-//!   1. Process token mint reuses + rotates (host-level).
-//!   2. Auth-mismatch kills the plugin and does NOT respawn (host-level).
-//!   3. `experimental.dev.neige/kernel-callbacks` capability gate (M1).
-//!
-//! Test #2 reuses the echo stub with `STUB_ECHO_OVERRIDE` env to force a
-//! wrong echo response — that env-driven branch lives in the echo stub's
-//! `main.rs` so we don't need a fourth fixture binary.
+//! Per-plugin auth tokens: process token mint/rotate, auth-mismatch kill, and
+//! the `experimental.dev.neige/kernel-callbacks` capability gate.
 
 #![cfg(unix)]
 
@@ -31,10 +19,6 @@ use tokio::time::{Instant, sleep};
 
 const ECHO_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-echo");
 const CALLER_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-caller");
-
-// ---------------------------------------------------------------------------
-// Host fixtures (mirror plugin_host_smoke.rs but parameterized for env)
-// ---------------------------------------------------------------------------
 
 async fn boot_host(
     plugin_id: &str,
@@ -69,11 +53,7 @@ async fn boot_host(
             .await
             .expect("open in-memory sqlite repo"),
     );
-    // Production flow installs the plugin row (via the REST install handler)
-    // before `spawn` runs; these tests bypass the REST surface and call
-    // `host.spawn` directly. With MockRepo this happened to work because the
-    // mock didn't enforce FKs — SqlxRepo's `plugin_tokens.plugin_id` FK
-    // requires a real plugins row. Seed it here.
+    // Seed the plugins row: SqlxRepo's `plugin_tokens.plugin_id` FK requires it.
     repo.plugin_install(calm_server::model::NewPlugin {
         id: plugin_id.into(),
         version: "0.1.0".into(),
@@ -119,14 +99,6 @@ async fn wait_for_status(
     }
 }
 
-// ===========================================================================
-// 1. Process token mint reuses + rotates
-// ===========================================================================
-//
-// `ensure_plugin_token` is documented to mint fresh every call (raw not
-// recoverable from hash). We assert the *hash* gets persisted on spawn, and
-// that rotate_plugin_token both kills + respawns + swaps the hash.
-
 #[tokio::test]
 async fn process_token_persists_hash_on_spawn() {
     let (host, repo, _tmp, _events) = boot_host("test.tok1", &[]).await;
@@ -140,9 +112,6 @@ async fn process_token_persists_hash_on_spawn() {
     .await
     .unwrap();
 
-    // The repo should now have a token row whose hash is NOT the raw value
-    // (it's a SHA-256 hex). We can't recover the raw from the row, but we
-    // can assert the hash length is 64 hex chars.
     let row = repo
         .plugin_token_get("test.tok1")
         .await
@@ -186,16 +155,6 @@ async fn rotate_plugin_token_swaps_hash_and_restarts() {
     host.stop("test.tok2").await.unwrap();
 }
 
-// ===========================================================================
-// 2. Auth mismatch → Crashed, no respawn
-// ===========================================================================
-//
-// We point the echo stub at `STUB_ECHO_OVERRIDE=bogus` so it returns a wrong
-// echoed_token on initialize. The kernel must:
-//   * kill the child,
-//   * surface an AuthMismatch error from `spawn`,
-//   * NOT install a supervisor task (so no respawn fires).
-
 #[tokio::test]
 async fn auth_mismatch_kills_and_does_not_respawn() {
     let (host, _repo, _tmp, _events) = boot_host(
@@ -208,14 +167,12 @@ async fn auth_mismatch_kills_and_does_not_respawn() {
         .spawn("test.badauth")
         .await
         .expect_err("spawn should fail");
-    // The kernel surfaces AuthMismatch (distinct from InitializeRejected).
     assert!(
         matches!(err, calm_server::plugin_host::HostError::AuthMismatch(_)),
         "expected AuthMismatch, got {err:?}",
     );
 
-    // Wait a moment to confirm no respawn supervisor fires. The host should
-    // have no entry for this plugin in processes either way.
+    // Wait a moment to confirm no respawn supervisor fires.
     sleep(Duration::from_millis(300)).await;
     let snap = host.status("test.badauth").await;
     assert!(
@@ -225,43 +182,6 @@ async fn auth_mismatch_kills_and_does_not_respawn() {
     );
 }
 
-// ===========================================================================
-// 3. Iframe cookie round-trip via REST — REMOVED in M3 (mcp-apps migration)
-// ===========================================================================
-//
-// Pre-M3 the iframe cookie was minted by `GET /api/plugins/:id/views/:view_id`
-// (the legacy iframe-HTML route). M3 deletes that route in favor of MCP
-// `resources/read` over postMessage (see `plugin_host::resources` and its
-// own tests). M5 will introduce the AppBridge → kernel transport, at which
-// point the cookie (if it survives the redesign) gets minted on a different
-// path. Until then we have no REST-level cookie minting path to round-trip,
-// so the original REST round-trip + revoke tests have been removed.
-//
-// Cache-level cookie behaviour stays covered by:
-//   * `iframe_cookie_expires` (this file, test #4)
-//   * the in-module tests in `auth.rs`
-
-// (M3) The boot_app / install_and_enable fixtures that previously drove the
-// `view_html` GET → cookie mint flow have been removed alongside the route.
-// If a future test needs a full REST app fixture, plugin_routes.rs's
-// boot_state + app helpers cover the same surface.
-
-// ===========================================================================
-// 4 + 5. Iframe cookie tests — deleted in M5.
-// ===========================================================================
-//
-// Pre-M5 the cache-level mint/verify/expire/revoke tests guarded the second
-// auth surface that backed `iframe-write`. Both the route and the cache went
-// away in M5 (migration doc §3.3); the trust boundary now lives in the
-// `tool-call` route's `neige.*` prefix gate (`plugin_routes_m5.rs`) and the
-// CORS allowlist on `main.rs`. Nothing to assert at the cache level.
-
-// ===========================================================================
-// Sanity: the auth helpers we re-export from plugin_host are wired correctly.
-// (Round-trip is also covered by the in-module tests in `auth.rs`; this is
-// the "make sure they're public surface" guard.)
-// ===========================================================================
-
 #[test]
 fn auth_helpers_reachable_from_public_surface() {
     let raw = "deadbeef".repeat(8); // 64 chars to mirror a real token shape
@@ -269,23 +189,6 @@ fn auth_helpers_reachable_from_public_surface() {
     assert!(verify_token(&raw, &h));
     assert!(!verify_token("nope", &h));
 }
-
-// ===========================================================================
-// 6. M1: no kernel-callbacks capability → MethodNotFound on neige.*
-// ===========================================================================
-//
-// Planner contract (migration doc §6/M1): a plugin opts into the `neige.*`
-// host-callback namespace by echoing `experimental.dev.neige/kernel-callbacks`
-// back in its `initialize` response. If absent, the kernel installs a
-// MethodNotFound drainer in place of the real dispatcher — so the caller-stub
-// firing `neige.overlay.set` should leave the kernel's repo state empty
-// (overlay never written, kv never written, no card rows) and the call should
-// be answered with -32601.
-//
-// We can't peek the wire directly (the kernel synthesizes the error frame),
-// so the test asserts on the *effect*: with the dispatcher installed, the
-// caller-stub's six pipelined neige.* calls touch kv + overlays + cards;
-// with the drainer installed, none of those should land.
 
 #[tokio::test]
 async fn no_kernel_callbacks_capability_installs_method_not_found_drainer() {
@@ -330,9 +233,7 @@ async fn no_kernel_callbacks_capability_installs_method_not_found_drainer() {
         .await
         .unwrap();
 
-    // STUB_OMIT_CAPABILITY=1 → the caller-stub's initialize response carries
-    // an empty `capabilities` object. The kernel should then install the
-    // MethodNotFound drainer.
+    // STUB_OMIT_CAPABILITY=1 → the initialize response carries an empty `capabilities` object.
     let manifest_json = json!({
         "manifest_version": 1,
         "id": plugin_id,
@@ -346,9 +247,6 @@ async fn no_kernel_callbacks_capability_installs_method_not_found_drainer() {
                 "STUB_OMIT_CAPABILITY": "1"
             }
         },
-        // Permissions are generous on paper, but the dispatcher is never
-        // installed so they don't matter — the drainer answers MethodNotFound
-        // before perms are consulted.
         "permissions": {
             "overlays_write": ["track", "card"],
             "cards_create": true,
@@ -370,8 +268,6 @@ async fn no_kernel_callbacks_capability_installs_method_not_found_drainer() {
     .expect("seed plugin row");
     let host = Arc::new(PluginHost::new_full(
         Arc::new(registry),
-        // method-call clone is a coercion site for the `Arc<dyn Repo>` →
-        // `Arc<dyn RouteRepo>` upcast (PR #41 — kernel-narrow).
         repo.clone(),
         plugins_dir,
         plugins_data_dir,
@@ -393,13 +289,9 @@ async fn no_kernel_callbacks_capability_installs_method_not_found_drainer() {
     .await
     .expect("plugin running");
 
-    // Give the stub time to pipeline all six callbacks and the kernel time to
-    // synthesize MethodNotFound responses for each. 300 ms is conservative
-    // vs the ~1 ms per round-trip we see on the dispatcher path.
+    // Give the stub time to pipeline all six callbacks and the kernel time to answer each.
     sleep(Duration::from_millis(300)).await;
 
-    // With the drainer installed, none of the writes the dispatcher does
-    // should have landed:
     let kv = repo.plugin_kv_get(plugin_id, "answer").await.unwrap();
     assert!(
         kv.is_none(),

@@ -20,19 +20,8 @@ use crate::validation::{
 use calm_types::claude_permissions::ClaudePermissionsSource;
 use calm_types::worker::WorkerSessionState;
 
-/// Atomically create a `terminal`-kind card AND its associated terminal row
-/// inside a single transaction. Runtime identity is written to
-/// `worker_sessions`; API/WS responses project the legacy payload fields at
-/// read time.
-///
-/// This is the kernel side of #13's plan to collapse today's 3-step
-/// terminal-card recipe (card-add → terminal-create → card-update) into one
-/// atomic db helper. PR1 just lands this helper; PR2 will wire it to a new
-/// `POST /api/tracks/:id/terminal-cards` endpoint and delete the old recipe.
-///
-/// On any failure the surrounding transaction rolls back, so partial state
-/// (card without terminal, or terminal without worker-session row) is
-/// impossible.
+/// Atomically create a `terminal`-kind card AND its terminal row in a single transaction; runtime identity is written
+/// to `worker_sessions`, and legacy payload fields are projected at read time. On any failure the whole tx rolls back.
 #[allow(clippy::too_many_arguments)]
 pub async fn card_with_terminal_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
@@ -46,37 +35,17 @@ pub async fn card_with_terminal_create_tx(
     cwd: String,
     env: serde_json::Value,
     role: CardRole,
-    // Issue #229 PR A — required deletable bit, threaded through to
-    // `card_create_with_id_tx`. Dispatcher's worker-terminal path passes
-    // `true` (workers are user-facing — users can close them); the
-    // direct `POST /api/tracks/:id/terminal-cards` path passes `true` for
-    // the same reason. Future kernel-owned terminal cards (none today)
-    // would pass `false`.
+    // Required deletable bit; worker terminals are user-facing and pass `true`.
     deletable: bool,
     card_role_cache: &CardRoleCache,
-    // #177 — host browser's theme RGB, written onto the terminal row
-    // alongside the card so every spawn path reads it from the row and
-    // stamps consistent `--terminal-fg/-bg` argv (closes the WS auto-
-    // revive race observed in PR #193).
+    // Host browser's theme RGB, written onto the terminal row so every spawn path stamps consistent `--terminal-fg/-bg` argv.
     theme: RequestTheme,
-    // #1620 — `true` only for a terminal the Planner opened with hook
-    // signals: stamps `TERMINAL_SIGNALS_PAYLOAD_KEY` into the card payload
-    // (the durable provenance the hook ingest route keys on). Every other
-    // creation path passes `false` and the key is absent.
+    // `true` only for a terminal the Planner opened with hook signals: stamps `TERMINAL_SIGNALS_PAYLOAD_KEY` into the
+    // card payload, the durable provenance the hook ingest route keys on.
     planner_hooks: bool,
 ) -> Result<(Card, Terminal)> {
-    // 1. Card row with placeholder payload — schemaVersion is stamped in
-    //    step 5 once we have the terminal row.
-    //
-    // PR2 of #136: card id is now pre-minted by the caller (same pattern
-    // the codex helper has had since #117) so the surrounding
-    // `write_with_event` can stamp `EventScope::Card { card, .. }` on
-    // the audit row without racing the txn.
-    //
-    // User-facing terminal creation and dispatcher worker-terminal paths
-    // pass `CardRole::Worker`. The cache
-    // write-through inside `card_create_with_id_tx` keeps the role
-    // visible to `enforce_role` calls later in the same tx.
+    // Card row with placeholder payload; schemaVersion is stamped once the terminal row exists. The card id is
+    // pre-minted by the caller so `write_with_event` can stamp `EventScope::Card` without racing the txn.
     let card = card_create_with_id_tx(
         tx,
         card_id,
@@ -93,7 +62,6 @@ pub async fn card_with_terminal_create_tx(
     )
     .await?;
 
-    // 2. Terminal row, parented to the card.
     let term = terminal_create_tx(
         tx,
         NewTerminal {
@@ -106,7 +74,6 @@ pub async fn card_with_terminal_create_tx(
     )
     .await?;
 
-    // 3. Build the canonical terminal-card payload.
     let mut payload = serde_json::json!({
         "schemaVersion": TERMINAL_PAYLOAD_SCHEMA_VERSION,
     });
@@ -114,13 +81,9 @@ pub async fn card_with_terminal_create_tx(
         payload[TERMINAL_SIGNALS_PAYLOAD_KEY] = serde_json::Value::Bool(true);
     }
 
-    // 4. Defense-in-depth: payload validation. The boundary call in
-    //    `routes/cards.rs:141` already enforces this for direct create, but
-    //    composing inside the kernel means we run our own check rather than
-    //    trusting a payload we built ourselves.
+    // Defense-in-depth: re-run payload validation on the payload we built ourselves.
     validate_card_kind_global("terminal", &payload)?;
 
-    // 5. Re-stamp the card with the real payload.
     let card = card_update_tx(
         tx,
         card.id.as_ref(),
@@ -129,8 +92,7 @@ pub async fn card_with_terminal_create_tx(
             kind: None,
             sort: None,
             payload: Some(payload),
-            // #229 PR A — kernel-internal callers never patch
-            // `deletable`; the route handler 400s clients that try.
+            // Kernel-internal callers never patch `deletable`.
             deletable: None,
         },
     )
@@ -159,16 +121,8 @@ pub async fn card_with_terminal_create_tx(
     Ok((card, term))
 }
 
-/// #1704 S1 — stamp the effective Claude Code `permissions` block a Planner
-/// declared on `calm.terminal.open` into the card payload under
-/// [`TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY`], inside the caller's
-/// transaction (the terminal adapter's `prepare_tx`, right after
-/// [`card_with_terminal_create_tx`]), and (S2) its source under
-/// [`TERMINAL_CLAUDE_PERMISSIONS_SOURCE_PAYLOAD_KEY`] beside it. Goes
-/// through `card_update_tx`, which re-stamps the other server-owned key on
-/// the way; the returned card is the stored one. Only the kernel ever calls
-/// this: every public write boundary refuses the keys
-/// (`validation::reject_client_supplied_server_owned_keys`).
+/// Stamp the effective Claude Code `permissions` block a Planner declared on `calm.terminal.open` into the card payload,
+/// with its source beside it, inside the caller's transaction. Only the kernel ever calls this: every public write boundary refuses the keys.
 pub async fn card_stamp_claude_permissions_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card: &Card,
@@ -199,39 +153,16 @@ pub async fn card_stamp_claude_permissions_tx(
     .await
 }
 
-/// Issue #310 followup — atomically delete a card + its backing terminal
-/// row inside a single tx, in the order the `RESTRICT` FK demands
-/// (terminal first, then card). The structural inverse of
-/// [`card_with_terminal_create_tx`] / [`card_with_codex_create_tx`].
-///
-/// **Use site** is the dispatcher's post-commit failure cleanup: when
-/// `per-card CODEX_HOME seeding` or `spawn_daemon_with_parts` returns
-/// Err *after* the row-creation tx has already committed, the worker
-/// card + terminal row are orphans — the runtime references a terminal
-/// whose daemon never came up, and a retry with the same
-/// `idempotency_key` would short-circuit on the abandoned row instead
-/// of trying again. Rolling both rows back here lets the retry succeed.
-///
-/// **Idempotent shape.** Each delete swallows `NotFound` so a caller
-/// that races the orphan sweeper (which deletes terminals out from
-/// under us on a 30-60s cadence) still completes cleanly. The card
-/// delete may still surface `NotFound` if the sweeper additionally
-/// reaped the card — same shape as the route handler in
-/// `routes/cards.rs::delete_card`, where the comment notes the same
-/// race is acceptable.
-///
-/// `card_role_cache` is threaded through so the cache stays in
-/// lockstep with the row delete — same write-through invariant
-/// `card_delete_tx` itself enforces.
+/// Atomically delete a card + its backing terminal row (terminal first, as the `RESTRICT` FK demands). Used for the
+/// dispatcher's post-commit spawn-failure cleanup, so a retry with the same idempotency key does not short-circuit on
+/// the orphan. Each delete swallows `NotFound` because the orphan sweeper may race it.
 pub async fn card_with_terminal_rollback_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: &str,
     terminal_id: &str,
     card_role_cache: &CardRoleCache,
 ) -> Result<()> {
-    // Order matters — the FK on `terminals.card_id` is `ON DELETE RESTRICT`
-    // since migration 0011, so the card delete would fail with a FK
-    // violation if the terminal row still existed.
+    // Order matters — the FK on `terminals.card_id` is `ON DELETE RESTRICT`.
     match terminal_delete_tx(tx, terminal_id).await {
         Ok(()) => {}
         Err(e) if e.is_not_found() => {}
@@ -245,37 +176,9 @@ pub async fn card_with_terminal_rollback_tx(
     Ok(())
 }
 
-/// Atomically create a `codex`-kind card, its associated terminal row, and
-/// the initial `Starting` worker-session row inside a single transaction.
-/// Runtime identity is written to `worker_sessions`; API/WS responses project
-/// the legacy payload fields at read time.
-///
-/// Twin of [`card_with_terminal_create_tx`] for the codex-card flow (#117).
-/// Differs in two places from the terminal helper:
-///
-///   1. The caller pre-mints `card_id` (option C in the design doc) so the
-///      handler can derive per-card filesystem paths (`CODEX_HOME =
-///      <codex_homes_dir>/<card_id>/`) before the row hits the DB. The
-///      pre-mint avoids a post-commit "stamp env" round-trip that option B
-///      would have required, and keeps a single `card.added` envelope on
-///      the bus.
-///   2. The canonical payload carries `cwd` when non-empty — the frontend's
-///      `codex.tsx` placeholder reads it for status text while the daemon
-///      boots. Terminal cards have no such field.
-///
-/// `program` is hardwired to `"codex"`. The caller still owns env
-/// composition (CODEX_HOME / NEIGE_CARD_ID / proxy vars) since those
-/// require `AppState` and a settings snapshot that the db layer shouldn't
-/// see.
-///
-/// On any failure the surrounding transaction rolls back; a partial state
-/// (card without terminal, or terminal without worker-session row) is
-/// impossible.
-/// PR7a (#136) — third return slot is `Some(raw_token)` for Planner/Worker
-/// cards. The caller is expected to thread the raw value into the codex
-/// daemon's `NEIGE_MCP_TOKEN` env var immediately and discard it — the
-/// hash is persisted in `card_mcp_tokens`, but the raw form is
-/// unrecoverable on a kernel restart (by design).
+/// Atomically create a `codex`-kind card, its terminal row, and the initial `Starting` worker-session row. The caller
+/// pre-mints `card_id` so per-card filesystem paths (`CODEX_HOME`) can be derived before the row exists. The third
+/// return slot is the raw MCP token for Planner/Worker cards: thread it into `NEIGE_MCP_TOKEN` immediately and discard it — only the hash is persisted.
 #[allow(clippy::too_many_arguments)]
 pub async fn card_with_codex_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
@@ -291,26 +194,14 @@ pub async fn card_with_codex_create_tx(
     icon_bg: Option<String>,
     icon_fg: Option<String>,
     role: CardRole,
-    // Issue #229 PR A — required deletable bit. The track-create route
-    // passes `false` (the planner card is kernel-owned, must survive
-    // direct REST / plugin-callback delete attempts). The user-facing
-    // `POST /api/tracks/:id/codex-cards` route passes `true`.
+    // Required deletable bit: the planner card is kernel-owned and passes `false`; user-facing codex cards pass `true`.
     deletable: bool,
     card_role_cache: &CardRoleCache,
-    // #177 — host browser's theme RGB; written onto the terminal row
-    // in the same transaction so the codex daemon's spawn argv is
-    // deterministic regardless of which spawn path lands it.
+    // Host browser's theme RGB, written onto the terminal row in the same transaction so the spawn argv is deterministic.
     theme: RequestTheme,
 ) -> Result<(Card, Terminal, Option<String>)> {
-    // 1. Card row with placeholder payload — schemaVersion and UI hints
-    //    are stamped in step 5 once we have the terminal row.
-    //
-    // User-facing codex creation and dispatcher paths pass
-    // `CardRole::Worker`. The track-create route passes `CardRole::Planner`
-    // so the auto-minted planner card is recognized by `enforce_role` as a
-    // `TrackUpdated`-permitted emitter. The cache write-through
-    // inside `card_create_with_id_tx` keeps the role visible to
-    // `enforce_role` calls later in the same tx.
+    // Card row with placeholder payload; the track-create route passes `CardRole::Planner` so the auto-minted planner
+    // card is recognized by `enforce_role` as a `TrackUpdated`-permitted emitter.
     let card = card_create_with_id_tx(
         tx,
         card_id,
@@ -327,8 +218,7 @@ pub async fn card_with_codex_create_tx(
     )
     .await?;
 
-    // 2. Terminal row, parented to the card. `program == "codex"` always —
-    //    the codex CLI runs in the PTY directly (see `routes::codex_cards`).
+    // `program == "codex"` always — the codex CLI runs in the PTY directly.
     let term = terminal_create_tx(
         tx,
         NewTerminal {
@@ -341,9 +231,7 @@ pub async fn card_with_codex_create_tx(
     )
     .await?;
 
-    // 3. Build the canonical codex-card payload. `cwd` is omitted when the
-    //    caller passed an empty string — the frontend treats a missing
-    //    `cwd` as "show no path hint" rather than "show an empty path".
+    // `cwd` is omitted when empty: the frontend treats a missing `cwd` as "no path hint", not an empty path.
     let mut payload = serde_json::Map::new();
     payload.insert(
         "schemaVersion".into(),
@@ -352,12 +240,7 @@ pub async fn card_with_codex_create_tx(
     if !cwd.is_empty() {
         payload.insert("cwd".into(), serde_json::Value::String(cwd));
     }
-    // `prompt` — surfaces to the `legacy auto-submit` subscriber, which
-    // gates auto-Enter on this being a non-empty string. An empty /
-    // missing value here is the "user spawned codex without a hands-free
-    // prompt" path, identical to pre-#110 behaviour. Trimmed and empty-
-    // filtered so the subscriber's `.filter(|s| !s.is_empty())` is the
-    // single source of truth.
+    // `prompt` gates the auto-submit subscriber; trimmed and empty-filtered so the subscriber's filter is the single source of truth.
     if let Some(p) = prompt.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         payload.insert("prompt".into(), serde_json::Value::String(p.to_string()));
     }
@@ -369,13 +252,9 @@ pub async fn card_with_codex_create_tx(
     }
     let payload = serde_json::Value::Object(payload);
 
-    // 4. Defense-in-depth: payload validation. The boundary call in
-    //    `routes/cards.rs` enforces this for direct create; composing
-    //    inside the kernel means we re-run the check on the payload we
-    //    just built.
+    // Defense-in-depth: re-run payload validation on the payload we built ourselves.
     validate_card_kind_global("codex", &payload)?;
 
-    // 5. Re-stamp the card with the real payload.
     let card = card_update_tx(
         tx,
         card.id.as_ref(),
@@ -384,23 +263,14 @@ pub async fn card_with_codex_create_tx(
             kind: None,
             sort: None,
             payload: Some(payload),
-            // #229 PR A — kernel-internal callers never patch
-            // `deletable`; the route handler 400s clients that try.
+            // Kernel-internal callers never patch `deletable`.
             deletable: None,
         },
     )
     .await?;
 
-    // 6. PR7a (#136) — when the card is Planner/Worker, mint a fresh per-card
-    //    MCP token, store the hash in `card_mcp_tokens` inside the same tx
-    //    (FK enforced — the card row above is the parent), and return the
-    //    raw value to the caller so it can be threaded into the codex
-    //    daemon's `NEIGE_MCP_TOKEN` env var.
-    //
-    //    Doing this here (rather than at the route layer) keeps the
-    //    invariant atomic: a committed card row whose role is Planner/Worker
-    //    will *always* have a matching token row, and a rolled-back tx
-    //    drops both together.
+    // For Planner/Worker cards, mint a per-card MCP token and store its hash in the same tx, so a committed card row
+    // with that role *always* has a matching token row.
     let mut mcp_token_hash = None;
     let mcp_token = if matches!(role, CardRole::Planner | CardRole::Worker) {
         let token = crate::mcp_auth::CardMcpToken::generate();
@@ -434,10 +304,8 @@ pub async fn card_with_codex_create_tx(
     Ok((card, term, mcp_token))
 }
 
-/// Atomically create a `claude`-kind worker card AND its associated terminal
-/// row. Claude cards are PTY-backed like codex cards, but intentionally have
-/// no MCP token/config path; completion observability comes solely from
-/// Claude hook events ingested through `/internal/claude/hook`.
+/// Atomically create a `claude`-kind worker card AND its terminal row. Claude cards intentionally have no MCP
+/// token/config path; completion observability comes solely from Claude hook events.
 #[allow(clippy::too_many_arguments)]
 pub async fn card_with_claude_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
@@ -547,14 +415,8 @@ pub async fn card_with_claude_create_tx(
     Ok((card, term))
 }
 
-/// Atomically create a scheduler-owned `claude` worker card and terminal.
-///
-/// This mirrors [`card_with_claude_create_tx`] for the persisted card shape,
-/// but is specific to first-class task workers: the role is always
-/// [`CardRole::Worker`], `spawn_op_id` is recorded for reaper convergence,
-/// and the worker session row is seeded without minting a raw MCP token.
-/// The spawn-side effect rotates the token post-commit and writes only the
-/// hash back into `card_mcp_tokens` and `worker_sessions`.
+/// Atomically create a scheduler-owned `claude` worker card and terminal: role is always `Worker`, `spawn_op_id` is
+/// recorded for reaper convergence, and the session row is seeded without a raw MCP token (rotated post-commit).
 #[allow(clippy::too_many_arguments)]
 pub async fn card_with_claude_worker_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
@@ -659,15 +521,8 @@ pub async fn card_with_claude_worker_create_tx(
     Ok((card, term))
 }
 
-/// PR7a (#136) — insert (or replace) a per-card MCP token row in the
-/// supplied transaction. The raw token is never persisted; the caller
-/// passes `hash_token(raw)` and keeps the raw value only in memory long
-/// enough to thread it into the env map handed to the codex daemon.
-///
-/// `card_id` must reference a real row in `cards` — the FK constraint
-/// in migration 0010 fails the tx otherwise. The standard call site is
-/// `card_with_codex_create_tx`, where the card row is created moments
-/// earlier in the same tx, so the FK is satisfied by construction.
+/// Insert (or replace) a per-card MCP token row; the raw token is never persisted, the caller passes `hash_token(raw)`.
+/// `card_id` must reference a real `cards` row (FK).
 pub async fn card_mcp_token_set_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: &str,
@@ -861,9 +716,8 @@ mod tests {
         );
     }
 
-    /// #1620 — `card_update_tx` keeps a stored `terminal_signals: true`
-    /// sticky across a whole-payload replacement, refuses a replacement that
-    /// cannot carry it, and never mints it on a card that lacks it.
+    /// `card_update_tx` keeps a stored `terminal_signals: true` sticky across a whole-payload replacement, refuses a
+    /// replacement that cannot carry it, and never mints it on a card that lacks it.
     #[tokio::test]
     async fn card_update_keeps_the_planner_terminal_marker_sticky() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -942,8 +796,7 @@ mod tests {
                 .payload[TERMINAL_SIGNALS_PAYLOAD_KEY],
             true
         );
-        // Sticky across a kind retarget as well (the hook route keys on the
-        // payload, never on the patchable kind).
+        // Sticky across a kind retarget as well (the hook route keys on the payload, never on the patchable kind).
         let retargeted = repo
             .card_update(
                 marked.id.as_str(),
@@ -1002,10 +855,7 @@ mod tests {
         );
     }
 
-    /// #1704 S1 — `card_stamp_claude_permissions_tx` stores the block next
-    /// to the marker; `card_update_tx` keeps BOTH server-owned keys sticky
-    /// across a whole-payload replacement, refuses a replacement that cannot
-    /// carry them, and never mints the block on a card that lacks it.
+    /// `card_update_tx` keeps BOTH server-owned keys sticky across a whole-payload replacement.
     #[tokio::test]
     async fn card_update_keeps_claude_permissions_sticky() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -1083,8 +933,7 @@ mod tests {
             stamped.payload[TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY],
             block
         );
-        // #1704 S2 — the source is stamped beside the block, in the wire
-        // spelling.
+        // The source is stamped beside the block, in the wire spelling.
         assert_eq!(
             stamped.payload[TERMINAL_CLAUDE_PERMISSIONS_SOURCE_PAYLOAD_KEY],
             "declared_within_policy"
@@ -1192,12 +1041,8 @@ mod tests {
         );
         assert_eq!(plain.payload[TERMINAL_SIGNALS_PAYLOAD_KEY], true);
 
-        // Only the kernel-minted shapes are sticky: a stored
-        // `terminal_signals: false`, a stored `claude_permissions: null` and
-        // a stored `claude_permissions_source` that is not one of the three
-        // spellings (never minted; seeded here through the kernel's own repo
-        // route) are NOT re-inserted, and such a card accepts a non-object
-        // replacement.
+        // Only the kernel-minted shapes are sticky: a stored `false`, `null`, or unknown source spelling is NOT re-inserted,
+        // and such a card accepts a non-object replacement.
         let odd = repo
             .card_create(NewCard {
                 track_id: track.id.clone(),

@@ -1,8 +1,5 @@
-//! #1677 S3 — `summary` on input and control receipts: a flat digest of
-//! the facts the receipt carries (readback screen change and wait, hook
-//! signal, repaint, control state), and the one-line text block saying the
-//! same in words,
-//! through the real MCP tools, renderer and PTY.
+//! `summary` on input and control receipts: a flat digest of the facts the receipt carries, and
+//! the one-line text block saying the same in words.
 use crate::terminal_support::{Harness, human_takeover};
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -22,8 +19,7 @@ fn observation(response: &Value) -> &Value {
 fn summary(response: &Value) -> &str {
     response["result"]["content"][0]["text"].as_str().unwrap()
 }
-/// The summary every receipt must carry: all thirteen keys, `fields` set
-/// (#1692: `screen` is the readback's screen fact, `wait` its outcome).
+/// The summary every receipt must carry: all thirteen keys, `fields` set.
 fn digest(fields: Value) -> Value {
     let mut summary = json!({"action":null,"readback":null,"screen":null,"wait":null,
         "settled":null,"signal":null,"repaint":null,"matched":null,"role":null,
@@ -47,10 +43,7 @@ async fn open_observed(h: &Harness, request: &str) -> String {
     terminal
 }
 
-/// Written receipts: with a change readback (screen, settled, role), with
-/// a text readback (matched pattern), without a readback, and with
-/// `claim:true, release:true` in one request, where the receipt keeps the
-/// granted lease while the summary's `control_id` is the readback's null.
+/// With `claim:true, release:true` in one request the receipt keeps the granted lease while the summary's `control_id` is the readback's null.
 #[tokio::test]
 async fn summary_on_written_receipts_follows_the_readback_not_the_lease() {
     let h = Harness::start().await;
@@ -166,8 +159,6 @@ async fn summary_on_written_receipts_follows_the_readback_not_the_lease() {
     h.stop(&terminal).await;
 }
 
-/// A signal readback: the hook event and the repaint outcome land in the
-/// summary and in the text block.
 #[tokio::test]
 async fn summary_names_the_hook_signal_and_the_repaint() {
     let h = Harness::start().await;
@@ -219,10 +210,6 @@ async fn summary_names_the_hook_signal_and_the_repaint() {
     h.stop(&terminal).await;
 }
 
-/// Stale and control-unavailable receipts (immediate readbacks), a claim
-/// with and without a readback and a release with one keep the summary
-/// shape; detach has none. (An unavailable readback is a unit-level shape:
-/// `receipt_summary.rs`.)
 #[tokio::test]
 async fn summary_on_refusals_control_receipts_and_unavailable_readbacks() {
     let h = Harness::start().await;
@@ -360,7 +347,7 @@ async fn summary_on_refusals_control_receipts_and_unavailable_readbacks() {
     assert_eq!(digested["wait"], "elapsed");
     assert_eq!(digested["role"], "observer");
     assert_eq!(digested["control_id"], Value::Null);
-    // #1697: a control release carries its release status like the input path.
+    // A control release carries its release status like the input path.
     assert_eq!(digested["release"], "released", "{released}");
     assert_eq!(
         summary(&released),

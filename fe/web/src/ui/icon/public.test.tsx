@@ -19,14 +19,6 @@ describe('Icon', () => {
     expect(svg?.getAttribute('stroke-width')).toBe('1.5');
   });
 
-  /* The reset arc used to be pinned here, path data and all, because its
-     source geometry had been corrected to centre the line work at y=8. That
-     glyph is gone with the control it drew (#1139) and nothing else in the set
-     had a hand-corrected arc, so the assertion has no subject left. What
-     survives it is the two `it.each(names)` cases below and above: they run
-     over whatever the set actually contains, so they cover the next icon
-     without being edited. */
-
   it('uses distinct CSS classes for the default md and sm sizes', () => {
     const { container } = render(<><Icon name="plus" /><Icon name="plus" size="sm" /></>);
     const [md, sm] = container.querySelectorAll('svg');

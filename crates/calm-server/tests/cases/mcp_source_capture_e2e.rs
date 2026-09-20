@@ -1,16 +1,7 @@
-//! #1669 S1 — the decisive I1 test (design §3): a Planner calls a fixture
-//! stdio plugin through the kernel socket, captures the result with
-//! `calm.source.capture { call }`, and `GET /api/tracks/{id}/sources/{id}`
-//! answers with `body_sha256 == sha256(text blocks joined by "\n")` of the
-//! reply the plugin was programmed with. Plus I6 (a later `isError` call on
-//! the same key replaces the record), I4 (a worker's call is not recorded),
-//! and the check that recording leaves the value returned to the model
-//! byte-identical.
-//!
-//! One `AppContext` serves both the MCP listener (`spawn_with_context`) and
-//! the axum router (`with_mcp_context`), so the ring the transport fills is
-//! the ring the tool reads and the rows the route reads are the rows the
-//! tool wrote.
+//! A Planner calls a fixture stdio plugin through the kernel socket, captures the result with
+//! `calm.source.capture { call }`, and the REST source answers with the sha256 of the joined text
+//! blocks. One `AppContext` serves both the MCP listener and the axum router, so the ring the
+//! transport fills is the ring the tool reads.
 
 #![cfg(unix)]
 
@@ -73,8 +64,7 @@ struct Fixture {
     _tmp: TempDir,
 }
 
-/// The text blocks of the programmed reply, joined by `"\n"` — the body
-/// I1 says the kernel must have stored.
+/// The text blocks of the programmed reply, joined by `"\n"` — the body the kernel must have stored.
 fn known_body() -> String {
     let reply: Value = serde_json::from_str(KNOWN_REPLY).expect("fixture reply parses");
     reply["result"]["content"]
@@ -474,18 +464,13 @@ fn plugin_result(frame: &Value) -> &Value {
     &frame["result"]
 }
 
-// ---------------------------------------------------------------------------
-// I1 — the captured body is the proxy's returned text blocks
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn i1_captured_body_sha256_equals_the_proxied_text_blocks() {
     let fx = boot().await;
     let args = json!({ "id": 752972 });
     let frame = fx.planner_call(10, EXPOSED_NAME, args.clone()).await;
     let returned = plugin_result(&frame);
-    // Recording changed nothing the model sees: the wire result is the
-    // programmed reply, structuredContent and image block included.
+    // Recording changed nothing the model sees: structuredContent and image block included.
     let programmed: Value = serde_json::from_str(KNOWN_REPLY).unwrap();
     assert_eq!(returned, &programmed["result"], "{returned:#?}");
 
@@ -537,8 +522,7 @@ async fn i1_captured_body_sha256_equals_the_proxied_text_blocks() {
     assert_eq!(list["sources"][0]["source_id"], source_id);
     assert!(list["sources"][0].get("body").is_none(), "{list}");
 
-    // I6 — the same key called again, now failing: the record is replaced
-    // and the old body is not capturable.
+    // The same key called again, now failing: the record is replaced and the old body is not capturable.
     program(
         &fx.control_dir,
         &json!({ "mode": "is_error", "text": "upstream 500" }).to_string(),
@@ -569,15 +553,8 @@ async fn i1_captured_body_sha256_equals_the_proxied_text_blocks() {
     assert_eq!(detail["body_sha256"], expected_sha);
 }
 
-// ---------------------------------------------------------------------------
-// I6 on a transport failure — no `CallToolResult` at all still replaces
-// ---------------------------------------------------------------------------
-
-/// After a success, the same call fails *below* the reply level: the stub
-/// answers something that is not a `CallToolResult` (a bare string), so
-/// the kernel's `tools_call` returns `Err` before any `isError` verdict
-/// exists. The Planner sees the RPC error, and the recorded entry for that
-/// key is `Error` — the old body is not capturable any more.
+/// The stub answers something that is not a `CallToolResult` (a bare string), so `tools_call`
+/// returns `Err` before any `isError` verdict exists; the recorded entry for that key is `Error`.
 #[tokio::test]
 async fn i6_a_transport_error_on_the_same_key_replaces_the_success() {
     let fx = boot().await;
@@ -646,10 +623,6 @@ async fn i6_a_transport_error_on_the_same_key_replaces_the_success() {
     assert_eq!(refusal["code"], -32602, "{refusal}");
 }
 
-// ---------------------------------------------------------------------------
-// I4 — a worker's call is not recorded for the planner
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn i4_a_workers_call_leaves_nothing_for_the_planner_to_capture() {
     let fx = boot().await;
@@ -708,10 +681,6 @@ async fn i4_a_workers_call_leaves_nothing_for_the_planner_to_capture() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(list["sources"], json!([]));
 }
-
-// ---------------------------------------------------------------------------
-// REST — 401 without a session, 404 across tracks
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn rest_sources_need_a_session_and_stay_inside_their_track() {

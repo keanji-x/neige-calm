@@ -1,4 +1,4 @@
-//! #585: migration 0037 drops the legacy plain card role.
+//! Migration 0037 drops the legacy plain card role.
 
 use sqlx::{Row, SqlitePool, sqlite::SqliteConnectOptions};
 use std::str::FromStr;

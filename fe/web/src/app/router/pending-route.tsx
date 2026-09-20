@@ -1,7 +1,5 @@
 // Two shapes share one panel: a route whose feature slice is not rewritten
-// yet, and an entity that no longer exists. Both are "there is nothing to
-// render here, and here is why" — a user who followed a stale link and a user
-// who clicked into an unbuilt route both need the way back, not a blank page.
+// yet, and an entity that no longer exists. Both need the way back, not a blank page.
 
 import { useCurrentPath, useGo } from './navigation.ts';
 import styles from './pending-route.module.css';

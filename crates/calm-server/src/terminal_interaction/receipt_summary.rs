@@ -1,24 +1,9 @@
-//! `summary` on input and control receipts (#1677): a flat digest of facts
-//! the receipt already carries several levels down (outcome, readback
-//! screen change and wait, hook signal, repaint, control state), derived
-//! once the readback and release facts are final. No new facts, no fence
-//! reads it, and
-//! `application_result: "unverified"` stays where it is: the digest is
-//! evidence, not a verdict.
+//! `summary` on input and control receipts: a flat digest of facts the receipt already
+//! carries. No new facts, no fence reads it; the digest is evidence, not a verdict.
 use serde_json::{Value, json};
 
-/// The digest of `receipt`. `action` is the control action (`claim` or
-/// `release`); an input receipt's `outcome` takes its place. Every field is
-/// nullable: `screen` is the readback's `changed_since_previous_observation`
-/// in words (`changed`/`unchanged` — the screen fact, #1692: a signal wait's
-/// `no_signal` says nothing about the screen; null on a connection's first
-/// observation, without a readback, or when the readback carries no such
-/// fact), the wait fields are the
-/// readback's `wait` block (`wait` its outcome; mode-dependent ones are null
-/// outside their mode), `role`/`control_id`/`exited` are the readback
-/// state's (`control_id` is the readback's, explicit null included, never
-/// the receipt's own lease), `claim`/`release` are the receipt's status
-/// blocks.
+/// The digest of `receipt`. Every field is nullable; `control_id` is the readback's (explicit
+/// null included), never the receipt's own lease.
 pub fn receipt_summary(action: &str, receipt: &Value) -> Value {
     let action = receipt["outcome"].as_str().unwrap_or(action);
     let readback = match receipt["observation"]["status"].as_str() {
@@ -31,10 +16,9 @@ pub fn receipt_summary(action: &str, receipt: &Value) -> Value {
         _ => &Value::Null,
     };
     let wait = &state["wait"];
-    // #1692: `changed_since_previous_observation` is computed as
-    // `previous.is_some_and(..)`, so a connection's first observation says
-    // `false` although nothing was compared. A fact about nothing is not a
-    // fact: the screen fact exists only against a previous observation.
+    // `changed_since_previous_observation` is `previous.is_some_and(..)`, so a connection's
+    // first observation says `false` although nothing was compared: the screen fact exists
+    // only against a previous observation.
     let screen = match (
         &state["previous_observation_revision"],
         &state["changed_since_previous_observation"],
@@ -52,10 +36,8 @@ pub fn receipt_summary(action: &str, receipt: &Value) -> Value {
         "claim":receipt["claim"]["status"],"release":receipt["release"]["status"]})
 }
 
-/// The one-line text block saying the same in words, so a client that shows
-/// only text gets the digest too. A null `screen` (a connection's first
-/// observation, #1692) has no segment: `settled` qualifies the screen
-/// segment, so it is not rendered either.
+/// The one-line text block saying the same in words. A null `screen` has no segment, and
+/// `settled` qualifies the screen segment so it is not rendered either.
 pub fn summary_line(terminal: &str, summary: &Value) -> String {
     let word = |value: &Value| match value {
         Value::String(text) => text.clone(),
@@ -110,10 +92,7 @@ pub fn summary_line(terminal: &str, summary: &Value) -> String {
 mod tests {
     use super::*;
 
-    /// A readback state; `changed` is `changed_since_previous_observation`
-    /// (a bool on every real readback; `Value::Null` leaves it out). The
-    /// connection has observed before (`previous_observation_revision` is
-    /// a string, as on every readback after the first).
+    /// A readback state; `Value::Null` for `changed` leaves the field out.
     fn state(wait: Value, changed: Value, role: &str, control_id: Value) -> Value {
         json!({"observation_id":"o-2","observation_revision":"9","role":role,"control_id":control_id,
             "exited":false,"text":["$ "],"wait":wait,"changed_since_previous_observation":changed,
@@ -132,11 +111,6 @@ mod tests {
         summary
     }
 
-    /// Every input outcome names itself; `screen` is the readback's screen
-    /// fact and `wait` its outcome (#1692: two fields, so a signal wait
-    /// that ran out of budget on a moving screen says `changed` and
-    /// `no_signal`); the other wait fields come from the readback's `wait`
-    /// block in its own mode and stay null elsewhere.
     #[test]
     fn input_outcomes_and_wait_modes() {
         let signal = json!({"mode":"signal","outcome":"signal","waited_ms":812,"settled":true,
@@ -159,7 +133,6 @@ mod tests {
             "terminal t1 input written; screen changed settled; wait signal; \
              signal stop, repaint settled; role observer; details in structuredContent"
         );
-        // #1692: the budget ran out while Claude kept painting.
         let no_signal = json!({"mode":"signal","outcome":"no_signal","waited_ms":15002,"settled":false,
             "signal":null,"signal_at_ms":null,"repaint":null});
         let moved = json!({"outcome":"written",
@@ -241,8 +214,7 @@ mod tests {
             "terminal t1 input control_unavailable; screen unchanged; wait elapsed; \
              role observer; claim unavailable; details in structuredContent"
         );
-        // A readback without the screen fact (not a real one) says null,
-        // never a guess from the wait outcome.
+        // A readback without the screen fact says null, never a guess from the wait outcome.
         let bare = json!({"outcome":"written",
             "observation":available(state(change, Value::Null, "owner", json!("c-1")))});
         let summary = receipt_summary("input", &bare);
@@ -250,11 +222,6 @@ mod tests {
         assert_eq!(summary["wait"], "changed");
     }
 
-    /// A connection's first observation (#1692): the readback reports
-    /// `previous_observation_revision: null` and, computed against nothing,
-    /// `changed_since_previous_observation: false`; the digest says null,
-    /// never `unchanged` — the wait outcome stays its own fact — and the
-    /// line has no screen segment (nor `settled`, which qualifies it).
     #[test]
     fn first_observation_on_a_connection_has_no_screen_fact() {
         let elapsed = json!({"mode":"elapsed","outcome":"elapsed","waited_ms":0,"settled":false});
@@ -276,8 +243,7 @@ mod tests {
             "terminal t1 claim; wait elapsed; role owner; \
              details in structuredContent"
         );
-        // `settled` qualifies the screen segment: without one it is not
-        // rendered on its own.
+        // `settled` qualifies the screen segment: without one it is not rendered on its own.
         let mut settled = summary.clone();
         settled["settled"] = json!(true);
         assert_eq!(
@@ -291,9 +257,7 @@ mod tests {
         assert_eq!(receipt_summary("claim", &later)["screen"], "unchanged");
     }
 
-    /// Claim and release receipts name the control action; without a
-    /// readback every state field is null (the receipt's own `control_id`
-    /// is never copied); an unavailable readback says so.
+    /// Without a readback every state field is null (the receipt's own `control_id` is never copied).
     #[test]
     fn control_receipts_and_missing_or_unavailable_readbacks() {
         let claim = json!({"terminal_id":"t1","connection_id":"n1","control_id":"c-1",
@@ -322,8 +286,8 @@ mod tests {
             summary_line("t1", &summary),
             "terminal t1 release; no readback; details in structuredContent"
         );
-        // The receipt's control_id is the lease the claim granted; without a
-        // readback the summary must not present it as the current state.
+        // The receipt's control_id is the lease the claim granted; without a readback the summary
+        // must not present it as the current state.
         let bare = json!({"outcome":"written","control_id":"c-lease","claim":{"status":"claimed","control_id":"c-lease"},
             "release":{"status":"requested"}});
         let summary = receipt_summary("input", &bare);

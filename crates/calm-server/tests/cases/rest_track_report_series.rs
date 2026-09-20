@@ -1,10 +1,5 @@
-//! #1628 S4 — `GET /api/tracks/{id}/report/series/{block_id}` through the
-//! real axum router (session middleware, `Principal`), against the same
-//! `AppContext` the MCP read uses (design §6 A16, S4.1).
-//!
-//! The resolver is unstarted: a read records what it would enqueue, and the
-//! test runs the job by hand when it wants a row. "The route called no
-//! plugin" is the fake plugin's own call log, not a timing argument.
+//! `GET /api/tracks/{id}/report/series/{block_id}` through the real axum router.
+//! The resolver is unstarted: a read records what it would enqueue, and the test runs the job by hand.
 
 #![cfg(unix)]
 
@@ -22,9 +17,7 @@ use tower::ServiceExt;
 
 use crate::report_series_fixture::{FixtureOptions, SeriesFixture, seam_fixture};
 
-/// The production router tree (`main.rs`): protected REST behind the actor
-/// middleware and the session check, over an `AppState` whose series route
-/// resolves through the fixture's own `AppContext`.
+/// The production router tree, over an `AppState` whose series route resolves through the fixture's own `AppContext`.
 fn app(fx: &SeriesFixture) -> (axum::Router, AuthState) {
     let state = AppState::from_parts(
         fx.boot.repo.clone(),
@@ -135,8 +128,6 @@ impl Route {
     }
 }
 
-/// The block's current `rev`, read through the MCP index the way the
-/// browser reads it through the track detail.
 async fn current_rev(fx: &SeriesFixture, block_id: &str) -> u64 {
     let read = fx.read(json!({ "resolve": { block_id: "none" } })).await;
     read["blocks"]
@@ -165,10 +156,6 @@ async fn resolved_seam_block(fx: &SeriesFixture) -> String {
     block_id
 }
 
-// ---------------------------------------------------------------------------
-// A16 — `rev` binds the request to the block the caller rendered
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn series_route_rejects_stale_rev() {
     let fx = SeriesFixture::boot(FixtureOptions::default()).await;
@@ -190,24 +177,19 @@ async fn series_route_rejects_stale_rev() {
         .await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["current_rev"], rev);
-    // A rejected request enqueues nothing: the caller's document is stale
-    // and its refetch will ask again with the right rev.
     assert!(fx.resolver().recorded_outcomes().is_empty());
 
-    // No rev at all is a malformed request, not a stale one.
     let (status, body) = route.get(fx.track_id(), &block_id, "").await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     let (status, body) = route.get(fx.track_id(), &block_id, "?rev=x").await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 
-    // The current rev is answered — with the row's state, here `pending`.
     let (status, body) = route
         .get(fx.track_id(), &block_id, &format!("?rev={rev}"))
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["status"], "pending");
 
-    // A rewrite bumps the rev: the old one is now the stale one.
     let new_rev = fx
         .rewrite_series_block(
             &block_id,
@@ -231,7 +213,6 @@ async fn series_route_404_for_missing_or_non_series_block() {
     let fx = SeriesFixture::boot(FixtureOptions::default()).await;
     let route = Route::new(&fx).await;
     let series_block = fx.write_series_block(seam_fixture()["block"].clone()).await;
-    // A block of another kind, through the same upsert tool.
     let prose_id = {
         use calm_server::mcp_server::tools::track_report_blocks::TOOL_REPORT_BLOCKS_UPSERT;
         let read = fx
@@ -258,17 +239,11 @@ async fn series_route_404_for_missing_or_non_series_block() {
     );
     let (status, body) = route.get("w_missing", &series_block, "?rev=1").await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
-    // Not-found is decided before `rev` is compared: the rev is meaningless
-    // for a block that is not there.
     let (status, _) = route.get(fx.track_id(), "b-nope", "?rev=999").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(fx.resolver().recorded_outcomes().is_empty());
     assert_eq!(fx.call_count(), 0);
 }
-
-// ---------------------------------------------------------------------------
-// S4.1 — `detail=summary` leaves `data` on disk; `full` is the default
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn series_route_summary_omits_points_and_full_includes_them() {
@@ -308,7 +283,6 @@ async fn series_route_summary_omits_points_and_full_includes_them() {
         {
             assert_eq!(entry["points"], replied["points"], "{query}: {entry}");
         }
-        // Everything but the points is the summary read.
         let mut stripped = full.clone();
         for entry in stripped["series"].as_array_mut().unwrap() {
             entry.as_object_mut().unwrap().remove("points");
@@ -320,14 +294,9 @@ async fn series_route_summary_omits_points_and_full_includes_them() {
         .get(fx.track_id(), &block_id, &format!("?rev={rev}&detail=none"))
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    // A fresh pinned row is served, never re-queued.
     assert_eq!(fx.resolver().recorded_outcomes().len(), 1);
     assert_eq!(fx.call_count(), 1);
 }
-
-// ---------------------------------------------------------------------------
-// S4.1 / D5 — a read with no row enqueues; the route itself calls nothing
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn series_route_enqueues_when_no_row() {
@@ -349,8 +318,6 @@ async fn series_route_enqueues_when_no_row() {
     assert_eq!(fx.call_count(), 0, "the route never calls the plugin");
     assert!(fx.rows().await.is_empty(), "the route never writes");
 
-    // The queued job is the block's job: running it lands the row the next
-    // GET serves.
     fx.reply_structured(seam_fixture()["reply"].clone());
     let outcomes = fx.run_recorded_jobs().await;
     assert_eq!(outcomes.len(), 1);
@@ -361,10 +328,6 @@ async fn series_route_enqueues_when_no_row() {
     assert_eq!(body["status"], "ok", "{body}");
     assert_eq!(body["pinned"], true);
 }
-
-// ---------------------------------------------------------------------------
-// D4 — the route returns the same bytes `calm.report.read` returns
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn series_route_and_mcp_read_return_the_same_bytes() {
@@ -390,8 +353,6 @@ async fn series_route_and_mcp_read_return_the_same_bytes() {
             serde_json::to_string(&mcp).unwrap(),
             "{query}"
         );
-        // The route's answer is the row, whole: every top-level field of
-        // the design sample is present.
         for key in [
             "status",
             "as_of",

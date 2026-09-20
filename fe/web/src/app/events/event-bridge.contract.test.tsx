@@ -20,10 +20,7 @@ const compatible = {
   dbInstanceId: 'db-a',
 };
 
-/**
- * Hand-written stream double. It mirrors the real typestate: handlers are only
- * reachable before `configure`, and only the configured handle can start.
- */
+/** Stream double mirroring the real typestate: handlers only before `configure`, only the configured handle can start. */
 function fakeStream() {
   const record = {
     configureCalls: [] as EventStreamConfiguration[],
@@ -183,8 +180,6 @@ describe('EventBridge contracts', () => {
     expect(first.record.stopCalls).toBe(1);
     expect(first.handlerCount()).toBe(0);
 
-    // A second mount over its own stream starts that stream exactly once, and
-    // never re-starts the first.
     const second = fakeStream();
     render(<EventBridge client={client} stream={second.stream} syncEventVersion={3} dbInstanceId="db-a" cursor={memoryCursor()} />);
     await waitFor(() => expect(second.record.startCalls).toBe(1));

@@ -1,21 +1,4 @@
-//! Scope G — `X-Calm-Actor` middleware tests.
-//!
-//! Asserts the declarative-actor wiring:
-//!
-//!   1. Missing header defaults to `"user"`.
-//!   2. Valid `ai:<id>` is recorded verbatim.
-//!   3. Reserved `kernel` is rejected from header with 400.
-//!   4. Reserved `plugin:<id>` is rejected from header with 400.
-//!   5. Malformed forms (`ai:`, `ai:UPPER`) are rejected with 400.
-//!   6. The plugin-callback write path keeps stamping `"plugin:<id>"`
-//!      regardless of any header — REST middleware and callback dispatcher
-//!      are separate code paths.
-//!
-//! Harness shape mirrors `tests/codex_ingest.rs`: an in-memory `SqlxRepo`, a
-//! stub `DaemonClient`/`CodexClient`/`PluginHost`, and the REST router
-//! wrapped with the actor middleware. We assert against `events.actor`
-//! directly so the recorded value is what we care about, not the response
-//! body shape.
+//! `X-Calm-Actor` middleware tests, asserted against `events.actor` directly.
 
 use std::sync::Arc;
 
@@ -33,9 +16,7 @@ use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use tower::ServiceExt;
 
-/// Build an `AppState` plus a router with the actor middleware wired in,
-/// matching `main.rs`. Returned repo is the concrete `SqlxRepo` so tests can
-/// query the events table directly.
+/// Router with the actor middleware wired in, matching `main.rs`.
 async fn boot() -> (axum::Router, Arc<SqlxRepo>, AppState) {
     let concrete = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let repo: Arc<dyn Repo> = concrete.clone();
@@ -60,7 +41,6 @@ async fn boot() -> (axum::Router, Arc<SqlxRepo>, AppState) {
         None,
         None,
     );
-    // Same shape as main.rs: middleware sits on the REST router only.
     let app = axum::Router::new()
         .merge(routes::router())
         .layer(axum::middleware::from_fn(actor_middleware))
@@ -68,9 +48,7 @@ async fn boot() -> (axum::Router, Arc<SqlxRepo>, AppState) {
     (app, concrete, state)
 }
 
-/// Drive a `POST /api/areas` and return the recorded actor for the event
-/// the write produced. Header value is passed verbatim when `header` is
-/// `Some(...)`. Returns the response status and (if 2xx) the actor string.
+/// `POST /api/areas` and return the status plus (if 2xx) the recorded actor of the resulting event.
 async fn post_area_and_read_actor(
     app: axum::Router,
     repo: &SqlxRepo,
@@ -93,10 +71,6 @@ async fn post_area_and_read_actor(
         return (status, None);
     }
 
-    // The most recent event row is the area we just created. We could
-    // parse the response body for the id and round-trip through events,
-    // but the events table is monotonic and we just created a row — read
-    // the latest.
     let row: (String, String) =
         sqlx::query_as("SELECT kind, actor FROM events ORDER BY id DESC LIMIT 1")
             .fetch_one(repo.pool())
@@ -110,14 +84,6 @@ async fn post_area_and_read_actor(
     (status, Some(row.1))
 }
 
-// ---------------------------------------------------------------------------
-// 1. No header → actor recorded as "user".
-// ---------------------------------------------------------------------------
-
-/// PR2 of #136 typed the actor field. `events.actor` now stores the
-/// JSON form of [`ActorId`]; the route's `Actor::to_actor_id()` maps
-/// the header string back onto the typed enum. The middleware's
-/// validation surface is unchanged — only the on-disk shape moved.
 fn parse_actor_json(s: &str) -> serde_json::Value {
     serde_json::from_str(s).expect("events.actor is JSON-serialized ActorId")
 }
@@ -133,33 +99,9 @@ async fn missing_header_defaults_to_user_actor() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 2. Valid AI header → mapped onto AiCodex; non-`codex` forms collapse to User.
-// ---------------------------------------------------------------------------
-//
-// PR2 of #136 — the route-level `Actor::to_actor_id()` mapping only
-// covers `"user"` → `User` and `"ai:codex"` → `AiCodex(<empty>)` today
-// (the only two header forms a production deploy actually emits; the
-// codex bridge stamps `ai:codex`, every other caller uses no header).
-// Any other `ai:<id>` form falls through to the defensive `User`
-// fallback — PR3+ will refine this once typed actors are wired into the
-// dispatcher.
-
 #[tokio::test]
 async fn ai_codex_header_rejected_without_card_context() {
-    // PR3 (#136) — `ai:codex` on the REST surface maps to
-    // `ActorId::AiCodex(CardId(""))` (no card context at the actor-
-    // extraction point); the `enforce_role` gate refuses the write
-    // outright via its empty-CardId guard. This used to land in the
-    // events table with a placeholder empty CardId in PR2; PR3
-    // tightens the gate so an AI write without a real card identity
-    // is impossible.
-    //
-    // The codex bridge ingest path (`routes::codex::ingest_hook`) is
-    // unaffected — it now resolves the real card id from its query
-    // param before stamping the actor (see PR3 reattribution in that
-    // file). Other production callers of `ai:codex` on REST don't
-    // exist today; the gate makes that an enforced invariant.
+    // `ai:codex` on REST maps to `AiCodex(CardId(""))`, which the `enforce_role` empty-CardId guard refuses.
     let (app, _repo, _state) = boot().await;
     let resp = app
         .oneshot(
@@ -183,17 +125,12 @@ async fn valid_ai_actor_with_dashes_recorded() {
     let (app, repo, _state) = boot().await;
     let (status, actor) = post_area_and_read_actor(app, &repo, Some("ai:claude-3-5")).await;
     assert_eq!(status, StatusCode::CREATED);
-    // Non-`codex` AI ids collapse to the defensive `User` fallback in
-    // PR2. Documented in `Actor::to_actor_id` — PR3+ may refine.
+    // Non-`codex` AI ids collapse to the defensive `User` fallback.
     assert_eq!(
         parse_actor_json(actor.as_deref().unwrap()),
         serde_json::json!({"kind": "User"})
     );
 }
-
-// ---------------------------------------------------------------------------
-// 3. Reserved `kernel` rejected from header.
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn kernel_actor_rejected_from_header() {
@@ -214,18 +151,12 @@ async fn kernel_actor_rejected_from_header() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
-    // And the rejection happens before the handler — so no event row was
-    // written.
     let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM events")
         .fetch_one(repo.pool())
         .await
         .unwrap();
     assert_eq!(row.0, 0, "rejected header must not produce an event row");
 }
-
-// ---------------------------------------------------------------------------
-// 4. Reserved `plugin:<id>` rejected from header.
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn plugin_actor_rejected_from_header() {
@@ -252,10 +183,6 @@ async fn plugin_actor_rejected_from_header() {
     assert_eq!(row.0, 0);
 }
 
-// ---------------------------------------------------------------------------
-// 5. Malformed `ai:<id>` forms rejected.
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn empty_ai_id_rejected() {
     let (app, _repo, _state) = boot().await;
@@ -275,7 +202,6 @@ async fn empty_ai_id_rejected() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
-    // Body shape carries the `bad_request` code so frontends can branch.
     let body = to_bytes(resp.into_body(), 1024).await.unwrap();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["code"], "bad_request");
@@ -301,29 +227,12 @@ async fn uppercase_ai_id_rejected() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
-// ---------------------------------------------------------------------------
-// 6. Plugin callback path unchanged.
-// ---------------------------------------------------------------------------
-//
-// The callback dispatcher in `plugin_host/callbacks.rs` calls
-// `write_with_event_typed` with `actor = format!("plugin:{plugin_id}")`
-// directly — it does NOT go through the REST middleware. This test exercises
-// the identical write the dispatcher performs (an overlay upsert), with the
-// plugin actor format, on a server whose REST router has the actor
-// middleware wired in. The middleware would have rejected `plugin:*` from
-// the header (test #4 covers that); here we assert the server-internal
-// path still produces a `plugin:<id>` event row regardless.
-//
-// This is a deliberately narrow assertion. The full callback round-trip is
-// already covered by `tests/plugin_host_callbacks.rs`. Scope G only needs to
-// prove that wiring middleware on the REST path didn't accidentally also
-// constrain the plugin-callback path.
+// The plugin-callback dispatcher writes `plugin:<id>` directly and does not go through the REST middleware.
 
 #[tokio::test]
 async fn plugin_callback_path_writes_plugin_actor_regardless_of_middleware() {
     let (_app, repo, state) = boot().await;
 
-    // Seed a track so the overlay upsert has a real entity to target.
     let area = repo
         .area_create(NewArea {
             name: "c".into(),
@@ -347,11 +256,7 @@ async fn plugin_callback_path_writes_plugin_actor_regardless_of_middleware() {
         .await
         .unwrap();
 
-    // Exactly what `plugin_host::callbacks::overlay_set` does after the
-    // perm check. PR2 of #136 typed the actor; PR3 (#136) added the
-    // role cache as another required arg:
-    //   let actor = ActorId::Plugin(ctx.plugin_id.to_string());
-    //   write_with_event_typed(repo, actor, scope, None, &bus, &write, |tx| { ... })
+    // Exactly the write `plugin_host::callbacks::overlay_set` performs after the perm check.
     let plugin_id = "hello-world";
     let actor = ActorId::Plugin(plugin_id.to_string());
     let new_overlay = NewOverlay {
@@ -391,7 +296,6 @@ async fn plugin_callback_path_writes_plugin_actor_regardless_of_middleware() {
         .await
         .unwrap();
     assert_eq!(row.0, "overlay.set");
-    // PR2 of #136: events.actor stores the typed JSON form.
     let actor_json: serde_json::Value = serde_json::from_str(&row.1).unwrap();
     assert_eq!(
         actor_json,
@@ -400,22 +304,10 @@ async fn plugin_callback_path_writes_plugin_actor_regardless_of_middleware() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 7. PR2 of #136 end-to-end: POST /api/cards stamps the full scope chain.
-// ---------------------------------------------------------------------------
-//
-// Drive the REST surface end-to-end and assert the resulting `events` row
-// carries `scope_kind = 'card'` plus the full `scope_card` / `scope_track`
-// / `scope_area` ancestor chain. This is the spot-check the issue brief
-// calls out — a single test that exercises the whole pipeline (route →
-// `card_scope` helper → `write_with_event_typed` → `event_append_in_tx`
-// → SQL bind) instead of unit-testing the layers in isolation.
-
 #[tokio::test]
 async fn create_card_stamps_full_scope_chain() {
     let (app, repo, _state) = boot().await;
 
-    // Seed an area + track so the card has somewhere to live.
     let area = repo
         .area_create(NewArea {
             name: "c".into(),
@@ -460,8 +352,6 @@ async fn create_card_stamps_full_scope_chain() {
     let card_json: serde_json::Value = serde_json::from_slice(&resp_body).unwrap();
     let card_id = card_json["id"].as_str().expect("card id").to_string();
 
-    // The most recent event row is the one we just produced. Read every
-    // scope_* column and assert the full chain is populated.
     let row: (String, Option<String>, Option<String>, Option<String>) = sqlx::query_as(
         "SELECT scope_kind, scope_area, scope_track, scope_card
          FROM events ORDER BY id DESC LIMIT 1",

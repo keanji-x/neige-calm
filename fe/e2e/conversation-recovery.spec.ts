@@ -4,7 +4,6 @@ import { createArea, createTrack } from './helpers/seed.js';
 
 test.use({ contextOptions: { reducedMotion: 'reduce' } });
 
-// Real app and isolated kernel, with a controlled rejection at the HTTP edge.
 // No Codex execution is needed: the fixture app-server accepts the final send.
 test('retains a rejected conversation message and retries it once', async ({ page, request }, testInfo) => {
   const area = await createArea(request, `Recovery check ${Date.now()}`);
@@ -27,18 +26,8 @@ test('retains a rejected conversation message and retries it once', async ({ pag
     const composer = page.getByRole('combobox', { name: 'Message' });
     await expect(composer).toHaveAttribute('contenteditable', 'true');
     const message = 'Retain this recovery check';
-    /*
-     * #1552 — the same words can render in two places: the transcript bubble
-     * and the "Queued messages" list. Every assertion below names the carrier
-     * it is actually claiming something about, so a match can never stand in
-     * for the other one. `data-nc-thread` / `data-nc-turn` are attributes the
-     * transcript sets on purpose (`features/chat/thread/public.tsx`), unlike
-     * the hashed CSS-module classes, which change on every build.
-     *
-     * Here the send was REFUSED (429), so the kernel never accepted it and no
-     * queue entry exists — the transcript is the only carrier, and it is the
-     * one the claim ("the words are retained") is about.
-     */
+    /* The same words can render in the transcript bubble and the "Queued messages" list, so each
+     * assertion names its carrier; `data-nc-thread` is set on purpose, unlike hashed CSS-module classes. */
     const transcript = page.locator('[data-nc-thread]');
     await composer.fill(message);
     await composer.press('Enter');
@@ -113,30 +102,12 @@ test('keeps a lost acknowledgement uncertain and asks before resending', async (
     await expect(composer).toHaveAttribute('contenteditable', 'true');
     await composer.fill('Keep this uncertain message');
     await composer.press('Enter');
-    /*
-     * The kernel accepted the input; the browser lost the answer.
-     *
-     * Since #1625 P2 the kernel writes the sentence to the transcript the
-     * moment the queue drains it into a turn — before the app-server has said
-     * anything, and CI's `osc-probe-child` fixture never says anything — so
-     * the page's next read shows the words as a server row. A matching row is
-     * a review hint, never a delivery receipt (#1505 F5: a stale read can
-     * reveal an old equal message), so the attempt stays uncertain and the
-     * reader is asked to look; only they may dismiss it. Before P2 the read
-     * answered nothing here and the page showed the plain "Delivery is
-     * unconfirmed" error with a `Check delivery` remedy; that state is now
-     * reachable only while the kernel has not drained the queue, which this
-     * stack does within the same second.
-     */
+    /* The kernel accepted the input and wrote it to the transcript as it drained the queue; the browser
+     * lost the answer. A matching row is a review hint, never a delivery receipt, so the attempt stays uncertain. */
     await expect(page.getByRole('status').filter({ hasText: 'Delivery is still unconfirmed' })).toBeVisible();
     await expect(page.getByText('A matching message is visible.', { exact: false })).toBeVisible();
     expect(accepted).toBe(true);
     expect(attempts).toBe(1);
-    /*
-     * #1552 — scoped to the transcript, which is the carrier this line is about:
-     * the words the reader typed are on screen after the transport lost the
-     * acknowledgement — once, as the server's row, not beside a failed echo.
-     */
     const transcript = page.locator('[data-nc-thread]');
     await expect(transcript.getByText('Keep this uncertain message', { exact: true })).toBeVisible();
     await expect(page.getByRole('alert')).toHaveCount(0);

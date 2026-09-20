@@ -9,14 +9,8 @@ import {
 } from './plugins.js';
 
 /**
- * A `config_schema` in the shape the kernel publishes it.
- *
- * Written as the kernel's subset states it (`plugin_host::template_input`'s
- * module doc): root `type: "object"` with an explicit
- * `additionalProperties: false`, and per property a type from
- * `{string, integer, number, boolean}` plus optional `enum` / `default` /
- * `description`. `enum` appears only on a string, because that is the only
- * place the kernel accepts one.
+ * A `config_schema` in the kernel's subset: root `type: "object"` with `additionalProperties:
+ * false`; `enum` only on a string.
  */
 function schema(): unknown {
   return {
@@ -39,8 +33,6 @@ describe('plugin list rows', () => {
     const row = {
       id: 'git-forge', version: '0.1.0', enabled: true, state: 'running', manifest_name: 'Git forge',
     };
-    // A kernel that did not send the bit is not the kernel this screen was
-    // written against, and "no configurable keys" must never be a guess.
     expect(pluginListItemSchema.safeParse(row).success).toBe(false);
     expect(pluginListItemSchema.safeParse({ ...row, has_config: false }).success).toBe(true);
   });
@@ -48,10 +40,6 @@ describe('plugin list rows', () => {
 
 describe('plugin detail', () => {
   it('decodes a user_config the kernel refuses to merge into, instead of failing', () => {
-    /* #1284's 409 `plugin_config_corrupt` row: the kernel keeps a non-object
-       `user_config` rather than coercing it away, and publishes it verbatim. A
-       schema that demanded an object here would turn the one row that needs
-       repairing into a blank screen. */
     const decoded = pluginDetailSchema.parse({
       id: 'git-forge',
       version: '0.1.0',
@@ -93,8 +81,6 @@ describe('configFieldsOf', () => {
   });
 
   it('drops a property whose type is outside the subset rather than guessing a control', () => {
-    // A control the kernel would refuse a value for is worse than no control:
-    // the operator fills it in and the write 400s on a key they cannot fix.
     const fields = configFieldsOf({
       type: 'object',
       additionalProperties: false,
@@ -119,16 +105,11 @@ describe('the draft a form starts from', () => {
     const fields = configFieldsOf(schema());
     const draft = configDraftFrom(fields, { token: 'abc' });
     expect(draft.token).toBe('abc');
-    /* `base_url` has a default and no stored value: it starts **empty**, so the
-       default can show as a placeholder and stay out of every payload. A draft
-       seeded from `effective_config` would start at the default and post it
-       back on the first Save. */
+    /* A default with no stored value starts empty, so the default can show as a placeholder and
+       stay out of every payload. */
     expect(draft.base_url).toBeNull();
     expect(draft.mode).toBeNull();
     expect(draft.retries).toBeNull();
-    /* The one control with no third position and no placeholder: a switch shows
-       the default it would run with. The diff base is this same state, so
-       showing it costs no write. */
     expect(draft.verbose).toBe(true);
   });
 
@@ -136,7 +117,6 @@ describe('the draft a form starts from', () => {
     const fields = configFieldsOf(schema());
     const draft = configDraftFrom(fields, { retries: 'three' });
     expect(draft.retries).toBeNull();
-    // And leaves it alone: the patch says nothing about a field nobody edited.
     expect(configPatchFrom(fields, draft, draft)).toEqual({});
   });
 
@@ -158,13 +138,6 @@ describe('configPatchFrom (#1284 §2.2.5)', () => {
   });
 
   it('never writes a manifest default back', () => {
-    /*
-     * The load-bearing case. `base_url`, `mode`, `retries` and `verbose` all
-     * have defaults and none is stored; the operator edits `token` only. If the
-     * form posted its effective state, this Save would materialize four
-     * defaults into the row — and a manifest that later changed any of them
-     * would never reach this plugin again.
-     */
     const base = configDraftFrom(fields, {});
     const patch = configPatchFrom(fields, base, { ...base, token: 'abc' });
     expect(patch).toEqual({ token: 'abc' });
@@ -184,19 +157,7 @@ describe('configPatchFrom (#1284 §2.2.5)', () => {
     expect(configPatchFrom(fields, base, { ...base, verbose: true })).toEqual({});
   });
 
-  /*
-   * ── The stored-boolean pair (S4 review P1-A) ─────────────────────────────
-   *
-   * The case above starts from *nothing stored*, which is why it passed while
-   * the defect was live. The pair below starts from a stored value that is the
-   * opposite of the default — the only shape in which a switch can be moved
-   * onto its default at all — and it is a pair because a rule that silenced
-   * that direction by silencing the control would be just as wrong.
-   */
   it('deletes the key when a stored boolean is moved back onto its default', () => {
-    // `verbose` defaults to `true`; the row holds `false`. Flipping it back is
-    // "follow the manifest again", and posting the literal `true` would instead
-    // freeze today's default into the row for good.
     const base = configDraftFrom(fields, { verbose: false });
     expect(base.verbose).toBe(false);
     expect(configPatchFrom(fields, base, { ...base, verbose: true })).toEqual({ verbose: null });
@@ -208,8 +169,6 @@ describe('configPatchFrom (#1284 §2.2.5)', () => {
   });
 
   it('writes a boolean literally when the manifest declares no default for it', () => {
-    /* No default means there is nothing to inherit, so `null` would delete the
-       key and leave the plugin with neither value. */
     const undeclared = configFieldsOf({
       type: 'object',
       properties: { flag: { type: 'boolean' } },
@@ -220,9 +179,6 @@ describe('configPatchFrom (#1284 §2.2.5)', () => {
   });
 
   it('cannot touch a key the current schema does not declare', () => {
-    /* Residue from an older manifest is deliberately kept by the kernel and
-       shown by nothing. A form that emitted it would delete or rewrite values
-       for keys the operator cannot even see. */
     const base = configDraftFrom(fields, { token: 'abc', legacy_flag: true });
     const patch = configPatchFrom(fields, { ...base, legacy_flag: true }, { ...base, legacy_flag: false });
     expect(patch).toEqual({});
@@ -252,8 +208,6 @@ describe('configWriteError', () => {
   const fields = configFieldsOf(schema());
 
   it('puts a schema violation on the field the kernel named', () => {
-    // The kernel's own wording, rooted at `config` because the route passes
-    // that as the validator's root path.
     const error = configWriteError(
       { code: 'bad_request', message: 'config.retries: expected integer, found a string' },
       fields,
@@ -263,12 +217,6 @@ describe('configWriteError', () => {
   });
 
   it('lands a violation on the declared key it names, not on one that starts the same', () => {
-    /*
-     * `token` and `token_extra` are both declared, and the match is exact
-     * rather than a prefix — a `startsWith` would put `token_extra`'s error on
-     * `token`'s control, which is a red field with someone else's reason in it.
-     * Both directions are checked because only one of them is asymmetric.
-     */
     const pair = configFieldsOf({
       type: 'object',
       properties: { token: { type: 'string' }, token_extra: { type: 'string' } },
@@ -284,14 +232,6 @@ describe('configWriteError', () => {
   });
 
   it('offers the reset for the byte-cap refusal too, without reading the prose', () => {
-    /*
-     * (S4 review P2-A.) A 400 like every schema violation, and the only one of
-     * them whose exit is `?reset=true` — the excess is residue from keys this
-     * form does not render and no ordinary patch can shrink. The judgement is
-     * the kernel's own code; matching `?reset=true` in the message would make
-     * an English sentence a wire format, so the code is what is read here and
-     * a plain `bad_request` carrying the same words must *not* offer it.
-     */
     const tooLarge = configWriteError(
       {
         code: 'plugin_config_too_large',
@@ -311,9 +251,6 @@ describe('configWriteError', () => {
   });
 
   it('keeps a violation of an undeclared key off the form', () => {
-    /* Same message shape, no control to land on: the form does not render
-       `ghost`, so attributing it to a field would mean attaching an error to
-       nothing. It belongs on the pane. */
     const error = configWriteError(
       { code: 'bad_request', message: 'config.ghost: unknown field (schema declares additionalProperties: false)' },
       fields,
@@ -336,7 +273,6 @@ describe('configWriteError', () => {
       fields,
     );
     expect(corrupt.offersReset).toBe(true);
-    // The kernel's sentence, not a paraphrase: it names what is wrong.
     expect(corrupt.message).toContain('not a JSON object');
 
     const unloaded = configWriteError(
@@ -350,9 +286,6 @@ describe('configWriteError', () => {
 
 describe('reloadOutcome (#1284 §2.4)', () => {
   it('reports a held lock as saved-but-not-restarted', () => {
-    /* Row 1: the configuration is in the database, the old process is still up
-       on the old configuration, and retrying is the whole remedy. Anything that
-       read only the status code would report this as a failed save. */
     const outcome = reloadOutcome({
       failure: { code: 'plugin_busy', message: 'plugin `git-forge` is busy' },
       state: 'running',
@@ -364,9 +297,7 @@ describe('reloadOutcome (#1284 §2.4)', () => {
   });
 
   it('carries last_error verbatim when the plugin landed in unavailable', () => {
-    /* Row 2: a connector's bring-up failed. `unavailable` is its normal
-       terminal state — not a kernel error — and `last_error` is the only
-       diagnostic that exists, so it is reproduced word for word. */
+    /* `unavailable` is a connector's normal terminal state, not a kernel error; `last_error` is the only diagnostic. */
     const reason = 'mcp-http: connect to https://api.example.com failed: connection refused';
     const outcome = reloadOutcome({
       failure: { code: 'bad_request', message: 'reload failed' },
@@ -378,15 +309,12 @@ describe('reloadOutcome (#1284 §2.4)', () => {
   });
 
   it('reads unavailable off the state even when the reload answered 200', () => {
-    // The status code is not the verdict, in both directions.
     const outcome = reloadOutcome({ failure: null, state: 'unavailable', lastError: 'upstream said no' });
     expect(outcome.kind).toBe('unavailable');
     expect(outcome.message).toContain('upstream said no');
   });
 
   it('says an app that did not come back has stopped', () => {
-    /* Row 3: a reload stops the plugin before re-reading anything, so this is
-       never "carried on with the old configuration". */
     const outcome = reloadOutcome({
       failure: { code: 'bad_request', message: 'spawn failed: No such file or directory' },
       state: 'installed',
@@ -403,9 +331,6 @@ describe('reloadOutcome (#1284 §2.4)', () => {
     expect(reloadOutcome({ failure: null, state: 'spawning' })).toMatchObject({
       kind: 'starting', tone: 'success',
     });
-    /* Saved, reloaded, and nothing holds it: a disabled plugin re-reads its
-       manifest and stays put. Calling that success would tell the operator
-       their configuration is in force when no process has it. */
     const idle = reloadOutcome({ failure: null, state: 'disabled' });
     expect(idle.kind).toBe('idle');
     expect(idle.tone).toBe('warning');
@@ -413,15 +338,6 @@ describe('reloadOutcome (#1284 §2.4)', () => {
   });
 
   it('says the state is unknown when the request never left the browser', () => {
-    /*
-     * (S4 review P2-B.) Not a §2.4 row, and that is the point: every row there
-     * is a statement about what the plugin did, and a transport failure with no
-     * readable state observed the plugin not at all. This used to fall through
-     * to `stopped` — "the plugin has stopped and did not start with the new
-     * configuration" — which is the strongest claim on the screen made from the
-     * weakest evidence there is, and probably backwards: a request that never
-     * arrived stopped nothing.
-     */
     const outcome = reloadOutcome({
       failure: { code: 'transport_failure', message: 'The request could not be completed.' },
       state: 'unknown',
@@ -430,13 +346,10 @@ describe('reloadOutcome (#1284 §2.4)', () => {
     expect(outcome.tone).toBe('warning');
     expect(outcome.message).toMatch(/unknown/);
     expect(outcome.message).not.toMatch(/has stopped/);
-    // Saved is still saved: the write succeeded before the reload was tried.
     expect(outcome.message).toMatch(/saved/i);
   });
 
   it('still reports a stop when the kernel answered and the plugin is down', () => {
-    /* The counterpart the row above must not swallow: a real refusal from a
-       reachable kernel is evidence about the plugin, and it keeps saying so. */
     const outcome = reloadOutcome({
       failure: { code: 'internal', message: 'spawn failed' },
       state: 'unknown',
@@ -445,19 +358,11 @@ describe('reloadOutcome (#1284 §2.4)', () => {
   });
 
   it('paints unavailable as a warning rather than an error', () => {
-    /* Asserted directly, not left to "the pane has no error branch for it".
-       `unavailable` is a connector's normal terminal state — an upstream that
-       did not answer — and the error tone would say the kernel is broken. The
-       pane keys its styling off `tone`, so this is the field that decides it. */
     expect(reloadOutcome({ failure: null, state: 'unavailable', lastError: 'upstream said no' }).tone)
       .toBe('warning');
     expect(reloadOutcome({ failure: null, state: 'unavailable' }).tone).toBe('warning');
   });
 });
-
-// ===========================================================================
-// #1480 — the install and uninstall operations
-// ===========================================================================
 
 describe('connector install', () => {
   const draft: ConnectorInstallDraft = {
@@ -503,11 +408,8 @@ describe('connector install', () => {
     expect(body.source.api_key_in).toBe('header:X-API-Key');
   });
 
-  /*
-   * A blank credential must leave the key **out**, not send `""`: the kernel
-   * reads an absent key as "unauthenticated connector" and refuses an empty
-   * one, so the two spellings are a working plugin and a 400.
-   */
+  /* A blank credential must leave the key out: the kernel reads an absent key as unauthenticated
+     and refuses an empty one. */
   it('omits the credential and its placement when none was given', () => {
     const body = installConnectorOperation({ ...draft, api_key: '   ' })
       .body as { source: Record<string, unknown> };
@@ -523,17 +425,8 @@ describe('connector install', () => {
     expect(body.source.url).toBe('https://mcp.wisburg.com/mcp');
   });
 
-  /*
-   * The form's own refusals, which are only the ones it can make without
-   * knowing anything about plugins. Everything else — a malformed id, an
-   * unreachable URL — is the kernel's judgement to make and its sentence to
-   * write.
-   */
-  /*
-   * The selected-mode refusal that exists because the failure it prevents looks
-   * like success: `tools_allow` is a strict allowlist, so a selected connector
-   * with no names would come up running and expose nothing at all.
-   */
+  /* `tools_allow` is a strict allowlist, so a selected connector with no names would come up
+     running and expose nothing. */
   it('refuses a connector that would expose no tools, and splits the list the operator typed', () => {
     expect(connectorDraftError({ ...draft, tools: '   ' })).toMatch(/at least one tool/i);
     expect(toolsAllowOf({ ...draft, tools: 'a, b\nc  d,,a' })).toEqual(['a', 'b', 'c', 'd']);
@@ -546,8 +439,6 @@ describe('connector install', () => {
     expect(connectorDraftError({ ...draft, placement: 'header', header_name: '' }))
       .toMatch(/header name/i);
     expect(connectorDraftError(draft)).toBeNull();
-    // No credential means no placement to spell, so the header name stops
-    // mattering — this is the keyless connector, not a half-filled form.
     expect(connectorDraftError({ ...draft, api_key: '', placement: 'header', header_name: '' }))
       .toBeNull();
   });

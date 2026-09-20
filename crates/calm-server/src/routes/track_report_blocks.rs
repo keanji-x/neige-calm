@@ -69,34 +69,10 @@ pub struct ReportBlockWriteResponse {
     pub updated_at: i64,
 }
 
-/// The judgement: REST writes are the human's channel.
-///
-/// One implementation, many sentences. `subject` names the write the caller
-/// attempted and `redirect` tells the refused caller where its own channel is —
-/// those differ per endpoint, the rule does not. Restating the rule per
-/// endpoint is how the copies drift apart, so callers pass wording and never a
-/// second `actor.as_str() == "user"`. A 403 that names the wrong subsystem is a
-/// false statement in the audit log, which is the other reason the wording is
-/// a parameter and not a second copy of this function.
-///
-/// # The criterion is `as_str()`, deliberately, and NOT `to_actor_id()`
-///
-/// `Actor::to_actor_id` maps `ai:codex` to `ActorId::AiCodex` and then, by a
-/// defensive default, folds every OTHER `ai:<id>` the middleware admits —
-/// `ai:claude` included — down to `ActorId::User`. A guard written on the id
-/// would therefore admit exactly the agents it was written to exclude, and
-/// would look correct doing it. Pinned by
-/// `every_ai_actor_is_refused_including_the_ones_that_map_to_user`, which
-/// walks `ai:claude` explicitly for that reason.
-///
-/// # Argument order is not type-checked
-///
-/// Two of the three parameters are `&str`, so a call that swaps `subject` and
-/// `redirect` COMPILES and produces a 403 naming the wrong subsystem — the
-/// false audit statement above, arriving silently. #1515 and #1505 PR2 each
-/// grew this helper independently with the two orders reversed, and the merge
-/// of the two is where that was nearly shipped. Read a new call site back
-/// against these names rather than trusting the build.
+/// REST writes are the human's channel. The criterion is `as_str()`, NOT `to_actor_id()`:
+/// the latter folds every `ai:<id>` other than `ai:codex` down to `ActorId::User`, so a
+/// guard on the id would admit the agents it was written to exclude. `subject` and
+/// `redirect` are both `&str`, so a swapped call compiles — read call sites back by name.
 pub(crate) fn require_rest_user_actor_for(
     actor: &Actor,
     subject: &str,
@@ -150,11 +126,6 @@ async fn commit(
 ) -> Result<ReportBlockWriteResponse> {
     require_rest_user_actor(actor)?;
     let target = ReportEditTarget::resolve(state.repo.as_ref(), track_id).await?;
-    // #1318 §1 — the writer is private to its module; this REST leg
-    // reaches it only through the entry point below.
-    // `ActorId::User` / `EditAuthor::User` used to be arguments here with a
-    // comment saying they always would be; now they are not expressible at
-    // this call site at all.
     let (card, block) = track_report::write::rest_user_block_op(
         state.repo.as_ref(),
         &state.events,
@@ -297,12 +268,8 @@ pub async fn move_block(
 mod tests {
     use super::*;
 
-    /// #1505 PR2 — two write ports, one criterion, two sentences.
-    ///
-    /// The 403 body lands in the audit log, so a planner-input refusal that
-    /// tells the reader to use `calm.report.*` tools is a false statement about
-    /// what the caller should have done. This is the reason the subject is a
-    /// parameter and not a second copy of the check.
+    /// The 403 body lands in the audit log, so a refusal naming the wrong subsystem is a
+    /// false statement about what the caller should have done.
     #[test]
     fn each_write_port_names_itself_in_its_403() {
         let agent = Actor("ai:codex".into());
@@ -326,9 +293,8 @@ mod tests {
         assert!(!planner.contains("calm.report.*"), "{planner}");
     }
 
-    /// The criterion itself: `ai:claude` is admitted by the middleware and
-    /// collapses to `ActorId::User` under `Actor::to_actor_id`, so a guard
-    /// written on the id would admit it. This one does not.
+    /// `ai:claude` collapses to `ActorId::User` under `Actor::to_actor_id`, so a guard
+    /// written on the id would admit it.
     #[test]
     fn every_ai_actor_is_refused_including_the_ones_that_map_to_user() {
         for header in ["ai:codex", "ai:claude", "ai:planner", "ai:anything"] {

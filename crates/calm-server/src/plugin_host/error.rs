@@ -1,10 +1,4 @@
-//! Plugin-host error surface.
-//!
-//! Split out from `crate::error::CalmError` because the host stack has a
-//! distinct vocabulary (process I/O, MCP framing, supervisor state machine)
-//! that doesn't map cleanly to the HTTP-shaped `CalmError` variants. Slice D
-//! will glue these into `CalmError` at the route layer; for now we keep them
-//! local so the host can be exercised in isolation.
+//! Plugin-host error surface: process I/O, MCP framing and supervisor state, kept apart from the HTTP-shaped `CalmError`.
 
 use std::io;
 
@@ -12,224 +6,113 @@ use thiserror::Error;
 
 use super::version::KernelTooOld;
 
-// ---------------------------------------------------------------------------
-// Process-layer errors
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Error)]
 pub enum ProcessError {
-    /// `tokio::process::Command::spawn` failed. Most common cause is a bad
-    /// `entrypoint.command` path in the manifest or a missing executable
-    /// permission bit; the wrapped `io::Error` carries the kernel detail.
+    /// Most common cause is a bad `entrypoint.command` path or a missing executable bit.
     #[error("plugin process spawn failed: {0}")]
     Spawn(#[source] io::Error),
 
-    /// `child.wait()` failed mid-supervision. Rare — typically only seen if
-    /// the process exits but the waitpid call races with another consumer.
     #[error("plugin process wait failed: {0}")]
     Wait(#[source] io::Error),
 
-    /// Stop / kill was called on a process that already exited. Slice C and D
-    /// callers treat this as benign (the desired post-state is "not running"
-    /// either way), so it's its own variant rather than an `Io`.
+    /// Callers treat this as benign (the desired post-state is "not running" either way), so it is its own variant rather than an `Io`.
     #[error("plugin process already exited")]
     AlreadyDead,
 
-    /// SIGTERM was sent but the child did not exit within the grace window.
-    /// We follow up with SIGKILL; this error fires only if even SIGKILL +
-    /// grace exhausts without the child reaping. In practice means a zombie.
+    /// Fires only if even SIGKILL + grace exhausts without the child reaping; in practice a zombie.
     #[error("plugin process did not exit within kill timeout")]
     KillTimeout,
 }
 
-// ---------------------------------------------------------------------------
-// MCP-layer errors
-// ---------------------------------------------------------------------------
-
-/// Wire-level failures from the JSON-RPC framer or the actor. These are
-/// distinct from `RpcError` (which models JSON-RPC's own `error` object
-/// per §5.1 of the JSON-RPC 2.0 specification).
+/// Wire-level failures from the JSON-RPC framer or the actor, distinct from `RpcError` (JSON-RPC's own `error` object).
 #[derive(Debug, Error)]
 pub enum McpError {
-    /// stdin/stdout I/O died — child closed its end, or we got an `EPIPE`.
-    /// Once an `McpClient` returns this, every future call also will. The
-    /// supervisor treats it as "the process is gone" and restarts.
+    /// Once an `McpClient` returns this, every future call also will; the supervisor treats it as "the process is gone".
     #[error("mcp transport closed: {0}")]
     TransportClosed(String),
 
-    /// We received bytes that didn't parse as a JSON-RPC frame.
     #[error("mcp framing error: {0}")]
     Framing(String),
 
-    /// The actor task panicked or was cancelled before responding. Used as a
-    /// last-resort marker so call() doesn't hang forever.
+    /// The actor task panicked or was cancelled before responding, so `call()` does not hang forever.
     #[error("mcp client dropped before response arrived")]
     ClientDropped,
 
-    /// `tokio::sync::mpsc` capacity exhausted — happens if the outbound
-    /// channel buffer fills (~64 deep). The caller should back off and retry.
+    /// Outbound channel buffer (~64 deep) is full; the caller should back off and retry.
     #[error("mcp client outbound buffer full")]
     BufferFull,
 
-    /// The plugin's echoed `protocolVersion` in the `initialize` response did
-    /// not match `KERNEL_PROTOCOL_VERSION`. Issue #45: we now enforce an
-    /// exact-equal match instead of silently accepting whatever the plugin
-    /// claims. The handshake is failed and the process is reaped by the
-    /// existing initialize-failure path; the supervisor surfaces this via
-    /// `HostError::InitializeRejected`.
+    /// Exact-equal match against `KERNEL_PROTOCOL_VERSION` is enforced; the handshake fails and the process is reaped.
     #[error("mcp protocol version mismatch: kernel={kernel}, plugin={plugin}")]
     ProtocolVersionMismatch { kernel: String, plugin: String },
 }
 
-// ---------------------------------------------------------------------------
-// Host-layer errors (what `PluginHost::spawn`/`stop`/etc. return)
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Error)]
 pub enum HostError {
-    /// No manifest registered for `id`. Caller probably forgot to install /
-    /// the registry didn't pick up the directory.
     #[error("plugin `{0}` not found in registry")]
     NotFound(String),
 
-    /// `spawn` was called on a plugin that's already running. Caller can
-    /// `stop` first or call `restart` instead.
     #[error("plugin `{0}` is already running")]
     AlreadyRunning(String),
 
-    /// `config.plugins_disabled` lists this id; the host refuses to spawn it.
-    /// Slice D's enable endpoint can override by removing from the list.
+    /// `config.plugins_disabled` lists this id.
     #[error("plugin `{0}` is disabled by config")]
     Disabled(String),
 
-    /// #1226 — the plugin's **DB row** says `enabled = false`: an operator
-    /// turned this plugin off. The spawn admission path refuses.
-    ///
-    /// Deliberately NOT [`Self::Disabled`], which is the *config* kill switch
-    /// (`config.plugins_disabled`, an operator edit to a file the running
-    /// kernel cannot change). These are two different stores with two different
-    /// remedies — `POST /api/plugins/{id}/enable` for this one, editing the
-    /// config for that one — and collapsing them would make the enable endpoint
-    /// look like the fix for something it cannot fix.
-    ///
-    /// Raised before any process spawn or token mint, so a refusal leaves
-    /// nothing half-started. **An absent row is not this error**: a row that
-    /// does not exist cannot say "disabled", so the spawn proceeds.
+    /// The plugin's DB row says `enabled = false`. Deliberately NOT [`Self::Disabled`] (the config kill switch): two stores, two remedies. Raised before any spawn or token mint; an absent row is not this error.
     #[error("plugin `{0}` is disabled: its row says `enabled = false`")]
     OperatorDisabled(String),
 
-    /// Process-level failure (spawn/wait/kill). The wrapped `ProcessError`
-    /// carries the syscall detail.
     #[error(transparent)]
     Spawn(#[from] ProcessError),
 
-    /// MCP wire failure. Most commonly seen during `initialize` handshake
-    /// failures or mid-flight transport drops.
     #[error(transparent)]
     Mcp(#[from] McpError),
 
-    /// `initialize` succeeded as a wire round-trip but the plugin's response
-    /// was malformed or claimed an incompatible protocol version. We carry
-    /// the rejection reason so the supervisor's `last_error` can show it.
+    /// `initialize` succeeded as a wire round-trip but the response was malformed or claimed an incompatible protocol version.
     #[error("plugin initialize rejected: {0}")]
     InitializeRejected(String),
 
-    /// State-machine guard: e.g. trying to stop a plugin that's `Spawning`.
-    /// The string carries the offending state for diagnostics.
+    /// State-machine guard, e.g. stopping a plugin that is `Spawning`.
     #[error("plugin in bad state: {0}")]
     BadState(String),
 
-    /// Slice H: plugin's echoed token didn't match what the kernel issued on
-    /// spawn. Treated as a security failure — supervisor does NOT respawn,
-    /// state event reports `Crashed { reason: "auth handshake failed" }`.
+    /// Treated as a security failure: the supervisor does NOT respawn and reports `Crashed { reason: "auth handshake failed" }`.
     #[error("plugin auth handshake failed: {0}")]
     AuthMismatch(String),
 
-    /// Issue #45: the manifest's `min_kernel_version` exceeds the running
-    /// kernel's version. The check fires before any process spawn, so this
-    /// variant never leaves a half-spawned plugin behind. Routes map it to a
-    /// 4xx so callers see the typed reason rather than a generic 500.
+    /// Fires before any process spawn, so no half-spawned plugin is left behind; routes map it to a 4xx.
     #[error(transparent)]
     KernelTooOld(#[from] KernelTooOld),
 
-    /// #891 slice ④ — registration-time template-id uniqueness. A trusted
-    /// plugin declares a template id another **running trusted** plugin
-    /// already registers; spawning it would make the binding resolvers
-    /// (`routes::tracks::resolve_template_binding`, the planner harness's
-    /// `bound_template`, the MCP per-track tool scope) ambiguous. Like
-    /// `KernelTooOld` this fires before any process spawn or token mint, so
-    /// no half-spawned state is left behind; the boot autospawn loop's
-    /// per-plugin tolerance logs and continues.
+    /// A trusted plugin declares a template id another running trusted plugin already registers, which would make the binding resolvers ambiguous. Fires before any spawn or token mint.
     #[error(
         "plugin `{plugin_id}` declares template `{template_id}`, which running trusted plugin `{held_by}` already registers"
     )]
     TemplateConflict {
         plugin_id: String,
-        /// The id a plugin declared in its manifest's `templates[]` array. Same
-        /// vocabulary as the kernel's `template_id` since #1268: a manifest
-        /// entry names which kernel template the plugin binds to.
+        /// The id a plugin declared in its manifest's `templates[]` array, naming which kernel template it binds to.
         template_id: String,
         held_by: String,
     },
 
-    /// #1164 §2.2 / §2.3 — a non-`app` connector could not be brought up.
-    /// Distinct from [`Self::Spawn`]/[`Self::Mcp`] because there is no child
-    /// process and no supervisor behind it: the failure is terminal until an
-    /// operator re-enables, and the `reason` is the only diagnostic they get
-    /// (it is also what lands in `PluginRuntimeStatus::Unavailable`). The boot
-    /// autospawn loop logs it and continues, so an unreachable upstream never
-    /// blocks server start.
+    /// A non-`app` connector could not be brought up. No child process and no supervisor behind it: terminal until an operator re-enables, and `reason` is the only diagnostic (it lands in `PluginRuntimeStatus::Unavailable`).
     #[error("connector `{plugin_id}` is unavailable: {reason}")]
     ConnectorUnavailable { plugin_id: String, reason: String },
 
-    /// #1284 §2.2/§2.4 — the plugin declares `config_schema.required` keys
-    /// that neither the operator's `user_config` nor a manifest `default`
-    /// supplies, so the kernel refuses to start it.
-    ///
-    /// Its own variant rather than [`Self::ConnectorUnavailable`] because this
-    /// fires on the `app` path, where "connector" is simply false; and rather
-    /// than [`Self::BadState`] because the state is the operator's to fix, not
-    /// a kernel invariant that broke. Like `KernelTooOld` and
-    /// `TemplateConflict` it is raised before any process spawn or token mint,
-    /// so nothing is left half-started — but unlike them it also publishes a
-    /// live `Unavailable` entry, because `reason` is the operator's only
-    /// diagnostic and it has to survive to `GET /api/plugins/{id}`.
+    /// `config_schema.required` keys that neither `user_config` nor a manifest `default` supplies. Raised before any spawn or token mint, but a live `Unavailable` entry is published so `reason` survives to `GET /api/plugins/{id}`.
     #[error("plugin `{plugin_id}` cannot start: {reason}")]
     MissingRequiredConfig { plugin_id: String, reason: String },
 
-    /// #1284 §2.3 (S2 review P2-1) — the spawn path could not read the
-    /// plugin's stored `user_config` at all: the repo call failed. Not
-    /// [`Self::MissingRequiredConfig`], because the kernel does not know
-    /// whether anything is missing — it never got to look; and not
-    /// [`Self::BadState`], whose catch-all 500 mapping would both claim a
-    /// kernel fault and, more importantly, invite the plain `?` that skips
-    /// publishing the `Unavailable` entry.
-    ///
-    /// Reading `{}` instead would be worse than failing: manifest defaults
-    /// would silently paper over the operator's real configuration, and a
-    /// `required` key could look satisfied by a default while the operator's
-    /// actual value sat unread. So the spawn is refused, and — like
-    /// `MissingRequiredConfig` — a live `Unavailable` entry is published
-    /// first, so `reason` survives to `GET /api/plugins/{id}`.
+    /// The spawn path could not read the stored `user_config` at all. Reading `{}` instead would let manifest defaults silently paper over the operator's real configuration, so the spawn is refused and a live `Unavailable` entry is published first.
     #[error("plugin `{plugin_id}` cannot start: {reason}")]
     ConfigUnreadable { plugin_id: String, reason: String },
 
-    /// #1196 §2.5 — the per-id lifecycle lock was held by another operation.
-    ///
-    /// **Nothing happened.** Every entry point that can return this takes the
-    /// lock as its first act, so a `LifecycleBusy` answer is inert: no DB row,
-    /// no registry entry, no live-table entry, no token row was touched. That
-    /// is what makes it safe for the caller to simply retry.
-    ///
-    /// Routes render it as a 409 with the code `plugin_busy`, which is
-    /// deliberately *not* `plugin_conflict`: the latter is permanent for the
-    /// request as written (duplicate id, template id already held) while this
-    /// one clears on its own. See [`crate::error::CalmError::PluginBusy`].
+    /// The per-id lifecycle lock was held by another operation. Nothing happened (every entry point takes the lock first), so the caller can simply retry; routes render a 409 `plugin_busy`, which clears on its own, unlike `plugin_conflict`.
     #[error("plugin `{0}` is busy: another lifecycle operation holds it")]
     LifecycleBusy(String),
 
-    /// #1164 §2.5 — an operation that only makes sense for a process-backed
-    /// `app` plugin was attempted on a connector (e.g. token rotation).
+    /// An operation that only makes sense for a process-backed `app` plugin (e.g. token rotation) was attempted on a connector.
     #[error("plugin `{plugin_id}` has kind `{kind}`, which does not support {operation}")]
     UnsupportedForKind {
         plugin_id: String,

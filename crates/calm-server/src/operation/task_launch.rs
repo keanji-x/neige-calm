@@ -11,8 +11,7 @@ use std::{
     time::Duration,
 };
 
-// Bound lock acquisition inside provider transports and socket writes too, not
-// only their reply timers. Stay below the renewed 60-second operation lease.
+// Bounds lock acquisition inside provider transports too; must stay below the renewed 60-second operation lease.
 const CONTROL_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(45);
 
 #[cfg(test)]
@@ -98,11 +97,8 @@ impl TaskLaunch {
         &self.task_id
     }
 
-    /// `effect` must contain only the bounded provider-control exchange, never
-    /// repository writes. The write transaction remains held through that send
-    /// and acknowledgement; PID/session persistence happens after it returns.
-    /// Thus withdrawal committed before this controlled launch is seen by the
-    /// final read, and concurrent withdrawal commits after launch admission.
+    /// `effect` must contain only the bounded provider-control exchange, never repository writes: the write transaction is held
+    /// through that send, so a withdrawal committed before this launch is seen by the final read.
     pub(crate) async fn run_observed<T, F>(
         self,
         repo: &dyn RepoEventWrite,
@@ -159,8 +155,6 @@ impl TaskLaunch {
             })
         })
         .await?;
-        // Keep the established already-prepared initial-attempt reconciliation
-        // contract. Current/terminal execution identity is still fenced above.
         if !recovered && !isolated {
             return effect.await.map_err(|error| LaunchFailure {
                 error,
@@ -181,12 +175,7 @@ impl TaskLaunch {
                 .ok_or_else(|| CalmError::Conflict("recovery launch requires an owned operation lease".into()))?;
             let now = crate::model::now_ms();
             let admission = serde_json::json!({"version":1,"task_id":self.task_id,"admitted_at_ms":now});
-            // Preparation/phase transitions already persist the exact target.
-            // Record this final admission in the existing mutable output before
-            // sending the launch, without inventing another scheduling state.
-            // Operation lease expiry permits takeover; ownership changes only
-            // on that claim. Match the existing phase/artifact CAS contract:
-            // the same owner may renew here, a claimed replacement cannot.
+            // Same phase/artifact CAS contract as elsewhere: the same owner may renew here, a claimed replacement cannot.
             let changed = sqlx::query(r#"
                 UPDATE operations SET
                     tx_output_json=json_set(tx_output_json,'$.data.launch_admission',json(?1)),

@@ -1,17 +1,5 @@
-//! D2 step 1 — drain-side admission (#1628 S2.3 / S2.4 / S2.5).
-//!
-//! Two autocommit statements on the pool, no transaction: the design's
-//! "DEFERRED read transaction" does not exist in this repository — a
-//! deferred read tx holds R locks across statements and is one party of the
-//! #930 deadlock ring against an IMMEDIATE writer (the source-scan guard
-//! `production_deferred_transactions_are_read_only_allowlisted` keeps the
-//! allowlist empty on purpose). Atomicity between the two reads is not
-//! needed: admission only filters, and the write that follows is
-//! `INSERT … ON CONFLICT … WHERE pinned = 0` either way.
-//!
-//! It re-reads the block as it is NOW, derives the request and window from
-//! that payload, and refuses the job when the block is gone, re-kinded or
-//! re-pointed, or when the row for the current hash is fresh or pinned.
+//! Drain-side admission: re-read the block as it is NOW, derive the request and window from that payload, and refuse the job when the block is gone, re-kinded or re-pointed, or the row for the current hash is fresh or pinned.
+//! Two autocommit statements, no transaction: a deferred read tx is one party of the deadlock ring against an IMMEDIATE writer, and atomicity between the two reads is not needed.
 
 use sqlx::SqlitePool;
 
@@ -21,11 +9,7 @@ use super::request::{SeriesRequest, Window};
 use super::store::{Detail, select_row};
 use super::summary::row_is_fresh;
 
-/// D2 step 1 as two autocommit statements (no transaction — #930: a deferred
-/// read tx is one party of the deadlock ring): re-read the block, derive the
-/// request and window from the payload as it is now, and refuse the job
-/// when the block is gone / re-kinded / re-pointed, or when the row for the
-/// current hash is fresh or pinned. `Ok(Err(reason))` is a drop.
+/// `Ok(Err(reason))` is a drop.
 pub(super) async fn admit(
     pool: &SqlitePool,
     track_id: &str,

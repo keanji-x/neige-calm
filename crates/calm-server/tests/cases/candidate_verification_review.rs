@@ -107,9 +107,8 @@ async fn candidate_verification_recovery_retains_capacity_when_leader_missing_gr
     };
     // Start a real owned candidate and retain its actual recorded group identity.
     let (fx, _, _, publication) = source("sleep 600 & echo $! > background.pid; sleep 600").await;
-    // A restarted kernel has no observer for this spawn. In one process the
-    // spawn's observer stays alive, and once it observes the leader die it
-    // SIGKILLs the recorded group (#1633). Park it before it can observe.
+    // A restarted kernel has no observer for this spawn; in one process the observer would SIGKILL the recorded
+    // group once it sees the leader die. Park it before it can observe.
     let observer_parked = Arc::new(AtomicBool::new(false));
     let parked = observer_parked.clone();
     let _observer_hook = calm_server::file_delivery::install_candidate_observer_hook(
@@ -150,12 +149,8 @@ async fn candidate_verification_recovery_retains_capacity_when_leader_missing_gr
     })
     .await
     .expect("the stale observer must be parked at the fixture hook before the leader is touched");
-    // Reap the leader from outside its observer, as a restart's new parent can.
-    // The row must stay `parked` and leased while its leader is a zombie: the
-    // scheduler's wait() loop drives every 25ms, and a lease-free
-    // `spawn_started` row would be claimed and re-driven, whose first step
-    // SIGKILLs the recorded group (#1633). Take the parked lease the way a live
-    // owner does, retrying past the sweep's own brief claims.
+    // Reap the leader from outside its observer, as a restart's new parent can. The row must stay parked and
+    // leased while its leader is a zombie, or the scheduler would claim and re-drive it (SIGKILLing the group).
     let lease = format!("test-restart-{}", calm_server::model::new_id());
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
@@ -706,9 +701,7 @@ async fn candidate_verification_live_observer_respects_parked_lease_before_commi
         assert_eq!(phase, "parked");
         // The retained kernel status is authoritative even if the hint is forged.
         std::fs::write(group.workspace.join("gate.exit"), b"7\n").unwrap();
-        // Keep the completed Child under a foreign lease while expiry is recorded.
-        // Boot's force-claim guarantees recovery gets the first settlement chance;
-        // the steady-state case also exercises the normal production sweep.
+        // Keep the completed Child under a foreign lease while expiry is recorded, so recovery gets the first settlement chance.
         sqlx::query("UPDATE operations SET parked_deadline_ms=0 WHERE id=?1")
             .bind(&op.id)
             .execute(&pool)

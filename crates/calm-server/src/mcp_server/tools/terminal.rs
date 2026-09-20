@@ -38,7 +38,7 @@ pub fn register_into(registry: &mut ToolRegistry) {
             "calm.terminal.open",
             include_str!("../../../prompts/tools/calm.terminal.open.md").trim_end(),
             json!({"request_id":{"type":"string","minLength":1,"maxLength":128},"title":{"type":"string","maxLength":200},"program":{"type":"string","minLength":1,"maxLength":4096},"format":{"type":"string","enum":["text","image"],"default":"text"},"claim":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"wait_text_absent":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000},
-            // #1704 S1 — the declared scope; the caps mirror `terminal_permissions`.
+            // The caps mirror `terminal_permissions`.
             "claude_permissions":{"type":"object","additionalProperties":false,"properties":{"edit":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"string","minLength":1,"maxLength":200}},"bash":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"string","minLength":1,"maxLength":200}},"deny":{"type":"array","maxItems":32,"items":{"type":"string","minLength":1,"maxLength":200}}}}}),
             vec!["request_id"],
         ),
@@ -46,7 +46,6 @@ pub fn register_into(registry: &mut ToolRegistry) {
             "calm.terminal.observe",
             include_str!("../../../prompts/tools/calm.terminal.observe.md").trim_end(),
             json!({"terminal_id":{"type":"string"},"task_id":{"type":"string"},"scroll_offset":{"type":"integer","minimum":0,"maximum":2000},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"wait_text_absent":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000},"format":{"type":"string","enum":["text","image"],"default":"text"},
-            // #1710 — the history search; its coupling (scroll_offset 0, no text conditions) is stated in the description and refused server-side.
             "scroll_to_text":{"type":"string","minLength":1,"maxLength":200},"scroll_to_occurrence":{"type":"string","enum":["latest","earliest"],"default":"latest"}}),
             vec![],
         ),
@@ -75,11 +74,7 @@ pub fn register_into(registry: &mut ToolRegistry) {
             let name = tool.clone();
             Box::pin(async move { call(&name, ctx, identity, args).await })
         });
-        // #1666 — no `terminal_id`/`task_id` selector arms: duplicating every
-        // root property into two closed arms tripled the input schema and
-        // left no room under the 4000-byte compaction threshold. Exactly-one
-        // targeting stays enforced server-side (`Target::from_ids`) and is the
-        // first sentence of every description; the action arms stay closed.
+        // No `terminal_id`/`task_id` selector arms: duplicating every root property pushed the schema past the 4000-byte compaction threshold; exactly-one targeting is enforced server-side.
         let input_schema = json!({"type":"object","additionalProperties":false,"properties":properties,"required":required});
         registry.register(ToolDescriptor { name:name.into(),description:description.into(),
             input_schema,
@@ -106,16 +101,11 @@ struct Open {
     repaint_ms: Option<u64>,
     wait_text: Option<Vec<String>>,
     wait_text_absent: Option<Vec<String>>,
-    /// #1704 S1 — the permission rules the Planner declares; its shape is checked
-    /// by `parse_scope` (so a JSON `null` or array is refused by name rather
-    /// than read as absent), validated before the create is submitted and
-    /// part of the idempotency hash.
+    /// Shape checked by `parse_scope` (a JSON `null` or array is refused by name rather than read as absent); part of the idempotency hash.
     #[serde(default, deserialize_with = "present_value")]
     claude_permissions: Option<Value>,
 }
-/// `Option<Value>` that keeps a JSON `null` as `Some(Null)` (serde's default
-/// reads `null` as `None`), so `claude_permissions: null` reaches
-/// `parse_scope` and is refused as "must be an object".
+/// Keeps a JSON `null` as `Some(Null)` (serde's default reads `null` as `None`) so it is refused as "must be an object".
 fn present_value<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<Value>, D::Error> {
@@ -137,7 +127,6 @@ struct Observe {
     wait_text_absent: Option<Vec<String>>,
     #[serde(default)]
     format: ObservationFormat,
-    /// #1710 — the history search (`scroll_to_request` validates the pair).
     scroll_to_text: Option<String>,
     scroll_to_occurrence: Option<String>,
 }
@@ -215,10 +204,6 @@ fn observation_summary(state: &Value) -> String {
         Value::Null => "null".into(),
         other => other.to_string(),
     };
-    // #1704 S1 — an open that declared a scope echoes the effective block;
-    // its rule counts join the line (observe never carries the block). S2 —
-    // the block's source (`declared`, `track_policy`,
-    // `declared_within_policy`) follows the counts when the card carries it.
     let permissions = match state[TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY].as_object() {
         Some(block) => {
             let rules = |list: &str| {
@@ -240,8 +225,6 @@ fn observation_summary(state: &Value) -> String {
         }
         None => String::new(),
     };
-    // #1710 — a history search names its verdict and the row on the
-    // returned screen.
     let scroll_to = match state["scroll_to"]["status"].as_str() {
         Some("found") => format!(" scroll_to found row {}", state["scroll_to"]["row"]),
         Some(status) => format!(" scroll_to {status}"),
@@ -261,8 +244,7 @@ fn observation_summary(state: &Value) -> String {
         state["wait"]["outcome"].as_str().unwrap_or("none")
     )
 }
-/// A detach receipt has no readback and no `summary` (#1677): its one line
-/// names the closed client.
+/// A detach receipt has no readback; its one line names the closed client.
 fn detach_summary(receipt: &Value) -> String {
     format!(
         "terminal {} detached had_client {}; details in structuredContent",
@@ -270,9 +252,6 @@ fn detach_summary(receipt: &Value) -> String {
         receipt["had_client"]
     )
 }
-/// Every input receipt and every claim/release receipt gains `summary`
-/// (#1677 S3), derived here once the readback and release facts are final;
-/// the text block says the same in words.
 fn receipt_result(action: &str, mut receipt: Value) -> ToolResult {
     if receipt["detached"] == true {
         let summary = detach_summary(&receipt);
@@ -283,9 +262,7 @@ fn receipt_result(action: &str, mut receipt: Value) -> ToolResult {
     receipt["summary"] = summary;
     ToolResult::structured_with_summary(receipt, line)
 }
-/// An open whose card operation did not succeed: no terminal id exists yet,
-/// so the summary names the operation; the outcome detail stays in
-/// structuredContent like every other terminal result.
+/// No terminal id exists yet, so the summary names the operation.
 fn open_failure_summary(receipt: &Value) -> String {
     format!(
         "terminal open {} operation {}; details in structuredContent",
@@ -317,9 +294,7 @@ impl WaitArgs {
             || self.wait_text.is_some()
             || self.wait_text_absent.is_some()
     }
-    /// Whether the wait would test live viewport rows (text mode, or
-    /// signal mode with text conditions): such a wait needs `scroll_offset`
-    /// 0 (the service refuses it again).
+    /// A wait that tests live viewport rows needs `scroll_offset` 0 (the service refuses it again).
     fn tests_text(&self) -> bool {
         match self.wait_for {
             Some(WaitFor::Text) => true,
@@ -355,11 +330,7 @@ fn action_observation(
     }
     wait.plan().map(Some)
 }
-/// An observation an open returns. With `format=image` a failed render
-/// falls back to an immediate text observation plus `image: {status:
-/// unavailable, reason}` (#1620 F6): after a wait the screen shown is still
-/// the post-wait one, but that fallback's `wait` block is the immediate
-/// read's; only a failed text observation is an error.
+/// With `format=image` a failed render falls back to a text observation plus `image: {status: unavailable, reason}`; only a failed text observation is an error.
 async fn observe_for_open(
     service: &TerminalInteraction,
     identity: &ToolCallIdentity,
@@ -390,10 +361,7 @@ async fn observe_for_open(
         Err(error) => Err(error),
     }
 }
-/// Merge the outcome of an explicit image observation into an open result
-/// that already carries a text observation (#1620 F6): success replaces the
-/// state and PNG; failure keeps the text state and creation/claim facts and
-/// reports `image: {status: unavailable, reason}` with no PNG.
+/// Success replaces the state and PNG; failure keeps the text state and reports `image: {status: unavailable, reason}`.
 fn apply_image_outcome(
     metadata: &mut Value,
     png: &mut Option<Vec<u8>>,
@@ -410,14 +378,8 @@ fn apply_image_outcome(
         }
     }
 }
-/// #1620 — the idempotency hash view of an open request. The generated hook
-/// env (`TERMINAL_HOOK_ENV_KEYS`) is derived by the adapter from the card id
-/// it allocates and never enters this view, so a replayed request_id hashes
-/// identically; the stored request and terminal row keep the complete env.
-/// #1704 S1 — the trimmed `claude_permissions` scope joins the view ONLY when
-/// declared, so every non-scoped open (and every pre-S1 stored hash) hashes
-/// as before, and a replay with a different scope is the runtime's payload
-/// conflict.
+/// The idempotency hash view of an open. The generated hook env never enters it, so a replayed request_id hashes identically;
+/// `claude_permissions` joins ONLY when declared, so every non-scoped open hashes as before.
 fn open_payload_hash(
     identity: &ToolCallIdentity,
     request: &TerminalCreateRequestPayload,
@@ -436,11 +398,7 @@ fn open_payload_hash(
     }
     stable_payload_hash(&view).map_err(failure)
 }
-/// #1710 — the history search of an observe, validated before the call:
-/// an occurrence needs the text; the pattern's bounds are `ScrollTo::new`'s;
-/// the search derives its own offset (so `scroll_offset` must be 0) and a
-/// wait that tests text returns the live viewport (so the two are
-/// exclusive). The service refuses the last two again.
+/// The search derives its own offset (so `scroll_offset` must be 0) and a wait that tests text returns the live viewport (so the two are exclusive).
 fn scroll_to_request(
     text: Option<String>,
     occurrence: Option<String>,
@@ -518,8 +476,7 @@ async fn call(
                     "invalid terminal request_id or title",
                 ));
             }
-            // #1677 S1 — the wait arguments are observe's, validated before
-            // the create is submitted; they never enter the idempotency hash.
+            // The wait arguments never enter the idempotency hash.
             let wait = WaitArgs {
                 wait_for: args.wait_for,
                 wait_ms: args.wait_ms,
@@ -531,9 +488,7 @@ async fn call(
             };
             let waited = wait.any();
             let wait = wait.plan()?;
-            // #1704 S1 — the declared scope is parsed and validated here,
-            // before the create is submitted; the trimmed scope enters the
-            // hash.
+            // The trimmed scope enters the hash.
             let claude_permissions = args
                 .claude_permissions
                 .as_ref()
@@ -551,15 +506,8 @@ async fn call(
                 .operation_runtime
                 .get()
                 .ok_or_else(|| RpcError::internal("operation runtime unavailable"))?;
-            // #1704 S2 — the Track tree's policy is the ceiling of the
-            // declaration. Only a FRESH request_id is checked here (a known
-            // key is `submit`'s business: the same hash returns the existing
-            // terminal whatever the policy is now, another hash is its
-            // payload conflict), so a replay with the same arguments never
-            // meets a since-narrowed policy. The verdict is discarded: the
-            // payload keeps the DECLARED scope and the hash view is
-            // unchanged; `prepare_tx` re-reads the ceiling inside the write
-            // transaction and renders the merge there.
+            // Only a FRESH request_id is checked against the policy ceiling, so a replay with the same arguments never meets a since-narrowed policy;
+            // the verdict is discarded — `prepare_tx` re-reads the ceiling inside the write transaction.
             if runtime
                 .find_by_kind_and_idempotency("terminal-create", &idempotency_key)
                 .await
@@ -620,11 +568,7 @@ async fn call(
                 .map_err(failure)?
                 .ok_or_else(|| RpcError::internal("created card has no terminal"))?;
             let target = Target::Terminal(terminal.id.clone());
-            // Establish the observation client before the Planner enters a TUI.
-            // The created ids survive an image failure: the text observation
-            // is returned with `image: unavailable` instead of an error. With
-            // a wait (#1677 S1) this immediate read is text only and is the
-            // baseline of the final, waited observation below.
+            // Establish the observation client before the Planner enters a TUI. With a wait this immediate read is text only and is the baseline of the final observation.
             let immediate = if waited {
                 ObservationFormat::Text
             } else {
@@ -641,10 +585,7 @@ async fn call(
             .map_err(failure)?;
             let mut claim = None;
             if args.claim {
-                // Same claim path as calm.terminal.control (claim-if-unowned);
-                // the open already succeeded whatever the claim does. Its
-                // readback is immediate: the wait runs after the claim, never
-                // inside its serial guard.
+                // Claim-if-unowned; the open already succeeded whatever the claim does. The wait runs after the claim, never inside its serial guard.
                 match service
                     .claim_after_open(&identity, &target, WaitPlan::default())
                     .await
@@ -682,8 +623,6 @@ async fn call(
                 }
             }
             if waited {
-                // The final observation: the wait (against the immediate read
-                // or the claim readback as baseline) in the requested format.
                 // A failed claim still returns the waited state.
                 (metadata, png) =
                     observe_for_open(service, &identity, &terminal.id, wait, args.format)
@@ -694,11 +633,7 @@ async fn call(
                 metadata["claim"] = claim;
             }
             metadata["card_id"] = json!(card.id);
-            // #1704 S1 — the effective block is echoed from the stamped card
-            // (the source of truth), so a replay echoes the same block; S2 —
-            // its source beside it, from the card for the same reason (a
-            // source recomputed against the CURRENT policy could mislabel
-            // the file the card carries).
+            // Echoed from the stamped card (source of truth), so a replay echoes the same block; a source recomputed against the CURRENT policy could mislabel it.
             for key in [
                 TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY,
                 TERMINAL_CLAUDE_PERMISSIONS_SOURCE_PAYLOAD_KEY,
@@ -792,9 +727,7 @@ async fn call(
                 },
                 false,
             )?;
-            // #1666 r1 — the below-cursor tolerance admits draft edits only
-            // (see `terminal_interaction::edits_the_draft`); the service
-            // refuses it again, this is the invalid-params shape.
+            // The below-cursor tolerance admits draft edits only; the service refuses it again.
             if args.allow_output_below_cursor && !edits_the_draft(&args.action) {
                 return Err(RpcError::invalid_params(BELOW_CURSOR_EDITS_ONLY));
             }

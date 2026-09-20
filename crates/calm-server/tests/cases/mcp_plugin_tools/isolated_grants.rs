@@ -62,9 +62,7 @@ async fn planner_on_track(fx: &Fixture, track_id: &str) -> (String, String) {
     .await
 }
 
-/// What Codex shows the model for `name`: every char outside `[A-Za-z0-9_]`
-/// becomes `_` (#1668). `plugin.dev.neige.git-forge_wf.tool` reads as
-/// `plugin_dev_neige_git_forge_wf_tool`.
+/// What Codex shows the model for `name`: every char outside `[A-Za-z0-9_]` becomes `_`.
 fn codex_spelling(name: &str) -> String {
     name.chars()
         .map(|c| {
@@ -179,10 +177,8 @@ async fn isolated_plugin_dispatch_accepts_codex_sanitized_spelling_and_freezes_r
     );
 }
 
-/// #1686 — the model's tool list shows `mcp__calm__` + the sanitized
-/// spelling; through `calm.task.dispatch` that name resolves to the
-/// registry name, which is what the receipt and the frozen grant carry,
-/// and the registry spelling replays the same receipt.
+/// The model's tool list shows the sanitized spelling; through `calm.task.dispatch` it resolves
+/// to the registry name, which is what the receipt and the frozen grant carry.
 #[tokio::test]
 async fn isolated_plugin_dispatch_accepts_codex_qualified_spelling_and_freezes_registry_name() {
     let fx = boot_fixture().await;
@@ -374,10 +370,8 @@ async fn isolated_plugin_dispatch_names_the_stopped_tool_in_its_refusal() {
     );
 }
 
-/// #891 non-disclosure through dispatch: on the template-bound track only the
-/// owning plugin is visible, so a probe for `dev.echo`'s tool — exact or in
-/// either sanitized spelling — is refused with the same wording as a tool
-/// that does not exist, while the owner's own sanitized spelling resolves.
+/// On the template-bound track a probe for an out-of-scope tool — exact or sanitized — is
+/// refused with the same wording as a tool that does not exist.
 #[tokio::test]
 async fn isolated_plugin_dispatch_on_bound_track_refuses_out_of_scope_as_unknown() {
     let fx = boot_fixture().await;

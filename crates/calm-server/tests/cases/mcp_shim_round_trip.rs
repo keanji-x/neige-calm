@@ -1,7 +1,4 @@
-//! True E2E MCP round trip: real shim binary + real kernel MCP server.
-//!
-//! This exercises the production byte path that codex uses:
-//! codex-style stdio frames -> `neige-mcp-stdio-shim` -> kernel UDS MCP
+//! True E2E MCP round trip: codex-style stdio frames -> `neige-mcp-stdio-shim` -> kernel UDS MCP
 //! transport -> tool handler -> response -> shim stdout.
 
 #![cfg(unix)]
@@ -29,11 +26,8 @@ use tokio::io::BufReader;
 use tokio::process::Command;
 
 fn shim_bin() -> std::path::PathBuf {
-    // CARGO_BIN_EXE_<name> is only set for bins in the SAME package; this
-    // test lives in calm-server but the shim bin lives in
-    // crates/neige-mcp-stdio-shim. Resolve it via the workspace target dir:
-    // cargo puts the bin next to the integration-test binary
-    // (target/{debug,release}/neige-mcp-stdio-shim).
+    // CARGO_BIN_EXE_<name> is only set for bins in the SAME package; the shim bin lives in another
+    // crate, so resolve it next to the integration-test binary in the workspace target dir.
     let mut p = std::env::current_exe().expect("current_exe");
     p.pop(); // .../deps/
     p.pop(); // .../debug/ or .../release/

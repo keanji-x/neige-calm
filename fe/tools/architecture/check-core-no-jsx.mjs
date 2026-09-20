@@ -6,7 +6,7 @@ export function checkCoreNoJsx(corePath = 'core', cardsPath = 'web/src/systems/c
   const jsx = existsSync(core)
     ? readdirSync(core, { recursive: true }).filter((entry) => ['.tsx', '.jsx'].includes(extname(String(entry))))
     : [];
-  // Reason: INV-CARD-082 freezes registry as pure .ts because .tsx changes its documented module boundary.
+  // The cards registry stays pure .ts: .tsx would change its documented module boundary.
   const cards = resolve(cardsPath);
   if (existsSync(cards)) {
     jsx.push(...readdirSync(cards).filter((entry) => basename(String(entry), extname(String(entry))) === 'registry'

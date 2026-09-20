@@ -1,46 +1,7 @@
-//! Issue #293 PR2 — end-to-end verification of the [`codex_appserver`]
-//! client against a **real `codex app-server`** booted over a unix socket.
-//!
-//! Feature-gated behind `codex-e2e` (same convention as
-//! `codex_e2e_planner_card.rs`) because CI ships no `codex` binary and cannot
-//! run model turns. Run locally with:
-//!
-//! ```sh
-//! cargo test --features codex-e2e --test codex_e2e_suite codex_appserver_e2e:: -- --nocapture
-//! ```
-//!
-//! ## What it proves
-//!
-//! 1. The Rust client completes the WebSocket-over-UDS handshake against a
-//!    real `codex app-server --listen unix://<sock>` (the spike's hardest
-//!    wire fact — compression must be off; tungstenite 0.24 satisfies this
-//!    by construction).
-//! 2. `initialize` → `thread/start` → `turn/start` with a deterministic
-//!    prompt drives a live model turn and a `turn/completed` notification
-//!    arrives on the push stream. **This is the core assertion** — it
-//!    requires real model auth + network (the proxy).
-//! 3. (Bonus) A *second* connection that `thread/resume`s the same thread
-//!    *after* the first turn (so a rollout exists on disk — see the spike's
-//!    caveat) observes the same thread and the same thread id.
-//!
-//! ## Self-skip (must NOT fail when codex/auth is absent)
-//!
-//! The test resolves the codex binary via `NEIGE_CODEX_BIN` only (#868 —
-//! no PATH/home fallback) exactly like `codex_e2e_planner_card.rs`. If the
-//! env var is unset or unusable it prints a skip marker and returns. It
-//! also self-skips (not fails) if the app-server fails to boot or the WS
-//! handshake fails — both indicate an environment without a usable codex
-//! (e.g. no auth), which is the CI condition this gate exists for. Only an
-//! *actual* successful boot+connect proceeds to the hard turn assertion.
-//!
-//! ## Proxy
-//!
-//! Model turns on this host go through `http://127.0.0.1:2080` (the
-//! `codex` shell alias injects `HTTP_PROXY`/`HTTPS_PROXY`). The spawned
-//! app-server inherits whatever proxy env the test process has, plus we
-//! re-assert it from `NEIGE_CODEX_PROXY` (default `http://127.0.0.1:2080`)
-//! so a bare `cargo test` still reaches the model. Set `NEIGE_CODEX_PROXY=`
-//! (empty) to disable.
+//! End-to-end check of the `codex_appserver` client against a real `codex app-server` over a unix socket.
+//! Feature-gated behind `codex-e2e`; resolves the binary via `NEIGE_CODEX_BIN` only and self-skips (never fails)
+//! when codex, auth, or the boot/handshake is unavailable. Model turns go through `NEIGE_CODEX_PROXY`
+//! (default `http://127.0.0.1:2080`; set empty to disable).
 
 #![cfg(all(unix, feature = "codex-e2e"))]
 
@@ -51,16 +12,14 @@ use std::time::Duration;
 
 use calm_server::codex_appserver::{ClientInfo, CodexAppServer, InputItem, Notification};
 use calm_server::planner_model::TurnModelSelection;
-// #868: shared no-fallback resolver — env `NEIGE_CODEX_BIN` only, `None` ⇒
-// self-skip via `skip!`. Tests must never fall back to a PATH/home codex.
+// Env `NEIGE_CODEX_BIN` only; tests must never fall back to a PATH/home codex.
 use support::codex_fixture::resolve_codex_bin;
 use tokio::process::Command;
 use tokio::time::timeout;
 
 const DEFAULT_PROXY: &str = "http://127.0.0.1:2080";
 
-/// Apply the proxy env (unless explicitly disabled) so spawned app-server
-/// model turns reach the upstream through `127.0.0.1:2080`.
+/// Apply the proxy env (unless explicitly disabled) so spawned app-server model turns reach the upstream.
 fn apply_proxy(cmd: &mut Command) {
     let proxy = std::env::var("NEIGE_CODEX_PROXY").unwrap_or_else(|_| DEFAULT_PROXY.to_string());
     if !proxy.is_empty() {
@@ -80,9 +39,7 @@ async fn appserver_client_drives_live_turn_and_second_client_resumes() {
     };
     eprintln!("[codex-appserver-e2e] using codex at {codex_bin:?}");
 
-    // Socket must live under a USER-OWNED dir: the server chmods the
-    // socket's parent dir to 0700 and EPERMs on a shared sticky /tmp (spike
-    // caveat #2). `mktemp -d` via `tempfile` gives us a 0700 dir we own.
+    // The socket must live under a USER-OWNED dir: the server chmods its parent to 0700 and EPERMs on a shared sticky /tmp.
     let sock_dir = tempfile::tempdir().expect("mktemp -d for socket");
     let sock = sock_dir.path().join("app.sock");
     let listen = format!("unix://{}", sock.display());
@@ -128,7 +85,6 @@ async fn appserver_client_drives_live_turn_and_second_client_resumes() {
     };
     eprintln!("[codex-appserver-e2e] connected over WS-over-UDS");
 
-    // --- initialize ---
     let init = client
         .initialize(ClientInfo {
             name: "neige-calm-e2e".into(),
@@ -145,7 +101,6 @@ async fn appserver_client_drives_live_turn_and_second_client_resumes() {
         "initialize returned a userAgent"
     );
 
-    // --- thread/start ---
     let thread = client.thread_start(None).await.expect("thread/start");
     let thread_id = thread
         .thread_id()
@@ -156,7 +111,6 @@ async fn appserver_client_drives_live_turn_and_second_client_resumes() {
         thread.model
     );
 
-    // --- turn/start with a deterministic prompt; await turn/completed ---
     let turn = client
         .turn_start(
             &thread_id,
@@ -169,9 +123,7 @@ async fn appserver_client_drives_live_turn_and_second_client_resumes() {
         .expect("turn/start");
     eprintln!("[codex-appserver-e2e] turn started: {:?}", turn.turn_id());
 
-    // Drain the push stream until turn/completed for this thread. This is
-    // the load-bearing assertion: a real model turn ran and the push
-    // notification arrived over the same client.
+    // The load-bearing assertion: a real model turn ran and the push notification arrived.
     let completed = drain_until_completed(&mut notifs, &thread_id, Duration::from_secs(180)).await;
     assert!(
         completed,
@@ -179,8 +131,7 @@ async fn appserver_client_drives_live_turn_and_second_client_resumes() {
     );
     eprintln!("[codex-appserver-e2e] PASS: turn/completed observed for {thread_id}");
 
-    // --- bonus: second connection resumes the SAME thread (rollout now
-    // exists on disk because turn #1 completed) ---
+    // Second connection resumes the SAME thread (a rollout exists on disk now that turn #1 completed).
     match CodexAppServer::connect(&sock).await {
         Ok((client2, _notifs2)) => {
             client2
@@ -202,8 +153,7 @@ async fn appserver_client_drives_live_turn_and_second_client_resumes() {
             eprintln!("[codex-appserver-e2e] PASS: second client resumed thread {thread_id}");
         }
         Err(e) => {
-            // The primary assertion already passed; a flaky second connect
-            // shouldn't fail the run, but report it.
+            // The primary assertion already passed; a flaky second connect must not fail the run.
             eprintln!("[codex-appserver-e2e] note: second connect failed: {e}");
         }
     }
@@ -212,9 +162,7 @@ async fn appserver_client_drives_live_turn_and_second_client_resumes() {
     let _ = child.kill().await;
 }
 
-/// Pull notifications until a `turn/completed` for `thread_id` arrives or
-/// `budget` elapses. Logs every turn/item method seen, mirroring the
-/// spike's per-turn notification list.
+/// Pull notifications until a `turn/completed` for `thread_id` arrives or `budget` elapses.
 async fn drain_until_completed(
     notifs: &mut calm_server::codex_appserver::NotificationStream,
     thread_id: &str,
@@ -248,7 +196,6 @@ async fn drain_until_completed(
                 }
                 _ => {}
             },
-            // Channel closed (connection dropped) or timed out.
             Ok(None) => return false,
             Err(_) => return false,
         }

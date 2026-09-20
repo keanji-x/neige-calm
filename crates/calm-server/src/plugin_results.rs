@@ -1,27 +1,5 @@
-//! #1669 §2.1 — the transient ring of plugin results the Planner's proxy
-//! calls produced, so `calm.source.capture` can vouch that a source body is
-//! exactly the text the kernel returned for one `(plugin, tool, args)` call.
-//!
-//! Keyed by `(track_id, plugin_id, tool_name, args_sha256)`; the plugin id
-//! and tool name are the *routed* ones (`plugin_tool_route`), never the
-//! spelling the model used. The value is one status per key —
-//! `Ok{text}` / `Error` / `NoText` / `TooLarge` — plus the canonical
-//! argument text and the completion time. **A new call on the same key
-//! replaces the old entry whatever its status** (I6), so a capture can never
-//! pick up a body that a later failed call superseded.
-//!
-//! Bounds: at most [`MAX_ENTRIES_PER_TRACK`] entries per track (LRU), at
-//! most [`MAX_TOTAL_BYTES`] of text + canonical args process-wide (oldest
-//! first), and a [`TTL_MS`] lifetime per entry. Eviction is **lazy** — it
-//! runs on insert and lookup; calm-server has no general sweep loop and
-//! this module starts no timer. Track deletion calls [`PluginResults::
-//! forget_track`] from the delete route's post-commit arm; an area-cascade
-//! delete never reaches that arm, and TTL covers it (track ids are never
-//! reused). The ring is process memory: a restart empties it.
-//!
-//! The recording point (`mcp_server/transport.rs`, the `kind: None` arm of
-//! `dispatch_plugin_tools_call`) records only Planner calls carrying a
-//! track (I4) and does not touch the value returned to the model.
+//! The transient ring of plugin results the Planner's proxy calls produced, so `calm.source.capture` can vouch a source body is exactly what the kernel returned for one `(plugin, tool, args)` call.
+//! A new call on the same key replaces the old entry whatever its status; eviction is lazy (on insert and lookup) and the ring is process memory.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
@@ -40,8 +18,7 @@ pub const MAX_TEXT_BYTES: usize = 1024 * 1024;
 /// Canonical args longer than this are not kept; the entry is `TooLarge`
 /// and a capture must spell `call.args` out.
 pub const MAX_ARGS_BYTES: usize = 64 * 1024;
-/// `origin.args_canon` in every stored source row: the canonicalization
-/// below, versioned so a future change can be told apart.
+/// Canonicalization version stored in every source row's `origin.args_canon`.
 pub const ARGS_CANON_VERSION: &str = "v1";
 
 /// What one recorded call produced.
@@ -93,11 +70,7 @@ pub fn registry_name(plugin_id: &str, tool_name: &str) -> String {
     format!("plugin.{plugin_id}_{tool_name}")
 }
 
-/// Canonical text of a `tools/call` `arguments` value: `serde_json`'s
-/// compact serialization. This crate does not enable `preserve_order`, so
-/// object keys are already sorted; numbers keep their JSON text (`1` and
-/// `1.0` differ), strings are not Unicode-normalized, arrays keep their
-/// order.
+/// Canonical text of a `tools/call` `arguments` value: `serde_json` compact serialization (keys sorted; `1` and `1.0` differ; no Unicode normalization).
 pub fn canonical_args(args: &Value) -> String {
     serde_json::to_string(args).unwrap_or_else(|_| "null".to_string())
 }
@@ -112,10 +85,7 @@ pub fn args_sha256(args: &Value) -> String {
     sha256_hex(canonical_args(args).as_bytes())
 }
 
-/// The status a `CallToolResult` records as, and the text it keeps. The
-/// joined length is checked block by block, so an oversized reply is
-/// refused as soon as the running total passes [`MAX_TEXT_BYTES`] — no
-/// temporary larger than the cap is ever built.
+/// The joined length is checked block by block, so no temporary larger than the cap is ever built.
 pub fn classify(result: &CallToolResult) -> ResultStatus {
     if result.is_error == Some(true) {
         return ResultStatus::Error;
@@ -157,10 +127,7 @@ struct Entry {
     status: ResultStatus,
     args_canonical: Option<String>,
     completed_at: i64,
-    /// Completion order, assigned once at record time and never rewritten:
-    /// breaks `completed_at` ties for "latest". Distinct from `lru_seq`,
-    /// which a lookup moves — "latest completed" must not become "last
-    /// accessed".
+    /// Completion order, assigned once and never rewritten; distinct from `lru_seq`, which a lookup moves.
     completed_seq: u64,
     /// Position in the process-wide LRU order; rewritten on every touch.
     lru_seq: u64,
@@ -235,9 +202,7 @@ impl PluginResults {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Record one completed proxy call. The caller has already decided the
-    /// call is a Planner's and carries a track (the recording point checks
-    /// the resolved identity); this function only stores.
+    /// Record one completed proxy call; the caller has already decided it is a Planner's and carries a track.
     pub fn record(
         &self,
         track_id: &str,
@@ -249,11 +214,7 @@ impl PluginResults {
         self.insert(track_id, plugin_id, tool_name, args, |_| classify(result));
     }
 
-    /// Record a proxy call that produced no `CallToolResult` at all — a
-    /// transport error, a reply that did not parse, a disconnect. The key
-    /// is known before the call, so the entry is replaced with `Error`
-    /// just like an `isError` reply would (I6): a later capture cannot
-    /// pick up the body of the call before it.
+    /// Record a proxy call that produced no `CallToolResult` at all: the entry is replaced with `Error` so a later capture cannot pick up the previous body.
     pub fn record_failure(&self, track_id: &str, plugin_id: &str, tool_name: &str, args: &Value) {
         self.insert(track_id, plugin_id, tool_name, args, |_| {
             ResultStatus::Error
@@ -506,8 +467,6 @@ mod tests {
         (ring, clock)
     }
 
-    // -- args_sha256 test vectors (§2.1) -------------------------------
-
     #[test]
     fn args_hash_is_key_order_independent() {
         let a = json!({ "b": 1, "a": [1, 2] });
@@ -553,8 +512,6 @@ mod tests {
         assert_ne!(args_sha256(&Value::Null), args_sha256(&json!({})));
     }
 
-    // -- classify ---------------------------------------------------------
-
     #[test]
     fn classify_joins_text_blocks_in_order_with_newlines() {
         let mut result = ok_result(&["第一段", "second"]);
@@ -596,8 +553,6 @@ mod tests {
             ResultStatus::Ok { .. }
         ));
     }
-
-    // -- ring -------------------------------------------------------------
 
     #[test]
     fn same_key_new_call_replaces_the_old_entry_whatever_its_status() {
@@ -651,9 +606,7 @@ mod tests {
         assert_eq!(latest.registry_name(), "plugin.p_tool");
     }
 
-    /// Two calls in the same millisecond, the older one looked up (an LRU
-    /// touch) after the newer one completed: "latest" is still the newer
-    /// call. A single counter serving both orders would answer A.
+    /// A single counter serving both completion and LRU order would answer A.
     #[test]
     fn latest_is_completion_order_not_last_access() {
         let (ring, _) = ring_with_clock();
@@ -664,9 +617,7 @@ mod tests {
         assert!(ring.get("t", "p", "tool", &args_sha256(&a)).is_some());
         let latest = ring.latest("t", "p", "tool").unwrap();
         assert_eq!(latest.args_canonical.as_deref(), Some(r#"{"id":"b"}"#));
-        // …while the LRU order is what the touches say: A touched last,
-        // so B is the least recently used entry and goes first under the
-        // per-track cap.
+        // A was touched last, so B is the least recently used and goes first under the per-track cap.
         assert!(ring.get("t", "p", "tool", &args_sha256(&a)).is_some());
         for i in 0..MAX_ENTRIES_PER_TRACK - 1 {
             ring.record("t", "p", "tool", &json!({ "fill": i }), &ok_result(&["x"]));

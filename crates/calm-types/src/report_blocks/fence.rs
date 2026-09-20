@@ -1,38 +1,18 @@
-//! #960 PR3 — the deterministic fenced flat representation of
-//! non-prose report blocks (design §3.5).
-//!
-//! A non-prose block appears in the flat `body` projection as a
-//! ```` ```neige-block <kind> ```` fence whose interior is the block's
-//! payload as **canonical JSON** (keys sorted bytewise, 2-space
-//! indent, scalar-only arrays inlined). The fence carries **no id and
-//! no rev** (design D9): the dispatcher fingerprints `body` with
-//! SHA256 and the VCS snapshot diffs it, so metadata would pollute
-//! both, while canonical pretty JSON turns parameter edits into
-//! line-level diffs.
-//!
-//! Read side is lenient: [`parse_fence`] only accepts a slice that is
-//! *exactly* one well-formed fence (unindented ```` ```neige-block
-//! <kind> ```` opener, a JSON **object** interior, an unindented
-//! ```` ``` ```` closer); anything else reads as prose. Write ends
-//! must reject malformed fences explicitly
-//! (`super::invalid_neige_fences`).
-//!
-//! [`render_fence`] ∘ [`parse_fence`] is idempotent: rendering a
-//! parsed payload reproduces the canonical fence byte for byte.
+//! The deterministic fenced flat representation of non-prose report blocks: a ```` ```neige-block <kind> ````
+//! fence whose interior is the payload as canonical JSON, carrying no id and no rev. Read side is lenient
+//! (anything but an exact well-formed fence reads as prose); [`render_fence`] ∘ [`parse_fence`] is idempotent.
 
 use serde_json::Value;
 
-/// A parsed `neige-block` fence: the block kind from the info string
-/// plus the JSON object payload.
+/// A parsed `neige-block` fence: the block kind from the info string plus the JSON object payload.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NonProseFence {
     pub kind: String,
     pub payload: Value,
 }
 
-/// `Some(kind)` iff `line` (ending-stripped or raw) is an unindented
-/// `neige-block` fence opener: exactly three backticks, the literal
-/// info word, one space, and a `[a-z0-9._-]+` kind token.
+/// `Some(kind)` iff `line` is an unindented `neige-block` fence opener: exactly three backticks, the
+/// literal info word, one space, and a `[a-z0-9._-]+` kind token.
 pub fn neige_open_kind(line: &str) -> Option<&str> {
     let kind = line.strip_prefix("```neige-block ")?;
     let kind = kind.strip_suffix('\n').unwrap_or(kind);
@@ -44,11 +24,8 @@ pub fn neige_open_kind(line: &str) -> Option<&str> {
     .then_some(kind)
 }
 
-/// Parse `raw` iff it is exactly one well-formed `neige-block` fence:
-/// opener line, a JSON **object** interior, and a bare ```` ``` ````
-/// closing line (final newline optional — a fence at EOF may lack it).
-/// Returns `None` for everything else — the caller treats the slice
-/// as prose (lenient read).
+/// Parse `raw` iff it is exactly one well-formed `neige-block` fence (final newline optional);
+/// `None` for everything else, which the caller treats as prose.
 pub fn parse_fence(raw: &str) -> Option<NonProseFence> {
     let (first_line, rest) = raw.split_once('\n')?;
     let kind = neige_open_kind(first_line)?;
@@ -68,19 +45,13 @@ pub fn parse_fence(raw: &str) -> Option<NonProseFence> {
     })
 }
 
-/// The canonical fence text for a non-prose block: what the CRDT
-/// stores in the block's `text` field and what the flat `body`
-/// projection therefore contains. Deterministic: byte-identical for
-/// semantically-equal payloads.
+/// The canonical fence text for a non-prose block: byte-identical for semantically-equal payloads.
 pub fn render_fence(kind: &str, payload: &Value) -> String {
     format!("```neige-block {kind}\n{}\n```\n", canonical_json(payload))
 }
 
-/// Deterministic pretty JSON: object keys sorted bytewise, 2-space
-/// indent, `": "` separators, arrays of scalars inlined on one line
-/// (so a candle row is one line and a parameter edit is a line-level
-/// diff), composite arrays and objects broken across lines. Idempotent
-/// under parse→render (serde_json numbers round-trip exactly).
+/// Deterministic pretty JSON: object keys sorted bytewise, 2-space indent, arrays of scalars inlined
+/// on one line, composite arrays and objects broken across lines.
 pub fn canonical_json(value: &Value) -> String {
     let mut out = String::new();
     write_value(value, 0, &mut out);
@@ -181,9 +152,7 @@ mod tests {
         let fence = parse_fence(raw).expect("well-formed fence parses");
         assert_eq!(fence.kind, "app");
         assert_eq!(fence.payload, json!({ "src": "/x" }));
-        // Final newline optional (fence at EOF).
         assert!(parse_fence("```neige-block app\n{\"src\": \"/x\"}\n```").is_some());
-        // CRLF interior tolerated (JSON whitespace).
         assert!(parse_fence("```neige-block app\r\n{\"src\": \"/x\"}\r\n```\r\n").is_some());
 
         for reject in [
@@ -202,7 +171,6 @@ mod tests {
 
     #[test]
     fn render_is_canonical_and_parse_render_round_trips() {
-        // Key order and formatting in the input do not matter.
         let a =
             json!({ "symbol": "0700.HK", "candles": [[1, 2.0, 3, 1, 2, 100], [2, 2, 4, 2, 3]] });
         let b: Value = serde_json::from_str(
@@ -215,7 +183,6 @@ mod tests {
             rendered,
             "```neige-block chart.candles\n{\n  \"candles\": [\n    [1, 2.0, 3, 1, 2, 100],\n    [2, 2, 4, 2, 3]\n  ],\n  \"symbol\": \"0700.HK\"\n}\n```\n",
         );
-        // Idempotence: parse the rendered fence, render again → same bytes.
         let parsed = parse_fence(&rendered).expect("canonical fence parses");
         assert_eq!(parsed.kind, "chart.candles");
         assert_eq!(render_fence(&parsed.kind, &parsed.payload), rendered);

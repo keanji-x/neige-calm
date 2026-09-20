@@ -1,13 +1,4 @@
-//! #1189 slice 3 — `POST`/`GET /api/tracks/{track_id}/conversations`.
-//!
-//! Owns the three gates the design assigns to this slice:
-//!
-//! * **G1** — the same `Idempotency-Key` retried lands on the same card.
-//! * **G2** — a `planner_card_id` the adapter did not derive itself is refused,
-//!   including one derived for a different track.
-//! * **G3** — the list returns assistant conversations and nothing else, on a
-//!   track populated with a planner card, a report card and a real codex worker
-//!   card.
+//! `POST`/`GET /api/tracks/{track_id}/conversations`: idempotency, derived-id refusal, and the list predicate.
 
 #![cfg(unix)]
 
@@ -108,10 +99,8 @@ async fn boot() -> Boot {
 }
 
 impl Boot {
-    /// A real, user-visible track — created through `POST /api/tracks`, so it
-    /// carries the planner card, the report card and the workspace a production
-    /// track has. G3 leans on that: a hand-rolled `track_create` would give the
-    /// predicate nothing to exclude.
+    /// A real, user-visible track through `POST /api/tracks`, so it carries the planner card, the report
+    /// card and the workspace a production track has.
     async fn create_track(&self, title: &str) -> String {
         let (status, body) = self
             .request(
@@ -181,9 +170,7 @@ impl Boot {
         .await
     }
 
-    /// A genuine codex worker card, minted through the production transaction
-    /// (`card_with_codex_create_tx`) rather than an INSERT — so it carries the
-    /// role, kind, payload and linked rows a dispatched worker really has.
+    /// A genuine codex worker card, minted through the production transaction rather than an INSERT.
     async fn mint_codex_worker_card(&self, track_id: &str) -> String {
         let card_id = calm_server::model::new_id();
         let mut tx = self.repo.pool().begin().await.unwrap();
@@ -211,10 +198,8 @@ impl Boot {
         card_id
     }
 
-    /// A codex card carrying only HALF of the `(role, marker)` pair the list
-    /// predicate requires — the shape production never mints (the mint writes
-    /// both halves from one `minted_card_shape` call) and therefore the shape a
-    /// predicate that dropped one conjunct would leak.
+    /// A codex card carrying only HALF of the `(role, marker)` pair the list predicate requires — the shape
+    /// a predicate that dropped one conjunct would leak.
     async fn mint_half_marked_card(&self, track_id: &str, role: CardRole, marker: &str) -> String {
         let card_id = calm_server::model::new_id();
         let mut tx = self.repo.pool().begin().await.unwrap();
@@ -264,24 +249,8 @@ impl Boot {
         .unwrap()
     }
 
-    /// How many copies of `needle` the assistant harness has actually been
-    /// handed.
-    ///
-    /// Counted at the harness, never at `harness.user_message.enqueued`. The
-    /// audit row is written by `prepare_tx` inside the mint transaction, which
-    /// commits in `TxCommitted` — *before* `AppServerInteract` can fail and
-    /// before any thread exists — so it is evidence that a delivery was
-    /// attempted and says nothing about whether one happened. Counting it would
-    /// answer the opposite of the question
-    /// `a_retry_after_a_failed_attempt_still_delivers_the_message` asks.
-    ///
-    /// Two places are summed because an observation may or may not have been
-    /// drained into a turn yet: turns already started on the fake app-server,
-    /// plus observations still queued on live harness handles. Substring
-    /// occurrences rather than entries, since adjacent `UserMessage`s fold into
-    /// one concatenated entry and counting entries would under-report a double
-    /// delivery. Polls, because the run loop drains on a background task, and
-    /// returns what it saw so a failing assertion reports the real number.
+    /// How many copies of `needle` the assistant harness has actually been handed, counted at the harness
+    /// (turns started plus observations still queued), never at `harness.user_message.enqueued`, which only says a delivery was attempted.
     async fn copies_in_harness(&self, needle: &str, want: usize) -> usize {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
@@ -335,12 +304,8 @@ impl Boot {
     }
 }
 
-/// The mint writes an ASSISTANT card, not a plain-chat worker card.
-///
-/// Every assertion here is one of the four things #1189 §4.2 says the
-/// hard-coded mint got wrong. They are asserted on the persisted row rather
-/// than on the response body because the row is what the authorization gate,
-/// the list predicate and the CARDS panel all read.
+/// Asserted on the persisted row rather than the response body: the row is what the authorization
+/// gate, the list predicate and the CARDS panel all read.
 #[tokio::test]
 async fn the_first_message_mints_an_assistant_card_with_its_own_marker_and_mcp_token() {
     let b = boot().await;
@@ -418,10 +383,7 @@ async fn the_first_message_mints_an_assistant_card_with_its_own_marker_and_mcp_t
     b.shutdown_harnesses().await;
 }
 
-/// **G1** — one `Idempotency-Key`, one conversation, however many retries.
-///
-/// The second POST must come back with the SAME card id and must not add a
-/// second assistant card to the track.
+/// One `Idempotency-Key`, one conversation, however many retries.
 #[tokio::test]
 async fn retrying_one_idempotency_key_lands_on_the_same_conversation() {
     let b = boot().await;
@@ -463,34 +425,8 @@ async fn retrying_one_idempotency_key_lands_on_the_same_conversation() {
     b.shutdown_harnesses().await;
 }
 
-/// #1314 — a retry after a failed attempt still delivers the message.
-///
-/// This is the one combination the migration onto the in-transaction seam
-/// creates, and it is a trap that reads as correct from the audit log:
-///
-/// * `prepare_tx` seeds the `Observation::UserMessage` and writes
-///   `harness.user_message.enqueued` in one transaction that commits in
-///   `TxCommitted`;
-/// * `AppServerInteract` can still fail afterwards, and it does here
-///   (`fail_next_thread_start_for_test`);
-/// * `plan_compensation` registers `delete_card` whenever `create_card.is_some()`
-///   — and the conversation route is exactly that case — so the card is removed;
-/// * `events` is append-only and compensation only marks the runtime failed, so
-///   the enqueued row stays, keyed by `(scope_track, scope_card)`;
-/// * the retry re-derives **the same card id** from the same `Idempotency-Key`.
-///
-/// So a retry that consulted `harness.user_message.enqueued` to decide whether
-/// to deliver would read a row about a message that never reached an agent, on
-/// a card that no longer exists, and silently drop the user's sentence forever.
-/// The assertion below is therefore made **at the harness**, not by counting
-/// audit rows — counting them would pass in exactly the broken world, which is
-/// what the mutation check confirmed: reinstating the suppression turns only
-/// this case red.
-///
-/// The three premises are asserted rather than assumed. Without them a green
-/// run could mean "the first attempt never failed", "the card was never
-/// deleted", or "there was no stale evidence to be fooled by", none of which
-/// exercise the hazard.
+/// `prepare_tx` writes `harness.user_message.enqueued` in the mint transaction, `AppServerInteract` can
+/// still fail afterwards and compensation deletes the card, so the audit row survives about a message that never reached an agent.
 #[tokio::test]
 async fn a_retry_after_a_failed_attempt_still_delivers_the_message() {
     const NEEDLE: &str = "do not lose this sentence";
@@ -564,13 +500,8 @@ async fn a_retry_after_a_failed_attempt_still_delivers_the_message() {
     b.shutdown_harnesses().await;
 }
 
-/// **G2** — the adapter mints only ids it derived itself.
-///
-/// Driven through `operation_runtime.submit`, not through the route, because
-/// the route always derives a correct id: the guard exists for anything that
-/// reaches the operation with a payload of its own choosing. Three shapes are
-/// covered, and they are the three the design names — a conjured id, an id
-/// derived under a different key, and an id derived for a different track.
+/// Driven through `operation_runtime.submit`, not through the route, because the route always derives
+/// a correct id.
 #[tokio::test]
 async fn a_planner_card_id_the_adapter_did_not_derive_is_refused() {
     use calm_server::operation::planner_harness_start_adapter::{
@@ -639,9 +570,7 @@ async fn a_planner_card_id_the_adapter_did_not_derive_is_refused() {
         "rejected for the wrong reason: {conjured}"
     );
 
-    // 2. A correctly derived id, presented with a DIFFERENT key. This is the
-    //    shape a plain "the id looks like a conversation id" check would let
-    //    through.
+    // 2. A correctly derived id, presented with a DIFFERENT key.
     let real_id = calm_server::conversation_keys::derive_track_conversation_card_id_for_test(
         &track_id,
         "idem-real",
@@ -658,8 +587,7 @@ async fn a_planner_card_id_the_adapter_did_not_derive_is_refused() {
         "rejected for the wrong reason: {mismatched}"
     );
 
-    // 3. An id derived for ANOTHER track, aimed at this one — the "pointing at
-    //    somebody else's track" case.
+    // 3. An id derived for ANOTHER track, aimed at this one.
     let foreign_id = calm_server::conversation_keys::derive_track_conversation_card_id_for_test(
         &other_track_id,
         "idem-real",
@@ -681,9 +609,7 @@ async fn a_planner_card_id_the_adapter_did_not_derive_is_refused() {
         "rejected for the wrong reason: {keyless}"
     );
 
-    // The positive control: the id the adapter itself derives is accepted, so
-    // the three refusals above are the guard talking and not some unrelated
-    // failure that would reject everything.
+    // The positive control: the id the adapter itself derives is accepted.
     assert!(
         submit(real_id, Some("idem-real".into()), track_id.clone())
             .await
@@ -702,20 +628,8 @@ async fn a_planner_card_id_the_adapter_did_not_derive_is_refused() {
     b.shutdown_harnesses().await;
 }
 
-/// **G3** — the list is assistant conversations and nothing else.
-///
-/// The track is deliberately crowded: `POST /api/tracks` leaves a planner card and a
-/// report card, and a real codex worker card is minted on top through the
-/// production transaction. A predicate widened to "a codex card on this track"
-/// picks up the planner card and the worker; one widened to "not a report card"
-/// picks up both as well.
-///
-/// The two half-marked decoys cover the remaining shape: the predicate is a
-/// CONJUNCTION of role and marker, and every decoy above is missing both halves,
-/// so dropping either conjunct leaves the list correct anyway. A card with the
-/// assistant role but a plain-chat marker fails if the marker conjunct goes; a
-/// card with the assistant marker but a worker role fails if the role conjunct
-/// goes.
+/// The track is deliberately crowded (planner card, report card, a real codex worker card, two
+/// half-marked decoys): the predicate is a CONJUNCTION of role and marker.
 #[tokio::test]
 async fn the_list_returns_assistant_conversations_and_nothing_else() {
     let b = boot().await;
@@ -801,17 +715,8 @@ async fn the_list_returns_assistant_conversations_and_nothing_else() {
     b.shutdown_harnesses().await;
 }
 
-/// #1722 S1b — `lastTurnCompletedAt` is the newest `turn/completed` transcript
-/// row that is not an interrupt, and `null` when the conversation has none.
-///
-/// The rows are written through `harness_turn_outcome_put`, the production
-/// writer, so the column and the `params` shape it reads (`status` at the turn
-/// object's root) are the ones the run loop persists. Their `created_at_ms`
-/// are then pinned to known instants — the writer stamps the clock, and the
-/// assertion needs the interrupt to be strictly later than the completion so
-/// that a subquery which forgot to exclude interrupts returns a different
-/// number, not the same one by coincidence of timing. `updatedAt` keeps its
-/// own meaning and is not asserted here.
+/// `lastTurnCompletedAt` is the newest non-interrupt `turn/completed` transcript row, `null` when none.
+/// The interrupt is pinned strictly later than the completion so a subquery that forgot to exclude interrupts returns a different number.
 #[tokio::test]
 async fn the_list_carries_the_last_non_interrupted_turn_completion() {
     let b = boot().await;
@@ -888,19 +793,8 @@ async fn the_list_carries_the_last_non_interrupted_turn_completion() {
     b.shutdown_harnesses().await;
 }
 
-/// `POST /api/cards/{id}/planner/reset` restarts an assistant under the ASSISTANT
-/// profile.
-///
-/// The arm in `routes::cards::reset_planner_harness_card` that selects
-/// `HarnessProfile::Assistant` had no caller in the suite: delete it and the
-/// card falls through to `HarnessProfile::Planner`, which `validate` refuses
-/// (`card ... is not a planner card`) — so the assertions below are the reset arm
-/// itself, not incidental coverage.
-///
-/// Both halves of the card's identity are re-read afterwards because reset
-/// re-enters the start adapter: a restart that rewrote the role or the marker
-/// would leave a card the list predicate or the authorization gate no longer
-/// recognises.
+/// `POST /api/cards/{id}/planner/reset` restarts an assistant under the ASSISTANT profile; both halves
+/// of the card's identity are re-read afterwards because reset re-enters the start adapter.
 #[tokio::test]
 async fn resetting_an_assistant_conversation_restarts_it_under_its_own_profile() {
     let b = boot().await;
@@ -916,10 +810,8 @@ async fn resetting_an_assistant_conversation_restarts_it_under_its_own_profile()
             .fetch_one(b.repo.pool())
             .await
             .unwrap();
-    // Captured BEFORE the reset. A one-sided "the assistant did not become the
-    // root" assertion also passes when reset clears `root_session_id` to NULL,
-    // which loses the planner card's root just as thoroughly, so the post-condition
-    // below is equality against this value, not absence of the assistant.
+    // Captured BEFORE the reset: a reset that clears `root_session_id` to NULL loses the planner card's root
+    // just as thoroughly, so the post-condition is equality against this value.
     let root_before: Option<String> =
         sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id = ?1")
             .bind(&track_id)
@@ -956,9 +848,8 @@ async fn resetting_an_assistant_conversation_restarts_it_under_its_own_profile()
         Some("assistant"),
         "reset must not rewrite the conversation's marker"
     );
-    // The profile actually taken, observed rather than asserted about: the Planner
-    // arm writes a `SharedPlanner` session, which is `WorkerContract::Planner` and
-    // takes over `tracks.root_session_id`.
+    // The profile actually taken: the Planner arm writes a `SharedPlanner` session, which takes over
+    // `tracks.root_session_id`.
     let contracts: Vec<String> =
         sqlx::query_scalar("SELECT contract FROM worker_sessions WHERE card_id = ?1")
             .bind(&card_id)
@@ -993,10 +884,8 @@ async fn resetting_an_assistant_conversation_restarts_it_under_its_own_profile()
             .any(|id| root_after.as_deref() == Some(id.as_str())),
         "the reset assistant displaced the planner card as the track's root session"
     );
-    // A reset is a hard restart: a new thread, and the card still listed.
-    // Ordered explicitly: reset supersedes the old row and starts a new one, so
-    // "the live session" is the newest active row, not whatever sqlite happens
-    // to return first.
+    // A reset is a hard restart: a new thread, and the card still listed. Ordered explicitly: "the live
+    // session" is the newest active row.
     let thread_after: Option<String> = sqlx::query_scalar(
         "SELECT thread_id FROM worker_sessions WHERE card_id = ?1 \
            AND state IN ('starting','running','idle','turn_pending') \

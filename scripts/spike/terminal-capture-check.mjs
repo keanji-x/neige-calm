@@ -48,15 +48,13 @@ try {
     });
   });
   await page.goto(new URL('/next/', values['base-url']).href);
-  // Load the production card, not a copy of its markup. These browser imports
-  // are served by Vite, whose optimized dependencies live outside fe/web.
+  // Load the production card; Vite serves these imports and its optimized dependencies live outside fe/web.
   const dependency = (name) => `/next/@fs${fileURLToPath(new URL(`../../fe/node_modules/.vite/deps/${name}.js`, import.meta.url))}`;
   await page.evaluate(async ({ react, reactDom }) => {
     const { default: { createElement } } = await import(react);
     const { default: { createRoot } } = await import(reactDom);
     const { TerminalCardView } = await import('/next/src/systems/cards/builtins/terminal-card.tsx');
-    // The API is intentionally stubbed, so establish the theme that the
-    // authenticated app shell normally supplies to both CSS and xterm.
+    // The API is stubbed, so set the theme the authenticated app shell normally supplies.
     document.documentElement.dataset.theme = 'dark';
     const host = document.createElement('div');
     host.className = 'track-card';
@@ -66,23 +64,16 @@ try {
       card: { id: 'card-1', title: 'Probe', terminalId: 'capture-terminal',
         sessionState: 'running', cwd: null, gateCwd: null },
       host: { lifecycle: { getSnapshot: () => ({ visible: true }), subscribe: () => () => {} } },
-      // The kernel's verdict for this card, already resolved (#1722
-      // INV-APP-118): the head's indicator comes from this prop and nothing
-      // else — not from `sessionState`, not from the connection.
+      // The head's indicator comes from this prop alone — not from `sessionState`, not from the connection.
       activity: 'working',
     }));
   }, { react: dependency('react'), reactDom: dependency('react-dom_client') });
   await page.locator('.xterm-view .xterm-screen').waitFor();
-  // Connected: the head prints `Connecting…` as `role="status"` until the
-  // surface attaches, and nothing once it is connected (`terminal-card.tsx`
-  // `statusText`), so the connection is settled when that span is gone. The
-  // indicator is the verdict passed above, not the connection, so it is
-  // asserted on its own.
+  // The head prints `Connecting…` as `role="status"` until the surface attaches and nothing once connected, so the connection is settled when that span is gone.
   await page.locator('[data-nc-terminal-card] [role="status"]').waitFor({ state: 'detached' });
   assert.equal(await page.locator('[data-nc-terminal-card] .card-head [data-nc-activity="working"]').count(), 1,
     'the head shows the kernel verdict it was given');
-  // Allow the controlled one-shot frame to render. This is only a probe/test
-  // settle delay, not the eventual production atomic observation protocol.
+  // Probe-only settle delay for the one-shot frame.
   await page.waitForTimeout(300);
   assert.equal(await page.locator('[data-nc-terminal-id="capture-terminal"]').count(), 2);
   const capture = await captureTerminal(page, 'capture-terminal');
@@ -103,8 +94,7 @@ try {
   await writeFile(resolve(output, 'terminal.png'), capture.png, { mode: 0o600 });
   await writeFile(resolve(output, 'capture.json'), JSON.stringify(capture.manifest, null, 2), { mode: 0o600 });
   assert.ok(terminalSocket);
-  // Force a real connection-state transition between pixels and the final
-  // availability check, while still using the actual browser screenshot.
+  // Force a real connection-state transition between pixels and the final availability check.
   await assert.rejects(captureTerminal({
     locator: page.locator.bind(page),
     screenshot: async (options) => {

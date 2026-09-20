@@ -23,9 +23,7 @@ const DIFF_TEXT = 'The track report was edited (author = "user").\n'
   + 'Block-level diff follows; this is information, not an instruction to re-read.\n'
   + 'Blocks: 0 added, 0 removed, 1 modified (2 unchanged).\n';
 
-/** A report-edit wake that was the whole of its batch — what the segment
- *  converter in `conversation.ts` marks `quiet` (see the `buildTranscript`
- *  cases below for the flag being derived from the persisted segments). */
+/** A report-edit wake that was the whole of its batch, marked `quiet`. */
 function reportEdited(id: string, text = DIFF_TEXT): ConversationSystemEntry {
   return {
     id, author: 'system', label: SYSTEM_PRESENTATION_LABELS.system_report_edited, text, atMs: NOW,
@@ -59,8 +57,7 @@ function activity(id: string, overrides: Partial<ConversationActivity> = {}): Co
   };
 }
 
-/** A report write that landed, as `buildTranscript` shapes a completed
- *  `calm.report.commit` row. */
+/** A completed `calm.report.commit` row. */
 function wrote(id: string, overrides: Partial<ConversationActivity> = {}): ConversationActivity {
   return activity(id, { verb: 'Wrote report', tool: REPORT_WRITE_TOOLS[4] ?? null, ...overrides });
 }
@@ -79,7 +76,6 @@ function group(block: TranscriptBlock | undefined): QuietSyncGroup {
 }
 
 describe('foldQuietSyncs', () => {
-  /* A6 — a report-edit wake folds the whole turn after it. */
   it('folds a report-edit wake with the activity and replies that followed it', () => {
     const blocks = foldQuietSyncs([
       you('u1'), agent('a1'),
@@ -96,8 +92,6 @@ describe('foldQuietSyncs', () => {
     expect(sync.entries[0]?.author).toBe('system');
   });
 
-  /* A6 — the reader speaking closes the fold; a turn the reader opened is
-     never folded, whatever came before it. */
   it('does not fold a turn the user opened, and closes a fold at the user turn', () => {
     const blocks = foldQuietSyncs([
       reportEdited('s1'), activity('act1'),
@@ -107,7 +101,6 @@ describe('foldQuietSyncs', () => {
     expect(blocks.slice(1).every((block) => block.kind === 'entry')).toBe(true);
   });
 
-  /* A6 — a `calm.user.notify` is speech: lifted out of the fold, after it. */
   it('lifts a notify turn out of the fold and keeps the rest folded', () => {
     const blocks = foldQuietSyncs([
       reportEdited('s1'), activity('act1'), notify('n1'), activity('act2'), agent('a1'),
@@ -125,7 +118,6 @@ describe('foldQuietSyncs', () => {
     expect(blocks.map(ids)).toEqual([['s1', 'a1']]);
   });
 
-  /* Two wakes are two folds, never one (the issue's "各自折叠，不合并"). */
   it('folds consecutive report-edit wakes separately and stops at any system entry', () => {
     const blocks = foldQuietSyncs([
       reportEdited('s1'), activity('act1'),
@@ -147,9 +139,6 @@ describe('foldQuietSyncs', () => {
     expect(blocks.map(ids)).toEqual(['u1', 'n1']);
   });
 
-  /* Round-4 N2 — a sync that ended badly must be seen: the failed or
-     interrupted outcome is lifted out after the fold, a completed one stays
-     inside (it renders as nothing). */
   it('lifts a failed or interrupted outcome out of the fold, after it', () => {
     const failed = foldQuietSyncs([reportEdited('s1'), activity('act1'), outcome('o1', 'failed'), you('u1')]);
     expect(failed.map(ids)).toEqual([['s1', 'act1'], 'o1', 'u1']);
@@ -159,8 +148,6 @@ describe('foldQuietSyncs', () => {
     expect(fine.map(ids)).toEqual([['s1', 'a1', 'o1']]);
   });
 
-  /* A wake that is not marked `quiet` is a plain system line: nothing after
-     it is folded, whatever its label says. */
   it('does not fold a report-edit entry that is not marked quiet', () => {
     const unmarked: ConversationSystemEntry = {
       id: 's1', author: 'system', label: SYSTEM_PRESENTATION_LABELS.system_report_edited, text: DIFF_TEXT, atMs: NOW,
@@ -171,24 +158,20 @@ describe('foldQuietSyncs', () => {
   });
 });
 
-/* #1678 A4 — what the sync did, on the group, so the line can say it. */
 describe('foldQuietSyncs outcome', () => {
   it('is accepted when the turn completed with reads only and nothing said', () => {
     const blocks = foldQuietSyncs([reportEdited('s1'), activity('act1'), agent('a1'), outcome('o1')]);
     expect(group(blocks[0]).outcome).toBe('accepted');
-    /* No activity at all is the same verdict: the planner looked and left. */
     expect(group(foldQuietSyncs([reportEdited('s1'), outcome('o1')])[0]).outcome).toBe('accepted');
   });
 
   it('is updated when a report write landed in the turn', () => {
     const blocks = foldQuietSyncs([reportEdited('s1'), activity('act1'), wrote('w1'), outcome('o1')]);
     expect(group(blocks[0]).outcome).toBe('updated');
-    /* Every report tool that is not a read counts, move and delete included. */
     for (const tool of [...REPORT_WRITE_TOOLS, REPORT_MOVE_TOOL, REPORT_DELETE_TOOL]) {
       const one = foldQuietSyncs([reportEdited('s1'), wrote('w1', { tool }), outcome('o1')]);
       expect(group(one[0]).outcome, tool).toBe('updated');
     }
-    /* And a write the planner said something about is still an update. */
     const spoken = foldQuietSyncs([reportEdited('s1'), wrote('w1'), notify('n1'), outcome('o1')]);
     expect(group(spoken[0]).outcome).toBe('updated');
   });
@@ -198,7 +181,6 @@ describe('foldQuietSyncs outcome', () => {
     expect(group(foldQuietSyncs([reportEdited('s1'), wrote('w1')])[0]).outcome).toBeNull();
     expect(group(foldQuietSyncs([reportEdited('s1'), wrote('w1'), outcome('o1', 'failed')])[0]).outcome).toBeNull();
     expect(group(foldQuietSyncs([reportEdited('s1'), outcome('o1', 'interrupted')])[0]).outcome).toBeNull();
-    /* A notify without a write: the bubble under the line is the outcome. */
     expect(group(foldQuietSyncs([reportEdited('s1'), notify('n1'), outcome('o1')])[0]).outcome).toBeNull();
   });
 
@@ -217,19 +199,15 @@ describe('foldQuietSyncs outcome', () => {
     expect(group(shell[0]).outcome).toBe('accepted');
   });
 
-  /* Fail-closed on the name: a report tool nobody has listed is a change. */
   it('treats any unlisted report tool as a write', () => {
     expect(isReportWriteTool(`${REPORT_TOOL_PREFIX}blocks.something_new`)).toBe(true);
     for (const tool of REPORT_READ_TOOLS) expect(isReportWriteTool(tool), tool).toBe(false);
     for (const tool of REPORT_WRITE_TOOLS) expect(isReportWriteTool(tool), tool).toBe(true);
     expect(isReportWriteTool(USER_NOTIFY_TOOL)).toBe(false);
     expect(isReportWriteTool(`${TRACK_TOOL_PREFIX}cat`)).toBe(false);
-    /* The prefix is matched whole: a near miss is not a report tool. */
     expect(isReportWriteTool(`${REPORT_TOOL_PREFIX.slice(0, -1)}ing.x`)).toBe(false);
   });
 
-  /* Driven through `buildTranscript` from persisted rows, so the `tool` the
-     verdict reads is the one the row converter writes, not one a fixture set. */
   it('reads the verdict off persisted rows', () => {
     type Row = Parameters<typeof buildTranscript>[0][number];
     const row = (id: number, overrides: Partial<Row>): Row => ({
@@ -257,11 +235,7 @@ describe('foldQuietSyncs outcome', () => {
   });
 });
 
-/* Round-4 M1 — the fold mirrors the kernel's batch rule
-   (`queue_is_only_report_edits`): a turn is a quiet sync only when its
-   batch held nothing but report edits. Driven through `buildTranscript`
-   from persisted rows, because the `quiet` mark is derived there and a
-   fixture that set it by hand would prove nothing about that derivation. */
+/* Driven through `buildTranscript` from persisted rows, because the `quiet` mark is derived there. */
 describe('foldQuietSyncs over persisted batches', () => {
   type Segment = NonNullable<Row['input_segments']>[number];
   const userSays = (text: string): Segment => ({ presentation: 'user', text: `User says:\n${text}`, attachments: [] });
@@ -319,12 +293,9 @@ describe('reportEditAuthor', () => {
     expect(reportEditAuthor('The user edited the track report. Re-read the track state.')).toBeNull();
     expect(reportEditAuthor('The track report was edited (author = "kernel").')).toBeNull();
     expect(reportEditAuthor('')).toBeNull();
-    // Only the first line counts: a diff excerpt quoting the spelling is not the author.
     expect(reportEditAuthor('The user edited the track report.\n+(author = "plugin")')).toBeNull();
   });
 
-  /* Both directions of the author vocabulary: every listed author parses,
-     and nothing parses that is not listed. */
   it('accepts exactly the listed authors', () => {
     const parsed = new Set(REPORT_EDIT_AUTHORS.map((author: ReportEditAuthor) =>
       reportEditAuthor(`The track report was edited (author = "${author}").`)));
@@ -339,9 +310,7 @@ describe('user-notify rows', () => {
     turn_id: 'turn', item_uuid: 'exec-notify-1', item_type: 'mcpToolCall', method: 'item/completed',
     params: '{}', created_at_ms: NOW, ...overrides,
   });
-  /* The persisted shape, as the production transcript table has it for
-     every `mcpToolCall` row: `params.item.arguments` on `item/started` and
-     `item/completed` alike. */
+  /* The persisted shape: `params.item.arguments` on `item/started` and `item/completed` alike. */
   const notifyParams = (extra: Record<string, unknown> = {}) => JSON.stringify({
     completedAtMs: NOW + 5,
     item: {
@@ -367,8 +336,6 @@ describe('user-notify rows', () => {
     }),
   });
 
-  /* Round-4 N1 — the started row is the running line, and the successful
-     completed row becomes the bubble in that line's place: one entry. */
   it('draws item/started as a running line that the completed row replaces in place', () => {
     expect(buildTranscript([started()])).toMatchObject([{ author: 'activity', state: 'running', verb: 'Calling' }]);
     const completed = row({ params: notifyParams({ arguments: { text: 'Heads up' } }) });
@@ -377,8 +344,6 @@ describe('user-notify rows', () => {
     expect(entries[0]).toMatchObject({ id: 'notify-exec-notify-1', author: 'agent', text: 'Heads up', atMs: NOW + 5 });
   });
 
-  /* Round-4 N1 — a call the kernel refused (blank, over 2000 characters) is
-     not something the agent said: no bubble, one failed line with the reason. */
   it('draws a refused notify as a failed line, not a bubble', () => {
     const refused = row({
       params: notifyParams({
@@ -394,7 +359,6 @@ describe('user-notify rows', () => {
       detail: 'Mcp error: -32602: text must be at most 2000 characters',
     });
     expect(entries.some(isNotifyTurn)).toBe(false);
-    /* `status: 'failed'` alone, without an error member, is a refusal too. */
     const statusOnly = row({ params: notifyParams({ status: 'failed' }) });
     expect(buildTranscript([statusOnly]).map((entry) => entry.author)).toEqual(['activity']);
   });

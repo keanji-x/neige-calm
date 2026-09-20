@@ -149,17 +149,8 @@ describe('sameTrackSearch', () => {
     expect(sameTrackSearch(location, 'w1', { card: 'c9' })).toEqual({ card: 'c9', from: 'pages' });
   });
 
-  /*
-   * §1.4's first row, and the one combination the two neighbours above miss:
-   * they cover a card that never parsed and a card being *set*, never a card
-   * being *cleared* off a URL that carries both.
-   *
-   * The card/panel exclusion belongs to the search this builds, not to the one
-   * it reads. Applied while reading, `?card=bad&panel=tasks` normalises to the
-   * card alone, and the bounce's `{ card: undefined }` then has no panel left
-   * to keep — the reader loses the panel they were in because a *different*
-   * parameter was unopenable.
-   */
+  /* The card/panel exclusion belongs to the search this builds, not the one it reads: normalising
+   * `?card=bad&panel=tasks` on read would leave the bounce's `{ card: undefined }` no panel to keep. */
   it('[#1191 §1.4] keeps the panel when the illegal-card bounce clears the card', () => {
     const location = { pathname: '/track/w1', searchStr: '?card=bad&panel=tasks&from=area' };
     expect(sameTrackSearch(location, 'w1', { card: undefined })).toEqual({ panel: 'tasks', from: 'area' });
@@ -189,13 +180,8 @@ describe('hasFilePushedMarker', () => {
   });
 });
 
-/*
- * The same six cells as its neighbour, for the same reason: history state is
- * whatever a previous version of this app, or a hand-edited session entry, left
- * behind, so the marker is read as an exact `true` and never as truthiness. A
- * `'true'` string arming the planner drawer would open a conversation and take the
- * caret on an ordinary visit (#1211 S2).
- */
+/* History state is whatever an older app version or a hand-edited entry left behind, so the marker is
+ * read as an exact `true`, never as truthiness. */
 describe('hasPlannerOpenMarker', () => {
   it('accepts only the exact marker', () => {
     expect(hasPlannerOpenMarker({ ncOpenPlanner: true })).toBe(true);
@@ -208,14 +194,8 @@ describe('hasPlannerOpenMarker', () => {
 });
 
 describe('renderedMobilePanel', () => {
-  /*
-   * The half of the desktop fix that no integration test can see: the route
-   * also clears `?panel=` from the URL in an effect, and effects flush inside
-   * `act`, so by the time jsdom can query the DOM the URL is already honest.
-   * A real browser paints that frame — with the desktop panel `inert` and
-   * `aria-hidden` behind a `display: none` mobile list — so the guard is
-   * asserted where it is decidable.
-   */
+  /* The route also clears `?panel=` in an effect that flushes inside `act`, so jsdom cannot see the
+   * frame a real browser paints; the guard is asserted where it is decidable. */
   it('[#1191] refuses to open a panel above the compact breakpoint', () => {
     expect(renderedMobilePanel('cards', { compact: false, overlayOpen: false })).toBeNull();
     expect(renderedMobilePanel('cards', { compact: true, overlayOpen: false })).toBe('cards');
