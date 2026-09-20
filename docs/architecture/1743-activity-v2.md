@@ -241,6 +241,7 @@ S1：与今天同形——全部 SELECT（含新增的 P 与 `archived_at` 列�
 - **G-11 codex 交互 TUI 被信号杀不铸 failed**：resumable 会话的 `ws.state` 留 `running`（K15），卡只是不再 working（退出门）；线程在 daemon 上仍可 `codex resume`。真要一个「TUI 没了」的红点需要第二个失败族（按终端行的 `signal_killed` 铸），规则 1 不加。
 - **G-12 安静后 ≤30 s 的 working 尾巴**：没有后沿臂（§4.3），有输出→安静由 tick 收；与 1722 G5 同类。
 - **G-13 落在 planner 轮中间的失败被那一轮老化**（红少）：任务在 t0 失败时 planner 轮 T1 在飞，`observe_envelope` 只入队（`harness/run_loop.rs:687-716`），`maybe_issue_turn` 要 `can_issue_turn()` 才排空（`:3688-3800`）⇒ 观察等到 T2；T1 在 t1 > t0 完成，feeder 写 P = t1 ⇒ `at_ms ≤ P` ⇒ 红只亮 t0..t1 就消失，T2 的 E1 之后亮一次 unread。4140：有转录覆盖的 4 条失败里 0 条落在轮内（`WITH f AS (failed, fa) , tc AS (planner turn/completed), ts AS (MIN item/started per turn) … ts.first_item_ms < f.fa AND tc.end_ms > f.fa` → 0/4），不是已观测缺陷。
+- **G-14 S2 的杀半截没跑时，收敛的是孤儿臂，它会删终端行**：§4.2 第 3 步写完 `exited` 之后第 4 步没有执行——写后出错（`terminal_get` / 重挂返回 `Err`）、写与杀之间内核重启、或 `ChildExited`（此次未取得 renderer）——会话行已 `exited`、终端行无退出记录、创建早过 60 s ⇒ 下一次孤儿扫描（`read.rs:952-985` 的谓词；#1701 的豁免只认**有**退出记录的 Terminal 卡行）走 `cleanup_terminal`：`reap_terminal_artifacts`（有 entry 则 TERM→KILL，reader 可能在这之间补上 `signal_killed=1`，否则 pid 兜底 SIGTERM）然后**删行** + `terminal.deleted`。对 Terminal 卡（4140 上 `8ab9cc27`）这正是 #1701 修掉的「卡指向空」形状——最终屏幕、scrollback、退出码随行一起没了；对 worker 卡则与今天正常退出后的处置相同（K18）。正常路径（`Alive` → reap → reader 写 `signal_killed=1`）保留行。不加固：这三种情形都是 S2 自己的失败分支，行删了卡还在，`observe` / `control release` 会失败（#1701 描述的形状）；要保行得给孤儿臂再加一条「已 `exited` 会话的终端行」豁免，那会让真正的残留永远留下。来自实现评审 r1（A）。
 
 ## 9. 不在范围
 
@@ -308,3 +309,5 @@ S5 `calm.task.ask`（砍掉：该状态在 4140 从未发生）；屏幕判定�
 ### 第四轮（v4 → v5）
 
 两通道 APPROVE（A: 0B/0M/2m，B: 0B/0M/1m）；三条 MINOR 折入 v5，不再开一轮。
+
+实现评审 r1（S1+S2，通道 A）另登记 §8 G-14：S2 的杀半截没跑时由孤儿臂收敛、终端行被删（Terminal 卡即 #1701 形状）——设计接受，不是代码缺陷。
