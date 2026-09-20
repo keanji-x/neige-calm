@@ -106,6 +106,22 @@ export type ClaudePermissionsScope = { edit?: Array<string>, bash?: Array<string
 export type ClaudePermissionsSource = "declared" | "track_policy" | "declared_within_policy";
 
 /**
+ * Why a Git delivery produced no candidate. Every value has exactly one producer (D2 code table).
+ */
+export type DeliveryFailureCode = "workspace_missing" | "provenance_mismatch" | "commit_failed" | "unresolved";
+
+/**
+ * How one Git delivery settled: a pinned candidate, or why none was minted.
+ */
+export type DeliverySettlement = { "kind": "candidate", candidate_id: string, commit_sha: string, base_sha: string, base_is_ancestor: boolean, } | { "kind": "failed", code: DeliveryFailureCode, reason: string, retry_allowed: boolean, };
+
+/**
+ * The wake disposition decided once in the settlement transaction and copied into the event.
+ * Only `DeferredToGate` is silent: `task.gate_result` carries that wake.
+ */
+export type DeliveryWakeReason = "failed" | "ungated_candidate" | "gate_already_terminal" | "deferred_to_gate";
+
+/**
  * Producer of a track-report edit. Existing variants are persisted wire values.
  */
 export type EditAuthor = "planner" | "user" | "assistant" | "kernel" | "plugin";
@@ -181,7 +197,7 @@ hook_idempotency_key: string,
 /**
  * Original Claude hook JSON, verbatim.
  */
-payload: unknown, } } | { "ev": "codex.worker_requested", "data": { idempotency_key: string, goal: string, context: unknown, acceptance_criteria?: string, agent_message?: string, } } | { "ev": "terminal.worker_requested", "data": { idempotency_key: string, cmd: string, cwd?: string, agent_message?: string, } } | { "ev": "task.completed", "data": { idempotency_key: string, result: unknown, artifacts: Array<ArtifactRef>, agent_message?: string, } } | { "ev": "task.failed", "data": { idempotency_key: string, reason: string, details?: unknown, agent_message?: string, } } | { "ev": "task.file_publication_settled", "data": { task_id: string, operation_id: string, } } | { "ev": "task.candidate_verification_settled", "data": { task_id: string, operation_id: string, } } | { "ev": "task.execution_settled", "data": { task_id: string, operation_id: string, } } | { "ev": "plan.updated", "data": { track_id: TrackId, changed_keys: Array<string>, agent_message?: string, } } | { "ev": "task.dispatched", "data": { idempotency_key: string, kind: string, agent_message?: string, } } | { "ev": "task.context_frozen", "data": { track_id: TrackId, task_key: string, idempotency_key: string, task_id: string, refs: Array<TaskContextRef>, doc_revs: { [key in string]: number }, truncated: boolean, } } | { "ev": "task.context_advanced", "data": { track_id: TrackId, task_key: string, task_id: string, changed_refs: Array<TaskContextChangedRef>, verdict: string, rationale: string, } } | { "ev": "workspace.leased", "data": { track_id: TrackId, card_id: CardId, lease_id: string, path: string, } } | { "ev": "workspace.released", "data": { track_id: TrackId, card_id: CardId, lease_id: string, } } | { "ev": "forge.pr.merged", "data": { track_id: TrackId, subject: ForgeMergeSubject, head_sha: string, merge_sha: string, } } | { "ev": "review.round", "data": { track_id: TrackId, subject: ReviewSubject, head_sha: string | null, n: number, cap: number, converged: boolean, channels: Array<ChannelVerdict>, root_cause: string | null, idempotency_key: string, } } | { "ev": "ratify.requested", "data": { track_id: TrackId, reason: string, } } | { "ev": "ratify.resolved", "data": { track_id: TrackId, decision: RatifyDecision, } } | { "ev": "proposal.submitted", "data": { track_id: TrackId, proposal_id: string, 
+payload: unknown, } } | { "ev": "codex.worker_requested", "data": { idempotency_key: string, goal: string, context: unknown, acceptance_criteria?: string, agent_message?: string, } } | { "ev": "terminal.worker_requested", "data": { idempotency_key: string, cmd: string, cwd?: string, agent_message?: string, } } | { "ev": "task.completed", "data": { idempotency_key: string, result: unknown, artifacts: Array<ArtifactRef>, agent_message?: string, } } | { "ev": "task.failed", "data": { idempotency_key: string, reason: string, details?: unknown, agent_message?: string, } } | { "ev": "task.file_publication_settled", "data": { task_id: string, operation_id: string, } } | { "ev": "task.candidate_verification_settled", "data": { task_id: string, operation_id: string, } } | { "ev": "task.git_delivery_settled", "data": { task_id: string, idempotency_key: string, track_id: TrackId, card_id: CardId, delivery_id: string, ordinal: number, result: DeliverySettlement, wake_reason: DeliveryWakeReason, } } | { "ev": "task.execution_settled", "data": { task_id: string, operation_id: string, } } | { "ev": "plan.updated", "data": { track_id: TrackId, changed_keys: Array<string>, agent_message?: string, } } | { "ev": "task.dispatched", "data": { idempotency_key: string, kind: string, agent_message?: string, } } | { "ev": "task.context_frozen", "data": { track_id: TrackId, task_key: string, idempotency_key: string, task_id: string, refs: Array<TaskContextRef>, doc_revs: { [key in string]: number }, truncated: boolean, } } | { "ev": "task.context_advanced", "data": { track_id: TrackId, task_key: string, task_id: string, changed_refs: Array<TaskContextChangedRef>, verdict: string, rationale: string, } } | { "ev": "workspace.leased", "data": { track_id: TrackId, card_id: CardId, lease_id: string, path: string, } } | { "ev": "workspace.released", "data": { track_id: TrackId, card_id: CardId, lease_id: string, } } | { "ev": "forge.pr.merged", "data": { track_id: TrackId, subject: ForgeMergeSubject, head_sha: string, merge_sha: string, } } | { "ev": "review.round", "data": { track_id: TrackId, subject: ReviewSubject, head_sha: string | null, n: number, cap: number, converged: boolean, channels: Array<ChannelVerdict>, root_cause: string | null, idempotency_key: string, } } | { "ev": "ratify.requested", "data": { track_id: TrackId, reason: string, } } | { "ev": "ratify.resolved", "data": { track_id: TrackId, decision: RatifyDecision, } } | { "ev": "proposal.submitted", "data": { track_id: TrackId, proposal_id: string, 
 /**
  * Submitting plugin, injected kernel-side from the callback connection (never trusted from plugin input).
  */
@@ -202,7 +218,15 @@ note: string,
  * Pending-scoped idempotency key: re-submits while pending return the original proposal id;
  * resolution releases the key.
  */
-idem_key: string, } } | { "ev": "proposal.resolved", "data": { track_id: TrackId, proposal_id: string, plugin_id: string, decision: ProposalDecision, } } | { "ev": "forge.scan.completed", "data": { track_id: TrackId, overlapping_prs: Array<number>, } } | { "ev": "forge.pr.opened", "data": { track_id: TrackId, pr_number: number, head_sha: string, } } | { "ev": "forge.pr.diff.read", "data": { track_id: TrackId, pr_number: number, base_sha: string, head_sha: string, artifact_path: string, } } | { "ev": "forge.pr.checks", "data": { track_id: TrackId, pr_number: number, conclusion: string, } } | { "ev": "forge.issue.read", "data": { track_id: TrackId, issue_number: number, artifact_path: string, } } | { "ev": "forge.issue.closed", "data": { track_id: TrackId, issue_number: number, } } | { "ev": "worktree.provisioned", "data": { track_id: TrackId, card_id: CardId, path: string, } } | { "ev": "worktree.committed", "data": { track_id: TrackId, card_id: CardId, commit_sha: string, branch: string, } } | { "ev": "worktree.removed", "data": { track_id: TrackId, card_id: CardId, path: string, } } | { "ev": "task.gate_result", "data": { task_id: string, idempotency_key: string, passed: boolean, failing_step?: string, exit_code?: number, log_tail: string, log_path: string, attempt: number, agent_message?: string, } };
+idem_key: string, } } | { "ev": "proposal.resolved", "data": { track_id: TrackId, proposal_id: string, plugin_id: string, decision: ProposalDecision, } } | { "ev": "forge.scan.completed", "data": { track_id: TrackId, overlapping_prs: Array<number>, } } | { "ev": "forge.pr.opened", "data": { track_id: TrackId, pr_number: number, head_sha: string, } } | { "ev": "forge.pr.diff.read", "data": { track_id: TrackId, pr_number: number, base_sha: string, head_sha: string, artifact_path: string, } } | { "ev": "forge.pr.checks", "data": { track_id: TrackId, pr_number: number, conclusion: string, } } | { "ev": "forge.issue.read", "data": { track_id: TrackId, issue_number: number, artifact_path: string, } } | { "ev": "forge.issue.closed", "data": { track_id: TrackId, issue_number: number, } } | { "ev": "worktree.provisioned", "data": { track_id: TrackId, card_id: CardId, path: string, } } | { "ev": "worktree.committed", "data": { track_id: TrackId, card_id: CardId, commit_sha: string, branch: string, 
+/**
+ * #1727 S4: set by the kernel delivery path only; absent on legacy auto-commits.
+ */
+delivery_id?: string, 
+/**
+ * #1727 S4: the delivery script's ancestry observation of `commit_sha` against the lease base.
+ */
+base_is_ancestor?: boolean, } } | { "ev": "worktree.removed", "data": { track_id: TrackId, card_id: CardId, path: string, } } | { "ev": "task.gate_result", "data": { task_id: string, idempotency_key: string, passed: boolean, failing_step?: string, exit_code?: number, log_tail: string, log_path: string, attempt: number, agent_message?: string, } };
 
 /**
  * Where an event lives in the area → track → card hierarchy.

@@ -431,6 +431,8 @@ pub(super) fn paths_changed_by_event(event: &Event, track_id: &TrackId) -> PathD
         | Event::TaskContextFrozen { .. }
         | Event::TaskContextAdvanced { .. }
         | Event::TaskExecutionSettled { .. } | Event::TaskCandidateVerificationSettled { .. } | Event::TaskFilePublicationSettled { .. } => {}
+        // #1727 S4: a Git delivery settlement is read back through `calm.plan.list`; no track-fs path.
+        Event::TaskGitDeliverySettled { .. } => {}
         // Operational history: persisted and replayable, no track-fs projection.
         Event::WorkspaceLeased { .. } | Event::WorkspaceReleased { .. } => {}
         Event::ForgePrMerged { .. }

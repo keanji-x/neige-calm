@@ -496,6 +496,42 @@ export const taskCandidateVerificationSettledSchema = z.object({
   data: z.object({ task_id: z.string(), operation_id: z.string() }),
 });
 
+/** #1727 S4: how one Git delivery settled — a pinned candidate or the kernel's failure classification. */
+export const deliverySettlementSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('candidate'),
+    candidate_id: z.string(),
+    commit_sha: z.string(),
+    base_sha: z.string(),
+    base_is_ancestor: z.boolean(),
+  }),
+  z.object({
+    kind: z.literal('failed'),
+    code: z.enum(['workspace_missing', 'provenance_mismatch', 'commit_failed', 'unresolved']),
+    reason: z.string(),
+    retry_allowed: z.boolean(),
+  }),
+]);
+
+/** The wake disposition the settlement transaction decided once; `deferred_to_gate` is the silent one. */
+export const deliveryWakeReasonSchema = z.enum([
+  'failed', 'ungated_candidate', 'gate_already_terminal', 'deferred_to_gate',
+]);
+
+export const taskGitDeliverySettledSchema = z.object({
+  ev: z.literal('task.git_delivery_settled'),
+  data: z.object({
+    task_id: z.string(),
+    idempotency_key: z.string(),
+    track_id: z.string(),
+    card_id: z.string(),
+    delivery_id: z.string(),
+    ordinal: z.number(),
+    result: deliverySettlementSchema,
+    wake_reason: deliveryWakeReasonSchema,
+  }),
+});
+
 export const taskExecutionSettledSchema = z.object({
   ev: z.literal('task.execution_settled'),
   data: z.object({
@@ -783,6 +819,9 @@ export const worktreeCommittedSchema = z.object({
     card_id: z.string(),
     commit_sha: z.string(),
     branch: z.string(),
+    /* #1727 S4: present only on kernel deliveries; legacy auto-commits carry neither. */
+    delivery_id: z.string().optional(),
+    base_is_ancestor: z.boolean().optional(),
   }),
 });
 
@@ -860,6 +899,7 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   taskExecutionSettledSchema,
   taskFilePublicationSettledSchema,
   taskCandidateVerificationSettledSchema,
+  taskGitDeliverySettledSchema,
   planUpdatedSchema,
   taskDispatchedSchema,
   taskContextFrozenSchema,
@@ -942,6 +982,7 @@ export type WorktreeProvisionedEvent = z.infer<typeof worktreeProvisionedSchema>
 export type WorktreeCommittedEvent = z.infer<typeof worktreeCommittedSchema>;
 export type WorktreeRemovedEvent = z.infer<typeof worktreeRemovedSchema>;
 export type TaskGateResultEvent = z.infer<typeof taskGateResultSchema>;
+export type TaskGitDeliverySettledEvent = z.infer<typeof taskGitDeliverySettledSchema>;
 
 export type WireEvent = z.infer<typeof wireEventSchema>;
 

@@ -9,6 +9,7 @@ pub mod enrollment;
 pub mod error;
 pub mod event;
 pub mod forge_git;
+pub mod git_candidate;
 pub mod harness;
 pub mod ids;
 pub mod mcp_connector;

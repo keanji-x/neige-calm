@@ -283,6 +283,7 @@ pub fn enforce_role(
         event,
         Event::TaskExecutionSettled { .. }
             | Event::TaskCandidateVerificationSettled { .. }
+            | Event::TaskGitDeliverySettled { .. }
             | Event::TaskFilePublicationSettled { .. }
     ) && !matches!(actor, ActorId::Kernel | ActorId::KernelDispatcher)
     {
@@ -1613,6 +1614,46 @@ mod tests {
             ActorId::Plugin("p".into()),
             ActorId::AiPlanner("p".into()),
             ActorId::AiCodex("w".into()),
+            ActorId::AiPlannerSession("p".into()),
+            ActorId::AiCodexSession("w".into()),
+        ] {
+            assert!(
+                enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc).is_err(),
+                "{actor:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn task_git_delivery_settled_is_kernel_only() {
+        use calm_types::git_candidate::{
+            DeliveryFailureCode, DeliverySettlement, DeliveryWakeReason,
+        };
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let event = Event::TaskGitDeliverySettled {
+            task_id: "a".into(),
+            idempotency_key: "a".into(),
+            track_id: TrackId::from("w"),
+            card_id: CardId::from("c"),
+            delivery_id: "d".into(),
+            ordinal: 1,
+            result: DeliverySettlement::Failed {
+                code: DeliveryFailureCode::Unresolved,
+                reason: "probe unknown".into(),
+                retry_allowed: true,
+            },
+            wake_reason: DeliveryWakeReason::Failed,
+        };
+        for actor in [ActorId::Kernel, ActorId::KernelDispatcher] {
+            enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc).unwrap();
+        }
+        for actor in [
+            ActorId::User,
+            ActorId::Plugin("p".into()),
+            ActorId::AiPlanner("p".into()),
+            ActorId::AiCodex("w".into()),
+            ActorId::AiClaude("w".into()),
             ActorId::AiPlannerSession("p".into()),
             ActorId::AiCodexSession("w".into()),
         ] {

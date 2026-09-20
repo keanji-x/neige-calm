@@ -137,6 +137,8 @@ impl Fixture {
             card_id: inner.card_id.clone(),
             commit_sha: "retained-commit".into(),
             branch: "completed-slice".into(),
+            delivery_id: None,
+            base_is_ancestor: None,
         };
         let scope = harness_event_scope(inner, "worktree.committed");
         let mut tx = self.repo.pool().begin().await.unwrap();

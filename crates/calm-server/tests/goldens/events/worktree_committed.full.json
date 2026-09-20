@@ -1,0 +1,14 @@
+{
+  "description": "worktree.committed with the #1727 S4 kernel-delivery fields present: delivery_id names the delivery row and base_is_ancestor is the script's ancestry observation (both skip_serializing_if, absent on legacy auto-commits — see worktree_committed.json).",
+  "wire": {
+    "ev": "worktree.committed",
+    "data": {
+      "track_id": "track-01",
+      "card_id": "card-01",
+      "commit_sha": "0123456789abcdef0123456789abcdef01234567",
+      "branch": "neige/track-01/card-01",
+      "delivery_id": "delivery-01",
+      "base_is_ancestor": true
+    }
+  }
+}

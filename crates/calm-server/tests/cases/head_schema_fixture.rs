@@ -49,6 +49,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0109_track_claude_permissions_policy.sql",
     "0110_database_identity_and_transcript_index.sql",
     "0111_workspace_lease_base.sql",
+    "0112_git_delivery_settled_event_version.sql",
 ];
 
 #[test]

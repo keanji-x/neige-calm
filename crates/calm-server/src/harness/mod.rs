@@ -834,6 +834,8 @@ mod tests {
                     card_id: verifying_worker.id.clone(),
                     commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
                     branch: "neige/replay/verify".into(),
+                    delivery_id: None,
+                    base_is_ancestor: None,
                 },
                 false,
             ),
