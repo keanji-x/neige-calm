@@ -1,5 +1,4 @@
-//! Orphan-terminal cleanup sweeper — **fallback** layer. See
-//! `docs/sync-engine-design.md` §10.
+//! See `docs/sync-engine-design.md` §10.
 //!
 //! ## Two-layer cleanup model (issue #197)
 //!
@@ -61,9 +60,7 @@
 //! and the sweeper was supposed to "catch the leak" — but in practice
 //! it had nothing to catch (the row was already gone) and the daemon
 //! process kept running until the next 30 s tick at best. That model
-//! was wrong; the design doc lied. Card / track / area delete now own
-//! their own teardown synchronously, and this sweeper exists only for
-//! crash-recovery / partial-write residue.
+//! was wrong; the design doc lied.
 //!
 //! ## Cleanup sequence per orphan
 //!
@@ -233,7 +230,8 @@ pub async fn sweep(state: &AppState) -> Result<()> {
                 worker_session_id = %session.id,
                 terminal_id = %session.terminal_id,
                 error = %e,
-                "terminal_sweeper: ending a completed-track session failed (retried next tick)"
+                "terminal_sweeper: ending a completed-track session failed (before the \
+                 exited write: retried next tick; after it: the orphan arm converges)"
             );
         }
     }
