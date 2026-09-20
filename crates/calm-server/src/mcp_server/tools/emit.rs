@@ -141,6 +141,7 @@ async fn task_complete(
     let artifacts: Vec<crate::event::ArtifactRef> = serde_json::from_value(artifacts_val)
         .map_err(|e| RpcError::invalid_params(format!("task_complete: invalid artifacts: {e}")))?;
 
+    let attempt_id = idempotency_key.clone();
     let event = Event::TaskCompleted {
         idempotency_key,
         result,
@@ -148,7 +149,15 @@ async fn task_complete(
         agent_message: None,
     };
     commit_worker_task_report_for_identity(&ctx, &identity, event).await?;
-    if let Err(error) = submit_worker_success_commit(&ctx, &identity).await {
+    // A delivery row (written by the report tx for a kernel-delivery lease) is submitted under its
+    // persisted key; no row is the legacy auto-commit, whose provider skip lives in that branch.
+    let submitted =
+        match crate::git_candidate::delivery::submit_reported_delivery(&ctx, &attempt_id).await {
+            Ok(true) => Ok(()),
+            Ok(false) => submit_worker_success_commit(&ctx, &identity).await,
+            Err(error) => Err(error),
+        };
+    if let Err(error) = submitted {
         tracing::warn!(
             card_id = %identity.card_id,
             track_id = identity.track_id.as_deref().unwrap_or("<missing>"),

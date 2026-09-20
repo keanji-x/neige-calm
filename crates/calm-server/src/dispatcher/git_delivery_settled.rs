@@ -2,9 +2,13 @@
 //!
 //! The event carries the settlement; the observation adds the two things only rows know: the
 //! task `key` the Planner addresses (looked up by `task_id`, like `task.gate_result`) and the
-//! lease worktree path while it still exists (`retained_path`, `None` once removed). Live push
-//! and boot catch-up share this one mapping. No tasks row, or a row on another track, means no
-//! observation — the same outcome the other row-backed settlement mappings produce.
+//! lease worktree path while it still exists (`retained_path`, `None` once removed, and `None`
+//! for a `workspace_missing` failure — the settlement's proof that the directory is gone, whatever
+//! path the lease row still names). Live push and boot catch-up share this one mapping. No tasks
+//! row, or a row on another track, means no observation — the same outcome the other row-backed
+//! settlement mappings produce.
+use calm_types::git_candidate::{DeliveryFailureCode, DeliverySettlement};
+
 use crate::db::{RepoEventWrite, write_in_tx_typed};
 use crate::error::Result;
 use crate::event::Event;
@@ -39,7 +43,15 @@ pub(crate) async fn observation(
             if task.track_id != track_id.as_str() {
                 return Ok(None);
             }
+            let workspace_missing = matches!(
+                &result,
+                DeliverySettlement::Failed {
+                    code: DeliveryFailureCode::WorkspaceMissing,
+                    ..
+                }
+            );
             let retained_path = match task.worker_card_id.as_deref() {
+                Some(_) if workspace_missing => None,
                 Some(worker_card_id) => {
                     crate::operation::workspace_lease::facts::worker_worktree_facts_tx(
                         tx,

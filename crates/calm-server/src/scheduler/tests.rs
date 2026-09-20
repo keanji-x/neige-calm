@@ -607,6 +607,7 @@ async fn sweep_running_claude_past_liveness_deadline_fails_and_releases_lease_ro
         write,
         Arc::downgrade(&runtime),
         Arc::new(Semaphore::new(1)),
+        std::env::temp_dir().join("neige-scheduler-test-gate-logs"),
     );
     scheduler.mark_boot_sweep_complete();
     scheduler.open_context_sweep_gate().await;
@@ -733,6 +734,7 @@ async fn running_timeout_race_lost_does_not_teardown_or_release_lease() {
         write,
         Weak::<OperationRuntime>::new(),
         Arc::new(Semaphore::new(1)),
+        std::env::temp_dir().join("neige-scheduler-test-gate-logs"),
     );
 
     scheduler.fail_running_liveness_timeout(snapshot).await;

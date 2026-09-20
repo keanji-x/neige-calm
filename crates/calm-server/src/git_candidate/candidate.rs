@@ -6,6 +6,8 @@
 //! is derived from events. `branch` is the script's one observation at its start and is for
 //! humans only; downstream readers use `commit_sha` / `ref_name` (G20).
 
+use std::path::Path;
+
 use serde_json::Value;
 use sqlx::Row;
 
@@ -13,6 +15,7 @@ use super::delivery::{DeliveryRow, candidate_ref_name};
 use crate::error::{CalmError, Result};
 use crate::operation::Tx;
 use crate::operation::workspace_lease::WorkspaceLease;
+use crate::workspace_materialize::neige_git_command;
 
 /// One `task_candidates` row.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -185,4 +188,36 @@ fn row_to_candidate(row: sqlx::sqlite::SqliteRow) -> Result<CandidateRow> {
         ref_name: row.try_get("ref_name")?,
         created_at_ms: row.try_get("created_at_ms")?,
     })
+}
+
+/// The commit `ref_name` resolves to in `git_common_dir` (the lease row's persisted value: the
+/// candidate ref lives in the common dir, and the Track cwd may have moved since — A6c).
+/// `Ok(None)` when git resolved nothing (the ref is absent); `Err` when git could not be run.
+pub(crate) async fn resolve_ref_commit(
+    git_common_dir: &Path,
+    ref_name: &str,
+) -> Result<Option<String>> {
+    let mut command = neige_git_command();
+    command
+        .arg(format!("--git-dir={}", git_common_dir.display()))
+        .args([
+            "rev-parse",
+            "--verify",
+            "-q",
+            &format!("{ref_name}^{{commit}}"),
+        ]);
+    let output = tokio::task::spawn_blocking(move || command.output())
+        .await
+        .map_err(|e| CalmError::Internal(format!("git rev-parse task: {e}")))?
+        .map_err(|e| {
+            CalmError::Internal(format!(
+                "spawn git rev-parse in {}: {e}",
+                git_common_dir.display()
+            ))
+        })?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let printed = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok((!printed.is_empty()).then_some(printed))
 }

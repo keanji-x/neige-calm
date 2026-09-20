@@ -5,7 +5,8 @@
 //! the same `operation_key`. Settlement writes the six settlement columns once, in one UPDATE
 //! guarded by `WHERE settlement IS NULL`; the migration's trigger is the backstop.
 
-use std::sync::LazyLock;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock};
 
 use calm_types::forge_git::{
     GIT_DELIVERY_OUTPUT_PROBE_SCRIPT, GIT_DELIVERY_PROBE_SCRIPT, GIT_DELIVERY_SCRIPT,
@@ -15,17 +16,23 @@ use calm_types::git_candidate::{DeliveryFailureCode, DeliveryWakeReason};
 use sqlx::Row;
 
 use super::candidate::CandidateRow;
+use crate::db::write_in_tx_typed;
 use crate::error::{CalmError, Result};
 use crate::event::{FieldSource, ForgeEventSpec};
+use crate::mcp_server::registry::AppContext;
 use crate::mcp_server::tools::emit::{GIT_FORGE_PLUGIN_ID, worker_delivery_payload};
-use crate::mcp_server::transport::PluginForgePayload;
+use crate::mcp_server::transport::{
+    ForgeActionSubmission, PluginForgePayload, submit_forge_action_with_key,
+};
 use crate::model::new_id;
-use crate::operation::Tx;
 use crate::operation::forge_action_adapter::{FORGE_ACTION_KIND, ForgeActionResultFile, ProbeSpec};
-use crate::operation::workspace_lease::facts::workspace_lease_by_id_tx;
+use crate::operation::workspace_lease::facts::{
+    LeaseStates, latest_workspace_lease_for_card_tx, workspace_lease_by_id_tx,
+};
 use crate::operation::workspace_lease::{
     DeliveryPolicy, WorkspaceLease, workspace_slice_branch_for,
 };
+use crate::operation::{OperationRuntime, Tx};
 
 /// Fixed sentences for a failed delivery, keyed by the script's exit code or the kernel's
 /// classification (`prompts/delivery/git-delivery-failures.md`). Rust only maps a code to a key.
@@ -267,6 +274,104 @@ pub(crate) async fn insert_initial_delivery_tx(
     .execute(&mut **tx)
     .await?;
     Ok(row)
+}
+
+/// The report transaction's hook (D2 "persistent hand-off"): a successful report of an attached
+/// attempt whose card holds an active kernel-delivery lease inserts the first delivery row in the
+/// same transaction as the task flip. Isolated attempts and legacy leases (`delivery_policy`
+/// NULL — a slice 1 lease, a plain directory op) insert nothing and keep today's path. `None`
+/// when no row was inserted.
+pub(crate) async fn insert_initial_delivery_if_kernel_tx(
+    tx: &mut Tx<'_>,
+    track_id: &str,
+    card_id: &str,
+    producer_attempt_id: &str,
+    now_ms: i64,
+) -> Result<Option<DeliveryRow>> {
+    if crate::isolated_codex::lookup::is_isolated_task_tx(tx, producer_attempt_id).await? {
+        return Ok(None);
+    }
+    let Some(lease) = latest_workspace_lease_for_card_tx(tx, card_id, LeaseStates::Active).await?
+    else {
+        return Ok(None);
+    };
+    if lease.delivery_policy != Some(DeliveryPolicy::Kernel) {
+        return Ok(None);
+    }
+    insert_initial_delivery_tx(tx, track_id, card_id, producer_attempt_id, &lease, now_ms)
+        .await
+        .map(Some)
+}
+
+/// Whether `attempt_id` has a delivery row — the pairing rule of `is_deferred_self_report`
+/// (the row is written in the same transaction as `task.completed` and is never deleted below
+/// a Track, so live push and replay read the same answer).
+pub(crate) async fn attempt_has_delivery(
+    pool: &sqlx::SqlitePool,
+    attempt_id: &str,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM task_git_deliveries WHERE producer_attempt_id = ?1)",
+    )
+    .bind(attempt_id)
+    .fetch_one(pool)
+    .await?)
+}
+
+/// Submit one delivery's forge action under the row's persisted `operation_key` (the one
+/// submission function, D2): the report handler and the scheduler's re-submission both come
+/// here, so the semantic hash and the key are equal and the runtime dedups the second call.
+pub(crate) async fn submit_delivery(
+    runtime: &Arc<OperationRuntime>,
+    gate_logs_dir: &Path,
+    delivery: &DeliveryRow,
+    lease: &WorkspaceLease,
+) -> Result<ForgeActionSubmission> {
+    let payload = forge_payload_for(delivery, lease)?;
+    submit_forge_action_with_key(
+        runtime,
+        gate_logs_dir,
+        GIT_FORGE_PLUGIN_ID,
+        delivery.track_id.clone(),
+        delivery.card_id.clone(),
+        PathBuf::from(&lease.path),
+        payload,
+        delivery.operation_key.clone(),
+    )
+    .await
+    .map_err(|error| CalmError::Internal(format!("delivery {}: {error}", delivery.delivery_id)))?
+    .map_err(|error| CalmError::Internal(format!("delivery {}: {error}", delivery.delivery_id)))
+}
+
+/// After the report transaction: read the attempt's delivery row back and submit it. `Ok(false)`
+/// when the attempt has no row (a failed first report, or no kernel-delivery lease) — the caller
+/// runs the legacy auto-commit; `Ok(true)` when the row was submitted.
+pub(crate) async fn submit_reported_delivery(
+    ctx: &Arc<AppContext>,
+    attempt_id: &str,
+) -> std::result::Result<bool, String> {
+    let attempt_id = attempt_id.to_string();
+    let found = write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            let Some(delivery) = delivery_latest_for_attempt_tx(tx, &attempt_id).await? else {
+                return Ok(None);
+            };
+            let lease = lease_for_delivery_tx(tx, &delivery).await?;
+            Ok(Some((delivery, lease)))
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    let Some((delivery, lease)) = found else {
+        return Ok(false);
+    };
+    let Some(runtime) = ctx.operation_runtime.get().cloned() else {
+        return Err("operation runtime not bound".into());
+    };
+    submit_delivery(&runtime, &ctx.gate_logs_dir, &delivery, &lease)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(true)
 }
 
 /// The lease row a delivery names, in whatever state it is now (the worker has usually released
@@ -546,6 +651,16 @@ pub(crate) fn classify_failure(
             true,
         ),
     }
+}
+
+/// The default arm of the code table with one detail line: the kernel could not prove what the
+/// delivery did (a result the ref does not confirm, a result event it cannot read).
+pub(crate) fn unresolved_failure(detail: &str) -> (DeliveryFailureCode, String, bool) {
+    (
+        DeliveryFailureCode::Unresolved,
+        format!("{}\n{detail}", failure_sentence("unresolved", None)),
+        true,
+    )
 }
 
 /// The stdout lines the script printed before exiting, cut to

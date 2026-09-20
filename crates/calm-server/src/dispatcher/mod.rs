@@ -186,10 +186,14 @@ pub(crate) fn event_warrants_planner_push_with_role(
     }
 }
 
-/// A worker self-report for a tasks row with `gate_json` set is not pushed — the planner hears
-/// `task.gate_result` instead. Not status-based: a fast gate can flip the row terminal before this
-/// read. A gated `task.failed` is pushed only when the failure landed pre-gate; lookup errors fail open.
-pub(crate) async fn is_gated_self_report(repo: &dyn crate::db::Repo, event: &Event) -> bool {
+/// A worker self-report whose wake is deferred to a later kernel event is not pushed: a
+/// `task.completed` whose attempt has a `task_git_deliveries` row (the kernel delivery settles it,
+/// `task.git_delivery_settled` wakes the planner; the row is written in the report transaction and
+/// never deleted below a Track, so live push and replay agree), and a report for a tasks row with
+/// `gate_json` set (the planner hears `task.gate_result` instead). Not status-based: a fast gate can
+/// flip the row terminal before this read. A gated `task.failed` is pushed only when the failure
+/// landed pre-gate; lookup errors fail open.
+pub(crate) async fn is_deferred_self_report(repo: &dyn crate::db::Repo, event: &Event) -> bool {
     let (idempotency_key, is_failure) = match event {
         Event::TaskCompleted {
             idempotency_key, ..
@@ -199,6 +203,15 @@ pub(crate) async fn is_gated_self_report(repo: &dyn crate::db::Repo, event: &Eve
         } => (idempotency_key, true),
         _ => return false,
     };
+    if !is_failure && let Some(pool) = repo.sqlite_pool() {
+        match crate::git_candidate::delivery::attempt_has_delivery(&pool, idempotency_key).await {
+            Ok(true) => return true,
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!(idempotency_key = %idempotency_key, error = %e, "dispatcher push: delivery-row lookup failed; consulting the gate rule (fail-open)")
+            }
+        }
+    }
     match repo.task_get(idempotency_key).await {
         Ok(Some(task)) => {
             if task.gate_json.is_none() {
@@ -632,6 +645,7 @@ impl Dispatcher {
             operation_runtime,
             permits,
             Scheduler::budget_from_env(crate::scheduler::DEFAULT_TRACK_TASK_BUDGET),
+            crate::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir(),
         )
     }
 
@@ -661,6 +675,7 @@ impl Dispatcher {
             operation_runtime,
             permits,
             Scheduler::budget_from_env(crate::scheduler::DEFAULT_TRACK_TASK_BUDGET),
+            crate::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir(),
         )
     }
 
@@ -706,6 +721,7 @@ impl Dispatcher {
             operation_runtime,
             permits,
             Scheduler::budget_from_env(crate::scheduler::DEFAULT_TRACK_TASK_BUDGET),
+            crate::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir(),
         )
     }
 
@@ -723,6 +739,7 @@ impl Dispatcher {
         operation_runtime: Arc<OperationRuntime>,
         permits: usize,
         task_budget_default: i64,
+        gate_logs_dir: PathBuf,
     ) -> Self {
         let permits = if permits == 0 {
             DEFAULT_PERMITS
@@ -736,6 +753,7 @@ impl Dispatcher {
             write.clone(),
             Arc::downgrade(&operation_runtime),
             Arc::clone(&semaphore),
+            gate_logs_dir,
             task_budget_default,
         );
         let context_monitor = Arc::new(TaskContextMonitor::new_with_metrics(
@@ -956,7 +974,7 @@ impl Inner {
             | Event::TaskGitDeliverySettled { .. }
             | Event::TaskExecutionSettled { .. } | Event::TaskCandidateVerificationSettled { .. } | Event::TaskFilePublicationSettled { .. } => {
                 if event_warrants_planner_push(&envelope.event, &envelope.actor, &self.write)
-                    && !is_gated_self_report(self.repo.as_ref(), &envelope.event).await
+                    && !is_deferred_self_report(self.repo.as_ref(), &envelope.event).await
                 {
                     if let Some(track_id) = envelope.scope.track_id().cloned() {
                         self.observe_harness(track_id, &envelope.event, envelope.id)

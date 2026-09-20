@@ -594,55 +594,55 @@ async fn gated_self_report_predicate() {
         details: None,
         agent_message: None,
     };
-    assert!(is_gated_self_report(&repo, &completed("gated")).await);
-    assert!(!is_gated_self_report(&repo, &completed("ungated")).await);
+    assert!(is_deferred_self_report(&repo, &completed("gated")).await);
+    assert!(!is_deferred_self_report(&repo, &completed("ungated")).await);
     assert!(
-        !is_gated_self_report(&repo, &completed("legacy-no-row")).await,
+        !is_deferred_self_report(&repo, &completed("legacy-no-row")).await,
         "legacy keys with no tasks row push as today"
     );
     assert!(
-        is_gated_self_report(&repo, &failed("gated")).await,
+        is_deferred_self_report(&repo, &failed("gated")).await,
         "stale task.failed while the gate is in flight (`verifying`) is suppressed"
     );
     assert!(
-        is_gated_self_report(&repo, &failed("gated-gate-failed")).await,
+        is_deferred_self_report(&repo, &failed("gated-gate-failed")).await,
         "late task.failed after the gate already failed the row is suppressed"
     );
     assert!(
-        is_gated_self_report(&repo, &failed("gated-done")).await,
+        is_deferred_self_report(&repo, &failed("gated-done")).await,
         "late task.failed after the gate already passed the row is suppressed"
     );
     assert!(
-        !is_gated_self_report(&repo, &failed("gated-worker-failed")).await,
+        !is_deferred_self_report(&repo, &failed("gated-worker-failed")).await,
         "a genuine pre-gate worker failure pushes as today (no gate runs on failure)"
     );
     assert!(
-        !is_gated_self_report(&repo, &failed("gated-spawn-failed")).await,
+        !is_deferred_self_report(&repo, &failed("gated-spawn-failed")).await,
         "a spawn failure pushes as today (no gate runs on failure)"
     );
     assert!(
-        !is_gated_self_report(&repo, &failed("gated-spawn-failed-reason")).await,
+        !is_deferred_self_report(&repo, &failed("gated-spawn-failed-reason")).await,
         "#1147 ①: the reason tail must not hide the `spawn-failed` classifier"
     );
     assert!(
-        is_gated_self_report(&repo, &failed("gated-gate-failed-reason")).await,
+        is_deferred_self_report(&repo, &failed("gated-gate-failed-reason")).await,
         "#1147 ①: a pre-gate word inside a `gate-*` reason tail must not \
          reclassify the row as a pre-gate failure"
     );
     assert!(
-        !is_gated_self_report(&repo, &failed("gated-worker-timeout")).await,
+        !is_deferred_self_report(&repo, &failed("gated-worker-timeout")).await,
         "a worker liveness timeout pushes as a pre-gate failure"
     );
     assert!(
-        !is_gated_self_report(&repo, &failed("ungated-failed")).await,
+        !is_deferred_self_report(&repo, &failed("ungated-failed")).await,
         "ungated failures keep today's behavior"
     );
     assert!(
-        !is_gated_self_report(&repo, &failed("legacy-no-row")).await,
+        !is_deferred_self_report(&repo, &failed("legacy-no-row")).await,
         "legacy task.failed keys with no tasks row push as today"
     );
     assert!(
-        !is_gated_self_report(
+        !is_deferred_self_report(
             &repo,
             &Event::TaskGateResult {
                 task_id: "w:gated".into(),
@@ -2903,11 +2903,11 @@ async fn settled_event_maps_to_observation_with_turn_text() {
         matches!(
             &observation,
             HarnessObservation::TaskGitDeliverySettled {
-                retained_path: Some(_),
+                retained_path: None,
                 ..
             }
         ),
-        "the lease row still carries the path: {observation:?}"
+        "the lease row still carries a path, the observation must not: {observation:?}"
     );
     let text = observation.to_turn_text();
     assert!(
@@ -3203,6 +3203,7 @@ async fn deferred_settlement_is_silent_live_and_on_replay() {
         write.clone(),
         std::sync::Weak::new(),
         Arc::clone(&semaphore),
+        std::env::temp_dir().join("neige-dispatcher-test-gate-logs"),
         crate::scheduler::DEFAULT_TRACK_TASK_BUDGET,
     );
     let context_monitor = Arc::new(TaskContextMonitor::new_with_metrics(

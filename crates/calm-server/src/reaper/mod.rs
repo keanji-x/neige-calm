@@ -501,7 +501,7 @@ pub(crate) async fn converge_dead_worker(
     let reason = reason.to_string();
     let result = write_with_actor_events_typed::<(), _>(repo, None, events, write, move |tx| {
         Box::pin(async move {
-            // The `spawn-failed` classifier is knowingly wrong here (a reaped worker died at RUNTIME); correcting the vocabulary has its own consumers (`is_gated_self_report`). The reason tail at least stops the row from lying silently.
+            // The `spawn-failed` classifier is knowingly wrong here (a reaped worker died at RUNTIME); correcting the vocabulary has its own consumers (`is_deferred_self_report`). The reason tail at least stops the row from lying silently.
             let rows = task_fail_from_worker_tx(
                 tx,
                 &task_id,

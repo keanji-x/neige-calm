@@ -543,6 +543,7 @@ impl Fx {
             self.write.clone(),
             Arc::downgrade(&runtime),
             Arc::new(tokio::sync::Semaphore::new(4)),
+            std::env::temp_dir().join("neige-test-gate-logs"),
         );
         (runtime, scheduler)
     }

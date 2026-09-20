@@ -7,11 +7,14 @@ use calm_types::task_execution::IsolatedCodexSelection;
 use calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE;
 use serde::Serialize;
 
-use super::candidate::CandidateRow;
-use super::delivery::{DeliveryRow, DeliverySettled};
+use super::candidate::{CandidateRow, candidate_for_attempt_tx};
+use super::delivery::{DeliveryRow, DeliverySettled, delivery_latest_for_attempt_tx};
 use crate::error::{CalmError, Result};
 use crate::model::{Task, TaskKind, TaskStatus};
-use crate::operation::workspace_lease::facts::WorkerWorktreeFacts;
+use crate::operation::Tx;
+use crate::operation::workspace_lease::facts::{
+    LeaseStates, WorkerWorktreeFacts, latest_workspace_lease_for_card_tx,
+};
 use crate::operation::workspace_lease::{DeliveryPolicy, WorkspaceLease};
 
 /// The `integrity.mismatches` entries the delivery derivation can name.
@@ -319,4 +322,35 @@ pub(crate) fn candidate_binding(
             task.id, lease.lease_id
         ))),
     }
+}
+
+/// `calm.plan.list.candidate` for one current attempt: the lease row of its worker card (the
+/// same latest row `facts` was derived from), the attempt's latest delivery row and candidate
+/// row for a kernel lease, then the two pure derivations. `facts` is the entry's `worktree`
+/// facts, read by the caller from the same card.
+pub(crate) async fn candidate_view_tx(
+    tx: &mut Tx<'_>,
+    task: &Task,
+    facts: Option<&WorkerWorktreeFacts>,
+) -> Result<CandidateBinding> {
+    let lease = match task.worker_card_id.as_deref() {
+        Some(card_id) => latest_workspace_lease_for_card_tx(tx, card_id, LeaseStates::Any).await?,
+        None => None,
+    };
+    let delivery = match lease.as_ref() {
+        Some(lease) if lease.delivery_policy == Some(DeliveryPolicy::Kernel) => {
+            let delivery = delivery_latest_for_attempt_tx(tx, &task.id).await?;
+            let candidate = candidate_for_attempt_tx(tx, &task.id).await?;
+            // Abandonment rows are slice 3: no producer exists yet.
+            Some(delivery_state(
+                task.status,
+                task.status_detail.as_deref(),
+                delivery.as_ref(),
+                candidate.as_ref(),
+                None,
+            ))
+        }
+        _ => None,
+    };
+    candidate_binding(task, lease.as_ref(), facts, delivery)
 }

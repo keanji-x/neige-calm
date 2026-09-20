@@ -69,6 +69,7 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
         boot.ctx.write.clone(),
         Arc::downgrade(&runtime),
         Arc::new(tokio::sync::Semaphore::new(1)),
+        boot.ctx.gate_logs_dir.clone(),
         1,
     );
     let source = r#"{"timeout_secs":-1}"#;

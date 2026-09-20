@@ -11,10 +11,8 @@
 //! Every write goes through a `begin_immediate_tx` transaction the caller owns; this module never
 //! begins one.
 //!
-//! PR-B 1/2 lands the rows, scripts and derivations with their own tests; PR-B 2/2 wires the
-//! report transaction, the scheduler settlement and `calm.plan.list` to them. Until then nothing
-//! outside this module and its tests calls in, hence the module-wide allowance below.
-#![allow(dead_code)]
+//! Wired in: the report transaction (`decision_sink`) inserts the delivery row, `calm.task.complete`
+//! and `scheduler::git_delivery` submit it, the scheduler settles it, `calm.plan.list` reads it.
 
 pub(crate) mod candidate;
 pub(crate) mod delivery;

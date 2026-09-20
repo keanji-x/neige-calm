@@ -52,24 +52,48 @@ pub(crate) async fn workspace_lease_by_id_tx(
     row.map(row_to_workspace_lease).transpose()
 }
 
+/// Which lease rows of a card a reader wants.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LeaseStates {
+    /// `held` or `releasing` — the lease a report transaction sees (the release runs after it).
+    Active,
+    /// Any state — the read surface after the worker released it.
+    Any,
+}
+
+/// The latest `workspace_leases` row of `card_id` among `states`, the row `worker_worktree_facts_tx`
+/// derives its facts from. `None` when the card holds no such lease.
+pub(crate) async fn latest_workspace_lease_for_card_tx(
+    tx: &mut Tx<'_>,
+    card_id: &str,
+    states: LeaseStates,
+) -> Result<Option<super::WorkspaceLease>> {
+    let state_filter = match states {
+        LeaseStates::Active => " AND state IN ('held','releasing')",
+        LeaseStates::Any => "",
+    };
+    let sql = format!(
+        "SELECT {WORKSPACE_LEASE_COLUMNS} FROM workspace_leases \
+         WHERE card_id = ?1{state_filter} ORDER BY created_at_ms DESC, lease_id DESC LIMIT 1"
+    );
+    let row = sqlx::query(&sql)
+        .bind(card_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    row.map(row_to_workspace_lease).transpose()
+}
+
 /// The latest `workspace_leases` row for `worker_card_id` (any state) joined with the latest
 /// `worktree.committed` event and the removed/provisioned ordering. `None` when the card never held a lease.
 pub(crate) async fn worker_worktree_facts_tx(
     tx: &mut Tx<'_>,
     worker_card_id: &str,
 ) -> Result<Option<WorkerWorktreeFacts>> {
-    let sql = format!(
-        "SELECT {WORKSPACE_LEASE_COLUMNS} FROM workspace_leases \
-         WHERE card_id = ?1 ORDER BY created_at_ms DESC, lease_id DESC LIMIT 1"
-    );
-    let row = sqlx::query(&sql)
-        .bind(worker_card_id)
-        .fetch_optional(&mut **tx)
-        .await?;
-    let Some(row) = row else {
+    let Some(lease) =
+        latest_workspace_lease_for_card_tx(tx, worker_card_id, LeaseStates::Any).await?
+    else {
         return Ok(None);
     };
-    let lease = row_to_workspace_lease(row)?;
     let committed: Option<String> = sqlx::query_scalar(
         r#"SELECT payload FROM events
            WHERE scope_card = ?1 AND kind = 'worktree.committed'
