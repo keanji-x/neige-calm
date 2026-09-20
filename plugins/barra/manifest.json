@@ -1,0 +1,69 @@
+{
+  "manifest_version": 3,
+  "id": "dev-neige-barra",
+  "version": "0.1.0",
+  "min_kernel_version": "0.0.1",
+  "display_name": "Barra-style US research",
+  "entrypoint": {"command": "run"},
+  "permissions": {"overlays_write": ["track"]},
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "prices_csv": {"type": "string", "default": "", "description": "Optional absolute path to an offline adjusted-close CSV (date, stocks, benchmark). Empty uses Yahoo Finance. No simulated fallback."}
+    },
+    "additionalProperties": false
+  },
+  "exposes_tools": [
+    {
+      "name": "barra.series",
+      "description": "Read already-computed daily research metrics in the current Track for native chart.series blocks. BARRA:Beta, BARRA:Momentum, BARRA:ResidualVol are window-cumulative factor regression coefficients in percentage points, NOT tradable strategy returns. BARRA:Forecast and BARRA:Realized21D are annualized volatility percentages; BARRA:EqualWeight is the study-start-100 gross equal-weight reference index. Only fields=[close], period=day. No market fetch or calculation is triggered. Frozen mode conservatively excludes the latest result date to honor the host's completion contract.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "series": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 8, "uniqueItems": true},
+          "fields": {"type": "array", "items": {"type": "string", "enum": ["close"]}, "minItems": 1, "maxItems": 1},
+          "period": {"type": "string", "enum": ["day"]},
+          "mode": {"type": "string", "enum": ["live", "frozen"]},
+          "start": {"type": "string"}, "as_of": {"type": "string"},
+          "deadline_ms": {"type": "integer"}
+        },
+        "required": ["series", "fields", "period", "mode", "start", "as_of", "deadline_ms"],
+        "additionalProperties": false
+      },
+      "annotations": {"title": "Barra research charts", "readOnlyHint": true, "openWorldHint": false}
+    },
+    {
+      "name": "barra.start",
+      "description": "Start or update a daily US price-factor study in the current Track. Beta, momentum and residual volatility only; NOT MSCI Barra. Defaults to a fixed illustrative 30-stock universe and SPY benchmark, with selection/survivorship bias. Queues an immediate calculation and future daily updates; the background worker downloads public Yahoo data. No trades or model-generated code. Configuration changes are refused during an active calculation. No Track id argument.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "symbols": {"type": "array", "items": {"type": "string"}, "minItems": 12, "maxItems": 40, "uniqueItems": true, "description": "US Yahoo ticker symbols, uppercase. All must have sufficient complete history."},
+          "benchmark": {"type": "string", "default": "SPY"},
+          "update_hour_utc": {"type": "integer", "minimum": 0, "maximum": 23, "default": 7},
+          "history_days": {"type": "integer", "minimum": 60, "maximum": 252, "default": 126}
+        },
+        "additionalProperties": false
+      },
+      "annotations": {"title": "Start Barra-style research", "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false}
+    },
+    {
+      "name": "barra.status",
+      "description": "Read the current Track's study configuration, phase, error and latest successful summary. Does not fetch market data. The output states data date and scope limitations.",
+      "input_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+      "annotations": {"title": "Research status", "readOnlyHint": true, "openWorldHint": false}
+    },
+    {
+      "name": "barra.refresh",
+      "description": "Queue one recalculation for the current Track. The background worker subsequently fetches data; this call only queues work. Concurrent refreshes coalesce. A stopped study must be started first.",
+      "input_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+      "annotations": {"title": "Refresh research", "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false}
+    },
+    {
+      "name": "barra.stop",
+      "description": "Disable daily updates for the current Track and clear pending work. A calculation already in progress may finish internally; if stopped before publication its output is discarded. Existing published results and files are retained.",
+      "input_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+      "annotations": {"title": "Stop research", "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false}
+    }
+  ]
+}

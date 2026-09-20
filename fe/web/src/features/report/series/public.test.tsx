@@ -46,6 +46,41 @@ function polylinePoints(container: HTMLElement): number[][][] {
 }
 
 describe('ReportSeriesBlock', () => {
+  it('shows absolute values for unpriced metric series, not misleading percentage returns', () => {
+    draw(ok([okEntry('METRIC:Score', [-0.04, 14.35], { currency: undefined })]));
+    const legend = screen.getByRole('list', { name: 'Series' }).textContent ?? '';
+    expect(legend).toContain('14.35');
+    expect(legend).not.toContain('%');
+    expect(legend).not.toContain('METRIC:');
+  });
+
+  it('keeps namespace identity when metric names collide', () => {
+    draw(ok([okEntry('METRIC:Score', [1, 2], { currency: undefined }),
+      okEntry('OTHER:Score', [3, 4], { currency: undefined })]));
+    const legend = screen.getByRole('list', { name: 'Series' }).textContent ?? '';
+    expect(legend).toContain('METRIC:Score');
+    expect(legend).toContain('OTHER:Score');
+  });
+
+  it('provides value and time axes and keeps technical metadata collapsed', () => {
+    const { container } = draw(ok([okEntry('METRIC:Score', [-2, 0, 2], { currency: undefined })]));
+    expect(container.textContent).toContain('-2.00');
+    expect(container.textContent).toContain('2.00');
+    expect(container.textContent).toContain('1970-01-01');
+    expect(container.querySelector('details')?.open).toBe(false);
+    expect(container.querySelector('details')?.textContent).toContain('resolved 2026-09-12');
+  });
+
+  it.each([[10_000, 10_040], [0.011, 0.014], [1.0001, 1.0009]])(
+    'keeps narrow-range axis ticks distinct between %s and %s', (low, high) => {
+      const { container } = draw(ok([okEntry('METRIC:Score', [low, high], { currency: undefined })]));
+      const labels = [...(container.querySelector('svg')?.previousElementSibling?.querySelectorAll('span') ?? [])]
+        .map((node) => node.textContent);
+      expect(labels).toHaveLength(5);
+      expect(new Set(labels).size).toBe(5);
+    },
+  );
+
   it('draws one polyline per ok series, none for a failed one', () => {
     const { container } = draw(ok([
       okEntry('US:NVDA', [118.2, 125, 101.4, 176.9]),

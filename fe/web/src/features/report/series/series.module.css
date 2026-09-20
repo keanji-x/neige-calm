@@ -58,10 +58,50 @@
     color: var(--text-3);
   }
 
-  .assets {
-    font-family: var(--font-mono);
-    font-size: var(--text-base);
-    color: var(--text);
+  .details {
+    margin-inline-start: auto;
+    max-inline-size: 100%;
+  }
+
+  .detailBody {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    padding-block: var(--space-3);
+    overflow-wrap: anywhere;
+    line-height: var(--leading-snug);
+  }
+
+  .plot {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    column-gap: var(--space-3);
+  }
+
+  .yAxis,
+  .xAxis {
+    display: flex;
+    justify-content: space-between;
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    color: var(--text-3);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .yAxis {
+    flex-direction: column;
+    padding-block: var(--space-5);
+    line-height: 1;
+  }
+
+  .xAxis {
+    grid-column: 2;
+    margin-block-end: var(--space-4);
+  }
+
+  .gridline {
+    stroke: var(--hairline);
+    stroke-width: 1;
   }
 
   .meta {
@@ -89,7 +129,7 @@
   .line {
     fill: none;
     stroke: currentColor;
-    stroke-width: 1.25;
+    stroke-width: 1.75;
   }
 
   /* MA overlays: the series' own hue, dashed, so the average reads as a
@@ -139,6 +179,7 @@
     display: inline-flex;
     align-items: center;
     gap: var(--space-2);
+    flex-wrap: wrap;
   }
 
   .legendAsset {
@@ -147,6 +188,12 @@
   }
 
   .legendMeta {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .legendValue {
+    color: var(--text);
+    font-weight: 600;
     font-variant-numeric: tabular-nums;
   }
 
