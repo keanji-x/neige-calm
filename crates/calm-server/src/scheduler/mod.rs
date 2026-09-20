@@ -3,6 +3,7 @@
 //! never reorders beyond `(priority DESC, created_at ASC, key ASC)`, never edits the plan.
 
 mod file_delivery;
+mod git_delivery;
 mod worker_failure;
 pub(crate) use worker_failure::fail_worker_task_tx;
 
@@ -481,6 +482,8 @@ pub struct Scheduler {
     /// Persisted running liveness window, resolved once from
     /// `NEIGE_TASK_RUN_TIMEOUT_SECS`.
     task_run_timeout: Duration,
+    /// Where a re-submitted git delivery's forge result files go (one value with the MCP context's).
+    gate_logs_dir: std::path::PathBuf,
     /// Per-track single-flight: exactly the push-locks pattern.
     track_locks: DashMap<TrackId, Arc<tokio::sync::Mutex<()>>>,
     /// Dirty flags — a trigger arriving mid-pass marks dirty and the
@@ -529,6 +532,7 @@ impl Scheduler {
         write: WriteContext,
         operation_runtime: Weak<OperationRuntime>,
         semaphore: Arc<Semaphore>,
+        gate_logs_dir: std::path::PathBuf,
     ) -> Arc<Self> {
         Self::new_with_timeouts(
             repo,
@@ -536,6 +540,7 @@ impl Scheduler {
             write,
             operation_runtime,
             semaphore,
+            gate_logs_dir,
             Self::task_run_timeout_from_env(),
             Self::budget_from_env(DEFAULT_TRACK_TASK_BUDGET),
         )
@@ -550,6 +555,7 @@ impl Scheduler {
         write: WriteContext,
         operation_runtime: Weak<OperationRuntime>,
         semaphore: Arc<Semaphore>,
+        gate_logs_dir: std::path::PathBuf,
         task_budget_default: i64,
     ) -> Arc<Self> {
         Self::new_with_timeouts(
@@ -558,6 +564,7 @@ impl Scheduler {
             write,
             operation_runtime,
             semaphore,
+            gate_logs_dir,
             Self::task_run_timeout_from_env(),
             task_budget_default,
         )
@@ -570,6 +577,7 @@ impl Scheduler {
         write: WriteContext,
         operation_runtime: Weak<OperationRuntime>,
         semaphore: Arc<Semaphore>,
+        gate_logs_dir: std::path::PathBuf,
         task_run_timeout: Duration,
     ) -> Arc<Self> {
         Self::new_with_timeouts(
@@ -578,17 +586,20 @@ impl Scheduler {
             write,
             operation_runtime,
             semaphore,
+            gate_logs_dir,
             task_run_timeout,
             Self::budget_from_env(DEFAULT_TRACK_TASK_BUDGET),
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn new_with_timeouts(
         repo: Arc<dyn Repo>,
         events: EventBus,
         write: WriteContext,
         operation_runtime: Weak<OperationRuntime>,
         semaphore: Arc<Semaphore>,
+        gate_logs_dir: std::path::PathBuf,
         task_run_timeout: Duration,
         task_budget_default: i64,
     ) -> Arc<Self> {
@@ -601,6 +612,7 @@ impl Scheduler {
             semaphore,
             budget_default: task_budget_default,
             task_run_timeout,
+            gate_logs_dir,
             track_locks: DashMap::new(),
             track_dirty: DashMap::new(),
             inflight: Arc::new(DashMap::new()),
@@ -951,6 +963,8 @@ impl Scheduler {
         };
         let tasks = self.repo.tasks_by_track(track_id.as_str()).await?;
         self.resume_candidate_allocations(track_id.as_str()).await?;
+        // Before the lifecycle gate: a delivery settles (and wakes the planner) on a Done track too.
+        self.resume_git_deliveries(track_id.as_str()).await?;
         self.drive_file_producers(&tasks);
         // Drive each `verifying` task's gate, fire-and-forget: a gate can run for hours and
         // must never block the track lock. Deliberately BEFORE the lifecycle gate: lifecycle
@@ -1839,6 +1853,8 @@ impl Scheduler {
                 Err(error) => tracing::warn!(%error, "candidate reservation sweep failed"),
             }
         }
+        // Unsettled git deliveries are the authoritative discovery, whatever the task status (F6.4).
+        pending_tracks.extend(self.unsettled_git_delivery_tracks().await);
         let tasks = match self.repo.tasks_nonterminal().await {
             Ok(tasks) => tasks,
             Err(e) => {

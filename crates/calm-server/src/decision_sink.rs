@@ -201,6 +201,19 @@ impl CardDecisionSink {
                                 "task {task_id}: admitted report did not advance the task"
                             )));
                         }
+                        // The kernel git delivery hand-off (#1727 S4 D2): the first delivery row lands in this
+                        // transaction when the card's active lease is a kernel-delivery lease; a REPEATED report
+                        // never reaches here, so a second `task.complete` never writes a second row.
+                        if success && rows == 1 {
+                            crate::git_candidate::delivery::insert_initial_delivery_if_kernel_tx(
+                                tx,
+                                track_id.as_str(),
+                                &worker_card_id,
+                                &task_id,
+                                now,
+                            )
+                            .await?;
+                        }
                     }
 
                     let mut events = vec![(actor, scope, event)];

@@ -382,6 +382,7 @@ fn build_scheduler_unbooted_with_timeouts(
             boot.write.clone(),
             Arc::downgrade(&runtime),
             semaphore,
+            std::env::temp_dir().join("neige-test-gate-logs"),
             task_run_timeout,
         )
     } else {
@@ -391,6 +392,7 @@ fn build_scheduler_unbooted_with_timeouts(
             boot.write.clone(),
             Arc::downgrade(&runtime),
             semaphore,
+            std::env::temp_dir().join("neige-test-gate-logs"),
         )
     };
     (runtime, scheduler)

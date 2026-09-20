@@ -1,1 +1,1 @@
-Report that a worker card has completed its task. `idempotency_key` should echo the kernel-provided task id so the planner card can correlate.
+Report that a worker card has completed its task. `idempotency_key` should echo the kernel-provided task id so the planner card can correlate. For a worker running in a kernel-provisioned git worktree, the kernel commits that worktree after this call and pins the result as a candidate; do not commit or switch branches yourself.

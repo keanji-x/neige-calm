@@ -784,19 +784,46 @@ pub(crate) async fn submit_forge_action(
     cwd_lease: PathBuf,
     payload: PluginForgePayload,
 ) -> Result<std::result::Result<ForgeActionSubmission, String>, RpcError> {
+    // A malformed payload is answered before the runtime is consulted (the pre-refactor order).
     validate_plugin_forge_payload(&payload)?;
 
     let Some(runtime) = ctx.operation_runtime.get().cloned() else {
         return Err(RpcError::internal("operation runtime not bound"));
     };
+    submit_forge_action_with_key(
+        &runtime,
+        &ctx.gate_logs_dir,
+        plugin_id,
+        track_id,
+        card_id,
+        cwd_lease,
+        payload,
+        new_id(),
+    )
+    .await
+}
+
+/// `submit_forge_action` with the caller's `operation_key`: a kernel delivery re-submits its persisted key.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn submit_forge_action_with_key(
+    runtime: &Arc<OperationRuntime>,
+    gate_logs_dir: &Path,
+    plugin_id: &str,
+    track_id: String,
+    card_id: String,
+    cwd_lease: PathBuf,
+    payload: PluginForgePayload,
+    operation_key: String,
+) -> Result<std::result::Result<ForgeActionSubmission, String>, RpcError> {
+    validate_plugin_forge_payload(&payload)?;
 
     let parked = payload.parked;
     let idempotency_key = format!("{plugin_id}:{track_id}:{card_id}:{}", payload.idem_key);
-    let result_path = forge_result_path(&ctx.gate_logs_dir, &idempotency_key)?;
+    let result_path = forge_result_path(gate_logs_dir, &idempotency_key)?;
     let deadline_ms = now_ms() + forge_deadline_ms(payload.parked);
 
     let key = OperationKey {
-        operation_key: new_id(),
+        operation_key,
         idempotency_key: Some(idempotency_key),
         payload_hash: semantic_payload_hash(&payload)?,
     };
@@ -968,7 +995,7 @@ async fn resolve_forge_cwd(
     }
 }
 
-fn semantic_payload_hash(payload: &PluginForgePayload) -> Result<String, RpcError> {
+pub(crate) fn semantic_payload_hash(payload: &PluginForgePayload) -> Result<String, RpcError> {
     let semantic = SemanticForgePayload {
         idem_key: &payload.idem_key,
         event_spec: payload.event_spec.as_ref(),

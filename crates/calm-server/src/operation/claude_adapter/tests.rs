@@ -818,3 +818,57 @@ mod recovery_tests;
 
 #[cfg(test)]
 mod launch_cleanup_tests;
+
+/// #1727 S4 slice 2 — the lease the claude worker's `prepare_tx` takes is a kernel-delivery
+/// lease (`delivery_policy = 'kernel'`, written in the same INSERT as its base); the
+/// fixtures-only plain lease stays NULL (legacy).
+#[tokio::test]
+async fn worker_lease_is_kernel_policy() {
+    let harness = claude_worker_harness().await;
+    let (prepared, _, _) = prepare_claude_worker(&harness, "kernel").await;
+    let card_id = prepared.output_string("card_id", "test").unwrap();
+    let lease_id: String =
+        sqlx::query_scalar("SELECT lease_id FROM workspace_leases WHERE card_id = ?1")
+            .bind(&card_id)
+            .fetch_one(harness.repo.pool())
+            .await
+            .unwrap();
+    let policy: Option<String> =
+        sqlx::query_scalar("SELECT delivery_policy FROM workspace_leases WHERE lease_id = ?1")
+            .bind(&lease_id)
+            .fetch_one(harness.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(policy.as_deref(), Some("kernel"));
+    let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
+    let lease =
+        crate::operation::workspace_lease::facts::workspace_lease_by_id_tx(&mut tx, &lease_id)
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(
+        lease.delivery_policy,
+        Some(crate::operation::workspace_lease::DeliveryPolicy::Kernel)
+    );
+    assert!(lease.base.is_some());
+
+    let plain_card = format!("{card_id}-plain");
+    let (plain, _event) = crate::operation::workspace_lease::acquire_plain_workspace_lease_tx(
+        &mut tx,
+        &plain_card,
+        &harness.track_id,
+        "op-plain",
+        &harness.workspace.path().join("plain-lease"),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(plain.delivery_policy, None);
+    let policy: Option<String> =
+        sqlx::query_scalar("SELECT delivery_policy FROM workspace_leases WHERE card_id = ?1")
+            .bind(&plain_card)
+            .fetch_one(harness.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(policy, None, "the plain fixture lease is legacy");
+}

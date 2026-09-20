@@ -873,6 +873,7 @@ async fn every_lease_reader_returns_base_and_policy() {
                     .unwrap();
             tx.commit().await.unwrap();
             assert_eq!(lease.base.as_ref(), Some(&base));
+            assert_eq!(lease.delivery_policy, Some(DeliveryPolicy::Kernel));
             (card_id, lease)
         }
     };
@@ -917,6 +918,16 @@ async fn every_lease_reader_returns_base_and_policy() {
         .unwrap()
         .expect("held row by id");
     assert!(by_id.base.is_some(), "by-id read carries the base");
+    assert_eq!(by_id.delivery_policy, Some(DeliveryPolicy::Kernel));
+    // 8. by-id in any state: `facts::workspace_lease_by_id_tx` (the delivery hand-off's reader).
+    let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+    let any_state = facts::workspace_lease_by_id_tx(&mut tx, &lease_by_id.lease_id)
+        .await
+        .unwrap()
+        .expect("row by id in any state");
+    tx.commit().await.unwrap();
+    assert_eq!(any_state.delivery_policy, Some(DeliveryPolicy::Kernel));
+    assert!(any_state.base.is_some());
     assert!(
         crate::test_seams::release_workspace_lease_by_id_for_test(
             repo.pool(),
@@ -953,6 +964,11 @@ async fn every_lease_reader_returns_base_and_policy() {
         "boot + facts leases are the active rows"
     );
     assert!(all_active.iter().all(|lease| lease.base.is_some()));
+    assert!(
+        all_active
+            .iter()
+            .all(|lease| lease.delivery_policy == Some(DeliveryPolicy::Kernel))
+    );
     let reclaimed = reclaim_dead_workspace_leases_on_boot(repo.pool(), &events)
         .await
         .unwrap();
@@ -977,6 +993,13 @@ async fn every_lease_reader_returns_base_and_policy() {
     assert!(
         sweep.leases.iter().all(|lease| lease.base.is_some()),
         "sweep rows carry the base"
+    );
+    assert!(
+        sweep
+            .leases
+            .iter()
+            .all(|lease| lease.delivery_policy == Some(DeliveryPolicy::Kernel)),
+        "sweep rows carry the kernel delivery policy"
     );
     for lease in &sweep.leases {
         let base = lease.base.as_ref().unwrap();

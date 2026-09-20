@@ -85,6 +85,14 @@ const EXPECTED_OTHER_WRITES: &[(&str, &str, &str)] = &[
          writer refuses a frozen row.",
     ),
     (
+        "crates/calm-server/tests/cases/git_delivery.rs",
+        "update tracks set workspace_path = ?1 where id = ?2",
+        "#1727 S4 — points `boot()`'s track (attached, frozen at creation, \
+         path empty) at a real git repository so the kernel git delivery runs \
+         against a worker worktree of it. Same reason as the \
+         `no_double_spawn.rs` entry: the production writer refuses a frozen row.",
+    ),
+    (
         "crates/calm-truth/src/db/sqlite/track_workspace_migration_tests.rs",
         "update tracks set workspace_frozen_at = null where id = ?1",
         "#1147 S3 — the ONLY un-freeze in the tree, and it is a test fixture. \

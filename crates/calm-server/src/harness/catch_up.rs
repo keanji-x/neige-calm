@@ -31,9 +31,9 @@ pub(crate) async fn observations_since(
         if !dispatcher::event_warrants_planner_push_with_role(&row.event, &row.actor, |_| role) {
             continue;
         }
-        // Same gated-self-report consultation the live push branch runs: a crash between the emit
-        // tx and the live push must not replay a gated task's raw self-report.
-        if dispatcher::is_gated_self_report(repo, &row.event).await {
+        // Same deferred-self-report consultation the live push branch runs: a crash between the
+        // emit tx and the live push must not replay a gated or kernel-delivered task's raw self-report.
+        if dispatcher::is_deferred_self_report(repo, &row.event).await {
             continue;
         }
         // Same stale-worker-stop consultation the live hook arm runs.

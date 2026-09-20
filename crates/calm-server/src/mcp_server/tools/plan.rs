@@ -732,6 +732,12 @@ async fn plan_list(
                     if let Some(facts) = &worktree_facts {
                         entry["worktree"] = serde_json::to_value(facts)?;
                     }
+                    // Given for every current attempt, `pending`/`failed` included (D8).
+                    if let Some(task) = &task {
+                        entry["candidate"] = serde_json::to_value(
+                            crate::git_candidate::view::candidate_view_tx(tx, task, worktree_facts.as_ref()).await?,
+                        )?;
+                    }
                     // MCP-only: `guidance` exists only here; the REST wire type is unchanged.
                     if let (Some(refused), Some(task)) = (&refusal, &task) {
                         entry["recovery"]["guidance"] =

@@ -747,6 +747,7 @@ impl AppState {
                 operation_runtime.clone(),
                 Dispatcher::permits_from_env(8),
                 task_budget_default,
+                TaskVerifyAdapter::default_gate_logs_dir(),
             ),
         );
         let worker_flow = WorkerFlowDriver::from_state_parts(
@@ -919,6 +920,7 @@ impl AppState {
                     runtime,
                     self.dispatcher.permits(),
                     self.route.task_budget_default,
+                    self.route.mcp_context.gate_logs_dir.clone(),
                 ),
             );
             self.worker.dispatcher = dispatcher.clone();
@@ -1204,6 +1206,7 @@ impl AppState {
                 operation_runtime.clone(),
                 crate::dispatcher::Dispatcher::permits_from_env(8),
                 task_budget_default,
+                gate_logs_dir.clone(),
             ),
         );
 

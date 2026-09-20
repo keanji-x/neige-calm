@@ -559,6 +559,7 @@ pub fn spawn_dispatcher_with_harness(fx: &Fixture) -> Dispatcher {
         fx.runtime.clone(),
         4,
         calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
+        std::env::temp_dir().join("neige-test-gate-logs"),
     )
 }
 

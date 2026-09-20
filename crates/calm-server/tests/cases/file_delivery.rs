@@ -589,6 +589,7 @@ async fn file_delivery_claim_restart_retains_exact_input_and_rejects_missing_bin
             fx.boot.ctx.write.clone(),
             std::sync::Arc::downgrade(&fx.state.operation_runtime),
             std::sync::Arc::new(tokio::sync::Semaphore::new(8)),
+            fx.boot.ctx.gate_logs_dir.clone(),
         );
         restarted.mark_boot_sweep_complete();
         restarted.mark_context_sweep_boot_complete();
