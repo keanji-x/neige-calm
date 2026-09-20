@@ -334,3 +334,15 @@ codex P2：懒 WS attach 与新启动竞争同一 terminal 的注册表入表。
 A MINOR-2（入表后唤醒无测试）：简报的前提「每条新启动路径入表后都有 Starting→Running 状态写」核过为**假**——codex-create 带 prompt 时状态写在 `AppServerInteract`（`persist_prompt_thread`）、先于 spawn；空 prompt 时是 `thread/started` 绑定写、与入表无序 ⇒ 唤醒保留不删，改由 `fresh_launch_replay_stamp_wakes_without_a_bus_event` 钉住（生产铸卡 `card_with_terminal_create_tx` + 直接 `registry.ensure(cfg)`、无操作 ⇒ 总线上没有唤醒该 track 的事件；变异：去掉入表后唤醒 → 红）；`handed_over_stamp_wakes_without_a_bus_event` 同形状钉住交接的唤醒（变异：`fetch_max` 保留但不唤醒 → 红）。§4.3 的「并在条目入表后唤醒一次」改写为载体陈述。
 
 A MINOR-1 → §8 G-16。新增 §8 G-17（并发 attach 赢下入表时新启动的 model view 被丢弃、Planner open/observe 读到 `projection unavailable`；r2 竞态用例最先红在这里）。
+
+### 第七轮（S4 落地）
+
+S4 按 §5 落地（`foldAttentionByCard`、`cardGoalTitle` 窄守卫、Today 第二个数 = `isWorking` 计数、「Open」分组、`anyCardNeedsInput` 全删、`s2a-activity-overlay-plugin-gate-dropped` 与 `s2a-today-groups-by-working` 的 patch 重新生成、三条 `s4-*` 见证变异登记）。实现中核出与本文不符的事实（`path:line` 为本轮树上的位置）：
+
+- `app/providers/queries.ts:990` 的 `anyCardNeedsInput` 注释在本轮基线上已不存在（#1754 修剪掉了），无可删。
+- `row/public.test.tsx:175`（现 `:155`）不是「夹具键」，是一整条只测该 flag 的用例 `ignores the retired any_card_needs_input flag`（也是 `s2a-track-activity-state-from-lifecycle` 的一条 `expected_red` 标题）——整条删除；`track.test.ts` 里是一条用例（`:186`）+ 一条断言（`:245`），不是两条用例。
+- `read-fallbacks.contract.test.tsx:371`（现 `:363`）的夹具不是键改名能救的：无人再解码 `any_card_needs_input` 后该 workspace overlay 成了空夹具；换成内核 `activity` overlay（`attention: 'input'` + planner 卡项），用例仍证明「detail 的中性读压过 workspace 的陈旧活动」。
+- §6 未列的后果：`s2a-today-groups-by-working`（分组改按 `isWorking`）的必红集缩小——三条 `degraded workspace reads` 用例读的是页头数字，数字不再由分组派生，变异下照绿；该条目的 `expected_red` / `selection_paths` 随之收缩（`fe/tools/mutation/manifest.json`）。
+- `capabilities-e2e.yaml:394`（CAP-TRACKNAME-015）在 `router/public.tsx` 上的三个区间（`:1077-1082,1553-1557,1866-1890`）没有一个含 `focusOnMount` / `openPlanner` / `usePlannerOpenIntent`（F8 只说了第三个漂到 `attentionNotifications`）；重锚到 `new-track-route.tsx:60`（`go({ …, openPlanner: true })`）与 `public.tsx:1387,1974-1980`。
+- 核实（非错误）：planner 卡 payload 带 `prompt` 不带 `goal`（`routes/tracks.rs` `planner_harness_card_payload`），goal 优先、label 回落不会把 Planner 行改名。
+- §6 S4 的折叠用例按本文写成「Worker 一行、计数 3」（夹具保留两条无卡项）；孪生「两卡两行」另加一条两张 worker 卡各一条 failed 的用例，`lists simultaneous Planner and Worker requests` 保持不动。Today 计数用例同时钉在 `today/public.test.tsx`（单元：planning 空闲 → 不计，`working: true` → 计）与 `today-activity.test.tsx`（路由：三条 working 阶段、一条 working 判定 → `1working`）。
