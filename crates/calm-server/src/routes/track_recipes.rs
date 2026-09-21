@@ -79,7 +79,7 @@ fn normalize_recipe_body(body: &str) -> String {
 
 /// End `out` on a blank line so whatever is appended next starts a new Markdown block.
 /// No-op when empty or already blank-terminated, so repeated calls do not accumulate.
-fn restore_paragraph_break(out: &mut String) {
+pub(super) fn restore_paragraph_break(out: &mut String) {
     if out.is_empty() || out.ends_with("\n\n") {
         return;
     }

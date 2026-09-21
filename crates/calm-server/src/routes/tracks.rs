@@ -637,20 +637,35 @@ fn prepare_initial_report_payload(
         payload.body.clone(),
     );
     // Named sources describe a working method, not queued work. Preserve
-    // every non-task block and use the canonical block join to keep paragraph
-    // boundaries intact when removing task fences.
+    // every non-task block, including the paragraph boundary a removed fence
+    // supplied even when its neighbors had no blank lines.
     let has_tasks = blocks
         .iter()
         .any(|block| block.kind == calm_types::report_blocks::KIND_TASK);
-    blocks.retain(|block| block.kind != calm_types::report_blocks::KIND_TASK);
     let body = if has_tasks {
-        blocks
-            .iter()
-            .map(calm_types::report_blocks::flat_text)
-            .fold(String::new(), |mut body, text| {
-                calm_types::report_blocks::append_block_text(&mut body, &text);
-                body
-            })
+        // Elision must not turn a misplaced source header into a valid one.
+        calm_types::report_contract::check_document(&body).map_err(|error| {
+            CalmError::Internal(format!(
+                "track create: template `{label}` contract: {error}"
+            ))
+        })?;
+        let mut body = String::new();
+        let mut pending_break = false;
+        for block in &blocks {
+            if block.kind == calm_types::report_blocks::KIND_TASK {
+                pending_break = true;
+                continue;
+            }
+            if pending_break {
+                super::track_recipes::restore_paragraph_break(&mut body);
+                pending_break = false;
+            }
+            calm_types::report_blocks::append_block_text(
+                &mut body,
+                &calm_types::report_blocks::flat_text(block),
+            );
+        }
+        body
     } else {
         body
     };
@@ -3404,7 +3419,7 @@ mod tests {
                 "acceptance": "Evidence explains the result", "ready": false, "declared_by": "spec"
             }),
         );
-        let body = format!("before\n\n{task}\n---\n");
+        let body = format!("before\n{task}---\n");
         let compiled = prepare_initial_report_payload(
             "example",
             TrackReportPayload::new("Example", body.clone()),
@@ -3427,6 +3442,22 @@ mod tests {
         let context = serde_json::to_value(compiled.template_context.unwrap()).unwrap();
         assert_eq!(context["body"], body);
         assert_eq!(context["title"], "Example");
+    }
+
+    #[test]
+    fn task_elision_cannot_repair_a_misplaced_source_contract() {
+        let task = calm_types::report_blocks::render_fence(
+            "task",
+            &serde_json::json!({
+                "key": "example", "kind": "codex", "goal": "Inspect",
+                "ready": true, "declared_by": "user", "released_by_user": true,
+            }),
+        );
+        let body = format!("{task}{}", TrackReportPayload::initial().body);
+        assert!(
+            prepare_initial_report_payload("misplaced", TrackReportPayload::new("Example", body))
+                .is_err()
+        );
     }
 
     /// A recipe whose body does not parse is refused, not silently thinned: `split_body` treats
