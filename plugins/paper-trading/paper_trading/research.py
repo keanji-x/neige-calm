@@ -3,7 +3,7 @@ from datetime import date
 import json
 from pathlib import Path
 
-from .config import exact
+from .config import calendar_date, exact
 from .ledger import digest, encoded
 
 
@@ -31,6 +31,9 @@ def ingest(db, ledger, config, args):
     predictions = [row for row in rows if isinstance(row, dict) and row.get("issued") == args["week"]]
     if not predictions or len({p["id"] for p in predictions}) != len(predictions):
         raise ValueError("week must have uniquely identified predictions")
+    for prediction in predictions:
+        if calendar_date(prediction["horizon_end"]) < week:
+            raise ValueError("research horizon precedes its issued date")
     body = {"week": args["week"], "report": report, "predictions": predictions}
     key = digest(body)
     if db.execute("SELECT 1 FROM sources WHERE id=?", (key,)).fetchone() is None:

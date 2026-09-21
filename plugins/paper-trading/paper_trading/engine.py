@@ -5,7 +5,7 @@ import json
 import re
 from zoneinfo import ZoneInfo
 
-from .config import exact, identifier, integer, money, symbol, timestamp
+from .config import broker_money, calendar_date, exact, identifier, integer, money, symbol, timestamp
 from .ledger import Ledger, encoded
 from .portfolio import BROKER_TERMINAL, TERMINAL, trades
 from . import research
@@ -70,7 +70,7 @@ class Engine:
         if action not in ("buy", "sell", "hold"):
             raise ValueError("action must be buy, sell or hold; shorting is unsupported")
         symbol(args["symbol"])
-        if args["symbol"] not in self.config.symbols:
+        if action == "buy" and args["symbol"] not in self.config.symbols:
             raise ValueError("symbol is not allowlisted")
         if not isinstance(args["rationale"], str) or not 10 <= len(args["rationale"]) <= 6000:
             raise ValueError("rationale must contain 10-6000 characters")
@@ -98,7 +98,7 @@ class Engine:
                 raise ValueError("new entries are paused")
             if prediction["direction"] != "long" or prediction["conviction_tier"] == "watch":
                 raise ValueError("only explicit long, non-watch predictions can open positions")
-            if deadline.astimezone(ZoneInfo("America/New_York")).date().isoformat() > prediction["horizon_end"]:
+            if deadline.astimezone(ZoneInfo("America/New_York")).date() > calendar_date(prediction["horizon_end"]):
                 raise ValueError("decision outlives the research horizon")
             if not money(args["stop_price"]) < limit < money(args["target_price"]):
                 raise ValueError("long entry requires stop < limit < target")
@@ -129,8 +129,8 @@ class Engine:
         local = self.clock().astimezone(ZoneInfo("America/New_York"))
         if local.weekday() > 4 or not (9 * 60 + 30 <= local.hour * 60 + local.minute < 16 * 60):
             raise ValueError("outside US regular trading hours")
-        last = money(quote["last"])
-        if abs(last / money(latest["price"]) - 1) * 10000 > self.config.max_price_deviation_bps:
+        last = broker_money(quote["last"])
+        if abs(last / broker_money(latest["price"]) - 1) * 10000 > self.config.max_price_deviation_bps:
             raise ValueError("quote and timestamped intraday price disagree")
         return {"symbol": name, "last": str(last), "intraday_at": latest["time"],
                 "observed_at": self.clock().isoformat()}
@@ -145,30 +145,39 @@ class Engine:
         if snapshot is None or snapshot["unresolved"]:
             raise ValueError("account reconciliation is missing or has unknown submissions")
         decisions = self.ledger.decisions(db)
-        portfolio = trades(decisions, self.ledger.fills(db))
+        fills = self.ledger.fills(db)
+        portfolio = trades(decisions, fills)
         others = [d for d in decisions if d["id"] != decision["id"] and d["state"] not in TERMINAL]
+
+        def remaining(d):
+            return d["body"]["quantity"] - sum(f["quantity"] for f in fills if f["order_id"] == d["broker_id"])
+
         quote = self.quote(plan["symbol"])
         limit, qty = money(plan["limit_price"]), plan["quantity"]
-        if abs(limit / money(quote["last"]) - 1) * 10000 > self.config.max_price_deviation_bps:
+        if abs(limit / broker_money(quote["last"]) - 1) * 10000 > self.config.max_price_deviation_bps:
             raise ValueError("limit price is too far from current market")
         if limit * qty > money(self.config.max_order_usd):
             raise ValueError("order notional exceeds configured limit")
         if plan["action"] == "buy":
+            if plan["symbol"] not in self.config.symbols:
+                raise ValueError("symbol is no longer allowlisted")
             if self.ledger.get_meta(db, "paused"):
                 raise ValueError("new entries are paused")
-            if not money(plan["stop_price"]) < money(quote["last"]) < money(plan["target_price"]):
+            if not money(plan["stop_price"]) < broker_money(quote["last"]) < money(plan["target_price"]):
                 raise ValueError("market has already crossed the entry thesis levels")
             if (limit - money(plan["stop_price"])) * qty > money(self.config.max_trade_risk_usd):
                 raise ValueError("initial price risk exceeds configured limit")
             if any(t["symbol"] == plan["symbol"] and t["trade_id"] != plan["trade_id"]
                    and (t["quantity"] or t["state"] == "pending") for t in portfolio):
                 raise ValueError("another trade already owns this symbol")
-            # Count all outstanding buy quantities, including queued proposals.
-            reserved = sum((money(d["body"]["limit_price"]) * d["body"]["quantity"]
-                            for d in others if d["body"]["action"] == "buy"), Decimal(0))
-            if limit * qty + reserved > money(snapshot["available_cash_usd"], zero=True):
+            buys = [d for d in others if d["body"]["action"] == "buy"]
+            reserved = sum((money(d["body"]["limit_price"]) * remaining(d) for d in buys), Decimal(0))
+            local_reserved = sum((money(d["body"]["limit_price"]) * remaining(d)
+                                  for d in buys if not d["broker_id"]), Decimal(0))
+            # Available broker cash/shares already exclude its active orders.
+            if limit * qty + local_reserved > broker_money(snapshot["available_cash_usd"], zero=True):
                 raise ValueError("cash is insufficient after outstanding reservations")
-            gross = sum((money(t["average_entry"], zero=True) * t["quantity"] for t in portfolio), Decimal(0))
+            gross = sum((Decimal(t["average_entry"]) * t["quantity"] for t in portfolio if t["quantity"]), Decimal(0))
             if gross + reserved + limit * qty > money(self.config.max_portfolio_usd):
                 raise ValueError("portfolio cost exposure exceeds configured limit")
         else:
@@ -178,10 +187,12 @@ class Engine:
             entry = self.ledger.decision(db, current["entry_decision_id"])
             if entry["state"] not in TERMINAL:
                 raise ValueError("entry must be settled or canceled before exiting")
-            reserved = sum(d["body"]["quantity"] for d in others if d["body"]["action"] == "sell"
-                           and d["body"]["trade_id"] == plan["trade_id"])
+            sells = [d for d in others if d["body"]["action"] == "sell" and d["body"]["trade_id"] == plan["trade_id"]]
+            reserved = sum(remaining(d) for d in sells)
+            local_reserved = sum(remaining(d) for d in sells if not d["broker_id"])
             position = next((p for p in snapshot["positions"] if p["symbol"] == plan["symbol"]), None)
-            if position is None or qty + reserved > min(current["quantity"], integer(position["available"], zero=True)):
+            if (position is None or qty + reserved > current["quantity"]
+                    or qty + local_reserved > integer(position["available"], zero=True)):
                 raise ValueError("exit exceeds available unreserved shares")
         return quote
 
@@ -209,9 +220,9 @@ class Engine:
                         continue
                     try:
                         quote = self.quote(trade["symbol"])
-                        if money(quote["last"]) <= money(trade["stop_price"]):
+                        if broker_money(quote["last"]) <= money(trade["stop_price"]):
                             alerts.append({"trade_id": trade["trade_id"], "reason": "stop_crossed", "quote": quote})
-                        elif money(quote["last"]) >= money(trade["target_price"]):
+                        elif broker_money(quote["last"]) >= money(trade["target_price"]):
                             alerts.append({"trade_id": trade["trade_id"], "reason": "target_crossed", "quote": quote})
                     except Exception:
                         alerts.append({"trade_id": trade["trade_id"], "reason": "market_data_unavailable"})

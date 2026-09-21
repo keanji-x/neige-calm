@@ -149,10 +149,11 @@ unattended order authorization is installed by this plugin.
   snapshot. The previous snapshot remains visible with an explicit error.
 - At most 500 broker order identities are reconciled per pass. A larger history
   fails visibly; this first slice is not an unlimited historical broker archive.
-- Risk exposure uses entry cost plus outstanding buy requests, not mark-to-market
-  exposure or a VaR model. Reservations are conservative, including the entire
-  notional of partially filled active buy orders; they can temporarily refuse
-  additional trading rather than under-reserve cash.
+- Risk exposure uses entry cost plus the unfilled quantity of outstanding buys,
+  not mark-to-market exposure or a VaR model. Local proposals reserve additional
+  cash/shares; broker-working orders are already reflected in broker availability
+  and are not subtracted from it again. Both kinds count toward owned-quantity
+  and portfolio-exposure limits.
 - Gross P/L ignores commissions, financing, FX, dividends, corporate actions and
   tax. Splits or manual trades cause position mismatch and require investigation.
 - Native confirmation can expire, fail or be mistyped. A broker-call failure is

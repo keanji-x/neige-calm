@@ -6,7 +6,8 @@ of objects. Quotes have no schema-proven timestamp; intraday rows have `time`.
 `positions` and `order` use a string-typed schema whose description specifies AP
 (HK/CN) arrays, versus US-account objects. Only the AP array contract is accepted
 here: US-listed instruments do not imply a US-region account. No object envelope
-is silently flattened, and individual broker fields are returned unchanged.
+is silently flattened. JSON fractional numbers decode as Decimal, preserving
+the exact broker numeric token instead of rounding through a binary float.
 
 `auth status --schema` declares token/object and account/unspecified, not their
 nested fields. We strictly REQUIRE token.status == valid, token.dc_region == ap,
@@ -23,6 +24,7 @@ Preview text (including any native confirmation) must not go to agent tools.
 """
 
 import json
+from decimal import Decimal
 import os
 import re
 import selectors
@@ -169,7 +171,8 @@ class Broker:
     def _json(self, argv: list[str]) -> object:
         raw = self._run(argv)
         try:
-            return json.loads(raw, object_pairs_hook=_json_object, parse_constant=_invalid_constant)
+            return json.loads(raw, object_pairs_hook=_json_object, parse_constant=_invalid_constant,
+                              parse_float=Decimal)
         except (ValueError, RecursionError):
             raise BrokerError("Invalid broker JSON response; outcome may be unknown") from None
 

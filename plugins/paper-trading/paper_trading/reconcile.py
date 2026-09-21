@@ -1,7 +1,7 @@
 """Fail-closed reconciliation and recovery; never submits or guesses an order."""
 from datetime import timezone
 
-from .config import integer, money, timestamp
+from .config import broker_money, integer, money, timestamp
 from .ledger import digest, encoded
 from .portfolio import BROKER_ACTIVE, BROKER_TERMINAL, position_map, trades
 
@@ -13,7 +13,7 @@ def remark(plan):
 def verify_order(order, plan):
     if (order["symbol"] != plan["symbol"] or order["side"] != plan["action"].capitalize()
             or order["order_type"] != "LO" or integer(order["quantity"]) != plan["quantity"]
-            or money(order["price"]) != money(plan["limit_price"])):
+            or broker_money(order["price"]) != money(plan["limit_price"])):
         raise ValueError("broker order does not match immutable decision")
     if "remark" in order and order["remark"] != remark(plan):
         raise ValueError("broker order remark mismatch")
@@ -67,7 +67,7 @@ def refresh(db, ledger, config, broker, now):
         if not isinstance(raw["trade_id"], str) or not raw["trade_id"]:
             raise ValueError("broker execution id required")
         fill = {"trade_id": raw["trade_id"], "order_id": order_id, "symbol": raw["symbol"],
-                "quantity": integer(raw["quantity"]), "price": str(money(str(raw["price"]))),
+                "quantity": integer(raw["quantity"]), "price": str(broker_money(raw["price"])),
                 "time": timestamp(raw["time"]).isoformat()}
         old = db.execute("SELECT body FROM fills WHERE id=?", (fill["trade_id"],)).fetchone()
         if old is not None and old[0] != encoded(fill):
@@ -82,7 +82,7 @@ def refresh(db, ledger, config, broker, now):
         requested = decision["body"]["quantity"]
         if count > requested or (detail["status"] == "Filled" and count != requested):
             raise ValueError("broker order/execution totals disagree; retry reconciliation")
-        if detail["status"] == "PartialFilled" and not 0 < count < requested:
+        if detail["status"] in ("PartialFilled", "PartialWithdrawal") and not 0 < count < requested:
             raise ValueError("partial-fill total disagrees with order status")
         state = {"Filled": "settled", "Canceled": "canceled", "Rejected": "rejected",
                  "Expired": "expired", "PartialWithdrawal": "canceled"}.get(detail["status"], "working")
@@ -91,7 +91,9 @@ def refresh(db, ledger, config, broker, now):
     expected = {t["symbol"]: t["quantity"] for t in portfolio if t["quantity"]}
     if len(expected) != sum(t["quantity"] > 0 for t in portfolio):
         raise ValueError("overlapping symbol ownership")
-    positions = broker.positions()
+    positions = [{"symbol": p["symbol"], "quantity": integer(p["quantity"], zero=True),
+                  "available": integer(p["available"], zero=True), "currency": p["currency"]}
+                 for p in broker.positions()]
     if position_map(positions) != expected:
         raise ValueError("broker positions differ from ledger; trading blocked")
     assets = [a for a in broker.assets() if a["currency"] == "USD"]
@@ -100,8 +102,8 @@ def refresh(db, ledger, config, broker, now):
     cash = [c for c in assets[0]["cash_infos"] if c["currency"] == "USD"]
     if len(cash) != 1:
         raise ValueError("USD cash availability is missing")
-    available = str(money(cash[0]["available_cash"], zero=True))
-    equity = str(money(assets[0]["net_assets"], zero=True))
+    available = str(broker_money(cash[0]["available_cash"], zero=True))
+    equity = str(broker_money(assets[0]["net_assets"], zero=True))
     broker.identity(config.account_no)
     snapshot = {"at": now.astimezone(timezone.utc).isoformat(), "available_cash_usd": available,
                 "account_equity_usd": equity, "positions": positions,

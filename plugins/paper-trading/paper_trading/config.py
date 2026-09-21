@@ -1,6 +1,6 @@
 """Operator-owned limits and strict decimal/time parsing."""
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 import json
@@ -20,11 +20,36 @@ def money(value, *, zero=False):
 
 
 def integer(value, *, zero=False):
-    if isinstance(value, str) and re.fullmatch(r"[0-9]{1,9}", value):
+    if isinstance(value, str) and re.fullmatch(r"[0-9]{1,9}(\.0{1,8})?", value):
+        value = Decimal(value)
+    if isinstance(value, Decimal):
+        if not value.is_finite() or not 0 <= value <= 100_000_000 or value != value.to_integral_value():
+            raise ValueError("quantity must be an integer share count")
         value = int(value)
     if type(value) is not int or value < (0 if zero else 1) or value > 100_000_000:
         raise ValueError("quantity must be an integer share count")
     return value
+
+
+def broker_money(value, *, zero=False):
+    if type(value) not in (str, int, Decimal):
+        raise ValueError("broker amount must be a decimal string or JSON number")
+    try:
+        result = Decimal(value)
+    except InvalidOperation as error:
+        raise ValueError("invalid broker amount") from error
+    if not result.is_finite() or result < 0 or (result == 0 and not zero) or result > Decimal("1e12"):
+        raise ValueError("broker amount outside supported range")
+    return result
+
+
+def calendar_date(value):
+    if not isinstance(value, str):
+        raise ValueError("date must be canonical YYYY-MM-DD")
+    result = date.fromisoformat(value)
+    if result.isoformat() != value:
+        raise ValueError("date must be canonical YYYY-MM-DD")
+    return result
 
 
 def timestamp(value):

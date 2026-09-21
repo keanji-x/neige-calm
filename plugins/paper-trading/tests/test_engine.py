@@ -263,3 +263,148 @@ def test_invalid_confirmation_does_not_poison_submission_state(rig):
     status = rig.engine.call("track-owner", "paper.status", {})
     assert status["decisions"][0]["state"] in ("queued", "ready")
     assert not any("--execute" in c for c in rig.calls())
+
+
+def test_updated_allowlist_is_checked_at_operator_preflight(rig):
+    rig.decide()
+    values = rig.values | {"symbols_json": '["GLD.US"]'}
+    rig.engine = Engine(rig.data, Config.parse(values), rig.broker, clock=lambda: NOW)
+    with pytest.raises(ValueError, match="allowlist"):
+        rig.engine.operator_preview("entry-1")
+    assert not any("--execute" in c for c in rig.calls())
+
+
+def test_numeric_broker_intraday_price_is_supported(rig):
+    rig.decide()
+    state = rig.state()
+    state["intraday"]["SOXX.US"][0]["price"] = 100.0
+    rig.write(state)
+    assert rig.engine.process_once()["decisions"][0]["state"] == "ready"
+
+
+def test_malformed_research_horizon_cannot_authorize_entry(rig):
+    path = rig.research / "weekly/2026/predictions.jsonl"
+    prediction = json.loads(path.read_text()) | {"horizon_end": "not-a-date"}
+    path.write_text(json.dumps(prediction))
+    with pytest.raises(ValueError, match="date|horizon"):
+        rig.source = rig.engine.call("track-owner", "paper.ingest", {"week": "2026-09-21"})
+        rig.decide()
+
+
+def exit_plan(rig, **changes):
+    plan = rig.plan(decision_id="exit-1", action="sell") | changes
+    del plan["stop_price"], plan["target_price"]
+    return plan
+
+
+def test_repeating_fill_average_does_not_block_future_entries(rig):
+    entry = rig.plan(quantity=3)
+    rig.decide(entry)
+    rig.submit(entry)
+    rig.fill("order-1", 1, price="99.00", remaining=1, status="PartialFilled")
+    filled = rig.fill("order-1", 2, price="100.00", fill_id="fill-2", remaining=3)
+    assert filled["trades"][0]["average_entry"] == "99.66666666666666666666666667"
+    sell = exit_plan(rig, quantity=3)
+    rig.decide(sell)
+    rig.submit(sell, "order-2")
+    assert rig.fill("order-2", 3, fill_id="fill-3", remaining=0)["trades"][0]["state"] == "closed"
+    (rig.research / "weekly/2026/09_21/weekly_market_analysis_cn.md").write_text("# Renewed research\nNew thesis.")
+    rig.source = rig.engine.call("track-owner", "paper.ingest", {"week": "2026-09-21"})
+    rig.decide(rig.plan(decision_id="entry-2", trade_id="trade-2", quantity=3))
+    status = rig.engine.process_once()
+    assert next(d for d in status["decisions"] if d["id"] == "entry-2")["state"] == "ready"
+
+
+def test_partial_withdrawal_requires_partial_executions(rig):
+    rig.decide()
+    rig.submit(rig.plan())
+    state = rig.state()
+    state["orders"]["order-1"]["status"] = "PartialWithdrawal"
+    rig.write(state)
+    assert rig.engine.process_once()["error"] is not None
+
+
+def test_broker_frozen_sell_shares_are_not_reserved_twice(rig):
+    rig.decide()
+    rig.submit(rig.plan())
+    rig.fill("order-1", 10)
+    first = exit_plan(rig, quantity=4)
+    rig.decide(first)
+    rig.submit(first, "order-2")
+    state = rig.state()
+    state["positions"][0]["available"] = "6"
+    rig.write(state)
+    rig.decide(exit_plan(rig, decision_id="exit-2", quantity=6))
+    status = rig.engine.process_once()
+    assert next(d for d in status["decisions"] if d["id"] == "exit-2")["state"] == "ready"
+
+
+def test_removed_entry_symbol_still_allows_owned_exit(rig):
+    rig.decide()
+    rig.submit(rig.plan())
+    rig.fill("order-1", 10)
+    rig.engine = Engine(rig.data, Config.parse(rig.values | {"symbols_json": '["GLD.US"]'}), rig.broker, clock=lambda: NOW)
+    rig.decide(exit_plan(rig))
+    assert rig.submit(exit_plan(rig), "order-2")["error"] is None
+
+
+def test_partial_sell_reserves_only_its_unfilled_remainder(rig):
+    rig.decide()
+    rig.submit(rig.plan())
+    rig.fill("order-1", 10)
+    first = exit_plan(rig, quantity=4)
+    rig.decide(first)
+    rig.submit(first, "order-2")
+    rig.fill("order-2", 2, fill_id="fill-2", remaining=8, status="PartialFilled")
+    state = rig.state()
+    state["positions"][0]["available"] = "6"
+    rig.write(state)
+    rig.decide(exit_plan(rig, decision_id="exit-2", quantity=6))
+    status = rig.engine.process_once()
+    assert next(d for d in status["decisions"] if d["id"] == "exit-2")["state"] == "ready"
+
+
+def test_local_sell_reservations_still_prevent_overselling(rig):
+    rig.decide()
+    rig.submit(rig.plan())
+    rig.fill("order-1", 10)
+    rig.decide(exit_plan(rig, quantity=6))
+    rig.decide(exit_plan(rig, decision_id="exit-2", quantity=6))
+    status = rig.engine.process_once()
+    exits = [d for d in status["decisions"] if d["body"]["action"] == "sell"]
+    assert all(d["state"] == "queued" and "unreserved" in d["error"] for d in exits)
+
+
+def test_partial_withdrawal_with_consistent_fills_is_accounted(rig):
+    rig.decide()
+    rig.submit(rig.plan())
+    state = rig.fill("order-1", 4, remaining=4, status="PartialWithdrawal")
+    assert state["error"] is None
+    assert state["decisions"][0]["state"] == "canceled"
+    assert state["trades"][0]["state"] == "open"
+    assert state["trades"][0]["quantity"] == 4
+
+
+def test_broker_numeric_execution_and_position_fields_serialize_safely(rig):
+    rig.decide()
+    rig.submit(rig.plan())
+    state = rig.state()
+    state["orders"]["order-1"]["status"] = "Filled"
+    state["orders"]["order-1"]["price"] = 100.0
+    state["orders"]["order-1"]["quantity"] = 10.0
+    state["positions"] = [{"symbol": "SOXX.US", "quantity": 10.0, "available": 10.0, "currency": "USD"}]
+    state["fills"] = [{"trade_id": "fill-1", "order_id": "order-1", "symbol": "SOXX.US",
+                       "price": 100.0, "quantity": 10.0, "time": NOW.isoformat()}]
+    rig.write(state)
+    status = rig.engine.process_once()
+    assert status["error"] is None
+    assert status["trades"][0]["quantity"] == 10
+    json.dumps(status, allow_nan=False)
+
+
+@pytest.mark.parametrize("horizon", ["2026-9-20", "2026-02-30", "2026-09-20", None])
+def test_noncanonical_or_invalid_horizon_is_refused_at_ingest(rig, horizon):
+    path = rig.research / "weekly/2026/predictions.jsonl"
+    path.write_text(json.dumps(json.loads(path.read_text()) | {"horizon_end": horizon}))
+    with pytest.raises(ValueError):
+        rig.engine.call("track-owner", "paper.ingest", {"week": "2026-09-21"})

@@ -1,7 +1,7 @@
 """Decimal accounting from executions, not forecast highs or order acceptance."""
 from decimal import Decimal
 
-from .config import integer, money, timestamp
+from .config import broker_money, integer, money, timestamp
 from .ledger import digest
 
 TERMINAL = {"settled", "canceled", "rejected", "expired", "recorded"}
@@ -26,8 +26,8 @@ def trades(decisions, fills):
         sell_qty = sum(integer(f["quantity"]) for f in sells)
         if sell_qty > buy_qty:
             raise ValueError("sell executions exceed owned entry executions")
-        cost = sum((money(f["price"]) * integer(f["quantity"]) for f in buys), Decimal(0))
-        proceeds = sum((money(f["price"]) * integer(f["quantity"]) for f in sells), Decimal(0))
+        cost = sum((broker_money(f["price"]) * integer(f["quantity"]) for f in buys), Decimal(0))
+        proceeds = sum((broker_money(f["price"]) * integer(f["quantity"]) for f in sells), Decimal(0))
         average = cost / buy_qty if buy_qty else Decimal(0)
         if buys and sells and min(timestamp(f["time"]) for f in sells) < max(timestamp(f["time"]) for f in buys):
             raise ValueError("exit precedes completion of entry fills")

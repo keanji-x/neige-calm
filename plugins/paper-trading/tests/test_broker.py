@@ -1,6 +1,7 @@
 """Exercise the production adapter through a deterministic external executable."""
 
 import json
+from decimal import Decimal
 import os
 from pathlib import Path
 import sys
@@ -90,6 +91,13 @@ def test_identity_valid(harness):
     harness.reply(expected)
     assert harness.broker.identity("001234") == expected
     assert harness.calls()[0]["argv"] == ["auth", "status", "--format", "json"]
+
+
+def test_json_fractional_price_preserves_broker_decimal_token(harness):
+    harness.reply(stdout='[{"time":"2026-09-21T15:00:00Z","price":100.1234567890123456789}]')
+    price = harness.broker.intraday("TEST.US")[0]["price"]
+    assert isinstance(price, Decimal)
+    assert price == Decimal("100.1234567890123456789")
 
 
 @pytest.mark.parametrize("field,value", [

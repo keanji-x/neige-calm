@@ -161,6 +161,13 @@ manage existing paper positions before disabling the plugin. Preserve all data.
   complete red set was `test_no_repeat_submit_after_lost_ack`. Running the full
   191-test suite produced exactly 1 failed / 190 passed; restoring via patch
   produced 191 passed and `git diff --exit-code` confirmed zero residue.
-- Independent complete-diff reviews are in progress; findings and final reruns
-  are recorded before delivery. No production deployment or broker acceptance
-  test has been performed.
+- Independent review round 1 at `85f2e8e2a` found six unique in-scope defects
+  (both channels reported the invalid horizon): entry allowlist revalidation,
+  schema-supported numeric prices, canonical research dates, repeating weighted
+  fill averages, partial-withdrawal fill consistency, and double-counted sell
+  reservations. Each has a red-before-fix regression. Fixes also sweep buy-side
+  reservations, remaining quantities and numeric broker serialization. The
+  updated complete suite passes 207 tests. Fresh full-diff review is pending.
+- No production deployment or actual Longbridge broker order acceptance test
+  has been performed. The host/browser harness uses the real deployed binary
+  only as a separately spawned executable with isolated data and fake providers.
