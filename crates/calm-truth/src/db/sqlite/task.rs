@@ -450,6 +450,44 @@ pub async fn task_apply_gate_result_tx(
     Ok(res.rows_affected())
 }
 
+/// The `status_detail` classifier of a gated row the Planner released by abandoning its failed
+/// Git delivery (#1727 S4 slice 3). Not a pre-gate class: the dispatcher does not push the
+/// `task.failed` that carries it (the tool receipt is the Planner's answer).
+pub const TASK_STATUS_DETAIL_DELIVERY_ABANDONED: &str = "delivery-abandoned";
+
+/// `verifying → failed/delivery-abandoned` for a gated row whose Git delivery the Planner gave
+/// up (#1727 S4 slice 3): the budget release of `calm.task.delivery{abandon}`. Clears the same
+/// gate-process columns as `task_apply_gate_result_tx` so a gate still running is orphaned from
+/// the row (its late verdict misses the `verifying` guard and writes nothing). Guarded on
+/// `verifying` alone — not on `gate_attempt`, which a still-running gate holds — and never on
+/// `dispatched | running`, which `task_fail_from_worker_tx` owns. `0` rows = the gate already
+/// flipped the row (`already_terminal` to the caller).
+pub async fn task_abandon_delivery_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    track_id: &str,
+    now: i64,
+) -> Result<u64> {
+    let res = sqlx::query(
+        r#"UPDATE tasks
+           SET status = 'failed',
+               status_detail = ?1,
+               gate_pid = NULL,
+               gate_pid_starttime = NULL,
+               gate_pid_boot_id = NULL,
+               updated_at_ms = ?2,
+               finished_at_ms = ?2
+           WHERE id = ?3 AND track_id = ?4 AND status = 'verifying'"#,
+    )
+    .bind(TASK_STATUS_DETAIL_DELIVERY_ABANDONED)
+    .bind(now)
+    .bind(id)
+    .bind(track_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(res.rows_affected())
+}
+
 /// Operation `last_error` texts are unbounded; the row only needs the readable head.
 const STATUS_DETAIL_REASON_MAX: usize = 480;
 

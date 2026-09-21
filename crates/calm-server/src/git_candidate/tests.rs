@@ -13,13 +13,18 @@ use calm_types::git_candidate::{DeliveryFailureCode, DeliveryWakeReason};
 use calm_types::task_recovery::{TASK_CHILD_TRACK_ROUTE, TASK_IN_TRACK_ROUTE};
 use serde_json::{Value, json};
 
+use super::abandonment::{
+    AbandonTaskOutcome, AbandonmentRow, abandonment_by_request_key_tx, abandonment_for_delivery_tx,
+    insert_abandonment_tx,
+};
 use super::candidate::{CandidateRow, candidate_for_attempt_tx, from_operation_result};
 use super::delivery::{
     DeliveryRow, DeliverySettled, FAILURE_EVIDENCE_MAX_LINE_BYTES, FAILURE_EVIDENCE_MAX_LINES,
     candidate_ref_name, classify_failure, delivery_argv, delivery_by_id_tx,
-    delivery_latest_for_attempt_tx, delivery_message, forge_payload_for,
-    insert_initial_delivery_tx, lease_for_delivery_tx, settle_candidate_tx, settle_failed_tx,
-    unsettled_deliveries_for_track_tx, worktree_committed_delivery_fields,
+    delivery_by_request_key_tx, delivery_latest_for_attempt_tx, delivery_message,
+    forge_payload_for, insert_initial_delivery_tx, insert_retry_delivery_tx, lease_for_delivery_tx,
+    settle_candidate_tx, settle_failed_tx, unsettled_deliveries_for_track_tx,
+    worktree_committed_delivery_fields,
 };
 use super::view::{
     AbandonmentFacts, CandidateBinding, CandidateWorkspace, DeliveryFailure, DeliveryState,
@@ -1655,15 +1660,322 @@ async fn candidate_row_is_immutable() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The abandonment table (migration 0114).
+// ---------------------------------------------------------------------------
+
+impl DbFixture {
+    /// A delivery settled `failed` (the only shape an abandonment can hang on).
+    async fn insert_failed_delivery(&self, attempt: &str) -> DeliveryRow {
+        let row = self.insert_delivery(attempt).await;
+        let mut tx = begin_immediate_tx(self.repo.pool()).await.unwrap();
+        settle_failed_tx(
+            &mut tx,
+            &row.delivery_id,
+            1,
+            DeliveryFailureCode::CommitFailed,
+            "hook",
+            true,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        delivery_by_id_tx(
+            &mut begin_immediate_tx(self.repo.pool()).await.unwrap(),
+            &row.delivery_id,
+        )
+        .await
+        .unwrap()
+        .unwrap()
+    }
+
+    fn abandonment_for(
+        &self,
+        delivery: &DeliveryRow,
+        request_key: &str,
+        task_outcome: AbandonTaskOutcome,
+        task_status: TaskStatus,
+    ) -> AbandonmentRow {
+        AbandonmentRow {
+            delivery_id: delivery.delivery_id.clone(),
+            track_id: delivery.track_id.clone(),
+            producer_attempt_id: delivery.producer_attempt_id.clone(),
+            request_idempotency_key: request_key.into(),
+            reason: Some("gave up".into()),
+            task_outcome,
+            task_status,
+            created_at_ms: 3_000,
+        }
+    }
+}
+
+/// The implication CHECK over `task_outcome × task_status` (3 × 2 = 6 tuples): exactly four
+/// land — `failed/failed`, `done_unchanged/done`, `already_terminal/done`,
+/// `already_terminal/failed` — and every other spelling of either column is refused.
+#[tokio::test]
+async fn abandonment_check_rejects_every_invalid_tuple() {
+    let fx = db_fixture().await;
+    let delivery = fx.insert_failed_delivery("attempt-1").await;
+    let mut accepted = Vec::new();
+    let mut index = 0;
+    for outcome in ["failed", "done_unchanged", "already_terminal"] {
+        for status in ["done", "failed"] {
+            index += 1;
+            let inserted = sqlx::query(
+                "INSERT INTO task_git_delivery_abandonments (delivery_id, track_id, \
+                 producer_attempt_id, request_idempotency_key, reason, task_outcome, \
+                 task_status, created_at_ms) VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, 1)",
+            )
+            .bind(&delivery.delivery_id)
+            .bind(&delivery.track_id)
+            .bind(&delivery.producer_attempt_id)
+            .bind(format!("req-{index}"))
+            .bind(outcome)
+            .bind(status)
+            .execute(fx.repo.pool())
+            .await;
+            if inserted.is_ok() {
+                accepted.push((outcome, status));
+                sqlx::query("DELETE FROM task_git_delivery_abandonments WHERE delivery_id = ?1")
+                    .bind(&delivery.delivery_id)
+                    .execute(fx.repo.pool())
+                    .await
+                    .unwrap();
+            }
+        }
+    }
+    assert_eq!(
+        accepted,
+        vec![
+            ("failed", "failed"),
+            ("done_unchanged", "done"),
+            ("already_terminal", "done"),
+            ("already_terminal", "failed"),
+        ]
+    );
+    for (outcome, status) in [
+        ("bogus", "failed"),
+        ("failed", "verifying"),
+        ("failed", "canceled"),
+        ("done_unchanged", ""),
+    ] {
+        let refused = sqlx::query(
+            "INSERT INTO task_git_delivery_abandonments (delivery_id, track_id, \
+             producer_attempt_id, request_idempotency_key, reason, task_outcome, task_status, \
+             created_at_ms) VALUES (?1, ?2, ?3, 'req-x', NULL, ?4, ?5, 1)",
+        )
+        .bind(&delivery.delivery_id)
+        .bind(&delivery.track_id)
+        .bind(&delivery.producer_attempt_id)
+        .bind(outcome)
+        .bind(status)
+        .execute(fx.repo.pool())
+        .await;
+        assert!(refused.is_err(), "{outcome}/{status}: {refused:?}");
+    }
+    // Both FKs: a delivery id without a row and a track id without a row are refused.
+    for (delivery_id, track_id) in [
+        ("no-such-delivery", fx.track_id.as_str()),
+        (delivery.delivery_id.as_str(), "no-such-track"),
+    ] {
+        let refused = sqlx::query(
+            "INSERT INTO task_git_delivery_abandonments (delivery_id, track_id, \
+             producer_attempt_id, request_idempotency_key, reason, task_outcome, task_status, \
+             created_at_ms) VALUES (?1, ?2, ?3, 'req-fk', NULL, 'failed', 'failed', 1)",
+        )
+        .bind(delivery_id)
+        .bind(track_id)
+        .bind(&delivery.producer_attempt_id)
+        .execute(fx.repo.pool())
+        .await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|error| error.to_string().contains("FOREIGN KEY")),
+            "{delivery_id}/{track_id}: {refused:?}"
+        );
+    }
+}
+
+/// Every column of an abandonment row is immutable; the PK refuses a second abandonment of the
+/// same delivery and the request key is unique per attempt. The readers find the row by
+/// delivery and by request key, and `facts()` is what the derivation reads.
+#[tokio::test]
+async fn abandonment_row_is_immutable() {
+    let fx = db_fixture().await;
+    let delivery = fx.insert_failed_delivery("attempt-1").await;
+    let row = fx.abandonment_for(
+        &delivery,
+        "req-1",
+        AbandonTaskOutcome::AlreadyTerminal,
+        TaskStatus::Done,
+    );
+    let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
+    insert_abandonment_tx(&mut tx, &row).await.unwrap();
+    tx.commit().await.unwrap();
+    for sql in [
+        "UPDATE task_git_delivery_abandonments SET reason = 'edited' WHERE delivery_id = ?1",
+        "UPDATE task_git_delivery_abandonments SET task_outcome = 'failed', task_status = 'failed' \
+         WHERE delivery_id = ?1",
+        "UPDATE task_git_delivery_abandonments SET request_idempotency_key = 'other' \
+         WHERE delivery_id = ?1",
+        "UPDATE task_git_delivery_abandonments SET created_at_ms = 9 WHERE delivery_id = ?1",
+    ] {
+        let refused = sqlx::query(sql)
+            .bind(&delivery.delivery_id)
+            .execute(fx.repo.pool())
+            .await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|error| error.to_string().contains("immutable")),
+            "{sql}: {refused:?}"
+        );
+    }
+    // A second abandonment of the same delivery (any key) and a reused key (any delivery).
+    let other = fx.insert_failed_delivery("attempt-2").await;
+    for (delivery_for_row, key, what) in [
+        (&delivery, "req-2", "same delivery, new key"),
+        (
+            &other,
+            "req-1",
+            "same key on another delivery of the same attempt",
+        ),
+    ] {
+        let mut duplicate = fx.abandonment_for(
+            delivery_for_row,
+            key,
+            AbandonTaskOutcome::Failed,
+            TaskStatus::Failed,
+        );
+        duplicate.producer_attempt_id = "attempt-1".into();
+        let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
+        let refused = insert_abandonment_tx(&mut tx, &duplicate).await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|error| error.to_string().contains("UNIQUE")),
+            "{what}: {refused:?}"
+        );
+    }
+    let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
+    assert_eq!(
+        abandonment_for_delivery_tx(&mut tx, &delivery.delivery_id)
+            .await
+            .unwrap()
+            .as_ref(),
+        Some(&row)
+    );
+    assert_eq!(
+        abandonment_by_request_key_tx(&mut tx, &fx.track_id, "attempt-1", "req-1")
+            .await
+            .unwrap()
+            .as_ref(),
+        Some(&row)
+    );
+    assert_eq!(
+        abandonment_by_request_key_tx(&mut tx, &fx.track_id, "attempt-1", "req-9")
+            .await
+            .unwrap(),
+        None
+    );
+    // The replay key is Track-scoped: another Track quoting this attempt and key finds nothing.
+    assert_eq!(
+        abandonment_by_request_key_tx(&mut tx, "another-track", "attempt-1", "req-1")
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        abandonment_for_delivery_tx(&mut tx, &other.delivery_id)
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        row.facts(),
+        AbandonmentFacts {
+            reason: Some("gave up".into()),
+            task_outcome: "already_terminal".into(),
+            task_status: "done".into(),
+        }
+    );
+}
+
+/// The retry row: `ordinal + 1`, the predecessor, the request key and reason; found by request
+/// key (an `ordinal = 1` row never is) and as the attempt's latest.
+#[tokio::test]
+async fn retry_delivery_row_and_request_key_reader() {
+    let fx = db_fixture().await;
+    let first = fx.insert_failed_delivery("attempt-1").await;
+    let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
+    let retry = insert_retry_delivery_tx(&mut tx, &first, "req-1", Some("hook fixed"), 4_000)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(retry.ordinal, 2);
+    assert_eq!(
+        retry.predecessor_delivery_id.as_deref(),
+        Some(first.delivery_id.as_str())
+    );
+    assert_eq!(retry.request_idempotency_key.as_deref(), Some("req-1"));
+    assert_eq!(retry.reason.as_deref(), Some("hook fixed"));
+    assert_eq!(retry.lease_id, first.lease_id);
+    assert_eq!(retry.card_id, first.card_id);
+    assert_ne!(retry.delivery_id, first.delivery_id);
+    assert_ne!(retry.operation_key, first.operation_key);
+    assert_ne!(retry.forge_idempotency_key, first.forge_idempotency_key);
+    assert!(retry.settlement.is_none());
+    let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
+    assert_eq!(
+        delivery_by_request_key_tx(&mut tx, &fx.track_id, "attempt-1", "req-1")
+            .await
+            .unwrap()
+            .as_ref(),
+        Some(&retry)
+    );
+    assert_eq!(
+        delivery_by_request_key_tx(&mut tx, &fx.track_id, "attempt-1", "req-2")
+            .await
+            .unwrap(),
+        None
+    );
+    // The replay key is Track-scoped: another Track quoting this attempt and key finds nothing.
+    assert_eq!(
+        delivery_by_request_key_tx(&mut tx, "another-track", "attempt-1", "req-1")
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        delivery_latest_for_attempt_tx(&mut tx, "attempt-1")
+            .await
+            .unwrap()
+            .as_ref(),
+        Some(&retry)
+    );
+    // The same request key twice on one attempt is refused by the table.
+    let refused = insert_retry_delivery_tx(&mut tx, &retry, "req-1", None, 5_000).await;
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|error| error.to_string().contains("UNIQUE")),
+        "{refused:?}"
+    );
+}
+
 /// A9d (this slice's part) — deleting the Track, or its Area, cascades both tables away in the
 /// one `DELETE FROM tracks` statement (the delivery's non-cascading lease FK and the candidate's
-/// delivery FK are checked at statement end); events outlive the rows.
+/// delivery FK are checked at statement end); events outlive the rows. This pins the PAIR of
+/// abandonment cascades (`track_id` and `delivery_id`): dropping one alone is masked by the other
+/// chain; `abandonment_cascades_with_its_delivery_row` pins the `delivery_id` cascade by itself.
 #[tokio::test]
 async fn delivery_tables_cascade_on_track_delete() {
     for delete_area in [false, true] {
         let fx = db_fixture().await;
         let settled = fx.insert_delivery("attempt-settled").await;
         let _pending = fx.insert_delivery("attempt-pending").await;
+        let abandoned = fx.insert_failed_delivery("attempt-abandoned").await;
         let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
         settle_candidate_tx(
             &mut tx,
@@ -1674,10 +1986,29 @@ async fn delivery_tables_cascade_on_track_delete() {
         )
         .await
         .unwrap();
+        insert_abandonment_tx(
+            &mut tx,
+            &fx.abandonment_for(
+                &abandoned,
+                "req-1",
+                AbandonTaskOutcome::Failed,
+                TaskStatus::Failed,
+            ),
+        )
+        .await
+        .unwrap();
         tx.commit().await.unwrap();
         assert_eq!(
             count(&fx.repo, "SELECT COUNT(*) FROM task_git_deliveries").await,
-            2
+            3
+        );
+        assert_eq!(
+            count(
+                &fx.repo,
+                "SELECT COUNT(*) FROM task_git_delivery_abandonments"
+            )
+            .await,
+            1
         );
         assert_eq!(
             count(&fx.repo, "SELECT COUNT(*) FROM task_candidates").await,
@@ -1710,6 +2041,14 @@ async fn delivery_tables_cascade_on_track_delete() {
             0
         );
         assert_eq!(
+            count(
+                &fx.repo,
+                "SELECT COUNT(*) FROM task_git_delivery_abandonments"
+            )
+            .await,
+            0
+        );
+        assert_eq!(
             count(&fx.repo, "SELECT COUNT(*) FROM workspace_leases").await,
             0
         );
@@ -1718,6 +2057,66 @@ async fn delivery_tables_cascade_on_track_delete() {
             events_before
         );
     }
+}
+
+/// The abandonment row's own `delivery_id … ON DELETE CASCADE` (0114), pinned on its own:
+/// deleting the delivery row takes the abandonment with it. The Track-delete test above pins the
+/// PAIR of cascades — there, either FK alone is masked by the other chain (the Track cascade
+/// removes both rows whichever FK cascades first) — so a dropped `delivery_id` cascade only
+/// reads as `FOREIGN KEY constraint failed` here.
+#[tokio::test]
+async fn abandonment_cascades_with_its_delivery_row() {
+    let fx = db_fixture().await;
+    let abandoned = fx.insert_failed_delivery("attempt-abandoned").await;
+    let kept = fx.insert_failed_delivery("attempt-kept").await;
+    let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
+    for (delivery, key) in [(&abandoned, "req-1"), (&kept, "req-2")] {
+        insert_abandonment_tx(
+            &mut tx,
+            &fx.abandonment_for(
+                delivery,
+                key,
+                AbandonTaskOutcome::Failed,
+                TaskStatus::Failed,
+            ),
+        )
+        .await
+        .unwrap();
+    }
+    tx.commit().await.unwrap();
+    assert_eq!(
+        count(
+            &fx.repo,
+            "SELECT COUNT(*) FROM task_git_delivery_abandonments"
+        )
+        .await,
+        2
+    );
+
+    sqlx::query("DELETE FROM task_git_deliveries WHERE delivery_id = ?1")
+        .bind(&abandoned.delivery_id)
+        .execute(fx.repo.pool())
+        .await
+        .expect("the abandonment cascades with its delivery row");
+    let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
+    assert_eq!(
+        abandonment_for_delivery_tx(&mut tx, &abandoned.delivery_id)
+            .await
+            .unwrap(),
+        None,
+        "the abandonment of the deleted delivery is gone"
+    );
+    assert!(
+        abandonment_for_delivery_tx(&mut tx, &kept.delivery_id)
+            .await
+            .unwrap()
+            .is_some(),
+        "the other delivery's abandonment stays"
+    );
+    assert_eq!(
+        count(&fx.repo, "SELECT COUNT(*) FROM task_git_deliveries").await,
+        1
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1982,9 +2381,6 @@ fn result_file(exit_code: i32, stdout: &str) -> ForgeActionResultFile {
     }
 }
 
-const G4_CLAUSE: &str = "Retry delivers the branch tip as it stands now; commits and files added \
-     after the base by anyone are included";
-
 #[test]
 fn classify_failure_maps_every_code() {
     use super::delivery::failure_sentence;
@@ -2064,19 +2460,24 @@ fn classify_failure_maps_every_code() {
     assert_eq!(reason, failure_sentence("workspace_missing", None));
     assert!(!retry);
 
-    // Every key the mapping uses has a sentence; the retryable ones end with the G4 clause.
-    for key in ["10", "11", "12", "13", "14", "15", "git", "no_result"] {
+    // Every key the mapping uses has a sentence, and none carries the G4 clause: the wake text
+    // states it once, keyed on `retry_allowed` (`observation.rs`, slice 3 review round 2).
+    for key in [
+        "10",
+        "11",
+        "12",
+        "13",
+        "14",
+        "15",
+        "git",
+        "no_result",
+        "workspace_missing",
+        "unresolved",
+    ] {
         let sentence = failure_sentence(key, Some(1));
         assert_ne!(sentence, key, "no sentence for {key}");
-        assert!(
-            sentence.ends_with(&format!("{G4_CLAUSE}.")),
-            "{key}: {sentence}"
-        );
-    }
-    for key in ["workspace_missing", "unresolved"] {
-        let sentence = failure_sentence(key, None);
-        assert_ne!(sentence, key);
-        assert!(!sentence.contains(G4_CLAUSE));
+        assert!(!sentence.contains("Retry delivers"), "{key}: {sentence}");
+        assert!(sentence.ends_with('.'), "{key}: {sentence}");
     }
 
     // Evidence is cut to the fixed limits: a 1100-byte line is truncated to the cap.
@@ -2182,12 +2583,19 @@ fn candidate(commit_sha: &str, base_is_ancestor: bool) -> CandidateRow {
     }
 }
 
+/// A real abandonment row's facts (`AbandonmentRow::facts`), not a hand-built struct.
 fn abandonment() -> AbandonmentFacts {
-    AbandonmentFacts {
-        reason: "gave up".into(),
-        task_outcome: "failed".into(),
-        task_status: "failed".into(),
+    AbandonmentRow {
+        delivery_id: DELIVERY.into(),
+        track_id: TRACK.into(),
+        producer_attempt_id: "attempt-1".into(),
+        request_idempotency_key: "req-1".into(),
+        reason: Some("gave up".into()),
+        task_outcome: AbandonTaskOutcome::Failed,
+        task_status: TaskStatus::Failed,
+        created_at_ms: 3,
     }
+    .facts()
 }
 
 /// D2's derivation table, one assertion per input (15: the two `not_reported` statuses, the
@@ -2313,10 +2721,24 @@ fn delivery_state_covers_every_row() {
         DeliveryState::Abandoned {
             delivery_id: DELIVERY.into(),
             ordinal: 1,
-            reason: "gave up".into(),
+            reason: Some("gave up".into()),
             task_outcome: "failed".into(),
             task_status: "failed".into(),
         }
+    );
+    assert_eq!(
+        serde_json::to_value(delivery_state(
+            TaskStatus::Failed,
+            None,
+            Some(&failed),
+            None,
+            Some(&abandonment())
+        ))
+        .unwrap(),
+        json!({
+            "state": "abandoned", "delivery_id": DELIVERY, "ordinal": 1,
+            "reason": "gave up", "task_outcome": "failed", "task_status": "failed"
+        })
     );
     assert_eq!(
         delivery_state(

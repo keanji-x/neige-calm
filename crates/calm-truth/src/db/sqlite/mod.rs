@@ -112,8 +112,9 @@ pub use session_row::{
     session_state_transition_tx, worker_session_status_transition_allowed,
 };
 pub use task::{
-    SuccessReportFlip, TaskReporter, require_track_exists_tx, status_detail_class,
-    status_detail_with_reason, task_apply_gate_result_tx, task_cancel_tx, task_claim_pending_tx,
+    SuccessReportFlip, TASK_STATUS_DETAIL_DELIVERY_ABANDONED, TaskReporter,
+    require_track_exists_tx, status_detail_class, status_detail_with_reason,
+    task_abandon_delivery_tx, task_apply_gate_result_tx, task_cancel_tx, task_claim_pending_tx,
     task_complete_from_worker_tx, task_fail_from_worker_tx, task_gate_attempt_bump_tx, task_get_tx,
     task_mark_running_tx, task_mark_sub_track_running_tx, task_report_success_from_worker_tx,
     task_stamp_missing_running_deadline_tx, task_start_verifying_from_worker_tx,

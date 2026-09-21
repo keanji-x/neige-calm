@@ -2845,7 +2845,8 @@ async fn settled_event_maps_to_observation_with_turn_text() {
         ordinal: 2,
         result: DeliverySettlement::Failed {
             code: DeliveryFailureCode::CommitFailed,
-            reason: "git commit exited 128: index.lock exists".into(),
+            // A reason ends with its own period (as every producer's does); the renderer adds none.
+            reason: "git commit exited 128: index.lock exists.".into(),
             retry_allowed: true,
         },
         wake_reason: DeliveryWakeReason::Failed,
@@ -2865,19 +2866,33 @@ async fn settled_event_maps_to_observation_with_turn_text() {
     let text = observation.to_turn_text();
     assert!(
         text.starts_with(
-            "Task deliver Git delivery FAILED (commit_failed): git commit exited 128: index.lock exists. "
+            "Task deliver Git delivery FAILED (commit_failed): git commit exited 128: index.lock exists.\n"
         ),
         "{text}"
     );
+    // The retained/Read clause starts on its own line after the reason.
     assert!(
-        text.contains(&format!("Files retained at {retained_path}; ")),
+        text.contains(&format!(
+            "index.lock exists.\nFiles retained at {retained_path}; "
+        )),
         "{text}"
     );
     assert!(
-        text.ends_with(&format!("read the worker output at runs/{task_id}.md.")),
+        text.contains(&format!(
+            "read the worker output at runs/{task_id}.md. Decide: "
+        )),
         "{text}"
     );
-    assert!(!text.contains("calm.task.delivery"), "{text}");
+    // Slice 3: the decision clause names the delivery the event carried; a retryable failure
+    // states G4 with it (the retry delivers the branch tip as it stands now).
+    assert!(
+        text.ends_with(
+            "Decide: calm.task.delivery{action:\"retry\"|\"abandon\", expected_delivery_id:\"delivery-2\"}. \
+             Retry delivers the branch tip as it stands now; commits and files added after the \
+             base by anyone are included."
+        ),
+        "{text}"
+    );
 
     // D2: `workspace_missing` is the kernel's proof the lease directory is absent. The lease row
     // still names a path here (the mapping copies it), and the sentence must not.
@@ -2890,7 +2905,7 @@ async fn settled_event_maps_to_observation_with_turn_text() {
         ordinal: 3,
         result: DeliverySettlement::Failed {
             code: DeliveryFailureCode::WorkspaceMissing,
-            reason: "lease directory absent at settlement".into(),
+            reason: "lease directory absent at settlement.".into(),
             retry_allowed: false,
         },
         wake_reason: DeliveryWakeReason::Failed,
@@ -2912,17 +2927,25 @@ async fn settled_event_maps_to_observation_with_turn_text() {
     let text = observation.to_turn_text();
     assert!(
         text.starts_with(
-            "Task deliver Git delivery FAILED (workspace_missing): lease directory absent at settlement. "
+            "Task deliver Git delivery FAILED (workspace_missing): lease directory absent at settlement.\n"
         ),
         "{text}"
     );
     assert!(!text.contains("Files retained at"), "{text}");
     assert!(
-        text.ends_with(&format!(
-            "absent at settlement. Read the worker output at runs/{task_id}.md."
+        text.contains(&format!(
+            "absent at settlement.\nRead the worker output at runs/{task_id}.md. Decide: "
         )),
         "{text}"
     );
+    // `retry_allowed: false`: only `abandon` is offered.
+    assert!(
+        text.ends_with(
+            "Decide: calm.task.delivery{action:\"abandon\", expected_delivery_id:\"delivery-3\"}."
+        ),
+        "{text}"
+    );
+    assert!(!text.to_ascii_lowercase().contains("retry"), "{text}");
 
     // Once the worktree is removed the sentence drops the retained clause.
     let removed = crate::event::EventScope::Card {
@@ -2956,7 +2979,7 @@ async fn settled_event_maps_to_observation_with_turn_text() {
         .to_turn_text();
     assert!(!text.contains("Files retained at"), "{text}");
     assert!(
-        text.contains("index.lock exists. Read the worker output at runs/"),
+        text.contains("index.lock exists.\nRead the worker output at runs/"),
         "{text}"
     );
 
@@ -2974,6 +2997,258 @@ async fn settled_event_maps_to_observation_with_turn_text() {
             .await
             .unwrap()
             .is_none()
+    );
+}
+
+/// Slice 3: the failed wake sentence names the decision — `retry`|`abandon` when the row admits
+/// a retry, `abandon` alone when it does not (`workspace_missing`) — and the `delivery_id` the
+/// decision must quote. An observation persisted before `delivery_id` existed names no decision.
+#[tokio::test]
+async fn failed_wake_text_names_the_delivery_action() {
+    use crate::git_candidate::delivery::{classify_failure, unresolved_failure};
+    use crate::operation::forge_action_adapter::ForgeActionResultFile;
+    let (repo, _) = planner_push_delivery_fixture().await;
+    let track = TrackId::from("w");
+    let failed =
+        |delivery_id: &str, code: DeliveryFailureCode, reason: &str, retry_allowed: bool| {
+            Event::TaskGitDeliverySettled {
+                task_id: "delivery-source-attempt".into(),
+                idempotency_key: "delivery-source-attempt".into(),
+                track_id: track.clone(),
+                card_id: CardId::from("worker"),
+                delivery_id: delivery_id.into(),
+                ordinal: 1,
+                result: DeliverySettlement::Failed {
+                    code,
+                    reason: reason.into(),
+                    retry_allowed,
+                },
+                wake_reason: DeliveryWakeReason::Failed,
+            }
+        };
+
+    let observation = resolve_harness_observation(
+        &repo,
+        &track,
+        &failed(
+            "d-retryable",
+            DeliveryFailureCode::CommitFailed,
+            "hook.",
+            true,
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        matches!(&observation, HarnessObservation::TaskGitDeliverySettled { delivery_id: Some(id), .. } if id == "d-retryable"),
+        "{observation:?}"
+    );
+    let text = observation.to_turn_text();
+    assert!(text.contains("Decide: calm.task.delivery{"), "{text}");
+    assert!(text.contains("action:\"retry\"|\"abandon\""), "{text}");
+    assert!(
+        text.contains("expected_delivery_id:\"d-retryable\""),
+        "{text}"
+    );
+    // G4 rides with the retry offer, after the decision sentence.
+    assert!(
+        text.ends_with(
+            "expected_delivery_id:\"d-retryable\"}. Retry delivers the branch tip as it stands \
+             now; commits and files added after the base by anyone are included."
+        ),
+        "{text}"
+    );
+
+    let text = resolve_harness_observation(
+        &repo,
+        &track,
+        &failed(
+            "d-gone",
+            DeliveryFailureCode::WorkspaceMissing,
+            "hook.",
+            false,
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .to_turn_text();
+    assert!(text.contains("Decide: calm.task.delivery{"), "{text}");
+    assert!(text.contains("action:\"abandon\""), "{text}");
+    // No retry offer, no G4 clause (the sentence would say "Retry").
+    assert!(!text.to_ascii_lowercase().contains("retry"), "{text}");
+    assert!(
+        text.ends_with("expected_delivery_id:\"d-gone\"}."),
+        "{text}"
+    );
+
+    // The production reasons end with their own period and the renderer adds none: no `..` in
+    // the wake text for a code-11 reason (the fixed sentence alone) or an `unresolved` one (the
+    // sentence plus the kernel's detail line, which `unresolved_failure` terminates). A code-10
+    // reason ends with the script's evidence line, copied without a period: the retained/Read
+    // clause starts on its own line after every reason, so the evidence never runs on into it.
+    // G4 appears exactly once, after the decision sentence — the fixed sentences no longer
+    // carry it.
+    let code_11 = ForgeActionResultFile {
+        exit_code: 11,
+        stdout: String::new(),
+    };
+    let (code, reason, retry_allowed) =
+        classify_failure(Some(&code_11), Some("action-failed"), true);
+    assert_eq!(code, DeliveryFailureCode::ProvenanceMismatch);
+    let code_10 = ForgeActionResultFile {
+        exit_code: 10,
+        stdout: "provenance realpath=/leases/w/worker common_dir=/repo/.git registered=0\n".into(),
+    };
+    let (code_10_code, code_10_reason, code_10_retry) =
+        classify_failure(Some(&code_10), Some("action-failed"), true);
+    assert_eq!(code_10_code, DeliveryFailureCode::ProvenanceMismatch);
+    assert!(
+        code_10_reason.ends_with(" registered=0"),
+        "{code_10_reason}"
+    );
+    let (unresolved, unresolved_reason, unresolved_retry) = unresolved_failure(
+        "ref refs/neige/candidates/w/worker/d-11 does not resolve to the reported commit abc123",
+    );
+    assert_eq!(unresolved, DeliveryFailureCode::Unresolved);
+    for (id, code, reason, retry_allowed) in [
+        ("d-11", code, reason.as_str(), retry_allowed),
+        ("d-10", code_10_code, code_10_reason.as_str(), code_10_retry),
+        (
+            "d-unresolved",
+            unresolved,
+            unresolved_reason.as_str(),
+            unresolved_retry,
+        ),
+    ] {
+        let text =
+            resolve_harness_observation(&repo, &track, &failed(id, code, reason, retry_allowed))
+                .await
+                .unwrap()
+                .unwrap()
+                .to_turn_text();
+        assert!(!text.contains(".."), "{text}");
+        assert!(
+            text.contains(&format!("{reason}\nFiles retained at ")),
+            "{text}"
+        );
+        assert_eq!(text.matches("Retry delivers").count(), 1, "{text}");
+    }
+    assert!(
+        unresolved_reason.ends_with("reported commit abc123."),
+        "{unresolved_reason}"
+    );
+
+    // Pre-slice-3 snapshot shape: no `delivery_id`, no decision clause, the rest intact.
+    let legacy = HarnessObservation::TaskGitDeliverySettled {
+        key: "deliver".into(),
+        attempt_id: "delivery-source-attempt".into(),
+        result: DeliverySettlement::Failed {
+            code: DeliveryFailureCode::CommitFailed,
+            reason: "hook.".into(),
+            retry_allowed: true,
+        },
+        retained_path: None,
+        delivery_id: None,
+    };
+    let text = legacy.to_turn_text();
+    assert!(!text.contains("calm.task.delivery"), "{text}");
+    assert!(
+        text.ends_with("Read the worker output at runs/delivery-source-attempt.md."),
+        "{text}"
+    );
+    // A snapshot written by slice 2 has no `delivery_id` key at all; it decodes to `None`.
+    let mut wire = serde_json::to_value(&legacy).unwrap();
+    assert!(
+        wire.as_object_mut()
+            .unwrap()
+            .remove("delivery_id")
+            .is_some()
+    );
+    let decoded: HarnessObservation = serde_json::from_value(wire).unwrap();
+    assert_eq!(decoded, legacy);
+}
+
+/// A9 / slice 3: the `task.failed` that `calm.task.delivery{abandon}` appends for a gated row
+/// (`status_detail = delivery-abandoned`, with or without a reason tail) is not a Planner wake —
+/// the tool receipt is the answer. `delivery-abandoned` is not in the pre-gate class table, so
+/// the gated `task.failed` rule suppresses it; adding it there would push it.
+#[tokio::test]
+async fn abandon_task_failed_is_not_a_wake() {
+    let repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+        .await
+        .expect("in-memory sqlite");
+    let mut abandoned = crate::model::Task {
+        id: "w:abandoned".into(),
+        track_id: "w".into(),
+        key: "abandoned".into(),
+        kind: crate::model::TaskKind::Codex,
+        goal: "g".into(),
+        context_json: "null".into(),
+        acceptance_criteria: None,
+        cwd: None,
+        depends_on_json: "[]".into(),
+        priority: 0,
+        gate_json: Some("{\"steps\":[{\"name\":\"t\",\"cmd\":\"true\"}]}".to_string()),
+        status: crate::model::TaskStatus::Failed,
+        status_detail: Some(crate::db::sqlite::TASK_STATUS_DETAIL_DELIVERY_ABANDONED.into()),
+        worker_card_id: None,
+        gate_result_json: None,
+        gate_attempt: 1,
+        gate_pid: None,
+        gate_pid_starttime: None,
+        gate_pid_boot_id: None,
+        running_deadline_ms: None,
+        context_stale_at_ms: None,
+        declared_by: calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR.into(),
+        spawn: calm_types::task_recovery::TASK_IN_TRACK_ROUTE.into(),
+        created_at_ms: 1,
+        updated_at_ms: 1,
+        finished_at_ms: Some(2),
+    };
+    let mut with_reason = abandoned.clone();
+    with_reason.id = "w:abandoned-reason".into();
+    with_reason.key = "abandoned-reason".into();
+    with_reason.status_detail = Some(crate::db::sqlite::status_detail_with_reason(
+        crate::db::sqlite::TASK_STATUS_DETAIL_DELIVERY_ABANDONED,
+        "hook keeps rejecting the commit",
+    ));
+    abandoned.status_detail = Some("delivery-abandoned".into());
+    crate::db::write_in_tx_typed(&repo, move |tx| {
+        Box::pin(async move {
+            crate::test_support::insert_task_tx(tx, &abandoned).await?;
+            crate::test_support::insert_task_tx(tx, &with_reason).await?;
+            Ok(())
+        })
+    })
+    .await
+    .expect("seed tasks");
+    let failed = |key: &str, reason: &str| Event::TaskFailed {
+        idempotency_key: format!("w:{key}"),
+        reason: reason.into(),
+        details: None,
+        agent_message: None,
+    };
+    let event = failed("abandoned", "delivery-abandoned");
+    assert!(
+        event_warrants_planner_push_with_role(&event, &ActorId::KernelDispatcher, |_| None),
+        "absent the deferral rule the kernel-authored task.failed would be pushed"
+    );
+    assert!(
+        is_deferred_self_report(&repo, &event).await,
+        "the abandon's task.failed is suppressed: the tool receipt already answered the Planner"
+    );
+    assert!(
+        is_deferred_self_report(
+            &repo,
+            &failed(
+                "abandoned-reason",
+                "delivery-abandoned: hook keeps rejecting the commit"
+            )
+        )
+        .await,
+        "a reason tail on the row does not reclassify it as a pre-gate failure"
     );
 }
 

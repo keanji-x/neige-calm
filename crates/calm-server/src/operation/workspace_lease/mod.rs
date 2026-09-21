@@ -678,6 +678,17 @@ pub(crate) async fn sweep_workspace_worktrees_for_track_repo(
             return Ok(0);
         }
     }
+    // Candidate refs before any directory is read: addressed by the lease rows' common dirs, not
+    // by the Track cwd (D9; the cwd may be a moved linked worktree).
+    crate::git_candidate::refs::delete_candidate_refs_for_track(
+        &sweep.track_id,
+        sweep.leases.iter().filter_map(|lease| {
+            lease
+                .base
+                .as_ref()
+                .map(|base| base.git_common_dir.as_path())
+        }),
+    );
     let mut removed = Vec::new();
     for repo_root in repo_roots {
         removed.extend(sweep_workspace_worktree_root_for_track(

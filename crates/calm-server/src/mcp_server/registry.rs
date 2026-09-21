@@ -134,6 +134,9 @@ pub fn require_role_any(identity: &ToolCallIdentity, allowed: &[CardRole]) -> Re
 }
 
 /// Per-process context every tool handler reads from, `Arc`-cloned into each connection task.
+/// A handle to the scheduler's `poke(track)` (see [`AppContext::scheduler_poke`]).
+pub type SchedulerPoke = Arc<dyn Fn(TrackId) + Send + Sync>;
+
 #[derive(Clone)]
 pub struct AppContext {
     pub terminal_interaction:
@@ -158,6 +161,11 @@ pub struct AppContext {
     pub plugin_host: Arc<tokio::sync::OnceCell<Arc<crate::plugin_host::PluginHost>>>,
     /// Late-bound: MCP boot precedes runtime construction.
     pub operation_runtime: Arc<tokio::sync::OnceCell<Arc<crate::operation::OperationRuntime>>>,
+    /// Late-bound (the Dispatcher is spawned after the MCP context): the scheduler's
+    /// `poke(track)`. A Planner action that submits kernel work without writing an event
+    /// (`calm.task.delivery{retry}`) pokes through it so the scheduler drives the work now; unbound
+    /// (fixtures without a Dispatcher) means the reconcile sweep drives it instead.
+    pub scheduler_poke: Arc<tokio::sync::OnceCell<SchedulerPoke>>,
     /// The `chart.series` background resolver; `calm.report.read` enqueues into it.
     pub series_resolver: Arc<crate::report_series::SeriesResolver>,
     /// Transient ring of Planner plugin results `calm.source.capture` reads.
@@ -169,7 +177,8 @@ pub struct AppContext {
 
 impl AppContext {
     /// The one production construction; the HTTP series route and the MCP tools share one
-    /// `SeriesResolver`. The two late-bound cells are filled by `AppState::new` once those exist.
+    /// `SeriesResolver`. The two late-bound cells are filled by `AppState::new` once those exist;
+    /// `scheduler_poke` is bound there too, once the Dispatcher is spawned.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         repo: Arc<dyn Repo>,
@@ -198,6 +207,7 @@ impl AppContext {
             task_budget_default,
             plugin_host,
             operation_runtime,
+            scheduler_poke: Arc::new(tokio::sync::OnceCell::new()),
             series_resolver,
             plugin_results: Arc::new(crate::plugin_results::PluginResults::new()),
             sqlite_pool,
@@ -490,6 +500,7 @@ mod tests {
             task_budget_default: crate::scheduler::DEFAULT_TRACK_TASK_BUDGET,
             plugin_host: Arc::new(tokio::sync::OnceCell::new()),
             operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
+            scheduler_poke: Arc::new(tokio::sync::OnceCell::new()),
             series_resolver: Arc::new(crate::report_series::SeriesResolver::new_unstarted(None)),
             plugin_results: Arc::new(crate::plugin_results::PluginResults::new()),
             sqlite_pool,
