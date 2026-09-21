@@ -3453,6 +3453,10 @@ mod tests {
                 "ready": true, "declared_by": "user", "released_by_user": true,
             }),
         );
+        let reference_only = prepare_initial_report_payload(
+            "example", TrackReportPayload::new("Example", task.clone()),
+        ).unwrap();
+        assert!(reference_only.declarations.is_empty(), "even a released example is not execution authority");
         let body = format!("{task}{}", TrackReportPayload::initial().body);
         assert!(
             prepare_initial_report_payload("misplaced", TrackReportPayload::new("Example", body))
