@@ -1487,6 +1487,8 @@ mod tests {
             log_path: "/tmp/gate.log".into(),
             attempt: 1,
             agent_message: None,
+            status_detail: None,
+            target: None,
         };
 
         for (actor, label) in [

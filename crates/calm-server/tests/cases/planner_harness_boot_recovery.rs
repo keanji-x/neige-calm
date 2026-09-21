@@ -1522,6 +1522,8 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
             log_path: "/tmp/gate.log".into(),
             attempt: 1,
             agent_message: None,
+            status_detail: None,
+            target: None,
         },
     )
     .await

@@ -1520,6 +1520,8 @@ pub(crate) fn harness_observation_from_event(
             exit_code,
             log_tail,
             attempt,
+            status_detail,
+            target,
             ..
         } => Some(HarnessObservation::TaskGateResult {
             idempotency_key: idempotency_key.clone(),
@@ -1529,6 +1531,8 @@ pub(crate) fn harness_observation_from_event(
             exit_code: *exit_code,
             log_tail: log_tail.clone(),
             attempt: *attempt,
+            status_detail: status_detail.clone(),
+            target: target.clone().map(Box::new),
         }),
         Event::TrackReportEdited {
             body_before,

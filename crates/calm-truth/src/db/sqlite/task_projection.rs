@@ -4,8 +4,8 @@ use calm_types::event::{Event, EventScope, TaskContextChangedRef, TaskContextRef
 use calm_types::ids::{ActorId, TrackId};
 use calm_types::report_blocks::tasks::{
     Diagnostic, GateInput, PLANNER_DECLARATION_AUTHOR, TASK_BLOCKING_DIAGNOSTIC_PATHS,
-    TaskDeclaration, diagnostic_args, gate_rule_violations, json_eq, opt_json_eq,
-    task_diagnostic_action, unknown_deps,
+    TaskDeclaration, diagnostic_args, gate_cwd_violations, gate_rule_violations, json_eq,
+    opt_json_eq, task_diagnostic_action, unknown_deps,
 };
 use calm_types::report_links::{format_track_destination, parse_destination, scan_links};
 use serde::{Deserialize, Serialize};
@@ -340,6 +340,7 @@ fn readable_action(action: &str) -> String {
         "raise_planner_task_ceiling" => "raise planner ceiling".into(),
         "raise_tree_task_budget" => "raise tree budget".into(),
         "add_gate_or_reason" => "add gate or reason".into(),
+        "remove_gate_cwd" => "remove gate.cwd".into(),
         "edit_dependencies" => "edit dependencies".into(),
         "release_task" => "release task".into(),
         other => other.replace('_', " "),
@@ -1016,6 +1017,7 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
     let gate_bad: BTreeSet<_> = gate_rule_violations(declarations, require_gates)
         .into_iter()
         .collect();
+    let gate_cwd_bad: BTreeSet<_> = gate_cwd_violations(declarations).into_iter().collect();
     let mut verdicts = Vec::with_capacity(declarations.len());
     for (declaration, references) in declarations.iter().zip(&references_by_declaration) {
         let mut diagnostics = block_local_diags
@@ -1043,6 +1045,16 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
                 vec![],
                 None,
                 Some("add_gate_or_reason".into()),
+            ));
+        }
+        if gate_cwd_bad.contains(&declaration.key) {
+            diagnostics.push(Diagnostic::coded(
+                "gate_cwd_on_agent_task",
+                "gate",
+                BTreeMap::new(),
+                vec![],
+                None,
+                Some("remove_gate_cwd".into()),
             ));
         }
         for reference in references {

@@ -542,6 +542,125 @@ describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
     }
   });
 
+  it('parses a task.gate_result refused for a verification target mismatch (#1727 S4 slice 4)', () => {
+    const parsed = wireEventSchema.parse({
+      ev: 'task.gate_result',
+      data: {
+        task_id: 'wv-1:impl',
+        idempotency_key: 'wv-1:impl',
+        passed: false,
+        log_tail: 'refused: verification target mismatch (head, dirty)',
+        log_path: '/data/gate-logs/wv-1:impl-g1.log',
+        attempt: 1,
+        status_detail: 'gate-target-mismatch',
+        target: {
+          kind: 'candidate',
+          candidate_id: 'cand-1',
+          commit_sha: 'a'.repeat(40),
+          lease_id: 'lease-1',
+          evidence: {
+            kind: 'refused',
+            cwd: '/leases/lease-1',
+            before: {
+              head: 'b'.repeat(40),
+              dirty: [' M src/lib.rs'],
+              provenance: { realpath: '/leases/lease-1', common_dir: '/repo/.git', registered: true },
+            },
+            reasons: ['head', 'dirty'],
+          },
+        },
+      },
+    });
+    expect(parsed.ev).toBe('task.gate_result');
+    if (parsed.ev === 'task.gate_result') {
+      expect(parsed.data.status_detail).toBe('gate-target-mismatch');
+      expect(parsed.data.failing_step).toBeUndefined();
+      const target = parsed.data.target;
+      expect(target?.kind).toBe('candidate');
+      if (target?.kind === 'candidate') {
+        expect(target.candidate_id).toBe('cand-1');
+        expect(target.evidence.kind).toBe('refused');
+        if (target.evidence.kind === 'refused') {
+          expect(target.evidence.reasons).toEqual(['head', 'dirty']);
+          expect(target.evidence.before.dirty).toEqual([' M src/lib.rs']);
+          expect(target.evidence.before.provenance.registered).toBe(true);
+        }
+      }
+    }
+  });
+
+  it('parses a task.gate_result refused because no candidate existed (#1727 S4 slice 4)', () => {
+    const parsed = wireEventSchema.parse({
+      ev: 'task.gate_result',
+      data: {
+        task_id: 'wv-1:impl',
+        idempotency_key: 'wv-1:impl',
+        passed: false,
+        log_tail: 'refused: no candidate to verify',
+        log_path: '/data/gate-logs/wv-1:impl-g1.log',
+        attempt: 1,
+        status_detail: 'gate-infra',
+        target: { kind: 'no_candidate', reason: { kind: 'delivery_pending', delivery_id: 'del-1' } },
+      },
+    });
+    expect(parsed.ev).toBe('task.gate_result');
+    if (parsed.ev === 'task.gate_result') {
+      expect(parsed.data.status_detail).toBe('gate-infra');
+      const target = parsed.data.target;
+      expect(target?.kind).toBe('no_candidate');
+      if (target?.kind === 'no_candidate') {
+        expect(target.reason).toEqual({ kind: 'delivery_pending', delivery_id: 'del-1' });
+      }
+    }
+    // `prepare` is the one phase without a `cwd`; an unbound target is a bare reason.
+    const unsampled = wireEventSchema.parse({
+      ev: 'task.gate_result',
+      data: {
+        task_id: 'wv-1:impl',
+        idempotency_key: 'wv-1:impl',
+        passed: false,
+        log_tail: '',
+        log_path: '/data/gate-logs/wv-1:impl-g1.log',
+        attempt: 1,
+        status_detail: 'gate-infra',
+        target: {
+          kind: 'candidate',
+          candidate_id: 'cand-1',
+          commit_sha: 'a'.repeat(40),
+          lease_id: 'lease-1',
+          evidence: { kind: 'unsampled', phase: { kind: 'prepare', reason: 'git status exited 128' } },
+        },
+      },
+    });
+    expect(unsampled.ev).toBe('task.gate_result');
+    const unbound = wireEventSchema.safeParse({
+      ev: 'task.gate_result',
+      data: {
+        task_id: 'wv-1:impl',
+        idempotency_key: 'wv-1:impl',
+        passed: true,
+        log_tail: '',
+        log_path: '/data/gate-logs/wv-1:impl-g1.log',
+        attempt: 1,
+        target: { kind: 'unbound', reason: 'legacy_lease' },
+      },
+    });
+    expect(unbound.success).toBe(true);
+    const badReason = wireEventSchema.safeParse({
+      ev: 'task.gate_result',
+      data: {
+        task_id: 'wv-1:impl',
+        idempotency_key: 'wv-1:impl',
+        passed: true,
+        log_tail: '',
+        log_path: '/data/gate-logs/wv-1:impl-g1.log',
+        attempt: 1,
+        target: { kind: 'unbound', reason: 'unknown' },
+      },
+    });
+    expect(badReason.success).toBe(false);
+  });
+
   it('rejects task.gate_result missing passed', () => {
     const result = wireEventSchema.safeParse({
       ev: 'task.gate_result',

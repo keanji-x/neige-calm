@@ -102,6 +102,8 @@ async fn task_recovery_gate_observation_reads_exact_execution_and_gate_bytes() {
                 .to_string(),
             attempt,
             agent_message: None,
+            status_detail: None,
+            target: None,
         };
         let persisted: Event =
             serde_json::from_value(serde_json::to_value(&event).unwrap()).unwrap();

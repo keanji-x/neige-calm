@@ -275,6 +275,8 @@ async fn emit_gate_result(boot: &Boot, task: &Task) {
                 log_path: "/tmp/gate.log".into(),
                 attempt: 1,
                 agent_message: None,
+                status_detail: None,
+                target: None,
             },
         )
         .await

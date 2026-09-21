@@ -890,7 +890,8 @@ async fn parent_gate_verifying_is_working() {
     let f = fx().await;
     let parent = f.track("parent").await;
     let child = f.track("child").await;
-    let gate = json!({ "cwd": "/tmp", "steps": [{ "name": "ok", "cmd": "true" }] });
+    // No `gate.cwd`: a codex declaration carrying one is not admitted (#1727 S4 `gate_cwd_on_agent_task`).
+    let gate = json!({ "steps": [{ "name": "ok", "cmd": "true" }] });
     f.plan_tasks(
         &parent,
         &[("sub", "codex", TASK_CHILD_TRACK_ROUTE, Some(gate))],
@@ -2409,6 +2410,8 @@ async fn wakeup_table_resolves_every_row_of_the_design() {
                 log_path: String::new(),
                 attempt: 1,
                 agent_message: None,
+                status_detail: None,
+                target: None,
             },
         ),
     ];

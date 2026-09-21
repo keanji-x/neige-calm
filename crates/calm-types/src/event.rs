@@ -5,6 +5,7 @@ use crate::harness::HarnessPhaseTag;
 use crate::ids::{ActorId, AreaId, CardId, TrackId};
 use crate::model::{Area, Card, Overlay, Track, TrackLifecycle};
 use crate::proposal::{ProposalDecision, ProposalOp};
+use crate::verify_target::VerifyTarget;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -784,6 +785,15 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         agent_message: Option<String>,
+        /// #1727 S4: the verdict's classification (`gate-red` / `gate-timeout` / `gate-infra` /
+        /// `gate-target-mismatch`); absent on a passed verdict and on pre-slice-4 producers.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        status_detail: Option<String>,
+        /// #1727 S4: what the verdict was checked against (D3); absent on pre-slice-4 producers.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        target: Option<VerifyTarget>,
     },
 }
 
@@ -2081,6 +2091,8 @@ mod scope_tests {
             log_path: "/data/gate-logs/w-1:impl-g2.log".into(),
             attempt: 2,
             agent_message: None,
+            status_detail: None,
+            target: None,
         };
         let json = serde_json::to_value(&ev).unwrap();
         assert_eq!(json["ev"], "task.gate_result");
@@ -2105,6 +2117,8 @@ mod scope_tests {
             log_path: "/data/gate-logs/w-1:impl-g1.log".into(),
             attempt: 1,
             agent_message: None,
+            status_detail: None,
+            target: None,
         };
         let json = serde_json::to_value(&green).unwrap();
         assert!(json["data"].get("failing_step").is_none());

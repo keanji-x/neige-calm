@@ -18,6 +18,9 @@ use calm_types::event::{
 };
 use calm_types::git_candidate::{DeliveryFailureCode, DeliverySettlement, DeliveryWakeReason};
 use calm_types::proposal::{ProposalAnchor, ProposalDecision, ProposalOp};
+use calm_types::verify_target::{
+    MismatchReason, ProvenanceSample, Sample, VerifyTarget, VerifyTargetEvidence,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -1144,6 +1147,18 @@ golden_test!(
     }
 );
 
+fn gate_sample(dirty: &[&str]) -> Sample {
+    Sample {
+        head: "a".repeat(40),
+        dirty: dirty.iter().map(|path| (*path).to_owned()).collect(),
+        provenance: ProvenanceSample {
+            realpath: "/leases/lease-01".into(),
+            common_dir: "/repo/.git".into(),
+            registered: true,
+        },
+    }
+}
+
 golden_test!(
     task_gate_result_full,
     "task_gate_result.full.json",
@@ -1157,6 +1172,18 @@ golden_test!(
         log_path: "/data/gate-logs/track-01:build-step-g2.log".into(),
         attempt: 2,
         agent_message: Some("gate attempt 2 failed at clippy".into()),
+        status_detail: Some("gate-target-mismatch".into()),
+        target: Some(VerifyTarget::Candidate {
+            candidate_id: "cand-01".into(),
+            commit_sha: "a".repeat(40),
+            lease_id: "lease-01".into(),
+            evidence: VerifyTargetEvidence::Verified {
+                cwd: "/leases/lease-01".into(),
+                before: gate_sample(&[]),
+                after: gate_sample(&[" M Cargo.lock", "?? target-notes.txt"]),
+                reasons: vec![MismatchReason::Dirty],
+            },
+        }),
     }
 );
 
@@ -1173,6 +1200,8 @@ golden_test!(
         log_path: "/data/gate-logs/track-01:build-step-g1.log".into(),
         attempt: 1,
         agent_message: None,
+        status_detail: None,
+        target: None,
     }
 );
 

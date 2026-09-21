@@ -166,6 +166,8 @@ fn dispatcher_filter_matches_push_kinds() {
         log_path: "/tmp/gate.log".into(),
         attempt: 1,
         agent_message: None,
+        status_detail: None,
+        target: None,
     })));
     assert!(filter.matches(&env(Event::TrackReportEdited {
         track_id: track.clone(),
@@ -654,6 +656,8 @@ async fn gated_self_report_predicate() {
                 log_path: "/tmp/gate.log".into(),
                 attempt: 1,
                 agent_message: None,
+                status_detail: None,
+                target: None,
             }
         )
         .await,
@@ -814,6 +818,8 @@ async fn task_recovery_gate_observation_resolves_opaque_execution_identity() {
         log_path: "/tmp/gate.log".into(),
         attempt: 1,
         agent_message: None,
+        status_detail: None,
+        target: None,
     };
     let observation = resolve_harness_observation(&repo, &TrackId::from("w"), &event)
         .await
@@ -843,6 +849,8 @@ fn gate_result_maps_to_hard_fire_observation_with_plan_key() {
         log_path: "/tmp/gate-logs/track-1:impl-parser-g2.log".into(),
         attempt: 2,
         agent_message: None,
+        status_detail: None,
+        target: None,
     };
     let obs = harness_observation_from_event(&track, &event, Some("impl-parser"))
         .expect("gate result must map to an observation");
@@ -873,6 +881,248 @@ fn gate_result_maps_to_hard_fire_observation_with_plan_key() {
     assert!(text.contains("Task impl-parser gate FAILED at step test (exit 101)"));
     assert!(text.contains("runs/track-1:impl-parser/gates/2.log"));
     assert!(text.contains("runs/track-1:impl-parser.md"));
+}
+
+/// #1727 S4 slice 4: a `task.gate_result` whose `target` is a refused, discarded or no-candidate
+/// target wakes the Planner with a sentence that names the target; `status_detail` reaches the
+/// text for timeout/infra verdicts; a verified target with no reasons keeps the step verdict.
+/// Both fields travel through the event → observation mapping, so a mapping that drops them
+/// (or a producer that omits them) makes the sentence fall back to the plain step verdict.
+#[test]
+fn turn_text_names_target_mismatch() {
+    use calm_types::verify_target::{
+        MismatchReason, NoCandidateReason, ProvenanceSample, Sample, VerifyTarget,
+        VerifyTargetEvidence,
+    };
+    let track = TrackId::from("track-1");
+    let sample = |head: &str, dirty: &[&str], registered: bool| Sample {
+        head: head.into(),
+        dirty: dirty.iter().map(|path| (*path).to_owned()).collect(),
+        provenance: ProvenanceSample {
+            realpath: if registered {
+                "/leases/lease-1".into()
+            } else {
+                "/tmp/external-clone".into()
+            },
+            common_dir: if registered {
+                "/repo/.git".into()
+            } else {
+                "/tmp/external-clone/.git".into()
+            },
+            registered,
+        },
+    };
+    let candidate = |evidence: VerifyTargetEvidence| VerifyTarget::Candidate {
+        candidate_id: "cand-1".into(),
+        commit_sha: "a".repeat(40),
+        lease_id: "lease-1".into(),
+        evidence,
+    };
+    let event = |status_detail: Option<&str>, target: Option<VerifyTarget>| Event::TaskGateResult {
+        task_id: "track-1:impl-parser".into(),
+        idempotency_key: "track-1:impl-parser".into(),
+        passed: false,
+        failing_step: None,
+        exit_code: None,
+        log_tail: "refused\n".into(),
+        log_path: "/tmp/gate-logs/track-1:impl-parser-g3.log".into(),
+        attempt: 3,
+        agent_message: None,
+        status_detail: status_detail.map(str::to_owned),
+        target,
+    };
+    let text = |event: &Event| {
+        harness_observation_from_event(&track, event, Some("impl-parser"))
+            .expect("gate result must map to an observation")
+            .to_turn_text()
+    };
+    let tail = "(attempt 3). Log tail:\nrefused\n\nRead the full log at \
+                runs/track-1:impl-parser/gates/3.log; read the worker output at \
+                runs/track-1:impl-parser.md.";
+
+    // 1. Refused before any step: every reason, six dirty paths (five shown), provenance line.
+    let refused = text(&event(
+        Some("gate-target-mismatch"),
+        Some(candidate(VerifyTargetEvidence::Refused {
+            cwd: "/leases/lease-1".into(),
+            before: sample(
+                &"b".repeat(40),
+                &["a.rs", "b.rs", "c.rs", "d.rs", "e.rs", "f.rs"],
+                false,
+            ),
+            reasons: vec![
+                MismatchReason::Provenance,
+                MismatchReason::Head,
+                MismatchReason::Dirty,
+            ],
+        })),
+    ));
+    assert_eq!(
+        refused,
+        format!(
+            "Task impl-parser gate REFUSED — verification target mismatch (provenance, head, dirty): \
+             expected candidate cand-1 ({}) at /leases/lease-1; found {}; dirty: 6 paths: \
+             a.rs, b.rs, c.rs, d.rs, e.rs…; cwd is not the registered lease worktree: \
+             realpath=/tmp/external-clone common_dir=/tmp/external-clone/.git registered=0; \
+             no step ran {tail}",
+            "a".repeat(40),
+            "b".repeat(40),
+        )
+    );
+    // Only the reasons present render their clause: a bare HEAD mismatch has neither.
+    let head_only = text(&event(
+        Some("gate-target-mismatch"),
+        Some(candidate(VerifyTargetEvidence::Refused {
+            cwd: "/leases/lease-1".into(),
+            before: sample(&"b".repeat(40), &["stale.txt"], true),
+            reasons: vec![MismatchReason::Head],
+        })),
+    ));
+    assert!(head_only.contains("mismatch (head): "), "{head_only}");
+    assert!(!head_only.contains("dirty:"), "{head_only}");
+    assert!(
+        !head_only.contains("registered lease worktree"),
+        "{head_only}"
+    );
+
+    // 2. Discarded after the steps: the tree changed during the gate.
+    let discarded = text(&event(
+        Some("gate-target-mismatch"),
+        Some(candidate(VerifyTargetEvidence::Verified {
+            cwd: "/leases/lease-1".into(),
+            before: sample(&"a".repeat(40), &[], true),
+            after: sample(&"c".repeat(40), &[" M Cargo.lock"], true),
+            reasons: vec![MismatchReason::Head, MismatchReason::Dirty],
+        })),
+    ));
+    assert_eq!(
+        discarded,
+        format!(
+            "Task impl-parser gate RESULT DISCARDED — checkout changed during the gate (head, dirty): \
+             HEAD {}→{}; dirty after: 1 paths:  M Cargo.lock; a step that rewrites files \
+             (e.g. cargo fmt without --check) does this; no step result is trusted; \
+             candidate cand-1 is intact {tail}",
+            "a".repeat(40),
+            "c".repeat(40),
+        )
+    );
+
+    // 3. No candidate: each delivery state and the missing row.
+    for (reason, found) in [
+        (
+            NoCandidateReason::DeliveryPending {
+                delivery_id: "del-1".into(),
+            },
+            "delivery del-1 is pending",
+        ),
+        (
+            NoCandidateReason::DeliveryFailed {
+                delivery_id: "del-1".into(),
+            },
+            "delivery del-1 is failed",
+        ),
+        (
+            NoCandidateReason::DeliveryAbandoned {
+                delivery_id: "del-1".into(),
+            },
+            "delivery del-1 is abandoned",
+        ),
+        (NoCandidateReason::NoDeliveryRow, "no delivery row"),
+    ] {
+        let no_candidate = text(&event(
+            Some("gate-infra"),
+            Some(VerifyTarget::NoCandidate { reason }),
+        ));
+        assert_eq!(
+            no_candidate,
+            format!(
+                "Task impl-parser gate REFUSED — no candidate to verify: {found}; \
+                 the gate was admitted before settlement; no step ran {tail}"
+            )
+        );
+    }
+
+    // `gate-timeout` / `gate-infra` render the class whatever the step/exit attribution (M2):
+    // the producers keep the running step on a timeout (`gate_process.rs` `timeout_verdict`)
+    // and the exit code on a handshake failure (exit 75, `gate-infra`); `gate-red` and an
+    // absent detail keep today's bare verdict word for word.
+    let attributed = |step: Option<&str>, code: Option<i32>, detail: Option<&str>| {
+        let mut event = event(detail, None);
+        if let Event::TaskGateResult {
+            failing_step,
+            exit_code,
+            ..
+        } = &mut event
+        {
+            *failing_step = step.map(str::to_owned);
+            *exit_code = code;
+        }
+        event
+    };
+    for (step, code, detail, verdict) in [
+        (None, None, Some("gate-timeout"), "FAILED (gate-timeout)"),
+        (None, None, Some("gate-infra"), "FAILED (gate-infra)"),
+        (
+            Some("test"),
+            None,
+            Some("gate-timeout"),
+            "FAILED (gate-timeout) at step test",
+        ),
+        (
+            None,
+            Some(75),
+            Some("gate-infra"),
+            "FAILED (gate-infra, exit 75)",
+        ),
+        (None, None, Some("gate-red"), "FAILED"),
+        (None, None, None, "FAILED"),
+        (
+            Some("test"),
+            Some(101),
+            Some("gate-red"),
+            "FAILED at step test (exit 101)",
+        ),
+        (Some("test"), None, None, "FAILED at step test"),
+        (None, Some(75), None, "FAILED (exit 75)"),
+    ] {
+        let plain = text(&attributed(step, code, detail));
+        assert_eq!(plain, format!("Task impl-parser gate {verdict} {tail}"));
+    }
+    // An unsampled target keeps the verdict; `status_detail` alone says what happened.
+    let unsampled = text(&event(
+        Some("gate-infra"),
+        Some(candidate(VerifyTargetEvidence::Unsampled {
+            phase: calm_types::verify_target::SamplePhase::Finalize {
+                cwd: "/leases/lease-1".into(),
+                reason: "git status exited 128".into(),
+            },
+        })),
+    ));
+    assert_eq!(
+        unsampled,
+        format!("Task impl-parser gate FAILED (gate-infra) {tail}")
+    );
+    // A verified target with no reasons is the ordinary verdict; an unbound target too.
+    let verified = text(&event(
+        Some("gate-infra"),
+        Some(candidate(VerifyTargetEvidence::Verified {
+            cwd: "/leases/lease-1".into(),
+            before: sample(&"a".repeat(40), &[], true),
+            after: sample(&"a".repeat(40), &[], true),
+            reasons: vec![],
+        })),
+    ));
+    assert_eq!(
+        verified,
+        format!("Task impl-parser gate FAILED (gate-infra) {tail}")
+    );
+    let unbound = text(&event(
+        None,
+        Some(VerifyTarget::Unbound {
+            reason: calm_types::verify_target::UnboundReason::LegacyLease,
+        }),
+    ));
+    assert_eq!(unbound, format!("Task impl-parser gate FAILED {tail}"));
 }
 
 #[test]
@@ -931,6 +1181,8 @@ fn event_warrants_planner_push_covers_push_allowlist() {
         log_path: "/tmp/gate.log".into(),
         attempt: 1,
         agent_message: None,
+        status_detail: None,
+        target: None,
     };
     assert!(event_warrants_planner_push(
         &gate_result,
@@ -1912,6 +2164,8 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
                 log_path: "/tmp/gate.log".into(),
                 attempt: 1,
                 agent_message: None,
+                status_detail: None,
+                target: None,
             },
             ActorId::KernelDispatcher,
             true,

@@ -651,6 +651,100 @@ async fn report_blocks_gate_admission_matrix_pins_diagnostics_and_projection() {
     }
 }
 
+/// #1727 S4 D3 (oracle 1n, A13): a `codex` / `claude` declaration whose `gate` carries a `cwd`
+/// key is written (the report write is not rejected; `docRev` advances) but not admitted: the
+/// read surface reports `gate_cwd_on_agent_task` (path `gate`, action `remove_gate_cwd`), no
+/// `tasks` row exists and the pending reason is `notAdmitted`. The criterion is the key's
+/// presence, not its value: an empty `cwd` never reaches the projection because the existing
+/// payload validator (`validate_gate_shape`) refuses the whole write, and terminal tasks keep
+/// `gate.cwd`.
+#[tokio::test]
+async fn agent_task_gate_cwd_not_admitted_at_claim() {
+    let boot = new_boot().await;
+    let gate = |cwd: Value| json!({"cwd": cwd, "steps": [{"name": "check", "cmd": "true"}]});
+    let doc_rev_before = read(&boot).await["docRev"].as_u64().unwrap();
+
+    let mut refused = task("claude-gate-cwd");
+    refused["kind"] = json!("claude");
+    refused["gate"] = gate(json!("/tmp/x"));
+    upsert(&boot, None, refused).await;
+    let mut codex = task("codex-gate-cwd");
+    codex["gate"] = gate(json!("/tmp/y"));
+    upsert(&boot, None, codex).await;
+    let mut empty = task("codex-gate-empty-cwd");
+    empty["gate"] = gate(json!(""));
+    let empty_error = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        planner_identity(&boot),
+        json!({"kind": "task", "payload": empty, "if_doc_rev": read(&boot).await["docRev"]}),
+    )
+    .await
+    .expect_err("an empty gate.cwd is refused before projection");
+    assert_eq!(empty_error.code, -32602, "{empty_error:?}");
+    assert!(
+        empty_error
+            .message
+            .contains("gate.cwd must be non-empty when present"),
+        "{empty_error:?}"
+    );
+    let mut terminal = task("terminal-gate-cwd");
+    terminal["kind"] = json!("terminal");
+    terminal.as_object_mut().unwrap().remove("goal");
+    terminal["command"] = json!("true");
+    terminal["gate"] = gate(json!("/tmp/x"));
+    upsert(&boot, None, terminal).await;
+
+    let snapshot = read(&boot).await;
+    assert!(
+        snapshot["docRev"].as_u64().unwrap() > doc_rev_before,
+        "the report write itself is accepted: {snapshot}"
+    );
+    for key in ["claude-gate-cwd", "codex-gate-cwd"] {
+        let verdict = task_verdict(&snapshot, key);
+        assert_eq!(verdict["schedulable"], false, "{key}: {verdict}");
+        let diagnostic = verdict["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|diagnostic| diagnostic["code"] == "gate_cwd_on_agent_task")
+            .unwrap_or_else(|| panic!("{key}: gate_cwd_on_agent_task missing in {verdict}"));
+        assert_eq!(diagnostic["path"], "gate", "{key}");
+        assert_eq!(diagnostic["action"], "remove_gate_cwd", "{key}");
+        assert!(
+            diagnostic["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("cd <subdir> && …")),
+            "{key}: {diagnostic}"
+        );
+        let reason = &verdict["pendingReason"];
+        assert_eq!(reason["kind"], "notAdmitted", "{key}: {reason}");
+        assert!(
+            reason["diagnosticCodes"]
+                .as_array()
+                .is_some_and(|codes| codes.iter().any(|code| code == "gate_cwd_on_agent_task")),
+            "{key}: {reason}"
+        );
+        assert!(
+            reason["actions"]
+                .as_array()
+                .is_some_and(|actions| actions.iter().any(|action| action == "remove_gate_cwd")),
+            "{key}: {reason}"
+        );
+        assert!(
+            !has_diagnostic_code(&snapshot, key, "gate_required"),
+            "{key}: a gate is declared; only its cwd is refused"
+        );
+    }
+    let terminal_verdict = task_verdict(&snapshot, "terminal-gate-cwd");
+    assert_eq!(terminal_verdict["schedulable"], true, "{terminal_verdict}");
+    assert!(
+        !has_diagnostic_code(&snapshot, "terminal-gate-cwd", "gate_cwd_on_agent_task"),
+        "{terminal_verdict}"
+    );
+    assert_eq!(keys(&boot).await, vec!["terminal-gate-cwd".to_string()]);
+}
+
 #[tokio::test]
 async fn production_reads_attach_task_state_and_read_time_diagnostics() {
     let boot = new_boot().await;

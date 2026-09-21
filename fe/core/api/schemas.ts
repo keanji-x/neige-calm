@@ -834,7 +834,79 @@ export const worktreeRemovedSchema = z.object({
   }),
 });
 
-/** One `task-verify` attempt finished; `failing_step` / `exit_code` are absent for verdicts that don't carry them. */
+/** #1727 S4 D3.0: which check of one checkout sample failed against the candidate. */
+export const mismatchReasonSchema = z.enum(['provenance', 'head', 'dirty']);
+
+/** The lease-provenance observation line (`realpath`, `common_dir`, `registered`) of one sample. */
+export const provenanceSampleSchema = z.object({
+  realpath: z.string(),
+  common_dir: z.string(),
+  registered: z.boolean(),
+});
+
+/** One D3.0 sample: HEAD, porcelain status lines, provenance. */
+export const sampleSchema = z.object({
+  head: z.string(),
+  dirty: z.array(z.string()),
+  provenance: provenanceSampleSchema,
+});
+
+/** Where sampling failed; `cwd` is absent only in `prepare`. */
+export const samplePhaseSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('prepare'), reason: z.string() }),
+  z.object({ kind: z.literal('finalize'), cwd: z.string(), reason: z.string() }),
+  z.object({ kind: z.literal('compensation'), cwd: z.string(), reason: z.string() }),
+  z.object({ kind: z.literal('reconciliation'), cwd: z.string(), last_error: z.string() }),
+]);
+
+/** How the checkout was compared to the candidate: refused before any step, verified before and after, or unsampled. */
+export const verifyTargetEvidenceSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('refused'),
+    cwd: z.string(),
+    before: sampleSchema,
+    reasons: z.array(mismatchReasonSchema),
+  }),
+  z.object({
+    kind: z.literal('verified'),
+    cwd: z.string(),
+    before: sampleSchema,
+    after: sampleSchema,
+    reasons: z.array(mismatchReasonSchema),
+  }),
+  z.object({ kind: z.literal('unsampled'), phase: samplePhaseSchema }),
+]);
+
+/** The delivery state the gate found instead of a candidate; each variant carries only facts that exist. */
+export const noCandidateReasonSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('delivery_pending'), delivery_id: z.string() }),
+  z.object({ kind: z.literal('delivery_failed'), delivery_id: z.string() }),
+  z.object({ kind: z.literal('delivery_abandoned'), delivery_id: z.string() }),
+  z.object({ kind: z.literal('no_delivery_row') }),
+]);
+
+/** Why a gate checked nothing against a candidate. */
+export const unboundReasonSchema = z.enum([
+  'legacy_lease', 'legacy_frozen', 'legacy_verdict', 'terminal',
+]);
+
+/** #1727 S4 D3: what a gate verdict was checked against. */
+export const verifyTargetSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('candidate'),
+    candidate_id: z.string(),
+    commit_sha: z.string(),
+    lease_id: z.string(),
+    evidence: verifyTargetEvidenceSchema,
+  }),
+  z.object({ kind: z.literal('no_candidate'), reason: noCandidateReasonSchema }),
+  z.object({ kind: z.literal('unbound'), reason: unboundReasonSchema }),
+]);
+
+/**
+ * One `task-verify` attempt finished; `failing_step` / `exit_code` are absent for verdicts that don't carry them.
+ * `status_detail` / `target` (#1727 S4 slice 4) are absent on a passed verdict and on pre-slice-4 producers.
+ */
 export const taskGateResultSchema = z.object({
   ev: z.literal('task.gate_result'),
   data: z.object({
@@ -847,6 +919,8 @@ export const taskGateResultSchema = z.object({
     log_path: z.string(),
     attempt: z.number(),
     agent_message: z.string().optional(),
+    status_detail: z.string().optional(),
+    target: verifyTargetSchema.optional(),
   }),
 });
 
