@@ -10,6 +10,10 @@ async fn a_fresh_template_can_report_repository_mismatch_without_tasks_or_ratifi
     }))).await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
     let track = created["id"].as_str().unwrap();
+    assert_eq!(
+        boot.repo.track_get(track).await.unwrap().unwrap().lifecycle,
+        calm_server::model::TrackLifecycle::Draft
+    );
     let (ctx, registry, identity) = planner_tool_channel(&boot, track).await;
     let read = call_planner_tool(
         &ctx,
@@ -62,7 +66,7 @@ async fn a_fresh_template_can_report_repository_mismatch_without_tasks_or_ratifi
     let track_row = boot.repo.track_get(track).await.unwrap().unwrap();
     assert_eq!(
         track_row.lifecycle,
-        calm_server::model::TrackLifecycle::Draft
+        calm_server::model::TrackLifecycle::Planning
     );
     let card = boot
         .repo

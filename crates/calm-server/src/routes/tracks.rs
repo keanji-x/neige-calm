@@ -3413,7 +3413,17 @@ mod tests {
         assert!(compiled.task_block_payloads().unwrap().is_empty());
         assert!(compiled.declarations.is_empty());
         assert!(!compiled.payload.body.contains("```neige-block task"));
-        assert!(compiled.payload.body.contains("before\n\n---"));
+        let markup: Vec<_> = pulldown_cmark::Parser::new(&compiled.payload.body).collect();
+        assert_eq!(
+            markup,
+            vec![
+                pulldown_cmark::Event::Start(pulldown_cmark::Tag::Paragraph),
+                pulldown_cmark::Event::Text("before".into()),
+                pulldown_cmark::Event::End(pulldown_cmark::TagEnd::Paragraph),
+                pulldown_cmark::Event::Rule,
+            ],
+            "removing a task must not turn its prose neighbors into a Setext heading"
+        );
         let context = serde_json::to_value(compiled.template_context.unwrap()).unwrap();
         assert_eq!(context["body"], body);
         assert_eq!(context["title"], "Example");
