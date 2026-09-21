@@ -9,6 +9,9 @@ use crate::git_candidate::{DeliveryFailureCode, DeliverySettlement};
 use crate::ids::{CardId, TrackId};
 use crate::model::{HarnessInputPresentation, HarnessInputSegment};
 use crate::report_edit_diff::{self, ReportBlockRef};
+use crate::verify_target::{
+    MismatchReason, NoCandidateReason, Sample, VerifyTarget, VerifyTargetEvidence, render_reasons,
+};
 
 mod receipt;
 
@@ -64,7 +67,8 @@ pub enum Observation {
         text: String,
     },
     /// The kernel gate runner recorded a verdict for one gate attempt. Hard-fired: for a gated task this
-    /// REPLACES the suppressed worker self-report as the planner's wake-up.
+    /// REPLACES the suppressed worker self-report as the planner's wake-up. `status_detail` and
+    /// `target` (#1727 S4 slice 4) are absent on observations persisted before they existed.
     TaskGateResult {
         idempotency_key: String,
         key: String,
@@ -75,6 +79,11 @@ pub enum Observation {
         exit_code: Option<i32>,
         log_tail: String,
         attempt: i64,
+        #[serde(default)]
+        status_detail: Option<String>,
+        /// Boxed: a candidate target carries two checkout samples (`clippy::large_enum_variant`).
+        #[serde(default)]
+        target: Option<Box<VerifyTarget>>,
     },
     /// One Git delivery settled (#1727 S4). Hard-fired: it is the wake the suppressed worker
     /// self-report would have been. `retained_path` is the lease worktree while it still exists.
@@ -307,7 +316,6 @@ impl Observation {
             } => format!(
                 "A worker card finished a turn. Re-read the track state to incorporate any changes.\n(hook_id={idempotency_key})"
             ),
-            // `failing_step` is absent on timeout/infra verdicts; the log tail carries the reason there.
             Observation::TaskGateResult {
                 idempotency_key,
                 key,
@@ -316,23 +324,22 @@ impl Observation {
                 exit_code,
                 log_tail,
                 attempt,
+                status_detail,
+                target,
             } => {
-                let verdict = if *passed {
-                    "passed".to_string()
-                } else {
-                    match (failing_step.as_deref(), exit_code) {
-                        (Some(step), Some(code)) => {
-                            format!("FAILED at step {step} (exit {code})")
-                        }
-                        (Some(step), None) => format!("FAILED at step {step}"),
-                        (None, Some(code)) => format!("FAILED (exit {code})"),
-                        (None, None) => "FAILED".to_string(),
-                    }
-                };
+                let head = gate_result_text(
+                    key,
+                    *passed,
+                    failing_step.as_deref(),
+                    *exit_code,
+                    status_detail.as_deref(),
+                    target.as_deref(),
+                    *attempt,
+                );
                 // The tail is rendered with runs of identical consecutive lines folded; the stored observation keeps every line.
                 let log_tail = collapse_repeated_lines(log_tail);
                 format!(
-                    "Task {key} gate {verdict} (attempt {attempt}). Log tail:\n{log_tail}\nRead the full log at runs/{idempotency_key}/gates/{attempt}.log; read the worker output at runs/{idempotency_key}.md."
+                    "{head} Log tail:\n{log_tail}\nRead the full log at runs/{idempotency_key}/gates/{attempt}.log; read the worker output at runs/{idempotency_key}.md."
                 )
             }
             // Slice 2 wording: no delivery tool and no `base:{attempt}` yet (slices 3 and 5 append them).
@@ -477,6 +484,136 @@ impl Observation {
     }
 }
 
+/// The head sentence of a gate-result wake (everything before ` Log tail:`), #1727 S4 D3.
+/// A refused, discarded or no-candidate target names the target instead of the step verdict;
+/// every other target (`Unbound`, `Verified` with no reasons, `Unsampled`, absent) keeps the step
+/// verdict. A `gate-timeout` / `gate-infra` detail always names its class, with the step / exit
+/// attribution appended when the producer kept one; `gate-red` and an absent detail stay bare.
+fn gate_result_text(
+    key: &str,
+    passed: bool,
+    failing_step: Option<&str>,
+    exit_code: Option<i32>,
+    status_detail: Option<&str>,
+    target: Option<&VerifyTarget>,
+    attempt: i64,
+) -> String {
+    match target {
+        Some(VerifyTarget::Candidate {
+            candidate_id,
+            commit_sha,
+            evidence:
+                VerifyTargetEvidence::Refused {
+                    cwd,
+                    before,
+                    reasons,
+                },
+            ..
+        }) => format!(
+            "Task {key} gate REFUSED — verification target mismatch ({}): \
+             expected candidate {candidate_id} ({commit_sha}) at {cwd}; found {}{}{}; \
+             no step ran (attempt {attempt}).",
+            render_reasons(reasons),
+            before.head,
+            dirty_clause("dirty", before, reasons),
+            provenance_clause(before, reasons),
+        ),
+        Some(VerifyTarget::Candidate {
+            candidate_id,
+            evidence:
+                VerifyTargetEvidence::Verified {
+                    before,
+                    after,
+                    reasons,
+                    ..
+                },
+            ..
+        }) if !reasons.is_empty() => format!(
+            "Task {key} gate RESULT DISCARDED — checkout changed during the gate ({}): \
+             HEAD {}→{}{}{}; a step that rewrites files (e.g. cargo fmt without --check) \
+             does this; no step result is trusted; candidate {candidate_id} is intact \
+             (attempt {attempt}).",
+            render_reasons(reasons),
+            before.head,
+            after.head,
+            dirty_clause("dirty after", after, reasons),
+            provenance_clause(after, reasons),
+        ),
+        Some(VerifyTarget::NoCandidate { reason }) => {
+            let found = match reason {
+                NoCandidateReason::DeliveryPending { delivery_id } => {
+                    format!("delivery {delivery_id} is pending")
+                }
+                NoCandidateReason::DeliveryFailed { delivery_id } => {
+                    format!("delivery {delivery_id} is failed")
+                }
+                NoCandidateReason::DeliveryAbandoned { delivery_id } => {
+                    format!("delivery {delivery_id} is abandoned")
+                }
+                NoCandidateReason::NoDeliveryRow => "no delivery row".to_string(),
+            };
+            format!(
+                "Task {key} gate REFUSED — no candidate to verify: {found}; \
+                 the gate was admitted before settlement; no step ran (attempt {attempt})."
+            )
+        }
+        _ => {
+            // A timeout keeps the step that was running and a handshake failure keeps its exit
+            // code, so the class is rendered on its own and the attribution follows it.
+            let class =
+                status_detail.filter(|detail| matches!(*detail, "gate-timeout" | "gate-infra"));
+            let verdict = if passed {
+                "passed".to_string()
+            } else {
+                match (class, failing_step, exit_code) {
+                    (None, Some(step), Some(code)) => {
+                        format!("FAILED at step {step} (exit {code})")
+                    }
+                    (None, Some(step), None) => format!("FAILED at step {step}"),
+                    (None, None, Some(code)) => format!("FAILED (exit {code})"),
+                    (None, None, None) => "FAILED".to_string(),
+                    (Some(class), Some(step), Some(code)) => {
+                        format!("FAILED ({class}) at step {step} (exit {code})")
+                    }
+                    (Some(class), Some(step), None) => format!("FAILED ({class}) at step {step}"),
+                    (Some(class), None, Some(code)) => format!("FAILED ({class}, exit {code})"),
+                    (Some(class), None, None) => format!("FAILED ({class})"),
+                }
+            };
+            format!("Task {key} gate {verdict} (attempt {attempt}).")
+        }
+    }
+}
+
+/// `; dirty: N paths: a, b, …` (first five, `…` beyond) when `reasons` names the porcelain status.
+fn dirty_clause(label: &str, sample: &Sample, reasons: &[MismatchReason]) -> String {
+    if !reasons.contains(&MismatchReason::Dirty) {
+        return String::new();
+    }
+    let shown = sample.dirty.iter().take(5).cloned().collect::<Vec<_>>();
+    let more = if sample.dirty.len() > shown.len() {
+        "…"
+    } else {
+        ""
+    };
+    format!(
+        "; {label}: {} paths: {}{more}",
+        sample.dirty.len(),
+        shown.join(", ")
+    )
+}
+
+/// `; cwd is not the registered lease worktree: <provenance line>` when `reasons` names identity.
+fn provenance_clause(sample: &Sample, reasons: &[MismatchReason]) -> String {
+    if !reasons.contains(&MismatchReason::Provenance) {
+        return String::new();
+    }
+    format!(
+        "; cwd is not the registered lease worktree: {}",
+        sample.provenance.render()
+    )
+}
+
 /// Rewrite runs of two or more identical consecutive lines as one `<line> (×N)` line (a run of
 /// blank lines as `(blank ×N)`). Lines are split with `str::lines`, so CRLF comes back as `\n`.
 /// Never applied to stored payloads or files on disk.
@@ -564,10 +701,71 @@ mod tests {
             exit_code: Some(0),
             log_tail: "ok\nwarn\nwarn\nwarn\n".into(),
             attempt: 1,
+            status_detail: None,
+            target: None,
         };
         let text = obs.to_turn_text();
         assert!(text.contains("Log tail:\nok\nwarn (×3)\n"), "{text}");
         assert!(!text.contains("warn\nwarn"), "{text}");
+    }
+
+    /// #1727 S4 slice 4: an observation persisted by a pre-slice-4 harness snapshot has neither
+    /// `status_detail` nor `target`; it decodes (both `None`) and renders today's sentence.
+    #[test]
+    fn gate_result_observation_reads_pre_upgrade_snapshot() {
+        let legacy = serde_json::json!({
+            "type": "task_gate_result",
+            "idempotency_key": "w:k",
+            "key": "k",
+            "passed": false,
+            "failing_step": "test",
+            "exit_code": 101,
+            "log_tail": "boom\n",
+            "attempt": 2
+        });
+        let decoded: Observation = serde_json::from_value(legacy).unwrap();
+        assert_eq!(
+            decoded,
+            Observation::TaskGateResult {
+                idempotency_key: "w:k".into(),
+                key: "k".into(),
+                passed: false,
+                failing_step: Some("test".into()),
+                exit_code: Some(101),
+                log_tail: "boom\n".into(),
+                attempt: 2,
+                status_detail: None,
+                target: None,
+            }
+        );
+        assert!(
+            decoded.to_turn_text().starts_with(
+                "Task k gate FAILED at step test (exit 101) (attempt 2). Log tail:\nboom\n"
+            ),
+            "{}",
+            decoded.to_turn_text()
+        );
+        // The upgraded shape round-trips with both fields present.
+        let upgraded = Observation::TaskGateResult {
+            idempotency_key: "w:k".into(),
+            key: "k".into(),
+            passed: false,
+            failing_step: None,
+            exit_code: None,
+            log_tail: String::new(),
+            attempt: 1,
+            status_detail: Some("gate-infra".into()),
+            target: Some(Box::new(VerifyTarget::NoCandidate {
+                reason: NoCandidateReason::NoDeliveryRow,
+            })),
+        };
+        let wire = serde_json::to_value(&upgraded).unwrap();
+        assert_eq!(wire["status_detail"], "gate-infra");
+        assert_eq!(wire["target"]["kind"], "no_candidate");
+        assert_eq!(
+            serde_json::from_value::<Observation>(wire).unwrap(),
+            upgraded
+        );
     }
 
     #[test]
@@ -971,6 +1169,8 @@ mod tests {
             exit_code: Some(1),
             log_tail: "first evidence".into(),
             attempt: 2,
+            status_detail: None,
+            target: None,
         };
         let serialized = serde_json::to_value(&observation).unwrap();
         let restored: Observation = serde_json::from_value(serialized).unwrap();

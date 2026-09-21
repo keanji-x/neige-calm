@@ -25,6 +25,7 @@ pub const TASK_DIAGNOSTIC_CODES: &[&str] = &[
     "tombstone_blocks_redeclaration",
     "unknown_dependency",
     "gate_required",
+    "gate_cwd_on_agent_task",
     "reference_needs_block",
     "reference_missing",
     "reference_cross_area",
@@ -47,6 +48,7 @@ pub const TASK_DIAGNOSTIC_CODE_PATHS: &[(&str, &str)] = &[
     ("tombstone_blocks_redeclaration", "key"),
     ("unknown_dependency", "depends_on"),
     ("gate_required", "gate"),
+    ("gate_cwd_on_agent_task", "gate"),
     ("reference_needs_block", "refs"),
     ("reference_missing", "refs"),
     ("reference_cross_area", "refs"),
@@ -276,6 +278,11 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
         }
         "unknown_dependency" => format!("unknown dependency `{}`", arg(args, "dependency")),
         "gate_required" => "task requires a gate or no_gate_reason".into(),
+        "gate_cwd_on_agent_task" => {
+            "codex/claude tasks do not take gate.cwd: the gate runs in the worker's lease worktree; \
+             write a sub-directory gate as `cd <subdir> && …` inside the step"
+                .into()
+        }
         "reference_needs_block" => format!(
             "reference `{}` must identify a block",
             arg(args, "reference")
@@ -552,6 +559,25 @@ pub fn gate_rule_violations(declarations: &[TaskDeclaration], require_gates: boo
             declaration.kind != "terminal"
                 && declaration.gate.is_none()
                 && declaration.no_gate_reason.is_none()
+        })
+        .map(|declaration| declaration.key.clone())
+        .collect()
+}
+
+/// #1727 S4 D3: a `codex` / `claude` declaration whose `gate` carries a `cwd` key is not
+/// admitted — its gate runs in the worker's lease worktree and a directory of its own would
+/// defeat the candidate check. The criterion is the key's presence, not its value (an empty
+/// string counts); terminal tasks keep `gate.cwd`. Returns the offending keys.
+pub fn gate_cwd_violations(declarations: &[TaskDeclaration]) -> Vec<String> {
+    declarations
+        .iter()
+        .filter(|declaration| !declaration.tombstone)
+        .filter(|declaration| {
+            matches!(declaration.kind.as_str(), "codex" | "claude")
+                && declaration
+                    .gate
+                    .as_ref()
+                    .is_some_and(|gate| gate.cwd.is_some())
         })
         .map(|declaration| declaration.key.clone())
         .collect()
@@ -1077,6 +1103,91 @@ mod tests {
         );
     }
 
+    /// #1727 S4 D3 (review round 1): `gate.cwd: null` is not a violation. `GateInput.cwd` is an
+    /// `Option<String>`, so `null` reads as absent at every layer (validation, this extraction,
+    /// the adapter's `filter(non-empty)`); it cannot point the gate anywhere, which is what the
+    /// key-presence criterion refuses. Pinned so the decision is visible, not accidental.
+    #[test]
+    fn gate_cwd_null_reads_as_absent() {
+        let block = ReportBlock {
+            id: "b_0001".into(),
+            kind: super::super::KIND_TASK.into(),
+            rev: 0,
+            payload: json!({"key":"null-cwd","kind":"codex","goal":"Check","ready":true,
+                "declared_by":PLANNER_DECLARATION_AUTHOR,
+                "gate":{"cwd":null,"steps":[{"name":"check","cmd":"true"}]}}),
+        };
+        let (declarations, diagnostics) = project_task_declarations(&[block]);
+        assert!(diagnostics.iter().all(Vec::is_empty), "{diagnostics:?}");
+        assert_eq!(declarations.len(), 1);
+        assert_eq!(
+            declarations[0]
+                .gate
+                .as_ref()
+                .and_then(|gate| gate.cwd.clone()),
+            None
+        );
+        assert!(gate_cwd_violations(&declarations).is_empty());
+    }
+
+    /// #1727 S4 D3: the predicate fires on the presence of the `cwd` key (an empty string too),
+    /// never on terminal declarations or tombstones, and never on a gate without `cwd`.
+    #[test]
+    fn gate_cwd_violations_fire_on_the_key_not_the_value() {
+        let gate = |cwd: Option<&str>| {
+            Some(GateInput {
+                cwd: cwd.map(str::to_owned),
+                timeout_secs: None,
+                steps: vec![GateStepInput {
+                    name: "check".into(),
+                    cmd: "true".into(),
+                }],
+            })
+        };
+        let declarations = vec![
+            TaskDeclaration {
+                gate: gate(Some("/tmp/x")),
+                ..declaration("codex-cwd", &[])
+            },
+            TaskDeclaration {
+                kind: "claude".into(),
+                gate: gate(Some("")),
+                ..declaration("claude-empty-cwd", &[])
+            },
+            TaskDeclaration {
+                gate: gate(None),
+                ..declaration("codex-no-cwd", &[])
+            },
+            TaskDeclaration {
+                kind: "terminal".into(),
+                gate: gate(Some("/tmp/x")),
+                ..declaration("terminal-cwd", &[])
+            },
+            TaskDeclaration {
+                gate: gate(Some("/tmp/x")),
+                ..tombstone("gone")
+            },
+            declaration("ungated", &[]),
+        ];
+        assert_eq!(
+            gate_cwd_violations(&declarations),
+            vec!["codex-cwd", "claude-empty-cwd"]
+        );
+        let rendered = Diagnostic::coded(
+            "gate_cwd_on_agent_task",
+            "gate",
+            BTreeMap::new(),
+            vec![],
+            None,
+            Some("remove_gate_cwd".into()),
+        );
+        assert!(
+            rendered.message.contains("cd <subdir> && …"),
+            "{}",
+            rendered.message
+        );
+    }
+
     #[test]
     fn tombstones_only_participate_in_duplicate_and_tombstone_predicates() {
         let declarations = vec![declaration("consumer", &["removed"]), tombstone("removed")];
@@ -1139,6 +1250,7 @@ mod tests {
             ("tombstone_blocks_redeclaration", "key"),
             ("unknown_dependency", "depends_on"),
             ("gate_required", "gate"),
+            ("gate_cwd_on_agent_task", "gate"),
             ("reference_needs_block", "refs"),
             ("reference_missing", "refs"),
             ("reference_cross_area", "refs"),

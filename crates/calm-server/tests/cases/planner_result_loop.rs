@@ -78,7 +78,7 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
         "key":"audit", "kind":"codex", "goal":"Audit config.json without changing it; timeout_secs must be positive. Write matching JSON to audit.json and your result: subject (source version), valid (boolean), findings (array with id, field, actual, recommendation for each finding).",
         "acceptance":"Report one finding with actual equal to the observed source value and a valid timeout recommendation. Set valid according to source validity; preserve the source.",
         "ready":true, "declared_by":PLANNER_DECLARATION_AUTHOR,
-        "gate":{"cwd":dir.path(), "timeout_secs":5, "steps":[{"name":"audit",
+        "gate":{"timeout_secs":5, "steps":[{"name":"audit",
             "cmd":"python3 -c 'import json; a=json.load(open(\"audit.json\")); c=json.load(open(\"config.json\")); assert a[\"findings\"][0][\"actual\"] == c[\"timeout_secs\"] == -1; assert a[\"valid\"] is False; print(\"audit-json-checked\")'"}]}
     })).await;
     let mut downstream = json!({"key":"recommendation", "kind":"codex",
@@ -88,6 +88,19 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
     let (b_block, b_rev) = declare(&boot, downstream.clone()).await;
     let a = current(&boot, "audit").await;
     assert_ne!(a.id, a.key, "execution IDs are opaque, not author keys");
+    // A codex declaration does not take `gate.cwd` (#1727 S4): the gate runs in the bound
+    // worker's lease worktree, so the worker card gets a released lease at `dir`.
+    sqlx::query(
+        "INSERT INTO workspace_leases (lease_id, path, card_id, track_id, state, lease_owner, \
+         lease_until_ms, created_at_ms, updated_at_ms) \
+         VALUES ('audit-checkout', ?1, ?2, ?3, 'released', 'test', 1, 1, 1)",
+    )
+    .bind(dir.path().to_str().unwrap())
+    .bind(boot.worker_card_id.as_str())
+    .bind(boot.track_id.as_str())
+    .execute(&boot.repo.sqlite_pool().unwrap())
+    .await
+    .unwrap();
     start(&boot, &scheduler, &a, boot.worker_card_id.as_str()).await;
     let result = json!({
         "subject":"config-v1", "valid":false, "findings":[{

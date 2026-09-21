@@ -885,6 +885,8 @@ mod tests {
                     log_path: "/tmp/gate.log".into(),
                     attempt: 1,
                     agent_message: None,
+                    status_detail: None,
+                    target: None,
                 },
                 true,
             ),
@@ -956,6 +958,8 @@ mod tests {
                     exit_code: Some(0),
                     log_tail: "ok\n".into(),
                     attempt: 1,
+                    status_detail: None,
+                    target: None,
                 },
             ],
             "only the running worker's stop hook and the gate result replay"

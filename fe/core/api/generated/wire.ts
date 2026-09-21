@@ -226,7 +226,16 @@ delivery_id?: string,
 /**
  * #1727 S4: the delivery script's ancestry observation of `commit_sha` against the lease base.
  */
-base_is_ancestor?: boolean, } } | { "ev": "worktree.removed", "data": { track_id: TrackId, card_id: CardId, path: string, } } | { "ev": "task.gate_result", "data": { task_id: string, idempotency_key: string, passed: boolean, failing_step?: string, exit_code?: number, log_tail: string, log_path: string, attempt: number, agent_message?: string, } };
+base_is_ancestor?: boolean, } } | { "ev": "worktree.removed", "data": { track_id: TrackId, card_id: CardId, path: string, } } | { "ev": "task.gate_result", "data": { task_id: string, idempotency_key: string, passed: boolean, failing_step?: string, exit_code?: number, log_tail: string, log_path: string, attempt: number, agent_message?: string, 
+/**
+ * #1727 S4: the verdict's classification (`gate-red` / `gate-timeout` / `gate-infra` /
+ * `gate-target-mismatch`); absent on a passed verdict and on pre-slice-4 producers.
+ */
+status_detail?: string, 
+/**
+ * #1727 S4: what the verdict was checked against (D3); absent on pre-slice-4 producers.
+ */
+target?: VerifyTarget, } };
 
 /**
  * Where an event lives in the area → track → card hierarchy.
@@ -274,9 +283,20 @@ export type HarnessQueueChange = "edited" | "deleted" | "steered" | "restored" |
 
 export type McpCheckResult = { tools: Array<string>, };
 
+/**
+ * Which D3.0 check failed. `reasons` empty means the sample matched the candidate.
+ */
+export type MismatchReason = "provenance" | "head" | "dirty";
+
 export type MobileProvider = "unavailable" | "funnel" | "private-tailnet";
 
 export type MobileStatus = { provider: MobileProvider, tailnet: TailnetStatus | null, available: boolean, publicUrl: string | null, pending: Array<PendingPair>, devices: Array<PairedDevice>, };
+
+/**
+ * The delivery state the gate found instead of a candidate. Each variant carries only facts
+ * that exist: no `candidate_id` / `commit_sha` is minted for a delivery that produced none.
+ */
+export type NoCandidateReason = { "kind": "delivery_pending", delivery_id: string, } | { "kind": "delivery_failed", delivery_id: string, } | { "kind": "delivery_abandoned", delivery_id: string, } | { "kind": "no_delivery_row" };
 
 export type Overlay = { id: string, plugin_id: string, 
 /**
@@ -334,6 +354,12 @@ export type ProposalDecision = "accepted" | "rejected" | "stale" | "withdrawn";
  */
 export type ProposalOp = { "op": "upsert_block", block_id?: string, temp_id?: string, kind: string, payload: unknown, if_rev?: number, anchor?: ProposalAnchor, } | { "op": "move_block", block_id: string, if_rev: number, anchor: ProposalAnchor, } | { "op": "delete_block", block_id: string, if_rev: number, };
 
+/**
+ * The observation line `GIT_LEASE_PROVENANCE_SCRIPT` prints to stderr:
+ * `provenance realpath=<path> common_dir=<path> registered=<0|1>`.
+ */
+export type ProvenanceSample = { realpath: string, common_dir: string, registered: boolean, };
+
 export type RatifyDecision = "grant" | "deny";
 
 /**
@@ -345,6 +371,17 @@ export type ReportBlock = { id: string, kind: string, rev: number, payload: unkn
  * Logical review subject key for `review.round`.
  */
 export type ReviewSubject = { phase: string, slice_id: string, pr_number: number | null, };
+
+/**
+ * One D3.0 sample of a checkout: HEAD, the porcelain status lines, and the lease-provenance observation.
+ */
+export type Sample = { head: string, dirty: Array<string>, provenance: ProvenanceSample, };
+
+/**
+ * Where sampling failed. `cwd` is absent only in `Prepare` (nothing was frozen yet); the other
+ * three phases carry the frozen cwd.
+ */
+export type SamplePhase = { "kind": "prepare", reason: string, } | { "kind": "finalize", cwd: string, reason: string, } | { "kind": "compensation", cwd: string, reason: string, } | { "kind": "reconciliation", cwd: string, last_error: string, };
 
 /**
  * Where a body came from. Stored verbatim as the row's `origin` column.
@@ -641,6 +678,11 @@ frozen_at: number | null, };
 export type TrackWorkspaceKind = "managed" | "attached";
 
 /**
+ * Why a gate ran without a candidate to check against.
+ */
+export type UnboundReason = "legacy_lease" | "legacy_frozen" | "legacy_verdict" | "terminal";
+
+/**
  * `201` body of `POST /api/cards/{id}/planner/attachments`.
  */
 export type UploadAttachmentResponse = { attachmentId: AttachmentId, contentType: string, size: number, 
@@ -649,6 +691,22 @@ export type UploadAttachmentResponse = { attachmentId: AttachmentId, contentType
  * bound: a staged upload never sent is swept after the 24h orphan TTL, after which this path answers 400.
  */
 url: string, };
+
+/**
+ * What the gate verdict was checked against. Every candidate-bound verdict is exactly one row
+ * of the D3 producer × variant table; a verdict recorded before slice 4 reads as `Unbound`.
+ *
+ * `Candidate` carries two checkout samples inline (`clippy::large_enum_variant`): the value is
+ * a wire shape built once per verdict and matched by field, and boxing `evidence` would force a
+ * nested match on every reader; the persisted observation boxes the whole target instead.
+ */
+export type VerifyTarget = { "kind": "candidate", candidate_id: string, commit_sha: string, lease_id: string, evidence: VerifyTargetEvidence, } | { "kind": "no_candidate", reason: NoCandidateReason, } | { "kind": "unbound", reason: UnboundReason, };
+
+/**
+ * How the checkout was compared to the candidate (D3.0): refused before any step ran, verified
+ * before and after the steps, or not sampled at all (a sampling command failed).
+ */
+export type VerifyTargetEvidence = { "kind": "refused", cwd: string, before: Sample, reasons: Array<MismatchReason>, } | { "kind": "verified", cwd: string, before: Sample, after: Sample, reasons: Array<MismatchReason>, } | { "kind": "unsampled", phase: SamplePhase, };
 
 /**
  * Opaque execution-session identifier.

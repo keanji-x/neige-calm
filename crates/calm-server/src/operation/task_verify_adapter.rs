@@ -170,6 +170,8 @@ pub(crate) async fn apply_gate_result_with_guard_in_tx(
         log_path: verdict.log_path.clone(),
         attempt: verdict.attempt,
         agent_message: None,
+        status_detail: None,
+        target: None,
     }];
     if let Some(auto_events) = auto_transition_if_current_in_tx(
         tx,
