@@ -615,7 +615,7 @@ fn prepare_initial_report_payload(
         .map_err(|error| {
             CalmError::Internal(format!("track create: migrate template `{label}`: {error}"))
         })?;
-    let blocks = doc.blocks_snapshot().map_err(|error| {
+    let mut blocks = doc.blocks_snapshot().map_err(|error| {
         CalmError::Internal(format!("track create: template `{label}` blocks: {error}"))
     })?;
     let (summary, body) = doc.project().map_err(|error| {
@@ -632,15 +632,54 @@ fn prepare_initial_report_payload(
     crate::track_report_guard::validate_body_fences(&body).map_err(|error| {
         CalmError::Internal(format!("track create: template `{label}` body: {error}"))
     })?;
+    let template_context = crate::template_context::TemplateContext::new(
+        payload.summary.clone(),
+        payload.body.clone(),
+    );
+    // Named sources describe a working method, not queued work. Preserve
+    // every non-task block and use the canonical block join to keep paragraph
+    // boundaries intact when removing task fences.
+    let has_tasks = blocks
+        .iter()
+        .any(|block| block.kind == calm_types::report_blocks::KIND_TASK);
+    blocks.retain(|block| block.kind != calm_types::report_blocks::KIND_TASK);
+    let body = if has_tasks {
+        blocks
+            .iter()
+            .map(calm_types::report_blocks::flat_text)
+            .fold(String::new(), |mut body, text| {
+                calm_types::report_blocks::append_block_text(&mut body, &text);
+                body
+            })
+    } else {
+        body
+    };
+    let mut prepared = TrackReportPayload::new(summary, body);
+    if has_tasks {
+        doc = ReportDoc::from_payload(&prepared);
+        doc.ensure_blocks_layout(None).map_err(|error| {
+            CalmError::Internal(format!("track create: template `{label}` report: {error}"))
+        })?;
+        blocks = doc.blocks_snapshot().map_err(|error| {
+            CalmError::Internal(format!(
+                "track create: template `{label}` report blocks: {error}"
+            ))
+        })?;
+        (prepared.summary, prepared.body) = doc.project().map_err(|error| {
+            CalmError::Internal(format!(
+                "track create: template `{label}` report projection: {error}"
+            ))
+        })?;
+    }
     let (declarations, diagnostics) =
         calm_types::report_blocks::tasks::project_task_declarations(&blocks);
-    let mut prepared = TrackReportPayload::new(summary, body);
     prepared.blocks = Some(blocks);
     Ok(InitialReportSnapshot {
         payload: prepared,
         doc,
         declarations,
         diagnostics,
+        template_context: Some(template_context),
     })
 }
 
@@ -1354,6 +1393,9 @@ async fn create_track_structure(
                 };
 
                 let mut planner_payload = planner_harness_card_payload(None);
+                if let Some(context) = init_snapshot.as_ref().and_then(|snapshot| snapshot.template_context.as_ref()) {
+                    planner_payload[crate::validation::PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY] = serde_json::to_value(context)?;
+                }
                 if model.is_some() || reasoning_effort.is_some() {
                     crate::planner_model::CardModelSelection::apply_to_payload(
                         planner_payload.as_object_mut().ok_or_else(|| {
@@ -1409,6 +1451,7 @@ async fn create_track_structure(
                     mut doc,
                     declarations,
                     diagnostics,
+                    template_context: _,
                 }) = init_snapshot
                 {
                     // The structural door takes no author, actor, event bus or CAS input, so this closure
@@ -1631,6 +1674,7 @@ pub(crate) struct InitialReportSnapshot {
     doc: ReportDoc,
     declarations: Vec<calm_types::report_blocks::tasks::TaskDeclaration>,
     diagnostics: Vec<Vec<calm_types::report_blocks::tasks::Diagnostic>>,
+    template_context: Option<crate::template_context::TemplateContext>,
 }
 
 impl InitialReportSnapshot {
@@ -1796,6 +1840,7 @@ fn prepare_fork_report(
         doc,
         declarations,
         diagnostics,
+        template_context: None,
     })
 }
 

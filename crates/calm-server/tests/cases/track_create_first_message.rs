@@ -3,6 +3,9 @@
 
 #![cfg(unix)]
 
+#[path = "template_startup_context.rs"]
+mod template_startup_context;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -999,8 +1002,8 @@ async fn a_first_message_is_delivered_once_on_a_recipe_create() {
         .collect();
     assert_eq!(
         task_keys,
-        vec![json!("stage")],
-        "the recipe's task must be on the new track's report: {payload}"
+        Vec::<Value>::new(),
+        "the recipe must not create a placeholder task: {payload}"
     );
     // A recipe id is not a plugin-bindable template id.
     let template_id: Option<String> =

@@ -1158,18 +1158,19 @@ mod tests {
 
     #[tokio::test]
     async fn card_create_and_update_reject_client_server_owned_keys() {
-        use crate::validation::SERVER_OWNED_TERMINAL_PAYLOAD_KEYS;
+        use crate::validation::SERVER_OWNED_CARD_PAYLOAD_KEYS;
         let h = Harness::new("p1", manifest_with_full_perms("p1")).await;
         assert_eq!(
-            SERVER_OWNED_TERMINAL_PAYLOAD_KEYS,
+            SERVER_OWNED_CARD_PAYLOAD_KEYS,
             [
                 "terminal_signals",
                 "claude_permissions",
-                "claude_permissions_source"
+                "claude_permissions_source",
+                "template_context"
             ]
         );
         let probes = [json!(true), json!({}), json!("declared"), Value::Null];
-        for key in SERVER_OWNED_TERMINAL_PAYLOAD_KEYS {
+        for key in SERVER_OWNED_CARD_PAYLOAD_KEYS {
             for kind in ["terminal", "plugin:p1:demo"] {
                 for value in &probes {
                     let mut payload = json!({ "schemaVersion": 1 });
@@ -1212,7 +1213,7 @@ mod tests {
         .await
         .unwrap();
         let cid = create["id"].as_str().unwrap().to_string();
-        for key in SERVER_OWNED_TERMINAL_PAYLOAD_KEYS {
+        for key in SERVER_OWNED_CARD_PAYLOAD_KEYS {
             for value in &probes {
                 let mut payload = json!({});
                 payload[key] = value.clone();
@@ -1232,7 +1233,7 @@ mod tests {
             }
         }
         let stored = h.ctx_storage.repo.card_get(&cid).await.unwrap().unwrap();
-        for key in SERVER_OWNED_TERMINAL_PAYLOAD_KEYS {
+        for key in SERVER_OWNED_CARD_PAYLOAD_KEYS {
             assert!(
                 stored.payload.get(key).is_none(),
                 "{key}: {}",

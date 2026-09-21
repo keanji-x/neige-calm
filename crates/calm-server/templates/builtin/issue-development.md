@@ -42,48 +42,33 @@ track 的 VCS diff）。不要把秘密写进来。
   · 决策 —— 重要取舍，格式「决定 X，因为 Y」。候选 / 讨论过程不写在这里，
     只写已经定下来的事。做了一个决定就在这里加一行。
 
-模板还可带有以下预置章节。各模板只维护正文中已有的章节，保持其顺序，
-不补齐未使用的章节，也不要把这些独立章节合并回一个 Plan：
-  · Purpose —— 模板用途与范围。
-  · Goal and inputs —— 目标来源、输入与仓库核对。
-  · Plan —— 预置计划与任务激活方式。
-  · Review convergence —— 评审、修复与轮数限制。
-  · Verification gates —— 仓库工具链与验证要求。
-  · Merge and approval —— 合并条件与审批策略。
-这些章节共同组成预置计划。里面的 `task` 块激活完之后，预置章节的散文
-由上面「概要、待你定、已完成、决策」四节接手，相应的预置章节就可以移除。
-除此之外不要动它们的结构；激活只针对 `task` 块，不是替换这些散文。
--->
-
-# Goal and inputs
+Goal and inputs
 
 - Template input: the track's bound `template_input` JSON is the task's source of truth,
   not the track title.
-- Ingest (inspect-issue): derive the track goal from gh.issue.view on input.repo /
+- Issue inspection: derive the track goal from gh.issue.view on input.repo /
   input.issue_number. Record the issue's requirements and constraints in the track
   report before dispatching any downstream task.
 - notes: optional advisory context from the requester; it never overrides the issue or
   the gates.
 
-## Check the repository
+Check the repository
 
-Repo cross-check (inspect-issue acceptance): before any write action, compare input.repo
+Repo cross-check: before any write action, compare input.repo
 against `git remote get-url origin` run in the track cwd (owner/name after stripping the
 host and a trailing .git). On mismatch do NOT proceed: move working->blocked via
 calm.ratify.request with `reason:"repo_mismatch: input.repo=<owner/name>, cwd.origin=<owner/name>"` (that exact prefix, then both observed values), and wait for
 the human decision.
 
-# Plan
+Working method
 
-Pre-set issue-development plan. Treat the `task` blocks as the authoritative plan.
-Activate by replacing those task blocks and setting `ready: true` — use the read's block
-ids and revision as replace anchors. Do not mint duplicate tasks. Prose blocks are NOT a plan to activate: maintain them per this document's own contract.
+Understand the source issue and propose an appropriate design. Review the design through two independent channels before implementation: channel a checks correctness, channel b checks failure paths. Implement and commit in a worktree, run verification, open a PR and converge both PR reviews through those same two perspectives before any merge. After an authorized merge, close the source issue. Create concrete tasks when delegation is needed; these are working requirements, not a fixed task list.
 
-# Review convergence
+Review convergence
 
 For this track, drive dual-review convergence for each review subject.
 
-## Record both verdicts
+Record both verdicts
 
 - After BOTH channels for a phase complete, call calm.review.round with
   subject:{phase,slice_id,pr_number?}, optional head_sha, n, cap, converged,
@@ -96,7 +81,7 @@ For this track, drive dual-review convergence for each review subject.
 
 Record root_cause each round; repeated facets should drive a class fix.
 
-## Review rounds and fixes
+Review rounds and fixes
 
 - For each subject, set n to the last observed review.round n for that same subject plus 1.
   cap is the fixed policy constant 8 for a subject's first review window; after a
@@ -105,7 +90,7 @@ Record root_cause each round; repeated facets should drive a class fix.
 - Always re-review. Every fix re-dispatches BOTH channels before the next
   calm.review.round.
 
-## When the review limit is reached
+When the review limit is reached
 
 If n == cap and the round is non-approving, do not merge.
 
@@ -120,20 +105,20 @@ If n == cap and the round is non-approving, do not merge.
   authorize this for each subject that was already cap-exhausted when it was issued.
 - If the extended window also exhausts without convergence, GIVE-UP or ASK-HUMAN again.
 
-# Verification gates
+Verification gates
 
 gates: author each agent task's `gate` from the TARGET repo's own toolchain — detect it
 (Cargo / npm / pytest / go / Make, etc.) and run that ecosystem's formatter, linter, and
 tests where present; do not hardcode `cargo test`.
 
-# Merge and approval
+Merge and approval
 
-## Merge fence F4
+Merge fence F4
 
 Merge fence F4: call gh.pr.merge for a subject ONLY when that subject's latest
 review.round has converged:true. Pass expected_head_sha equal to that round's head_sha.
 
-## Merge policy
+Merge policy
 
 - merge_policy: `auto-merge` allows gh.pr.merge as soon as merge fence F4 is satisfied.
 - `hold-for-ratify` — also the semantics whenever merge_policy is absent — additionally
@@ -146,136 +131,12 @@ review.round has converged:true. Pass expected_head_sha equal to that round's he
   merging that already-converged head — no fresh review round is required for the hold
   itself; resume working->reviewing and call gh.pr.merge per fence F4 (expected_head_sha
   = the converged round's head_sha).
+-->
 
-```neige-block task
-{
-  "acceptance": "The issue requirements and constraints are captured for the track AND the track cwd's origin remote matches input.repo (mismatch is reported, not proceeded past).",
-  "context": {
-    "tools": ["gh.issue.view"]
-  },
-  "declared_by": "spec",
-  "depends_on": [],
-  "goal": "Read the bound template input, view the source issue via gh.issue.view, and cross-check input.repo against the git remote of the track cwd.",
-  "key": "inspect-issue",
-  "kind": "codex",
-  "no_gate_reason": "inspect does not produce a repo change to verify",
-  "ready": false
-}
-```
+# 概要
 
-```neige-block task
-{
-  "acceptance": "Channel a records a design verdict.",
-  "context": {
-    "channel": "a",
-    "reviewer_role": "design-correctness"
-  },
-  "declared_by": "spec",
-  "depends_on": ["inspect-issue"],
-  "goal": "Review the proposed design for correctness before implementation.",
-  "key": "review-design-a",
-  "kind": "codex",
-  "no_gate_reason": "design review does not produce a repo change to verify",
-  "ready": false
-}
-```
+# 待你定
 
-```neige-block task
-{
-  "acceptance": "Channel b records a design verdict.",
-  "context": {
-    "channel": "b",
-    "reviewer_role": "design-failure-path"
-  },
-  "declared_by": "spec",
-  "depends_on": ["inspect-issue"],
-  "goal": "Review the proposed design for failure paths before implementation.",
-  "key": "review-design-b",
-  "kind": "codex",
-  "no_gate_reason": "design review does not produce a repo change to verify",
-  "ready": false
-}
-```
+# 已完成
 
-```neige-block task
-{
-  "acceptance": "The change is committed in the track worktree.",
-  "context": {
-    "tools": ["git.worktree.add", "git.commit"]
-  },
-  "declared_by": "spec",
-  "depends_on": ["review-design-a", "review-design-b"],
-  "goal": "Create a worktree, implement the change, and commit the result.",
-  "key": "implement-change",
-  "kind": "codex",
-  "no_gate_reason": "author a real gate from the target repo toolchain (formatter, linter, tests) before activating; this reason is not a permanent skip",
-  "ready": false
-}
-```
-
-```neige-block task
-{
-  "acceptance": "A pull request exists with readable diff and check status.",
-  "context": {
-    "tools": ["gh.pr.create", "gh.pr.list", "gh.pr.diff", "gh.pr.checks"]
-  },
-  "declared_by": "spec",
-  "depends_on": ["implement-change"],
-  "goal": "Open a pull request and check its diff/check status.",
-  "key": "open-pr",
-  "kind": "codex",
-  "no_gate_reason": "opening a PR is verified by forge status, not a local toolchain gate",
-  "ready": false
-}
-```
-
-```neige-block task
-{
-  "acceptance": "Channel a records a PR verdict.",
-  "context": {
-    "channel": "a",
-    "reviewer_role": "pr-correctness"
-  },
-  "declared_by": "spec",
-  "depends_on": ["open-pr"],
-  "goal": "Review the pull request for correctness.",
-  "key": "review-pr-a",
-  "kind": "codex",
-  "no_gate_reason": "PR review does not produce a repo change to verify",
-  "ready": false
-}
-```
-
-```neige-block task
-{
-  "acceptance": "Channel b records a PR verdict.",
-  "context": {
-    "channel": "b",
-    "reviewer_role": "pr-failure-path"
-  },
-  "declared_by": "spec",
-  "depends_on": ["open-pr"],
-  "goal": "Review the pull request for failure paths.",
-  "key": "review-pr-b",
-  "kind": "codex",
-  "no_gate_reason": "PR review does not produce a repo change to verify",
-  "ready": false
-}
-```
-
-```neige-block task
-{
-  "acceptance": "Either the PR is merged (F4 converged and any policy-required ratify grant held) and the issue is closed, or — hold-for-ratify with no grant yet — the track is parked at the merge_hold ratify request with no merge performed.",
-  "context": {
-    "tools": ["gh.pr.merge", "gh.issue.close"]
-  },
-  "declared_by": "spec",
-  "depends_on": ["review-pr-a", "review-pr-b"],
-  "goal": "Merge the pull request and close the issue only after merge fence F4 has converged AND any merge_policy-required ratify grant is held; under hold-for-ratify with no grant yet, park at the merge_hold ratify request instead of merging.",
-  "key": "merge",
-  "kind": "codex",
-  "no_gate_reason": "merge is gated by review fence F4 and forge, not a local toolchain gate",
-  "ready": false
-}
-```
-
+# 决策

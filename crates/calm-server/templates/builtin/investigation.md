@@ -42,51 +42,18 @@ track 的 VCS diff）。不要把秘密写进来。
   · 决策 —— 重要取舍，格式「决定 X，因为 Y」。候选 / 讨论过程不写在这里，
     只写已经定下来的事。做了一个决定就在这里加一行。
 
-模板还可带有以下预置章节。各模板只维护正文中已有的章节，保持其顺序，
-不补齐未使用的章节，也不要把这些独立章节合并回一个 Plan：
-  · Purpose —— 模板用途与范围。
-  · Goal and inputs —— 目标来源、输入与仓库核对。
-  · Plan —— 预置计划与任务激活方式。
-  · Review convergence —— 评审、修复与轮数限制。
-  · Verification gates —— 仓库工具链与验证要求。
-  · Merge and approval —— 合并条件与审批策略。
-这些章节共同组成预置计划。里面的 `task` 块激活完之后，预置章节的散文
-由上面「概要、待你定、已完成、决策」四节接手，相应的预置章节就可以移除。
-除此之外不要动它们的结构；激活只针对 `task` 块，不是替换这些散文。
--->
-
-# Purpose
+Working method: Investigation
 
 Read-only investigation. Gather facts, then write findings in this report. Do not open a pull request, merge, or otherwise change the bound repository.
+Read the relevant code, docs, history and provided inputs to answer the user's question.
+Distinguish observed facts from inference; record source paths, unresolved questions and recommended next steps.
+Create concrete delegated tasks only when they help this investigation; do not manufacture a fixed checklist.
+-->
 
-# Plan
+# 概要
 
-Treat these task blocks as the authoritative pre-set plan. Activate by replacing those
-task blocks with `ready: true`. Do not mint duplicate tasks. Prose blocks are NOT a plan to activate: maintain them per this document's own contract.
+# 待你定
 
-```neige-block task
-{
-  "acceptance": "The relevant facts, file paths, and open questions are captured for the write-findings task.",
-  "declared_by": "spec",
-  "depends_on": [],
-  "goal": "Read the code, docs, history, and any bound input needed to answer the question. Do not modify the repository.",
-  "key": "gather-facts",
-  "kind": "codex",
-  "no_gate_reason": "investigation is read-only; no repo change to verify",
-  "ready": false
-}
-```
+# 已完成
 
-```neige-block task
-{
-  "acceptance": "The report records findings and does not include a forge merge or pull request.",
-  "declared_by": "spec",
-  "depends_on": ["gather-facts"],
-  "goal": "Write findings, remaining unknowns, and recommended next steps into this track report. Do not open a PR or merge.",
-  "key": "write-findings",
-  "kind": "codex",
-  "no_gate_reason": "findings are report prose; no repo change to verify",
-  "ready": false
-}
-```
-
+# 决策

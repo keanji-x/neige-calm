@@ -593,6 +593,7 @@ pub use calm_types::track_fs_dto;
 pub mod report_backlinks;
 pub mod report_series;
 pub mod report_sources;
+mod template_context;
 /// The template roster: built-in template files parsed once, plus the operator's `*.md` files
 /// as `site/<stem>` entries when the process runs with `--templates-dir`.
 pub mod templates;

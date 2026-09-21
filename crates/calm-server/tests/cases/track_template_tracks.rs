@@ -462,8 +462,8 @@ async fn two_tracks_from_one_template_are_independent_and_identical() {
     );
 
     // Third edit: a block the template itself minted.
-    const RECIPE_PROSE: &str = "Short inspect";
-    const RECIPE_PROSE_EDITED: &str = "Quick inspect";
+    const RECIPE_PROSE: &str = "Read the requested change";
+    const RECIPE_PROSE_EDITED: &str = "Read the specified change";
     assert!(
         first_replaced.body.contains(RECIPE_PROSE),
         "the recipe's intro prose is not in the body, so this leg edits nothing; \
@@ -588,7 +588,7 @@ async fn two_tracks_from_one_template_are_independent_and_identical() {
 }
 
 #[tokio::test]
-async fn issue_development_create_forks_inspect_issue_not_ready() {
+async fn issue_development_create_captures_method_without_tasks() {
     let boot = boot().await;
     let (status, body) = post(
         boot.app.clone(),
@@ -619,36 +619,22 @@ async fn issue_development_create_forks_inspect_issue_not_ready() {
         payload.report_startup_read_required(),
         "forked plan must require a startup read"
     );
-    let tasks = task_blocks(&payload);
-    let inspect = tasks
+    assert!(task_blocks(&payload).is_empty());
+    let planner = detail["cards"]
+        .as_array()
+        .unwrap()
         .iter()
-        .find(|task| task["key"] == "inspect-issue")
-        .unwrap_or_else(|| panic!("missing inspect-issue; tasks={tasks:?}"));
-    assert_eq!(inspect["ready"], false);
-    assert_eq!(inspect["kind"], "codex");
-    assert_eq!(inspect["declared_by"], "spec");
+        .find(|card| card["payload"]["planner_harness"] == true)
+        .unwrap();
+    let context = &planner["payload"]["template_context"];
+    assert_eq!(context["title"], "Issue development");
+    assert_eq!(context["body"], payload.body);
+    assert!(context["body"].as_str().unwrap().contains("gh.issue.view"));
     assert!(
-        inspect["context"]["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|tool| tool == "gh.issue.view"),
-        "inspect-issue must keep context.tools; payload={inspect}"
-    );
-    let implement = tasks
-        .iter()
-        .find(|task| task["key"] == "implement-change")
-        .expect("implement-change");
-    assert!(
-        implement.get("gate").is_none(),
-        "implement-change must not carry an executed gate; payload={implement}"
-    );
-    assert!(
-        implement["no_gate_reason"]
+        context["body"]
             .as_str()
-            .unwrap_or("")
-            .contains("author a real gate"),
-        "implement-change must tell planner to author a real gate; payload={implement}"
+            .unwrap()
+            .contains("TARGET repo's own toolchain")
     );
 }
 
@@ -773,7 +759,7 @@ async fn a_template_and_an_explicit_fork_source_are_a_400() {
 #[tokio::test]
 async fn investigation_and_small_change_auto_fork_without_plugin() {
     let boot = boot().await;
-    for (key, task_key) in [(SMALL_CHANGE, "inspect"), (INVESTIGATION, "gather-facts")] {
+    for key in [SMALL_CHANGE, INVESTIGATION] {
         let (status, body) = post(
             boot.app.clone(),
             "/api/tracks",
@@ -792,12 +778,7 @@ async fn investigation_and_small_change_auto_fork_without_plugin() {
         assert_eq!(status, StatusCode::OK);
         let payload = report_card_payload(&detail);
         assert!(payload.report_startup_read_required());
-        let tasks = task_blocks(&payload);
-        let first = tasks
-            .iter()
-            .find(|task| task["key"] == task_key)
-            .unwrap_or_else(|| panic!("missing {task_key} for {key}; tasks={tasks:?}"));
-        assert_eq!(first["ready"], false);
+        assert!(task_blocks(&payload).is_empty());
     }
 }
 
@@ -1299,10 +1280,9 @@ async fn listing_templates_returns_constants_and_writes_nothing() {
                 entry["tasks"].is_array(),
                 "{leg}: {entry} carries no tasks array"
             );
-            assert_eq!(
+            assert!(
                 task_keys(entry).is_empty(),
-                entry["id"] == INVESTMENT_RESEARCH,
-                "{leg}: {entry} advertises tasks iff it is a plan template"
+                "{leg}: {entry} must not advertise preset tasks"
             );
         }
         assert_eq!(
@@ -1455,31 +1435,9 @@ async fn listed_template_keys_create_their_exact_recipes() {
     // key, roster title, ordered task keys. Hand-written on purpose — this is
     // the one table in this file that must NOT be derived from production.
     let anchors: [(&str, &str, &[&str]); 4] = [
-        (
-            ISSUE_DEVELOPMENT,
-            "Issue development",
-            &[
-                "inspect-issue",
-                "review-design-a",
-                "review-design-b",
-                "implement-change",
-                "open-pr",
-                "review-pr-a",
-                "review-pr-b",
-                "merge",
-            ],
-        ),
-        (
-            SMALL_CHANGE,
-            "Small change",
-            &["inspect", "implement", "verify"],
-        ),
-        (
-            INVESTIGATION,
-            "Investigation",
-            &["gather-facts", "write-findings"],
-        ),
-        // A report-only template: no pre-set tasks. The empty key list is the anchor.
+        (ISSUE_DEVELOPMENT, "Issue development", &[]),
+        (SMALL_CHANGE, "Small change", &[]),
+        (INVESTIGATION, "Investigation", &[]),
         (INVESTMENT_RESEARCH, "Investment research", &[]),
     ];
     assert_eq!(

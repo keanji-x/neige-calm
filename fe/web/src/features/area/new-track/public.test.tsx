@@ -399,7 +399,7 @@ describe('Area creation defaults', () => {
     expect(submitButton().disabled).toBe(false);
     const notice = screen.getByRole('group', { name: 'Area default template' });
     expect(notice.textContent).toContain('Area default: Small change');
-    expect(notice.textContent).toContain('3 preset tasks will be added');
+    expect(notice.textContent).not.toContain('preset tasks');
     expect(within(notice).queryByRole('button', { name: 'Use Small change' })).toBeNull();
     await userEvent.keyboard('{Enter}');
     expect(onSubmit).toHaveBeenCalledWith({

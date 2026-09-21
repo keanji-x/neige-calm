@@ -264,57 +264,23 @@ async fn bound_template_carries_the_plugin_input_schema() {
     );
 }
 
+/// A template no longer promises placeholder tasks in the picker.
 #[tokio::test]
-async fn every_template_lists_the_tasks_its_report_pre_sets() {
+async fn every_template_lists_no_preset_tasks() {
     let boot = boot(false).await;
     let (status, body) = list_templates(boot.app).await;
-    assert_eq!(status, StatusCode::OK, "body={body}");
-
-    let keys = |id: &str| -> Vec<String> {
-        row(&body, id)["tasks"]
-            .as_array()
-            .unwrap_or_else(|| panic!("`{id}` must carry a tasks array: {body}"))
-            .iter()
-            .map(|task| task["key"].as_str().expect("task key string").to_string())
-            .collect()
-    };
-    assert_eq!(
-        keys(ISSUE_DEVELOPMENT),
-        vec![
-            "inspect-issue",
-            "review-design-a",
-            "review-design-b",
-            "implement-change",
-            "open-pr",
-            "review-pr-a",
-            "review-pr-b",
-            "merge",
-        ],
-        "issue-development must advertise its eight pre-set tasks, in plan order"
-    );
-    assert_eq!(keys(SMALL_CHANGE), vec!["inspect", "implement", "verify"]);
-    assert_eq!(keys(INVESTIGATION), vec!["gather-facts", "write-findings"]);
-    // A report-only template advertises an empty (present) tasks array.
-    assert_eq!(
-        keys(INVESTMENT_RESEARCH),
-        Vec::<String>::new(),
-        "investment-research pre-sets no tasks"
-    );
-
-    for entry in body.as_array().expect("array body") {
-        for task in entry["tasks"].as_array().expect("tasks array") {
-            let goal = task["goal"].as_str().expect("goal string");
-            assert!(!goal.trim().is_empty(), "empty goal in {entry}");
-        }
+    assert_eq!(status, StatusCode::OK, "{body}");
+    for id in [
+        ISSUE_DEVELOPMENT,
+        SMALL_CHANGE,
+        INVESTIGATION,
+        INVESTMENT_RESEARCH,
+    ] {
+        assert_eq!(row(&body, id)["tasks"], json!([]), "{id}");
     }
-    assert_eq!(
-        row(&body, INVESTIGATION)["tasks"][1]["goal"],
-        "Write findings, remaining unknowns, and recommended next steps into this track report. Do not open a PR or merge."
-    );
-
     assert!(
-        boot.repo.areas_list().await.expect("areas list").is_empty(),
-        "listing track templates must not write anything"
+        boot.repo.areas_list().await.unwrap().is_empty(),
+        "listing remains read-only"
     );
 }
 
