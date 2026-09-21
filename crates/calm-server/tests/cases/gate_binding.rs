@@ -1287,18 +1287,31 @@ async fn gate_prepare_times_out_as_stuck_not_hang() {
     let fx = fixture().await;
     fx.dispatcher.abort_event_listener_for_test();
     let (_, task, lease, candidate) = settled_gated_task(&fx, "hooked", gated("true")).await;
-    // A `core.fsmonitor` hook that never returns, in the repository config every worker of
-    // this repository can write; 5.1.6's `status` honours it and `-c` cannot switch it off.
+    // A slow `clean` filter that never returns: `git status` runs it to recompute a tracked file
+    // whose stat cache is stale, and it survives `-c core.fsmonitor=false` (the sampler now disables
+    // fsmonitor, so an fsmonitor hook would never fire). The filter command and `.gitattributes` live
+    // in the shared repository any worker can write.
     let hook = fx
         .track_root
         .parent()
         .unwrap()
-        .join(format!("fsmonitor-hook-{}.sh", std::process::id()));
+        .join(format!("slow-clean-filter-{}.sh", std::process::id()));
     write_executable(&hook, "#!/bin/sh\nsleep 60\n");
     git(
         &lease.path,
-        &["config", "core.fsmonitor", hook.to_str().unwrap()],
+        &["config", "filter.slow.clean", hook.to_str().unwrap()],
     );
+    std::fs::write(
+        lease.path.join(".gitattributes"),
+        "worker.txt filter=slow\n",
+    )
+    .unwrap();
+    // Stale the tracked file's stat cache (rewrite the same bytes with a newer mtime) so `git
+    // status` must run the clean filter on it.
+    let worker_txt = lease.path.join("worker.txt");
+    let content = std::fs::read(&worker_txt).unwrap();
+    std::thread::sleep(Duration::from_millis(1100));
+    std::fs::write(&worker_txt, &content).unwrap();
     let needle = hook.display().to_string();
 
     let drive = spawn_drive(fx.scheduler(), task.clone());
@@ -1375,7 +1388,8 @@ async fn gate_prepare_times_out_as_stuck_not_hang() {
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    git(&lease.path, &["config", "--unset", "core.fsmonitor"]);
+    git(&lease.path, &["config", "--unset", "filter.slow.clean"]);
+    let _ = std::fs::remove_file(lease.path.join(".gitattributes"));
 }
 
 // ---------------------------------------------------------------------------
@@ -2395,6 +2409,28 @@ async fn refused_gate_survives_restart_between_prepare_and_spawn() {
 // while the wrapper waits, so no live observer of that boot survives to kill the group.
 // ---------------------------------------------------------------------------
 
+/// Kills a recorded gate group's still-marked members on drop — on unwind (panic) and on every
+/// early `return` — so a wrapper/straggler `until [ -f <flag> ]; do sleep 0.1; done` loop cannot
+/// spin forever once its tempdir (holding the flag) is gone. Authenticated by the same inherited
+/// `NEIGE_GATE_OP` marker production's recovery sweep uses, so it never signals a foreign process
+/// that recycled the pgid.
+#[cfg(target_os = "linux")]
+struct GateGroupCleanup {
+    pgid: i32,
+    marker: String,
+}
+#[cfg(target_os = "linux")]
+impl Drop for GateGroupCleanup {
+    fn drop(&mut self) {
+        let members = calm_server::proc_identity::group_members_with_env_marker(
+            self.pgid,
+            "NEIGE_GATE_OP",
+            &self.marker,
+        );
+        let _ = calm_server::proc_identity::sigkill_verified_members(&members);
+    }
+}
+
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn recovered_gate_stops_the_group_before_sampling() {
@@ -2436,6 +2472,12 @@ async fn recovered_gate_stops_the_group_before_sampling() {
     .await;
     let artifacts = parked_artifacts(&op);
     assert_eq!(artifacts.pgid, artifacts.pid, "the wrapper leads its group");
+    // Installed the moment the group is observed: on panic or any early return this kills the
+    // still-marked wrapper/straggler so their flag-poll loops cannot outlive the vanished tempdir.
+    let _gate_cleanup = GateGroupCleanup {
+        pgid: artifacts.pgid,
+        marker: format!("{}#g1", task.id),
+    };
     wait_for_file(&pidfile);
     let straggler: i32 = tokio::time::timeout(WAIT, async {
         loop {
@@ -2495,12 +2537,30 @@ async fn recovered_gate_stops_the_group_before_sampling() {
     let result: TaskGateResult =
         serde_json::from_value(op.tx_output.as_ref().unwrap().result.clone()).unwrap();
     assert!(result.verdict.passed, "{result:?}");
-    // The straggler was stopped before the after-sample: dead, and its group empty.
-    assert_ne!(
-        read_proc_start_time(straggler),
-        Some(straggler_start),
-        "the recovery path stopped the recorded group before sampling"
-    );
+    // The straggler was stopped before the after-sample. A SIGKILLed straggler lingers as a zombie
+    // (its start_time unchanged) until init reaps it, so the bounded check accepts gone, recycled
+    // (start_time changed) OR Z/X — the same predicate production's `group_stopped` uses.
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let dead = match std::fs::read_to_string(format!("/proc/{straggler}/stat"))
+                .ok()
+                .and_then(|stat| parse_proc_stat_fields(&stat))
+            {
+                None => true,
+                Some(fields) => {
+                    fields.start_time != straggler_start
+                        || fields.state == 'Z'
+                        || fields.state == 'X'
+                }
+            };
+            if dead {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the recovery path stopped the recorded group before sampling");
     assert!(
         scan_process_group_members(artifacts.pgid)
             .iter()
@@ -2571,6 +2631,11 @@ async fn live_reattached_gate_result_discarded_when_tree_changed() {
     })
     .await;
     let artifacts = parked_artifacts(&op);
+    // Kills the still-marked wrapper on panic or early return (see `GateGroupCleanup`).
+    let _gate_cleanup = GateGroupCleanup {
+        pgid: artifacts.pgid,
+        marker: format!("{}#g1", task.id),
+    };
     wait_for_file(&lease.path.join("extra.txt"));
     boot1.sigkill_and_reap();
     assert!(verify_owned_pid(

@@ -628,6 +628,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
             &script_path,
             &log_path,
             &exit_path,
+            &gate_attempt_key(&frozen.task_id, frozen.attempt),
         )
         .await?;
         let pid = child.id().map(|p| p as i32).ok_or_else(|| {
@@ -730,7 +731,8 @@ impl ProviderAdapter for TaskVerifyAdapter {
             .await;
             // `wait_verdict` killed and waited the group; a cleanup it left unresolved is what
             // `stop_group` reports, and `finalize` then samples nothing.
-            let stopped = target::stop_group(&artifacts).await;
+            let op_marker = gate_attempt_key(&observer_frozen.task_id, observer_frozen.attempt);
+            let stopped = target::stop_group(&artifacts, &op_marker).await;
             let verdict = target::finalize(verdict, &observer_frozen, stopped).await;
             if let Err(e) = complete_gate_op_with_result(
                 &observer_pool,
@@ -780,8 +782,10 @@ impl ProviderAdapter for TaskVerifyAdapter {
                 Ok(Some(code)) => {
                     let verdict = verdict_from_exit_code(code, &log_path, frozen.attempt);
                     // The leader is dead; descendants that outlived it are stopped before the
-                    // after-sample (the driver's own kill skips a dead leader).
-                    let stopped = target::stop_group(artifacts).await;
+                    // after-sample (the driver's own kill skips a dead leader). The numeric pgid
+                    // may have been recycled, so members are authenticated by the inherited marker.
+                    let op_marker = gate_attempt_key(&frozen.task_id, frozen.attempt);
+                    let stopped = target::stop_group(artifacts, &op_marker).await;
                     let verdict = target::finalize(verdict, &frozen, stopped).await;
                     ParkedRecovery::Complete(ParkedOutcome::Succeeded {
                         result: serde_json::to_value(&verdict)?,
@@ -831,7 +835,8 @@ impl ProviderAdapter for TaskVerifyAdapter {
                             attempt,
                         ),
                     };
-                    let stopped = target::stop_group(&artifacts).await;
+                    let op_marker = gate_attempt_key(&frozen.task_id, frozen.attempt);
+                    let stopped = target::stop_group(&artifacts, &op_marker).await;
                     let verdict = target::finalize(verdict, &frozen, stopped).await;
                     if let Err(e) = complete_gate_op_with_result(
                         &pool,

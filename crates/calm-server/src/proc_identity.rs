@@ -160,6 +160,40 @@ pub fn scan_process_group_members(_pgid: i32) -> Vec<GroupMember> {
     Vec::new()
 }
 
+/// Does `/proc/<pid>/environ` carry the exact `key=value` entry? The environ is NUL-separated and
+/// readable by the same uid; a process started from an empty environment that never `unset`s the
+/// marker keeps it, and every descendant inherits it. Unreadable (gone, permission) or absent → `false`.
+/// This is what authenticates a recovered gate's group members across a kernel restart: a numeric
+/// pgid can be recycled by an unrelated process once the wrapper's leader dies, but that process
+/// does not carry our marker. Returns `false` unconditionally on non-Linux.
+#[cfg(target_os = "linux")]
+pub fn proc_env_contains(pid: i32, key: &str, value: &str) -> bool {
+    let Ok(bytes) = std::fs::read(format!("/proc/{pid}/environ")) else {
+        return false;
+    };
+    let needle = format!("{key}={value}");
+    bytes
+        .split(|&b| b == 0)
+        .any(|entry| entry == needle.as_bytes())
+}
+
+/// Non-Linux stub for [`proc_env_contains`]: no `/proc`, so nothing is authenticated (fail-closed).
+#[cfg(not(target_os = "linux"))]
+pub fn proc_env_contains(_pid: i32, _key: &str, _value: &str) -> bool {
+    false
+}
+
+/// The members of process group `pgid` whose `/proc/<pid>/environ` carries `key=value` — the gate's
+/// own descendants, told apart from an unrelated process that recycled the numeric pgid after the
+/// wrapper's leader died. Members without the marker (foreign, or environ unreadable) are dropped,
+/// so a caller sweeping or waiting on this list never signals nor blocks on a foreign process.
+pub fn group_members_with_env_marker(pgid: i32, key: &str, value: &str) -> Vec<GroupMember> {
+    scan_process_group_members(pgid)
+        .into_iter()
+        .filter(|member| proc_env_contains(member.pid, key, value))
+        .collect()
+}
+
 /// Result of a [`sigkill_verified_group_members`] sweep.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct GroupSweepOutcome {

@@ -155,6 +155,7 @@ pub(crate) async fn spawn_held(
     script_path: &Path,
     log_path: &Path,
     exit_path: &Path,
+    op_marker: &str,
 ) -> Result<tokio::process::Child> {
     if !cwd.is_dir() {
         return Err(CalmError::BadRequest(format!(
@@ -173,7 +174,11 @@ pub(crate) async fn spawn_held(
         .stderr(std::process::Stdio::from(log_file_err))
         // Start from an EMPTY environment: no `NEIGE_MCP_SOCKET`/`NEIGE_MCP_TOKEN` (the gate cannot write kernel state) and no incidental kernel secrets.
         .env_clear()
-        .env("NEIGE_GATE_EXIT_PATH", exit_path);
+        .env("NEIGE_GATE_EXIT_PATH", exit_path)
+        // Authenticates this gate's descendants to the recovery group sweep. UNLIKE `NEIGE_GATE_EXIT_PATH`
+        // the wrapper does NOT `unset` it, so every descendant inherits it; a process that later recycles
+        // the numeric pgid does not carry it. See `stop_group` / `group_members_with_env_marker`.
+        .env("NEIGE_GATE_OP", op_marker);
     // Deliberately NO `kill_on_drop`: a graceful kernel shutdown drops the observer and must leave the gate RUNNING so boot recovery can reattach.
     // `kill_on_drop` would SIGKILL only the `/bin/sh` wrapper, never its group; every kernel-side kill targets the recorded process GROUP instead.
     for key in ["PATH", "HOME", "LANG", "LC_ALL", "TERM"] {
@@ -331,6 +336,63 @@ pub(crate) fn group_stopped(artifacts: &super::SpawnArtifacts) -> Result<bool> {
 pub(crate) async fn wait_group_stopped(artifacts: &super::SpawnArtifacts) -> Result<()> {
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         while !group_stopped(artifacts)? {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|_| CalmError::Conflict("gate process-group cleanup remains unresolved".into()))?
+}
+
+/// Like [`group_stopped`], but a live member counts only if `/proc/<pid>/environ` carries
+/// `NEIGE_GATE_OP=<op_marker>`. On the recovery paths the wrapper's leader is dead and the numeric
+/// pgid can be reused by an unrelated process; that process is NOT waited for (nor swept), so a
+/// recycled pgid never turns a recovery into a 5 s timeout. Boot mismatch and an invalid pgid are
+/// handled exactly as [`group_stopped`]; an unreadable/unparseable live member still fails closed.
+pub(crate) fn marked_group_stopped(
+    artifacts: &super::SpawnArtifacts,
+    op_marker: &str,
+) -> Result<bool> {
+    let boot = crate::proc_identity::read_boot_id()
+        .ok_or_else(|| CalmError::Conflict("gate cleanup boot identity unavailable".into()))?;
+    if boot != artifacts.boot_id {
+        return Ok(true);
+    }
+    if artifacts.pgid <= 1 {
+        return Err(CalmError::Conflict(
+            "gate cleanup group identity invalid".into(),
+        ));
+    }
+    for entry in std::fs::read_dir("/proc")? {
+        let entry = entry?;
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<i32>() else {
+            continue;
+        };
+        let stat = match std::fs::read_to_string(entry.path().join("stat")) {
+            Ok(stat) => stat,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        let fields = crate::proc_identity::parse_proc_stat_fields(&stat).ok_or_else(|| {
+            CalmError::Conflict("gate cleanup process identity unreadable".into())
+        })?;
+        if fields.pgrp == artifacts.pgid
+            && fields.state != 'Z'
+            && fields.state != 'X'
+            && crate::proc_identity::proc_env_contains(pid, "NEIGE_GATE_OP", op_marker)
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+pub(crate) async fn wait_marked_group_stopped(
+    artifacts: &super::SpawnArtifacts,
+    op_marker: &str,
+) -> Result<()> {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !marked_group_stopped(artifacts, op_marker)? {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         Ok(())

@@ -30,7 +30,7 @@ use crate::git_candidate::delivery::{
 };
 use crate::model::{Task, TaskKind};
 use crate::operation::forge_action_adapter::forge_base_env;
-use crate::operation::gate_process::{kill, wait_group_stopped};
+use crate::operation::gate_process::{kill, wait_marked_group_stopped};
 use crate::operation::workspace_lease::facts::{LeaseStates, latest_workspace_lease_for_card_tx};
 use crate::operation::workspace_lease::{DeliveryPolicy, WorkspaceLease};
 use crate::operation::{OperationOutcome, SpawnArtifacts, Tx, TxOutput};
@@ -38,7 +38,7 @@ use crate::plugin_host::child_process::{
     ChildFinishError, SpawnTimedOut, finish_within, read_capped, set_process_group_leader,
     spawn_within,
 };
-use crate::proc_identity::{read_boot_id, sigkill_verified_group_members};
+use crate::proc_identity::{group_members_with_env_marker, read_boot_id, sigkill_verified_members};
 
 /// `status_detail` of a verdict whose target check failed (the fourth value; isolated never
 /// produces it).
@@ -55,13 +55,20 @@ const REV_PARSE_ARGV: [&str; 4] = ["git", "rev-parse", "--verify", "HEAD^{commit
 
 /// D3.0 (iii), 5.1.6 verbatim: the porcelain status with untracked files enumerated whatever
 /// the checkout's `status.showUntrackedFiles` says (the `-c` and the flag are redundant with
-/// each other on purpose: either alone is enough, both are pinned).
-const STATUS_ARGV: [&str; 9] = [
+/// each other on purpose: either alone is enough, both are pinned). `-c core.fsmonitor=false`
+/// disables the one hook `git status` runs: a worker can write the shared `.git/config` with a
+/// `core.fsmonitor` command that never returns, and `status` is the only sampling command that
+/// would honour it (`rev-parse` / `worktree list` run no hooks). The porcelain bytes are unchanged
+/// by the switch — fsmonitor is only a stat cache — so this closes the hook-holds-prepare hazard
+/// class at the root rather than merely bounding it.
+const STATUS_ARGV: [&str; 11] = [
     "git",
     "-c",
     "status.showUntrackedFiles=all",
     "-c",
     "core.quotepath=false",
+    "-c",
+    "core.fsmonitor=false",
     "status",
     "--porcelain=v1",
     "--untracked-files=all",
@@ -69,14 +76,15 @@ const STATUS_ARGV: [&str; 9] = [
 ];
 
 /// One deadline for the three commands of one D3.0 sample. The prepare-time sample runs inside
-/// the driver's `BEGIN IMMEDIATE` (D3), so a command a repository hook holds (`core.fsmonitor`
-/// on `git status`; any worker can write the shared `.git/config`) must not hold the kernel's
-/// only write slot for longer than other writers tolerate: `begin_immediate_tx` retries
-/// `busy_timeout` 5 s × 7 ≈ 35 s before failing. U4 measured the sample at p99 101 ms and
-/// 264 ms cold, G23 at ≤ 212 ms after heavy I/O; 10 s is ~40× the worst observed and leaves
-/// every other writer's retry budget intact. A timeout is `SampleFailure` (`Unsampled`), and
-/// the command's whole process group is killed (the hook is a grandchild of `git`).
-pub const SAMPLE_TIMEOUT: Duration = Duration::from_secs(10);
+/// the driver's `BEGIN IMMEDIATE` (D3), so it must not hold the kernel's only write slot for longer
+/// than other writers tolerate. `STATUS_ARGV` already disables `core.fsmonitor`, the one hook a
+/// worker could weaponise; what remains under this bound is real I/O stall only. U4 measured the
+/// sample at p99 101 ms and 264 ms cold, G23 at ≤ 212 ms after heavy I/O; 4 s is ~15× the worst
+/// observed and, crucially, stays UNDER the single 5 s `busy_timeout` of the pool's auto-commit
+/// writers (lease releases, `today` upserts), so a sample that stalls the full bound never makes
+/// those writers return `database is locked` before its own transaction rolls back. A timeout is
+/// `SampleFailure` (`Unsampled`), and the command's whole process group is killed.
+pub const SAMPLE_TIMEOUT: Duration = Duration::from_secs(4);
 
 /// Bytes of a sampling command's stdout / stderr kept (the porcelain status of a large dirty
 /// tree is the biggest; anything past this is drained and dropped, and the sample fails closed
@@ -311,13 +319,14 @@ async fn run_sampling_command(
     argv: &[&str],
     what: &str,
     deadline: tokio::time::Instant,
+    bound: Duration,
 ) -> std::result::Result<std::process::Output, SampleFailure> {
     let timed_out = || SampleFailure {
         reason: format!(
             "{what} timed out after {:.1} s in {} (sample bound {:?})",
-            SAMPLE_TIMEOUT.as_secs_f64(),
+            bound.as_secs_f64(),
             cwd.display(),
-            SAMPLE_TIMEOUT
+            bound
         ),
     };
     let mut cmd = tokio::process::Command::new(argv[0]);
@@ -428,6 +437,7 @@ pub(crate) async fn sample_within(
         ],
         "lease provenance observation",
         deadline,
+        timeout,
     )
     .await?;
     let provenance_holds = match provenance.status.code() {
@@ -452,7 +462,8 @@ pub(crate) async fn sample_within(
                 .to_string(),
         })?;
 
-    let head = run_sampling_command(cwd, &REV_PARSE_ARGV, "git rev-parse", deadline).await?;
+    let head =
+        run_sampling_command(cwd, &REV_PARSE_ARGV, "git rev-parse", deadline, timeout).await?;
     if !head.status.success() {
         return Err(SampleFailure {
             reason: format!(
@@ -474,7 +485,7 @@ pub(crate) async fn sample_within(
         });
     }
 
-    let status = run_sampling_command(cwd, &STATUS_ARGV, "git status", deadline).await?;
+    let status = run_sampling_command(cwd, &STATUS_ARGV, "git status", deadline, timeout).await?;
     if !status.status.success() {
         return Err(SampleFailure {
             reason: format!(
@@ -698,16 +709,21 @@ pub(crate) async fn prepare_target_tx(
     })
 }
 
-/// Stop the recorded gate group before the after-sample, on every completion path. The leader
-/// is reaped (live) or dead (recovery) by now, so the group signal `kill` sends only for a
-/// verified leader is followed by a per-member verified sweep of what outlived the wrapper (a
-/// step's backgrounded child keeps the group alive; the pgid cannot be recycled while it does),
-/// then the group is waited empty. `Err` = the group did not stop within the wait: the caller
-/// must not sample (a live descendant can still write), see [`finalize`].
-pub(crate) async fn stop_group(artifacts: &SpawnArtifacts) -> Result<()> {
+/// Stop the recorded gate group before the after-sample, on every completion path. `op_marker`
+/// (`gate_attempt_key(task_id, attempt)`) is the `NEIGE_GATE_OP` value the wrapper and every
+/// descendant carry; the sweep and the wait touch ONLY members that carry it. On the `!alive`
+/// recovery paths the wrapper's leader is dead, so its numeric pgid can be recycled by an unrelated
+/// process in the same OS boot (a dead pgid does not refuse a group-wide signal); a numeric-pgid
+/// sweep would SIGKILL that foreign group and wait it empty. Authenticating by the inherited environ
+/// marker instead means a foreign process is neither signalled nor waited for — it does not exist
+/// for this gate. The `kill` group signal stays authenticated by the (live) leader's own identity;
+/// a marker-carrying descendant that outlives the wrapper is what the sweep reaches. `Err` = a
+/// marked descendant is still alive after the wait: the caller must not sample, see [`finalize`].
+pub(crate) async fn stop_group(artifacts: &SpawnArtifacts, op_marker: &str) -> Result<()> {
     kill(artifacts);
     if read_boot_id().as_deref() == Some(artifacts.boot_id.as_str()) {
-        let sweep = sigkill_verified_group_members(artifacts.pgid);
+        let members = group_members_with_env_marker(artifacts.pgid, "NEIGE_GATE_OP", op_marker);
+        let sweep = sigkill_verified_members(&members);
         if !sweep.killed.is_empty() {
             tracing::warn!(
                 pgid = artifacts.pgid,
@@ -716,7 +732,7 @@ pub(crate) async fn stop_group(artifacts: &SpawnArtifacts) -> Result<()> {
             );
         }
     }
-    wait_group_stopped(artifacts).await
+    wait_marked_group_stopped(artifacts, op_marker).await
 }
 
 /// The one exit of the three completion paths (live observer, boot reattach, dead process with
@@ -1247,6 +1263,7 @@ mod tests {
             STATUS_ARGV.join(" "),
             concat!(
                 "git -c status.showUntrackedFiles=all -c core.quotepath=false ",
+                "-c core.fsmonitor=false ",
                 "status --porcelain=v1 --untracked-files=all --ignore-submodules=none"
             )
         );
@@ -1378,50 +1395,26 @@ mod tests {
         found
     }
 
-    /// A `core.fsmonitor` hook that never returns holds `git status` (5.1.6 honours the hook;
-    /// `-c` cannot switch it off): the sample is a `SampleFailure` naming the bound, within the
-    /// bound plus a margin, and the hook — a grandchild of the `git` the sampler spawned — is
-    /// dead afterwards (the group sweep, not `kill_on_drop`, reaches it). Sub-second bound so
-    /// the test does not wait out [`SAMPLE_TIMEOUT`].
+    /// A sampling command that never returns is a `SampleFailure` naming the ACTUAL bound (not the
+    /// production constant), within the bound plus a margin, and its whole process group — the
+    /// command plus the grandchild it forked — is dead afterwards (the `GroupChild` sweep, not just
+    /// `kill_on_drop` of the leader). The stall source is a plain sleeping command, NOT a
+    /// `core.fsmonitor` hook: the sampler now runs `git status` with `-c core.fsmonitor=false`, so a
+    /// fsmonitor hook is never invoked; the generic execution entry (`run_sampling_command`) is what
+    /// the bound and group-kill live on. Sub-second bound so the test does not wait out
+    /// [`SAMPLE_TIMEOUT`].
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn sampling_command_timeout_is_a_sample_failure() {
         let tmp = tempfile::Builder::new()
             .prefix("neige-gate-sample-timeout-")
             .tempdir()
             .unwrap();
-        let repo = tmp.path().join("repo");
-        std::fs::create_dir_all(&repo).unwrap();
-        git(&repo, &["init", "-q", "-b", "main"]);
-        git(&repo, &["config", "user.email", "t@example.test"]);
-        git(&repo, &["config", "user.name", "t"]);
-        std::fs::write(repo.join("README.md"), "x\n").unwrap();
-        git(&repo, &["add", "README.md"]);
-        git(&repo, &["commit", "-q", "-m", "initial"]);
-        let head = git(&repo, &["rev-parse", "HEAD"]);
-        let worktree = tmp.path().join("wt");
-        git(
-            &repo,
-            &["worktree", "add", "-q", worktree.to_str().unwrap(), "HEAD"],
-        );
-        let expected = Expected {
-            canonical_path: std::fs::canonicalize(&worktree)
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .to_string(),
-            git_common_dir: std::fs::canonicalize(repo.join(".git"))
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .to_string(),
-            commit_sha: head,
-        };
-        assert!(sample(&worktree, &expected).await.is_ok());
 
-        // The hook script's path is the needle a /proc scan finds it by; it sleeps far past
-        // the bound. Repository-level config: the shared `.git/config` any worker can write.
+        // The probe script's path is the needle a /proc scan finds it by; it sleeps far past the
+        // bound. It forks a grandchild sleeper so the assertion below proves the GROUP was swept,
+        // not merely the leader `kill_on_drop`-ed.
         let hook = tmp.path().join(format!(
-            "fsmonitor-hook-{}-{}.sh",
+            "slow-sample-probe-{}-{}.sh",
             std::process::id(),
             now_ms()
         ));
@@ -1430,23 +1423,35 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        git(
-            &worktree,
-            &["config", "core.fsmonitor", hook.to_str().unwrap()],
-        );
         let needle = hook.display().to_string();
 
+        // The command run under the bound is a shell that backgrounds the hook (a GRANDCHILD of the
+        // sampler) and waits; `kill_on_drop` reaches only the leader, so the grandchild dying proves
+        // the group sweep ran.
+        let script = format!("'{needle}' & wait");
         let bound = Duration::from_millis(500);
+        let deadline = tokio::time::Instant::now() + bound;
         let started = std::time::Instant::now();
-        let failure = sample_within(&worktree, &expected, bound)
-            .await
-            .unwrap_err();
+        let failure = run_sampling_command(
+            tmp.path(),
+            &["sh", "-c", &script],
+            "slow probe",
+            deadline,
+            bound,
+        )
+        .await
+        .unwrap_err();
         let elapsed = started.elapsed();
         assert!(
             failure.reason.contains("timed out"),
             "{failure:?} after {elapsed:?}"
         );
-        assert!(failure.reason.starts_with("git status"), "{failure:?}");
+        assert!(failure.reason.starts_with("slow probe"), "{failure:?}");
+        // The reason names the actual bound, not the production constant.
+        assert!(
+            failure.reason.contains("0.5 s"),
+            "the reason must name the injected bound, got {failure:?}"
+        );
         assert!(
             elapsed <= bound + Duration::from_secs(1),
             "the sample returned {elapsed:?} after a {bound:?} bound"
@@ -1464,5 +1469,111 @@ mod tests {
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+    }
+
+    /// The recovery `stop_group` sweep authenticates group members by the inherited `NEIGE_GATE_OP`
+    /// marker, not the numeric pgid: a foreign process that recycled the dead wrapper's pgid is
+    /// neither killed nor waited for (the group counts as stopped), while a genuinely marked member
+    /// in the same pgid is killed. Mutating `stop_group` back to a numeric-pgid sweep
+    /// (`sigkill_verified_group_members(pgid)` + `wait_group_stopped`) kills the foreign process → red.
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recovery_group_sweep_spares_a_foreign_pgid_member() {
+        use crate::proc_identity::read_proc_start_time;
+        use std::os::unix::process::CommandExt as _;
+
+        let marker = format!("w:spare#g1-{}-{}", std::process::id(), now_ms());
+        let boot_id = read_boot_id().expect("boot id");
+
+        // A foreign process that owns the recycled pgid: its OWN group leader, WITHOUT the marker.
+        let mut foreign = std::process::Command::new("sleep")
+            .arg("300")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("spawn foreign leader");
+        let foreign_pid = foreign.id() as i32;
+        let foreign_start = read_proc_start_time(foreign_pid).expect("foreign start_time");
+
+        // The recorded artifacts: the wrapper leader is long dead (a pid that does not resolve), so
+        // `kill` sends no group signal; the pgid is the one the foreign process now leads.
+        let dead_leader = SpawnArtifacts {
+            pid: 2_000_000_000,
+            pgid: foreign_pid,
+            start_time: foreign_start,
+            boot_id: boot_id.clone(),
+            log_path: None,
+            extra: serde_json::json!({}),
+        };
+        stop_group(&dead_leader, &marker)
+            .await
+            .expect("a foreign-owned pgid counts as stopped");
+        // Spared means still a LIVE process, not a killed-but-unreaped zombie: this test owns the
+        // foreign child, so a SIGKILL would leave it as a `Z` with its start_time intact, which
+        // `read_proc_start_time` cannot tell from alive. The state is what distinguishes them.
+        let foreign_state = std::fs::read_to_string(format!("/proc/{foreign_pid}/stat"))
+            .ok()
+            .and_then(|stat| crate::proc_identity::parse_proc_stat_fields(&stat))
+            .map(|f| f.state);
+        assert!(
+            matches!(foreign_state, Some('S') | Some('R') | Some('D')),
+            "the foreign process must be spared alive (it never carried this gate's marker), got state {foreign_state:?}"
+        );
+        assert_eq!(
+            read_proc_start_time(foreign_pid),
+            Some(foreign_start),
+            "the foreign process must still be present"
+        );
+
+        // A genuinely marked member in a pgid IS swept.
+        let mut marked = std::process::Command::new("sleep")
+            .arg("300")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .env("NEIGE_GATE_OP", &marker)
+            .process_group(0)
+            .spawn()
+            .expect("spawn marked leader");
+        let marked_pid = marked.id() as i32;
+        let marked_start = read_proc_start_time(marked_pid).expect("marked start_time");
+        let marked_artifacts = SpawnArtifacts {
+            pid: 2_000_000_001,
+            pgid: marked_pid,
+            start_time: marked_start,
+            boot_id,
+            log_path: None,
+            extra: serde_json::json!({}),
+        };
+        stop_group(&marked_artifacts, &marker)
+            .await
+            .expect("the marked group stops");
+        let marked_dead = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match read_proc_start_time(marked_pid) {
+                    Some(s) if s == marked_start => {}
+                    _ => break,
+                }
+                // A killed-but-unreaped child stays a zombie with its start_time; accept Z/X too.
+                if let Ok(stat) = std::fs::read_to_string(format!("/proc/{marked_pid}/stat"))
+                    && crate::proc_identity::parse_proc_stat_fields(&stat)
+                        .is_some_and(|f| f.state == 'Z' || f.state == 'X')
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+
+        // Cleanup regardless of assertions.
+        let _ = foreign.kill();
+        let _ = foreign.wait();
+        let _ = marked.kill();
+        let _ = marked.wait();
+        assert!(marked_dead, "the marked member must be swept");
     }
 }
