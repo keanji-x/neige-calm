@@ -77,13 +77,15 @@ def main():
         request("/api/plugins/dev-neige-paper-trading/enable", {}, "POST")
         for _ in range(150):
             overlays = request(f"/api/overlays?entity_kind=track&entity_id={track['id']}")
+            overlays = [o for o in overlays if o["plugin_id"] == "dev-neige-paper-trading"]
             if len(overlays) == 6:
                 overview = next(o for o in overlays if o["kind"] == "paper.portfolio")
                 assert next(r["value"] for r in overview["payload"]["rows"] if r["metric"] == "Account equity (USD)") == "100000"
                 break
             time.sleep(0.1)
         else:
-            raise AssertionError("plugin did not publish six report projections")
+            raise AssertionError(f"plugin did not publish six report projections: {overlays}; "
+                                 f"log={request('/api/plugins/dev-neige-paper-trading/log')}")
         metadata = {"base": base, "track_id": track["id"], "area_id": area["id"], "version": version}
         (root / "metadata.json").write_text(json.dumps(metadata, indent=2))
         subprocess.run(["node", str(plugin / "tests/browser_smoke.cjs"), str(args.browser_package.resolve()),

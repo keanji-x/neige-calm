@@ -141,5 +141,26 @@ manage existing paper positions before disabling the plugin. Preserve all data.
 
 ## Verification record
 
-Implementation, test, mutation and independent review results will be appended
-after they actually run.
+- Initial complete suite: `python3 -m pytest plugins/paper-trading/tests -q`,
+  191 passed. This includes real stdio app startup/host callbacks, external CLI
+  fixture calls, and a pseudo-terminal operator waiting for explicit input.
+- Initial isolated host smoke with the installed `2fdd018d3` binary and its
+  matching frontend: install/configure/enable, all six overlays, and desktop
+  1366x1000/mobile 390x844 browser assertions passed. No real agents or orders.
+  The first install exposed the scalar-only config schema; `symbols_json`
+  uses JSON parsing and runtime validation rather than widening host schemas.
+- Account-fence mutation in the broker-only exclusive worktree removed only
+  the `account_channel != lb_papertrading` predicate. Predicted and actual red
+  set: `test_identity_rejects_wrong_account_or_channel[account_channel-lb_live]`,
+  `[account_channel-paper]`, `[account_channel-None]`, and
+  `test_identity_requires_each_field[account-account_channel]`. Actual result:
+  4 failed / 145 passed; restored 149 passed. Two later cancellation-shape tests
+  brought the broker suite to 151 passing tests without changing that fence.
+- No-repeat mutation at `85f2e8e2a`, in a separate exclusive mutation worktree,
+  disabled only the `queued/ready` preflight state predicate. The predicted
+  complete red set was `test_no_repeat_submit_after_lost_ack`. Running the full
+  191-test suite produced exactly 1 failed / 190 passed; restoring via patch
+  produced 191 passed and `git diff --exit-code` confirmed zero residue.
+- Independent complete-diff reviews are in progress; findings and final reruns
+  are recorded before delivery. No production deployment or broker acceptance
+  test has been performed.
