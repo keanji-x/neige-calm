@@ -311,6 +311,7 @@ pub(crate) async fn boot() -> Boot {
         task_budget_default: calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
         plugin_host: Arc::new(tokio::sync::OnceCell::new()),
         operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
+        scheduler_poke: Arc::new(tokio::sync::OnceCell::new()),
         // Unstarted: reads record their `enqueue` outcomes and the series tests run the recorded jobs by hand.
         series_resolver: Arc::new(calm_server::report_series::SeriesResolver::new_unstarted(
             repo.sqlite_pool(),

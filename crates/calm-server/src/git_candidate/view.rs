@@ -7,6 +7,7 @@ use calm_types::task_execution::IsolatedCodexSelection;
 use calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE;
 use serde::Serialize;
 
+use super::abandonment::abandonment_for_delivery_tx;
 use super::candidate::{CandidateRow, candidate_for_attempt_tx};
 use super::delivery::{DeliveryRow, DeliverySettled, delivery_latest_for_attempt_tx};
 use crate::error::{CalmError, Result};
@@ -36,11 +37,12 @@ pub(crate) struct DeliveryFailure {
     pub retry_allowed: bool,
 }
 
-/// What an abandonment row says (`task_git_delivery_abandonments`, slice 3). This slice only
-/// defines the shape; no producer exists yet and every caller passes `None`.
+/// What an abandonment row says (`task_git_delivery_abandonments`, slice 3): the Planner's
+/// reason, what the abandonment did to the tasks row and the status it observed
+/// (`abandonment::AbandonmentRow::facts`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AbandonmentFacts {
-    pub reason: String,
+    pub reason: Option<String>,
     pub task_outcome: String,
     pub task_status: String,
 }
@@ -89,7 +91,8 @@ pub(crate) enum DeliveryState {
     Abandoned {
         delivery_id: String,
         ordinal: i64,
-        reason: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
         task_outcome: String,
         task_status: String,
     },
@@ -341,13 +344,18 @@ pub(crate) async fn candidate_view_tx(
         Some(lease) if lease.delivery_policy == Some(DeliveryPolicy::Kernel) => {
             let delivery = delivery_latest_for_attempt_tx(tx, &task.id).await?;
             let candidate = candidate_for_attempt_tx(tx, &task.id).await?;
-            // Abandonment rows are slice 3: no producer exists yet.
+            let abandonment = match delivery.as_ref() {
+                Some(delivery) => abandonment_for_delivery_tx(tx, &delivery.delivery_id)
+                    .await?
+                    .map(|row| row.facts()),
+                None => None,
+            };
             Some(delivery_state(
                 task.status,
                 task.status_detail.as_deref(),
                 delivery.as_ref(),
                 candidate.as_ref(),
-                None,
+                abandonment.as_ref(),
             ))
         }
         _ => None,

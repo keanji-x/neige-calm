@@ -279,6 +279,62 @@ pub(crate) async fn insert_initial_delivery_tx(
     Ok(row)
 }
 
+/// Insert the retry row of one attempt (`calm.task.delivery{action:"retry"}`, slice 3): the
+/// predecessor's `ordinal + 1`, `predecessor_delivery_id` naming it, the request key and reason
+/// the Planner sent (the replay key). Fresh `delivery_id` and `operation_key`; same lease and
+/// card as the predecessor. The caller has admitted the retry (predecessor failed, retryable,
+/// workspace present) in the same transaction.
+pub(crate) async fn insert_retry_delivery_tx(
+    tx: &mut Tx<'_>,
+    predecessor: &DeliveryRow,
+    request_idempotency_key: &str,
+    reason: Option<&str>,
+    now_ms: i64,
+) -> Result<DeliveryRow> {
+    let delivery_id = new_id();
+    let row = DeliveryRow {
+        delivery_id: delivery_id.clone(),
+        track_id: predecessor.track_id.clone(),
+        producer_attempt_id: predecessor.producer_attempt_id.clone(),
+        card_id: predecessor.card_id.clone(),
+        lease_id: predecessor.lease_id.clone(),
+        ordinal: predecessor.ordinal + 1,
+        operation_key: new_id(),
+        forge_idempotency_key: format!(
+            "{GIT_FORGE_PLUGIN_ID}:{}:{}:{}",
+            predecessor.track_id,
+            predecessor.card_id,
+            delivery_idem_key(&delivery_id)
+        ),
+        predecessor_delivery_id: Some(predecessor.delivery_id.clone()),
+        request_idempotency_key: Some(request_idempotency_key.to_string()),
+        reason: reason.map(str::to_string),
+        created_at_ms: now_ms,
+        settlement: None,
+    };
+    sqlx::query(
+        "INSERT INTO task_git_deliveries (delivery_id, track_id, producer_attempt_id, card_id, \
+         lease_id, ordinal, operation_key, forge_idempotency_key, predecessor_delivery_id, \
+         request_idempotency_key, reason, created_at_ms) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+    )
+    .bind(&row.delivery_id)
+    .bind(&row.track_id)
+    .bind(&row.producer_attempt_id)
+    .bind(&row.card_id)
+    .bind(&row.lease_id)
+    .bind(row.ordinal)
+    .bind(&row.operation_key)
+    .bind(&row.forge_idempotency_key)
+    .bind(&row.predecessor_delivery_id)
+    .bind(&row.request_idempotency_key)
+    .bind(&row.reason)
+    .bind(row.created_at_ms)
+    .execute(&mut **tx)
+    .await?;
+    Ok(row)
+}
+
 /// The report transaction's hook (D2 "persistent hand-off"): a successful report of an attached
 /// attempt whose card holds an active kernel-delivery lease inserts the first delivery row in the
 /// same transaction as the task flip. Isolated attempts and legacy leases (`delivery_policy`
@@ -405,6 +461,25 @@ pub(crate) async fn delivery_latest_for_attempt_tx(
     );
     let row = sqlx::query(&sql)
         .bind(producer_attempt_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    row.map(row_to_delivery).transpose()
+}
+
+/// The retry row one request key already produced for this attempt (the replay key of
+/// `calm.task.delivery{retry}`); `ordinal = 1` rows carry no key and are never returned.
+pub(crate) async fn delivery_by_request_key_tx(
+    tx: &mut Tx<'_>,
+    producer_attempt_id: &str,
+    request_idempotency_key: &str,
+) -> Result<Option<DeliveryRow>> {
+    let sql = format!(
+        "SELECT {DELIVERY_COLUMNS} FROM task_git_deliveries d \
+         WHERE d.producer_attempt_id = ?1 AND d.request_idempotency_key = ?2"
+    );
+    let row = sqlx::query(&sql)
+        .bind(producer_attempt_id)
+        .bind(request_idempotency_key)
         .fetch_optional(&mut **tx)
         .await?;
     row.map(row_to_delivery).transpose()

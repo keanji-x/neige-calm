@@ -78,12 +78,17 @@ pub enum Observation {
     },
     /// One Git delivery settled (#1727 S4). Hard-fired: it is the wake the suppressed worker
     /// self-report would have been. `retained_path` is the lease worktree while it still exists.
+    /// `delivery_id` (slice 3) is what a failed delivery's `calm.task.delivery` decision names;
+    /// an observation persisted before it existed carries `None` and its sentence names no
+    /// decision.
     TaskGitDeliverySettled {
         key: String,
         attempt_id: String,
         result: DeliverySettlement,
         #[serde(default)]
         retained_path: Option<String>,
+        #[serde(default)]
+        delivery_id: Option<String>,
     },
     WorkspaceLeased {
         track_id: TrackId,
@@ -356,8 +361,14 @@ impl Observation {
             Observation::TaskGitDeliverySettled {
                 key,
                 attempt_id,
-                result: DeliverySettlement::Failed { code, reason, .. },
+                result:
+                    DeliverySettlement::Failed {
+                        code,
+                        reason,
+                        retry_allowed,
+                    },
                 retained_path,
+                delivery_id,
             } => {
                 // `workspace_missing` is the kernel's proof the lease directory is gone; the lease
                 // row can still carry a path, so that code never names one.
@@ -367,9 +378,21 @@ impl Observation {
                     }
                     _ => "Read".to_string(),
                 };
+                // The decision clause (slice 3): only the actions the row admits are offered.
+                let decide = match delivery_id.as_deref() {
+                    Some(id) if *retry_allowed => format!(
+                        " Decide: calm.task.delivery{{action:\"retry\"|\"abandon\", \
+                         expected_delivery_id:\"{id}\"}}."
+                    ),
+                    Some(id) => format!(
+                        " Decide: calm.task.delivery{{action:\"abandon\", \
+                         expected_delivery_id:\"{id}\"}}."
+                    ),
+                    None => String::new(),
+                };
                 format!(
                     "Task {key} Git delivery FAILED ({}): {reason}. \
-                     {read} the worker output at runs/{attempt_id}.md.",
+                     {read} the worker output at runs/{attempt_id}.md.{decide}",
                     code.wire_str()
                 )
             }

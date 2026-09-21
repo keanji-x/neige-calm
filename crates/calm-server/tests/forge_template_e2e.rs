@@ -1606,6 +1606,7 @@ async fn boot_fixture() -> Fixture {
         task_budget_default: calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
         plugin_host: plugin_host_cell.clone(),
         operation_runtime: operation_runtime_cell.clone(),
+        scheduler_poke: Arc::new(tokio::sync::OnceCell::new()),
         series_resolver: Arc::new(calm_server::report_series::SeriesResolver::new_unstarted(
             None,
         )),

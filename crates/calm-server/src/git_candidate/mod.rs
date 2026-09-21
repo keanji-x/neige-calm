@@ -7,15 +7,23 @@
 //! - [`candidate`]: the `task_candidates` row, a byte copy of the operation result and the lease.
 //! - [`view`]: the pure derivations the Planner read surface shows (`delivery.state`,
 //!   `candidate.binding`).
+//! - [`abandonment`]: the `task_git_delivery_abandonments` row the Planner's abandon writes.
+//! - [`action`]: `calm.task.delivery{retry|abandon}` — replay first, then admission, in one
+//!   immediate transaction.
+//! - [`refs`]: the candidate-ref prefix cleanup the Track-delete sweep runs (D9).
 //!
-//! Every write goes through a `begin_immediate_tx` transaction the caller owns; this module never
-//! begins one.
+//! Every write goes through a `begin_immediate_tx` transaction the caller owns (`action` owns
+//! its own through `write_in_tx_typed`); no module here calls `pool.begin()`.
 //!
 //! Wired in: the report transaction (`decision_sink`) inserts the delivery row, `calm.task.complete`
-//! and `scheduler::git_delivery` submit it, the scheduler settles it, `calm.plan.list` reads it.
+//! and `scheduler::git_delivery` submit it, the scheduler settles it, `calm.plan.list` reads it,
+//! `calm.task.delivery` retries or abandons it, the Track-delete sweep drops its refs.
 
+pub(crate) mod abandonment;
+pub(crate) mod action;
 pub(crate) mod candidate;
 pub(crate) mod delivery;
+pub(crate) mod refs;
 pub(crate) mod view;
 
 #[cfg(test)]

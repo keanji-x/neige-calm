@@ -34,9 +34,10 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     // Captured sources are the planner's evidence.
     "calm.source.capture",
     "calm.source.list",
-    // Track state + verdict.
+    // Track state + verdict + the Planner's action on a failed Git delivery.
     "calm.track.state",
     "calm.task.verdict",
+    "calm.task.delivery",
     // Naming the track is a planner judgement.
     "calm.track.rename",
     // Speaking from a background sync turn is a planner action.
