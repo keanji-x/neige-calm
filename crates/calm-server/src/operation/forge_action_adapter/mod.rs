@@ -345,14 +345,21 @@ where
         .collect()
 }
 
-/// env_clear + a tight allowlist, applied identically to the action and to recovery probes: both run plugin-supplied argv and neither may inherit daemon secrets.
-async fn apply_forge_subprocess_env(cmd: &mut tokio::process::Command, repo: &dyn RouteRepo) {
+/// `env_clear` + the base allowlist alone (no forge passthrough, no worker env): the environment
+/// every kernel-side git observation runs under — the forge action and its probes below, and the
+/// task-verify target sampler (#1727 S4 D3.0), which must resolve `git` from the same `PATH`.
+pub(crate) fn forge_base_env(cmd: &mut tokio::process::Command) {
     cmd.env_clear();
     for key in FORGE_BASE_ENV_KEYS {
         if let Some(v) = std::env::var_os(key) {
             cmd.env(key, v);
         }
     }
+}
+
+/// env_clear + a tight allowlist, applied identically to the action and to recovery probes: both run plugin-supplied argv and neither may inherit daemon secrets.
+async fn apply_forge_subprocess_env(cmd: &mut tokio::process::Command, repo: &dyn RouteRepo) {
+    forge_base_env(cmd);
     if let Value::Object(env) = super::terminal_adapter::terminal_worker_env(repo)
         .await
         .unwrap_or(Value::Null)

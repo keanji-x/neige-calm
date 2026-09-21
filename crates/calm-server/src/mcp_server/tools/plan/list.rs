@@ -129,6 +129,8 @@ pub(super) fn summary(entry: &Value) -> Value {
             "candidate/delivery/failure/retry_allowed",
             "candidate/delivery/task_outcome",
             "candidate/delivery/task_status",
+            "candidate/verification/state",
+            "candidate/verification/gate_attempt",
             "recovery/guidance/blocking_condition",
             "recovery/guidance/supported_continuation",
             // An empty `{}` (terminal worker, no lease) must survive the summary.

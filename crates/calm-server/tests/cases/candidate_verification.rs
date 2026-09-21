@@ -638,3 +638,36 @@ mod authoring;
 
 #[path = "candidate_review_qualification.rs"]
 mod candidate_review_qualification;
+
+/// #1727 S4 A32: the isolated verification receipt is untouched by the task-verify target —
+/// `Evidence.verdict` is the shared `GateVerdict`'s seven keys, never `target` or `cwd`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn isolated_verify_receipt_shape_unchanged() {
+    let (fx, _task, _path, publication) = source(CHECK).await;
+    declare(&fx.boot, consumer()).await;
+    schedule(&fx).await;
+    let evidence = verified(&fx, &publication).await;
+    let mut keys: Vec<&str> = evidence["verdict"]
+        .as_object()
+        .expect("verdict object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "attempt",
+            "exit_code",
+            "failing_step",
+            "log_path",
+            "log_tail",
+            "passed",
+            "status_detail"
+        ],
+        "{evidence}"
+    );
+    assert!(evidence["verdict"].get("target").is_none());
+    assert!(evidence["verdict"].get("cwd").is_none());
+    assert_eq!(evidence["verdict"]["passed"], true);
+}

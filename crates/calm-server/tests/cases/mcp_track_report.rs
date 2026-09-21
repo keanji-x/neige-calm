@@ -149,11 +149,13 @@ pub(crate) async fn seed_non_root_session_with_provider(
 }
 
 pub(crate) async fn boot() -> Boot {
-    let repo: Arc<dyn Repo> = Arc::new(
-        SqlxRepo::open("sqlite::memory:")
-            .await
-            .expect("open in-memory sqlite"),
-    );
+    boot_at("sqlite::memory:").await
+}
+
+/// [`boot`] on an explicit sqlite URL (a file-backed database an out-of-process kernel can be
+/// launched against afterwards).
+pub(crate) async fn boot_at(db_url: &str) -> Boot {
+    let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open(db_url).await.expect("open sqlite"));
     let area = repo
         .area_create(NewArea {
             name: "report-test".into(),

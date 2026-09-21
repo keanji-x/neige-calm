@@ -33,8 +33,8 @@ use crate::operation::claude_adapter::ClaudeWorkerOperationPayload;
 use crate::operation::codex_adapter::CodexWorkerOperationPayload;
 use crate::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
 use crate::operation::task_verify_adapter::{
-    GateResultCtx, GateVerdict, TASK_VERIFY_KIND, TaskVerifyOperationPayload,
-    apply_gate_result_in_tx, gate_attempt_key,
+    GateResultCtx, TASK_VERIFY_KIND, TaskVerifyOperationPayload, apply_gate_result_in_tx,
+    gate_attempt_key,
 };
 use crate::operation::terminal_adapter::TerminalWorkerOperationPayload;
 use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
@@ -2350,7 +2350,16 @@ impl Scheduler {
     /// If the current attempt's op exists, `wait()` it and copy the outcome iff the row is
     /// still `verifying` at that attempt; otherwise submit `#g{gate_attempt + 1}`. Racing
     /// submitters compute the same key and dedupe on the operations unique index.
-    async fn drive_gate_inner(&self, runtime: &Arc<OperationRuntime>, task: &Task) -> Result<()> {
+    async fn drive_gate_inner(
+        self: &Arc<Self>,
+        runtime: &Arc<OperationRuntime>,
+        task: &Task,
+    ) -> Result<()> {
+        // Admission (#1727 S4 D3, oracle 8): a candidate-bound attempt's gate waits for its
+        // delivery to settle as a candidate; `Failed` / `Abandoned` / still pending → no `#gN`.
+        if !self.admit_gate(runtime, task).await? {
+            return Ok(());
+        }
         if task.gate_attempt >= 1 {
             let key = gate_attempt_key(&task.id, task.gate_attempt);
             if let Some(op) = runtime
@@ -2408,52 +2417,6 @@ impl Scheduler {
             outcome,
             OperationOutcome::Failed { .. } | OperationOutcome::Stuck { .. }
         );
-        let verdict = match outcome {
-            OperationOutcome::Succeeded { result }
-            | OperationOutcome::SucceededViaCollision { result, .. } => {
-                match serde_json::from_value::<GateVerdict>(result) {
-                    Ok(verdict) => verdict,
-                    Err(e) => GateVerdict {
-                        passed: false,
-                        status_detail: Some("gate-infra".into()),
-                        failing_step: None,
-                        exit_code: None,
-                        log_tail: format!("gate op result unparseable: {e}"),
-                        log_path: log_path.to_string(),
-                        attempt,
-                    },
-                }
-            }
-            OperationOutcome::Failed {
-                last_error,
-                last_error_class,
-                ..
-            } => {
-                let status_detail = if last_error_class.as_deref() == Some("parked_deadline") {
-                    "gate-timeout"
-                } else {
-                    "gate-infra"
-                };
-                GateVerdict {
-                    passed: false,
-                    status_detail: Some(status_detail.into()),
-                    failing_step: None,
-                    exit_code: None,
-                    log_tail: last_error,
-                    log_path: log_path.to_string(),
-                    attempt,
-                }
-            }
-            OperationOutcome::Stuck { reason, .. } => GateVerdict {
-                passed: false,
-                status_detail: Some("gate-infra".into()),
-                failing_step: None,
-                exit_code: None,
-                log_tail: reason,
-                log_path: log_path.to_string(),
-                attempt,
-            },
-        };
         let pool = self
             .repo
             .sqlite_pool()
@@ -2468,8 +2431,13 @@ impl Scheduler {
             area_id: track.area_id.clone(),
         };
         let mut tx = begin_immediate_tx(&pool).await?;
+        // P9 / P9b / P10: the verdict with its target (frozen, or derived from the rows).
+        let verdict = crate::operation::task_verify_adapter::target::reconcile_result_tx(
+            &mut tx, task, attempt, log_path, outcome,
+        )
+        .await?;
         let mut envelopes = apply_gate_result_in_tx(&mut tx, &rctx, &verdict).await?;
-        if envelopes.is_empty() && op_terminal_failed && verdict.attempt >= 1 {
+        if envelopes.is_empty() && op_terminal_failed && verdict.verdict.attempt >= 1 {
             // Pre-bump failure arm: a `prepare_tx` error BEFORE the bump terminal-fails op `#gN`
             // while the row stays `verifying@N-1`, and the eq-attempt guard would miss forever.
             // Flip at the pre-bump attempt; a row that DID reach attempt N makes this guard miss.
@@ -2477,7 +2445,7 @@ impl Scheduler {
                 &mut tx,
                 &rctx,
                 &verdict,
-                verdict.attempt - 1,
+                verdict.verdict.attempt - 1,
             )
             .await?;
         }

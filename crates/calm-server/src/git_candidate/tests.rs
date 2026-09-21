@@ -26,9 +26,10 @@ use super::delivery::{
     settle_candidate_tx, settle_failed_tx, unsettled_deliveries_for_track_tx,
     worktree_committed_delivery_fields,
 };
+use super::verification::{VerificationState, VerificationView};
 use super::view::{
-    AbandonmentFacts, CandidateBinding, CandidateWorkspace, DeliveryFailure, DeliveryState,
-    MISMATCH_ABANDONMENT_WITH_CANDIDATE, MISMATCH_CANDIDATE_ROW_MISSING,
+    AbandonmentFacts, BoundFacts, CandidateBinding, CandidateWorkspace, DeliveryFailure,
+    DeliveryState, MISMATCH_ABANDONMENT_WITH_CANDIDATE, MISMATCH_CANDIDATE_ROW_MISSING,
     MISMATCH_CANDIDATE_WITH_FAILED_SETTLEMENT, MISMATCH_DELIVERY_ROW_MISSING, NoBindingReason,
     UnboundReason, candidate_binding, delivery_state,
 };
@@ -2888,6 +2889,19 @@ fn facts() -> WorkerWorktreeFacts {
     }
 }
 
+fn not_reported() -> BoundFacts {
+    BoundFacts {
+        delivery: DeliveryState::NotReported,
+        verification: VerificationView {
+            state: VerificationState::NotStarted,
+            gate_attempt: 0,
+            target: None,
+            log_path: None,
+            gate_log: None,
+        },
+    }
+}
+
 /// D8's first-match table: isolated, terminal, child-track, no lease, legacy lease, bound —
 /// and a kernel lease with no delivery row yet is bound with `not_reported`, never legacy.
 #[test]
@@ -2904,7 +2918,7 @@ fn candidate_binding_covers_every_row() {
         &task(TaskKind::Codex, TASK_IN_TRACK_ROUTE, isolated),
         Some(&lease(Some(DeliveryPolicy::Kernel))),
         Some(&facts()),
-        Some(DeliveryState::NotReported),
+        Some(not_reported()),
     )
     .unwrap();
     assert_eq!(
@@ -2939,7 +2953,7 @@ fn candidate_binding_covers_every_row() {
             &task(TaskKind::Terminal, TASK_IN_TRACK_ROUTE, json!({})),
             Some(&lease(Some(DeliveryPolicy::Kernel))),
             Some(&facts()),
-            Some(DeliveryState::NotReported),
+            Some(not_reported()),
         )
         .unwrap(),
         CandidateBinding::None {
@@ -3001,7 +3015,7 @@ fn candidate_binding_covers_every_row() {
         &task(TaskKind::Claude, TASK_IN_TRACK_ROUTE, json!({})),
         Some(&lease(Some(DeliveryPolicy::Kernel))),
         Some(&facts()),
-        Some(DeliveryState::NotReported),
+        Some(not_reported()),
     )
     .unwrap();
     assert_eq!(
@@ -3011,11 +3025,16 @@ fn candidate_binding_covers_every_row() {
             base_sha: "b".repeat(40),
             workspace,
             delivery: DeliveryState::NotReported,
+            verification: not_reported().verification,
         }
     );
     let wire = serde_json::to_value(&bound).unwrap();
     assert_eq!(wire["binding"], json!("bound"));
     assert_eq!(wire["delivery"], json!({"state": "not_reported"}));
+    assert_eq!(
+        wire["verification"],
+        json!({"state": "not_started", "gate_attempt": 0})
+    );
     assert_eq!(wire["base_sha"], json!("b".repeat(40)));
 
     // Contract violations are errors, never a guessed binding.
@@ -3034,7 +3053,7 @@ fn candidate_binding_covers_every_row() {
             &task(TaskKind::Claude, TASK_IN_TRACK_ROUTE, json!({})),
             Some(&lease(Some(DeliveryPolicy::Kernel))),
             None,
-            Some(DeliveryState::NotReported),
+            Some(not_reported()),
         )
         .is_err(),
         "a lease without worktree facts"

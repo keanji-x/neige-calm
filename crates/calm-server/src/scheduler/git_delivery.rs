@@ -13,15 +13,18 @@ use super::*;
 use crate::db::sqlite::{append_decision_event_in_tx, task_get_tx};
 use crate::db::write_in_tx_typed;
 use crate::event::{BroadcastEnvelope, SYNC_EVENT_VERSION};
+use crate::git_candidate::abandonment::abandonment_for_delivery_tx;
 use crate::git_candidate::candidate::{CandidateRow, from_operation_result, resolve_ref_commit};
 use crate::git_candidate::delivery::{
     DeliveryRow, UnsettledDelivery, classify_failure, delivery_by_id_tx, lease_for_delivery_tx,
     settle_candidate_tx, settle_failed_tx, submit_delivery, unresolved_failure,
     unsettled_deliveries_for_track_tx,
 };
+use crate::git_candidate::view::{DeliveryState, MISMATCH_DELIVERY_ROW_MISSING, delivery_state};
 use crate::operation::forge_action_adapter::{
     FORGE_ACTION_KIND, ForgeActionPayload, ForgeActionResultFile, read_result_file,
 };
+use crate::operation::task_verify_adapter::target::{VerifyIdentity, verify_target_identity};
 use crate::operation::workspace_lease::WorkspaceLease;
 
 /// What one settlement transaction writes: the candidate row, or the three failure facts.
@@ -41,6 +44,128 @@ impl Scheduler {
     #[doc(hidden)]
     pub async fn settle_git_delivery_for_test(self: &Arc<Self>, delivery_id: &str) -> Result<()> {
         self.settle_git_delivery(delivery_id).await
+    }
+
+    /// Fixtures-only reach-through to one gate drive with its admission, without a
+    /// `schedule_pass` (slice 4 A10c — the waiter settles a terminal, unsettled delivery itself).
+    /// Unlike `drive_gate` the drive's error is returned, not logged; a drive already in flight
+    /// under `gate:<task>` is `Conflict`.
+    #[cfg(feature = "fixtures")]
+    #[doc(hidden)]
+    pub async fn drive_gate_for_test(self: &Arc<Self>, task: Task) -> Result<()> {
+        let inflight_key = format!("gate:{}", task.id);
+        let _inflight = InflightGuard::acquire(&self.inflight, &inflight_key).ok_or_else(|| {
+            CalmError::Conflict(format!("gate drive for task {} already in flight", task.id))
+        })?;
+        let runtime = self
+            .operation_runtime
+            .upgrade()
+            .ok_or_else(|| CalmError::Internal("operation runtime dropped".into()))?;
+        self.drive_gate_inner(&runtime, &task).await
+    }
+
+    /// Gate admission (#1727 S4 D3, oracle 8): whether `task`'s gate may be submitted now.
+    ///
+    /// An attempt that is not candidate-bound (legacy lease, terminal) is admitted as today. A
+    /// candidate-bound attempt is admitted only once its latest delivery settled as a candidate:
+    /// no delivery row → admitted (impossible by construction; `prepare_tx` refuses it with
+    /// `NoCandidate { NoDeliveryRow }`); the row's forge Operation missing → re-submit through
+    /// `resume_git_deliveries` and, if it is still missing, stay out (the settlement event pokes
+    /// the next pass); the Operation not terminal → wait for it; terminal but unsettled → run the
+    /// idempotent settlement step here rather than return and wait for a poke that the held
+    /// `gate:<task>` single-flight key would swallow (`InflightGuard::acquire` has no re-drive
+    /// flag). Then the effective delivery state decides: `committed` / `no_change` → admitted;
+    /// `failed` / `abandoned` / `pending` / `inconsistent` → not.
+    pub(super) async fn admit_gate(
+        self: &Arc<Self>,
+        runtime: &Arc<OperationRuntime>,
+        task: &Task,
+    ) -> Result<bool> {
+        let identity = {
+            let task = task.clone();
+            write_in_tx_typed(self.repo.as_ref(), move |tx| {
+                Box::pin(async move { verify_target_identity(tx, &task).await })
+            })
+            .await?
+        };
+        let delivery = match identity {
+            VerifyIdentity::Unbound { .. } => return Ok(true),
+            VerifyIdentity::Bound { delivery: None, .. } => return Ok(true),
+            VerifyIdentity::Bound {
+                delivery: Some(delivery),
+                ..
+            } => delivery,
+        };
+        if delivery.settlement.is_none() {
+            let mut op = runtime
+                .find_by_kind_and_idempotency(FORGE_ACTION_KIND, &delivery.forge_idempotency_key)
+                .await?;
+            if op.is_none() {
+                self.resume_git_deliveries(&task.track_id).await?;
+                op = runtime
+                    .find_by_kind_and_idempotency(
+                        FORGE_ACTION_KIND,
+                        &delivery.forge_idempotency_key,
+                    )
+                    .await?;
+            }
+            let Some(op) = op else {
+                tracing::debug!(task_id = %task.id, delivery_id = %delivery.delivery_id, "gate admission: delivery op missing; not admitted");
+                return Ok(false);
+            };
+            runtime.wait(&op.id).await?;
+            self.settle_git_delivery(&delivery.delivery_id).await?;
+        }
+        let state = {
+            let task = task.clone();
+            write_in_tx_typed(self.repo.as_ref(), move |tx| {
+                Box::pin(async move {
+                    let current = task_get_tx(tx, &task.id).await?.unwrap_or(task);
+                    let state = match verify_target_identity(tx, &current).await? {
+                        VerifyIdentity::Unbound { .. } => None,
+                        VerifyIdentity::Bound {
+                            delivery,
+                            candidate,
+                            abandoned,
+                            ..
+                        } => {
+                            let abandonment = match delivery.as_ref() {
+                                Some(delivery) if abandoned => {
+                                    abandonment_for_delivery_tx(tx, &delivery.delivery_id)
+                                        .await?
+                                        .map(|row| row.facts())
+                                }
+                                _ => None,
+                            };
+                            Some(delivery_state(
+                                current.status,
+                                current.status_detail.as_deref(),
+                                delivery.as_ref(),
+                                candidate.as_ref(),
+                                abandonment.as_ref(),
+                            ))
+                        }
+                    };
+                    Ok(state)
+                })
+            })
+            .await?
+        };
+        let admitted = match &state {
+            None => true,
+            Some(DeliveryState::Committed { .. } | DeliveryState::NoChange { .. }) => true,
+            // A kernel lease with no row: submitted, refused in `prepare_tx` (NoDeliveryRow).
+            Some(DeliveryState::Inconsistent { mismatches })
+                if mismatches == &[MISMATCH_DELIVERY_ROW_MISSING] =>
+            {
+                true
+            }
+            Some(_) => false,
+        };
+        if !admitted {
+            tracing::debug!(task_id = %task.id, state = ?state, "gate admission: delivery not a candidate; not admitted");
+        }
+        Ok(admitted)
     }
 
     /// `sweep_reconcile`'s authoritative discovery (F6.4): every Track holding an unsettled
