@@ -58,24 +58,29 @@ def refresh(db, ledger, config, broker, now):
         if key not in owned and detail["status"] not in BROKER_TERMINAL:
             raise ValueError("unowned active broker order; trading blocked")
     executions = (broker.executions(start) if start else []) + broker.executions()
+    seen = {}
     for raw in executions:
         order_id = raw["order_id"]
-        if order_id not in owned:
-            continue
-        plan = owned[order_id]["body"]
-        if raw["symbol"] != plan["symbol"]:
-            raise ValueError("execution symbol mismatch")
         if not isinstance(raw["trade_id"], str) or not raw["trade_id"]:
             raise ValueError("broker execution id required")
         fill = {"trade_id": raw["trade_id"], "order_id": order_id, "symbol": raw["symbol"],
                 "quantity": integer(raw["quantity"]), "price": str(broker_money(raw["price"])),
                 "time": timestamp(raw["time"]).isoformat()}
+        comparable = fill | {"price": broker_money(fill["price"])}
+        if fill["trade_id"] in seen and seen[fill["trade_id"]] != comparable:
+            raise ValueError("conflicting broker execution id")
+        seen[fill["trade_id"]] = comparable
         old = db.execute("SELECT body FROM fills WHERE id=?", (fill["trade_id"],)).fetchone()
         if old is not None:
             previous = json.loads(old[0])
             previous["price"] = broker_money(previous["price"])
-            if previous != fill | {"price": broker_money(fill["price"])}:
+            if previous != comparable:
                 raise ValueError("conflicting broker execution id")
+        if order_id not in owned:
+            continue
+        plan = owned[order_id]["body"]
+        if raw["symbol"] != plan["symbol"]:
+            raise ValueError("execution symbol mismatch")
         if old is None:
             db.execute("INSERT INTO fills VALUES (?,?)", (fill["trade_id"], encoded(fill)))
             ledger.event(db, "fill", fill)

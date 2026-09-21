@@ -449,3 +449,44 @@ def test_exact_exposure_limit_uses_fill_cost_not_rounded_average(rig):
     rig.engine.config = Config.parse(values | {"max_portfolio_usd": "4.02"})
     result = rig.engine.process_once()
     assert "portfolio cost exposure" in next(d for d in result["decisions"] if d["id"] == "entry-2")["error"]
+
+
+@pytest.mark.parametrize("persisted", [False, True])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_execution_id_conflict_is_checked_before_ownership_filter(rig, persisted, reverse):
+    rig.decide()
+    rig.submit(rig.plan())
+    if persisted:
+        rig.fill("order-1", 10)
+    state = rig.state()
+    state["orders"]["order-1"]["status"] = "Filled"
+    owned = {"trade_id": "fill-1", "order_id": "order-1", "symbol": "SOXX.US", "quantity": "10",
+             "price": "100.00", "time": NOW.isoformat()}
+    state["fills"] = [owned, owned | {"order_id": "outside-order"}]
+    if reverse:
+        state["fills"].reverse()
+    state["positions"] = [{"symbol": "SOXX.US", "quantity": "10", "available": "10", "currency": "USD"}]
+    rig.write(state)
+    assert "conflicting broker execution" in (rig.engine.process_once()["error"] or "")
+    if persisted:
+        rig.decide(exit_plan(rig))
+        with pytest.raises(ValueError, match="conflicting broker execution"):
+            rig.engine.operator_preview("exit-1")
+
+
+def test_realized_pnl_and_initial_risk_use_original_cost_not_display_average(rig):
+    state = rig.state()
+    state["quotes"]["SOXX.US"]["last"] = "1.01"
+    state["intraday"]["SOXX.US"][0]["price"] = "1.01"
+    rig.write(state)
+    plan = rig.plan(quantity=3, limit_price="1.01", stop_price="0.50", target_price="2.00")
+    rig.decide(plan)
+    rig.submit(plan)
+    rig.fill("order-1", 1, price="1.00", remaining=1, status="PartialFilled")
+    rig.fill("order-1", 2, price="1.01", fill_id="fill-2", remaining=3)
+    sell = exit_plan(rig, quantity=3, limit_price="1.01")
+    rig.decide(sell)
+    rig.submit(sell, "order-2")
+    result = rig.fill("order-2", 3, price="1.01", fill_id="fill-3", remaining=0)
+    assert result["trades"][0]["realized_gross_usd"] == "0.01"
+    assert result["trades"][0]["initial_price_risk_usd"] == "1.52"

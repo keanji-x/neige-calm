@@ -46,8 +46,8 @@ def trades(decisions, fills):
         average = cost / buy_qty if buy_qty else Decimal(0)
         if buys and sells and min(timestamp(f["time"]) for f in sells) < max(timestamp(f["time"]) for f in buys):
             raise ValueError("exit precedes completion of entry fills")
-        gross = proceeds - average * sell_qty
-        risk = (average - money(plan["stop_price"])) * buy_qty
+        gross = proceeds - cost * sell_qty / buy_qty if buy_qty else Decimal(0)
+        risk = cost - money(plan["stop_price"]) * buy_qty
         pending = any(d["state"] not in TERMINAL for d in related)
         value = {"trade_id": plan["trade_id"], "symbol": plan["symbol"],
                  "entry_decision_id": entry["id"], "bought": buy_qty, "sold": sell_qty,
