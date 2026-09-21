@@ -20,14 +20,16 @@ use calm_server::db::sqlite::{
     card_create_with_id_tx, session_set_handle_state_tx, session_start_runtime_tx,
 };
 use calm_server::decision_sink::CardDecisionSink;
-use calm_server::dispatcher::Dispatcher;
+use calm_server::dispatcher::{Dispatcher, TaskFailurePushTestHook};
 use calm_server::event::{Event, EventBus};
+use calm_server::harness::queue::{MutationRefused, QueueMutation};
 use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, Observation, PlannerHarness,
-    PlannerHarnessParams, recover_harnesses_on_boot,
+    PlannerHarnessParams, QueueEntryId, recover_harnesses_on_boot,
 };
+use calm_server::ids::ActorId;
 use calm_server::mcp_server::registry::ToolCallIdentity;
-use calm_server::model::{CardRole, NewCard, Task, TaskStatus, TrackLifecycle, now_ms};
+use calm_server::model::{CardRole, NewCard, NewTrack, Task, TaskStatus, TrackLifecycle, now_ms};
 use calm_server::operation::forge_action_adapter::{FORGE_ACTION_KIND, ForgeActionAdapter};
 use calm_server::operation::task_verify_adapter::{TASK_VERIFY_KIND, TaskVerifyAdapter};
 use calm_server::operation::{
@@ -823,6 +825,96 @@ impl Fx {
             .unwrap()
     }
 
+    async fn set_track_lifecycle(&self, lifecycle: TrackLifecycle) {
+        self.boot
+            .repo
+            .track_update(
+                self.track(),
+                calm_server::model::TrackPatch {
+                    lifecycle: Some(lifecycle),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(self.track_lifecycle().await, lifecycle);
+    }
+
+    async fn track_lifecycle(&self) -> TrackLifecycle {
+        self.boot
+            .repo
+            .track_get(self.track())
+            .await
+            .unwrap()
+            .unwrap()
+            .lifecycle
+    }
+
+    /// A second Track in the same Area with its own Planner card: the caller identity of "another
+    /// Track's Planner".
+    async fn other_track_planner(&self) -> ToolCallIdentity {
+        let track = self
+            .boot
+            .repo
+            .track_create(NewTrack {
+                template_input: None,
+                area_id: self.boot.area_id.clone(),
+                title: "other track".into(),
+                sort: None,
+                cwd: String::new(),
+                template_id: None,
+                plugin_scope: None,
+                attach_folder: false,
+                theme: calm_server::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        let card_id = format!("planner-of-{}", track.id.as_str());
+        let mut tx = self.pool().begin().await.unwrap();
+        card_create_with_id_tx(
+            &mut tx,
+            card_id.clone(),
+            NewCard {
+                track_id: track.id.clone(),
+                title: None,
+                kind: "codex".into(),
+                sort: None,
+                payload: Value::Null,
+            },
+            CardRole::Planner,
+            true,
+            &self.boot.card_role_cache,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        ToolCallIdentity {
+            card_id,
+            track_id: Some(track.id.as_str().to_string()),
+            session_id: "other-planner-session".into(),
+            thread_id: "other-planner-thread".into(),
+            ..planner_identity(&self.boot)
+        }
+    }
+
+    /// Arm the Dispatcher's `task.failed` hook for `task_id` without holding the handler: the
+    /// returned `Notify` fires once the Dispatcher's handler for that envelope has RUN its push
+    /// branch (suppressed or delivered) — the barrier `wait_task_failed_handled` waits on.
+    fn arm_task_failed_barrier(&self, task_id: &str) -> Arc<tokio::sync::Notify> {
+        let resume = Arc::new(tokio::sync::Notify::new());
+        let finished = Arc::new(tokio::sync::Notify::new());
+        self.dispatcher
+            .set_task_failure_push_hook_for_test(TaskFailurePushTestHook {
+                task_id: task_id.to_string(),
+                entered: Arc::new(tokio::sync::Notify::new()),
+                resume: resume.clone(),
+                finished: finished.clone(),
+            });
+        // A stored permit: the handler passes its `resume` gate without waiting.
+        resume.notify_one();
+        finished
+    }
+
     /// A live Planner harness for this Track, registered where the Dispatcher pushes.
     async fn planner(&self) -> PlannerHarness {
         let worker_session_id = planner_identity(&self.boot).session_id;
@@ -893,12 +985,45 @@ async fn wait_observations(handle: &PlannerHarness, n: usize) -> Vec<Observation
     .unwrap_or_else(|_| panic!("harness never reached {n} observations"))
 }
 
-/// Settle for a moment and assert the harness holds exactly `expected` observations.
+/// Settle for a moment and assert the harness holds exactly `expected` observations. A timing
+/// check: use it only where no envelope was emitted at all (nothing to barrier on); where an
+/// envelope was emitted, prove it handled (`wait_task_failed_handled`, `wait_observations`) and
+/// read the count through `assert_observations_exactly`.
 async fn assert_observations_settle_at(
     handle: &PlannerHarness,
     expected: usize,
 ) -> Vec<Observation> {
     tokio::time::sleep(Duration::from_millis(400)).await;
+    let pending = observations(handle).await;
+    assert_eq!(pending.len(), expected, "{pending:?}");
+    pending
+}
+
+/// The Dispatcher's handler for the armed `task.failed` has run (`Fx::arm_task_failed_barrier`).
+async fn wait_task_failed_handled(finished: &tokio::sync::Notify) {
+    tokio::time::timeout(WAIT, finished.notified())
+        .await
+        .expect("the Dispatcher handled the task.failed envelope");
+}
+
+/// Drain the harness ingress, then assert exactly `expected` observations. The refused no-op
+/// queue command rides the same FIFO as observation deliveries, so its answer proves everything
+/// the Dispatcher enqueued before it has been applied (PR-A's
+/// `deferred_settlement_is_silent_live_and_on_replay` technique).
+async fn assert_observations_exactly(handle: &PlannerHarness, expected: usize) -> Vec<Observation> {
+    assert_eq!(
+        handle
+            .mutate_pending_entry(
+                QueueMutation::Delete {
+                    entry_id: QueueEntryId::from_wire("absent-observation-barrier".into()),
+                    if_entry_rev: 1,
+                },
+                ActorId::User,
+            )
+            .await
+            .unwrap(),
+        Err(MutationRefused::NotFound)
+    );
     let pending = observations(handle).await;
     assert_eq!(pending.len(), expected, "{pending:?}");
     pending
@@ -987,14 +1112,25 @@ fn action_args(
     args
 }
 
-/// A refusal: `-32602` and a `refused:` text (5.1.11).
+/// A state refusal: `-32409` (the repository's Conflict code) and the `refused:` sentence
+/// verbatim — no `task_delivery:` prefix (5.1.11).
 fn assert_refused(result: &Result<Value, RpcError>, needle: &str) {
     let error = match result {
         Err(error) => error,
         Ok(receipt) => panic!("expected a refusal containing {needle:?}, got {receipt}"),
     };
+    assert_eq!(error.code, -32409, "{error:?}");
+    assert!(error.message.starts_with("refused:"), "{error:?}");
+    assert!(error.message.contains(needle), "{error:?}");
+}
+
+/// A malformed argument: `-32602`.
+fn assert_invalid_params(result: &Result<Value, RpcError>, needle: &str) {
+    let error = match result {
+        Err(error) => error,
+        Ok(receipt) => panic!("expected -32602 containing {needle:?}, got {receipt}"),
+    };
     assert_eq!(error.code, RpcError::INVALID_PARAMS, "{error:?}");
-    assert!(error.message.contains("refused:"), "{error:?}");
     assert!(error.message.contains(needle), "{error:?}");
 }
 
@@ -2184,7 +2320,7 @@ async fn workspace_missing_delivery_is_not_retryable() {
         )),
         "{text}"
     );
-    assert!(!text.contains("retry"), "{text}");
+    assert!(!text.to_ascii_lowercase().contains("retry"), "{text}");
     let entry = fx.plan_entry("gone").await;
     assert_eq!(
         entry["candidate"]["delivery"]["failure"]["retry_allowed"], false,
@@ -2778,12 +2914,14 @@ async fn retry_after_failed_delivery_mints_candidate() {
         .retry(&task, &first.delivery_id, "req-1", Some("hook removed"))
         .await
         .expect("retry admitted");
-    assert_eq!(receipt["action"], "retry", "{receipt}");
-    assert_eq!(receipt["ordinal"], 2);
-    assert_eq!(receipt["task_outcome"], Value::Null);
-    assert_eq!(receipt["task_status"], "done");
     let new_id = receipt["delivery_id"].as_str().unwrap().to_string();
     assert_ne!(new_id, first.delivery_id);
+    // D2's retry receipt: the new delivery and the action, no task key (nothing about the tasks
+    // row is persisted by a retry).
+    assert_eq!(
+        receipt,
+        json!({"delivery_id": new_id, "ordinal": 2, "action": "retry"})
+    );
 
     let second_settled = fx.wait_settled_nth(&task.id, 2).await;
     let (result, wake_reason) = settled_result(&second_settled);
@@ -2987,36 +3125,321 @@ async fn retry_refused_while_delivery_pending() {
 }
 
 // ---------------------------------------------------------------------------
-// A8d: replay first.
+// Retry-only refusals: `retry_allowed = 0` (the row, not the directory) and a missing workspace.
+// ---------------------------------------------------------------------------
+
+/// A `workspace_missing` settlement (`retry_allowed = 0`); the lease directory is RE-CREATED
+/// before the retry so the directory check cannot stand in for the row check.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retry_refused_when_not_retryable() {
+    let mut fx = fixture().await;
+    fx.dispatcher.abort_event_listener_for_test();
+    let worker = fx.codex_worker();
+    let lease = fx.kernel_lease(&worker.card_id).await;
+    let task = fx
+        .running_task("not-retryable", "codex", &worker.card_id, json!({}))
+        .await;
+    std::fs::write(lease.path.join("worker.txt"), "gone\n").unwrap();
+    fx.report_only(&worker, &task.id).await;
+    std::fs::remove_dir_all(&lease.path).unwrap();
+    fx.reboot().await;
+    let settled = fx.wait_settled(&task.id).await;
+    let (code, _, retry_allowed) = failure_of(settled_result(&settled).0);
+    assert_eq!(code, DeliveryFailureCode::WorkspaceMissing);
+    assert!(!retry_allowed);
+    let row = fx.delivery_row(&task.id).await.unwrap();
+    assert_eq!(row.retry_allowed, Some(0));
+    let ops_before = fx.forge_op_count().await;
+
+    std::fs::create_dir_all(&lease.path).unwrap();
+    assert!(lease.path.is_dir(), "the directory check passes again");
+    let result = fx.retry(&task, &row.delivery_id, "req-1", None).await;
+    assert_refused(
+        &result,
+        &format!(
+            "refused: delivery {} is not retryable (workspace_missing)",
+            row.delivery_id
+        ),
+    );
+    assert_eq!(fx.delivery_count(&task.id).await, 1, "no ordinal 2");
+    assert_eq!(fx.forge_op_count().await, ops_before);
+    // The way out is offered and still open.
+    let receipt = fx
+        .abandon(&task, &row.delivery_id, "req-2", None)
+        .await
+        .expect("abandon admitted");
+    assert_eq!(receipt["action"], "abandon", "{receipt}");
+}
+
+/// A retryable failure (`commit_failed`, `retry_allowed = 1`) whose workspace was removed after
+/// the settlement: refused by the directory check, no row, no Operation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retry_refused_when_workspace_is_gone() {
+    let fx = fixture().await;
+    let (_, task, lease) = fx.hook_failing_task("workspace-gone", json!({})).await;
+    fx.wait_settled(&task.id).await;
+    let row = fx.delivery_row(&task.id).await.unwrap();
+    assert_eq!(row.failure_code.as_deref(), Some("commit_failed"));
+    assert_eq!(row.retry_allowed, Some(1));
+    let ops_before = fx.forge_op_count().await;
+
+    std::fs::remove_dir_all(&lease.path).unwrap();
+    let result = fx.retry(&task, &row.delivery_id, "req-1", None).await;
+    assert_refused(
+        &result,
+        &format!(
+            "refused: delivery {} cannot be retried, workspace {} is missing",
+            row.delivery_id,
+            lease.path.display()
+        ),
+    );
+    assert!(
+        fx.delivery_row_at(&task.id, 2).await.is_none(),
+        "no ordinal 2"
+    );
+    assert_eq!(fx.delivery_count(&task.id).await, 1);
+    assert_eq!(fx.forge_op_count().await, ops_before);
+}
+
+// ---------------------------------------------------------------------------
+// Wire codes: malformed arguments are `-32602` and commit nothing; refusals are `-32409`.
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn delivery_action_rejects_malformed_arguments() {
+    let fx = fixture().await;
+    let (_, task, _) = fx.hook_failing_task("malformed", json!({})).await;
+    fx.wait_settled(&task.id).await;
+    let row = fx.delivery_row(&task.id).await.unwrap();
+    let ops_before = fx.forge_op_count().await;
+
+    // A present `reason` that is not a string.
+    let mut args = action_args(&task, &row.delivery_id, "req-1", "abandon", None);
+    args["reason"] = json!(123);
+    let result = fx.delivery_action(args).await;
+    assert_invalid_params(&result, "`reason` must be a string");
+    assert!(
+        fx.abandonment_row(&row.delivery_id).await.is_none(),
+        "nothing committed"
+    );
+    assert_eq!(fx.task_columns(&task.id).await.status, TaskStatus::Done);
+
+    // An unknown action; a missing and an empty required string.
+    let result = fx
+        .delivery_action(action_args(&task, &row.delivery_id, "req-2", "skip", None))
+        .await;
+    assert_invalid_params(&result, "unknown action `skip`");
+    let mut args = action_args(&task, &row.delivery_id, "req-3", "retry", None);
+    args.as_object_mut().unwrap().remove("expected_delivery_id");
+    let result = fx.delivery_action(args).await;
+    assert_invalid_params(&result, "missing `expected_delivery_id`");
+    let mut args = action_args(&task, &row.delivery_id, "req-4", "retry", None);
+    args["idempotency_key"] = json!("  ");
+    let result = fx.delivery_action(args).await;
+    assert_invalid_params(&result, "missing `idempotency_key`");
+    assert_eq!(fx.delivery_count(&task.id).await, 1);
+    assert_eq!(fx.forge_op_count().await, ops_before);
+    for key in ["req-1", "req-2", "req-3", "req-4"] {
+        let used: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM task_git_deliveries WHERE request_idempotency_key = ?1",
+        )
+        .bind(key)
+        .fetch_one(&fx.pool())
+        .await
+        .unwrap();
+        assert_eq!(used, 0, "{key} was never persisted");
+    }
+
+    // A state refusal, for contrast: `-32409` and the sentence verbatim.
+    let result = fx.retry(&task, "not-the-latest", "req-5", None).await;
+    assert_refused(&result, "refused: expected_delivery_id not-the-latest");
+    assert!(
+        !result.unwrap_err().message.contains("task_delivery:"),
+        "no handler prefix on a refusal"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// No delivery row: the refusal names why (legacy lease, not reported, ended without delivery).
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn no_delivery_row_refusals_name_the_reason() {
+    let fx = fixture().await;
+    fx.dispatcher.abort_event_listener_for_test();
+
+    // A legacy lease (slice 1: base recorded, no delivery policy): no kernel delivery exists.
+    let legacy = fx.new_worker("legacy", AgentProvider::Codex).await;
+    let lease = fx.kernel_lease(&legacy.card_id).await;
+    sqlx::query("UPDATE workspace_leases SET delivery_policy = NULL WHERE lease_id = ?1")
+        .bind(&lease.lease_id)
+        .execute(&fx.pool())
+        .await
+        .unwrap();
+    let task = fx
+        .running_task("legacy", "codex", &legacy.card_id, json!({}))
+        .await;
+    let result = fx.retry(&task, "none", "req-1", None).await;
+    assert_refused(
+        &result,
+        &format!(
+            "refused: attempt {} has a legacy lease (no kernel delivery); nothing to retry or abandon",
+            task.id
+        ),
+    );
+
+    // A kernel lease whose worker is still running: no report yet.
+    let worker = fx.codex_worker();
+    fx.kernel_lease(&worker.card_id).await;
+    let task = fx
+        .running_task("unreported", "codex", &worker.card_id, json!({}))
+        .await;
+    let result = fx.abandon(&task, "none", "req-2", None).await;
+    assert_refused(
+        &result,
+        &format!(
+            "refused: attempt {} has not reported yet; wait for the worker's report",
+            task.id
+        ),
+    );
+
+    // The same attempt ended `failed` without ever reporting (a worker timeout).
+    sqlx::query(
+        "UPDATE tasks SET status = 'failed', status_detail = 'worker-timeout', \
+         finished_at_ms = ?2, updated_at_ms = ?2 WHERE id = ?1",
+    )
+    .bind(&task.id)
+    .bind(now_ms())
+    .execute(&fx.pool())
+    .await
+    .unwrap();
+    let result = fx.retry(&task, "none", "req-3", None).await;
+    assert_refused(
+        &result,
+        &format!(
+            "refused: attempt {} ended without a delivery (worker-timeout); declare a new task",
+            task.id
+        ),
+    );
+    assert_eq!(fx.delivery_count(&task.id).await, 0);
+    assert_eq!(fx.forge_op_count().await, 0);
+}
+
+// ---------------------------------------------------------------------------
+// A8d: replay first.
+// ---------------------------------------------------------------------------
+
+/// A gated task: the gate finishes (the row flips `verifying → done`) between the first call and
+/// the replay, and the replay is the original receipt whole — a retry receipt carries nothing
+/// observed at call time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn retry_replay_after_success_returns_original_receipt() {
     let fx = fixture().await;
-    let (_, task, lease) = fx.hook_failing_task("replay", json!({})).await;
+    let flag = fx.track_root.parent().unwrap().join("gate-may-finish");
+    let (_, task, lease) = fx
+        .hook_failing_task(
+            "replay",
+            json!({"gate": gate_waiting_for(&flag), "no_gate_reason": null}),
+        )
+        .await;
     fx.wait_settled(&task.id).await;
+    assert_eq!(
+        fx.task_columns(&task.id).await.status,
+        TaskStatus::Verifying
+    );
     let first = fx.delivery_row(&task.id).await.unwrap();
     remove_pre_commit(&lease);
     let receipt = fx
         .retry(&task, &first.delivery_id, "req-1", Some("again"))
         .await
         .unwrap();
+    assert_eq!(
+        receipt,
+        json!({"delivery_id": receipt["delivery_id"], "ordinal": 2, "action": "retry"}),
+        "the retry receipt has no task key"
+    );
     let settled = fx.wait_settled_nth(&task.id, 2).await;
     candidate_of(settled_result(&settled).0);
     assert!(fx.candidate_row(&task.id).await.is_some());
 
-    // The state is `committed` now; the same key with the same fingerprint replays anyway.
+    // The gate finishes between the two calls: the row is `done` now, the state `committed`.
+    fx.release_gate(&flag, &task.id).await;
+    wait_gate_result(&fx, &task.id).await;
+    assert_eq!(fx.task_columns(&task.id).await.status, TaskStatus::Done);
+
+    // The same key with the same fingerprint replays anyway, and the receipt is identical.
     let replay = fx
         .retry(&task, &first.delivery_id, "req-1", Some("again"))
         .await
         .expect("replay is not admission");
-    assert_eq!(replay["delivery_id"], receipt["delivery_id"]);
-    assert_eq!(replay["ordinal"], 2);
-    assert_eq!(replay["action"], "retry");
-    assert_eq!(replay["task_outcome"], Value::Null);
+    assert_eq!(replay, receipt, "the original receipt, whole");
     assert_eq!(fx.delivery_count(&task.id).await, 2, "no third row");
     assert_eq!(fx.forge_op_count().await, 2);
     assert_eq!(fx.settled_events_for(&task.id).await.len(), 2);
+}
+
+/// The replay key is Track-scoped: another Track's Planner quoting this Track's attempt, request
+/// key and fingerprint is refused (no current attempt in its Track), never handed this Track's
+/// receipt — for a retry and for an abandon.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn delivery_action_replay_is_track_scoped() {
+    let fx = fixture().await;
+    let other_planner = fx.other_track_planner().await;
+    let (_, task, lease) = fx.hook_failing_task("scoped", json!({})).await;
+    fx.wait_settled(&task.id).await;
+    let first = fx.delivery_row(&task.id).await.unwrap();
+    remove_pre_commit(&lease);
+    let receipt = fx
+        .retry(&task, &first.delivery_id, "req-1", Some("mine"))
+        .await
+        .unwrap();
+    fx.wait_settled_nth(&task.id, 2).await;
+    let refused_sentence =
+        "refused: task scoped has no current attempt in this Track; declare a new task";
+
+    // Track B's Planner, Track A's attempt + key + fingerprint: not A's receipt.
+    let foreign = call_tool(
+        &fx.boot,
+        TOOL_TASK_DELIVERY,
+        other_planner.clone(),
+        action_args(&task, &first.delivery_id, "req-1", "retry", Some("mine")),
+    )
+    .await;
+    assert_refused(&foreign, refused_sentence);
+    assert_eq!(fx.delivery_count(&task.id).await, 2, "no third row");
+    // A's own replay still answers.
+    assert_eq!(
+        fx.retry(&task, &first.delivery_id, "req-1", Some("mine"))
+            .await
+            .unwrap(),
+        receipt
+    );
+
+    // The abandonment key on another fixture, the same way.
+    let fx = fixture().await;
+    let other_planner = fx.other_track_planner().await;
+    let (_, task, _) = fx.hook_failing_task("scoped", json!({})).await;
+    fx.wait_settled(&task.id).await;
+    let row = fx.delivery_row(&task.id).await.unwrap();
+    let receipt = fx
+        .abandon(&task, &row.delivery_id, "req-a", Some("mine"))
+        .await
+        .unwrap();
+    assert_eq!(receipt["task_outcome"], "done_unchanged", "{receipt}");
+    let foreign = call_tool(
+        &fx.boot,
+        TOOL_TASK_DELIVERY,
+        other_planner,
+        action_args(&task, &row.delivery_id, "req-a", "abandon", Some("mine")),
+    )
+    .await;
+    assert_refused(&foreign, refused_sentence);
+    assert_eq!(
+        fx.abandon(&task, &row.delivery_id, "req-a", Some("mine"))
+            .await
+            .unwrap(),
+        receipt
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -3098,6 +3521,7 @@ async fn abandon_frees_track_budget() {
         "budget 1 is held by the gated row"
     );
 
+    let task_failed_handled = fx.arm_task_failed_barrier(&first_task.id);
     let receipt = fx
         .abandon(&first_task, &row.delivery_id, "req-a", Some("hook rejects"))
         .await
@@ -3163,8 +3587,10 @@ async fn abandon_frees_track_budget() {
         "the settlement is not touched"
     );
 
-    // Zero turns for the abandon: the tool receipt is the answer.
-    let pending = assert_observations_settle_at(&planner, 1).await;
+    // Zero turns for the abandon: the tool receipt is the answer. The Dispatcher has handled the
+    // `task.failed` (barrier) and the harness ingress is drained before the count is read.
+    wait_task_failed_handled(&task_failed_handled).await;
+    let pending = assert_observations_exactly(&planner, 1).await;
     assert!(
         matches!(&pending[0], Observation::TaskGitDeliverySettled { .. }),
         "{pending:?}"
@@ -3188,7 +3614,9 @@ async fn abandon_frees_track_budget() {
             .as_deref(),
         Some("delivery-abandoned")
     );
-    assert_observations_settle_at(&planner, 1).await;
+    // Nothing was emitted since the barrier (the discarded verdict appended no event, asserted
+    // above): the drained count is the whole answer.
+    assert_observations_exactly(&planner, 1).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -3254,6 +3682,99 @@ async fn abandon_flips_verifying_row() {
         "{entry}"
     );
     fx.release_gate(&flag, &task.id).await;
+}
+
+// ---------------------------------------------------------------------------
+// Abandon promotes the Track like every other terminal flip: `working → reviewing` in the same
+// transaction, its events broadcast behind the `task.failed`; not for `done_unchanged`.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn abandon_promotes_working_track_to_reviewing() {
+    let fx = fixture().await;
+    let flag = fx.track_root.parent().unwrap().join("gate-may-finish");
+    let (_, task, _) = fx
+        .hook_failing_task(
+            "promote",
+            json!({"gate": gate_waiting_for(&flag), "no_gate_reason": null}),
+        )
+        .await;
+    fx.wait_settled(&task.id).await;
+    let row = fx.delivery_row(&task.id).await.unwrap();
+    fx.set_track_lifecycle(TrackLifecycle::Working).await;
+    let mut bus = fx.boot.ctx.events.subscribe();
+
+    let receipt = fx
+        .abandon(&task, &row.delivery_id, "req-a", Some("give up"))
+        .await
+        .expect("admitted");
+    assert_eq!(receipt["task_outcome"], "failed", "{receipt}");
+    assert_eq!(fx.track_lifecycle().await, TrackLifecycle::Reviewing);
+
+    // The three events of the one transaction, in append order, each broadcast with its id.
+    let persisted = fx
+        .boot
+        .repo
+        .events_for_track(
+            fx.track(),
+            &[TASK_FAILED_KIND, "track.lifecycle_changed", "track.updated"],
+            None,
+        )
+        .await
+        .unwrap();
+    let kinds: Vec<&str> = persisted.iter().map(|row| row.event.kind_tag()).collect();
+    assert_eq!(
+        kinds,
+        vec![TASK_FAILED_KIND, "track.lifecycle_changed", "track.updated"],
+        "{persisted:?}"
+    );
+    assert!(
+        matches!(&persisted[1].event, Event::TrackLifecycleChanged { from: TrackLifecycle::Working, to: TrackLifecycle::Reviewing, agent_message: Some(message), .. } if message == "[auto] delivery abandoned"),
+        "{:?}",
+        persisted[1].event
+    );
+    let mut broadcast = Vec::new();
+    while broadcast.len() < 3 {
+        let envelope = tokio::time::timeout(WAIT, bus.recv())
+            .await
+            .expect("the abandon's events are broadcast")
+            .unwrap();
+        if [TASK_FAILED_KIND, "track.lifecycle_changed", "track.updated"]
+            .contains(&envelope.event.kind_tag())
+        {
+            broadcast.push((envelope.id, envelope.event.kind_tag()));
+        }
+    }
+    assert_eq!(
+        broadcast,
+        persisted
+            .iter()
+            .map(|row| (row.id, row.event.kind_tag()))
+            .collect::<Vec<_>>(),
+        "broadcast in append order under the persisted ids"
+    );
+    fx.release_gate(&flag, &task.id).await;
+
+    // `done_unchanged` (an ungated `done` row) is no terminal flip: the Track stays `working`.
+    let fx = fixture().await;
+    let (_, task, _) = fx.hook_failing_task("no-promote", json!({})).await;
+    fx.wait_settled(&task.id).await;
+    let row = fx.delivery_row(&task.id).await.unwrap();
+    fx.set_track_lifecycle(TrackLifecycle::Working).await;
+    let receipt = fx
+        .abandon(&task, &row.delivery_id, "req-a", None)
+        .await
+        .unwrap();
+    assert_eq!(receipt["task_outcome"], "done_unchanged", "{receipt}");
+    assert_eq!(fx.track_lifecycle().await, TrackLifecycle::Working);
+    assert!(
+        fx.boot
+            .repo
+            .events_for_track(fx.track(), &["track.lifecycle_changed"], None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -3330,6 +3851,17 @@ async fn abandon_on_terminal_row_reports_already_terminal() {
             "{name}: no task.failed"
         );
         assert_eq!(fx.events_for(GATE_RESULT_KIND, &task.id).await.len(), 1);
+        // The replay is the persisted row's receipt, whole.
+        assert_eq!(
+            fx.abandon(&task, &row.delivery_id, "req-a", Some("late"))
+                .await
+                .unwrap(),
+            receipt,
+            "{name}"
+        );
+        // An `already_terminal` abandon appends no event at all (asserted above), so there is no
+        // envelope to barrier on: the two handled turns (gate result, failed settlement) are the
+        // count and this is the timing check that nothing else arrives.
         assert_observations_settle_at(&planner, 2).await;
         let entry = fx.plan_entry(name).await;
         assert_eq!(
@@ -3398,6 +3930,7 @@ async fn abandon_clears_gate_pid_triple() {
     assert!(before.finished_at_ms.is_none());
     wait_observations(&planner, 1).await;
 
+    let task_failed_handled = fx.arm_task_failed_barrier(&task.id);
     fx.abandon(&task, &row.delivery_id, "req-a", None)
         .await
         .expect("admitted");
@@ -3427,7 +3960,10 @@ async fn abandon_clears_gate_pid_triple() {
         after,
         "the row is unchanged"
     );
-    assert_observations_settle_at(&planner, 1).await;
+    // Zero turns: the Dispatcher handled the abandon's `task.failed` (barrier), the discarded
+    // verdict appended nothing (asserted above), and the drained ingress holds the one settlement.
+    wait_task_failed_handled(&task_failed_handled).await;
+    assert_observations_exactly(&planner, 1).await;
 
     // The gate-flip path clears the same triple (A9b's `done` fixture, on the same fixture).
     let fx = fixture().await;
@@ -3729,7 +4265,11 @@ async fn retry_after_gate_flipped_wakes_with_gate_already_terminal() {
         .retry(&task, &first.delivery_id, "req-1", None)
         .await
         .expect("admitted");
-    assert_eq!(receipt["task_status"], "done");
+    assert_eq!(
+        receipt,
+        json!({"delivery_id": receipt["delivery_id"], "ordinal": 2, "action": "retry"}),
+        "{receipt}"
+    );
     let settled = fx.wait_settled_nth(&task.id, 2).await;
     let (result, wake_reason) = settled_result(&settled);
     candidate_of(result);
@@ -3753,7 +4293,9 @@ async fn retry_after_gate_flipped_wakes_with_gate_already_terminal() {
         ),
         "{pending:?}"
     );
-    assert_observations_settle_at(&planner, 3).await;
+    // The last settlement is handled (its observation is the third turn); the drained ingress
+    // holds exactly the three.
+    assert_observations_exactly(&planner, 3).await;
     assert_eq!(fx.events_for(GATE_RESULT_KIND, &task.id).await.len(), 1);
     assert_eq!(
         current(&fx.boot, "gate-then-retry").await.status,

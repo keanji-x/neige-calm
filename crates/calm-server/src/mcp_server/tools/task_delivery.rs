@@ -1,7 +1,10 @@
 //! `calm.task.delivery` (Planner-only): retry or abandon a failed Git delivery
 //! (#1727 S4 slice 3). The logic is `git_candidate::action::apply_delivery_action`; this file is
-//! the descriptor, the argument parsing and the error mapping (refusals are `-32602` with a
-//! `refused:` text, 5.1.11).
+//! the descriptor, the argument parsing and the error mapping: a malformed argument (a missing or
+//! empty required string, an unknown `action`, a present `reason` that is not a string) is
+//! `-32602`; a state refusal (`CalmError::Conflict`, text starting with `refused:`, 5.1.11) is
+//! `-32409` with the text verbatim — the repository's Conflict convention (`task_dispatch`,
+//! `task_repair`, `emit`); `Forbidden` is `-32403`.
 
 use std::sync::Arc;
 
@@ -89,15 +92,13 @@ async fn task_delivery(
         expected_delivery_id: required_string(&args, "expected_delivery_id")?,
         idempotency_key: required_string(&args, "idempotency_key")?,
         action,
-        reason: args
-            .get("reason")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        reason: optional_string(&args, "reason")?,
     };
     match apply_delivery_action(&ctx, &identity, parsed).await {
         Ok(receipt) => serde_json::to_value(receipt)
             .map_err(|error| RpcError::internal(format!("task_delivery: {error}"))),
-        Err(CalmError::Conflict(msg)) | Err(CalmError::BadRequest(msg)) => {
+        Err(CalmError::Conflict(msg)) => Err(RpcError::custom(-32409, msg)),
+        Err(CalmError::BadRequest(msg)) => {
             Err(RpcError::invalid_params(format!("task_delivery: {msg}")))
         }
         Err(CalmError::Forbidden(msg)) => Err(RpcError::custom(
@@ -105,5 +106,16 @@ async fn task_delivery(
             format!("task_delivery: forbidden: {msg}"),
         )),
         Err(error) => Err(RpcError::internal(format!("task_delivery: {error}"))),
+    }
+}
+
+/// A present `name` must be a string (`null` counts as absent); any other JSON type is malformed.
+fn optional_string(args: &Value, name: &str) -> Result<Option<String>, RpcError> {
+    match args.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value.clone())),
+        Some(other) => Err(RpcError::invalid_params(format!(
+            "task_delivery: `{name}` must be a string, got {other}"
+        ))),
     }
 }

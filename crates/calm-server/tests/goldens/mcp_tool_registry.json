@@ -1161,7 +1161,7 @@
   },
   {
     "name": "calm.task.delivery",
-    "description_sha256": "6ad46855e2b72577c362b9f4ebe00e4b7a8d213718899a845175f97fb902e69f",
+    "description_sha256": "410848170018d5301715fb9814e30618a0264014d084a7c84598ea13a61b7409",
     "input_schema": {
       "properties": {
         "action": {

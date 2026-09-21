@@ -466,18 +466,22 @@ pub(crate) async fn delivery_latest_for_attempt_tx(
     row.map(row_to_delivery).transpose()
 }
 
-/// The retry row one request key already produced for this attempt (the replay key of
-/// `calm.task.delivery{retry}`); `ordinal = 1` rows carry no key and are never returned.
+/// The retry row one request key already produced for this attempt in this Track (the replay
+/// key of `calm.task.delivery{retry}`, Track-scoped: another Track's Planner quoting this
+/// attempt id and key finds nothing and falls through to admission); `ordinal = 1` rows carry
+/// no key and are never returned.
 pub(crate) async fn delivery_by_request_key_tx(
     tx: &mut Tx<'_>,
+    track_id: &str,
     producer_attempt_id: &str,
     request_idempotency_key: &str,
 ) -> Result<Option<DeliveryRow>> {
     let sql = format!(
         "SELECT {DELIVERY_COLUMNS} FROM task_git_deliveries d \
-         WHERE d.producer_attempt_id = ?1 AND d.request_idempotency_key = ?2"
+         WHERE d.track_id = ?1 AND d.producer_attempt_id = ?2 AND d.request_idempotency_key = ?3"
     );
     let row = sqlx::query(&sql)
+        .bind(track_id)
         .bind(producer_attempt_id)
         .bind(request_idempotency_key)
         .fetch_optional(&mut **tx)

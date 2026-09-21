@@ -1867,14 +1867,21 @@ async fn abandonment_row_is_immutable() {
         Some(&row)
     );
     assert_eq!(
-        abandonment_by_request_key_tx(&mut tx, "attempt-1", "req-1")
+        abandonment_by_request_key_tx(&mut tx, &fx.track_id, "attempt-1", "req-1")
             .await
             .unwrap()
             .as_ref(),
         Some(&row)
     );
     assert_eq!(
-        abandonment_by_request_key_tx(&mut tx, "attempt-1", "req-9")
+        abandonment_by_request_key_tx(&mut tx, &fx.track_id, "attempt-1", "req-9")
+            .await
+            .unwrap(),
+        None
+    );
+    // The replay key is Track-scoped: another Track quoting this attempt and key finds nothing.
+    assert_eq!(
+        abandonment_by_request_key_tx(&mut tx, "another-track", "attempt-1", "req-1")
             .await
             .unwrap(),
         None
@@ -1921,14 +1928,21 @@ async fn retry_delivery_row_and_request_key_reader() {
     assert!(retry.settlement.is_none());
     let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
     assert_eq!(
-        delivery_by_request_key_tx(&mut tx, "attempt-1", "req-1")
+        delivery_by_request_key_tx(&mut tx, &fx.track_id, "attempt-1", "req-1")
             .await
             .unwrap()
             .as_ref(),
         Some(&retry)
     );
     assert_eq!(
-        delivery_by_request_key_tx(&mut tx, "attempt-1", "req-2")
+        delivery_by_request_key_tx(&mut tx, &fx.track_id, "attempt-1", "req-2")
+            .await
+            .unwrap(),
+        None
+    );
+    // The replay key is Track-scoped: another Track quoting this attempt and key finds nothing.
+    assert_eq!(
+        delivery_by_request_key_tx(&mut tx, "another-track", "attempt-1", "req-1")
             .await
             .unwrap(),
         None
@@ -1952,7 +1966,9 @@ async fn retry_delivery_row_and_request_key_reader() {
 
 /// A9d (this slice's part) — deleting the Track, or its Area, cascades both tables away in the
 /// one `DELETE FROM tracks` statement (the delivery's non-cascading lease FK and the candidate's
-/// delivery FK are checked at statement end); events outlive the rows.
+/// delivery FK are checked at statement end); events outlive the rows. This pins the PAIR of
+/// abandonment cascades (`track_id` and `delivery_id`): dropping one alone is masked by the other
+/// chain; `abandonment_cascades_with_its_delivery_row` pins the `delivery_id` cascade by itself.
 #[tokio::test]
 async fn delivery_tables_cascade_on_track_delete() {
     for delete_area in [false, true] {
@@ -2041,6 +2057,66 @@ async fn delivery_tables_cascade_on_track_delete() {
             events_before
         );
     }
+}
+
+/// The abandonment row's own `delivery_id … ON DELETE CASCADE` (0114), pinned on its own:
+/// deleting the delivery row takes the abandonment with it. The Track-delete test above pins the
+/// PAIR of cascades — there, either FK alone is masked by the other chain (the Track cascade
+/// removes both rows whichever FK cascades first) — so a dropped `delivery_id` cascade only
+/// reads as `FOREIGN KEY constraint failed` here.
+#[tokio::test]
+async fn abandonment_cascades_with_its_delivery_row() {
+    let fx = db_fixture().await;
+    let abandoned = fx.insert_failed_delivery("attempt-abandoned").await;
+    let kept = fx.insert_failed_delivery("attempt-kept").await;
+    let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
+    for (delivery, key) in [(&abandoned, "req-1"), (&kept, "req-2")] {
+        insert_abandonment_tx(
+            &mut tx,
+            &fx.abandonment_for(
+                delivery,
+                key,
+                AbandonTaskOutcome::Failed,
+                TaskStatus::Failed,
+            ),
+        )
+        .await
+        .unwrap();
+    }
+    tx.commit().await.unwrap();
+    assert_eq!(
+        count(
+            &fx.repo,
+            "SELECT COUNT(*) FROM task_git_delivery_abandonments"
+        )
+        .await,
+        2
+    );
+
+    sqlx::query("DELETE FROM task_git_deliveries WHERE delivery_id = ?1")
+        .bind(&abandoned.delivery_id)
+        .execute(fx.repo.pool())
+        .await
+        .expect("the abandonment cascades with its delivery row");
+    let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
+    assert_eq!(
+        abandonment_for_delivery_tx(&mut tx, &abandoned.delivery_id)
+            .await
+            .unwrap(),
+        None,
+        "the abandonment of the deleted delivery is gone"
+    );
+    assert!(
+        abandonment_for_delivery_tx(&mut tx, &kept.delivery_id)
+            .await
+            .unwrap()
+            .is_some(),
+        "the other delivery's abandonment stays"
+    );
+    assert_eq!(
+        count(&fx.repo, "SELECT COUNT(*) FROM task_git_deliveries").await,
+        1
+    );
 }
 
 // ---------------------------------------------------------------------------

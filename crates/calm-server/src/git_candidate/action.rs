@@ -2,22 +2,26 @@
 //! (#1727 S4 slice 3, D2 "Planner action").
 //!
 //! One immediate transaction, in a fixed order: (1) replay first — the request key
-//! `(producer_attempt_id, request_idempotency_key)` is looked up in the delivery rows (a retry)
-//! and the abandonment rows (an abandon); a hit with the same `(action, expected_delivery_id,
-//! reason)` fingerprint returns the original receipt without looking at the current state, a
-//! different fingerprint is a `Conflict`; (2) admission — the attempt is current, the expected
-//! delivery is the attempt's latest, its effective state (`view::delivery_state`, fed the
-//! candidate row so a candidate is never overlooked) is `failed`; (3) `retry` reads
-//! `retry_allowed` from the row (never the result file, never an event), requires the lease
-//! directory, inserts the `ordinal + 1` row and submits it after the commit; (4) `abandon` flips a
-//! gated `verifying` row through its own guarded UPDATE (`task_abandon_delivery_tx`: 1 row →
-//! `failed` + one `task.failed` from `KernelDispatcher`, 0 rows → `already_terminal`), leaves an
-//! ungated `done` row alone (`done_unchanged`), and writes the abandonment row with the observed
-//! status.
+//! `(track_id, producer_attempt_id, request_idempotency_key)` is looked up in the delivery rows
+//! (a retry) and the abandonment rows (an abandon), scoped to the caller's Track so another
+//! Track's Planner quoting this attempt and key never reads this Track's receipt; a hit with the
+//! same `(action, expected_delivery_id, reason)` fingerprint returns the original receipt without
+//! looking at the current state (a retry's `{delivery_id, ordinal, action}` from the retry row,
+//! an abandon's five keys from the abandonment row), a different fingerprint is a `Conflict`;
+//! (2) admission — the attempt is current in this Track, the expected delivery is the attempt's
+//! latest, its effective state (`view::delivery_state`, fed the candidate row so a candidate is
+//! never overlooked) is `failed`; (3) `retry` reads `retry_allowed` from the row (never the
+//! result file, never an event), requires the lease directory, inserts the `ordinal + 1` row and
+//! submits it after the commit; (4) `abandon` flips a gated `verifying` row through its own
+//! guarded UPDATE (`task_abandon_delivery_tx`: 1 row → `failed` + one `task.failed` from
+//! `KernelDispatcher` + the Track's `working → reviewing` auto-transition that every other
+//! terminal flip makes, 0 rows → `already_terminal`), leaves an ungated `done` row alone
+//! (`done_unchanged`), and writes the abandonment row with the observed status.
 //!
 //! Every refusal is a `Conflict` whose text starts with `refused:` and names the way out
-//! (5.1.11). Track lifecycle: the same rule as `calm.task.verdict`, which admits a verdict on a
-//! Done Track (no lifecycle admission; G11), so this action admits too.
+//! (5.1.11); the handler maps it to `-32409`. Track lifecycle: the same rule as
+//! `calm.task.verdict`, which admits a verdict on a Done Track (no lifecycle admission; G11), so
+//! this action admits too.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -35,17 +39,19 @@ use super::delivery::{
 };
 use super::view::{DeliveryFailure, DeliveryState, delivery_state};
 use crate::db::sqlite::{
-    TASK_STATUS_DETAIL_DELIVERY_ABANDONED, append_decision_event_in_tx, task_abandon_delivery_tx,
+    TASK_STATUS_DETAIL_DELIVERY_ABANDONED, append_decision_events_in_tx, task_abandon_delivery_tx,
     task_attempt_current_tx, task_get_tx,
 };
 use crate::db::write_in_tx_typed;
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventScope, SYNC_EVENT_VERSION};
-use crate::ids::ActorId;
+use crate::ids::{ActorId, TrackId};
 use crate::mcp_server::registry::{AppContext, ToolCallIdentity};
-use crate::model::{Task, TaskStatus, now_ms};
+use crate::model::{Task, TaskStatus, TrackLifecycle, now_ms};
 use crate::operation::Tx;
 use crate::operation::workspace_lease::WorkspaceLease;
+use crate::operation::workspace_lease::facts::{LeaseStates, latest_workspace_lease_for_card_tx};
+use crate::track_lifecycle::auto_transition_if_current_in_tx;
 
 /// The two actions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,24 +88,28 @@ pub(crate) struct DeliveryActionArgs {
     pub reason: Option<String>,
 }
 
-/// The tool result. `task_outcome` is `None` for a retry (nothing happens to the tasks row);
-/// `task_status` is the row status the transaction observed (for a replayed retry: observed at
-/// replay time — a retry persists no status).
+/// The tool result. A retry is `{delivery_id, ordinal, action:"retry"}` — nothing happens to the
+/// tasks row and nothing about it is persisted, so the receipt carries no task key (D2). An
+/// abandon adds `task_outcome` and `task_status` exactly as the abandonment row stores them; the
+/// first call and every replay read the same row, so the receipt is stable.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct DeliveryActionReceipt {
     pub delivery_id: String,
     pub ordinal: i64,
     pub action: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub task_outcome: Option<&'static str>,
-    pub task_status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_status: Option<&'static str>,
 }
 
-/// What the transaction hands the post-commit half: the retry row to submit, or the
-/// `task.failed` to broadcast.
+/// What the transaction hands the post-commit half: the retry row to submit, or the events the
+/// abandon appended (`task.failed`, then the Track auto-transition's pair when it fired), in
+/// append order.
 enum AfterCommit {
     Nothing,
     Submit(Box<(DeliveryRow, WorkspaceLease)>),
-    Broadcast(Box<BroadcastEnvelope>),
+    Broadcast(Vec<BroadcastEnvelope>),
 }
 
 fn refused(text: String) -> CalmError {
@@ -171,7 +181,11 @@ pub(crate) async fn apply_delivery_action(
                 ),
             }
         }
-        AfterCommit::Broadcast(envelope) => ctx.events.emit_envelope(*envelope),
+        AfterCommit::Broadcast(envelopes) => {
+            for envelope in envelopes {
+                ctx.events.emit_envelope(envelope);
+            }
+        }
     }
     Ok(receipt)
 }
@@ -183,27 +197,23 @@ async fn apply_in_tx(
     args: DeliveryActionArgs,
 ) -> Result<(DeliveryActionReceipt, AfterCommit)> {
     let attempt_id = args.expected_attempt_id.as_str();
-    // (1) Replay first: the request key decides before any state is read.
-    if let Some(row) = delivery_by_request_key_tx(tx, attempt_id, &args.idempotency_key).await? {
+    // (1) Replay first: the request key decides before any state is read. Both lookups are
+    // Track-scoped: a row of another Track is no hit, and admission below refuses the attempt as
+    // not current in this Track.
+    if let Some(row) =
+        delivery_by_request_key_tx(tx, track_id, attempt_id, &args.idempotency_key).await?
+    {
         let same = args.action == DeliveryAction::Retry
             && row.predecessor_delivery_id.as_deref() == Some(args.expected_delivery_id.as_str())
             && row.reason == args.reason;
         if !same {
             return Err(fingerprint_conflict(&args));
         }
-        let task = task_row(tx, attempt_id).await?;
-        return Ok((
-            DeliveryActionReceipt {
-                delivery_id: row.delivery_id,
-                ordinal: row.ordinal,
-                action: DeliveryAction::Retry.wire_str(),
-                task_outcome: None,
-                task_status: task_status_wire(task.status),
-            },
-            AfterCommit::Nothing,
-        ));
+        return Ok((retry_receipt(&row), AfterCommit::Nothing));
     }
-    if let Some(row) = abandonment_by_request_key_tx(tx, attempt_id, &args.idempotency_key).await? {
+    if let Some(row) =
+        abandonment_by_request_key_tx(tx, track_id, attempt_id, &args.idempotency_key).await?
+    {
         let same = args.action == DeliveryAction::Abandon
             && row.delivery_id == args.expected_delivery_id
             && row.reason == args.reason;
@@ -238,14 +248,9 @@ async fn apply_in_tx(
         )));
     }
     let task = task_row(tx, attempt_id).await?;
-    let latest = delivery_latest_for_attempt_tx(tx, attempt_id)
-        .await?
-        .ok_or_else(|| {
-            refused(format!(
-                "refused: attempt {attempt_id} has no Git delivery; wait for the worker's report \
-                 or declare a new task"
-            ))
-        })?;
+    let Some(latest) = delivery_latest_for_attempt_tx(tx, attempt_id).await? else {
+        return Err(no_delivery_refusal(tx, &task).await?);
+    };
     if latest.delivery_id != args.expected_delivery_id {
         return Err(refused(format!(
             "refused: expected_delivery_id {} is not the latest delivery of attempt {attempt_id} \
@@ -267,9 +272,44 @@ async fn apply_in_tx(
     let failure = admit_failed(&latest, state)?;
 
     match args.action {
-        DeliveryAction::Retry => retry(tx, &task, &latest, &failure, &args).await,
+        DeliveryAction::Retry => retry(tx, &latest, &failure, &args).await,
         DeliveryAction::Abandon => abandon(tx, track_id, scope, &task, &latest, &args).await,
     }
+}
+
+/// Why an attempt has no delivery row, in the words the Planner can act on: a legacy lease (no
+/// kernel delivery exists for it), a worker that has not reported yet, an attempt that ended
+/// (`failed`) without ever reporting. Anything else (a `verifying`/`done` row without its
+/// delivery row, a `pending`/`canceled` attempt) keeps the generic sentence.
+async fn no_delivery_refusal(tx: &mut Tx<'_>, task: &Task) -> Result<CalmError> {
+    let attempt_id = task.id.as_str();
+    let lease = match task.worker_card_id.as_deref() {
+        Some(card_id) => latest_workspace_lease_for_card_tx(tx, card_id, LeaseStates::Any).await?,
+        None => None,
+    };
+    if let Some(lease) = lease
+        && lease.delivery_policy.is_none()
+    {
+        return Ok(refused(format!(
+            "refused: attempt {attempt_id} has a legacy lease (no kernel delivery); nothing to \
+             retry or abandon"
+        )));
+    }
+    Ok(match task.status {
+        TaskStatus::Dispatched | TaskStatus::Running => refused(format!(
+            "refused: attempt {attempt_id} has not reported yet; wait for the worker's report"
+        )),
+        TaskStatus::Failed => refused(format!(
+            "refused: attempt {attempt_id} ended without a delivery ({}); declare a new task",
+            task.status_detail.as_deref().unwrap_or("no status detail")
+        )),
+        TaskStatus::Pending | TaskStatus::Verifying | TaskStatus::Done | TaskStatus::Canceled => {
+            refused(format!(
+                "refused: attempt {attempt_id} has no Git delivery; wait for the worker's report or \
+             declare a new task"
+            ))
+        }
+    })
 }
 
 /// The effective-state gate: only `failed` admits either action; every other state names its
@@ -304,7 +344,6 @@ fn admit_failed(latest: &DeliveryRow, state: DeliveryState) -> Result<DeliveryFa
 
 async fn retry(
     tx: &mut Tx<'_>,
-    task: &Task,
     latest: &DeliveryRow,
     failure: &DeliveryFailure,
     args: &DeliveryActionArgs,
@@ -333,13 +372,7 @@ async fn retry(
         now_ms(),
     )
     .await?;
-    let receipt = DeliveryActionReceipt {
-        delivery_id: row.delivery_id.clone(),
-        ordinal: row.ordinal,
-        action: DeliveryAction::Retry.wire_str(),
-        task_outcome: None,
-        task_status: task_status_wire(task.status),
-    };
+    let receipt = retry_receipt(&row);
     Ok((receipt, AfterCommit::Submit(Box::new((row, lease)))))
 }
 
@@ -363,20 +396,40 @@ async fn abandon(
                 _ => TASK_STATUS_DETAIL_DELIVERY_ABANDONED.to_string(),
             };
             let actor = ActorId::KernelDispatcher;
-            let event = Event::TaskFailed {
+            let mut events = vec![Event::TaskFailed {
                 idempotency_key: task.id.clone(),
                 reason,
                 details: None,
                 agent_message: None,
-            };
-            let id = append_decision_event_in_tx(tx, &actor, scope, None, &event).await?;
-            after = AfterCommit::Broadcast(Box::new(BroadcastEnvelope {
-                id,
-                event_version: SYNC_EVENT_VERSION,
-                actor,
-                scope: scope.clone(),
-                event,
-            }));
+            }];
+            // The terminal flip promotes the Track exactly as the gate verdict, the worker
+            // failure and the reaper do (`working → reviewing` when it is `working`), in this
+            // transaction; the pair rides behind the `task.failed`.
+            if let Some(auto_events) = auto_transition_if_current_in_tx(
+                tx,
+                &TrackId::from(track_id.to_string()),
+                TrackLifecycle::Working,
+                TrackLifecycle::Reviewing,
+                &actor,
+                Some("[auto] delivery abandoned".to_string()),
+            )
+            .await?
+            {
+                events.extend(auto_events);
+            }
+            let ids = append_decision_events_in_tx(tx, &actor, scope, None, &events).await?;
+            after = AfterCommit::Broadcast(
+                ids.into_iter()
+                    .zip(events)
+                    .map(|(id, event)| BroadcastEnvelope {
+                        id,
+                        event_version: SYNC_EVENT_VERSION,
+                        actor: actor.clone(),
+                        scope: scope.clone(),
+                        event,
+                    })
+                    .collect(),
+            );
             (AbandonTaskOutcome::Failed, TaskStatus::Failed)
         } else {
             // The gate flipped the row first (slice 3 without slice 4's gate admission).
@@ -402,13 +455,26 @@ async fn abandon(
     Ok((abandon_receipt(&row, latest), after))
 }
 
+/// The retry receipt, from the retry row alone (first call and replay alike).
+fn retry_receipt(row: &DeliveryRow) -> DeliveryActionReceipt {
+    DeliveryActionReceipt {
+        delivery_id: row.delivery_id.clone(),
+        ordinal: row.ordinal,
+        action: DeliveryAction::Retry.wire_str(),
+        task_outcome: None,
+        task_status: None,
+    }
+}
+
+/// The abandon receipt, from the abandonment row and the delivery it names (first call and
+/// replay alike): `task_outcome` / `task_status` are the row's stored values, never re-observed.
 fn abandon_receipt(row: &AbandonmentRow, delivery: &DeliveryRow) -> DeliveryActionReceipt {
     DeliveryActionReceipt {
         delivery_id: row.delivery_id.clone(),
         ordinal: delivery.ordinal,
         action: DeliveryAction::Abandon.wire_str(),
         task_outcome: Some(row.task_outcome.wire_str()),
-        task_status: task_status_wire(row.task_status),
+        task_status: Some(task_status_wire(row.task_status)),
     }
 }
 

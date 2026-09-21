@@ -379,10 +379,14 @@ impl Observation {
                     _ => "Read".to_string(),
                 };
                 // The decision clause (slice 3): only the actions the row admits are offered.
+                // When a retry is offered, G4 is stated with it: the retry delivers the branch
+                // tip as it is now, nothing is checked for drift.
                 let decide = match delivery_id.as_deref() {
                     Some(id) if *retry_allowed => format!(
                         " Decide: calm.task.delivery{{action:\"retry\"|\"abandon\", \
-                         expected_delivery_id:\"{id}\"}}."
+                         expected_delivery_id:\"{id}\"}}. Retry delivers the branch tip as it \
+                         stands now; commits and files added after the base by anyone are \
+                         included."
                     ),
                     Some(id) => format!(
                         " Decide: calm.task.delivery{{action:\"abandon\", \

@@ -2879,10 +2879,13 @@ async fn settled_event_maps_to_observation_with_turn_text() {
         )),
         "{text}"
     );
-    // Slice 3: the decision clause names the delivery the event carried.
+    // Slice 3: the decision clause names the delivery the event carried; a retryable failure
+    // states G4 with it (the retry delivers the branch tip as it stands now).
     assert!(
         text.ends_with(
-            "Decide: calm.task.delivery{action:\"retry\"|\"abandon\", expected_delivery_id:\"delivery-2\"}."
+            "Decide: calm.task.delivery{action:\"retry\"|\"abandon\", expected_delivery_id:\"delivery-2\"}. \
+             Retry delivers the branch tip as it stands now; commits and files added after the \
+             base by anyone are included."
         ),
         "{text}"
     );
@@ -2938,7 +2941,7 @@ async fn settled_event_maps_to_observation_with_turn_text() {
         ),
         "{text}"
     );
-    assert!(!text.contains("retry"), "{text}");
+    assert!(!text.to_ascii_lowercase().contains("retry"), "{text}");
 
     // Once the worktree is removed the sentence drops the retained clause.
     let removed = crate::event::EventScope::Card {
@@ -3036,6 +3039,14 @@ async fn failed_wake_text_names_the_delivery_action() {
         text.contains("expected_delivery_id:\"d-retryable\""),
         "{text}"
     );
+    // G4 rides with the retry offer, after the decision sentence.
+    assert!(
+        text.ends_with(
+            "expected_delivery_id:\"d-retryable\"}. Retry delivers the branch tip as it stands \
+             now; commits and files added after the base by anyone are included."
+        ),
+        "{text}"
+    );
 
     let text = resolve_harness_observation(
         &repo,
@@ -3048,8 +3059,12 @@ async fn failed_wake_text_names_the_delivery_action() {
     .to_turn_text();
     assert!(text.contains("Decide: calm.task.delivery{"), "{text}");
     assert!(text.contains("action:\"abandon\""), "{text}");
-    assert!(!text.contains("retry"), "{text}");
-    assert!(text.contains("expected_delivery_id:\"d-gone\""), "{text}");
+    // No retry offer, no G4 clause (the sentence would say "Retry").
+    assert!(!text.to_ascii_lowercase().contains("retry"), "{text}");
+    assert!(
+        text.ends_with("expected_delivery_id:\"d-gone\"}."),
+        "{text}"
+    );
 
     // Pre-slice-3 snapshot shape: no `delivery_id`, no decision clause, the rest intact.
     let legacy = HarnessObservation::TaskGitDeliverySettled {

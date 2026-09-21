@@ -110,17 +110,20 @@ pub(crate) async fn abandonment_for_delivery_tx(
     row.map(row_to_abandonment).transpose()
 }
 
-/// The abandonment one request key already produced for this attempt (the replay key).
+/// The abandonment one request key already produced for this attempt in this Track (the replay
+/// key, Track-scoped like the retry row's).
 pub(crate) async fn abandonment_by_request_key_tx(
     tx: &mut Tx<'_>,
+    track_id: &str,
     producer_attempt_id: &str,
     request_idempotency_key: &str,
 ) -> Result<Option<AbandonmentRow>> {
     let sql = format!(
         "SELECT {ABANDONMENT_COLUMNS} FROM task_git_delivery_abandonments \
-         WHERE producer_attempt_id = ?1 AND request_idempotency_key = ?2"
+         WHERE track_id = ?1 AND producer_attempt_id = ?2 AND request_idempotency_key = ?3"
     );
     let row = sqlx::query(&sql)
+        .bind(track_id)
         .bind(producer_attempt_id)
         .bind(request_idempotency_key)
         .fetch_optional(&mut **tx)
