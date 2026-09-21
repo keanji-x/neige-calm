@@ -3394,86 +3394,43 @@ mod tests {
         }
     }
 
-    /// For every builtin entry, the picker projection yields, per key and in order, the
-    /// `goal` and `acceptance` the fence in the file carries. The fences are read with the
-    /// independent reader so the two sides do not share the producer.
+    /// Task examples stay in startup context, not in the report or picker.
     #[test]
-    fn the_picker_projection_carries_each_fences_own_goal_and_acceptance() {
-        use crate::templates::task_payload_key_and_instruction;
-        use calm_types::report_blocks::{KIND_TASK, parse_fence, split_body};
-
-        let roster = TemplateRoster::builtin();
-        let mut fences_seen = 0;
-        for template in roster.entries() {
-            let key = template.key();
-            let body = template.recipe().body;
-            let fences: Vec<serde_json::Value> = split_body(&body)
-                .iter()
-                .filter_map(|slice| parse_fence(&slice.raw))
-                .filter(|fence| fence.kind == KIND_TASK)
-                .map(|fence| fence.payload)
-                .collect();
-            let compiled = super::compile_template(template)
-                .unwrap_or_else(|error| panic!("`{key}` must compile: {error}"));
-            let blocks = compiled
-                .task_block_payloads()
-                .unwrap_or_else(|error| panic!("`{key}` must carry blocks: {error}"));
-            let projected: Vec<(String, String)> = blocks
-                .iter()
-                .filter_map(|payload| task_payload_key_and_instruction(payload))
-                .collect();
-            assert_eq!(
-                projected.len(),
-                fences.len(),
-                "`{key}`: the picker projects one row per task fence in the file"
-            );
-            assert_eq!(
-                blocks.len(),
-                fences.len(),
-                "`{key}`: one compiled block per fence"
-            );
-            for ((projected_key, projected_goal), fence) in projected.iter().zip(&fences) {
-                let fence_key = fence["key"].as_str().expect("fence key");
-                let fence_goal = fence["goal"].as_str().expect("fence goal");
-                let fence_acceptance = fence["acceptance"].as_str().expect("fence acceptance");
-                assert_ne!(
-                    fence_goal, fence_acceptance,
-                    "`{key}`/{fence_key}: fixture — goal and acceptance must differ, or a \
-                     swapped projection would be invisible"
-                );
-                assert_eq!(projected_key, fence_key, "`{key}`: projected key, in order");
-                assert_eq!(
-                    projected_goal, fence_goal,
-                    "`{key}`/{fence_key}: the picker's goal must be the fence's goal"
-                );
-            }
-            for (block, fence) in blocks.iter().zip(&fences) {
-                let fence_key = fence["key"].as_str().expect("fence key");
-                assert_eq!(
-                    block["goal"], fence["goal"],
-                    "`{key}`/{fence_key}: compiled goal is the fence's"
-                );
-                assert_eq!(
-                    block["acceptance"], fence["acceptance"],
-                    "`{key}`/{fence_key}: compiled acceptance is the fence's"
-                );
-            }
-            fences_seen += fences.len();
-        }
-        assert!(
-            fences_seen > 0,
-            "the roster must carry at least one task fence for this to test anything"
+    fn named_source_task_examples_remain_in_context_only() {
+        let task = calm_types::report_blocks::render_fence(
+            "task",
+            &serde_json::json!({
+                "key": "example", "kind": "codex", "goal": "Read the code",
+                "acceptance": "Evidence explains the result", "ready": false, "declared_by": "spec"
+            }),
         );
+        let body = format!("before\n\n{task}\n---\n");
+        let compiled = prepare_initial_report_payload(
+            "example",
+            TrackReportPayload::new("Example", body.clone()),
+        )
+        .unwrap();
+        assert!(compiled.task_block_payloads().unwrap().is_empty());
+        assert!(compiled.declarations.is_empty());
+        assert!(!compiled.payload.body.contains("```neige-block task"));
+        assert!(compiled.payload.body.contains("before\n\n---"));
+        let context = serde_json::to_value(compiled.template_context.unwrap()).unwrap();
+        assert_eq!(context["body"], body);
+        assert_eq!(context["title"], "Example");
     }
 
     /// A recipe whose body does not parse is refused, not silently thinned: `split_body` treats
     /// a malformed fence as prose, so without the check an indented opener would drop a task.
     #[test]
     fn a_recipe_that_does_not_parse_is_refused() {
-        let good = TemplateRoster::builtin()
-            .get("small-change")
-            .expect("known key")
-            .recipe();
+        let good = TrackReportPayload::new(
+            "Example",
+            calm_types::report_blocks::render_fence(
+                "task",
+                &serde_json::json!({"key": "example", "kind": "codex",
+                "goal": "Read the code", "ready": false, "declared_by": "spec"}),
+            ),
+        );
 
         // A: an indented opener. `split_body` demotes it to prose.
         let indented = good

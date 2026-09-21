@@ -54,11 +54,15 @@ Goal and inputs
 
 Check the repository
 
-Repo cross-check: before any write action, compare input.repo
+Repo cross-check: before any repository write, compare input.repo
 against `git remote get-url origin` run in the track cwd (owner/name after stripping the
-host and a trailing .git). On mismatch do NOT proceed: move working->blocked via
-calm.ratify.request with `reason:"repo_mismatch: input.repo=<owner/name>, cwd.origin=<owner/name>"` (that exact prefix, then both observed values), and wait for
-the human decision.
+host and a trailing .git). On mismatch do NOT proceed or declare execution tasks.
+Record both observed repositories in 待你定 and ask the user to correct or confirm
+the repository. In draft or planning, stop after reporting the mismatch: no
+ratification is needed to ask this question, and calm.ratify.request is unavailable
+there. If already working, move working->blocked via calm.ratify.request with
+`reason:"repo_mismatch: input.repo=<owner/name>, cwd.origin=<owner/name>"`
+(that exact prefix, then both observed values), and wait for the human decision.
 
 Working method
 

@@ -1,5 +1,8 @@
 #![cfg(unix)]
 
+#[path = "template_mismatch.rs"]
+mod template_mismatch;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
