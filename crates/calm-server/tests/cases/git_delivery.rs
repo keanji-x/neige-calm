@@ -17,7 +17,8 @@ use std::time::Duration;
 use crate::mcp_track_report::{Boot, boot, call_tool, planner_identity, worker_identity};
 use crate::task_recovery::{current, declare};
 use calm_server::db::sqlite::{
-    card_create_with_id_tx, session_set_handle_state_tx, session_start_runtime_tx,
+    begin_immediate_tx, card_create_with_id_tx, session_set_handle_state_tx,
+    session_start_runtime_tx,
 };
 use calm_server::decision_sink::CardDecisionSink;
 use calm_server::dispatcher::{Dispatcher, TaskFailurePushTestHook};
@@ -870,7 +871,10 @@ impl Fx {
             .await
             .unwrap();
         let card_id = format!("planner-of-{}", track.id.as_str());
-        let mut tx = self.pool().begin().await.unwrap();
+        // `card_create_with_id_tx` reads then writes: an immediate transaction, never a deferred
+        // one that would upgrade under the read.
+        let pool = self.pool();
+        let mut tx = begin_immediate_tx(&pool).await.unwrap();
         card_create_with_id_tx(
             &mut tx,
             card_id.clone(),

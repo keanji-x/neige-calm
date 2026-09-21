@@ -3,8 +3,9 @@
 //!
 //! One immutable row per abandoned delivery (`delivery_id` PK). `task_outcome` records what the
 //! abandonment transaction did to the tasks row and `task_status` the status it observed; both are
-//! written once and never derived again. `(producer_attempt_id, request_idempotency_key)` is the
-//! replay key the action reads before any admission.
+//! written once and never derived again. `UNIQUE(producer_attempt_id, request_idempotency_key)`
+//! is the uniqueness of the request key; the action's replay lookup (before any admission) adds
+//! the caller's `track_id`.
 
 use sqlx::Row;
 

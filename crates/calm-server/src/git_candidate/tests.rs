@@ -2381,9 +2381,6 @@ fn result_file(exit_code: i32, stdout: &str) -> ForgeActionResultFile {
     }
 }
 
-const G4_CLAUSE: &str = "Retry delivers the branch tip as it stands now; commits and files added \
-     after the base by anyone are included";
-
 #[test]
 fn classify_failure_maps_every_code() {
     use super::delivery::failure_sentence;
@@ -2463,19 +2460,24 @@ fn classify_failure_maps_every_code() {
     assert_eq!(reason, failure_sentence("workspace_missing", None));
     assert!(!retry);
 
-    // Every key the mapping uses has a sentence; the retryable ones end with the G4 clause.
-    for key in ["10", "11", "12", "13", "14", "15", "git", "no_result"] {
+    // Every key the mapping uses has a sentence, and none carries the G4 clause: the wake text
+    // states it once, keyed on `retry_allowed` (`observation.rs`, slice 3 review round 2).
+    for key in [
+        "10",
+        "11",
+        "12",
+        "13",
+        "14",
+        "15",
+        "git",
+        "no_result",
+        "workspace_missing",
+        "unresolved",
+    ] {
         let sentence = failure_sentence(key, Some(1));
         assert_ne!(sentence, key, "no sentence for {key}");
-        assert!(
-            sentence.ends_with(&format!("{G4_CLAUSE}.")),
-            "{key}: {sentence}"
-        );
-    }
-    for key in ["workspace_missing", "unresolved"] {
-        let sentence = failure_sentence(key, None);
-        assert_ne!(sentence, key);
-        assert!(!sentence.contains(G4_CLAUSE));
+        assert!(!sentence.contains("Retry delivers"), "{key}: {sentence}");
+        assert!(sentence.ends_with('.'), "{key}: {sentence}");
     }
 
     // Evidence is cut to the fixed limits: a 1100-byte line is truncated to the cap.

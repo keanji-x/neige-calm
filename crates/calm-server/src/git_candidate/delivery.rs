@@ -736,11 +736,15 @@ pub(crate) fn classify_failure(
 }
 
 /// The default arm of the code table with one detail line: the kernel could not prove what the
-/// delivery did (a result the ref does not confirm, a result event it cannot read).
+/// delivery did (a result the ref does not confirm, a result event it cannot read). The detail
+/// line is terminated like the fixed sentences are: the wake text follows the reason with a
+/// space and its next sentence, adding no period of its own.
 pub(crate) fn unresolved_failure(detail: &str) -> (DeliveryFailureCode, String, bool) {
+    let detail = detail.trim_end();
+    let period = if detail.ends_with('.') { "" } else { "." };
     (
         DeliveryFailureCode::Unresolved,
-        format!("{}\n{detail}", failure_sentence("unresolved", None)),
+        format!("{}\n{detail}{period}", failure_sentence("unresolved", None)),
         true,
     )
 }

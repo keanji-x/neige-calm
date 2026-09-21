@@ -2845,7 +2845,8 @@ async fn settled_event_maps_to_observation_with_turn_text() {
         ordinal: 2,
         result: DeliverySettlement::Failed {
             code: DeliveryFailureCode::CommitFailed,
-            reason: "git commit exited 128: index.lock exists".into(),
+            // A reason ends with its own period (as every producer's does); the renderer adds none.
+            reason: "git commit exited 128: index.lock exists.".into(),
             retry_allowed: true,
         },
         wake_reason: DeliveryWakeReason::Failed,
@@ -2901,7 +2902,7 @@ async fn settled_event_maps_to_observation_with_turn_text() {
         ordinal: 3,
         result: DeliverySettlement::Failed {
             code: DeliveryFailureCode::WorkspaceMissing,
-            reason: "lease directory absent at settlement".into(),
+            reason: "lease directory absent at settlement.".into(),
             retry_allowed: false,
         },
         wake_reason: DeliveryWakeReason::Failed,
@@ -3001,29 +3002,37 @@ async fn settled_event_maps_to_observation_with_turn_text() {
 /// decision must quote. An observation persisted before `delivery_id` existed names no decision.
 #[tokio::test]
 async fn failed_wake_text_names_the_delivery_action() {
+    use crate::git_candidate::delivery::{classify_failure, unresolved_failure};
+    use crate::operation::forge_action_adapter::ForgeActionResultFile;
     let (repo, _) = planner_push_delivery_fixture().await;
     let track = TrackId::from("w");
-    let failed = |delivery_id: &str, code: DeliveryFailureCode, retry_allowed: bool| {
-        Event::TaskGitDeliverySettled {
-            task_id: "delivery-source-attempt".into(),
-            idempotency_key: "delivery-source-attempt".into(),
-            track_id: track.clone(),
-            card_id: CardId::from("worker"),
-            delivery_id: delivery_id.into(),
-            ordinal: 1,
-            result: DeliverySettlement::Failed {
-                code,
-                reason: "hook".into(),
-                retry_allowed,
-            },
-            wake_reason: DeliveryWakeReason::Failed,
-        }
-    };
+    let failed =
+        |delivery_id: &str, code: DeliveryFailureCode, reason: &str, retry_allowed: bool| {
+            Event::TaskGitDeliverySettled {
+                task_id: "delivery-source-attempt".into(),
+                idempotency_key: "delivery-source-attempt".into(),
+                track_id: track.clone(),
+                card_id: CardId::from("worker"),
+                delivery_id: delivery_id.into(),
+                ordinal: 1,
+                result: DeliverySettlement::Failed {
+                    code,
+                    reason: reason.into(),
+                    retry_allowed,
+                },
+                wake_reason: DeliveryWakeReason::Failed,
+            }
+        };
 
     let observation = resolve_harness_observation(
         &repo,
         &track,
-        &failed("d-retryable", DeliveryFailureCode::CommitFailed, true),
+        &failed(
+            "d-retryable",
+            DeliveryFailureCode::CommitFailed,
+            "hook.",
+            true,
+        ),
     )
     .await
     .unwrap()
@@ -3051,7 +3060,12 @@ async fn failed_wake_text_names_the_delivery_action() {
     let text = resolve_harness_observation(
         &repo,
         &track,
-        &failed("d-gone", DeliveryFailureCode::WorkspaceMissing, false),
+        &failed(
+            "d-gone",
+            DeliveryFailureCode::WorkspaceMissing,
+            "hook.",
+            false,
+        ),
     )
     .await
     .unwrap()
@@ -3066,13 +3080,55 @@ async fn failed_wake_text_names_the_delivery_action() {
         "{text}"
     );
 
+    // The production reasons end with their own period and the renderer adds none: no `..` in
+    // the wake text for a code-11 reason (the fixed sentence alone) or an `unresolved` one (the
+    // sentence plus the kernel's detail line, which `unresolved_failure` terminates). G4 appears
+    // exactly once, after the decision sentence — the fixed sentences no longer carry it.
+    let code_11 = ForgeActionResultFile {
+        exit_code: 11,
+        stdout: String::new(),
+    };
+    let (code, reason, retry_allowed) =
+        classify_failure(Some(&code_11), Some("action-failed"), true);
+    assert_eq!(code, DeliveryFailureCode::ProvenanceMismatch);
+    let (unresolved, unresolved_reason, unresolved_retry) = unresolved_failure(
+        "ref refs/neige/candidates/w/worker/d-11 does not resolve to the reported commit abc123",
+    );
+    assert_eq!(unresolved, DeliveryFailureCode::Unresolved);
+    for (id, code, reason, retry_allowed) in [
+        ("d-11", code, reason.as_str(), retry_allowed),
+        (
+            "d-unresolved",
+            unresolved,
+            unresolved_reason.as_str(),
+            unresolved_retry,
+        ),
+    ] {
+        let text =
+            resolve_harness_observation(&repo, &track, &failed(id, code, reason, retry_allowed))
+                .await
+                .unwrap()
+                .unwrap()
+                .to_turn_text();
+        assert!(!text.contains(".."), "{text}");
+        assert!(
+            text.contains(&format!("{reason} Files retained at ")),
+            "{text}"
+        );
+        assert_eq!(text.matches("Retry delivers").count(), 1, "{text}");
+    }
+    assert!(
+        unresolved_reason.ends_with("reported commit abc123."),
+        "{unresolved_reason}"
+    );
+
     // Pre-slice-3 snapshot shape: no `delivery_id`, no decision clause, the rest intact.
     let legacy = HarnessObservation::TaskGitDeliverySettled {
         key: "deliver".into(),
         attempt_id: "delivery-source-attempt".into(),
         result: DeliverySettlement::Failed {
             code: DeliveryFailureCode::CommitFailed,
-            reason: "hook".into(),
+            reason: "hook.".into(),
             retry_allowed: true,
         },
         retained_path: None,

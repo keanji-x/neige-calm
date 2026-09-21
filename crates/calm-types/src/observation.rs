@@ -394,8 +394,11 @@ impl Observation {
                     ),
                     None => String::new(),
                 };
+                // No period after `reason`: every fixed sentence ends with one and
+                // `unresolved_failure` terminates its detail line (the raw evidence lines of
+                // 10/12/15 are copied as the script printed them).
                 format!(
-                    "Task {key} Git delivery FAILED ({}): {reason}. \
+                    "Task {key} Git delivery FAILED ({}): {reason} \
                      {read} the worker output at runs/{attempt_id}.md.{decide}",
                     code.wire_str()
                 )

@@ -10,7 +10,8 @@
 --
 -- Both foreign keys cascade: Track and Area deletion issue one `DELETE FROM tracks` and check the
 -- FKs at statement end, so a non-cascading `delivery_id` FK would fail the whole delete
--- (D2 cascade list). `UNIQUE(producer_attempt_id, request_idempotency_key)` is the replay key.
+-- (D2 cascade list). `UNIQUE(producer_attempt_id, request_idempotency_key)` is the uniqueness of
+-- the request key; the action's replay lookup adds the caller's `track_id`.
 CREATE TABLE task_git_delivery_abandonments (
   delivery_id TEXT PRIMARY KEY NOT NULL REFERENCES task_git_deliveries(delivery_id) ON DELETE CASCADE,
   track_id TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
