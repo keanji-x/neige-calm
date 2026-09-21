@@ -11,6 +11,7 @@
 
 use std::path::Path;
 use std::process::Stdio;
+use std::time::Duration;
 
 use calm_types::forge_git::GIT_LEASE_PROVENANCE_SCRIPT;
 use calm_types::verify_target::{
@@ -29,9 +30,15 @@ use crate::git_candidate::delivery::{
 };
 use crate::model::{Task, TaskKind};
 use crate::operation::forge_action_adapter::forge_base_env;
+use crate::operation::gate_process::{kill, wait_group_stopped};
 use crate::operation::workspace_lease::facts::{LeaseStates, latest_workspace_lease_for_card_tx};
 use crate::operation::workspace_lease::{DeliveryPolicy, WorkspaceLease};
-use crate::operation::{OperationOutcome, Tx, TxOutput};
+use crate::operation::{OperationOutcome, SpawnArtifacts, Tx, TxOutput};
+use crate::plugin_host::child_process::{
+    ChildFinishError, SpawnTimedOut, finish_within, read_capped, set_process_group_leader,
+    spawn_within,
+};
+use crate::proc_identity::{read_boot_id, sigkill_verified_group_members};
 
 /// `status_detail` of a verdict whose target check failed (the fourth value; isolated never
 /// produces it).
@@ -42,6 +49,39 @@ const GATE_TIMEOUT: &str = "gate-timeout";
 /// The `sh -c` text of one provenance observation: the shared function, then one call with the
 /// two positional parameters (`canonical_path`, `git_common_dir`).
 const PROVENANCE_SAMPLE_SCRIPT: &str = "neige_lease_provenance \"$1\" \"$2\"";
+
+/// D3.0 (ii): the HEAD commit.
+const REV_PARSE_ARGV: [&str; 4] = ["git", "rev-parse", "--verify", "HEAD^{commit}"];
+
+/// D3.0 (iii), 5.1.6 verbatim: the porcelain status with untracked files enumerated whatever
+/// the checkout's `status.showUntrackedFiles` says (the `-c` and the flag are redundant with
+/// each other on purpose: either alone is enough, both are pinned).
+const STATUS_ARGV: [&str; 9] = [
+    "git",
+    "-c",
+    "status.showUntrackedFiles=all",
+    "-c",
+    "core.quotepath=false",
+    "status",
+    "--porcelain=v1",
+    "--untracked-files=all",
+    "--ignore-submodules=none",
+];
+
+/// One deadline for the three commands of one D3.0 sample. The prepare-time sample runs inside
+/// the driver's `BEGIN IMMEDIATE` (D3), so a command a repository hook holds (`core.fsmonitor`
+/// on `git status`; any worker can write the shared `.git/config`) must not hold the kernel's
+/// only write slot for longer than other writers tolerate: `begin_immediate_tx` retries
+/// `busy_timeout` 5 s × 7 ≈ 35 s before failing. U4 measured the sample at p99 101 ms and
+/// 264 ms cold, G23 at ≤ 212 ms after heavy I/O; 10 s is ~40× the worst observed and leaves
+/// every other writer's retry budget intact. A timeout is `SampleFailure` (`Unsampled`), and
+/// the command's whole process group is killed (the hook is a grandchild of `git`).
+pub const SAMPLE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Bytes of a sampling command's stdout / stderr kept (the porcelain status of a large dirty
+/// tree is the biggest; anything past this is drained and dropped, and the sample fails closed
+/// because the status would then be incomplete).
+const SAMPLE_OUTPUT_CAP: usize = 4 * 1024 * 1024;
 
 /// Why a frozen gate checks nothing against a candidate: the three [`UnboundReason`]s a freeze
 /// can carry (`LegacyVerdict` belongs to a persisted verdict, never to a freeze).
@@ -262,20 +302,85 @@ pub struct SampleFailure {
     pub reason: String,
 }
 
+/// Run one sampling command to completion under `deadline`: its own process group (so the
+/// group sweep on timeout reaches a hook `git` forked), output drained then the leader reaped,
+/// the group swept after the reap. Past the deadline the child is dropped (`kill_on_drop` +
+/// the `GroupChild` sweep) and the failure names the bound.
 async fn run_sampling_command(
     cwd: &Path,
     argv: &[&str],
     what: &str,
+    deadline: tokio::time::Instant,
 ) -> std::result::Result<std::process::Output, SampleFailure> {
+    let timed_out = || SampleFailure {
+        reason: format!(
+            "{what} timed out after {:.1} s in {} (sample bound {:?})",
+            SAMPLE_TIMEOUT.as_secs_f64(),
+            cwd.display(),
+            SAMPLE_TIMEOUT
+        ),
+    };
     let mut cmd = tokio::process::Command::new(argv[0]);
     cmd.args(&argv[1..])
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
     forge_base_env(&mut cmd);
-    cmd.output().await.map_err(|error| SampleFailure {
-        reason: format!("{what} could not be spawned in {}: {error}", cwd.display()),
+    set_process_group_leader(&mut cmd);
+    let mut child = match spawn_within(cmd, deadline).await {
+        Ok(Ok(child)) => child,
+        Ok(Err(error)) => {
+            return Err(SampleFailure {
+                reason: format!("{what} could not be spawned in {}: {error}", cwd.display()),
+            });
+        }
+        Err(SpawnTimedOut) => return Err(timed_out()),
+    };
+    let (Some(mut stdout), Some(mut stderr)) = (child.stdout(), child.stderr()) else {
+        return Err(SampleFailure {
+            reason: format!("{what}: output pipes missing"),
+        });
+    };
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let finished = finish_within(
+        deadline,
+        async {
+            let (o, e) = tokio::join!(
+                read_capped(&mut stdout, SAMPLE_OUTPUT_CAP, &mut out),
+                read_capped(&mut stderr, SAMPLE_OUTPUT_CAP, &mut err),
+            );
+            o?;
+            e?;
+            Ok::<(), std::io::Error>(())
+        },
+        child.wait_and_release_group(),
+    )
+    .await;
+    let (status, released) = match finished {
+        Ok(value) => value,
+        Err(ChildFinishError::Drain(error)) => {
+            return Err(SampleFailure {
+                reason: format!("{what} output could not be read: {error}"),
+            });
+        }
+        Err(ChildFinishError::TimedOut) => return Err(timed_out()),
+    };
+    released.sweep();
+    let status = status.map_err(|error| SampleFailure {
+        reason: format!("{what} could not be reaped: {error}"),
+    })?;
+    if out.len() > SAMPLE_OUTPUT_CAP || err.len() > SAMPLE_OUTPUT_CAP {
+        return Err(SampleFailure {
+            reason: format!("{what} printed more than {SAMPLE_OUTPUT_CAP} bytes"),
+        });
+    }
+    Ok(std::process::Output {
+        status,
+        stdout: out,
+        stderr: err,
     })
 }
 
@@ -299,6 +404,17 @@ pub async fn sample(
     cwd: &Path,
     expected: &Expected,
 ) -> std::result::Result<Sampled, SampleFailure> {
+    sample_within(cwd, expected, SAMPLE_TIMEOUT).await
+}
+
+/// [`sample`] under an explicit bound (the unit test's small one; production passes
+/// [`SAMPLE_TIMEOUT`]).
+pub(crate) async fn sample_within(
+    cwd: &Path,
+    expected: &Expected,
+    timeout: Duration,
+) -> std::result::Result<Sampled, SampleFailure> {
+    let deadline = tokio::time::Instant::now() + timeout;
     let script = format!("{GIT_LEASE_PROVENANCE_SCRIPT}\n{PROVENANCE_SAMPLE_SCRIPT}");
     let provenance = run_sampling_command(
         cwd,
@@ -311,6 +427,7 @@ pub async fn sample(
             &expected.git_common_dir,
         ],
         "lease provenance observation",
+        deadline,
     )
     .await?;
     let provenance_holds = match provenance.status.code() {
@@ -335,12 +452,7 @@ pub async fn sample(
                 .to_string(),
         })?;
 
-    let head = run_sampling_command(
-        cwd,
-        &["git", "rev-parse", "--verify", "HEAD^{commit}"],
-        "git rev-parse",
-    )
-    .await?;
+    let head = run_sampling_command(cwd, &REV_PARSE_ARGV, "git rev-parse", deadline).await?;
     if !head.status.success() {
         return Err(SampleFailure {
             reason: format!(
@@ -362,22 +474,7 @@ pub async fn sample(
         });
     }
 
-    let status = run_sampling_command(
-        cwd,
-        &[
-            "git",
-            "-c",
-            "status.showUntrackedFiles=all",
-            "-c",
-            "core.quotepath=false",
-            "status",
-            "--porcelain=v1",
-            "--untracked-files=all",
-            "--ignore-submodules=none",
-        ],
-        "git status",
-    )
-    .await?;
+    let status = run_sampling_command(cwd, &STATUS_ARGV, "git status", deadline).await?;
     if !status.status.success() {
         return Err(SampleFailure {
             reason: format!(
@@ -601,11 +698,38 @@ pub(crate) async fn prepare_target_tx(
     })
 }
 
+/// Stop the recorded gate group before the after-sample, on every completion path. The leader
+/// is reaped (live) or dead (recovery) by now, so the group signal `kill` sends only for a
+/// verified leader is followed by a per-member verified sweep of what outlived the wrapper (a
+/// step's backgrounded child keeps the group alive; the pgid cannot be recycled while it does),
+/// then the group is waited empty. `Err` = the group did not stop within the wait: the caller
+/// must not sample (a live descendant can still write), see [`finalize`].
+pub(crate) async fn stop_group(artifacts: &SpawnArtifacts) -> Result<()> {
+    kill(artifacts);
+    if read_boot_id().as_deref() == Some(artifacts.boot_id.as_str()) {
+        let sweep = sigkill_verified_group_members(artifacts.pgid);
+        if !sweep.killed.is_empty() {
+            tracing::warn!(
+                pgid = artifacts.pgid,
+                killed = ?sweep.killed,
+                "gate group: descendants outlived the wrapper; swept before the after-sample"
+            );
+        }
+    }
+    wait_group_stopped(artifacts).await
+}
+
 /// The one exit of the three completion paths (live observer, boot reattach, dead process with
 /// an exit file): an `Unbound` freeze passes the verdict through (P7); a `Candidate` freeze is
 /// sampled again — `reasons` empty keeps the verdict, non-empty discards every step result as
 /// `gate-target-mismatch`, a sampling failure is `gate-infra` with `Unsampled { Finalize }` (P6).
-pub(crate) async fn finalize(verdict: GateVerdict, frozen: &FrozenVerify) -> TaskGateResult {
+/// `stopped` is the caller's [`stop_group`] outcome: a group that did not stop is not sampled
+/// (fail-closed: `gate-infra`, `Unsampled { Finalize }` naming the cleanup error).
+pub(crate) async fn finalize(
+    verdict: GateVerdict,
+    frozen: &FrozenVerify,
+    stopped: Result<()>,
+) -> TaskGateResult {
     let cwd = Some(frozen.cwd.clone());
     match &frozen.target {
         FrozenTarget::Unbound { reason } => TaskGateResult {
@@ -678,7 +802,13 @@ pub(crate) async fn finalize(verdict: GateVerdict, frozen: &FrozenVerify) -> Tas
                 evidence,
             };
             let log_path = Path::new(&verdict.log_path).to_path_buf();
-            match sample(Path::new(gate_cwd), &expected).await {
+            let after = match stopped {
+                Ok(()) => sample(Path::new(gate_cwd), &expected).await,
+                Err(error) => Err(SampleFailure {
+                    reason: format!("gate process group did not stop: {error}"),
+                }),
+            };
+            match after {
                 Ok(after) => {
                     let reasons = reasons(&after, &expected);
                     let target = candidate(VerifyTargetEvidence::Verified {
@@ -907,6 +1037,7 @@ pub(crate) fn target_json(target: &VerifyTarget) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::now_ms;
     use serde_json::json;
 
     fn sample_of(head: &str, dirty: &[&str], holds: bool) -> Sampled {
@@ -1104,6 +1235,27 @@ mod tests {
         }
     }
 
+    /// The two git commands of a sample are the 5.1.6 text, byte for byte (A12c's two
+    /// untracked-files switches are redundant with each other; this is what pins both).
+    #[test]
+    fn sampling_commands_match_the_pinned_text() {
+        assert_eq!(
+            REV_PARSE_ARGV.join(" "),
+            "git rev-parse --verify HEAD^{commit}"
+        );
+        assert_eq!(
+            STATUS_ARGV.join(" "),
+            concat!(
+                "git -c status.showUntrackedFiles=all -c core.quotepath=false ",
+                "status --porcelain=v1 --untracked-files=all --ignore-submodules=none"
+            )
+        );
+        assert_eq!(
+            PROVENANCE_SAMPLE_SCRIPT,
+            "neige_lease_provenance \"$1\" \"$2\""
+        );
+    }
+
     /// The mismatch `log_tail` is one line plus the target as one JSON line (5.1.7).
     #[test]
     fn mismatch_log_tail_carries_target_json() {
@@ -1198,5 +1350,119 @@ mod tests {
             failure.reason.contains("could not be spawned"),
             "{failure:?}"
         );
+    }
+
+    /// Live processes whose command line names `needle`, zombies excluded (a killed hook is
+    /// reaped by init, not by us).
+    fn processes_naming(needle: &str) -> Vec<i32> {
+        let mut found = Vec::new();
+        for entry in std::fs::read_dir("/proc").unwrap().flatten() {
+            let Ok(pid) = entry.file_name().to_string_lossy().parse::<i32>() else {
+                continue;
+            };
+            let Ok(cmdline) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+                continue;
+            };
+            if !String::from_utf8_lossy(&cmdline).contains(needle) {
+                continue;
+            }
+            let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+                continue;
+            };
+            if crate::proc_identity::parse_proc_stat_fields(&stat)
+                .is_some_and(|fields| fields.state != 'Z' && fields.state != 'X')
+            {
+                found.push(pid);
+            }
+        }
+        found
+    }
+
+    /// A `core.fsmonitor` hook that never returns holds `git status` (5.1.6 honours the hook;
+    /// `-c` cannot switch it off): the sample is a `SampleFailure` naming the bound, within the
+    /// bound plus a margin, and the hook — a grandchild of the `git` the sampler spawned — is
+    /// dead afterwards (the group sweep, not `kill_on_drop`, reaches it). Sub-second bound so
+    /// the test does not wait out [`SAMPLE_TIMEOUT`].
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sampling_command_timeout_is_a_sample_failure() {
+        let tmp = tempfile::Builder::new()
+            .prefix("neige-gate-sample-timeout-")
+            .tempdir()
+            .unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(&repo, &["config", "user.email", "t@example.test"]);
+        git(&repo, &["config", "user.name", "t"]);
+        std::fs::write(repo.join("README.md"), "x\n").unwrap();
+        git(&repo, &["add", "README.md"]);
+        git(&repo, &["commit", "-q", "-m", "initial"]);
+        let head = git(&repo, &["rev-parse", "HEAD"]);
+        let worktree = tmp.path().join("wt");
+        git(
+            &repo,
+            &["worktree", "add", "-q", worktree.to_str().unwrap(), "HEAD"],
+        );
+        let expected = Expected {
+            canonical_path: std::fs::canonicalize(&worktree)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string(),
+            git_common_dir: std::fs::canonicalize(repo.join(".git"))
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string(),
+            commit_sha: head,
+        };
+        assert!(sample(&worktree, &expected).await.is_ok());
+
+        // The hook script's path is the needle a /proc scan finds it by; it sleeps far past
+        // the bound. Repository-level config: the shared `.git/config` any worker can write.
+        let hook = tmp.path().join(format!(
+            "fsmonitor-hook-{}-{}.sh",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::write(&hook, "#!/bin/sh\nsleep 60\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        git(
+            &worktree,
+            &["config", "core.fsmonitor", hook.to_str().unwrap()],
+        );
+        let needle = hook.display().to_string();
+
+        let bound = Duration::from_millis(500);
+        let started = std::time::Instant::now();
+        let failure = sample_within(&worktree, &expected, bound)
+            .await
+            .unwrap_err();
+        let elapsed = started.elapsed();
+        assert!(
+            failure.reason.contains("timed out"),
+            "{failure:?} after {elapsed:?}"
+        );
+        assert!(failure.reason.starts_with("git status"), "{failure:?}");
+        assert!(
+            elapsed <= bound + Duration::from_secs(1),
+            "the sample returned {elapsed:?} after a {bound:?} bound"
+        );
+        // The hook process is dead (SIGKILL is asynchronous; give it a moment to leave /proc).
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let live = processes_naming(&needle);
+            if live.is_empty() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "hook processes survived the sample timeout: {live:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 }

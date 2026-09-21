@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use std::time::Duration;
 use target::FrozenTarget;
-pub use target::TaskGateResult;
+pub use target::{SAMPLE_TIMEOUT, TaskGateResult};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -722,13 +722,16 @@ impl ProviderAdapter for TaskVerifyAdapter {
         let observer = Box::pin(async move {
             let verdict = super::gate_process::wait_verdict(
                 child,
-                artifacts,
+                artifacts.clone(),
                 observer_log_path,
                 attempt,
                 timeout_secs,
             )
             .await;
-            let verdict = target::finalize(verdict, &observer_frozen).await;
+            // `wait_verdict` killed and waited the group; a cleanup it left unresolved is what
+            // `stop_group` reports, and `finalize` then samples nothing.
+            let stopped = target::stop_group(&artifacts).await;
+            let verdict = target::finalize(verdict, &observer_frozen, stopped).await;
             if let Err(e) = complete_gate_op_with_result(
                 &observer_pool,
                 &completion,
@@ -776,7 +779,10 @@ impl ProviderAdapter for TaskVerifyAdapter {
             return Ok(match read_exit_file(&exit_path) {
                 Ok(Some(code)) => {
                     let verdict = verdict_from_exit_code(code, &log_path, frozen.attempt);
-                    let verdict = target::finalize(verdict, &frozen).await;
+                    // The leader is dead; descendants that outlived it are stopped before the
+                    // after-sample (the driver's own kill skips a dead leader).
+                    let stopped = target::stop_group(artifacts).await;
+                    let verdict = target::finalize(verdict, &frozen, stopped).await;
                     ParkedRecovery::Complete(ParkedOutcome::Succeeded {
                         result: serde_json::to_value(&verdict)?,
                     })
@@ -825,7 +831,8 @@ impl ProviderAdapter for TaskVerifyAdapter {
                             attempt,
                         ),
                     };
-                    let verdict = target::finalize(verdict, &frozen).await;
+                    let stopped = target::stop_group(&artifacts).await;
+                    let verdict = target::finalize(verdict, &frozen, stopped).await;
                     if let Err(e) = complete_gate_op_with_result(
                         &pool,
                         &completion,

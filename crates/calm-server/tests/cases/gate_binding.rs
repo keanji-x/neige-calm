@@ -327,7 +327,10 @@ fn unsampled_phase(evidence: &VerifyTargetEvidence) -> &SamplePhase {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn gate_is_not_submitted_while_delivery_pending() {
     let fx = fixture().await;
-    let planner = fx.planner().await;
+    // No live pass: the gate drive below is the only gate driver, so the one `runtime.wait`
+    // anything can enter is the admission's wait on the held delivery Operation (the report
+    // handler submits it without waiting; `resume_git_deliveries` runs only from a pass).
+    fx.dispatcher.abort_event_listener_for_test();
     let worker = fx.codex_worker();
     let lease = fx.kernel_lease(&worker.card_id).await;
     let flag = fx.track_root.parent().unwrap().join("commit-may-proceed");
@@ -336,18 +339,39 @@ async fn gate_is_not_submitted_while_delivery_pending() {
         .running_task("admit", "codex", &worker.card_id, gated("true"))
         .await;
     std::fs::write(lease.path.join("worker.txt"), "gated\n").unwrap();
-
     fx.complete(&worker, &task.id).await;
-    // The delivery is held in its pre-commit hook: the live pass ran, the gate drive is waiting
-    // on the forge Operation, and no task-verify Operation exists for as long as we look.
-    for _ in 0..40 {
-        assert_eq!(
-            task_verify_op_count(&fx).await,
-            0,
-            "gate submitted while pending"
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
+    let row = fx.delivery_row(&task.id).await.unwrap();
+    assert!(row.settlement.is_none(), "{row:?}");
+    assert!(
+        fx.forge_op(&row.forge_idempotency_key).await.is_some(),
+        "the report handler submitted the delivery"
+    );
+
+    // The barrier: the drive notifies once it has entered `runtime.wait` — the admission's
+    // "Operation present, not terminal → wait" arm — and only then is the absence read.
+    let entered = Arc::new(tokio::sync::Notify::new());
+    fx.runtime
+        .install_wait_entered_hook_for_test(entered.clone());
+    let task = current(&fx.boot, "admit").await;
+    assert_eq!(task.status, TaskStatus::Verifying);
+    let mut drive = spawn_drive(fx.scheduler(), task.clone());
+    tokio::select! {
+        entered = tokio::time::timeout(WAIT, entered.notified()) => {
+            entered.expect("the gate drive entered its wait on the delivery Operation");
+        }
+        finished = &mut drive => {
+            finished.unwrap();
+            panic!(
+                "the gate drive returned without waiting on the pending delivery ({} task-verify op(s))",
+                task_verify_op_count(&fx).await
+            );
+        }
     }
+    assert_eq!(
+        task_verify_op_count(&fx).await,
+        0,
+        "gate submitted while pending"
+    );
     assert_eq!(
         current(&fx.boot, "admit").await.status,
         TaskStatus::Verifying
@@ -360,18 +384,16 @@ async fn gate_is_not_submitted_while_delivery_pending() {
             .is_none()
     );
     assert!(fx.candidate_row(&task.id).await.is_none());
-    assert_observations_settle_at(&planner, 0).await;
 
     // Released: the waiter settles (`deferred_to_gate`), is admitted and submits `#g1`.
     std::fs::write(&flag, b"").unwrap();
+    drive.await.unwrap();
     let settled = fx.wait_settled(&task.id).await;
     let (result, wake_reason) = settled_result(&settled);
     let (candidate_id, commit_sha, _, _) = candidate_of(result);
     assert_eq!(wake_reason, DeliveryWakeReason::DeferredToGate);
-    let op = wait_gate_op_until(&fx, &task.id, "succeeded", |op| {
-        op.phase.tag() == PhaseTag::Succeeded
-    })
-    .await;
+    let op = gate_op(&fx, &task.id).await.expect("#g1 submitted");
+    assert_eq!(op.phase.tag(), PhaseTag::Succeeded, "{op:?}");
     assert!(op.spawn_artifacts.is_some(), "the gate ran: {op:?}");
     let gate = gate_result(&wait_gate_result(&fx, &task.id).await);
     assert!(gate.passed, "{gate:?}");
@@ -385,14 +407,6 @@ async fn gate_is_not_submitted_while_delivery_pending() {
     );
     assert_eq!(current(&fx.boot, "admit").await.status, TaskStatus::Done);
     assert_eq!(task_verify_op_count(&fx).await, 1);
-    let pending = wait_observations(&planner, 1).await;
-    assert!(
-        matches!(
-            &pending[0],
-            Observation::TaskGateResult { passed: true, .. }
-        ),
-        "{pending:?}"
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1078,7 +1092,11 @@ async fn gate_catches_untracked_under_suppressing_config() {
 }
 
 // ---------------------------------------------------------------------------
-// A12b: the dead-process + exit-file completion path samples after too.
+// A12b: the dead-process + exit-file completion path (`recover_parked`'s `!alive` arm)
+// samples after too. Only that arm: the recorded identity belongs to another boot, so the
+// wrapper — alive, held on its flag — reads as dead and nothing is re-attached. The
+// boot-reattach arm (the wrapper alive at reboot) is
+// `live_reattached_gate_result_discarded_when_tree_changed`, out of process.
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1092,7 +1110,7 @@ async fn reattached_gate_result_discarded_when_tree_changed() {
     let op = wait_gate_parked(&fx, &task.id).await;
     wait_for_file(&lease.path.join("extra.txt"));
     // The kernel "died" after the wrapper finished: the recorded identity belongs to another
-    // boot and the exit file says 0.
+    // boot (so the group it names is not signalled either) and the exit file says 0.
     stale_artifacts(&fx, &op.id).await;
     std::fs::write(exit_path_of(&op), "0\n").unwrap();
 
@@ -1118,6 +1136,343 @@ async fn reattached_gate_result_discarded_when_tree_changed() {
     std::fs::write(&flag, b"").unwrap();
     drive.await.unwrap();
     assert_eq!(gate_result_events(&fx, &task.id).await.len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// Review round 1 (5a/5b): `finalize` compares HEAD, not only the porcelain status; an after
+// sample that cannot be taken is `gate-infra` with `Unsampled { Finalize }`.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gate_result_discarded_when_head_moved_during_steps() {
+    let fx = fixture().await;
+    fx.dispatcher.abort_event_listener_for_test();
+    // The step moves HEAD and leaves the tree clean: only the `head` check can catch it.
+    let (_, task, lease, candidate) = settled_gated_task(
+        &fx,
+        "head-moved",
+        gated("git commit -q --allow-empty -m moved-by-the-gate"),
+    )
+    .await;
+    fx.scheduler()
+        .drive_gate_for_test(task.clone())
+        .await
+        .unwrap();
+    let moved = git(&lease.path, &["rev-parse", "HEAD"]);
+    assert_ne!(moved, candidate.commit_sha, "the step moved HEAD");
+    assert_eq!(git(&lease.path, &["status", "--porcelain"]), "");
+
+    let gate = gate_result(&wait_gate_result(&fx, &task.id).await);
+    assert!(!gate.passed, "{gate:?}");
+    assert_eq!(gate.status_detail.as_deref(), Some("gate-target-mismatch"));
+    let (id, sha, _, evidence) = gate.candidate();
+    assert_eq!(id, candidate.candidate_id);
+    assert_eq!(sha, candidate.commit_sha);
+    let VerifyTargetEvidence::Verified {
+        before,
+        after,
+        reasons,
+        ..
+    } = evidence
+    else {
+        panic!("{evidence:?}");
+    };
+    assert_eq!(before.head, candidate.commit_sha);
+    assert_eq!(after.head, moved);
+    assert!(after.dirty.is_empty(), "{after:?}");
+    assert_eq!(reasons, &[MismatchReason::Head]);
+    let op = gate_op(&fx, &task.id).await.unwrap();
+    assert_eq!(op.phase.tag(), PhaseTag::Succeeded);
+    assert!(op.spawn_artifacts.is_some(), "the step ran");
+    assert!(gate_log(&fx, &task.id).unwrap().contains("::gate-step t"));
+    assert_eq!(
+        current(&fx.boot, "head-moved").await.status,
+        TaskStatus::Failed
+    );
+    let text = gate.turn_text("head-moved");
+    assert!(text.contains("RESULT DISCARDED"), "{text}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn after_sample_failure_is_gate_infra_unsampled_finalize() {
+    let fx = fixture().await;
+    fx.dispatcher.abort_event_listener_for_test();
+    // The step breaks the linked worktree's `.git` file (prepare sampled a good tree; the
+    // after sample cannot be taken) and exits 0.
+    let (_, task, lease, candidate) =
+        settled_gated_task(&fx, "unsampled-after", gated("printf garbage > .git")).await;
+    fx.scheduler()
+        .drive_gate_for_test(task.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(lease.path.join(".git")).unwrap(),
+        "garbage"
+    );
+
+    let gate = gate_result(&wait_gate_result(&fx, &task.id).await);
+    assert!(!gate.passed, "{gate:?}");
+    assert_eq!(gate.status_detail.as_deref(), Some("gate-infra"));
+    let (id, _, _, evidence) = gate.candidate();
+    assert_eq!(id, candidate.candidate_id);
+    let SamplePhase::Finalize { cwd, reason } = unsampled_phase(evidence) else {
+        panic!("{evidence:?}");
+    };
+    assert_eq!(cwd, lease.path.to_str().unwrap());
+    assert!(
+        reason.contains("lease provenance observation failed"),
+        "{reason}"
+    );
+    assert!(
+        gate.log_tail.contains("unsampled after the gate"),
+        "{}",
+        gate.log_tail
+    );
+    let op = gate_op(&fx, &task.id).await.unwrap();
+    assert_eq!(op.phase.tag(), PhaseTag::Succeeded, "{op:?}");
+    assert!(op.spawn_artifacts.is_some(), "the step ran");
+    let log = gate_log(&fx, &task.id).unwrap();
+    assert!(log.contains("::gate-step t"), "{log}");
+    assert!(log.contains("unsampled after the gate"), "{log}");
+    assert_eq!(
+        current(&fx.boot, "unsampled-after").await.status,
+        TaskStatus::Failed
+    );
+    let entry = fx.plan_entry("unsampled-after").await;
+    assert_eq!(
+        entry["candidate"]["verification"]["state"], "infra",
+        "{entry}"
+    );
+    assert_eq!(
+        entry["candidate"]["verification"]["target"]["evidence"]["phase"]["kind"],
+        "finalize"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Review round 1 (1): a sampling command a repository hook holds is bounded — the prepare
+// transaction ends as Stuck / `Unsampled { Prepare }` and the kernel's write slot is released.
+// ---------------------------------------------------------------------------
+
+/// Live (non-zombie) processes whose command line names `needle`.
+fn live_processes_naming(needle: &str) -> Vec<i32> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir("/proc").unwrap().flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<i32>() else {
+            continue;
+        };
+        let Ok(cmdline) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+            continue;
+        };
+        if !String::from_utf8_lossy(&cmdline).contains(needle) {
+            continue;
+        }
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            continue;
+        };
+        if calm_server::proc_identity::parse_proc_stat_fields(&stat)
+            .is_some_and(|fields| fields.state != 'Z' && fields.state != 'X')
+        {
+            found.push(pid);
+        }
+    }
+    found
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gate_prepare_times_out_as_stuck_not_hang() {
+    use calm_server::db::sqlite::begin_immediate_tx;
+    use calm_server::operation::task_verify_adapter::SAMPLE_TIMEOUT;
+
+    let fx = fixture().await;
+    fx.dispatcher.abort_event_listener_for_test();
+    let (_, task, lease, candidate) = settled_gated_task(&fx, "hooked", gated("true")).await;
+    // A `core.fsmonitor` hook that never returns, in the repository config every worker of
+    // this repository can write; 5.1.6's `status` honours it and `-c` cannot switch it off.
+    let hook = fx
+        .track_root
+        .parent()
+        .unwrap()
+        .join(format!("fsmonitor-hook-{}.sh", std::process::id()));
+    write_executable(&hook, "#!/bin/sh\nsleep 60\n");
+    git(
+        &lease.path,
+        &["config", "core.fsmonitor", hook.to_str().unwrap()],
+    );
+    let needle = hook.display().to_string();
+
+    let drive = spawn_drive(fx.scheduler(), task.clone());
+    // The prepare transaction is sampling: the hook is running under the sampler's `git status`.
+    tokio::time::timeout(WAIT, async {
+        while live_processes_naming(&needle).is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the sampler reached the hook");
+
+    // Another writer, started while the prepare transaction holds the write slot: it completes
+    // once the sample bound fires and the transaction rolls back — never `database is locked`.
+    let pool = fx.pool();
+    let task_id = task.id.clone();
+    let writer_started = std::time::Instant::now();
+    let writer = tokio::spawn(async move {
+        let mut tx = begin_immediate_tx(&pool).await?;
+        sqlx::query("UPDATE tasks SET updated_at_ms = updated_at_ms WHERE id = ?1")
+            .bind(&task_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok::<_, calm_server::error::CalmError>(writer_started.elapsed())
+    });
+    let writer_elapsed = tokio::time::timeout(Duration::from_secs(30), writer)
+        .await
+        .expect("the write slot was released by the sample bound (30 s)")
+        .unwrap()
+        .expect("the concurrent write committed");
+    eprintln!(
+        "concurrent write committed after {writer_elapsed:?} (sample bound {SAMPLE_TIMEOUT:?})"
+    );
+    assert!(
+        writer_elapsed <= SAMPLE_TIMEOUT + Duration::from_secs(2),
+        "write slot held for {writer_elapsed:?}"
+    );
+    tokio::time::timeout(Duration::from_secs(30), drive)
+        .await
+        .expect("the gate drive returned (30 s)")
+        .unwrap();
+
+    let op = gate_op(&fx, &task.id).await.unwrap();
+    assert_eq!(op.phase.tag(), PhaseTag::Stuck, "{op:?}");
+    assert!(op.tx_output.is_none(), "prepare rolled back");
+    let events = gate_result_events(&fx, &task.id).await;
+    assert_eq!(events.len(), 1, "{events:?}");
+    let gate = &events[0];
+    assert_eq!(gate.status_detail.as_deref(), Some("gate-infra"));
+    let (id, _, _, evidence) = gate.candidate();
+    assert_eq!(id, candidate.candidate_id);
+    let SamplePhase::Prepare { reason } = unsampled_phase(evidence) else {
+        panic!("{evidence:?}");
+    };
+    assert!(reason.contains("timed out"), "{reason}");
+    assert!(reason.contains("git status"), "{reason}");
+    assert_eq!(current(&fx.boot, "hooked").await.status, TaskStatus::Failed);
+    assert_eq!(
+        current(&fx.boot, "hooked").await.gate_attempt,
+        0,
+        "pre-bump fallback"
+    );
+    // The hook (a grandchild of the sampler's `git`) was killed with the command's group.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let live = live_processes_naming(&needle);
+        if live.is_empty() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "hook processes survived the sample bound: {live:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    git(&lease.path, &["config", "--unset", "core.fsmonitor"]);
+}
+
+// ---------------------------------------------------------------------------
+// Review round 1 (2): an existing `#gN` is waited and reconciled before admission — the
+// D12 (i) window (a pre-slice-4 gate terminal beside a failed delivery) still flips its row.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn existing_terminal_gate_op_is_reconciled_before_admission() {
+    let fx = fixture().await;
+    fx.dispatcher.abort_event_listener_for_test();
+    // A failed delivery under a `verifying` row ...
+    let (_, task, lease) = fx.hook_failing_task("upgraded", gated("true")).await;
+    let row = settle_by_hand(&fx, &task.id).await;
+    assert_eq!(row.settlement.as_deref(), Some("failed"), "{row:?}");
+    remove_pre_commit(&lease);
+    assert_eq!(
+        current(&fx.boot, "upgraded").await.status,
+        TaskStatus::Verifying
+    );
+    // ... beside a `#g1` a slice 2/3 build submitted, froze (no `target` key) and that died
+    // parked, terminal-Failed and never reconciled; the row was bumped to attempt 1.
+    let op_id = calm_server::model::new_id();
+    let frozen = json!({
+        "target_type": "task", "target_id": task.id, "result": {},
+        "data": {
+            "task_id": task.id, "track_id": task.track_id, "area_id": fx.boot.area_id,
+            "key": "upgraded", "attempt": 1, "cwd": lease.path,
+            "gate": {"steps": [{"name": "t", "cmd": "true"}]},
+        },
+    });
+    let now = now_ms();
+    sqlx::query(
+        r#"INSERT INTO operations (
+               id, operation_key, kind, idempotency_key, payload_hash,
+               target_type, target_id, target_json, payload_json, tx_output_json,
+               phase, phase_detail_json, last_error, created_at_ms, updated_at_ms, completed_at_ms
+           )
+           VALUES (?1, ?2, ?3, ?4, 'pre-slice-4', 'task', ?5, ?6, ?7, ?8,
+                   'failed', ?9, ?10, ?11, ?11, ?11)"#,
+    )
+    .bind(&op_id)
+    .bind(format!("gate-{}", task.id))
+    .bind(TASK_VERIFY_KIND)
+    .bind(format!("{}#g1", task.id))
+    .bind(&task.id)
+    .bind(json!({"type": "task", "id": task.id}).to_string())
+    .bind(json!({"task_id": task.id, "attempt": 1}).to_string())
+    .bind(frozen.to_string())
+    .bind(json!({"from_phase": "parked", "last_error_class": "parked_dead"}).to_string())
+    .bind("gate process dead with no recorded verdict; gate-infra")
+    .bind(now)
+    .execute(&fx.pool())
+    .await
+    .unwrap();
+    sqlx::query("UPDATE tasks SET gate_attempt = 1 WHERE id = ?1")
+        .bind(&task.id)
+        .execute(&fx.pool())
+        .await
+        .unwrap();
+    let task = current(&fx.boot, "upgraded").await;
+    assert_eq!(task.gate_attempt, 1);
+
+    fx.scheduler()
+        .drive_gate_for_test(task.clone())
+        .await
+        .unwrap();
+
+    // Reconciled: the row flipped from the terminal op, one result, no `#g2`.
+    let events = gate_result_events(&fx, &task.id).await;
+    assert_eq!(events.len(), 1, "{events:?}");
+    let gate = &events[0];
+    assert!(!gate.passed);
+    assert_eq!(gate.status_detail.as_deref(), Some("gate-infra"));
+    assert_eq!(gate.attempt, 1);
+    assert_eq!(
+        gate.target,
+        Some(VerifyTarget::Unbound {
+            reason: UnboundReason::LegacyFrozen
+        })
+    );
+    assert_eq!(
+        gate.log_tail,
+        "gate process dead with no recorded verdict; gate-infra"
+    );
+    let after = current(&fx.boot, "upgraded").await;
+    assert_eq!(after.status, TaskStatus::Failed);
+    assert_eq!(after.gate_attempt, 1);
+    assert!(
+        fx.runtime
+            .find_by_kind_and_idempotency(TASK_VERIFY_KIND, &format!("{}#g2", task.id))
+            .await
+            .unwrap()
+            .is_none(),
+        "no second gate on a failed delivery"
+    );
+    assert_eq!(task_verify_op_count(&fx).await, 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -1794,29 +2149,24 @@ async fn claim_with_closure(fx: &Fx, key: &str, worker: &str) -> Task {
     current(&fx.boot, key).await
 }
 
-#[cfg(target_os = "linux")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn refused_gate_survives_restart_between_prepare_and_spawn() {
-    use crate::mcp_track_report::boot_at;
-    use crate::support::kernel_proc::{
-        ChildGuard, free_port_or_skip, launch_kernel, spawn_kernel, wait_exit_with_timeout,
-    };
-    use crate::task_recovery::declare;
+/// The world of an out-of-process test, on a file-backed database the kernel binary is launched
+/// against: the in-process kernel stays passive (its live listener stopped, its sweeps
+/// boot-gated) and only seeds rows through the production paths.
+struct FileWorld {
+    fx: Fx,
+    tmp_path: PathBuf,
+    db_path: PathBuf,
+    _tmp: tempfile::TempDir,
+}
 
+async fn file_world() -> FileWorld {
+    use crate::mcp_track_report::boot_at;
     let tmp = tempfile::tempdir().expect("tempdir");
     let tmp_path = tmp.path().to_path_buf();
     let db_path = tmp_path.join("calm.db");
     let db_str = db_path.to_string_lossy().to_string();
     assert!(!db_str.contains("/.local/share/neige-calm"));
     let db_url = format!("sqlite://{db_str}?mode=rwc");
-    let Some(port) = free_port_or_skip("gate-restart") else {
-        return; // sandbox denied loopback bind — CI-safe skip
-    };
-
-    // The world, through the production paths, on the file-backed database the kernel binary
-    // is launched against next: a gated attempt declared, claimed with its context closure,
-    // delivered and settled as a candidate; then HEAD moved past the candidate. The in-process
-    // kernel stays passive from here (its live listener is stopped, its sweeps boot-gated).
     let fx = fixture_on(boot_at(&db_url).await, |tmp| {
         let repo = tmp.join("repo");
         init_repo(&repo);
@@ -1824,27 +2174,86 @@ async fn refused_gate_survives_restart_between_prepare_and_spawn() {
     })
     .await;
     fx.dispatcher.abort_event_listener_for_test();
+    FileWorld {
+        fx,
+        tmp_path,
+        db_path,
+        _tmp: tmp,
+    }
+}
+
+/// A gated attempt declared, claimed with its context closure (so the kernel's boot context
+/// sweep keeps it), delivered and settled as a candidate: `verifying@0` with a candidate row,
+/// the shape the launched kernel's boot sweep admits.
+async fn file_world_candidate(
+    world: &FileWorld,
+    key: &str,
+    gate: Value,
+) -> (
+    Task,
+    calm_server::test_seams::KernelWorkspaceLease,
+    CandidateRowView,
+) {
+    use crate::task_recovery::declare;
+    let fx = &world.fx;
     let worker = fx.codex_worker();
     let lease = fx.kernel_lease(&worker.card_id).await;
     declare(
         &fx.boot,
         json!({
-            "key": "gated", "kind": "codex", "goal": "deliver gated",
+            "key": key, "kind": "codex", "goal": format!("deliver {key}"),
             "declared_by": calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR,
-            "ready": true, "gate": {"steps": [{"name": "t", "cmd": "true"}]},
+            "ready": true, "gate": gate,
         }),
     )
     .await;
-    let task = claim_with_closure(&fx, "gated", &worker.card_id).await;
+    let task = claim_with_closure(fx, key, &worker.card_id).await;
     std::fs::write(lease.path.join("worker.txt"), "delivered\n").unwrap();
     fx.complete(&worker, &task.id).await;
-    let row = settle_by_hand(&fx, &task.id).await;
+    let row = settle_by_hand(fx, &task.id).await;
     assert_eq!(row.settlement.as_deref(), Some("candidate"));
     let candidate = fx.candidate_row(&task.id).await.unwrap();
-    assert_eq!(
-        current(&fx.boot, "gated").await.status,
-        TaskStatus::Verifying
-    );
+    let task = current(&fx.boot, key).await;
+    assert_eq!(task.status, TaskStatus::Verifying);
+    (task, lease, candidate)
+}
+
+/// Poll `#g1` of `task_id` on the file database until `ready` holds (the launched kernel
+/// drives it).
+async fn wait_file_gate_op(
+    world: &FileWorld,
+    task_id: &str,
+    what: &str,
+    ready: impl Fn(&Operation) -> bool,
+) -> Operation {
+    wait_gate_op_until(&world.fx, task_id, what, ready).await
+}
+
+fn parked_artifacts(op: &Operation) -> calm_server::operation::SpawnArtifacts {
+    op.spawn_artifacts.clone().expect("parked with artifacts")
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refused_gate_survives_restart_between_prepare_and_spawn() {
+    use crate::support::kernel_proc::{
+        ChildGuard, free_port_or_skip, launch_kernel_to, spawn_kernel_to, wait_exit_with_timeout,
+    };
+
+    let Some(port) = free_port_or_skip("gate-restart") else {
+        return; // SKIP was printed: sandbox denied loopback bind (hosted CI runners)
+    };
+    // The world, through the production paths, on the file-backed database the kernel binary
+    // is launched against next: a gated attempt declared, claimed with its context closure,
+    // delivered and settled as a candidate; then HEAD moved past the candidate.
+    let world = file_world().await;
+    let fx = &world.fx;
+    let (task, lease, candidate) = file_world_candidate(
+        &world,
+        "gated",
+        json!({"steps": [{"name": "t", "cmd": "true"}]}),
+    )
+    .await;
     git(
         &lease.path,
         &["commit", "-q", "--allow-empty", "-m", "moved"],
@@ -1857,13 +2266,20 @@ async fn refused_gate_survives_restart_between_prepare_and_spawn() {
 
     // boot#1: the boot sweep drives the gate; prepare refuses and commits; the seam aborts
     // before the spawn. The abort can land before or after the listener binds, so boot#1 is
-    // waited on for its exit, not for readiness.
+    // waited on for its exit, not for readiness. Its stderr is kept: the seam names itself.
     let crash_env: Vec<(&str, OsString)> = vec![(
         "CALM_TEST_CRASH_AT",
         OsString::from("task-verify-post-prepare"),
     )];
+    let boot1_log = world.tmp_path.join("boot1.log");
     let mut boot1 = ChildGuard {
-        child: spawn_kernel(&tmp_path, &db_path, port, &crash_env),
+        child: spawn_kernel_to(
+            &world.tmp_path,
+            &world.db_path,
+            port,
+            &crash_env,
+            Some(&boot1_log),
+        ),
         port,
     };
     let status = wait_exit_with_timeout(&mut boot1, Duration::from_secs(60));
@@ -1872,22 +2288,28 @@ async fn refused_gate_survives_restart_between_prepare_and_spawn() {
         Some(libc::SIGABRT),
         "boot#1 must die by the CALM_TEST_CRASH_AT abort seam, got {status:?}"
     );
-    let (phase, tx_output, artifacts): (String, Option<String>, Option<String>) = sqlx::query_as(
-        "SELECT phase, tx_output_json, spawn_artifacts_json FROM operations WHERE kind = 'task-verify' AND idempotency_key = ?1",
-    )
-    .bind(&key)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_ne!(
-        phase, "succeeded",
-        "crash window: the op was not completed before the abort"
+    let boot1_output = std::fs::read_to_string(&boot1_log).unwrap();
+    assert!(
+        boot1_output.contains("CALM_TEST_CRASH_AT=task-verify-post-prepare: aborting"),
+        "boot#1 died at the named seam:\n{boot1_output}"
     );
+    let (op_id, phase, tx_output, artifacts): (String, String, Option<String>, Option<String>) =
+        sqlx::query_as(
+            "SELECT id, phase, tx_output_json, spawn_artifacts_json FROM operations \
+             WHERE kind = 'task-verify' AND idempotency_key = ?1",
+        )
+        .bind(&key)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    // The driver persists `SpawnStarted` before it calls `spawn_side_effect`, whose first
+    // statement is the seam: this is exactly the phase the abort leaves behind.
+    assert_eq!(phase, "spawn_started", "the crash window's phase");
     let frozen: Value =
         serde_json::from_str(tx_output.as_deref().expect("prepare committed")).unwrap();
     assert_eq!(frozen["data"]["target"]["refused"], true, "{frozen}");
     assert!(artifacts.is_none());
-    let events = gate_result_events(&fx, &task_id).await;
+    let events = gate_result_events(fx, &task_id).await;
     assert_eq!(
         events.len(),
         1,
@@ -1895,9 +2317,17 @@ async fn refused_gate_survives_restart_between_prepare_and_spawn() {
     );
     assert_eq!(current(&fx.boot, "gated").await.status, TaskStatus::Failed);
 
-    // boot#2: recovery drives the op from its committed freeze; the spawn is a no-op.
-    let Some(mut boot2) = launch_kernel(&tmp_path, &db_path, "boot-2", &[]) else {
-        return;
+    // boot#2: recovery drives the op from its committed freeze; the spawn is a no-op. Its
+    // log carries the recovery plan the kernel prints before applying it.
+    let boot2_log = world.tmp_path.join("boot2.log");
+    let Some(mut boot2) = launch_kernel_to(
+        &world.tmp_path,
+        &world.db_path,
+        "boot-2",
+        &[],
+        Some(&boot2_log),
+    ) else {
+        return; // SKIP was printed
     };
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     let phase = loop {
@@ -1919,7 +2349,18 @@ async fn refused_gate_survives_restart_between_prepare_and_spawn() {
     };
     boot2.sigkill_and_reap();
     assert_eq!(phase, "succeeded");
-    let op = gate_op(&fx, &task_id).await.unwrap();
+    let boot2_output = std::fs::read_to_string(&boot2_log).unwrap();
+    let plan_line = boot2_output
+        .lines()
+        .find(|line| line.contains("operation recovery plan item") && line.contains(&op_id))
+        .unwrap_or_else(|| {
+            panic!("boot#2 logged no recovery plan item for {op_id}:\n{boot2_output}")
+        });
+    assert!(
+        plan_line.contains("drive from spawn_started"),
+        "recovery resumed the op from spawn_started: {plan_line}"
+    );
+    let op = gate_op(fx, &task_id).await.unwrap();
     assert!(
         op.spawn_artifacts.is_none(),
         "no process was ever spawned: {op:?}"
@@ -1927,7 +2368,7 @@ async fn refused_gate_survives_restart_between_prepare_and_spawn() {
     let task = current(&fx.boot, "gated").await;
     assert_eq!(task.status, TaskStatus::Failed);
     assert_eq!(task.gate_attempt, 1);
-    let events = gate_result_events(&fx, &task_id).await;
+    let events = gate_result_events(fx, &task_id).await;
     assert_eq!(
         events.len(),
         1,
@@ -1945,4 +2386,264 @@ async fn refused_gate_survives_restart_between_prepare_and_spawn() {
     };
     assert_eq!(before.head, moved);
     assert_eq!(reasons, &[MismatchReason::Head]);
+}
+
+// ---------------------------------------------------------------------------
+// Review round 1 (3): the dead-process recovery path stops the recorded group before its
+// after-sample — a step's backgrounded child that outlived the wrapper is killed, not left
+// to write after the sample. Out of process: the kernel that spawned the gate is SIGKILLed
+// while the wrapper waits, so no live observer of that boot survives to kill the group.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recovered_gate_stops_the_group_before_sampling() {
+    use crate::support::kernel_proc::{free_port_or_skip, launch_kernel};
+    use calm_server::proc_identity::{
+        parse_proc_stat_fields, read_proc_start_time, scan_process_group_members, verify_owned_pid,
+    };
+
+    if free_port_or_skip("gate-stragglers").is_none() {
+        return; // SKIP was printed: sandbox denied loopback bind (hosted CI runners)
+    }
+    let world = file_world().await;
+    let fx = &world.fx;
+    let straggler_flag = world.tmp_path.join("straggler-may-finish");
+    let leader_flag = world.tmp_path.join("gate-may-finish");
+    let pidfile = world.tmp_path.join("straggler.pid");
+    // The step backgrounds a child in the wrapper's group (no job control: same pgid) that
+    // waits for its own flag and then writes into the checkout; the wrapper itself waits.
+    let step = format!(
+        "( until [ -f '{}' ]; do sleep 0.1; done; touch late.txt ) & echo $! > '{}'; until [ -f '{}' ]; do sleep 0.1; done",
+        straggler_flag.display(),
+        pidfile.display(),
+        leader_flag.display()
+    );
+    let (task, lease, candidate) = file_world_candidate(
+        &world,
+        "stragglers",
+        json!({"steps": [{"name": "t", "cmd": step}], "timeout_secs": 600}),
+    )
+    .await;
+
+    // boot#1 admits and runs the gate: `#g1` parked, the straggler recorded.
+    let Some(mut boot1) = launch_kernel(&world.tmp_path, &world.db_path, "boot-1", &[]) else {
+        return; // SKIP was printed
+    };
+    let op = wait_file_gate_op(&world, &task.id, "parked", |op| {
+        op.phase.tag() == PhaseTag::Parked && op.spawn_artifacts.is_some()
+    })
+    .await;
+    let artifacts = parked_artifacts(&op);
+    assert_eq!(artifacts.pgid, artifacts.pid, "the wrapper leads its group");
+    wait_for_file(&pidfile);
+    let straggler: i32 = tokio::time::timeout(WAIT, async {
+        loop {
+            if let Ok(raw) = std::fs::read_to_string(&pidfile)
+                && raw.ends_with('\n')
+                && let Ok(pid) = raw.trim().parse::<i32>()
+            {
+                break pid;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the step recorded its background child");
+    let straggler_start = read_proc_start_time(straggler).expect("the straggler is alive");
+    let stat = std::fs::read_to_string(format!("/proc/{straggler}/stat")).unwrap();
+    assert_eq!(
+        parse_proc_stat_fields(&stat).unwrap().pgrp,
+        artifacts.pgid,
+        "the straggler is in the recorded group"
+    );
+
+    // The kernel dies with the wrapper still waiting; then the wrapper finishes on its own —
+    // exit 0, exit file written, its leader reaped by init — and the straggler outlives it.
+    boot1.sigkill_and_reap();
+    assert!(verify_owned_pid(
+        artifacts.pid,
+        artifacts.start_time,
+        &artifacts.boot_id
+    ));
+    std::fs::write(&leader_flag, b"").unwrap();
+    let exit_path = exit_path_of(&op);
+    wait_for_file(&exit_path);
+    assert_eq!(std::fs::read_to_string(&exit_path).unwrap().trim(), "0");
+    tokio::time::timeout(WAIT, async {
+        while verify_owned_pid(artifacts.pid, artifacts.start_time, &artifacts.boot_id) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the wrapper's leader is reaped");
+    assert_eq!(
+        read_proc_start_time(straggler),
+        Some(straggler_start),
+        "the straggler outlived the wrapper"
+    );
+    assert!(!lease.path.join("late.txt").exists());
+
+    // boot#2: the dead-process recovery reads the exit file, stops the group, samples clean.
+    let Some(mut boot2) = launch_kernel(&world.tmp_path, &world.db_path, "boot-2", &[]) else {
+        return; // SKIP was printed
+    };
+    let op = wait_file_gate_op(&world, &task.id, "succeeded", |op| {
+        op.phase.tag() == PhaseTag::Succeeded
+    })
+    .await;
+    let result: TaskGateResult =
+        serde_json::from_value(op.tx_output.as_ref().unwrap().result.clone()).unwrap();
+    assert!(result.verdict.passed, "{result:?}");
+    // The straggler was stopped before the after-sample: dead, and its group empty.
+    assert_ne!(
+        read_proc_start_time(straggler),
+        Some(straggler_start),
+        "the recovery path stopped the recorded group before sampling"
+    );
+    assert!(
+        scan_process_group_members(artifacts.pgid)
+            .iter()
+            .all(|member| member.is_zombie),
+        "{:?}",
+        scan_process_group_members(artifacts.pgid)
+    );
+    let gate = gate_result(&wait_gate_result(fx, &task.id).await);
+    boot2.sigkill_and_reap();
+    assert!(gate.passed, "{gate:?}");
+    assert_eq!(gate.status_detail, None);
+    let (id, _, _, evidence) = gate.candidate();
+    assert_eq!(id, candidate.candidate_id);
+    let VerifyTargetEvidence::Verified { after, reasons, .. } = evidence else {
+        panic!("{evidence:?}");
+    };
+    assert!(reasons.is_empty(), "{evidence:?}");
+    assert!(after.dirty.is_empty(), "{after:?}");
+    assert_eq!(
+        current(&fx.boot, "stragglers").await.status,
+        TaskStatus::Done
+    );
+    assert_eq!(gate_result_events(fx, &task.id).await.len(), 1);
+    // The straggler is dead, so releasing it changes nothing: the verdict stood on a checkout
+    // no descendant could still write to.
+    std::fs::write(&straggler_flag, b"").unwrap();
+    assert!(!lease.path.join("late.txt").exists());
+}
+
+// ---------------------------------------------------------------------------
+// Review round 1 (5c): the boot-reattach observer (the wrapper alive at reboot) samples after
+// too. Out of process, as above. The row is terminal before boot#2 (the D12 (i) shape: a
+// Planner flipped it while the gate was parked), so boot#2's scheduler drives no gate — its
+// 25 ms `wait` loop would otherwise run the driver's dead-work probe, which completes a dead
+// leader through `recover_parked`'s `!alive` arm ahead of the 2 s re-attach poll (A12b pins
+// that arm). With no waiter, the re-attached observer is the one completion path, and the op
+// result carries its `finalize`.
+// ---------------------------------------------------------------------------
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_reattached_gate_result_discarded_when_tree_changed() {
+    use crate::support::kernel_proc::{free_port_or_skip, launch_kernel};
+    use calm_server::proc_identity::verify_owned_pid;
+
+    if free_port_or_skip("gate-reattach").is_none() {
+        return; // SKIP was printed: sandbox denied loopback bind (hosted CI runners)
+    }
+    let world = file_world().await;
+    let fx = &world.fx;
+    let leader_flag = world.tmp_path.join("gate-may-finish");
+    let step = format!(
+        "touch extra.txt; until [ -f '{}' ]; do sleep 0.1; done",
+        leader_flag.display()
+    );
+    let (task, lease, candidate) = file_world_candidate(
+        &world,
+        "reattach-live",
+        json!({"steps": [{"name": "t", "cmd": step}], "timeout_secs": 600}),
+    )
+    .await;
+
+    // boot#1 runs the gate to parked; the step has left its file; the kernel dies.
+    let Some(mut boot1) = launch_kernel(&world.tmp_path, &world.db_path, "boot-1", &[]) else {
+        return; // SKIP was printed
+    };
+    let op = wait_file_gate_op(&world, &task.id, "parked", |op| {
+        op.phase.tag() == PhaseTag::Parked && op.spawn_artifacts.is_some()
+    })
+    .await;
+    let artifacts = parked_artifacts(&op);
+    wait_for_file(&lease.path.join("extra.txt"));
+    boot1.sigkill_and_reap();
+    assert!(verify_owned_pid(
+        artifacts.pid,
+        artifacts.start_time,
+        &artifacts.boot_id
+    ));
+    // The row is flipped by hand while the gate is parked (see the header): boot#2 has no
+    // `verifying` row to drive, so nothing waits on `#g1` and nothing probes it.
+    sqlx::query(
+        "UPDATE tasks SET status = 'failed', status_detail = 'delivery-abandoned', finished_at_ms = ?1 WHERE id = ?2",
+    )
+    .bind(now_ms())
+    .bind(&task.id)
+    .execute(&fx.pool())
+    .await
+    .unwrap();
+
+    // boot#2 finds the wrapper alive: the Boot arm leaves the op parked and re-attaches an
+    // observer (the listener binds only after recovery, so readiness proves the arm ran).
+    let Some(mut boot2) = launch_kernel(&world.tmp_path, &world.db_path, "boot-2", &[]) else {
+        return; // SKIP was printed
+    };
+    let op = gate_op(fx, &task.id).await.unwrap();
+    assert_eq!(op.phase.tag(), PhaseTag::Parked, "{op:?}");
+    assert!(
+        op.lease_owner.is_none(),
+        "the parked lease was cleared for boot"
+    );
+    assert!(verify_owned_pid(
+        artifacts.pid,
+        artifacts.start_time,
+        &artifacts.boot_id
+    ));
+
+    // The wrapper finishes (exit 0); the re-attached observer reads the exit file, stops the
+    // group and samples: the tree changed during the steps, the result is discarded. The op
+    // result is the observer's verdict (the terminal row takes no result: guard miss, no
+    // event).
+    std::fs::write(&leader_flag, b"").unwrap();
+    let op = wait_file_gate_op(&world, &task.id, "succeeded", |op| {
+        op.phase.tag() == PhaseTag::Succeeded
+    })
+    .await;
+    boot2.sigkill_and_reap();
+    let result: TaskGateResult =
+        serde_json::from_value(op.tx_output.as_ref().unwrap().result.clone()).unwrap();
+    assert!(!result.verdict.passed, "{result:?}");
+    assert_eq!(
+        result.verdict.status_detail.as_deref(),
+        Some("gate-target-mismatch")
+    );
+    assert_eq!(result.cwd.as_deref(), lease.path.to_str());
+    let VerifyTarget::Candidate {
+        candidate_id,
+        evidence,
+        ..
+    } = &result.target
+    else {
+        panic!("{result:?}");
+    };
+    assert_eq!(candidate_id, &candidate.candidate_id);
+    let VerifyTargetEvidence::Verified { after, reasons, .. } = evidence else {
+        panic!("{evidence:?}");
+    };
+    assert_eq!(after.dirty, vec!["?? extra.txt".to_string()]);
+    assert_eq!(reasons, &[MismatchReason::Dirty]);
+    let log = std::fs::read_to_string(&result.verdict.log_path).unwrap();
+    assert!(log.contains("::gate-step t"), "{log}");
+    assert!(log.contains("gate RESULT DISCARDED"), "{log}");
+    assert!(gate_result_events(fx, &task.id).await.is_empty());
+    assert_eq!(
+        current(&fx.boot, "reattach-live").await.status,
+        TaskStatus::Failed
+    );
 }

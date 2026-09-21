@@ -2355,11 +2355,6 @@ impl Scheduler {
         runtime: &Arc<OperationRuntime>,
         task: &Task,
     ) -> Result<()> {
-        // Admission (#1727 S4 D3, oracle 8): a candidate-bound attempt's gate waits for its
-        // delivery to settle as a candidate; `Failed` / `Abandoned` / still pending → no `#gN`.
-        if !self.admit_gate(runtime, task).await? {
-            return Ok(());
-        }
         if task.gate_attempt >= 1 {
             let key = gate_attempt_key(&task.id, task.gate_attempt);
             if let Some(op) = runtime
@@ -2376,6 +2371,14 @@ impl Scheduler {
                     .reconcile_gate_outcome(task, task.gate_attempt, &log_path, result.outcome)
                     .await;
             }
+        }
+        // Admission (#1727 S4 D3, oracle 8) decides only whether a NEW op is submitted: a
+        // candidate-bound attempt's gate waits for its delivery to settle as a candidate;
+        // `Failed` / `Abandoned` / still pending → no `#gN`. An existing `#gN` (above) is always
+        // waited and reconciled — a terminal op beside a failed delivery (D12 (i)) must still
+        // flip its row.
+        if !self.admit_gate(runtime, task).await? {
+            return Ok(());
         }
         let attempt = task.gate_attempt + 1;
         let payload = serde_json::to_value(TaskVerifyOperationPayload {

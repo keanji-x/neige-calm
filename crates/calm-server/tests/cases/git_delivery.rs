@@ -22,6 +22,7 @@ use calm_server::db::sqlite::{
 };
 use calm_server::decision_sink::CardDecisionSink;
 use calm_server::dispatcher::{Dispatcher, TaskFailurePushTestHook};
+use calm_server::error::CalmError;
 use calm_server::event::{Event, EventBus};
 use calm_server::harness::queue::{MutationRefused, QueueMutation};
 use calm_server::harness::{
@@ -765,16 +766,37 @@ impl Fx {
     }
 
     /// Slice 4: a gate is admitted only after a `candidate` settlement — on a failed or
-    /// abandoned delivery no `#g1` is ever submitted. A timing check (nothing to barrier on).
+    /// abandoned delivery no `#g1` is ever submitted. The admission decision is run by hand
+    /// (`drive_gate_for_test`, retried while a live drive still holds `gate:<task>`) and only
+    /// then is the absence read: the decision has run, nothing is timed.
     pub(super) async fn assert_no_gate_op(&self, attempt: &str) {
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        let task = self
+            .boot
+            .repo
+            .task_get(attempt)
+            .await
+            .unwrap()
+            .expect("task row");
+        tokio::time::timeout(WAIT, async {
+            loop {
+                match self.scheduler().drive_gate_for_test(task.clone()).await {
+                    Ok(()) => break,
+                    Err(CalmError::Conflict(_)) => {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                    Err(error) => panic!("gate drive for {attempt}: {error}"),
+                }
+            }
+        })
+        .await
+        .expect("the live gate drive released gate:<task>");
         assert!(
             self.runtime
                 .find_by_kind_and_idempotency(TASK_VERIFY_KIND, &format!("{attempt}#g1"))
                 .await
                 .unwrap()
                 .is_none(),
-            "no gate is admitted on a failed delivery (slice 4)"
+            "no gate is admitted on a failed or abandoned delivery (slice 4)"
         );
     }
 
@@ -3917,10 +3939,18 @@ async fn abandon_on_terminal_row_reports_already_terminal() {
             .await;
         std::fs::write(lease.path.join("worker.txt"), "gated\n").unwrap();
         fx.complete(&worker, &task.id).await;
-        // Slice 4 admits no gate while the delivery is pending: the terminal row beside a
+        // Slice 4 admits no gate while the delivery is pending (the decision is pinned by
+        // `gate_is_not_submitted_while_delivery_pending`; this is a state read, the live drive
+        // holds `gate:<task>` while it waits on the held delivery): the terminal row beside a
         // pending delivery is the D12 (i) window, played by hand with the verdict a slice 2/3
         // gate would have recorded.
-        fx.assert_no_gate_op(&task.id).await;
+        assert!(
+            fx.runtime
+                .find_by_kind_and_idempotency(TASK_VERIFY_KIND, &format!("{}#g1", task.id))
+                .await
+                .unwrap()
+                .is_none()
+        );
         sqlx::query(
             "UPDATE tasks SET status = ?1, status_detail = ?2, gate_attempt = 1, \
              gate_result_json = ?3, finished_at_ms = ?4 WHERE id = ?5",
@@ -4354,8 +4384,10 @@ async fn retry_then_gate_wakes_twice() {
     std::fs::write(lease.path.join("worker.txt"), "gated\n").unwrap();
 
     fx.complete(&worker, &task.id).await;
-    // No gate while the delivery is held: admission waits for settlement.
-    assert_observations_settle_at(&planner, 0).await;
+    // No gate while the delivery is held: admission waits for settlement (the decision is
+    // pinned by `gate_is_not_submitted_while_delivery_pending`; here the harness ingress is
+    // drained and the absence read).
+    assert_observations_exactly(&planner, 0).await;
     assert!(
         fx.runtime
             .find_by_kind_and_idempotency(TASK_VERIFY_KIND, &format!("{}#g1", task.id))
