@@ -1,5 +1,6 @@
 """Decimal accounting from executions, not forecast highs or order acceptance."""
 from decimal import Decimal
+from fractions import Fraction
 
 from .config import broker_money, integer, money, timestamp
 from .ledger import digest
@@ -8,6 +9,20 @@ TERMINAL = {"settled", "canceled", "rejected", "expired", "recorded"}
 BROKER_TERMINAL = {"Filled", "Canceled", "Rejected", "Expired", "PartialWithdrawal"}
 BROKER_ACTIVE = {"NotReported", "New", "WaitToNew", "PartialFilled", "WaitToReplace",
                  "PendingReplace", "Replaced", "WaitToCancel", "PendingCancel"}
+
+
+def cost_exposure(portfolio, decisions, fills):
+    """Keep rational cost allocations exact at the risk-limit comparison."""
+    entries = {d["id"]: d["broker_id"] for d in decisions}
+    total = Fraction(0)
+    for trade in portfolio:
+        if not trade["quantity"]:
+            continue
+        order_id = entries[trade["entry_decision_id"]]
+        cost = sum((Fraction(broker_money(f["price"])) * f["quantity"]
+                    for f in fills if f["order_id"] == order_id), Fraction(0))
+        total += cost * Fraction(trade["quantity"], trade["bought"])
+    return total
 
 
 def trades(decisions, fills):

@@ -1,5 +1,6 @@
 """Fail-closed reconciliation and recovery; never submits or guesses an order."""
 from datetime import timezone
+import json
 
 from .config import broker_money, integer, money, timestamp
 from .ledger import digest, encoded
@@ -70,8 +71,11 @@ def refresh(db, ledger, config, broker, now):
                 "quantity": integer(raw["quantity"]), "price": str(broker_money(raw["price"])),
                 "time": timestamp(raw["time"]).isoformat()}
         old = db.execute("SELECT body FROM fills WHERE id=?", (fill["trade_id"],)).fetchone()
-        if old is not None and old[0] != encoded(fill):
-            raise ValueError("conflicting broker execution id")
+        if old is not None:
+            previous = json.loads(old[0])
+            previous["price"] = broker_money(previous["price"])
+            if previous != fill | {"price": broker_money(fill["price"])}:
+                raise ValueError("conflicting broker execution id")
         if old is None:
             db.execute("INSERT INTO fills VALUES (?,?)", (fill["trade_id"], encoded(fill)))
             ledger.event(db, "fill", fill)

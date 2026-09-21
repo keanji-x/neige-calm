@@ -1,13 +1,14 @@
 """Track-scoped decisions and the supervised broker state machine."""
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from fractions import Fraction
 import json
 import re
 from zoneinfo import ZoneInfo
 
 from .config import broker_money, calendar_date, exact, identifier, integer, money, symbol, timestamp
 from .ledger import Ledger, encoded
-from .portfolio import BROKER_TERMINAL, TERMINAL, trades
+from .portfolio import BROKER_TERMINAL, TERMINAL, cost_exposure, trades
 from . import research
 from .reconcile import refresh, remark, verify_order
 
@@ -177,8 +178,8 @@ class Engine:
             # Available broker cash/shares already exclude its active orders.
             if limit * qty + local_reserved > broker_money(snapshot["available_cash_usd"], zero=True):
                 raise ValueError("cash is insufficient after outstanding reservations")
-            gross = sum((Decimal(t["average_entry"]) * t["quantity"] for t in portfolio if t["quantity"]), Decimal(0))
-            if gross + reserved + limit * qty > money(self.config.max_portfolio_usd):
+            gross = cost_exposure(portfolio, decisions, fills)
+            if gross + Fraction(reserved) + Fraction(limit) * qty > Fraction(money(self.config.max_portfolio_usd)):
                 raise ValueError("portfolio cost exposure exceeds configured limit")
         else:
             current = next((t for t in portfolio if t["trade_id"] == plan["trade_id"]), None)

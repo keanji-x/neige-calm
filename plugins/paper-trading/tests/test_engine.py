@@ -408,3 +408,44 @@ def test_noncanonical_or_invalid_horizon_is_refused_at_ingest(rig, horizon):
     path.write_text(json.dumps(json.loads(path.read_text()) | {"horizon_end": horizon}))
     with pytest.raises(ValueError):
         rig.engine.call("track-owner", "paper.ingest", {"week": "2026-09-21"})
+
+
+@pytest.mark.parametrize("price", [100, 100.0, "100.0", "100.0000", "1E+2"])
+def test_equivalent_fill_price_representation_preserves_original_evidence(rig, price):
+    rig.decide()
+    rig.submit(rig.plan())
+    before = rig.fill("order-1", 10, price="100.00")
+    state = rig.state()
+    state["fills"][0]["price"] = price
+    rig.write(state)
+    after = rig.engine.process_once()
+    assert after["error"] is None
+    assert after["fills"] == before["fills"]
+    assert after["trades"] == before["trades"]
+
+
+def test_exact_exposure_limit_uses_fill_cost_not_rounded_average(rig):
+    path = rig.research / "weekly/2026/predictions.jsonl"
+    prediction = json.loads(path.read_text())
+    path.write_text(json.dumps(prediction) + "\n" + json.dumps(prediction | {"id": "second", "symbol": "GLD"}))
+    values = rig.values | {"symbols_json": '["SOXX.US","GLD.US"]', "max_order_usd": "3.03", "max_portfolio_usd": "4.03"}
+    rig.engine = Engine(rig.data, Config.parse(values), rig.broker, clock=lambda: NOW)
+    rig.source = rig.engine.call("track-owner", "paper.ingest", {"week": "2026-09-21"})
+    state = rig.state()
+    for name in ("SOXX.US", "GLD.US"):
+        state["quotes"][name] = {"symbol": name, "last": "1.01", "status": "Normal"}
+        state["intraday"][name] = [{"time": NOW.isoformat(), "price": "1.01"}]
+    rig.write(state)
+    plan = rig.plan(quantity=3, limit_price="1.01", stop_price="0.50", target_price="2.00")
+    rig.decide(plan)
+    rig.submit(plan)
+    rig.fill("order-1", 1, price="1.00", remaining=1, status="PartialFilled")
+    rig.fill("order-1", 2, price="1.01", fill_id="fill-2", remaining=3)
+    second = rig.plan(decision_id="entry-2", trade_id="trade-2", prediction_id="second", symbol="GLD.US",
+                      quantity=1, limit_price="1.01", stop_price="0.50", target_price="2.00")
+    rig.decide(second)
+    result = rig.engine.process_once()
+    assert next(d for d in result["decisions"] if d["id"] == "entry-2")["state"] == "ready"
+    rig.engine.config = Config.parse(values | {"max_portfolio_usd": "4.02"})
+    result = rig.engine.process_once()
+    assert "portfolio cost exposure" in next(d for d in result["decisions"] if d["id"] == "entry-2")["error"]

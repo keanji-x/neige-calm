@@ -167,7 +167,24 @@ manage existing paper positions before disabling the plugin. Preserve all data.
   fill averages, partial-withdrawal fill consistency, and double-counted sell
   reservations. Each has a red-before-fix regression. Fixes also sweep buy-side
   reservations, remaining quantities and numeric broker serialization. The
-  updated complete suite passes 207 tests. Fresh full-diff review is pending.
+  updated complete suite passed 207 tests.
+- Review round 2 through `b2647bafe` found equivalent numeric fill prices were
+  compared by their serialized spelling, and cost limits were reconstructed
+  from a rounded average. Six additional red-before-fix regressions cover the
+  two classes. Duplicate fills now compare price values while retaining the
+  originally recorded bytes; exposure uses exact rational allocations from
+  original fills, never a display average or an epsilon allowance.
+- Both invariant mutations were repeated after round-1 fixes at `da7ff1452`:
+  the broker suite produced the same four predicted failures (148 passed), then
+  152 passed after restoration; no-repeat submission produced only the predicted
+  failure (206 passed), then 207 passed after restoration. Both worktree diffs
+  were clean after restoration. Updated host/browser checks also passed.
+- CI exposed the repository-wide workflow `NPM_CONFIG_AUDIT=false` requirement.
+  The new workflow now follows the existing plugin workflow pattern. The
+  existing focused FE architecture suite passed all five tests after the fix.
+- Final independent review and latest CI receipts are recorded on
+  https://github.com/keanji-x/neige-calm/pull/1767; historical counts above name
+  their tested checkpoints rather than claiming later unrun results.
 - No production deployment or actual Longbridge broker order acceptance test
   has been performed. The host/browser harness uses the real deployed binary
   only as a separately spawned executable with isolated data and fake providers.
