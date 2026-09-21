@@ -2866,12 +2866,15 @@ async fn settled_event_maps_to_observation_with_turn_text() {
     let text = observation.to_turn_text();
     assert!(
         text.starts_with(
-            "Task deliver Git delivery FAILED (commit_failed): git commit exited 128: index.lock exists. "
+            "Task deliver Git delivery FAILED (commit_failed): git commit exited 128: index.lock exists.\n"
         ),
         "{text}"
     );
+    // The retained/Read clause starts on its own line after the reason.
     assert!(
-        text.contains(&format!("Files retained at {retained_path}; ")),
+        text.contains(&format!(
+            "index.lock exists.\nFiles retained at {retained_path}; "
+        )),
         "{text}"
     );
     assert!(
@@ -2924,14 +2927,14 @@ async fn settled_event_maps_to_observation_with_turn_text() {
     let text = observation.to_turn_text();
     assert!(
         text.starts_with(
-            "Task deliver Git delivery FAILED (workspace_missing): lease directory absent at settlement. "
+            "Task deliver Git delivery FAILED (workspace_missing): lease directory absent at settlement.\n"
         ),
         "{text}"
     );
     assert!(!text.contains("Files retained at"), "{text}");
     assert!(
         text.contains(&format!(
-            "absent at settlement. Read the worker output at runs/{task_id}.md. Decide: "
+            "absent at settlement.\nRead the worker output at runs/{task_id}.md. Decide: "
         )),
         "{text}"
     );
@@ -2976,7 +2979,7 @@ async fn settled_event_maps_to_observation_with_turn_text() {
         .to_turn_text();
     assert!(!text.contains("Files retained at"), "{text}");
     assert!(
-        text.contains("index.lock exists. Read the worker output at runs/"),
+        text.contains("index.lock exists.\nRead the worker output at runs/"),
         "{text}"
     );
 
@@ -3082,8 +3085,11 @@ async fn failed_wake_text_names_the_delivery_action() {
 
     // The production reasons end with their own period and the renderer adds none: no `..` in
     // the wake text for a code-11 reason (the fixed sentence alone) or an `unresolved` one (the
-    // sentence plus the kernel's detail line, which `unresolved_failure` terminates). G4 appears
-    // exactly once, after the decision sentence — the fixed sentences no longer carry it.
+    // sentence plus the kernel's detail line, which `unresolved_failure` terminates). A code-10
+    // reason ends with the script's evidence line, copied without a period: the retained/Read
+    // clause starts on its own line after every reason, so the evidence never runs on into it.
+    // G4 appears exactly once, after the decision sentence — the fixed sentences no longer
+    // carry it.
     let code_11 = ForgeActionResultFile {
         exit_code: 11,
         stdout: String::new(),
@@ -3091,12 +3097,24 @@ async fn failed_wake_text_names_the_delivery_action() {
     let (code, reason, retry_allowed) =
         classify_failure(Some(&code_11), Some("action-failed"), true);
     assert_eq!(code, DeliveryFailureCode::ProvenanceMismatch);
+    let code_10 = ForgeActionResultFile {
+        exit_code: 10,
+        stdout: "provenance realpath=/leases/w/worker common_dir=/repo/.git registered=0\n".into(),
+    };
+    let (code_10_code, code_10_reason, code_10_retry) =
+        classify_failure(Some(&code_10), Some("action-failed"), true);
+    assert_eq!(code_10_code, DeliveryFailureCode::ProvenanceMismatch);
+    assert!(
+        code_10_reason.ends_with(" registered=0"),
+        "{code_10_reason}"
+    );
     let (unresolved, unresolved_reason, unresolved_retry) = unresolved_failure(
         "ref refs/neige/candidates/w/worker/d-11 does not resolve to the reported commit abc123",
     );
     assert_eq!(unresolved, DeliveryFailureCode::Unresolved);
     for (id, code, reason, retry_allowed) in [
         ("d-11", code, reason.as_str(), retry_allowed),
+        ("d-10", code_10_code, code_10_reason.as_str(), code_10_retry),
         (
             "d-unresolved",
             unresolved,
@@ -3112,7 +3130,7 @@ async fn failed_wake_text_names_the_delivery_action() {
                 .to_turn_text();
         assert!(!text.contains(".."), "{text}");
         assert!(
-            text.contains(&format!("{reason} Files retained at ")),
+            text.contains(&format!("{reason}\nFiles retained at ")),
             "{text}"
         );
         assert_eq!(text.matches("Retry delivers").count(), 1, "{text}");

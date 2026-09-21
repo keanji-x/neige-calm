@@ -395,10 +395,12 @@ impl Observation {
                     None => String::new(),
                 };
                 // No period after `reason`: every fixed sentence ends with one and
-                // `unresolved_failure` terminates its detail line (the raw evidence lines of
-                // 10/12/15 are copied as the script printed them).
+                // `unresolved_failure` terminates its detail line. The raw evidence lines of
+                // 10/12/15 are copied as the script printed them and carry no period, so the
+                // retained/Read clause starts on a line of its own instead of running on after
+                // them (the `unresolved` reason already breaks a line before its detail).
                 format!(
-                    "Task {key} Git delivery FAILED ({}): {reason} \
+                    "Task {key} Git delivery FAILED ({}): {reason}\n\
                      {read} the worker output at runs/{attempt_id}.md.{decide}",
                     code.wire_str()
                 )
