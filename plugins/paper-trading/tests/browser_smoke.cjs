@@ -21,7 +21,7 @@ const { chromium, expect } = createRequire(path.resolve(frontend, 'package.json'
         await expect(page.getByText('$100,000.00', { exact: true })).toBeVisible();
         await expect(page.getByRole('meter', { name: '策略预算使用' })).toBeVisible();
       } else {
-        await expect(page.getByText('存在待确认草案', { exact: true })).toBeVisible();
+        await expect(page.getByRole('note').getByText('存在待确认草案', { exact: true })).toBeVisible();
         await expect(page.getByRole('meter')).toHaveCount(0);
       }
       expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);

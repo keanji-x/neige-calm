@@ -18,6 +18,7 @@ describe('native live-view contract', () => {
   it.each([
     { ...overview, version: 2 }, { ...overview, view: 'html' }, { ...overview, script: 'alert(1)' },
     { ...overview, asOf: 'not-a-date' },
+    { ...overview, asOf: `2026-09-22T08:00:00.${'1'.repeat(200)}Z` },
     { ...overview, charts: [{ kind: 'budget', title: 'B', unit: 'USD', detail: '', used: 1, limit: 0 }] },
     { ...overview, charts: [{ kind: 'bars', title: 'B', unit: 'USD', emptyText: '', points: [{ label: 'X', value: Infinity }] }] },
   ])('refuses unknown capabilities and malformed data %#', (value) => {

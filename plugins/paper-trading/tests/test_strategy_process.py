@@ -31,7 +31,7 @@ def test_stdio_account_only_startup_and_unapproved_proposal_reports(rig, tmp_pat
         assert host.tool('paper.approve', {'revision': proposal['strategy']['proposal']['revision']})['isError']
         assert host.tool('paper.strategy', settings(rig), track=None)['isError']
         assert host.tool('paper.strategy', settings(rig) | {'approved': True})['isError']
-        while len({p['kind'] for p in host.overlays}) < 13:
+        while len({p['kind'] for p in host.overlays}) < 14:
             host.receive()
         strategy = next(p for p in host.overlays if p['kind'] == 'paper.strategy')
         assert strategy['entity_id'] == 'track-owner'

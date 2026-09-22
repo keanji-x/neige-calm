@@ -8,7 +8,7 @@ function text(limit = 2048) {
 
 const tone = z.enum(['neutral', 'positive', 'warning', 'negative']);
 const identifier = z.string().min(1).max(200).regex(/\S/, 'Missing item identifier');
-const timestamp = z.string().datetime({ offset: true });
+const timestamp = z.string().max(128).datetime({ offset: true });
 const metric = z.strictObject({ label: text(120), value: text(120), detail: text(500), tone });
 const notice = z.strictObject({ title: text(200), detail: text(), tone });
 const bars = z.strictObject({

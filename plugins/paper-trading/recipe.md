@@ -101,6 +101,10 @@ scheduler; decisions and reviews run when an agent is invoked.
 # 更多明细
 
 ```neige-block table
+{"source":"neige://plugin/dev-neige-paper-trading/paper.alert_details"}
+```
+
+```neige-block table
 {"source":"neige://plugin/dev-neige-paper-trading/paper.strategy_details"}
 ```
 

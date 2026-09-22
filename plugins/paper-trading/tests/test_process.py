@@ -96,11 +96,11 @@ def test_real_plugin_handshake_tools_track_fence_and_report_callbacks(rig):
         assert source["source_id"] == rig.source["source_id"]
         status = host.tool("paper.status", {})["structuredContent"]
         assert status["mode"] == "supervised_paper"
-        while len({p["kind"] for p in host.overlays}) < 13:
+        while len({p["kind"] for p in host.overlays}) < 14:
             host.receive()
         assert {p["kind"] for p in host.overlays} == {
             "paper.strategy", "paper.portfolio", "paper.decisions", "paper.trades", "paper.alerts", "paper.journal", "paper.reviews",
-            "paper.overview", "paper.activity", "paper.review_cards", "paper.strategy_details", "paper.order_details", "paper.trade_details"}
+            "paper.overview", "paper.activity", "paper.review_cards", "paper.strategy_details", "paper.order_details", "paper.trade_details", "paper.alert_details"}
         assert next(p for p in host.overlays if p['kind'] == 'paper.overview')['payload']['view'] == 'overview'
         assert all(p["entity_id"] == "track-owner" for p in host.overlays)
         # A legitimate digest or filesystem path can contain the three digits.

@@ -78,7 +78,9 @@ def activity(state):
     important = {'decision_recorded', 'fill', 'review_added', 'source_ingested', 'pause_changed',
                  'submission_unknown', 'cancel_unknown', 'reconciliation_error', 'cancel_acknowledged'}
     items = [{'id': str(event['seq']), 'at': event['at'], **event_text(event, state['decisions'])}
-             for event in state['journal'] if event['kind'] in important][:100]
+             for event in state['journal'] if event['kind'] in important or event['kind'] == 'decision_state' and
+             (event['body']['state'] in ('canceled', 'rejected', 'expired') or
+              event['body']['state'] == 'queued' and event['body'].get('error'))][:100]
     return {'version': 1, 'view': 'activity', 'emptyText': '暂无交易动态。', 'items': items}
 
 
@@ -117,10 +119,20 @@ def details(title, payload, labels):
 
 
 def view_payloads(state, legacy):
+    symbols = {trade['trade_id']: trade['symbol'] for trade in state['trades']}
+    reasons = {'stop_crossed': '触及止损提醒价', 'target_crossed': '触及目标提醒价',
+               'market_data_unavailable': '行情暂不可用'}
+    alerts = {'columns': [{'key': 'symbol', 'label': '标的'}, {'key': 'reason', 'label': '提醒'},
+                          {'key': 'price', 'label': '观察价格 / USD'}],
+              'rows': [{'symbol': symbols[alert['trade_id']], 'reason': reasons.get(alert['reason'], '需要核对'),
+                        'price': money_text(alert['quote']['last']) if alert.get('quote') else '—'}
+                       for alert in state['alerts']],
+              'caption': '提醒不是保护性订单，不会自动平仓。' if state['alerts'] else '当前暂无持仓提醒。'}
     return {
         'paper.overview': overview(state),
         'paper.activity': activity(state),
         'paper.review_cards': reviews(state),
+        'paper.alert_details': {'version': 1, 'view': 'details', 'title': f"全部持仓提醒（{len(state['alerts'])}）", 'table': alerts},
         'paper.strategy_details': details('策略参数与待确认修改', legacy['paper.strategy'],
                                          {'setting': '参数', 'approved': '当前已确认', 'proposed': '待确认'}),
         'paper.order_details': details('订单明细', legacy['paper.decisions'],

@@ -332,6 +332,6 @@ class Engine:
                 "snapshot": self.ledger.get_meta(db, "snapshot"), "error": self.ledger.get_meta(db, "error"),
                 "alerts": self.ledger.get_meta(db, "alerts") or [], "decisions": decision_views,
                 "trades": trades(decisions, fills), "fills": fills,
-                "reviews": [json.loads(r[0]) for r in db.execute("SELECT body FROM reviews ORDER BY id")],
+                "reviews": self.ledger.reviews(db),
                 "journal": [dict(r) | {"body": json.loads(r["body"])} for r in
                             db.execute("SELECT * FROM journal ORDER BY seq DESC LIMIT 200")]}

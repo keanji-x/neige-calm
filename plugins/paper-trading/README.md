@@ -142,7 +142,7 @@ Report prose. Preserve both databases and research snapshots.
 Deploy this Recipe with the matching frontend's version-1 native live-view
 renderer. It accepts bounded data, not HTML, script, styles or action URLs.
 The original seven table source IDs remain available to previously saved
-Reports; six additional source IDs carry the new visual views. Updating a saved
+Reports; seven additional source IDs carry the new visual views. Updating a saved
 Recipe does not rewrite existing Track reports or approved strategy settings.
 
 Native table cells and activity details show at most 2,048 Unicode code points;
@@ -152,6 +152,11 @@ Journal text is presented as readable event summaries instead of serialized JSON
 Report rows contain only their declared columns. Charts use existing executions
 and cost accounting: account equity is not attributed strategy return, gross
 P/L excludes fees, and no historical balance curve is fabricated.
+Every holding alert remains accessible in the collapsed alert details. Review
+cards are ordered by their recorded journal sequence, not their arbitrary IDs;
+missing or inconsistent review audit evidence is refused instead of silently
+dropping a review. Expiration, rejection and confirmed cancellation remain in
+the activity feed alongside fills and proposals.
 
 ## Explicit legacy migration
 

@@ -52,6 +52,13 @@ def event_text(event, decisions):
     elif kind == 'decision_state':
         title, detail = '计划状态更新', f"{symbol} · {state_text(body['state'])}"
         tone = 'warning' if body['state'] in ('unknown', 'rejected', 'expired') else 'neutral'
+        outcomes = {'canceled': '订单取消已确认', 'rejected': '订单已被拒绝', 'expired': '计划已过期'}
+        if body['state'] in outcomes:
+            title = outcomes[body['state']]
+            detail += '。已经产生的成交仍保留在交易记录中。'
+        elif body['state'] == 'queued' and body.get('error'):
+            title, tone = '计划暂未通过检查', 'warning'
+            detail += '。' + body['error']
     elif kind in ('submission_unknown', 'cancel_unknown'):
         title, detail, tone = '订单结果待核实', f'{symbol} · 正在核对券商记录，请勿重复提交。', 'warning'
     elif kind == 'reconciliation_error':

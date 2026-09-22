@@ -1,7 +1,8 @@
 @layer features {
-  .root, .details { font-family: var(--font-sans); font-size: var(--text-base); line-height: var(--leading-base); letter-spacing: 0; }
+  .root, .details { min-inline-size: 0; overflow-wrap: anywhere; font-family: var(--font-sans); font-size: var(--text-base); line-height: var(--leading-base); letter-spacing: 0; }
   .root p, .root figure, .root dl, .root dd, .root ol { margin: 0; }
-  .root p, .metricValue, .barLabels, .summary { overflow-wrap: anywhere; }
+  .root p, .root h3, .root dt, .root dd, .root strong, .chartTitle, .metricValue, .barLabels, .summary { min-inline-size: 0; overflow-wrap: anywhere; }
+  .notice > div { min-inline-size: 0; }
   .positive { color: var(--success-text); }
   .negative { color: var(--error-text); }
   .warning { color: var(--warn-text); }
@@ -22,7 +23,7 @@
   .bars { min-block-size: 4rem; max-block-size: 18rem; overflow-y: auto; }
   .barRow { margin-block-end: var(--space-4); }
   .barLabels, .budgetLabels { display: flex; justify-content: space-between; gap: var(--space-3); font-size: var(--text-xs); color: var(--text-2); }
-  .barLabels strong { flex: none; font-variant-numeric: tabular-nums; }
+  .barLabels strong { flex: none; max-inline-size: 45%; font-variant-numeric: tabular-nums; }
   .barTrack { position: relative; block-size: 1rem; margin-block-start: var(--space-2); background: var(--surface-chip); border-radius: var(--radius-sm); overflow: hidden; }
   .zeroLine { position: absolute; block-size: 100%; inline-size: 1px; background: var(--hairline-strong); z-index: 1; }
   .barPositive, .barNegative { position: absolute; inset-block: 0; min-inline-size: 0; border-radius: var(--radius-sm); }
@@ -38,7 +39,7 @@
   .activityItem { display: grid; grid-template-columns: 0.5rem minmax(0, 1fr); gap: var(--space-4); padding-block: var(--space-4); border-block-end: 1px solid var(--hairline); }
   .dot { inline-size: 0.375rem; block-size: 0.375rem; border-radius: 50%; background: currentcolor; margin-block-start: var(--space-2); }
   .activityHead { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: var(--space-2); color: var(--text); }
-  .activityHead strong { font-size: var(--text-base); font-weight: var(--weight-semibold); }
+  .activityHead strong { min-inline-size: 0; max-inline-size: 100%; font-size: var(--text-base); font-weight: var(--weight-semibold); }
   .activityHead time { font-size: var(--text-xs); color: var(--text-3); white-space: nowrap; }
   .activityItem p { color: var(--text-2); font-size: var(--text-base); margin-block-start: var(--space-2); white-space: pre-wrap; }
   .reviews { display: grid; gap: var(--space-4); }

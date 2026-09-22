@@ -3,6 +3,7 @@ import { page, userEvent } from 'vitest/browser';
 import { afterEach, expect, it } from 'vitest';
 
 import '../../../styles/entry.css';
+import { reportLiveViewSchema } from '../../../../../core/domain/report-live-view.ts';
 import { ReportTableBlock } from '../table/public.tsx';
 
 afterEach(cleanup);
@@ -49,3 +50,25 @@ it('opens reference details using the keyboard without adding approval controls'
   expect(container.querySelector('table')!.getBoundingClientRect().height).toBeGreaterThan(10);
   expect(container.querySelector('button')).toBeNull();
 });
+
+it.each(['metric-label', 'metric-detail', 'activity-title', 'card-title', 'notice-title', 'chart-title'])(
+  'contains schema-valid unbroken %s on mobile', async (field) => {
+    await page.viewport(390, 844);
+    const overview = { version: 1, view: 'overview', asOf: null,
+      metrics: [{ label: field === 'metric-label' ? 'M'.repeat(120) : 'Equity', value: '$100',
+        detail: field === 'metric-detail' ? 'D'.repeat(500) : 'Account total', tone: 'neutral' }],
+      notices: field === 'notice-title' ? [{ title: 'N'.repeat(200), detail: 'Notice', tone: 'warning' }] : [],
+      charts: field === 'chart-title' ? [{ kind: 'bars', title: 'C'.repeat(200), unit: 'USD', emptyText: '', points: [{ label: 'Trade', value: 10 }] }] : [],
+    };
+    const payload = field === 'activity-title'
+      ? { version: 1, view: 'activity', emptyText: '', items: [{ id: 'event', at: '2026-09-22T08:00:00Z', title: 'A'.repeat(200), detail: 'Event detail', tone: 'neutral' }] }
+      : field === 'card-title'
+        ? { version: 1, view: 'cards', emptyText: '', items: [{ id: 'review', title: 'R'.repeat(200), body: 'Review body', next: '', footer: '' }] }
+        : overview;
+    expect(reportLiveViewSchema.safeParse(payload).success).toBe(true);
+    render(<main style={{ maxInlineSize: 600, padding: 12 }}>
+      <ReportTableBlock payload={{ source: 'neige://plugin/demo/long' }} resolveLive={() => payload} />
+    </main>);
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(390);
+  },
+);
