@@ -30,8 +30,9 @@ Strategy setup:
    documented in README.md; the human reviews its JSON and types literal APPROVE.
    Legacy import separately requires literal IMPORT and the saved legacy config.
    Chat agreement, editing this Recipe, and the Report
-   do not approve a strategy. All other paper tools require an approved strategy
-   for this owner Track. Use returned strategy status/the Strategy table to
+   do not approve a strategy. paper.status and paper.journal can inspect setup
+   before approval; other paper tools require an approved strategy for this
+   owner Track. Use paper.status and the Strategy table to
    verify approval before continuing. Never run approval, legacy-import or order
    operator commands yourself, obtain or redeem confirmation codes, or ask an
    agent to do so. One dedicated account can have only one approved Track and

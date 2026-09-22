@@ -69,7 +69,7 @@
     },
     {
       "name": "paper.status",
-      "description": "Requires an approved strategy for the host-provided owner Track. Read persisted portfolio, decisions, fills, alerts and reviews for the current Track. Check snapshot time and error; this is not a live broker fetch. Unknown submission outcomes must be reconciled, never resubmitted.",
+      "description": "Read strategy setup/approval status and the current Track's persisted portfolio, decisions, fills, alerts and reviews. Available before approval without broker access; after account binding only the owner Track can read it. Check snapshot time and error; this is not a live broker fetch. Unknown submission outcomes must be reconciled, never resubmitted.",
       "input_schema": {"type": "object", "properties": {}, "additionalProperties": false},
       "annotations": {"title": "Paper portfolio status", "readOnlyHint": true, "openWorldHint": false}
     },
@@ -87,7 +87,7 @@
     },
     {
       "name": "paper.journal",
-      "description": "Requires an approved strategy for the host-provided owner Track. Read the portfolio's latest 200 append-only journal events and current evidence. The full journal remains in the durable ledger. Does not rewrite decisions or executions.",
+      "description": "Read strategy setup/approval status and the portfolio's latest 200 append-only journal events and current evidence. Available before approval; after account binding only the owner Track can read it. The full journal remains in the durable ledger. Does not rewrite decisions or executions.",
       "input_schema": {"type": "object", "properties": {}, "additionalProperties": false},
       "annotations": {"title": "Read trading journal", "readOnlyHint": true, "openWorldHint": false}
     },

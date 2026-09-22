@@ -121,8 +121,9 @@ browser confirmation route. Strategy approval is a local policy approval,
 5. Verify the approved revision/settings in the Report's first `Strategy` table,
    sourced from `paper.strategy`, before starting a paper cycle. The other six
    sections remain Paper portfolio, Decisions and orders, Trades, Attention,
-   Trading journal and Reviews. All other paper tools retain their signatures
-   and require an approved strategy for the host-provided owner Track.
+   Trading journal and Reviews. Existing paper tools retain their signatures.
+   `paper.status` and `paper.journal` can inspect setup before approval; all
+   other existing tools require an approved strategy for the host-provided owner Track.
 
 One dedicated paper account can have only one approved Track. It cannot be
 rebound to another Track, even after closing its trades; never delete data or

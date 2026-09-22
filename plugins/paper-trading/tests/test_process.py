@@ -11,13 +11,21 @@ import threading
 import time
 
 from .conftest import ROOT
+from paper_trading.config import AccountConfig
+from paper_trading.strategy import Portfolio
+
+
+def account_values(rig):
+    return {key: rig.values[key] for key in ('account_no', 'broker_home', 'cli_path', 'poll_seconds')}
 
 
 class Host:
-    def __init__(self, rig):
+    def __init__(self, rig, data_dir=None):
+        data_dir = data_dir or rig.data
+        data_dir.mkdir(exist_ok=True)
         env = {"PATH": os.defpath, "HOME": str(rig.home), "LANG": "C.UTF-8",
-               "NEIGE_PLUGIN_DATA_DIR": str(rig.data)}
-        self.proc = subprocess.Popen([str(ROOT / "run")], cwd=rig.data, env=env,
+               "NEIGE_PLUGIN_DATA_DIR": str(data_dir)}
+        self.proc = subprocess.Popen([str(ROOT / "run")], cwd=data_dir, env=env,
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.frames = queue.Queue()
         self.sequence = 0
@@ -26,7 +34,7 @@ class Host:
         self.thread.start()
         init = self.request("initialize", {"protocolVersion": "2025-11-25", "_meta": {
             "dev.neige/auth": {"expected_echo": "fixture-token"},
-            "dev.neige/config": {"values": rig.values}}})
+            "dev.neige/config": {"values": account_values(rig)}}})
         assert init["_meta"]["dev.neige/auth"]["echoed_token"] == "fixture-token"
 
     def read(self):
@@ -73,11 +81,12 @@ class Host:
 
 
 def test_real_plugin_handshake_tools_track_fence_and_report_callbacks(rig):
+    Portfolio(rig.data, AccountConfig.parse(account_values(rig)), rig.broker).import_legacy(rig.values)
     host = Host(rig)
     try:
         names = {t["name"] for t in host.request("tools/list", {})["tools"]}
         assert names == {"paper.ingest", "paper.decide", "paper.status", "paper.refresh",
-                         "paper.pause", "paper.journal", "paper.review"}
+                         "paper.pause", "paper.journal", "paper.review", "paper.strategy"}
         assert host.tool("paper.status", {}, track=None)["isError"]
         assert host.tool("paper.status", {}, track="other")["isError"]
         assert host.tool("paper.status", {"track_id": "track-owner"})["isError"]
@@ -87,10 +96,10 @@ def test_real_plugin_handshake_tools_track_fence_and_report_callbacks(rig):
         assert source["source_id"] == rig.source["source_id"]
         status = host.tool("paper.status", {})["structuredContent"]
         assert status["mode"] == "supervised_paper"
-        while len({p["kind"] for p in host.overlays}) < 6:
+        while len({p["kind"] for p in host.overlays}) < 7:
             host.receive()
         assert {p["kind"] for p in host.overlays} == {
-            "paper.portfolio", "paper.decisions", "paper.trades", "paper.alerts", "paper.journal", "paper.reviews"}
+            "paper.strategy", "paper.portfolio", "paper.decisions", "paper.trades", "paper.alerts", "paper.journal", "paper.reviews"}
         assert all(p["entity_id"] == "track-owner" for p in host.overlays)
         assert "731" not in json.dumps(host.overlays)
         assert not any("--execute" in c for c in rig.calls())
@@ -100,7 +109,7 @@ def test_real_plugin_handshake_tools_track_fence_and_report_callbacks(rig):
 
 def test_operator_refuses_noninteractive_confirmation(rig, tmp_path):
     config = tmp_path / "config.json"
-    config.write_text(json.dumps(rig.values))
+    config.write_text(json.dumps(account_values(rig)))
     result = subprocess.run([sys.executable, "-m", "paper_trading.operator", "--config", str(config),
                              "--data-dir", str(rig.data), "--decision", "entry-1"], cwd=ROOT,
                             input="731\n", text=True, capture_output=True, timeout=10)
@@ -111,15 +120,16 @@ def test_operator_refuses_noninteractive_confirmation(rig, tmp_path):
 
 def test_operator_pty_displays_preview_then_waits_for_explicit_input(rig, tmp_path):
     rig.decide()
+    Portfolio(rig.data, AccountConfig.parse(account_values(rig)), rig.broker).import_legacy(rig.values)
     state = rig.state()
     state["publish_on_submit"] = rig.order(rig.plan())
     rig.write(state)
     config = tmp_path / "config.json"
-    config.write_text(json.dumps(rig.values))
+    config.write_text(json.dumps(account_values(rig)))
     # Only the clock is controlled. The real operator, broker subprocess, ledger,
     # terminal check and confirmation read run unchanged in the child process.
     driver = "from unittest.mock import patch; from datetime import datetime; from paper_trading.operator import main\n" \
-             "with patch('paper_trading.engine.utc_now', return_value=datetime.fromisoformat('2026-09-21T15:00:00+00:00')): main()"
+             "with patch('paper_trading.strategy.utc_now', return_value=datetime.fromisoformat('2026-09-21T15:00:00+00:00')): main()"
     master, slave = pty.openpty()
     proc = subprocess.Popen([sys.executable, "-c", driver, "--config", str(config), "--data-dir", str(rig.data),
                              "--decision", "entry-1"], cwd=ROOT, stdin=slave, stdout=slave, stderr=slave)

@@ -18,10 +18,16 @@ def utc_now():
 
 
 class Engine:
-    def __init__(self, root, config, broker, clock=None):
+    def __init__(self, root, config, broker, clock=None, *, strategy_revision=None):
         self.config = config
         self.broker = broker
         self.clock = clock or utc_now
+        # None identifies legacy/domain callers; never attribute their historical
+        # decisions to a newly approved strategy on a retry or import.
+        if strategy_revision is not None and (not isinstance(strategy_revision, str)
+                                              or re.fullmatch('[0-9a-f]{64}', strategy_revision) is None):
+            raise ValueError('invalid approved strategy revision')
+        self.strategy_revision = strategy_revision
         self.ledger = Ledger(root, config)
 
     def authorize(self, track):
@@ -116,6 +122,10 @@ class Engine:
         db.execute("INSERT INTO decisions(id,body,state,created_at) VALUES (?,?,?,?)",
                    (args["decision_id"], encoded(args), "recorded" if action == "hold" else "queued", now.isoformat()))
         self.ledger.event(db, "decision_recorded", args)
+        if self.strategy_revision is not None:
+            self.ledger.set_meta(db, 'decision_strategy:' + args['decision_id'], self.strategy_revision)
+            self.ledger.event(db, 'decision_strategy_bound', {
+                'decision_id': args['decision_id'], 'strategy_revision': self.strategy_revision})
         return self.ledger.decision(db, args["decision_id"])
 
     def quote(self, name):
@@ -314,9 +324,13 @@ class Engine:
     def status(self, db):
         decisions = self.ledger.decisions(db)
         fills = self.ledger.fills(db)
+        decision_views = []
+        for decision in decisions:
+            revision = self.ledger.get_meta(db, 'decision_strategy:' + decision['id'])
+            decision_views.append(decision | {'strategy_revision': revision} if revision is not None else decision)
         return {"mode": "supervised_paper", "paused": self.ledger.get_meta(db, "paused"),
                 "snapshot": self.ledger.get_meta(db, "snapshot"), "error": self.ledger.get_meta(db, "error"),
-                "alerts": self.ledger.get_meta(db, "alerts") or [], "decisions": decisions,
+                "alerts": self.ledger.get_meta(db, "alerts") or [], "decisions": decision_views,
                 "trades": trades(decisions, fills), "fills": fills,
                 "reviews": [json.loads(r[0]) for r in db.execute("SELECT body FROM reviews ORDER BY id")],
                 "journal": [dict(r) | {"body": json.loads(r["body"])} for r in

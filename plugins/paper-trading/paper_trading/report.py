@@ -11,7 +11,7 @@ def table(columns, rows, caption):
 def tables(state):
     snapshot = state["snapshot"] or {}
     stamp = datetime.fromisoformat(snapshot["at"]).strftime("%Y-%m-%d %H:%M UTC") if snapshot else "Not yet reconciled"
-    return {
+    result = {
         "paper.portfolio": table([("metric", "Metric"), ("value", "Value")], [
             {"metric": "Mode", "value": "Supervised paper trading"},
             {"metric": "New entries", "value": "Paused" if state["paused"] else "Enabled"},
@@ -37,3 +37,28 @@ def tables(state):
         "paper.reviews": table([("trade_id", "Trade"), ("analysis", "Review"), ("next_action", "Next action")],
                                 state["reviews"][-200:], "Reviews of closed trades"),
     }
+    if 'strategy' in state:
+        strategy = state['strategy']
+        rows = [{'setting': 'Status', 'approved': strategy['phase'], 'proposed': ''},
+                {'setting': 'Paper account', 'approved': strategy['account_no'], 'proposed': ''}]
+        active, proposal = strategy['active'], strategy['proposal']
+        pending = proposal if proposal and (not active or proposal['revision'] != active['revision']) else None
+        for key, label in [('track_id', 'Strategy Track'), ('revision', 'Revision')]:
+            rows.append({'setting': label, 'approved': active[key] if active else '',
+                         'proposed': pending[key] if pending else ''})
+        for key, label in [('research_root', 'Research source'), ('symbols', 'Allowed symbols'),
+                           ('max_order_usd', 'Maximum order (USD)'),
+                           ('max_portfolio_usd', 'Maximum portfolio cost (USD)'),
+                           ('max_trade_risk_usd', 'Maximum initial price risk (USD)'),
+                           ('quote_max_age_seconds', 'Maximum quote age (seconds)'),
+                           ('max_price_deviation_bps', 'Maximum price deviation (bps)')]:
+            values = {'setting': label}
+            for name, snapshot in [('approved', active), ('proposed', pending)]:
+                value = snapshot['settings'][key] if snapshot else ''
+                values[name] = ', '.join(value) if isinstance(value, list) else value
+            rows.append(values)
+        result = {'paper.strategy': table([('setting', 'Setting'), ('approved', 'Approved'),
+                                            ('proposed', 'Awaiting approval')], rows,
+                                          'Proposals do not authorize trading; approve the exact revision with the operator.'),
+                  **result}
+    return result
