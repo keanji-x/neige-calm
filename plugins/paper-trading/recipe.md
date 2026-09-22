@@ -1,4 +1,4 @@
-<!-- neige:contract {"version":1,"sections":[{"h1":"Strategy"},{"h1":"Paper portfolio"},{"h1":"Decisions and orders"},{"h1":"Trades"},{"h1":"Attention"},{"h1":"Trading journal"},{"h1":"Reviews"}]} -->
+<!-- neige:contract {"version":1,"sections":[{"h1":"交易概览"},{"h1":"交易动态"},{"h1":"交易复盘"},{"h1":"更多明细"}]} -->
 <!--
 Planner: Maintain one long-lived research-driven, long-only paper portfolio in
 this Track, not one Track per week or order. This saved Recipe owns the method;
@@ -32,7 +32,7 @@ Strategy setup:
    Chat agreement, editing this Recipe, and the Report
    do not approve a strategy. paper.status and paper.journal can inspect setup
    before approval; other paper tools require an approved strategy for this
-   owner Track. Use paper.status and the Strategy table to
+   owner Track. Use paper.status and the strategy details to
    verify approval before continuing. Never run approval, legacy-import or order
    operator commands yourself, obtain or redeem confirmation codes, or ask an
    agent to do so. One dedicated account can have only one approved Track and
@@ -74,50 +74,40 @@ Research and decision method after approval:
    and risk refusals. Keep next actions evidence-based; never rewrite the thesis,
    manufacture net P/L or use prediction scorecards as realized returns.
 
-Do not rewrite dynamic tables. Pausing/archiving this Track does not liquidate
+Do not rewrite dynamic views. Pausing/archiving this Track does not liquidate
 positions: pause new entries, have the human resolve orders and holdings, and
 retain the ledger and strategy history. This Recipe is not a recurring AI
 scheduler; decisions and reviews run when an agent is invoked.
 -->
 
-# Strategy
+# 交易概览
 
 ```neige-block table
-{"source":"neige://plugin/dev-neige-paper-trading/paper.strategy"}
+{"source":"neige://plugin/dev-neige-paper-trading/paper.overview"}
 ```
 
-# Paper portfolio
+# 交易动态
 
 ```neige-block table
-{"source":"neige://plugin/dev-neige-paper-trading/paper.portfolio"}
+{"source":"neige://plugin/dev-neige-paper-trading/paper.activity"}
 ```
 
-# Decisions and orders
+# 交易复盘
 
 ```neige-block table
-{"source":"neige://plugin/dev-neige-paper-trading/paper.decisions"}
+{"source":"neige://plugin/dev-neige-paper-trading/paper.review_cards"}
 ```
 
-# Trades
+# 更多明细
 
 ```neige-block table
-{"source":"neige://plugin/dev-neige-paper-trading/paper.trades"}
+{"source":"neige://plugin/dev-neige-paper-trading/paper.strategy_details"}
 ```
 
-# Attention
-
 ```neige-block table
-{"source":"neige://plugin/dev-neige-paper-trading/paper.alerts"}
+{"source":"neige://plugin/dev-neige-paper-trading/paper.order_details"}
 ```
 
-# Trading journal
-
 ```neige-block table
-{"source":"neige://plugin/dev-neige-paper-trading/paper.journal"}
-```
-
-# Reviews
-
-```neige-block table
-{"source":"neige://plugin/dev-neige-paper-trading/paper.reviews"}
+{"source":"neige://plugin/dev-neige-paper-trading/paper.trade_details"}
 ```

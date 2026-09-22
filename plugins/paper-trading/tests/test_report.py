@@ -43,14 +43,18 @@ def test_table_does_not_default_missing_required_cell():
 
 
 @pytest.mark.parametrize('text', ['x' * 1900, '\U0001f642' * 2500], ids=['json-overhead', 'unicode'])
-def test_journal_bounds_json_overhead_without_changing_decision(rig, text):
+def test_journal_bounds_readable_text_without_changing_decision(rig, text):
     rig.decide(rig.plan(rationale=text))
     state = rig.engine.call('track-owner', 'paper.status', {})
     assert state['decisions'][0]['body']['rationale'] == text
     detail = next(row['detail'] for row in tables(state)['paper.journal']['rows']
                   if row['kind'] == 'decision_recorded')
     assert len(detail) <= 2048
-    assert detail.endswith('[truncated]')
+    assert '"decision_id"' not in detail
+    if len(text) > 2048:
+        assert detail.endswith('[truncated]')
+    else:
+        assert detail.endswith(text)
     assert next(event['body']['rationale'] for event in state['journal']
                 if event['kind'] == 'decision_recorded') == text
 

@@ -1,6 +1,8 @@
 """Native Report projections of the persisted trading ledger."""
-import json
 from datetime import datetime
+
+from .report_text import event_text
+from .report_views import view_payloads
 
 
 def display_cell(value):
@@ -42,7 +44,7 @@ def tables(state):
                                "Alerts only; no broker stop orders"),
         "paper.journal": table([("seq", "Event"), ("at", "Time"), ("kind", "Kind"), ("detail", "Detail")],
                                 [{"seq": e["seq"], "at": e["at"], "kind": e["kind"],
-                                  "detail": json.dumps(e["body"], ensure_ascii=False)} for e in state["journal"]], stamp),
+                                  "detail": event_text(e, state['decisions'])['detail']} for e in state["journal"]], stamp),
         "paper.reviews": table([("trade_id", "Trade"), ("analysis", "Review"), ("next_action", "Next action")],
                                 state["reviews"][-200:], "Reviews of closed trades"),
     }
@@ -71,4 +73,5 @@ def tables(state):
                                             ('proposed', 'Awaiting approval')], rows,
                                           'Only approved settings authorize trading.'),
                   **result}
+        result.update(view_payloads(state, result))
     return result

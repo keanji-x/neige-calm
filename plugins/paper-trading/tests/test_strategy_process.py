@@ -31,11 +31,13 @@ def test_stdio_account_only_startup_and_unapproved_proposal_reports(rig, tmp_pat
         assert host.tool('paper.approve', {'revision': proposal['strategy']['proposal']['revision']})['isError']
         assert host.tool('paper.strategy', settings(rig), track=None)['isError']
         assert host.tool('paper.strategy', settings(rig) | {'approved': True})['isError']
-        while len({p['kind'] for p in host.overlays}) < 7:
+        while len({p['kind'] for p in host.overlays}) < 13:
             host.receive()
         strategy = next(p for p in host.overlays if p['kind'] == 'paper.strategy')
         assert strategy['entity_id'] == 'track-owner'
         assert any(row['approved'] == 'awaiting_approval' for row in strategy['payload']['rows'])
+        overview = next(p for p in host.overlays if p['kind'] == 'paper.overview')['payload']
+        assert overview['metrics'][0]['value'] == '—'
         assert rig.calls() == []
     finally:
         host.close()

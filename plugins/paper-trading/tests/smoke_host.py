@@ -88,7 +88,7 @@ def main():
             for _ in range(150):
                 overlays = request(f"/api/overlays?entity_kind=track&entity_id={track['id']}")
                 overlays = [o for o in overlays if o['plugin_id'] == 'dev-neige-paper-trading']
-                if len(overlays) == 7:
+                if len(overlays) == 13:
                     strategy = next(o for o in overlays if o['kind'] == 'paper.strategy')
                     overview = next(o for o in overlays if o['kind'] == 'paper.portfolio')
                     current = next(r['approved'] for r in strategy['payload']['rows'] if r['setting'] == 'Status')
@@ -110,7 +110,7 @@ def main():
         check('approved', '100000')
         calls = [json.loads(line) for line in (home / "calls.jsonl").read_text().splitlines()]
         assert not any("--execute" in call for call in calls)
-        print(json.dumps({"result": "passed", "overlays": 7, "phases": ['awaiting_approval', 'approved'],
+        print(json.dumps({"result": "passed", "overlays": 13, "phases": ['awaiting_approval', 'approved'],
                           "host": version["buildSha"], "output": str(root)}))
     finally:
         os.killpg(child.pid, signal.SIGTERM)

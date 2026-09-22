@@ -3,7 +3,7 @@
 One investment Area, one long-lived strategy Track, one dedicated paper account.
 Weekly reports are versioned inputs, not new accounts or new execution Tracks.
 The plugin records decisions, reconciles broker orders and executions, maintains
-a durable trading journal and renders native Report tables. AI research and
+a durable trading journal and renders native Report views. AI research and
 review run in the existing Neige agent, not inside another model client.
 
 **This is supervised paper execution, not unattended trading or a shadow
@@ -118,10 +118,11 @@ agreement, Recipe edits and Report edits are not approval, and there is no
 browser confirmation route. Strategy approval is a local policy approval,
 **not** the broker's native order confirmation and not an order submission.
 
-5. Verify the approved revision/settings in the Report's first `Strategy` table,
-   sourced from `paper.strategy`, before starting a paper cycle. The other six
-   sections remain Paper portfolio, Decisions and orders, Trades, Attention,
-   Trading journal and Reviews. Existing paper tools retain their signatures.
+5. Verify the approved revision/settings under the Report's collapsed strategy
+   details before starting a paper cycle. The Recipe prioritizes account/return
+   KPI cards, per-trade gross P/L bars and a cost-budget meter, followed by readable
+   activity and review cards. Strategy, order and trade details start collapsed.
+   Existing paper tools retain their signatures.
    `paper.status` and `paper.journal` can inspect setup before approval; all
    other existing tools require an approved strategy for the host-provided owner Track.
 
@@ -138,9 +139,19 @@ Approved typed settings and proposal history persist in `strategy.sqlite3`
 alongside the existing `ledger.sqlite3`, independently of mutable Recipe and
 Report prose. Preserve both databases and research snapshots.
 
-Native Report cells show at most 2,048 Unicode code points. Long review text and
-journal details end with `[truncated]`; full original values remain in the
-ledger and tool responses. Report rows contain only their declared columns.
+Deploy this Recipe with the matching frontend's version-1 native live-view
+renderer. It accepts bounded data, not HTML, script, styles or action URLs.
+The original seven table source IDs remain available to previously saved
+Reports; six additional source IDs carry the new visual views. Updating a saved
+Recipe does not rewrite existing Track reports or approved strategy settings.
+
+Native table cells and activity details show at most 2,048 Unicode code points;
+long values end with `[truncated]`. Review cards retain the complete validated
+review text. Full original facts remain in the ledger and tool responses.
+Journal text is presented as readable event summaries instead of serialized JSON.
+Report rows contain only their declared columns. Charts use existing executions
+and cost accounting: account equity is not attributed strategy return, gross
+P/L excludes fees, and no historical balance curve is fabricated.
 
 ## Explicit legacy migration
 
@@ -172,7 +183,7 @@ import establishes the approved legacy strategy snapshot; inspect the operator's
 result and approved settings before resuming. Later changes still need a new
 proposal and exact-revision human approval as above.
 Continue in the original Track, retaining its other Recipe customizations when
-adding the `Strategy` section and updated instructions from `recipe.md`.
+adopting the visual report references and updated instructions from `recipe.md`.
 
 ## Run the first real paper cycle
 
@@ -259,8 +270,9 @@ unattended order authorization is installed by this plugin.
   positions before retirement; retain `ledger.sqlite3`, `strategy.sqlite3` and
   research snapshots.
 
-`paper.journal` and the Report display the latest 200 journal events; the full
-append-only history remains in SQLite. Publication failures retry projections,
+`paper.journal` and the legacy journal table expose the latest 200 journal events.
+The primary activity feed selects up to 100 important events from that window;
+the full append-only history remains in SQLite. Publication failures retry projections,
 not broker writes. Back up both databases while the plugin and operator are
 stopped, or use SQLite's backup API with coordinated snapshot consistency; do not
 copy live databases arbitrarily.
@@ -286,6 +298,8 @@ python3 plugins/paper-trading/tests/smoke_host.py \
 ```
 
 This creates fresh data, a fixture-only account, disabled real agent binaries,
-a random loopback port and seven native Report tables; Playwright captures both
-viewports. The temporary server is stopped afterwards. It does not touch 4140
+a random loopback port and native Report views (plus the seven legacy table
+projections); Playwright checks overview, unknown/approved states, collapsed
+details and account settings at both viewports. The temporary server is stopped
+afterwards. It does not touch 4140
 or prove that an actual Longbridge account has filled an order.
