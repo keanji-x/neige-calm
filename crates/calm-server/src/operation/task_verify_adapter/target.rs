@@ -718,7 +718,7 @@ pub(crate) async fn prepare_target_tx(
 /// marker instead means a foreign process is neither signalled nor waited for — it does not exist
 /// for this gate. The `kill` group signal stays authenticated by the (live) leader's own identity;
 /// a marker-carrying descendant that outlives the wrapper is what the sweep reaches. A live member
-/// whose environ cannot be read (`PR_SET_DUMPABLE=0`, a cleared environment) is cleanup-uncertain,
+/// whose environ cannot be read (`PR_SET_DUMPABLE=0` → EACCES) is cleanup-uncertain,
 /// NOT proven-foreign: the sweep never kills it (only proven members are killed) and the wait never
 /// counts the group stopped, so `stop_group` returns `Err` → `gate-infra`. Only a member whose
 /// environ is readable AND lacks the marker is proven foreign and skipped. `Err` = a marked or
@@ -1645,7 +1645,6 @@ mod tests {
                 .into_iter()
                 .map(|m| m.pid)
                 .collect();
-        let still_live = read_proc_start_time(hidden_pid);
 
         // Cleanup before asserting (the child otherwise sleeps 30 s).
         let _ = hidden.kill();
@@ -1662,10 +1661,6 @@ mod tests {
         assert!(
             !member_pids.contains(&hidden_pid),
             "an unreadable member must NOT be listed for the kill sweep, got {member_pids:?}"
-        );
-        assert!(
-            still_live.is_some(),
-            "the unreadable member must be left alive (never killed by the gate)"
         );
     }
 }

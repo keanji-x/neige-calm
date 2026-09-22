@@ -165,9 +165,9 @@ pub fn scan_process_group_members(_pgid: i32) -> Vec<GroupMember> {
 /// environment that never `unset`s the marker keeps it, and every descendant inherits it. This is
 /// what tells a recovered gate's own descendants (across a kernel restart) apart from an unrelated
 /// process that recycled the numeric pgid once the wrapper's leader died — but "cannot read the
-/// environ" must NOT be collapsed into "proven not ours": a live same-uid descendant can hide its
-/// own environ (`PR_SET_DUMPABLE=0` → EACCES, or a cleared environment), and dropping it from both
-/// the wait and the kill would let it keep mutating the checkout while the gate reports clean.
+/// environ" must NOT be collapsed into "proven not ours": a live same-uid descendant can make its
+/// own environ unreadable (`PR_SET_DUMPABLE=0` → EACCES), and dropping it from both the wait and
+/// the kill would let it keep mutating the checkout while the gate reports clean.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MarkerAuth {
     /// Environ readable and carrying the exact marker: a proven descendant. Killed by the sweep;
