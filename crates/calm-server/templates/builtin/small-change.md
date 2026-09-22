@@ -42,65 +42,19 @@ track 的 VCS diff）。不要把秘密写进来。
   · 决策 —— 重要取舍，格式「决定 X，因为 Y」。候选 / 讨论过程不写在这里，
     只写已经定下来的事。做了一个决定就在这里加一行。
 
-模板还可带有以下预置章节。各模板只维护正文中已有的章节，保持其顺序，
-不补齐未使用的章节，也不要把这些独立章节合并回一个 Plan：
-  · Purpose —— 模板用途与范围。
-  · Goal and inputs —— 目标来源、输入与仓库核对。
-  · Plan —— 预置计划与任务激活方式。
-  · Review convergence —— 评审、修复与轮数限制。
-  · Verification gates —— 仓库工具链与验证要求。
-  · Merge and approval —— 合并条件与审批策略。
-这些章节共同组成预置计划。里面的 `task` 块激活完之后，预置章节的散文
-由上面「概要、待你定、已完成、决策」四节接手，相应的预置章节就可以移除。
-除此之外不要动它们的结构；激活只针对 `task` 块，不是替换这些散文。
+Working method: Small change
+
+Read the requested change and the current code path; identify constraints before writing.
+Implement and commit the smallest appropriate change, then run the target repository's relevant verification.
+Derive formatter, linter and test commands from that repository's toolchain, never a hardcoded ecosystem.
+Create concrete delegated tasks only when needed for the request, not one task for each step above.
+Record the actual result and verification evidence in the report. Do not claim unrun checks passed.
 -->
 
-# Purpose
+# 概要
 
-Short inspect → implement → verify loop.
+# 待你定
 
-# Plan
+# 已完成
 
-Treat these task blocks as the authoritative pre-set plan. Activate by replacing those
-task blocks, authoring a real `gate` from the target repo toolchain (formatter, linter,
-tests), and setting `ready: true`. Do not mint duplicate tasks. Prose blocks are NOT a plan to activate: maintain them per this document's own contract.
-
-```neige-block task
-{
-  "acceptance": "The change request and the current code path are captured in the track report.",
-  "declared_by": "spec",
-  "depends_on": [],
-  "goal": "Read the requested change and the current code that it touches. Record constraints in this report before writing.",
-  "key": "inspect",
-  "kind": "codex",
-  "no_gate_reason": "inspect does not produce a repo change to verify",
-  "ready": false
-}
-```
-
-```neige-block task
-{
-  "acceptance": "The change is committed in the track worktree.",
-  "declared_by": "spec",
-  "depends_on": ["inspect"],
-  "goal": "Implement the change and commit it.",
-  "key": "implement",
-  "kind": "codex",
-  "no_gate_reason": "author a real gate from the target repo toolchain (formatter, linter, tests) before activating; this reason is not a permanent skip",
-  "ready": false
-}
-```
-
-```neige-block task
-{
-  "acceptance": "The repository toolchain's standard test/verification command passed.",
-  "declared_by": "spec",
-  "depends_on": ["implement"],
-  "goal": "Run the repository's standard tests and record the result.",
-  "key": "verify",
-  "kind": "codex",
-  "no_gate_reason": "author a real gate from the target repo toolchain (formatter, linter, tests) before activating; this reason is not a permanent skip",
-  "ready": false
-}
-```
-
+# 决策

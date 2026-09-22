@@ -167,22 +167,12 @@ test('creates a track from a template and seeds its report', async ({ page, requ
   await page.getByLabel(TASK_LABEL).fill(message);
   await page.getByRole('button', { name: /^Template: / }).click();
 
-  /* The option itself is the hover trigger; hovering opens a `popover` layer, which jsdom cannot prove. */
   const option = page.getByRole('menuitem', { name: /^Small change/ });
   await expect(option).toBeVisible();
   await expect(page.getByText(/^\d+ tasks?$/)).toHaveCount(0);
-  /* Addressed via `aria-describedby`, not `getByRole('dialog')`: `HoverCard` renders its layer inline and
-       Playwright's `hasText` reads `textContent` through `display:none`. `[id="…"]` because `useId` ids are `«r0»`-shaped. */
   await option.hover();
-  const cardId = await option.getAttribute('aria-describedby');
-  expect(cardId, 'the option must describe its hover card').toBeTruthy();
-  const taskCard = page.locator(`[id="${cardId ?? ''}"]`);
-  await expect(taskCard).toHaveCount(1);
-  await expect(taskCard).toBeVisible();
-  await expect(taskCard).toContainText('implement');
-  await expect(taskCard).toContainText('verify');
-  // Another template's tasks are not in this card.
-  await expect(taskCard).not.toContainText('gather-facts');
+  expect(await option.getAttribute('aria-describedby')).toBeNull();
+
   await option.click();
   await expect(page.getByRole('button', { name: 'Template: Small change' })).toBeVisible();
 
@@ -209,16 +199,14 @@ test('creates a track from a template and seeds its report', async ({ page, requ
   };
   expect(detailBody.track.template_id).toBe('small-change');
 
-  /* `template_id` on the row says the kernel accepted the binding, not that the report was seeded.
-       `ready: false` is asserted because tasks are pre-set, not released. */
   const report = detailBody.cards.find((card) => card.kind === 'track-report');
-  expect(report, 'the created track must have a track-report card').toBeTruthy();
+  expect(report, 'the created track must have a report').toBeTruthy();
   const reportBody = report?.payload.body ?? '';
-  for (const key of ['inspect', 'implement', 'verify']) {
-    expect(reportBody, `small-change must pre-set the ${key} task`).toContain(`"key": "${key}"`);
-  }
-  expect(reportBody).toContain('"ready": false');
-  expect(reportBody).not.toContain('"ready": true');
+  expect(reportBody).not.toContain('```neige-block task');
+  expect(reportBody).toContain('# 概要');
+  expect(reportBody).toContain('# 已完成');
+  await expect(page.locator('[data-nc-task-state]')).toHaveCount(0);
+
 
   expect(errors).toEqual([]);
 });

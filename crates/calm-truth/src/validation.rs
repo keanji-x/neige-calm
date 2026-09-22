@@ -26,17 +26,26 @@ pub const TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY: &str = "claude_permissions";
 /// `Card.payload` key stamped beside [`TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY`] with a
 /// [`ClaudePermissionsSource`]; absent reads as `declared`.
 pub const TERMINAL_CLAUDE_PERMISSIONS_SOURCE_PAYLOAD_KEY: &str = "claude_permissions_source";
-/// `Card.payload` keys only the kernel writes: refused from every client and kept sticky on update.
-pub const SERVER_OWNED_TERMINAL_PAYLOAD_KEYS: [&str; 3] = [
+/// Creation-time template instructions, retained across Planner resets and
+/// report edits. Only the track-create transaction may mint this snapshot.
+pub const PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY: &str = "template_context";
+
+/// Kernel-owned card fields, refused at client boundaries and preserved by
+/// `card_update_tx` even when a replacement payload omits them.
+pub const SERVER_OWNED_CARD_PAYLOAD_KEYS: [&str; 4] = [
     TERMINAL_SIGNALS_PAYLOAD_KEY,
     TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY,
     TERMINAL_CLAUDE_PERMISSIONS_SOURCE_PAYLOAD_KEY,
+    PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY,
 ];
 
 /// Whether a stored value of a server-owned key is the shape the kernel mints (and so is kept
 /// sticky by `card_update_tx`); the map form of a unit variant was never minted.
 pub fn server_owned_value_is_sticky(key: &str, value: &Value) -> bool {
     match key {
+        // Even corrupt snapshots stay protected: startup must report the
+        // corruption, not erase it and silently drop the working method.
+        PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY => true,
         TERMINAL_SIGNALS_PAYLOAD_KEY => value.as_bool() == Some(true),
         TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY => value.is_object(),
         TERMINAL_CLAUDE_PERMISSIONS_SOURCE_PAYLOAD_KEY => {
@@ -50,7 +59,7 @@ pub fn server_owned_value_is_sticky(key: &str, value: &Value) -> bool {
 /// Refuse a client-supplied `Card.payload` carrying any server-owned key, whatever the card kind:
 /// the hook ingest route reads the marker from the payload, never from the patchable `kind`.
 pub fn reject_client_supplied_server_owned_keys(payload: &Value) -> Result<()> {
-    for key in SERVER_OWNED_TERMINAL_PAYLOAD_KEYS {
+    for key in SERVER_OWNED_CARD_PAYLOAD_KEYS {
         if payload.get(key).is_some() {
             return Err(CalmError::BadRequest(format!(
                 "`{key}` is server-owned and cannot be written through the API"

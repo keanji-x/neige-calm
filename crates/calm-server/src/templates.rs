@@ -337,7 +337,6 @@ pub fn task_payload_key_and_instruction(payload: &Value) -> Option<(String, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use calm_types::report_blocks::render_fence;
     use calm_types::report_contract::check_document;
     use calm_types::track_report::{research_header, work_brief_header};
     use std::collections::BTreeSet;
@@ -502,53 +501,41 @@ mod tests {
         }
     }
 
-    /// Block 0 is one identical text across the three plan templates, and `default.md`'s block 0
-    /// is a prefix of it.
     #[test]
-    fn every_plan_template_carries_the_one_maintenance_contract() {
-        let mut block_0s: Vec<String> = Vec::new();
+    fn every_work_template_carries_the_contract_and_method_without_tasks() {
+        let default_body = TrackReportPayload::initial().body;
+        let default_block = split_body(&default_body)[0].raw.clone();
+        let shared = default_block.strip_suffix("-->\n\n").unwrap();
         for key in PLAN_TEMPLATES {
-            let report = roster().get(key).expect("plan template").recipe();
-            assert_eq!(
-                check_document(&report.body),
-                Ok(Some(work_brief_header())),
-                "{key}: the body must pass the contract funnel check"
-            );
+            let report = roster().get(key).unwrap().recipe();
+            assert_eq!(check_document(&report.body), Ok(Some(work_brief_header())));
             let slices = split_body(&report.body);
             assert!(
-                slices[0].raw.ends_with("-->\n\n"),
-                "{key}: the contract must be its own closed block, got {:?}",
-                slices[0].raw
+                slices[0].raw.starts_with(shared),
+                "{key}: shared report contract"
             );
             assert!(
-                report.report_startup_read_required(),
-                "{key} is not the default skeleton"
+                slices[0].raw.ends_with("-->\n\n"),
+                "{key}: closed instructions"
             );
-            block_0s.push(slices[0].raw.clone());
-        }
-        for (key, block_0) in PLAN_TEMPLATES.iter().zip(&block_0s) {
+            assert!(
+                slices[0].raw.contains("Working method"),
+                "{key}: startup method"
+            );
+            assert!(
+                template_task_payloads_from_body(&report.body).is_empty(),
+                "{key}"
+            );
+            let headings: Vec<_> = slices[1..]
+                .iter()
+                .map(|s| s.raw.lines().next().unwrap())
+                .collect();
             assert_eq!(
-                block_0, &block_0s[0],
-                "{key}: the three plan templates must share one block 0 (contract + plan note)"
+                headings,
+                ["# 概要", "# 待你定", "# 已完成", "# 决策"],
+                "{key}"
             );
         }
-
-        let default_body = TrackReportPayload::initial().body;
-        let default_block_0 = split_body(&default_body)[0].raw.clone();
-        let shared = default_block_0
-            .strip_suffix("-->\n\n")
-            .expect("default.md's block 0 is a closed comment");
-        assert!(
-            block_0s[0].starts_with(shared),
-            "default.md's contract (minus its closing line) must be a prefix of the plan \
-             templates' block 0; the two texts drifted:\n--- default ---\n{shared}\n--- template \
-             ---\n{}",
-            block_0s[0]
-        );
-        assert!(
-            block_0s[0].len() > shared.len() + "-->\n\n".len(),
-            "the plan templates add a plan note after the shared contract"
-        );
     }
 
     #[test]
@@ -638,25 +625,14 @@ mod tests {
         assert!(!report.body.contains("# Plan"));
     }
 
-    /// Identity on the payload, not merely agreement on the fields some struct models.
     #[test]
-    fn parsing_a_task_fence_and_rendering_it_back_is_an_identity() {
+    fn builtin_templates_contain_no_task_declarations() {
         for template in roster().entries() {
-            let key = template.key();
-            let body = template.recipe().body;
-            let payloads = template_task_payloads_from_body(&body);
-            assert_eq!(
-                payloads.is_empty(),
-                key == INVESTMENT_RESEARCH,
-                "{key}: task payloads parsed iff the recipe is a plan template"
+            assert!(
+                template_task_payloads_from_body(&template.recipe().body).is_empty(),
+                "{} must supply working instructions, not placeholder tasks",
+                template.key()
             );
-            for payload in &payloads {
-                let fence = render_fence(KIND_TASK, payload);
-                assert!(
-                    body.contains(&fence),
-                    "{key}: re-rendering a parsed payload did not reproduce its fence:\n{fence}"
-                );
-            }
         }
     }
 

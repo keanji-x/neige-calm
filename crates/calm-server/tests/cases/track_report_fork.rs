@@ -1,5 +1,8 @@
 #![cfg(unix)]
 
+#[path = "template_mismatch.rs"]
+mod template_mismatch;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -1821,8 +1824,8 @@ async fn inv_1110_002_forked_track_requires_report_startup_read() {
         )),
         "forked planner must require the report read before direct edits and explicitly exempt bounded Dispatch"
     );
-    assert!(prompt.contains("authoritative pre-set plan"));
-    assert!(prompt.contains("Do not mint duplicate tasks"));
+    assert!(prompt.contains("Existing report tasks belong to this track's current work"));
+    assert!(prompt.contains("preserve their identities and approvals"));
 }
 
 #[tokio::test]

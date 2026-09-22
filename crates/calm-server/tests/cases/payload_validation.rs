@@ -17,7 +17,7 @@ use calm_server::routes::tracks::{
     TrackLifecyclePatchRaceHook, install_track_lifecycle_patch_race_hook_for_test,
 };
 use calm_server::state::{AppState, DaemonClient};
-use calm_server::validation::SERVER_OWNED_TERMINAL_PAYLOAD_KEYS;
+use calm_server::validation::SERVER_OWNED_CARD_PAYLOAD_KEYS;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -280,14 +280,15 @@ fn server_owned_probe_values() -> [Value; 5] {
 async fn post_card_with_a_server_owned_key_is_rejected_for_every_kind() {
     let (state, track_id, repo) = boot_with_repo().await;
     assert_eq!(
-        SERVER_OWNED_TERMINAL_PAYLOAD_KEYS,
+        SERVER_OWNED_CARD_PAYLOAD_KEYS,
         [
             "terminal_signals",
             "claude_permissions",
-            "claude_permissions_source"
+            "claude_permissions_source",
+            "template_context"
         ]
     );
-    for key in SERVER_OWNED_TERMINAL_PAYLOAD_KEYS {
+    for key in SERVER_OWNED_CARD_PAYLOAD_KEYS {
         for (kind, value) in [
             ("terminal", json!(true)),
             ("codex", json!(true)),
@@ -342,7 +343,7 @@ async fn patch_card_with_a_server_owned_key_is_rejected() {
         })
         .await
         .unwrap();
-    for key in SERVER_OWNED_TERMINAL_PAYLOAD_KEYS {
+    for key in SERVER_OWNED_CARD_PAYLOAD_KEYS {
         for value in server_owned_probe_values() {
             let mut payload = json!({ "schemaVersion": 1, "terminal_id": "t1" });
             payload[key] = value;

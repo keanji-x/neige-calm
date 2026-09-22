@@ -615,7 +615,7 @@ fn prepare_initial_report_payload(
         .map_err(|error| {
             CalmError::Internal(format!("track create: migrate template `{label}`: {error}"))
         })?;
-    let blocks = doc.blocks_snapshot().map_err(|error| {
+    let mut blocks = doc.blocks_snapshot().map_err(|error| {
         CalmError::Internal(format!("track create: template `{label}` blocks: {error}"))
     })?;
     let (summary, body) = doc.project().map_err(|error| {
@@ -632,15 +632,69 @@ fn prepare_initial_report_payload(
     crate::track_report_guard::validate_body_fences(&body).map_err(|error| {
         CalmError::Internal(format!("track create: template `{label}` body: {error}"))
     })?;
+    let template_context = crate::template_context::TemplateContext::new(
+        payload.summary.clone(),
+        payload.body.clone(),
+    );
+    // Named sources describe a working method, not queued work. Preserve
+    // every non-task block, including the paragraph boundary a removed fence
+    // supplied even when its neighbors had no blank lines.
+    let has_tasks = blocks
+        .iter()
+        .any(|block| block.kind == calm_types::report_blocks::KIND_TASK);
+    let body = if has_tasks {
+        // Elision must not turn a misplaced source header into a valid one.
+        calm_types::report_contract::check_document(&body).map_err(|error| {
+            CalmError::Internal(format!(
+                "track create: template `{label}` contract: {error}"
+            ))
+        })?;
+        let mut body = String::new();
+        let mut pending_break = false;
+        for block in &blocks {
+            if block.kind == calm_types::report_blocks::KIND_TASK {
+                pending_break = true;
+                continue;
+            }
+            if pending_break {
+                super::track_recipes::restore_paragraph_break(&mut body);
+                pending_break = false;
+            }
+            calm_types::report_blocks::append_block_text(
+                &mut body,
+                &calm_types::report_blocks::flat_text(block),
+            );
+        }
+        body
+    } else {
+        body
+    };
+    let mut prepared = TrackReportPayload::new(summary, body);
+    if has_tasks {
+        doc = ReportDoc::from_payload(&prepared);
+        doc.ensure_blocks_layout(None).map_err(|error| {
+            CalmError::Internal(format!("track create: template `{label}` report: {error}"))
+        })?;
+        blocks = doc.blocks_snapshot().map_err(|error| {
+            CalmError::Internal(format!(
+                "track create: template `{label}` report blocks: {error}"
+            ))
+        })?;
+        (prepared.summary, prepared.body) = doc.project().map_err(|error| {
+            CalmError::Internal(format!(
+                "track create: template `{label}` report projection: {error}"
+            ))
+        })?;
+    }
     let (declarations, diagnostics) =
         calm_types::report_blocks::tasks::project_task_declarations(&blocks);
-    let mut prepared = TrackReportPayload::new(summary, body);
     prepared.blocks = Some(blocks);
     Ok(InitialReportSnapshot {
         payload: prepared,
         doc,
         declarations,
         diagnostics,
+        template_context: Some(template_context),
     })
 }
 
@@ -1354,6 +1408,9 @@ async fn create_track_structure(
                 };
 
                 let mut planner_payload = planner_harness_card_payload(None);
+                if let Some(context) = init_snapshot.as_ref().and_then(|snapshot| snapshot.template_context.as_ref()) {
+                    planner_payload[crate::validation::PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY] = serde_json::to_value(context)?;
+                }
                 if model.is_some() || reasoning_effort.is_some() {
                     crate::planner_model::CardModelSelection::apply_to_payload(
                         planner_payload.as_object_mut().ok_or_else(|| {
@@ -1409,6 +1466,7 @@ async fn create_track_structure(
                     mut doc,
                     declarations,
                     diagnostics,
+                    template_context: _,
                 }) = init_snapshot
                 {
                     // The structural door takes no author, actor, event bus or CAS input, so this closure
@@ -1631,6 +1689,7 @@ pub(crate) struct InitialReportSnapshot {
     doc: ReportDoc,
     declarations: Vec<calm_types::report_blocks::tasks::TaskDeclaration>,
     diagnostics: Vec<Vec<calm_types::report_blocks::tasks::Diagnostic>>,
+    template_context: Option<crate::template_context::TemplateContext>,
 }
 
 impl InitialReportSnapshot {
@@ -1796,6 +1855,7 @@ fn prepare_fork_report(
         doc,
         declarations,
         diagnostics,
+        template_context: None,
     })
 }
 
@@ -3349,75 +3409,63 @@ mod tests {
         }
     }
 
-    /// For every builtin entry, the picker projection yields, per key and in order, the
-    /// `goal` and `acceptance` the fence in the file carries. The fences are read with the
-    /// independent reader so the two sides do not share the producer.
+    /// Task examples stay in startup context, not in the report or picker.
     #[test]
-    fn the_picker_projection_carries_each_fences_own_goal_and_acceptance() {
-        use crate::templates::task_payload_key_and_instruction;
-        use calm_types::report_blocks::{KIND_TASK, parse_fence, split_body};
+    fn named_source_task_examples_remain_in_context_only() {
+        let task = calm_types::report_blocks::render_fence(
+            "task",
+            &serde_json::json!({
+                "key": "example", "kind": "codex", "goal": "Read the code",
+                "acceptance": "Evidence explains the result", "ready": false, "declared_by": "spec"
+            }),
+        );
+        let body = format!("before\n{task}---\n");
+        let compiled = prepare_initial_report_payload(
+            "example",
+            TrackReportPayload::new("Example", body.clone()),
+        )
+        .unwrap();
+        assert!(compiled.task_block_payloads().unwrap().is_empty());
+        assert!(compiled.declarations.is_empty());
+        assert!(!compiled.payload.body.contains("```neige-block task"));
+        let markup: Vec<_> = pulldown_cmark::Parser::new(&compiled.payload.body).collect();
+        assert_eq!(
+            markup,
+            vec![
+                pulldown_cmark::Event::Start(pulldown_cmark::Tag::Paragraph),
+                pulldown_cmark::Event::Text("before".into()),
+                pulldown_cmark::Event::End(pulldown_cmark::TagEnd::Paragraph),
+                pulldown_cmark::Event::Rule,
+            ],
+            "removing a task must not turn its prose neighbors into a Setext heading"
+        );
+        let context = serde_json::to_value(compiled.template_context.unwrap()).unwrap();
+        assert_eq!(context["body"], body);
+        assert_eq!(context["title"], "Example");
+    }
 
-        let roster = TemplateRoster::builtin();
-        let mut fences_seen = 0;
-        for template in roster.entries() {
-            let key = template.key();
-            let body = template.recipe().body;
-            let fences: Vec<serde_json::Value> = split_body(&body)
-                .iter()
-                .filter_map(|slice| parse_fence(&slice.raw))
-                .filter(|fence| fence.kind == KIND_TASK)
-                .map(|fence| fence.payload)
-                .collect();
-            let compiled = super::compile_template(template)
-                .unwrap_or_else(|error| panic!("`{key}` must compile: {error}"));
-            let blocks = compiled
-                .task_block_payloads()
-                .unwrap_or_else(|error| panic!("`{key}` must carry blocks: {error}"));
-            let projected: Vec<(String, String)> = blocks
-                .iter()
-                .filter_map(|payload| task_payload_key_and_instruction(payload))
-                .collect();
-            assert_eq!(
-                projected.len(),
-                fences.len(),
-                "`{key}`: the picker projects one row per task fence in the file"
-            );
-            assert_eq!(
-                blocks.len(),
-                fences.len(),
-                "`{key}`: one compiled block per fence"
-            );
-            for ((projected_key, projected_goal), fence) in projected.iter().zip(&fences) {
-                let fence_key = fence["key"].as_str().expect("fence key");
-                let fence_goal = fence["goal"].as_str().expect("fence goal");
-                let fence_acceptance = fence["acceptance"].as_str().expect("fence acceptance");
-                assert_ne!(
-                    fence_goal, fence_acceptance,
-                    "`{key}`/{fence_key}: fixture — goal and acceptance must differ, or a \
-                     swapped projection would be invisible"
-                );
-                assert_eq!(projected_key, fence_key, "`{key}`: projected key, in order");
-                assert_eq!(
-                    projected_goal, fence_goal,
-                    "`{key}`/{fence_key}: the picker's goal must be the fence's goal"
-                );
-            }
-            for (block, fence) in blocks.iter().zip(&fences) {
-                let fence_key = fence["key"].as_str().expect("fence key");
-                assert_eq!(
-                    block["goal"], fence["goal"],
-                    "`{key}`/{fence_key}: compiled goal is the fence's"
-                );
-                assert_eq!(
-                    block["acceptance"], fence["acceptance"],
-                    "`{key}`/{fence_key}: compiled acceptance is the fence's"
-                );
-            }
-            fences_seen += fences.len();
-        }
+    #[test]
+    fn task_elision_cannot_repair_a_misplaced_source_contract() {
+        let task = calm_types::report_blocks::render_fence(
+            "task",
+            &serde_json::json!({
+                "key": "example", "kind": "codex", "goal": "Inspect",
+                "ready": true, "declared_by": "user", "released_by_user": true,
+            }),
+        );
+        let reference_only = prepare_initial_report_payload(
+            "example",
+            TrackReportPayload::new("Example", task.clone()),
+        )
+        .unwrap();
         assert!(
-            fences_seen > 0,
-            "the roster must carry at least one task fence for this to test anything"
+            reference_only.declarations.is_empty(),
+            "even a released example is not execution authority"
+        );
+        let body = format!("{task}{}", TrackReportPayload::initial().body);
+        assert!(
+            prepare_initial_report_payload("misplaced", TrackReportPayload::new("Example", body))
+                .is_err()
         );
     }
 
@@ -3425,10 +3473,14 @@ mod tests {
     /// a malformed fence as prose, so without the check an indented opener would drop a task.
     #[test]
     fn a_recipe_that_does_not_parse_is_refused() {
-        let good = TemplateRoster::builtin()
-            .get("small-change")
-            .expect("known key")
-            .recipe();
+        let good = TrackReportPayload::new(
+            "Example",
+            calm_types::report_blocks::render_fence(
+                "task",
+                &serde_json::json!({"key": "example", "kind": "codex",
+                "goal": "Read the code", "ready": false, "declared_by": "spec"}),
+            ),
+        );
 
         // A: an indented opener. `split_body` demotes it to prose.
         let indented = good

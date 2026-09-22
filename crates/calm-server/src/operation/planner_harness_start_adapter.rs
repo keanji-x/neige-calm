@@ -304,7 +304,9 @@ pub(crate) fn render_planner_developer_instructions(
         crate::planner_card::SeededCardRole::Planner.prompt_template(),
         track_id,
     );
-    // The descriptor is an id handle only; the remaining injected contract is the track's validated `template_input`.
+    // The plugin descriptor is an id handle, not the working method. The
+    // creation-time method is appended from the Planner card's snapshot at
+    // thread/start. Plugin input still requires a currently resolved binding.
     if template_descriptor.is_none() {
         return instructions;
     }
@@ -924,13 +926,24 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 }
                 HarnessProfile::Planner => {
                     let bound_template = self.bound_template(&track_id).await?;
-                    Some(render_planner_developer_instructions(
+                    let mut instructions = render_planner_developer_instructions(
                         &track_id,
                         bound_template.as_ref().map(|bound| &bound.descriptor),
                         bound_template
                             .as_ref()
                             .and_then(|bound| bound.input.as_ref()),
-                    ))
+                    );
+                    let card = self
+                        .repo
+                        .card_get(&card_id)
+                        .await?
+                        .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
+                    if let Some(context) =
+                        crate::template_context::TemplateContext::from_card_payload(&card.payload)?
+                    {
+                        context.append_to(&mut instructions)?;
+                    }
+                    Some(instructions)
                 }
             };
             let (raw, hashed) = mint_card_mcp_token_pair();
@@ -2241,8 +2254,8 @@ mod tests {
             )),
             "base prompt must require the report read before direct edits and explicitly exempt bounded Dispatch"
         );
-        assert!(expected.contains("authoritative pre-set plan"));
-        assert!(expected.contains("Do not mint duplicate tasks"));
+        assert!(expected.contains("Selected Template snapshot"));
+        assert!(expected.contains("not to reproduce a template checklist"));
     }
 
     #[test]

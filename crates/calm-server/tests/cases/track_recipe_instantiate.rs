@@ -183,6 +183,15 @@ fn report_payload(detail: &Value) -> TrackReportPayload {
     serde_json::from_value(card["payload"].clone()).expect("report payload")
 }
 
+fn template_context(detail: &Value) -> &Value {
+    &detail["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|card| card["payload"]["planner_harness"] == true)
+        .unwrap()["payload"]["template_context"]
+}
+
 fn task_blocks(payload: &TrackReportPayload) -> Vec<&Value> {
     payload
         .blocks
@@ -224,19 +233,12 @@ async fn a_recipe_becomes_the_new_tracks_report() {
     let payload = report_payload(&detail);
     assert_eq!(payload.summary, "my flow", "title becomes the summary");
 
-    let tasks = task_blocks(&payload);
-    assert_eq!(tasks.len(), 2, "tasks={tasks:?}");
-    assert_eq!(tasks[0]["key"], json!("setup"));
-    assert_eq!(tasks[0]["goal"], json!("set the thing up"));
-    assert_eq!(tasks[0]["acceptance"], json!("it is set up"));
-    assert_eq!(tasks[1]["key"], json!("verify"));
-    assert_eq!(tasks[1]["depends_on"], json!(["setup"]));
-
-    for task in &tasks {
-        assert_eq!(task["declared_by"], json!("spec"));
-        assert_eq!(task["ready"], json!(false));
-        assert!(task.get("released_by_user").is_none());
-    }
+    assert!(
+        task_blocks(&payload).is_empty(),
+        "saved steps are reference material only"
+    );
+    assert_eq!(template_context(&detail)["title"], recipe["title"]);
+    assert_eq!(template_context(&detail)["body"], recipe["body"]);
 
     assert!(
         payload.body.contains("Set the thing up, then check it."),
@@ -281,14 +283,22 @@ async fn a_recipe_that_carried_refs_instantiates_with_no_reference() {
 
     let detail = track_detail(boot.app.clone(), &track_id).await;
     let payload = report_payload(&detail);
-    let tasks = task_blocks(&payload);
-    assert_eq!(tasks.len(), 1, "tasks={tasks:?}");
+    assert!(task_blocks(&payload).is_empty());
+    let context = template_context(&detail);
+    assert_eq!(context["body"], recipe["body"]);
     assert!(
-        tasks[0].get("refs").is_none(),
-        "the instantiated task must carry no reference: {:?}",
-        tasks[0]
+        !context["body"]
+            .as_str()
+            .unwrap()
+            .contains("some-other-track"),
+        "a saved recipe must not import source-track references into the startup prompt"
     );
-    assert_eq!(tasks[0]["cwd"], json!("/srv/repos/thing"));
+    assert!(
+        context["body"]
+            .as_str()
+            .unwrap()
+            .contains("/srv/repos/thing")
+    );
 
     let blocks = payload.blocks.as_deref().expect("report blocks");
     let verdicts = boot
@@ -384,13 +394,12 @@ async fn recipe_and_instantiated_track_are_independent() {
     .await;
     assert_eq!(status, StatusCode::OK, "{updated}");
 
-    let payload = report_payload(&track_detail(boot.app.clone(), &track_id).await);
+    // The existing track is untouched.
+    let detail = track_detail(boot.app.clone(), &track_id).await;
+    let payload = report_payload(&detail);
     assert_eq!(payload.summary, "v1", "the track kept its snapshot");
-    let keys: Vec<_> = task_blocks(&payload)
-        .iter()
-        .map(|task| task["key"].clone())
-        .collect();
-    assert_eq!(keys, vec![json!("setup"), json!("verify")]);
+    assert!(task_blocks(&payload).is_empty());
+    assert_eq!(template_context(&detail)["body"], recipe["body"]);
 
     let (_, second) = send(
         boot.app.clone(),
@@ -403,16 +412,11 @@ async fn recipe_and_instantiated_track_are_independent() {
         )),
     )
     .await;
-    let second_payload =
-        report_payload(&track_detail(boot.app.clone(), second["id"].as_str().unwrap()).await);
+    let second_detail = track_detail(boot.app.clone(), second["id"].as_str().unwrap()).await;
+    let second_payload = report_payload(&second_detail);
     assert_eq!(second_payload.summary, "v2");
-    assert_eq!(
-        task_blocks(&second_payload)
-            .iter()
-            .map(|task| task["key"].clone())
-            .collect::<Vec<_>>(),
-        vec![json!("different")]
-    );
+    assert!(task_blocks(&second_payload).is_empty());
+    assert_eq!(template_context(&second_detail)["body"], updated["body"]);
 }
 
 #[tokio::test]
@@ -442,9 +446,11 @@ async fn deleting_a_recipe_does_not_disturb_tracks_made_from_it() {
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
-    let payload = report_payload(&track_detail(boot.app.clone(), &track_id).await);
+    let detail = track_detail(boot.app.clone(), &track_id).await;
+    let payload = report_payload(&detail);
     assert_eq!(payload.summary, "doomed");
-    assert_eq!(task_blocks(&payload).len(), 2);
+    assert!(task_blocks(&payload).is_empty());
+    assert_eq!(template_context(&detail)["body"], recipe["body"]);
 }
 
 #[tokio::test]
@@ -922,13 +928,16 @@ async fn a_fork_of_a_recipe_born_track_has_no_provenance() {
     assert_eq!(status, StatusCode::CREATED, "{forked}");
     let fork_id = forked["id"].as_str().unwrap().to_string();
 
-    let payload = report_payload(&track_detail(boot.app.clone(), &fork_id).await);
+    // The fork did receive the recipe's content, one hop removed.
+    let detail = track_detail(boot.app.clone(), &fork_id).await;
+    let payload = report_payload(&detail);
     assert_eq!(payload.summary, "forkable");
-    let keys: Vec<_> = task_blocks(&payload)
-        .iter()
-        .map(|task| task["key"].clone())
-        .collect();
-    assert_eq!(keys, vec![json!("setup"), json!("verify")]);
+    assert!(task_blocks(&payload).is_empty());
+    assert!(payload.body.contains("Set the thing up, then check it."));
+    assert!(
+        template_context(&detail).is_null(),
+        "a report fork does not inherit startup instructions"
+    );
 
     let fork = boot
         .repo

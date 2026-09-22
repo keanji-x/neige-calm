@@ -213,8 +213,8 @@ async fn picker_lists_the_site_template_after_the_builtins() {
     assert_eq!(site["title"], SITE_X_TITLE);
     assert_eq!(
         site["tasks"],
-        json!([{ "key": SITE_TASK_KEY, "goal": SITE_TASK_GOAL }]),
-        "the picker projects the site file's own task fence"
+        json!([]),
+        "site templates do not advertise preset tasks"
     );
     assert!(
         site.get("input_schema").is_none(),
@@ -243,10 +243,17 @@ async fn create_from_a_site_template_instantiates_the_file_body() {
         payload.summary, SITE_X_TITLE,
         "summary is the front matter title"
     );
+    let planner = detail["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|card| card["payload"]["planner_harness"] == true)
+        .unwrap();
     assert_eq!(
-        payload.body, boot.site_body,
-        "the report body is the file's bytes after the closing `+++` line"
+        planner["payload"]["template_context"]["body"], boot.site_body,
+        "startup captures the site's original method"
     );
+    assert!(!payload.body.contains("```neige-block task"));
     let task_keys: Vec<&str> = payload
         .blocks
         .as_ref()
@@ -255,7 +262,7 @@ async fn create_from_a_site_template_instantiates_the_file_body() {
         .filter(|block| block.kind == KIND_TASK)
         .map(|block| block.payload["key"].as_str().expect("task key"))
         .collect();
-    assert_eq!(task_keys, [SITE_TASK_KEY]);
+    assert!(task_keys.is_empty());
 
     let row = boot
         .repo
