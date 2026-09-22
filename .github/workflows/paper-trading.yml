@@ -1,0 +1,37 @@
+name: Paper trading plugin
+
+on:
+  pull_request:
+    paths:
+      - 'plugins/paper-trading/**'
+      - '.github/workflows/paper-trading.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'plugins/paper-trading/**'
+      - '.github/workflows/paper-trading.yml'
+
+permissions:
+  contents: read
+
+env:
+  NPM_CONFIG_AUDIT: 'false'
+
+concurrency:
+  group: paper-trading-plugin-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: paper-trading-plugin (pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install test dependency
+        run: python -m pip install 'pytest>=8,<10'
+      - name: Test broker, ledger, process and human-confirmation contracts
+        run: python -m pytest plugins/paper-trading/tests -q
