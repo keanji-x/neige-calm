@@ -3,9 +3,18 @@ import json
 from datetime import datetime
 
 
+def display_cell(value):
+    # Native table cells allow 2048 Unicode code points, including any JSON
+    # punctuation in journal details. Ledger and tool responses stay complete.
+    suffix = '... [truncated]'
+    if isinstance(value, str) and len(value) > 2048:
+        return value[:2048 - len(suffix)] + suffix
+    return value
+
+
 def table(columns, rows, caption):
     return {"columns": [{"key": key, "label": label} for key, label in columns],
-            "rows": [{key: row[key] for key, _label in columns} for row in rows], "caption": caption}
+            "rows": [{key: display_cell(row[key]) for key, _label in columns} for row in rows], "caption": caption}
 
 
 def tables(state):

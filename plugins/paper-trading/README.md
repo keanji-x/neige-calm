@@ -138,6 +138,10 @@ Approved typed settings and proposal history persist in `strategy.sqlite3`
 alongside the existing `ledger.sqlite3`, independently of mutable Recipe and
 Report prose. Preserve both databases and research snapshots.
 
+Native Report cells show at most 2,048 Unicode code points. Long review text and
+journal details end with `[truncated]`; full original values remain in the
+ledger and tool responses. Report rows contain only their declared columns.
+
 ## Explicit legacy migration
 
 For an existing 0.1.0 installation, do not replace or reset its ledger, infer
