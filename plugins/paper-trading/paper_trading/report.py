@@ -43,22 +43,23 @@ def tables(state):
                 {'setting': 'Paper account', 'approved': strategy['account_no'], 'proposed': ''}]
         active, proposal = strategy['active'], strategy['proposal']
         pending = proposal if proposal and (not active or proposal['revision'] != active['revision']) else None
-        for key, label in [('track_id', 'Strategy Track'), ('revision', 'Revision')]:
-            rows.append({'setting': label, 'approved': active[key] if active else '',
-                         'proposed': pending[key] if pending else ''})
-        for key, label in [('research_root', 'Research source'), ('symbols', 'Allowed symbols'),
-                           ('max_order_usd', 'Maximum order (USD)'),
-                           ('max_portfolio_usd', 'Maximum portfolio cost (USD)'),
-                           ('max_trade_risk_usd', 'Maximum initial price risk (USD)'),
-                           ('quote_max_age_seconds', 'Maximum quote age (seconds)'),
-                           ('max_price_deviation_bps', 'Maximum price deviation (bps)')]:
+        rows.append({'setting': 'Revision (short)', 'approved': active['revision'][:12] if active else '',
+                     'proposed': pending['revision'][:12] if pending else ''})
+        for key, label in [('research_root', 'Research'), ('symbols', 'Symbols'),
+                           ('max_order_usd', 'Order limit / USD'),
+                           ('max_portfolio_usd', 'Cost limit / USD'),
+                           ('max_trade_risk_usd', 'Price risk / USD'),
+                           ('quote_max_age_seconds', 'Quote age / sec'),
+                           ('max_price_deviation_bps', 'Deviation / bps')]:
             values = {'setting': label}
             for name, snapshot in [('approved', active), ('proposed', pending)]:
                 value = snapshot['settings'][key] if snapshot else ''
+                if key == 'research_root' and len(value) > 32:
+                    value = value[:8] + '...' + value[-21:]
                 values[name] = ', '.join(value) if isinstance(value, list) else value
             rows.append(values)
         result = {'paper.strategy': table([('setting', 'Setting'), ('approved', 'Approved'),
                                             ('proposed', 'Awaiting approval')], rows,
-                                          'Proposals do not authorize trading; approve the exact revision with the operator.'),
+                                          'Only approved settings authorize trading.'),
                   **result}
     return result

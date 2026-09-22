@@ -2,6 +2,7 @@
 from dataclasses import asdict
 import hashlib
 import json
+import sqlite3
 
 import pytest
 
@@ -132,6 +133,41 @@ def test_account_binding_cannot_change_on_restart(portfolio, account, policy):
     approve(portfolio, policy)
     with pytest.raises(ValueError, match='account binding'):
         Portfolio(portfolio.root, AccountConfig.parse(asdict(account) | {'account_no': 'OTHER'}), portfolio.broker)
+
+
+def test_unapproved_foreign_proposal_does_not_reserve_account(portfolio, policy):
+    portfolio.call('foreign-track', 'paper.strategy', policy)
+    revision = approve(portfolio, policy)
+    assert portfolio.call('track-owner', 'paper.status', {})['strategy']['active']['revision'] == revision
+
+
+def test_order_preview_cannot_cross_policy_revision(portfolio, policy, rig):
+    first = approve(portfolio, policy)
+    second = approve(portfolio, policy | {'max_order_usd': '4500'})
+    assert second != first
+    before = len(rig.calls())
+    with pytest.raises(ValueError, match='changed since preview'):
+        portfolio.operator_confirm('entry-1', {'strategy_revision': first, 'arguments': []}, '731')
+    assert len(rig.calls()) == before
+
+
+def test_policy_snapshot_corruption_is_refused(portfolio, policy):
+    proposal = portfolio.call('track-owner', 'paper.strategy', policy)['strategy']['proposal']
+    with sqlite3.connect(portfolio.root / 'strategy.sqlite3') as db:
+        db.execute('UPDATE proposals SET settings=? WHERE revision=?',
+                   (json.dumps(proposal['settings'] | {'max_trade_risk_usd': '99999'}), proposal['revision']))
+    with pytest.raises(ValueError, match='integrity'):
+        portfolio.approve(proposal['revision'])
+
+
+def test_legacy_import_cannot_invent_or_default_strategy_values(rig, account):
+    portfolio = Portfolio(rig.data, account, rig.broker)
+    values = dict(rig.values)
+    del values['max_trade_risk_usd']
+    with pytest.raises(ValueError, match='fields'):
+        portfolio.import_legacy(values)
+    with pytest.raises(ValueError, match='JSON array'):
+        portfolio.import_legacy(rig.values | {'symbols_json': '{"SOXX.US":true}'})
 
 
 def test_explicit_legacy_import_preserves_history_and_requires_exact_binding(rig, account):
