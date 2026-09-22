@@ -11,7 +11,7 @@
   .cell > h4 { margin: 0 0 var(--space-3); color: var(--text-2); font-size: var(--text-base); font-weight: var(--weight-medium); }
   .one, .two, .three { display: grid; gap: var(--space-5); min-inline-size: 0; }
   .one { grid-template-columns: minmax(0, 1fr); }
-  .two { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); }
+  .two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .three { grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.1fr) minmax(0, 1.4fr); }
   .muted, .snapshot { font-size: var(--text-xs); color: var(--text-3); }
   .snapshot { border-top: 1px solid var(--hairline); padding-block-start: var(--space-3); }
@@ -37,5 +37,5 @@
   .evidence blockquote { margin-inline: 0; padding-inline-start: var(--space-3); border-inline-start: 2px solid var(--hairline-strong); }
   .evidence p { font-size: var(--text-xs); color: var(--text-3); }
   .positive { color: var(--success-text); } .negative { color: var(--error-text); } .warning { color: var(--warn-text); } .neutral { color: var(--text-2); }
-  @container (inline-size < 44rem) { .two, .three { grid-template-columns: minmax(0, 1fr); } }
+  @container (inline-size < 40rem) { .two, .three { grid-template-columns: minmax(0, 1fr); } }
 }

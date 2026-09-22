@@ -73,6 +73,9 @@
     min-inline-size: 0;
   }
 
+  /* Native grids use the free trailing gutter; the outline and prose measure stay intact. */
+  .nativeBlock { grid-column: 2 / -1; }
+
   /*
    * A block that rendered nothing takes no row — and neither does anything
    * else on that row. The case is a document carrying its own maintenance
@@ -639,6 +642,8 @@
       grid-column: 1;
       max-inline-size: 100%;
     }
+
+    .nativeBlock { grid-column: 1; }
 
     .sidenote {
       display: none;

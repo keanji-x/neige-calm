@@ -34,6 +34,10 @@ nor thresholds imply investment judgments in the renderer.
 - App/Recipe author: business calculations, semantic labels, evidence, snapshot
   identity, and explicit composition in a `neige-block view` fence.
 
+Native grids may use the document's trailing gutter while preserving the outline
+gutter and ordinary prose measure. They never overlap the separate conversation
+column. Narrow containers stack; the existing wide Dialog remains available.
+
 The coordinating owner approves this additive report contract and its new
 native renderer. The only frozen-inventory change is registration of two new
 leaf owners (`ui/data-visualization`, `tools/report-view`); existing ownership,
@@ -45,7 +49,12 @@ interface or global style change is requested. The commit records the
 
 This is a native reading/inspection Demo, not an order or scheduling service.
 Chart dataset selection, card/list choice and evidence disclosure are local
-presentation only. Do not imitate persistence with browser-only decisions.
+presentation only. The report owner holds this inspection state and supplies
+controlled props to both inline and wide renderers, including the selected
+scenario, sample, series, record, and evidence disclosures. Expanding or closing
+must not reset which facts the reader is inspecting. Measured-zero distributions
+retain their categories and totals; their percentages are undefined, not missing
+observations. Do not imitate persistence with browser-only decisions.
 Editing state uses existing report authoring/CAS, not a new embedded action
 protocol. Durable trading-thesis workflow enforcement remains App responsibility.
 

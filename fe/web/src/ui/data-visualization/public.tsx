@@ -1,4 +1,3 @@
-import { useState } from '../state/public.ts';
 import styles from './visualization.module.css';
 
 export type ValueDisplay =
@@ -10,6 +9,7 @@ export type PlotDataset = { id: string; label: string; unit: string; style: 'lin
   series: readonly { id: string; label: string; palette: number }[];
   points: readonly { date: string; values: readonly (number | null)[] }[] };
 export type DistributionDatum = { id: string; label: string; value: number; palette: number };
+export type PlotSelection = { datasetId: string; selected: string | null; sample: number | null };
 
 function number(value: number, decimals = 2) {
   return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: decimals }).format(value);
@@ -30,32 +30,34 @@ export function MetricGroup({ items }: { items: readonly MetricDatum[] }) {
   </div>)}</dl>;
 }
 
-export function DistributionChart({ label, unit, slices, emptyText }: {
+export function DistributionChart({ label, unit, slices, emptyText, selected, onSelect }: {
   label: string; unit: string; slices: readonly DistributionDatum[]; emptyText: string;
+  selected: string | null; onSelect: (id: string | null) => void;
 }) {
-  const [selected, setSelected] = useState<string | null>(null);
   const total = slices.reduce((sum, slice) => sum + slice.value, 0);
   const current = slices.find(slice => slice.id === selected);
-  if (total === 0) return <p className={styles.empty}>{emptyText}</p>;
+  if (slices.length === 0) return <p className={styles.empty}>{emptyText}</p>;
+  const percentage = (value: number) => total === 0 ? '—' : `${number(value / total * 100, 1)}%`;
   let cumulative = 0;
   const circumference = 2 * Math.PI * 50;
   return <div className={styles.distribution}>
     <svg className={styles.donut} viewBox="0 0 150 150" role="img"
-      aria-label={`${label}: ${slices.map(s => `${s.label} ${number(s.value / total * 100, 1)}%`).join(', ')}`}>
+      aria-label={`${label}: ${slices.map(s => `${s.label} ${s.value} ${unit}, ${percentage(s.value)}`).join(', ')}`}>
       {slices.map(slice => {
-        const start = cumulative; cumulative += slice.value / total;
+        const ratio = total === 0 ? 0 : slice.value / total;
+        const start = cumulative; cumulative += ratio;
         return <circle key={slice.id} className={palette(slice.palette)} cx="75" cy="75" r="50"
           fill="none" stroke="currentColor" strokeWidth="18" transform="rotate(-90 75 75)"
-          strokeDasharray={`${slice.value / total * circumference} ${circumference}`}
+          strokeDasharray={`${ratio * circumference} ${circumference}`}
           strokeDashoffset={-start * circumference} opacity={current && current.id !== slice.id ? 0.25 : 1} />;
       })}
-      <text x="75" y="73" textAnchor="middle" className={styles.donutValue}>{current ? `${number(current.value / total * 100, 1)}%` : '100%'}</text>
+      <text x="75" y="73" textAnchor="middle" className={styles.donutValue}>{percentage(current?.value ?? total)}</text>
       <text x="75" y="94" textAnchor="middle" className={styles.donutLabel}>占比</text>
     </svg>
     <div className={styles.legend}>{slices.map(slice => <button key={slice.id} type="button"
-      aria-pressed={selected === slice.id} onClick={() => setSelected(selected === slice.id ? null : slice.id)}>
+      aria-pressed={selected === slice.id} onClick={() => onSelect(selected === slice.id ? null : slice.id)}>
       <span className={`${styles.swatch} ${palette(slice.palette)}`} aria-hidden="true" />
-      {slice.label}<span>{number(slice.value / total * 100, 1)}%</span>
+      {slice.label}<span>{percentage(slice.value)}</span>
     </button>)}</div>
     <p className={styles.detail}>{current?.label ?? label} · {number(current?.value ?? total)} {unit}</p>
   </div>;
@@ -77,12 +79,11 @@ export function linePaths(points: readonly { x: number; y: number | null }[]): s
   return paths;
 }
 
-export function TimeSeriesChart({ label, datasets, emptyText }: {
+export function TimeSeriesChart({ label, datasets, emptyText, selection, onSelection }: {
   label: string; datasets: readonly PlotDataset[]; emptyText: string;
+  selection: PlotSelection; onSelection: (selection: PlotSelection) => void;
 }) {
-  const [datasetId, setDatasetId] = useState(datasets[0]?.id ?? '');
-  const [selected, setSelected] = useState<string | null>(null);
-  const [sample, setSample] = useState<number | null>(null);
+  const { datasetId, selected, sample } = selection;
   const data = datasets.find(d => d.id === datasetId) ?? datasets[0];
   if (!data) return <p className={styles.empty}>{emptyText}</p>;
   const points = data.points;
@@ -104,7 +105,7 @@ export function TimeSeriesChart({ label, datasets, emptyText }: {
   const focused = points[Math.min(sample ?? points.length - 1, points.length - 1)];
   return <div className={styles.root}>
     {datasets.length > 1 && <div className={styles.tabs} aria-label={`${label} 数据视图`}>{datasets.map(d =>
-      <button type="button" key={d.id} aria-pressed={data.id === d.id} onClick={() => { setDatasetId(d.id); setSample(null); setSelected(null); }}>{d.label}</button>)}</div>}
+      <button type="button" key={d.id} aria-pressed={data.id === d.id} onClick={() => onSelection({ datasetId: d.id, sample: null, selected: null })}>{d.label}</button>)}</div>}
     <p className={styles.detail}>{data.unit}</p>
     {!hasData ? <p className={styles.empty}>{emptyText}</p> : <>
       <div className={styles.plot}>
@@ -131,13 +132,13 @@ export function TimeSeriesChart({ label, datasets, emptyText }: {
         <div className={styles.xAxis}><span>{points[0]?.date}</span><span>{points.at(-1)?.date}</span></div>
       </div>
       <div className={styles.legend}>{data.series.map((series, i) => <button key={series.id} type="button"
-        aria-pressed={selected === series.id} onClick={() => setSelected(selected === series.id ? null : series.id)}>
+        aria-pressed={selected === series.id} onClick={() => onSelection({ ...selection, selected: selected === series.id ? null : series.id })}>
         <span className={`${styles.swatch} ${palette(series.palette)}`} aria-hidden="true" />{series.label}
         <span>{focused?.values[i] == null ? '未知' : number(focused.values[i])} {data.unit}</span>
       </button>)}</div>
       <label className={styles.sample}><span>{focused?.date}</span><input type="range" aria-label={`${label} 观察日期`}
         min={0} max={Math.max(0, points.length - 1)} value={sample ?? points.length - 1}
-        onChange={e => setSample(Number(e.target.value))} /></label>
+        onChange={e => onSelection({ ...selection, sample: Number(e.target.value) })} /></label>
     </>}
   </div>;
 }

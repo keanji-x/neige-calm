@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it } from 'vitest';
 import { nativeViewPayloadSchema } from '../../../../../core/domain/report-view.ts';
 import { NativeReportView } from './public.tsx';
-import { linePaths } from '../../../ui/data-visualization/public.tsx';
+import { DistributionChart, linePaths } from '../../../ui/data-visualization/public.tsx';
 
 afterEach(cleanup);
 const fixture = JSON.parse(readFileSync(resolve(process.cwd(), '../test-data/native-view-v1.json'), 'utf8')) as { valid: unknown };
@@ -43,4 +43,48 @@ it('opens the existing native wide dialog and restores the opener', async () => 
 
 it('keeps missing points as gaps and does not discard a real zero', () => {
   expect(linePaths([{ x: 0, y: 1 }, { x: 1, y: null }, { x: 2, y: 0 }])).toEqual(['M0,1', 'M2,0']);
+});
+
+it('preserves inspection state in both directions across wide reading', async () => {
+  render(<NativeReportView payload={payload} />);
+  await userEvent.click(screen.getByRole('button', { name: '合计' }));
+  fireEvent.change(screen.getByRole('slider'), { target: { value: '0' } });
+  await userEvent.click(screen.getByRole('button', { name: '队列' }));
+  await userEvent.click(screen.getByRole('button', { name: '查看证据' }));
+  const evidence = screen.getByText('e1').closest('details')!;
+  await userEvent.click(evidence.querySelector('summary')!);
+  await userEvent.click(screen.getByRole('button', { name: '展开 运营概览' }));
+  const dialog = within(screen.getByRole('dialog'));
+  expect(dialog.getByRole('button', { name: '合计' }).getAttribute('aria-pressed')).toBe('true');
+  expect(dialog.getByRole<HTMLInputElement>('slider').value).toBe('0');
+  expect(dialog.getByRole('button', { name: '队列' }).getAttribute('aria-pressed')).toBe('true');
+  expect(dialog.getByText('e1').closest('details')?.open).toBe(true);
+  await userEvent.click(dialog.getByRole('button', { name: '独立序列' }));
+  await userEvent.keyboard('{Escape}');
+  expect(screen.getByRole('button', { name: '独立序列' }).getAttribute('aria-pressed')).toBe('true');
+  expect(screen.getByText('e1').closest('details')?.open).toBe(true);
+});
+
+it('preserves the selected research scenario and evidence rather than reverting to r1', async () => {
+  const example = nativeViewPayloadSchema.parse(JSON.parse(readFileSync(resolve(process.cwd(), '../plugins/paper-trading/examples/native-demo.json'), 'utf8')));
+  render(<NativeReportView payload={example} />);
+  await userEvent.click(screen.getByRole('button', { name: 'r2 · 预设反证' }));
+  const article = screen.getByText('支持减弱').closest('article')!;
+  await userEvent.click(within(article).getByRole('button', { name: '查看证据' }));
+  await userEvent.click(screen.getByText('E04').closest('summary')!);
+  await userEvent.click(screen.getByRole('button', { name: '展开 低频投资组合' }));
+  const dialog = within(screen.getByRole('dialog'));
+  expect(dialog.getByRole('button', { name: 'r2 · 预设反证' }).getAttribute('aria-pressed')).toBe('true');
+  expect(dialog.getByText('支持减弱')).toBeTruthy();
+  expect(dialog.getByText('E04').closest('details')?.open).toBe(true);
+  await userEvent.keyboard('{Escape}');
+  expect(screen.getByText('E04').closest('details')?.open).toBe(true);
+});
+
+it('shows measured zero categories without inventing percentages or missing data', () => {
+  render(<DistributionChart label="计数" unit="个" slices={[{ id: 'a', label: '已完成', value: 0, palette: 1 }]} emptyText="未取得数据" selected={null} onSelect={() => {}} />);
+  expect(screen.queryByText('未取得数据')).toBeNull();
+  expect(screen.getByRole('button', { name: /已完成/ }).textContent).toContain('—');
+  expect(screen.getByText('计数 · 0 个')).toBeTruthy();
+  expect(document.body.textContent).not.toMatch(/NaN|100%/);
 });

@@ -4,8 +4,8 @@
   "description": "全部为虚构数据。两个冻结场景用于展示与阅读评审；无券商连接、交易或调度权限。资料与处理状态分开。",
   "snapshot": {
     "id": "portfolio-demo-v1",
-    "observedAt": 1790037000000,
-    "producedAt": 1790037000000
+    "observedAt": 1790123400000,
+    "producedAt": 1790123400000
   },
   "rows": [
     {
@@ -96,7 +96,7 @@
                 {
                   "id": "portfolio",
                   "label": "组合",
-                  "palette": 1
+                  "palette": 5
                 }
               ],
               "points": [
@@ -195,7 +195,7 @@
                 {
                   "id": "portfolio",
                   "label": "组合",
-                  "palette": 1
+                  "palette": 5
                 },
                 {
                   "id": "benchmark",
@@ -313,7 +313,7 @@
                 {
                   "id": "portfolio",
                   "label": "组合",
-                  "palette": 1
+                  "palette": 5
                 }
               ],
               "points": [
@@ -364,7 +364,7 @@
                 {
                   "id": "portfolio",
                   "label": "组合",
-                  "palette": 1
+                  "palette": 5
                 },
                 {
                   "id": "benchmark",
@@ -437,25 +437,25 @@
               "id": "north",
               "label": "北辰算力",
               "value": 335520,
-              "palette": 1
+              "palette": 5
             },
             {
               "id": "clear",
               "label": "澄明医疗",
               "value": 276300,
-              "palette": 2
+              "palette": 6
             },
             {
               "id": "river",
               "label": "远川工业",
               "value": 272800,
-              "palette": 3
+              "palette": 2
             },
             {
               "id": "cash",
               "label": "现金",
               "value": 200000,
-              "palette": 4
+              "palette": 3
             }
           ]
         },
@@ -475,22 +475,22 @@
                 {
                   "id": "north",
                   "label": "北辰算力",
-                  "palette": 1
+                  "palette": 5
                 },
                 {
                   "id": "clear",
                   "label": "澄明医疗",
-                  "palette": 2
+                  "palette": 6
                 },
                 {
                   "id": "river",
                   "label": "远川工业",
-                  "palette": 3
+                  "palette": 2
                 },
                 {
                   "id": "cash",
                   "label": "现金",
-                  "palette": 4
+                  "palette": 3
                 }
               ],
               "points": [
@@ -631,22 +631,22 @@
                 {
                   "id": "north",
                   "label": "北辰算力",
-                  "palette": 1
+                  "palette": 5
                 },
                 {
                   "id": "clear",
                   "label": "澄明医疗",
-                  "palette": 2
+                  "palette": 6
                 },
                 {
                   "id": "river",
                   "label": "远川工业",
-                  "palette": 3
+                  "palette": 2
                 },
                 {
                   "id": "cash",
                   "label": "现金",
-                  "palette": 4
+                  "palette": 3
                 }
               ],
               "points": [
@@ -809,25 +809,25 @@
             ],
             "rows": [
               {
-                "name": "北辰算力 / NTH.SIM",
+                "name": "北辰算力",
                 "price": "186.40",
                 "change": "+2.08%",
-                "pnl": "$+6,840"
+                "pnl": "+$6,840"
               },
               {
-                "name": "澄明医疗 / CLR.SIM",
+                "name": "澄明医疗",
                 "price": "92.10",
                 "change": "-1.29%",
-                "pnl": "$-3,600"
+                "pnl": "-$3,600"
               },
               {
-                "name": "远川工业 / RIV.SIM",
+                "name": "远川工业",
                 "price": "68.20",
                 "change": "+1.04%",
-                "pnl": "$+2,800"
+                "pnl": "+$2,800"
               },
               {
-                "name": "现金 / USD",
+                "name": "现金",
                 "price": "—",
                 "change": "—",
                 "pnl": "—"
@@ -878,6 +878,10 @@
                     {
                       "label": "依据",
                       "value": "演示约束 v1"
+                    },
+                    {
+                      "label": "研究截止（模拟）",
+                      "value": "2026-09-22 08:30 Asia/Shanghai"
                     }
                   ],
                   "sections": [
@@ -904,6 +908,10 @@
                     {
                       "label": "时间",
                       "body": "登记 2026.06.30；核验期限 2026.09.22。"
+                    },
+                    {
+                      "label": "下次计划核验（模拟）",
+                      "body": "2026.09.23"
                     },
                     {
                       "label": "关联持仓",
@@ -946,6 +954,10 @@
                     {
                       "label": "依据",
                       "value": "预注册 v1"
+                    },
+                    {
+                      "label": "研究截止（模拟）",
+                      "value": "2026-09-22 08:30 Asia/Shanghai"
                     }
                   ],
                   "sections": [
@@ -972,6 +984,10 @@
                     {
                       "label": "时间",
                       "body": "登记 2026.08.18；核验期限 2026.09.20。"
+                    },
+                    {
+                      "label": "下次计划核验（模拟）",
+                      "body": "2026.09.23"
                     },
                     {
                       "label": "关联订单",
@@ -1014,6 +1030,10 @@
                     {
                       "label": "依据",
                       "value": "预注册 v1"
+                    },
+                    {
+                      "label": "研究截止（模拟）",
+                      "value": "2026-09-22 08:30 Asia/Shanghai"
                     }
                   ],
                   "sections": [
@@ -1040,6 +1060,10 @@
                     {
                       "label": "时间",
                       "body": "登记 2026.09.01；核验期限 2026.10.31。"
+                    },
+                    {
+                      "label": "下次计划核验（模拟）",
+                      "body": "2026.09.23"
                     },
                     {
                       "label": "关联订单",
@@ -1082,6 +1106,10 @@
                     {
                       "label": "依据",
                       "value": "预注册 v1"
+                    },
+                    {
+                      "label": "研究截止（模拟）",
+                      "value": "2026-09-22 08:30 Asia/Shanghai"
                     }
                   ],
                   "sections": [
@@ -1108,6 +1136,10 @@
                     {
                       "label": "时间",
                       "body": "登记 2026.09.01；核验期限 2026.10.29。"
+                    },
+                    {
+                      "label": "下次计划核验（模拟）",
+                      "body": "2026.10.29"
                     },
                     {
                       "label": "关联订单",
@@ -1156,6 +1188,10 @@
                     {
                       "label": "依据",
                       "value": "预注册 v1"
+                    },
+                    {
+                      "label": "研究截止（模拟）",
+                      "value": "2026-09-23 08:30 Asia/Shanghai (simulated future scenario)"
                     }
                   ],
                   "sections": [
@@ -1182,6 +1218,10 @@
                     {
                       "label": "时间",
                       "body": "登记 2026.09.01；核验期限 2026.10.31。"
+                    },
+                    {
+                      "label": "下次计划核验（模拟）",
+                      "body": "2026.09.24"
                     },
                     {
                       "label": "关联订单",
@@ -1232,6 +1272,10 @@
                     {
                       "label": "依据",
                       "value": "演示约束 v1"
+                    },
+                    {
+                      "label": "研究截止（模拟）",
+                      "value": "2026-09-23 08:30 Asia/Shanghai (simulated future scenario)"
                     }
                   ],
                   "sections": [
@@ -1258,6 +1302,10 @@
                     {
                       "label": "时间",
                       "body": "登记 2026.06.30；核验期限 2026.09.22。"
+                    },
+                    {
+                      "label": "下次计划核验（模拟）",
+                      "body": "2026.09.24"
                     },
                     {
                       "label": "关联持仓",
@@ -1300,6 +1348,10 @@
                     {
                       "label": "依据",
                       "value": "预注册 v1"
+                    },
+                    {
+                      "label": "研究截止（模拟）",
+                      "value": "2026-09-23 08:30 Asia/Shanghai (simulated future scenario)"
                     }
                   ],
                   "sections": [
@@ -1326,6 +1378,10 @@
                     {
                       "label": "时间",
                       "body": "登记 2026.08.18；核验期限 2026.09.20。"
+                    },
+                    {
+                      "label": "下次计划核验（模拟）",
+                      "body": "2026.09.24"
                     },
                     {
                       "label": "关联订单",
@@ -1368,6 +1424,10 @@
                     {
                       "label": "依据",
                       "value": "预注册 v1"
+                    },
+                    {
+                      "label": "研究截止（模拟）",
+                      "value": "2026-09-23 08:30 Asia/Shanghai (simulated future scenario)"
                     }
                   ],
                   "sections": [
@@ -1394,6 +1454,10 @@
                     {
                       "label": "时间",
                       "body": "登记 2026.09.01；核验期限 2026.10.29。"
+                    },
+                    {
+                      "label": "下次计划核验（模拟）",
+                      "body": "2026.10.29"
                     },
                     {
                       "label": "关联订单",

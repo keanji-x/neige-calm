@@ -187,7 +187,7 @@ function BlockSlot({
 }) {
   return (
     <div className={styles.row}>
-      <div className={styles.block} id={block.id}>
+      <div className={block.kind === 'view' ? `${styles.block} ${styles.nativeBlock}` : styles.block} id={block.id}>
         {block.kind === 'prose'
           ? <ProseBlock
               markdown={block.payload.markdown}
