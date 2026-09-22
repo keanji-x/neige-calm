@@ -25,7 +25,7 @@ async fn a_fresh_template_can_report_repository_mismatch_without_tasks_or_ratifi
     .await
     .unwrap();
     assert!(
-        read["body"]
+        read["text"]
             .as_str()
             .unwrap()
             .contains("In draft or planning")
