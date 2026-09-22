@@ -225,7 +225,7 @@ async fn old_create_and_move_shapes_return_self_healing_invalid_params() {
 }
 
 #[tokio::test]
-async fn kinds_returns_all_six_schemas() {
+async fn kinds_returns_all_supported_schemas() {
     let boot = boot().await;
     let out = call_tool(
         &boot,

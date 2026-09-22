@@ -227,6 +227,65 @@ async fn live_view_does_not_expand_the_table_contract() {
 }
 
 #[tokio::test]
+async fn live_view_table_hydration_preserves_large_existing_overlay() {
+    let boot = boot().await;
+    let created = create(
+        &boot,
+        "table",
+        json!({"source": "neige://plugin/operations/health"}),
+    )
+    .await;
+    let table = json!({"columns": [{"key": "a", "label": "A"}, {"key": "b", "label": "B"}],
+        "rows": vec![json!({"a": "x".repeat(2048), "b": "y".repeat(2048)}); 65]});
+    assert!(serde_json::to_vec(&table).unwrap().len() > 256 * 1024);
+    publish(
+        &boot,
+        "operations",
+        "track",
+        boot.track_id.as_str(),
+        "health",
+        table.clone(),
+    )
+    .await;
+    let full = read(
+        &boot,
+        json!({"resolve": {created["id"].as_str().unwrap(): "full"}}),
+    )
+    .await;
+    assert_eq!(resolved(&full, &created["id"])["status"], "ok");
+    assert_eq!(resolved(&full, &created["id"])["table"], table);
+}
+
+#[tokio::test]
+async fn live_view_table_hydration_preserves_nullable_overlay_fields() {
+    let boot = boot().await;
+    let created = create(
+        &boot,
+        "table",
+        json!({"source": "neige://plugin/operations/health"}),
+    )
+    .await;
+    let table = json!({"columns": [{"key": "a", "label": "A", "align": null}],
+        "rows": [{"a": 1}], "caption": null, "highlight": null});
+    publish(
+        &boot,
+        "operations",
+        "track",
+        boot.track_id.as_str(),
+        "health",
+        table.clone(),
+    )
+    .await;
+    let full = read(
+        &boot,
+        json!({"resolve": {created["id"].as_str().unwrap(): "full"}}),
+    )
+    .await;
+    assert_eq!(resolved(&full, &created["id"])["status"], "ok");
+    assert_eq!(resolved(&full, &created["id"])["table"], table);
+}
+
+#[tokio::test]
 async fn live_view_invalid_reference_cannot_mutate_report() {
     let boot = boot().await;
     let before = read(&boot, json!({})).await;

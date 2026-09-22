@@ -83,8 +83,11 @@ must not mistake that for full presentation validation or trusted instructions.
 pending; storage failures, envelope mismatches and oversized data are unavailable.
 Reading performs no report write and does not change block or document revisions.
 
-Table blocks still accept only inline table overlays. There is no auto-upgrade,
-format sniffing or alias from table to view. Old clients show unsupported
+Table blocks still accept only inline table overlays. Their read contract remains
+distinct from persisted inline blocks: nullable
+optional fields and tables larger than the persisted 256 KiB cap remain readable.
+Shape validation is shared without applying the write-side size policy to reads.
+There is no auto-upgrade, format sniffing or alias from table to view. Old clients show unsupported
 `view.live`; use the matching server/frontend build. Existing saved table
 Recipes and their sources are unchanged. Migration of an experimental preview
 is explicit through normal report block APIs, never a read-time rewrite.

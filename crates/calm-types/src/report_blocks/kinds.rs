@@ -538,6 +538,41 @@ fn validate_table(map: &Map<String, Value>, errors: &mut Vec<String>) {
         validate_live_table(map, errors);
         return;
     }
+    validate_inline_table(map, errors, TableContract::Persisted);
+}
+
+#[derive(Clone, Copy)]
+enum TableContract {
+    Persisted,
+    Overlay,
+}
+
+impl TableContract {
+    fn accepts_null(self, value: &Value) -> bool {
+        matches!(self, Self::Overlay) && value.is_null()
+    }
+}
+
+/// Read-side table shape: nullable optional fields and no persisted-block byte cap.
+/// The caller retains the original payload; validation never normalizes it.
+pub fn validate_inline_table_overlay(payload: &Value) -> Result<(), String> {
+    let Some(map) = payload.as_object() else {
+        return Err("table overlay must be an object".into());
+    };
+    let mut errors = Vec::new();
+    validate_inline_table(map, &mut errors, TableContract::Overlay);
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+fn validate_inline_table(
+    map: &Map<String, Value>,
+    errors: &mut Vec<String>,
+    contract: TableContract,
+) {
     reject_unknown(map, &["columns", "rows", "caption", "highlight"], errors);
     let mut column_keys: Vec<&str> = Vec::new();
     match map.get("columns") {
@@ -578,6 +613,7 @@ fn validate_table(map: &Map<String, Value>, errors: &mut Vec<String>) {
                     _ => errors.push(format!("columns[{index}].label: required string")),
                 }
                 if let Some(align) = column.get("align")
+                    && !contract.accepts_null(align)
                     && !matches!(align.as_str(), Some("left" | "right"))
                 {
                     errors.push(format!(
@@ -623,8 +659,14 @@ fn validate_table(map: &Map<String, Value>, errors: &mut Vec<String>) {
         }
         Some(_) | None => errors.push("rows: required array of row objects".into()),
     }
-    optional_string(map, "caption", errors);
-    optional_string(map, "highlight", errors);
+    for field in ["caption", "highlight"] {
+        if !map
+            .get(field)
+            .is_some_and(|value| contract.accepts_null(value))
+        {
+            optional_string(map, field, errors);
+        }
+    }
 }
 
 fn validate_app(map: &Map<String, Value>, errors: &mut Vec<String>) {

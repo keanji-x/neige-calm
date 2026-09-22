@@ -1,6 +1,29 @@
 use super::*;
 
 #[test]
+fn inline_table_overlay_preserves_read_contract_without_relaxing_writes() {
+    let nullable = json!({"columns": [{"key": "a", "label": "A", "align": null}],
+        "rows": [{"a": null}], "caption": null, "highlight": null});
+    assert!(validate_inline_table_overlay(&nullable).is_ok());
+    assert!(validate_payload(KIND_TABLE, &nullable).is_err());
+    let large = json!({"columns": [{"key": "a", "label": "A"}, {"key": "b", "label": "B"}],
+        "rows": vec![json!({"a": "x".repeat(2048), "b": "y".repeat(2048)}); 65]});
+    assert!(validate_inline_table_overlay(&large).is_ok());
+    assert!(
+        validate_payload(KIND_TABLE, &large)
+            .unwrap_err()
+            .contains("payload too large")
+    );
+    for invalid in [
+        json!({"source": "neige://plugin/x/y"}),
+        json!({"columns": [{"key": "a", "label": "A"}], "rows": [{"other": 1}]}),
+        json!({"columns": [{"key": "a", "label": "A"}], "rows": [], "view": "overview"}),
+    ] {
+        assert!(validate_inline_table_overlay(&invalid).is_err());
+    }
+}
+
+#[test]
 fn live_view_reference_is_explicit_bounded_and_round_trips() {
     for view in ["overview", "activity", "cards", "details"] {
         let payload =

@@ -12,6 +12,7 @@ use crate::mcp_server::tool_visibility::{TrackPluginScope, plugin_scope_for_trac
 use crate::report_series::hydrate::hydrate_chart_series;
 use crate::report_series::{Detail, resolved_at_text};
 use calm_types::report_blocks::kinds::LIVE_SOURCE_PREFIX;
+use calm_types::report_blocks::kinds::validate_inline_table_overlay;
 use calm_types::report_blocks::{
     KIND_CHART_SERIES, KIND_LIVE_VIEW, KIND_TABLE, MAX_LIVE_VIEW_BYTES, validate_payload,
 };
@@ -150,9 +151,7 @@ fn hydrate_overlay(
         return hydrate_live_view(block, overlay, mode);
     }
     // A live reference, mixed view/table object, or malformed row is not an inline table.
-    if overlay.payload.get("source").is_some()
-        || validate_payload(KIND_TABLE, &overlay.payload).is_err()
-    {
+    if validate_inline_table_overlay(&overlay.payload).is_err() {
         return json!({ "status": "unavailable", "reason": "overlay payload is not an inline table",
                        "resolved_at": resolved_at_text(overlay.updated_at) });
     }
