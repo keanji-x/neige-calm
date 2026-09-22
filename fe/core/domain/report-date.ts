@@ -21,4 +21,3 @@ export function isCalendarDate(text: string): boolean {
   const last = daysInMonth(year, month);
   return last !== null && day >= 1 && day <= last;
 }
-

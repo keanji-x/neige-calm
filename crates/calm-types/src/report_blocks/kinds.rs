@@ -605,6 +605,23 @@ fn validate_inline_table(
                 }
                 match column.get("key") {
                     Some(Value::String(key)) if !key.is_empty() => {
+                        if matches!(
+                            key.as_str(),
+                            "__proto__"
+                                | "constructor"
+                                | "__defineGetter__"
+                                | "__defineSetter__"
+                                | "hasOwnProperty"
+                                | "__lookupGetter__"
+                                | "__lookupSetter__"
+                                | "isPrototypeOf"
+                                | "propertyIsEnumerable"
+                                | "toString"
+                                | "valueOf"
+                                | "toLocaleString"
+                        ) {
+                            errors.push(format!("columns[{index}].key: reserved object key"));
+                        }
                         if column_keys.contains(&key.as_str()) {
                             errors.push(format!("columns[{index}].key: duplicate key `{key}`"));
                         }

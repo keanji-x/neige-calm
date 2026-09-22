@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { isCalendarDate } from './report-date.js';
-import { inlineTableBlockPayloadSchema } from './report-table.js';
+import { inlineTableBlockPayloadSchema, rejectReservedObjectKeys } from './report-table.js';
 
 const text = (limit = 2048) => z.string().refine(v => [...v].length <= limit, 'Text limit exceeded').meta({ maxLength: limit });
 const id = z.string().min(1).max(100).regex(/^[A-Za-z0-9._-]+$/);
@@ -17,6 +17,47 @@ const value = z.discriminatedUnion('state', [
 ]);
 const metric = z.strictObject({ id, label: text(120), value, detail: text(500), tone, emphasis: z.enum(['primary', 'normal']) });
 const unique = (items: readonly { id: string }[]) => new Set(items.map(item => item.id)).size === items.length;
+
+function utf8Bytes(text: string): number {
+  let bytes = 0;
+  for (const char of text) {
+    const point = char.codePointAt(0)!;
+    bytes += point < 128 ? 1 : point < 2048 ? 2 : point < 65536 ? 3 : 4;
+  }
+  return bytes;
+}
+
+function scalarBytes(value: unknown): number {
+  if (typeof value !== 'number') return utf8Bytes(JSON.stringify(value) ?? 'null');
+  if (value === 0) return 1;
+  const scientific = value.toExponential();
+  const exponent = Number(scientific.split('e')[1]);
+  // serde_json's float formatter uses ordinary notation for exponents -5..15.
+  const floatBytes = exponent >= -5 && exponent <= 15
+    ? String(value).length + (Number.isInteger(value) ? 2 : 0)
+    : scientific.length;
+  return Number.isInteger(value) ? Math.min(value.toFixed(0).length, floatBytes) : floatBytes;
+}
+
+/** Kernel pretty layout, including inline scalar arrays. Number spellings lost in JSON
+ * decoding (1 versus 1.0, signed zero) use a lower bound: exact admission stays in Rust. */
+export function nativeViewCanonicalSizeLowerBound(value: unknown, depth = 0): number {
+  if (value === null || typeof value !== 'object') return scalarBytes(value);
+  if (Array.isArray(value)) {
+    if (value.length === 0) return 2;
+    if (value.every(item => item === null || typeof item !== 'object')) {
+      return 2 + (value.length - 1) * 2 + value.reduce<number>((sum, item) => sum + scalarBytes(item), 0);
+    }
+    return 3 + depth * 2 + value.reduce<number>((sum, item, index) => sum + (depth + 1) * 2
+      + nativeViewCanonicalSizeLowerBound(item, depth + 1) + (index + 1 === value.length ? 1 : 2), 0);
+  }
+  const entries = Object.entries(value).filter(([, item]) => item !== undefined);
+  if (entries.length === 0) return 2;
+  return 3 + depth * 2 + entries.reduce((sum, [key, item], index) => sum + (depth + 1) * 2
+    + scalarBytes(key) + 2 + nativeViewCanonicalSizeLowerBound(item, depth + 1)
+    + (index + 1 === entries.length ? 1 : 2), 0);
+}
+
 const series = z.strictObject({ id, label: text(120), palette });
 const dataset = z.strictObject({ id, label: text(120), unit: text(32), style: z.enum(['line', 'stacked']),
   series: z.array(series).min(1).max(6).refine(unique, 'Duplicate series'),
@@ -47,7 +88,7 @@ export const nativeComponentSchema = z.discriminatedUnion('kind', [
     datasets: z.array(z.strictObject({ id, label: text(120), items: z.array(record).max(50).refine(unique, 'Duplicate record') }))
       .min(1).max(4).refine(unique, 'Duplicate dataset') }),
 ]);
-export const nativeViewPayloadSchema = z.strictObject({
+export const nativeViewPayloadSchema = z.unknown().superRefine(rejectReservedObjectKeys).pipe(z.strictObject({
   version: z.literal(1), title: text(200), description: text(500),
   snapshot: z.strictObject({ id, observedAt: z.number().int().min(0).max(253402300799999), producedAt: z.number().int().min(0).max(253402300799999) }),
   rows: z.array(z.strictObject({ id, title: text(200), layout: z.enum(['one', 'two', 'three']),
@@ -55,14 +96,8 @@ export const nativeViewPayloadSchema = z.strictObject({
   }).refine(row => row.cells.length === ({ one: 1, two: 2, three: 3 })[row.layout], 'Layout must match cell count')).min(1).max(6)
     .refine(unique, 'Duplicate row'),
 }).refine(view => unique(view.rows.flatMap(row => row.cells)), 'Duplicate component')
-  .refine(view => {
-    let bytes = 0;
-    for (const char of JSON.stringify(view)) {
-      const point = char.codePointAt(0)!;
-      bytes += point < 128 ? 1 : point < 2048 ? 2 : point < 65536 ? 3 : 4;
-    }
-    return bytes <= 256 * 1024;
-  }, 'View exceeds 256 KiB');
+  .refine(view => nativeViewCanonicalSizeLowerBound(view) <= 256 * 1024,
+    'View exceeds the 256 KiB canonical report budget'));
 
 export type NativeViewPayload = z.infer<typeof nativeViewPayloadSchema>;
 export type NativeComponent = z.infer<typeof nativeComponentSchema>;

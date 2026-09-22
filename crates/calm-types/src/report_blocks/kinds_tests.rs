@@ -1,6 +1,36 @@
 use super::*;
 
 #[test]
+fn inline_tables_reject_prototype_keys_on_writes_and_overlay_reads() {
+    for key in [
+        "__proto__",
+        "constructor",
+        "__defineGetter__",
+        "__defineSetter__",
+        "hasOwnProperty",
+        "__lookupGetter__",
+        "__lookupSetter__",
+        "isPrototypeOf",
+        "propertyIsEnumerable",
+        "toString",
+        "valueOf",
+        "toLocaleString",
+    ] {
+        for rows in [json!([{}]), json!([{key: "evidence"}])] {
+            let table = json!({"columns": [{"key": key, "label": "Value"}], "rows": rows});
+            assert!(
+                validate_payload(KIND_TABLE, &table).is_err(),
+                "write accepted {key}"
+            );
+            assert!(
+                validate_inline_table_overlay(&table).is_err(),
+                "overlay accepted {key}"
+            );
+        }
+    }
+}
+
+#[test]
 fn inline_table_overlay_preserves_read_contract_without_relaxing_writes() {
     let nullable = json!({"columns": [{"key": "a", "label": "A", "align": null}],
         "rows": [{"a": null}], "caption": null, "highlight": null});

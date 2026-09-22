@@ -455,6 +455,7 @@
                               "key": {
                                 "type": "string",
                                 "minLength": 1,
+                                "pattern": "^(?!(?:__proto__|constructor|__defineGetter__|__defineSetter__|hasOwnProperty|__lookupGetter__|__lookupSetter__|isPrototypeOf|propertyIsEnumerable|toString|valueOf|toLocaleString)$)",
                                 "maxLength": 2048
                               },
                               "label": {

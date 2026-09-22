@@ -26,6 +26,23 @@
       ]}
     ]
   },
+  "canonical_sizes": [
+    {"json": "1", "canonical": "1", "decoded_bytes": 1},
+    {"json": "1.0", "canonical": "1.0", "decoded_bytes": 1},
+    {"json": "-0.0", "canonical": "-0.0", "decoded_bytes": 1},
+    {"json": "0.00001", "canonical": "0.00001", "decoded_bytes": 7},
+    {"json": "0.000001", "canonical": "1e-6", "decoded_bytes": 4},
+    {"json": "1e20", "canonical": "1e+20", "decoded_bytes": 5},
+    {"json": "5e-324", "canonical": "5e-324", "decoded_bytes": 6},
+    {"json": "123.45", "canonical": "123.45", "decoded_bytes": 6},
+    {"json": "{}", "canonical": "{}", "decoded_bytes": 2},
+    {"json": "[]", "canonical": "[]", "decoded_bytes": 2},
+    {"json": "[1,2,null]", "canonical": "[1, 2, null]", "decoded_bytes": 12},
+    {"json": "{\"b\":[1,2],\"a\":{\"x\":true}}", "canonical": "{\n  \"a\": {\n    \"x\": true\n  },\n  \"b\": [1, 2]\n}", "decoded_bytes": 45},
+    {"json": "[{},[]]", "canonical": "[\n  {},\n  []\n]", "decoded_bytes": 14},
+    {"json": "\"雪😀\\n\\\"\"", "canonical": "\"雪😀\\n\\\"\"", "decoded_bytes": 13}
+  ],
+  "budget_boundary": {"rows": 150, "empty_canonical_bytes": 9699, "sizes": [262143, 262144, 262145]},
   "invalid": [
     {"name": "unknown version", "path": ["version"], "value": 2},
     {"name": "executable field", "path": ["script"], "value": "alert(1)"},
@@ -46,6 +63,11 @@
     {"name": "negative stack", "path": ["rows", 0, "cells", 1, "datasets", 1, "points", 0, "values"], "value": [100, -10]},
     {"name": "negative slice", "path": ["rows", 1, "cells", 0, "slices", 0, "value"], "value": -1},
     {"name": "undeclared column", "path": ["rows", 1, "cells", 1, "table", "rows", 0, "extra"], "value": 1},
+    {"name": "prototype column", "path": ["rows", 1, "cells", 1, "table"], "value": {"columns": [{"key": "__proto__", "label": "Value"}], "rows": [{"__proto__": "evidence"}]}},
+    {"name": "constructor column", "path": ["rows", 1, "cells", 1, "table"], "value": {"columns": [{"key": "constructor", "label": "Value"}], "rows": [{"constructor": "evidence"}]}},
+    {"name": "inherited method column", "path": ["rows", 1, "cells", 1, "table"], "value": {"columns": [{"key": "toString", "label": "Value"}], "rows": [{}]}},
+    {"name": "undeclared prototype key", "path": ["rows", 1, "cells", 1, "table"], "value": {"columns": [{"key": "value", "label": "Value"}], "rows": [{"value": 1, "__proto__": "hidden"}]}},
+    {"name": "prototype field on view", "path": ["__proto__"], "value": "hidden"},
     {"name": "record action", "path": ["rows", 2, "cells", 0, "datasets", 0, "items", 0, "action"], "value": {"tool": "trade"}}
   ]
 }

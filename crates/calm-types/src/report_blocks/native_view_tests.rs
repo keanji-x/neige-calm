@@ -1,6 +1,69 @@
 use super::kinds::{KIND_VIEW, validate_payload};
 use serde_json::Value;
 
+#[test]
+fn native_view_numeric_spelling_survives_kernel_canonicalization() {
+    for case in fixture()["canonical_sizes"].as_array().unwrap() {
+        let value: Value = serde_json::from_str(case["json"].as_str().unwrap()).unwrap();
+        let canonical = super::canonical_json(&value);
+        assert_eq!(canonical, case["canonical"].as_str().unwrap());
+        assert!(canonical.len() >= case["decoded_bytes"].as_u64().unwrap() as usize);
+    }
+}
+
+#[test]
+fn native_view_table_size_uses_the_canonical_report_rendering() {
+    let columns: Vec<_> = (0..32)
+        .map(|i| serde_json::json!({"key": format!("c{i}"), "label": format!("Column {i}")}))
+        .collect();
+    let row: serde_json::Map<String, Value> = (0..32)
+        .map(|i| (format!("c{i}"), serde_json::json!(12345)))
+        .collect();
+    let view = serde_json::json!({"version": 1, "title": "", "description": "",
+        "snapshot": {"id": "size", "observedAt": 0, "producedAt": 0},
+        "rows": [{"id": "row", "title": "", "layout": "one", "cells": [{"kind": "table", "id": "table", "title": "",
+            "table": {"columns": columns, "rows": vec![Value::Object(row); 500]}}]}]});
+    assert!(serde_json::to_vec(&view).unwrap().len() < super::MAX_CANONICAL_BYTES);
+    assert!(super::canonical_json(&view).len() > super::MAX_CANONICAL_BYTES);
+    assert!(
+        validate_payload(KIND_VIEW, &view)
+            .unwrap_err()
+            .contains("payload too large")
+    );
+}
+
+#[test]
+fn native_view_shared_canonical_byte_boundary() {
+    let fixture = fixture();
+    let boundary = &fixture["budget_boundary"];
+    let count = boundary["rows"].as_u64().unwrap() as usize;
+    let base = boundary["empty_canonical_bytes"].as_u64().unwrap() as usize;
+    for target in boundary["sizes"].as_array().unwrap() {
+        let target = target.as_u64().unwrap() as usize;
+        let mut view = serde_json::json!({"version": 1, "title": "", "description": "",
+            "snapshot": {"id": "size", "observedAt": 0, "producedAt": 0},
+            "rows": [{"id": "row", "title": "", "layout": "one", "cells": [{"kind": "table", "id": "table", "title": "",
+                "table": {"columns": [{"key": "value", "label": "Value"}], "rows": vec![serde_json::json!({"value": ""}); count]}}]}]});
+        assert_eq!(super::canonical_json(&view).len(), base);
+        let padding = target - base;
+        for (index, row) in view["rows"][0]["cells"][0]["table"]["rows"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .enumerate()
+        {
+            row["value"] = Value::String(
+                "x".repeat(padding / count + if index == 0 { padding % count } else { 0 }),
+            );
+        }
+        assert_eq!(super::canonical_json(&view).len(), target);
+        assert_eq!(
+            validate_payload(KIND_VIEW, &view).is_ok(),
+            target <= super::MAX_CANONICAL_BYTES
+        );
+    }
+}
+
 pub fn fixture() -> Value {
     serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),

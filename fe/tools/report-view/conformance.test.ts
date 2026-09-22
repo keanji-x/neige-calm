@@ -1,11 +1,15 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { nativeViewPayloadSchema } from '../../core/domain/report-view.js';
-import { readTrackReport } from '../../core/domain/report.js';
+import { nativeViewPayloadSchema, nativeViewCanonicalSizeLowerBound } from '../../core/domain/report-view.js';
+import { readTrackReport, tableBlockPayloadSchema } from '../../core/domain/report.js';
+import { reportLiveViewSchema } from '../../core/domain/report-live-view.js';
+import { inlineTableBlockPayloadSchema } from '../../core/domain/report-table.js';
 import { z } from 'zod';
 
 const fixture = JSON.parse(readFileSync(new URL('../../../test-data/native-view-v1.json', import.meta.url), 'utf8')) as {
   valid: Record<string, unknown>;
+  canonical_sizes: { json: string; canonical: string; decoded_bytes: number }[];
+  budget_boundary: { rows: number; empty_canonical_bytes: number; sizes: number[] };
   invalid: { name: string; path: (string | number)[]; value?: unknown; remove?: boolean }[];
 };
 describe('native view conformance shared with the kernel', () => {
@@ -21,12 +25,50 @@ describe('native view conformance shared with the kernel', () => {
   it('accepts all native primitives with explicit missing values', () => {
     expect(nativeViewPayloadSchema.parse(fixture.valid)).toEqual(fixture.valid);
   });
+  it.each(fixture.canonical_sizes)('counts kernel layout and numeric spelling bounds for $json', value => {
+    const bytes = nativeViewCanonicalSizeLowerBound(JSON.parse(value.json));
+    expect(bytes).toBe(value.decoded_bytes);
+    expect(bytes).toBeLessThanOrEqual(Buffer.byteLength(value.canonical));
+  });
+  it('rejects a compact-small table whose canonical report rendering exceeds 256 KiB', () => {
+    const table = {
+      columns: Array.from({ length: 32 }, (_, i) => ({ key: `c${i}`, label: `Column ${i}` })),
+      rows: Array.from({ length: 500 }, () => Object.fromEntries(Array.from({ length: 32 }, (_, i) => [`c${i}`, 12345]))),
+    };
+    const view = { version: 1, title: '', description: '', snapshot: { id: 'size', observedAt: 0, producedAt: 0 },
+      rows: [{ id: 'row', title: '', layout: 'one', cells: [{ kind: 'table', id: 'table', title: '', table }] }] };
+    expect(Buffer.byteLength(JSON.stringify(view))).toBeLessThan(256 * 1024);
+    expect(nativeViewPayloadSchema.safeParse(view).success).toBe(false);
+  });
+  it.each(fixture.budget_boundary.sizes)('enforces the shared canonical byte boundary at %i bytes', target => {
+    const count = fixture.budget_boundary.rows;
+    const rows = Array.from({ length: count }, () => ({ value: '' }));
+    const table = { columns: [{ key: 'value', label: 'Value' }], rows };
+    const view = { version: 1, title: '', description: '', snapshot: { id: 'size', observedAt: 0, producedAt: 0 },
+      rows: [{ id: 'row', title: '', layout: 'one', cells: [{ kind: 'table', id: 'table', title: '', table }] }] };
+    expect(nativeViewCanonicalSizeLowerBound(view)).toBe(fixture.budget_boundary.empty_canonical_bytes);
+    const padding = target - fixture.budget_boundary.empty_canonical_bytes;
+    for (const [index, row] of rows.entries()) row.value = 'x'.repeat(Math.floor(padding / count) + (index === 0 ? padding % count : 0));
+    expect(nativeViewCanonicalSizeLowerBound(view)).toBe(target);
+    expect(nativeViewPayloadSchema.safeParse(view).success).toBe(target <= 256 * 1024);
+  });
+  it.each(Object.getOwnPropertyNames(Object.prototype))('rejects reserved table key %s without silently dropping it', key => {
+    const table = { columns: [{ key, label: 'Value' }], rows: [JSON.parse(`{"${key}":"evidence"}`)] };
+    expect(inlineTableBlockPayloadSchema.safeParse(table).success).toBe(false);
+    expect(tableBlockPayloadSchema.safeParse(table).success).toBe(false);
+    expect(reportLiveViewSchema.safeParse({ version: 1, view: 'details', title: '', table }).success).toBe(false);
+  });
+  it('rejects an undeclared prototype key before record decoding can erase it', () => {
+    const table = { columns: [{ key: 'value', label: 'Value' }], rows: [JSON.parse('{"value":1,"__proto__":"hidden"}')] };
+    expect(inlineTableBlockPayloadSchema.safeParse(table).success).toBe(false);
+  });
   it.each(fixture.invalid)('rejects $name', change => {
     const value = structuredClone(fixture.valid);
     let parent = value;
     for (const part of change.path.slice(0, -1)) parent = parent[part] as Record<string, unknown>;
     const key = change.path.at(-1)!;
-    if (change.remove) delete parent[key]; else parent[key] = change.value;
+    if (change.remove) delete parent[key];
+    else Object.defineProperty(parent, key, { value: change.value, writable: true, enumerable: true, configurable: true });
     expect(nativeViewPayloadSchema.safeParse(value).success).toBe(false);
   });
   it('reads through the real report decoder without an app or table wrapper', () => {
