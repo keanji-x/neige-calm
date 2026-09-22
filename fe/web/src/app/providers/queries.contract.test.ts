@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // Invariants owned by the shared query layer.
-import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { onlineManager, QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createElement, type ReactNode } from 'react';
@@ -15,6 +15,7 @@ import {
 import { NEUTRAL_ACTIVITY, type TrackDetailWire } from '../../../../core/domain/track.ts';
 import {
   ApiError, areaListQueryOptions, harnessItemsQueryOptions, queryKeys, runOperation, taskVerdictsRefetchInterval,
+  trackOverlaysQueryOptions,
   useAreaMutations, usePlannerMutations, useTrackMutations, useWorkspace, tracksInAreaQueryOptions,
   useTodayLaunchpadEnsureMutation, useTrackConversationMutations, useTrackRecipeMutations,
   seriesRefetchInterval, trackReportSeriesQueryOptions, trackSourceQueryOptions, type SeriesRead,
@@ -176,6 +177,49 @@ describe('track list', () => {
     await tracksInAreaQueryOptions(transport, 'c2', unauthorized).queryFn();
     expect(paths).toEqual(['/api/areas/c1/tracks', '/api/areas/c2/tracks']);
   });
+
+  it('passes the Query cancellation signal to the track-overlay request', async () => {
+    let requestSignal: AbortSignal | undefined;
+    const transport: ApiTransportPort = {
+      send: (request) => {
+        requestSignal = request.signal as AbortSignal;
+        return Promise.resolve(ok([]));
+      },
+    };
+    const controller = new AbortController();
+    await trackOverlaysQueryOptions(transport, unauthorized).queryFn({ signal: controller.signal });
+    expect(requestSignal).toBe(controller.signal);
+  });
+
+  it('sorts each Area by recent activity without changing the flat workspace or track caches', async () => {
+    const secondArea = { ...userArea, id: 'c2', name: 'Other', sort: 3 };
+    const old = { ...baseTrackWire, id: 'old', sort: 1, updated_at: 20 };
+    const recent = { ...baseTrackWire, id: 'recent', sort: 2, updated_at: 10 };
+    const second = { ...baseTrackWire, id: 'second', area_id: 'c2', sort: 1, updated_at: 30 };
+    const activityOverlay = {
+      id: 'activity-recent', plugin_id: 'kernel', entity_kind: 'track', entity_id: 'recent',
+      kind: 'activity', payload: { schemaVersion: 2 }, updated_at: 100,
+    };
+    const { transport } = recordingTransport((request) => {
+      if (request.path === '/api/areas') return ok([userArea, secondArea]);
+      if (request.path === '/api/areas/c1/tracks') return ok([old, recent]);
+      if (request.path === '/api/areas/c2/tracks') return ok([second]);
+      if (request.path === '/api/overlays?entity_kind=track') return ok([activityOverlay]);
+      throw new Error(`unexpected request: ${request.path}`);
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client }, children);
+    const { result } = renderHook(() => useWorkspace(transport, unauthorized), { wrapper });
+    await waitFor(() => expect(result.current.tracks).toHaveLength(3));
+    await waitFor(() => expect(result.current.tracksByArea.get('c1')?.map((row) => row.id))
+      .toEqual(['recent', 'old']));
+
+    expect(result.current.tracks.map((row) => row.id)).toEqual(['old', 'recent', 'second']);
+    expect(client.getQueryData<readonly { id: string }[]>(queryKeys.tracksInArea('c1'))?.map((row) => row.id))
+      .toEqual(['old', 'recent']);
+    expect(result.current.tracksByArea.get('c2')?.map((row) => row.id)).toEqual(['second']);
+  });
 });
 
 describe('delete mutation wiring', () => {
@@ -216,6 +260,49 @@ describe('delete mutation wiring', () => {
     controller.abort();
     await expect(result.current.remove('w1', 'c1', controller.signal)).rejects.toBeInstanceOf(ApiError);
     expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.tracksInArea('c1') });
+  });
+
+  it.each([
+    ['track delete', (mutations: ReturnType<typeof useTrackMutations>) => mutations.remove('w1', 'c1')],
+    ['card delete', (mutations: ReturnType<typeof useTrackMutations>) => mutations.removeCard('w1', 'card-a')],
+  ] as const)('%s aborts an active track-overlay read before the replacement starts', async (_name, remove) => {
+    const signals: AbortSignal[] = [];
+    const order: string[] = [];
+    const transport: ApiTransportPort = {
+      send: (request) => {
+        if (request.method === 'DELETE') return Promise.resolve(ok(undefined));
+        if (request.path !== '/api/overlays?entity_kind=track') {
+          return Promise.resolve(ok(request.path.includes('/tracks/') ? { ...baseTrackWire } : []));
+        }
+        const signal = request.signal as AbortSignal;
+        const index = signals.length;
+        signals.push(signal);
+        order.push(`start-${index + 1}`);
+        if (index > 0) return Promise.resolve(ok([]));
+        return new Promise<ApiTransportResponse>((_resolve, reject) => {
+          signal.addEventListener('abort', () => {
+            order.push('abort-1');
+            reject(new DOMException('aborted', 'AbortError'));
+          }, { once: true });
+        });
+      },
+    };
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const observer = new QueryObserver(client, trackOverlaysQueryOptions(transport, unauthorized));
+    const unsubscribe = observer.subscribe(() => undefined);
+    await waitFor(() => expect(signals).toHaveLength(1));
+    const { result } = renderHook(() => useTrackMutations(transport, unauthorized), {
+      wrapper: mutationWrapper(client),
+    });
+
+    await act(() => remove(result.current));
+
+    await waitFor(() => expect(signals).toHaveLength(2));
+    expect(signals[0]?.aborted).toBe(true);
+    expect(order).toEqual(['start-1', 'abort-1', 'start-2']);
+    unsubscribe();
   });
 
   it('invalidates the area list even when an aborted delete may have committed', async () => {

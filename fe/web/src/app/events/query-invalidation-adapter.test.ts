@@ -1,4 +1,5 @@
-import { describe, expect, expectTypeOf, it } from 'vitest';
+import { QueryClient, QueryObserver } from '@tanstack/react-query';
+import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 import type { AreaWire } from '../../../../core/domain/area.ts';
 import { wireEventSchema } from '../../../../core/api/schemas.ts';
@@ -111,10 +112,64 @@ describe('query invalidation adapter', () => {
     ]);
   });
 
-  it('invalidates the whole cache for a null key set', () => {
+  it('invalidates the whole cache for a null key set after canceling track overlays', async () => {
     const { calls, client } = recordingClient();
     applyEventEffects(client, [{ type: 'invalidate', keys: null }]);
+    await Promise.resolve();
     expect(calls).toEqual([{ op: 'invalidate', queryKey: undefined }]);
+  });
+
+  it.each([
+    ['mapped track overlay', [{ type: 'invalidate', keys: [['overlays', 'track']] }] as const],
+    ['replay-complete full invalidation', [{ type: 'invalidate', keys: null }] as const],
+  ])('aborts an active track-overlay read before starting its replacement for %s', async (_name, effects) => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const starts: string[] = [];
+    const signals: AbortSignal[] = [];
+    const observer = new QueryObserver(client, {
+      queryKey: queryKeys.overlaysByKind('track'),
+      queryFn: ({ signal }) => {
+        const index = signals.length;
+        signals.push(signal);
+        starts.push(`start-${index + 1}`);
+        if (index > 0) return Promise.resolve([]);
+        return new Promise<never>((_resolve, reject) => {
+          signal.addEventListener('abort', () => {
+            starts.push('abort-1');
+            reject(new DOMException('aborted', 'AbortError'));
+          }, { once: true });
+        });
+      },
+    });
+    const unsubscribe = observer.subscribe(() => undefined);
+    await vi.waitFor(() => expect(signals).toHaveLength(1));
+
+    applyEventEffects(client, effects);
+
+    await vi.waitFor(() => expect(signals).toHaveLength(2));
+    expect(signals[0]?.aborted).toBe(true);
+    expect(starts).toEqual(['start-1', 'abort-1', 'start-2']);
+    unsubscribe();
+  });
+
+  it('does not cancel an active card-overlay read when refreshing track overlays', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const cardSignals: AbortSignal[] = [];
+    const cardObserver = new QueryObserver(client, {
+      queryKey: queryKeys.overlaysByKind('card'),
+      queryFn: ({ signal }) => {
+        cardSignals.push(signal);
+        return new Promise<never>(() => undefined);
+      },
+    });
+    const unsubscribe = cardObserver.subscribe(() => undefined);
+    await vi.waitFor(() => expect(cardSignals).toHaveLength(1));
+
+    applyEventEffects(client, [{ type: 'invalidate', keys: [['overlays', 'track']] }]);
+    await Promise.resolve();
+
+    expect(cardSignals[0]?.aborted).toBe(false);
+    unsubscribe();
   });
 
   it('clears the cache for a clear-cache effect', () => {
@@ -338,9 +393,9 @@ describe('query invalidation adapter', () => {
     await Promise.resolve();
     expect(calls).toEqual([
       { op: 'invalidate', queryKey: queryKeys.tracksInArea('c1') },
-      { op: 'invalidate', queryKey: queryKeys.overlaysByKind('track') },
       { op: 'remove', queryKey: queryKeys.trackDetail('w1') },
       { op: 'remove', queryKey: queryKeys.trackReport('w1') },
+      { op: 'invalidate', queryKey: queryKeys.overlaysByKind('track') },
       { op: 'invalidate', queryKey: queryKeys.trackReportPrefix() },
     ]);
   });

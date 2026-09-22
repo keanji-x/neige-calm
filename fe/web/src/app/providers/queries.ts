@@ -44,7 +44,7 @@ import {
   createCardOperation, createCodexCardOperation, createTerminalCardOperation, createTrackOperation,
   createTrackRecipeOperation, deleteCardOperation, deleteTrackOperation, deleteTrackRecipeOperation,
   overlaysByKindOperation, toTrack, updateTrackOperation, updateTrackRecipeOperation,
-  trackActivityFrom, trackDetailOperation, trackRecipesOperation, trackTemplatesOperation,
+  sortAreaTracksByRecent, trackActivityFrom, trackDetailOperation, trackRecipesOperation, trackTemplatesOperation,
   tracksInAreaOperation,
   type CardWire, type NewCardBody, type NewCodexCardBody, type NewTerminalCardBody,
   type NewTrackBodyWithFirstMessage, type NewTrackBodyWithoutFirstMessage, type OverlayWire,
@@ -62,6 +62,7 @@ import {
 import { useState } from '../../ui/state/public.ts';
 import type { ServerVersionInfo } from './public.tsx';
 import type { HarnessItem } from '../../../../core/api/generated/wire.ts';
+import { cancelThenInvalidate } from '../events/query-refresh.ts';
 
 export class ApiError extends Error {
   readonly failure: ApiFailure;
@@ -368,7 +369,8 @@ export function areaListQueryOptions(transport: ApiTransportPort, unauthorized: 
 export function trackOverlaysQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
   return {
     queryKey: queryKeys.overlaysByKind('track'),
-    queryFn: (): Promise<OverlayWire[]> => runOperation(transport, overlaysByKindOperation('track'), unauthorized),
+    queryFn: ({ signal }: { signal: AbortSignal }): Promise<OverlayWire[]> =>
+      runOperation(transport, { ...overlaysByKindOperation('track'), signal }, unauthorized),
   };
 }
 
@@ -654,7 +656,7 @@ export function useWorkspace(transport: ApiTransportPort, unauthorized: Unauthor
     if (query?.error instanceof Error) trackErrorsByArea.set(area.id, query.error);
     if (query?.data !== undefined) {
       const rows = query.data.map((track) => ({ ...track, ...trackActivityFrom(track.id, overlays) }));
-      tracksByArea.set(area.id, rows);
+      tracksByArea.set(area.id, sortAreaTracksByRecent(rows));
       tracks.push(...rows);
     }
   }
@@ -829,7 +831,7 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
     // Reconcile both list-derived surfaces even if abort raced a committed DELETE.
     onSettled: (_result, _error, variables) => {
       void client.invalidateQueries({ queryKey: queryKeys.tracksInArea(variables.areaId) });
-      void client.invalidateQueries({ queryKey: queryKeys.overlaysByKind('track') });
+      cancelThenInvalidate(client, queryKeys.overlaysByKind('track'));
     },
   });
   /* The card creates answer with the row the kernel just wrote and the next render needs it: the caller
@@ -874,7 +876,7 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
     },
     onSettled: (_result, _error, { trackId }) => {
       void client.invalidateQueries({ queryKey: queryKeys.trackDetail(trackId) });
-      void client.invalidateQueries({ queryKey: queryKeys.overlaysByKind('track') });
+      cancelThenInvalidate(client, queryKeys.overlaysByKind('track'));
     },
   });
   const patchTrack = async (trackId: string, areaId: string, body: TrackPatchBody) =>

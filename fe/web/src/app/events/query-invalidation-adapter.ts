@@ -5,11 +5,10 @@ import { newestArea, toArea } from '../../../../core/domain/area.ts';
 import type { QueryKey } from '../../../../core/events/invalidation-plan.ts';
 import type { EventEffect } from '../../../../core/events/reducer.ts';
 import { queryKeys } from '../providers/queries.ts';
+import { cancelThenInvalidate, type QueryRefreshPort } from './query-refresh.ts';
 
 /** The slice of `QueryClient` the adapter is allowed to use. */
-export interface QueryCachePort {
-  cancelQueries(filters: { queryKey: readonly unknown[] }): Promise<unknown>;
-  invalidateQueries(filters?: { queryKey?: readonly unknown[] }): unknown;
+export interface QueryCachePort extends QueryRefreshPort {
   removeQueries(filters: { queryKey: readonly unknown[] }): unknown;
   getQueryData<T>(queryKey: readonly unknown[]): T | undefined;
   setQueryData<T>(queryKey: readonly unknown[], value: T): unknown;
@@ -21,11 +20,13 @@ export interface QueryCachePort {
  * then clears `isInvalidated`; task verdicts do not all poll, so cancel the report fetch first.
  */
 function invalidateMappedQuery(client: QueryCachePort, queryKey: readonly unknown[]): void {
-  if (queryKey[0] !== 'track-report') {
+  const cancelFirst = queryKey[0] === 'track-report'
+    || (queryKey[0] === 'overlays' && queryKey[1] === 'track');
+  if (!cancelFirst) {
     void client.invalidateQueries({ queryKey });
     return;
   }
-  void client.cancelQueries({ queryKey }).then(() => client.invalidateQueries({ queryKey }));
+  cancelThenInvalidate(client, queryKey);
 }
 
 /** Translates one planned key onto a `queryKeys` key, or `null` when the built surface has no query for it. */
@@ -63,7 +64,7 @@ export function applyEventEffects(client: QueryCachePort, effects: readonly Even
     if (effect.type === 'invalidate') {
       // A null key set is the reducer's "everything is suspect" signal after a replay.
       if (effect.keys === null) {
-        void client.invalidateQueries();
+        cancelThenInvalidate(client, queryKeys.overlaysByKind('track'), null);
         continue;
       }
       for (const key of effect.keys) {
