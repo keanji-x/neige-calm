@@ -39,8 +39,10 @@ function scalarBytes(value: unknown): number {
   return Number.isInteger(value) ? Math.min(value.toFixed(0).length, floatBytes) : floatBytes;
 }
 
-/** Kernel pretty layout, including inline scalar arrays. Number spellings lost in JSON
- * decoding (1 versus 1.0, signed zero) use a lower bound: exact admission stays in Rust. */
+/** Read-side lower bound, NOT exact write admission. The kernel retains authority over
+ * raw numeric precision/spelling and exact canonical bytes. JS decoding cannot recover
+ * 1 versus 1.0, signed-zero spelling, or integers rounded into an IEEE-754 number.
+ * Mirror the kernel's pretty layout without normalizing or rewriting persisted JSON. */
 export function nativeViewCanonicalSizeLowerBound(value: unknown, depth = 0): number {
   if (value === null || typeof value !== 'object') return scalarBytes(value);
   if (Array.isArray(value)) {

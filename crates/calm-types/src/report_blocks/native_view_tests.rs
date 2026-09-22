@@ -64,6 +64,52 @@ fn native_view_shared_canonical_byte_boundary() {
     }
 }
 
+#[test]
+fn native_view_numeric_spellings_at_the_kernel_byte_limit() {
+    let fixture = fixture();
+    let count = fixture["budget_boundary"]["rows"].as_u64().unwrap() as usize;
+    let base = fixture["budget_boundary"]["empty_canonical_bytes"]
+        .as_u64()
+        .unwrap() as usize;
+    for scalar in fixture["canonical_sizes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|case| case["view_boundary"] == true)
+    {
+        let number: Value = serde_json::from_str(scalar["json"].as_str().unwrap()).unwrap();
+        let scalar_bytes = scalar["canonical"].as_str().unwrap().len();
+        let mut rows = vec![serde_json::json!({"value": ""}); count];
+        rows[0]["value"] = number.clone();
+        let mut view = serde_json::json!({"version": 1, "title": "", "description": "",
+            "snapshot": {"id": "size", "observedAt": 0, "producedAt": 0},
+            "rows": [{"id": "row", "title": "", "layout": "one", "cells": [{"kind": "table", "id": "table", "title": "",
+                "table": {"columns": [{"key": "value", "label": "Value"}], "rows": rows}}]}]});
+        assert_eq!(super::canonical_json(&view).len(), base - 2 + scalar_bytes);
+        let padding = super::MAX_CANONICAL_BYTES - (base - 2 + scalar_bytes);
+        for (index, row) in view["rows"][0]["cells"][0]["table"]["rows"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .enumerate()
+            .skip(1)
+        {
+            row["value"] = Value::String("x".repeat(
+                padding / (count - 1) + if index == 1 { padding % (count - 1) } else { 0 },
+            ));
+        }
+        assert_eq!(
+            super::canonical_json(&view).len(),
+            super::MAX_CANONICAL_BYTES
+        );
+        validate_payload(KIND_VIEW, &view).unwrap();
+        assert_eq!(
+            view["rows"][0]["cells"][0]["table"]["rows"][0]["value"],
+            number
+        );
+    }
+}
+
 pub fn fixture() -> Value {
     serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),

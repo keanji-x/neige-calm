@@ -8,7 +8,7 @@ import { z } from 'zod';
 
 const fixture = JSON.parse(readFileSync(new URL('../../../test-data/native-view-v1.json', import.meta.url), 'utf8')) as {
   valid: Record<string, unknown>;
-  canonical_sizes: { json: string; canonical: string; decoded_bytes: number }[];
+  canonical_sizes: { json: string; canonical: string; decoded_bytes: number; view_boundary?: boolean }[];
   budget_boundary: { rows: number; empty_canonical_bytes: number; sizes: number[] };
   invalid: { name: string; path: (string | number)[]; value?: unknown; remove?: boolean }[];
 };
@@ -51,6 +51,19 @@ describe('native view conformance shared with the kernel', () => {
     for (const [index, row] of rows.entries()) row.value = 'x'.repeat(Math.floor(padding / count) + (index === 0 ? padding % count : 0));
     expect(nativeViewCanonicalSizeLowerBound(view)).toBe(target);
     expect(nativeViewPayloadSchema.safeParse(view).success).toBe(target <= 256 * 1024);
+  });
+  it.each(fixture.canonical_sizes.filter(value => value.view_boundary))('does not reject kernel-limit reports containing $json', scalar => {
+    const count = fixture.budget_boundary.rows;
+    const rows: { value: string | number }[] = Array.from({ length: count }, () => ({ value: '' }));
+    rows[0].value = JSON.parse(scalar.json) as number;
+    const table = { columns: [{ key: 'value', label: 'Value' }], rows };
+    const view = { version: 1, title: '', description: '', snapshot: { id: 'size', observedAt: 0, producedAt: 0 },
+      rows: [{ id: 'row', title: '', layout: 'one', cells: [{ kind: 'table', id: 'table', title: '', table }] }] };
+    const kernelBytes = fixture.budget_boundary.empty_canonical_bytes - 2 + Buffer.byteLength(scalar.canonical);
+    const padding = 256 * 1024 - kernelBytes;
+    for (let index = 1; index < count; index++) rows[index].value = 'x'.repeat(Math.floor(padding / (count - 1)) + (index === 1 ? padding % (count - 1) : 0));
+    expect(nativeViewCanonicalSizeLowerBound(view)).toBe(256 * 1024 - Buffer.byteLength(scalar.canonical) + scalar.decoded_bytes);
+    expect(nativeViewPayloadSchema.parse(view)).toEqual(view);
   });
   it.each(Object.getOwnPropertyNames(Object.prototype))('rejects reserved table key %s without silently dropping it', key => {
     const table = { columns: [{ key, label: 'Value' }], rows: [JSON.parse(`{"${key}":"evidence"}`)] };
