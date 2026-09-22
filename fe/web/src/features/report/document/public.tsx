@@ -23,6 +23,7 @@ import { ReportSeriesBlock } from '../series/public.tsx';
 import { ReportSourceCitation } from '../source/public.tsx';
 import { ReportTableBlock } from '../table/public.tsx';
 import { ReportLiveViewBlock } from '../rich/public.tsx';
+import { NativeReportView } from '../native/public.tsx';
 import { ReportTaskBlock } from '../task/public.tsx';
 import styles from './document.module.css';
 
@@ -222,6 +223,7 @@ function BlockBody({ block, task, renderTaskExecution, onOpenSourceLink, resolve
       return <ReportTableBlock payload={block.payload} resolveLive={resolveOverlay} onOpenSourceLink={onOpenSourceLink} />;
     case 'view.live':
       return <ReportLiveViewBlock payload={block.payload} resolveOverlay={resolveOverlay} onOpenSourceLink={onOpenSourceLink} />;
+    case 'view': return <NativeReportView payload={block.payload} onOpenSourceLink={onOpenSourceLink} />;
     case 'chart.candles': return <ReportCandlesBlock payload={block.payload} />;
     case 'chart.series':
       return <ReportSeriesBlock payload={block.payload} blockId={block.id} rev={block.rev} resolve={resolveSeries} />;

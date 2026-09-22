@@ -256,7 +256,8 @@ fn unknown_kind_is_an_error() {
             "table",
             "app",
             "task",
-            "view.live"
+            "view.live",
+            "view"
         ],
         "the closed data-kind set, in blocks.kinds order"
     );

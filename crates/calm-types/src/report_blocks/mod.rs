@@ -4,10 +4,13 @@
 pub mod chart_series;
 pub mod fence;
 pub mod kinds;
+pub mod native_view;
 pub mod tasks;
 
 mod align;
 
+#[cfg(test)]
+mod native_view_tests;
 #[cfg(test)]
 mod projection_tests;
 
@@ -16,7 +19,7 @@ pub use chart_series::{RANGE_DAYS, chart_series_range_days, is_valid_ymd, parse_
 pub use fence::{NonProseFence, canonical_json, neige_open_kind, parse_fence, render_fence};
 pub use kinds::{
     DATA_KINDS, KIND_APP, KIND_CHART_CANDLES, KIND_CHART_SERIES, KIND_LIVE_VIEW, KIND_PROSE,
-    KIND_TABLE, KIND_TASK, MAX_CANONICAL_BYTES, MAX_CHART_CANDLES, MAX_CHART_SERIES,
+    KIND_TABLE, KIND_TASK, KIND_VIEW, MAX_CANONICAL_BYTES, MAX_CHART_CANDLES, MAX_CHART_SERIES,
     MAX_LIVE_VIEW_BYTES, MAX_STRING_CHARS, MAX_TABLE_COLUMNS, MAX_TABLE_ROWS, TASK_FIELDS,
     is_data_kind, scannable_text_fields, validate_payload,
 };

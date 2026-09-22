@@ -1,0 +1,51 @@
+{
+  "valid": {
+    "version": 1,
+    "title": "运营概览",
+    "description": "原生组件的非金融示例",
+    "snapshot": {"id": "operations-r1", "observedAt": 1790035200000, "producedAt": 1790035201000},
+    "rows": [
+      {"id": "summary", "title": "容量与用量", "layout": "two", "cells": [
+        {"kind": "metrics", "id": "capacity", "title": "容量", "items": [
+          {"id": "used", "label": "已用空间", "value": {"state": "known", "amount": 120, "unit": " GB", "placement": "suffix", "decimals": 0, "signed": false}, "detail": "已采集", "tone": "neutral", "emphasis": "primary"},
+          {"id": "unknown", "label": "远端空间", "value": {"state": "unknown", "reason": "尚未取得样本"}, "detail": "", "tone": "warning", "emphasis": "normal"}
+        ]},
+        {"kind": "time-series", "id": "usage", "title": "历史用量", "caption": "缺失值不插值为零", "emptyText": "暂无观测", "datasets": [
+          {"id": "line", "label": "独立序列", "unit": "GB", "style": "line", "series": [{"id": "a", "label": "主库", "palette": 1}], "points": [{"date": "2026-09-21", "values": [100]}, {"date": "2026-09-22", "values": [null]}, {"date": "2026-09-23", "values": [120]}]},
+          {"id": "stack", "label": "合计", "unit": "GB", "style": "stacked", "series": [{"id": "a", "label": "主库", "palette": 1}, {"id": "b", "label": "备份", "palette": 2}], "points": [{"date": "2026-09-21", "values": [100, 20]}, {"date": "2026-09-23", "values": [120, 30]}]}
+        ]}
+      ]},
+      {"id": "breakdown", "title": "组成", "layout": "two", "cells": [
+        {"kind": "distribution", "id": "allocation", "title": "存储构成", "unit": "GB", "emptyText": "暂无组成", "slices": [{"id": "a", "label": "主库", "value": 120, "palette": 1}, {"id": "b", "label": "备份", "value": 30, "palette": 2}]},
+        {"kind": "table", "id": "details", "title": "明细", "table": {"columns": [{"key": "name", "label": "名称"}, {"key": "value", "label": "用量"}], "rows": [{"name": "主库", "value": 120}]}}
+      ]},
+      {"id": "review", "title": "待复核记录", "layout": "one", "cells": [
+        {"kind": "records", "id": "records", "title": "核验事项", "emptyText": "暂无事项", "datasets": [{"id": "r1", "label": "初始状态", "items": [
+          {"id": "backup", "category": "运维", "title": "备份是否按时完成？", "summary": "需要读取完成记录", "status": {"label": "未知", "tone": "neutral"}, "handling": {"label": "待补证", "tone": "warning"}, "facts": [{"label": "截止时间", "value": "2026-09-23"}], "sections": [{"label": "原始规则", "body": "以任务完成记录为准，不因读取失败判定备份失败。"}], "evidence": [{"id": "e1", "label": "读取记录", "date": "2026-09-23", "body": "<script>alert(1)</script>", "note": "原文只作文本显示", "tone": "neutral"}]}
+        ]}]}
+      ]}
+    ]
+  },
+  "invalid": [
+    {"name": "unknown version", "path": ["version"], "value": 2},
+    {"name": "executable field", "path": ["script"], "value": "alert(1)"},
+    {"name": "missing snapshot", "path": ["snapshot"], "remove": true},
+    {"name": "bad snapshot time", "path": ["snapshot", "observedAt"], "value": -1},
+    {"name": "empty rows", "path": ["rows"], "value": []},
+    {"name": "layout mismatch", "path": ["rows", 0, "layout"], "value": "three"},
+    {"name": "duplicate row", "path": ["rows", 1, "id"], "value": "summary"},
+    {"name": "duplicate component", "path": ["rows", 1, "cells", 0, "id"], "value": "capacity"},
+    {"name": "iframe primitive", "path": ["rows", 0, "cells", 0, "kind"], "value": "iframe"},
+    {"name": "unknown as zero", "path": ["rows", 0, "cells", 0, "items", 1, "value", "amount"], "value": 0},
+    {"name": "missing unit", "path": ["rows", 0, "cells", 0, "items", 0, "value", "unit"], "remove": true},
+    {"name": "invalid palette", "path": ["rows", 0, "cells", 1, "datasets", 0, "series", 0, "palette"], "value": 99},
+    {"name": "invalid date", "path": ["rows", 0, "cells", 1, "datasets", 0, "points", 0, "date"], "value": "2026-02-30"},
+    {"name": "duplicate date", "path": ["rows", 0, "cells", 1, "datasets", 0, "points", 1, "date"], "value": "2026-09-21"},
+    {"name": "point width", "path": ["rows", 0, "cells", 1, "datasets", 0, "points", 0, "values"], "value": [100, 200]},
+    {"name": "stacked gap", "path": ["rows", 0, "cells", 1, "datasets", 1, "points", 0, "values"], "value": [100, null]},
+    {"name": "negative stack", "path": ["rows", 0, "cells", 1, "datasets", 1, "points", 0, "values"], "value": [100, -10]},
+    {"name": "negative slice", "path": ["rows", 1, "cells", 0, "slices", 0, "value"], "value": -1},
+    {"name": "undeclared column", "path": ["rows", 1, "cells", 1, "table", "rows", 0, "extra"], "value": 1},
+    {"name": "record action", "path": ["rows", 2, "cells", 0, "datasets", 0, "items", 0, "action"], "value": {"tool": "trade"}}
+  ]
+}

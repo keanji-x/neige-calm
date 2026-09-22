@@ -3,6 +3,11 @@
 // deep link addresses); `body` is the flat fallback. Everything here is fail-soft.
 
 import { z } from 'zod';
+import { max2048CodePoints, inlineTableBlockPayloadSchema } from './report-table.js';
+import { isCalendarDate } from './report-date.js';
+import { nativeViewPayloadSchema, type NativeViewPayload } from './report-view.js';
+export { inlineTableBlockPayloadSchema } from './report-table.js';
+export { isCalendarDate } from './report-date.js';
 
 import type { CurrentTaskExecution } from './task-execution.js';
 import type { ApiOperation } from '../api/types.js';
@@ -18,10 +23,6 @@ export const TRACK_REPORT_CARD_KIND = 'track-report';
    kernel accepts is exactly a payload this renders. */
 
 export const proseBlockPayloadSchema = z.object({ markdown: z.string() });
-
-function max2048CodePoints(schema: z.ZodString) {
-  return schema.refine((value) => [...value].length <= 2048, { message: 'String must contain at most 2048 character(s)' });
-}
 
 /** One candle: `[ts_ms, open, high, low, close, volume?]`. */
 export const candleTupleSchema = z.tuple([
@@ -44,26 +45,6 @@ export const chartCandlesPayloadSchema = z.strictObject({
 export const LIVE_TABLE_SOURCE_PATTERN = /^neige:\/\/plugin\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 
 /** The rows-carrying form — and the shape a live table's overlay must hold. */
-export const inlineTableBlockPayloadSchema = z.strictObject({
-  columns: z.array(z.strictObject({
-    key: max2048CodePoints(z.string().min(1)),
-    label: max2048CodePoints(z.string()),
-    align: z.enum(['left', 'right']).nullish(),
-  })).min(1).max(32),
-  rows: z.array(z.record(
-    z.string(),
-    z.union([max2048CodePoints(z.string()), z.number(), z.null()]),
-  )).max(500),
-  caption: max2048CodePoints(z.string()).nullish(),
-  highlight: max2048CodePoints(z.string()).nullish(),
-})
-  .refine((table) => new Set(table.columns.map((column) => column.key)).size === table.columns.length,
-    { message: 'column keys must be unique' })
-  .refine((table) => {
-    const keys = new Set(table.columns.map((column) => column.key));
-    return table.rows.every((row) => Object.keys(row).every((key) => keys.has(key)));
-  }, { message: 'row keys must be declared column keys' });
-
 export const liveTableBlockPayloadSchema = z.strictObject({
   source: max2048CodePoints(z.string().regex(LIVE_TABLE_SOURCE_PATTERN,
     'must be neige://plugin/<plugin_id>/<overlay_kind>')),
@@ -83,30 +64,6 @@ export type LiveViewBlockPayload = z.infer<typeof liveViewBlockPayloadSchema>;
 
 /** `^[A-Z]{2,8}:[A-Za-z0-9._-]{1,32}$` — venue prefix and symbol. */
 export const CHART_SERIES_ASSET_PATTERN = /^[A-Z]{2,8}:[A-Za-z0-9._-]{1,32}$/;
-
-function isLeapYear(year: number): boolean {
-  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
-}
-
-function daysInMonth(year: number, month: number): number | null {
-  switch (month) {
-    case 1: case 3: case 5: case 7: case 8: case 10: case 12: return 31;
-    case 4: case 6: case 9: case 11: return 30;
-    case 2: return isLeapYear(year) ? 29 : 28;
-    default: return null;
-  }
-}
-
-/** `YYYY-MM-DD` that names a real Gregorian day. No `Date`: `new Date('2026-02-30')` rolls over to March. */
-export function isCalendarDate(text: string): boolean {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
-  if (match === null) return false;
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  const last = daysInMonth(year, month);
-  return last !== null && day >= 1 && day <= last;
-}
 
 export const chartSeriesPayloadSchema = z.strictObject({
   source: max2048CodePoints(z.string().regex(LIVE_TABLE_SOURCE_PATTERN,
@@ -247,6 +204,7 @@ export type ReportBlock =
   | Readonly<{ id: string; kind: 'chart.series'; rev: number; payload: ChartSeriesPayload }>
   | Readonly<{ id: string; kind: 'table'; payload: TableBlockPayload }>
   | Readonly<{ id: string; kind: 'view.live'; payload: LiveViewBlockPayload }>
+  | Readonly<{ id: string; kind: 'view'; payload: NativeViewPayload }>
   | Readonly<{ id: string; kind: 'app'; payload: AppBlockPayload }>
   | Readonly<{ id: string; kind: 'task'; payload: TaskBlockPayload }>
   | Readonly<{ id: string; kind: 'unsupported'; declaredKind: string }>;
@@ -267,6 +225,7 @@ function payloadSchemaFor(kind: string): z.ZodType | null {
     case 'chart.series': return chartSeriesPayloadSchema;
     case 'table': return tableBlockPayloadSchema;
     case 'view.live': return liveViewBlockPayloadSchema;
+    case 'view': return nativeViewPayloadSchema;
     case 'app': return appBlockPayloadSchema;
     case 'task': return taskBlockPayloadSchema;
     default: return null;

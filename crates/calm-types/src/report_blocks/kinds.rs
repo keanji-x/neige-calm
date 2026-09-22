@@ -11,6 +11,7 @@ pub const KIND_CHART_CANDLES: &str = "chart.candles";
 pub const KIND_CHART_SERIES: &str = "chart.series";
 pub const KIND_TABLE: &str = "table";
 pub const KIND_LIVE_VIEW: &str = "view.live";
+pub const KIND_VIEW: &str = "view";
 pub const KIND_APP: &str = "app";
 pub const KIND_TASK: &str = "task";
 
@@ -30,13 +31,14 @@ pub const MAX_CANONICAL_BYTES: usize = 256 * 1024;
 pub const MAX_LIVE_VIEW_BYTES: usize = 4 * 1024 * 1024;
 
 /// The non-prose kinds a report may contain, in `blocks.kinds` order.
-pub const DATA_KINDS: [&str; 6] = [
+pub const DATA_KINDS: [&str; 7] = [
     KIND_CHART_CANDLES,
     KIND_CHART_SERIES,
     KIND_TABLE,
     KIND_APP,
     KIND_TASK,
     KIND_LIVE_VIEW,
+    KIND_VIEW,
 ];
 
 pub fn is_data_kind(kind: &str) -> bool {
@@ -77,6 +79,11 @@ pub fn validate_payload(kind: &str, payload: &Value) -> Result<(), String> {
         KIND_CHART_SERIES => super::chart_series::validate_chart_series(map, &mut errors),
         KIND_TABLE => validate_table(map, &mut errors),
         KIND_LIVE_VIEW => validate_live_view(map, &mut errors),
+        KIND_VIEW => {
+            if let Err(error) = super::native_view::validate(payload) {
+                errors.push(error);
+            }
+        }
         KIND_APP => validate_app(map, &mut errors),
         KIND_TASK => validate_task(map, &mut errors),
         other => errors.push(format!(

@@ -252,7 +252,8 @@ async fn kinds_returns_all_supported_schemas() {
             "table",
             "app",
             "task",
-            "view.live"
+            "view.live",
+            "view"
         ]
     );
     for kind in kinds {

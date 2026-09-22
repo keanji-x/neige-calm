@@ -33,6 +33,8 @@ mod mcp_track_report_blocks;
 mod mcp_track_report_chart_series;
 #[path = "cases/mcp_track_report_live_view.rs"]
 mod mcp_track_report_live_view;
+#[path = "cases/mcp_track_report_native_view.rs"]
+mod mcp_track_report_native_view;
 #[path = "cases/mcp_track_state.rs"]
 mod mcp_track_state;
 #[path = "cases/report_series_checklist.rs"]
