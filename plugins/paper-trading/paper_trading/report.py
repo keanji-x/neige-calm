@@ -5,7 +5,7 @@ from datetime import datetime
 
 def table(columns, rows, caption):
     return {"columns": [{"key": key, "label": label} for key, label in columns],
-            "rows": rows, "caption": caption}
+            "rows": [{key: row[key] for key, _label in columns} for row in rows], "caption": caption}
 
 
 def tables(state):
