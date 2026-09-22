@@ -44,8 +44,12 @@ export function NativeReportView({ payload, onOpenSourceLink }: { payload: Nativ
     <header className={styles.header}><h2>{payload.title}</h2><button type="button" className={styles.expand}
       aria-label={`展开 ${payload.title}`} title="展开视图" onClick={() => setExpanded(true)}><Icon name="arrow-up" size="sm" /></button></header>
     <Composition payload={payload} {...reading} />
-    <Dialog open={expanded} onClose={() => setExpanded(false)} title={payload.title} wide>
-      <div className={styles.root}><Composition payload={payload} {...reading} /></div>
+    <Dialog open={expanded} onClose={() => setExpanded(false)} title={payload.title} hideTitleRow wide>
+      <div className={styles.root}>
+        <header className={styles.header}><h2>{payload.title}</h2><button type="button" className={styles.expand}
+          aria-label="Close" title="关闭视图" onClick={() => setExpanded(false)}><Icon name="close" size="sm" /></button></header>
+        <Composition payload={payload} {...reading} />
+      </div>
     </Dialog>
   </div>;
 }
