@@ -717,8 +717,12 @@ pub(crate) async fn prepare_target_tx(
 /// sweep would SIGKILL that foreign group and wait it empty. Authenticating by the inherited environ
 /// marker instead means a foreign process is neither signalled nor waited for — it does not exist
 /// for this gate. The `kill` group signal stays authenticated by the (live) leader's own identity;
-/// a marker-carrying descendant that outlives the wrapper is what the sweep reaches. `Err` = a
-/// marked descendant is still alive after the wait: the caller must not sample, see [`finalize`].
+/// a marker-carrying descendant that outlives the wrapper is what the sweep reaches. A live member
+/// whose environ cannot be read (`PR_SET_DUMPABLE=0`, a cleared environment) is cleanup-uncertain,
+/// NOT proven-foreign: the sweep never kills it (only proven members are killed) and the wait never
+/// counts the group stopped, so `stop_group` returns `Err` → `gate-infra`. Only a member whose
+/// environ is readable AND lacks the marker is proven foreign and skipped. `Err` = a marked or
+/// unreadable descendant is still alive after the wait: the caller must not sample, see [`finalize`].
 pub(crate) async fn stop_group(artifacts: &SpawnArtifacts, op_marker: &str) -> Result<()> {
     kill(artifacts);
     if read_boot_id().as_deref() == Some(artifacts.boot_id.as_str()) {
@@ -739,8 +743,9 @@ pub(crate) async fn stop_group(artifacts: &SpawnArtifacts, op_marker: &str) -> R
 /// an exit file): an `Unbound` freeze passes the verdict through (P7); a `Candidate` freeze is
 /// sampled again — `reasons` empty keeps the verdict, non-empty discards every step result as
 /// `gate-target-mismatch`, a sampling failure is `gate-infra` with `Unsampled { Finalize }` (P6).
-/// `stopped` is the caller's [`stop_group`] outcome: a group that did not stop is not sampled
-/// (fail-closed: `gate-infra`, `Unsampled { Finalize }` naming the cleanup error).
+/// `stopped` is the caller's [`stop_group`] outcome: a group that did not stop — including one held
+/// live by a marked-but-unreadable-environ descendant (cleanup-uncertain, never killed) — is not
+/// sampled (fail-closed: `gate-infra`, `Unsampled { Finalize }` naming the cleanup error).
 pub(crate) async fn finalize(
     verdict: GateVerdict,
     frozen: &FrozenVerify,
@@ -1575,5 +1580,92 @@ mod tests {
         let _ = marked.kill();
         let _ = marked.wait();
         assert!(marked_dead, "the marked member must be swept");
+    }
+
+    /// A same-uid, LIVE descendant in the recorded pgid whose `/proc/<pid>/environ` is unreadable
+    /// (`PR_SET_DUMPABLE=0` → EACCES) is cleanup-uncertain, NOT proven-foreign: `proc_env_marker`
+    /// classifies it `Unreadable`, so `marked_group_stopped` fails closed (`Ok(false)` — the group
+    /// is held live and the caller reaches `gate-infra`), while the kill sweep never lists it
+    /// (`group_members_with_env_marker` excludes it — it is never SIGKILLed and stays alive).
+    /// Mutating `proc_env_marker` to fold `Unreadable` into `Foreign`, or `marked_group_stopped` to
+    /// block only on `Present`, makes the wait report the group stopped (`Ok(true)`) → red.
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unreadable_member_blocks_group_stop_without_killing() {
+        use crate::operation::gate_process::marked_group_stopped;
+        use crate::proc_identity::{
+            MarkerAuth, group_members_with_env_marker, proc_env_marker, read_proc_start_time,
+        };
+        use std::os::unix::process::CommandExt as _;
+
+        let marker = format!("w:hide#g1-{}-{}", std::process::id(), now_ms());
+        let boot_id = read_boot_id().expect("boot id");
+
+        // A same-uid, live descendant that carries the marker but hides its own environ: it makes
+        // itself non-dumpable (`PR_SET_DUMPABLE=0`, prctl option 4 value 0), so /proc/<pid>/environ
+        // becomes root-owned mode-0 and a same-uid reader gets EACCES. It leads its own new pgid
+        // (the recorded gate group). `python3` is available on this box (harness and reviewers use it).
+        let mut hidden = std::process::Command::new("python3")
+            .arg("-c")
+            .arg("import ctypes,time; ctypes.CDLL(None).prctl(4,0,0,0,0); time.sleep(30)")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .env("NEIGE_GATE_OP", &marker)
+            .process_group(0)
+            .spawn()
+            .expect("spawn hidden-environ descendant");
+        let hidden_pid = hidden.id() as i32;
+
+        // Wait until prctl has run and the environ is genuinely unreadable (EACCES → `Unreadable`).
+        let became_unreadable = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if proc_env_marker(hidden_pid, "NEIGE_GATE_OP", &marker) == MarkerAuth::Unreadable {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+
+        // A dead fake leader (a pid that does not resolve): `kill` sends no group signal; the pgid
+        // is the one the hidden descendant now leads.
+        let artifacts = SpawnArtifacts {
+            pid: 2_000_000_002,
+            pgid: hidden_pid,
+            start_time: read_proc_start_time(hidden_pid).expect("hidden start_time"),
+            boot_id,
+            log_path: None,
+            extra: serde_json::json!({}),
+        };
+        let stopped = marked_group_stopped(&artifacts, &marker);
+        let member_pids: Vec<i32> =
+            group_members_with_env_marker(hidden_pid, "NEIGE_GATE_OP", &marker)
+                .into_iter()
+                .map(|m| m.pid)
+                .collect();
+        let still_live = read_proc_start_time(hidden_pid);
+
+        // Cleanup before asserting (the child otherwise sleeps 30 s).
+        let _ = hidden.kill();
+        let _ = hidden.wait();
+
+        assert!(
+            became_unreadable,
+            "the descendant's environ never became unreadable; prctl/setup did not take"
+        );
+        assert!(
+            matches!(stopped, Ok(false)),
+            "an unreadable live member must block the wait (cleanup-uncertain, fail closed), got {stopped:?}"
+        );
+        assert!(
+            !member_pids.contains(&hidden_pid),
+            "an unreadable member must NOT be listed for the kill sweep, got {member_pids:?}"
+        );
+        assert!(
+            still_live.is_some(),
+            "the unreadable member must be left alive (never killed by the gate)"
+        );
     }
 }

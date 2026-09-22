@@ -344,11 +344,16 @@ pub(crate) async fn wait_group_stopped(artifacts: &super::SpawnArtifacts) -> Res
     .map_err(|_| CalmError::Conflict("gate process-group cleanup remains unresolved".into()))?
 }
 
-/// Like [`group_stopped`], but a live member counts only if `/proc/<pid>/environ` carries
-/// `NEIGE_GATE_OP=<op_marker>`. On the recovery paths the wrapper's leader is dead and the numeric
-/// pgid can be reused by an unrelated process; that process is NOT waited for (nor swept), so a
-/// recycled pgid never turns a recovery into a 5 s timeout. Boot mismatch and an invalid pgid are
-/// handled exactly as [`group_stopped`]; an unreadable/unparseable live member still fails closed.
+/// Like [`group_stopped`], but a live member's classification comes from
+/// [`crate::proc_identity::proc_env_marker`] against `NEIGE_GATE_OP=<op_marker>`. On the recovery
+/// paths the wrapper's leader is dead and the numeric pgid can be reused by an unrelated process;
+/// a proven-`Foreign` member (environ readable without the marker, or already gone) is NOT waited
+/// for (nor swept), so a recycled pgid never turns a recovery into a 5 s timeout. Boot mismatch and
+/// an invalid pgid are handled exactly as [`group_stopped`]. A live member whose environ is
+/// UNREADABLE ([`crate::proc_identity::MarkerAuth::Unreadable`] — e.g. a same-uid descendant that
+/// set `PR_SET_DUMPABLE=0`) is cleanup-uncertain, not proven foreign: it blocks the wait (fail
+/// closed → the group never counts as stopped → `gate-infra`) yet is never killed (the sweep signals
+/// only `Present`). An unparseable `stat` still returns `Err`.
 pub(crate) fn marked_group_stopped(
     artifacts: &super::SpawnArtifacts,
     op_marker: &str,
@@ -376,12 +381,15 @@ pub(crate) fn marked_group_stopped(
         let fields = crate::proc_identity::parse_proc_stat_fields(&stat).ok_or_else(|| {
             CalmError::Conflict("gate cleanup process identity unreadable".into())
         })?;
-        if fields.pgrp == artifacts.pgid
-            && fields.state != 'Z'
-            && fields.state != 'X'
-            && crate::proc_identity::proc_env_contains(pid, "NEIGE_GATE_OP", op_marker)
-        {
-            return Ok(false);
+        if fields.pgrp == artifacts.pgid && fields.state != 'Z' && fields.state != 'X' {
+            // Fail closed on an unreadable live member: `Present` (proven ours) OR `Unreadable`
+            // (live but environ hidden — cannot be proven foreign) both block the wait; only a
+            // proven-`Foreign` member (readable without the marker, or already gone) is passed over.
+            match crate::proc_identity::proc_env_marker(pid, "NEIGE_GATE_OP", op_marker) {
+                crate::proc_identity::MarkerAuth::Present
+                | crate::proc_identity::MarkerAuth::Unreadable => return Ok(false),
+                crate::proc_identity::MarkerAuth::Foreign => {}
+            }
         }
     }
     Ok(true)

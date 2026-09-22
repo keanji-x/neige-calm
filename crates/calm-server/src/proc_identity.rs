@@ -160,27 +160,64 @@ pub fn scan_process_group_members(_pgid: i32) -> Vec<GroupMember> {
     Vec::new()
 }
 
-/// Does `/proc/<pid>/environ` carry the exact `key=value` entry? The environ is NUL-separated and
-/// readable by the same uid; a process started from an empty environment that never `unset`s the
-/// marker keeps it, and every descendant inherits it. Unreadable (gone, permission) or absent → `false`.
-/// This is what authenticates a recovered gate's group members across a kernel restart: a numeric
-/// pgid can be recycled by an unrelated process once the wrapper's leader dies, but that process
-/// does not carry our marker. Returns `false` unconditionally on non-Linux.
-#[cfg(target_os = "linux")]
-pub fn proc_env_contains(pid: i32, key: &str, value: &str) -> bool {
-    let Ok(bytes) = std::fs::read(format!("/proc/{pid}/environ")) else {
-        return false;
-    };
-    let needle = format!("{key}={value}");
-    bytes
-        .split(|&b| b == 0)
-        .any(|entry| entry == needle.as_bytes())
+/// Three-value classification of `/proc/<pid>/environ` against an exact `key=value` marker. The
+/// environ is NUL-separated and readable by the same uid; a process started from an empty
+/// environment that never `unset`s the marker keeps it, and every descendant inherits it. This is
+/// what tells a recovered gate's own descendants (across a kernel restart) apart from an unrelated
+/// process that recycled the numeric pgid once the wrapper's leader died — but "cannot read the
+/// environ" must NOT be collapsed into "proven not ours": a live same-uid descendant can hide its
+/// own environ (`PR_SET_DUMPABLE=0` → EACCES, or a cleared environment), and dropping it from both
+/// the wait and the kill would let it keep mutating the checkout while the gate reports clean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkerAuth {
+    /// Environ readable and carrying the exact marker: a proven descendant. Killed by the sweep;
+    /// blocks the wait.
+    Present,
+    /// Environ readable WITHOUT the marker (a recycled-pgid stranger), or the process is already
+    /// gone (`ENOENT`): not ours and not live — never killed, never blocks the wait.
+    Foreign,
+    /// Environ unreadable while the process is live (`EACCES`, …): cleanup-uncertain, NOT
+    /// proven-foreign. Never killed (identity unproven), but blocks the wait (fail closed →
+    /// `gate-infra`) so a hidden-environ descendant cannot slip a clean after-sample past the gate.
+    Unreadable,
 }
 
-/// Non-Linux stub for [`proc_env_contains`]: no `/proc`, so nothing is authenticated (fail-closed).
+#[cfg(target_os = "linux")]
+pub fn proc_env_marker(pid: i32, key: &str, value: &str) -> MarkerAuth {
+    match std::fs::read(format!("/proc/{pid}/environ")) {
+        Ok(bytes) => {
+            let needle = format!("{key}={value}");
+            if bytes
+                .split(|&b| b == 0)
+                .any(|entry| entry == needle.as_bytes())
+            {
+                MarkerAuth::Present
+            } else {
+                MarkerAuth::Foreign
+            }
+        }
+        // The process left between the scan and this read: not a live member to wait for and not a
+        // live process to kill — fold into `Foreign`.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => MarkerAuth::Foreign,
+        // Live but unreadable (EACCES from `PR_SET_DUMPABLE=0`, etc.): membership cannot be proven
+        // OR disproven — cleanup-uncertain.
+        Err(_) => MarkerAuth::Unreadable,
+    }
+}
+
+/// Non-Linux stub for [`proc_env_marker`]: no `/proc`, so nothing is authenticated (`Foreign`).
 #[cfg(not(target_os = "linux"))]
-pub fn proc_env_contains(_pid: i32, _key: &str, _value: &str) -> bool {
-    false
+pub fn proc_env_marker(_pid: i32, _key: &str, _value: &str) -> MarkerAuth {
+    MarkerAuth::Foreign
+}
+
+/// Does `/proc/<pid>/environ` carry the exact `key=value` entry (i.e. [`MarkerAuth::Present`])? This
+/// is the KILL-path predicate: [`group_members_with_env_marker`] → [`sigkill_verified_members`]
+/// signals ONLY proven members, never a `Foreign` (recycled pgid) or `Unreadable` (dumpable-off /
+/// env-cleared) process. The wait path uses [`proc_env_marker`] directly so it can fail closed on
+/// `Unreadable`. Returns `false` on non-Linux and for every non-`Present` classification.
+pub fn proc_env_contains(pid: i32, key: &str, value: &str) -> bool {
+    matches!(proc_env_marker(pid, key, value), MarkerAuth::Present)
 }
 
 /// The members of process group `pgid` whose `/proc/<pid>/environ` carries `key=value` — the gate's
