@@ -73,6 +73,29 @@ def main():
         area = request("/api/areas", {"name": "Investment laboratory", "color": "#267A67"})
         track = request("/api/tracks", {"area_id": area["id"], "title": "Weekly paper strategy", "recipe_id": recipe["id"],
                                         "theme": {"fg": [216, 219, 226], "bg": [15, 20, 24]}})
+        report_path = f"/api/tracks/{track['id']}/report"
+        report = request(report_path)
+        views = [block for block in report['blocks'] if block['kind'] == 'view.live']
+        assert len(views) == 7 and not any(block['kind'] == 'table' for block in report['blocks'])
+        reference = views[0]['payload']
+        temporary = request(report_path + '/blocks', {
+            'kind': 'view.live', 'payload': reference, 'ifDocRev': report['docRev']})
+        temporary_id = temporary['id']
+        temporary = next(block for block in request(report_path)['blocks'] if block['id'] == temporary_id)
+        request(report_path + '/blocks/' + temporary_id, {
+            'kind': 'view.live', 'payload': reference | {'view': 'cards'}, 'ifBlockRev': temporary['rev']}, 'PATCH')
+        after = request(report_path)
+        try:
+            request(report_path + '/blocks/' + temporary_id, {
+                'kind': 'view.live', 'payload': reference, 'ifBlockRev': temporary['rev']}, 'PATCH')
+        except RuntimeError as error:
+            assert ': 409:' in str(error), error
+        else:
+            raise AssertionError('stale view.live edit was accepted')
+        assert request(report_path)['docRev'] == after['docRev']
+        temporary = next(block for block in after['blocks'] if block['id'] == temporary_id)
+        request(report_path + '/blocks/' + temporary_id, {'ifBlockRev': temporary['rev']}, 'DELETE')
+        assert request(report_path)['body'] == report['body']
         request("/api/plugins/install", {"source": {"kind": "local_path", "path": str(plugin)}})
         config = {"account_no": "FIXTURE-PAPER", "broker_home": str(home), "poll_seconds": 5,
                   "cli_path": str(plugin / "tests/fixture_cli.py")}

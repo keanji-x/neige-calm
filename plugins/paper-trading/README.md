@@ -139,8 +139,11 @@ Approved typed settings and proposal history persist in `strategy.sqlite3`
 alongside the existing `ledger.sqlite3`, independently of mutable Recipe and
 Report prose. Preserve both databases and research snapshots.
 
-Deploy this Recipe with the matching frontend's version-1 native live-view
-renderer. It accepts bounded data, not HTML, script, styles or action URLs.
+Deploy this Recipe with the matching server and frontend supporting the
+first-class `view.live` block. Every reference declares its source, version and
+view; tables remain table-only. The renderer accepts bounded data, not HTML,
+script, styles or action URLs. The plugin owns labels, business calculations,
+and semantic tones; the platform owns validation, layout and interaction.
 The original seven table source IDs remain available to previously saved
 Reports; seven additional source IDs carry the new visual views. Updating a saved
 Recipe does not rewrite existing Track reports or approved strategy settings.

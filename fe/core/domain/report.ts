@@ -70,6 +70,14 @@ export const liveTableBlockPayloadSchema = z.strictObject({
   caption: max2048CodePoints(z.string()).nullish(),
 });
 
+/** A first-class, read-only presentation reference, not an executable App. */
+export const liveViewBlockPayloadSchema = z.strictObject({
+  source: max2048CodePoints(z.string().regex(LIVE_TABLE_SOURCE_PATTERN)),
+  version: z.literal(1),
+  view: z.enum(['overview', 'activity', 'cards', 'details']),
+});
+export type LiveViewBlockPayload = z.infer<typeof liveViewBlockPayloadSchema>;
+
 /* chart.series: a chart that names its data instead of carrying it. Like the kernel, `as_of`
    is never compared with today — a cutoff in the future is a frozen block the renderer must draw. */
 
@@ -238,6 +246,7 @@ export type ReportBlock =
   | Readonly<{ id: string; kind: 'chart.candles'; payload: ChartCandlesPayload }>
   | Readonly<{ id: string; kind: 'chart.series'; rev: number; payload: ChartSeriesPayload }>
   | Readonly<{ id: string; kind: 'table'; payload: TableBlockPayload }>
+  | Readonly<{ id: string; kind: 'view.live'; payload: LiveViewBlockPayload }>
   | Readonly<{ id: string; kind: 'app'; payload: AppBlockPayload }>
   | Readonly<{ id: string; kind: 'task'; payload: TaskBlockPayload }>
   | Readonly<{ id: string; kind: 'unsupported'; declaredKind: string }>;
@@ -257,6 +266,7 @@ function payloadSchemaFor(kind: string): z.ZodType | null {
     case 'chart.candles': return chartCandlesPayloadSchema;
     case 'chart.series': return chartSeriesPayloadSchema;
     case 'table': return tableBlockPayloadSchema;
+    case 'view.live': return liveViewBlockPayloadSchema;
     case 'app': return appBlockPayloadSchema;
     case 'task': return taskBlockPayloadSchema;
     default: return null;

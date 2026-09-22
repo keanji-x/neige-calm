@@ -22,17 +22,15 @@
   .chartTitle { margin-block-end: var(--space-4); font-size: var(--text-base); font-weight: var(--weight-semibold); color: var(--text); }
   .bars { min-block-size: 4rem; max-block-size: 18rem; overflow-y: auto; }
   .barRow { margin-block-end: var(--space-4); }
-  .barLabels, .budgetLabels { display: flex; justify-content: space-between; gap: var(--space-3); font-size: var(--text-xs); color: var(--text-2); }
+  .barLabels, .meterLabels { display: flex; justify-content: space-between; gap: var(--space-3); font-size: var(--text-xs); color: var(--text-2); }
   .barLabels strong { flex: none; max-inline-size: 45%; font-variant-numeric: tabular-nums; }
   .barTrack { position: relative; block-size: 1rem; margin-block-start: var(--space-2); background: var(--surface-chip); border-radius: var(--radius-sm); overflow: hidden; }
   .zeroLine { position: absolute; block-size: 100%; inline-size: 1px; background: var(--hairline-strong); z-index: 1; }
-  .barPositive, .barNegative { position: absolute; inset-block: 0; min-inline-size: 0; border-radius: var(--radius-sm); }
-  .barPositive { background: var(--success); }
-  .barNegative { background: var(--error); }
-  .budgetPercent { margin-block: var(--space-2) var(--space-4); font-size: var(--text-xl); font-weight: var(--weight-semibold); font-variant-numeric: tabular-nums; }
-  .budgetPercent span { margin-inline-start: var(--space-1); font-size: var(--text-lg); color: var(--text-3); }
+  .barMark { position: absolute; inset-block: 0; min-inline-size: 0; border-radius: var(--radius-sm); background: currentcolor; }
+  .meterPercent { margin-block: var(--space-2) var(--space-4); font-size: var(--text-xl); font-weight: var(--weight-semibold); font-variant-numeric: tabular-nums; }
+  .meterPercent span { margin-inline-start: var(--space-1); font-size: var(--text-lg); color: var(--text-3); }
   .meter { display: block; inline-size: 100%; block-size: 1.25rem; accent-color: var(--accent); }
-  .budgetLabels { margin-block-start: var(--space-2); flex-wrap: wrap; }
+  .meterLabels { margin-block-start: var(--space-2); flex-wrap: wrap; }
   .chart .chartNote { margin-block-start: var(--space-4); font-size: var(--text-xs); color: var(--text-3); }
   .empty { padding-block: var(--space-5); color: var(--text-3); font-size: var(--text-base); }
   .root .activity { list-style: none; padding: 0; }
@@ -42,13 +40,13 @@
   .activityHead strong { min-inline-size: 0; max-inline-size: 100%; font-size: var(--text-base); font-weight: var(--weight-semibold); }
   .activityHead time { font-size: var(--text-xs); color: var(--text-3); white-space: nowrap; }
   .activityItem p { color: var(--text-2); font-size: var(--text-base); margin-block-start: var(--space-2); white-space: pre-wrap; }
-  .reviews { display: grid; gap: var(--space-4); }
-  .review { background: var(--surface-card); border-radius: var(--radius-sm); padding: var(--space-5); min-inline-size: 0; }
-  .review h3 { margin: 0 0 var(--space-3); font-family: var(--font-sans); font-size: var(--text-base); font-weight: var(--weight-semibold); color: var(--text); }
-  .review p { color: var(--text-2); white-space: pre-wrap; font-size: var(--text-base); }
-  .next { margin-block-start: var(--space-4); padding-block-start: var(--space-3); border-block-start: 1px solid var(--hairline); }
-  .next strong { display: block; font-size: var(--text-xs); color: var(--text-3); margin-block-end: var(--space-2); }
-  .review .reviewFooter { margin-block-start: var(--space-4); color: var(--text-3); font-size: var(--text-xs); }
+  .cards { display: grid; gap: var(--space-4); }
+  .card { background: var(--surface-card); border-radius: var(--radius-sm); padding: var(--space-5); min-inline-size: 0; }
+  .card h3 { margin: 0 0 var(--space-3); font-family: var(--font-sans); font-size: var(--text-base); font-weight: var(--weight-semibold); color: var(--text); }
+  .card p { color: var(--text-2); white-space: pre-wrap; font-size: var(--text-base); }
+  .section { margin-block-start: var(--space-4); padding-block-start: var(--space-3); border-block-start: 1px solid var(--hairline); }
+  .section strong { display: block; font-size: var(--text-xs); color: var(--text-3); margin-block-end: var(--space-2); }
+  .card .cardFooter { margin-block-start: var(--space-4); color: var(--text-3); font-size: var(--text-xs); }
   .details { border-block-start: 1px solid var(--hairline); }
   .summary { display: flex; align-items: center; gap: var(--space-2); list-style: none; cursor: pointer; padding-block: var(--space-4); color: var(--text-2); font-weight: var(--weight-semibold); }
   .summary::-webkit-details-marker { display: none; }

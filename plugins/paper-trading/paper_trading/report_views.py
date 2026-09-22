@@ -52,7 +52,9 @@ def overview(state):
         notices.append({'title': f"{len(state['alerts'])} 项持仓提醒",
                         'detail': detail + '。提醒不是保护性订单，不会自动平仓。', 'tone': 'warning'})
     points = [{'label': f"{trade['symbol']} · 交易{index + 1}（{state_text(trade['state'])}）",
-               'value': float(Decimal(trade['realized_gross_usd']))}
+               'value': float(Decimal(trade['realized_gross_usd'])),
+               'tone': 'positive' if Decimal(trade['realized_gross_usd']) > 0 else
+                       'negative' if Decimal(trade['realized_gross_usd']) < 0 else 'neutral'}
               for index, trade in enumerate(state['trades']) if trade['sold'] > 0][-12:]
     used, limit = None, None
     if known:
@@ -64,13 +66,19 @@ def overview(state):
         # Chart numbers are display-only. Order admission still uses the exact
         # Decimal/Fraction calculations in the execution engine.
         used, limit = float(exposure + reserved), float(Decimal(active['settings']['max_portfolio_usd']))
-    return {'version': 1, 'view': 'overview', 'asOf': snapshot['at'] if snapshot else None,
+    over_budget = known and used > limit
+    budget_detail = '持仓成本加未完成买单预留金额；不代表市值或最大亏损。'
+    if over_budget:
+        budget_detail = '已超过当前预算。' + budget_detail
+    return {'version': 1, 'view': 'overview',
+            'updated': {'label': '最近对账', 'at': snapshot['at']} if snapshot else None,
             'metrics': metrics, 'notices': notices,
             'charts': [
                 {'kind': 'bars', 'title': '逐笔已实现毛收益', 'unit': 'USD · 最近 12 笔有退出成交的交易 · 未计费用',
                  'emptyText': '暂无退出成交，尚无已实现收益。', 'points': points},
-                {'kind': 'budget', 'title': '策略预算使用', 'unit': 'USD', 'used': used, 'limit': limit,
-                 'detail': '持仓成本加未完成买单预留金额；不代表市值或最大亏损。'},
+                {'kind': 'meter', 'title': '策略预算使用', 'unit': 'USD', 'used': used, 'limit': limit,
+                 'usedLabel': '已使用', 'limitLabel': '上限', 'emptyText': '暂无已确认的预算数据',
+                 'tone': 'negative' if over_budget else 'neutral', 'detail': budget_detail},
             ]}
 
 
@@ -91,7 +99,8 @@ def reviews(state):
     for review in reversed(state['reviews'][-50:]):
         trade = trades.get(review['trade_id'])
         items.append({'id': review['review_id'], 'title': f"{trade['symbol']} · 交易{numbers[review['trade_id']]}复盘" if trade else '交易复盘',
-                      'body': bounded(review['analysis'], 8000), 'next': bounded(review['next_action'], 8000),
+                      'body': bounded(review['analysis'], 8000),
+                      'sections': [{'label': '下一步', 'body': bounded(review['next_action'], 8000)}] if review['next_action'] else [],
                       'footer': f"已实现毛收益 {money_text(trade['realized_gross_usd'], signed=True)} · 未计费用" if trade else ''})
     return {'version': 1, 'view': 'cards', 'emptyText': '交易完成后，复盘会显示在这里。', 'items': items}
 

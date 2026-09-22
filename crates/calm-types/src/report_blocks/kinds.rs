@@ -10,6 +10,7 @@ pub const KIND_PROSE: &str = "prose";
 pub const KIND_CHART_CANDLES: &str = "chart.candles";
 pub const KIND_CHART_SERIES: &str = "chart.series";
 pub const KIND_TABLE: &str = "table";
+pub const KIND_LIVE_VIEW: &str = "view.live";
 pub const KIND_APP: &str = "app";
 pub const KIND_TASK: &str = "task";
 
@@ -25,14 +26,17 @@ pub const MAX_TABLE_ROWS: usize = 500;
 pub const MAX_STRING_CHARS: usize = 2048;
 /// Maximum size (bytes) of a payload's canonical JSON rendering.
 pub const MAX_CANONICAL_BYTES: usize = 256 * 1024;
+/// Bounded prose histories may be larger than the persisted view reference.
+pub const MAX_LIVE_VIEW_BYTES: usize = 4 * 1024 * 1024;
 
 /// The non-prose kinds a report may contain, in `blocks.kinds` order.
-pub const DATA_KINDS: [&str; 5] = [
+pub const DATA_KINDS: [&str; 6] = [
     KIND_CHART_CANDLES,
     KIND_CHART_SERIES,
     KIND_TABLE,
     KIND_APP,
     KIND_TASK,
+    KIND_LIVE_VIEW,
 ];
 
 pub fn is_data_kind(kind: &str) -> bool {
@@ -72,6 +76,7 @@ pub fn validate_payload(kind: &str, payload: &Value) -> Result<(), String> {
         KIND_CHART_CANDLES => validate_chart(map, &mut errors),
         KIND_CHART_SERIES => super::chart_series::validate_chart_series(map, &mut errors),
         KIND_TABLE => validate_table(map, &mut errors),
+        KIND_LIVE_VIEW => validate_live_view(map, &mut errors),
         KIND_APP => validate_app(map, &mut errors),
         KIND_TASK => validate_task(map, &mut errors),
         other => errors.push(format!(
@@ -503,6 +508,28 @@ fn validate_live_table(map: &Map<String, Value>, errors: &mut Vec<String>) {
         )),
     }
     optional_string(map, "caption", errors);
+}
+
+fn validate_live_view(map: &Map<String, Value>, errors: &mut Vec<String>) {
+    reject_unknown(map, &["source", "version", "view"], errors);
+    match map.get("source").and_then(Value::as_str) {
+        Some(source) => {
+            check_string_cap("source", source, errors);
+            if let Err(error) = validate_live_source(source) {
+                errors.push(error);
+            }
+        }
+        None => errors.push("source: required plugin overlay reference".into()),
+    }
+    if map.get("version").and_then(Value::as_f64) != Some(1.0) {
+        errors.push("version: required integer 1".into());
+    }
+    required_enum(
+        map,
+        "view",
+        &["overview", "activity", "cards", "details"],
+        errors,
+    );
 }
 
 fn validate_table(map: &Map<String, Value>, errors: &mut Vec<String>) {

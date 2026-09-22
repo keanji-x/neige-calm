@@ -1,10 +1,12 @@
 import { Button } from '@astryxdesign/core/Button';
 
-import { signedBarLayout, type OverviewChart, type ReportLiveView } from '../../../../../core/domain/report-live-view.ts';
+import { reportLiveViewSchema, type OverviewChart, type ReportLiveView } from '../../../../../core/domain/report-live-view.ts';
+import type { LiveViewBlockPayload } from '../../../../../core/domain/report.ts';
 import type { ReportSourceLinkTarget } from '../../../../../core/domain/report-source.ts';
 import { Icon } from '../../../ui/icon/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import { InlineTable } from '../table/inline.tsx';
+import { signedBarLayout } from './layout.ts';
 import styles from './rich.module.css';
 
 function number(value: number) {
@@ -25,14 +27,29 @@ function toneClass(tone: string) {
   }
 }
 
-export function ReportLiveViewBlock({ payload, onOpenSourceLink }: {
+export function ReportLiveViewBlock({ payload, resolveOverlay, onOpenSourceLink }: {
+  payload: LiveViewBlockPayload;
+  resolveOverlay?: (source: string) => unknown;
+  onOpenSourceLink?: (target: ReportSourceLinkTarget) => void;
+}) {
+  if (resolveOverlay === undefined) return <p>This view does not carry live data.</p>;
+  const raw = resolveOverlay(payload.source);
+  if (raw === undefined) return <p>Waiting for {payload.source}.</p>;
+  const parsed = reportLiveViewSchema.safeParse(raw);
+  if (!parsed.success || parsed.data.version !== payload.version || parsed.data.view !== payload.view) {
+    return <p role="status">Live view data does not match the declared version and view.</p>;
+  }
+  return <View payload={parsed.data} onOpenSourceLink={onOpenSourceLink} />;
+}
+
+function View({ payload, onOpenSourceLink }: {
   payload: ReportLiveView;
   onOpenSourceLink?: (target: ReportSourceLinkTarget) => void;
 }) {
   switch (payload.view) {
     case 'overview': return <Overview payload={payload} />;
     case 'activity': return <Activity payload={payload} />;
-    case 'cards': return <ReviewCards payload={payload} />;
+    case 'cards': return <Cards payload={payload} />;
     case 'details': return (
       <details className={styles.details}>
         <summary className={styles.summary}><Icon name="chevron-right" size="sm" /><span>{payload.title}</span></summary>
@@ -58,29 +75,27 @@ function Overview({ payload }: { payload: Extract<ReportLiveView, { view: 'overv
           </div>
         ))}
       </dl>
-      {payload.asOf !== null && <p className={styles.timestamp}>最近对账 <time dateTime={payload.asOf}>{time(payload.asOf)}</time></p>}
+      {payload.updated !== null && <p className={styles.timestamp}>{payload.updated.label} <time dateTime={payload.updated.at}>{time(payload.updated.at)}</time></p>}
       <div className={styles.charts}>{payload.charts.map((chart, index) => <Chart key={index} chart={chart} />)}</div>
     </div>
   );
 }
 
 function Chart({ chart }: { chart: OverviewChart }) {
-  if (chart.kind === 'budget') {
-    const over = chart.used !== null && chart.limit !== null && chart.used > chart.limit;
+  if (chart.kind === 'meter') {
     return (
       <figure className={styles.chart}>
         <figcaption className={styles.chartTitle}>{chart.title}</figcaption>
         {chart.used !== null && chart.limit !== null ? (
           <>
-            <div className={`${styles.budgetPercent} ${over ? styles.negative : styles.neutral}`}>
+            <div className={`${styles.meterPercent} ${toneClass(chart.tone)}`}>
               {number(chart.used / chart.limit * 100)}<span>%</span>
             </div>
             <meter className={styles.meter} aria-label={chart.title} min={0} max={chart.limit}
               value={Math.min(chart.used, chart.limit)} aria-valuetext={`${number(chart.used)} / ${number(chart.limit)} ${chart.unit}`} />
-            <div className={styles.budgetLabels}><span>已使用 {number(chart.used)}</span><span>上限 {number(chart.limit)} {chart.unit}</span></div>
-            {over && <p className={styles.negative}>已超过当前预算</p>}
+            <div className={styles.meterLabels}><span>{chart.usedLabel} {number(chart.used)}</span><span>{chart.limitLabel} {number(chart.limit)} {chart.unit}</span></div>
           </>
-        ) : <p className={styles.empty}>暂无已确认的预算数据</p>}
+        ) : <p className={styles.empty}>{chart.emptyText}</p>}
         <p className={styles.chartNote}>{chart.detail}</p>
       </figure>
     );
@@ -93,12 +108,12 @@ function Chart({ chart }: { chart: OverviewChart }) {
         <div className={styles.bars} role="img" aria-label={`${chart.title}：${chart.points.map((point) => `${point.label} ${number(point.value)}`).join('；')} ${chart.unit}`}>
           {chart.points.map((point, index) => (
             <div key={index} className={styles.barRow}>
-              <div className={styles.barLabels}><span>{point.label}</span><strong className={point.value < 0 ? styles.negative : point.value > 0 ? styles.positive : styles.neutral}>
+              <div className={styles.barLabels}><span>{point.label}</span><strong className={toneClass(point.tone)}>
                 {point.value > 0 ? '+' : ''}{number(point.value)}
               </strong></div>
               <div className={styles.barTrack} title={`${point.label}: ${number(point.value)} ${chart.unit}`}>
                 <span className={styles.zeroLine} style={{ insetInlineStart: `${layout[index]?.zero ?? 0}%` }} />
-                <span className={point.value < 0 ? styles.barNegative : styles.barPositive}
+                <span className={`${styles.barMark} ${toneClass(point.tone)}`}
                   style={{ insetInlineStart: `${layout[index]?.start ?? 0}%`, inlineSize: `${layout[index]?.width ?? 0}%` }} />
               </div>
             </div>
@@ -124,27 +139,27 @@ function Activity({ payload }: { payload: Extract<ReportLiveView, { view: 'activ
           </li>
         ))}</ol>
       )}
-      {payload.items.length > 5 && <Button variant="ghost" label={expanded ? '收起动态' : `更多动态（${payload.items.length - 5}）`}
+      {payload.items.length > 5 && <Button variant="ghost" label={expanded ? '收起' : `展开更多（${payload.items.length - 5}）`}
         onClick={() => setExpanded(!expanded)} />}
     </div>
   );
 }
 
-function ReviewCards({ payload }: { payload: Extract<ReportLiveView, { view: 'cards' }> }) {
+function Cards({ payload }: { payload: Extract<ReportLiveView, { view: 'cards' }> }) {
   const [expanded, setExpanded] = useState(false);
   const items = expanded ? payload.items : payload.items.slice(0, 3);
   return (
     <div className={styles.root}>
       {items.length === 0 ? <p className={styles.empty}>{payload.emptyText}</p> : (
-        <div className={styles.reviews}>{items.map((item) => (
-          <section key={item.id} className={styles.review} aria-label={item.title}>
+        <div className={styles.cards}>{items.map((item) => (
+          <section key={item.id} className={styles.card} aria-label={item.title}>
             <h3>{item.title}</h3><p>{item.body}</p>
-            {item.next !== '' && <div className={styles.next}><strong>下一步</strong><p>{item.next}</p></div>}
-            {item.footer !== '' && <p className={styles.reviewFooter}>{item.footer}</p>}
+            {item.sections.map((section, index) => <div key={index} className={styles.section}><strong>{section.label}</strong><p>{section.body}</p></div>)}
+            {item.footer !== '' && <p className={styles.cardFooter}>{item.footer}</p>}
           </section>
         ))}</div>
       )}
-      {payload.items.length > 3 && <Button variant="ghost" label={expanded ? '收起复盘' : `更多复盘（${payload.items.length - 3}）`}
+      {payload.items.length > 3 && <Button variant="ghost" label={expanded ? '收起' : `展开更多（${payload.items.length - 3}）`}
         onClick={() => setExpanded(!expanded)} />}
     </div>
   );

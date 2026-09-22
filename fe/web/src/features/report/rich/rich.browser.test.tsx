@@ -4,22 +4,23 @@ import { afterEach, expect, it } from 'vitest';
 
 import '../../../styles/entry.css';
 import { reportLiveViewSchema } from '../../../../../core/domain/report-live-view.ts';
-import { ReportTableBlock } from '../table/public.tsx';
+import { ReportLiveViewBlock } from './public.tsx';
 
 afterEach(cleanup);
 
 it.each([390, 1440])('keeps metrics and chart marks within a %i pixel viewport', async (width) => {
   await page.viewport(width, 1000);
   const payload = {
-    version: 1, view: 'overview', asOf: '2026-09-22T08:00:00Z', notices: [],
+    version: 1, view: 'overview', updated: { label: '最近对账', at: '2026-09-22T08:00:00Z' }, notices: [],
     metrics: [{ label: '账户权益', value: '$1,000,000,000.00', detail: '券商账户总额', tone: 'neutral' },
       { label: '已实现毛收益', value: '-$2,000.00', detail: '未计费用', tone: 'negative' }],
     charts: [{ kind: 'bars', title: '已实现收益', unit: 'USD', emptyText: '',
-      points: [{ label: '盈利交易', value: 50 }, { label: '亏损交易', value: -20 }] },
-    { kind: 'budget', title: '预算', unit: 'USD', detail: '成本口径', used: 150, limit: 100 }],
+      points: [{ label: '盈利交易', value: 50, tone: 'positive' }, { label: '亏损交易', value: -20, tone: 'negative' }] },
+    { kind: 'meter', title: '预算', unit: 'USD', detail: '成本口径', used: 150, limit: 100,
+      usedLabel: '已用', limitLabel: '上限', emptyText: '未知', tone: 'negative' }],
   };
   const { container } = render(<main style={{ maxInlineSize: 600, padding: 12 }}>
-    <ReportTableBlock payload={{ source: 'neige://plugin/demo/overview' }} resolveLive={() => payload} />
+    <ReportLiveViewBlock payload={{ source: 'neige://plugin/demo/overview', version: 1, view: 'overview' }} resolveOverlay={() => payload} />
   </main>);
   expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
   for (const value of container.querySelectorAll('dd')) {
@@ -38,7 +39,7 @@ it.each([390, 1440])('keeps metrics and chart marks within a %i pixel viewport',
 
 it('opens reference details using the keyboard without adding approval controls', async () => {
   await page.viewport(390, 844);
-  const { container } = render(<ReportTableBlock payload={{ source: 'neige://plugin/demo/detail' }} resolveLive={() => ({
+  const { container } = render(<ReportLiveViewBlock payload={{ source: 'neige://plugin/demo/detail', version: 1, view: 'details' }} resolveOverlay={() => ({
     version: 1, view: 'details', title: '策略参数',
     table: { columns: [{ key: 'amount', label: '预算' }], rows: [{ amount: 1000 }] },
   })} />);
@@ -54,20 +55,20 @@ it('opens reference details using the keyboard without adding approval controls'
 it.each(['metric-label', 'metric-detail', 'activity-title', 'card-title', 'notice-title', 'chart-title'])(
   'contains schema-valid unbroken %s on mobile', async (field) => {
     await page.viewport(390, 844);
-    const overview = { version: 1, view: 'overview', asOf: null,
+    const overview = { version: 1, view: 'overview', updated: null,
       metrics: [{ label: field === 'metric-label' ? 'M'.repeat(120) : 'Equity', value: '$100',
         detail: field === 'metric-detail' ? 'D'.repeat(500) : 'Account total', tone: 'neutral' }],
       notices: field === 'notice-title' ? [{ title: 'N'.repeat(200), detail: 'Notice', tone: 'warning' }] : [],
-      charts: field === 'chart-title' ? [{ kind: 'bars', title: 'C'.repeat(200), unit: 'USD', emptyText: '', points: [{ label: 'Trade', value: 10 }] }] : [],
+      charts: field === 'chart-title' ? [{ kind: 'bars', title: 'C'.repeat(200), unit: 'USD', emptyText: '', points: [{ label: 'Trade', value: 10, tone: 'neutral' }] }] : [],
     };
     const payload = field === 'activity-title'
       ? { version: 1, view: 'activity', emptyText: '', items: [{ id: 'event', at: '2026-09-22T08:00:00Z', title: 'A'.repeat(200), detail: 'Event detail', tone: 'neutral' }] }
       : field === 'card-title'
-        ? { version: 1, view: 'cards', emptyText: '', items: [{ id: 'review', title: 'R'.repeat(200), body: 'Review body', next: '', footer: '' }] }
+        ? { version: 1, view: 'cards', emptyText: '', items: [{ id: 'review', title: 'R'.repeat(200), body: 'Review body', sections: [], footer: '' }] }
         : overview;
-    expect(reportLiveViewSchema.safeParse(payload).success).toBe(true);
+    const parsed = reportLiveViewSchema.parse(payload);
     render(<main style={{ maxInlineSize: 600, padding: 12 }}>
-      <ReportTableBlock payload={{ source: 'neige://plugin/demo/long' }} resolveLive={() => payload} />
+      <ReportLiveViewBlock payload={{ source: 'neige://plugin/demo/long', version: 1, view: parsed.view }} resolveOverlay={() => payload} />
     </main>);
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(390);
   },

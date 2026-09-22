@@ -1,4 +1,4 @@
-//! The `resolved` projection `calm.report.read` attaches to its block index (`chart.series` rows, live `table` overlays).
+//! Read-only hydration of chart series and typed Track overlay references.
 //! Everything here is a database read plus, for a `chart.series` block without a fresh row, one in-memory `enqueue`; nothing calls a plugin, nothing writes.
 
 use std::collections::HashMap;
@@ -12,7 +12,9 @@ use crate::mcp_server::tool_visibility::{TrackPluginScope, plugin_scope_for_trac
 use crate::report_series::hydrate::hydrate_chart_series;
 use crate::report_series::{Detail, resolved_at_text};
 use calm_types::report_blocks::kinds::LIVE_SOURCE_PREFIX;
-use calm_types::report_blocks::{KIND_CHART_SERIES, KIND_TABLE};
+use calm_types::report_blocks::{
+    KIND_CHART_SERIES, KIND_LIVE_VIEW, KIND_TABLE, MAX_LIVE_VIEW_BYTES, validate_payload,
+};
 use calm_types::track_report::ReportBlock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,13 +71,15 @@ pub(crate) async fn hydrated_block_index(
     } else {
         None
     };
-    let overlays = if blocks.iter().any(is_live_table) {
+    let overlays = if blocks.iter().any(|block| {
+        is_overlay_block(block) && modes.get(&block.id).copied() != Some(ResolveMode::None)
+    }) {
         ctx.repo
             .overlays_for("track", track_id)
             .await
-            .unwrap_or_default()
+            .map_err(|_| "overlay storage unavailable")
     } else {
-        Vec::new()
+        Ok(Vec::new())
     };
 
     let mut index = Vec::with_capacity(blocks.len());
@@ -97,20 +101,24 @@ pub(crate) async fn hydrated_block_index(
             };
             entry["resolved"] =
                 hydrate_chart_series(ctx, track_id, block, detail, Some(scope)).await;
-        } else if is_live_table(block) {
-            entry["resolved"] = hydrate_live_table(track_id, block, mode, &overlays);
+        } else if is_overlay_block(block) {
+            entry["resolved"] = match &overlays {
+                Ok(overlays) => hydrate_overlay(track_id, block, mode, overlays),
+                Err(reason) => json!({ "status": "unavailable", "reason": reason }),
+            };
         }
         index.push(entry);
     }
     index
 }
 
-fn is_live_table(block: &ReportBlock) -> bool {
-    block.kind == KIND_TABLE && block.payload.get("source").is_some_and(Value::is_string)
+fn is_overlay_block(block: &ReportBlock) -> bool {
+    matches!(block.kind.as_str(), KIND_TABLE | KIND_LIVE_VIEW)
+        && block.payload.get("source").is_some_and(Value::is_string)
 }
 
-/// Same rule the frontend applies (`liveTableOverlayPayload`).
-fn hydrate_live_table(
+/// Exact Track/plugin/kind lookup; never resolve by plugin name alone.
+fn hydrate_overlay(
     track_id: &str,
     block: &ReportBlock,
     mode: ResolveMode,
@@ -138,6 +146,16 @@ fn hydrate_live_table(
     }) else {
         return json!({ "status": "pending" });
     };
+    if block.kind == KIND_LIVE_VIEW {
+        return hydrate_live_view(block, overlay, mode);
+    }
+    // A live reference, mixed view/table object, or malformed row is not an inline table.
+    if overlay.payload.get("source").is_some()
+        || validate_payload(KIND_TABLE, &overlay.payload).is_err()
+    {
+        return json!({ "status": "unavailable", "reason": "overlay payload is not an inline table",
+                       "resolved_at": resolved_at_text(overlay.updated_at) });
+    }
     let columns = overlay.payload.get("columns").and_then(Value::as_array);
     let rows = overlay.payload.get("rows").and_then(Value::as_array);
     let (Some(columns), Some(rows)) = (columns, rows) else {
@@ -158,6 +176,34 @@ fn hydrate_live_table(
     }
     if mode == ResolveMode::Full {
         out["table"] = overlay.payload.clone();
+    }
+    out
+}
+
+/// Availability/envelope validation only; not a second presentation-schema implementation.
+fn hydrate_live_view(
+    block: &ReportBlock,
+    overlay: &crate::model::Overlay,
+    mode: ResolveMode,
+) -> Value {
+    let mut out = json!({
+        "source": block.payload["source"], "version": block.payload["version"],
+        "view": block.payload["view"], "resolved_at": resolved_at_text(overlay.updated_at),
+        "validation": "envelope-only",
+    });
+    let valid = validate_payload(KIND_LIVE_VIEW, &block.payload).is_ok()
+        && overlay.payload.get("version").and_then(Value::as_f64) == Some(1.0)
+        && overlay.payload.get("view") == block.payload.get("view")
+        && serde_json::to_vec(&overlay.payload)
+            .is_ok_and(|bytes| bytes.len() <= MAX_LIVE_VIEW_BYTES);
+    if !valid {
+        out["status"] = json!("unavailable");
+        out["reason"] = json!("view envelope mismatch or payload exceeds 4 MiB");
+        return out;
+    }
+    out["status"] = json!("ok");
+    if mode == ResolveMode::Full {
+        out["data"] = overlay.payload.clone();
     }
     out
 }

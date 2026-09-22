@@ -1,10 +1,8 @@
-// A live source carries either the original table contract or an explicit native view.
+// Both inline and live tables obey the same table-only contract.
 import type { ReportSourceLinkTarget } from '../../../../../core/domain/report-source.ts';
-import { reportLiveViewSchema } from '../../../../../core/domain/report-live-view.ts';
 import {
   inlineTableBlockPayloadSchema, isLiveTablePayload, type TableBlockPayload,
 } from '../../../../../core/domain/report.ts';
-import { ReportLiveViewBlock } from '../rich/public.tsx';
 import { InlineTable } from './inline.tsx';
 import styles from './table.module.css';
 
@@ -21,8 +19,6 @@ export function ReportTableBlock({ payload, resolveLive, onOpenSourceLink }: {
     if (resolved === undefined) {
       return <LiveTableNotice caption={payload.caption} text={`Waiting for ${payload.source} — nothing has been pushed here yet.`} />;
     }
-    const view = reportLiveViewSchema.safeParse(resolved);
-    if (view.success) return <ReportLiveViewBlock payload={view.data} onOpenSourceLink={onOpenSourceLink} />;
     const decoded = inlineTableBlockPayloadSchema.safeParse(resolved);
     if (!decoded.success) {
       return <LiveTableNotice caption={payload.caption} text={`${payload.source} holds something this build cannot read as a table.`} />;

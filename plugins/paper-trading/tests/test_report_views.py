@@ -54,7 +54,7 @@ def test_error_notice_keeps_last_snapshot_visible_without_claiming_freshness(por
     view = overview(state)
     assert view['notices'][0]['tone'] == 'negative'
     assert '最近一次' in view['notices'][0]['detail']
-    assert view['asOf'] == state['snapshot']['at']
+    assert view['updated'] == {'label': '最近对账', 'at': state['snapshot']['at']}
 
 
 def test_budget_does_not_double_count_partial_entry_fills(portfolio, policy, rig):
@@ -94,6 +94,7 @@ def test_profit_chart_uses_actual_gross_results_and_clears_closed_cost(portfolio
     state = portfolio.call('track-owner', 'paper.status', {})
     view = overview(state)
     assert view['charts'][0]['points'][0]['value'] == gross
+    assert view['charts'][0]['points'][0]['tone'] == tone
     assert view['metrics'][1]['tone'] == tone
     assert view['charts'][1]['used'] == 0
     assert state['trades'][0]['net_pnl_usd'] is None

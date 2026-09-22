@@ -22,6 +22,7 @@ import { ReportCandlesBlock } from '../candles/public.tsx';
 import { ReportSeriesBlock } from '../series/public.tsx';
 import { ReportSourceCitation } from '../source/public.tsx';
 import { ReportTableBlock } from '../table/public.tsx';
+import { ReportLiveViewBlock } from '../rich/public.tsx';
 import { ReportTaskBlock } from '../task/public.tsx';
 import styles from './document.module.css';
 
@@ -54,8 +55,8 @@ export type ReportDocumentProps = Readonly<{
   taskRows?: readonly ReportTaskRow[];
   /** App-owned current/history query and recovery action, scoped to a task. */
   renderTaskExecution?: (task: ReportTaskRow, expanded: boolean) => ReactNode;
-  /** Resolves a live `table` block's `source` to the payload a plugin last pushed there. Absent ⇒ live tables say so instead of rendering. */
-  resolveLiveTable?: (source: string) => unknown;
+  /** Resolves a Track overlay for `table` or `view.live`; each renderer validates its declared contract. */
+  resolveOverlay?: (source: string) => unknown;
   /** Resolves a `chart.series` block, by id and rev, to the app's query of the kernel's resolved data. Absent ⇒ series blocks say the view carries no such data. */
   resolveSeries?: (blockId: string, rev: number) => SeriesResolution | undefined;
 }>;
@@ -63,7 +64,7 @@ export type ReportDocumentProps = Readonly<{
 /** A report is prose, not navigation: it emits no `<a href>`; typed citations become buttons and every other link keeps its label and drops its destination. */
 export function ReportDocument({
   report, empty, rail, byline, backlinkCounts, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath,
-  resolveLiveTable, resolveSeries,
+  resolveOverlay, resolveSeries,
   arrivalAnchorId, taskVerdicts, taskRows, renderTaskExecution,
 }: ReportDocumentProps) {
   useEffect(() => {
@@ -108,7 +109,7 @@ export function ReportDocument({
                   onOpenSourceLink={onOpenSourceLink}
                   fileRoot={fileRoot}
                   fileBasePath={fileBasePath}
-                  resolveLiveTable={resolveLiveTable}
+                  resolveOverlay={resolveOverlay}
                   resolveSeries={resolveSeries}
                 />
               ))}
@@ -171,7 +172,7 @@ function ReportReference({ blocks, backlinkCounts, tasks, renderTaskExecution }:
 
 /** One block, plus the sidenote that belongs to it. */
 function BlockSlot({
-  block, backlinks, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath, resolveLiveTable, resolveSeries,
+  block, backlinks, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath, resolveOverlay, resolveSeries,
 }: {
   block: ReportBlock;
   backlinks: number;
@@ -180,7 +181,7 @@ function BlockSlot({
   onOpenSourceLink?: (target: ReportSourceLinkTarget) => void;
   fileRoot?: string;
   fileBasePath?: string;
-  resolveLiveTable?: ReportDocumentProps['resolveLiveTable'];
+  resolveOverlay?: ReportDocumentProps['resolveOverlay'];
   resolveSeries?: ReportDocumentProps['resolveSeries'];
 }) {
   return (
@@ -197,7 +198,7 @@ function BlockSlot({
               fileBasePath={fileBasePath}
             />
           : <BlockBody block={block} onOpenSourceLink={onOpenSourceLink}
-              resolveLiveTable={resolveLiveTable} resolveSeries={resolveSeries} />}
+              resolveOverlay={resolveOverlay} resolveSeries={resolveSeries} />}
       </div>
       {backlinks > 0 && (
         <span className={styles.sidenote} title={`${backlinks} report${backlinks === 1 ? '' : 's'} cite this block`}>
@@ -209,16 +210,18 @@ function BlockSlot({
 }
 
 /** One bad block may not cost the page: an unknown kind or an unparsable payload degrades to one line. */
-function BlockBody({ block, task, renderTaskExecution, onOpenSourceLink, resolveLiveTable, resolveSeries }: {
+function BlockBody({ block, task, renderTaskExecution, onOpenSourceLink, resolveOverlay, resolveSeries }: {
   block: ReportBlock; task?: ReportTaskRow; renderTaskExecution?: ReportDocumentProps['renderTaskExecution'];
   /** A table cell that is one source citation is the same control the prose paints. */
   onOpenSourceLink?: (target: ReportSourceLinkTarget) => void;
-  resolveLiveTable?: ReportDocumentProps['resolveLiveTable'];
+  resolveOverlay?: ReportDocumentProps['resolveOverlay'];
   resolveSeries?: ReportDocumentProps['resolveSeries'];
 }): ReactNode {
   switch (block.kind) {
     case 'table':
-      return <ReportTableBlock payload={block.payload} resolveLive={resolveLiveTable} onOpenSourceLink={onOpenSourceLink} />;
+      return <ReportTableBlock payload={block.payload} resolveLive={resolveOverlay} onOpenSourceLink={onOpenSourceLink} />;
+    case 'view.live':
+      return <ReportLiveViewBlock payload={block.payload} resolveOverlay={resolveOverlay} onOpenSourceLink={onOpenSourceLink} />;
     case 'chart.candles': return <ReportCandlesBlock payload={block.payload} />;
     case 'chart.series':
       return <ReportSeriesBlock payload={block.payload} blockId={block.id} rev={block.rev} resolve={resolveSeries} />;

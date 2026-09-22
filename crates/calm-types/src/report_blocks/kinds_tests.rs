@@ -1,4 +1,31 @@
 use super::*;
+
+#[test]
+fn live_view_reference_is_explicit_bounded_and_round_trips() {
+    for view in ["overview", "activity", "cards", "details"] {
+        let payload =
+            json!({"source": "neige://plugin/operations/health", "version": 1, "view": view});
+        validate_payload(KIND_LIVE_VIEW, &payload).unwrap();
+        let fence = crate::report_blocks::render_fence(KIND_LIVE_VIEW, &payload);
+        let parsed = crate::report_blocks::parse_fence(&fence).unwrap();
+        assert_eq!(parsed.kind, KIND_LIVE_VIEW);
+        assert_eq!(parsed.payload, payload);
+    }
+    for payload in [
+        json!({"source": "neige://plugin/operations/health", "view": "overview"}),
+        json!({"source": "neige://plugin/operations/health", "version": 2, "view": "overview"}),
+        json!({"source": "neige://plugin/operations/health", "version": 1.5, "view": "overview"}),
+        json!({"source": "https://example.com", "version": 1, "view": "overview"}),
+        json!({"source": "neige://plugin/operations/health", "version": 1, "view": "html"}),
+        json!({"source": "neige://plugin/operations/health", "version": 1, "view": "overview", "script": "x"}),
+        json!({"source": format!("neige://plugin/x/{}", "x".repeat(2048)), "version": 1, "view": "overview"}),
+    ] {
+        assert!(
+            validate_payload(KIND_LIVE_VIEW, &payload).is_err(),
+            "{payload}"
+        );
+    }
+}
 use serde_json::json;
 
 #[test]
@@ -200,7 +227,14 @@ fn unknown_kind_is_an_error() {
     assert!(is_data_kind("task"));
     assert_eq!(
         DATA_KINDS,
-        ["chart.candles", "chart.series", "table", "app", "task"],
+        [
+            "chart.candles",
+            "chart.series",
+            "table",
+            "app",
+            "task",
+            "view.live"
+        ],
         "the closed data-kind set, in blocks.kinds order"
     );
     assert!(
