@@ -1,12 +1,15 @@
 //! `task-verify` operation — the kernel gate runner. One operation per gate attempt (`"{task.id}#g{N}"`); the wrapper is held at a stdin
 //! handshake until its pid triple is recorded, the verdict comes from the WAIT STATUS (the exit file is only a dead-work recovery hint), and gate red / timeout / infra all land `failed`.
 
-#[path = "task_verify_display.rs"]
 mod display;
+pub(crate) mod target;
 
 use super::gate_process::*;
 use std::path::{Path, PathBuf};
+
 use std::time::Duration;
+use target::FrozenTarget;
+pub use target::{SAMPLE_TIMEOUT, TaskGateResult};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -55,6 +58,8 @@ const TASK_VERIFY_PHASES: &[PhaseTag] = &[
     PhaseTag::Pending,
     PhaseTag::TxCommitted,
     PhaseTag::SpawnStarted,
+    // A target refused in `prepare_tx` spawns nothing: `Ready(NoOp)` lands here (#1727 S4 D3).
+    PhaseTag::SpawnSucceeded,
     PhaseTag::Parked,
     PhaseTag::Succeeded,
 ];
@@ -92,7 +97,11 @@ impl GateSpec {
     }
 }
 
-/// `status_detail` is `None` on green, else `gate-red` / `gate-timeout` / `gate-infra`.
+/// `status_detail` is `None` on green, else `gate-red` / `gate-timeout` / `gate-infra` /
+/// `gate-target-mismatch` (the fourth value is produced only by the task-verify target check,
+/// `target::finalize` and the prepare-time refusal; isolated verification never produces it).
+/// Shared with isolated `candidate_verify`: the task-verify target rides on [`TaskGateResult`],
+/// never here (D10, A32).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GateVerdict {
     pub passed: bool,
@@ -119,29 +128,31 @@ pub(crate) struct GateResultCtx {
 pub(crate) async fn apply_gate_result_in_tx(
     tx: &mut super::Tx<'_>,
     rctx: &GateResultCtx,
-    verdict: &GateVerdict,
+    result: &TaskGateResult,
 ) -> Result<Vec<BroadcastEnvelope>> {
-    apply_gate_result_with_guard_in_tx(tx, rctx, verdict, verdict.attempt).await
+    apply_gate_result_with_guard_in_tx(tx, rctx, result, result.verdict.attempt).await
 }
 
 /// [`apply_gate_result_in_tx`] with an explicit row-guard attempt: the reconcile arm flips a row still at `verdict.attempt - 1`, the shape left when `prepare_tx` failed BEFORE the guarded bump.
 pub(crate) async fn apply_gate_result_with_guard_in_tx(
     tx: &mut super::Tx<'_>,
     rctx: &GateResultCtx,
-    verdict: &GateVerdict,
+    result: &TaskGateResult,
     guard_attempt: i64,
 ) -> Result<Vec<BroadcastEnvelope>> {
-    let mut recorded_verdict = serde_json::to_value(verdict)?;
-    let frozen_cwd: Option<String> = sqlx::query_scalar::<_, Option<String>>(
-        "SELECT json_extract(tx_output_json, '$.data.cwd') FROM operations \
-         WHERE kind = 'task-verify' AND idempotency_key = ?1",
-    )
-    .bind(gate_attempt_key(&rctx.task_id, verdict.attempt))
-    .fetch_optional(&mut **tx)
-    .await?
-    .flatten();
-    if let Some(cwd) = frozen_cwd {
-        recorded_verdict["cwd"] = json!(cwd);
+    let verdict = &result.verdict;
+    let mut recorded = result.clone();
+    if recorded.cwd.is_none() {
+        // The frozen cwd, when the producer did not carry it (the reconcile arm P10 has no
+        // freeze; a prepare-time refusal's own freeze is not yet persisted — empty is expected).
+        recorded.cwd = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT json_extract(tx_output_json, '$.data.cwd') FROM operations \
+             WHERE kind = 'task-verify' AND idempotency_key = ?1",
+        )
+        .bind(gate_attempt_key(&rctx.task_id, verdict.attempt))
+        .fetch_optional(&mut **tx)
+        .await?
+        .flatten();
     }
     let rows = task_apply_gate_result_tx(
         tx,
@@ -149,7 +160,7 @@ pub(crate) async fn apply_gate_result_with_guard_in_tx(
         guard_attempt,
         verdict.passed,
         verdict.status_detail.as_deref(),
-        &serde_json::to_string(&recorded_verdict)?,
+        &serde_json::to_string(&recorded)?,
         now_ms(),
     )
     .await?;
@@ -170,8 +181,8 @@ pub(crate) async fn apply_gate_result_with_guard_in_tx(
         log_path: verdict.log_path.clone(),
         attempt: verdict.attempt,
         agent_message: None,
-        status_detail: None,
-        target: None,
+        status_detail: verdict.status_detail.clone(),
+        target: Some(recorded.target.clone()),
     }];
     if let Some(auto_events) = auto_transition_if_current_in_tx(
         tx,
@@ -207,7 +218,7 @@ pub(crate) async fn complete_gate_op_with_result(
     events: &EventBus,
     op_id: &str,
     rctx: &GateResultCtx,
-    verdict: &GateVerdict,
+    verdict: &TaskGateResult,
 ) -> Result<()> {
     let outcome = ParkedOutcome::Succeeded {
         result: serde_json::to_value(verdict)?,
@@ -245,6 +256,9 @@ pub(crate) struct FrozenVerify {
     pub attempt: i64,
     pub cwd: String,
     pub gate: GateSpec,
+    /// Absent on an op frozen before slice 4: `Unbound { LegacyFrozen }` (D12 (c)).
+    #[serde(default)]
+    pub target: FrozenTarget,
 }
 
 impl FrozenVerify {
@@ -489,6 +503,16 @@ impl ProviderAdapter for TaskVerifyAdapter {
             )));
         }
 
+        // The target check (D3): sampled in this transaction; a refusal is written here too.
+        let prepared = target::prepare_target_tx(
+            tx,
+            &task,
+            &gate,
+            &cwd,
+            attempt,
+            &self.log_path(&task.id, attempt),
+        )
+        .await?;
         let frozen = FrozenVerify {
             task_id: task.id.clone(),
             track_id: task.track_id.clone(),
@@ -497,9 +521,16 @@ impl ProviderAdapter for TaskVerifyAdapter {
             attempt,
             cwd,
             gate,
+            target: prepared.target,
         };
         let mut output = TxOutput::new("task", Some(task.id.clone()), json!({}));
         output.data = serde_json::to_value(&frozen)?;
+        if let Some(refusal) = &prepared.refusal {
+            output
+                .post_commit_events
+                .extend(apply_gate_result_in_tx(tx, &frozen.result_ctx(), refusal).await?);
+            output.result = serde_json::to_value(refusal)?;
+        }
         if let Some(card_id) = task.worker_card_id.as_deref() {
             output.post_commit_events.extend(
                 display::record_gate_cwd_tx(
@@ -530,7 +561,13 @@ impl ProviderAdapter for TaskVerifyAdapter {
         op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome> {
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::crash_point("task-verify-post-prepare");
         let frozen = FrozenVerify::from_output(output)?;
+        if frozen.target.spawn_is_noop() {
+            // The verdict was written in the prepare transaction: nothing to kill, admit or spawn.
+            return Ok(SpawnOutcome::Ready(super::SpawnHandle::NoOp));
+        }
         let pool = ctx.operation_repo.sqlite_pool();
 
         // Kill prior: this op's own artifacts (same-op re-drive), the previous attempt's, and the tasks-row pid triple.
@@ -591,6 +628,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
             &script_path,
             &log_path,
             &exit_path,
+            &gate_attempt_key(&frozen.task_id, frozen.attempt),
         )
         .await?;
         let pid = child.id().map(|p| p as i32).ok_or_else(|| {
@@ -681,15 +719,21 @@ impl ProviderAdapter for TaskVerifyAdapter {
         let events = ctx.events.clone();
         let observer_pool = pool.clone();
         let observer_log_path = log_path.clone();
+        let observer_frozen = frozen.clone();
         let observer = Box::pin(async move {
             let verdict = super::gate_process::wait_verdict(
                 child,
-                artifacts,
+                artifacts.clone(),
                 observer_log_path,
                 attempt,
                 timeout_secs,
             )
             .await;
+            // `wait_verdict` killed and waited the group; a cleanup it left unresolved is what
+            // `stop_group` reports, and `finalize` then samples nothing.
+            let op_marker = gate_attempt_key(&observer_frozen.task_id, observer_frozen.attempt);
+            let stopped = target::stop_group(&artifacts, &op_marker).await;
+            let verdict = target::finalize(verdict, &observer_frozen, stopped).await;
             if let Err(e) = complete_gate_op_with_result(
                 &observer_pool,
                 &completion,
@@ -737,6 +781,12 @@ impl ProviderAdapter for TaskVerifyAdapter {
             return Ok(match read_exit_file(&exit_path) {
                 Ok(Some(code)) => {
                     let verdict = verdict_from_exit_code(code, &log_path, frozen.attempt);
+                    // The leader is dead; descendants that outlived it are stopped before the
+                    // after-sample (the driver's own kill skips a dead leader). The numeric pgid
+                    // may have been recycled, so members are authenticated by the inherited marker.
+                    let op_marker = gate_attempt_key(&frozen.task_id, frozen.attempt);
+                    let stopped = target::stop_group(artifacts, &op_marker).await;
+                    let verdict = target::finalize(verdict, &frozen, stopped).await;
                     ParkedRecovery::Complete(ParkedOutcome::Succeeded {
                         result: serde_json::to_value(&verdict)?,
                     })
@@ -785,6 +835,9 @@ impl ProviderAdapter for TaskVerifyAdapter {
                             attempt,
                         ),
                     };
+                    let op_marker = gate_attempt_key(&frozen.task_id, frozen.attempt);
+                    let stopped = target::stop_group(&artifacts, &op_marker).await;
+                    let verdict = target::finalize(verdict, &frozen, stopped).await;
                     if let Err(e) = complete_gate_op_with_result(
                         &pool,
                         &completion,
@@ -847,6 +900,10 @@ impl ProviderAdapter for TaskVerifyAdapter {
                         "area_id": frozen.area_id,
                         "attempt": frozen.attempt,
                         "reason": reason,
+                        "target": target::target_json(&target::compensation_target(
+                            &frozen.target,
+                            reason,
+                        )),
                     }),
                     completed: false,
                     attempts: 0,
@@ -859,7 +916,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
     async fn compensate_step(
         &self,
         step: &CompensationStep,
-        _output: &TxOutput,
+        output: &TxOutput,
         _op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<()> {
@@ -919,14 +976,27 @@ impl ProviderAdapter for TaskVerifyAdapter {
                     track_id: TrackId::from(track_id.to_string()),
                     area_id: AreaId::from(area_id.to_string()),
                 };
-                let verdict = GateVerdict {
-                    passed: false,
-                    status_detail: Some("gate-infra".into()),
-                    failing_step: None,
-                    exit_code: None,
-                    log_tail: reason.to_string(),
-                    log_path: self.log_path(task_id, attempt).display().to_string(),
-                    attempt,
+                // P8: the target planned with the step; a state planned before slice 4 has none
+                // and falls back to the op's freeze (which reads as `LegacyFrozen` when absent).
+                let target = match step.args.get("target") {
+                    Some(target) => serde_json::from_value(target.clone())?,
+                    None => target::compensation_target(
+                        &FrozenVerify::from_output(output)?.target,
+                        reason,
+                    ),
+                };
+                let verdict = TaskGateResult {
+                    verdict: GateVerdict {
+                        passed: false,
+                        status_detail: Some("gate-infra".into()),
+                        failing_step: None,
+                        exit_code: None,
+                        log_tail: reason.to_string(),
+                        log_path: self.log_path(task_id, attempt).display().to_string(),
+                        attempt,
+                    },
+                    cwd: None,
+                    target,
                 };
                 let pool = ctx.operation_repo.sqlite_pool();
                 let mut tx = begin_immediate_tx(&pool).await?;

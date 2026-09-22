@@ -76,6 +76,8 @@ mod isolated_activity;
 mod candidate_verification;
 #[path = "cases/file_delivery.rs"]
 mod file_delivery;
+#[path = "cases/gate_binding.rs"]
+mod gate_binding;
 #[path = "cases/git_delivery.rs"]
 mod git_delivery;
 

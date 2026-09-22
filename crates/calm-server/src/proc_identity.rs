@@ -160,6 +160,77 @@ pub fn scan_process_group_members(_pgid: i32) -> Vec<GroupMember> {
     Vec::new()
 }
 
+/// Three-value classification of `/proc/<pid>/environ` against an exact `key=value` marker. The
+/// environ is NUL-separated and readable by the same uid; a process started from an empty
+/// environment that never `unset`s the marker keeps it, and every descendant inherits it. This is
+/// what tells a recovered gate's own descendants (across a kernel restart) apart from an unrelated
+/// process that recycled the numeric pgid once the wrapper's leader died — but "cannot read the
+/// environ" must NOT be collapsed into "proven not ours": a live same-uid descendant can make its
+/// own environ unreadable (`PR_SET_DUMPABLE=0` → EACCES), and dropping it from both the wait and
+/// the kill would let it keep mutating the checkout while the gate reports clean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkerAuth {
+    /// Environ readable and carrying the exact marker: a proven descendant. Killed by the sweep;
+    /// blocks the wait.
+    Present,
+    /// Environ readable WITHOUT the marker (a recycled-pgid stranger), or the process is already
+    /// gone (`ENOENT`): not ours and not live — never killed, never blocks the wait.
+    Foreign,
+    /// Environ unreadable while the process is live (`EACCES`, …): cleanup-uncertain, NOT
+    /// proven-foreign. Never killed (identity unproven), but blocks the wait (fail closed →
+    /// `gate-infra`) so a hidden-environ descendant cannot slip a clean after-sample past the gate.
+    Unreadable,
+}
+
+#[cfg(target_os = "linux")]
+pub fn proc_env_marker(pid: i32, key: &str, value: &str) -> MarkerAuth {
+    match std::fs::read(format!("/proc/{pid}/environ")) {
+        Ok(bytes) => {
+            let needle = format!("{key}={value}");
+            if bytes
+                .split(|&b| b == 0)
+                .any(|entry| entry == needle.as_bytes())
+            {
+                MarkerAuth::Present
+            } else {
+                MarkerAuth::Foreign
+            }
+        }
+        // The process left between the scan and this read: not a live member to wait for and not a
+        // live process to kill — fold into `Foreign`.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => MarkerAuth::Foreign,
+        // Live but unreadable (EACCES from `PR_SET_DUMPABLE=0`, etc.): membership cannot be proven
+        // OR disproven — cleanup-uncertain.
+        Err(_) => MarkerAuth::Unreadable,
+    }
+}
+
+/// Non-Linux stub for [`proc_env_marker`]: no `/proc`, so nothing is authenticated (`Foreign`).
+#[cfg(not(target_os = "linux"))]
+pub fn proc_env_marker(_pid: i32, _key: &str, _value: &str) -> MarkerAuth {
+    MarkerAuth::Foreign
+}
+
+/// Does `/proc/<pid>/environ` carry the exact `key=value` entry (i.e. [`MarkerAuth::Present`])? This
+/// is the KILL-path predicate: [`group_members_with_env_marker`] → [`sigkill_verified_members`]
+/// signals ONLY proven members, never a `Foreign` (recycled pgid) or `Unreadable` (dumpable-off /
+/// env-cleared) process. The wait path uses [`proc_env_marker`] directly so it can fail closed on
+/// `Unreadable`. Returns `false` on non-Linux and for every non-`Present` classification.
+pub fn proc_env_contains(pid: i32, key: &str, value: &str) -> bool {
+    matches!(proc_env_marker(pid, key, value), MarkerAuth::Present)
+}
+
+/// The members of process group `pgid` whose `/proc/<pid>/environ` carries `key=value` — the gate's
+/// own descendants, told apart from an unrelated process that recycled the numeric pgid after the
+/// wrapper's leader died. Members without the marker (foreign, or environ unreadable) are dropped,
+/// so a caller sweeping or waiting on this list never signals nor blocks on a foreign process.
+pub fn group_members_with_env_marker(pgid: i32, key: &str, value: &str) -> Vec<GroupMember> {
+    scan_process_group_members(pgid)
+        .into_iter()
+        .filter(|member| proc_env_contains(member.pid, key, value))
+        .collect()
+}
+
 /// Result of a [`sigkill_verified_group_members`] sweep.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct GroupSweepOutcome {

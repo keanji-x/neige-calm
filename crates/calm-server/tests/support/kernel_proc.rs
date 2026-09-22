@@ -51,7 +51,9 @@ pub fn free_port_or_skip(what: &str) -> Option<u16> {
     match TcpListener::bind("127.0.0.1:0") {
         Ok(listener) => Some(listener.local_addr().unwrap().port()),
         Err(e) if e.kind() == ErrorKind::PermissionDenied => {
-            eprintln!("skipping kernel reboot harness ({what}): sandbox denied loopback bind: {e}");
+            // The test then returns green having verified nothing: a hosted CI runner's sandbox
+            // takes this branch, the self-hosted runner never does.
+            eprintln!("SKIP: kernel reboot harness ({what}) (loopback bind denied): {e}");
             None
         }
         Err(e) => panic!("bind 127.0.0.1:0 for {what}: {e}"),
@@ -66,6 +68,34 @@ pub fn spawn_kernel(
     port: u16,
     extra_env: &[(&str, OsString)],
 ) -> Child {
+    spawn_kernel_to(tmp, db_path, port, extra_env, None)
+}
+
+/// A handle on `log` (appending) for one of the kernel's output streams.
+fn log_stdio(log: &Path) -> Stdio {
+    Stdio::from(
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log)
+            .expect("open the kernel log file"),
+    )
+}
+
+/// [`spawn_kernel`] with the kernel's stdout and stderr appended to `log` when given, for a
+/// test that asserts on the kernel's own lines: tracing writes to stdout (the boot recovery
+/// plan), the crash seam's abort notice goes to stderr.
+pub fn spawn_kernel_to(
+    tmp: &Path,
+    db_path: &Path,
+    port: u16,
+    extra_env: &[(&str, OsString)],
+    log: Option<&Path>,
+) -> Child {
+    let (stdout, stderr) = match log {
+        Some(log) => (log_stdio(log), log_stdio(log)),
+        None => (Stdio::inherit(), Stdio::inherit()),
+    };
     // `PATH` is passed through so incidental lookups still resolve; everything else is an explicit fixture value.
     let path = std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into());
 
@@ -97,8 +127,8 @@ pub fn spawn_kernel(
         // `/api/version` readiness probe is public regardless.
         .env("CALM_DEV_AUTOLOGIN", "true")
         .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
+        .stdout(stdout)
+        .stderr(stderr);
     for (key, value) in extra_env {
         cmd.env(key, value);
     }
@@ -185,13 +215,25 @@ pub fn launch_kernel(
     what: &str,
     extra_env: &[(&str, OsString)],
 ) -> Option<ChildGuard> {
+    launch_kernel_to(tmp, db_path, what, extra_env, None)
+}
+
+/// [`launch_kernel`] with the kernel's stdout and stderr appended to `log` when given (every
+/// relaunch attempt appends to the same file).
+pub fn launch_kernel_to(
+    tmp: &Path,
+    db_path: &Path,
+    what: &str,
+    extra_env: &[(&str, OsString)],
+    log: Option<&Path>,
+) -> Option<ChildGuard> {
     for attempt in 0..5 {
         let port = free_port_or_skip(what)?;
         assert_ne!(port, 4040, "must never bind the prod calm-server port");
         // Wrap the child in its `ChildGuard` IMMEDIATELY: `wait_ready` can panic, and only the guard's
         // `Drop` SIGKILLs the (possibly hung) kernel — a bare `Child` would leak it.
         let mut guard = ChildGuard {
-            child: spawn_kernel(tmp, db_path, port, extra_env),
+            child: spawn_kernel_to(tmp, db_path, port, extra_env, log),
             port,
         };
         match wait_ready(&mut guard.child, port) {

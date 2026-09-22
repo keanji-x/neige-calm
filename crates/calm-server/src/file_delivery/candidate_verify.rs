@@ -351,6 +351,7 @@ impl ProviderAdapter for CandidateVerifyAdapter {
             &frozen.workspace.join("gate.sh"),
             &frozen.log(),
             &frozen.exit(),
+            &frozen.candidate.publication_operation_id,
         )
         .await?;
         let pid = child

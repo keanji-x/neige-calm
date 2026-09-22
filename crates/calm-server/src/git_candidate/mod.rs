@@ -7,6 +7,7 @@
 //! - [`candidate`]: the `task_candidates` row, a byte copy of the operation result and the lease.
 //! - [`view`]: the pure derivations the Planner read surface shows (`delivery.state`,
 //!   `candidate.binding`).
+//! - [`verification`]: `verification.state`, the gate's twelve-value read (slice 4, D8).
 //! - [`abandonment`]: the `task_git_delivery_abandonments` row the Planner's abandon writes.
 //! - [`action`]: `calm.task.delivery{retry|abandon}` — replay first, then admission, in one
 //!   immediate transaction.
@@ -24,6 +25,7 @@ pub(crate) mod action;
 pub(crate) mod candidate;
 pub(crate) mod delivery;
 pub(crate) mod refs;
+pub(crate) mod verification;
 pub(crate) mod view;
 
 #[cfg(test)]

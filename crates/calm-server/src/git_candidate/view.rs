@@ -10,9 +10,11 @@ use serde::Serialize;
 use super::abandonment::abandonment_for_delivery_tx;
 use super::candidate::{CandidateRow, candidate_for_attempt_tx};
 use super::delivery::{DeliveryRow, DeliverySettled, delivery_latest_for_attempt_tx};
+use super::verification::{VerificationView, verification_state};
 use crate::error::{CalmError, Result};
 use crate::model::{Task, TaskKind, TaskStatus};
 use crate::operation::Tx;
+use crate::operation::task_verify_adapter::{TASK_VERIFY_KIND, TaskGateResult, gate_attempt_key};
 use crate::operation::workspace_lease::facts::{
     LeaseStates, WorkerWorktreeFacts, latest_workspace_lease_for_card_tx,
 };
@@ -240,7 +242,9 @@ impl CandidateWorkspace {
     }
 }
 
-/// `candidate.binding` — D8's three shapes.
+/// `candidate.binding` — D8's three shapes. `Bound` carries the delivery and verification views
+/// inline (`clippy::large_enum_variant`): one value per read-surface entry, serialized once.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "binding", rename_all = "snake_case")]
 pub(crate) enum CandidateBinding {
@@ -256,7 +260,15 @@ pub(crate) enum CandidateBinding {
         base_sha: String,
         workspace: CandidateWorkspace,
         delivery: DeliveryState,
+        verification: VerificationView,
     },
+}
+
+/// The two derivations a kernel lease carries beside its binding (D2 `delivery`, D8 `verification`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct BoundFacts {
+    pub delivery: DeliveryState,
+    pub verification: VerificationView,
 }
 
 /// A task that declares isolated execution (`context.neige_execution` present, whatever it says:
@@ -269,14 +281,14 @@ fn declares_isolated(task: &Task) -> bool {
     }
 }
 
-/// D8 first-match table. `facts` and `delivery_state` accompany `lease`: a lease row implies a
-/// facts row (same table) and a kernel lease implies the caller derived the delivery state; a
-/// caller that breaks either contract gets an `Err`, never a guessed binding.
+/// D8 first-match table. `facts` and `bound` accompany `lease`: a lease row implies a facts row
+/// (same table) and a kernel lease implies the caller derived the delivery and verification
+/// states; a caller that breaks either contract gets an `Err`, never a guessed binding.
 pub(crate) fn candidate_binding(
     task: &Task,
     lease: Option<&WorkspaceLease>,
     facts: Option<&WorkerWorktreeFacts>,
-    delivery_state: Option<DeliveryState>,
+    bound: Option<BoundFacts>,
 ) -> Result<CandidateBinding> {
     if declares_isolated(task) {
         return Ok(CandidateBinding::None {
@@ -305,16 +317,17 @@ pub(crate) fn candidate_binding(
         )));
     };
     let workspace = CandidateWorkspace::from_facts(facts);
-    match (lease.delivery_policy, lease.base.as_ref(), delivery_state) {
+    match (lease.delivery_policy, lease.base.as_ref(), bound) {
         (None, _, _) => Ok(CandidateBinding::Unbound {
             reason: UnboundReason::LegacyLease,
             workspace,
         }),
-        (Some(DeliveryPolicy::Kernel), Some(base), Some(delivery)) => Ok(CandidateBinding::Bound {
+        (Some(DeliveryPolicy::Kernel), Some(base), Some(bound)) => Ok(CandidateBinding::Bound {
             producer_attempt_id: task.id.clone(),
             base_sha: base.base_sha.clone(),
             workspace,
-            delivery,
+            delivery: bound.delivery,
+            verification: bound.verification,
         }),
         (Some(DeliveryPolicy::Kernel), None, _) => Err(CalmError::Internal(format!(
             "task {}: kernel lease {} has no base",
@@ -329,7 +342,7 @@ pub(crate) fn candidate_binding(
 
 /// `calm.plan.list.candidate` for one current attempt: the lease row of its worker card (the
 /// same latest row `facts` was derived from), the attempt's latest delivery row and candidate
-/// row for a kernel lease, then the two pure derivations. `facts` is the entry's `worktree`
+/// row for a kernel lease, then the pure derivations. `facts` is the entry's `worktree`
 /// facts, read by the caller from the same card.
 pub(crate) async fn candidate_view_tx(
     tx: &mut Tx<'_>,
@@ -340,7 +353,7 @@ pub(crate) async fn candidate_view_tx(
         Some(card_id) => latest_workspace_lease_for_card_tx(tx, card_id, LeaseStates::Any).await?,
         None => None,
     };
-    let delivery = match lease.as_ref() {
+    let bound = match lease.as_ref() {
         Some(lease) if lease.delivery_policy == Some(DeliveryPolicy::Kernel) => {
             let delivery = delivery_latest_for_attempt_tx(tx, &task.id).await?;
             let candidate = candidate_for_attempt_tx(tx, &task.id).await?;
@@ -350,15 +363,50 @@ pub(crate) async fn candidate_view_tx(
                     .map(|row| row.facts()),
                 None => None,
             };
-            Some(delivery_state(
-                task.status,
-                task.status_detail.as_deref(),
-                delivery.as_ref(),
-                candidate.as_ref(),
-                abandonment.as_ref(),
-            ))
+            Some(BoundFacts {
+                delivery: delivery_state(
+                    task.status,
+                    task.status_detail.as_deref(),
+                    delivery.as_ref(),
+                    candidate.as_ref(),
+                    abandonment.as_ref(),
+                ),
+                verification: verification_view_tx(tx, task).await?,
+            })
         }
         _ => None,
     };
-    candidate_binding(task, lease.as_ref(), facts, delivery)
+    candidate_binding(task, lease.as_ref(), facts, bound)
+}
+
+/// The D8 `verification` inputs of one row: its persisted verdict, and whether a task-verify
+/// Operation exists at the row's `gate_attempt` or the next one (the op that bumped the row, or
+/// one submitted and not yet through `prepare_tx`).
+async fn verification_view_tx(tx: &mut Tx<'_>, task: &Task) -> Result<VerificationView> {
+    let gate_result = task.gate_result_json.as_deref().and_then(|raw| {
+        match serde_json::from_str::<TaskGateResult>(raw) {
+            Ok(result) => Some(result),
+            Err(error) => {
+                tracing::warn!(task_id = %task.id, %error, "gate_result_json unreadable");
+                None
+            }
+        }
+    });
+    let gate_op_present: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM operations WHERE kind = ?1 AND idempotency_key IN (?2, ?3))",
+    )
+    .bind(TASK_VERIFY_KIND)
+    .bind(gate_attempt_key(&task.id, task.gate_attempt))
+    .bind(gate_attempt_key(&task.id, task.gate_attempt + 1))
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(verification_state(
+        &task.id,
+        task.gate_json.as_deref(),
+        task.status,
+        task.status_detail.as_deref(),
+        task.gate_attempt,
+        gate_result.as_ref(),
+        gate_op_present,
+    ))
 }
