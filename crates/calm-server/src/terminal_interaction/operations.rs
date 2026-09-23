@@ -66,6 +66,7 @@ impl TerminalInteraction {
             "{BELOW_CURSOR_EDITS_ONLY}"
         );
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
+        resolved.ensure_accepts_input()?;
         let terminal = resolved.binding.terminal_id.as_str();
         let client = self.client(identity, &resolved.binding).await?;
         // One action at a time per connection, readback wait included; other connections are not serialized.

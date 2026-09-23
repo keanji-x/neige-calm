@@ -44,11 +44,37 @@ impl Binding {
             .expect("serializable terminal binding")
     }
 }
+/// Typing into a codex task Worker's remote TUI interrupts its turn and starts no replacement
+/// turn (#1782), so the Planner's input and claim on that card are refused (#1784).
+const CODEX_TASK_WORKER_INPUT_REFUSED: &str =
+    "a running codex worker cannot be redirected via terminal input; use the task channel";
+
+/// The typed refusal behind [`CODEX_TASK_WORKER_INPUT_REFUSED`].
+#[derive(Debug)]
+pub struct CodexTaskWorkerInputRefused;
+impl std::fmt::Display for CodexTaskWorkerInputRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(CODEX_TASK_WORKER_INPUT_REFUSED)
+    }
+}
+impl std::error::Error for CodexTaskWorkerInputRefused {}
+
 pub(super) struct Resolved {
     pub binding: Binding,
     pub controllable: bool,
     pub task_status: Option<TaskStatus>,
     pub card_kind: String,
+    /// A codex card bound to a task execution: observable, never writable.
+    pub codex_task_worker: bool,
+}
+impl Resolved {
+    /// Checked before any connection or claim, so a refused input writes no byte.
+    pub(super) fn ensure_accepts_input(&self) -> Result<()> {
+        if self.codex_task_worker {
+            return Err(CodexTaskWorkerInputRefused.into());
+        }
+        Ok(())
+    }
 }
 
 impl TerminalInteraction {
@@ -176,7 +202,9 @@ impl TerminalInteraction {
             }
             None => None,
         };
+        let codex_task_worker = card.kind == "codex" && task.is_some();
         let controllable = session.state.is_active_authority()
+            && !codex_task_worker
             && task
                 .as_ref()
                 .is_none_or(|task| task.status == TaskStatus::Running);
@@ -193,6 +221,7 @@ impl TerminalInteraction {
             controllable,
             task_status: task.map(|task| task.status),
             card_kind: card.kind,
+            codex_task_worker,
         })
     }
     /// Re-resolve `expected.terminal_id` and return the current resolution
@@ -214,6 +243,9 @@ impl TerminalInteraction {
             &current.binding == expected,
             "terminal task/session binding changed; resolve and observe again"
         );
+        if write {
+            current.ensure_accepts_input()?;
+        }
         ensure!(
             !write || current.controllable,
             "task or worker session is not running; terminal control refused"
@@ -237,6 +269,9 @@ impl TerminalInteraction {
         result["task_status"] = json!(resolved.task_status);
         if !available {
             result["reason"] = json!("no live observable terminal view; no session was started");
+        }
+        if resolved.codex_task_worker {
+            result["input_refused"] = json!(CODEX_TASK_WORKER_INPUT_REFUSED);
         }
         Ok(result)
     }
