@@ -427,7 +427,7 @@
   },
   {
     "name": "calm.preview.register",
-    "description_sha256": "5fe355a97cf3026dad543a64e064883873d16699075ca19df99084d4143e51fe",
+    "description_sha256": "82773b0c8b66abdfd441afd49f2561a9c720068b44f0cea418f9cc909ac41ec0",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

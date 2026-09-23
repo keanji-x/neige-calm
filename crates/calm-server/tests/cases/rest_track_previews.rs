@@ -25,6 +25,7 @@ struct Boot {
     app: axum::Router,
     session: String,
     registry: Arc<PreviewRegistry>,
+    area_id: AreaId,
 }
 
 async fn create_track(repo: &SqlxRepo, area_id: &AreaId, title: &str) -> TrackId {
@@ -123,6 +124,7 @@ async fn boot() -> (Boot, TrackId, TrackId) {
         app,
         session,
         registry,
+        area_id: area.id.clone(),
     };
     (boot, a, b)
 }
@@ -145,6 +147,18 @@ impl Boot {
             status,
             serde_json::from_slice(&bytes).unwrap_or(Value::Null),
         )
+    }
+}
+
+impl Boot {
+    async fn delete(&self, uri: &str) -> StatusCode {
+        let request = Request::builder()
+            .method("DELETE")
+            .uri(uri)
+            .header(header::COOKIE, &self.session)
+            .body(Body::empty())
+            .unwrap();
+        self.app.clone().oneshot(request).await.unwrap().status()
     }
 }
 
@@ -186,4 +200,38 @@ async fn previews_route_requires_a_session_and_a_known_track() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     let (status, _) = boot.get("no-such-track", Some(&boot.session)).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// The deleted track's Planner is the only identity that could unregister, so a committed
+/// delete must free the port and close the tunnels.
+#[tokio::test]
+async fn track_delete_releases_its_previews() {
+    let (boot, a, b) = boot().await;
+    assert_eq!(boot.registry.register(&a, "fe", "FE", 5173), Ok(4050));
+    let tunnels = boot.registry.lookup(4050).unwrap().tunnels;
+    let status = boot.delete(&format!("/api/tracks/{a}")).await;
+    assert!(status.is_success(), "{status}");
+    assert!(
+        tunnels.is_cancelled(),
+        "open tunnels on the deleted track close"
+    );
+    assert!(boot.registry.lookup(4050).is_none());
+    assert_eq!(boot.registry.register(&b, "fe", "FE", 5174), Ok(4050));
+}
+
+#[tokio::test]
+async fn area_delete_releases_previews_of_every_track_in_it() {
+    let (boot, a, b) = boot().await;
+    assert_eq!(boot.registry.register(&a, "fe", "FE", 5173), Ok(4050));
+    assert_eq!(boot.registry.register(&b, "fe", "FE", 5174), Ok(4051));
+    let tunnels = boot.registry.lookup(4051).unwrap().tunnels;
+    let status = boot.delete(&format!("/api/areas/{}", boot.area_id)).await;
+    assert!(status.is_success(), "{status}");
+    assert!(
+        tunnels.is_cancelled(),
+        "open tunnels on the deleted tracks close"
+    );
+    assert!(boot.registry.for_track(&a).is_empty() && boot.registry.for_track(&b).is_empty());
+    let other = TrackId::from("track-elsewhere");
+    assert_eq!(boot.registry.register(&other, "fe", "FE", 5175), Ok(4050));
 }

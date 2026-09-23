@@ -627,9 +627,9 @@ impl RecycledAreaDeletion {
             route.terminal_renderer.remove_hook_settings(card_id);
         }
         for track_id in deleted_track_ids {
-            route
-                .write
-                .forget_track(&crate::ids::TrackId::from(track_id));
+            let track_id = crate::ids::TrackId::from(track_id);
+            route.mcp_context.preview.release_track(&track_id);
+            route.write.forget_track(&track_id);
         }
         workspace_recycle::finalize_area_recycle(
             &route.workspace_root,
