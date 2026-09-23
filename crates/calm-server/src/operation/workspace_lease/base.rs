@@ -12,10 +12,13 @@
 //! `worktree add` to it and refuse a worktree whose HEAD or realpath differs
 //! (design D4 / oracle rows 2, 3, 3n).
 //!
-//! `base_source`: only [`BaseSource::Head`] has a producer in this slice.
-//! `Commit` and `Attempt` (`TaskDeclaration.base`) are written by slice 5;
-//! the column round-trip covers all three so the CHECK-accepted shapes and
-//! the Rust type never disagree.
+//! `base_source`: [`BaseSource::Upstream`] and [`BaseSource::Head`] have a
+//! producer ([`resolve_lease_base`]: the upstream of the branch HEAD is on
+//! when HEAD is at or behind it, HEAD when HEAD is ahead or there is none, a
+//! refusal when the two diverged — [`super::upstream`], #1777). `Commit`
+//! and `Attempt` (`TaskDeclaration.base`) are written by slice 5; the column
+//! round-trip covers all four so the CHECK-accepted shapes and the Rust type
+//! never disagree.
 
 use std::{
     ffi::{OsStr, OsString},
@@ -26,6 +29,7 @@ use std::{
 
 use sqlx::{Row, Sqlite, sqlite::SqliteRow};
 
+use super::upstream::LeaseStart;
 use super::{
     GitWorktreeRegistration, WorkspaceLease, WorkspaceLeaseDirectoryMode, WorkspaceLeaseTarget,
     create_workspace_lease_directory,
@@ -38,8 +42,17 @@ use crate::workspace_materialize::neige_git_command;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BaseSource {
     /// The attached repository's HEAD at prepare time (`TaskDeclaration.base`
-    /// absent). The only producer in slice 1.
+    /// absent, and the branch HEAD is on has no upstream, no ref of that
+    /// upstream resolves, HEAD is ahead of it — HEAD then contains it — or a
+    /// shallow history leaves the relation unknown).
     Head,
+    /// The last known commit of the upstream of the branch HEAD is on, which
+    /// HEAD equals or is behind, or which a checkout without commits of its
+    /// own is moved to after an upstream rewrite (`TaskDeclaration.base`
+    /// absent): the receipt of the kernel's most recent fetch when that fetch
+    /// succeeded, else the repository's own remote-tracking ref
+    /// ([`super::upstream::last_known_upstream`], #1777).
+    Upstream,
     /// `TaskDeclaration.base: {commit}` — slice 5.
     Commit,
     /// `TaskDeclaration.base: {attempt}`; `base_attempt_id` names the
@@ -51,6 +64,7 @@ impl BaseSource {
     pub(crate) fn as_column(self) -> &'static str {
         match self {
             BaseSource::Head => "head",
+            BaseSource::Upstream => "upstream",
             BaseSource::Commit => "commit",
             BaseSource::Attempt => "attempt",
         }
@@ -59,10 +73,11 @@ impl BaseSource {
     pub(crate) fn from_column(value: &str) -> Result<Self> {
         match value {
             "head" => Ok(BaseSource::Head),
+            "upstream" => Ok(BaseSource::Upstream),
             "commit" => Ok(BaseSource::Commit),
             "attempt" => Ok(BaseSource::Attempt),
             other => Err(CalmError::Internal(format!(
-                "workspace lease base_source {other:?} is not head, commit or attempt"
+                "workspace lease base_source {other:?} is not head, upstream, commit or attempt"
             ))),
         }
     }
@@ -209,13 +224,38 @@ pub(super) fn utf8_path<'a>(path: &'a Path, what: &str) -> Result<&'a str> {
     })
 }
 
-/// Resolve the `head` base for a lease target inside the prepare transaction:
-/// `base_sha` = the attached repository's HEAD now, `git_common_dir` and
-/// `canonical_path` as the row will carry them. Creates the worktree parent
-/// directory first (the same `ParentOnly` step the lease INSERT takes, so the
-/// parent is a real directory before it is canonicalized).
-pub(crate) fn resolve_head_lease_base(target: &WorkspaceLeaseTarget) -> Result<LeaseBase> {
-    let base_sha = resolve_head_base(&target.repo_root)?;
+/// Resolve the base for a lease target inside the prepare transaction, by
+/// the relation of the attached repository's HEAD to the upstream of the
+/// branch it is on, as last known ([`super::upstream::choose_lease_start`]):
+/// behind or equal → that upstream (`upstream`); ahead, or no upstream → HEAD
+/// (`head`); diverged → refused ([`super::upstream::diverged_refusal`], a
+/// human decision). `git_common_dir` and `canonical_path` as the row will
+/// carry them. Local reads only — the upstream was fetched on the submit
+/// path, before this transaction began ([`super::upstream_fetch`]). Creates
+/// the worktree parent directory first (the same `ParentOnly` step the lease
+/// INSERT takes, so the parent is a real directory before it is
+/// canonicalized).
+pub(crate) fn resolve_lease_base(target: &WorkspaceLeaseTarget) -> Result<LeaseBase> {
+    let (base_sha, base_source) = match super::upstream::choose_lease_start(&target.repo_root)? {
+        LeaseStart::Head { sha } => (sha, BaseSource::Head),
+        LeaseStart::Upstream { sha } => (sha, BaseSource::Upstream),
+        LeaseStart::Diverged {
+            head,
+            upstream,
+            unpushed,
+            ahead,
+            behind,
+        } => {
+            return Err(super::upstream::diverged_refusal(
+                &target.repo_root,
+                &head,
+                &upstream,
+                unpushed,
+                ahead,
+                behind,
+            ));
+        }
+    };
     let git_common_dir = lease_git_common_dir(&target.repo_root)?;
     create_workspace_lease_directory(&target.path, WorkspaceLeaseDirectoryMode::ParentOnly)?;
     let parent = target.path.parent().ok_or_else(|| {
@@ -236,7 +276,7 @@ pub(crate) fn resolve_head_lease_base(target: &WorkspaceLeaseTarget) -> Result<L
         })?;
     Ok(LeaseBase {
         base_sha,
-        base_source: BaseSource::Head,
+        base_source,
         base_attempt_id: None,
         canonical_path: lease_canonical_path(parent, card_id)?,
         git_common_dir,
@@ -799,7 +839,7 @@ pub(crate) fn verify_worktree_base(
 /// `git -C <worktree> symbolic-ref -q HEAD`: `Some(refs/heads/..)` on a
 /// branch, `None` when HEAD is detached (`-q` exits 1 silently for exactly
 /// that), `Err` for anything else.
-fn worktree_head_ref(worktree: &Path) -> Result<Option<String>> {
+pub(super) fn worktree_head_ref(worktree: &Path) -> Result<Option<String>> {
     let args = ["symbolic-ref", "-q", "HEAD"];
     let output = neige_git_command()
         .arg("-C")
@@ -834,10 +874,16 @@ mod tests {
 
     #[test]
     fn base_source_round_trips_all_values() {
-        for source in [BaseSource::Head, BaseSource::Commit, BaseSource::Attempt] {
+        for source in [
+            BaseSource::Head,
+            BaseSource::Upstream,
+            BaseSource::Commit,
+            BaseSource::Attempt,
+        ] {
             assert_eq!(BaseSource::from_column(source.as_column()).unwrap(), source);
         }
         assert_eq!(BaseSource::Head.as_column(), "head");
+        assert_eq!(BaseSource::Upstream.as_column(), "upstream");
         assert_eq!(BaseSource::Commit.as_column(), "commit");
         assert_eq!(BaseSource::Attempt.as_column(), "attempt");
         let err = BaseSource::from_column("bogus").unwrap_err();

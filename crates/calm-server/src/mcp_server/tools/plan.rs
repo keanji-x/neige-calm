@@ -654,7 +654,10 @@ async fn plan_list(
     let (_card, track) = resolve_track_for_identity(&ctx, &identity).await?;
     let actor = identity.to_actor_id();
     let task_budget_default = ctx.task_budget_default;
-    crate::db::write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
+    let summary = args.summary;
+    let tx_track = track.clone();
+    let entries = crate::db::write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
+        let track = tx_track;
         Box::pin(async move {
             let as_of_ms = now_ms();
             let mut tasks_json = Vec::new();
@@ -733,10 +736,11 @@ async fn plan_list(
                         entry["worktree"] = serde_json::to_value(facts)?;
                     }
                     // Given for every current attempt, `pending`/`failed` included (D8).
+                    let mut measured_base = None;
                     if let Some(task) = &task {
-                        entry["candidate"] = serde_json::to_value(
-                            crate::git_candidate::view::candidate_view_tx(tx, task, worktree_facts.as_ref()).await?,
-                        )?;
+                        let binding = crate::git_candidate::view::candidate_view_tx(tx, task, worktree_facts.as_ref()).await?;
+                        measured_base = binding.measured_base().map(str::to_string);
+                        entry["candidate"] = serde_json::to_value(binding)?;
                     }
                     // MCP-only: `guidance` exists only here; the REST wire type is unchanged.
                     if let (Some(refused), Some(task)) = (&refusal, &task) {
@@ -744,18 +748,42 @@ async fn plan_list(
                             recovery_guidance::guidance_tx(tx, task, refused, worktree_facts)
                                 .await?;
                     }
-                    tasks_json.push(if args.summary { list::summary(&entry) } else { entry });
+                    tasks_json.push((entry, measured_base));
                     after_key = Some(allocation.key);
                 }
                 if args.key.is_some() || !full_page {
                     break;
                 }
             }
-            Ok(json!({ "tasks": tasks_json }))
+            Ok(tasks_json)
         })
     })
     .await
-    .map_err(|error| map_plan_error("plan_list", error))
+    .map_err(|error| map_plan_error("plan_list", error))?;
+    // After the commit: `candidate.upstream` runs git, which must never hold the write
+    // transaction, and runs it on a blocking thread, not a runtime worker.
+    let bases: Vec<Option<String>> = entries.iter().map(|(_, base)| base.clone()).collect();
+    let staleness = crate::git_candidate::staleness::upstream_staleness_blocking(
+        track.id.to_string(),
+        track.workspace.path.clone(),
+        bases,
+    )
+    .await;
+    let tasks_json: Vec<Value> = entries
+        .into_iter()
+        .zip(staleness)
+        .map(|((mut entry, _), upstream)| {
+            if let Some(upstream) = upstream {
+                entry["candidate"]["upstream"] = json!(upstream);
+            }
+            if summary {
+                list::summary(&entry)
+            } else {
+                entry
+            }
+        })
+        .collect();
+    Ok(json!({ "tasks": tasks_json }))
 }
 
 /// A projection, not the row: gate commands are stripped to `{present, steps: [names]}` and gate bookkeeping columns never leave the kernel.

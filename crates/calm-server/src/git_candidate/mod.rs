@@ -12,6 +12,8 @@
 //! - [`action`]: `calm.task.delivery{retry|abandon}` — replay first, then admission, in one
 //!   immediate transaction.
 //! - [`refs`]: the candidate-ref prefix cleanup the Track-delete sweep runs (D9).
+//! - [`staleness`]: `candidate.upstream`, how far a candidate's base is behind the Track
+//!   repository's upstream as last known (#1777), read after `plan.list`'s transaction.
 //!
 //! Every write goes through a `begin_immediate_tx` transaction the caller owns (`action` owns
 //! its own through `write_in_tx_typed`); no module here calls `pool.begin()`.
@@ -25,6 +27,7 @@ pub(crate) mod action;
 pub(crate) mod candidate;
 pub(crate) mod delivery;
 pub(crate) mod refs;
+pub(crate) mod staleness;
 pub(crate) mod verification;
 pub(crate) mod view;
 

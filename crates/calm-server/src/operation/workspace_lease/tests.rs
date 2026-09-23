@@ -720,10 +720,11 @@ async fn track_sweep_uses_persisted_lease_paths_when_track_cwd_is_deleted() {
     assert_eq!(event_kind_count(&repo, "worktree.removed").await, 1);
 }
 
-/// The base production records for a fresh lease: the repository's HEAD now,
-/// resolved the way the worker op's prepare tx resolves it.
+/// The base production records for a fresh lease: the repository's HEAD now
+/// (these fixtures have no upstream), resolved the way the worker op's
+/// prepare tx resolves it.
 fn head_base(target: &WorkspaceLeaseTarget) -> LeaseBase {
-    base::resolve_head_lease_base(target).unwrap()
+    base::resolve_lease_base(target).unwrap()
 }
 
 fn pinned(base: &LeaseBase) -> WorktreeBase {
@@ -1297,7 +1298,7 @@ fn hostile_git_env_does_not_leak_into_lease_git() {
             message.contains(&c0) && message.contains(&c1),
             "refusal names expected C0 and found C1: {message}"
         );
-        let resolved = base::resolve_head_lease_base(&target).unwrap();
+        let resolved = base::resolve_lease_base(&target).unwrap();
         assert_eq!(resolved.base_sha, c0);
         assert_eq!(
             resolved.git_common_dir,
@@ -1306,7 +1307,7 @@ fn hostile_git_env_does_not_leak_into_lease_git() {
     }
     {
         let _git_dir = EnvVar::set("GIT_DIR", &foreign.join(".git"));
-        let resolved = base::resolve_head_lease_base(&target).unwrap();
+        let resolved = base::resolve_lease_base(&target).unwrap();
         assert_eq!(
             resolved.base_sha, c0,
             "base is the attached repository's HEAD, not the foreign GIT_DIR's"
@@ -1345,7 +1346,7 @@ fn lease_base_resolves_in_repo_path_with_spaces() {
         branch: workspace_slice_branch_for("track-space", "card-space").unwrap(),
     };
 
-    let base = base::resolve_head_lease_base(&target).unwrap();
+    let base = base::resolve_lease_base(&target).unwrap();
 
     assert_eq!(
         base.git_common_dir,
@@ -2451,7 +2452,7 @@ fn common_dir_ending_in_cr_resolves() {
         "git_common_dir keeps the bare repository's trailing CR"
     );
     assert!(common_dir.to_str().unwrap().ends_with("bare\r"));
-    let base = base::resolve_head_lease_base(&target).unwrap();
+    let base = base::resolve_lease_base(&target).unwrap();
     assert_eq!(base.git_common_dir, common_dir);
     provision_workspace_worktree(&target, &pinned(&base)).unwrap();
     base::verify_worktree_base(&target, &pinned(&base)).unwrap();
@@ -2485,7 +2486,7 @@ fn lease_base_resolves_in_repo_path_with_newline() {
         branch: workspace_slice_branch_for("track-nl", "card-nl").unwrap(),
     };
 
-    let base = base::resolve_head_lease_base(&target).unwrap();
+    let base = base::resolve_lease_base(&target).unwrap();
 
     assert_eq!(
         base.git_common_dir,
@@ -2574,7 +2575,7 @@ fn foreign_non_utf8_worktree_record_does_not_fail_the_lease() {
 
 /// The repository is UTF-8 but `.claude/worktrees` is a
 /// symlink into a directory that is not, so the canonical parent is not
-/// UTF-8. `resolve_head_lease_base` refuses with an `Err` naming the path:
+/// UTF-8. `resolve_lease_base` refuses with an `Err` naming the path:
 /// the prepare tx fails the op instead of panicking in `json!` (which would
 /// leave it `Pending`, panicking again on every drive).
 #[test]
@@ -2595,7 +2596,7 @@ fn non_utf8_canonical_parent_is_refused_not_a_panic() {
         branch: workspace_slice_branch_for("track-u8", "card-u8").unwrap(),
     };
 
-    let err = base::resolve_head_lease_base(&target).unwrap_err();
+    let err = base::resolve_lease_base(&target).unwrap_err();
 
     assert!(matches!(err, CalmError::Internal(_)), "{err}");
     assert!(
@@ -2685,10 +2686,11 @@ async fn non_utf8_toplevel_is_refused_at_target_preparation() {
     );
 }
 
-/// A2b — the whole `{sha,NULL} × {head,commit,attempt,NULL,bogus} × {A,NULL}`
-/// matrix against migration 0111's tuple CHECK (`canonical_path` and
-/// `git_common_dir` follow `base_sha`'s nullness). Exactly four tuples land;
-/// every other one is rejected by the CHECK itself, not by anything in Rust.
+/// A2b — the whole `{sha,NULL} × {head,upstream,commit,attempt,NULL,bogus} × {A,NULL}`
+/// matrix against the tuple CHECK (0111, widened by 0115 to `upstream`;
+/// `canonical_path` and `git_common_dir` follow `base_sha`'s nullness).
+/// Exactly five tuples land; every other one is rejected by the CHECK
+/// itself, not by anything in Rust.
 #[tokio::test]
 async fn lease_check_rejects_every_invalid_tuple() {
     let tmp = tempfile::tempdir().unwrap();
@@ -2700,6 +2702,7 @@ async fn lease_check_rejects_every_invalid_tuple() {
         .flat_map(|sha| {
             [
                 Some("head"),
+                Some("upstream"),
                 Some("commit"),
                 Some("attempt"),
                 None,
@@ -2751,18 +2754,19 @@ async fn lease_check_rejects_every_invalid_tuple() {
         accepted,
         vec![
             (Some("sha"), Some("head"), None),
+            (Some("sha"), Some("upstream"), None),
             (Some("sha"), Some("commit"), None),
             (Some("sha"), Some("attempt"), Some("A")),
             (None, None, None),
         ],
-        "exactly the four CHECK-accepted tuples land"
+        "exactly the five CHECK-accepted tuples land"
     );
-    assert_eq!(rejected, 16);
+    assert_eq!(rejected, 19);
     let landed: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM workspace_leases")
         .fetch_one(repo.pool())
         .await
         .unwrap();
-    assert_eq!(landed, 4);
+    assert_eq!(landed, 5);
 }
 
 async fn new_card(repo: &crate::db::sqlite::SqlxRepo, track_id: &str) -> String {

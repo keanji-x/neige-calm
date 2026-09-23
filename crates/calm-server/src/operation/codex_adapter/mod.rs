@@ -23,9 +23,9 @@ use crate::mcp_server::wiring::{card_mcp_env, mint_and_persist_card_token};
 use crate::model::{Card, CardRole, new_id, now_ms};
 use crate::operation::worker_cleanup::{WorkerCleanupOutcome, compensate_worker_rows};
 use crate::operation::workspace_lease::{
-    WorkspaceLeaseTarget, WorktreeBase, acquire_workspace_lease_tx, base::resolve_head_lease_base,
+    WorkspaceLeaseTarget, WorktreeBase, acquire_workspace_lease_tx, base::resolve_lease_base,
     prepare_workspace_lease_target_tx, provision_workspace_worktree, release_workspace_lease_by_id,
-    remove_workspace_artifact_for_lease_by_id,
+    remove_workspace_artifact_for_lease_by_id, upstream_fetch::refresh_track_upstream,
 };
 use crate::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
 use crate::planner_model::TurnModelSelection;
@@ -760,6 +760,17 @@ impl ProviderAdapter for CodexWorkerAdapter {
         Ok(())
     }
 
+    /// The lease base is the attached repository's upstream when it has one
+    /// (#1777): fetch it now, outside every transaction, so `prepare_tx`
+    /// reads it with a local `rev-parse`.
+    async fn before_insert(&self, input: &Value) {
+        let Ok(payload) = serde_json::from_value::<CodexWorkerOperationPayload>(input.clone())
+        else {
+            return;
+        };
+        refresh_track_upstream(self.repo.as_ref(), &payload.track_id).await;
+    }
+
     async fn prepare_tx<'tx>(
         &self,
         tx: &mut Tx<'tx>,
@@ -783,7 +794,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
         .await?;
         // The base is decided here, in the prepare tx, and frozen below; the
         // spawn pins the worktree to it (design D4).
-        let lease_base = resolve_head_lease_base(&lease_target)?;
+        let lease_base = resolve_lease_base(&lease_target)?;
         let cwd = lease_target.path_string();
         let env = build_codex_env(self.repo.as_ref(), self.codex.as_ref(), &card_id).await?;
         let rendered_prompt = render_task_worker_prompt(

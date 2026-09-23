@@ -264,6 +264,19 @@ pub(crate) enum CandidateBinding {
     },
 }
 
+impl CandidateBinding {
+    /// The base `candidate.upstream` is measured from: `base_sha` of every
+    /// bound candidate, whatever its lease's `base_source` ([`super::staleness`],
+    /// computed after the read transaction); `None` for an unbound or
+    /// unminted binding, which records no base.
+    pub(crate) fn measured_base(&self) -> Option<&str> {
+        match self {
+            CandidateBinding::Bound { base_sha, .. } => Some(base_sha),
+            _ => None,
+        }
+    }
+}
+
 /// The two derivations a kernel lease carries beside its binding (D2 `delivery`, D8 `verification`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BoundFacts {

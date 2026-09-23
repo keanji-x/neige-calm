@@ -6,7 +6,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use super::{InitCommit, materialize_managed_workspace, materialize_managed_workspace_inner};
 use crate::operation::workspace_lease::{
-    WorkspaceLeaseTarget, WorktreeBase, base::resolve_head_lease_base, provision_workspace_worktree,
+    WorkspaceLeaseTarget, WorktreeBase, base::resolve_lease_base, provision_workspace_worktree,
 };
 
 /// The git environment is process-global, so every git-spawning test holds this lock for its whole body
@@ -130,9 +130,9 @@ fn lease_target(repo_root: &Path) -> WorkspaceLeaseTarget {
     }
 }
 
-/// The base production pins a fresh lease to: the repository's HEAD now.
+/// The base production pins a fresh lease to: the repository's HEAD now (no upstream here).
 fn head_base(target: &WorkspaceLeaseTarget) -> WorktreeBase {
-    WorktreeBase::from_lease_base(&resolve_head_lease_base(target).expect("resolve head base"))
+    WorktreeBase::from_lease_base(&resolve_lease_base(target).expect("resolve lease base"))
 }
 
 #[test]

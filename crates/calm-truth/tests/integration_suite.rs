@@ -14,6 +14,8 @@ mod track_write_point_registry;
 mod worker_session_matrix_alignment;
 #[path = "worker_sessions_nonterminal.rs"]
 mod worker_sessions_nonterminal;
+#[path = "workspace_lease_upstream_migration.rs"]
+mod workspace_lease_upstream_migration;
 
 #[test]
 fn every_root_test_file_is_in_this_suite() {

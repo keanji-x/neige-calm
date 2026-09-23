@@ -429,7 +429,8 @@ impl Fx {
     }
 
     /// The production lease sequence for `card`: prepare from the Track workspace, resolve the
-    /// HEAD base, the kernel-policy row, the worktree pinned to the base.
+    /// lease base (the upstream when the repo has one, else HEAD), the kernel-policy row, the
+    /// worktree pinned to the base.
     pub(super) async fn kernel_lease(&self, card: &str) -> KernelWorkspaceLease {
         take_kernel_workspace_lease_for_test(&self.pool(), self.track(), card, &self.workspace_root)
             .await

@@ -1702,6 +1702,151 @@ async fn spawn_failure_status_detail_carries_the_real_reason() {
     );
 }
 
+fn diverged_git(dir: &std::path::Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args([
+            "-c",
+            "user.name=Diverged",
+            "-c",
+            "user.email=diverged@example.test",
+        ])
+        .args(args)
+        .output()
+        .expect("spawn git");
+    assert!(
+        output.status.success(),
+        "git {args:?} in {}: {}",
+        dir.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+/// #1777 — an attached checkout whose branch and upstream have diverged, driven through the
+/// scheduler and the REAL `CodexWorkerAdapter`: the submit path fetches, `prepare_tx` refuses, and
+/// the task the Planner reads fails once as `spawn-failed: refused: attached-repo-diverged: …` with
+/// both commits, the counts and the not-retryable instruction — in `status_detail` and in the
+/// kernel `task.failed`. A second scheduling pass starts nothing: no retry loop.
+#[tokio::test]
+async fn diverged_attached_checkout_fails_the_task_for_a_human_to_reconcile() {
+    let boot = boot().await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let attached = tmp.path().join("attached");
+    let origin = tmp.path().join("origin");
+    std::fs::create_dir_all(&attached).unwrap();
+    diverged_git(&attached, &["init", "-q", "-b", "main"]);
+    diverged_git(
+        &attached,
+        &["commit", "-q", "--allow-empty", "-m", "initial"],
+    );
+    diverged_git(&attached, &["clone", "-q", ".", origin.to_str().unwrap()]);
+    diverged_git(
+        &attached,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+    diverged_git(&attached, &["fetch", "-q", "origin"]);
+    diverged_git(
+        &attached,
+        &["branch", "-q", "--set-upstream-to=origin/main"],
+    );
+    diverged_git(
+        &attached,
+        &["commit", "-q", "--allow-empty", "-m", "unpushed"],
+    );
+    diverged_git(
+        &attached,
+        &["commit", "-q", "--allow-empty", "-m", "unpushed again"],
+    );
+    let head = diverged_git(&attached, &["rev-parse", "HEAD"]);
+    diverged_git(
+        &origin,
+        &["commit", "-q", "--allow-empty", "-m", "landed upstream"],
+    );
+    let upstream = diverged_git(&origin, &["rev-parse", "HEAD"]);
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    sqlx::query(
+        "UPDATE tracks SET workspace_kind='attached', workspace_path=?1, workspace_frozen_at=1 WHERE id=?2",
+    )
+    .bind(attached.to_str().unwrap())
+    .bind(boot.track_id.as_str())
+    .execute(&pool)
+    .await
+    .expect("set track workspace");
+
+    let task = plan_task(&boot.track_id, "diverged", TaskKind::Codex, &[]);
+    let task_id = task.id.clone();
+    seed_projected_task(&boot, task).await;
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
+    let codex: Arc<dyn ProviderAdapter> = Arc::new(CodexWorkerAdapter::new(
+        route_repo,
+        Arc::new(CodexClient::new_stub()),
+        boot.shared_codex_appserver.clone(),
+        None,
+        boot.card_role_cache.clone(),
+        boot.track_area_cache.clone(),
+        std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
+    ));
+    let (runtime, scheduler) = build_scheduler(&boot, vec![codex]);
+
+    scheduler.schedule_track(boot.track_id.clone()).await;
+
+    let op = runtime
+        .find_by_kind_and_idempotency("codex-worker", &task_id)
+        .await
+        .unwrap()
+        .expect("codex worker op");
+    assert_eq!(op.phase.tag(), PhaseTag::Failed);
+    let leases: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM workspace_leases")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(leases, 0, "no lease for a diverged checkout");
+
+    let row = task_row(&boot, "diverged").await;
+    assert_eq!(row.status, TaskStatus::Failed);
+    let detail = row.status_detail.clone().unwrap_or_default();
+    assert!(
+        detail.starts_with("spawn-failed: refused: attached-repo-diverged:"),
+        "{detail}"
+    );
+    let failed = event_rows(&boot, "task.failed").await;
+    assert_eq!(failed.len(), 1, "one kernel task.failed for the Planner");
+    let reason = failed[0].1["reason"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    for text in [&detail, &reason] {
+        for needle in [
+            "attached-repo-diverged",
+            head.as_str(),
+            upstream.as_str(),
+            "(2 unpushed)",
+            "per kernel fetch",
+            "2 ahead, 1 behind",
+            "Not retryable",
+            "a human must run `git fetch`, then rebase the unpushed commits onto the upstream \
+             and push, or reset to it",
+            "re-dispatch works afterwards",
+        ] {
+            assert!(text.contains(needle), "{needle:?} missing from {text:?}");
+        }
+    }
+
+    // No automatic retry: another scheduling pass leaves the failed task and its one op alone.
+    scheduler.schedule_track(boot.track_id.clone()).await;
+    assert_eq!(task_row(&boot, "diverged").await.status, TaskStatus::Failed);
+    assert_eq!(event_rows(&boot, "task.failed").await.len(), 1);
+    let ops: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM operations WHERE kind = 'codex-worker'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(ops, 1);
+}
+
 #[tokio::test]
 async fn worker_report_flips_row_inside_emit_tx() {
     let boot = boot().await;

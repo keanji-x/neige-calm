@@ -673,7 +673,7 @@ mod tests {
     };
     use crate::model::{CardRole, NewArea, NewCard, NewTrack, TrackPatch};
     use crate::operation::workspace_lease::{
-        WorktreeBase, acquire_workspace_lease_tx, base::resolve_head_lease_base,
+        WorktreeBase, acquire_workspace_lease_tx, base::resolve_lease_base,
         prepare_workspace_lease_target_tx, provision_workspace_worktree,
     };
     use crate::recorder_shadow::divergence_count_for_test;
@@ -852,7 +852,7 @@ mod tests {
         )
         .await
         .expect("prepare lease target");
-        let base = resolve_head_lease_base(&target).expect("resolve lease base");
+        let base = resolve_lease_base(&target).expect("resolve lease base");
         let (lease, _event) = acquire_workspace_lease_tx(
             &mut tx,
             worker_card.id.as_str(),

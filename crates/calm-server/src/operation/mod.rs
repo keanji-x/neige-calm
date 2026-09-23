@@ -689,6 +689,15 @@ pub trait ProviderAdapter: Send + Sync {
 
     async fn validate(&self, input: &Value) -> Result<()>;
 
+    /// Work a submission does after `validate` and before its op row is
+    /// inserted — outside every database transaction, so nothing here can hold
+    /// the kernel's one write transaction (network I/O above all: the worker
+    /// adapters fetch the attached repository's upstream here, #1777, and
+    /// `prepare_tx` then reads it locally). Infallible by contract: whatever
+    /// fails here is the adapter's to log, and `prepare_tx` decides from what
+    /// is on disk. A retried submission of an existing op does not run it.
+    async fn before_insert(&self, _input: &Value) {}
+
     async fn prepare_tx<'tx>(
         &self,
         tx: &mut Tx<'tx>,
@@ -1074,6 +1083,8 @@ fn required_output(op: &Operation) -> Result<&TxOutput> {
         .ok_or_else(|| CalmError::Internal(format!("operation {} missing tx_output_json", op.id)))
 }
 
+#[cfg(test)]
+mod before_insert_tests;
 #[cfg(test)]
 mod claim_completion_deadlock_tests;
 #[cfg(test)]

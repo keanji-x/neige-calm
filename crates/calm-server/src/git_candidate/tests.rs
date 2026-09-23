@@ -3036,6 +3036,9 @@ fn candidate_binding_covers_every_row() {
         json!({"state": "not_started", "gate_attempt": 0})
     );
     assert_eq!(wire["base_sha"], json!("b".repeat(40)));
+    // Every bound candidate is measured, whatever its lease's `base_source`.
+    assert_eq!(bound.measured_base(), Some("b".repeat(40).as_str()));
+    assert_eq!(legacy.measured_base(), None);
 
     // Contract violations are errors, never a guessed binding.
     assert!(
