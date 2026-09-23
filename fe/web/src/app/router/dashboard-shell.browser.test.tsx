@@ -12,10 +12,11 @@ import { ThemeProvider } from '../theme/public.tsx';
 import { createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 import source from '../../../../../test-data/native-view-v1.json?raw';
+import demoSource from '../../../../../plugins/paper-trading/examples/native-demo.json?raw';
 
 afterEach(() => { cleanup(); document.getElementById('root')?.remove(); });
 
-function setup({ native = true, inventory = false, initial = '/track/a' } = {}) {
+function setup({ native = true, inventory = false, initial = '/track/a', demo = false } = {}) {
   const tracks = ['a', 'b'].map(id => ({ id, area_id: 'area', title: `Track ${id}`, sort: 1,
     lifecycle: 'working', cwd: '/tmp', archived_at: null, pinned_at: null, terminal_at: null,
     created_at: 1, updated_at: 2 }));
@@ -23,7 +24,7 @@ function setup({ native = true, inventory = false, initial = '/track/a' } = {}) 
   const cardsFor = (id: string) => [{ id: `report-${id}`, track_id: id, title: null, kind: 'track-report',
     sort: 0, deletable: false, created_at: 1, updated_at: 2,
     payload: { summary: '', body: '', blocks: [
-      ...(native && id === 'a' ? [{ id: 'native-view', kind: 'view', rev: 1, payload: fixture.valid }] : []),
+      ...(native && id === 'a' ? [{ id: 'native-view', kind: 'view', rev: 1, payload: demo ? JSON.parse(demoSource) : fixture.valid }] : []),
       { id: 'citation', kind: 'prose', rev: 1, payload: { markdown: '[Source proof](neige://source/src_0badf00d)' } },
       ...Array.from({ length: 40 }, (_, i) => ({ id: `paragraph-${i}`, kind: 'prose', rev: 1,
         payload: { markdown: `Paragraph ${i}. A report to read and return to.` } })),
@@ -87,6 +88,15 @@ it('gives declared native reports the available width at 1440 without an empty i
   await expect.element(page.getByRole('button', { name: 'Show track panel' })).toHaveAttribute('aria-expanded', 'false');
   expect(document.querySelector('iframe')).toBeNull();
   await page.screenshot({ path: 'test-results/dashboard-shell-1440.png' });
+});
+
+it('puts the actual portfolio Demo research row in the first dashboard viewport', async () => {
+  await page.viewport(1440, 1000);
+  setup({ demo: true });
+  await ready();
+  expect(nativeBlock().getBoundingClientRect().width).toBeGreaterThanOrEqual(1000);
+  expect(page.getByRole('region', { name: '03 · 投资观点' }).element().getBoundingClientRect().top).toBeLessThan(1000);
+  await page.screenshot({ path: 'test-results/native-dashboard-integrated.png' });
 });
 
 it('preserves the native reader and inventory nodes through panel, Planner, and board round trips', async () => {

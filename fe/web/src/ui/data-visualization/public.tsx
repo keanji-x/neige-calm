@@ -17,6 +17,10 @@ function number(value: number, decimals = 2) {
 function axisNumber(value: number) {
   return new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 2 }).format(value);
 }
+function observationNumber(value: number) {
+  if (value !== 0 && Math.abs(value) < 1e-6) return String(value);
+  return new Intl.NumberFormat('zh-CN', { maximumSignificantDigits: 17 }).format(value);
+}
 function scalar(value: ValueDisplay) {
   if (value.state === 'unknown') return '—';
   const sign = value.amount < 0 ? '-' : value.signed && value.amount > 0 ? '+' : '';
@@ -62,7 +66,7 @@ export function DistributionChart({ label, unit, slices, emptyText, selected, on
       <span className={`${styles.swatch} ${palette(slice.palette)}`} aria-hidden="true" />
       {slice.label}<span>{percentage(slice.value)}</span>
     </button>)}</div>
-    <p className={styles.detail}>{current?.label ?? label} · {number(current?.value ?? total)} {unit}</p>
+    <p className={styles.detail}>{current?.label ?? label} · {observationNumber(current?.value ?? total)} {unit}</p>
   </div>;
 }
 
@@ -113,7 +117,7 @@ export function TimeSeriesChart({ label, datasets, emptyText, selection, onSelec
   const y = (value: number) => HEIGHT - PAD - (value - minimum) / (maximum - minimum || 1) * (HEIGHT - 2 * PAD);
   const sampleIndex = Math.max(0, Math.min(sample ?? points.length - 1, points.length - 1));
   const focused = points[sampleIndex];
-  const describeSample = focused ? `${focused.date}; ${data.series.map((series, i) => `${series.label}: ${focused.values[i] === null ? '未知' : number(focused.values[i])} ${data.unit}`).join('; ')}` : '';
+  const describeSample = focused ? `${focused.date}; ${data.series.map((series, i) => `${series.label}: ${focused.values[i] === null ? '未知' : observationNumber(focused.values[i])} ${data.unit}`).join('; ')}` : '';
   const selectAt = (element: HTMLInputElement, clientX: number) => {
     const box = element.getBoundingClientRect();
     if (box.width === 0) return;
@@ -169,8 +173,8 @@ export function TimeSeriesChart({ label, datasets, emptyText, selection, onSelec
           onChange={event => onSelection({ ...selection, sample: Number(event.target.value) })} />
         {focused && <div className={styles.tooltip} aria-hidden="true" style={sampleIndex < points.length / 2 ? { right: 8 } : { left: 8 }}>
           <strong>{focused.date}</strong>{data.series.map((series, i) => <div key={series.id}>
-            <span className={`${styles.swatch} ${palette(series.palette)}`} />{series.label}
-            <span>{focused.values[i] === null ? '未知' : number(focused.values[i])} {data.unit}</span>
+            <span className={`${styles.swatch} ${palette(series.palette)}`} /><span className={styles.tooltipSeries}>{series.label}</span>
+            <span>{focused.values[i] === null ? '未知' : observationNumber(focused.values[i])}</span>
           </div>)}
         </div>}
         </div>

@@ -4,6 +4,7 @@
   .header h2 { margin: 0; font-size: 19px; font-weight: var(--weight-medium); }
   .expand { border: 1px solid var(--hairline); border-radius: var(--radius-sm); background: var(--surface-card); color: var(--text); inline-size: var(--control-h); block-size: var(--control-h); display: grid; place-items: center; }
   .composition { container-type: inline-size; }
+  .recordBrowser { container-type: inline-size; }
   .description { color: var(--text-2); font-size: var(--text-xs); margin-block: var(--space-3) var(--space-5); }
   .row { padding-block: var(--space-6); border-top: 1px solid var(--hairline); }
   .row > h3 { margin: 0 0 var(--space-5); font-size: 16px; font-weight: var(--weight-medium); }

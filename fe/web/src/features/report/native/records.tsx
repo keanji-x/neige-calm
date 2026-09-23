@@ -13,7 +13,7 @@ export function RecordBrowser({ component, selection, onSelection }: {
   const selected = data?.items.find(item => item.id === selectedId);
   const opener = useRef<HTMLButtonElement | null>(null);
   const closeDetail = () => { onSelection({ ...selection, selectedId: null, evidence: [] }); opener.current?.focus(); };
-  return <div>
+  return <div className={styles.recordBrowser}>
     <div className={styles.controls}>
       {component.datasets.length > 1 && <div className={styles.segments} aria-label="记录场景">{component.datasets.map(d =>
         <button type="button" key={d.id} aria-pressed={data?.id === d.id} onClick={() => onSelection({ ...selection, datasetId: d.id, selectedId: null, evidence: [] })}>{d.label}</button>)}</div>}

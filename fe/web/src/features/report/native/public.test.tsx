@@ -65,6 +65,13 @@ it('renders a single stacked observation without an invisible degenerate polygon
   expect(Number(container.querySelector('rect')?.getAttribute('height'))).toBeGreaterThan(0);
 });
 
+it('does not round small measured values to zero in observation inspection', () => {
+  render(<TimeSeriesChart label="测量" emptyText="无数据" selection={{ datasetId: 'small', selected: null, sample: null }} onSelection={() => {}}
+    datasets={[{ id: 'small', label: '样本', unit: 'GB', style: 'line', series: [{ id: 'a', label: '主库', palette: 1 }], points: [{ date: '2026-09-23', values: [0.001] }] }]} />);
+  expect(screen.getByRole('slider').getAttribute('aria-valuetext')).toContain('0.001 GB');
+  expect(screen.getByText('0.001')).toBeTruthy();
+});
+
 it('preserves inspection state in both directions across wide reading', async () => {
   render(<NativeReportView payload={payload} />);
   await userEvent.click(screen.getByRole('button', { name: '合计' }));

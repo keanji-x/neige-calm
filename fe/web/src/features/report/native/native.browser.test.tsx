@@ -7,6 +7,7 @@ import demoSource from '../../../../../../plugins/paper-trading/examples/native-
 import { nativeViewPayloadSchema } from '../../../../../core/domain/report-view.ts';
 import { NativeReportView } from './public.tsx';
 import { ReportDocument } from '../document/public.tsx';
+import { TimeSeriesChart } from '../../../ui/data-visualization/public.tsx';
 
 afterEach(cleanup);
 const fixture = JSON.parse(source) as { valid: unknown };
@@ -75,4 +76,29 @@ it('uses the authored narrow-summary ratio and keeps research visible in a wide 
   expect(slider.value).toBe('0');
   expect(slider.getAttribute('aria-valuetext')).toContain('2026-06-30');
   expect(container.querySelector('iframe')).toBeNull();
+});
+
+it('stacks record details according to their own cell width, not the whole composition', async () => {
+  await page.viewport(1440, 1000);
+  const view = structuredClone(payload);
+  const records = view.rows[2].cells[0];
+  view.rows = [{ id: 'narrow', title: 'Narrow records', layout: 'three', cells: [records, view.rows[0].cells[0], view.rows[1].cells[0]] }];
+  render(<main style={{ inlineSize: 1000 }}><NativeReportView payload={view} /></main>);
+  await page.getByRole('button', { name: '查看证据', exact: true }).click();
+  const detail = page.getByRole('region', { name: '备份是否按时完成？ 详情' }).element();
+  expect(detail.getBoundingClientRect().width).toBeGreaterThan(180);
+  expect(detail.getBoundingClientRect().right).toBeLessThanOrEqual(detail.parentElement!.getBoundingClientRect().right);
+});
+
+it('contains long observation tooltips inside the plot without covering the legend', async () => {
+  await page.viewport(1440, 1000);
+  const { container } = render(<div style={{ inlineSize: 350 }}><TimeSeriesChart label="测量" emptyText="无数据"
+    selection={{ datasetId: 'long', selected: null, sample: null }} onSelection={() => {}}
+    datasets={[{ id: 'long', label: '长说明', unit: 'GB', style: 'line',
+      series: Array.from({ length: 6 }, (_, i) => ({ id: `s${i}`, label: `Series ${i} ${'long descriptive label '.repeat(4)}`, palette: i + 1 })),
+      points: [{ date: '2026-09-23', values: [1, 2, 3, 4, 5, 6] }] }]} /></div>);
+  const cursor = page.getByRole('slider').element();
+  await page.getByRole('slider').hover();
+  const tooltip = container.querySelector('[aria-hidden="true"][style]')!;
+  expect(tooltip.getBoundingClientRect().bottom).toBeLessThanOrEqual(cursor.getBoundingClientRect().bottom);
 });
