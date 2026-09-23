@@ -516,14 +516,29 @@ pub enum ThreadConfig {
 }
 
 impl ThreadConfig {
-    fn to_wire_config(&self) -> Option<serde_json::Value> {
+    /// An MCP thread's exec-shells get the kernel-led PATH through `shell_environment_policy.set`:
+    /// codex re-applies `set` after restoring its login-shell snapshot, which can reset or reorder
+    /// the daemon's inherited PATH (#1784).
+    fn to_wire_config(&self) -> Result<Option<serde_json::Value>> {
         match self {
-            Self::NoMcp => None,
+            Self::NoMcp => Ok(None),
             Self::McpShell {
                 role,
                 socket_path,
                 raw_token,
-            } => Some(card_mcp_thread_start_config(socket_path, raw_token, *role)),
+            } => {
+                let kernel_path = crate::kernel_bin_path::kernel_led_path()
+                    .map_err(|error| CalmError::Internal(format!("thread PATH: {error}")))?;
+                let path = kernel_path
+                    .path_utf8()
+                    .map_err(|error| CalmError::Internal(format!("thread PATH: {error}")))?;
+                Ok(Some(card_mcp_thread_start_config(
+                    socket_path,
+                    raw_token,
+                    *role,
+                    path,
+                )))
+            }
         }
     }
 }
@@ -539,13 +554,16 @@ pub struct SharedThreadStartParams {
 
 impl std::fmt::Debug for SharedThreadStartParams {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let redacted_config = self.config.to_wire_config();
+        let redacted_config = match self.config.to_wire_config() {
+            Ok(config) => redact_thread_start_config(&config),
+            Err(error) => serde_json::json!({ "unrenderable": error.to_string() }),
+        };
         f.debug_struct("SharedThreadStartParams")
             .field("cwd", &self.cwd)
             .field("approval_policy", &self.approval_policy)
             .field("sandbox_mode", &self.sandbox_mode)
             .field("developer_instructions", &self.developer_instructions)
-            .field("config", &redact_thread_start_config(&redacted_config))
+            .field("config", &redacted_config)
             .finish()
     }
 }
@@ -1255,7 +1273,7 @@ impl SharedCodexAppServer {
         }
         self.reap_and_respawn_with_current_settings().await?;
         let client = self.connected_client().await?;
-        let config = params.config.to_wire_config();
+        let config = params.config.to_wire_config()?;
         let semantic_recovery = self.recovery.is_some()
             && self.repo.card_role_get(card_id).await? == Some(CardRole::Planner);
         let tools = if semantic_recovery {
@@ -3438,7 +3456,19 @@ impl SharedCodexAppServer {
         card_id: &str,
         config: ThreadConfig,
     ) {
-        let lowered = config.to_wire_config();
+        let lowered = match config.to_wire_config() {
+            Ok(lowered) => lowered,
+            Err(e) => {
+                tracing::warn!(
+                    target = "shared_codex_daemon::resume",
+                    %thread_id,
+                    %card_id,
+                    error = %e,
+                    "shared codex thread resume config unavailable; leaving mapping intact"
+                );
+                return;
+            }
+        };
         if let Err(e) = client.thread_resume_with_config(thread_id, lowered).await {
             tracing::warn!(
                 target = "shared_codex_daemon::resume",

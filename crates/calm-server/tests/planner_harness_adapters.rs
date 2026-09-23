@@ -721,6 +721,21 @@ async fn planner_thread_start_carries_neige_mcp_exec_shell_env() {
             .is_none()
     );
 
+    // #1784: codex re-applies `set` after its login-shell snapshot, so the kernel-led PATH rides here.
+    assert_eq!(
+        thread_start
+            .pointer("/params/config/shell_environment_policy/set/PATH")
+            .and_then(Value::as_str),
+        Some(
+            format!(
+                "{}:{}",
+                std::env::current_exe().unwrap().parent().unwrap().display(),
+                std::env::var("PATH").unwrap()
+            )
+            .as_str()
+        ),
+        "planner thread/start must carry the kernel bin dir, then the kernel PATH: {thread_start}"
+    );
     let mcp_socket = thread_start
         .pointer("/params/config/shell_environment_policy/set/NEIGE_MCP_SOCKET")
         .and_then(Value::as_str);

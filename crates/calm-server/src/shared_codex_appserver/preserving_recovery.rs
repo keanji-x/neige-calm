@@ -231,7 +231,7 @@ impl SharedCodexAppServer {
         Ok(self
             .connected_client()
             .await?
-            .thread_resume_with_config(thread_id, config.to_wire_config())
+            .thread_resume_with_config(thread_id, config.to_wire_config()?)
             .await?
             .thread)
     }

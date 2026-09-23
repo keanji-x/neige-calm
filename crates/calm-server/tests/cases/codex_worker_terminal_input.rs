@@ -7,8 +7,7 @@ use serde_json::{Value, json};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-const REFUSAL: &str =
-    "a running codex worker cannot be redirected via terminal input; use the task channel";
+const REFUSAL: &str = "a running codex worker cannot be redirected yet: terminal input interrupts its turn without starting a new one; wait for its task to settle, then plan or rewire its successor";
 
 /// A viewer that records every byte it receives on stdin, unechoed and unbuffered.
 fn stdin_recorder(log: &Path) -> String {

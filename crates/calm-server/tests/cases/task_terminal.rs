@@ -504,58 +504,75 @@ async fn worker_session_replacement_invalidates_previous_task_observations() {
         AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
     };
     let h = Harness::start().await;
-    let w = worker(&h, "claude", &h.track, true).await;
-    h.ok(
-        "calm.terminal.control",
-        json!({"task_id":w.task,"action":"claim"}),
-    )
-    .await;
-    let before = snapshot(&h, json!({"task_id":w.task})).await;
-    let old = h
-        .sql
-        .session_get_by_id(&w.session.clone().into())
+    // A codex task Worker is observe-only (#1784); it keeps the observation half.
+    for (kind, session_kind, provider) in [
+        (
+            "claude",
+            WorkerSessionKind::ClaudeCard,
+            AgentProvider::Claude,
+        ),
+        ("codex", WorkerSessionKind::CodexCard, AgentProvider::Codex),
+    ] {
+        let writable = kind == "claude";
+        let w = worker(&h, kind, &h.track, true).await;
+        if writable {
+            h.ok(
+                "calm.terminal.control",
+                json!({"task_id":w.task,"action":"claim"}),
+            )
+            .await;
+        }
+        let before = snapshot(&h, json!({"task_id":w.task})).await;
+        let old = h
+            .sql
+            .session_get_by_id(&w.session.clone().into())
+            .await
+            .unwrap()
+            .unwrap();
+        let next = new_id();
+        let mut tx = h.sql.pool().begin().await.unwrap();
+        session_supersede_and_start_tx(
+            &mut tx,
+            &w.session,
+            WorkerSessionInit {
+                id: next.clone(),
+                card_id: w.card.clone(),
+                kind: session_kind,
+                agent_provider: Some(provider),
+                status: WorkerSessionState::Running,
+                terminal_run_id: Some(w.terminal.clone()),
+                thread_id: None,
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: None,
+                spawn_op_id: old.spawn_op_id,
+                now_ms: now_ms(),
+            },
+        )
         .await
-        .unwrap()
         .unwrap();
-    let next = new_id();
-    let mut tx = h.sql.pool().begin().await.unwrap();
-    session_supersede_and_start_tx(
-        &mut tx,
-        &w.session,
-        WorkerSessionInit {
-            id: next.clone(),
-            card_id: w.card.clone(),
-            kind: WorkerSessionKind::ClaudeCard,
-            agent_provider: Some(AgentProvider::Claude),
-            status: WorkerSessionState::Running,
-            terminal_run_id: Some(w.terminal.clone()),
-            thread_id: None,
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: old.spawn_op_id,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let resolved = h
-        .ok("calm.terminal.resolve", json!({"task_id":w.task}))
-        .await;
-    assert_eq!(resolved["worker_session_id"], next);
-    h.ok(
-        "calm.terminal.control",
-        json!({"task_id":w.task,"action":"claim"}),
-    )
-    .await;
-    let fresh = snapshot(&h, json!({"task_id":w.task})).await;
-    assert_ne!(before["connection_id"], fresh["connection_id"]);
-    let rejected=h.call("calm.terminal.input",json!({"task_id":w.task,"observation_id":before["observation_id"],"request_id":"old","action":{"type":"text","text":"stale"}})).await;
-    assert!(rejected.get("error").is_some(), "{rejected}");
-    let accepted=h.ok("calm.terminal.input",json!({"task_id":w.task,"observation_id":fresh["observation_id"],"request_id":"new","action":{"type":"text","text":"current"}})).await;
-    assert_eq!(accepted["outcome"], "written");
-    stop(&h, &w).await;
+        tx.commit().await.unwrap();
+        let resolved = h
+            .ok("calm.terminal.resolve", json!({"task_id":w.task}))
+            .await;
+        assert_eq!(resolved["worker_session_id"], next);
+        if writable {
+            h.ok(
+                "calm.terminal.control",
+                json!({"task_id":w.task,"action":"claim"}),
+            )
+            .await;
+        }
+        let fresh = snapshot(&h, json!({"task_id":w.task})).await;
+        assert_ne!(before["connection_id"], fresh["connection_id"], "{kind}");
+        let rejected=h.call("calm.terminal.input",json!({"task_id":w.task,"observation_id":before["observation_id"],"request_id":"old","action":{"type":"text","text":"stale"}})).await;
+        assert!(rejected.get("error").is_some(), "{rejected}");
+        if writable {
+            let accepted=h.ok("calm.terminal.input",json!({"task_id":w.task,"observation_id":fresh["observation_id"],"request_id":"new","action":{"type":"text","text":"current"}})).await;
+            assert_eq!(accepted["outcome"], "written");
+        }
+        stop(&h, &w).await;
+    }
 }
 
 #[tokio::test]

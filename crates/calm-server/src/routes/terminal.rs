@@ -117,7 +117,11 @@ async fn terminal_renderer_config(
         crate::proc_supervisor::resolve_control_sock(daemon.proc_supervisor_sock.as_deref())
             .await?;
 
-    let envs = terminal_child_envs(env)?;
+    let envs = terminal_child_envs(env);
+    // #1784: `neige` in a PTY resolves to the running kernel's CLI. The prepend runs inside the
+    // shell, so the PATH the proc supervisor hands the child stays byte-exact behind it.
+    let path_prepend = crate::kernel_bin_path::shell_path_prepend()
+        .map_err(|error| CalmError::Internal(format!("terminal PATH: {error}")))?;
 
     Ok(RendererConfig {
         terminal_id: term.id.clone(),
@@ -127,7 +131,7 @@ async fn terminal_renderer_config(
         terminal_fg: parse_rgb(&term.theme_fg).map_err(CalmError::Internal)?,
         terminal_bg: parse_rgb(&term.theme_bg).map_err(CalmError::Internal)?,
         program: "/bin/sh".to_string(),
-        args: vec!["-c".to_string(), program.to_string()],
+        args: vec!["-c".to_string(), format!("{path_prepend}\n{program}")],
         envs,
         cwd: cwd.to_string(),
         supervisor_sock: proc_supervisor_sock,
@@ -135,17 +139,10 @@ async fn terminal_renderer_config(
 }
 
 /// Overlay `TERM` / `COLORTERM` / `TERM_PROGRAM=neige` so a server launched
-/// from VS Code does not inherit `TERM_PROGRAM=vscode`, and lead `PATH` with the
-/// kernel's bin dir so a Worker's `neige` is the running kernel's CLI (#1784).
-/// Caller pairs are appended last and win on conflict.
-pub(crate) fn terminal_child_envs(env: &serde_json::Value) -> Result<Vec<(String, String)>> {
-    let path = crate::kernel_bin_path::kernel_led_path()
-        .map_err(|error| CalmError::Internal(format!("terminal PATH: {error}")))?
-        .path
-        .into_string()
-        .map_err(|path| CalmError::Internal(format!("terminal PATH is not UTF-8: {path:?}")))?;
+/// from VS Code does not inherit `TERM_PROGRAM=vscode`. Caller pairs are
+/// appended last and win on conflict.
+pub(crate) fn terminal_child_envs(env: &serde_json::Value) -> Vec<(String, String)> {
     let mut envs = vec![
-        ("PATH".to_string(), path),
         ("TERM".to_string(), "xterm-256color".to_string()),
         ("COLORTERM".to_string(), "truecolor".to_string()),
         ("TERM_PROGRAM".to_string(), "neige".to_string()),
@@ -157,7 +154,7 @@ pub(crate) fn terminal_child_envs(env: &serde_json::Value) -> Result<Vec<(String
             }
         }
     }
-    Ok(envs)
+    envs
 }
 
 fn parse_rgb(s: &str) -> std::result::Result<(u8, u8, u8), String> {
@@ -183,9 +180,9 @@ mod tests {
 
     #[test]
     fn pins_term_program_neige_unless_caller_overrides() {
-        let envs = terminal_child_envs(&json!({})).unwrap();
+        let envs = terminal_child_envs(&json!({}));
         assert!(envs.contains(&("TERM_PROGRAM".into(), "neige".into())));
-        let over = terminal_child_envs(&json!({ "TERM_PROGRAM": "vscode" })).unwrap();
+        let over = terminal_child_envs(&json!({ "TERM_PROGRAM": "vscode" }));
         assert_eq!(over.last(), Some(&("TERM_PROGRAM".into(), "vscode".into())));
     }
 }

@@ -46,8 +46,7 @@ impl Binding {
 }
 /// Typing into a codex task Worker's remote TUI interrupts its turn and starts no replacement
 /// turn (#1782), so the Planner's input and claim on that card are refused (#1784).
-const CODEX_TASK_WORKER_INPUT_REFUSED: &str =
-    "a running codex worker cannot be redirected via terminal input; use the task channel";
+const CODEX_TASK_WORKER_INPUT_REFUSED: &str = "a running codex worker cannot be redirected yet: terminal input interrupts its turn without starting a new one; wait for its task to settle, then plan or rewire its successor";
 
 /// The typed refusal behind [`CODEX_TASK_WORKER_INPUT_REFUSED`].
 #[derive(Debug)]
