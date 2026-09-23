@@ -4,7 +4,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use axum::{response::Redirect, routing::get};
-use calm_server::auth::{AuthConfig, AuthState};
+use calm_server::auth::AuthState;
 use calm_server::config::Config;
 use calm_server::routes;
 use calm_server::state::AppState;
@@ -76,31 +76,36 @@ async fn main() -> anyhow::Result<()> {
         calm_server::replay::spawn_session_recorder(&state.events, path.into());
     }
 
-    let cors = CorsLayer::new()
-        .allow_origin(
-            cfg.allowed_origin
-                .parse::<axum::http::HeaderValue>()
-                .map_err(|e| anyhow::anyhow!("bad CALM_ALLOWED_ORIGIN: {e}"))?,
-        )
-        .allow_methods([
-            axum::http::Method::GET,
-            axum::http::Method::POST,
-            axum::http::Method::PATCH,
-            axum::http::Method::DELETE,
-        ])
-        .allow_headers(cors_allowed_headers())
-        .allow_credentials(true);
+    // No configured origin: calm serves only its own origins, so no CORS layer at all.
+    let cors = match cfg.allowed_origin.as_deref() {
+        None => None,
+        Some(origin) => Some(
+            CorsLayer::new()
+                .allow_origin(
+                    origin
+                        .parse::<axum::http::HeaderValue>()
+                        .map_err(|e| anyhow::anyhow!("bad CALM_ALLOWED_ORIGIN: {e}"))?,
+                )
+                .allow_methods([
+                    axum::http::Method::GET,
+                    axum::http::Method::POST,
+                    axum::http::Method::PATCH,
+                    axum::http::Method::DELETE,
+                ])
+                .allow_headers(cors_allowed_headers())
+                .allow_credentials(true),
+        ),
+    };
 
     // Global session gate: `auth_routes` and `public_routes` are public; `protected_routes` + WS
     // are gated by `auth::require_session` / `auth::require_session_ws`.
-    let auth_config = AuthConfig::from_config(&cfg)?;
-    if auth_config.dev_autologin {
+    let auth_state = AuthState::from_config(&cfg)?;
+    if auth_state.config.dev_autologin {
         tracing::warn!(
             "auth: DEV AUTOLOGIN is ON — every request is auto-promoted to owner. \
              Do NOT use this in production."
         );
     }
-    let auth_state = AuthState::new(auth_config).with_allowed_origin(cfg.allowed_origin.clone());
     if cfg.private_tailnet_unavailable {
         auth_state.mobile.mark_unavailable();
     }
@@ -160,7 +165,10 @@ async fn main() -> anyhow::Result<()> {
     };
     let mobile_shutdown = auth_state.mobile.clone();
 
-    let mut app = routes::application_router(state, auth_state).layer(cors);
+    let mut app = routes::application_router(state, auth_state);
+    if let Some(cors) = cors {
+        app = app.layer(cors);
+    }
 
     app = mount_frontends(app, cfg.web_dist.as_deref(), cfg.fe_dist.as_deref());
 

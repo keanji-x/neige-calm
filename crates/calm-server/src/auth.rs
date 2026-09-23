@@ -152,10 +152,35 @@ impl AuthState {
         }
     }
 
+    /// Production wiring: auth config plus the configured `CALM_ALLOWED_ORIGIN`, if any.
+    pub fn from_config(cfg: &Config) -> anyhow::Result<Self> {
+        let state = Self::new(AuthConfig::from_config(cfg)?);
+        Ok(match cfg.allowed_origin.clone() {
+            Some(origin) => state.with_allowed_origin(origin),
+            None => state,
+        })
+    }
+
+    /// `origin` must already be in [`normalize_origin`] form.
     pub fn with_allowed_origin(mut self, origin: String) -> Self {
         self.allowed_origin = Some(origin);
         self
     }
+}
+
+/// Canonical form of a configured or learned origin: `http(s)://host[:port]`, lowercase, no trailing `/`.
+pub fn normalize_origin(raw: &str) -> Option<String> {
+    let lower = raw.trim().to_ascii_lowercase();
+    let origin = lower.strip_suffix('/').unwrap_or(&lower);
+    let host = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))?;
+    (!host.is_empty() && !host.contains('/')).then(|| origin.to_string())
+}
+
+/// Clap value parser for `CALM_ALLOWED_ORIGIN`.
+pub fn parse_origin(raw: &str) -> std::result::Result<String, String> {
+    normalize_origin(raw).ok_or_else(|| format!("`{raw}` is not an http(s) origin"))
 }
 
 /// Authenticated principal, inserted into request extensions by [`require_session`]; today every principal is owner.
@@ -221,8 +246,13 @@ fn check_origin(state: &AuthState, headers: &HeaderMap) -> Result<()> {
     let Some(origin) = headers.get(header::ORIGIN) else {
         return Ok(());
     };
-    let origin = origin.to_str().unwrap_or_default();
+    let Ok(origin) = origin.to_str() else {
+        return Err(CalmError::Forbidden(
+            "cross-origin request rejected: Origin is not a valid header string".into(),
+        ));
+    };
     // Scheme-agnostic: one port speaks one protocol, and a TLS-terminating proxy keeps `Host`.
+    // So an https-on-443 deployment also accepts `http://<same host>`; fine, this fence targets other ports.
     let same_host = headers
         .get(header::HOST)
         .and_then(|h| h.to_str().ok())
@@ -235,7 +265,12 @@ fn check_origin(state: &AuthState, headers: &HeaderMap) -> Result<()> {
         });
     if same_host
         || state.allowed_origin.as_deref() == Some(origin)
-        || state.mobile.origin().as_deref() == Some(origin)
+        || state
+            .mobile
+            .origin()
+            .and_then(|o| normalize_origin(&o))
+            .as_deref()
+            == Some(origin)
     {
         return Ok(());
     }
@@ -430,7 +465,7 @@ mod tests {
             data_dir: None,
             workspace_root: None,
             proc_supervisor_sock: None,
-            allowed_origin: "http://localhost".into(),
+            allowed_origin: None,
             web_dist: None,
             fe_dist: None,
             plugins_dir: None,
@@ -468,7 +503,7 @@ mod tests {
             data_dir: None,
             workspace_root: None,
             proc_supervisor_sock: None,
-            allowed_origin: "http://localhost".into(),
+            allowed_origin: None,
             web_dist: None,
             fe_dist: None,
             plugins_dir: None,

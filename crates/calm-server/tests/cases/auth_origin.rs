@@ -1,9 +1,11 @@
 //! #1780 S1: cookie-authenticated writes and WS upgrades must come from one of calm's own origins.
 
 use axum::body::Body;
-use axum::http::{Request, StatusCode, header};
+use axum::http::{HeaderValue, Request, StatusCode, header};
 use calm_server::auth::AuthState;
+use calm_server::config::Config;
 use calm_server::routes;
+use clap::Parser;
 use http_body_util::BodyExt;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tower::ServiceExt;
@@ -29,8 +31,16 @@ async fn app_and_cookie(auth: AuthState) -> (axum::Router, String) {
     (app, cookie)
 }
 
-async fn post_area(app: &axum::Router, cookie: &str, origin: Option<&str>) -> StatusCode {
-    let mut request = Request::post("/api/areas")
+async fn send(
+    app: &axum::Router,
+    method: &str,
+    uri: &str,
+    cookie: &str,
+    origin: Option<HeaderValue>,
+) -> StatusCode {
+    let mut request = Request::builder()
+        .method(method)
+        .uri(uri)
         .header(header::HOST, HOST)
         .header(header::COOKIE, cookie)
         .header(header::CONTENT_TYPE, "application/json");
@@ -53,6 +63,23 @@ async fn post_area(app: &axum::Router, cookie: &str, origin: Option<&str>) -> St
         assert!(body.contains("cross-origin request rejected"), "{body}");
     }
     status
+}
+
+async fn post_area(app: &axum::Router, cookie: &str, origin: Option<&str>) -> StatusCode {
+    let origin = origin.map(|o| HeaderValue::from_str(o).unwrap());
+    send(app, "POST", "/api/areas", cookie, origin).await
+}
+
+fn configured(args: &[&str]) -> AuthState {
+    let base = [
+        "calm-server",
+        "--auth-username",
+        "alice",
+        "--auth-password",
+        "pw",
+    ];
+    let cfg = Config::parse_from(base.iter().chain(args));
+    AuthState::from_config(&cfg).unwrap()
 }
 
 #[tokio::test]
@@ -87,6 +114,61 @@ async fn same_origin_absent_origin_and_allowed_origin_posts_succeed() {
             "{origin:?}"
         );
     }
+}
+
+/// Without `CALM_ALLOWED_ORIGIN` no foreign origin is trusted (the old clap default trusted :5175).
+#[tokio::test]
+async fn default_config_trusts_no_extra_origin() {
+    let (app, cookie) = app_and_cookie(configured(&[])).await;
+    assert_eq!(
+        post_area(&app, &cookie, Some("http://localhost:5175")).await,
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn configured_allowed_origin_is_normalized() {
+    let (app, cookie) =
+        app_and_cookie(configured(&["--allowed-origin", "HTTP://LocalHost:5180/"])).await;
+    assert_eq!(
+        post_area(&app, &cookie, Some("http://localhost:5180")).await,
+        StatusCode::CREATED
+    );
+    for bad in ["", "localhost:5180", "http://", "http://host/path"] {
+        assert!(calm_server::auth::parse_origin(bad).is_err(), "{bad:?}");
+    }
+}
+
+#[tokio::test]
+async fn every_unsafe_method_is_fenced() {
+    let (app, cookie) = app_and_cookie(live_auth_state("alice", "pw")).await;
+    let mut statuses = Vec::new();
+    for (method, uri) in [
+        ("PATCH", "/api/areas/a1"),
+        ("PUT", "/api/settings"),
+        ("DELETE", "/api/areas/a1"),
+    ] {
+        let origin = HeaderValue::from_static("http://192.168.1.5:4050");
+        statuses.push((method, send(&app, method, uri, &cookie, Some(origin)).await));
+    }
+    assert_eq!(
+        statuses,
+        [
+            ("PATCH", StatusCode::FORBIDDEN),
+            ("PUT", StatusCode::FORBIDDEN),
+            ("DELETE", StatusCode::FORBIDDEN),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn unparseable_origin_is_forbidden() {
+    let (app, cookie) = app_and_cookie(live_auth_state("alice", "pw")).await;
+    let origin = HeaderValue::from_bytes(b"http://192.168.1.5:4040\xff").unwrap();
+    assert_eq!(
+        send(&app, "POST", "/api/areas", &cookie, Some(origin)).await,
+        StatusCode::FORBIDDEN
+    );
 }
 
 /// Dev autologin is ambient authority without any cookie, so it gets the same fence.
