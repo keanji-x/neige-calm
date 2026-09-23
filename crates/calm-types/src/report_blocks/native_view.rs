@@ -33,6 +33,10 @@ pub enum Layout {
     One,
     Two,
     Three,
+    #[serde(rename = "two-wide-start")]
+    TwoWideStart,
+    #[serde(rename = "two-wide-end")]
+    TwoWideEnd,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -124,6 +128,7 @@ pub struct Record {
 pub struct RecordSet {
     pub id: String,
     pub label: String,
+    pub description: Option<String>,
     pub items: Vec<Record>,
 }
 #[derive(Deserialize)]
@@ -313,7 +318,7 @@ impl Component {
                     ids(data.series.iter().map(|s| s.id.as_str()))?;
                     for series in &data.series {
                         text(&series.label, 120)?;
-                        integer(series.palette, 1.0, 6.0)?;
+                        integer(series.palette, 1.0, 7.0)?;
                     }
                     let mut previous: Option<&str> = None;
                     for point in &data.points {
@@ -356,7 +361,7 @@ impl Component {
                     if slice.value < 0.0 {
                         return Err("negative distribution value".into());
                     }
-                    integer(slice.palette, 1.0, 6.0)?;
+                    integer(slice.palette, 1.0, 7.0)?;
                 }
             }
             Self::Table { table, .. } => super::kinds::validate_inline_table_overlay(table)?,
@@ -370,6 +375,9 @@ impl Component {
                 ids(datasets.iter().map(|d| d.id.as_str()))?;
                 for data in datasets {
                     text(&data.label, 120)?;
+                    if let Some(description) = &data.description {
+                        text(description, 500)?;
+                    }
                     count(data.items.len(), 0, 50)?;
                     ids(data.items.iter().map(|i| i.id.as_str()))?;
                     for item in &data.items {
@@ -424,7 +432,7 @@ pub fn validate(payload: &Value) -> Result<(), String> {
         text(&row.title, 200)?;
         let expected = match row.layout {
             Layout::One => 1,
-            Layout::Two => 2,
+            Layout::Two | Layout::TwoWideStart | Layout::TwoWideEnd => 2,
             Layout::Three => 3,
         };
         count(row.cells.len(), expected, expected)?;

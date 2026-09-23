@@ -1,41 +1,66 @@
 @layer features {
-  .root { font-family: var(--font-sans); font-size: var(--text-base); min-inline-size: 0; overflow-wrap: anywhere; letter-spacing: 0; }
+  .root { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; min-inline-size: 0; overflow-wrap: anywhere; letter-spacing: 0; }
   .header, .controls { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
-  .header h2 { margin: 0; font-size: var(--text-md); font-weight: var(--weight-medium); }
+  .header h2 { margin: 0; font-size: 19px; font-weight: var(--weight-medium); }
   .expand { border: 1px solid var(--hairline); border-radius: var(--radius-sm); background: var(--surface-card); color: var(--text); inline-size: var(--control-h); block-size: var(--control-h); display: grid; place-items: center; }
   .composition { container-type: inline-size; }
   .description { color: var(--text-2); font-size: var(--text-xs); margin-block: var(--space-3) var(--space-5); }
-  .row { padding-block: var(--space-5); border-top: 1px solid var(--hairline); }
-  .row > h3 { margin: 0 0 var(--space-4); font-size: var(--text-md); font-weight: var(--weight-medium); }
+  .row { padding-block: var(--space-6); border-top: 1px solid var(--hairline); }
+  .row > h3 { margin: 0 0 var(--space-5); font-size: 16px; font-weight: var(--weight-medium); }
   .cell { min-inline-size: 0; }
-  .cell > h4 { margin: 0 0 var(--space-3); color: var(--text-2); font-size: var(--text-base); font-weight: var(--weight-medium); }
-  .one, .two, .three { display: grid; gap: var(--space-5); min-inline-size: 0; }
+  .cell > h4 { margin: 0 0 var(--space-4); min-block-size: var(--control-h); display: flex; align-items: center; color: var(--text-2); font-size: 13px; font-weight: var(--weight-medium); }
+  .one, .two, .three, .two-wide-start, .two-wide-end { display: grid; gap: var(--space-8); min-inline-size: 0; }
   .one { grid-template-columns: minmax(0, 1fr); }
   .two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .two-wide-start { grid-template-columns: minmax(0, 1.7fr) minmax(0, 0.82fr); }
+  .two-wide-end { grid-template-columns: minmax(0, 0.82fr) minmax(0, 1.7fr); }
   .three { grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.1fr) minmax(0, 1.4fr); }
   .muted, .snapshot { font-size: var(--text-xs); color: var(--text-3); }
   .snapshot { border-top: 1px solid var(--hairline); padding-block-start: var(--space-3); }
-  .segments { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+  .snapshot p { margin-block: var(--space-2); }
+  .segments { display: flex; flex-wrap: wrap; gap: 2px; border: 1px solid var(--hairline); border-radius: var(--radius-sm); padding: 2px; background: var(--surface-card); }
   .segments button, .controls button, .recordBottom button { background: var(--surface-card); border: 1px solid var(--hairline); border-radius: var(--radius-sm); color: var(--text-2); padding: var(--space-2) var(--space-3); font-size: var(--text-xs); }
-  .segments button[aria-pressed="true"] { background: var(--surface-chip); color: var(--text); }
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: var(--space-4); margin-block-start: var(--space-4); }
-  .record { border: 1px solid var(--hairline); border-radius: var(--radius-sm); padding: var(--space-4); min-inline-size: 0; background: var(--surface-card); }
+  .segments button { border: 0; border-radius: 2px; background: transparent; }
+  .segments button[aria-pressed="true"] { background: var(--text); color: var(--bg); }
+  .datasetDescription { margin: var(--space-3) 0; font-size: var(--text-xs); color: var(--text-3); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: var(--space-5); margin-block-start: var(--space-4); }
+  .record { display: flex; flex-direction: column; border: 1px solid var(--hairline); border-radius: var(--radius-sm); padding: var(--space-5); min-inline-size: 0; background: var(--surface-card); }
   .recordTop, .recordBottom { display: flex; flex-wrap: wrap; gap: var(--space-3); justify-content: space-between; align-items: center; font-size: var(--text-xs); color: var(--text-3); }
-  .record h4 { margin: var(--space-3) 0; color: var(--text); font-size: var(--text-base); font-weight: var(--weight-medium); }
-  .record p { font-size: var(--text-xs); color: var(--text-2); }
-  .facts { display: flex; flex-wrap: wrap; gap: var(--space-3); margin-block: var(--space-3); font-size: var(--text-xs); }
-  .facts dt { color: var(--text-3); } .facts dd { margin: 0; color: var(--text); }
-  .recordBottom { border-top: 1px solid var(--hairline); padding-block-start: var(--space-3); }
+  .record h4 { margin: var(--space-4) 0; color: var(--text); font-size: 15px; font-weight: var(--weight-medium); line-height: 1.5; }
+  .record p { font-size: 12px; color: var(--text-2); margin-block: 0 var(--space-4); }
+  .facts { display: flex; flex-wrap: wrap; gap: var(--space-4); margin-block: var(--space-4); font-size: 12px; }
+  .facts dt { color: var(--text-3); } .facts dd { margin: var(--space-1) 0 0; color: var(--text); font-size: 14px; font-weight: var(--weight-medium); }
+  .recordBottom { border-top: 1px solid var(--hairline); padding-block-start: var(--space-3); margin-block-start: auto; }
+  .status::before { content: ''; display: inline-block; inline-size: 5px; block-size: 5px; background: currentcolor; border-radius: 50%; margin-inline-end: var(--space-2); vertical-align: middle; }
   .list { display: grid; gap: var(--space-3); margin-block-start: var(--space-4); }
   .list .record { border: 0; border-bottom: 1px solid var(--hairline); border-radius: 0; padding-inline: 0; background: none; }
-  .recordDetail { border-top: 1px solid var(--hairline); margin-block-start: var(--space-5); padding-block-start: var(--space-4); }
-  .recordDetail h4 { margin: 0; font-size: var(--text-base); font-weight: var(--weight-medium); }
+  .activeRecord { border-color: var(--accent); }
+  .reviewWorkspace { display: grid; grid-template-columns: minmax(220px, 0.75fr) minmax(0, 1.7fr); gap: var(--space-8); margin-block-start: var(--space-4); align-items: start; }
+  .reviewWorkspace .cards { grid-template-columns: minmax(0, 1fr); margin-block-start: 0; }
+  .reviewWorkspace .list { margin-block-start: 0; }
+  .recordDetail { border-inline-start: 1px solid var(--hairline); padding-inline-start: var(--space-7); min-inline-size: 0; }
+  .recordDetail h4 { margin: var(--space-1) 0 0; font-size: 17px; font-weight: var(--weight-medium); }
+  .detailHeader { display: flex; justify-content: space-between; align-items: start; gap: var(--space-4); }
+  .detailHeader > div { min-inline-size: 0; }
+  .detailHeader > div > span { color: var(--text-3); font-size: var(--text-xs); }
+  .detailHeader button { flex: none; }
+  .detailSummary { color: var(--text-2); font-size: 13px; margin-block: var(--space-4); }
+  .sections { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 var(--space-7); }
   .section { border-bottom: 1px solid var(--hairline); padding-block: var(--space-3); font-size: var(--text-base); }
   .section dt { font-size: var(--text-xs); color: var(--text-3); margin-block-end: var(--space-2); }
   .section dd { margin: 0; white-space: pre-wrap; }
   .evidence { padding-block: var(--space-3); border-bottom: 1px solid var(--hairline); font-size: var(--text-base); }
   .evidence blockquote { margin-inline: 0; padding-inline-start: var(--space-3); border-inline-start: 2px solid var(--hairline-strong); }
   .evidence p { font-size: var(--text-xs); color: var(--text-3); }
+  .reviewWorkspace .record > p, .reviewWorkspace .record > .facts { display: none; }
   .positive { color: var(--success-text); } .negative { color: var(--error-text); } .warning { color: var(--warn-text); } .neutral { color: var(--text-2); }
-  @container (inline-size < 40rem) { .two, .three { grid-template-columns: minmax(0, 1fr); } }
+  @container (inline-size < 40rem) {
+    .two, .three, .two-wide-start, .two-wide-end, .reviewWorkspace, .sections { grid-template-columns: minmax(0, 1fr); }
+    .recordDetail { border-inline-start: 0; padding-inline-start: 0; border-top: 1px solid var(--hairline); padding-block-start: var(--space-5); }
+  }
+  @container (inline-size < 52rem) { .two-wide-start, .two-wide-end { grid-template-columns: minmax(0, 1fr); } }
+  @media (pointer: coarse) {
+    .segments button, .recordBottom button { min-block-size: 44px; }
+    .expand { inline-size: 44px; block-size: 44px; }
+  }
 }

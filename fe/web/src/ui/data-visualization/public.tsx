@@ -14,6 +14,9 @@ export type PlotSelection = { datasetId: string; selected: string | null; sample
 function number(value: number, decimals = 2) {
   return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: decimals }).format(value);
 }
+function axisNumber(value: number) {
+  return new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 2 }).format(value);
+}
 function scalar(value: ValueDisplay) {
   if (value.state === 'unknown') return '—';
   const sign = value.amount < 0 ? '-' : value.signed && value.amount > 0 ? '+' : '';
@@ -54,7 +57,7 @@ export function DistributionChart({ label, unit, slices, emptyText, selected, on
       <text x="75" y="73" textAnchor="middle" className={styles.donutValue}>{percentage(current?.value ?? total)}</text>
       <text x="75" y="94" textAnchor="middle" className={styles.donutLabel}>占比</text>
     </svg>
-    <div className={styles.legend}>{slices.map(slice => <button key={slice.id} type="button"
+    <div className={`${styles.legend} ${styles.distributionLegend}`}>{slices.map(slice => <button key={slice.id} type="button"
       aria-pressed={selected === slice.id} onClick={() => onSelect(selected === slice.id ? null : slice.id)}>
       <span className={`${styles.swatch} ${palette(slice.palette)}`} aria-hidden="true" />
       {slice.label}<span>{percentage(slice.value)}</span>
@@ -66,6 +69,12 @@ export function DistributionChart({ label, unit, slices, emptyText, selected, on
 const WIDTH = 600;
 const HEIGHT = 170;
 const PAD = 5;
+
+/** Match the plotted time axis, not evenly-spaced indices, including irregular samples. */
+export function nearestSample(stamps: readonly number[], fraction: number): number {
+  const target = (stamps[0] ?? 0) + Math.max(0, Math.min(1, fraction)) * ((stamps.at(-1) ?? 0) - (stamps[0] ?? 0));
+  return stamps.reduce((nearest, stamp, index) => Math.abs(stamp - target) < Math.abs(stamps[nearest] - target) ? index : nearest, 0);
+}
 
 /** Null observations split the path; zero remains an ordinary observation. */
 export function linePaths(points: readonly { x: number; y: number | null }[]): string[] {
@@ -100,16 +109,30 @@ export function TimeSeriesChart({ label, datasets, emptyText, selection, onSelec
   const high = hasData ? Math.max(...all) : 1;
   const span = high > low ? high - low : Math.max(Math.abs(high) * 0.1, 1);
   const minimum = data.style === 'stacked' ? 0 : low - span * 0.08;
-  const maximum = high + span * 0.08;
+  const maximum = data.style === 'stacked' ? (high > 0 ? high : 1) : high + span * 0.08;
   const y = (value: number) => HEIGHT - PAD - (value - minimum) / (maximum - minimum || 1) * (HEIGHT - 2 * PAD);
-  const focused = points[Math.min(sample ?? points.length - 1, points.length - 1)];
+  const sampleIndex = Math.max(0, Math.min(sample ?? points.length - 1, points.length - 1));
+  const focused = points[sampleIndex];
+  const describeSample = focused ? `${focused.date}; ${data.series.map((series, i) => `${series.label}: ${focused.values[i] === null ? '未知' : number(focused.values[i])} ${data.unit}`).join('; ')}` : '';
+  const selectAt = (element: HTMLInputElement, clientX: number) => {
+    const box = element.getBoundingClientRect();
+    if (box.width === 0) return;
+    const fraction = ((clientX - box.left) / box.width * WIDTH - PAD) / (WIDTH - 2 * PAD);
+    onSelection({ ...selection, sample: nearestSample(stamps, fraction) });
+  };
   return <div className={styles.root}>
-    {datasets.length > 1 && <div className={styles.tabs} aria-label={`${label} 数据视图`}>{datasets.map(d =>
-      <button type="button" key={d.id} aria-pressed={data.id === d.id} onClick={() => onSelection({ datasetId: d.id, sample: null, selected: null })}>{d.label}</button>)}</div>}
-    <p className={styles.detail}>{data.unit}</p>
+    <div className={styles.toolbar}><h4>{label}</h4><div className={styles.toolbarControls}><span className={styles.unit}>{data.unit}</span>
+      {datasets.length === 2 && <div className={styles.tabs} aria-label={`${label} 数据视图`}>{datasets.map(d =>
+        <button type="button" key={d.id} aria-pressed={data.id === d.id} onClick={() => onSelection({ datasetId: d.id, sample: null, selected: null })}>{d.label}</button>)}</div>}
+      {datasets.length > 2 && <select aria-label={`${label} 数据视图`} value={data.id}
+        onChange={event => onSelection({ datasetId: event.target.value, sample: null, selected: null })}>
+        {datasets.map(d => <option key={d.id} value={d.id}>{d.label}</option>)}
+      </select>}
+    </div></div>
     {!hasData ? <p className={styles.empty}>{emptyText}</p> : <>
       <div className={styles.plot}>
-        <div className={styles.yAxis} aria-hidden="true">{[maximum, (maximum + minimum) / 2, minimum].map((v, i) => <span key={i}>{number(v)}</span>)}</div>
+        <div className={styles.yAxis} aria-hidden="true">{[maximum, (maximum + minimum) / 2, minimum].map((v, i) => <span key={i}>{axisNumber(v)}</span>)}</div>
+        <div className={styles.plotFrame}>
         <svg className={styles.plotSvg} viewBox={`0 0 ${WIDTH} ${HEIGHT}`} preserveAspectRatio="none" role="img"
           aria-label={`${label}: ${points.length} observations, ${points[0]?.date} to ${points.at(-1)?.date}; ${data.unit}`}>
           {[minimum, (maximum + minimum) / 2, maximum].map((v, i) => <line key={i} className={styles.grid}
@@ -117,28 +140,46 @@ export function TimeSeriesChart({ label, datasets, emptyText, selection, onSelec
           {data.series.map((series, seriesIndex) => {
             const muted = selected !== null && selected !== series.id;
             if (data.style === 'stacked') {
+              if (points.length === 1) {
+                const bottom = points[0].values.slice(0, seriesIndex).reduce<number>((sum, v) => sum + (v ?? 0), 0);
+                const top = bottom + (points[0].values[seriesIndex] ?? 0);
+                return <rect key={series.id} className={palette(series.palette)} x={WIDTH / 2 - 6} y={y(top)}
+                  width={12} height={y(bottom) - y(top)} fill="currentColor" opacity={muted ? 0.12 : 0.65} />;
+              }
               const bottom = points.map((p, i) => `${x(stamps[i])} ${y(p.values.slice(0, seriesIndex).reduce<number>((sum, v) => sum + (v ?? 0), 0))}`);
               const top = points.map((p, i) => `${x(stamps[i])} ${y(p.values.slice(0, seriesIndex + 1).reduce<number>((sum, v) => sum + (v ?? 0), 0))}`);
-              return <path key={series.id} className={palette(series.palette)} fill="currentColor" opacity={muted ? 0.12 : 0.5}
+              return <path key={series.id} className={palette(series.palette)} fill="currentColor" opacity={muted ? 0.12 : 0.65}
                 d={`M${top.join(' L')} L${bottom.reverse().join(' L')} Z`} />;
             }
             const coordinates = points.map((p, i) => ({ x: x(stamps[i]), y: p.values[seriesIndex] == null ? null : y(p.values[seriesIndex]) }));
             return <g key={series.id} className={palette(series.palette)} opacity={muted ? 0.2 : 1}>
               {linePaths(coordinates).map((d, i) => <path key={i} d={d} fill="none" stroke="currentColor" strokeWidth="2" vectorEffect="non-scaling-stroke" />)}
-              {coordinates.filter(p => p.y !== null).map((p, i) => <circle key={i} cx={p.x} cy={p.y!} r="2" fill="currentColor" />)}
+              {coordinates.filter((p, i) => p.y !== null && (i === sampleIndex
+                || ((i === 0 || coordinates[i - 1].y === null) && (i === coordinates.length - 1 || coordinates[i + 1].y === null))))
+                .map((p, i) => <circle key={i} cx={p.x} cy={p.y!} r="3" fill="currentColor" />)}
             </g>;
           })}
+          {focused && <line className={styles.cursor} x1={x(stamps[sampleIndex])} x2={x(stamps[sampleIndex])}
+            y1={PAD} y2={HEIGHT - PAD} vectorEffect="non-scaling-stroke" />}
         </svg>
+        <input className={styles.dateCursor} type="range" aria-label={`${label} 观察日期`} aria-valuetext={describeSample}
+          min={0} max={Math.max(0, points.length - 1)} value={sampleIndex}
+          onPointerDown={event => { event.preventDefault(); event.currentTarget.focus(); selectAt(event.currentTarget, event.clientX); }}
+          onPointerMove={event => selectAt(event.currentTarget, event.clientX)}
+          onChange={event => onSelection({ ...selection, sample: Number(event.target.value) })} />
+        {focused && <div className={styles.tooltip} aria-hidden="true" style={sampleIndex < points.length / 2 ? { right: 8 } : { left: 8 }}>
+          <strong>{focused.date}</strong>{data.series.map((series, i) => <div key={series.id}>
+            <span className={`${styles.swatch} ${palette(series.palette)}`} />{series.label}
+            <span>{focused.values[i] === null ? '未知' : number(focused.values[i])} {data.unit}</span>
+          </div>)}
+        </div>}
+        </div>
         <div className={styles.xAxis}><span>{points[0]?.date}</span><span>{points.at(-1)?.date}</span></div>
       </div>
-      <div className={styles.legend}>{data.series.map((series, i) => <button key={series.id} type="button"
+      <div className={styles.legend}>{data.series.map(series => <button key={series.id} type="button"
         aria-pressed={selected === series.id} onClick={() => onSelection({ ...selection, selected: selected === series.id ? null : series.id })}>
         <span className={`${styles.swatch} ${palette(series.palette)}`} aria-hidden="true" />{series.label}
-        <span>{focused?.values[i] == null ? '未知' : number(focused.values[i])} {data.unit}</span>
       </button>)}</div>
-      <label className={styles.sample}><span>{focused?.date}</span><input type="range" aria-label={`${label} 观察日期`}
-        min={0} max={Math.max(0, points.length - 1)} value={sample ?? points.length - 1}
-        onChange={e => onSelection({ ...selection, sample: Number(e.target.value) })} /></label>
     </>}
   </div>;
 }

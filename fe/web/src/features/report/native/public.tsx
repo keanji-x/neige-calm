@@ -30,10 +30,10 @@ function Composition({ payload, ...reading }: ReadingProps & { payload: NativeVi
     {payload.rows.map(row => <section key={row.id} className={styles.row} aria-label={row.title}>
       <h3>{row.title}</h3>
       <div className={styles[row.layout]}>{row.cells.map(component => <div key={component.id} className={styles.cell}>
-        <h4>{component.title}</h4><Cell component={component} {...reading} />
+        {component.title && component.kind !== 'time-series' && <h4>{component.title}</h4>}<Cell component={component} {...reading} />
       </div>)}</div>
     </section>)}
-    <p className={styles.snapshot}>快照 {payload.snapshot.id} · 资料截止 {new Date(payload.snapshot.observedAt).toISOString()} · 生成 {new Date(payload.snapshot.producedAt).toISOString()}</p>
+    <details className={styles.snapshot}><summary>快照信息</summary><p>{payload.snapshot.id} · 资料截止 {new Date(payload.snapshot.observedAt).toISOString()} · 生成 {new Date(payload.snapshot.producedAt).toISOString()}</p></details>
   </div>;
 }
 export function NativeReportView({ payload, onOpenSourceLink }: { payload: NativeViewPayload; onOpenSourceLink?: (target: ReportSourceLinkTarget) => void }) {

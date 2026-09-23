@@ -1,4 +1,6 @@
 import type { NativeComponent } from '../../../../../core/domain/report-view.ts';
+import { useRef } from 'react';
+import { Icon } from '../../../ui/icon/public.tsx';
 import styles from './native.module.css';
 
 type Records = Extract<NativeComponent, { kind: 'records' }>;
@@ -9,6 +11,8 @@ export function RecordBrowser({ component, selection, onSelection }: {
   const { datasetId, mode, selectedId } = selection;
   const data = component.datasets.find(d => d.id === datasetId) ?? component.datasets[0];
   const selected = data?.items.find(item => item.id === selectedId);
+  const opener = useRef<HTMLButtonElement | null>(null);
+  const closeDetail = () => { onSelection({ ...selection, selectedId: null, evidence: [] }); opener.current?.focus(); };
   return <div>
     <div className={styles.controls}>
       {component.datasets.length > 1 && <div className={styles.segments} aria-label="记录场景">{component.datasets.map(d =>
@@ -18,18 +22,24 @@ export function RecordBrowser({ component, selection, onSelection }: {
         <button type="button" aria-pressed={mode === 'list'} onClick={() => onSelection({ ...selection, mode: 'list' })}>队列</button>
       </div>
     </div>
+    {data?.description && <p className={styles.datasetDescription}>{data.description}</p>}
+    <div className={selected ? styles.reviewWorkspace : undefined}>
     {!data?.items.length ? <p className={styles.muted}>{component.emptyText}</p> : <div className={mode === 'cards' ? styles.cards : styles.list}>
-      {data.items.map(item => <article key={item.id} className={styles.record}>
-        <div className={styles.recordTop}><span>{item.category}</span><span className={styles[item.status.tone]}>{item.status.label}</span></div>
+      {data.items.map(item => <article key={item.id} className={`${styles.record} ${selectedId === item.id ? styles.activeRecord : ''}`}>
+        <div className={styles.recordTop}><span>{item.id} · {item.category}</span><span className={`${styles.status} ${styles[item.status.tone]}`}>{item.status.label}</span></div>
         <h4>{item.title}</h4><p>{item.summary}</p>
         <dl className={styles.facts}>{item.facts.map((field, index) => <div key={index}><dt>{field.label}</dt><dd>{field.value}</dd></div>)}</dl>
         <div className={styles.recordBottom}><span className={styles[item.handling.tone]}>{item.handling.label}</span>
-          <button type="button" onClick={() => onSelection({ ...selection, selectedId: selectedId === item.id ? null : item.id, evidence: [] })} aria-expanded={selectedId === item.id}>查看证据</button></div>
+          <button type="button" ref={selectedId === item.id ? opener : undefined}
+            onClick={() => onSelection({ ...selection, selectedId: selectedId === item.id ? null : item.id, evidence: [] })} aria-expanded={selectedId === item.id}>查看证据</button></div>
       </article>)}
     </div>}
     {selected && <section className={styles.recordDetail} aria-label={`${selected.title} 详情`}>
-      <div className={styles.controls}><h4>{selected.title}</h4><button type="button" onClick={() => onSelection({ ...selection, selectedId: null, evidence: [] })}>收起详情</button></div>
-      <dl>{selected.sections.map((section, index) => <div key={index} className={styles.section}>
+      <header className={styles.detailHeader}><div><span>{selected.id} · {selected.category}</span><h4>{selected.title}</h4></div>
+        <button type="button" className={styles.expand} aria-label="收起详情" title="收起详情" onClick={closeDetail}><Icon name="close" size="sm" /></button></header>
+      <p className={styles.detailSummary}>{selected.summary}</p>
+      <dl className={styles.facts}>{selected.facts.map((field, index) => <div key={index}><dt>{field.label}</dt><dd>{field.value}</dd></div>)}</dl>
+      <dl className={styles.sections}>{selected.sections.map((section, index) => <div key={index} className={styles.section}>
         <dt>{section.label}</dt><dd>{section.body}</dd>
       </div>)}</dl>
       {selected.evidence.map(e => <details key={e.id} className={styles.evidence} open={selection.evidence.includes(e.id)}>
@@ -38,5 +48,6 @@ export function RecordBrowser({ component, selection, onSelection }: {
         <blockquote>{e.body}</blockquote><p>{e.note}</p>
       </details>)}
     </section>}
+    </div>
   </div>;
 }

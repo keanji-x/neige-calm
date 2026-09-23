@@ -7,7 +7,7 @@ const id = z.string().min(1).max(100).regex(/^[A-Za-z0-9._-]+$/);
 const number = z.number().min(-1e15).max(1e15);
 const date = z.string().refine(v => !v.startsWith('0000') && isCalendarDate(v), 'Expected a UTC calendar date').meta({ format: 'date' });
 const tone = z.enum(['neutral', 'positive', 'warning', 'negative']);
-const palette = z.number().int().min(1).max(6);
+const palette = z.number().int().min(1).max(7);
 const fields = z.array(z.strictObject({ label: text(120), value: text() })).max(12);
 const status = z.strictObject({ label: text(120), tone });
 const value = z.discriminatedUnion('state', [
@@ -87,15 +87,15 @@ export const nativeComponentSchema = z.discriminatedUnion('kind', [
     slices: z.array(z.strictObject({ id, label: text(120), value: number.nonnegative(), palette })).max(12).refine(unique, 'Duplicate slice') }),
   z.strictObject({ kind: z.literal('table'), id, title: text(200), table: inlineTableBlockPayloadSchema }),
   z.strictObject({ kind: z.literal('records'), id, title: text(200), emptyText: text(500),
-    datasets: z.array(z.strictObject({ id, label: text(120), items: z.array(record).max(50).refine(unique, 'Duplicate record') }))
+    datasets: z.array(z.strictObject({ id, label: text(120), description: text(500).nullish(), items: z.array(record).max(50).refine(unique, 'Duplicate record') }))
       .min(1).max(4).refine(unique, 'Duplicate dataset') }),
 ]);
 export const nativeViewPayloadSchema = z.unknown().superRefine(rejectReservedObjectKeys).pipe(z.strictObject({
   version: z.literal(1), title: text(200), description: text(500),
   snapshot: z.strictObject({ id, observedAt: z.number().int().min(0).max(253402300799999), producedAt: z.number().int().min(0).max(253402300799999) }),
-  rows: z.array(z.strictObject({ id, title: text(200), layout: z.enum(['one', 'two', 'three']),
+  rows: z.array(z.strictObject({ id, title: text(200), layout: z.enum(['one', 'two', 'three', 'two-wide-start', 'two-wide-end']),
     cells: z.array(nativeComponentSchema).min(1).max(3),
-  }).refine(row => row.cells.length === ({ one: 1, two: 2, three: 3 })[row.layout], 'Layout must match cell count')).min(1).max(6)
+  }).refine(row => row.cells.length === ({ one: 1, two: 2, three: 3, 'two-wide-start': 2, 'two-wide-end': 2 })[row.layout], 'Layout must match cell count')).min(1).max(6)
     .refine(unique, 'Duplicate row'),
 }).refine(view => unique(view.rows.flatMap(row => row.cells)), 'Duplicate component')
   .refine(view => nativeViewCanonicalSizeLowerBound(view) <= 256 * 1024,

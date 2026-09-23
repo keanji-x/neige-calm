@@ -6,7 +6,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it } from 'vitest';
 import { nativeViewPayloadSchema } from '../../../../../core/domain/report-view.ts';
 import { NativeReportView } from './public.tsx';
-import { DistributionChart, linePaths } from '../../../ui/data-visualization/public.tsx';
+import { DistributionChart, linePaths, nearestSample, TimeSeriesChart } from '../../../ui/data-visualization/public.tsx';
 
 afterEach(cleanup);
 const fixture = JSON.parse(readFileSync(resolve(process.cwd(), '../test-data/native-view-v1.json'), 'utf8')) as { valid: unknown };
@@ -43,6 +43,26 @@ it('opens the existing native wide dialog and restores the opener', async () => 
 
 it('keeps missing points as gaps and does not discard a real zero', () => {
   expect(linePaths([{ x: 0, y: 1 }, { x: 1, y: null }, { x: 2, y: 0 }])).toEqual(['M0,1', 'M2,0']);
+});
+
+it('locates dates on the actual time axis rather than evenly spaced row indices', () => {
+  expect(nearestSample([0, 1, 100], 0.1)).toBe(1);
+  expect(nearestSample([0, 1, 100], 0.8)).toBe(2);
+  expect(nearestSample([42], 0.5)).toBe(0);
+});
+
+it('keeps isolated known observations visible on both sides of a missing sample', () => {
+  const chart = payload.rows[0].cells[1];
+  if (chart.kind !== 'time-series') throw new Error('Expected plot fixture');
+  const { container } = render(<TimeSeriesChart label={chart.title} datasets={chart.datasets} emptyText={chart.emptyText}
+    selection={{ datasetId: 'line', sample: 2, selected: null }} onSelection={() => {}} />);
+  expect(container.querySelectorAll('circle')).toHaveLength(2);
+});
+
+it('renders a single stacked observation without an invisible degenerate polygon', () => {
+  const { container } = render(<TimeSeriesChart label="容量" emptyText="无数据" selection={{ datasetId: 'one', selected: null, sample: null }} onSelection={() => {}}
+    datasets={[{ id: 'one', label: '样本', unit: 'GB', style: 'stacked', series: [{ id: 'a', label: '主库', palette: 7 }], points: [{ date: '2026-09-23', values: [5] }] }]} />);
+  expect(Number(container.querySelector('rect')?.getAttribute('height'))).toBeGreaterThan(0);
 });
 
 it('preserves inspection state in both directions across wide reading', async () => {

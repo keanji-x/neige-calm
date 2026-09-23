@@ -1,7 +1,7 @@
 {
   "version": 1,
   "title": "低频投资组合",
-  "description": "全部为虚构数据。两个冻结场景用于展示与阅读评审；无券商连接、交易或调度权限。资料与处理状态分开。",
+  "description": "虚构数据 · USD · 估值截至 2026.09.21 收盘；r1 / r2 为预设研究场景，未连接账户。",
   "snapshot": {
     "id": "portfolio-demo-v1",
     "observedAt": 1790123400000,
@@ -11,12 +11,12 @@
     {
       "id": "performance",
       "title": "01 · 组合表现",
-      "layout": "two",
+      "layout": "two-wide-end",
       "cells": [
         {
           "kind": "metrics",
           "id": "assets",
-          "title": "资产摘要",
+          "title": "",
           "items": [
             {
               "id": "nav",
@@ -455,7 +455,7 @@
               "id": "cash",
               "label": "现金",
               "value": 200000,
-              "palette": 3
+              "palette": 7
             }
           ]
         },
@@ -490,7 +490,7 @@
                 {
                   "id": "cash",
                   "label": "现金",
-                  "palette": 3
+                  "palette": 7
                 }
               ],
               "points": [
@@ -646,7 +646,7 @@
                 {
                   "id": "cash",
                   "label": "现金",
-                  "palette": 3
+                  "palette": 7
                 }
               ],
               "points": [
@@ -846,12 +846,13 @@
         {
           "kind": "records",
           "id": "theses",
-          "title": "观点与组合事项",
+          "title": "",
           "emptyText": "暂无事项",
           "datasets": [
             {
               "id": "r1",
               "label": "r1 · 初始状态",
+              "description": "研究截止（模拟）：2026-09-22 08:30 Asia/Shanghai · 待人工决定 2 项；估值未随场景改变。",
               "items": [
                 {
                   "id": "PF-01",
@@ -878,10 +879,6 @@
                     {
                       "label": "依据",
                       "value": "演示约束 v1"
-                    },
-                    {
-                      "label": "研究截止（模拟）",
-                      "value": "2026-09-22 08:30 Asia/Shanghai"
                     }
                   ],
                   "sections": [
@@ -954,10 +951,6 @@
                     {
                       "label": "依据",
                       "value": "预注册 v1"
-                    },
-                    {
-                      "label": "研究截止（模拟）",
-                      "value": "2026-09-22 08:30 Asia/Shanghai"
                     }
                   ],
                   "sections": [
@@ -1030,10 +1023,6 @@
                     {
                       "label": "依据",
                       "value": "预注册 v1"
-                    },
-                    {
-                      "label": "研究截止（模拟）",
-                      "value": "2026-09-22 08:30 Asia/Shanghai"
                     }
                   ],
                   "sections": [
@@ -1106,10 +1095,6 @@
                     {
                       "label": "依据",
                       "value": "预注册 v1"
-                    },
-                    {
-                      "label": "研究截止（模拟）",
-                      "value": "2026-09-22 08:30 Asia/Shanghai"
                     }
                   ],
                   "sections": [
@@ -1162,6 +1147,7 @@
             {
               "id": "r2",
               "label": "r2 · 预设反证",
+              "description": "研究截止（模拟）：2026-09-23 08:30 Asia/Shanghai (simulated future scenario) · 待人工决定 3 项；估值未随场景改变。",
               "items": [
                 {
                   "id": "TH-01",
@@ -1188,10 +1174,6 @@
                     {
                       "label": "依据",
                       "value": "预注册 v1"
-                    },
-                    {
-                      "label": "研究截止（模拟）",
-                      "value": "2026-09-23 08:30 Asia/Shanghai (simulated future scenario)"
                     }
                   ],
                   "sections": [
@@ -1272,10 +1254,6 @@
                     {
                       "label": "依据",
                       "value": "演示约束 v1"
-                    },
-                    {
-                      "label": "研究截止（模拟）",
-                      "value": "2026-09-23 08:30 Asia/Shanghai (simulated future scenario)"
                     }
                   ],
                   "sections": [
@@ -1348,10 +1326,6 @@
                     {
                       "label": "依据",
                       "value": "预注册 v1"
-                    },
-                    {
-                      "label": "研究截止（模拟）",
-                      "value": "2026-09-23 08:30 Asia/Shanghai (simulated future scenario)"
                     }
                   ],
                   "sections": [
@@ -1424,10 +1398,6 @@
                     {
                       "label": "依据",
                       "value": "预注册 v1"
-                    },
-                    {
-                      "label": "研究截止（模拟）",
-                      "value": "2026-09-23 08:30 Asia/Shanghai (simulated future scenario)"
                     }
                   ],
                   "sections": [

@@ -3,6 +3,7 @@ import { page, userEvent } from 'vitest/browser';
 import { afterEach, expect, it } from 'vitest';
 import '../../../styles/entry.css';
 import source from '../../../../../../test-data/native-view-v1.json?raw';
+import demoSource from '../../../../../../plugins/paper-trading/examples/native-demo.json?raw';
 import { nativeViewPayloadSchema } from '../../../../../core/domain/report-view.ts';
 import { NativeReportView } from './public.tsx';
 import { ReportDocument } from '../document/public.tsx';
@@ -57,4 +58,22 @@ it('keeps a native composition backlink beside its block without consuming anoth
   const note = document.querySelector('[title="3 reports cite this block"]')!.getBoundingClientRect();
   expect(note.top).toBeLessThan(block.top + 40);
   expect(note.left).toBeGreaterThanOrEqual(block.right);
+});
+
+it('uses the authored narrow-summary ratio and keeps research visible in a wide first viewport', async () => {
+  await page.viewport(1440, 1000);
+  const demo = nativeViewPayloadSchema.parse(JSON.parse(demoSource));
+  const { container } = render(<main style={{ inlineSize: 1120, padding: 16 }}><NativeReportView payload={demo} /></main>);
+  const summary = page.getByRole('region', { name: '01 · 组合表现' }).element();
+  const children = summary.querySelector('h3 + div')!.children;
+  expect(children[1].getBoundingClientRect().width / children[0].getBoundingClientRect().width).toBeGreaterThan(1.8);
+  expect(page.getByRole('region', { name: '03 · 投资观点' }).element().getBoundingClientRect().top).toBeLessThan(850);
+  await page.screenshot({ fullPage: true });
+  const slider = page.getByRole('slider', { name: '总资产变化 观察日期' }).element() as HTMLInputElement;
+  expect(getComputedStyle(slider).opacity).toBe('0');
+  slider.focus();
+  await userEvent.keyboard('{Home}');
+  expect(slider.value).toBe('0');
+  expect(slider.getAttribute('aria-valuetext')).toContain('2026-06-30');
+  expect(container.querySelector('iframe')).toBeNull();
 });

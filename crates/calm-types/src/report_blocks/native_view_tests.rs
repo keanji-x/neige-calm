@@ -2,6 +2,27 @@ use super::kinds::{KIND_VIEW, validate_payload};
 use serde_json::Value;
 
 #[test]
+fn native_view_shared_neutral_palette() {
+    let fixture = fixture();
+    let mut view = fixture["valid"].clone();
+    view["rows"][0]["cells"][1]["datasets"][0]["series"][0]["palette"] =
+        fixture["neutral_palette"].clone();
+    validate_payload(KIND_VIEW, &view).unwrap();
+}
+
+#[test]
+fn native_view_explicit_wide_layouts_require_two_cells() {
+    let fixture = fixture();
+    for layout in fixture["wide_layouts"].as_array().unwrap() {
+        let mut view = fixture["valid"].clone();
+        view["rows"][0]["layout"] = layout.clone();
+        validate_payload(KIND_VIEW, &view).unwrap();
+        view["rows"][0]["cells"].as_array_mut().unwrap().pop();
+        assert!(validate_payload(KIND_VIEW, &view).is_err());
+    }
+}
+
+#[test]
 fn native_view_numeric_spelling_survives_kernel_canonicalization() {
     for case in fixture()["canonical_sizes"].as_array().unwrap() {
         let value: Value = serde_json::from_str(case["json"].as_str().unwrap()).unwrap();

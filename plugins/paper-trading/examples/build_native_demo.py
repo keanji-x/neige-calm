@@ -13,11 +13,11 @@ def scalar(amount, unit='$', decimals=0, signed=False, placement='prefix'):
 def create_view(facts):
     ui = facts['portfolio']
     assets, total = ui['assets'], ui['total']
-    palettes = [5, 6, 2, 3]
+    palettes = [5, 6, 2, 7]
     def metric(key, label, value, detail, tone='neutral', primary=False):
         return {'id': key, 'label': label, 'value': value, 'detail': detail, 'tone': tone,
                 'emphasis': 'primary' if primary else 'normal'}
-    metrics = {'kind': 'metrics', 'id': 'assets', 'title': '资产摘要', 'items': [
+    metrics = {'kind': 'metrics', 'id': 'assets', 'title': '', 'items': [
         metric('nav', '总资产', scalar(total), '证券 $884,620 · 现金 $200,000', primary=True),
         metric('previous', '上一交易日收盘 · 09.18', scalar(ui['previous']), 'USD · 演示交易日'),
         metric('pnl', '本日盈亏 · 09.21', scalar(ui['daily'], signed=True), '区间净入金 $0', 'positive'),
@@ -60,8 +60,7 @@ def create_view(facts):
             'status': {'label': item['initial'], 'tone': tone},
             'handling': {'label': item['processing'], 'tone': 'warning' if item['requires_human_decision'] else 'neutral'},
             'facts': [{'label': '关联敞口', 'value': f'{exposure:.1f}%'}, {'label': '资料状态', 'value': item['data']},
-                      {'label': '依据', 'value': ('演示约束' if constraint else '预注册') + ' v1'},
-                      {'label': '研究截止（模拟）', 'value': facts['metadata'][scenario + '_research_as_of']}],
+                      {'label': '依据', 'value': ('演示约束' if constraint else '预注册') + ' v1'}],
             'sections': [{'label': label, 'body': body} for label, body in [
                 ('原始规则', item['rule']), ('裁定 / 处理边界', item['fail']), ('持有或风险依据', item['why']),
                 ('价格与口径', item['pricing']), ('建议', item['recommend']),
@@ -71,14 +70,16 @@ def create_view(facts):
             'evidence': [{'id': e['id'], 'label': e['label'],
                           'date': datetime.strptime(e['at'], '%Y.%m.%d').date().isoformat(),
                           'body': e['quote'], 'note': e['note'], 'tone': 'warning' if e['id'] == 'E04' else 'neutral'} for e in item['evidence']]}
-    records = {'kind': 'records', 'id': 'theses', 'title': '观点与组合事项', 'emptyText': '暂无事项',
-        'datasets': [{'id': key, 'label': label, 'items': [record(item, key) for item in facts['scenarios'][key]['items']]}
+    records = {'kind': 'records', 'id': 'theses', 'title': '', 'emptyText': '暂无事项',
+        'datasets': [{'id': key, 'label': label,
+                      'description': f"研究截止（模拟）：{facts['metadata'][key + '_research_as_of']} · 待人工决定 {sum(item['requires_human_decision'] for item in facts['scenarios'][key]['items'])} 项；估值未随场景改变。",
+                      'items': [record(item, key) for item in facts['scenarios'][key]['items']]}
                      for key, label in [('r1', 'r1 · 初始状态'), ('r2', 'r2 · 预设反证')]]}
     stamp = int(datetime(2026, 9, 23, 0, 30, tzinfo=timezone.utc).timestamp() * 1000)
     return {'version': 1, 'title': '低频投资组合',
-        'description': '全部为虚构数据。两个冻结场景用于展示与阅读评审；无券商连接、交易或调度权限。资料与处理状态分开。',
+        'description': '虚构数据 · USD · 估值截至 2026.09.21 收盘；r1 / r2 为预设研究场景，未连接账户。',
         'snapshot': {'id': 'portfolio-demo-v1', 'observedAt': stamp, 'producedAt': stamp},
-        'rows': [{'id': 'performance', 'title': '01 · 组合表现', 'layout': 'two', 'cells': [metrics, nav]},
+        'rows': [{'id': 'performance', 'title': '01 · 组合表现', 'layout': 'two-wide-end', 'cells': [metrics, nav]},
                  {'id': 'allocation', 'title': '02 · 资金投向', 'layout': 'three', 'cells': [distribution, weight_chart, table]},
                  {'id': 'research', 'title': '03 · 投资观点', 'layout': 'one', 'cells': [records]}]}
 
@@ -94,7 +95,7 @@ def main():
         assert destination.read_text() == encoded, 'Native Demo fixture drift'
     else:
         destination.write_text(encoded)
-    recipe = '# 低频组合看板\n\n虚构数据，仅用于原生组件与 Planner 阅读评审。\n\n```neige-block view\n' + json.dumps(view, ensure_ascii=False, allow_nan=False, separators=(',', ':')) + '\n```\n'
+    recipe = '```neige-block view\n' + json.dumps(view, ensure_ascii=False, allow_nan=False, separators=(',', ':')) + '\n```\n'
     recipe_path = ROOT / 'native-demo.md'
     if args.check:
         assert recipe_path.read_text() == recipe, 'Native Recipe drift'

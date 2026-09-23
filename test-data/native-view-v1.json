@@ -1,4 +1,6 @@
 {
+  "wide_layouts": ["two-wide-start", "two-wide-end"],
+  "neutral_palette": 7,
   "valid": {
     "version": 1,
     "title": "运营概览",
@@ -20,7 +22,7 @@
         {"kind": "table", "id": "details", "title": "明细", "table": {"columns": [{"key": "name", "label": "名称"}, {"key": "value", "label": "用量"}], "rows": [{"name": "主库", "value": 120}]}}
       ]},
       {"id": "review", "title": "待复核记录", "layout": "one", "cells": [
-        {"kind": "records", "id": "records", "title": "核验事项", "emptyText": "暂无事项", "datasets": [{"id": "r1", "label": "初始状态", "items": [
+        {"kind": "records", "id": "records", "title": "核验事项", "emptyText": "暂无事项", "datasets": [{"id": "r1", "label": "初始状态", "description": "研究截止 2026-09-23，未取得的样本不视为失败。", "items": [
           {"id": "backup", "category": "运维", "title": "备份是否按时完成？", "summary": "需要读取完成记录", "status": {"label": "未知", "tone": "neutral"}, "handling": {"label": "待补证", "tone": "warning"}, "facts": [{"label": "截止时间", "value": "2026-09-23"}], "sections": [{"label": "原始规则", "body": "以任务完成记录为准，不因读取失败判定备份失败。"}], "evidence": [{"id": "e1", "label": "读取记录", "date": "2026-09-23", "body": "<script>alert(1)</script>", "note": "原文只作文本显示", "tone": "neutral"}]}
         ]}]}
       ]}
@@ -46,6 +48,7 @@
   ],
   "budget_boundary": {"rows": 150, "empty_canonical_bytes": 9699, "sizes": [262143, 262144, 262145]},
   "invalid": [
+    {"name": "invalid dataset description", "path": ["rows", 2, "cells", 0, "datasets", 0, "description"], "value": 42},
     {"name": "unknown version", "path": ["version"], "value": 2},
     {"name": "executable field", "path": ["script"], "value": "alert(1)"},
     {"name": "missing snapshot", "path": ["snapshot"], "remove": true},

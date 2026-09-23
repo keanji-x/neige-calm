@@ -63,7 +63,9 @@
             "enum": [
               "one",
               "two",
-              "three"
+              "three",
+              "two-wide-start",
+              "two-wide-end"
             ]
           },
           "cells": {
@@ -284,7 +286,7 @@
                                 "palette": {
                                   "type": "integer",
                                   "minimum": 1,
-                                  "maximum": 6
+                                  "maximum": 7
                                 }
                               },
                               "required": [
@@ -402,7 +404,7 @@
                           "palette": {
                             "type": "integer",
                             "minimum": 1,
-                            "maximum": 6
+                            "maximum": 7
                           }
                         },
                         "required": [
@@ -583,6 +585,17 @@
                           "label": {
                             "type": "string",
                             "maxLength": 120
+                          },
+                          "description": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "maxLength": 500
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
                           },
                           "items": {
                             "maxItems": 50,

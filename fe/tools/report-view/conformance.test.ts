@@ -8,11 +8,27 @@ import { z } from 'zod';
 
 const fixture = JSON.parse(readFileSync(new URL('../../../test-data/native-view-v1.json', import.meta.url), 'utf8')) as {
   valid: Record<string, unknown>;
+  wide_layouts: string[];
+  neutral_palette: number;
   canonical_sizes: { json: string; canonical: string; decoded_bytes: number; view_boundary?: boolean }[];
   budget_boundary: { rows: number; empty_canonical_bytes: number; sizes: number[] };
   invalid: { name: string; path: (string | number)[]; value?: unknown; remove?: boolean }[];
 };
 describe('native view conformance shared with the kernel', () => {
+  it('accepts the shared neutral palette', () => {
+    const view = nativeViewPayloadSchema.parse(fixture.valid);
+    const chart = view.rows[0].cells[1];
+    if (chart.kind !== 'time-series') throw new Error('Expected chart fixture');
+    chart.datasets[0].series[0].palette = fixture.neutral_palette;
+    expect(nativeViewPayloadSchema.safeParse(view).success).toBe(true);
+  });
+  it.each(fixture.wide_layouts)('accepts explicit ratio %s only with two cells', layout => {
+    const view = structuredClone(fixture.valid) as { rows: { layout: string; cells: unknown[] }[] };
+    view.rows[0].layout = layout;
+    expect(nativeViewPayloadSchema.safeParse(view).success).toBe(true);
+    view.rows[0].cells.pop();
+    expect(nativeViewPayloadSchema.safeParse(view).success).toBe(false);
+  });
   it('publishes the actual generated schema without drift', () => {
     const generated = JSON.parse(readFileSync(new URL('../../core/domain/report-view.schema.json', import.meta.url), 'utf8')) as Record<string, unknown>;
     delete generated.description;
