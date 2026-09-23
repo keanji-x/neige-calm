@@ -1,4 +1,5 @@
 import type { NativeComponent, NativeViewPayload } from '../../../../../core/domain/report-view.ts';
+import { useId } from 'react';
 import type { ReportSourceLinkTarget } from '../../../../../core/domain/report-source.ts';
 import { MetricGroup, DistributionChart, TimeSeriesChart, type PlotSelection } from '../../../ui/data-visualization/public.tsx';
 import { Dialog } from '../../../ui/dialog/public.tsx';
@@ -8,7 +9,7 @@ import { InlineTable } from '../table/inline.tsx';
 import { RecordBrowser, type RecordSelection } from './records.tsx';
 import styles from './native.module.css';
 
-type Inspection = { plots: ReadonlyMap<string, PlotSelection>; distributions: ReadonlyMap<string, string | null>; records: ReadonlyMap<string, RecordSelection> };
+type Inspection = { plots: ReadonlyMap<string, PlotSelection>; distributions: ReadonlyMap<string, string | null>; records: ReadonlyMap<string, RecordSelection>; snapshotOpen: boolean };
 type ReadingProps = { inspection: Inspection; onInspection: (next: Inspection) => void; onOpenSourceLink?: (target: ReportSourceLinkTarget) => void };
 function Cell({ component, inspection, onInspection, onOpenSourceLink }: ReadingProps & { component: NativeComponent }) {
   switch (component.kind) {
@@ -25,6 +26,7 @@ function Cell({ component, inspection, onInspection, onOpenSourceLink }: Reading
   }
 }
 function Composition({ payload, ...reading }: ReadingProps & { payload: NativeViewPayload }) {
+  const snapshotId = useId();
   return <div className={styles.composition}>
     <p className={styles.description}>{payload.description}</p>
     {payload.rows.map(row => <section key={row.id} className={styles.row} aria-label={row.title}>
@@ -33,12 +35,15 @@ function Composition({ payload, ...reading }: ReadingProps & { payload: NativeVi
         {component.title && component.kind !== 'time-series' && <h4>{component.title}</h4>}<Cell component={component} {...reading} />
       </div>)}</div>
     </section>)}
-    <details className={styles.snapshot}><summary>快照信息</summary><p>{payload.snapshot.id} · 资料截止 {new Date(payload.snapshot.observedAt).toISOString()} · 生成 {new Date(payload.snapshot.producedAt).toISOString()}</p></details>
+    <div className={styles.snapshot}><button type="button" className={styles.disclosureToggle} aria-expanded={reading.inspection.snapshotOpen}
+      aria-controls={snapshotId} onClick={() => reading.onInspection({ ...reading.inspection, snapshotOpen: !reading.inspection.snapshotOpen })}>
+      <Icon name="chevron-right" size="sm" />快照信息</button>
+      <p id={snapshotId} hidden={!reading.inspection.snapshotOpen}>{payload.snapshot.id} · 资料截止 {new Date(payload.snapshot.observedAt).toISOString()} · 生成 {new Date(payload.snapshot.producedAt).toISOString()}</p></div>
   </div>;
 }
 export function NativeReportView({ payload, onOpenSourceLink }: { payload: NativeViewPayload; onOpenSourceLink?: (target: ReportSourceLinkTarget) => void }) {
   const [expanded, setExpanded] = useState(false);
-  const [inspection, setInspection] = useState<Inspection>(() => ({ plots: new Map(), distributions: new Map(), records: new Map() }));
+  const [inspection, setInspection] = useState<Inspection>(() => ({ plots: new Map(), distributions: new Map(), records: new Map(), snapshotOpen: false }));
   const reading = { inspection, onInspection: setInspection, onOpenSourceLink };
   return <div className={styles.root}>
     <header className={styles.header}><h2>{payload.title}</h2><button type="button" className={styles.expand}

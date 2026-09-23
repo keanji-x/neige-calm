@@ -1,5 +1,5 @@
 import type { NativeComponent } from '../../../../../core/domain/report-view.ts';
-import { useRef } from 'react';
+import { useId, useRef } from 'react';
 import { Icon } from '../../../ui/icon/public.tsx';
 import styles from './native.module.css';
 
@@ -11,6 +11,7 @@ export function RecordBrowser({ component, selection, onSelection }: {
   const { datasetId, mode, selectedId } = selection;
   const data = component.datasets.find(d => d.id === datasetId) ?? component.datasets[0];
   const selected = data?.items.find(item => item.id === selectedId);
+  const disclosureId = useId();
   const opener = useRef<HTMLButtonElement | null>(null);
   const closeDetail = () => { onSelection({ ...selection, selectedId: null, evidence: [] }); opener.current?.focus(); };
   return <div className={styles.recordBrowser}>
@@ -28,7 +29,7 @@ export function RecordBrowser({ component, selection, onSelection }: {
       {data.items.map(item => <article key={item.id} className={`${styles.record} ${selectedId === item.id ? styles.activeRecord : ''}`}>
         <div className={styles.recordTop}><span>{item.id} · {item.category}</span><span className={`${styles.status} ${styles[item.status.tone]}`}>{item.status.label}</span></div>
         <h4>{item.title}</h4><p>{item.summary}</p>
-        <dl className={styles.facts}>{item.facts.map((field, index) => <div key={index}><dt>{field.label}</dt><dd>{field.value}</dd></div>)}</dl>
+        <dl className={styles.facts}>{item.facts.slice(0, 2).map((field, index) => <div key={index}><dt>{field.label}</dt><dd>{field.value}</dd></div>)}</dl>
         <div className={styles.recordBottom}><span className={styles[item.handling.tone]}>{item.handling.label}</span>
           <button type="button" ref={selectedId === item.id ? opener : undefined}
             onClick={() => onSelection({ ...selection, selectedId: selectedId === item.id ? null : item.id, evidence: [] })} aria-expanded={selectedId === item.id}>查看证据</button></div>
@@ -44,11 +45,17 @@ export function RecordBrowser({ component, selection, onSelection }: {
       <dl className={styles.sections}>{selected.sections.map((section, index) => <div key={index} className={styles.section}>
         <dt>{section.label}</dt><dd>{section.body}</dd>
       </div>)}</dl>
-      {selected.evidence.map(e => <details key={e.id} className={styles.evidence} open={selection.evidence.includes(e.id)}>
-        <summary onClick={event => { event.preventDefault(); onSelection({ ...selection, evidence: selection.evidence.includes(e.id)
-          ? selection.evidence.filter(id => id !== e.id) : [...selection.evidence, e.id] }); }}><span className={styles[e.tone]}>{e.id}</span> · {e.date} · {e.label}</summary>
-        <blockquote>{e.body}</blockquote><p>{e.note}</p>
-      </details>)}
+      {selected.evidence.map(e => {
+        const panelId = `${disclosureId}-${selected.id}-${e.id}`;
+        const open = selection.evidence.includes(e.id);
+        return <div key={e.id} className={styles.evidence}>
+          <button type="button" id={`${panelId}-label`} className={styles.disclosureToggle} aria-expanded={open} aria-controls={panelId}
+            onClick={() => onSelection({ ...selection, evidence: open ? selection.evidence.filter(id => id !== e.id) : [...selection.evidence, e.id] })}>
+            <Icon name="chevron-right" size="sm" /><span><span className={styles[e.tone]}>{e.id}</span> · {e.date} · {e.label}</span>
+          </button>
+          <div id={panelId} hidden={!open} role="region" aria-labelledby={`${panelId}-label`}><blockquote>{e.body}</blockquote><p>{e.note}</p></div>
+        </div>;
+      })}
     </section>}
     </div>
   </div>;

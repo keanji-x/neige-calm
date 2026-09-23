@@ -49,3 +49,21 @@ records under #1769.
 - Verify report styling inside the restored shell, normal card/Planner entry
   points, and unchanged stored data. Deploy only frontend assets to the isolated
   4143 preview; do not restart Planner or change 4140.
+
+## Report-only follow-up
+
+Use the existing approximately 700px document slot without changing its owner,
+gutter, side panel or background. Medium-width authored two-column rows keep a
+readable summary/figure pair; smaller containers stack. The App template keeps
+price and day change in its compact holdings table and carries the complete
+contribution, deadline and next-check fields in records. Card previews show the
+first two author-ordered facts; opening a record exposes every fact and evidence.
+
+Evidence and snapshot controls are ordinary Report-owned buttons with explicit
+expanded/panel relationships, compatible with the existing shared Dialog. Do not
+modify shared focus traversal or introduce iframe/UI-specific data copies.
+
+Acceptance is split: browser checks geometry, legibility, all data access and
+keyboard interactions while Card/Track stay unchanged; the existing Planner is
+asked to read the current report without screenshot attachments and assess only
+facts, units, evidence, uncertainty, timing and analytical completeness.

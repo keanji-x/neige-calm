@@ -102,3 +102,30 @@ it('contains long observation tooltips inside the plot without covering the lege
   const tooltip = container.querySelector('[aria-hidden="true"][style]')!;
   expect(tooltip.getBoundingClientRect().bottom).toBeLessThanOrEqual(cursor.getBoundingClientRect().bottom);
 });
+
+it('keeps summary and curve beside each other in an ordinary report slot', async () => {
+  await page.viewport(1440, 1000);
+  const demo = nativeViewPayloadSchema.parse(JSON.parse(demoSource));
+  render(<main style={{ inlineSize: 700 }}><NativeReportView payload={demo} /></main>);
+  const row = page.getByRole('region', { name: '01 · 组合表现' }).element();
+  const cells = row.querySelector('h3 + div')!.children;
+  expect(Math.abs(cells[0].getBoundingClientRect().top - cells[1].getBoundingClientRect().top)).toBeLessThan(2);
+  expect(cells[1].getBoundingClientRect().width).toBeGreaterThan(cells[0].getBoundingClientRect().width);
+});
+
+it('reaches evidence and snapshot controls using the unchanged shared dialog', async () => {
+  await page.viewport(1440, 1000);
+  render(<NativeReportView payload={payload} />);
+  await page.getByRole('button', { name: '查看证据', exact: true }).click();
+  await page.getByRole('button', { name: '展开 运营概览' }).click();
+  const detailClose = page.getByRole('button', { name: '收起详情', exact: true }).element() as HTMLElement;
+  detailClose.focus();
+  await userEvent.keyboard('{Tab}');
+  expect(document.activeElement?.textContent).toContain('e1');
+  await userEvent.keyboard('{Enter}');
+  await expect.element(page.getByRole('dialog').getByText('<script>alert(1)</script>', { exact: true })).toBeVisible();
+  await userEvent.keyboard('{Tab}');
+  expect(document.activeElement?.textContent).toContain('快照信息');
+  await userEvent.keyboard('{Enter}');
+  await expect.element(page.getByRole('dialog').getByText(/operations-r1/)).toBeVisible();
+});

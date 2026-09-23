@@ -13,14 +13,15 @@ def scalar(amount, unit='$', decimals=0, signed=False, placement='prefix'):
 def create_view(facts):
     ui = facts['portfolio']
     assets, total = ui['assets'], ui['total']
+    cash = next(asset for asset in assets if asset['id'] == 'cash')
     palettes = [5, 6, 2, 7]
     def metric(key, label, value, detail, tone='neutral', primary=False):
         return {'id': key, 'label': label, 'value': value, 'detail': detail, 'tone': tone,
                 'emphasis': 'primary' if primary else 'normal'}
     metrics = {'kind': 'metrics', 'id': 'assets', 'title': '', 'items': [
-        metric('nav', '总资产', scalar(total), '证券 $884,620 · 现金 $200,000', primary=True),
+        metric('nav', '总资产', scalar(total), f"证券 ${total - cash['value']:,.0f} · 现金 ${cash['value']:,.0f}", primary=True),
         metric('previous', '上一交易日收盘 · 09.18', scalar(ui['previous']), 'USD · 演示交易日'),
-        metric('pnl', '本日盈亏 · 09.21', scalar(ui['daily'], signed=True), '区间净入金 $0', 'positive'),
+        metric('pnl', '本日盈亏 · 09.21', scalar(ui['daily'], signed=True), f"净入金 $0 · 现金盈亏 ${cash['day']:,.2f}", 'positive'),
         metric('change', '本日涨跌', scalar(ui['daily'] / ui['previous'] * 100, '%', 2, True, 'suffix'), '相对上一交易日', 'positive'),
     ]}
     def date(row):
@@ -46,26 +47,31 @@ def create_view(facts):
                     'emptyText': '暂无历史仓位', 'datasets': weight_sets}
     table = {'kind': 'table', 'id': 'holdings', 'title': '持仓明细', 'table': {
         'columns': [{'key': key, 'label': label, 'align': align} for key, label, align in [
-            ('name', '标的', 'left'), ('price', '现价 / USD', 'right'), ('change', '本日涨跌', 'right'), ('pnl', '盈亏贡献', 'right')]],
+            ('name', '标的', 'left'), ('price', '现价 / USD', 'right'), ('change', '本日涨跌', 'right')]],
         'rows': [{'name': a['name'], 'price': f"{a['price']:.2f}" if a['id'] != 'cash' else '—',
-                  'change': f"{(a['price'] / a['previous'] - 1) * 100:+.2f}%" if a['id'] != 'cash' else '—',
-                  'pnl': f"{'+' if a['day'] >= 0 else '-'}${abs(a['day']):,.0f}" if a['id'] != 'cash' else '—'} for a in assets],
+                  'change': f"{(a['price'] / a['previous'] - 1) * 100:+.2f}%" if a['id'] != 'cash' else '—'} for a in assets],
         'caption': '虚构价格截至 2026.09.21 收盘，无日内换仓。'}}
     def record(item, scenario):
         constraint = item.get('type') == 'constraint'
         exposure = ui['commonWeight'] if constraint else ui['weights'][item['asset']]
         tone = 'warning' if item['initial'] in ('超复核阈值', '支持减弱') else 'neutral'
+        next_check = '2026.09.24' if scenario == 'r2' and item['id'] != 'river' else item['next']
+        facts = [{'label': '关联敞口', 'value': f'{exposure:.1f}%'}, {'label': '下次核验（模拟）', 'value': next_check}]
+        if not constraint:
+            asset = assets[item['asset']]
+            facts.extend([{'label': '标的代码', 'value': asset['symbol']},
+                          {'label': '本日盈亏贡献 / USD', 'value': f"{asset['day']:+,.2f}"}])
+        facts.extend([{'label': '资料状态', 'value': item['data']}, {'label': '核验期限', 'value': item['deadline']},
+                      {'label': '登记时间', 'value': item['registered']}, {'label': '依据', 'value': ('演示约束' if constraint else '预注册') + ' v1'},
+                      {'label': '排期说明', 'value': '预设场景中的拟检查日期；没有实际调度、已执行检查或正式延期记录。'}])
         return {'id': item['code'], 'category': '组合约束（演示）' if constraint else assets[item['asset']]['name'],
             'title': item['title'], 'summary': item['copy'],
             'status': {'label': item['initial'], 'tone': tone},
             'handling': {'label': item['processing'], 'tone': 'warning' if item['requires_human_decision'] else 'neutral'},
-            'facts': [{'label': '关联敞口', 'value': f'{exposure:.1f}%'}, {'label': '资料状态', 'value': item['data']},
-                      {'label': '依据', 'value': ('演示约束' if constraint else '预注册') + ' v1'}],
+            'facts': facts,
             'sections': [{'label': label, 'body': body} for label, body in [
                 ('原始规则', item['rule']), ('裁定 / 处理边界', item['fail']), ('持有或风险依据', item['why']),
                 ('价格与口径', item['pricing']), ('建议', item['recommend']),
-                ('时间', f"登记 {item['registered']}；核验期限 {item['deadline']}。"),
-                ('下次计划核验（模拟）', '2026.09.24' if scenario == 'r2' and item['id'] != 'river' else item['next']),
                 ('关联持仓' if constraint else '关联订单', '\n'.join(item['orders']))]],
             'evidence': [{'id': e['id'], 'label': e['label'],
                           'date': datetime.strptime(e['at'], '%Y.%m.%d').date().isoformat(),
