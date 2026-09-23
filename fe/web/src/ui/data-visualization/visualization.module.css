@@ -19,6 +19,8 @@
   .legend { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-4); min-inline-size: 0; margin-block-start: var(--space-2); }
   .legend button { display: inline-flex; align-items: center; gap: var(--space-2); border: 0; padding: var(--space-2) 0; background: none; color: var(--text-2); font-size: var(--text-xs); overflow-wrap: anywhere; min-inline-size: 0; max-inline-size: 100%; }
   .legend button[aria-pressed="true"] { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
+  .legendLabel { min-inline-size: 0; overflow-wrap: anywhere; text-align: start; }
+  .plotLegend { block-size: 32px; overflow: auto; scrollbar-gutter: stable; }
   .distributionLegend { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); inline-size: 100%; }
   .distributionLegend button { justify-content: start; flex-wrap: wrap; }
   .swatch { flex: none; inline-size: 8px; block-size: 8px; background: currentcolor; border-radius: 2px; }
@@ -32,10 +34,16 @@
   .grid { stroke: var(--hairline); stroke-width: 1; }
   .dateCursor { position: absolute; inset: 0; inline-size: 100%; block-size: 100%; min-inline-size: 0; margin: 0; opacity: 0; cursor: crosshair; touch-action: pan-y; }
   .cursor { stroke: var(--text-3); stroke-width: 1; stroke-dasharray: 3 4; opacity: 0; }
-  .tooltip { display: none; position: absolute; inset-block-start: var(--space-3); max-inline-size: calc(100% - 16px); max-block-size: calc(100% - 16px); overflow: hidden; padding: var(--space-3); background: var(--surface-card); border: 1px solid var(--hairline); border-radius: var(--radius-sm); box-shadow: var(--shadow-float); font-size: var(--text-xs); pointer-events: none; }
-  .tooltip strong { display: block; margin-block-end: var(--space-2); font-weight: var(--weight-medium); }
-  .tooltip > div { display: grid; grid-template-columns: 8px minmax(0, 1fr) max-content; gap: var(--space-2); align-items: center; }
-  .tooltipSeries { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tooltip { display: none; position: absolute; inset-block-start: var(--space-3); max-inline-size: calc(100% - 16px); padding: var(--space-2); background: var(--surface-card); border: 1px solid var(--hairline); border-radius: var(--radius-sm); box-shadow: var(--shadow-float); font-size: var(--text-xs); pointer-events: none; }
+  .tooltip strong { display: block; font-weight: var(--weight-medium); }
+  .readoutToggle { display: flex; justify-content: space-between; flex-wrap: wrap; gap: var(--space-2); inline-size: 100%; min-block-size: var(--control-h); border: 0; border-block-end: 1px solid var(--hairline); background: none; color: var(--text-2); font: inherit; font-size: var(--text-xs); text-align: start; }
+  .readout { block-size: 144px; overflow: auto; scrollbar-gutter: stable; font-size: var(--text-xs); }
+  .readout dl { margin: 0; }
+  .readout dl > div { padding-block: var(--space-2); border-block-end: 1px solid var(--hairline); }
+  .readout dt, .readout dd { margin: 0; min-inline-size: 0; }
+  .readout button { display: flex; align-items: baseline; gap: var(--space-2); inline-size: 100%; border: 0; padding: 0; background: none; color: var(--text-2); font: inherit; }
+  .readout button[aria-pressed="true"] { color: var(--text); text-decoration: underline; }
+  .readout dd { color: var(--text); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
   .plotFrame:hover .tooltip, .plotFrame:focus-within .tooltip { display: block; }
   .plotFrame:hover .cursor, .plotFrame:focus-within .cursor { opacity: 1; }
   .toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--space-3); min-block-size: var(--control-h); margin-block-end: var(--space-4); }

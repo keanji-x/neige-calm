@@ -1,3 +1,5 @@
+import { useId } from 'react';
+import { useState } from '../state/public.ts';
 import styles from './visualization.module.css';
 
 export type ValueDisplay =
@@ -64,7 +66,7 @@ export function DistributionChart({ label, unit, slices, emptyText, selected, on
     <div className={`${styles.legend} ${styles.distributionLegend}`}>{slices.map(slice => <button key={slice.id} type="button"
       aria-pressed={selected === slice.id} onClick={() => onSelect(selected === slice.id ? null : slice.id)}>
       <span className={`${styles.swatch} ${palette(slice.palette)}`} aria-hidden="true" />
-      {slice.label}<span>{percentage(slice.value)}</span>
+      <span className={styles.legendLabel}>{slice.label}</span><span>{percentage(slice.value)}</span>
     </button>)}</div>
     <p className={styles.detail}>{current?.label ?? label} · {observationNumber(current?.value ?? total)} {unit}</p>
   </div>;
@@ -96,6 +98,8 @@ export function TimeSeriesChart({ label, datasets, emptyText, selection, onSelec
   label: string; datasets: readonly PlotDataset[]; emptyText: string;
   selection: PlotSelection; onSelection: (selection: PlotSelection) => void;
 }) {
+  const [readoutOpen, setReadoutOpen] = useState(false);
+  const readoutId = useId();
   const { datasetId, selected, sample } = selection;
   const data = datasets.find(d => d.id === datasetId) ?? datasets[0];
   if (!data) return <p className={styles.empty}>{emptyText}</p>;
@@ -172,18 +176,29 @@ export function TimeSeriesChart({ label, datasets, emptyText, selection, onSelec
           onPointerMove={event => selectAt(event.currentTarget, event.clientX)}
           onChange={event => onSelection({ ...selection, sample: Number(event.target.value) })} />
         {focused && <div className={styles.tooltip} aria-hidden="true" style={sampleIndex < points.length / 2 ? { right: 8 } : { left: 8 }}>
-          <strong>{focused.date}</strong>{data.series.map((series, i) => <div key={series.id}>
-            <span className={`${styles.swatch} ${palette(series.palette)}`} /><span className={styles.tooltipSeries}>{series.label}</span>
-            <span>{focused.values[i] === null ? '未知' : observationNumber(focused.values[i])}</span>
-          </div>)}
+          <strong>{focused.date}</strong>
         </div>}
         </div>
         <div className={styles.xAxis}><span>{points[0]?.date}</span><span>{points.at(-1)?.date}</span></div>
       </div>
-      <div className={styles.legend}>{data.series.map(series => <button key={series.id} type="button"
+      <button type="button" className={styles.readoutToggle} aria-label={`${label} 观察值`}
+        aria-expanded={readoutOpen} aria-controls={readoutId} onClick={() => setReadoutOpen(open => !open)}>
+        <span>{focused?.date}</span><span>观察值 {readoutOpen ? '−' : '+'}</span>
+      </button>
+      {focused && <section id={readoutId} hidden={!readoutOpen} className={styles.readout} aria-label={`${label} 观察值`}>
+        <dl>{data.series.map((series, i) => <div key={series.id}>
+          <dt><button type="button" aria-pressed={selected === series.id} aria-describedby={`${readoutId}-${i}`}
+            onClick={() => onSelection({ ...selection, selected: selected === series.id ? null : series.id })}>
+            <span className={`${styles.swatch} ${palette(series.palette)}`} aria-hidden="true" />
+            <span className={styles.legendLabel}>{series.label}</span>
+          </button></dt>
+          <dd id={`${readoutId}-${i}`}><span>{focused.values[i] === null ? '未知' : observationNumber(focused.values[i])}</span> {data.unit}</dd>
+        </div>)}</dl>
+      </section>}
+      {!readoutOpen && <div className={`${styles.legend} ${styles.plotLegend}`}>{data.series.map(series => <button key={series.id} type="button"
         aria-pressed={selected === series.id} onClick={() => onSelection({ ...selection, selected: selected === series.id ? null : series.id })}>
-        <span className={`${styles.swatch} ${palette(series.palette)}`} aria-hidden="true" />{series.label}
-      </button>)}</div>
+        <span className={`${styles.swatch} ${palette(series.palette)}`} aria-hidden="true" /><span className={styles.legendLabel}>{series.label}</span>
+      </button>)}</div>}
     </>}
   </div>;
 }
