@@ -32,6 +32,14 @@ pub(crate) fn card_mcp_thread_start_config(
     for (key, value) in card_mcp_env(socket_path, raw_token) {
         set.insert(key.to_string(), serde_json::Value::String(value));
     }
+    // A PATH in `set` stops codex re-adding its own PATH entries after the snapshot
+    // (codex-rs core/src/tools/runtimes/mod.rs:140): the per-process arg0 tempdir
+    // (apply_patch/applypatch/codex-linux-sandbox/codex-execve-wrapper aliases) and, in
+    // snapshot mode, the bundled-rg package dir. Acceptable: codex intercepts apply_patch
+    // in-process and runs the sandbox and execve wrapper by absolute path. Lost: shell forms
+    // the apply_patch parser does not recognise (e.g. `cat p | apply_patch`) and bundled rg
+    // on a host without rg. `set` values are literal and the arg0 dir is a random tempdir,
+    // so no prepend-style carrier exists.
     set.insert("PATH".into(), serde_json::Value::String(path.into()));
     let mut config = serde_json::json!({
         "shell_environment_policy": {
