@@ -2961,6 +2961,8 @@ impl RecycledTrackDeletion {
             .mcp_context
             .plugin_results
             .forget_track(track.id.as_str());
+        // Preview registrations are keyed by track; only the deleted track's Planner could unregister them.
+        route.mcp_context.preview.release_track(&track.id);
         // Post-commit, best effort: remove `<terminal-hooks>/<card_id>.json` for every deleted
         // Terminal card.
         for card_id in &terminal_card_ids {

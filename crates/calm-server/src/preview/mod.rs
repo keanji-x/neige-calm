@@ -204,9 +204,39 @@ impl PreviewRegistry {
         Some(port)
     }
 
+    /// Frees every registration of a deleted track and closes its tunnels; returns the freed
+    /// ports. Called after a track or area delete commits: the track's Planner, the only
+    /// unregistering identity, is gone with it.
+    pub fn release_track(&self, track_id: &TrackId) -> Vec<u16> {
+        let mut slots = self.slots.lock().expect("preview registry poisoned");
+        let mut freed = Vec::new();
+        slots.retain(|port, e| {
+            let keep = e.track_id != *track_id;
+            if !keep {
+                e.tunnels.cancel();
+                freed.push(*port);
+            }
+            keep
+        });
+        freed.sort_unstable();
+        freed
+    }
+
     pub fn lookup(&self, port: u16) -> Option<PreviewEntry> {
         let slots = self.slots.lock().expect("preview registry poisoned");
         slots.get(&port).cloned()
+    }
+
+    /// `(pool port, entry)` for every registration of `track_id`, by port.
+    pub fn for_track(&self, track_id: &TrackId) -> Vec<(u16, PreviewEntry)> {
+        let slots = self.slots.lock().expect("preview registry poisoned");
+        let mut held: Vec<_> = slots
+            .iter()
+            .filter(|(_, e)| e.track_id == *track_id)
+            .map(|(port, e)| (*port, e.clone()))
+            .collect();
+        held.sort_by_key(|(port, _)| *port);
+        held
     }
 }
 

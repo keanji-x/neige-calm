@@ -5216,6 +5216,67 @@
         }
       }
     },
+    "/api/tracks/{id}/previews": {
+      "get": {
+        "tags": [
+          "tracks"
+        ],
+        "operationId": "list_track_previews",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Track id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The track's registered previews",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrackPreviews"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Track not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/tracks/{id}/report": {
       "get": {
         "tags": [
@@ -11797,6 +11858,48 @@
                 "description": "Request a workspace change. Handled by the route, never by\n`track_update_tx`: a re-point is a filesystem move bracketed by two\ntransactions, and mutually exclusive with every other field here."
               }
             ]
+          }
+        }
+      },
+      "TrackPreview": {
+        "type": "object",
+        "required": [
+          "key",
+          "title",
+          "port",
+          "live"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "live": {
+            "type": "boolean",
+            "description": "Whether the dev server behind it accepted a TCP connection just now."
+          },
+          "port": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The gateway pool port the browser loads.",
+            "minimum": 0
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "TrackPreviews": {
+        "type": "object",
+        "required": [
+          "previews"
+        ],
+        "properties": {
+          "previews": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TrackPreview"
+            },
+            "description": "Ordered by `port`."
           }
         }
       },
