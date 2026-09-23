@@ -46,6 +46,8 @@ export type TrackActivity = Readonly<{
   attention: AttentionKind;
   /** Same overlay: high-water mark of completion-class evidence; the read receipt compares against it. */
   activityAt: number | null;
+  /** Latest finite write/evidence time from the kernel activity overlay; used only for Area ordering. */
+  recentAt: number | null;
   /** Same overlay: every item that needs a person, with where it came from. */
   attentionItems: readonly ActivityItem[];
   /** Same overlay: the per-card verdicts, keyed by card id. Read through `cardActivityOf`. */
@@ -56,7 +58,7 @@ export type TrackActivity = Readonly<{
  * and a `new Map()` here would be rejected — hence `cards` is a `Record`. */
 export const NEUTRAL_ACTIVITY: TrackActivity = Object.freeze({
   progress: 0, eta: '', now: '',
-  working: false, attention: 'none', activityAt: null,
+  working: false, attention: 'none', activityAt: null, recentAt: null,
   attentionItems: Object.freeze([]), cards: Object.freeze({}),
 });
 
@@ -188,6 +190,11 @@ function activityOverlayFields(payload: unknown): Partial<TrackActivity> | null 
   };
 }
 
+function newerFinite(current: number | null, candidate: number): number | null {
+  if (!Number.isFinite(candidate)) return current;
+  return current === null || candidate > current ? candidate : current;
+}
+
 /**
  * Folds a track's overlays into its activity fields; junk payloads are ignored, not rejected.
  * Only the kernel-written `activity` row is the verdict — any plugin may write a row of any kind under its own id.
@@ -202,11 +209,46 @@ export function trackActivityFrom(trackId: string, overlays: readonly OverlayWir
     else if (overlay.kind === 'eta' && typeof text === 'string') activity = { ...activity, eta: text };
     else if (overlay.kind === 'now' && typeof text === 'string') activity = { ...activity, now: text };
     else if (overlay.kind === 'activity' && overlay.plugin_id === KERNEL_OVERLAY_PLUGIN_ID) {
+      const recentAt = newerFinite(activity.recentAt, overlay.updated_at);
       const fields = activityOverlayFields(overlay.payload);
-      if (fields !== null) activity = { ...activity, ...fields };
+      activity = fields === null ? { ...activity, recentAt } : {
+        ...activity,
+        ...fields,
+        recentAt: fields.activityAt === null || fields.activityAt === undefined
+          ? recentAt
+          : newerFinite(recentAt, fields.activityAt),
+      };
     }
   }
   return activity;
+}
+
+function finiteOrNull(value: number): number | null {
+  return Number.isFinite(value) ? value : null;
+}
+
+/** Effective recency for an Area row. Malformed fixtures fail closed onto the remaining finite evidence. */
+export function trackRecentAt(track: Track): number {
+  const rowTime = finiteOrNull(track.updatedAt) ?? finiteOrNull(track.createdAt) ?? 0;
+  const overlayTime = track.recentAt === null ? null : finiteOrNull(track.recentAt);
+  return overlayTime === null ? rowTime : Math.max(rowTime, overlayTime);
+}
+
+function bytewiseCompare(left: string, right: string): number {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
+/** Area-only display order. The source array and its Track objects remain untouched. */
+export function sortAreaTracksByRecent(tracks: readonly Track[]): Track[] {
+  return [...tracks].sort((left, right) => {
+    const recency = trackRecentAt(right) - trackRecentAt(left);
+    if (recency !== 0) return recency;
+    const leftSort = Number.isFinite(left.sort) ? left.sort : Number.POSITIVE_INFINITY;
+    const rightSort = Number.isFinite(right.sort) ? right.sort : Number.POSITIVE_INFINITY;
+    return leftSort - rightSort || bytewiseCompare(left.id, right.id);
+  });
 }
 
 /** The longest title the Notifications aside takes from a card's goal. */

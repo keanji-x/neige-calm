@@ -4,6 +4,7 @@ import {
   activeTracksOn, cardGoalTitle, createCardOperation, createCodexCardOperation, createTerminalCardOperation,
   createTrackOperation, deleteCardOperation, hasFailed, isBlankForKernel, isRunning, isWaitingForUser,
   isWorking, lifecycleLabel, lifecycleRank, needsUserAttention, toTrack, trackActivityFrom,
+  sortAreaTracksByRecent, trackRecentAt,
   trackActivityState, trackDetailSchema, updateTrackOperation,
   NEUTRAL_ACTIVITY, UNTITLED_TRACK_LABEL, trackDisplayTitle, trackLifecycleSchema, trackWireSchema, tracksInAreaOperation,
   trackCreateKeyAction, userVisibleTracks, liveTableOverlayPayload,
@@ -259,6 +260,7 @@ describe('trackActivityFrom: the kernel activity overlay', () => {
     expect(activity.working).toBe(true);
     expect(activity.attention).toBe('failed');
     expect(activity.activityAt).toBe(1_789_460_968_837);
+    expect(activity.recentAt).toBe(1_789_460_968_837);
     expect(activity.attentionItems).toEqual([
       { origin: 'task', id: 'task-1', cardId: 'worker-1', atMs: 20, kind: 'failed' },
       { origin: 'card', id: 'planner', cardId: 'planner', atMs: 10, kind: 'input' },
@@ -287,7 +289,18 @@ describe('trackActivityFrom: the kernel activity overlay', () => {
 
   it('ignores a payload that is not the v1 shape at all', () => {
     for (const junk of [null, 'working', { schemaVersion: 2, working: true }, { working: 'yes' }]) {
-      expect(trackActivityFrom('t1', [overlay(junk)])).toEqual(NEUTRAL_ACTIVITY);
+      expect(trackActivityFrom('t1', [overlay(junk)])).toEqual({ ...NEUTRAL_ACTIVITY, recentAt: 1 });
+    }
+  });
+
+  it('uses every matching row time and valid activity time without trusting input order', () => {
+    const olderPayload = overlay({ ...payload, activity_at_ms: 40 }, { id: 'older', updated_at: 50 });
+    const newerRow = overlay({ schemaVersion: 2 }, { id: 'newer', updated_at: 90 });
+    const nonFinite = overlay({ ...payload, activity_at_ms: Number.POSITIVE_INFINITY }, {
+      id: 'non-finite', updated_at: Number.NaN,
+    });
+    for (const rows of [[olderPayload, newerRow, nonFinite], [nonFinite, newerRow, olderPayload]]) {
+      expect(trackActivityFrom('t1', rows).recentAt).toBe(90);
     }
   });
 
@@ -312,6 +325,29 @@ describe('trackActivityFrom: the kernel activity overlay', () => {
       expect(activity.cards).toEqual({});
     }
     expect(trackActivityFrom('t1', [overlay({ value: 0.5 }, { kind: 'progress', plugin_id: 'dev.echo' })]).progress).toBe(0.5);
+  });
+});
+
+describe('Area recent-activity order', () => {
+  it('orders by the newest finite row or activity time, then sort and bytewise id', () => {
+    const rows = [
+      track({ id: 'b', sort: 1, updatedAt: 20, recentAt: 100 }),
+      track({ id: 'a', sort: 1, updatedAt: 100, recentAt: 30 }),
+      track({ id: 'z', sort: 0, updatedAt: 100, recentAt: null }),
+      track({ id: 'bad', sort: 0, updatedAt: Number.NaN, createdAt: 5, recentAt: Number.POSITIVE_INFINITY }),
+    ];
+    expect(sortAreaTracksByRecent(rows).map((row) => row.id)).toEqual(['z', 'a', 'b', 'bad']);
+    expect(trackRecentAt(rows[3])).toBe(5);
+  });
+
+  it('returns a new array without mutating its source or Track objects', () => {
+    const old = track({ id: 'old', sort: 1, updatedAt: 1 });
+    const recent = track({ id: 'recent', sort: 2, updatedAt: 2 });
+    const source = [old, recent];
+    const sorted = sortAreaTracksByRecent(source);
+    expect(sorted.map((row) => row.id)).toEqual(['recent', 'old']);
+    expect(source).toEqual([old, recent]);
+    expect(sorted[0]).toBe(recent);
   });
 });
 
