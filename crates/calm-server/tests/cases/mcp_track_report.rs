@@ -319,6 +319,7 @@ pub(crate) async fn boot_at(db_url: &str) -> Boot {
             repo.sqlite_pool(),
         )),
         plugin_results: Arc::new(calm_server::plugin_results::PluginResults::new()),
+        preview: Arc::new(calm_server::preview::PreviewRegistry::disabled()),
         sqlite_pool: repo.sqlite_pool(),
     });
 

@@ -98,6 +98,7 @@ impl McpServer {
             operation_runtime,
             gate_logs_dir,
             task_budget_default,
+            Arc::new(crate::preview::PreviewRegistry::disabled()),
         );
         Self::spawn_with_context(ctx, socket_path, shim_bin, registry).await
     }

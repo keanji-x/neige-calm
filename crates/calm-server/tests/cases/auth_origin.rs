@@ -234,3 +234,28 @@ async fn ws_upgrade_rejects_foreign_origin_and_accepts_same_origin() {
         .await
         .expect("same-origin upgrade");
 }
+
+/// #1780 S2 pin: a preview page on another port can plant `calm-session=EVIL; path=/api` (cookies
+/// ignore ports) and the browser sends it FIRST; the genuine `/` cookie comes last and must win.
+#[tokio::test]
+async fn planted_duplicate_session_cookie_resolves_the_genuine_last_one() {
+    let (app, cookie) = app_and_cookie(live_auth_state("alice", "pw")).await;
+    let whoami = |cookie: String| {
+        let app = app.clone();
+        async move {
+            let request = Request::get("/api/auth/whoami")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap();
+            app.oneshot(request).await.unwrap().status()
+        }
+    };
+    assert_eq!(
+        whoami("calm-session=EVIL".into()).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        whoami(format!("calm-session=EVIL; {cookie}")).await,
+        StatusCode::OK
+    );
+}

@@ -125,6 +125,7 @@ async fn native_report(
             None,
         )),
         plugin_results: Arc::new(calm_server::plugin_results::PluginResults::new()),
+        preview: Arc::new(calm_server::preview::PreviewRegistry::disabled()),
         sqlite_pool: boot.repo.sqlite_pool(),
     });
     let mut registry = ToolRegistry::new();

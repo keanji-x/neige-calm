@@ -305,6 +305,7 @@ async fn boot() -> Fixture {
         Arc::new(OnceCell::new()),
         tmp.path().join("gate-logs"),
         calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
+        Arc::new(calm_server::preview::PreviewRegistry::disabled()),
     );
     let server = McpServer::spawn_with_context(
         ctx.clone(),

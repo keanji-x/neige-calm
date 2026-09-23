@@ -7,7 +7,7 @@ use axum::{response::Redirect, routing::get};
 use calm_server::auth::AuthState;
 use calm_server::config::Config;
 use calm_server::routes;
-use calm_server::state::AppState;
+use calm_server::state::{AppState, RouteState};
 use clap::Parser;
 use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
@@ -164,6 +164,10 @@ async fn main() -> anyhow::Result<()> {
         None
     };
     let mobile_shutdown = auth_state.mobile.clone();
+    let preview = <RouteState as axum::extract::FromRef<_>>::from_ref(&state)
+        .mcp_context
+        .preview
+        .clone();
 
     let mut app = routes::application_router(state, auth_state);
     if let Some(cors) = cors {
@@ -175,6 +179,13 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&cfg.listen).await?;
     tracing::info!(addr = %cfg.listen, "calm-server listening");
     calm_server::spawn_hook_fallback_replay(cfg.codex_ingest_url_resolved());
+    let preview_shutdown = tokio_util::sync::CancellationToken::new();
+    calm_server::preview::gateway::spawn(
+        preview,
+        calm_server::preview::listen_host(&cfg.listen),
+        preview_shutdown.clone(),
+    )
+    .await?;
     // Graceful shutdown: SIGTERM/SIGINT stops accepting and drains in-flight HTTP, bounded by
     // SHUTDOWN_DRAIN_MAX. In-flight daemon transitions get no wait and no abort.
     // INVARIANT: calm-server shutdown NEVER signals the shared codex daemon; it is left running
@@ -192,6 +203,7 @@ async fn main() -> anyhow::Result<()> {
     )
     .await;
 
+    preview_shutdown.cancel();
     // Keep total drain below neige-app's five-second stop grace. Parent-death
     // ownership also kills the tunnel helper if shutdown is abrupt.
     if !matches!(

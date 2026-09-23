@@ -45,6 +45,11 @@ pub struct Config {
     #[arg(long, env = "CALM_ALLOWED_ORIGIN", value_parser = crate::auth::parse_origin)]
     pub allowed_origin: Option<String>,
 
+    /// Preview gateway port pool, `first-last` (at most 16 ports, all >= 1024), bound on
+    /// `CALM_LISTEN`'s host. Unset: the gateway is disabled and registration refuses.
+    #[arg(long, env = "CALM_PREVIEW_PORTS", value_parser = crate::preview::PreviewPorts::parse)]
+    pub preview_ports: Option<crate::preview::PreviewPorts>,
+
     /// Retired legacy bundle setting, accepted so existing service configs can
     /// upgrade. It logs a warning and never mounts `/calm/`; use `fe_dist`.
     #[arg(long, env = "CALM_WEB_DIST")]
