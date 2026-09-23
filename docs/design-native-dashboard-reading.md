@@ -34,7 +34,7 @@ The coordinating owner also approves a narrow fix in the frozen `ui/dialog`
 implementation: its focus traversal must include native disclosure summaries
 and exclude descendants hidden by closed disclosures. Keep the public Dialog
 props unchanged. Do not add caller-specific tabindex workarounds in report
-components; record the directory-scoped ownership trailer under #1769.
+components; record exact per-file ownership trailers under #1769.
 All app-owned right-side drawers, including sources and conversations, reserve
 their space through the same explicit Track presentation prop.
 
