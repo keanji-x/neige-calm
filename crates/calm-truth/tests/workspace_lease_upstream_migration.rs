@@ -82,7 +82,8 @@ async fn exec(db: &mut SqliteConnection, sql: &str) -> Result<(), sqlx::Error> {
 
 fn lease(id: &str, path: &str, state: &str, base: &str, policy: &str) -> String {
     format!(
-        "INSERT INTO workspace_leases(lease_id,card_id,track_id,path,state,lease_owner,lease_until_ms,boot_id,created_at_ms,updated_at_ms,released_at_ms,
+        "INSERT INTO workspace_leases(lease_id,card_id,track_id,path,
+         state,lease_owner,lease_until_ms,boot_id,created_at_ms,updated_at_ms,released_at_ms,
             base_sha,base_source,base_attempt_id,canonical_path,git_common_dir,delivery_policy)
          VALUES('{id}','card-{id}','track','{path}','{state}','op-{id}',100,'boot',10,20,NULL,{base},{policy});"
     )
@@ -150,7 +151,8 @@ async fn upstream_base_rebuild_preserves_rows_references_and_constraints() {
     // settled as a candidate) and that candidate — all on kernel leases.
     exec(
         &mut db,
-        "INSERT INTO task_git_deliveries(delivery_id,track_id,producer_attempt_id,card_id,lease_id,ordinal,operation_key,forge_idempotency_key,
+        "INSERT INTO task_git_deliveries(delivery_id,track_id,producer_attempt_id,card_id,
+         lease_id,ordinal,operation_key,forge_idempotency_key,
             predecessor_delivery_id,request_idempotency_key,reason,created_at_ms,settlement,settled_event_id,failure_code,failure_reason,retry_allowed,wake_reason)
          VALUES('d-1','track','attempt-a','card-kernel-head','kernel-head',1,'op-1','forge-1',NULL,NULL,NULL,30,'failed',7,'commit_failed','boom',1,'failed'),
                ('d-2','track','attempt-a','card-kernel-head','kernel-head',2,'op-2','forge-2','d-1','retry-1','again',31,'candidate',8,NULL,NULL,NULL,'ungated_candidate'),
@@ -273,7 +275,8 @@ async fn upstream_base_rebuild_preserves_rows_references_and_constraints() {
     assert!(
         exec(
             &mut db,
-            "INSERT INTO task_git_deliveries(delivery_id,track_id,producer_attempt_id,card_id,lease_id,ordinal,operation_key,forge_idempotency_key,created_at_ms)
+            "INSERT INTO task_git_deliveries(delivery_id,track_id,producer_attempt_id,card_id,
+             lease_id,ordinal,operation_key,forge_idempotency_key,created_at_ms)
              VALUES('d-9','track','attempt-z','card','no-such-lease',1,'op-9','forge-9',40)",
         )
         .await
