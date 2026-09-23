@@ -60,3 +60,20 @@
   verification_owner: unit
   test_tier: jsdom
   migration: pending
+
+- id: GATE-OWNERSHIP-010
+  kind: gate
+  family: ownership-authorization
+  statement: >
+    关联 squash 的最终只读路径必须由实际修改该路径的 source commit trailer 逐路径授权
+  why: >
+    只验证 source commit 自身并不能证明它授权了最终提交触及的同一条只读路径；
+    未绑定到 source changed path 的 trailer 不得被借给 final path。
+  source: fe/tools/ownership/validator.ts:233-242
+  authoritative_test: fe/tools/ownership/squash.test.ts:118-123
+  owner_slice: none/ci
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: unit
+  test_tier: static
+  migration: pending

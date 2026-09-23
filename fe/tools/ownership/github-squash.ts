@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { OwnershipCommit } from './validator.ts';
+import { canonicalRepoRelativePath, type OwnershipCommit } from './validator.ts';
 
 export interface GitHubOwnershipConfig { repository: string; token: string }
 export type GitHubRequest = (path: string) => Promise<unknown>;
@@ -91,9 +91,15 @@ export async function githubSquashCommits(
       }
       message = detail.commit.message;
       for (const file of detail.files) {
+        if (!canonicalRepoRelativePath(file.filename)) {
+          throw new Error(`non-canonical ownership path from GitHub: ${file.filename}`);
+        }
         paths.push(file.filename);
         if (file.status === 'renamed') {
           if (!file.previous_filename) throw new Error('ownership rename is missing its original path');
+          if (!canonicalRepoRelativePath(file.previous_filename)) {
+            throw new Error(`non-canonical ownership path from GitHub: ${file.previous_filename}`);
+          }
           paths.push(file.previous_filename);
         }
       }

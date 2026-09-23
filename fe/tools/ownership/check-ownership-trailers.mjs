@@ -36,7 +36,7 @@ if (eventName === 'pull_request' && encodedBody === undefined) {
 }
 const pullRequestBody = encodedBody === undefined ? '' : Buffer.from(encodedBody, 'base64').toString('utf8');
 const violations = [
-  ...validateOwnership(ownershipManifest, [], commits),
+  ...validateOwnership(ownershipManifest, [], eventName === 'push' ? [] : commits),
   ...validateOwnershipPullRequestBody(eventName, commits, pullRequestBody),
 ];
 

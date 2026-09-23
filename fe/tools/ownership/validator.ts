@@ -24,33 +24,62 @@ export const OWNERSHIP_CONTROL_FILES = Object.freeze([
   'fe/tsconfig.node.json', 'fe/vite.config.ts', 'fe/vitest.config.ts',
 ] as const);
 
-function clean(path: string): string {
-  return path.replaceAll('\\', '/').replace(/^\.\//, '').replace(/\/$/, '');
-}
-
 interface OwnershipTrailer { text: string; path: string }
 
+export function canonicalRepoRelativePath(path: string): boolean {
+  return path !== '' && !path.includes('\uFFFD') && !path.startsWith('/') && !path.includes('\\') && path === posix.normalize(path)
+    && path.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..')
+    && !['*', '?', '[', ']'].some((character) => path.includes(character));
+}
+
 function ownershipTrailers(message: string): OwnershipTrailer[] {
-  return Array.from(
-    message.matchAll(/^OWNERSHIP-CHANGE:\s+(\S+)\s+—\s+\S.+\s+\(#\d+\)$/gm),
-    (match) => ({ text: match[0], path: clean(match[1]) }),
-  );
+  return message.split(/\r?\n/).flatMap((line) => {
+    const match = /^OWNERSHIP-CHANGE: (\S+) — (\S+(?: \S+)*) \(#\d+\)$/.exec(line);
+    if (!match || !canonicalRepoRelativePath(match[1])
+      || match[2].split(' ').includes('OWNERSHIP-CHANGE:')) return [];
+    return [{ text: line, path: match[1] }];
+  });
+}
+
+function frozenChangedPaths(entries: readonly OwnershipEntry[], commit: OwnershipCommit): string[] {
+  return commit.paths.filter((path) => entries.some((entry) => entry.readonly === true
+    && entryMatches(entry, path)));
+}
+
+function codePointLength(value: string): number {
+  return [...value].length;
+}
+
+function githubWrapTrailer(trailer: string): string {
+  const lines: string[] = [];
+  for (const word of trailer.split(' ')) {
+    const current = lines.at(-1);
+    if (current === undefined || codePointLength(current) + 1 + codePointLength(word) > 72) lines.push(word);
+    else lines[lines.length - 1] = `${current} ${word}`;
+  }
+  return lines.join('\n');
+}
+
+function hasPhysicalLines(message: string, representation: string): boolean {
+  const lines = message.replaceAll('\r\n', '\n').split('\n');
+  const expected = representation.split('\n');
+  return lines.some((_, start) => expected.every((line, offset) => lines[start + offset] === line));
+}
+
+function durableMessagePreserves(message: string, trailer: string): boolean {
+  return hasPhysicalLines(message, trailer) || hasPhysicalLines(message, githubWrapTrailer(trailer));
 }
 
 function validPath(path: string): boolean {
-  const normalized = clean(path);
-  return normalized !== '' && !normalized.startsWith('/') && !normalized.split('/').includes('..')
-    && !['*', '?', '[', ']'].some((character) => normalized.includes(character));
+  return canonicalRepoRelativePath(path);
 }
 
 function entryMatches(entry: OwnershipEntry, file: string): boolean {
-  const target = clean(entry.path);
-  const candidate = clean(file);
-  return entry.type === 'file' ? candidate === target : candidate === target || candidate.startsWith(`${target}/`);
+  return entry.type === 'file' ? file === entry.path : file === entry.path || file.startsWith(`${entry.path}/`);
 }
 
 function overlap(left: OwnershipEntry, right: OwnershipEntry): boolean {
-  if (clean(left.path) === clean(right.path)) return true;
+  if (left.path === right.path) return true;
   if (left.type === 'directory' && entryMatches(left, right.path)) return true;
   return right.type === 'directory' && entryMatches(right, left.path);
 }
@@ -91,13 +120,24 @@ export function validateOwnership(
       }
     }
   }
-  for (const file of existingFiles.map(clean).sort()) {
+  for (const file of [...existingFiles].sort()) {
+    if (!canonicalRepoRelativePath(file)) {
+      violations.push({ rule: 'coverage', message: `non-canonical repository path: ${file}` });
+      continue;
+    }
     const count = validEntries.filter((entry) => entryMatches(entry, file)).length;
     if (count !== 1) violations.push({ rule: 'coverage', message: `${file} has ${count} owners` });
   }
   for (const commit of commits) {
     const approved = new Set(ownershipTrailers(commit.message).map(({ path }) => path));
-    for (const path of commit.paths.map(clean).sort()) {
+    for (const path of [...new Set(commit.paths)].sort()) {
+      if (!canonicalRepoRelativePath(path)) {
+        violations.push({
+          rule: 'readonly-change-trailer',
+          message: `${commit.sha} has non-canonical changed path ${path}`,
+        });
+        continue;
+      }
       if (!validEntries.some((entry) => entry.readonly === true && entryMatches(entry, path))) continue;
       if (!approved.has(path)) violations.push({
         rule: 'readonly-change-trailer',
@@ -130,11 +170,12 @@ export function validateOwnershipPullRequestBody(
 export function repositoryFiles(repoRoot: string, trackedFiles?: readonly string[]): string[] {
   const roots = ['fe/core', 'fe/web', 'fe/tools'];
   const controls: readonly string[] = OWNERSHIP_CONTROL_FILES;
-  const files = trackedFiles ?? execFileSync('git', ['ls-files', '--', ...roots, ...controls], {
+  const files = trackedFiles ?? execFileSync('git', ['ls-files', '-z', '--', ...roots, ...controls], {
     cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
-  }).split(/\r?\n/).filter(Boolean);
-  return files.map((path) => posix.normalize(clean(path)))
-    .filter((path) => trackedFiles !== undefined || existsSync(resolve(repoRoot, path)))
+  }).split('\0').filter(Boolean);
+  const nonCanonical = files.find((path) => !canonicalRepoRelativePath(path));
+  if (nonCanonical !== undefined) throw new Error(`non-canonical repository path: ${nonCanonical}`);
+  return files.filter((path) => trackedFiles !== undefined || existsSync(resolve(repoRoot, path)))
     .filter((path) => controls.includes(path)
       || roots.some((directory) => path === directory || path.startsWith(`${directory}/`)))
     .sort();
@@ -154,9 +195,9 @@ export function gitOwnershipCommits(repoRoot: string, baseSha: string, headRef =
   return hashes.map((sha) => ({
     sha,
     message: execFileSync('git', ['log', '-1', '--format=%B', sha], { cwd: repoRoot, encoding: 'utf8' }),
-    paths: execFileSync('git', ['diff-tree', '--root', '--no-commit-id', '--name-only', '-r', sha, '--'], {
+    paths: execFileSync('git', ['diff-tree', '--root', '--no-commit-id', '--name-only', '-z', '-r', sha, '--'], {
       cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
-    }).split(/\r?\n/).filter(Boolean),
+    }).split('\0').filter(Boolean),
   }));
 }
 
@@ -168,25 +209,43 @@ export async function ownershipCommitsForEvent(
 ): Promise<readonly OwnershipCommit[]> {
   const commits = load();
   if (eventName !== 'push') return commits;
-  const result: OwnershipCommit[] = [];
   for (const commit of commits) {
-    if (validateOwnership(entries, [], [commit]).length === 0) {
-      result.push(commit);
+    const invalidPaths = commit.paths.filter((path) => !canonicalRepoRelativePath(path));
+    if (invalidPaths.length > 0) {
+      throw new Error(`cannot audit ownership push ${commit.sha}: ${commit.sha} has non-canonical changed path ${invalidPaths.join(', ')}`);
+    }
+    const changedFrozenPaths = frozenChangedPaths(entries, commit);
+    if (changedFrozenPaths.length === 0) continue;
+    const source = await recover(commit);
+    if (source.length === 0) {
+      const violations = validateOwnership(entries, [], [commit]);
+      if (violations.length > 0) {
+        throw new Error(`cannot audit direct ownership push ${commit.sha}:\n${violations
+          .map(({ message }) => message).join('\n')}`);
+      }
       continue;
     }
-    const source = await recover(commit);
     const violations = validateOwnership(entries, [], source);
     if (violations.length > 0) {
-      throw new Error(`cannot recover ownership for ${commit.sha}: original PR commits fail audit:\n${violations
+      throw new Error(`cannot audit ownership squash ${commit.sha}: original PR commits fail audit:\n${violations
         .map(({ message }) => message).join('\n')}`);
     }
-    const trailers = source.flatMap((original) => {
-      const changed = new Set(original.paths.map(clean));
-      return ownershipTrailers(original.message).filter(({ path }) => changed.has(path)).map(({ text }) => text);
-    });
-    result.push({ ...commit, message: [commit.message, ...trailers].join('\n\n') });
+    const trailers = new Map(source.flatMap((original) => {
+      const changed = new Set(original.paths);
+      return ownershipTrailers(original.message).filter(({ path }) => changed.has(path))
+        .map((trailer) => [trailer.text, trailer] as const);
+    }));
+    const authorizedPaths = new Set(Array.from(trailers.values(), ({ path }) => path));
+    const unauthorized = [...new Set(changedFrozenPaths)].filter((path) => !authorizedPaths.has(path));
+    if (unauthorized.length > 0) {
+      throw new Error(`cannot audit ownership squash ${commit.sha}: original PR commits do not authorize final frozen paths: ${unauthorized.join(', ')}`);
+    }
+    const missing = Array.from(trailers.keys()).filter((trailer) => !durableMessagePreserves(commit.message, trailer));
+    if (missing.length > 0) {
+      throw new Error(`cannot audit ownership squash ${commit.sha}: final commit message does not preserve source trailers:\n${missing.join('\n')}`);
+    }
   }
-  return result;
+  return commits;
 }
 
 export function resolveOwnershipBase(

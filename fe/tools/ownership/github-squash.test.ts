@@ -104,6 +104,16 @@ it('audits both paths of a rename', async () => {
   expect((await f.run())[0].paths).toEqual(['new.txt', 'frozen.txt']);
 });
 
+it.each([
+  { label: 'filename alias', file: { filename: './frozen.txt', status: 'modified' } },
+  { label: 'previous_filename alias', file: { filename: 'new.txt', status: 'renamed', previous_filename: 'dir\\frozen.txt' } },
+  { label: 'filename replacement marker', file: { filename: 'bad\uFFFD.txt', status: 'modified' } },
+])('rejects a non-canonical GitHub $label', async ({ file }) => {
+  const f = fixture();
+  f.detail.files = [file];
+  await expect(f.run()).rejects.toThrow('non-canonical ownership path');
+});
+
 it.each(['missing rename source', 'merge', 'wrong sha', 'missing files'])('fails closed on malformed commit evidence: %s', async (kind) => {
   const f = fixture();
   if (kind === 'missing rename source') f.detail.files[0].status = 'renamed';

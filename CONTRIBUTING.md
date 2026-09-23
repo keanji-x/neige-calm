@@ -128,12 +128,18 @@ Neige Calm uses **Squash and merge only**.
   the pull request description's **Ownership changes** section. The repository
   uses the pull request body as the default squash commit body, and the
   `ownership trailers preserved in squash body` check reruns when that body is
-  edited.
+  edited. Keep each branch-commit and pull-request trailer on one physical line
+  with the canonical single spaces shown by the template.
 - Keep useful rationale, issue references, co-author attribution, and required
   trailers in the final squash commit message.
 - Do not override the default squash body with a custom message that drops
   required trailers. If merge tooling supplies a custom body, it must preserve
-  every `OWNERSHIP-CHANGE` line exactly.
+  every canonical `OWNERSHIP-CHANGE` trailer. The final squash message audit
+  accepts either the canonical single line or GitHub's deterministic wrapping:
+  greedily append whole space-delimited tokens while the physical line stays at
+  or below 72 Unicode code points, then start the next token on a new line. A
+  token over 72 code points occupies its own line. Original commits and the pull
+  request body accept only the canonical single-line form.
 - Merge only when required checks are green, review feedback is resolved, and
   GitHub reports that the pull request is mergeable.
 - Delete the source branch after the squash merge when it is no longer needed.
