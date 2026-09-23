@@ -432,6 +432,63 @@ fn a_shallow_checkout_whose_relation_is_unknown_starts_from_head() {
     );
 }
 
+/// A shallow checkout equal to its tracking ref after an upstream force-push
+/// (the kernel's fetch has the rewrite): neither ancestry check succeeds and
+/// the shallow history cannot say which commits are the human's own, so the
+/// relation is unknown — HEAD, not the no-unpushed-commits shortcut to the
+/// upstream, which needs a complete history.
+#[tokio::test]
+async fn a_shallow_checkout_in_sync_with_its_tracking_ref_keeps_head() {
+    let dir = tempfile::tempdir().unwrap();
+    let origin = dir.path().join("origin");
+    let attached = dir.path().join("attached");
+    std::fs::create_dir_all(&origin).unwrap();
+    git(&origin, &["init", "-q"]);
+    for message in ["c1", "c2", "c3"] {
+        git(&origin, &["commit", "--allow-empty", "-q", "-m", message]);
+    }
+    git(
+        dir.path(),
+        &[
+            "clone",
+            "-q",
+            "--depth",
+            "1",
+            &format!("file://{}", origin.display()),
+            attached.to_str().unwrap(),
+        ],
+    );
+    let head = git(&attached, &["rev-parse", "HEAD"]);
+    assert_eq!(git(&attached, &["rev-parse", "@{upstream}"]), head);
+    git(&origin, &["reset", "-q", "--hard", "HEAD~1"]);
+    git(
+        &origin,
+        &["commit", "--allow-empty", "-q", "-m", "rewritten"],
+    );
+    let rewritten = git(&origin, &["rev-parse", "HEAD"]);
+    assert!(matches!(
+        refresh_upstream(&attached).await,
+        UpstreamRefresh::Fetched { .. }
+    ));
+    assert_eq!(
+        last_known_upstream(&attached).unwrap().unwrap().sha,
+        rewritten
+    );
+    assert_eq!(
+        git(&attached, &["rev-parse", "--is-shallow-repository"]),
+        "true"
+    );
+    assert!(
+        !is_ancestor(&attached, &head, &rewritten).unwrap()
+            && !is_ancestor(&attached, &rewritten, &head).unwrap()
+    );
+
+    assert_eq!(
+        choose_lease_start(&attached).unwrap(),
+        LeaseStart::Head { sha: head }
+    );
+}
+
 /// Fetch failure and neither ref resolves: no upstream is known, the base is
 /// HEAD. The same for a branch without upstream config and a detached HEAD.
 #[tokio::test]

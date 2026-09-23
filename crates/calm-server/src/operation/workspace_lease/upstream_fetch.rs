@@ -34,6 +34,9 @@
 //!   (left by a fetch killed at the bound) is removed before the next fetch;
 //!   the kernel is that ref's only writer.
 //! - The local reads before the fetch run on a blocking thread.
+//! - Every (remote, merge-ref) pair of a *named* remote (or `.`) is fetched.
+//!   A URL in `branch.<b>.remote` is not: there is no named remote to fetch
+//!   from; such a branch reads its remote-tracking ref, if any.
 //!
 //! **One kernel per attached repository.** Provenance and single-flight are
 //! process-local, by design (simple first): this deployment runs exactly one
@@ -44,9 +47,12 @@
 //! soon as that process's own next fetch fails, and is replaced by its next
 //! successful one. Their fetches are not serialized with each other; a lost
 //! ref lock is an ordinary failed fetch.
-//! - Every (remote, merge-ref) pair of a *named* remote (or `.`) is fetched.
-//!   A URL in `branch.<b>.remote` is not: there is no named remote to fetch
-//!   from; such a branch reads its remote-tracking ref, if any.
+//!
+//! **A success receipt does not age.** It stays authoritative until the next
+//! fetch of its key records another outcome: a prepare re-driven without a
+//! fresh `before_insert` (the driver's short-circuit of an existing op, or
+//! recovery of a pending one) still trusts the last receipt, however old. A
+//! restart clears every receipt.
 //!
 //! Any failure is a `warn!` and leaves the lease to the last known upstream.
 
@@ -492,6 +498,9 @@ async fn fetch_into(
 ) -> std::result::Result<(), String> {
     let deadline = tokio::time::Instant::now() + bound;
     let timed_out = || format!("git fetch {} timed out after {bound:?}", upstream.remote);
+    // The kernel environment is inherited (hostile git variables stripped), not
+    // an allowlist: credential helpers and ssh-agent need HOME / SSH_AUTH_SOCK
+    // etc., as every `neige_git_command` caller relies on.
     let mut std_command = neige_git_command();
     std_command
         .arg("-C")

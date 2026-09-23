@@ -335,17 +335,11 @@ pub(crate) fn choose_lease_start(repo_root: &Path) -> Result<LeaseStart> {
     if is_ancestor(repo_root, &upstream.sha, &head)? {
         return Ok(LeaseStart::Head { sha: head });
     }
-    let unpushed = match &tracking_sha {
-        Some(tracking) => Some(commits_behind(repo_root, tracking, &head)?),
-        None => None,
-    };
-    if unpushed == Some(0) {
-        // The human has no commits of their own: nothing to lose.
-        return Ok(LeaseStart::Upstream { sha: upstream.sha });
-    }
     if is_shallow(repo_root)? {
         // Neither check succeeded, but a shallow history cannot prove
-        // divergence: the relation is unknown. HEAD, as before #1777.
+        // divergence — nor tell which commits are the human's own: the
+        // relation is unknown. HEAD, as before #1777. Checked before the
+        // no-unpushed-commits shortcut, which needs a complete history.
         tracing::warn!(
             repo_root = %repo_root.display(),
             head,
@@ -354,6 +348,14 @@ pub(crate) fn choose_lease_start(repo_root: &Path) -> Result<LeaseStart> {
              the lease starts from HEAD"
         );
         return Ok(LeaseStart::Head { sha: head });
+    }
+    let unpushed = match &tracking_sha {
+        Some(tracking) => Some(commits_behind(repo_root, tracking, &head)?),
+        None => None,
+    };
+    if unpushed == Some(0) {
+        // The human has no commits of their own: nothing to lose.
+        return Ok(LeaseStart::Upstream { sha: upstream.sha });
     }
     let (ahead, behind) = ahead_behind(repo_root, &head, &upstream.sha)?;
     Ok(LeaseStart::Diverged {
