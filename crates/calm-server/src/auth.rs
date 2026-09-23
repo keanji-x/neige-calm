@@ -7,7 +7,7 @@ use axum::{
     Json, Router,
     body::Body,
     extract::{FromRequestParts, Request, State},
-    http::{HeaderMap, header, request::Parts},
+    http::{HeaderMap, Method, header, request::Parts},
     middleware::Next,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -137,6 +137,8 @@ pub struct AuthState {
     pub config: Arc<AuthConfig>,
     pub sessions: SessionStore,
     pub mobile: crate::mobile_access::MobileAccess,
+    /// `CALM_ALLOWED_ORIGIN`: the one foreign origin (dev frontend) trusted beside calm's own.
+    pub allowed_origin: Option<String>,
 }
 
 impl AuthState {
@@ -146,8 +148,39 @@ impl AuthState {
             config: Arc::new(config),
             mobile: crate::mobile_access::MobileAccess::new(sessions.clone()),
             sessions,
+            allowed_origin: None,
         }
     }
+
+    /// Production wiring: auth config plus the configured `CALM_ALLOWED_ORIGIN`, if any.
+    pub fn from_config(cfg: &Config) -> anyhow::Result<Self> {
+        let state = Self::new(AuthConfig::from_config(cfg)?);
+        Ok(match cfg.allowed_origin.clone() {
+            Some(origin) => state.with_allowed_origin(origin),
+            None => state,
+        })
+    }
+
+    /// `origin` must already be in [`normalize_origin`] form.
+    pub fn with_allowed_origin(mut self, origin: String) -> Self {
+        self.allowed_origin = Some(origin);
+        self
+    }
+}
+
+/// Canonical form of a configured or learned origin: `http(s)://host[:port]`, lowercase, no trailing `/`.
+pub fn normalize_origin(raw: &str) -> Option<String> {
+    let lower = raw.trim().to_ascii_lowercase();
+    let origin = lower.strip_suffix('/').unwrap_or(&lower);
+    let host = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))?;
+    (!host.is_empty() && !host.contains('/')).then(|| origin.to_string())
+}
+
+/// Clap value parser for `CALM_ALLOWED_ORIGIN`.
+pub fn parse_origin(raw: &str) -> std::result::Result<String, String> {
+    normalize_origin(raw).ok_or_else(|| format!("`{raw}` is not an http(s) origin"))
 }
 
 /// Authenticated principal, inserted into request extensions by [`require_session`]; today every principal is owner.
@@ -206,6 +239,46 @@ fn resolve_principal(state: &AuthState, headers: &HeaderMap) -> Option<Principal
     Some(Principal::owner(&state.config, session.session_id))
 }
 
+/// #1780: `SameSite=Strict` still attaches the cookie to pages on another port of the same host,
+/// so a write or WS upgrade that carries `Origin` must come from one of calm's own origins.
+/// No `Origin` means a non-browser client (CLI, shim); browsers always send it on these requests.
+fn check_origin(state: &AuthState, headers: &HeaderMap) -> Result<()> {
+    let Some(origin) = headers.get(header::ORIGIN) else {
+        return Ok(());
+    };
+    let Ok(origin) = origin.to_str() else {
+        return Err(CalmError::Forbidden(
+            "cross-origin request rejected: Origin is not a valid header string".into(),
+        ));
+    };
+    // Scheme-agnostic: one port speaks one protocol, and a TLS-terminating proxy keeps `Host`.
+    // So an https-on-443 deployment also accepts `http://<same host>`; fine, this fence targets other ports.
+    let same_host = headers
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .is_some_and(|host| {
+            ["http://", "https://"].iter().any(|scheme| {
+                origin
+                    .strip_prefix(scheme)
+                    .is_some_and(|rest| rest.eq_ignore_ascii_case(host))
+            })
+        });
+    if same_host
+        || state.allowed_origin.as_deref() == Some(origin)
+        || state
+            .mobile
+            .origin()
+            .and_then(|o| normalize_origin(&o))
+            .as_deref()
+            == Some(origin)
+    {
+        return Ok(());
+    }
+    Err(CalmError::Forbidden(format!(
+        "cross-origin request rejected: Origin `{origin}` is not an origin of this server"
+    )))
+}
+
 /// Axum middleware: gate every protected endpoint. Login, whoami, logout, version and openapi.json must NOT have this layer applied.
 pub async fn require_session(
     State(auth): State<AuthState>,
@@ -216,11 +289,17 @@ pub async fn require_session(
     let Some(principal) = resolve_principal(&auth, &headers) else {
         return Err(CalmError::Unauthorized);
     };
+    if !matches!(
+        *request.method(),
+        Method::GET | Method::HEAD | Method::OPTIONS
+    ) {
+        check_origin(&auth, &headers)?;
+    }
     request.extensions_mut().insert(principal);
     Ok(next.run(request).await)
 }
 
-/// Same as [`require_session`] but for the WS upgrade routes; a separate seam for future divergence.
+/// Same as [`require_session`] but for the WS upgrade routes: every upgrade is origin-checked (WS has no CORS).
 pub async fn require_session_ws(
     State(auth): State<AuthState>,
     headers: HeaderMap,
@@ -230,6 +309,7 @@ pub async fn require_session_ws(
     let Some(principal) = resolve_principal(&auth, &headers) else {
         return Err(CalmError::Unauthorized);
     };
+    check_origin(&auth, &headers)?;
     request.extensions_mut().insert(principal);
     Ok(next.run(request).await)
 }
@@ -385,7 +465,7 @@ mod tests {
             data_dir: None,
             workspace_root: None,
             proc_supervisor_sock: None,
-            allowed_origin: "http://localhost".into(),
+            allowed_origin: None,
             web_dist: None,
             fe_dist: None,
             plugins_dir: None,
@@ -423,7 +503,7 @@ mod tests {
             data_dir: None,
             workspace_root: None,
             proc_supervisor_sock: None,
-            allowed_origin: "http://localhost".into(),
+            allowed_origin: None,
             web_dist: None,
             fe_dist: None,
             plugins_dir: None,

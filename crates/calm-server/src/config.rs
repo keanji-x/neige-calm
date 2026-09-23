@@ -40,13 +40,10 @@ pub struct Config {
     #[arg(long, env = "CALM_PROC_SUPERVISOR_SOCK")]
     pub proc_supervisor_sock: Option<PathBuf>,
 
-    /// CORS origin allowed by the API (typically the web-calm dev origin).
-    #[arg(
-        long,
-        env = "CALM_ALLOWED_ORIGIN",
-        default_value = "http://localhost:5175"
-    )]
-    pub allowed_origin: String,
+    /// Extra browser origin (typically a dev frontend) trusted for CORS and for
+    /// cookie-authenticated writes and WS upgrades. Unset: only calm's own origins.
+    #[arg(long, env = "CALM_ALLOWED_ORIGIN", value_parser = crate::auth::parse_origin)]
+    pub allowed_origin: Option<String>,
 
     /// Retired legacy bundle setting, accepted so existing service configs can
     /// upgrade. It logs a warning and never mounts `/calm/`; use `fe_dist`.
