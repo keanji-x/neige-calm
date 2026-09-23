@@ -1,11 +1,11 @@
-import '../../../styles/entry.css';
+import '../../styles/entry.css';
 import { cleanup } from '@testing-library/react';
 import { page } from 'vitest/browser';
 import { afterEach, expect, it } from 'vitest';
-import { renderPage } from '../../track/page/test-fixtures.tsx';
-import { ReportDocument } from '../document/public.tsx';
-import { nativeViewPayloadSchema } from '../../../../../core/domain/report-view.ts';
-import source from '../../../../../../plugins/paper-trading/examples/native-demo.json?raw';
+import { renderPage } from '../../features/track/page/test-fixtures.tsx';
+import { ReportDocument } from '../../features/report/document/public.tsx';
+import { nativeViewPayloadSchema } from '../../../../core/domain/report-view.ts';
+import source from '../../../../../plugins/paper-trading/examples/native-demo.json?raw';
 
 afterEach(cleanup);
 
