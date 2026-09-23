@@ -12,7 +12,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
+use axum_extra::extract::cookie::{Cookie, SameSite};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -222,10 +222,23 @@ where
     }
 }
 
-/// Read the `calm-session` cookie value from a request's headers, if any.
-fn session_cookie(headers: &HeaderMap) -> Option<String> {
-    let jar = CookieJar::from_headers(headers);
-    jar.get(SESSION_COOKIE).map(|c| c.value().to_string())
+/// True when a `name=value` pair from a Cookie header is calm's session by its RAW name. No
+/// percent-decoding: `calm%2Dsession` is a different cookie that any page on another port of this
+/// host can set (HttpOnly on the real one does not stop it), so it must never count as calm's.
+pub(crate) fn is_session_cookie(pair: &str) -> bool {
+    pair.split_once('=').map_or(pair, |(name, _)| name).trim() == SESSION_COOKIE
+}
+
+/// Every `calm-session` value across all Cookie headers. All of them, because a planted duplicate
+/// (another port's page, a narrower `Path`) must not evict the genuine one.
+fn session_cookies(headers: &HeaderMap) -> impl Iterator<Item = &str> {
+    headers
+        .get_all(header::COOKIE)
+        .into_iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .filter(|pair| is_session_cookie(pair))
+        .filter_map(|pair| pair.split_once('=').map(|(_, value)| value.trim()))
 }
 
 /// `None` when there is no valid session AND dev_autologin is off; the caller decides whether to 401.
@@ -234,8 +247,7 @@ pub(crate) fn resolve_principal(state: &AuthState, headers: &HeaderMap) -> Optio
         // Dev mode: a stable synthetic session id so whoami / logout behave consistently; nothing is written to the store.
         return Some(Principal::owner(&state.config, "dev-autologin".to_string()));
     }
-    let cookie = session_cookie(headers)?;
-    let session = state.sessions.get(&cookie)?;
+    let session = session_cookies(headers).find_map(|id| state.sessions.get(id))?;
     Some(Principal::owner(&state.config, session.session_id))
 }
 
@@ -377,8 +389,8 @@ async fn login_handler(
     }
 
     // Tear down any previous session on this request so a successful login leaves no zombie sessions.
-    if let Some(existing) = session_cookie(&headers) {
-        auth.sessions.remove(&existing);
+    for existing in session_cookies(&headers) {
+        auth.sessions.remove(existing);
     }
 
     let new_id = auth.sessions.create(SessionAuthority::PasswordLogin);
@@ -403,8 +415,8 @@ async fn whoami_handler(State(auth): State<AuthState>, headers: HeaderMap) -> Re
 
 /// POST /api/auth/logout — always 200; idempotent.
 async fn logout_handler(State(auth): State<AuthState>, headers: HeaderMap) -> Result<Response> {
-    if let Some(id) = session_cookie(&headers) {
-        auth.sessions.remove(&id);
+    for id in session_cookies(&headers) {
+        auth.sessions.remove(id);
     }
     let cookie = build_logout_cookie();
     let mut resp = Json(serde_json::json!({"ok": true})).into_response();

@@ -235,11 +235,13 @@ async fn ws_upgrade_rejects_foreign_origin_and_accepts_same_origin() {
         .expect("same-origin upgrade");
 }
 
-/// #1780 S2 pin: a preview page on another port can plant `calm-session=EVIL; path=/api` (cookies
-/// ignore ports) and the browser sends it FIRST; the genuine `/` cookie comes last and must win.
+/// #1780 S2: a page on another port of this host can plant `calm-session=EVIL; path=/api` or an
+/// encoded-name `calm%2Dsession=EVIL` (a different cookie, so HttpOnly does not stop it). Neither
+/// may evict the genuine session, in either order, and an encoded name is never calm's cookie.
 #[tokio::test]
-async fn planted_duplicate_session_cookie_resolves_the_genuine_last_one() {
+async fn planted_session_cookies_never_shadow_the_genuine_one() {
     let (app, cookie) = app_and_cookie(live_auth_state("alice", "pw")).await;
+    let real = cookie.strip_prefix("calm-session=").unwrap();
     let whoami = |cookie: String| {
         let app = app.clone();
         async move {
@@ -250,12 +252,13 @@ async fn planted_duplicate_session_cookie_resolves_the_genuine_last_one() {
             app.oneshot(request).await.unwrap().status()
         }
     };
-    assert_eq!(
-        whoami("calm-session=EVIL".into()).await,
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        whoami(format!("calm-session=EVIL; {cookie}")).await,
-        StatusCode::OK
-    );
+    for (jar, want) in [
+        ("calm-session=EVIL".to_owned(), StatusCode::UNAUTHORIZED),
+        (format!("calm-session=EVIL; {cookie}"), StatusCode::OK),
+        (format!("{cookie}; calm-session=EVIL"), StatusCode::OK),
+        (format!("{cookie}; calm%2Dsession=EVIL"), StatusCode::OK),
+        (format!("calm%2Dsession={real}"), StatusCode::UNAUTHORIZED),
+    ] {
+        assert_eq!(whoami(jar.clone()).await, want, "{jar}");
+    }
 }

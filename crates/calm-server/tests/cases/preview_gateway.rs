@@ -28,7 +28,7 @@ struct Gw {
     registry: Arc<PreviewRegistry>,
     /// `calm-session=<a live session>`.
     session: String,
-    _stop: CancellationToken,
+    stop: CancellationToken,
 }
 
 /// A gateway on an ephemeral pool port; `target: Some(port)` registers that upstream.
@@ -63,7 +63,7 @@ async fn gateway_with_timeout(target: Option<u16>, response_timeout: Duration) -
         port,
         registry,
         session,
-        _stop: stop,
+        stop,
     }
 }
 
@@ -96,6 +96,8 @@ async fn upstream() -> (u16, Arc<AtomicUsize>) {
             "__Secure-calm-session=W; Secure",
             "XSRF-TOKEN=abc; Path=/",
             "Calm-Session=U",
+            "calm%2Dsession=EVIL; Path=/",
+            "__Secure-calm%2dsession=E; Secure",
         ] {
             headers.append(header::SET_COOKIE, cookie.parse().unwrap());
         }
@@ -246,12 +248,19 @@ async fn only_calm_session_is_filtered_from_cookies_both_ways() {
     let gw = gateway_for(Some(target)).await;
     // Two Cookie headers, calm's session in each position; the live one last so auth passes.
     let request = Request::get("/echo")
-        .header(header::COOKIE, "calm-session=X; XSRF-TOKEN=abc")
+        .header(
+            header::COOKIE,
+            "calm-session=X; XSRF-TOKEN=abc; calm%2Dsession=Q",
+        )
         .header(header::COOKIE, format!("t=d; {}", gw.session))
         .body(Body::empty())
         .unwrap();
     let (_, body) = text(send(gw.port, request).await).await;
-    assert!(body.ends_with(" cookie=XSRF-TOKEN=abc; t=d"), "{body}");
+    // The encoded name is not calm's cookie (auth.rs), so it passes as an ordinary one.
+    assert!(
+        body.ends_with(" cookie=XSRF-TOKEN=abc; calm%2Dsession=Q; t=d"),
+        "{body}"
+    );
 
     let resp = send(
         gw.port,
@@ -361,10 +370,7 @@ async fn unregister_closes_an_open_tunnel() {
         gw.registry.unregister(&TrackId::from("track-1"), "fe"),
         Some(gw.port)
     );
-    match next_frame(&mut socket).await {
-        None | Some(Err(_)) | Some(Ok(Message::Close(_))) => {}
-        Some(Ok(other)) => panic!("tunnel still open after unregister: {other:?}"),
-    }
+    assert_tunnel_closed(&mut socket, "unregister").await;
 }
 
 #[tokio::test]
@@ -383,4 +389,61 @@ async fn dead_target_is_502_offline_and_unregistered_port_is_404() {
     let gw = gateway_for(None).await;
     let (status, _) = get_text(&gw, "/", &[]).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_set_cookie_that_is_not_ascii_is_dropped() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            head.push(socket.read_u8().await.unwrap());
+        }
+        let resp = b"HTTP/1.1 200 OK\r\nset-cookie: calm-session=PWN; Path=/; X=\xe9\r\n\
+                     set-cookie: ok=1\r\ncontent-length: 0\r\n\r\n";
+        socket.write_all(resp).await.unwrap();
+    });
+    let gw = gateway_for(Some(target)).await;
+    let resp = send(gw.port, get_req(gw.port, "/", &[("cookie", &gw.session)])).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let set: Vec<_> = resp.headers().get_all(header::SET_COOKIE).iter().collect();
+    assert_eq!(set, ["ok=1"]);
+}
+
+async fn assert_tunnel_closed(socket: &mut Ws, why: &str) {
+    match next_frame(socket).await {
+        None | Some(Err(_)) | Some(Ok(Message::Close(_))) => {}
+        Some(Ok(other)) => panic!("tunnel still open after {why}: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn reregister_keeps_the_tunnel_for_the_same_target_and_closes_it_for_another() {
+    let (target, _) = upstream().await;
+    let (other, _) = upstream().await;
+    let gw = gateway_for(Some(target)).await;
+    let track = TrackId::from("track-1");
+    let (mut socket, _) = ws_connect(&gw, Some(&gw.session)).await.unwrap();
+    next_frame(&mut socket).await.unwrap().unwrap();
+    assert_eq!(
+        gw.registry.register(&track, "fe", "FE v2", target),
+        Ok(gw.port)
+    );
+    socket.send(Message::text("still-there")).await.unwrap();
+    let echoed = next_frame(&mut socket).await.unwrap().unwrap();
+    assert_eq!(echoed, Message::text("still-there"));
+    assert_eq!(gw.registry.register(&track, "fe", "FE", other), Ok(gw.port));
+    assert_tunnel_closed(&mut socket, "re-register to another target").await;
+}
+
+#[tokio::test]
+async fn gateway_shutdown_closes_an_open_tunnel() {
+    let (target, _) = upstream().await;
+    let gw = gateway_for(Some(target)).await;
+    let (mut socket, _) = ws_connect(&gw, Some(&gw.session)).await.unwrap();
+    next_frame(&mut socket).await.unwrap().unwrap();
+    gw.stop.cancel();
+    assert_tunnel_closed(&mut socket, "gateway shutdown").await;
 }

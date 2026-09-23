@@ -3,10 +3,12 @@
 //!
 //! The pool is reachable from the LAN and `Host` is rewritten to loopback (which defeats a dev
 //! server's own DNS-rebinding checks), so every request must carry calm's session first; an
-//! unauthenticated request never reaches the target.
+//! unauthenticated request never reaches the target. CORS preflights carry no credentials, so
+//! they get 401 too: a preview calling another preview port must go through its dev server's
+//! proxy. An open tunnel outlives logout, as calm's own WS routes do.
 
 use super::PreviewRegistry;
-use crate::auth::{AuthState, SESSION_COOKIE, resolve_principal};
+use crate::auth::{AuthState, SESSION_COOKIE, is_session_cookie, resolve_principal};
 use axum::body::Body;
 use axum::extract::{ConnectInfo, Request, State};
 use axum::http::uri::PathAndQuery;
@@ -287,7 +289,7 @@ fn rewrite_request(req: &mut Request, target: u16, peer: SocketAddr) -> Option<S
     // Browser cookies ignore ports: calm's session is in this jar and must never leave. Every
     // other cookie is shared by all previews, which are the owner's own dev servers.
     let kept = header_tokens(headers, header::COOKIE, ';')
-        .filter(|c| !c.is_empty() && cookie_name(c) != SESSION_COOKIE)
+        .filter(|c| !c.is_empty() && !is_session_cookie(c))
         .collect::<Vec<_>>()
         .join("; ");
     headers.remove(header::COOKIE);
@@ -303,14 +305,40 @@ fn cookie_name(pair: &str) -> &str {
     pair.split_once('=').map_or(pair, |(name, _)| name).trim()
 }
 
-/// A dev server must not overwrite calm's session, in any of the cookie-prefix spellings.
+/// A dev server must not set calm's session, raw or percent-encoded (`calm%2Dsession`), in any of
+/// the cookie-prefix spellings.
 fn sets_calm_session(set_cookie: &str) -> bool {
-    let name = cookie_name(set_cookie);
-    let name = name
-        .strip_prefix("__Host-")
-        .or_else(|| name.strip_prefix("__Secure-"))
-        .unwrap_or(name);
-    name == SESSION_COOKIE
+    let raw = cookie_name(set_cookie);
+    [raw.to_owned(), percent_decode(raw)].iter().any(|name| {
+        let name = name
+            .strip_prefix("__Host-")
+            .or_else(|| name.strip_prefix("__Secure-"))
+            .unwrap_or(name);
+        name == SESSION_COOKIE
+    })
+}
+
+fn percent_decode(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = bytes
+            .get(i + 1..i + 3)
+            .filter(|h| h.iter().all(u8::is_ascii_hexdigit))
+            .and_then(|h| std::str::from_utf8(h).ok());
+        match (bytes[i], hex.and_then(|h| u8::from_str_radix(h, 16).ok())) {
+            (b'%', Some(byte)) => {
+                out.push(byte);
+                i += 3;
+            }
+            (byte, _) => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn rewrite_response(headers: &mut HeaderMap, target: u16, own_host: Option<&str>, switching: bool) {
@@ -318,7 +346,8 @@ fn rewrite_response(headers: &mut HeaderMap, target: u16, own_host: Option<&str>
     let cookies: Vec<HeaderValue> = headers
         .get_all(header::SET_COOKIE)
         .into_iter()
-        .filter(|v| !v.to_str().is_ok_and(sets_calm_session))
+        // Fail closed: a Set-Cookie that is not visible ASCII cannot be checked, so it drops.
+        .filter(|v| v.to_str().is_ok_and(|s| !sets_calm_session(s)))
         .cloned()
         .collect();
     headers.remove(header::SET_COOKIE);
