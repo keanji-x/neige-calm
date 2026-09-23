@@ -1782,5 +1782,20 @@
       "web/src/app/router/track-conversation.test.tsx"
     ],
     "why_more_than_one": "Only the goal-title case carries a card with a payload.goal; every other aside fixture's cards have no goal and are named by notificationCardLabel with or without the goal read, so exactly that case reddens."
+  },
+  {
+    "mutation_id": "ownership-squash-skip-source-path-binding",
+    "defends": [
+      "oracle:GATE-OWNERSHIP-010"
+    ],
+    "target": "tools/ownership/validator.ts",
+    "patch": "diff --git a/tools/ownership/validator.ts b/tools/ownership/validator.ts\n--- a/tools/ownership/validator.ts\n+++ b/tools/ownership/validator.ts\n@@ -236,7 +236,7 @@ export async function ownershipCommitsForEvent(\n         .map((trailer) => [trailer.text, trailer] as const);\n     }));\n     const authorizedPaths = new Set(Array.from(trailers.values(), ({ path }) => path));\n-    const unauthorized = [...new Set(changedFrozenPaths)].filter((path) => !authorizedPaths.has(path));\n+    const unauthorized = [...new Set(changedFrozenPaths)].filter((path) => false && !authorizedPaths.has(path));\n     if (unauthorized.length > 0) {\n       throw new Error(`cannot audit ownership squash ${commit.sha}: original PR commits do not authorize final frozen paths: ${unauthorized.join(', ')}`);\n     }\n",
+    "expected_red": [
+      "does not borrow a trailer from a source commit that did not change that path"
+    ],
+    "selection_paths": [
+      "tools/ownership/squash.test.ts"
+    ],
+    "why_more_than_one": "Measured in the exclusive lease worktree: disabling only the source-path binding produced exactly this one red and 39 green tests in the selected file; any additional red would indicate unrelated ownership behavior moved."
   }
 ]

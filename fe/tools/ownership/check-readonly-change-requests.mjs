@@ -36,7 +36,8 @@ try {
       }));
     });
   const repositoryViolations = validateOwnership(
-    ownershipManifest, repositoryFiles(join(feRoot, '..')), commits,
+    ownershipManifest, repositoryFiles(join(feRoot, '..')),
+    process.env.OWNERSHIP_EVENT_NAME === 'push' ? [] : commits,
   );
   if (repositoryViolations.length) {
     throw new Error(`repository ownership audit failed:\n${repositoryViolations

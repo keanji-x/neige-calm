@@ -65,6 +65,19 @@ describe('ownership fixtures', () => {
     ]);
   });
 
+  it.each([
+    './fe/core/model.ts',
+    'fe\\core\\model.ts',
+    'fe/core/model.ts/',
+    'fe/core/bad\uFFFD.ts',
+  ])('rejects non-canonical manifest path %s', (path) => {
+    expect(validateOwnership([{
+      path, type: 'file', owner: 'core/model', readonly: false,
+    }], [])).toEqual([{
+      rule: 'entry-shape', message: `invalid entry 1: ${path}`,
+    }]);
+  });
+
   it('reports malformed entry fields without throwing', () => {
     expect(validateOwnership([
       { path: 1, type: 'file', owner: 'ui/test' },
@@ -109,6 +122,12 @@ describe('ownership fixtures', () => {
       'OWNERSHIP-CHANGE: fe/web/src/styles/tokens.css approved token update (#997)',
       'OWNERSHIP-CHANGE: fe/web/src/styles/tokens.css —',
       '* OWNERSHIP-CHANGE: fe/web/src/styles/tokens.css — approved token update (#997)',
+      'OWNERSHIP-CHANGE:\nfe/web/src/styles/tokens.css — approved token update (#997)',
+      'OWNERSHIP-CHANGE: fe/web/src/styles/tokens.css\n— approved token update (#997)',
+      'OWNERSHIP-CHANGE: fe/web/src/styles/tokens.css — approved token\nupdate (#997)',
+      'OWNERSHIP-CHANGE: fe/web/src/styles/tokens.css — approved token update\n(#997)',
+      'OWNERSHIP-CHANGE: fe/web/src/styles/tokens.css — approved  token update (#997)',
+      'OWNERSHIP-CHANGE: fe/web/src/styles/tokens.css — approved\ttoken update (#997)',
       'OWNERSHIP-CHANGE: fe/web/src/styles/tokens.css — approved token update',
       'OWNERSHIP-CHANGE: fe/web/src/styles/tokens.css — approved token update (#abc)',
       'OWNERSHIP-CHANGE: fe/web/src/styles/tokens.css — approved token update (#997) trailing text',
@@ -123,6 +142,34 @@ describe('ownership fixtures', () => {
       { rule: 'entry-shape', message: 'invalid entry 1: fe/core/model.ts' },
       { rule: 'readonly-change-trailer', message: 'def456 changes frozen fe/core/model.ts without an OWNERSHIP-CHANGE trailer' },
     ]);
+  });
+
+  it.each([
+    { canonical: 'frozen.txt', raw: './frozen.txt' },
+    { canonical: 'dir/frozen.txt', raw: 'dir\\frozen.txt' },
+    { canonical: 'frozen.txt', raw: 'frozen.txt/' },
+  ])('rejects non-canonical source trailer path $raw', ({ canonical, raw }) => {
+    const manifest = [{ path: canonical, type: 'file' as const, owner: 'fixture', readonly: true }];
+    expect(validateOwnership(manifest, [], [{
+      sha: 'source', message: `OWNERSHIP-CHANGE: ${raw} — approved fixture (#1478)`, paths: [canonical],
+    }])).toEqual([{
+      rule: 'readonly-change-trailer',
+      message: `source changes frozen ${canonical} without an OWNERSHIP-CHANGE trailer`,
+    }]);
+  });
+
+  it.each([
+    { canonical: 'frozen.txt', raw: './frozen.txt' },
+    { canonical: 'dir/frozen.txt', raw: 'dir\\frozen.txt' },
+    { canonical: 'frozen.txt', raw: 'frozen.txt/' },
+  ])('rejects non-canonical source changed path $raw', ({ canonical, raw }) => {
+    const manifest = [{ path: canonical, type: 'file' as const, owner: 'fixture', readonly: true }];
+    expect(validateOwnership(manifest, [], [{
+      sha: 'source', message: `OWNERSHIP-CHANGE: ${canonical} — approved fixture (#1478)`, paths: [raw],
+    }])).toEqual([{
+      rule: 'readonly-change-trailer',
+      message: `source has non-canonical changed path ${raw}`,
+    }]);
   });
 
 });
@@ -144,6 +191,15 @@ it('includes every frontend gate control file in ownership scope', () => {
   const controls = ['fe/.dependency-cruiser.cjs', 'fe/eslint.config.js', 'fe/package.json', 'fe/package-lock.json',
     'fe/tsconfig.json', 'fe/vite.config.ts', 'fe/vitest.config.ts'];
   expect(repositoryFiles('', controls)).toEqual([...controls].sort());
+});
+
+it.each([
+  './fe/core/model.ts',
+  'fe\\core\\model.ts',
+  'fe/core/model.ts/',
+  'fe/core/bad\uFFFD.ts',
+])('rejects non-canonical repository file input %s', (path) => {
+  expect(() => repositoryFiles('', [path])).toThrow(`non-canonical repository path: ${path}`);
 });
 
 describe('P8b2 ownership exit', () => {
@@ -220,6 +276,33 @@ describe('ownership trailer transfer into the squash body', () => {
     )).toEqual([{
       rule: 'readonly-change-pr-body',
       message: 'commit-two has OWNERSHIP-CHANGE: fe/package.json — keep the plan purity guard (#1119) but the pull request body does not preserve it for the squash commit',
+    }]);
+  });
+
+  it('rejects a pull request body that folds a canonical trailer across physical lines', () => {
+    const commits = fixtureCommits('pull-request-body-trailer', 'positive');
+    const body = fixtureBody('pull-request-body-trailer', 'positive').replace(
+      'OWNERSHIP-CHANGE: fe/package.json — expose the mutation plan command (#1119)',
+      'OWNERSHIP-CHANGE:\nfe/package.json — expose the mutation plan command (#1119)',
+    );
+    const violations = validateOwnershipPullRequestBody('pull_request', commits, body);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]?.rule).toBe('readonly-change-pr-body');
+    expect(violations[0]?.message).toContain('commit-one');
+  });
+
+  it.each([
+    { canonical: 'frozen.txt', raw: './frozen.txt' },
+    { canonical: 'dir/frozen.txt', raw: 'dir\\frozen.txt' },
+    { canonical: 'frozen.txt', raw: 'frozen.txt/' },
+  ])('rejects non-canonical pull request trailer path $raw', ({ canonical, raw }) => {
+    const trailer = `OWNERSHIP-CHANGE: ${canonical} — approved fixture (#1478)`;
+    const violations = validateOwnershipPullRequestBody('pull_request', [{
+      sha: 'source', message: trailer, paths: [canonical],
+    }], `OWNERSHIP-CHANGE: ${raw} — approved fixture (#1478)`);
+    expect(violations).toEqual([{
+      rule: 'readonly-change-pr-body',
+      message: `source has ${trailer} but the pull request body does not preserve it for the squash commit`,
     }]);
   });
 
