@@ -819,6 +819,9 @@ mod recovery_tests;
 #[cfg(test)]
 mod launch_cleanup_tests;
 
+#[cfg(test)]
+mod upstream_tests;
+
 /// #1727 S4 slice 2 — the lease the claude worker's `prepare_tx` takes is a kernel-delivery
 /// lease (`delivery_policy = 'kernel'`, written in the same INSERT as its base); the
 /// fixtures-only plain lease stays NULL (legacy).

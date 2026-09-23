@@ -15,6 +15,7 @@ use crate::error::{CalmError, Result};
 use crate::model::{Task, TaskKind, TaskStatus};
 use crate::operation::Tx;
 use crate::operation::task_verify_adapter::{TASK_VERIFY_KIND, TaskGateResult, gate_attempt_key};
+use crate::operation::workspace_lease::base::BaseSource;
 use crate::operation::workspace_lease::facts::{
     LeaseStates, WorkerWorktreeFacts, latest_workspace_lease_for_card_tx,
 };
@@ -258,10 +259,31 @@ pub(crate) enum CandidateBinding {
     Bound {
         producer_attempt_id: String,
         base_sha: String,
+        /// How the lease chose `base_sha`; not on the wire. An `upstream` base
+        /// is what `plan.list` measures `candidate.upstream` against
+        /// ([`super::staleness`], computed after the read transaction).
+        #[serde(skip)]
+        base_source: BaseSource,
         workspace: CandidateWorkspace,
         delivery: DeliveryState,
         verification: VerificationView,
     },
+}
+
+impl CandidateBinding {
+    /// The base `candidate.upstream` is measured from: `base_sha` of a bound
+    /// candidate whose lease started from the upstream; `None` for a `head`
+    /// (or `commit` / `attempt`) base, an unbound or unminted binding.
+    pub(crate) fn upstream_base(&self) -> Option<&str> {
+        match self {
+            CandidateBinding::Bound {
+                base_sha,
+                base_source: BaseSource::Upstream,
+                ..
+            } => Some(base_sha),
+            _ => None,
+        }
+    }
 }
 
 /// The two derivations a kernel lease carries beside its binding (D2 `delivery`, D8 `verification`).
@@ -325,6 +347,7 @@ pub(crate) fn candidate_binding(
         (Some(DeliveryPolicy::Kernel), Some(base), Some(bound)) => Ok(CandidateBinding::Bound {
             producer_attempt_id: task.id.clone(),
             base_sha: base.base_sha.clone(),
+            base_source: base.base_source,
             workspace,
             delivery: bound.delivery,
             verification: bound.verification,

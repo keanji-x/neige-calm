@@ -30,7 +30,7 @@ pub async fn prepare_workspace_lease_target_for_test(
     .map(|target| target.repo_root)
 }
 
-/// Take a whole first-worker workspace lease: prepare → resolve the HEAD base → commit →
+/// Take a whole first-worker workspace lease: prepare → resolve the lease base → commit →
 /// provision pinned to that base, in that order. Returns the provisioned worktree path.
 #[cfg(feature = "fixtures")]
 pub async fn provision_workspace_lease_for_test(
@@ -47,7 +47,7 @@ pub async fn provision_workspace_lease_for_test(
         workspace_root,
     )
     .await?;
-    let base = crate::operation::workspace_lease::base::resolve_head_lease_base(&target)?;
+    let base = crate::operation::workspace_lease::base::resolve_lease_base(&target)?;
     tx.commit().await?;
     crate::operation::workspace_lease::provision_workspace_worktree(
         &target,
@@ -186,7 +186,7 @@ pub struct KernelWorkspaceLease {
 
 /// The whole first-worker lease sequence the worker op's `prepare_tx` + spawn run, in
 /// production order and through the production functions: prepare the target from the Track's
-/// workspace, resolve the HEAD base, INSERT the lease row (`delivery_policy = 'kernel'`, the
+/// workspace, resolve the lease base, INSERT the lease row (`delivery_policy = 'kernel'`, the
 /// five base columns) in one immediate transaction, then provision the worktree pinned to that
 /// base. The one seam an integration test needs to stand where a Codex/Claude worker would.
 #[cfg(feature = "fixtures")]
@@ -197,13 +197,13 @@ pub async fn take_kernel_workspace_lease_for_test(
     workspace_root: &std::path::Path,
 ) -> crate::error::Result<KernelWorkspaceLease> {
     use crate::operation::workspace_lease::{
-        WorktreeBase, acquire_workspace_lease_tx, base::resolve_head_lease_base,
+        WorktreeBase, acquire_workspace_lease_tx, base::resolve_lease_base,
         prepare_workspace_lease_target_tx, provision_workspace_worktree,
     };
     let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
     let target =
         prepare_workspace_lease_target_tx(&mut tx, track_id, card_id, workspace_root).await?;
-    let base = resolve_head_lease_base(&target)?;
+    let base = resolve_lease_base(&target)?;
     let (lease, _event) =
         acquire_workspace_lease_tx(&mut tx, card_id, track_id, "op-test", &target, &base).await?;
     tx.commit().await?;

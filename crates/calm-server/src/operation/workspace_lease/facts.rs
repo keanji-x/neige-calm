@@ -25,8 +25,9 @@ pub(crate) struct WorkerWorktreeFacts {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_commit: Option<String>,
     /// The commit the worktree started from: the lease
-    /// row's `base_sha` (the attached repository's HEAD when the attempt was
-    /// prepared). A failed attempt has one too — it never delivers, so this
+    /// row's `base_sha` (when the attempt was prepared: the last known
+    /// upstream of the attached repository's HEAD branch, or its HEAD when
+    /// that branch has no upstream — `base_source`). A failed attempt has one too — it never delivers, so this
     /// is the fact that can be given where `last_commit` cannot. Absent for
     /// a lease taken before the kernel recorded it. Survives removal like
     /// `last_commit` (the commit object is not the worktree's).

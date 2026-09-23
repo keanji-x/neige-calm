@@ -138,6 +138,9 @@ impl OperationRuntime {
             return Err(idempotency_payload_conflict(key.idempotency_key.as_deref()));
         }
         adapter.validate(&payload).await?;
+        // Before the row exists and outside every transaction (#1777: the
+        // worker adapters' upstream fetch must never run in `prepare_tx`).
+        adapter.before_insert(&payload).await;
         let op_id = self.repo.insert_operation(kind, key, payload).await?;
         self.drive().await?;
         Ok(op_id)

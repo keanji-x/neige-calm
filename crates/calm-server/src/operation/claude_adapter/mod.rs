@@ -24,8 +24,9 @@ use crate::model::{Card, CardRole, new_id};
 use crate::operation::codex_adapter::render_task_worker_prompt;
 use crate::operation::worker_cleanup::{compensate_worker_rows, worker_spawn_failure_preserved};
 use crate::operation::workspace_lease::{
-    acquire_workspace_lease_tx, base::resolve_head_lease_base, prepare_workspace_lease_target_tx,
+    acquire_workspace_lease_tx, base::resolve_lease_base, prepare_workspace_lease_target_tx,
     release_workspace_lease_by_id, remove_workspace_artifact_for_lease_by_id,
+    upstream::refresh_track_upstream,
 };
 use crate::routes::cards::card_scope;
 use crate::routes::claude_cards::{
@@ -749,6 +750,17 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         Ok(())
     }
 
+    /// The lease base is the attached repository's upstream when it has one
+    /// (#1777): fetch it now, outside every transaction, so `prepare_tx`
+    /// reads it with a local `rev-parse`.
+    async fn before_insert(&self, input: &Value) {
+        let Ok(payload) = serde_json::from_value::<ClaudeWorkerOperationPayload>(input.clone())
+        else {
+            return;
+        };
+        refresh_track_upstream(self.repo.as_ref(), &payload.track_id).await;
+    }
+
     async fn prepare_tx<'tx>(
         &self,
         tx: &mut Tx<'tx>,
@@ -772,7 +784,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         .await?;
         // The base is decided here, in the prepare tx, and frozen below; the
         // spawn pins the worktree to it (design D4).
-        let lease_base = resolve_head_lease_base(&lease_target)?;
+        let lease_base = resolve_lease_base(&lease_target)?;
         let cwd = lease_target.path_string();
         let settings_path = self
             .codex

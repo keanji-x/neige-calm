@@ -72,6 +72,8 @@ mod isolated_codex_smoke;
 #[path = "cases/isolated_activity.rs"]
 mod isolated_activity;
 
+#[path = "cases/candidate_upstream.rs"]
+mod candidate_upstream;
 #[path = "cases/candidate_verification.rs"]
 mod candidate_verification;
 #[path = "cases/file_delivery.rs"]

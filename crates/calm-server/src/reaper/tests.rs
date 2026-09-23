@@ -270,7 +270,7 @@ async fn acquire_test_workspace_lease(
     )
     .await
     .expect("prepare workspace lease target");
-    let base = crate::operation::workspace_lease::base::resolve_head_lease_base(&target)
+    let base = crate::operation::workspace_lease::base::resolve_lease_base(&target)
         .expect("resolve workspace lease base");
     let (lease, _event) = crate::operation::workspace_lease::acquire_workspace_lease_tx(
         &mut tx,

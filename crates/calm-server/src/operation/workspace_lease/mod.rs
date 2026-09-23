@@ -21,6 +21,9 @@ use super::{PhaseTag, TimestampMs, Tx};
 
 pub(crate) mod base;
 pub(crate) mod facts;
+pub(crate) mod upstream;
+#[cfg(test)]
+pub(crate) mod upstream_tests;
 
 pub(crate) use base::{DeliveryPolicy, LeaseBase, WorktreeBase};
 
@@ -213,7 +216,7 @@ async fn acquire_workspace_lease_at_path_tx(
     let now = now_ms();
     let boot_id = read_boot_id();
     // The parent directory exists before the row does: the row's
-    // `canonical_path` was resolved through it (`base::resolve_head_lease_base`).
+    // `canonical_path` was resolved through it (`base::resolve_lease_base`).
     create_workspace_lease_directory(path, directory_mode)?;
     let query = sqlx::query(
         r#"INSERT INTO workspace_leases (
