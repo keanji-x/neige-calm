@@ -21,10 +21,11 @@ function setup({ native = true, inventory = false, initial = '/track/a', demo = 
     lifecycle: 'working', cwd: '/tmp', archived_at: null, pinned_at: null, terminal_at: null,
     created_at: 1, updated_at: 2 }));
   const fixture = JSON.parse(source) as { valid: unknown };
+  const viewPayload: unknown = demo ? JSON.parse(demoSource) : fixture.valid;
   const cardsFor = (id: string) => [{ id: `report-${id}`, track_id: id, title: null, kind: 'track-report',
     sort: 0, deletable: false, created_at: 1, updated_at: 2,
     payload: { summary: '', body: '', blocks: [
-      ...(native && id === 'a' ? [{ id: 'native-view', kind: 'view', rev: 1, payload: demo ? JSON.parse(demoSource) : fixture.valid }] : []),
+      ...(native && id === 'a' ? [{ id: 'native-view', kind: 'view', rev: 1, payload: viewPayload }] : []),
       { id: 'citation', kind: 'prose', rev: 1, payload: { markdown: '[Source proof](neige://source/src_0badf00d)' } },
       ...Array.from({ length: 40 }, (_, i) => ({ id: `paragraph-${i}`, kind: 'prose', rev: 1,
         payload: { markdown: `Paragraph ${i}. A report to read and return to.` } })),
