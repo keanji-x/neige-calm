@@ -12,7 +12,7 @@ import { useCompactViewport } from '../../../ui/viewport/public.ts';
 
 import type { ActivityOrigin } from '../../../../../core/domain/activity.ts';
 import { independentTaskUnavailableReason } from '../../../../../core/domain/independent-task.ts';
-import type { ReportOutlineItem, ReportTaskRow } from '../../../../../core/domain/report.ts';
+import type { ReportOutlineItem, ReportPresentation, ReportTaskRow } from '../../../../../core/domain/report.ts';
 import {
   UNTITLED_TRACK_LABEL, trackActivityState, trackDisplayTitle, type CardWire, type Track,
 } from '../../../../../core/domain/track.ts';
@@ -36,6 +36,8 @@ import { makeDesktopPainter, paintDesktopPanel } from './desktop-painter.tsx';
 import { makeMobilePainter, paintMobileModule } from './mobile-painter.tsx';
 import { MobileTitleReadView } from './mobile-title-read-view.tsx';
 import styles from './page.module.css';
+import presentationStyles from './report-presentation.module.css';
+import { ReportPanelToggle, useReportPanel } from './report-presentation.tsx';
 
 /** The mobile drill-down pages: two that are not row modules, plus one per row module the view model names. The renderer special-cases exactly those two and sends every other member through `paintMobileModule`. */
 type MobilePanelKind = 'outline' | RowModuleView['key'] | 'conversations';
@@ -67,6 +69,8 @@ export type TrackPageProps = Readonly<{
   /** The panel card's second module, composed by `app/router` (features/chat). */
   /** The report document, composed by `app/router` (features/report). */
   report?: ReactNode;
+  /** Explicit app-derived presentation; ordinary tracks keep their document layout. */
+  reportPresentation?: ReportPresentation;
   /** `REFERENCED BY` — omitted entirely when nothing cites this track. */
   backlinks?: ReactNode;
   conversationList?: ReactNode;
@@ -128,7 +132,7 @@ function taskInventorySummary(tasks: readonly ReportTaskRow[]): string | null {
 }
 
 export function TrackPage({
-  track, cards, tasks, openableCards, outlineItems = [], report, backlinks, conversationList, conversationAction,
+  track, cards, tasks, openableCards, outlineItems = [], report, reportPresentation = 'document', backlinks, conversationList, conversationAction,
   onStartConversation, conversationOpen = false, mobilePanelObscured, inputNotifications = [], onOpenInputNotification,
   cardsAction, onCreateTask, recentFiles, onOpenCard, onDeleteCard, onOpenTask, onOpenOutline, board, onCloseBoard,
   panel = null, onOpenPanel, onClosePanel,
@@ -136,6 +140,9 @@ export function TrackPage({
   canResumeTrack, onRenameTrack, onResumeTrack, onDeleteTrack,
 }: TrackPageProps) {
   const compactViewport = useCompactViewport();
+  const reportPanel = useReportPanel(track.id, reportPresentation);
+  const dashboard = reportPresentation === 'dashboard';
+  const panelCollapsed = dashboard && !reportPanel.open;
   const headerActionsHost = compactViewport ? mobileHeaderActionsHost : null;
   const [titleContainer] = useState(() => {
     const container = document.createElement('div');
@@ -253,8 +260,15 @@ export function TrackPage({
   const [desktopActionsOpen, setDesktopActionsOpen] = useState(false);
   const desktopActionsRef = useRef<HTMLButtonElement | null>(null);
   const mobilePanelRef = useRef<HTMLElement | null>(null);
+  const reportPanelToggleRef = useRef<HTMLButtonElement | null>(null);
   const mobileActionsRef = useRef<HTMLSpanElement | null>(null);
   const previousPanel = useRef<MobilePanelKind | null>(null);
+
+  useLayoutEffect(() => {
+    if (!compactViewport && panelCollapsed && mobilePanelRef.current?.contains(document.activeElement)) {
+      reportPanelToggleRef.current?.focus({ preventScroll: true });
+    }
+  }, [compactViewport, panelCollapsed]);
 
   useEffect(() => {
     if (!mobilePanelOpen || mobilePanelObscured) return;
@@ -326,7 +340,7 @@ export function TrackPage({
 
   return (
     <section
-      className={`${styles.page} ${boardOpen ? styles.pageBoard : ''}`}
+      className={`${styles.page} ${boardOpen ? styles.pageBoard : ''} ${dashboard ? presentationStyles.dashboard : ''}`}
       data-nc-track-page=""
     >
       <PageHeader
@@ -350,6 +364,9 @@ export function TrackPage({
         }
         actions={(
           <span className={styles.headerActions}>
+            {dashboard && !compactViewport && !boardOpen && !conversationOpen && (
+              <ReportPanelToggle open={reportPanel.open} onToggle={reportPanel.toggle} buttonRef={reportPanelToggleRef} />
+            )}
             <AstryxDropdownMenu
               button={{
                 ref: desktopActionsRef,
@@ -404,7 +421,7 @@ export function TrackPage({
 
       <div className={styles.workspace}>
       <div
-        className={styles.content}
+        className={`${styles.content} ${panelCollapsed && !conversationOpen ? presentationStyles.wideContent : ''}`}
         aria-hidden={boardOpen ? true : undefined}
         inert={boardOpen}
       >
@@ -415,7 +432,9 @@ export function TrackPage({
         <aside
           id="mobile-track-panel"
           ref={mobilePanelRef}
-          className={`${styles.panel} ${mobilePanelOpen ? styles.mobilePanelOpen : styles.mobilePanelClosed}`}
+          className={`${styles.panel} ${mobilePanelOpen ? styles.mobilePanelOpen : styles.mobilePanelClosed} ${panelCollapsed ? presentationStyles.collapsedPanel : ''}`}
+          aria-hidden={!compactViewport && panelCollapsed ? true : undefined}
+          inert={!compactViewport && panelCollapsed}
           data-nc-panel=""
           data-nc-mobile-page={mobilePanelOpen ? 'open' : 'closed'}
           /* Programmatically focusable only — the container is where focus

@@ -56,7 +56,7 @@ import { ReportOutline } from '../../features/report/outline/public.tsx';
 import { RecentFiles } from '../../features/report/recent-files/public.tsx';
 import { revealReportAnchor } from '../../features/report/anchor/public.ts';
 import {
-  backlinkCountsByBlock, deriveReportOutline, deriveReportTasks, readTrackReport, type ReportLinkTarget,
+  backlinkCountsByBlock, deriveReportOutline, deriveReportPresentation, deriveReportTasks, readTrackReport, type ReportLinkTarget,
 } from '../../../../core/domain/report.ts';
 import {
   parseWorkspaceRelativeFilePath, type ReportFileLinkTarget,
@@ -2028,6 +2028,7 @@ function TrackRouteBody({
    * `invalidation-plan` refreshes on every `task.*` event and `track.report_edited`. */
   /* Read before the query: the poll's interval depends on the rows this report can produce. */
   const report = useMemo(() => readTrackReport(cards), [cards]);
+  const reportPresentation = deriveReportPresentation(report);
   const reportBlocks = report?.blocks ?? null;
   const verdictsQuery = useQuery(
     trackTaskVerdictsQueryOptions(transport, track.id, unauthorized, reportBlocks),
@@ -2287,6 +2288,7 @@ function TrackRouteBody({
       tasks={tasks}
       openableCards={openableCards}
       outlineItems={outline}
+      reportPresentation={reportPresentation}
       /* Tasks and the mobile Outline share one anchor landing. The URL carries
          it too, so the reader can hand the destination to somebody else. */
       onOpenTask={openReportAnchor}
@@ -2350,7 +2352,7 @@ function TrackRouteBody({
           openableWorkerIds={openableCards}
           openWorker={(cardId) => { go({ name: 'track', trackId: track.id, cardId, from: routeFrom }); }}
         />}
-        rail={<ReportOutline items={outline} />}
+        rail={reportPresentation === 'document' ? <ReportOutline items={outline} /> : undefined}
         backlinkCounts={backlinks === undefined ? undefined : backlinkCountsByBlock(backlinks.backlinks)}
         onOpenLink={openReportLink}
         onOpenFileLink={openReportFile}
