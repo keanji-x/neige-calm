@@ -2383,7 +2383,7 @@ function TrackRouteBody({
       conversationList={chat.list}
       conversationAction={chat.action}
       onStartConversation={chat.startConversation}
-      conversationOpen={chat.isOpen}
+      sideDrawerOpen={chat.isOpen || sourceOpen}
       inputNotifications={inputNotifications}
       onOpenInputNotification={(cardId) => {
         /* No card to open (a lifecycle item, a task with no worker card yet): the

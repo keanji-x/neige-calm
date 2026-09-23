@@ -68,7 +68,6 @@ it('uses the authored narrow-summary ratio and keeps research visible in a wide 
   const children = summary.querySelector('h3 + div')!.children;
   expect(children[1].getBoundingClientRect().width / children[0].getBoundingClientRect().width).toBeGreaterThan(1.8);
   expect(page.getByRole('region', { name: '03 · 投资观点' }).element().getBoundingClientRect().top).toBeLessThan(850);
-  await page.screenshot({ fullPage: true });
   const slider = page.getByRole('slider', { name: '总资产变化 观察日期' }).element() as HTMLInputElement;
   expect(getComputedStyle(slider).opacity).toBe('0');
   slider.focus();

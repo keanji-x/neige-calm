@@ -3,7 +3,7 @@ import '../../styles/entry.css';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, RouterProvider } from '@tanstack/react-router';
 import { act, cleanup, render } from '@testing-library/react';
-import { page } from 'vitest/browser';
+import { page, userEvent } from 'vitest/browser';
 import { afterEach, expect, it } from 'vitest';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
@@ -24,6 +24,7 @@ function setup({ native = true, inventory = false, initial = '/track/a' } = {}) 
     sort: 0, deletable: false, created_at: 1, updated_at: 2,
     payload: { summary: '', body: '', blocks: [
       ...(native && id === 'a' ? [{ id: 'native-view', kind: 'view', rev: 1, payload: fixture.valid }] : []),
+      { id: 'citation', kind: 'prose', rev: 1, payload: { markdown: '[Source proof](neige://source/src_0badf00d)' } },
       ...Array.from({ length: 40 }, (_, i) => ({ id: `paragraph-${i}`, kind: 'prose', rev: 1,
         payload: { markdown: `Paragraph ${i}. A report to read and return to.` } })),
     ] } }, ...(inventory ? [
@@ -38,6 +39,7 @@ function setup({ native = true, inventory = false, initial = '/track/a' } = {}) 
     if (request.path === '/api/areas') body = [{ id: 'area', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 }];
     if (request.path === '/api/areas/area/tracks') body = tracks;
     if (request.path === '/api/settings') body = {};
+    if (request.path.includes('/sources/')) return { status: 404, statusText: 'Not Found', body: { error: 'source not found', code: 'not_found' } };
     for (const track of tracks) {
       if (request.path === `/api/tracks/${track.id}`) body = { track, can_resume: false, cards: cardsFor(track.id), overlays: [] };
       if (request.path === `/api/tracks/${track.id}/report`) body = { taskDiagnostics: [] };
@@ -131,6 +133,20 @@ it('keeps ordinary document routes unchanged after leaving a dashboard', async (
   await expect.element(page.getByRole('heading', { name: 'Cards', exact: true })).toBeVisible();
   const prose = document.getElementById('paragraph-0')!.getBoundingClientRect();
   expect(prose.width).toBeLessThanOrEqual(568);
+});
+
+it('reserves space for source drawers and restores the wide reader on close', async () => {
+  await page.viewport(1440, 900);
+  setup();
+  await ready();
+  const report = nativeBlock();
+  await page.getByRole('button', { name: 'Source proof', exact: true }).click();
+  const drawer = document.querySelector<HTMLElement>('[data-nc-drawer]')!;
+  expect(drawer).not.toBeNull();
+  expect(report.getBoundingClientRect().right).toBeLessThanOrEqual(drawer.getBoundingClientRect().left);
+  await userEvent.keyboard('{Escape}');
+  expect(nativeBlock()).toBe(report);
+  expect(report.getBoundingClientRect().width).toBeGreaterThanOrEqual(1080);
 });
 
 it.each([390, 736])('keeps mobile panel navigation and the native reader at %i', async width => {

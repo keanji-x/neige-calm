@@ -600,7 +600,7 @@ describe('TrackPage card inventory', () => {
   it('keeps a source-obscured mobile panel inaccessible even when no conversation is open', () => {
     vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })));
     try {
-      const view = renderPage({ panel: 'conversations', mobilePanelObscured: true, conversationOpen: false,
+      const view = renderPage({ panel: 'conversations', mobilePanelObscured: true, sideDrawerOpen: false,
         conversationList: <button type="button">Existing conversation</button> });
       const panel = view.container.querySelector('[data-nc-mobile-panel]')!;
       expect(panel.hasAttribute('inert')).toBe(true);

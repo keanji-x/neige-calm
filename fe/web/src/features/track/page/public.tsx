@@ -81,9 +81,9 @@ export type TrackPageProps = Readonly<{
   inputNotifications?: readonly TrackInputNotification[];
   /** Review: the item's card when it has one, else the track itself. */
   onOpenInputNotification?: (cardId: string | null) => void;
-  /** The route's conversation drawer is open. Input notifications compact
+  /** An app-owned right-side drawer is open. Input notifications compact
    *  beside it instead of covering its composer. */
-  conversationOpen?: boolean;
+  sideDrawerOpen?: boolean;
   /** Any active foreground drawer makes the painted mobile panel inaccessible. */
   mobilePanelObscured: boolean;
   /** Starts Chat from the mobile Report's dedicated floating action. */
@@ -133,7 +133,7 @@ function taskInventorySummary(tasks: readonly ReportTaskRow[]): string | null {
 
 export function TrackPage({
   track, cards, tasks, openableCards, outlineItems = [], report, reportPresentation = 'document', backlinks, conversationList, conversationAction,
-  onStartConversation, conversationOpen = false, mobilePanelObscured, inputNotifications = [], onOpenInputNotification,
+  onStartConversation, sideDrawerOpen = false, mobilePanelObscured, inputNotifications = [], onOpenInputNotification,
   cardsAction, onCreateTask, recentFiles, onOpenCard, onDeleteCard, onOpenTask, onOpenOutline, board, onCloseBoard,
   panel = null, onOpenPanel, onClosePanel,
   mobileBackLabel = 'Pages', onMobileBack, mobileHeaderActionsHost = null, mobileHeaderTitleHost = null, mobileTitleReadView,
@@ -186,12 +186,12 @@ export function TrackPage({
   const notificationSignature = inputNotifications
     .map(({ origin, id, state, updatedAt }) => `${origin}:${id}:${state}:${updatedAt}`)
     .join('|');
-  const [noticeExpanded, setNoticeExpanded] = useState(inputNotifications.length > 0 && !conversationOpen);
+  const [noticeExpanded, setNoticeExpanded] = useState(inputNotifications.length > 0 && !sideDrawerOpen);
   const [notificationAnnouncement, setNotificationAnnouncement] = useState('');
   const resumePendingRef = useRef(false);
   const previousNotificationSignatureRef = useRef('');
   const previousNotificationCountRef = useRef(0);
-  const previousConversationOpenRef = useRef(conversationOpen);
+  const previousSideDrawerOpenRef = useRef(sideDrawerOpen);
   useEffect(() => {
     // The PATCH promise settles before its invalidation refetch. Keep Resume
     // fenced after a successful response until the authoritative capability
@@ -206,14 +206,14 @@ export function TrackPage({
     setNotificationAnnouncement(count > 0
       ? `${count} ${count === 1 ? 'notification needs' : 'notifications need'} your attention.`
       : (previousNotificationCountRef.current > 0 ? 'All notifications cleared.' : ''));
-    if (count > 0 && !conversationOpen) setNoticeExpanded(true);
+    if (count > 0 && !sideDrawerOpen) setNoticeExpanded(true);
     previousNotificationSignatureRef.current = notificationSignature;
     previousNotificationCountRef.current = count;
-  }, [conversationOpen, inputNotifications.length, notificationSignature]);
+  }, [sideDrawerOpen, inputNotifications.length, notificationSignature]);
   useEffect(() => {
-    if (conversationOpen && !previousConversationOpenRef.current) setNoticeExpanded(false);
-    previousConversationOpenRef.current = conversationOpen;
-  }, [conversationOpen]);
+    if (sideDrawerOpen && !previousSideDrawerOpenRef.current) setNoticeExpanded(false);
+    previousSideDrawerOpenRef.current = sideDrawerOpen;
+  }, [sideDrawerOpen]);
   const boardOpen = onCloseBoard !== undefined;
   const mobilePanelOpen = panel !== null;
   const noticePanelOpen = noticeExpanded;
@@ -364,7 +364,7 @@ export function TrackPage({
         }
         actions={(
           <span className={styles.headerActions}>
-            {dashboard && !compactViewport && !boardOpen && !conversationOpen && (
+            {dashboard && !compactViewport && !boardOpen && !sideDrawerOpen && (
               <ReportPanelToggle open={reportPanel.open} onToggle={reportPanel.toggle} buttonRef={reportPanelToggleRef} />
             )}
             <AstryxDropdownMenu
@@ -421,7 +421,7 @@ export function TrackPage({
 
       <div className={styles.workspace}>
       <div
-        className={`${styles.content} ${panelCollapsed && !conversationOpen ? presentationStyles.wideContent : ''}`}
+        className={`${styles.content} ${panelCollapsed && !sideDrawerOpen ? presentationStyles.wideContent : ''}`}
         aria-hidden={boardOpen ? true : undefined}
         inert={boardOpen}
       >
@@ -537,7 +537,7 @@ export function TrackPage({
         <aside
           className={`${styles.needsInputNotice} ${noticePanelOpen
             ? styles.needsInputNoticeExpanded
-            : styles.needsInputNoticeCompact} ${conversationOpen ? styles.needsInputNoticeBesideDrawer : ''}`}
+            : styles.needsInputNoticeCompact} ${sideDrawerOpen ? styles.needsInputNoticeBesideDrawer : ''}`}
           data-nc-needs-input-notice=""
           data-nc-notification-mode={noticePanelOpen ? 'expanded' : 'compact'}
           role="region"

@@ -28,7 +28,7 @@ it('follows a late declared presentation without remounting report or panel stat
   expect(screen.getByRole('textbox', { name: 'Panel state' })).toBe(panel);
   expect((report as HTMLInputElement).value).toBe('selected dataset');
   expect((panel as HTMLInputElement).value).toBe('panel selection');
-  rerender(<TrackPage {...initial} reportPresentation="dashboard" conversationOpen />);
+  rerender(<TrackPage {...initial} reportPresentation="dashboard" sideDrawerOpen />);
   expect(screen.queryByRole('button', { name: 'Hide track panel' })).toBeNull();
   rerender(<TrackPage {...initial} reportPresentation="dashboard" />);
   expect(screen.getByRole('button', { name: 'Hide track panel' }).getAttribute('aria-expanded')).toBe('true');
