@@ -189,33 +189,6 @@ fn known_sha(repo: &Path) -> Option<String> {
     last_known_upstream(repo).unwrap().map(|known| known.sha)
 }
 
-/// Fetch failure with a kernel ref from an earlier fetch: the base is that
-/// kernel ref, even though the remote-tracking ref is older still.
-#[tokio::test]
-async fn failed_fetch_resolves_the_kernel_ref() {
-    let attached = attached_repo();
-    let origin = attach_origin(attached.path());
-    let tracking = git(attached.path(), &["rev-parse", &origin.tracking_ref()]);
-    let fetched = origin.commit("fetched once");
-    assert!(matches!(
-        refresh_upstream(attached.path()).await,
-        UpstreamRefresh::Fetched { .. }
-    ));
-    origin.commit("never fetched");
-    break_origin(attached.path());
-
-    let refresh = refresh_upstream(attached.path()).await;
-
-    assert!(
-        matches!(refresh, UpstreamRefresh::Failed { .. }),
-        "{refresh:?}"
-    );
-    assert_ne!(fetched, tracking);
-    let known = last_known_upstream(attached.path()).unwrap().unwrap();
-    assert_eq!(known.sha, fetched);
-    assert_eq!(known.ref_name, kernel_ref(&origin));
-}
-
 /// Fetch failure and no kernel ref yet: the base is the repository's own
 /// remote-tracking ref, read and not written.
 #[tokio::test]
@@ -237,44 +210,223 @@ async fn failed_fetch_without_kernel_ref_resolves_the_tracking_ref() {
     assert_eq!(known_sha(attached.path()), Some(tracking));
 }
 
-/// The human fetched after the kernel's last fetch: the newer
-/// remote-tracking ref wins over the stale kernel ref (the descendant of the
-/// two). After a force-push, when the two have diverged, the kernel ref wins.
+/// Freshness is fetch provenance (a): the upstream is rewound from B to A and
+/// the kernel's fetch of it succeeds. The kernel ref (A) is authoritative even
+/// though the human's stale tracking ref (B) descends from it: B was removed
+/// upstream.
 #[tokio::test]
-async fn the_fresher_of_kernel_and_tracking_ref_wins() {
+async fn a_successful_fetch_of_a_rewound_upstream_is_authoritative() {
     let attached = attached_repo();
     let origin = attach_origin(attached.path());
-    let stale = origin.commit("the kernel fetched this");
+    let a = origin.commit("A");
+    let b = origin.commit("B");
+    git(attached.path(), &["fetch", "-q", "origin"]);
+    git(origin.path(), &["reset", "-q", "--hard", &a]);
+    assert!(matches!(
+        refresh_upstream(attached.path()).await,
+        UpstreamRefresh::Fetched { .. }
+    ));
+    assert_eq!(
+        git(attached.path(), &["rev-parse", &origin.tracking_ref()]),
+        b,
+        "the human's tracking ref still names the removed commit"
+    );
+
+    assert_eq!(
+        choose_lease_start(attached.path()).unwrap(),
+        LeaseStart::Upstream { sha: a.clone() }
+    );
+    assert_eq!(known_sha(attached.path()), Some(a));
+}
+
+/// (b): the kernel's last fetch failed and the human has fetched a newer
+/// commit since the kernel's last success: the tracking ref is authoritative.
+#[tokio::test]
+async fn after_a_failed_fetch_the_tracking_ref_is_authoritative() {
+    let attached = attached_repo();
+    let origin = attach_origin(attached.path());
+    let kernel_tip = origin.commit("the kernel fetched this");
     assert!(matches!(
         refresh_upstream(attached.path()).await,
         UpstreamRefresh::Fetched { .. }
     ));
     let newer = origin.commit("the human fetched this later");
     git(attached.path(), &["fetch", "-q", "origin"]);
+    break_origin(attached.path());
+    assert!(matches!(
+        refresh_upstream(attached.path()).await,
+        UpstreamRefresh::Failed { .. }
+    ));
     assert_eq!(
         git(attached.path(), &["rev-parse", &kernel_ref(&origin)]),
-        stale
+        kernel_tip
+    );
+
+    assert_eq!(
+        choose_lease_start(attached.path()).unwrap(),
+        LeaseStart::Upstream { sha: newer.clone() }
     );
     let known = last_known_upstream(attached.path()).unwrap().unwrap();
-    assert_eq!(known.sha, newer);
-    assert_eq!(known.ref_name, origin.tracking_ref());
+    assert_eq!((known.sha, known.ref_name), (newer, origin.tracking_ref()));
+}
 
-    // The kernel catches up, then the upstream is force-pushed and only the
-    // human fetches the rewrite: kernel ref and tracking ref diverge.
+/// (c): the upstream was force-pushed, the human fetched the rewrite, and
+/// the kernel's next fetch failed. The tracking ref is authoritative, so
+/// HEAD — at the old tip the kernel ref still holds — is compared with the
+/// rewrite the human sees: diverged, refused, naming the commit the human can
+/// act on (not "equal" to the stale kernel ref).
+#[tokio::test]
+async fn after_a_failed_fetch_heads_relation_is_to_the_force_pushed_tracking_ref() {
+    let attached = attached_repo();
+    let origin = attach_origin(attached.path());
+    let old_tip = origin.commit("the old tip");
     assert!(matches!(
         refresh_upstream(attached.path()).await,
         UpstreamRefresh::Fetched { .. }
     ));
+    git(attached.path(), &["fetch", "-q", "origin"]);
+    git(attached.path(), &["merge", "-q", "--ff-only", &old_tip]);
     git(origin.path(), &["reset", "-q", "--hard", "HEAD~1"]);
     let rewritten = origin.commit("rewritten history");
     git(attached.path(), &["fetch", "-q", "origin"]);
+    break_origin(attached.path());
+    assert!(matches!(
+        refresh_upstream(attached.path()).await,
+        UpstreamRefresh::Failed { .. }
+    ));
     assert_eq!(
-        git(attached.path(), &["rev-parse", &origin.tracking_ref()]),
-        rewritten
+        git(attached.path(), &["rev-parse", &kernel_ref(&origin)]),
+        old_tip
     );
+
+    let LeaseStart::Diverged { head, upstream, .. } = choose_lease_start(attached.path()).unwrap()
+    else {
+        panic!("HEAD at the old tip has diverged from the force-pushed upstream");
+    };
+    assert_eq!(head, old_tip);
+    assert_eq!(upstream.sha, rewritten);
+    assert_eq!(upstream.ref_name, origin.tracking_ref());
+}
+
+/// (d): no provenance record for this upstream (as after a restart: the
+/// kernel ref was fetched, but not by this process's provenance): the
+/// tracking ref is authoritative, even though the kernel ref is newer.
+#[tokio::test]
+async fn without_a_provenance_record_the_tracking_ref_is_authoritative() {
+    let attached = attached_repo();
+    let origin = attach_origin(attached.path());
+    let tracking = git(attached.path(), &["rev-parse", &origin.tracking_ref()]);
+    let fetched_elsewhere = origin.commit("fetched by an earlier process");
+    let earlier_process = super::upstream_fetch::FetchProvenance::default();
+    assert!(matches!(
+        super::upstream_fetch::refresh_upstream_with(
+            attached.path(),
+            std::time::Duration::from_secs(15),
+            &earlier_process,
+            std::time::Instant::now(),
+        )
+        .await,
+        UpstreamRefresh::Fetched { .. }
+    ));
+    assert_eq!(
+        git(attached.path(), &["rev-parse", &kernel_ref(&origin)]),
+        fetched_elsewhere
+    );
+
+    assert_eq!(
+        choose_lease_start(attached.path()).unwrap(),
+        LeaseStart::Upstream {
+            sha: tracking.clone()
+        }
+    );
+    assert_eq!(known_sha(attached.path()), Some(tracking));
+}
+
+/// A multi-valued `branch.<b>.merge`: the upstream is the FIRST value, as
+/// git's own `@{upstream}` resolves it — for the tracking ref and the kernel
+/// ref alike.
+#[tokio::test]
+async fn a_multi_valued_merge_resolves_as_git_does() {
+    let attached = attached_repo();
+    let origin = attach_origin(attached.path());
+    git(origin.path(), &["checkout", "-q", "-b", "other"]);
+    git(
+        origin.path(),
+        &["commit", "--allow-empty", "-q", "-m", "other"],
+    );
+    git(origin.path(), &["checkout", "-q", &origin.branch]);
+    origin.commit("main moved");
+    git(attached.path(), &["fetch", "-q", "origin"]);
+    git(
+        attached.path(),
+        &[
+            "config",
+            "--add",
+            &format!("branch.{}.merge", origin.branch),
+            "refs/heads/other",
+        ],
+    );
+    let git_upstream = git(attached.path(), &["rev-parse", "@{upstream}"]);
+    assert_eq!(
+        head_upstream(attached.path()).unwrap().unwrap().merge,
+        format!("refs/heads/{}", origin.branch)
+    );
+    assert_eq!(known_sha(attached.path()), Some(git_upstream.clone()));
+
+    assert!(matches!(
+        refresh_upstream(attached.path()).await,
+        UpstreamRefresh::Fetched { .. }
+    ));
     let known = last_known_upstream(attached.path()).unwrap().unwrap();
-    assert_eq!(known.sha, newer);
     assert_eq!(known.ref_name, kernel_ref(&origin));
+    assert_eq!(known.sha, git_upstream);
+}
+
+/// A shallow checkout strictly behind its upstream: the history needed to
+/// prove the relation is missing, so the relation is unknown — the lease
+/// starts from HEAD, not a refusal. (A complete history that diverged is
+/// still refused: [`lease_start_follows_heads_relation_to_the_upstream`].)
+#[test]
+fn a_shallow_checkout_whose_relation_is_unknown_starts_from_head() {
+    let dir = tempfile::tempdir().unwrap();
+    let origin = dir.path().join("origin");
+    let attached = dir.path().join("attached");
+    std::fs::create_dir_all(&origin).unwrap();
+    git(&origin, &["init", "-q"]);
+    for message in ["c1", "c2", "c3"] {
+        git(&origin, &["commit", "--allow-empty", "-q", "-m", message]);
+    }
+    git(
+        dir.path(),
+        &[
+            "clone",
+            "-q",
+            "--depth",
+            "1",
+            &format!("file://{}", origin.display()),
+            attached.to_str().unwrap(),
+        ],
+    );
+    let head = git(&attached, &["rev-parse", "HEAD"]);
+    for message in ["c4", "c5"] {
+        git(&origin, &["commit", "--allow-empty", "-q", "-m", message]);
+    }
+    git(&attached, &["fetch", "-q", "--depth", "1", "origin"]);
+    let upstream = git(&attached, &["rev-parse", "@{upstream}"]);
+    assert_eq!(
+        git(&attached, &["rev-parse", "--is-shallow-repository"]),
+        "true"
+    );
+    assert!(
+        !is_ancestor(&attached, &head, &upstream).unwrap()
+            && !is_ancestor(&attached, &upstream, &head).unwrap(),
+        "the shallow history cannot show that HEAD is behind"
+    );
+
+    assert_eq!(
+        choose_lease_start(&attached).unwrap(),
+        LeaseStart::Head { sha: head }
+    );
 }
 
 /// Fetch failure and neither ref resolves: no upstream is known, the base is

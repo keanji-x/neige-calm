@@ -223,7 +223,7 @@ async fn credential_demand_fails_fast_without_prompting() {
     let refresh = refresh_upstream_with(
         attached.path(),
         Duration::from_secs(15),
-        &FetchBackoff::default(),
+        &FetchProvenance::default(),
         Instant::now(),
     )
     .await;
@@ -248,7 +248,7 @@ async fn a_failed_fetch_backs_off_and_a_success_clears_it() {
     let attached = attached_repo();
     let origin = attach_origin(attached.path());
     let failing = witness_transport_then(attached.path(), "exit 1");
-    let backoff = FetchBackoff::default();
+    let backoff = FetchProvenance::default();
     let bound = Duration::from_secs(15);
     let t0 = Instant::now();
     let at = |secs: u64| t0 + Duration::from_secs(secs);
@@ -282,7 +282,10 @@ async fn a_failed_fetch_backs_off_and_a_success_clears_it() {
         UpstreamRefresh::Fetched { .. }
     ));
     assert_eq!(transport_count(&serving), 1);
-    assert_eq!(known_sha(attached.path()), Some(tip));
+    assert_eq!(
+        git(attached.path(), &["rev-parse", &kernel_ref(&origin)]),
+        tip
+    );
 
     // The success cleared the entry: the next failure is attempted at once.
     let failing_again = witness_transport_then(attached.path(), "exit 1");
@@ -339,7 +342,7 @@ async fn hanging_fetch_is_killed_at_the_bound() {
     let refresh = refresh_upstream_with(
         attached.path(),
         Duration::from_millis(1500),
-        &FetchBackoff::default(),
+        &FetchProvenance::default(),
         Instant::now(),
     )
     .await;

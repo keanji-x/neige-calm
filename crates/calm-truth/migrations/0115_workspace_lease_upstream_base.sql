@@ -1,9 +1,11 @@
 -- #1777 — a lease may start from the attached repository's upstream.
 --
 -- `workspace_leases.base_source` gains `'upstream'`: the last known commit of
--- the upstream of the branch the attached repository's HEAD is on (the
--- kernel-fetched `refs/neige/upstream/<remote>/<branch>`, else the
--- repository's own remote-tracking ref). It sits in the `head`/`commit` arm of
+-- the upstream of the branch the attached repository's HEAD is on, when HEAD
+-- is at or behind it (the kernel-fetched `refs/neige/upstream/<digest>` while
+-- the kernel's last fetch of it succeeded, else the repository's own
+-- remote-tracking ref; HEAD ahead, a shallow unknown relation or no upstream
+-- stays `'head'`, a diverged checkout gets no lease). It sits in the `head`/`commit` arm of
 -- the 0111 tuple CHECK: no `base_attempt_id`, every other base column set.
 -- Nothing else changes; the 0113 `delivery_policy` CHECK is carried over as is.
 --

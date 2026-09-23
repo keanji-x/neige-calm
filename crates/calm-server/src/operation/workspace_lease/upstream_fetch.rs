@@ -20,8 +20,15 @@
 //!   still work: they do not prompt.
 //! - It is bounded ([`UPSTREAM_FETCH_TIMEOUT`], the fetch's whole process
 //!   group killed past it), and a repository whose fetch just failed is not
-//!   fetched again for [`FETCH_BACKOFF`] ([`FetchBackoff`]): an offline remote
-//!   costs one timeout per minute, not one per worker.
+//!   fetched again for [`FETCH_BACKOFF`]: an offline remote costs one timeout
+//!   per minute, not one per worker.
+//! - It is single-flight per (common dir, kernel ref): workers dispatched in
+//!   parallel share one fetch and its outcome instead of racing for the ref
+//!   lock and recording false failures.
+//! - Its outcome is kept as fetch provenance ([`FetchProvenance`]): the
+//!   kernel ref is authoritative only while the most recent kernel fetch of
+//!   it succeeded ([`super::upstream::last_known_upstream`]).
+//! - The local reads before the fetch run on a blocking thread.
 //! - Every (remote, merge-ref) pair of a *named* remote (or `.`) is fetched.
 //!   A URL in `branch.<b>.remote` is not: there is no named remote to fetch
 //!   from; such a branch reads its remote-tracking ref, if any.
@@ -31,7 +38,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use super::upstream::{Upstream, git_output, head_upstream};
@@ -71,90 +78,168 @@ pub(crate) enum UpstreamRefresh {
     /// value git itself would not accept); the remote-tracking ref, if any, is
     /// what the lease reads.
     NotFetched { reason: String },
-    /// The kernel ref now holds the upstream's current commit.
+    /// The kernel ref now holds the upstream's current commit (this call's
+    /// fetch, or a concurrent one for the same key it waited for).
     Fetched { kernel_ref: String },
     /// A fetch of this upstream failed less than [`FETCH_BACKOFF`] ago; no
     /// fetch was attempted.
     BackedOff { kernel_ref: String },
-    /// The fetch failed or timed out; logged at `warn`.
+    /// The fetch failed or timed out (this call's, or a concurrent one it
+    /// waited for); logged at `warn`.
     Failed { reason: String },
 }
 
-/// The in-memory negative cache: (git common dir, kernel ref) → when its last
-/// fetch failed. A success clears the entry.
+/// (git common dir, kernel ref): one upstream of one repository.
+pub(crate) type FetchKey = (PathBuf, String);
+
+/// How the most recent kernel fetch of one key ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum LastFetch {
+    Succeeded,
+    Failed { at: Instant, reason: String },
+}
+
 #[derive(Default)]
-pub(crate) struct FetchBackoff {
-    failed_at: Mutex<HashMap<(PathBuf, String), Instant>>,
+struct FetchEntry {
+    last: Option<LastFetch>,
+    /// Bumped by every recorded outcome: a caller that waited on `flight`
+    /// sees whether a fetch finished meanwhile.
+    generation: u64,
+    /// Held for the whole fetch: concurrent refreshes of one key run one
+    /// fetch and share its outcome instead of racing for the ref lock.
+    flight: Arc<tokio::sync::Mutex<()>>,
 }
 
-impl FetchBackoff {
-    /// The process-wide cache production uses.
-    pub(crate) fn global() -> &'static FetchBackoff {
-        static GLOBAL: OnceLock<FetchBackoff> = OnceLock::new();
-        GLOBAL.get_or_init(FetchBackoff::default)
+/// The kernel's in-memory fetch provenance, per [`FetchKey`]: how the most
+/// recent fetch ended (the freshness rule of
+/// [`super::upstream::last_known_upstream`] and the [`FETCH_BACKOFF`] clock),
+/// and the single-flight lock. Not persisted: after a restart there is no
+/// record, and the human's remote-tracking ref is authoritative until the
+/// kernel's next successful fetch.
+#[derive(Default)]
+pub(crate) struct FetchProvenance {
+    entries: Mutex<HashMap<FetchKey, FetchEntry>>,
+}
+
+impl FetchProvenance {
+    /// The process-wide provenance production uses.
+    pub(crate) fn global() -> &'static FetchProvenance {
+        static GLOBAL: OnceLock<FetchProvenance> = OnceLock::new();
+        GLOBAL.get_or_init(FetchProvenance::default)
     }
 
-    fn backing_off(&self, key: &(PathBuf, String), now: Instant) -> bool {
-        let mut failed_at = self.failed_at.lock().unwrap_or_else(|p| p.into_inner());
-        match failed_at.get(key) {
-            Some(at) if now.saturating_duration_since(*at) < FETCH_BACKOFF => true,
-            Some(_) => {
-                failed_at.remove(key);
-                false
-            }
-            None => false,
-        }
+    fn entries(&self) -> std::sync::MutexGuard<'_, HashMap<FetchKey, FetchEntry>> {
+        self.entries.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    fn record(&self, key: (PathBuf, String), outcome: std::result::Result<(), Instant>) {
-        let mut failed_at = self.failed_at.lock().unwrap_or_else(|p| p.into_inner());
-        match outcome {
-            Ok(()) => {
-                failed_at.remove(&key);
-            }
-            Err(at) => {
-                failed_at.insert(key, at);
-            }
-        }
+    /// Whether the most recent kernel fetch of `key` succeeded — the one case
+    /// in which the kernel ref is authoritative.
+    pub(crate) fn last_fetch_succeeded(&self, key: &FetchKey) -> bool {
+        self.entries()
+            .get(key)
+            .is_some_and(|entry| entry.last == Some(LastFetch::Succeeded))
+    }
+
+    fn flight(&self, key: &FetchKey) -> (Arc<tokio::sync::Mutex<()>>, u64) {
+        let mut entries = self.entries();
+        let entry = entries.entry(key.clone()).or_default();
+        (entry.flight.clone(), entry.generation)
+    }
+
+    fn snapshot(&self, key: &FetchKey) -> (u64, Option<LastFetch>) {
+        let entries = self.entries();
+        entries
+            .get(key)
+            .map(|entry| (entry.generation, entry.last.clone()))
+            .unwrap_or_default()
+    }
+
+    fn record(&self, key: &FetchKey, last: LastFetch) {
+        let mut entries = self.entries();
+        let entry = entries.entry(key.clone()).or_default();
+        entry.last = Some(last);
+        entry.generation += 1;
     }
 }
 
-/// Fetch HEAD's upstream into its kernel ref with the production bound, cache
-/// and clock. Never inside a database transaction.
+/// Fetch HEAD's upstream into its kernel ref with the production bound,
+/// provenance and clock. Never inside a database transaction.
 pub(crate) async fn refresh_upstream(repo_root: &Path) -> UpstreamRefresh {
     refresh_upstream_with(
         repo_root,
         UPSTREAM_FETCH_TIMEOUT,
-        FetchBackoff::global(),
+        FetchProvenance::global(),
         Instant::now(),
     )
     .await
 }
 
-/// [`refresh_upstream`] with the bound, the negative cache and the clock
+/// What the fetch needs, read from the repository before it.
+struct PreparedFetch {
+    upstream: Upstream,
+    kernel_ref: String,
+    key: FetchKey,
+}
+
+/// The local reads before a fetch (upstream config, fetchability, common
+/// dir); run on a blocking thread.
+fn prepare_fetch(repo_root: &Path) -> std::result::Result<PreparedFetch, UpstreamRefresh> {
+    let upstream = match head_upstream(repo_root) {
+        Ok(Some(upstream)) => upstream,
+        Ok(None) => return Err(UpstreamRefresh::NoUpstream),
+        Err(error) => {
+            return Err(failed(
+                repo_root,
+                format!("reading the upstream failed: {error}"),
+            ));
+        }
+    };
+    if let Some(reason) = not_fetchable(repo_root, &upstream) {
+        tracing::debug!(repo_root = %repo_root.display(), reason, "upstream not fetched");
+        return Err(UpstreamRefresh::NotFetched { reason });
+    }
+    let kernel_ref = upstream.kernel_ref();
+    let common_dir = super::base::lease_git_common_dir(repo_root)
+        .map_err(|error| failed(repo_root, format!("reading the common dir failed: {error}")))?;
+    Ok(PreparedFetch {
+        key: (common_dir, kernel_ref.clone()),
+        upstream,
+        kernel_ref,
+    })
+}
+
+/// [`refresh_upstream`] with the bound, the provenance and the clock
 /// injected.
 pub(crate) async fn refresh_upstream_with(
     repo_root: &Path,
     bound: Duration,
-    backoff: &FetchBackoff,
+    provenance: &FetchProvenance,
     now: Instant,
 ) -> UpstreamRefresh {
-    let upstream = match head_upstream(repo_root) {
-        Ok(Some(upstream)) => upstream,
-        Ok(None) => return UpstreamRefresh::NoUpstream,
-        Err(error) => return failed(repo_root, format!("reading the upstream failed: {error}")),
+    let root = repo_root.to_path_buf();
+    let prepared = match tokio::task::spawn_blocking(move || prepare_fetch(&root)).await {
+        Ok(Ok(prepared)) => prepared,
+        Ok(Err(outcome)) => return outcome,
+        Err(error) => return failed(repo_root, format!("upstream read task failed: {error}")),
     };
-    if let Some(reason) = not_fetchable(repo_root, &upstream) {
-        tracing::debug!(repo_root = %repo_root.display(), reason, "upstream not fetched");
-        return UpstreamRefresh::NotFetched { reason };
+    let PreparedFetch {
+        upstream,
+        kernel_ref,
+        key,
+    } = prepared;
+    let (flight, generation) = provenance.flight(&key);
+    let _in_flight = flight.lock().await;
+    let (current, last) = provenance.snapshot(&key);
+    if current != generation {
+        // A fetch of this key finished while this call waited: share it.
+        return match last {
+            Some(LastFetch::Failed { reason, .. }) => UpstreamRefresh::Failed { reason },
+            _ => UpstreamRefresh::Fetched { kernel_ref },
+        };
     }
-    let kernel_ref = upstream.kernel_ref();
-    let common_dir = match super::base::lease_git_common_dir(repo_root) {
-        Ok(common_dir) => common_dir,
-        Err(error) => return failed(repo_root, format!("reading the common dir failed: {error}")),
-    };
-    let key = (common_dir, kernel_ref.clone());
-    if backoff.backing_off(&key, now) {
+    if let Some(LastFetch::Failed { at, .. }) = &last
+        && now.saturating_duration_since(*at) < FETCH_BACKOFF
+    {
         tracing::debug!(
             repo_root = %repo_root.display(),
             kernel_ref,
@@ -162,17 +247,29 @@ pub(crate) async fn refresh_upstream_with(
         );
         return UpstreamRefresh::BackedOff { kernel_ref };
     }
-    let result = match clear_symbolic_destination(repo_root, &kernel_ref) {
+    let root = repo_root.to_path_buf();
+    let destination = kernel_ref.clone();
+    let cleared =
+        tokio::task::spawn_blocking(move || clear_symbolic_destination(&root, &destination))
+            .await
+            .unwrap_or_else(|error| Err(format!("symbolic-ref check task failed: {error}")));
+    let result = match cleared {
         Ok(()) => fetch_into(repo_root, &upstream, &kernel_ref, bound).await,
         Err(reason) => Err(reason),
     };
     match result {
         Ok(()) => {
-            backoff.record(key, Ok(()));
+            provenance.record(&key, LastFetch::Succeeded);
             UpstreamRefresh::Fetched { kernel_ref }
         }
         Err(reason) => {
-            backoff.record(key, Err(now));
+            provenance.record(
+                &key,
+                LastFetch::Failed {
+                    at: now,
+                    reason: reason.clone(),
+                },
+            );
             failed(repo_root, reason)
         }
     }

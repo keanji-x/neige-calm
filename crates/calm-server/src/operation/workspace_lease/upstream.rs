@@ -12,7 +12,8 @@
 //! | no upstream, or nothing of it resolves | HEAD | `head` |
 //! | HEAD == U, or HEAD is an ancestor of U (behind) | U | `upstream` |
 //! | U is an ancestor of HEAD (ahead: unpushed local commits) | HEAD, which contains U | `head` |
-//! | diverged (neither contains the other) | refused: [`ATTACHED_REPO_DIVERGED`] | — |
+//! | diverged (neither contains the other) in a complete history | refused: [`ATTACHED_REPO_DIVERGED`] | — |
+//! | neither check succeeds in a shallow history (unknown) | HEAD, with a `warn!` | `head` |
 //!
 //! A diverged checkout is a human decision (push, rebase or reset); the lease
 //! is refused rather than guessed at ([`diverged_refusal`]).
@@ -26,6 +27,7 @@ use std::path::Path;
 
 use sha2::{Digest, Sha256};
 
+use super::upstream_fetch::FetchProvenance;
 use crate::error::{CalmError, Result};
 use crate::workspace_materialize::neige_git_command;
 
@@ -82,8 +84,18 @@ pub(crate) fn head_upstream(repo_root: &Path) -> Result<Option<Upstream>> {
         return Ok(None);
     };
     let (Some(remote), Some(merge)) = (
-        config_value(repo_root, &format!("branch.{branch}.remote"))?,
-        config_value(repo_root, &format!("branch.{branch}.merge"))?,
+        // As git resolves `@{upstream}`: the remote is the last value (plain
+        // config), the merge ref the FIRST of `branch.<b>.merge`'s values.
+        config_value(
+            repo_root,
+            &format!("branch.{branch}.remote"),
+            ConfigPick::Last,
+        )?,
+        config_value(
+            repo_root,
+            &format!("branch.{branch}.merge"),
+            ConfigPick::First,
+        )?,
     ) else {
         return Ok(None);
     };
@@ -115,16 +127,27 @@ pub(crate) fn head_upstream(repo_root: &Path) -> Result<Option<Upstream>> {
     }))
 }
 
-/// `git config --get <key>`: `Ok(None)` when unset (exit 1) or empty.
-fn config_value(repo_root: &Path, key: &str) -> Result<Option<String>> {
-    let args = ["config", "--get", key];
+/// Which value of a multi-valued config key git itself uses.
+#[derive(Clone, Copy)]
+enum ConfigPick {
+    First,
+    Last,
+}
+
+/// `git config --get-all <key>`, picking the value git uses; `Ok(None)` when
+/// unset (exit 1) or empty.
+fn config_value(repo_root: &Path, key: &str, pick: ConfigPick) -> Result<Option<String>> {
+    let args = ["config", "-z", "--get-all", key];
     let output = git_output(repo_root, &args)?;
     match output.status.code() {
         Some(0) => {
-            let value = String::from_utf8_lossy(&output.stdout)
-                .trim_end_matches('\n')
-                .to_string();
-            Ok((!value.is_empty()).then_some(value))
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let mut values = stdout.split('\0').filter(|value| !value.is_empty());
+            let value = match pick {
+                ConfigPick::First => values.next(),
+                ConfigPick::Last => values.next_back(),
+            };
+            Ok(value.map(str::to_string))
         }
         Some(1) => Ok(None),
         _ => Err(super::git_failed(
@@ -144,16 +167,21 @@ pub(crate) struct KnownUpstream {
     pub sha: String,
 }
 
-/// The freshest known commit of HEAD's upstream. Both candidates are read:
-/// the kernel ref (the submit-path fetch; a symbolic one is ignored — it
-/// could point anywhere) and the repository's own remote-tracking ref
-/// (read-only; the human may have fetched more recently than the kernel,
-/// e.g. while the kernel's fetches fail). When both resolve, the descendant
-/// wins. When they have diverged (a force-push between the two fetches), the
-/// kernel ref wins: it is refreshed on every worker submit, so it is the
-/// later observation unless the kernel's fetches are failing — and a failing
-/// fetch is logged. `Ok(None)` when HEAD has no upstream or neither ref
-/// resolves — the base is then HEAD. Local only; never fetches.
+/// HEAD's upstream as last known, by fetch provenance — never by comparing
+/// the two candidate refs' ancestry (an upstream can be rewound or
+/// force-pushed; the older commit may be the right one):
+///
+/// - the most recent kernel fetch of this upstream succeeded
+///   ([`FetchProvenance::last_fetch_succeeded`]) → the kernel ref is
+///   authoritative: it is the upstream as the remote had it moments ago;
+/// - otherwise (the last fetch failed or was backed off, or there is no
+///   record, e.g. after a restart) → the repository's own remote-tracking ref
+///   when it resolves: it is the human's view, the one a refusal can name and
+///   the human can act on; the kernel ref only when no tracking ref resolves.
+///
+/// A symbolic kernel ref is never read (it could point anywhere).
+/// `Ok(None)` when HEAD has no upstream or nothing of it resolves — the base
+/// is then HEAD. Local only; never fetches.
 pub(crate) fn last_known_upstream(repo_root: &Path) -> Result<Option<KnownUpstream>> {
     let Some(upstream) = head_upstream(repo_root)? else {
         return Ok(None);
@@ -173,16 +201,17 @@ pub(crate) fn last_known_upstream(repo_root: &Path) -> Result<Option<KnownUpstre
         }),
         None => None,
     };
-    Ok(match (kernel, tracking) {
-        (Some(kernel), Some(tracking)) => {
-            if kernel.sha != tracking.sha && is_ancestor(repo_root, &kernel.sha, &tracking.sha)? {
-                Some(tracking)
-            } else {
-                Some(kernel)
-            }
-        }
-        (kernel, tracking) => kernel.or(tracking),
-    })
+    let Some(kernel) = kernel else {
+        return Ok(tracking);
+    };
+    let key = (
+        super::base::lease_git_common_dir(repo_root)?,
+        kernel.ref_name.clone(),
+    );
+    if FetchProvenance::global().last_fetch_succeeded(&key) {
+        return Ok(Some(kernel));
+    }
+    Ok(Some(tracking.unwrap_or(kernel)))
 }
 
 /// Where a new lease starts, by the relation of HEAD to its upstream as last
@@ -205,8 +234,9 @@ pub(crate) enum LeaseStart {
 }
 
 /// The prepare transaction's base decision. Local reads only: `rev-parse`,
-/// `for-each-ref`, `merge-base --is-ancestor`, and a `rev-list --count` only
-/// for the refusal's counts.
+/// `for-each-ref`, `merge-base --is-ancestor`, and — only when neither
+/// ancestry check succeeds — `--is-shallow-repository` and the refusal's
+/// `rev-list --count`. Only proven divergence (a complete history) refuses.
 pub(crate) fn choose_lease_start(repo_root: &Path) -> Result<LeaseStart> {
     let head = super::base::resolve_head_base(repo_root)?;
     let Some(upstream) = last_known_upstream(repo_root)? else {
@@ -216,6 +246,18 @@ pub(crate) fn choose_lease_start(repo_root: &Path) -> Result<LeaseStart> {
         return Ok(LeaseStart::Upstream { sha: upstream.sha });
     }
     if is_ancestor(repo_root, &upstream.sha, &head)? {
+        return Ok(LeaseStart::Head { sha: head });
+    }
+    if is_shallow(repo_root)? {
+        // Neither check succeeded, but a shallow history cannot prove
+        // divergence: the relation is unknown. HEAD, as before #1777.
+        tracing::warn!(
+            repo_root = %repo_root.display(),
+            head,
+            upstream = upstream.sha,
+            "attached repository is shallow: HEAD's relation to its upstream is unknown; \
+             the lease starts from HEAD"
+        );
         return Ok(LeaseStart::Head { sha: head });
     }
     let (ahead, behind) = ahead_behind(repo_root, &head, &upstream.sha)?;
@@ -262,6 +304,12 @@ pub(crate) fn is_ancestor(repo_root: &Path, ancestor: &str, descendant: &str) ->
             &output,
         )),
     }
+}
+
+/// `git rev-parse --is-shallow-repository`.
+fn is_shallow(repo_root: &Path) -> Result<bool> {
+    let printed = git_success(repo_root, &["rev-parse", "--is-shallow-repository"])?;
+    Ok(printed.trim() == "true")
 }
 
 /// `git rev-list --left-right --count <head>...<upstream>`: (ahead, behind).
