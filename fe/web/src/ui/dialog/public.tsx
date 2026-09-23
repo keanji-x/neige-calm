@@ -25,23 +25,15 @@ export interface ConfirmDialogProps {
 const DialogViewContext = createContext<DialogViewController | null>(null);
 export function useDialogView(): DialogViewController | null { return useContext(DialogViewContext); }
 
-const focusableSelector = 'a[href],area[href],button:not([disabled]),input:not([disabled]):not([type="hidden"]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"]),[contenteditable="true"],summary:first-of-type:not([tabindex])';
+const focusableSelector = 'a[href],area[href],button:not([disabled]),input:not([disabled]):not([type="hidden"]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"]),[contenteditable="true"]';
 function focusables(panel: HTMLElement): HTMLElement[] {
-  return Array.from(panel.querySelectorAll<HTMLElement>(focusableSelector)).filter((element) => {
-    // Only the first direct summary gains a native tab stop without tabindex.
-    if (element.matches('summary:not([tabindex]):not([contenteditable="true"])')
-      && !element.parentElement?.matches('details')) return false;
-    return !element.hasAttribute('disabled') && !element.closest('[inert]') && isVisibleWithin(element, panel);
-  });
+  return Array.from(panel.querySelectorAll<HTMLElement>(focusableSelector)).filter((element) =>
+    !element.hasAttribute('disabled') && !element.closest('[inert]') && isVisibleWithin(element, panel));
 }
 function isVisibleWithin(element: HTMLElement, panel: HTMLElement): boolean {
   for (let current: HTMLElement | null = element; current; current = current.parentElement) {
     const style = getComputedStyle(current);
     if (current.hidden || style.display === 'none' || style.visibility === 'hidden') return false;
-    // Closed details hide everything except their first direct summary subtree;
-    // computed display/visibility on those hidden descendants do not reflect it.
-    if (current !== element && current.matches('details:not([open])')
-      && !current.querySelector(':scope > summary')?.contains(element)) return false;
     if (current === panel) break;
   }
   return true;

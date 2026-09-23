@@ -102,7 +102,7 @@ describe('the track lifecycle status in the page header', () => {
     await browserPage.viewport(1200, 800);
     renderPage({
       inputNotifications: plannerNotification,
-      sideDrawerOpen: true,
+      conversationOpen: true,
     });
 
     const notice = document.querySelector<HTMLElement>('[data-nc-needs-input-notice]')!;

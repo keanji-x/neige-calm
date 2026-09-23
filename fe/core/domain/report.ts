@@ -262,16 +262,6 @@ export type TrackReport = Readonly<{
   blocks: readonly ReportBlock[] | null;
 }>;
 
-export type ReportPresentation = 'document' | 'dashboard';
-
-/** Layout follows the declared block kind, including an unreadable native view.
- * Payload validity still belongs to the reader; titles and plugin data are not layout hints. */
-export function deriveReportPresentation(report: TrackReport | null): ReportPresentation {
-  return report?.blocks?.some(block => block.kind === 'view'
-    || (block.kind === 'unsupported' && block.declaredKind === 'view'))
-    ? 'dashboard' : 'document';
-}
-
 /**
  * The track's report, or `null` when it has none — no card, an unparseable payload, or one empty in
  * both projections.
