@@ -48,6 +48,8 @@ def test_compact_template_retains_complete_analytical_facts_for_planner():
             if source.get('type') != 'constraint':
                 asset = facts['portfolio']['assets'][source['asset']]
                 assert fields['标的代码'] == asset['symbol']
+                assert Decimal(fields['持仓数量 / 股'].replace(',', '')) == Decimal(str(asset['quantity']))
+                assert Decimal(fields['持仓市值 / USD'].replace(',', '')) == Decimal(str(asset['value']))
                 amount = Decimal(fields['本日盈亏贡献 / USD'].replace(',', ''))
                 assert amount == Decimal(str(asset['day']))
                 pnl += amount

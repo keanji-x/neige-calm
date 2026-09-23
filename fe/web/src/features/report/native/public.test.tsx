@@ -109,6 +109,24 @@ it('keeps complete analytical fields in details without filling the preview card
   expect(records.datasets[0].items[0].facts).toHaveLength(3);
 });
 
+it('keeps evidence control and panel IDs distinct for author-chosen suffixes', async () => {
+  const view = structuredClone(payload);
+  const records = view.rows[2].cells[0];
+  if (records.kind !== 'records') throw new Error('Expected record fixture');
+  const record = records.datasets[0].items[0];
+  record.evidence.push({ ...record.evidence[0], id: 'e1-label', body: 'Second observation' });
+  const { container } = render(<NativeReportView payload={view} />);
+  await userEvent.click(screen.getByRole('button', { name: '查看详情' }));
+  const button = screen.getByRole('button', { name: /e1-label ·/ });
+  const panel = document.getElementById(button.getAttribute('aria-controls')!);
+  expect(panel?.getAttribute('role')).toBe('region');
+  expect(panel?.getAttribute('aria-labelledby')).toBe(button.id);
+  const ids = [...container.querySelectorAll('[id]')].map(element => element.id);
+  expect(new Set(ids).size).toBe(ids.length);
+  await userEvent.click(button);
+  expect(panel?.hidden).toBe(false);
+});
+
 it('preserves the selected research scenario and evidence rather than reverting to r1', async () => {
   const example = nativeViewPayloadSchema.parse(JSON.parse(readFileSync(resolve(process.cwd(), '../plugins/paper-trading/examples/native-demo.json'), 'utf8')));
   render(<NativeReportView payload={example} />);

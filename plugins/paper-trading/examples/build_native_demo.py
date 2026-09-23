@@ -60,7 +60,9 @@ def create_view(facts):
         if not constraint:
             asset = assets[item['asset']]
             facts.extend([{'label': '标的代码', 'value': asset['symbol']},
-                          {'label': '本日盈亏贡献 / USD', 'value': f"{asset['day']:+,.2f}"}])
+                          {'label': '本日盈亏贡献 / USD', 'value': f"{asset['day']:+,.2f}"},
+                          {'label': '持仓数量 / 股', 'value': f"{asset['quantity']:,}"},
+                          {'label': '持仓市值 / USD', 'value': f"{asset['value']:,.2f}"}])
         facts.extend([{'label': '资料状态', 'value': item['data']}, {'label': '核验期限', 'value': item['deadline']},
                       {'label': '登记时间', 'value': item['registered']}, {'label': '依据', 'value': ('演示约束' if constraint else '预注册') + ' v1'},
                       {'label': '排期说明', 'value': '预设场景中的拟检查日期；没有实际调度、已执行检查或正式延期记录。'}])

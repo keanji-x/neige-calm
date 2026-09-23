@@ -46,14 +46,15 @@ export function RecordBrowser({ component, selection, onSelection }: {
         <dt>{section.label}</dt><dd>{section.body}</dd>
       </div>)}</dl>
       {selected.evidence.map(e => {
-        const panelId = `${disclosureId}-${selected.id}-${e.id}`;
+        const panelId = `${disclosureId}-panel-${selected.id}-${e.id}`;
+        const buttonId = `${disclosureId}-button-${selected.id}-${e.id}`;
         const open = selection.evidence.includes(e.id);
         return <div key={e.id} className={styles.evidence}>
-          <button type="button" id={`${panelId}-label`} className={styles.disclosureToggle} aria-expanded={open} aria-controls={panelId}
+          <button type="button" id={buttonId} className={styles.disclosureToggle} aria-expanded={open} aria-controls={panelId}
             onClick={() => onSelection({ ...selection, evidence: open ? selection.evidence.filter(id => id !== e.id) : [...selection.evidence, e.id] })}>
             <Icon name="chevron-right" size="sm" /><span><span className={styles[e.tone]}>{e.id}</span> · {e.date} · {e.label}</span>
           </button>
-          <div id={panelId} hidden={!open} role="region" aria-labelledby={`${panelId}-label`}><blockquote>{e.body}</blockquote><p>{e.note}</p></div>
+          <div id={panelId} hidden={!open} role="region" aria-labelledby={buttonId}><blockquote>{e.body}</blockquote><p>{e.note}</p></div>
         </div>;
       })}
     </section>}
