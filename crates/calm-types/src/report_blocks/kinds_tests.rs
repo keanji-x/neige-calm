@@ -122,6 +122,62 @@ fn app_payload_valid_and_invalid() {
 }
 
 #[test]
+fn preview_payload_valid_and_invalid() {
+    assert_eq!(
+        validate_payload(
+            KIND_PREVIEW,
+            &json!({ "key": "fe", "title": "前端", "path": "/next/", "height": 720 })
+        ),
+        Ok(())
+    );
+    assert_eq!(
+        validate_payload(KIND_PREVIEW, &json!({ "key": "a" })),
+        Ok(())
+    );
+    let max_key = format!("0{}", "a-_".repeat(21));
+    assert_eq!(max_key.len(), 64);
+    assert_eq!(
+        validate_payload(KIND_PREVIEW, &json!({ "key": max_key })),
+        Ok(())
+    );
+    for (payload, needle) in [
+        (json!({}), "key: required"),
+        (json!({ "key": "FE" }), "key: required"),
+        (json!({ "key": "-fe" }), "key: required"),
+        (json!({ "key": "fe.1" }), "key: required"),
+        (
+            json!({ "key": format!("a{}", "b".repeat(64)) }),
+            "key: required",
+        ),
+        (json!({ "key": 7 }), "key: required"),
+        (
+            json!({ "key": "fe", "path": "//evil.example/x" }),
+            "path: must be",
+        ),
+        (json!({ "key": "fe", "path": "next/" }), "path: must be"),
+        (
+            json!({ "key": "fe", "path": "/\\evil.example" }),
+            "path: must be",
+        ),
+        (
+            json!({ "key": "fe", "path": "/\n/evil.example" }),
+            "path: must be",
+        ),
+        (json!({ "key": "fe", "path": 1 }), "path: must be"),
+        (json!({ "key": "fe", "height": 50 }), "height"),
+        (json!({ "key": "fe", "height": 2001 }), "height"),
+        (
+            json!({ "key": "fe", "title": 1 }),
+            "title: must be a string",
+        ),
+        (json!({ "key": "fe", "port": 4050 }), "port: unknown field"),
+    ] {
+        let err = validate_payload(KIND_PREVIEW, &payload).unwrap_err();
+        assert!(err.contains(needle), "{payload} → {err}");
+    }
+}
+
+#[test]
 fn payload_size_caps_are_enforced_with_the_limit_in_the_error() {
     let candles: Vec<Value> = (0..(MAX_CHART_CANDLES as i64 + 1))
         .map(|i| json!([i, 1, 2, 0, 1]))
@@ -198,9 +254,17 @@ fn unknown_kind_is_an_error() {
     assert!(is_data_kind("chart.candles"));
     assert!(is_data_kind("chart.series"));
     assert!(is_data_kind("task"));
+    assert!(is_data_kind("preview"));
     assert_eq!(
         DATA_KINDS,
-        ["chart.candles", "chart.series", "table", "app", "task"],
+        [
+            "chart.candles",
+            "chart.series",
+            "table",
+            "app",
+            "task",
+            "preview"
+        ],
         "the closed data-kind set, in blocks.kinds order"
     );
     assert!(

@@ -12,6 +12,7 @@ pub const KIND_CHART_SERIES: &str = "chart.series";
 pub const KIND_TABLE: &str = "table";
 pub const KIND_APP: &str = "app";
 pub const KIND_TASK: &str = "task";
+pub const KIND_PREVIEW: &str = "preview";
 
 /// Maximum candle rows in a `chart.candles` payload.
 pub const MAX_CHART_CANDLES: usize = 5000;
@@ -27,12 +28,13 @@ pub const MAX_STRING_CHARS: usize = 2048;
 pub const MAX_CANONICAL_BYTES: usize = 256 * 1024;
 
 /// The non-prose kinds a report may contain, in `blocks.kinds` order.
-pub const DATA_KINDS: [&str; 5] = [
+pub const DATA_KINDS: [&str; 6] = [
     KIND_CHART_CANDLES,
     KIND_CHART_SERIES,
     KIND_TABLE,
     KIND_APP,
     KIND_TASK,
+    KIND_PREVIEW,
 ];
 
 pub fn is_data_kind(kind: &str) -> bool {
@@ -74,6 +76,7 @@ pub fn validate_payload(kind: &str, payload: &Value) -> Result<(), String> {
         KIND_TABLE => validate_table(map, &mut errors),
         KIND_APP => validate_app(map, &mut errors),
         KIND_TASK => validate_task(map, &mut errors),
+        KIND_PREVIEW => validate_preview(map, &mut errors),
         other => errors.push(format!(
             "unknown block kind `{other}` — known data kinds: {}",
             DATA_KINDS.join(", ")
@@ -603,23 +606,55 @@ fn validate_table(map: &Map<String, Value>, errors: &mut Vec<String>) {
 fn validate_app(map: &Map<String, Value>, errors: &mut Vec<String>) {
     reject_unknown(map, &["src", "title", "height"], errors);
     match map.get("src") {
-        Some(Value::String(src))
-            if src.starts_with('/')
-                && !src.starts_with("//")
-                && !src.contains('\\')
-                && !src.chars().any(is_url_hostile_char) =>
-        {
+        Some(Value::String(src)) if is_same_origin_path(src) => {
             check_string_cap("src", src, errors);
         }
-        Some(_) | None => errors.push(
-            "src: required same-origin path starting with `/` (no scheme, no `//host`, no \
-             backslashes, no control characters — the WHATWG URL parser strips tab/newline/C0 \
-             controls before parsing, so `/\\host` or `/\\n/host` would normalize to a \
-             protocol-relative URL; percent-encoded forms like `/%0A` are fine)"
-                .into(),
-        ),
+        Some(_) | None => errors.push(format!("src: required {SAME_ORIGIN_PATH_RULE}")),
     }
     optional_string(map, "title", errors);
+    optional_height(map, errors);
+}
+
+/// `preview` (#1780): a registered dev-server preview of this track, named by `key` (the
+/// `calm.preview.register` key); `path` is the path opened on the preview port.
+fn validate_preview(map: &Map<String, Value>, errors: &mut Vec<String>) {
+    reject_unknown(map, &["key", "title", "path", "height"], errors);
+    match map.get("key") {
+        Some(Value::String(key)) if is_preview_key(key) => {}
+        _ => errors.push("key: required string matching ^[a-z0-9][a-z0-9_-]{0,63}$".into()),
+    }
+    optional_string(map, "title", errors);
+    match map.get("path") {
+        None => {}
+        Some(Value::String(path)) if is_same_origin_path(path) => {
+            check_string_cap("path", path, errors);
+        }
+        Some(_) => errors.push(format!("path: must be a {SAME_ORIGIN_PATH_RULE}")),
+    }
+    optional_height(map, errors);
+}
+
+/// `^[a-z0-9][a-z0-9_-]{0,63}$`, the `calm.preview.register` key.
+fn is_preview_key(key: &str) -> bool {
+    let head = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit();
+    key.len() <= 64
+        && key.chars().next().is_some_and(head)
+        && key.chars().all(|c| head(c) || c == '_' || c == '-')
+}
+
+const SAME_ORIGIN_PATH_RULE: &str = "same-origin path starting with `/` (no scheme, no \
+     `//host`, no backslashes, no control characters — the WHATWG URL parser strips \
+     tab/newline/C0 controls before parsing, so `/\\host` or `/\\n/host` would normalize to a \
+     protocol-relative URL; percent-encoded forms like `/%0A` are fine)";
+
+fn is_same_origin_path(path: &str) -> bool {
+    path.starts_with('/')
+        && !path.starts_with("//")
+        && !path.contains('\\')
+        && !path.chars().any(is_url_hostile_char)
+}
+
+fn optional_height(map: &Map<String, Value>, errors: &mut Vec<String>) {
     if let Some(height) = map.get("height") {
         match height.as_f64() {
             Some(px) if (120.0..=2000.0).contains(&px) => {}

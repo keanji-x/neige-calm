@@ -48,6 +48,7 @@ import { ReportDocument } from '../../features/report/document/public.tsx';
 import { useIndependentTaskLaunch } from './independent-task.tsx';
 import { useTaskArtifactFiles } from './task-artifact-files.tsx';
 import { TaskRecovery, useCurrentTaskRows } from './task-recovery.tsx';
+import { useReportPreviewResolver } from './report-preview.ts';
 import { useReportSeriesResolver } from './report-series.ts';
 import { ReportSourceDrawer } from './report-source.tsx';
 import { ReportEmpty } from '../../features/report/empty/public.tsx';
@@ -2078,6 +2079,8 @@ function TrackRouteBody({
   /* One query per `chart.series` block, keyed by the block's rev; opening the
        report is what makes the kernel fetch the data. */
   const resolveSeries = useReportSeriesResolver(transport, track.id, reportBlocks, unauthorized);
+  /* One polled read of the track's previews, only while the report has a `preview` block. */
+  const resolvePreview = useReportPreviewResolver(transport, track.id, reportBlocks, unauthorized);
   const conversationNotificationCardIds = useMemo(
     () => new Set(cards
       .filter((card) => card.kind === 'codex'
@@ -2342,6 +2345,7 @@ function TrackRouteBody({
                    re-renders the block without the report being rewritten. */
         resolveLiveTable={resolveLiveTable}
         resolveSeries={resolveSeries}
+        resolvePreview={resolvePreview}
         taskVerdicts={verdicts}
         taskRows={tasks}
         renderTaskExecution={(task, expanded) => <TaskRecovery

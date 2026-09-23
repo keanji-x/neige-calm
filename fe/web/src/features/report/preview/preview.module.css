@@ -1,0 +1,96 @@
+@layer features {
+  /*
+   * The `app` block's register (see `../app/app.module.css`): a tint and no
+   * border, named underneath. A preview differs in two ways: it has controls
+   * (width and fullscreen), which sit at the far end of the caption line in
+   * the chrome register like the chart's range switcher, and it has states
+   * (not registered, offline, LAN only), which take the frame's place at the
+   * frame's height so the page does not jump when the dev server comes up.
+   */
+  .figure {
+    margin: 0;
+  }
+
+  .figure:fullscreen {
+    display: flex;
+    flex-direction: column;
+    padding: var(--space-4);
+    background: var(--bg);
+  }
+
+  .stage {
+    display: flex;
+    justify-content: center;
+  }
+
+  .figure:fullscreen .stage {
+    flex: 1;
+  }
+
+  .iframe {
+    display: block;
+    inline-size: 100%;
+    max-inline-size: 100%;
+    block-size: 100%;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: var(--surface-code);
+  }
+
+  /* The state line, in the caption register, centred in the frame's footprint. */
+  .placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--space-4);
+    border-radius: var(--radius-sm);
+    background: var(--surface-code);
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+    text-align: center;
+  }
+
+  .caption {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-3);
+    margin-block-start: var(--space-3);
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+  }
+
+  .title {
+    min-inline-size: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .controls {
+    display: flex;
+    gap: var(--space-1);
+    margin-inline-start: auto;
+  }
+
+  .control {
+    padding-inline: var(--space-3);
+    block-size: var(--control-h);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+    color: var(--text-3);
+    cursor: pointer;
+  }
+
+  .control:hover,
+  .control:focus-visible {
+    background: var(--overlay-hover);
+  }
+
+  .control[aria-pressed="true"] {
+    background: var(--accent-soft);
+    color: var(--text);
+  }
+}
