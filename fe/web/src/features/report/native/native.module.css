@@ -45,6 +45,7 @@
   .detailHeader > div > span { color: var(--text-3); font-size: var(--text-xs); }
   .detailHeader button { flex: none; }
   .detailSummary { color: var(--text-2); font-size: 13px; margin-block: var(--space-4); }
+  .recordStates { display: flex; flex-wrap: wrap; gap: var(--space-4); font-size: 12px; margin-block: var(--space-3); }
   .sections { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 var(--space-7); }
   .section { border-bottom: 1px solid var(--hairline); padding-block: var(--space-3); font-size: var(--text-base); }
   .section dt { font-size: var(--text-xs); color: var(--text-3); margin-block-end: var(--space-2); }

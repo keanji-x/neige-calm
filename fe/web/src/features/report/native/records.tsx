@@ -37,6 +37,8 @@ export function RecordBrowser({ component, selection, onSelection }: {
     {selected && <section className={styles.recordDetail} aria-label={`${selected.title} 详情`}>
       <header className={styles.detailHeader}><div><span>{selected.id} · {selected.category}</span><h4>{selected.title}</h4></div>
         <button type="button" className={styles.expand} aria-label="收起详情" title="收起详情" onClick={closeDetail}><Icon name="close" size="sm" /></button></header>
+      <p className={styles.recordStates}><span className={styles[selected.status.tone]}>状态：{selected.status.label}</span>
+        <span className={styles[selected.handling.tone]}>处理：{selected.handling.label}</span></p>
       <p className={styles.detailSummary}>{selected.summary}</p>
       <dl className={styles.facts}>{selected.facts.map((field, index) => <div key={index}><dt>{field.label}</dt><dd>{field.value}</dd></div>)}</dl>
       <dl className={styles.sections}>{selected.sections.map((section, index) => <div key={index} className={styles.section}>
