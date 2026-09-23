@@ -1,12 +1,14 @@
 //! #1780 `calm.preview.register` / `calm.preview.unregister`: bind a loopback dev server to a
 //! preview gateway pool port for the caller's own track. The track is always
-//! `identity.track_id`, never an argument, so registrations are per track.
+//! `identity.track_id`, never an argument (unknown arguments are ignored, as in sibling tools), so
+//! registrations are per track. Planner-only: Dispatch workers are isolated, have no network, and
+//! their MCP grant allowlist does not include these tools.
 
 use crate::ids::TrackId;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    require_role_any, role_gated_write_annotations,
+    require_role, role_gated_write_annotations,
 };
 use crate::model::CardRole;
 use crate::preview::PreviewRegistry;
@@ -16,10 +18,6 @@ use std::sync::Arc;
 pub const TOOL_PREVIEW_REGISTER: &str = "calm.preview.register";
 pub const TOOL_PREVIEW_UNREGISTER: &str = "calm.preview.unregister";
 
-/// Planner and Worker may call; only the Planner (the documented path, via `calm.terminal.open`)
-/// sees the tools in `tools/list`, so worker prompts need not advertise them.
-const ROLES: &[CardRole] = &[CardRole::Planner, CardRole::Worker];
-const VISIBLE_TO: &[CardRole] = &[CardRole::Planner];
 const KEY_PATTERN: &str = "^[a-z0-9][a-z0-9_-]{0,63}$";
 pub const MAX_TITLE_CHARS: usize = 120;
 
@@ -78,7 +76,7 @@ fn register_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: VISIBLE_TO,
+        visible_to_roles: &[CardRole::Planner],
     }
 }
 
@@ -95,12 +93,12 @@ fn unregister_descriptor() -> ToolDescriptor {
             "properties": { "key": key_schema() }
         }),
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: VISIBLE_TO,
+        visible_to_roles: &[CardRole::Planner],
     }
 }
 
 fn caller_track(tool: &str, identity: &ToolCallIdentity) -> Result<TrackId, RpcError> {
-    require_role_any(identity, ROLES)?;
+    require_role(identity, CardRole::Planner)?;
     identity
         .track_id
         .as_deref()
@@ -229,8 +227,8 @@ mod tests {
     #[test]
     fn register_returns_pool_port_keeps_it_and_hints_the_block() {
         let reg = pool();
-        let worker = caller(CardRole::Worker, Some("track-a"));
-        let first = register(&reg, &worker, &args("fe", 5173)).unwrap();
+        let planner = caller(CardRole::Planner, Some("track-a"));
+        let first = register(&reg, &planner, &args("fe", 5173)).unwrap();
         assert_eq!(
             first,
             json!({
@@ -239,7 +237,6 @@ mod tests {
                 "block_hint": { "kind": "preview", "payload": { "key": "fe", "title": "Web FE" } },
             })
         );
-        let planner = caller(CardRole::Planner, Some("track-a"));
         let again = register(&reg, &planner, &args("fe", 5180)).unwrap();
         assert_eq!(again["port"], 4050, "same (track, key) keeps its port");
         assert_eq!(reg.lookup(4050).unwrap().target_port, 5180);
@@ -248,16 +245,16 @@ mod tests {
     #[test]
     fn full_disabled_and_refused_targets_say_why() {
         let reg = pool();
-        let worker = caller(CardRole::Worker, Some("track-a"));
-        register(&reg, &worker, &args("fe", 5173)).unwrap();
-        register(&reg, &worker, &args("api", 8080)).unwrap();
-        let full = message(register(&reg, &worker, &args("docs", 8081)));
+        let planner = caller(CardRole::Planner, Some("track-a"));
+        register(&reg, &planner, &args("fe", 5173)).unwrap();
+        register(&reg, &planner, &args("api", 8080)).unwrap();
+        let full = message(register(&reg, &planner, &args("docs", 8081)));
         assert!(full.contains("4050: track track-a key fe"), "{full}");
-        let calm = message(register(&reg, &worker, &args("x", 4040)));
+        let calm = message(register(&reg, &planner, &args("x", 4040)));
         assert!(calm.contains("calm's own listen"), "{calm}");
         let off = message(register(
             &PreviewRegistry::disabled(),
-            &worker,
+            &planner,
             &args("fe", 5173),
         ));
         assert!(off.contains("CALM_PREVIEW_PORTS"), "{off}");
@@ -266,8 +263,8 @@ mod tests {
     #[test]
     fn unregister_frees_only_the_callers_own_key() {
         let reg = pool();
-        let a = caller(CardRole::Worker, Some("track-a"));
-        let b = caller(CardRole::Worker, Some("track-b"));
+        let a = caller(CardRole::Planner, Some("track-a"));
+        let b = caller(CardRole::Planner, Some("track-b"));
         register(&reg, &b, &args("fe", 5173)).unwrap();
         let key = json!({ "key": "fe" });
         assert_eq!(
@@ -286,7 +283,7 @@ mod tests {
     #[test]
     fn other_roles_and_trackless_callers_are_refused() {
         let reg = pool();
-        for role in [CardRole::Assistant, CardRole::ReportCard] {
+        for role in [CardRole::Worker, CardRole::Assistant, CardRole::ReportCard] {
             let who = caller(role, Some("track-a"));
             assert!(message(register(&reg, &who, &args("fe", 5173))).contains("requires role"));
             assert!(
@@ -297,6 +294,20 @@ mod tests {
         let refused = message(register(&reg, &trackless, &args("fe", 5173)));
         assert!(refused.contains("track-scoped"), "{refused}");
         assert!(reg.for_track(&TrackId::from("track-a")).is_empty());
+    }
+
+    /// The track comes from the identity only; a `track_id` (or any unknown key) in the arguments
+    /// is ignored, as sibling tools ignore arguments they do not read.
+    #[test]
+    fn argument_track_id_is_ignored() {
+        let reg = pool();
+        let a = caller(CardRole::Planner, Some("track-a"));
+        let mut spoofed = args("fe", 5173);
+        spoofed["track_id"] = json!("track-b");
+        spoofed["extra"] = json!(1);
+        assert_eq!(register(&reg, &a, &spoofed).unwrap()["port"], 4050);
+        assert_eq!(reg.for_track(&TrackId::from("track-a")).len(), 1);
+        assert!(reg.for_track(&TrackId::from("track-b")).is_empty());
     }
 
     #[test]

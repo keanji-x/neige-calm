@@ -427,7 +427,7 @@
   },
   {
     "name": "calm.preview.register",
-    "description_sha256": "60cc5f60caff7a73a5145c8787c38afa817dfde1d4cbedd1475412c7a1e6a32d",
+    "description_sha256": "5fe355a97cf3026dad543a64e064883873d16699075ca19df99084d4143e51fe",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -467,7 +467,7 @@
   },
   {
     "name": "calm.preview.unregister",
-    "description_sha256": "72c257ecea2995b313896f354c393a9197dbf4224ab44b308aa8bb68683d00b9",
+    "description_sha256": "34ea1db8e89744a98920b0a0f77dc445d313a3fbcf6e6d8d069e4969f3066ede",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

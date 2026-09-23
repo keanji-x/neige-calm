@@ -42,7 +42,7 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     "calm.track.rename",
     // Speaking from a background sync turn is a planner action.
     "calm.user.notify",
-    // Preview gateway registration (Planner|Worker, never Assistant).
+    // Preview gateway registration is a Planner action.
     "calm.preview.register",
     "calm.preview.unregister",
     "calm.terminal.open",
