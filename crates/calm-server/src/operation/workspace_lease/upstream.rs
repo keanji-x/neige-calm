@@ -47,6 +47,11 @@ pub(crate) struct Upstream {
     pub remote: String,
     /// `branch.<b>.merge` — the ref on that remote, e.g. `refs/heads/main`.
     pub merge: String,
+    /// The effective fetch URL of `remote` for this checkout, as
+    /// `git ls-remote --get-url` resolves it (per-worktree config and
+    /// `url.<base>.insteadOf` applied, no network); the remote string itself
+    /// for `.` or a URL remote.
+    pub url: String,
     /// The repository's own ref for that upstream (`%(upstream)`: the
     /// remote-tracking ref the fetch refspec maps `merge` to, or the local
     /// branch for `.`); `None` when no refspec maps it. Read, never written.
@@ -54,16 +59,21 @@ pub(crate) struct Upstream {
 }
 
 impl Upstream {
-    /// `refs/neige/upstream/<sha256(remote NUL merge) hex>` — where the
-    /// submit-path fetch puts this upstream. Total and collision-free over
-    /// every (remote, merge-ref) pair: a remote with `/`, a merge ref outside
-    /// `refs/heads/`, and `.` all get their own name, and the name is one
-    /// hex component whatever the inputs contain.
+    /// `refs/neige/upstream/<sha256(remote NUL merge NUL url) hex>` — where
+    /// the submit-path fetch puts this upstream. Total and collision-free over
+    /// every (remote, merge-ref, URL) triple: a remote with `/`, a merge ref
+    /// outside `refs/heads/`, and `.` all get their own name, and the name is
+    /// one hex component whatever the inputs contain. The URL is part of it
+    /// because linked worktrees sharing one common dir can fetch the same
+    /// remote name from different URLs, and a human can re-point a remote: a
+    /// new URL is a new kernel ref and a new provenance key, with no receipt.
     pub(crate) fn kernel_ref(&self) -> String {
         let mut hasher = Sha256::new();
         hasher.update(self.remote.as_bytes());
         hasher.update([0u8]);
         hasher.update(self.merge.as_bytes());
+        hasher.update([0u8]);
+        hasher.update(self.url.as_bytes());
         format!(
             "{KERNEL_UPSTREAM_REF_PREFIX}{}",
             hex::encode(hasher.finalize())
@@ -120,11 +130,24 @@ pub(crate) fn head_upstream(repo_root: &Path) -> Result<Option<Upstream>> {
             tracking_ref = Some(tracking.to_string());
         }
     }
+    let url = effective_url(repo_root, &remote)?;
     Ok(Some(Upstream {
         remote,
         merge,
+        url,
         tracking_ref,
     }))
+}
+
+/// `git ls-remote --get-url <remote>`: the URL a fetch of `remote` would
+/// use from this checkout (no network). A remote git would read as an option
+/// is returned as is; it is never fetched.
+fn effective_url(repo_root: &Path, remote: &str) -> Result<String> {
+    if remote.starts_with('-') {
+        return Ok(remote.to_string());
+    }
+    let printed = git_success(repo_root, &["ls-remote", "--get-url", remote])?;
+    Ok(printed.trim_end_matches('\n').to_string())
 }
 
 /// Which value of a multi-valued config key git itself uses.
@@ -135,19 +158,21 @@ enum ConfigPick {
 }
 
 /// `git config --get-all <key>`, picking the value git uses; `Ok(None)` when
-/// unset (exit 1) or empty.
+/// unset (exit 1), or when the picked value is empty (git then has no
+/// upstream either — an empty value is kept while picking, as git keeps it).
 fn config_value(repo_root: &Path, key: &str, pick: ConfigPick) -> Result<Option<String>> {
     let args = ["config", "-z", "--get-all", key];
     let output = git_output(repo_root, &args)?;
     match output.status.code() {
         Some(0) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            let mut values = stdout.split('\0').filter(|value| !value.is_empty());
+            // `-z`: every value ends in NUL, empty values included.
+            let mut values = stdout.strip_suffix('\0').unwrap_or(&stdout).split('\0');
             let value = match pick {
                 ConfigPick::First => values.next(),
                 ConfigPick::Last => values.next_back(),
             };
-            Ok(value.map(str::to_string))
+            Ok(value.filter(|value| !value.is_empty()).map(str::to_string))
         }
         Some(1) => Ok(None),
         _ => Err(super::git_failed(
@@ -158,60 +183,107 @@ fn config_value(repo_root: &Path, key: &str, pick: ConfigPick) -> Result<Option<
     }
 }
 
+/// Where the upstream commit a lease is measured against was observed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum UpstreamSource {
+    /// The receipt of the kernel's most recent fetch, which succeeded.
+    KernelFetch,
+    /// The human's own remote-tracking ref.
+    TrackingRef,
+    /// The kernel ref with no success receipt (no tracking ref resolves).
+    KernelRef,
+}
+
 /// HEAD's upstream as last known: which upstream (`<remote> <merge>`, as a
-/// human names it), the ref it was read from, and its commit.
+/// human names it), the ref it was read from, where it was observed, and its
+/// commit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct KnownUpstream {
     pub name: String,
     pub ref_name: String,
+    pub source: UpstreamSource,
     pub sha: String,
+}
+
+/// The authoritative upstream plus the human's tracking ref, which
+/// [`choose_lease_start`] needs apart: it says which commits of HEAD are the
+/// human's own (unpushed).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct UpstreamView {
+    authoritative: KnownUpstream,
+    tracking_sha: Option<String>,
 }
 
 /// HEAD's upstream as last known, by fetch provenance — never by comparing
 /// the two candidate refs' ancestry (an upstream can be rewound or
 /// force-pushed; the older commit may be the right one):
 ///
-/// - the most recent kernel fetch of this upstream succeeded
-///   ([`FetchProvenance::last_fetch_succeeded`]) → the kernel ref is
-///   authoritative: it is the upstream as the remote had it moments ago;
+/// - the kernel's most recent fetch of this upstream succeeded → its receipt
+///   ([`FetchProvenance::success_receipt`]) is authoritative: the commit the
+///   fetch left, recorded under the single-flight lock together with the
+///   outcome. The kernel ref itself is not read then — a concurrent fetch
+///   could move it between two reads and pair an old commit with a new
+///   outcome;
 /// - otherwise (the last fetch failed or was backed off, or there is no
-///   record, e.g. after a restart) → the repository's own remote-tracking ref
-///   when it resolves: it is the human's view, the one a refusal can name and
-///   the human can act on; the kernel ref only when no tracking ref resolves.
+///   receipt, e.g. after a restart or a URL change) → the repository's own
+///   remote-tracking ref when it resolves: it is the human's view, the one a
+///   refusal can name and the human can act on; the kernel ref only when no
+///   tracking ref resolves.
 ///
 /// A symbolic kernel ref is never read (it could point anywhere).
 /// `Ok(None)` when HEAD has no upstream or nothing of it resolves — the base
-/// is then HEAD. Local only; never fetches.
+/// is then HEAD. Local only; never fetches, never waits for a fetch.
 pub(crate) fn last_known_upstream(repo_root: &Path) -> Result<Option<KnownUpstream>> {
+    Ok(upstream_view(repo_root)?.map(|view| view.authoritative))
+}
+
+fn upstream_view(repo_root: &Path) -> Result<Option<UpstreamView>> {
     let Some(upstream) = head_upstream(repo_root)? else {
         return Ok(None);
     };
     let name = format!("{} {}", upstream.remote, upstream.merge);
     let kernel_ref = upstream.kernel_ref();
-    let kernel = read_direct_ref(repo_root, &kernel_ref)?.map(|sha| KnownUpstream {
-        name: name.clone(),
-        ref_name: kernel_ref,
-        sha,
-    });
-    let tracking = match upstream.tracking_ref {
-        Some(ref_name) => resolve_commit(repo_root, &ref_name)?.map(|sha| KnownUpstream {
-            name,
-            ref_name,
+    let tracking = match &upstream.tracking_ref {
+        Some(ref_name) => resolve_commit(repo_root, ref_name)?.map(|sha| KnownUpstream {
+            name: name.clone(),
+            ref_name: ref_name.clone(),
+            source: UpstreamSource::TrackingRef,
             sha,
         }),
         None => None,
     };
-    let Some(kernel) = kernel else {
-        return Ok(tracking);
-    };
+    let tracking_sha = tracking.as_ref().map(|tracking| tracking.sha.clone());
     let key = (
         super::base::lease_git_common_dir(repo_root)?,
-        kernel.ref_name.clone(),
+        kernel_ref.clone(),
     );
-    if FetchProvenance::global().last_fetch_succeeded(&key) {
-        return Ok(Some(kernel));
-    }
-    Ok(Some(tracking.unwrap_or(kernel)))
+    let authoritative = if let Some((sha, at)) = FetchProvenance::global().success_receipt(&key) {
+        tracing::debug!(
+            repo_root = %repo_root.display(),
+            sha,
+            receipt_age_ms = at.elapsed().as_millis() as u64,
+            "upstream from the kernel's fetch receipt"
+        );
+        Some(KnownUpstream {
+            name,
+            ref_name: kernel_ref,
+            source: UpstreamSource::KernelFetch,
+            sha,
+        })
+    } else if tracking.is_some() {
+        tracking
+    } else {
+        read_direct_ref(repo_root, &kernel_ref)?.map(|sha| KnownUpstream {
+            name,
+            ref_name: kernel_ref,
+            source: UpstreamSource::KernelRef,
+            sha,
+        })
+    };
+    Ok(authoritative.map(|authoritative| UpstreamView {
+        authoritative,
+        tracking_sha,
+    }))
 }
 
 /// Where a new lease starts, by the relation of HEAD to its upstream as last
@@ -226,6 +298,9 @@ pub(crate) enum LeaseStart {
     Diverged {
         head: String,
         upstream: KnownUpstream,
+        /// The human's own commits: HEAD's commits their tracking ref lacks
+        /// (`ahead` when no tracking ref resolves).
+        unpushed: u64,
         /// Commits HEAD has that the upstream lacks.
         ahead: u64,
         /// Commits the upstream has that HEAD lacks.
@@ -235,11 +310,23 @@ pub(crate) enum LeaseStart {
 
 /// The prepare transaction's base decision. Local reads only: `rev-parse`,
 /// `for-each-ref`, `merge-base --is-ancestor`, and — only when neither
-/// ancestry check succeeds — `--is-shallow-repository` and the refusal's
-/// `rev-list --count`. Only proven divergence (a complete history) refuses.
+/// ancestry check succeeds — the human's unpushed-commit count against their
+/// tracking ref, `--is-shallow-repository` and the refusal's
+/// `rev-list --count`.
+///
+/// Only real local work refuses: HEAD not related to the upstream either way
+/// is a human decision only when HEAD carries commits of the human's own
+/// (unpushed relative to their tracking ref). A checkout in sync with its
+/// tracking ref after an upstream force-push has nothing to lose and bases on
+/// the upstream. A shallow history that cannot show the relation starts from
+/// HEAD. Everything else that diverged in a complete history is refused.
 pub(crate) fn choose_lease_start(repo_root: &Path) -> Result<LeaseStart> {
     let head = super::base::resolve_head_base(repo_root)?;
-    let Some(upstream) = last_known_upstream(repo_root)? else {
+    let Some(UpstreamView {
+        authoritative: upstream,
+        tracking_sha,
+    }) = upstream_view(repo_root)?
+    else {
         return Ok(LeaseStart::Head { sha: head });
     };
     if head == upstream.sha || is_ancestor(repo_root, &head, &upstream.sha)? {
@@ -247,6 +334,14 @@ pub(crate) fn choose_lease_start(repo_root: &Path) -> Result<LeaseStart> {
     }
     if is_ancestor(repo_root, &upstream.sha, &head)? {
         return Ok(LeaseStart::Head { sha: head });
+    }
+    let unpushed = match &tracking_sha {
+        Some(tracking) => Some(commits_behind(repo_root, tracking, &head)?),
+        None => None,
+    };
+    if unpushed == Some(0) {
+        // The human has no commits of their own: nothing to lose.
+        return Ok(LeaseStart::Upstream { sha: upstream.sha });
     }
     if is_shallow(repo_root)? {
         // Neither check succeeded, but a shallow history cannot prove
@@ -264,6 +359,7 @@ pub(crate) fn choose_lease_start(repo_root: &Path) -> Result<LeaseStart> {
     Ok(LeaseStart::Diverged {
         head,
         upstream,
+        unpushed: unpushed.unwrap_or(ahead),
         ahead,
         behind,
     })
@@ -272,21 +368,34 @@ pub(crate) fn choose_lease_start(repo_root: &Path) -> Result<LeaseStart> {
 /// The refusal of a diverged checkout: a `Conflict`, so the worker op fails
 /// once (a client-class failure is never re-driven) and the task fails as
 /// `spawn-failed: refused: attached-repo-diverged: …` with this text as the
-/// reason the Planner reads. Every fact a human needs to reconcile is in it.
+/// reason the Planner reads. It names where the upstream commit was observed
+/// (a commit only the kernel's fetch has seen needs a `git fetch` before the
+/// human can see it) and asks for what reconciles unpushed work: rebase it
+/// onto the upstream (then push) or reset to the upstream — never a bare
+/// push, which would undo an upstream rewrite.
 pub(crate) fn diverged_refusal(
     repo_root: &Path,
     head: &str,
     upstream: &KnownUpstream,
+    unpushed: u64,
     ahead: u64,
     behind: u64,
 ) -> CalmError {
+    let (seen, fetch_first) = match upstream.source {
+        UpstreamSource::KernelFetch => ("kernel fetch", "run `git fetch`, then "),
+        UpstreamSource::TrackingRef => ("your tracking ref", ""),
+        UpstreamSource::KernelRef => ("kernel ref", "run `git fetch`, then "),
+    };
+    // The checkout path goes last: `status_detail` keeps 480 characters of
+    // the reason, and the path is the one fact the Planner already has.
     CalmError::Conflict(format!(
-        "refused: {ATTACHED_REPO_DIVERGED}: the attached checkout {} (HEAD {head}) and its \
-         upstream {} ({}) have diverged: {ahead} ahead, {behind} behind. Not retryable: a human \
-         must reconcile the checkout (push, rebase or reset); re-dispatch works afterwards.",
-        repo_root.display(),
+        "refused: {ATTACHED_REPO_DIVERGED}: HEAD {head} ({unpushed} unpushed) and upstream {} \
+         at {} (per {seen}) diverged: {ahead} ahead, {behind} behind. Not retryable: a human must \
+         {fetch_first}rebase the unpushed commits onto the upstream and push, or reset to it; \
+         re-dispatch works afterwards. Checkout: {}",
         upstream.name,
         upstream.sha,
+        repo_root.display(),
     ))
 }
 
@@ -338,7 +447,7 @@ fn ahead_behind(repo_root: &Path, head: &str, upstream: &str) -> Result<(u64, u6
 
 /// The commit a non-symbolic ref points at (a tag peeled to its commit);
 /// `None` when the ref is absent, symbolic, or not a commit.
-fn read_direct_ref(repo_root: &Path, ref_name: &str) -> Result<Option<String>> {
+pub(super) fn read_direct_ref(repo_root: &Path, ref_name: &str) -> Result<Option<String>> {
     let args = [
         "for-each-ref",
         "--format=%(refname)%00%(symref)%00%(objecttype)%00%(objectname)%00%(*objecttype)%00%(*objectname)",

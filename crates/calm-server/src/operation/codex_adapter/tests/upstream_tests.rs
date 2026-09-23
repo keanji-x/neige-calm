@@ -250,38 +250,59 @@ async fn failed_fetch_leases_from_the_last_known_upstream() {
 }
 
 /// Workers dispatched in parallel: N concurrent `before_insert` calls for one
-/// upstream run ONE fetch (the transport witness counts one invocation) and
-/// share its outcome — no lost ref lock recorded as a failure, so the kernel
-/// ref stays authoritative for the lease.
+/// upstream run ONE fetch and share its outcome — no lost ref lock recorded as
+/// a failure, so the kernel's receipt stays authoritative for the lease.
+/// Deterministic: the remote's upload-pack blocks on a release file; the test
+/// releases it only once the witness shows the one transport call AND all
+/// eight callers are registered on the key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_submits_share_one_fetch() {
-    let harness = worker_lease_harness().await;
-    let attached = harness.repo_root.path();
-    let origin = attach_origin(attached);
+    use crate::operation::workspace_lease::upstream_fetch::FetchProvenance;
+    let harness = Arc::new(worker_lease_harness().await);
+    let attached = harness.repo_root.path().to_path_buf();
+    let origin = attach_origin(&attached);
+    let gate = tempfile::tempdir().unwrap();
+    let release = gate.path().join("release");
     let witness = crate::operation::workspace_lease::upstream_tests::witness_transport_then(
-        attached,
-        "sleep 1; git-upload-pack",
+        &attached,
+        &format!(
+            "while [ ! -e '{}' ]; do sleep 0.05; done; git-upload-pack",
+            release.display()
+        ),
     );
     let tip = origin.commit("landed upstream");
-    let payloads: Vec<Value> = (0..8)
-        .map(|n| worker_payload(&harness.track_id, &format!("parallel-{n}")))
-        .collect();
-
-    futures::future::join_all(
-        payloads
-            .iter()
-            .map(|payload| harness.adapter.before_insert(payload)),
-    )
-    .await;
-
-    assert_eq!(transport_count(&witness), 1, "one fetch for eight submits");
     let key = (
-        crate::operation::workspace_lease::base::lease_git_common_dir(attached).unwrap(),
+        crate::operation::workspace_lease::base::lease_git_common_dir(&attached).unwrap(),
         kernel_ref(&origin),
     );
+
+    let callers: Vec<_> = (0..8)
+        .map(|n| {
+            let harness = harness.clone();
+            let payload = worker_payload(&harness.track_id, &format!("parallel-{n}"));
+            tokio::spawn(async move { harness.adapter.before_insert(&payload).await })
+        })
+        .collect();
+    let registered = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        loop {
+            if transport_count(&witness) == 1
+                && FetchProvenance::global().registered_callers(&key) == 8
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    std::fs::write(&release, "").unwrap();
+    registered.expect("one transport call and eight registered callers");
+    for caller in callers {
+        caller.await.unwrap();
+    }
+
+    assert_eq!(transport_count(&witness), 1, "one fetch for eight submits");
     assert!(
-        crate::operation::workspace_lease::upstream_fetch::FetchProvenance::global()
-            .last_fetch_succeeded(&key),
+        FetchProvenance::global().last_fetch_succeeded(&key),
         "no false failure was recorded"
     );
     let (output, _) = prepare_worker(&harness, "parallel-0").await;

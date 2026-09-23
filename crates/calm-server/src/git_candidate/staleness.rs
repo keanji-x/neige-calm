@@ -2,9 +2,9 @@
 //! base is behind the upstream of the branch the Track's attached checkout is
 //! on *now*, as last known. Read-only and computed at read time — never
 //! stored, never fetched: the upstream is the one a new lease of this Track
-//! would be measured against now ([`last_known_upstream`]: the fresher of the
-//! kernel ref the submit path fetched and the repository's own
-//! remote-tracking ref). Local `git` only, run after `plan.list`'s
+//! would be measured against now ([`last_known_upstream`]: the receipt of the
+//! kernel's most recent fetch when that fetch succeeded, else the
+//! repository's own remote-tracking ref). Local `git` only, run after `plan.list`'s
 //! transaction has committed and on a blocking thread, so no git process
 //! ever runs while the kernel's write transaction is held.
 //!

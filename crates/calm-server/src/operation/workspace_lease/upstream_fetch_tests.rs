@@ -224,7 +224,7 @@ async fn credential_demand_fails_fast_without_prompting() {
         attached.path(),
         Duration::from_secs(15),
         &FetchProvenance::default(),
-        Instant::now(),
+        &Instant::now,
     )
     .await;
 
@@ -240,45 +240,70 @@ async fn credential_demand_fails_fast_without_prompting() {
     );
 }
 
+/// A clock that returns the given instants in order, repeating the last.
+fn ticks(times: Vec<Instant>) -> impl Fn() -> Instant + Send + Sync {
+    let queue = std::sync::Mutex::new(std::collections::VecDeque::from(times));
+    move || {
+        let mut queue = queue.lock().unwrap();
+        if queue.len() > 1 {
+            queue.pop_front().unwrap()
+        } else {
+            *queue.front().unwrap()
+        }
+    }
+}
+
 /// After a failed fetch the same upstream is not fetched again for
-/// [`FETCH_BACKOFF`]; past it, it is; a success clears the entry. The clock is
+/// [`FETCH_BACKOFF`]; past it, it is; a success clears the entry. A failure is
+/// recorded at the fetch's COMPLETION: a slow failure that started at 61 s
+/// and ended at 100 s backs off until 160 s, not 121 s. The clock is
 /// injected; the transport witness counts real fetch attempts.
 #[tokio::test]
 async fn a_failed_fetch_backs_off_and_a_success_clears_it() {
     let attached = attached_repo();
     let origin = attach_origin(attached.path());
     let failing = witness_transport_then(attached.path(), "exit 1");
-    let backoff = FetchProvenance::default();
+    let provenance = FetchProvenance::default();
     let bound = Duration::from_secs(15);
     let t0 = Instant::now();
     let at = |secs: u64| t0 + Duration::from_secs(secs);
+    let refresh = |clock: Box<dyn Fn() -> Instant + Send + Sync>| {
+        let provenance = &provenance;
+        let path = attached.path().to_path_buf();
+        async move { refresh_upstream_with(&path, bound, provenance, &*clock).await }
+    };
 
     assert!(matches!(
-        refresh_upstream_with(attached.path(), bound, &backoff, at(0)).await,
+        refresh(Box::new(move || at(0))).await,
         UpstreamRefresh::Failed { .. }
     ));
     assert_eq!(transport_count(&failing), 1);
     assert_eq!(
-        refresh_upstream_with(attached.path(), bound, &backoff, at(30)).await,
+        refresh(Box::new(move || at(30))).await,
         UpstreamRefresh::BackedOff {
             kernel_ref: kernel_ref(&origin)
         }
     );
     assert_eq!(transport_count(&failing), 1, "backed off: no fetch");
+    // Past the back-off at entry (61 s); the slow failure completes at 100 s.
     assert!(matches!(
-        refresh_upstream_with(attached.path(), bound, &backoff, at(61)).await,
+        refresh(Box::new(ticks(vec![at(61), at(100)]))).await,
         UpstreamRefresh::Failed { .. }
     ));
     assert_eq!(transport_count(&failing), 2, "past the back-off: fetched");
+    assert!(
+        matches!(
+            refresh(Box::new(move || at(130))).await,
+            UpstreamRefresh::BackedOff { .. }
+        ),
+        "backed off from the failure's completion (100 s), not its start (61 s)"
+    );
+    assert_eq!(transport_count(&failing), 2);
 
     let serving = witness_transport(attached.path());
-    assert!(matches!(
-        refresh_upstream_with(attached.path(), bound, &backoff, at(62)).await,
-        UpstreamRefresh::BackedOff { .. }
-    ));
     let tip = origin.commit("upstream moved");
     assert!(matches!(
-        refresh_upstream_with(attached.path(), bound, &backoff, at(122)).await,
+        refresh(Box::new(move || at(161))).await,
         UpstreamRefresh::Fetched { .. }
     ));
     assert_eq!(transport_count(&serving), 1);
@@ -290,10 +315,98 @@ async fn a_failed_fetch_backs_off_and_a_success_clears_it() {
     // The success cleared the entry: the next failure is attempted at once.
     let failing_again = witness_transport_then(attached.path(), "exit 1");
     assert!(matches!(
-        refresh_upstream_with(attached.path(), bound, &backoff, at(123)).await,
+        refresh(Box::new(move || at(162))).await,
         UpstreamRefresh::Failed { .. }
     ));
     assert_eq!(transport_count(&failing_again), 1);
+}
+
+/// Single-flight shares only a fetch that is in flight: a caller arriving
+/// after a fetch finished starts a new one.
+#[tokio::test]
+async fn a_caller_after_a_finished_fetch_fetches_again() {
+    let attached = attached_repo();
+    let _origin = attach_origin(attached.path());
+    let serving = witness_transport(attached.path());
+    let provenance = FetchProvenance::default();
+    for expected in 1..=2 {
+        assert!(matches!(
+            refresh_upstream_with(
+                attached.path(),
+                Duration::from_secs(15),
+                &provenance,
+                &Instant::now
+            )
+            .await,
+            UpstreamRefresh::Fetched { .. }
+        ));
+        assert_eq!(transport_count(&serving), expected);
+    }
+}
+
+/// The kernel ref's loose lock path, as git names it.
+fn kernel_ref_lock(repo: &Path, kernel_ref: &str) -> std::path::PathBuf {
+    let printed = git(
+        repo,
+        &["rev-parse", "--git-path", &format!("{kernel_ref}.lock")],
+    );
+    let path = std::path::PathBuf::from(printed);
+    if path.is_absolute() {
+        path
+    } else {
+        repo.join(path)
+    }
+}
+
+/// A fetch killed at the bound can leave `<kernel ref>.lock`; one older than
+/// the fetch timeout is removed and the fetch succeeds. A fresh lock (a live
+/// writer's, as far as the kernel can tell) is left alone and the fetch fails.
+#[tokio::test]
+async fn a_stale_kernel_ref_lock_is_cleared_and_a_fresh_one_is_not() {
+    let attached = attached_repo();
+    let origin = attach_origin(attached.path());
+    let kernel = kernel_ref(&origin);
+    let lock = kernel_ref_lock(attached.path(), &kernel);
+    std::fs::create_dir_all(lock.parent().unwrap()).unwrap();
+
+    std::fs::write(&lock, "").unwrap();
+    let old = std::process::Command::new("touch")
+        .args(["-d", "1 hour ago"])
+        .arg(&lock)
+        .status()
+        .unwrap();
+    assert!(old.success());
+    let tip = origin.commit("upstream moved");
+    let refresh = refresh_upstream_with(
+        attached.path(),
+        Duration::from_secs(15),
+        &FetchProvenance::default(),
+        &Instant::now,
+    )
+    .await;
+    assert!(
+        matches!(refresh, UpstreamRefresh::Fetched { .. }),
+        "{refresh:?}"
+    );
+    assert!(!lock.exists(), "the stale lock was removed");
+    assert_eq!(git(attached.path(), &["rev-parse", &kernel]), tip);
+
+    std::fs::write(&lock, "").unwrap();
+    origin.commit("moved again");
+    let refresh = refresh_upstream_with(
+        attached.path(),
+        Duration::from_secs(15),
+        &FetchProvenance::default(),
+        &Instant::now,
+    )
+    .await;
+    let UpstreamRefresh::Failed { reason } = refresh else {
+        panic!("a fresh lock must fail the fetch, got {refresh:?}");
+    };
+    assert!(reason.contains("lock"), "{reason}");
+    assert!(lock.exists(), "a fresh lock is left alone");
+    assert_eq!(git(attached.path(), &["rev-parse", &kernel]), tip);
+    std::fs::remove_file(&lock).unwrap();
 }
 
 /// Live processes whose command line names `needle`, zombies excluded.
@@ -343,7 +456,7 @@ async fn hanging_fetch_is_killed_at_the_bound() {
         attached.path(),
         Duration::from_millis(1500),
         &FetchProvenance::default(),
-        Instant::now(),
+        &Instant::now,
     )
     .await;
 
@@ -380,6 +493,7 @@ fn fetch_args_and_env_are_pinned() {
     let upstream = Upstream {
         remote: "origin".into(),
         merge: "refs/heads/main".into(),
+        url: "/srv/origin.git".into(),
         tracking_ref: None,
     };
     let kernel = upstream.kernel_ref();

@@ -22,13 +22,28 @@
 //!   group killed past it), and a repository whose fetch just failed is not
 //!   fetched again for [`FETCH_BACKOFF`]: an offline remote costs one timeout
 //!   per minute, not one per worker.
-//! - It is single-flight per (common dir, kernel ref): workers dispatched in
-//!   parallel share one fetch and its outcome instead of racing for the ref
-//!   lock and recording false failures.
-//! - Its outcome is kept as fetch provenance ([`FetchProvenance`]): the
-//!   kernel ref is authoritative only while the most recent kernel fetch of
-//!   it succeeded ([`super::upstream::last_known_upstream`]).
+//! - It is single-flight per (common dir, kernel ref — whose digest includes
+//!   the effective remote URL): workers dispatched in parallel share one
+//!   fetch and its outcome instead of racing for the ref lock and recording
+//!   false failures.
+//! - Its outcome is kept as fetch provenance ([`FetchProvenance`]): a success
+//!   is an atomic receipt of the commit the fetch left, taken under the
+//!   single-flight lock, and it alone makes the kernel's view authoritative
+//!   ([`super::upstream::last_known_upstream`]).
+//! - A loose `.lock` of the kernel ref older than [`UPSTREAM_FETCH_TIMEOUT`]
+//!   (left by a fetch killed at the bound) is removed before the next fetch;
+//!   the kernel is that ref's only writer.
 //! - The local reads before the fetch run on a blocking thread.
+//!
+//! **One kernel per attached repository.** Provenance and single-flight are
+//! process-local, by design (simple first): this deployment runs exactly one
+//! kernel against an attached repository. If two kernel processes did share
+//! one, each keeps its own receipts, so one may hold a receipt the other's
+//! later fetch has superseded — a stale but real upstream commit, never a
+//! commit that was not fetched; it falls back to the human's tracking ref as
+//! soon as that process's own next fetch fails, and is replaced by its next
+//! successful one. Their fetches are not serialized with each other; a lost
+//! ref lock is an ordinary failed fetch.
 //! - Every (remote, merge-ref) pair of a *named* remote (or `.`) is fetched.
 //!   A URL in `branch.<b>.remote` is not: there is no named remote to fetch
 //!   from; such a branch reads its remote-tracking ref, if any.
@@ -89,13 +104,18 @@ pub(crate) enum UpstreamRefresh {
     Failed { reason: String },
 }
 
-/// (git common dir, kernel ref): one upstream of one repository.
+/// (git common dir, kernel ref): one upstream of one repository, as fetched
+/// from one URL — the kernel ref's digest includes the effective remote URL
+/// ([`Upstream::kernel_ref`]), so a URL change is a new key with no receipt.
 pub(crate) type FetchKey = (PathBuf, String);
 
-/// How the most recent kernel fetch of one key ended.
+/// How the most recent kernel fetch of one key ended. A success is a
+/// receipt: the commit the kernel ref held when the fetch finished, recorded
+/// together with the outcome under the single-flight lock, so a reader never
+/// pairs an outcome with a commit from another fetch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum LastFetch {
-    Succeeded,
+    Succeeded { sha: String, at: Instant },
     Failed { at: Instant, reason: String },
 }
 
@@ -106,16 +126,17 @@ struct FetchEntry {
     /// sees whether a fetch finished meanwhile.
     generation: u64,
     /// Held for the whole fetch: concurrent refreshes of one key run one
-    /// fetch and share its outcome instead of racing for the ref lock.
+    /// fetch and share its outcome instead of racing for the ref lock. Every
+    /// caller holds a clone from registration to return.
     flight: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// The kernel's in-memory fetch provenance, per [`FetchKey`]: how the most
-/// recent fetch ended (the freshness rule of
-/// [`super::upstream::last_known_upstream`] and the [`FETCH_BACKOFF`] clock),
-/// and the single-flight lock. Not persisted: after a restart there is no
-/// record, and the human's remote-tracking ref is authoritative until the
-/// kernel's next successful fetch.
+/// recent fetch ended (the receipt [`super::upstream::last_known_upstream`]
+/// reads, and the [`FETCH_BACKOFF`] clock), and the single-flight lock. Not
+/// persisted: after a restart there is no receipt, and the human's
+/// remote-tracking ref is authoritative until the kernel's next successful
+/// fetch. Process-local — see the module docs (one kernel per repository).
 #[derive(Default)]
 pub(crate) struct FetchProvenance {
     entries: Mutex<HashMap<FetchKey, FetchEntry>>,
@@ -132,12 +153,19 @@ impl FetchProvenance {
         self.entries.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// Whether the most recent kernel fetch of `key` succeeded — the one case
-    /// in which the kernel ref is authoritative.
+    /// The commit the most recent kernel fetch of `key` left, when that fetch
+    /// succeeded — the one case in which the kernel's view is authoritative.
+    pub(crate) fn success_receipt(&self, key: &FetchKey) -> Option<(String, Instant)> {
+        match self.entries().get(key).and_then(|entry| entry.last.clone()) {
+            Some(LastFetch::Succeeded { sha, at }) => Some((sha, at)),
+            _ => None,
+        }
+    }
+
+    /// Whether the most recent kernel fetch of `key` succeeded.
+    #[cfg(test)]
     pub(crate) fn last_fetch_succeeded(&self, key: &FetchKey) -> bool {
-        self.entries()
-            .get(key)
-            .is_some_and(|entry| entry.last == Some(LastFetch::Succeeded))
+        self.success_receipt(key).is_some()
     }
 
     fn flight(&self, key: &FetchKey) -> (Arc<tokio::sync::Mutex<()>>, u64) {
@@ -160,7 +188,31 @@ impl FetchProvenance {
         entry.last = Some(last);
         entry.generation += 1;
     }
+
+    /// Test-only: callers currently registered on `key` (running its fetch or
+    /// waiting for it).
+    #[cfg(test)]
+    pub(crate) fn registered_callers(&self, key: &FetchKey) -> usize {
+        self.entries()
+            .get(key)
+            .map_or(0, |entry| Arc::strong_count(&entry.flight) - 1)
+    }
+
+    /// Test-only: record a success receipt directly, as a fetch would.
+    #[cfg(test)]
+    pub(crate) fn record_success_for_test(&self, key: &FetchKey, sha: &str) {
+        self.record(
+            key,
+            LastFetch::Succeeded {
+                sha: sha.to_string(),
+                at: Instant::now(),
+            },
+        );
+    }
 }
+
+/// The clock the provenance's timestamps come from; injectable for tests.
+pub(crate) type Clock<'a> = &'a (dyn Fn() -> Instant + Send + Sync);
 
 /// Fetch HEAD's upstream into its kernel ref with the production bound,
 /// provenance and clock. Never inside a database transaction.
@@ -169,7 +221,7 @@ pub(crate) async fn refresh_upstream(repo_root: &Path) -> UpstreamRefresh {
         repo_root,
         UPSTREAM_FETCH_TIMEOUT,
         FetchProvenance::global(),
-        Instant::now(),
+        &Instant::now,
     )
     .await
 }
@@ -209,12 +261,13 @@ fn prepare_fetch(repo_root: &Path) -> std::result::Result<PreparedFetch, Upstrea
 }
 
 /// [`refresh_upstream`] with the bound, the provenance and the clock
-/// injected.
+/// injected. The clock is read at entry (the back-off check) and at the
+/// fetch's completion (the recorded outcome).
 pub(crate) async fn refresh_upstream_with(
     repo_root: &Path,
     bound: Duration,
     provenance: &FetchProvenance,
-    now: Instant,
+    clock: Clock<'_>,
 ) -> UpstreamRefresh {
     let root = repo_root.to_path_buf();
     let prepared = match tokio::task::spawn_blocking(move || prepare_fetch(&root)).await {
@@ -238,7 +291,7 @@ pub(crate) async fn refresh_upstream_with(
         };
     }
     if let Some(LastFetch::Failed { at, .. }) = &last
-        && now.saturating_duration_since(*at) < FETCH_BACKOFF
+        && clock().saturating_duration_since(*at) < FETCH_BACKOFF
     {
         tracing::debug!(
             repo_root = %repo_root.display(),
@@ -249,24 +302,43 @@ pub(crate) async fn refresh_upstream_with(
     }
     let root = repo_root.to_path_buf();
     let destination = kernel_ref.clone();
-    let cleared =
-        tokio::task::spawn_blocking(move || clear_symbolic_destination(&root, &destination))
-            .await
-            .unwrap_or_else(|error| Err(format!("symbolic-ref check task failed: {error}")));
+    let cleared = tokio::task::spawn_blocking(move || {
+        clear_stale_lock(&root, &destination)?;
+        clear_symbolic_destination(&root, &destination)
+    })
+    .await
+    .unwrap_or_else(|error| Err(format!("pre-fetch check task failed: {error}")));
     let result = match cleared {
         Ok(()) => fetch_into(repo_root, &upstream, &kernel_ref, bound).await,
         Err(reason) => Err(reason),
     };
-    match result {
+    // The receipt is read while the single-flight lock is still held: no
+    // other kernel fetch of this key can move the ref in between.
+    let result = match result {
         Ok(()) => {
-            provenance.record(&key, LastFetch::Succeeded);
+            let root = repo_root.to_path_buf();
+            let ref_name = kernel_ref.clone();
+            tokio::task::spawn_blocking(move || super::upstream::read_direct_ref(&root, &ref_name))
+                .await
+                .map_err(|error| format!("receipt read task failed: {error}"))
+                .and_then(|read| read.map_err(|error| error.to_string()))
+                .and_then(|sha| {
+                    sha.ok_or_else(|| format!("fetched kernel ref {kernel_ref} does not resolve"))
+                })
+        }
+        Err(reason) => Err(reason),
+    };
+    let at = clock();
+    match result {
+        Ok(sha) => {
+            provenance.record(&key, LastFetch::Succeeded { sha, at });
             UpstreamRefresh::Fetched { kernel_ref }
         }
         Err(reason) => {
             provenance.record(
                 &key,
                 LastFetch::Failed {
-                    at: now,
+                    at,
                     reason: reason.clone(),
                 },
             );
@@ -316,6 +388,48 @@ fn not_fetchable(repo_root: &Path, upstream: &Upstream) -> Option<String> {
         }
     }
     None
+}
+
+/// A fetch killed at [`UPSTREAM_FETCH_TIMEOUT`] can leave the kernel ref's
+/// loose `<ref>.lock` behind, and every later fetch would then fail to lock
+/// the ref. The kernel is that ref's only writer and this runs under its
+/// single-flight lock, so a lock file older than the timeout is a leftover:
+/// removed. A younger one is left alone (the fetch then fails as git decides).
+/// Located with `git rev-parse --git-path`, not a hard-coded layout.
+fn clear_stale_lock(repo_root: &Path, kernel_ref: &str) -> std::result::Result<(), String> {
+    let lock = format!("{kernel_ref}.lock");
+    let output = git_output(repo_root, &["rev-parse", "--git-path", lock.as_str()])
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(format!(
+            "git rev-parse --git-path {lock} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let path = super::base::printed_path(&output.stdout);
+    let path = if path.is_absolute() {
+        path
+    } else {
+        repo_root.join(path)
+    };
+    let modified = match std::fs::metadata(&path).and_then(|metadata| metadata.modified()) {
+        Ok(modified) => modified,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("inspect {}: {error}", path.display())),
+    };
+    let age = std::time::SystemTime::now()
+        .duration_since(modified)
+        .unwrap_or_default();
+    if age < UPSTREAM_FETCH_TIMEOUT {
+        return Ok(());
+    }
+    tracing::warn!(
+        repo_root = %repo_root.display(),
+        lock = %path.display(),
+        age_secs = age.as_secs(),
+        "removing a stale kernel upstream ref lock left by a killed fetch"
+    );
+    std::fs::remove_file(&path).map_err(|error| format!("remove {}: {error}", path.display()))
 }
 
 /// A kernel ref that is symbolic would make the fetch write through it into
@@ -453,10 +567,20 @@ pub(crate) async fn refresh_track_upstream(repo: &dyn crate::db::RouteRepo, trac
     if track.workspace.kind != TrackWorkspaceKind::Attached {
         return;
     }
-    let repo_root = match super::git_repo_root_for_track_cwd(track_id, &track.workspace.path) {
-        Ok(repo_root) => repo_root,
-        Err(error) => {
+    let owned_track_id = track_id.to_string();
+    let cwd = track.workspace.path.clone();
+    let repo_root = match tokio::task::spawn_blocking(move || {
+        super::git_repo_root_for_track_cwd(&owned_track_id, &cwd)
+    })
+    .await
+    {
+        Ok(Ok(repo_root)) => repo_root,
+        Ok(Err(error)) => {
             tracing::warn!(track_id, %error, "upstream refresh could not resolve the repository");
+            return;
+        }
+        Err(error) => {
+            tracing::warn!(track_id, %error, "upstream refresh repository task failed");
             return;
         }
     };

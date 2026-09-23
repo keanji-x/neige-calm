@@ -43,12 +43,14 @@ use crate::workspace_materialize::neige_git_command;
 pub(crate) enum BaseSource {
     /// The attached repository's HEAD at prepare time (`TaskDeclaration.base`
     /// absent, and the branch HEAD is on has no upstream, no ref of that
-    /// upstream resolves, or HEAD is ahead of it — HEAD then contains it).
+    /// upstream resolves, HEAD is ahead of it — HEAD then contains it — or a
+    /// shallow history leaves the relation unknown).
     Head,
     /// The last known commit of the upstream of the branch HEAD is on, which
-    /// HEAD equals or is behind (`TaskDeclaration.base` absent): the fresher
-    /// of the kernel-fetched `refs/neige/upstream/<digest>` and the
-    /// repository's own remote-tracking ref
+    /// HEAD equals or is behind, or which a checkout without commits of its
+    /// own is moved to after an upstream rewrite (`TaskDeclaration.base`
+    /// absent): the receipt of the kernel's most recent fetch when that fetch
+    /// succeeded, else the repository's own remote-tracking ref
     /// ([`super::upstream::last_known_upstream`], #1777).
     Upstream,
     /// `TaskDeclaration.base: {commit}` — slice 5.
@@ -240,6 +242,7 @@ pub(crate) fn resolve_lease_base(target: &WorkspaceLeaseTarget) -> Result<LeaseB
         LeaseStart::Diverged {
             head,
             upstream,
+            unpushed,
             ahead,
             behind,
         } => {
@@ -247,6 +250,7 @@ pub(crate) fn resolve_lease_base(target: &WorkspaceLeaseTarget) -> Result<LeaseB
                 &target.repo_root,
                 &head,
                 &upstream,
+                unpushed,
                 ahead,
                 behind,
             ));

@@ -1823,9 +1823,12 @@ async fn diverged_attached_checkout_fails_the_task_for_a_human_to_reconcile() {
             "attached-repo-diverged",
             head.as_str(),
             upstream.as_str(),
+            "(2 unpushed)",
+            "per kernel fetch",
             "2 ahead, 1 behind",
             "Not retryable",
-            "a human must reconcile the checkout (push, rebase or reset)",
+            "a human must run `git fetch`, then rebase the unpushed commits onto the upstream \
+             and push, or reset to it",
             "re-dispatch works afterwards",
         ] {
             assert!(text.contains(needle), "{needle:?} missing from {text:?}");
