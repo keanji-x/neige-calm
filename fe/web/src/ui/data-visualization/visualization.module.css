@@ -37,6 +37,8 @@
   .tooltip { display: none; position: absolute; inset-block-start: var(--space-3); max-inline-size: calc(100% - 16px); padding: var(--space-2); background: var(--surface-card); border: 1px solid var(--hairline); border-radius: var(--radius-sm); box-shadow: var(--shadow-float); font-size: var(--text-xs); pointer-events: none; }
   .tooltip strong { display: block; font-weight: var(--weight-medium); }
   .readoutToggle { display: flex; justify-content: space-between; flex-wrap: wrap; gap: var(--space-2); inline-size: 100%; min-block-size: var(--control-h); border: 0; border-block-end: 1px solid var(--hairline); background: none; color: var(--text-2); font: inherit; font-size: var(--text-xs); text-align: start; }
+  .readoutCommand { display: inline-flex; align-items: center; gap: var(--space-2); }
+  .readoutToggle[aria-expanded="true"] svg { transform: rotate(90deg); }
   .readout { block-size: 144px; overflow: auto; scrollbar-gutter: stable; font-size: var(--text-xs); }
   .readout dl { margin: 0; }
   .readout dl > div { padding-block: var(--space-2); border-block-end: 1px solid var(--hairline); }
@@ -56,5 +58,8 @@
   .tabs button[aria-pressed="true"] { background: var(--text); color: var(--bg); }
   .empty { color: var(--text-3); font-size: var(--text-base); padding-block: var(--space-5); }
   @container (inline-size > 30rem) { .plotSvg { block-size: 200px; } }
-  @media (pointer: coarse) { .tabs button, .toolbar select, .legend button { min-block-size: 44px; } }
+  @media (pointer: coarse) {
+    .tabs button, .toolbar select, .legend button, .readoutToggle, .readout button { min-block-size: 44px; }
+    .plotLegend { block-size: 48px; }
+  }
 }

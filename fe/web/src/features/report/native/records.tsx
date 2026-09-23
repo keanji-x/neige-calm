@@ -32,7 +32,7 @@ export function RecordBrowser({ component, selection, onSelection }: {
         <dl className={styles.facts}>{item.facts.slice(0, 2).map((field, index) => <div key={index}><dt>{field.label}</dt><dd>{field.value}</dd></div>)}</dl>
         <div className={styles.recordBottom}><span className={styles[item.handling.tone]}>{item.handling.label}</span>
           <button type="button" ref={selectedId === item.id ? opener : undefined}
-            onClick={() => onSelection({ ...selection, selectedId: selectedId === item.id ? null : item.id, evidence: [] })} aria-expanded={selectedId === item.id}>查看证据</button></div>
+            onClick={() => onSelection({ ...selection, selectedId: selectedId === item.id ? null : item.id, evidence: [] })} aria-expanded={selectedId === item.id}>查看详情</button></div>
       </article>)}
     </div>}
     {selected && <section className={styles.recordDetail} aria-label={`${selected.title} 详情`}>

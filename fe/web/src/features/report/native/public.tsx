@@ -15,7 +15,7 @@ function Cell({ component, inspection, onInspection, onOpenSourceLink }: Reading
   switch (component.kind) {
     case 'metrics': return <MetricGroup items={component.items} />;
     case 'time-series': return <><TimeSeriesChart label={component.title} datasets={component.datasets} emptyText={component.emptyText}
-      selection={inspection.plots.get(component.id) ?? { datasetId: component.datasets[0].id, selected: null, sample: null }}
+      selection={inspection.plots.get(component.id) ?? { datasetId: component.datasets[0].id, selected: null, sample: null, readoutOpen: false }}
       onSelection={next => onInspection({ ...inspection, plots: new Map(inspection.plots).set(component.id, next) })} /><p className={styles.muted}>{component.caption}</p></>;
     case 'distribution': return <DistributionChart label={component.title} unit={component.unit} slices={component.slices} emptyText={component.emptyText}
       selected={inspection.distributions.get(component.id) ?? null} onSelect={next => onInspection({ ...inspection, distributions: new Map(inspection.distributions).set(component.id, next) })} />;

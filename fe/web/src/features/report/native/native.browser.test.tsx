@@ -22,7 +22,7 @@ it.each([1440, 736, 390, 320])('native composition renders without frames or ove
   await page.getByRole('button', { name: '合计', exact: true }).click();
   const paths = [...container.querySelectorAll('svg path')];
   expect(paths.some(path => path.getBoundingClientRect().width > 100)).toBe(true);
-  await page.getByRole('button', { name: '查看证据', exact: true }).click();
+  await page.getByRole('button', { name: '查看详情', exact: true }).click();
   expect(container.querySelector('script')).toBeNull();
   expect(container.textContent).toContain('<script>alert(1)</script>');
   expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
@@ -84,7 +84,7 @@ it('stacks record details according to their own cell width, not the whole compo
   const records = view.rows[2].cells[0];
   view.rows = [{ id: 'narrow', title: 'Narrow records', layout: 'three', cells: [records, view.rows[0].cells[0], view.rows[1].cells[0]] }];
   render(<main style={{ inlineSize: 1000 }}><NativeReportView payload={view} /></main>);
-  await page.getByRole('button', { name: '查看证据', exact: true }).click();
+  await page.getByRole('button', { name: '查看详情', exact: true }).click();
   const detail = page.getByRole('region', { name: '备份是否按时完成？ 详情' }).element();
   expect(detail.getBoundingClientRect().width).toBeGreaterThan(180);
   expect(detail.getBoundingClientRect().right).toBeLessThanOrEqual(detail.parentElement!.getBoundingClientRect().right);
@@ -93,7 +93,7 @@ it('stacks record details according to their own cell width, not the whole compo
 it('contains long observation tooltips inside the plot without covering the legend', async () => {
   await page.viewport(1440, 1000);
   const { container } = render(<div style={{ inlineSize: 350 }}><TimeSeriesChart label="测量" emptyText="无数据"
-    selection={{ datasetId: 'long', selected: null, sample: null }} onSelection={() => {}}
+    selection={{ datasetId: 'long', selected: null, sample: null, readoutOpen: false }} onSelection={() => {}}
     datasets={[{ id: 'long', label: '长说明', unit: 'GB', style: 'line',
       series: Array.from({ length: 6 }, (_, i) => ({ id: `s${i}`, label: `Series ${i} ${'long descriptive label '.repeat(4)}`, palette: i + 1 })),
       points: [{ date: '2026-09-23', values: [1, 2, 3, 4, 5, 6] }] }]} /></div>);
@@ -116,7 +116,7 @@ it('keeps summary and curve beside each other in an ordinary report slot', async
 it('reaches evidence and snapshot controls using the unchanged shared dialog', async () => {
   await page.viewport(1440, 1000);
   render(<NativeReportView payload={payload} />);
-  await page.getByRole('button', { name: '查看证据', exact: true }).click();
+  await page.getByRole('button', { name: '查看详情', exact: true }).click();
   await page.getByRole('button', { name: '展开 运营概览' }).click();
   const detailClose = page.getByRole('button', { name: '收起详情', exact: true }).element() as HTMLElement;
   detailClose.focus();

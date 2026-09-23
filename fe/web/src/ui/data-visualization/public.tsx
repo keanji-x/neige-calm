@@ -1,5 +1,5 @@
 import { useId } from 'react';
-import { useState } from '../state/public.ts';
+import { Icon } from '../icon/public.tsx';
 import styles from './visualization.module.css';
 
 export type ValueDisplay =
@@ -11,7 +11,7 @@ export type PlotDataset = { id: string; label: string; unit: string; style: 'lin
   series: readonly { id: string; label: string; palette: number }[];
   points: readonly { date: string; values: readonly (number | null)[] }[] };
 export type DistributionDatum = { id: string; label: string; value: number; palette: number };
-export type PlotSelection = { datasetId: string; selected: string | null; sample: number | null };
+export type PlotSelection = { datasetId: string; selected: string | null; sample: number | null; readoutOpen: boolean };
 
 function number(value: number, decimals = 2) {
   return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: decimals }).format(value);
@@ -98,9 +98,8 @@ export function TimeSeriesChart({ label, datasets, emptyText, selection, onSelec
   label: string; datasets: readonly PlotDataset[]; emptyText: string;
   selection: PlotSelection; onSelection: (selection: PlotSelection) => void;
 }) {
-  const [readoutOpen, setReadoutOpen] = useState(false);
   const readoutId = useId();
-  const { datasetId, selected, sample } = selection;
+  const { datasetId, selected, sample, readoutOpen } = selection;
   const data = datasets.find(d => d.id === datasetId) ?? datasets[0];
   if (!data) return <p className={styles.empty}>{emptyText}</p>;
   const points = data.points;
@@ -131,9 +130,9 @@ export function TimeSeriesChart({ label, datasets, emptyText, selection, onSelec
   return <div className={styles.root}>
     <div className={styles.toolbar}><h4>{label}</h4><div className={styles.toolbarControls}><span className={styles.unit}>{data.unit}</span>
       {datasets.length === 2 && <div className={styles.tabs} aria-label={`${label} 数据视图`}>{datasets.map(d =>
-        <button type="button" key={d.id} aria-pressed={data.id === d.id} onClick={() => onSelection({ datasetId: d.id, sample: null, selected: null })}>{d.label}</button>)}</div>}
+        <button type="button" key={d.id} aria-pressed={data.id === d.id} onClick={() => onSelection({ ...selection, datasetId: d.id, sample: null, selected: null })}>{d.label}</button>)}</div>}
       {datasets.length > 2 && <select aria-label={`${label} 数据视图`} value={data.id}
-        onChange={event => onSelection({ datasetId: event.target.value, sample: null, selected: null })}>
+        onChange={event => onSelection({ ...selection, datasetId: event.target.value, sample: null, selected: null })}>
         {datasets.map(d => <option key={d.id} value={d.id}>{d.label}</option>)}
       </select>}
     </div></div>
@@ -182,8 +181,8 @@ export function TimeSeriesChart({ label, datasets, emptyText, selection, onSelec
         <div className={styles.xAxis}><span>{points[0]?.date}</span><span>{points.at(-1)?.date}</span></div>
       </div>
       <button type="button" className={styles.readoutToggle} aria-label={`${label} 观察值`}
-        aria-expanded={readoutOpen} aria-controls={readoutId} onClick={() => setReadoutOpen(open => !open)}>
-        <span>{focused?.date}</span><span>观察值 {readoutOpen ? '−' : '+'}</span>
+        aria-expanded={readoutOpen} aria-controls={readoutId} onClick={() => onSelection({ ...selection, readoutOpen: !readoutOpen })}>
+        <span>{focused?.date}</span><span className={styles.readoutCommand}>观察值 <Icon name="chevron-right" size="sm" /></span>
       </button>
       {focused && <section id={readoutId} hidden={!readoutOpen} className={styles.readout} aria-label={`${label} 观察值`}>
         <dl>{data.series.map((series, i) => <div key={series.id}>

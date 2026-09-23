@@ -8,7 +8,7 @@ import { DistributionChart, TimeSeriesChart, type PlotDataset, type PlotSelectio
 afterEach(cleanup);
 
 function Chart() {
-  const [selection, onSelection] = useState<PlotSelection>({ datasetId: 'precise', selected: null, sample: null });
+  const [selection, onSelection] = useState<PlotSelection>({ datasetId: 'precise', selected: null, sample: null, readoutOpen: false });
   const dataset: PlotDataset = { id: 'precise', label: 'Precise', unit: 'GB', style: 'line',
     series: Array.from({ length: 6 }, (_, i) => ({ id: `s${i}`, label: `Series ${i} ${'longlabel'.repeat(8)}`, palette: i + 1 })),
     points: [{ date: '2026-09-22', values: [0, null, 1, 2, 3, 4] },
