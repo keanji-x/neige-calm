@@ -426,6 +426,72 @@
     "visible_to_roles": []
   },
   {
+    "name": "calm.preview.register",
+    "description_sha256": "60cc5f60caff7a73a5145c8787c38afa817dfde1d4cbedd1475412c7a1e6a32d",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "description": "Stable name of this preview within the track, e.g. `fe`.",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "type": "string"
+        },
+        "target_port": {
+          "description": "The 127.0.0.1 port your dev server listens on.",
+          "maximum": 65535,
+          "minimum": 1024,
+          "type": "integer"
+        },
+        "title": {
+          "description": "Short label shown with the preview.",
+          "maxLength": 120,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "target_port",
+        "title"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "calm.preview.unregister",
+    "description_sha256": "72c257ecea2995b313896f354c393a9197dbf4224ab44b308aa8bb68683d00b9",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "description": "Stable name of this preview within the track, e.g. `fe`.",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
     "name": "calm.ratify.request",
     "description_sha256": "e110e83486eecb7e96242df1ca819540d01f61791a24dd2f701c7d1475e66a52",
     "input_schema": {

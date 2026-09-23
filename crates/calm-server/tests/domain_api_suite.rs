@@ -49,6 +49,8 @@ mod payload_validation;
 mod preview_gateway;
 #[path = "cases/repo.rs"]
 mod repo;
+#[path = "cases/rest_track_previews.rs"]
+mod rest_track_previews;
 #[path = "cases/review_ratify.rs"]
 mod review_ratify;
 #[path = "cases/role_enforcement.rs"]

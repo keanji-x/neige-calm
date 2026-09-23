@@ -34,6 +34,7 @@ pub mod threads;
 pub mod today;
 pub mod today_summary;
 pub mod track_conversations;
+pub mod track_previews;
 pub mod track_recipes;
 pub mod track_report_blocks;
 pub mod track_report_series;
@@ -58,6 +59,7 @@ pub fn protected_router() -> Router<AppState> {
         .merge(area_folders::router())
         .merge(tracks::router())
         .merge(track_conversations::router())
+        .merge(track_previews::router())
         .merge(track_report_blocks::router())
         .merge(track_report_series::router())
         .merge(track_sources::router())

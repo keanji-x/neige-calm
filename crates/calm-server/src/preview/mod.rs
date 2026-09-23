@@ -208,6 +208,18 @@ impl PreviewRegistry {
         let slots = self.slots.lock().expect("preview registry poisoned");
         slots.get(&port).cloned()
     }
+
+    /// `(pool port, entry)` for every registration of `track_id`, by port.
+    pub fn for_track(&self, track_id: &TrackId) -> Vec<(u16, PreviewEntry)> {
+        let slots = self.slots.lock().expect("preview registry poisoned");
+        let mut held: Vec<_> = slots
+            .iter()
+            .filter(|(_, e)| e.track_id == *track_id)
+            .map(|(port, e)| (*port, e.clone()))
+            .collect();
+        held.sort_by_key(|(port, _)| *port);
+        held
+    }
 }
 
 /// Host part of `CALM_LISTEN`, the interface the pool binds on (IPv6 brackets stripped).

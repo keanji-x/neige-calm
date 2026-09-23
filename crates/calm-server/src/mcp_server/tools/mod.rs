@@ -7,6 +7,7 @@ pub mod admin;
 pub mod emit;
 pub(crate) mod lifecycle_args;
 pub mod plan;
+pub mod preview;
 pub mod report_links;
 pub mod review;
 pub mod source;
@@ -36,6 +37,7 @@ pub fn register_default_tools(registry: &mut ToolRegistry) {
     source::register_into(registry);
     track_rename::register_into(registry);
     user_notify::register_into(registry);
+    preview::register_into(registry);
     track_state::register_into(registry);
     track_report::register_into(registry);
     track_report_blocks::register_into(registry);

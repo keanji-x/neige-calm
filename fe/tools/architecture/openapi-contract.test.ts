@@ -22,7 +22,7 @@ const RESPONSE_WIRE_EXCEPTIONS = new Set([
   'TaskArtifactFileResponse',
   'ViewCatalogEntry', 'TrackBacklinksResponse', 'TrackDetail', 'TrackFsContent', 'TrackFsEntry',
   'TrackReportReadResponse', 'TrackTemplate',
-  'ReportSeriesResolved', 'ReportSeriesRevConflict',
+  'ReportSeriesResolved', 'ReportSeriesRevConflict', 'TrackPreviews',
 ]);
 
 function object(value: unknown): value is JsonObject {
