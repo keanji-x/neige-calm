@@ -1,6 +1,10 @@
 //! #1780 preview gateway: a fixed pool of LAN ports, each reverse-proxying to one registered
 //! loopback dev server so a report can embed it. The registry is in-memory and keyed
 //! `(track_id, key)`; after a restart the agent re-registers.
+//!
+//! Refusing calm's own listen port as a target is one hop only: a registered dev-calm port, or a
+//! dev server proxying to calm, still reaches the loopback-only internal routes (`actor.rs`
+//! `require_loopback_connect_info`). Registrants must not register such ports.
 
 pub mod gateway;
 
@@ -8,6 +12,7 @@ use crate::config::Config;
 use crate::ids::TrackId;
 use std::collections::HashMap;
 use std::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 /// Most ports one pool may hold; each is a listener bound for the whole process lifetime.
 pub const MAX_POOL_PORTS: u16 = 16;
@@ -59,12 +64,14 @@ pub enum PreviewError {
     TargetRefused { port: u16, reason: &'static str },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct PreviewEntry {
     pub track_id: TrackId,
     pub key: String,
     pub title: String,
     pub target_port: u16,
+    /// Cancelled on unregister and on re-register to another target; closes open WS tunnels.
+    pub tunnels: CancellationToken,
 }
 
 /// Pool port → registration. Disabled is an empty pool, not a separate state.
@@ -103,6 +110,10 @@ impl PreviewRegistry {
             return Ok(Self::disabled());
         };
         let calm_port = listen_port(&cfg.listen)?;
+        anyhow::ensure!(
+            calm_port != 0,
+            "CALM_PREVIEW_PORTS needs a fixed CALM_LISTEN port, not 0"
+        );
         anyhow::ensure!(
             !ports.contains(calm_port),
             "CALM_PREVIEW_PORTS contains the CALM_LISTEN port {calm_port}"
@@ -143,12 +154,6 @@ impl PreviewRegistry {
         if self.refused_targets.contains(&target_port) {
             return Err(refused("calm's own listen or preview port"));
         }
-        let entry = PreviewEntry {
-            track_id: track_id.clone(),
-            key: key.to_owned(),
-            title: title.to_owned(),
-            target_port,
-        };
         let mut slots = self.slots.lock().expect("preview registry poisoned");
         let held = slots
             .iter()
@@ -169,6 +174,21 @@ impl PreviewRegistry {
                 });
             }
         };
+        let tunnels = match slots.get(&port) {
+            Some(old) if old.target_port == target_port => old.tunnels.clone(),
+            Some(old) => {
+                old.tunnels.cancel();
+                CancellationToken::new()
+            }
+            None => CancellationToken::new(),
+        };
+        let entry = PreviewEntry {
+            track_id: track_id.clone(),
+            key: key.to_owned(),
+            title: title.to_owned(),
+            target_port,
+            tunnels,
+        };
         slots.insert(port, entry);
         Ok(port)
     }
@@ -180,7 +200,7 @@ impl PreviewRegistry {
             .iter()
             .find(|(_, e)| e.track_id == *track_id && e.key == key)
             .map(|(port, _)| *port)?;
-        slots.remove(&port);
+        slots.remove(&port)?.tunnels.cancel();
         Some(port)
     }
 
@@ -269,6 +289,20 @@ mod tests {
         ];
         assert_eq!(boot(&ok).unwrap(), (4050..=4057).collect::<Vec<_>>());
         assert!(boot(&[]).unwrap().is_empty());
+        let ephemeral = ["--preview-ports", "4050-4057", "--listen", "127.0.0.1:0"];
+        assert!(boot(&ephemeral).unwrap_err().to_string().contains("not 0"));
+    }
+
+    /// Through the boot path, so the listen port reaching the registry is what is pinned.
+    #[test]
+    fn booted_registry_refuses_the_listen_port_as_target() {
+        let args = ["--preview-ports", "4050-4057", "--listen", "127.0.0.1:4040"];
+        let cfg = Config::parse_from(["calm-server"].iter().chain(&args));
+        let reg = PreviewRegistry::from_config(&cfg).unwrap();
+        assert!(matches!(
+            reg.register(&track("t"), "fe", "FE", 4040),
+            Err(PreviewError::TargetRefused { port: 4040, .. })
+        ));
     }
 
     #[test]
@@ -299,7 +333,7 @@ mod tests {
             "preview pool full (2 ports); held by: 4050: track t1 key fe, 4051: track t2 key fe"
         );
         assert_eq!(reg.unregister(&track("t2"), "fe"), Some(4051));
-        assert_eq!(reg.lookup(4051), None);
+        assert!(reg.lookup(4051).is_none());
         assert_eq!(reg.register(&track("t1"), "api", "API", 8080), Ok(4051));
     }
 

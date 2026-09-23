@@ -505,6 +505,11 @@ impl AppState {
         self.raw.as_ref()
     }
 
+    /// The preview registry the gateway listeners serve (shared with the MCP context).
+    pub fn preview(&self) -> Arc<crate::preview::PreviewRegistry> {
+        self.route.mcp_context.preview.clone()
+    }
+
     pub(crate) fn sqlite_pool(&self) -> Option<sqlx::SqlitePool> {
         self.raw.sqlite_pool()
     }
@@ -732,7 +737,6 @@ impl AppState {
             Arc::new(tokio::sync::OnceCell::new()),
             TaskVerifyAdapter::default_gate_logs_dir(),
             task_budget_default,
-            Arc::new(crate::preview::PreviewRegistry::disabled()),
         );
         let dispatcher = Arc::new(
             Dispatcher::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
@@ -1082,8 +1086,8 @@ impl AppState {
             operation_runtime_cell.clone(),
             gate_logs_dir.clone(),
             task_budget_default,
-            preview,
-        );
+        )
+        .with_preview(preview);
         let mcp_server = crate::mcp_server::McpServer::spawn_with_context(
             mcp_context.clone(),
             mcp_socket_path,

@@ -7,7 +7,7 @@ use axum::{response::Redirect, routing::get};
 use calm_server::auth::AuthState;
 use calm_server::config::Config;
 use calm_server::routes;
-use calm_server::state::{AppState, RouteState};
+use calm_server::state::AppState;
 use clap::Parser;
 use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
@@ -164,10 +164,7 @@ async fn main() -> anyhow::Result<()> {
         None
     };
     let mobile_shutdown = auth_state.mobile.clone();
-    let preview = <RouteState as axum::extract::FromRef<_>>::from_ref(&state)
-        .mcp_context
-        .preview
-        .clone();
+    let (preview, preview_auth) = (state.preview(), auth_state.clone());
 
     let mut app = routes::application_router(state, auth_state);
     if let Some(cors) = cors {
@@ -182,6 +179,7 @@ async fn main() -> anyhow::Result<()> {
     let preview_shutdown = tokio_util::sync::CancellationToken::new();
     calm_server::preview::gateway::spawn(
         preview,
+        preview_auth,
         calm_server::preview::listen_host(&cfg.listen),
         preview_shutdown.clone(),
     )

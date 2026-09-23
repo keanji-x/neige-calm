@@ -229,7 +229,7 @@ fn session_cookie(headers: &HeaderMap) -> Option<String> {
 }
 
 /// `None` when there is no valid session AND dev_autologin is off; the caller decides whether to 401.
-fn resolve_principal(state: &AuthState, headers: &HeaderMap) -> Option<Principal> {
+pub(crate) fn resolve_principal(state: &AuthState, headers: &HeaderMap) -> Option<Principal> {
     if state.config.dev_autologin {
         // Dev mode: a stable synthetic session id so whoami / logout behave consistently; nothing is written to the store.
         return Some(Principal::owner(&state.config, "dev-autologin".to_string()));

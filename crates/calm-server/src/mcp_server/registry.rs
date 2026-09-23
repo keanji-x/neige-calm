@@ -191,7 +191,6 @@ impl AppContext {
         operation_runtime: Arc<tokio::sync::OnceCell<Arc<crate::operation::OperationRuntime>>>,
         gate_logs_dir: std::path::PathBuf,
         task_budget_default: i64,
-        preview: Arc<crate::preview::PreviewRegistry>,
     ) -> Arc<Self> {
         let sqlite_pool = repo.sqlite_pool();
         let track_vcs = sqlite_pool.clone().map(SqlxTrackVcsRepo::shared);
@@ -213,9 +212,21 @@ impl AppContext {
             scheduler_poke: Arc::new(tokio::sync::OnceCell::new()),
             series_resolver,
             plugin_results: Arc::new(crate::plugin_results::PluginResults::new()),
-            preview,
+            preview: Arc::new(crate::preview::PreviewRegistry::disabled()),
             sqlite_pool,
         })
+    }
+
+    /// Boot's preview registry, set on the context [`Self::new`] just returned, before it is
+    /// shared; every other construction keeps the disabled one.
+    pub fn with_preview(
+        mut self: Arc<Self>,
+        preview: Arc<crate::preview::PreviewRegistry>,
+    ) -> Arc<Self> {
+        Arc::get_mut(&mut self)
+            .expect("with_preview runs before the context is shared")
+            .preview = preview;
+        self
     }
 }
 
