@@ -2,7 +2,9 @@
 //! upstream, fetched on the submit path and read locally in `prepare_tx`.
 
 use super::*;
-use crate::operation::workspace_lease::upstream_tests::{attach_origin, git, kernel_ref};
+use crate::operation::workspace_lease::upstream_tests::{
+    attach_origin, git, kernel_ref, transport_count, witness_transport,
+};
 
 /// `before_insert` fetches the upstream; `prepare_tx` starts the lease from
 /// it and records `upstream`.
@@ -31,23 +33,32 @@ async fn claude_lease_starts_from_the_fetched_upstream() {
     assert_eq!(source, "upstream");
 }
 
-/// `prepare_tx` never touches the network: the upstream moves after the last
-/// submit-path fetch, and the lease starts from the kernel ref that fetch
-/// left, which `prepare_tx` does not move.
+/// `prepare_tx` never touches the network: a transport witness on the remote
+/// counts at least one fetch during `before_insert` and none during
+/// `prepare_tx`, and the lease starts from the kernel ref the submit-path
+/// fetch left.
 #[tokio::test]
 async fn claude_prepare_tx_never_fetches() {
     let harness = claude_worker_harness().await;
     let attached = harness.workspace.path();
     let origin = attach_origin(attached);
+    let witness = witness_transport(attached);
     let fetched = origin.commit("fetched on submit");
     harness
         .adapter
-        .before_insert(&claude_worker_payload(&harness.track_id, "first"))
+        .before_insert(&claude_worker_payload(&harness.track_id, "no-fetch"))
         .await;
+    let submitted = transport_count(&witness);
+    assert!(submitted >= 1, "the submit path reached the remote");
     let moved = origin.commit("landed after the fetch");
 
     let (output, _, _) = prepare_claude_worker(&harness, "no-fetch").await;
 
+    assert_eq!(
+        transport_count(&witness),
+        submitted,
+        "prepare_tx reached the remote"
+    );
     assert_eq!(output.output_string("base_sha", "test").unwrap(), fetched);
     assert_ne!(fetched, moved);
     assert_eq!(git(attached, &["rev-parse", &kernel_ref(&origin)]), fetched);

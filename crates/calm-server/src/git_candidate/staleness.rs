@@ -1,15 +1,16 @@
 //! `calm.plan.list.candidate.upstream` (#1777): how far a bound candidate's
-//! base is behind the Track repository's upstream as last known. Read-only
-//! and computed at read time — never stored, never fetched: the upstream is
-//! the one a new lease of this Track would start from now
-//! ([`last_known_upstream`]: the kernel ref the submit path fetched, else the
-//! repository's own remote-tracking ref). Local `git` only, and run after
-//! `plan.list`'s transaction has committed, so no git process ever runs while
-//! the kernel's write transaction is held.
+//! base is behind the upstream of the branch the Track's attached checkout is
+//! on *now*, as last known. Read-only and computed at read time — never
+//! stored, never fetched: the upstream is the one a new lease of this Track
+//! would be measured against now ([`last_known_upstream`]: the fresher of the
+//! kernel ref the submit path fetched and the repository's own
+//! remote-tracking ref). Local `git` only, run after `plan.list`'s
+//! transaction has committed and on a blocking thread, so no git process
+//! ever runs while the kernel's write transaction is held.
 //!
-//! Given only for a candidate whose lease started from the upstream
-//! ([`super::view::CandidateBinding::upstream_base`]); a `head` or legacy
-//! lease has no upstream to be behind, and the field is absent.
+//! Given for every bound candidate (every one records its base), whatever its
+//! lease's `base_source` — a `head` lease is as stale as an `upstream` one;
+//! absent when the Track repository has no resolvable upstream now.
 
 use std::path::Path;
 
@@ -26,6 +27,22 @@ pub(crate) struct UpstreamStaleness {
     pub behind: u64,
 }
 
+/// [`upstream_staleness`] on a blocking thread; a panicked or cancelled
+/// blocking task reads as no answer for every entry.
+pub(crate) async fn upstream_staleness_blocking(
+    track_id: String,
+    track_cwd: String,
+    bases: Vec<Option<String>>,
+) -> Vec<Option<UpstreamStaleness>> {
+    let len = bases.len();
+    tokio::task::spawn_blocking(move || upstream_staleness(&track_id, &track_cwd, &bases))
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!(%error, "candidate upstream staleness task failed");
+            vec![None; len]
+        })
+}
+
 /// One answer per entry of `bases`, in order: `None` for an entry without an
 /// upstream base, and for every entry when the Track repository has no known
 /// upstream now. A git failure is a `warn!` and a `None`, never a guess: the
@@ -38,8 +55,9 @@ pub(crate) fn upstream_staleness(
     if bases.iter().all(Option::is_none) {
         return vec![None; bases.len()];
     }
-    let upstream = git_repo_root_for_track_cwd(track_id, track_cwd)
-        .and_then(|repo_root| Ok(last_known_upstream(&repo_root)?.map(|sha| (repo_root, sha))));
+    let upstream = git_repo_root_for_track_cwd(track_id, track_cwd).and_then(|repo_root| {
+        Ok(last_known_upstream(&repo_root)?.map(|known| (repo_root, known.sha)))
+    });
     let (repo_root, upstream_sha) = match upstream {
         Ok(Some(found)) => found,
         Ok(None) => return vec![None; bases.len()],

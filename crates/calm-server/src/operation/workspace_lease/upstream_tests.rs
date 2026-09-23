@@ -1,15 +1,15 @@
-//! The upstream half of a lease base (#1777): the fetch writes only the
-//! kernel ref, is bounded, and every failure leaves the last known upstream —
-//! kernel ref, then remote-tracking ref, then HEAD.
+//! The local half of an upstream lease base (#1777): which upstream commit is
+//! known, and where a lease starts by HEAD's relation to it.
 //!
-//! The fixtures here are shared with the worker adapters' tests, which drive
-//! the same repositories through `before_insert` and `prepare_tx`.
+//! The fixtures here are shared with the fetch tests
+//! (`upstream_fetch_tests`) and the worker adapters' tests, which drive the
+//! same repositories through `before_insert` and `prepare_tx`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
 
 use super::upstream::*;
+use super::upstream_fetch::{UpstreamRefresh, refresh_upstream};
 
 /// `git -C <dir> <args>` with a fixed identity; panics on failure, returns
 /// stdout trimmed.
@@ -58,6 +58,19 @@ impl Origin {
         );
         git(self.path(), &["rev-parse", "HEAD"])
     }
+
+    /// The upstream the attached checkout's branch names.
+    pub(crate) fn upstream(&self) -> Upstream {
+        Upstream {
+            remote: "origin".into(),
+            merge: format!("refs/heads/{}", self.branch),
+            tracking_ref: Some(self.tracking_ref()),
+        }
+    }
+
+    pub(crate) fn tracking_ref(&self) -> String {
+        format!("refs/remotes/origin/{}", self.branch)
+    }
 }
 
 /// Give `attached` an `origin` remote its HEAD branch tracks
@@ -98,7 +111,42 @@ pub(crate) fn break_origin(attached: &Path) {
 }
 
 pub(crate) fn kernel_ref(origin: &Origin) -> String {
-    format!("refs/neige/upstream/origin/{}", origin.branch)
+    origin.upstream().kernel_ref()
+}
+
+/// A transport witness: `origin`'s upload-pack runs through a shell line that
+/// appends one line to the returned marker file first, so every fetch that
+/// reaches the remote — the kernel's or any other — is counted. `then` is the
+/// rest of the line (`git-upload-pack` to serve the fetch, `exit 1` to fail
+/// it).
+pub(crate) fn witness_transport_then(attached: &Path, then: &str) -> PathBuf {
+    let marker = tempfile::Builder::new()
+        .prefix("neige-upstream-witness-")
+        .tempfile()
+        .unwrap()
+        .into_temp_path()
+        .keep()
+        .unwrap();
+    std::fs::write(&marker, "").unwrap();
+    git(
+        attached,
+        &[
+            "config",
+            "remote.origin.uploadpack",
+            &format!("echo fetch >> '{}'; {then}", marker.display()),
+        ],
+    );
+    marker
+}
+
+/// [`witness_transport_then`] serving the fetch.
+pub(crate) fn witness_transport(attached: &Path) -> PathBuf {
+    witness_transport_then(attached, "git-upload-pack")
+}
+
+/// How many transport invocations the witness has seen.
+pub(crate) fn transport_count(marker: &Path) -> usize {
+    std::fs::read_to_string(marker).unwrap().lines().count()
 }
 
 /// Everything of the user's the fetch must not touch: every ref outside
@@ -119,7 +167,7 @@ pub(crate) fn user_ref_state(repo: &Path) -> (String, Option<Vec<u8>>, String) {
     (refs, fetch_head, status)
 }
 
-fn attached_repo() -> tempfile::TempDir {
+pub(crate) fn attached_repo() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     git(dir.path(), &["init", "-q"]);
     std::fs::write(dir.path().join("README.md"), "initial\n").unwrap();
@@ -128,39 +176,17 @@ fn attached_repo() -> tempfile::TempDir {
     dir
 }
 
-/// The fetch writes the kernel ref and nothing of the user's: not
-/// `refs/remotes/*` (which `git fetch <remote> <refspec>` updates
-/// opportunistically without `--refmap=`), not `FETCH_HEAD`, not the tag the
-/// upstream carries, and `git status` reads as before.
-#[tokio::test]
-async fn fetch_writes_only_the_kernel_ref() {
-    let attached = attached_repo();
-    let origin = attach_origin(attached.path());
-    git(origin.path(), &["tag", "v-upstream"]);
-    let tip = origin.commit("upstream moved");
-    let before = user_ref_state(attached.path());
+/// A local commit on the attached checkout that its upstream does not have;
+/// returns the new HEAD.
+pub(crate) fn commit_locally(attached: &Path, file: &str) -> String {
+    std::fs::write(attached.join(file), "unpushed\n").unwrap();
+    git(attached, &["add", file]);
+    git(attached, &["commit", "-q", "-m", "unpushed local commit"]);
+    git(attached, &["rev-parse", "HEAD"])
+}
 
-    let refresh = refresh_upstream(attached.path()).await;
-
-    assert_eq!(
-        refresh,
-        UpstreamRefresh::Fetched {
-            kernel_ref: kernel_ref(&origin)
-        }
-    );
-    assert_eq!(
-        git(attached.path(), &["rev-parse", &kernel_ref(&origin)]),
-        tip
-    );
-    assert_eq!(
-        user_ref_state(attached.path()),
-        before,
-        "the fetch must not write refs/remotes/*, tags or FETCH_HEAD"
-    );
-    assert_eq!(
-        last_known_upstream(attached.path()).unwrap().as_deref(),
-        Some(tip.as_str())
-    );
+fn known_sha(repo: &Path) -> Option<String> {
+    last_known_upstream(repo).unwrap().map(|known| known.sha)
 }
 
 /// Fetch failure with a kernel ref from an earlier fetch: the base is that
@@ -169,13 +195,7 @@ async fn fetch_writes_only_the_kernel_ref() {
 async fn failed_fetch_resolves_the_kernel_ref() {
     let attached = attached_repo();
     let origin = attach_origin(attached.path());
-    let tracking = git(
-        attached.path(),
-        &[
-            "rev-parse",
-            &format!("refs/remotes/origin/{}", origin.branch),
-        ],
-    );
+    let tracking = git(attached.path(), &["rev-parse", &origin.tracking_ref()]);
     let fetched = origin.commit("fetched once");
     assert!(matches!(
         refresh_upstream(attached.path()).await,
@@ -191,10 +211,9 @@ async fn failed_fetch_resolves_the_kernel_ref() {
         "{refresh:?}"
     );
     assert_ne!(fetched, tracking);
-    assert_eq!(
-        last_known_upstream(attached.path()).unwrap().as_deref(),
-        Some(fetched.as_str())
-    );
+    let known = last_known_upstream(attached.path()).unwrap().unwrap();
+    assert_eq!(known.sha, fetched);
+    assert_eq!(known.ref_name, kernel_ref(&origin));
 }
 
 /// Fetch failure and no kernel ref yet: the base is the repository's own
@@ -205,13 +224,7 @@ async fn failed_fetch_without_kernel_ref_resolves_the_tracking_ref() {
     let origin = attach_origin(attached.path());
     origin.commit("upstream moved");
     git(attached.path(), &["fetch", "-q", "origin"]);
-    let tracking = git(
-        attached.path(),
-        &[
-            "rev-parse",
-            &format!("refs/remotes/origin/{}", origin.branch),
-        ],
-    );
+    let tracking = git(attached.path(), &["rev-parse", &origin.tracking_ref()]);
     let head = git(attached.path(), &["rev-parse", "HEAD"]);
     assert_ne!(tracking, head, "HEAD lags its upstream");
     break_origin(attached.path());
@@ -221,10 +234,47 @@ async fn failed_fetch_without_kernel_ref_resolves_the_tracking_ref() {
         UpstreamRefresh::Failed { .. }
     ));
 
+    assert_eq!(known_sha(attached.path()), Some(tracking));
+}
+
+/// The human fetched after the kernel's last fetch: the newer
+/// remote-tracking ref wins over the stale kernel ref (the descendant of the
+/// two). After a force-push, when the two have diverged, the kernel ref wins.
+#[tokio::test]
+async fn the_fresher_of_kernel_and_tracking_ref_wins() {
+    let attached = attached_repo();
+    let origin = attach_origin(attached.path());
+    let stale = origin.commit("the kernel fetched this");
+    assert!(matches!(
+        refresh_upstream(attached.path()).await,
+        UpstreamRefresh::Fetched { .. }
+    ));
+    let newer = origin.commit("the human fetched this later");
+    git(attached.path(), &["fetch", "-q", "origin"]);
     assert_eq!(
-        last_known_upstream(attached.path()).unwrap().as_deref(),
-        Some(tracking.as_str())
+        git(attached.path(), &["rev-parse", &kernel_ref(&origin)]),
+        stale
     );
+    let known = last_known_upstream(attached.path()).unwrap().unwrap();
+    assert_eq!(known.sha, newer);
+    assert_eq!(known.ref_name, origin.tracking_ref());
+
+    // The kernel catches up, then the upstream is force-pushed and only the
+    // human fetches the rewrite: kernel ref and tracking ref diverge.
+    assert!(matches!(
+        refresh_upstream(attached.path()).await,
+        UpstreamRefresh::Fetched { .. }
+    ));
+    git(origin.path(), &["reset", "-q", "--hard", "HEAD~1"]);
+    let rewritten = origin.commit("rewritten history");
+    git(attached.path(), &["fetch", "-q", "origin"]);
+    assert_eq!(
+        git(attached.path(), &["rev-parse", &origin.tracking_ref()]),
+        rewritten
+    );
+    let known = last_known_upstream(attached.path()).unwrap().unwrap();
+    assert_eq!(known.sha, newer);
+    assert_eq!(known.ref_name, kernel_ref(&origin));
 }
 
 /// Fetch failure and neither ref resolves: no upstream is known, the base is
@@ -235,11 +285,7 @@ async fn nothing_known_of_the_upstream_resolves_head() {
     let origin = attach_origin(attached.path());
     git(
         attached.path(),
-        &[
-            "update-ref",
-            "-d",
-            &format!("refs/remotes/origin/{}", origin.branch),
-        ],
+        &["update-ref", "-d", &origin.tracking_ref()],
     );
     break_origin(attached.path());
     assert!(matches!(
@@ -247,6 +293,11 @@ async fn nothing_known_of_the_upstream_resolves_head() {
         UpstreamRefresh::Failed { .. }
     ));
     assert_eq!(last_known_upstream(attached.path()).unwrap(), None);
+    let head = git(attached.path(), &["rev-parse", "HEAD"]);
+    assert_eq!(
+        choose_lease_start(attached.path()).unwrap(),
+        LeaseStart::Head { sha: head }
+    );
 
     let plain = attached_repo();
     assert_eq!(
@@ -263,8 +314,70 @@ async fn nothing_known_of_the_upstream_resolves_head() {
     );
 }
 
-/// A branch whose name another branch extends (`main` and `main/x`): only
-/// HEAD's own upstream is read.
+/// HEAD's relation to its upstream decides the start: equal or behind → the
+/// upstream; ahead → HEAD (which contains the upstream); diverged → refused,
+/// with both commits and the counts.
+#[test]
+fn lease_start_follows_heads_relation_to_the_upstream() {
+    let attached = attached_repo();
+    let origin = attach_origin(attached.path());
+    let equal = git(attached.path(), &["rev-parse", "HEAD"]);
+    assert_eq!(
+        choose_lease_start(attached.path()).unwrap(),
+        LeaseStart::Upstream { sha: equal }
+    );
+
+    let behind_tip = origin.commit("landed upstream");
+    git(attached.path(), &["fetch", "-q", "origin"]);
+    assert_eq!(
+        choose_lease_start(attached.path()).unwrap(),
+        LeaseStart::Upstream { sha: behind_tip }
+    );
+
+    git(
+        attached.path(),
+        &["merge", "-q", "--ff-only", &origin.tracking_ref()],
+    );
+    let ahead = commit_locally(attached.path(), "unpushed.txt");
+    assert_eq!(
+        choose_lease_start(attached.path()).unwrap(),
+        LeaseStart::Head { sha: ahead.clone() }
+    );
+
+    origin.commit("landed upstream meanwhile");
+    let upstream_tip = origin.commit("and another");
+    git(attached.path(), &["fetch", "-q", "origin"]);
+    let LeaseStart::Diverged {
+        head,
+        upstream,
+        ahead: ahead_count,
+        behind,
+    } = choose_lease_start(attached.path()).unwrap()
+    else {
+        panic!("a diverged checkout must be refused");
+    };
+    assert_eq!(head, ahead);
+    assert_eq!(upstream.sha, upstream_tip);
+    assert_eq!((ahead_count, behind), (1, 2));
+    let refusal = diverged_refusal(attached.path(), &head, &upstream, ahead_count, behind);
+    let crate::error::CalmError::Conflict(text) = &refusal else {
+        panic!("the refusal is a client-class Conflict: {refusal:?}");
+    };
+    for needle in [
+        "refused: attached-repo-diverged:",
+        head.as_str(),
+        upstream_tip.as_str(),
+        "1 ahead, 2 behind",
+        "Not retryable",
+        "push, rebase or reset",
+        "re-dispatch works afterwards",
+    ] {
+        assert!(text.contains(needle), "{needle:?} missing from {text}");
+    }
+}
+
+/// A branch whose name another branch extends (`main` and `main-other`):
+/// only HEAD's own upstream is read.
 #[test]
 fn head_upstream_is_the_exact_branch() {
     let attached = attached_repo();
@@ -273,150 +386,39 @@ fn head_upstream_is_the_exact_branch() {
         attached.path(),
         &["branch", "-q", &format!("{}-other", origin.branch)],
     );
-    let upstream = head_upstream(attached.path()).unwrap().unwrap();
-    assert_eq!(upstream.remote, "origin");
-    assert_eq!(upstream.merge, format!("refs/heads/{}", origin.branch));
     assert_eq!(
-        upstream.tracking_ref,
-        Some(format!("refs/remotes/origin/{}", origin.branch))
+        head_upstream(attached.path()).unwrap(),
+        Some(origin.upstream())
     );
 }
 
+/// Every (remote, merge-ref) pair gets its own kernel ref — slashes, `.`,
+/// URLs and refs outside `refs/heads/` included — and `git check-ref-format`
+/// accepts every one.
 #[test]
-fn kernel_ref_only_for_a_plain_remote_branch() {
-    let upstream = |remote: &str, merge: &str| Upstream {
-        remote: remote.into(),
-        merge: merge.into(),
-        tracking_ref: None,
-    };
-    assert_eq!(
-        upstream("origin", "refs/heads/main")
-            .kernel_ref()
-            .as_deref(),
-        Some("refs/neige/upstream/origin/main")
-    );
-    assert_eq!(
-        upstream("up-stream_2", "refs/heads/feat/x")
-            .kernel_ref()
-            .as_deref(),
-        Some("refs/neige/upstream/up-stream_2/feat/x")
-    );
-    for (remote, merge) in [
+fn kernel_ref_is_total_distinct_and_valid() {
+    let pairs = [
+        ("origin", "refs/heads/main"),
+        ("origin", "refs/heads/feat/x"),
+        ("a/b", "refs/heads/main"),
+        ("a", "b/refs/heads/main"),
         (".", "refs/heads/main"),
         ("https://example.test/r.git", "refs/heads/main"),
-        ("a/b", "refs/heads/main"),
-        ("-oops", "refs/heads/main"),
         ("origin", "refs/tags/v1"),
-        ("origin", "refs/heads/a:b"),
-        ("origin", "refs/heads/a..b"),
-        ("origin", "refs/heads/"),
-    ] {
-        assert_eq!(
-            upstream(remote, merge).kernel_ref(),
-            None,
-            "{remote} {merge}"
-        );
-    }
-}
-
-/// Live processes whose command line names `needle`, zombies excluded.
-fn processes_naming(needle: &str) -> Vec<i32> {
-    let mut found = Vec::new();
-    for entry in std::fs::read_dir("/proc").unwrap().flatten() {
-        let Ok(pid) = entry.file_name().to_string_lossy().parse::<i32>() else {
-            continue;
-        };
-        let Ok(cmdline) = std::fs::read(entry.path().join("cmdline")) else {
-            continue;
-        };
-        let zombie = std::fs::read_to_string(entry.path().join("stat"))
-            .map(|stat| {
-                stat.rsplit_once(')')
-                    .is_some_and(|(_, rest)| rest.trim_start().starts_with('Z'))
-            })
-            .unwrap_or(true);
-        if !zombie && String::from_utf8_lossy(&cmdline).contains(needle) {
-            found.push(pid);
+        ("origin", "refs/pull/1/head"),
+        ("origin", "main"),
+    ];
+    let dir = attached_repo();
+    let mut seen = std::collections::BTreeSet::new();
+    for (remote, merge) in pairs {
+        let kernel_ref = Upstream {
+            remote: remote.into(),
+            merge: merge.into(),
+            tracking_ref: None,
         }
+        .kernel_ref();
+        assert!(kernel_ref.starts_with(KERNEL_UPSTREAM_REF_PREFIX));
+        git(dir.path(), &["check-ref-format", &kernel_ref]);
+        assert!(seen.insert(kernel_ref), "{remote} {merge} collides");
     }
-    found
-}
-
-/// A fetch that hangs is bounded: it ends as `Failed` at the bound, and the
-/// whole process group — the transport command git forked, not only git —
-/// is gone. The hang is the local transport's `uploadpack`, run through the
-/// shell, sleeping far past the bound.
-#[tokio::test]
-async fn hanging_fetch_is_killed_at_the_bound() {
-    let attached = attached_repo();
-    let origin = attach_origin(attached.path());
-    origin.commit("never arrives");
-    let needle = "sleep 91.7177";
-    git(
-        attached.path(),
-        &[
-            "config",
-            "remote.origin.uploadpack",
-            &format!("{needle}; git-upload-pack"),
-        ],
-    );
-    let started = std::time::Instant::now();
-
-    let refresh = refresh_upstream_within(attached.path(), Duration::from_millis(1500)).await;
-
-    let UpstreamRefresh::Failed { reason } = refresh else {
-        panic!("a hanging fetch must fail at the bound, got {refresh:?}");
-    };
-    assert!(reason.contains("timed out"), "{reason}");
-    assert!(started.elapsed() < Duration::from_secs(15));
-    let mut live = processes_naming(needle);
-    for _ in 0..100 {
-        if live.is_empty() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        live = processes_naming(needle);
-    }
-    for pid in &live {
-        // SAFETY: pids just observed; killed only so a failing assertion
-        // leaves no 90-second sleep behind.
-        unsafe { libc::kill(*pid, libc::SIGKILL) };
-    }
-    assert!(live.is_empty(), "the fetch's transport survived: {live:?}");
-    assert_eq!(
-        last_known_upstream(attached.path()).unwrap(),
-        Some(git(
-            attached.path(),
-            &[
-                "rev-parse",
-                &format!("refs/remotes/origin/{}", origin.branch)
-            ]
-        ))
-    );
-}
-
-/// The fetch argv, pinned: one force refspec into the kernel ref and every
-/// flag that keeps the user's refs and prompts out of it.
-#[test]
-fn fetch_args_are_pinned() {
-    let upstream = Upstream {
-        remote: "origin".into(),
-        merge: "refs/heads/main".into(),
-        tracking_ref: None,
-    };
-    assert_eq!(
-        fetch_args(&upstream, "refs/neige/upstream/origin/main"),
-        [
-            "fetch",
-            "--quiet",
-            "--no-write-fetch-head",
-            "--refmap=",
-            "--no-tags",
-            "--no-prune",
-            "--no-recurse-submodules",
-            "--no-auto-maintenance",
-            "origin",
-            "+refs/heads/main:refs/neige/upstream/origin/main",
-        ]
-    );
 }

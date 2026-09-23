@@ -22,6 +22,9 @@ use super::{PhaseTag, TimestampMs, Tx};
 pub(crate) mod base;
 pub(crate) mod facts;
 pub(crate) mod upstream;
+pub(crate) mod upstream_fetch;
+#[cfg(test)]
+mod upstream_fetch_tests;
 #[cfg(test)]
 pub(crate) mod upstream_tests;
 

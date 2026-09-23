@@ -736,10 +736,10 @@ async fn plan_list(
                         entry["worktree"] = serde_json::to_value(facts)?;
                     }
                     // Given for every current attempt, `pending`/`failed` included (D8).
-                    let mut upstream_base = None;
+                    let mut measured_base = None;
                     if let Some(task) = &task {
                         let binding = crate::git_candidate::view::candidate_view_tx(tx, task, worktree_facts.as_ref()).await?;
-                        upstream_base = binding.upstream_base().map(str::to_string);
+                        measured_base = binding.measured_base().map(str::to_string);
                         entry["candidate"] = serde_json::to_value(binding)?;
                     }
                     // MCP-only: `guidance` exists only here; the REST wire type is unchanged.
@@ -748,7 +748,7 @@ async fn plan_list(
                             recovery_guidance::guidance_tx(tx, task, refused, worktree_facts)
                                 .await?;
                     }
-                    tasks_json.push((entry, upstream_base));
+                    tasks_json.push((entry, measured_base));
                     after_key = Some(allocation.key);
                 }
                 if args.key.is_some() || !full_page {
@@ -760,13 +760,15 @@ async fn plan_list(
     })
     .await
     .map_err(|error| map_plan_error("plan_list", error))?;
-    // After the commit: `candidate.upstream` runs git, which must never hold the write transaction.
+    // After the commit: `candidate.upstream` runs git, which must never hold the write
+    // transaction, and runs it on a blocking thread, not a runtime worker.
     let bases: Vec<Option<String>> = entries.iter().map(|(_, base)| base.clone()).collect();
-    let staleness = crate::git_candidate::staleness::upstream_staleness(
-        track.id.as_str(),
-        &track.workspace.path,
-        &bases,
-    );
+    let staleness = crate::git_candidate::staleness::upstream_staleness_blocking(
+        track.id.to_string(),
+        track.workspace.path.clone(),
+        bases,
+    )
+    .await;
     let tasks_json: Vec<Value> = entries
         .into_iter()
         .zip(staleness)

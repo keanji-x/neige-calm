@@ -26,7 +26,7 @@ use crate::operation::worker_cleanup::{compensate_worker_rows, worker_spawn_fail
 use crate::operation::workspace_lease::{
     acquire_workspace_lease_tx, base::resolve_lease_base, prepare_workspace_lease_target_tx,
     release_workspace_lease_by_id, remove_workspace_artifact_for_lease_by_id,
-    upstream::refresh_track_upstream,
+    upstream_fetch::refresh_track_upstream,
 };
 use crate::routes::cards::card_scope;
 use crate::routes::claude_cards::{

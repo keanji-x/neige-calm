@@ -3023,7 +3023,6 @@ fn candidate_binding_covers_every_row() {
         CandidateBinding::Bound {
             producer_attempt_id: "attempt-1".into(),
             base_sha: "b".repeat(40),
-            base_source: base::BaseSource::Head,
             workspace,
             delivery: DeliveryState::NotReported,
             verification: not_reported().verification,
@@ -3037,23 +3036,9 @@ fn candidate_binding_covers_every_row() {
         json!({"state": "not_started", "gate_attempt": 0})
     );
     assert_eq!(wire["base_sha"], json!("b".repeat(40)));
-    // `base_source` stays off the wire; only an `upstream` base is measured.
-    assert!(wire.get("base_source").is_none(), "{wire}");
-    assert_eq!(bound.upstream_base(), None);
-    let mut upstream_lease = lease(Some(DeliveryPolicy::Kernel));
-    upstream_lease.base.as_mut().unwrap().base_source = base::BaseSource::Upstream;
-    let upstream_bound = candidate_binding(
-        &task(TaskKind::Claude, TASK_IN_TRACK_ROUTE, json!({})),
-        Some(&upstream_lease),
-        Some(&facts()),
-        Some(not_reported()),
-    )
-    .unwrap();
-    assert_eq!(
-        upstream_bound.upstream_base(),
-        Some("b".repeat(40).as_str())
-    );
-    assert_eq!(serde_json::to_value(&upstream_bound).unwrap(), wire);
+    // Every bound candidate is measured, whatever its lease's `base_source`.
+    assert_eq!(bound.measured_base(), Some("b".repeat(40).as_str()));
+    assert_eq!(legacy.measured_base(), None);
 
     // Contract violations are errors, never a guessed binding.
     assert!(

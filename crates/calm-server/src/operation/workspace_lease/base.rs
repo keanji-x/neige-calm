@@ -14,7 +14,8 @@
 //!
 //! `base_source`: [`BaseSource::Upstream`] and [`BaseSource::Head`] have a
 //! producer ([`resolve_lease_base`]: the upstream of the branch HEAD is on
-//! when it has one, HEAD otherwise — [`super::upstream`], #1777). `Commit`
+//! when HEAD is at or behind it, HEAD when HEAD is ahead or there is none, a
+//! refusal when the two diverged — [`super::upstream`], #1777). `Commit`
 //! and `Attempt` (`TaskDeclaration.base`) are written by slice 5; the column
 //! round-trip covers all four so the CHECK-accepted shapes and the Rust type
 //! never disagree.
@@ -28,6 +29,7 @@ use std::{
 
 use sqlx::{Row, Sqlite, sqlite::SqliteRow};
 
+use super::upstream::LeaseStart;
 use super::{
     GitWorktreeRegistration, WorkspaceLease, WorkspaceLeaseDirectoryMode, WorkspaceLeaseTarget,
     create_workspace_lease_directory,
@@ -40,13 +42,14 @@ use crate::workspace_materialize::neige_git_command;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BaseSource {
     /// The attached repository's HEAD at prepare time (`TaskDeclaration.base`
-    /// absent, and the branch HEAD is on has no upstream, or no ref of that
-    /// upstream resolves).
+    /// absent, and the branch HEAD is on has no upstream, no ref of that
+    /// upstream resolves, or HEAD is ahead of it — HEAD then contains it).
     Head,
-    /// The last known commit of the upstream of the branch HEAD is on
-    /// (`TaskDeclaration.base` absent): the kernel-fetched
-    /// `refs/neige/upstream/<remote>/<branch>`, else the repository's own
-    /// remote-tracking ref ([`super::upstream::last_known_upstream`], #1777).
+    /// The last known commit of the upstream of the branch HEAD is on, which
+    /// HEAD equals or is behind (`TaskDeclaration.base` absent): the fresher
+    /// of the kernel-fetched `refs/neige/upstream/<digest>` and the
+    /// repository's own remote-tracking ref
+    /// ([`super::upstream::last_known_upstream`], #1777).
     Upstream,
     /// `TaskDeclaration.base: {commit}` — slice 5.
     Commit,
@@ -219,19 +222,35 @@ pub(super) fn utf8_path<'a>(path: &'a Path, what: &str) -> Result<&'a str> {
     })
 }
 
-/// Resolve the base for a lease target inside the prepare transaction:
-/// `base_sha` = the last known commit of the upstream of the branch the
-/// attached repository's HEAD is on (`upstream`), or its HEAD now when there
-/// is none (`head`); `git_common_dir` and `canonical_path` as the row will
+/// Resolve the base for a lease target inside the prepare transaction, by
+/// the relation of the attached repository's HEAD to the upstream of the
+/// branch it is on, as last known ([`super::upstream::choose_lease_start`]):
+/// behind or equal → that upstream (`upstream`); ahead, or no upstream → HEAD
+/// (`head`); diverged → refused ([`super::upstream::diverged_refusal`], a
+/// human decision). `git_common_dir` and `canonical_path` as the row will
 /// carry them. Local reads only — the upstream was fetched on the submit
-/// path, before this transaction began ([`super::upstream`]). Creates the
-/// worktree parent directory first (the same `ParentOnly` step the lease
+/// path, before this transaction began ([`super::upstream_fetch`]). Creates
+/// the worktree parent directory first (the same `ParentOnly` step the lease
 /// INSERT takes, so the parent is a real directory before it is
 /// canonicalized).
 pub(crate) fn resolve_lease_base(target: &WorkspaceLeaseTarget) -> Result<LeaseBase> {
-    let (base_sha, base_source) = match super::upstream::last_known_upstream(&target.repo_root)? {
-        Some(sha) => (sha, BaseSource::Upstream),
-        None => (resolve_head_base(&target.repo_root)?, BaseSource::Head),
+    let (base_sha, base_source) = match super::upstream::choose_lease_start(&target.repo_root)? {
+        LeaseStart::Head { sha } => (sha, BaseSource::Head),
+        LeaseStart::Upstream { sha } => (sha, BaseSource::Upstream),
+        LeaseStart::Diverged {
+            head,
+            upstream,
+            ahead,
+            behind,
+        } => {
+            return Err(super::upstream::diverged_refusal(
+                &target.repo_root,
+                &head,
+                &upstream,
+                ahead,
+                behind,
+            ));
+        }
     };
     let git_common_dir = lease_git_common_dir(&target.repo_root)?;
     create_workspace_lease_directory(&target.path, WorkspaceLeaseDirectoryMode::ParentOnly)?;

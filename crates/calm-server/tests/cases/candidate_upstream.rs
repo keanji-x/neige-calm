@@ -1,7 +1,7 @@
-//! #1777 B — `calm.plan.list.candidate.upstream`: a bound candidate whose lease started from the
-//! Track repository's upstream reads the upstream commit as last known now and how many commits
-//! its base is behind it; a `head` lease reads no such field. Read-only: the read fetches nothing
-//! and writes no ref.
+//! #1777 B — `calm.plan.list.candidate.upstream`: every bound candidate reads the commit, as last
+//! known now, of the upstream of the branch the Track's checkout is on now, and how many commits its
+//! base is behind it — whatever its lease's `base_source`. Absent when that branch has no known
+//! upstream. Read-only: the read fetches nothing and writes no ref.
 
 use std::path::{Path, PathBuf};
 
@@ -107,9 +107,15 @@ async fn plan_list_reads_how_far_an_upstream_candidate_is_behind() {
         "{summary}"
     );
 
+    // A `head` base is measured too: the initial commit lacks all three upstream commits.
     let head_entry = fx.plan_entry("head").await;
     assert_eq!(head_entry["candidate"]["binding"], "bound", "{head_entry}");
-    assert_eq!(head_entry["candidate"].get("upstream"), None::<&Value>);
+    assert_eq!(head_entry["candidate"]["base_sha"], head_lease.base_sha);
+    assert_eq!(
+        head_entry["candidate"]["upstream"],
+        json!({"sha": now, "behind": 3}),
+        "{head_entry}"
+    );
 
     // The read fetched nothing and wrote no ref.
     assert_eq!(all_refs(&repo), refs_before);
@@ -117,4 +123,16 @@ async fn plan_list_reads_how_far_an_upstream_candidate_is_behind() {
         !refs_before.contains("refs/neige/upstream/"),
         "{refs_before}"
     );
+
+    // No known upstream for the checkout's branch now: nothing to measure against.
+    git(&repo, &["branch", "-q", "--unset-upstream"]);
+    for key in ["up", "head"] {
+        let entry = fx.plan_entry(key).await;
+        assert_eq!(entry["candidate"]["binding"], "bound", "{entry}");
+        assert_eq!(
+            entry["candidate"].get("upstream"),
+            None::<&Value>,
+            "{entry}"
+        );
+    }
 }
