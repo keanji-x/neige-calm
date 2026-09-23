@@ -1,5 +1,6 @@
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import type { ClientRequest, IncomingMessage } from 'node:http';
 
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
@@ -9,6 +10,16 @@ import { OPTIMIZED_DEPENDENCIES } from './tools/vitest/optimized-dependencies.ts
 const apiProxyTarget = process.env.FE_API_PROXY_TARGET ?? 'http://127.0.0.1:4041';
 const devPort = Number(process.env.FE_DEV_PORT ?? 5180);
 const devHost = process.env.FE_DEV_HOST ?? 'localhost';
+
+// calm rejects cookie-authenticated writes and WS upgrades whose Origin is not
+// its own (#1780). A page served by this dev server is presented as the proxy
+// target; any other Origin is forwarded unchanged so calm still rejects it.
+const apiProxyOrigin = new URL(apiProxyTarget).origin;
+function presentOwnOriginAsTarget(proxyReq: ClientRequest, req: IncomingMessage): void {
+  if (req.headers.origin === `http://${req.headers.host}`) {
+    proxyReq.setHeader('origin', apiProxyOrigin);
+  }
+}
 
 // Version and build are build-time facts, not API fields: `wire.ts` has
 // no such columns, so Settings' ABOUT section reads these two defines.
@@ -46,6 +57,16 @@ export default defineConfig(({ mode }) => ({
     host: devHost,
     port: devPort,
     strictPort: true,
-    proxy: { '/api': { target: apiProxyTarget, changeOrigin: true, ws: true } },
+    proxy: {
+      '/api': {
+        target: apiProxyTarget,
+        changeOrigin: true,
+        ws: true,
+        configure: (proxy) => {
+          proxy.on('proxyReq', presentOwnOriginAsTarget);
+          proxy.on('proxyReqWs', presentOwnOriginAsTarget);
+        },
+      },
+    },
   },
 }));

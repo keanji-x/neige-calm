@@ -100,7 +100,7 @@ async fn main() -> anyhow::Result<()> {
              Do NOT use this in production."
         );
     }
-    let auth_state = AuthState::new(auth_config);
+    let auth_state = AuthState::new(auth_config).with_allowed_origin(cfg.allowed_origin.clone());
     if cfg.private_tailnet_unavailable {
         auth_state.mobile.mark_unavailable();
     }

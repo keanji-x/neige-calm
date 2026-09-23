@@ -285,6 +285,41 @@ async fn mobile_pairing_full_http_loop_and_explicit_public_authority_fence() {
 }
 
 #[tokio::test]
+async fn mobile_ingress_origin_may_write_but_a_foreign_origin_may_not() {
+    let f = fixture(json!({})).await;
+    let phone = pair(&f).await;
+    let (_, _, status) = request(
+        &f.local,
+        "GET",
+        "/api/mobile/access",
+        Some(&f.owner_cookie),
+        json!({}),
+    )
+    .await;
+    let public_url = status["publicUrl"].as_str().unwrap().to_owned();
+    for (origin, want) in [
+        (public_url.as_str(), StatusCode::CREATED),
+        ("https://pair.example.ts.net:8443", StatusCode::FORBIDDEN),
+    ] {
+        let response = (*f.public)
+            .clone()
+            .oneshot(
+                Request::post("/api/areas")
+                    .header(header::HOST, "127.0.0.1:9")
+                    .header(header::ORIGIN, origin)
+                    .header(header::COOKIE, &phone)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r##"{"name":"n","color":"#abc"}"##))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), want, "{origin}");
+    }
+    f.auth.mobile.disable().await.unwrap();
+}
+
+#[tokio::test]
 async fn mobile_pairing_revoke_closes_an_established_websocket() {
     use futures_util::StreamExt;
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;

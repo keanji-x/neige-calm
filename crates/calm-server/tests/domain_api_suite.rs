@@ -13,6 +13,8 @@ mod area_folders;
 mod area_system_endpoint;
 #[path = "cases/auth.rs"]
 mod auth;
+#[path = "cases/auth_origin.rs"]
+mod auth_origin;
 #[path = "cases/briefing_in_mint_tx.rs"]
 mod briefing_in_mint_tx;
 #[path = "cases/card_cascade_semantics.rs"]

@@ -128,6 +128,11 @@ impl MobileAccess {
         self.inner.control.lock().await.stop().await
     }
 
+    /// The verified public ingress origin while mobile access is live.
+    pub fn origin(&self) -> Option<String> {
+        self.lock().ok().and_then(|state| state.origin.clone())
+    }
+
     pub fn mark_unavailable(&self) {
         self.inner.unavailable.store(true, Ordering::Release);
     }

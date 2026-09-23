@@ -7,7 +7,7 @@ use axum::{
     Json, Router,
     body::Body,
     extract::{FromRequestParts, Request, State},
-    http::{HeaderMap, header, request::Parts},
+    http::{HeaderMap, Method, header, request::Parts},
     middleware::Next,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -137,6 +137,8 @@ pub struct AuthState {
     pub config: Arc<AuthConfig>,
     pub sessions: SessionStore,
     pub mobile: crate::mobile_access::MobileAccess,
+    /// `CALM_ALLOWED_ORIGIN`: the one foreign origin (dev frontend) trusted beside calm's own.
+    pub allowed_origin: Option<String>,
 }
 
 impl AuthState {
@@ -146,7 +148,13 @@ impl AuthState {
             config: Arc::new(config),
             mobile: crate::mobile_access::MobileAccess::new(sessions.clone()),
             sessions,
+            allowed_origin: None,
         }
+    }
+
+    pub fn with_allowed_origin(mut self, origin: String) -> Self {
+        self.allowed_origin = Some(origin);
+        self
     }
 }
 
@@ -206,6 +214,36 @@ fn resolve_principal(state: &AuthState, headers: &HeaderMap) -> Option<Principal
     Some(Principal::owner(&state.config, session.session_id))
 }
 
+/// #1780: `SameSite=Strict` still attaches the cookie to pages on another port of the same host,
+/// so a write or WS upgrade that carries `Origin` must come from one of calm's own origins.
+/// No `Origin` means a non-browser client (CLI, shim); browsers always send it on these requests.
+fn check_origin(state: &AuthState, headers: &HeaderMap) -> Result<()> {
+    let Some(origin) = headers.get(header::ORIGIN) else {
+        return Ok(());
+    };
+    let origin = origin.to_str().unwrap_or_default();
+    // Scheme-agnostic: one port speaks one protocol, and a TLS-terminating proxy keeps `Host`.
+    let same_host = headers
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .is_some_and(|host| {
+            ["http://", "https://"].iter().any(|scheme| {
+                origin
+                    .strip_prefix(scheme)
+                    .is_some_and(|rest| rest.eq_ignore_ascii_case(host))
+            })
+        });
+    if same_host
+        || state.allowed_origin.as_deref() == Some(origin)
+        || state.mobile.origin().as_deref() == Some(origin)
+    {
+        return Ok(());
+    }
+    Err(CalmError::Forbidden(format!(
+        "cross-origin request rejected: Origin `{origin}` is not an origin of this server"
+    )))
+}
+
 /// Axum middleware: gate every protected endpoint. Login, whoami, logout, version and openapi.json must NOT have this layer applied.
 pub async fn require_session(
     State(auth): State<AuthState>,
@@ -216,11 +254,17 @@ pub async fn require_session(
     let Some(principal) = resolve_principal(&auth, &headers) else {
         return Err(CalmError::Unauthorized);
     };
+    if !matches!(
+        *request.method(),
+        Method::GET | Method::HEAD | Method::OPTIONS
+    ) {
+        check_origin(&auth, &headers)?;
+    }
     request.extensions_mut().insert(principal);
     Ok(next.run(request).await)
 }
 
-/// Same as [`require_session`] but for the WS upgrade routes; a separate seam for future divergence.
+/// Same as [`require_session`] but for the WS upgrade routes: every upgrade is origin-checked (WS has no CORS).
 pub async fn require_session_ws(
     State(auth): State<AuthState>,
     headers: HeaderMap,
@@ -230,6 +274,7 @@ pub async fn require_session_ws(
     let Some(principal) = resolve_principal(&auth, &headers) else {
         return Err(CalmError::Unauthorized);
     };
+    check_origin(&auth, &headers)?;
     request.extensions_mut().insert(principal);
     Ok(next.run(request).await)
 }
