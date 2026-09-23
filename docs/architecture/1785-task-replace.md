@@ -1,6 +1,6 @@
-# 任务声明默认化 + `calm.task.replace`（#1785，#1727 片 5 新定义）— 设计 v4
+# 任务声明默认化 + `calm.task.replace`（#1785，#1727 片 5 新定义）— 设计 v5
 
-> **状态（2026-09-23）**：设计稿 v4，已折入第 1–3 轮双通道设计评审（第 3 轮：A 1 MAJOR + 7 MINOR；B 3 MAJOR + 1 MINOR），处置见 §11–§13。
+> **状态（2026-09-23）**：设计稿 v5，已折入第 1–4 轮双通道设计评审（第 4 轮：两通道同一 MAJOR + 若干 MINOR），处置见 §11–§14。时刻均为 +08:00（CST），夹具处另注 UTC。
 > 基线 `origin/main` = `2ef67292d`（工作树 `design/1785-task-replace`）。所有 file:line 在该基线上实测；路径省略 `crates/calm-server/src/` 前缀，其余写全；`event.rs` 指 `crates/calm-types/src/event.rs`。
 > 4140 数据来自只读 `~/.local/share/neige-next/data/calm.db`（`events.max(id)=34967`，最后事件 2026-09-23 13:58:52Z），复现命令见 §9。
 >
@@ -186,7 +186,7 @@ calm.task.replace {
     predecessor: {key, attempt_id, prior_status, stop: "canceled_now" | "already_terminal"},
     successor:   {key, attempt_id},                         // attempt_id = "{track}:{key}"（F4）
     carry:       {source_attempt_id, source_candidate_id, candidate_sha} | {none: <reason>} }
-    // 全部字段落在回执里，重放原样返回
+    // predecessor/successor/carry 来源与 none 原因落在回执里；candidate_sha 取自不可改的 task_candidates 行；重放按此重建
 ```
 
 后继块 = 前驱块载荷的拷贝，再做：继承且不可覆盖 `gate` 与 `no_gate_reason`（二者原样同进同出；4140 上 6/6 门禁相同，#1772 另有 12 个块用 `no_gate_reason`）、`kind`、`depends_on`、`priority`、`spawn`；
@@ -211,6 +211,7 @@ calm.task.replace {
 
 1. 重放检查先于一切状态读：命中则**从回执**返回原响应（`prior_status`、`stop`、`carry` 都存在回执里，不重读任务行）。
 2. `task_attempt_current_tx(track,key) == expected_attempt_id`，否则 `stale_attempt`。
+2a. 准入（§4.1 路由、`declare-and-wait` 策略、§4.7 的 `dispatched`/card NULL/`verifying`/`candidate_pending`/`already_replaced`/`pending_dependents`/派生 key/track 终态），任一不符即拒绝——全部先于第 3 步的任何写。
 3. 前驱 `running` ⇒ 片 1 的 CAS（detail `superseded: <succ key>`）+ 清理标记；`pending` ⇒ 现有 pending CAS；CAS 0 行 ⇒ 拒绝并带当前状态（同 3.1）。
 4. 解析 carry 来源（§4.5）。
 5. 经现有 `track_report::write` 入口（`planner_repair` 先例，`track_report/write.rs:233`）**追加**后继块（紧跟前驱块）；前驱块**原样保留**，所以评审块里 `depends_on` 旧 key 不产生 `unknown_dependency`（F9）。
@@ -220,7 +221,7 @@ calm.task.replace {
 1–7 在一个事务里（报告写入口本就在事务内，`track_report/write.rs:383-399,563-585`）：任一步失败整体回滚，无块、无回执、无事件——以直接的回滚原子性测试钉住。
 
 **替换元数据不进报告块**：回执以 `(track, successor_key)` 为键，租约准备按 key 查回执；块里没有任何内核引用（`context.neige_execution` 是 isolated 严格选择器，F8，不碰）。
-Planner 事后编辑后继块 = 普通声明编辑（在途执行照旧变 context-stale）；carry 归属于 key。编辑可能把后继改离支持路由（例如加上 isolated 选择器，调度器会先选 isolated 适配器，`scheduler/mod.rs:158`，绕过 carry）：**只在一处**拦——`build_worker_payload` 为有回执的任务选适配器前复核 §4.1 路由，不符 ⇒ `spawn-failed: refused: replace-route-changed`（推送），不逐个守编辑入口。前驱块保持终态，不会被再调度（终态不迁移，`644-plan-then-schedule.md:27`；测试钉住）。
+Planner 事后编辑后继块 = 普通声明编辑（在途执行照旧变 context-stale）；carry 归属于 key。编辑可能把后继改离支持路由（例如 pending 编辑改 `spawn` 为子 track 路由，`task_projection.rs:1653`、测试 `:2004`；或加 isolated 选择器）：**只在一处**拦——`drive_spawn`（`scheduler/mod.rs:1342`）**最顶部、子 track 分支（`:1343-1346`）之前**，用一个事务同时读回执与既有的 `recorded_worker_kind_tx`（把 `:1354-1358` 那次读上移合并，不新增事务）；有回执且 §4.1 路由不符 ⇒ `fail_spawn`（`:1741`）落 `spawn-failed: refused: replace-route-changed`（推送）。`build_worker_payload` 是无事务的纯函数，查不到回执，不放在那里；也不逐个守编辑入口。
 
 ### 4.5 carry：在新租约的 prepare 里做
 
@@ -277,7 +278,7 @@ carry 租约上的 `no_change`（`candidate == base_sha == C'`，F31）表示「
 | 终态且无候选（交付失败/放弃、准备前失败含 `carry-conflict`、legacy 租约） | 无 | 前驱回执来源，否则 none | 后继（`carry.none` 带原因） |
 | `dispatched`，或 `running` 但 `worker_card_id` 为 NULL | — | — | 拒绝 `predecessor_dispatching`（F20、G13） |
 | track 策略 `declare-and-wait` | — | — | 拒绝 `requires_user_release`（先于任何写） |
-| 后继被编辑离开支持路由（派发时） | — | — | 后继 `spawn-failed: refused: replace-route-changed` |
+| 后继被编辑离开支持路由（`drive_spawn` 顶部复核） | — | — | 后继 `spawn-failed: refused: replace-route-changed` |
 | `verifying` | — | — | 拒绝 `predecessor_verifying`（G1） |
 | delivery `pending`（未结算） | — | — | 拒绝 `candidate_pending`（等 `task.git_delivery_settled`） |
 | stop 的 CAS 0 行（并发推进） | — | — | 拒绝 `predecessor_changed{status}`，整事务回滚 |
@@ -324,8 +325,8 @@ carry 租约上的 `no_change`（`candidate == base_sha == C'`，F31）表示「
 
 | 片 | 内容 | 估算 | 验收（必须绿） | 必须红（变异/反转） |
 |---|---|---|---|---|
-| **1** 在途可停 + 空转必醒 | `plan.cancel` 收 `running`（codex/claude、非子 track 派生路由（`spawn` 判据见 `scheduler/mod.rs:234`）、非 isolated、`worker_card_id` 非空）；新 CAS + 泛化清理标记 + poke；sweep 空转臂（候选 + 注入的 `CodexDaemonProbe` 复核，限时 spawn）+ 构造参数宽限；`fail_task_liveness_timeout` 加 detail；`worker-turn-ended` 进 `dispatcher/mod.rs:228`；3.3 提示词；goldens | ~450 | running codex/claude cancel ⇒ `canceled/planner-canceled`、session `failed`、租约 `released`；cancel 先赢 ⇒ 迟到 `task.complete` 被拒且无交付行；报告先赢（`verifying`）⇒ cancel 拒绝带状态；`dispatched`/terminal/isolated/`verifying`/card NULL 拒绝且文案无 `#644`；空转：**r4 真值夹具对**（`completed_at=1790160084` 秒 = 18:41:24）：`now`=18:46:23（299 s）⇒ 不动，`now`=18:46:25（301 s）⇒ `failed/worker-turn-ended` 且推送（gated 与非 gated 各一）；turn 在 running 戳**之前**已结束 ⇒ 同样检测；持久化 idle 但实时 `Active` / `last_turn_completed_at=None` / `Some(None)` / 活动 turn 非空 / `read_liveness_facts` 为 `None` 或超时 / 宽限内 ⇒ 不动；`thread/loaded/list` 失败（`loaded=false`）而线程事实满足 ⇒ 照常触发；Claude、isolated 不动 | `tests/cases/mcp_plan.rs::cancel_in_flight_task_refused_with_409_text` 反转为 `cancel_running_task_cancels_and_reaps_worker`；变异①删空转臂 ⇒ 仅空转正例红；②从 `:228` 去掉 `worker-turn-ended` ⇒ 仅 gated 推送红；③去掉实时复核只看持久化列 ⇒ 所有「持久化 idle 但实时不满足」的反例红（实时 `Active`、`None`、`Some(None)`、活动 turn 非空、读失败/超时）；若该变异改读 `last_turn_completed_ms`，r4 正例也红（r4 该列为 NULL，`liveness_feeder.rs:67`）；④CAS 放宽到 `dispatched` ⇒ dispatched 拒绝测试红；⑤去掉 `*1000`（`now_ms - ts` 恒约 1.79e12）⇒ 仅 r4 夹具对的 18:46:23「不动」半边红 |
-| **2** `calm.task.replace` + carry | 迁移 0116；工具 + 描述 + 注册 golden；追加块 + 回执；`resolve_lease_base` carry 分支；worker 提示词一行 + golden；`plan.list.candidate.carry` 与 `no_change` 说明；死路提示清扫（§4.5 末）；`planner.md` 修复轮一段 | ~1000（超了拆 A=表+carry 经测试 seam，B=工具+提示词） | §4.7 每行一测；**链式两次替换**：`U0→C'1(+A)→cand1(+B)`，上游进到 `U1(+X)` 后第二次 replace 的租约树含 A、B、X（且 `U==U0` 时同样含 A、B）；gate-red 前驱 ⇒ carry 其候选；**被 `task.verdict rejected` 后仍为 `done` 行的前驱 ⇒ carry 其候选**（#1772 的主路径）；`declare-and-wait` track ⇒ `requires_user_release` 且前驱未被停；后继被编辑成 isolated 选择器 ⇒ 派发时 `replace-route-changed` 且推送；来源 `<cand>` 缺失 ⇒ `carry-infra`；冲突 ⇒ `carry-conflict` 且推送，再 replace 该失败执行被准入；同一回执两次 prepare 得同一 `C'`；前驱块字节不变、评审块无新诊断、canceled 前驱不再被调度；**响应丢失重放**：首次提交后丢弃响应、同请求重放返回相同 `prior_status/stop/carry/successor`；**回滚原子性**：stop CAS 0 行 ⇒ 无块、无回执、无事件；门禁与 `no_gate_reason` 与前驱逐字节相等、后继 `ready:true`/`declared_by` 为 Planner 声明作者；后继 context 不含前驱 context 的任何键；§4.6 唤醒保证枚举 | 变异①carry 基用 `U` 丢候选 ⇒ 所有带来源的 carry 测试红（单次、链式、gate-red、verdict 拒绝后的 `done`、冲突）；②改用以前驱租约 base 为合并基的 cherry-pick 语义 ⇒ **仅链式测试红**；③去掉 `predecessor_attempt_id` 唯一 ⇒ `already_replaced` 红；④回执不存 `prior_status` 而重放时重读任务行 ⇒ 仅响应丢失重放测试红；⑤来源改回「只看 done」⇒ 仅 gate-red 测试红；⑥去掉派发时路由复核 ⇒ 仅 `replace-route-changed` 测试红；⑦去掉策略检查 ⇒ 仅 `requires_user_release` 测试红 |
+| **1** 在途可停 + 空转必醒 | `plan.cancel` 收 `running`（codex/claude、非子 track 派生路由（`spawn` 判据见 `scheduler/mod.rs:234`）、非 isolated、`worker_card_id` 非空）；新 CAS + 泛化清理标记 + poke；sweep 空转臂（候选 + 注入的 `CodexDaemonProbe` 复核，限时 spawn）+ 构造参数宽限；`fail_task_liveness_timeout` 加 detail；`worker-turn-ended` 进 `dispatcher/mod.rs:228`；3.3 提示词；goldens | ~450 | running codex/claude cancel ⇒ `canceled/planner-canceled`、session `failed`、租约 `released`；cancel 先赢 ⇒ 迟到 `task.complete` 被拒且无交付行；报告先赢（`verifying`）⇒ cancel 拒绝带状态；`dispatched`/terminal/isolated/`verifying`/card NULL 拒绝且文案无 `#644`；空转：**r4 真值夹具对**（`completed_at=1790160084` 秒 = 18:41:24 +08:00 = 10:41:24Z）：`now`=18:46:23 +08:00（299 s，即「宽限内」反例）⇒ 不动，`now`=18:46:25 +08:00（301 s）⇒ `failed/worker-turn-ended` 且推送（gated 与非 gated 各一）；turn 在 running 戳**之前**已结束 ⇒ 同样检测；持久化 idle 但实时 `Active` / `last_turn_completed_at=None` / `Some(None)` / 活动 turn 非空 / `read_liveness_facts` 为 `None` 或超时 ⇒ 不动（「宽限内」由夹具对的 299 s 半边承担）；`thread/loaded/list` 失败（`loaded=false`）而线程事实满足 ⇒ 照常触发；Claude、isolated 不动 | `tests/cases/mcp_plan.rs::cancel_in_flight_task_refused_with_409_text` 反转为 `cancel_running_task_cancels_and_reaps_worker`；变异①删空转臂 ⇒ 仅空转正例红；②从 `:228` 去掉 `worker-turn-ended` ⇒ 仅 gated 推送红；③去掉实时复核只看持久化列 ⇒ 所有「持久化 idle 但实时不满足」的反例红（实时 `Active`、`None`、`Some(None)`、活动 turn 非空、读失败/超时）；若该变异改读 `last_turn_completed_ms`，r4 正例也红（r4 该列为 NULL，`liveness_feeder.rs:67`）；④CAS 放宽到 `dispatched` ⇒ dispatched 拒绝测试红；⑤去掉 `*1000`（`now_ms - ts` 恒约 1.79e12）⇒ 仅「宽限内」反例（r4 夹具对的 299 s 半边）红 |
+| **2** `calm.task.replace` + carry | 迁移 0116；工具 + 描述 + 注册 golden；追加块 + 回执；`resolve_lease_base` carry 分支；worker 提示词一行 + golden；`plan.list.candidate.carry` 与 `no_change` 说明；死路提示清扫（§4.5 末）；`planner.md` 修复轮一段 | ~1000（超了拆 A=表+carry 经测试 seam，B=工具+提示词） | §4.7 每行一测；**链式两次替换**：`U0→C'1(+A)→cand1(+B)`，上游进到 `U1(+X)` 后第二次 replace 的租约树含 A、B、X（且 `U==U0` 时同样含 A、B）；gate-red 前驱 ⇒ carry 其候选；**被 `task.verdict rejected` 后仍为 `done` 行的前驱 ⇒ carry 其候选**（#1772 的主路径）；`declare-and-wait` track ⇒ `requires_user_release` 且前驱未被停；后继被 pending 编辑改成子 track 路由后**首次派发** ⇒ `replace-route-changed` 且推送、不建子 track；后继被编辑成 isolated 选择器 ⇒ 同上；来源 `<cand>` 缺失 ⇒ `carry-infra`；冲突 ⇒ `carry-conflict` 且推送，再 replace 该失败执行被准入；同一回执两次 prepare 得同一 `C'`；前驱块字节不变、评审块无新诊断、canceled 前驱不再被调度；**响应丢失重放**：首次提交后丢弃响应、同请求重放返回相同 `prior_status/stop/carry/successor`；**回滚原子性**：stop CAS 0 行 ⇒ 无块、无回执、无事件；门禁与 `no_gate_reason` 与前驱逐字节相等、后继 `ready:true`/`declared_by` 为 Planner 声明作者；后继 context 不含前驱 context 的任何键；§4.6 唤醒保证枚举 | 变异①（生产操作：carry 分支跳过 `merge-tree`，直接取 `T = U^{tree}` 再 `commit-tree`）⇒ 红集＝单次、链式、`U==U0` 变体、gate-red、verdict 拒绝后的 `done`（树中无候选改动）、冲突（得 clean 而非 `carry-conflict`）、来源缺失（得 clean 而非 `carry-infra`）；绿：确定性（同回执仍同 `C'`）、`carry:"none"`、回滚原子性与重放；②改用以前驱租约 base 为合并基的 cherry-pick 语义 ⇒ **仅链式测试红**；③去掉 `predecessor_attempt_id` 唯一 ⇒ `already_replaced` 红；④回执不存 `prior_status` 而重放时重读任务行 ⇒ 仅响应丢失重放测试红；⑤来源改回「只看 done」⇒ 仅 gate-red 测试红；⑥删去 `drive_spawn` 顶部的路由复核 ⇒ 仅两个 `replace-route-changed` 测试红（子 track 与 isolated 各一）；⑦去掉策略检查 ⇒ 仅 `requires_user_release` 测试红 |
 | **3**（有条件）评审沿用 | replace 同时为前驱的终态直接依赖者（上一轮评审）追加 `<root>.<n>` 后继、依赖新 producer；认领时把依赖候选 `{ref, sha, carry range}` 注入评审提示词；参数 `reviewers: []` 可缩减 | ~600 | 一轮修复 = Planner 一次调用；评审提示词里的 sha = 依赖的已结算候选 | 变异：注入前驱而非新 producer 的候选 ⇒ 红 |
 
 门槛：片 3 只在片 2 部署到 4140 并跑完一条真实开发轨后，按访谈决定做或砍。
@@ -462,7 +463,7 @@ carry 命令核验（本机 `git version 2.39.5`）：`git merge-tree --write-tr
 | 发现 | 处置 | 证据 |
 |---|---|---|
 | B1 declare-and-wait 下后继不可调度 | 接受；选**原子拒绝**（少一种响应形态） | 4140：`automation_policy` 23/23 为 NULL、`decl_released_by_user=1` 0 行；`task_projection.rs:989,1106,1617`；§4.1 准入 + §4.7 行，先于任何写 |
-| B2 编辑使后继离开支持路由 | 接受；**派发时一处复核** | `scheduler/mod.rs:158`（`build_worker_payload` 先选 isolated）；`replace-route-changed`，不守编辑入口 |
+| B2 编辑使后继离开支持路由 | 接受；**派发时一处复核**（v5 移至 `drive_spawn` 顶部，见 §14） | `scheduler/mod.rs:158`（`build_worker_payload` 先选 isolated）；`replace-route-changed`，不守编辑入口 |
 | A1 / B3 `*1000` 变异预测错 | 接受 | 301 s 时两种写法都 ≥ 300000；改 r4 夹具对 18:46:23/18:46:25，预测「不动」半边红 |
 | A2 变异红集不全 | 接受 | 片 1 ③、片 2 ① 列出完整红集 |
 | A3 rc=1 也用于来源缺失 | 接受；删 `carry-source-missing` | rc=1 且输出空/不可解析 ⇒ `carry-infra` |
@@ -472,5 +473,18 @@ carry 命令核验（本机 `git version 2.39.5`）：`git merge-tree --write-tr
 | A7 缺「verdict 拒绝后 done」验收；F10 措辞 | 接受 | `decision_sink.rs:258+` 只写事件；#1772 三个被拒 producer 行仍 `done` |
 | A8 超时计数 | 接受 | 4 行 `worker-timeout`，codex 3（第 4 个 claude、无 session） |
 | B4 probe 失败精度 | 接受 | `shared_codex_appserver.rs:4464-4472`：`thread/loaded/list` 失败被吞、仍 `Some(facts)`；F23 与片 1 验收区分 |
+
+无驳回项。
+
+## 14. 第 4 轮处置（Round-4 resolutions）
+
+| 发现 | 处置 | 证据 |
+|---|---|---|
+| A1 = B1 路由复核放在 `build_worker_payload` 会被绕过 | 接受 | `scheduler/mod.rs:1342-1346` 子 track 路由先行返回；pending 编辑可改 `spawn`（`task_projection.rs:1653`，测试 `:2004`）；`build_worker_payload` 无事务。复核移到 `drive_spawn` 顶部，与 `recorded_worker_kind_tx` 合为一个事务，经 `fail_spawn` 拒绝；§4.4、§4.7、变异⑥、片 2 验收同步 |
+| A2 §4.4 缺准入步 | 接受 | 加 2a：全部拒绝先于任何写 |
+| A3 / B2 变异①未指明操作与红集 | 接受 | 定为「跳过 merge-tree 取 `U^{tree}`」；冲突与来源缺失确实变红（不再调用 merge-tree）；确定性测试仍绿 |
+| A3 变异⑤ | 接受 | 299 s 半边即「宽限内」反例，验收里不再重复列 |
+| A4 时区 | 接受 | 全文 +08:00，夹具注 UTC |
+| A5 §4.1 注释过时 | 接受 | `candidate_sha` 来自 `task_candidates` 行 |
 
 无驳回项。
