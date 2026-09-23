@@ -81,6 +81,9 @@ fn effective_test_env_signature(ingest_url: &str) -> String {
         ingest_url,
         http_proxy.as_deref(),
         https_proxy.as_deref(),
+        &calm_server::kernel_bin_path::kernel_led_path()
+            .unwrap()
+            .bin_dir,
     )
 }
 
@@ -180,6 +183,7 @@ async fn spawn_env_explicit_keys_stay_within_allow_list_and_computed_keys() {
     let env = daemon.spawn_env_for_test().await.unwrap();
 
     let computed = [
+        "PATH",
         "CODEX_HOME",
         "NEIGE_CALM_BASE_URL",
         "HTTP_PROXY",
@@ -267,6 +271,7 @@ async fn spawned_daemon_does_not_inherit_parent_canary_env() {
     );
 
     let computed = [
+        "PATH",
         "CODEX_HOME",
         "NEIGE_CALM_BASE_URL",
         "HTTP_PROXY",
@@ -293,6 +298,56 @@ async fn spawned_daemon_does_not_inherit_parent_canary_env() {
             "allow-list must pass {canary} through to the child; got {child_env:?}"
         );
     }
+}
+
+/// #1784: Planner and codex Worker exec-shells inherit the shared daemon's PATH, and `neige` must be
+/// the CLI installed beside the running kernel. The kernel here is this test binary, so its own
+/// file name stands in for `neige`: the shell's `command -v` must find it in the kernel's bin dir.
+#[tokio::test]
+async fn daemon_exec_shell_path_leads_with_the_kernel_bin_dir() {
+    let _guard = ENV_LOCK.lock().await;
+    let kernel_exe = std::env::current_exe().unwrap();
+    let kernel_bin_dir = kernel_exe.parent().unwrap().to_path_buf();
+    let exe_name = kernel_exe.file_name().unwrap().to_str().unwrap().to_owned();
+    let inherited = std::env::var_os("PATH").expect("test process has a PATH");
+    assert!(
+        !std::env::split_paths(&inherited).any(|dir| dir == kernel_bin_dir),
+        "precondition: the kernel bin dir is not already on the inherited PATH"
+    );
+    let root = tempfile::tempdir().unwrap();
+    let probe_out = root.path().join("exec-shell-probe.txt");
+    unsafe {
+        std::env::set_var(
+            "FAKE_CODEX_EXEC_SHELL_PROBE_CMD",
+            format!("printf '%s\\n' \"$PATH\"; command -v '{exe_name}'"),
+        );
+        std::env::set_var("FAKE_CODEX_EXEC_SHELL_PROBE_OUT", &probe_out);
+    }
+    let _cmd = EnvGuard("FAKE_CODEX_EXEC_SHELL_PROBE_CMD");
+    let _out = EnvGuard("FAKE_CODEX_EXEC_SHELL_PROBE_OUT");
+
+    let daemon = server(&root, repo().await).await;
+    daemon.start_or_takeover().await.unwrap();
+
+    let probe = std::fs::read_to_string(&probe_out).expect("exec-shell probe ran before bind");
+    let mut lines = probe.lines();
+    let shell_path = lines.next().expect("probe printed PATH");
+    let entries = std::env::split_paths(shell_path).collect::<Vec<_>>();
+    assert_eq!(
+        entries.first(),
+        Some(&kernel_bin_dir),
+        "the kernel bin dir must lead the exec-shell PATH; got {shell_path}"
+    );
+    assert_eq!(
+        entries[1..],
+        std::env::split_paths(&inherited).collect::<Vec<_>>()[..],
+        "the inherited PATH follows unchanged"
+    );
+    assert_eq!(
+        lines.next().map(std::path::PathBuf::from),
+        Some(kernel_exe),
+        "`command -v` in the exec-shell must resolve the kernel's sibling binary"
+    );
 }
 
 /// `seed()` copies host `~/.codex/` verbatim, so a host-level plugin registration lands in the shared
@@ -1983,15 +2038,43 @@ fn bounded_exponential_backoff_caps_at_max() {
 
 #[test]
 fn current_env_signature_changes_with_ingest_url_and_proxy() {
-    let s1 = SharedCodexAppServer::compute_env_signature("u1", None, None);
-    let s2 = SharedCodexAppServer::compute_env_signature("u2", None, None);
+    let s1 = SharedCodexAppServer::compute_env_signature(
+        "u1",
+        None,
+        None,
+        std::path::Path::new("/k/bin"),
+    );
+    let s2 = SharedCodexAppServer::compute_env_signature(
+        "u2",
+        None,
+        None,
+        std::path::Path::new("/k/bin"),
+    );
     assert_ne!(s1, s2);
 
-    let s3 = SharedCodexAppServer::compute_env_signature("u1", Some("p"), None);
+    let s3 = SharedCodexAppServer::compute_env_signature(
+        "u1",
+        Some("p"),
+        None,
+        std::path::Path::new("/k/bin"),
+    );
     assert_ne!(s1, s3);
 
-    let s4 = SharedCodexAppServer::compute_env_signature("u1", None, Some("p"));
+    let s4 = SharedCodexAppServer::compute_env_signature(
+        "u1",
+        None,
+        Some("p"),
+        std::path::Path::new("/k/bin"),
+    );
     assert_ne!(s1, s4);
+
+    let s5 = SharedCodexAppServer::compute_env_signature(
+        "u1",
+        None,
+        None,
+        std::path::Path::new("/other/bin"),
+    );
+    assert_ne!(s1, s5, "a moved kernel bin dir must respawn the daemon");
     assert_eq!(s1.len(), 16);
 }
 
@@ -2002,15 +2085,24 @@ fn current_env_signature_reads_inherited_proxy_when_settings_absent() {
         &["HTTP_PROXY", "http_proxy"],
         inherited_http_proxy("http://from-env"),
     );
-    let sig_with_env = SharedCodexAppServer::compute_env_signature("u1", proxy.as_deref(), None);
+    let sig_with_env = SharedCodexAppServer::compute_env_signature(
+        "u1",
+        proxy.as_deref(),
+        None,
+        std::path::Path::new("/k/bin"),
+    );
 
     let other_proxy = SharedCodexAppServer::effective_proxy_env_from(
         None,
         &["HTTP_PROXY", "http_proxy"],
         inherited_http_proxy("http://other"),
     );
-    let sig_with_other_env =
-        SharedCodexAppServer::compute_env_signature("u1", other_proxy.as_deref(), None);
+    let sig_with_other_env = SharedCodexAppServer::compute_env_signature(
+        "u1",
+        other_proxy.as_deref(),
+        None,
+        std::path::Path::new("/k/bin"),
+    );
 
     assert_ne!(
         sig_with_env, sig_with_other_env,
@@ -2025,15 +2117,24 @@ fn current_env_signature_prefers_settings_over_inherited_env() {
         &["HTTP_PROXY", "http_proxy"],
         inherited_http_proxy("http://from-env"),
     );
-    let sig = SharedCodexAppServer::compute_env_signature("u1", proxy.as_deref(), None);
+    let sig = SharedCodexAppServer::compute_env_signature(
+        "u1",
+        proxy.as_deref(),
+        None,
+        std::path::Path::new("/k/bin"),
+    );
 
     let proxy_no_env = SharedCodexAppServer::effective_proxy_env_from(
         Some("http://from-settings"),
         &["HTTP_PROXY", "http_proxy"],
         |_| None,
     );
-    let sig_no_env =
-        SharedCodexAppServer::compute_env_signature("u1", proxy_no_env.as_deref(), None);
+    let sig_no_env = SharedCodexAppServer::compute_env_signature(
+        "u1",
+        proxy_no_env.as_deref(),
+        None,
+        std::path::Path::new("/k/bin"),
+    );
 
     assert_eq!(proxy.as_deref(), Some("http://from-settings"));
     assert_eq!(sig, sig_no_env, "settings override must take precedence");

@@ -19,16 +19,28 @@ pub fn card_mcp_env(socket_path: &Path, raw_token: &str) -> [(&'static str, Stri
 }
 
 /// codex does NOT inherit the daemon process env into exec-shells; the per-thread `shell_environment_policy.set` field is the
-/// ONLY channel that reaches the `neige` CLI an agent must run. The card role additionally selects the Planner Terminal approval policy.
+/// ONLY channel that reaches the `neige` CLI an agent must run. `path` is the kernel-led PATH: `set` is re-applied after codex
+/// restores its login-shell snapshot, so `neige` stays the running kernel's CLI (#1784). The card role additionally selects the
+/// Planner Terminal approval policy.
 pub(crate) fn card_mcp_thread_start_config(
     socket_path: &Path,
     raw_token: &str,
     role: CardRole,
+    path: &str,
 ) -> serde_json::Value {
     let mut set = serde_json::Map::new();
     for (key, value) in card_mcp_env(socket_path, raw_token) {
         set.insert(key.to_string(), serde_json::Value::String(value));
     }
+    // A PATH in `set` stops codex re-adding its own PATH entries after the snapshot
+    // (codex-rs core/src/tools/runtimes/mod.rs:140): the per-process arg0 tempdir
+    // (apply_patch/applypatch/codex-linux-sandbox/codex-execve-wrapper aliases) and, in
+    // snapshot mode, the bundled-rg package dir. Acceptable: codex intercepts apply_patch
+    // in-process and runs the sandbox and execve wrapper by absolute path. Lost: shell forms
+    // the apply_patch parser does not recognise (e.g. `cat p | apply_patch`) and bundled rg
+    // on a host without rg. `set` values are literal and the arg0 dir is a random tempdir,
+    // so no prepend-style carrier exists.
+    set.insert("PATH".into(), serde_json::Value::String(path.into()));
     let mut config = serde_json::json!({
         "shell_environment_policy": {
             "set": set,
@@ -129,6 +141,7 @@ mod tests {
             Path::new("/tmp/kernel.sock"),
             "raw-token",
             CardRole::Worker,
+            "/k/bin:/usr/bin",
         );
         assert_eq!(
             cfg,
@@ -137,6 +150,7 @@ mod tests {
                     "set": {
                         "NEIGE_MCP_SOCKET": "/tmp/kernel.sock",
                         "NEIGE_MCP_TOKEN": "raw-token",
+                        "PATH": "/k/bin:/usr/bin",
                     }
                 }
             })
@@ -151,8 +165,12 @@ mod tests {
             CardRole::Worker,
             CardRole::ReportCard,
         ] {
-            let cfg =
-                card_mcp_thread_start_config(Path::new("/tmp/kernel.sock"), "raw-token", role);
+            let cfg = card_mcp_thread_start_config(
+                Path::new("/tmp/kernel.sock"),
+                "raw-token",
+                role,
+                "/k/bin:/usr/bin",
+            );
             if role == CardRole::Planner {
                 assert_eq!(
                     cfg["mcp_servers"],
@@ -179,6 +197,7 @@ mod tests {
             Path::new("/tmp/kernel.sock"),
             "raw-token",
             CardRole::Planner,
+            "/k/bin:/usr/bin",
         );
         let granted: std::collections::BTreeSet<_> = cfg["mcp_servers"]["calm"]["tools"]
             .as_object()

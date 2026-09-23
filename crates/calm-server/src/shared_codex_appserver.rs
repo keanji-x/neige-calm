@@ -51,10 +51,9 @@ use crate::shared_codex_home::{EXPECTED_MCP_SERVERS, SharedCodexHome};
 pub type TurnId = String;
 
 /// Ambient env keys forwarded verbatim into the spawned shared codex app-server; everything
-/// else in the parent env is dropped by `env_clear()`, computed keys are set in `apply_spawn_env`.
+/// else in the parent env is dropped by `env_clear()`, computed keys (including `PATH`) are set in
+/// `apply_spawn_env`.
 pub const SPAWN_ENV_PASSTHROUGH: &[&str] = &[
-    // binary/tool resolution; MCP child commands are NOT which-resolved on unix, child PATH is used
-    "PATH",
     // default-home fallback + `~` expansion in config paths; forwarded to MCP children
     "HOME",
     // codex's own child allow-lists forward these
@@ -517,14 +516,29 @@ pub enum ThreadConfig {
 }
 
 impl ThreadConfig {
-    fn to_wire_config(&self) -> Option<serde_json::Value> {
+    /// An MCP thread's exec-shells get the kernel-led PATH through `shell_environment_policy.set`:
+    /// codex re-applies `set` after restoring its login-shell snapshot, which can reset or reorder
+    /// the daemon's inherited PATH (#1784).
+    fn to_wire_config(&self) -> Result<Option<serde_json::Value>> {
         match self {
-            Self::NoMcp => None,
+            Self::NoMcp => Ok(None),
             Self::McpShell {
                 role,
                 socket_path,
                 raw_token,
-            } => Some(card_mcp_thread_start_config(socket_path, raw_token, *role)),
+            } => {
+                let kernel_path = crate::kernel_bin_path::kernel_led_path()
+                    .map_err(|error| CalmError::Internal(format!("thread PATH: {error}")))?;
+                let path = kernel_path
+                    .path_utf8()
+                    .map_err(|error| CalmError::Internal(format!("thread PATH: {error}")))?;
+                Ok(Some(card_mcp_thread_start_config(
+                    socket_path,
+                    raw_token,
+                    *role,
+                    path,
+                )))
+            }
         }
     }
 }
@@ -540,13 +554,16 @@ pub struct SharedThreadStartParams {
 
 impl std::fmt::Debug for SharedThreadStartParams {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let redacted_config = self.config.to_wire_config();
+        let redacted_config = match self.config.to_wire_config() {
+            Ok(config) => redact_thread_start_config(&config),
+            Err(error) => serde_json::json!({ "unrenderable": error.to_string() }),
+        };
         f.debug_struct("SharedThreadStartParams")
             .field("cwd", &self.cwd)
             .field("approval_policy", &self.approval_policy)
             .field("sandbox_mode", &self.sandbox_mode)
             .field("developer_instructions", &self.developer_instructions)
-            .field("config", &redact_thread_start_config(&redacted_config))
+            .field("config", &redacted_config)
             .finish()
     }
 }
@@ -1256,7 +1273,7 @@ impl SharedCodexAppServer {
         }
         self.reap_and_respawn_with_current_settings().await?;
         let client = self.connected_client().await?;
-        let config = params.config.to_wire_config();
+        let config = params.config.to_wire_config()?;
         let semantic_recovery = self.recovery.is_some()
             && self.repo.card_role_get(card_id).await? == Some(CardRole::Planner);
         let tools = if semantic_recovery {
@@ -1789,11 +1806,15 @@ impl SharedCodexAppServer {
         ingest_url: &str,
         http_proxy: Option<&str>,
         https_proxy: Option<&str>,
+        kernel_bin_dir: &Path,
     ) -> String {
         let mut h = Sha256::new();
         // Schema-version salt: the first boot of an upgraded binary mismatches every pre-upgrade
         // signature, so the takeover path replaces a daemon spawned with the old inherited env.
-        h.update(b"env-schema-v2:863|");
+        h.update(b"env-schema-v3:1784|");
+        // The PATH the daemon's exec-shells resolve `neige` through leads with this dir.
+        h.update(kernel_bin_dir.as_os_str().as_encoded_bytes());
+        h.update(b"|");
         h.update(ingest_url.as_bytes());
         h.update(b"|");
         h.update(http_proxy.unwrap_or_default().as_bytes());
@@ -1807,7 +1828,11 @@ impl SharedCodexAppServer {
     /// derive from the SAME settings read.
     async fn load_spawn_env_snapshot(&self) -> Result<SpawnEnvSnapshot> {
         let settings = load_settings(self.repo.as_ref()).await?;
+        let kernel_path = crate::kernel_bin_path::kernel_led_path().map_err(|error| {
+            CalmError::Internal(format!("shared codex app-server PATH: {error}"))
+        })?;
         Ok(SpawnEnvSnapshot {
+            kernel_path,
             http_proxy: Self::effective_proxy_env(
                 settings.http_proxy.as_deref(),
                 &["HTTP_PROXY", "http_proxy"],
@@ -1824,6 +1849,7 @@ impl SharedCodexAppServer {
             &self.ingest_url,
             snapshot.http_proxy.as_deref(),
             snapshot.https_proxy.as_deref(),
+            &snapshot.kernel_path.bin_dir,
         )
     }
 
@@ -1877,7 +1903,10 @@ impl SharedCodexAppServer {
             }
         }
 
-        cmd.env("CODEX_HOME", self.home.path())
+        // Planner and Worker exec-shells inherit this PATH; MCP child commands are NOT
+        // which-resolved on unix, so they resolve through it too.
+        cmd.env("PATH", &snapshot.kernel_path.path)
+            .env("CODEX_HOME", self.home.path())
             .env("NEIGE_CALM_BASE_URL", &self.ingest_url);
 
         // The snapshot values are already resolved; the lookup here is inert.
@@ -1893,6 +1922,7 @@ impl SharedCodexAppServer {
 
 /// A single-settings-read snapshot of the spawn-relevant runtime settings.
 struct SpawnEnvSnapshot {
+    kernel_path: crate::kernel_bin_path::KernelLedPath,
     http_proxy: Option<String>,
     https_proxy: Option<String>,
 }
@@ -3426,7 +3456,19 @@ impl SharedCodexAppServer {
         card_id: &str,
         config: ThreadConfig,
     ) {
-        let lowered = config.to_wire_config();
+        let lowered = match config.to_wire_config() {
+            Ok(lowered) => lowered,
+            Err(e) => {
+                tracing::warn!(
+                    target = "shared_codex_daemon::resume",
+                    %thread_id,
+                    %card_id,
+                    error = %e,
+                    "shared codex thread resume config unavailable; leaving mapping intact"
+                );
+                return;
+            }
+        };
         if let Err(e) = client.thread_resume_with_config(thread_id, lowered).await {
             tracing::warn!(
                 target = "shared_codex_daemon::resume",
@@ -4821,9 +4863,9 @@ mod tests {
         assert_eq!(thread_id_from_started(&params), Some("thrd_xyz"));
     }
 
-    /// The v2 schema salt must change the signature for identical inputs.
+    /// The schema salt must change the signature for identical inputs.
     #[test]
-    fn env_signature_v2_salt_differs_from_pre_salt_signature() {
+    fn env_signature_salt_differs_from_pre_salt_signature() {
         let ingest = "http://127.0.0.1:8765";
         let mut h = Sha256::new();
         h.update(ingest.as_bytes());
@@ -4831,10 +4873,11 @@ mod tests {
         h.update(b"|");
         let pre_salt = hex::encode(h.finalize())[..16].to_string();
 
-        let v2 = SharedCodexAppServer::compute_env_signature(ingest, None, None);
+        let salted =
+            SharedCodexAppServer::compute_env_signature(ingest, None, None, Path::new("/k/bin"));
         assert_ne!(
-            v2, pre_salt,
-            "compute_env_signature must be salted (env-schema-v2:863)"
+            salted, pre_salt,
+            "compute_env_signature must be salted (env-schema-v3:1784)"
         );
     }
 

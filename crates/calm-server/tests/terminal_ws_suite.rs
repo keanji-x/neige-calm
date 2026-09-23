@@ -48,5 +48,8 @@ mod ws_terminal_v2;
 #[path = "cases/task_terminal.rs"]
 mod task_terminal;
 
+#[path = "cases/codex_worker_terminal_input.rs"]
+mod codex_worker_terminal_input;
+
 #[path = "support/terminal_interaction.rs"]
 mod terminal_support;

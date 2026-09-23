@@ -40,9 +40,9 @@ mod wait;
 mod wait_plan;
 use client::{Client, LatestObservation};
 pub(crate) use target::Binding;
-pub use target::Target;
 #[cfg(test)]
 pub(crate) use target::TaskBinding;
+pub use target::{CodexTaskWorkerInputRefused, Target};
 pub use wait_plan::{
     SETTLE_MS_DEFAULT, SETTLE_MS_MAX, SIGNAL_WAIT_MS_DEFAULT, TEXT_WAIT_MS_DEFAULT, WAIT_MS_MAX,
     WaitFor, WaitPlan,

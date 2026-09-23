@@ -577,3 +577,28 @@ async fn terminal_formats_are_explicit_and_do_not_change_open_identity() {
     );
     h.stop(&terminal).await;
 }
+
+/// #1784: a Planner-opened Terminal, the PTY spawn Claude Workers share, finds `neige` beside the
+/// running kernel first. The kernel here is this test binary; its file name stands in for `neige`.
+#[tokio::test]
+async fn opened_terminal_path_leads_with_the_kernel_bin_dir() {
+    let h = Harness::start().await;
+    let exe = std::env::current_exe().unwrap();
+    let dir = exe.parent().unwrap().display().to_string();
+    let name = exe.file_name().unwrap().to_str().unwrap().to_owned();
+    let program = format!(
+        "if [ \"${{PATH%%:*}}\" = '{dir}' ] && [ \"$(command -v '{name}')\" = '{}' ]; \
+         then echo KERNEL_BIN_LEADS; else echo KERNEL_BIN_MISSING; fi; cat >/dev/null",
+        exe.display()
+    );
+    let opened = h
+        .ok(
+            "calm.terminal.open",
+            json!({"program":program,"request_id":"kernel-path","wait_for":"text",
+                "wait_text":["KERNEL_BIN_LEADS","KERNEL_BIN_MISSING"],"wait_ms":5000}),
+        )
+        .await;
+    let rows = opened["text"].as_array().unwrap();
+    assert!(rows.iter().any(|row| row == "KERNEL_BIN_LEADS"), "{opened}");
+    h.stop(opened["terminal_id"].as_str().unwrap()).await;
+}

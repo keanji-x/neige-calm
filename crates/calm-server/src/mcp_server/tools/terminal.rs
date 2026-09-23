@@ -12,8 +12,9 @@ use crate::operation::terminal_adapter::{
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::terminal_interaction::{
-    BELOW_CURSOR_EDITS_ONLY, InputOptions, ObservationFormat, Occurrence, ScrollTo, Target,
-    TerminalInteraction, WaitFor, WaitPlan, edits_the_draft, receipt_summary, summary_line,
+    BELOW_CURSOR_EDITS_ONLY, CodexTaskWorkerInputRefused, InputOptions, ObservationFormat,
+    Occurrence, ScrollTo, Target, TerminalInteraction, WaitFor, WaitPlan, edits_the_draft,
+    receipt_summary, summary_line,
 };
 use crate::terminal_permissions::{
     ClaudePermissionsScope, apply_policy, parse_scope, validate_scope, wait_at_ceiling_checked_hook,
@@ -187,6 +188,17 @@ fn parse<T: serde::de::DeserializeOwned>(args: Value) -> Result<T, RpcError> {
 }
 fn failure(error: impl std::fmt::Display) -> RpcError {
     RpcError::custom(-32403, error.to_string())
+}
+/// A write refused because the card is a codex task Worker carries a machine-readable `data.refusal`.
+fn write_failure(error: anyhow::Error) -> RpcError {
+    let mut rpc = failure(&error);
+    if error
+        .downcast_ref::<CodexTaskWorkerInputRefused>()
+        .is_some()
+    {
+        rpc.data = Some(json!({"refusal":"codex_task_worker_input"}));
+    }
+    rpc
 }
 fn observation_result(metadata: Value, png: Option<Vec<u8>>) -> Result<ToolResult, RpcError> {
     match png {
@@ -710,7 +722,7 @@ async fn call(
                 )
                 .await
                 .map(|receipt| receipt_result(&args.action, receipt))
-                .map_err(failure)
+                .map_err(write_failure)
         }
         "calm.terminal.input" => {
             let args: Input = parse(args)?;
@@ -748,7 +760,7 @@ async fn call(
                 )
                 .await
                 .map(|receipt| receipt_result("input", receipt))
-                .map_err(failure)
+                .map_err(write_failure)
         }
         _ => Err(RpcError::invalid_params("unknown terminal tool")),
     }

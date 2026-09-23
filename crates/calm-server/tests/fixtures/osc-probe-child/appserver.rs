@@ -92,6 +92,24 @@ fn install_signal_fixture() {
     }
 }
 
+/// #1784: `FAKE_CODEX_EXEC_SHELL_PROBE_CMD` runs under `/bin/sh -c` with this daemon's own
+/// environment, as a real codex exec-shell inherits it, and its stdout lands at
+/// `FAKE_CODEX_EXEC_SHELL_PROBE_OUT` before the socket binds.
+fn run_exec_shell_probe() {
+    let (Ok(cmd), Ok(out)) = (
+        std::env::var("FAKE_CODEX_EXEC_SHELL_PROBE_CMD"),
+        std::env::var("FAKE_CODEX_EXEC_SHELL_PROBE_OUT"),
+    ) else {
+        return;
+    };
+    let output = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(cmd)
+        .output()
+        .expect("fake app-server: exec-shell probe");
+    std::fs::write(out, output.stdout).expect("fake app-server: write exec-shell probe");
+}
+
 /// Parse `--listen unix://<path>` out of argv.
 fn listen_sock_path() -> PathBuf {
     let av: Vec<String> = std::env::args().collect();
@@ -115,6 +133,7 @@ pub fn run_fake_app_server() {
     // any knob that parks the process (bind delay), so a never-binding
     // child can still exercise graceful termination.
     install_signal_fixture();
+    run_exec_shell_probe();
     // #949 cold-start knobs — model codex's state-db backfill window, where
     // the child is alive for a long time BEFORE the listen socket exists:
     //   * `FAKE_CODEX_EXIT_BEFORE_BIND_CODE`: exit with this code before the

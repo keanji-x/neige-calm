@@ -118,6 +118,10 @@ async fn terminal_renderer_config(
             .await?;
 
     let envs = terminal_child_envs(env);
+    // #1784: `neige` in a PTY resolves to the running kernel's CLI. The prepend runs inside the
+    // shell, so the PATH the proc supervisor hands the child stays byte-exact behind it.
+    let path_prepend = crate::kernel_bin_path::shell_path_prepend()
+        .map_err(|error| CalmError::Internal(format!("terminal PATH: {error}")))?;
 
     Ok(RendererConfig {
         terminal_id: term.id.clone(),
@@ -127,7 +131,7 @@ async fn terminal_renderer_config(
         terminal_fg: parse_rgb(&term.theme_fg).map_err(CalmError::Internal)?,
         terminal_bg: parse_rgb(&term.theme_bg).map_err(CalmError::Internal)?,
         program: "/bin/sh".to_string(),
-        args: vec!["-c".to_string(), program.to_string()],
+        args: vec!["-c".to_string(), format!("{path_prepend}\n{program}")],
         envs,
         cwd: cwd.to_string(),
         supervisor_sock: proc_supervisor_sock,
