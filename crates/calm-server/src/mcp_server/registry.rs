@@ -170,6 +170,8 @@ pub struct AppContext {
     pub series_resolver: Arc<crate::report_series::SeriesResolver>,
     /// Transient ring of Planner plugin results `calm.source.capture` reads.
     pub plugin_results: Arc<crate::plugin_results::PluginResults>,
+    /// #1780 preview gateway registrations; the gateway listeners read the same `Arc`.
+    pub preview: Arc<crate::preview::PreviewRegistry>,
     /// The repo's sqlite pool for **read-only** statements; writes never go through this.
     /// `None` only for repos without sqlite (tests).
     pub sqlite_pool: Option<sqlx::SqlitePool>,
@@ -210,8 +212,21 @@ impl AppContext {
             scheduler_poke: Arc::new(tokio::sync::OnceCell::new()),
             series_resolver,
             plugin_results: Arc::new(crate::plugin_results::PluginResults::new()),
+            preview: Arc::new(crate::preview::PreviewRegistry::disabled()),
             sqlite_pool,
         })
+    }
+
+    /// Boot's preview registry, set on the context [`Self::new`] just returned, before it is
+    /// shared; every other construction keeps the disabled one.
+    pub fn with_preview(
+        mut self: Arc<Self>,
+        preview: Arc<crate::preview::PreviewRegistry>,
+    ) -> Arc<Self> {
+        Arc::get_mut(&mut self)
+            .expect("with_preview runs before the context is shared")
+            .preview = preview;
+        self
     }
 }
 
@@ -503,6 +518,7 @@ mod tests {
             scheduler_poke: Arc::new(tokio::sync::OnceCell::new()),
             series_resolver: Arc::new(crate::report_series::SeriesResolver::new_unstarted(None)),
             plugin_results: Arc::new(crate::plugin_results::PluginResults::new()),
+            preview: Arc::new(crate::preview::PreviewRegistry::disabled()),
             sqlite_pool,
         })
     }

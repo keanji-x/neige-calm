@@ -505,6 +505,11 @@ impl AppState {
         self.raw.as_ref()
     }
 
+    /// The preview registry the gateway listeners serve (shared with the MCP context).
+    pub fn preview(&self) -> Arc<crate::preview::PreviewRegistry> {
+        self.route.mcp_context.preview.clone()
+    }
+
     pub(crate) fn sqlite_pool(&self) -> Option<sqlx::SqlitePool> {
         self.raw.sqlite_pool()
     }
@@ -961,6 +966,8 @@ impl AppState {
         repo: Arc<dyn Repo>,
         templates: &'static crate::templates::TemplateRoster,
     ) -> anyhow::Result<Self> {
+        // First: a pool overlapping calm's own ports refuses boot before anything is started.
+        let preview = Arc::new(crate::preview::PreviewRegistry::from_config(cfg)?);
         let isolated_codex_backend = match &cfg.isolated_codex_config {
             Some(path) => {
                 let config: IsolatedCodexConfig = serde_json::from_slice(&std::fs::read(path)?)?;
@@ -1079,7 +1086,8 @@ impl AppState {
             operation_runtime_cell.clone(),
             gate_logs_dir.clone(),
             task_budget_default,
-        );
+        )
+        .with_preview(preview);
         let mcp_server = crate::mcp_server::McpServer::spawn_with_context(
             mcp_context.clone(),
             mcp_socket_path,

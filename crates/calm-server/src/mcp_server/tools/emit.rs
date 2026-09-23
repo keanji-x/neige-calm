@@ -771,6 +771,7 @@ mod tests {
             scheduler_poke: Arc::new(OnceCell::new()),
             series_resolver: Arc::new(crate::report_series::SeriesResolver::new_unstarted(None)),
             plugin_results: Arc::new(crate::plugin_results::PluginResults::new()),
+            preview: Arc::new(crate::preview::PreviewRegistry::disabled()),
             sqlite_pool: crate::db::Repo::sqlite_pool(repo.as_ref()),
         });
 

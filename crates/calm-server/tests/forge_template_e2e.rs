@@ -1611,6 +1611,7 @@ async fn boot_fixture() -> Fixture {
             None,
         )),
         plugin_results: Arc::new(calm_server::plugin_results::PluginResults::new()),
+        preview: Arc::new(calm_server::preview::PreviewRegistry::disabled()),
         sqlite_pool: sqlx_repo.sqlite_pool(),
     });
     let mut review_registry = ToolRegistry::new();

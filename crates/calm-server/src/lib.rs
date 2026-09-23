@@ -558,6 +558,7 @@ pub mod planner_card;
 pub mod planner_model;
 pub mod plugin_host;
 pub mod plugin_results;
+pub mod preview;
 pub mod proc_identity;
 pub(crate) mod proc_supervisor;
 /// Runtime-assembled agent prose: `prompts/**.md` fragments rendered through a placeholder seam.

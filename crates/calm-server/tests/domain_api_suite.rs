@@ -45,6 +45,8 @@ mod neige_cli_task_report;
 mod openapi;
 #[path = "cases/payload_validation.rs"]
 mod payload_validation;
+#[path = "cases/preview_gateway.rs"]
+mod preview_gateway;
 #[path = "cases/repo.rs"]
 mod repo;
 #[path = "cases/review_ratify.rs"]
