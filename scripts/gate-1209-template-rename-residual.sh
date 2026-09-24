@@ -50,6 +50,11 @@ read -r -d '' ALLOWLIST <<'EOF' || true
 1   fe/tools/mutation/runner.test.ts
 # --- 14. GitHub Actions' `workflow_dispatch` event name is a platform-owned key, not the retired vocabulary.
 3   .github/workflows/ci.yml
+# --- 15. Recorded Claude Code stream-json output (#1791): third-party skill/plugin/tool names in byte-exact recordings.
+1   crates/calm-server/tests/fixtures/claude_planner_stream/pB_baseline.ndjson
+1   crates/calm-server/tests/fixtures/claude_planner_stream/pB_emptycfg.ndjson
+1   crates/calm-server/tests/fixtures/claude_planner_stream/pB_safe.ndjson
+2   crates/calm-server/tests/fixtures/claude_planner_stream/pG.ndjson
 EOF
 
 # This script names the pattern and quotes allowlisted paths in its own reasons, so it is excluded from its own scan.
