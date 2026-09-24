@@ -48,6 +48,11 @@ pub(crate) fn on_route(task: &Task, track: &Track) -> bool {
     })
 }
 
+/// The spawn-failure reason of a successor edited off the route (`spawn-failed: <this>`).
+pub(crate) fn route_changed_reason() -> String {
+    format!("refused: {}", Refusal::RouteChanged.message(""))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -69,9 +74,4 @@ mod tests {
         assert!(!on(&serde_json::json!({"neige_execution": {
             "version": "isolated-codex-v1", "workspace": "empty"}})));
     }
-}
-
-/// The spawn-failure reason of a successor edited off the route (`spawn-failed: <this>`).
-pub(crate) fn route_changed_reason() -> String {
-    format!("refused: {}", Refusal::RouteChanged.message(""))
 }
