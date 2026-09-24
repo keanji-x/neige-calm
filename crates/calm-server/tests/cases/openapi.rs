@@ -203,10 +203,10 @@ fn document_serializes_to_json() {
 #[test]
 fn card_patch_documents_every_server_owned_payload_key() {
     let doc = serde_json::to_value(ApiDoc::openapi()).unwrap();
-    let refusal = doc["paths"]["/api/cards/{id}"]["patch"]["responses"]["400"]["description"]
+    let payload = doc["components"]["schemas"]["CardPatch"]["properties"]["payload"]["description"]
         .as_str()
-        .expect("PATCH /api/cards/{id} documents its 400");
+        .expect("CardPatch.payload is documented");
     for key in calm_server::validation::SERVER_OWNED_CARD_PAYLOAD_KEYS {
-        assert!(refusal.contains(&format!("`{key}`")), "{key}: {refusal}");
+        assert!(payload.contains(&format!("`{key}`")), "{key}: {payload}");
     }
 }

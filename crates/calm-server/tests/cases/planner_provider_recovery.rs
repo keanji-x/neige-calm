@@ -55,11 +55,11 @@ async fn recover_planner_row(
     )
     .await
     .unwrap();
-    let runtime_id = new_id();
+    let worker_session_id = new_id();
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit::shared_planner(
-            runtime_id.clone(),
+            worker_session_id.clone(),
             card.id.to_string(),
             row_provider,
             WorkerSessionState::Idle,
@@ -90,8 +90,8 @@ async fn recover_planner_row(
     )
     .await
     .unwrap();
-    let installed = registry.get(&runtime_id).is_some();
-    if let Some(handle) = registry.remove(&runtime_id) {
+    let installed = registry.get(&worker_session_id).is_some();
+    if let Some(handle) = registry.remove(&worker_session_id) {
         handle.shutdown().await.unwrap();
     }
     (outcome, installed)

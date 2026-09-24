@@ -681,7 +681,7 @@
         },
         "responses": {
           "200": {
-            "description": "Card updated. A replacement `payload` keeps every server-owned key the card already carries.",
+            "description": "Card updated",
             "content": {
               "application/json": {
                 "schema": {
@@ -691,7 +691,7 @@
             }
           },
           "400": {
-            "description": "Card patch violates an invariant, including a `payload` that carries a server-owned key (`terminal_signals`, `claude_permissions`, `claude_permissions_source`, `template_context`, `planner_provider`).",
+            "description": "Card patch violates an invariant (see `CardPatch.payload`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -7487,7 +7487,8 @@
             "type": [
               "object",
               "null"
-            ]
+            ],
+            "description": "Replaces the stored payload. A payload carrying a server-owned key is refused with 400:\n`terminal_signals`, `claude_permissions`, `claude_permissions_source`, `template_context`,\n`planner_provider`. Every server-owned key the card already carries is kept."
           },
           "sort": {
             "type": [
