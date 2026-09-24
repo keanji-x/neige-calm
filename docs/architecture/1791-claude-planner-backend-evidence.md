@@ -76,6 +76,7 @@ halves in §E2 because `scripts/gate-1316-terminology-ratchet.sh` counts the ret
 | S35 | Instructions carry bound template input and template context (`operation/planner_harness_start_adapter.rs:313-316`, `template_context.rs:53-56`); `IsolatedCodexConfig` is `deny_unknown_fields` with a required `codex_binary` (`isolated_codex/config.rs:14-23`); versioned binaries 2.1.220/2.1.259/2.1.280 behind the `~/.local/bin/claude` symlink; `--version` takes 9 ms | as listed |
 | S36 | Lifecycle facts: MCP listener spawned in `AppState::boot` (`state.rs:1091`) before `boot_harnesses` (`main.rs:43`); the shim reconnects with its cached `initialize` (`crates/neige-mcp-stdio-shim/src/pump.rs:243`); post-handshake calls check session activity only (`mcp_server/transport.rs:1479`); `spawn_recovered_harness` callers `harness/mod.rs:348`, `:429`, `:527`, `routes/cards.rs:1295`, `replay.rs:385`; the start adapter mints the token in `app_server_interact` (`:949`) but builds the harness in `spawn_side_effect` (`:1277`); the shutdown op supersedes first (`operation/planner_harness_shutdown_adapter.rs:82`); repoint fences all active runtimes (`routes/tracks.rs:2104-2118`), shuts down registered handles non-strictly (`:2125-2150`), Dirty branch `:2160`, recycle `:2239`; failure seam precedent `fail_workspace_repoint_shutdown_for_test` (`:1951-1976`); `sigkill_verified_members` verifies `start_time` (`proc_identity.rs:260-267`) | as listed |
 | S37 | Credential storage: `persist_card_mcp_token_hash` writes only `card_mcp_tokens` (`mcp_server/wiring.rs:77-85`); `mint_and_persist_card_token` writes card and session rows in one transaction (`:103-111`); handshake reads `worker_sessions.mcp_token_hash` of active rows (`crates/calm-truth/src/db/sqlite/session_row.rs:94-113`); `session_mirror_card_mcp_token_tx` copies the card hash into an active row with a NULL hash (`session_mirror.rs:223-259`); thread reuse requires a card token row (`operation/planner_harness_start_adapter.rs:892`); track deletion deletes its session rows (`db/sqlite/track.rs:438-442`); deletion quiesce reads only the active runtime (`routes/cards.rs:131-136`); the repoint seam is one-shot (`routes/tracks.rs:1963-1970`) | as listed |
+| S38 | `worker_sessions.mcp_token_hash` writers: `session_mcp_token_set_tx` (`crates/calm-truth/src/db/sqlite/session_row.rs:59-70`) via `mint_and_persist_card_token` (`mcp_server/wiring.rs:103-111`: first-turn mint; Codex cold resume), `mirror_session_mcp_token` (`:95-101`; start adapter `:1151`, Codex), `card_composite.rs:270-305` (`CodexCard` rows only), the card-hash mirror (`session_mirror.rs:256`); `session_insert_tx` (`session_row.rs:425`) inserts `NULL` from the mirror init. Activation paths: start mirror (`session_mirror.rs:286`), deferred placeholder (`:327`), restore (`session_projection.rs:516-527` → `session_mirror.rs:591-610`), all through `session_repoint_current_links_tx` (`:263-270`) → mirror. Supersede statements: `session_mirror.rs:331-345` (start/reset) and `:561-576` (`session_mark_superseded_runtime_tx`, `session_projection.rs:505`: shutdown op, repoint fence `routes/tracks.rs:2112-2115`). Only restore leaves `superseded`. `card_mcp_tokens` readers: the reuse check (`read.rs:1025`), the mirror; `card_mcp_token_lookup_by_hash` (`read.rs:940`) is used only by tests (`mcp_server/wiring.rs:114`+). Handshake: `session_get_by_active_token_hash` (`session_row.rs:94-113`) | as listed |
 | S27 | Other Codex-only consumers: `liveness_feeder` subscribes the Codex stream (`dispatcher/mod.rs:798`); dev replay (`replay.rs:390`); TUI initial-prompt takeover query (`db/sqlite/read.rs:798-830`) | as listed |
 
 ### E1.3 MCP, tools, prompts, FE
@@ -225,10 +226,16 @@ verified; the preferred fix passed its three checks and was adopted as D31. Per-
 
 ### E4.8 Round 8
 
+The lazy-mint revocation gap (both channels), stale construction-mint text, the `installed` location and
+the must-red 3 mutation were accepted (D32); per-row table in commit `9e28e0fdd` (this file). Round 9
+replaced D32's revocation scope with the D33 token invariant.
+
+### E4.9 Round 9
+
 | Id | Finding (short) | Disposition |
 |---|---|---|
-| B8 MAJOR = A MAJOR | lazy mint leaves the old token valid after an aborted deletion (`harness/mod.rs:429` reinstalls the same active row; shutdown clears nothing) | ACCEPTED, verified → D32 scoped revoke-then-sweep; must-red: old token rejected with no new input, then a queued input mints |
-| A MAJOR-1 / B MEDIUM | stale construction-mint text (D22, D28, §5.2 env, oracle row 13, PR4) | ACCEPTED → rewritten to first-turn mint + stop |
-| A MINOR-1 | where `installed` is set | ACCEPTED (`registry.rs:55-66`) → inside `install()`'s true arm |
-| A MINOR-2 | must-red 3 mutation shadowed by `:2959` | ACCEPTED, verified (run_loop `:2958-2959`) → mutation renamed |
+| A MAJOR-1 | reset compensation restores the old row with its unrevoked hash; the restore's mirror could copy the card hash | ACCEPTED, verified (S38) → D33 token invariant (supersede nulls, mirror skips Claude rows, only first-turn mint writes); card-row overwrite dropped (no production reader authenticates by it); must-red: failed reset → restored row rejects the old token → queued input mints |
+| A MINOR-1 | `HarnessRegistry::insert` also writes `Slot::Live` | ACCEPTED (`registry.rs:110-118`) → flag set there too |
+| A MINOR-2 | "e.g. mint at install" would not redden | ACCEPTED → example dropped |
+| A MINOR-3 | revocation blocks handshakes only | ACCEPTED (`transport.rs:1478-1497`) → claim scoped + KNOWN GAP |
 
