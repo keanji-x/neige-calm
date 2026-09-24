@@ -571,6 +571,13 @@ async fn seed_codex_card_with_role(boot: &Boot, role: CardRole) -> Card {
         })
         .await
         .expect("seed codex card");
+    // The persisted role is what recovery reads; the cache alone is not a Planner card.
+    sqlx::query("UPDATE cards SET role = ?1 WHERE id = ?2")
+        .bind(role.as_db_str())
+        .bind(card.id.as_str())
+        .execute(boot.repo.pool())
+        .await
+        .expect("persist seeded card role");
     boot.state
         .card_role_cache
         .insert(card.id.clone(), role, TrackId::from(boot.track_id.clone()));

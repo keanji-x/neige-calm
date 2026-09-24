@@ -349,16 +349,7 @@ async fn seed_recoverable_runtime(repo: &Arc<SqlxRepo>, tag: &str, thread_id: &s
         })
         .await
         .unwrap();
-    let card = repo
-        .card_create(NewCard {
-            track_id: track.id,
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({"schemaVersion": 1}),
-        })
-        .await
-        .unwrap();
+    let card = seed_planner_card_row(&repo, &track.id).await;
     let runtime_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
@@ -460,16 +451,7 @@ async fn boot_recovery_respawns_harness_with_snapshot() {
         })
         .await
         .unwrap();
-    let card = repo
-        .card_create(NewCard {
-            track_id: track.id,
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({"schemaVersion": 1}),
-        })
-        .await
-        .unwrap();
+    let card = seed_planner_card_row(&repo, &track.id).await;
     let runtime_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(
         42,
@@ -782,16 +764,7 @@ async fn boot_recovery_is_deferred_until_shared_daemon_is_running() {
         })
         .await
         .unwrap();
-    let card = repo
-        .card_create(NewCard {
-            track_id: track.id,
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({"schemaVersion": 1}),
-        })
-        .await
-        .unwrap();
+    let card = seed_planner_card_row(&repo, &track.id).await;
     let runtime_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(
         7,
@@ -1028,16 +1001,7 @@ async fn boot_recovery_skips_terminal_tracks() {
         .execute(repo.pool())
         .await
         .unwrap();
-    let card = repo
-        .card_create(NewCard {
-            track_id: track.id,
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({"schemaVersion": 1}),
-        })
-        .await
-        .unwrap();
+    let card = seed_planner_card_row(&repo, &track.id).await;
     let runtime_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(
         42,
@@ -1111,16 +1075,7 @@ async fn boot_recovery_skips_deferred_worker_session_phantom_ghost() {
         })
         .await
         .unwrap();
-    let card = repo
-        .card_create(NewCard {
-            track_id: track.id,
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({"schemaVersion": 1}),
-        })
-        .await
-        .unwrap();
+    let card = seed_planner_card_row(&repo, &track.id).await;
     let placeholder_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(
         1,

@@ -79,18 +79,18 @@ impl PlannerBinding {
     }
 }
 
-/// Whether a recovered Planner row may run on the Codex recovery path: the row must be a Codex row,
-/// and a Planner card must bind the same backend. Anything else fails closed until a Claude
-/// recovery arm exists.
+/// Whether a recovered Planner row may run on the Codex recovery path: it must be a Codex row on a
+/// card whose persisted role is Planner and whose `planner_provider` binds Codex. Anything else
+/// fails closed until a Claude recovery arm exists.
 pub(crate) fn planner_row_recoverable_on_codex(
     row_provider: Option<&AgentProvider>,
     card: &Card,
     role: Option<CardRole>,
 ) -> bool {
     row_provider == Some(&AgentProvider::Codex)
-        && (role != Some(CardRole::Planner)
-            || PlannerBinding::from_card(card, CardRole::Planner)
-                .is_some_and(|binding| binding.provider == AgentProvider::Codex))
+        && role == Some(CardRole::Planner)
+        && PlannerBinding::from_card(card, CardRole::Planner)
+            .is_some_and(|binding| binding.provider == AgentProvider::Codex)
 }
 
 #[cfg(test)]

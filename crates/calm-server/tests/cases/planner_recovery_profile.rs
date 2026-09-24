@@ -314,10 +314,11 @@ async fn cold_daemon_replay_gives_a_codex_planner_its_mcp_credential() {
 }
 
 #[tokio::test]
-async fn cold_daemon_replay_gives_a_planner_without_a_provider_no_mcp() {
+async fn cold_daemon_replay_gives_a_planner_without_a_codex_provider_no_mcp() {
     for payload in [
         json!({"schemaVersion":1,"planner_harness":true}),
         json!({"schemaVersion":1,"planner_harness":true,"planner_provider":"gpt"}),
+        json!({"schemaVersion":1,"planner_harness":true,"planner_provider":"claude"}),
     ] {
         assert_eq!(
             cold_daemon_replay_of_planner(payload.clone()).await,
@@ -325,4 +326,29 @@ async fn cold_daemon_replay_gives_a_planner_without_a_provider_no_mcp() {
             "{payload}"
         );
     }
+}
+
+/// #1791: preserving recovery resumes on the Codex app-server, so only a Codex binding may take it.
+#[tokio::test]
+async fn a_failed_planner_bound_to_claude_is_not_resumed_on_codex() {
+    let boot = boot_fake_running().await;
+    let (card, runtime, _, _) = failed_conversation(&boot).await;
+    sqlx::query(
+        "UPDATE cards SET payload = json_set(payload, '$.planner_provider', 'claude') WHERE id = ?",
+    )
+    .bind(card.id.as_str())
+    .execute(boot.repo.pool())
+    .await
+    .unwrap();
+    let (status, body) = post_json(
+        boot.app.clone(),
+        &format!("/api/cards/{}/planner/input", card.id),
+        json!({"text":"must not resume on codex"}),
+    )
+    .await;
+    assert!(!status.is_success(), "{status} {body}");
+    let row = runtime_by_id_tx_snapshot(&boot.repo, &runtime)
+        .await
+        .unwrap();
+    assert_eq!(row.status, WorkerSessionState::Failed);
 }

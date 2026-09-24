@@ -33,8 +33,12 @@ impl SharedCodexAppServer {
             .card_get(&runtime.card_id)
             .await?
             .ok_or_else(|| CalmError::NotFound("conversation no longer exists".into()))?;
+        // This resume is a Codex app-server call: only a Codex binding may take it.
         let profile = crate::harness::profile::PlannerBinding::from_card(&card, role)
-            .ok_or_else(|| CalmError::Conflict("card is not a harness conversation".into()))?
+            .filter(|binding| {
+                binding.provider == crate::session_projection_repo::AgentProvider::Codex
+            })
+            .ok_or_else(|| CalmError::Conflict("card is not a Codex harness conversation".into()))?
             .profile;
         self.validate_recovery_carrier(runtime, thread_id, &snapshot)
             .await?;

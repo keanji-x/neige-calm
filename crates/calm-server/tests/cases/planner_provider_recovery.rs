@@ -1,9 +1,11 @@
-//! #1791: the Codex recovery path only recovers a Codex Planner row on a Planner card that binds
-//! Codex; a Claude row, or a row whose card names another (or no) backend, is skipped.
+//! #1791: the Codex recovery path only recovers a Codex Planner row on a Planner-role card that
+//! binds Codex; a Claude row, a row whose card names another (or no) backend, or a Planner row on a
+//! card whose persisted role is not Planner, is skipped.
 
 use super::*;
 
 async fn recover_planner_row(
+    card_role: CardRole,
     card_provider: Option<&str>,
     row_provider: AgentProvider,
 ) -> (calm_server::harness::RecoveryOutcome, bool) {
@@ -49,7 +51,7 @@ async fn recover_planner_row(
             sort: None,
             payload,
         },
-        CardRole::Planner,
+        card_role,
         false,
         repo.card_role_cache(),
     )
@@ -99,7 +101,8 @@ async fn recover_planner_row(
 
 #[tokio::test]
 async fn a_codex_planner_row_on_a_codex_planner_card_is_recovered() {
-    let (_, installed) = recover_planner_row(Some("codex"), AgentProvider::Codex).await;
+    let (_, installed) =
+        recover_planner_row(CardRole::Planner, Some("codex"), AgentProvider::Codex).await;
     assert!(installed, "the Codex control case must recover");
 }
 
@@ -112,11 +115,25 @@ async fn a_planner_row_the_codex_path_cannot_run_is_skipped() {
         (None, AgentProvider::Codex),
         (Some("gpt"), AgentProvider::Codex),
     ] {
-        let (outcome, installed) = recover_planner_row(card_provider, row_provider.clone()).await;
+        let (outcome, installed) =
+            recover_planner_row(CardRole::Planner, card_provider, row_provider.clone()).await;
         assert!(
             matches!(outcome, calm_server::harness::RecoveryOutcome::Skipped),
             "card={card_provider:?} row={row_provider:?}"
         );
         assert!(!installed, "card={card_provider:?} row={row_provider:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_planner_row_on_a_card_that_is_not_a_planner_is_skipped() {
+    for role in [CardRole::Worker, CardRole::Assistant] {
+        let (outcome, installed) =
+            recover_planner_row(role, Some("codex"), AgentProvider::Codex).await;
+        assert!(
+            matches!(outcome, calm_server::harness::RecoveryOutcome::Skipped),
+            "{role:?}"
+        );
+        assert!(!installed, "{role:?}");
     }
 }
