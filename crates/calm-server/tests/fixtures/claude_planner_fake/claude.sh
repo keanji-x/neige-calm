@@ -4,7 +4,7 @@
 # allowlist, so everything the fake needs or records lives in that directory:
 #   in:  scenario, version (optional; default 2.1.280), result_line (optional)
 #   out: spawns, pid, argv, env, stdin, instructions, orphan, emitted
-# Needs on PATH: bash, jq, setsid, sleep, seq, touch; `flood` also needs python3 (F_SETPIPE_SZ).
+# Needs on PATH: bash, jq, setsid, sleep, seq, touch, yes; `flood` also needs python3 (F_SETPIPE_SZ).
 D=$(cd "$(dirname "$0")" && pwd)
 SCENARIO=$(cat "$D/scenario")
 
@@ -114,10 +114,10 @@ case "$SCENARIO" in
   bad-init)
     exec sleep 300 ;;
   chatty-after-interrupt)
-    # Ignore the interrupt and write ignored records as fast as the pipe takes them.
+    # Ignore the interrupt and keep stdout full of ignored records (`yes` outruns any reader).
     IFS= read -r CONTROL || exit 4
     printf '%s\n' "$CONTROL" >> "$D/stdin"
-    while :; do echo '{"type":"system","subtype":"status","status":"requesting"}'; done ;;
+    exec yes '{"type":"system","subtype":"status","status":"requesting"}' ;;
   interrupt-result-line)
     IFS= read -r CONTROL || exit 4
     printf '%s\n' "$CONTROL" >> "$D/stdin"
