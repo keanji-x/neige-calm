@@ -104,3 +104,15 @@ fn every_init_check_refuses_its_own_deviation() {
         assert!(init_check(&record, thread, "2.1.280").is_err(), "{name}");
     }
 }
+
+/// The stated invariant: an interrupt's `TurnCompleted` is due by interrupt + `STOP_TIMER` +
+/// `SETTLE_AFTER_STOP`, which leaves the run loop at least 5 s of the harness's interrupt budget.
+#[test]
+fn settle_by_fits_the_harness_interrupt_budget() {
+    use crate::claude_planner::session::{SETTLE_AFTER_STOP, STOP_TIMER};
+    let budget = crate::harness::HarnessConfig::default().interrupt_completion_budget;
+    assert!(
+        STOP_TIMER + SETTLE_AFTER_STOP + std::time::Duration::from_secs(5) <= budget,
+        "{STOP_TIMER:?} + {SETTLE_AFTER_STOP:?} leaves too little of {budget:?}"
+    );
+}

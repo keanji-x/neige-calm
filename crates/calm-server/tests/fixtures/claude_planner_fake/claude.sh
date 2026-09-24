@@ -118,6 +118,12 @@ case "$SCENARIO" in
     IFS= read -r CONTROL || exit 4
     printf '%s\n' "$CONTROL" >> "$D/stdin"
     exec yes '{"type":"system","subtype":"status","status":"requesting"}' ;;
+  stubborn-after-interrupt)
+    # Ignore the interrupt AND SIGTERM (the disposition survives exec), and keep stdout full.
+    IFS= read -r CONTROL || exit 4
+    printf '%s\n' "$CONTROL" >> "$D/stdin"
+    trap '' TERM
+    exec yes '{"type":"system","subtype":"status","status":"requesting"}' ;;
   interrupt-result-line)
     IFS= read -r CONTROL || exit 4
     printf '%s\n' "$CONTROL" >> "$D/stdin"

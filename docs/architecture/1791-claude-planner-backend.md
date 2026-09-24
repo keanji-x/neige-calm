@@ -285,7 +285,7 @@ arm, run the failing phase, clear, run the next phase. It is never consulted by 
 |---|---|---|
 | turn settlement / unexpected EOF | `session.rs` | logged; the turn is still emitted; the next spawn's `stop` fails closed |
 | next spawn (serialization is the settlement wait; `stop` covers a crash-leftover) | `turn_start` | `turn_start` fails → retryable refusal |
-| interrupt timer | `session.rs`; skips the stdin wait (the child already ignored the interrupt): 10 s timer (armed before the interrupt line is written) + ≤ 1 s drain + 5 s SIGTERM grace + ≤ 10 s wait = 26 s < `interrupt_completion_budget` 30 s (`harness/config.rs:27`) | cause already recorded; as settlement |
+| interrupt timer | `session.rs`; skips the stdin wait (the child already ignored the interrupt): invariant: interrupt ⇒ `TurnCompleted` by `settle_by` = interrupt + 10 s timer (armed before the interrupt line is written) + 12 s margin = 22 s < `interrupt_completion_budget` 30 s (`harness/config.rs:27`), leaving 8 s for the run loop around the call (`run_loop.rs:3639-3645`); every await after the stop is armed is capped by `settle_by` | cause already recorded; as settlement |
 | harness shutdown | Claude arm of `shutdown_inner`'s interrupt (run_loop `:666-729`), records `Interrupted(shutdown)`, awaits `stop` | strict `shutdown_for_deletion` propagates; non-strict logs |
 | reset (start adapter `:862-870`) and shutdown op (`operation/planner_harness_shutdown_adapter.rs:82`, `:109`) | `stop(old id)` for a Claude predecessor, registered or not; replay repeats it | logged; left to the next boot sweep or the next destructive step's scoped sweep (item 4); the old id's token no longer authenticates once the row is superseded (handshake accepts active rows only, `mcp_server/handshake.rs:55-60`) |
 | workspace repoint | fence supersedes every active runtime (`routes/tracks.rs:2104-2118`); the scoped sweep over the track's Claude ids runs **before** the pristine check and recycle (`:2160`, `:2239`) | the Dirty branch's restart at the old path, with its own 409 message ("a previous Claude Planner process of this track could not be stopped; the workspace was not moved") |
@@ -318,7 +318,14 @@ child's exit status is awaited (≤ 5 s) *before* recording, because the failure
 (timer or shutdown) first reads the stdout lines already written, for at most 1 s and without answering
 control requests (stdin closes next), so a result the CLI finished first still decides the turn (§6.2); a
 control answer the CLI does not take is abandoned at the stop deadline. The stop timer is armed when the
-interrupt is asked for, before its line is written. The first `system/init` of a `--session-id` spawn that names the thread
+interrupt is asked for, before its line is written. **Settlement deadline.** Once a stop is armed
+(interrupt: now + 10 s; shutdown: now), `settle_by` = the stop deadline + 12 s, and every await after
+that — control answers, the bind, the drain, the exit wait, the outcome write, `stop` (its SIGTERM grace
+ends 1 s before its deadline so SIGKILL still goes out; each `/proc` scan is bounded too, a hung scan is
+`Err` and its blocking thread is leaked), the final reap — gets the smaller of its own timeout and what is
+left before `settle_by`. What misses it is logged and settlement moves on: an unrecorded outcome is left to
+boot recovery (§5.1 item 5), a stop that did not confirm to the next spawn's `stop`, which fails closed.
+A result read while stopping gets no exit wait. The first `system/init` of a `--session-id` spawn that names the thread
 persists `agent_session_id` through the attribution bind, even when a later init check fails the turn (the
 CLI has created the session); the bind passes the row's `active_turn_id` through unchanged, since the
 harness snapshot owns it. A session opened for a row that has `agent_session_id` spawns `--resume`.
@@ -520,7 +527,7 @@ A recorded cause wins over the event that follows it; otherwise the first event 
 | (boot) | `last_turn_id` without an outcome | interrupted | "neige restarted during this turn" |
 | — | spawn / write fails before `Ok` | **no turn** (projection deleted, batch re-buffered) | — |
 
-The stop timer (≤ 10 s) settles an interrupted turn inside the harness's 30 s budget; Claude never emits
+An interrupted turn emits `TurnCompleted` by `settle_by` (§5.1: interrupt + 22 s), inside the harness's 30 s budget; Claude never emits
 `ThreadStatusChanged`, so `Wedged(systemError)` does not apply.
 Tool items still open at settlement are completed as `failed` (`close_open`): Codex item statuses have no
 interrupted variant, and the turn row carries `interrupted`.

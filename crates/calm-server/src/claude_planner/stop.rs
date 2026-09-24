@@ -13,6 +13,8 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::time::Instant;
+
 use sha2::{Digest, Sha256};
 
 use crate::error::{CalmError, Result};
@@ -23,6 +25,10 @@ pub const MARKER_KEY: &str = "NEIGE_CLAUDE_PLANNER";
 
 const TERM_GRACE: Duration = Duration::from_secs(5);
 const KILL_WAIT: Duration = Duration::from_secs(10);
+/// A stop given no tighter deadline gives up this long after it starts.
+pub const STOP_BOUND: Duration = Duration::from_secs(15);
+/// Under a tight deadline the SIGTERM grace ends this long before it, so SIGKILL still goes out.
+const KILL_RESERVE: Duration = Duration::from_secs(1);
 const POLL: Duration = Duration::from_millis(50);
 
 /// The calm instance a marker belongs to: a short hash of the canonical `data_dir`, so another
@@ -52,7 +58,16 @@ pub enum SeamPolicy {
 
 /// Stop every process carrying this worker session's marker. `Ok` means a scan found none left.
 pub async fn stop(instance: &MarkerInstance, worker_session_id: &str) -> Result<()> {
-    sweep(instance, &[worker_session_id], SeamPolicy::Consult).await
+    stop_by(instance, worker_session_id, Instant::now() + STOP_BOUND).await
+}
+
+/// [`stop`] that gives up at `until`: `Err` unless a scan found no member by then.
+pub async fn stop_by(
+    instance: &MarkerInstance,
+    worker_session_id: &str,
+    until: Instant,
+) -> Result<()> {
+    sweep_by(instance, &[worker_session_id], SeamPolicy::Consult, until).await
 }
 
 /// One sweep over the markers of a set of worker sessions, one `/proc` pass per scan.
@@ -60,6 +75,23 @@ pub async fn sweep(
     instance: &MarkerInstance,
     worker_session_ids: &[&str],
     seam: SeamPolicy,
+) -> Result<()> {
+    sweep_by(
+        instance,
+        worker_session_ids,
+        seam,
+        Instant::now() + STOP_BOUND,
+    )
+    .await
+}
+
+/// SIGTERM → grace (at most [`TERM_GRACE`], ending [`KILL_RESERVE`] before `until`) → rescan and
+/// SIGKILL → wait until no member, all by `until`; every scan is bounded by `until` too.
+pub async fn sweep_by(
+    instance: &MarkerInstance,
+    worker_session_ids: &[&str],
+    seam: SeamPolicy,
+    until: Instant,
 ) -> Result<()> {
     if seam == SeamPolicy::Consult {
         seam::check(worker_session_ids)?;
@@ -73,47 +105,75 @@ pub async fn sweep(
     if markers.is_empty() {
         return Ok(());
     }
-    signal_verified(&scan_off_thread(&markers).await?, libc::SIGTERM);
-    if wait_empty(&markers, TERM_GRACE).await? {
+    let proc_root = Path::new("/proc");
+    signal_verified(
+        &scan_off_thread(proc_root, &markers, until).await?,
+        libc::SIGTERM,
+    );
+    let term_until = (Instant::now() + TERM_GRACE).min(
+        until
+            .checked_sub(KILL_RESERVE)
+            .unwrap_or(until)
+            .max(Instant::now()),
+    );
+    if wait_empty(&markers, term_until, until).await? {
         return Ok(());
     }
-    let survivors = scan_off_thread(&markers).await?;
+    let survivors = scan_off_thread(proc_root, &markers, until).await?;
     tracing::warn!(
         pids = ?survivors.iter().map(|member| member.pid).collect::<Vec<_>>(),
         "claude planner stop: marked processes outlived SIGTERM; sending SIGKILL"
     );
     signal_verified(&survivors, libc::SIGKILL);
-    if wait_empty(&markers, KILL_WAIT).await? {
+    if wait_empty(&markers, until.min(Instant::now() + KILL_WAIT), until).await? {
         return Ok(());
     }
-    let left: Vec<i32> = scan_off_thread(&markers)
+    let left: Vec<i32> = scan_off_thread(proc_root, &markers, until)
         .await?
         .iter()
         .map(|member| member.pid)
         .collect();
     Err(CalmError::Conflict(format!(
-        "claude planner processes still alive after SIGKILL: {left:?}"
+        "claude planner processes still alive when the stop gave up: {left:?}"
     )))
 }
 
-async fn wait_empty(markers: &Arc<HashSet<String>>, within: Duration) -> Result<bool> {
-    let deadline = tokio::time::Instant::now() + within;
+/// Poll until a scan finds no member (`true`) or `phase_until` passes (`false`).
+async fn wait_empty(
+    markers: &Arc<HashSet<String>>,
+    phase_until: Instant,
+    until: Instant,
+) -> Result<bool> {
     loop {
-        if scan_off_thread(markers).await?.is_empty() {
+        if scan_off_thread(Path::new("/proc"), markers, until)
+            .await?
+            .is_empty()
+        {
             return Ok(true);
         }
-        if tokio::time::Instant::now() >= deadline {
+        if Instant::now() >= phase_until {
             return Ok(false);
         }
         tokio::time::sleep(POLL).await;
     }
 }
 
-/// A scan reads every process's `stat` and `environ`; it runs on the blocking pool.
-async fn scan_off_thread(markers: &Arc<HashSet<String>>) -> Result<Vec<Member>> {
+/// A scan reads every process's `stat` and `environ` on the blocking pool, bounded by `until`. A
+/// same-user process can make an `environ` read block (its mm lock held); past `until` the scan is
+/// an `Err` (fail closed) and its blocking thread is leaked until the read returns.
+pub(crate) async fn scan_off_thread(
+    proc_root: &Path,
+    markers: &Arc<HashSet<String>>,
+    until: Instant,
+) -> Result<Vec<Member>> {
     let markers = Arc::clone(markers);
-    tokio::task::spawn_blocking(move || scan(&markers))
+    let proc_root = proc_root.to_path_buf();
+    let scan = tokio::task::spawn_blocking(move || scan_in(&proc_root, &markers));
+    tokio::time::timeout_at(until, scan)
         .await
+        .map_err(|_| {
+            CalmError::Conflict("claude planner stop: a /proc scan did not finish in time".into())
+        })?
         .map_err(|error| CalmError::Internal(format!("claude planner stop scan: {error}")))?
 }
 
@@ -123,10 +183,6 @@ async fn scan_off_thread(markers: &Arc<HashSet<String>>) -> Result<Vec<Member>> 
 pub(crate) struct Member {
     pub(crate) pid: i32,
     pub(crate) start_time: u64,
-}
-
-pub(crate) fn scan(markers: &HashSet<String>) -> Result<Vec<Member>> {
-    scan_in(Path::new("/proc"), markers)
 }
 
 /// One pass over `proc_root`. A listing that cannot be read is an `Err`, never an empty (and so

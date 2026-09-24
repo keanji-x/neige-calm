@@ -35,7 +35,12 @@ use crate::shared_codex_appserver::SharedCodexAppServer;
 use calm_types::worker::WorkerSessionId;
 
 /// After an interrupt, the turn is stopped if the CLI has not ended it within this bound.
-pub(crate) const STOP_TIMER: Duration = Duration::from_secs(10);
+pub const STOP_TIMER: Duration = Duration::from_secs(10);
+/// Once a stop is armed, the turn's `TurnCompleted` is emitted by `settle_by` = the stop deadline +
+/// this margin, whatever the CLI does: every await after the stop is armed is capped by it. An
+/// interrupt therefore settles by interrupt + [`STOP_TIMER`] + this = 22 s, inside the harness's
+/// 30 s `interrupt_completion_budget` with 8 s left for the run loop's own work around the call.
+pub const SETTLE_AFTER_STOP: Duration = Duration::from_secs(12);
 /// A stdin line that the CLI does not take within this bound fails the write.
 pub(crate) const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long [`ClaudePlannerSession::shutdown`] waits for the running turn to settle after its stop.
@@ -79,15 +84,18 @@ pub(crate) struct TurnSlot {
     /// When the turn is stopped whatever the CLI does: armed by an interrupt (now + the stop
     /// timer) or a shutdown (now); the earliest arming wins.
     pub(crate) stop_at: watch::Sender<Option<tokio::time::Instant>>,
+    /// [`SETTLE_AFTER_STOP`], or a fixtures override.
+    settle_after_stop: Duration,
     pub(crate) settled: watch::Sender<bool>,
 }
 
 impl TurnSlot {
-    fn new(stdin: ChildStdin) -> Self {
+    fn new(stdin: ChildStdin, settle_after_stop: Duration) -> Self {
         Self {
             cause: Mutex::new(None),
             stdin: tokio::sync::Mutex::new(Some(stdin)),
             stop_at: watch::Sender::new(None),
+            settle_after_stop,
             settled: watch::Sender::new(false),
         }
     }
@@ -110,6 +118,32 @@ impl TurnSlot {
         });
     }
 
+    /// Whether a stop (interrupt timer or shutdown) is armed.
+    pub(crate) fn stop_armed(&self) -> bool {
+        self.stop_at.borrow().is_some()
+    }
+
+    /// The hard settlement deadline, once a stop is armed.
+    pub(crate) fn settle_by(&self) -> Option<tokio::time::Instant> {
+        self.stop_at.borrow().map(|at| at + self.settle_after_stop)
+    }
+
+    /// `fut` bounded by its own timeout and, once a stop is armed (even while `fut` runs), by
+    /// [`Self::settle_by`]; `None` when either bound passed first.
+    pub(crate) async fn bounded<F: std::future::Future>(
+        &self,
+        own: Duration,
+        fut: F,
+    ) -> Option<F::Output> {
+        let mut stop_rx = self.stop_at.subscribe();
+        tokio::select! {
+            biased;
+            out = fut => Some(out),
+            _ = tokio::time::sleep(own) => None,
+            _ = deadline_reached(&mut stop_rx, self.settle_after_stop) => None,
+        }
+    }
+
     pub(crate) fn cause(&self) -> Option<TerminalCause> {
         self.cause.lock().expect("turn slot poisoned").clone()
     }
@@ -126,14 +160,51 @@ async fn write_line(stdin: &tokio::sync::Mutex<Option<ChildStdin>>, line: &str) 
         let stdin = guard
             .as_mut()
             .ok_or_else(|| CalmError::Conflict("claude stdin is already closed".into()))?;
-        stdin.write_all(line.as_bytes()).await?;
-        stdin.write_all(b"\n").await?;
+        // One buffer, so a timed-out write can never leave a line without its newline.
+        let mut framed = String::with_capacity(line.len() + 1);
+        framed.push_str(line);
+        framed.push('\n');
+        stdin.write_all(framed.as_bytes()).await?;
         stdin.flush().await?;
         Ok::<_, CalmError>(())
     };
-    tokio::time::timeout(WRITE_TIMEOUT, write)
-        .await
-        .map_err(|_| CalmError::Conflict("claude did not take its stdin line in time".into()))?
+    match tokio::time::timeout(WRITE_TIMEOUT, write).await {
+        Ok(written) => written,
+        Err(_) => {
+            // A partly written line may sit in the pipe: close stdin so nothing is appended to it.
+            if let Ok(mut guard) = stdin.try_lock() {
+                guard.take();
+            }
+            Err(CalmError::Conflict(
+                "claude did not take its stdin line in time".into(),
+            ))
+        }
+    }
+}
+
+/// Resolves once a stop is armed and `extra` has passed since its deadline; `extra` zero is the
+/// stop itself, [`SETTLE_AFTER_STOP`] is `settle_by`.
+pub(crate) async fn deadline_reached(
+    rx: &mut watch::Receiver<Option<tokio::time::Instant>>,
+    extra: Duration,
+) {
+    loop {
+        let armed = *rx.borrow_and_update();
+        match armed {
+            Some(at) => tokio::select! {
+                _ = tokio::time::sleep_until(at + extra) => return,
+                changed = rx.changed() => if changed.is_err() {
+                    tokio::time::sleep_until(at + extra).await;
+                    return;
+                },
+            },
+            None => {
+                if rx.changed().await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+            }
+        }
+    }
 }
 
 struct ActiveTurn {
@@ -144,6 +215,7 @@ struct ActiveTurn {
 
 struct State {
     start: SessionStart,
+    settle_after_stop: Duration,
     total_tokens: i64,
     mcp_token: Option<String>,
     shutting_down: bool,
@@ -222,6 +294,7 @@ impl ClaudePlannerSession {
         let (notifications, _) = broadcast::channel(1024);
         let state = State {
             start,
+            settle_after_stop: SETTLE_AFTER_STOP,
             total_tokens: params.prior_total_tokens,
             mcp_token: None,
             shutting_down: false,
@@ -280,7 +353,7 @@ impl ClaudePlannerSession {
         let shared = &self.shared;
         let params = &shared.params;
         let _issue = shared.issue.lock().await;
-        let (start, token, prior_total_tokens) = {
+        let (start, token, prior_total_tokens, settle_after_stop) = {
             let state = shared.state();
             if state.shutting_down {
                 return Err(CalmError::Conflict(
@@ -295,7 +368,12 @@ impl ClaudePlannerSession {
             let token = state.mcp_token.clone().ok_or_else(|| {
                 CalmError::Conflict("claude planner has no MCP credential yet".into())
             })?;
-            (state.start, token, state.total_tokens)
+            (
+                state.start,
+                token,
+                state.total_tokens,
+                state.settle_after_stop,
+            )
         };
         let thread_uuid = Uuid::try_parse(thread).map_err(|_| {
             CalmError::BadRequest(format!("claude planner thread {thread} is not a UUID"))
@@ -388,7 +466,7 @@ impl ClaudePlannerSession {
             let error = CalmError::Internal("claude planner child has no piped stdio".into());
             return Err(self.abort_before_ok(Some(child), instructions, error).await);
         };
-        let slot = Arc::new(TurnSlot::new(stdin));
+        let slot = Arc::new(TurnSlot::new(stdin, settle_after_stop));
         if let Err(error) = slot.write_line(&line).await {
             return Err(self.abort_before_ok(Some(child), instructions, error).await);
         }
@@ -500,6 +578,13 @@ impl ClaudePlannerSession {
     #[cfg(feature = "fixtures")]
     pub fn set_after_spawn_hook_for_test(&self, hook: Arc<dyn Fn() + Send + Sync>) {
         self.shared.hooks.lock().expect("hooks").after_spawn = Some(hook);
+    }
+
+    /// Fixtures only: a shorter [`SETTLE_AFTER_STOP`] for turns started after this call, so a test
+    /// can make the settlement deadline bind within seconds.
+    #[cfg(feature = "fixtures")]
+    pub fn set_settle_after_stop_for_test(&self, margin: Duration) {
+        self.shared.state().settle_after_stop = margin;
     }
 
     #[cfg(feature = "fixtures")]

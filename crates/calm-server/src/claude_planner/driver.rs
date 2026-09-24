@@ -12,9 +12,9 @@ use tokio::time::Instant;
 use uuid::Uuid;
 
 use super::protocol::{ControlResponseOut, ControlResponseOutBody, Record, SystemInit, decode};
-use super::session::{Shared, TerminalCause, TurnSlot};
+use super::session::{Shared, TerminalCause, TurnSlot, WRITE_TIMEOUT, deadline_reached};
 use super::spawn::{InstructionsFile, SessionStart};
-use super::stop::stop;
+use super::stop::{STOP_BOUND, stop_by};
 use super::translate::{TurnOutcome, TurnTranslator};
 use crate::codex_appserver::Notification;
 use crate::error::CalmError;
@@ -25,6 +25,11 @@ use calm_types::worker::WorkerSessionId;
 const DRAIN_WINDOW: Duration = Duration::from_secs(1);
 /// After a result or EOF, the direct child's own exit is awaited this long before `stop`.
 const EXIT_WAIT: Duration = Duration::from_secs(5);
+/// Own bounds of the settlement's database writes; `settle_by` caps them further once a stop is armed.
+const RECORD_TIMEOUT: Duration = Duration::from_secs(5);
+const BIND_TIMEOUT: Duration = Duration::from_secs(5);
+/// After the final `start_kill`, the direct child is reaped for at most this long.
+const REAP_WAIT: Duration = Duration::from_secs(1);
 /// After the child exited, stdout lines it wrote before exiting are still read this long.
 const DRAIN_AFTER_EXIT: Duration = Duration::from_secs(1);
 
@@ -190,7 +195,7 @@ pub(crate) async fn drive(shared: Arc<Shared>, run: TurnRun) {
         // finished before the stop still decides the turn (§6.2: finished first ⇒ completed).
         tokio::select! {
             biased;
-            _ = stop_reached(&mut stop_rx) => break reading.drain_then_stop(&mut lines).await,
+            _ = deadline_reached(&mut stop_rx, Duration::ZERO) => break reading.drain_then_stop(&mut lines).await,
             line = lines.next_line() => match line {
                 Ok(Some(line)) => {
                     if let Some(ending) = reading.on_line(&line).await {
@@ -260,7 +265,15 @@ impl Reading<'_> {
                 // when a later check fails the turn: bind it, so the next spawn resumes it.
                 if init.session_id == self.thread {
                     if !self.bound && self.start == SessionStart::New {
-                        self.bind_agent_session().await;
+                        let bound = self
+                            .slot
+                            .bounded(BIND_TIMEOUT, self.bind_agent_session())
+                            .await;
+                        if bound.is_none() {
+                            tracing::warn!(
+                                "claude planner: agent session bind cut off by its bound"
+                            );
+                        }
                     }
                     self.bound = true;
                 }
@@ -281,7 +294,7 @@ impl Reading<'_> {
                 // A CLI that stopped reading stdin must not hold the turn past its stop.
                 tokio::select! {
                     biased;
-                    _ = stop_reached(&mut self.stop_rx) => {
+                    _ = deadline_reached(&mut self.stop_rx, Duration::ZERO) => {
                         tracing::debug!(request_id, "claude planner: control answer abandoned at the stop");
                     }
                     _ = answer_control_request(self.slot, request_id, request) => {}
@@ -324,8 +337,18 @@ impl Reading<'_> {
     /// of those lines already ended it.
     async fn drain_then_stop(&mut self, lines: &mut Lines<BufReader<ChildStdout>>) -> Ending {
         self.answering = false;
+        let slot = self.slot;
+        // The window is checked on the clock at every line: lines already buffered are returned
+        // without yielding, so a CLI that keeps stdout full would otherwise starve any timer
+        // raced against this loop.
+        let window_ends = Instant::now() + DRAIN_WINDOW;
         let drain = async {
             loop {
+                if Instant::now() >= window_ends
+                    || slot.settle_by().is_some_and(|at| Instant::now() >= at)
+                {
+                    return None;
+                }
                 // `next_line` is cancel-safe; the zero timeout gives up as soon as no complete
                 // line is ready (tokio may poll it again within the next timer tick).
                 match tokio::time::timeout(Duration::ZERO, lines.next_line()).await {
@@ -338,9 +361,9 @@ impl Reading<'_> {
                 }
             }
         };
-        match tokio::time::timeout(DRAIN_WINDOW, drain).await {
-            Ok(Some(ending)) => ending,
-            Ok(None) | Err(_) => Ending::Stopped,
+        match slot.bounded(DRAIN_WINDOW, drain).await {
+            Some(Some(ending)) => ending,
+            Some(None) | None => Ending::Stopped,
         }
     }
 
@@ -390,27 +413,6 @@ fn usage_total(notification: &Notification) -> Option<i64> {
             params["tokenUsage"]["total"]["totalTokens"].as_i64()
         }
         _ => None,
-    }
-}
-
-/// Resolves once the slot's stop deadline is armed and has passed.
-async fn stop_reached(rx: &mut watch::Receiver<Option<Instant>>) {
-    loop {
-        let armed = *rx.borrow_and_update();
-        match armed {
-            Some(at) => tokio::select! {
-                _ = tokio::time::sleep_until(at) => return,
-                changed = rx.changed() => if changed.is_err() {
-                    tokio::time::sleep_until(at).await;
-                    return;
-                },
-            },
-            None => {
-                if rx.changed().await.is_err() {
-                    std::future::pending::<()>().await;
-                }
-            }
-        }
     }
 }
 
@@ -470,6 +472,10 @@ struct SettleInput {
 
 /// record → close stdin → bounded wait for the direct child (not on the stop path) → `stop` →
 /// remove the instructions file → close open items → `TurnCompleted`.
+/// Every await here is bounded by its own timeout and, once a stop is armed, by the slot's
+/// `settle_by`, so `TurnCompleted` goes out by then whatever the CLI does. A bound that passes
+/// is logged and settlement moves on: an unrecorded outcome is left to boot recovery, and a stop
+/// that did not confirm is left to the next spawn's stop, which fails closed (§5.1).
 async fn settle(shared: &Shared, input: SettleInput, ending: Ending) {
     let SettleInput {
         mut child,
@@ -482,14 +488,15 @@ async fn settle(shared: &Shared, input: SettleInput, ending: Ending) {
         stderr_tail,
     } = input;
     let params = &shared.params;
+    // A result read while the turn was already stopping gets no graceful exit wait (D29).
     let (event, wait_for_exit) = match ending {
-        Ending::Result(event) => (event, true),
+        Ending::Result(event) => (event, !slot.stop_armed()),
         Ending::Exited(status) => {
             let status = match status {
                 Some(status) => Some(status),
-                None => tokio::time::timeout(EXIT_WAIT, child.wait())
+                None => slot
+                    .bounded(EXIT_WAIT, child.wait())
                     .await
-                    .ok()
                     .and_then(|status| status.ok()),
             };
             let tail = stderr_tail.lock().expect("stderr tail poisoned").clone();
@@ -511,29 +518,56 @@ async fn settle(shared: &Shared, input: SettleInput, ending: Ending) {
         unreachable!("turn_completed builds TurnCompleted");
     };
     let turn_id = turn["id"].as_str().unwrap_or_default().to_string();
-    if let Err(error) = crate::harness::turn_outcome::record(
-        params.repo.as_ref(),
-        &params.worker_session_id,
-        &params.card_id,
-        &params.track_id,
-        &thread.to_string(),
-        &turn_id,
-        turn,
-    )
-    .await
-    {
-        tracing::warn!(
+    let recorded = slot
+        .bounded(
+            RECORD_TIMEOUT,
+            crate::harness::turn_outcome::record(
+                params.repo.as_ref(),
+                &params.worker_session_id,
+                &params.card_id,
+                &params.track_id,
+                &thread.to_string(),
+                &turn_id,
+                turn,
+            ),
+        )
+        .await;
+    match recorded {
+        Some(Ok(_)) => {}
+        Some(Err(error)) => tracing::warn!(
             worker_session_id = %params.worker_session_id,
             turn_id,
             %error,
             "claude planner: turn outcome not recorded"
-        );
+        ),
+        None => tracing::warn!(
+            worker_session_id = %params.worker_session_id,
+            turn_id,
+            "claude planner: turn outcome not recorded by its bound; boot recovery records it"
+        ),
     }
-    drop(slot.stdin.lock().await.take());
-    if wait_for_exit && tokio::time::timeout(EXIT_WAIT, child.wait()).await.is_err() {
+    if let Some(mut stdin) = slot.bounded(WRITE_TIMEOUT, slot.stdin.lock()).await {
+        stdin.take();
+    }
+    if wait_for_exit && slot.bounded(EXIT_WAIT, child.wait()).await.is_none() {
         tracing::debug!(turn_id, "claude planner: the CLI lingered after its result");
     }
-    if let Err(error) = stop(&params.host.instance, &params.worker_session_id).await {
+    let stop_until = match slot.settle_by() {
+        Some(settle_by) => settle_by.min(Instant::now() + STOP_BOUND),
+        None => Instant::now() + STOP_BOUND,
+    };
+    let stopped = slot
+        .bounded(
+            STOP_BOUND,
+            stop_by(&params.host.instance, &params.worker_session_id, stop_until),
+        )
+        .await
+        .unwrap_or_else(|| {
+            Err(CalmError::Conflict(
+                "claude planner settlement stop cut off at settle_by".into(),
+            ))
+        });
+    if let Err(error) = stopped {
         tracing::warn!(
             worker_session_id = %params.worker_session_id,
             turn_id,
@@ -542,7 +576,7 @@ async fn settle(shared: &Shared, input: SettleInput, ending: Ending) {
         );
     }
     let _ = child.start_kill();
-    let _ = tokio::time::timeout(Duration::from_secs(1), child.wait()).await;
+    let _ = slot.bounded(REAP_WAIT, child.wait()).await;
     drop(instructions);
     let closes = translator.close_open(crate::model::now_ms());
     shared.finish_turn(bound, total_tokens);

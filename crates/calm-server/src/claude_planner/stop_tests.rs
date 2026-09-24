@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::io::Read as _;
 use std::process::{Command, Stdio};
 
-use super::{MARKER_KEY, MarkerInstance, Member, scan_in, signal_verified, stop};
+use super::{MARKER_KEY, MarkerInstance, Member, scan_in, scan_off_thread, signal_verified, stop};
 use crate::proc_identity::{parse_proc_stat_fields, read_proc_start_time};
 
 struct Scope {
@@ -306,4 +306,38 @@ fn instances_differ_by_data_dir() {
         one.instance,
         MarkerInstance::for_data_dir(one._dir.path()).expect("instance")
     );
+}
+
+/// A read that never returns (here: an `environ` that is a FIFO with no writer) turns into an
+/// `Err` at the scan's deadline instead of hanging the stop.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_scan_that_blocks_fails_at_its_deadline() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let dir = root.path().join("4242");
+    std::fs::create_dir(&dir).expect("pid dir");
+    std::fs::write(dir.join("stat"), GOOD_STAT).expect("stat");
+    let fifo = dir.join("environ");
+    let path = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0, "mkfifo");
+    let markers = std::sync::Arc::new(HashSet::from(["inst:ws".to_string()]));
+
+    let started = tokio::time::Instant::now();
+    let scanned = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        scan_off_thread(
+            root.path(),
+            &markers,
+            started + std::time::Duration::from_millis(200),
+        ),
+    )
+    .await;
+    // Release the leaked blocking thread: a writer lets its open() return.
+    let writer = unsafe { libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_NONBLOCK) };
+    if writer >= 0 {
+        unsafe { libc::close(writer) };
+    }
+
+    let scanned = scanned.expect("the scan's own deadline ended it, not the test's");
+    assert!(scanned.is_err(), "{scanned:?}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
 }

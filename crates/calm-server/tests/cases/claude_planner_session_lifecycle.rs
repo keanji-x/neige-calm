@@ -4,13 +4,17 @@
 
 use std::time::{Duration, Instant};
 
+use calm_server::claude_planner::session::{SETTLE_AFTER_STOP, STOP_TIMER};
+
 use super::claude_planner_session_fixture::{
     Rig, client_id, completed_turn, until_completed, wait_for_file,
 };
 
-/// The harness's interrupt budget less the stop's own worst case leaves this for settlement to
-/// begin; every stop test must settle inside it.
-const SETTLE_BUDGET: Duration = Duration::from_secs(25);
+/// An interrupt's `TurnCompleted` is due by `settle_by` = the interrupt + [`STOP_TIMER`] +
+/// [`SETTLE_AFTER_STOP`]; the tests allow one second of scheduling on top.
+const SETTLE_BUDGET: Duration = STOP_TIMER
+    .saturating_add(SETTLE_AFTER_STOP)
+    .saturating_add(Duration::from_secs(1));
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_ignored_interrupt_is_ended_by_the_stop_timer_within_budget() {
@@ -29,7 +33,7 @@ async fn an_ignored_interrupt_is_ended_by_the_stop_timer_within_budget() {
         .expect("interrupt");
     let seen = tokio::time::timeout(SETTLE_BUDGET, until_completed(&mut rx))
         .await
-        .expect("settled inside the 25 s interrupt budget");
+        .expect("settled by settle_by");
     let elapsed = interrupted_at.elapsed();
 
     assert_eq!(completed_turn(&seen)["status"], "interrupted");
@@ -135,9 +139,13 @@ async fn an_interrupted_cli_that_stopped_reading_stdin_settles_within_budget() {
         .expect("interrupt");
     let seen = tokio::time::timeout(SETTLE_BUDGET, until_completed(&mut rx))
         .await
-        .expect("settled inside the interrupt budget");
+        .expect("settled by settle_by");
 
-    assert!(interrupted_at.elapsed() <= SETTLE_BUDGET);
+    let elapsed = interrupted_at.elapsed();
+    // Answers are abandoned at the stop deadline and a result read while stopping gets no exit
+    // wait, so this settles just after the timer. Abandonment itself is not pinned: without it the
+    // in-flight answer adds a random 0-5 s, which `settle_by` still bounds.
+    assert!(elapsed < STOP_TIMER + Duration::from_secs(3), "{elapsed:?}");
     // The result was already written when the stop fired, so it decides the turn.
     assert_eq!(completed_turn(&seen)["status"], "completed");
     assert!(rig.marked_pids().is_empty());
@@ -161,7 +169,7 @@ async fn a_cli_that_never_stops_writing_is_stopped_within_budget() {
         .expect("interrupt");
     let seen = tokio::time::timeout(SETTLE_BUDGET, until_completed(&mut rx))
         .await
-        .expect("settled inside the interrupt budget");
+        .expect("settled by settle_by");
 
     assert_eq!(completed_turn(&seen)["status"], "interrupted");
     assert!(rig.marked_pids().is_empty());
@@ -242,10 +250,48 @@ async fn the_stop_timer_runs_from_the_interrupt_not_from_its_write() {
         .expect("interrupt");
     let seen = tokio::time::timeout(SETTLE_BUDGET, until_completed(&mut rx))
         .await
-        .expect("settled inside the interrupt budget");
+        .expect("settled by settle_by");
     let elapsed = interrupted_at.elapsed();
 
     assert_eq!(completed_turn(&seen)["status"], "interrupted");
     // 10 s timer + a bounded drain; arming after the 5 s write would land past 15 s.
     assert!(elapsed < Duration::from_secs(13), "{elapsed:?}");
+}
+
+/// A CLI that ignores both the interrupt and SIGTERM and keeps stdout full: with the settlement
+/// margin shortened to 3 s, the SIGTERM grace, the drain and the stop are all cut by `settle_by`,
+/// and `TurnCompleted` still goes out by then.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cli_ignoring_sigterm_still_settles_by_settle_by() {
+    let margin = Duration::from_secs(3);
+    let rig = Rig::new("stubborn-after-interrupt").await;
+    rig.session().set_settle_after_stop_for_test(margin);
+    let mut rx = rig.session().subscribe_notifications();
+    let turn = rig
+        .session()
+        .turn_start(&rig.thread, rig.text("hello"), &client_id())
+        .await
+        .expect("turn_start");
+    wait_for_file(&rig.bin("stdin")).await;
+    let interrupted_at = Instant::now();
+    rig.session()
+        .turn_interrupt(&rig.thread, &turn)
+        .await
+        .expect("interrupt");
+    let settle_by = STOP_TIMER + margin;
+    let seen = tokio::time::timeout(SETTLE_BUDGET, until_completed(&mut rx))
+        .await
+        .expect("settled");
+    let elapsed = interrupted_at.elapsed();
+
+    assert!(
+        elapsed < settle_by + Duration::from_millis(750),
+        "settled at {elapsed:?}, settle_by was {settle_by:?}"
+    );
+    assert_eq!(completed_turn(&seen)["status"], "interrupted");
+    assert_eq!(rig.outcomes().await[0]["status"], "interrupted");
+    assert!(
+        rig.marked_pids().is_empty(),
+        "the stubborn CLI did not survive"
+    );
 }
