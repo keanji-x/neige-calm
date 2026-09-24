@@ -174,7 +174,7 @@ pub(crate) async fn apply_delivery_action(
             // scheduler is poked directly: `resume_git_deliveries` drives the new row to its
             // settlement now instead of on the next reconcile sweep.
             match ctx.scheduler_poke.get() {
-                Some(poke) => poke(track.id.clone()),
+                Some(poke) => poke.poke(track.id.clone()),
                 None => tracing::debug!(
                     delivery_id = %row.delivery_id,
                     "scheduler poke not bound; the reconcile sweep drives the retry"

@@ -608,6 +608,11 @@ async fn sweep_running_claude_past_liveness_deadline_fails_and_releases_lease_ro
         Arc::downgrade(&runtime),
         Arc::new(Semaphore::new(1)),
         std::env::temp_dir().join("neige-scheduler-test-gate-logs"),
+        crate::scheduler::WorkerIdleWake::new(
+            crate::shared_codex_appserver::SharedCodexAppServer::new_stub(repo.clone()),
+            crate::scheduler::WORKER_IDLE_TURN_GRACE,
+            crate::scheduler::WORKER_IDLE_PROBE_TIMEOUT,
+        ),
     );
     scheduler.mark_boot_sweep_complete();
     scheduler.open_context_sweep_gate().await;
@@ -735,6 +740,11 @@ async fn running_timeout_race_lost_does_not_teardown_or_release_lease() {
         Weak::<OperationRuntime>::new(),
         Arc::new(Semaphore::new(1)),
         std::env::temp_dir().join("neige-scheduler-test-gate-logs"),
+        crate::scheduler::WorkerIdleWake::new(
+            crate::shared_codex_appserver::SharedCodexAppServer::new_stub(concrete.clone()),
+            crate::scheduler::WORKER_IDLE_TURN_GRACE,
+            crate::scheduler::WORKER_IDLE_PROBE_TIMEOUT,
+        ),
     );
 
     scheduler.fail_running_liveness_timeout(snapshot).await;

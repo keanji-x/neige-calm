@@ -71,6 +71,11 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
         Arc::new(tokio::sync::Semaphore::new(1)),
         boot.ctx.gate_logs_dir.clone(),
         1,
+        calm_server::scheduler::WorkerIdleWake::new(
+            calm_server::shared_codex_appserver::SharedCodexAppServer::new_stub(boot.repo.clone()),
+            calm_server::scheduler::WORKER_IDLE_TURN_GRACE,
+            calm_server::scheduler::WORKER_IDLE_PROBE_TIMEOUT,
+        ),
     );
     let source = r#"{"timeout_secs":-1}"#;
     std::fs::write(dir.path().join("config.json"), source).unwrap();

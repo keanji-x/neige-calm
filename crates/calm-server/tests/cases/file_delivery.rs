@@ -590,6 +590,13 @@ async fn file_delivery_claim_restart_retains_exact_input_and_rejects_missing_bin
             std::sync::Arc::downgrade(&fx.state.operation_runtime),
             std::sync::Arc::new(tokio::sync::Semaphore::new(8)),
             fx.boot.ctx.gate_logs_dir.clone(),
+            calm_server::scheduler::WorkerIdleWake::new(
+                calm_server::shared_codex_appserver::SharedCodexAppServer::new_stub(
+                    fx.boot.repo.clone(),
+                ),
+                calm_server::scheduler::WORKER_IDLE_TURN_GRACE,
+                calm_server::scheduler::WORKER_IDLE_PROBE_TIMEOUT,
+            ),
         );
         restarted.mark_boot_sweep_complete();
         restarted.mark_context_sweep_boot_complete();

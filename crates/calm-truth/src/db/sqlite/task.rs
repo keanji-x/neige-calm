@@ -117,6 +117,30 @@ pub async fn task_cancel_tx(tx: &mut Transaction<'_, Sqlite>, id: &str, now: i64
     Ok(res.rows_affected())
 }
 
+/// `running → canceled` for the Planner's in-flight cancel (#1785). The card guard pins the
+/// worker the caller marks for reaping; `dispatched` is excluded because its card may be unbound.
+/// Returns rows moved (`0` = the row left `running` or changed worker; the caller re-reads).
+pub async fn task_cancel_running_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    worker_card_id: &str,
+    status_detail: &str,
+    now: i64,
+) -> Result<u64> {
+    let res = sqlx::query(
+        r#"UPDATE tasks
+           SET status = 'canceled', status_detail = ?1, updated_at_ms = ?2, finished_at_ms = ?2
+           WHERE id = ?3 AND status = 'running' AND worker_card_id = ?4"#,
+    )
+    .bind(status_detail)
+    .bind(now)
+    .bind(id)
+    .bind(worker_card_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(res.rows_affected())
+}
+
 /// The claim tx re-checks schedulability against this, not the pre-claim
 /// snapshot. `None` = track row gone; inner `None` = NULL `task_budget`.
 pub async fn track_lifecycle_and_budget_tx(

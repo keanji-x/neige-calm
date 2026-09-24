@@ -4,7 +4,14 @@
 
 mod file_delivery;
 mod git_delivery;
+mod running_worker;
 mod worker_failure;
+use running_worker::RunningWorkerFailure;
+pub(crate) use running_worker::WorkerCleanupReason;
+pub use running_worker::{
+    PLANNER_CANCELED, WORKER_IDLE_PROBE_TIMEOUT, WORKER_IDLE_TURN_GRACE, WORKER_TURN_ENDED,
+    WorkerIdleClock, WorkerIdleWake,
+};
 pub(crate) use worker_failure::fail_worker_task_tx;
 
 use std::collections::BTreeSet;
@@ -74,16 +81,18 @@ fn fence_revision_matches(current: Option<Option<i64>>, frozen: u64) -> bool {
         == Some(frozen)
 }
 
-async fn mark_running_timeout_cleanup_tx(
+/// Mark the card's live worker session for the sweep's reap (`sweep_timeout_worker_cleanups`).
+pub(crate) async fn mark_running_timeout_cleanup_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     card_id: &str,
     task_id: &str,
     now: i64,
+    reason: WorkerCleanupReason,
 ) -> Result<u64> {
     let marker = serde_json::to_string(&json!({
         "task_id": task_id,
         "requested_at_ms": now,
-        "reason": "running_liveness_timeout",
+        "reason": reason.as_str(),
     }))?;
     let rows = sqlx::query(
         r#"UPDATE worker_sessions
@@ -230,7 +239,7 @@ fn task_kind_str(kind: TaskKind) -> &'static str {
     }
 }
 
-fn task_has_running_liveness_deadline(task: &Task) -> bool {
+pub(crate) fn task_has_running_liveness_deadline(task: &Task) -> bool {
     task.spawn != "sub-wave" && matches!(task.kind, TaskKind::Codex | TaskKind::Claude)
 }
 
@@ -482,6 +491,10 @@ pub struct Scheduler {
     /// Persisted running liveness window, resolved once from
     /// `NEIGE_TASK_RUN_TIMEOUT_SECS`.
     task_run_timeout: Duration,
+    /// Live recheck behind the sweep's idle arm (#1785).
+    worker_idle: WorkerIdleWake,
+    /// Per-task single-flight for spawned idle rechecks.
+    idle_checks: Arc<DashMap<String, ()>>,
     /// Where a re-submitted git delivery's forge result files go (one value with the MCP context's).
     gate_logs_dir: std::path::PathBuf,
     /// Per-track single-flight: exactly the push-locks pattern.
@@ -533,6 +546,7 @@ impl Scheduler {
         operation_runtime: Weak<OperationRuntime>,
         semaphore: Arc<Semaphore>,
         gate_logs_dir: std::path::PathBuf,
+        worker_idle: WorkerIdleWake,
     ) -> Arc<Self> {
         Self::new_with_timeouts(
             repo,
@@ -543,12 +557,14 @@ impl Scheduler {
             gate_logs_dir,
             Self::task_run_timeout_from_env(),
             Self::budget_from_env(DEFAULT_TRACK_TASK_BUDGET),
+            worker_idle,
         )
     }
 
     /// Production boot seam: the environment-backed task budget is resolved
     /// once by `AppState` and shared with every read surface that explains the
     /// scheduler's decision.
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_task_budget_default(
         repo: Arc<dyn Repo>,
         events: EventBus,
@@ -557,6 +573,7 @@ impl Scheduler {
         semaphore: Arc<Semaphore>,
         gate_logs_dir: std::path::PathBuf,
         task_budget_default: i64,
+        worker_idle: WorkerIdleWake,
     ) -> Arc<Self> {
         Self::new_with_timeouts(
             repo,
@@ -567,10 +584,12 @@ impl Scheduler {
             gate_logs_dir,
             Self::task_run_timeout_from_env(),
             task_budget_default,
+            worker_idle,
         )
     }
 
     #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_timeouts_for_test(
         repo: Arc<dyn Repo>,
         events: EventBus,
@@ -579,6 +598,7 @@ impl Scheduler {
         semaphore: Arc<Semaphore>,
         gate_logs_dir: std::path::PathBuf,
         task_run_timeout: Duration,
+        worker_idle: WorkerIdleWake,
     ) -> Arc<Self> {
         Self::new_with_timeouts(
             repo,
@@ -589,6 +609,7 @@ impl Scheduler {
             gate_logs_dir,
             task_run_timeout,
             Self::budget_from_env(DEFAULT_TRACK_TASK_BUDGET),
+            worker_idle,
         )
     }
 
@@ -602,6 +623,7 @@ impl Scheduler {
         gate_logs_dir: std::path::PathBuf,
         task_run_timeout: Duration,
         task_budget_default: i64,
+        worker_idle: WorkerIdleWake,
     ) -> Arc<Self> {
         Arc::new(Self {
             repo,
@@ -612,6 +634,8 @@ impl Scheduler {
             semaphore,
             budget_default: task_budget_default,
             task_run_timeout,
+            worker_idle,
+            idle_checks: Self::new_idle_checks(),
             gate_logs_dir,
             track_locks: DashMap::new(),
             track_dirty: DashMap::new(),
@@ -1919,6 +1943,8 @@ impl Scheduler {
                             .is_some_and(|deadline| now_ms() > deadline)
                     {
                         self.fail_running_liveness_timeout(task).await;
+                    } else if task.status == TaskStatus::Running {
+                        self.spawn_worker_idle_check(&task);
                     }
                 }
                 TaskStatus::Running => {}
@@ -1970,128 +1996,8 @@ impl Scheduler {
     }
 
     async fn fail_running_liveness_timeout(self: &Arc<Self>, task: Task) {
-        let track = match self.repo.track_get(&task.track_id).await {
-            Ok(Some(track)) => track,
-            Ok(None) => {
-                tracing::warn!(
-                    task_id = %task.id,
-                    "scheduler sweep: running timeout task's track row is gone; leaving row"
-                );
-                return;
-            }
-            Err(e) => {
-                tracing::warn!(
-                    task_id = %task.id,
-                    error = %e,
-                    "scheduler sweep: running timeout track_get failed"
-                );
-                return;
-            }
-        };
-
-        let cleanup_card_id = self.worker_card_id_for_task(&task).await;
-
-        match self
-            .fail_task_liveness_timeout(
-                &task,
-                &track,
-                "worker exceeded the running liveness deadline",
-                "[auto] worker liveness timeout",
-                cleanup_card_id.as_deref(),
-            )
-            .await
-        {
-            Ok(true) => {
-                self.sweep_timeout_worker_cleanups().await;
-            }
-            Ok(false) => {}
-            Err(e) => {
-                tracing::warn!(
-                    task_id = %task.id,
-                    error = %e,
-                    "scheduler sweep: running timeout fail tx failed"
-                );
-            }
-        }
-    }
-
-    async fn fail_task_liveness_timeout(
-        &self,
-        task: &Task,
-        track: &Track,
-        reason: &str,
-        auto_message: &str,
-        timeout_cleanup_card_id: Option<&str>,
-    ) -> Result<bool> {
-        let scope = EventScope::Track {
-            track: track.id.clone(),
-            area: track.area_id.clone(),
-        };
-        let task_id = task.id.clone();
-        let track_id = track.id.clone();
-        let reason = reason.to_string();
-        let auto_message = auto_message.to_string();
-        let timeout_cleanup_card_id = timeout_cleanup_card_id.map(str::to_string);
-        let result = write_with_actor_events_typed::<(), _>(
-            self.repo.as_ref(),
-            None,
-            &self.events,
-            &self.write,
-            move |tx| {
-                Box::pin(async move {
-                    let now = now_ms();
-                    let rows = task_fail_from_worker_tx(
-                        tx,
-                        &task_id,
-                        track_id.as_str(),
-                        TaskReporter::Kernel,
-                        "worker-timeout",
-                        now,
-                    )
-                    .await?;
-                    if rows == 0 {
-                        return Err(race_lost_err());
-                    }
-                    if let Some(card_id) = timeout_cleanup_card_id.as_deref() {
-                        mark_running_timeout_cleanup_tx(tx, card_id, &task_id, now).await?;
-                    }
-                    let mut events = vec![(
-                        ActorId::KernelDispatcher,
-                        scope.clone(),
-                        Event::TaskFailed {
-                            idempotency_key: task_id.clone(),
-                            reason,
-                            details: None,
-                            agent_message: None,
-                        },
-                    )];
-                    if let Some(auto_events) = auto_transition_if_current_in_tx(
-                        tx,
-                        &track_id,
-                        TrackLifecycle::Working,
-                        TrackLifecycle::Reviewing,
-                        &ActorId::KernelDispatcher,
-                        Some(auto_message),
-                    )
-                    .await?
-                    {
-                        events.extend(
-                            auto_events
-                                .into_iter()
-                                .map(|event| (ActorId::KernelDispatcher, scope.clone(), event)),
-                        );
-                    }
-                    Ok(((), events))
-                })
-            },
-        )
-        .await;
-
-        match result {
-            Ok(_) => Ok(true),
-            Err(e) if is_race_lost(&e) => Ok(false),
-            Err(e) => Err(e),
-        }
+        self.fail_running_worker(task, RunningWorkerFailure::LivenessTimeout)
+            .await;
     }
 
     async fn sweep_timeout_worker_cleanups(self: &Arc<Self>) {
