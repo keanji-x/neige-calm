@@ -174,7 +174,7 @@ async fn post_api_tracks_tolerates_broken_codex_bin_returns_201_inert_track() {
     let (status, body) = post(
         app.clone(),
         "/api/tracks",
-        json!({"area_id": area_id, "title": "inert track", "cwd": attached_repo_fixture("issue-293-tolerant"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"planner_provider": "codex", "area_id": area_id, "title": "inert track", "cwd": attached_repo_fixture("issue-293-tolerant"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
 
@@ -235,7 +235,7 @@ async fn post_api_tracks_does_not_stamp_prompt_on_planner_card() {
     let (status, _body) = post(
         boot.app.clone(),
         "/api/tracks",
-        json!({"area_id": boot.area_id, "title": title, "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"planner_provider": "codex", "area_id": boot.area_id, "title": title, "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -281,7 +281,7 @@ async fn whitespace_title_does_not_stamp_prompt_on_planner_card() {
     let (status, _body) = post(
         boot.app.clone(),
         "/api/tracks",
-        json!({"area_id": boot.area_id, "title": "   ", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"planner_provider": "codex", "area_id": boot.area_id, "title": "   ", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     // The create may still 500 because the daemon child fails to exec `codex` in CI; both 201 and 500 leave
@@ -319,6 +319,7 @@ async fn post_api_tracks_persists_track_cwd_and_attach_folder() {
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "cwd-contract track",
             "cwd": cwd,
@@ -356,6 +357,7 @@ async fn post_api_tracks_then_lifecycle_done_surfaces_terminal_at_in_get() {
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "track-to-done",
             "cwd": attached_repo_fixture("issue-250-pr2-to-done"),

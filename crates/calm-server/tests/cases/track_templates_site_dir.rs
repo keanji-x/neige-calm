@@ -163,6 +163,7 @@ async fn get(app: axum::Router, uri: &str) -> (StatusCode, Value) {
 
 fn create_body(area_id: &str, title: &str, template_id: &str) -> Value {
     json!({
+        "planner_provider": "codex",
         "area_id": area_id,
         "title": title,
         "cwd": attached_repo_fixture(&format!("1635-s5-{title}")),

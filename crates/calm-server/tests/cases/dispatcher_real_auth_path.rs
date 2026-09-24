@@ -142,7 +142,7 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
         boot.app.clone(),
         "/api/tracks",
         Some("user"),
-        json!({"area_id": boot.area_id, "title": "real-auth track", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"planner_provider": "codex", "area_id": boot.area_id, "title": "real-auth track", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(

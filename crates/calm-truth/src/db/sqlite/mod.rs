@@ -391,6 +391,8 @@ mod write_path_gate_wiring_tests;
 mod append_seam_gate_tests;
 
 #[cfg(test)]
+mod planner_provider_session_tests;
+#[cfg(test)]
 mod runtime_read_flip_parity_tests;
 #[cfg(test)]
 mod runtime_read_flip_projection_tests;

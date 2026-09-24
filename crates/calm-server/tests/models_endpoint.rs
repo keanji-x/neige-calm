@@ -724,7 +724,7 @@ async fn track_create_rejects_stale_unsupported_effort_before_mint() {
         .unwrap();
     // The caller's cached roster offered high, but the current catalog only
     // supports medium / brand-new-effort for this model.
-    let body = json!({"area_id": track.area_id, "theme": {"fg": [255,255,255], "bg": [0,0,0]},
+    let body = json!({"planner_provider": "codex", "area_id": track.area_id, "theme": {"fg": [255,255,255], "bg": [0,0,0]},
         "model": "gpt-5-codex", "reasoning_effort": "high", "first_message": "use my chosen effort"});
     let response = boot
         .app

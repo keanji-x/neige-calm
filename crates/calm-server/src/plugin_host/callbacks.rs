@@ -1166,7 +1166,8 @@ mod tests {
                 "terminal_signals",
                 "claude_permissions",
                 "claude_permissions_source",
-                "template_context"
+                "template_context",
+                "planner_provider"
             ]
         );
         let probes = [json!(true), json!({}), json!("declared"), Value::Null];

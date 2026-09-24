@@ -278,6 +278,64 @@ fn session_kind_for(profile: HarnessProfile) -> WorkerSessionKind {
     }
 }
 
+/// The provider the session row persists. A Planner card names it in `planner_provider` (missing or unknown is not a
+/// harness card); only a Codex binding is startable here. The conversation profiles run on Codex.
+fn startable_provider(profile: HarnessProfile, card: &Card) -> Result<AgentProvider> {
+    let role = match profile {
+        HarnessProfile::Planner => CardRole::Planner,
+        HarnessProfile::PlainChat => CardRole::Worker,
+        HarnessProfile::Assistant => CardRole::Assistant,
+    };
+    match crate::harness::profile::PlannerBinding::from_card(card, role) {
+        Some(binding) if binding.provider == AgentProvider::Codex => Ok(AgentProvider::Codex),
+        Some(_) => Err(CalmError::Conflict(format!(
+            "card {}: this server cannot start a Claude Planner",
+            card.id
+        ))),
+        None => Err(CalmError::BadRequest(format!(
+            "card {} is not a harness card",
+            card.id
+        ))),
+    }
+}
+
+/// A Planner row carries its provider (`WorkerSessionInit::shared_planner`); a conversation row is a Codex card.
+fn starting_runtime_init(
+    profile: HarnessProfile,
+    provider: AgentProvider,
+    id: String,
+    card_id: String,
+    thread_id: Option<String>,
+    snapshot: Value,
+    now_ms: i64,
+) -> WorkerSessionInit {
+    match profile {
+        HarnessProfile::Planner => WorkerSessionInit::shared_planner(
+            id,
+            card_id,
+            provider,
+            WorkerSessionState::Starting,
+            thread_id,
+            snapshot,
+            now_ms,
+        ),
+        HarnessProfile::PlainChat | HarnessProfile::Assistant => WorkerSessionInit {
+            id,
+            card_id,
+            kind: session_kind_for(profile),
+            agent_provider: Some(provider),
+            status: WorkerSessionState::Starting,
+            terminal_run_id: None,
+            thread_id,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(snapshot),
+            spawn_op_id: None,
+            now_ms,
+        },
+    }
+}
+
 /// One function returning both halves because they must never disagree: the role decides what the token may call, the marker which list the card appears in.
 /// `Planner` is rejected here as the fail-closed twin of `validate`.
 fn minted_card_shape(profile: HarnessProfile) -> Result<(CardRole, &'static str)> {
@@ -480,6 +538,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             };
             return Err(CalmError::BadRequest(message));
         }
+        startable_provider(payload.profile, &card)?;
         if expected_role == CardRole::Planner
             && track.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE)
         {
@@ -506,7 +565,6 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         let track_id = payload.track_id;
         let report_card_id = payload.report_card_id;
         let defer_runtime_start = payload.force_new_thread;
-        let session_kind = session_kind_for(payload.profile);
         // The briefing is rendered HERE, inside the mint transaction, and MUST stay ABOVE this transaction's first write: its reads run on a pool
         // connection, and once `tx` holds RESERVED on `events` the shared-lock read deadlocks against it (pinned by `briefing_ordering_survives_contention_in_the_mint_transaction`).
         let opening_briefing = match payload.opening_briefing {
@@ -584,6 +642,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         .await?
         .map(Card::from)
         .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
+        let provider = startable_provider(payload.profile, &card)?;
 
         let existing_active_runtime = if defer_runtime_start {
             session_projection_active_for_card_tx(tx, card.id.as_str()).await?
@@ -720,20 +779,15 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
 
         let mut old_worker_session_id = None;
         let mut old_runtime_status = None;
-        let runtime_init = WorkerSessionInit {
-            id: worker_session_id.clone(),
-            card_id: card.id.to_string(),
-            kind: session_kind,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Starting,
-            terminal_run_id: None,
-            thread_id: None,
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(serde_json::to_value(&snapshot)?),
-            spawn_op_id: None,
-            now_ms: now,
-        };
+        let runtime_init = starting_runtime_init(
+            payload.profile,
+            provider,
+            worker_session_id.clone(),
+            card.id.to_string(),
+            None,
+            serde_json::to_value(&snapshot)?,
+            now,
+        );
         if defer_runtime_start {
             if let Some(existing) = existing_active_runtime.as_ref() {
                 old_worker_session_id = Some(existing.id.clone());
@@ -848,7 +902,6 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         let reset_harness_items = payload.reset_harness_items;
         let force_new_thread = payload.force_new_thread;
         let profile = payload.profile;
-        let session_kind = session_kind_for(profile);
         // Not a security boundary: production reads this role nowhere (the tool surface is resolved per MCP request from the card's persisted `role` column).
         let card_role = match profile {
             HarnessProfile::Planner => CardRole::Planner,
@@ -1091,20 +1144,16 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                                 runtime_snapshot.set_pending_entries(entries);
                             }
                         }
-                        let runtime_init = WorkerSessionInit {
-                            id: worker_session_id.clone(),
-                            card_id: card_id.clone(),
-                            kind: session_kind,
-                            agent_provider: Some(AgentProvider::Codex),
-                            status: WorkerSessionState::Starting,
-                            terminal_run_id: None,
-                            thread_id: Some(thread_for_tx.clone()),
-                            session_id: None,
-                            active_turn_id: None,
-                            handle_state_json: Some(serde_json::to_value(&runtime_snapshot)?),
-                            spawn_op_id: None,
-                            now_ms: now,
-                        };
+                        // `prepare_tx` admitted only a Codex binding, and this is its `thread/start` path.
+                        let runtime_init = starting_runtime_init(
+                            profile,
+                            AgentProvider::Codex,
+                            worker_session_id.clone(),
+                            card_id.clone(),
+                            Some(thread_for_tx.clone()),
+                            serde_json::to_value(&runtime_snapshot)?,
+                            now,
+                        );
                         match (occupant, raced_in) {
                             // This operation's own placeholder: superseded and re-inserted under the same id.
                             (Some(existing), None) => {
@@ -2297,8 +2346,8 @@ mod tests {
         assert!(!without.contains("## Bound Template Input"));
     }
 
-    /// The boot-recovery selector's SQL literals (`('assistant','assistant')`, `('worker','plain_chat')` in calm-truth) have no compile-time link to
-    /// `minted_card_shape`; a rename on either side must be red here.
+    /// The boot-recovery selector's SQL literals (`('assistant','assistant')`, `('worker','plain_chat')`, `('claude','planner')` in calm-truth) have no
+    /// compile-time link to `minted_card_shape` or `WorkerSessionInit::shared_planner`; a rename on either side must be red here.
     #[tokio::test]
     async fn boot_recovery_sql_literals_track_the_minted_card_shape() {
         use crate::session_projection_repo::WorkerSessionProjectionRepo;
@@ -2363,6 +2412,44 @@ mod tests {
             .expect("start runtime");
             expected.push(worker_session_id);
         }
+        // A Claude Planner row is recovered too: its own arm, on a Planner card.
+        let planner = card_create_with_id_tx(
+            &mut tx,
+            new_id(),
+            NewCard {
+                track_id: track.id.clone(),
+                title: None,
+                kind: "codex".into(),
+                sort: None,
+                payload: crate::routes::tracks::planner_harness_card_payload(
+                    None,
+                    AgentProvider::Claude,
+                ),
+            },
+            CardRole::Planner,
+            false,
+            repo.card_role_cache(),
+        )
+        .await
+        .expect("mint planner card");
+        let worker_session_id = new_id();
+        let mut snapshot = base.clone();
+        snapshot.last_thread_id = Some(format!("thread-{}", planner.id.as_str()));
+        session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit::shared_planner(
+                worker_session_id.clone(),
+                planner.id.to_string(),
+                AgentProvider::Claude,
+                WorkerSessionState::TurnPending,
+                snapshot.last_thread_id.clone(),
+                serde_json::to_value(&snapshot).expect("serialize snapshot"),
+                now_ms(),
+            ),
+        )
+        .await
+        .expect("start claude planner runtime");
+        expected.push(worker_session_id);
         tx.commit().await.expect("commit seed tx");
 
         let mut selected = repo
@@ -2377,9 +2464,9 @@ mod tests {
         assert_eq!(
             selected, expected,
             "the boot selector no longer recognises a card minted by \
-             `minted_card_shape`: its SQL literals ('assistant'/'assistant' and \
-             'worker'/'plain_chat') have drifted from the Rust values, so a \
-             kernel restart would drop that conversation class"
+             `minted_card_shape` or a Claude Planner row: its SQL literals \
+             ('assistant'/'assistant', 'worker'/'plain_chat', 'claude'/'planner') have \
+             drifted from the Rust values, so a kernel restart would drop that class"
         );
     }
 

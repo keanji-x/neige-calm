@@ -3610,7 +3610,7 @@ async fn deferred_settlement_is_silent_live_and_on_replay() {
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: serde_json::json!({"schemaVersion": 1, "planner_harness": true}),
+            payload: serde_json::json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex"}),
         },
         CardRole::Planner,
         false,

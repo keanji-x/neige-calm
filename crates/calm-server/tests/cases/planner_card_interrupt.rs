@@ -150,6 +150,13 @@ async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, Value) {
 }
 
 async fn seed_codex_card_with_role(boot: &Boot, role: CardRole) -> Card {
+    let mut payload = json!({
+        "schemaVersion": 1,
+        "planner_harness": role == CardRole::Planner
+    });
+    if role == CardRole::Planner {
+        payload["planner_provider"] = json!("codex");
+    }
     let card = boot
         .repo
         .card_create(NewCard {
@@ -157,10 +164,7 @@ async fn seed_codex_card_with_role(boot: &Boot, role: CardRole) -> Card {
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: json!({
-                "schemaVersion": 1,
-                "planner_harness": role == CardRole::Planner
-            }),
+            payload,
         })
         .await
         .expect("seed codex card");

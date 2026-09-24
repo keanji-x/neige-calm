@@ -38,6 +38,7 @@ fn planner_card(detail: &Value) -> &Value {
 
 async fn create(b: &Boot, template: &str) -> String {
     let (status, body) = b.post_create(Some("template-context"), json!({
+        "planner_provider": "codex",
         "area_id": b.area_id,
         "template_id": template,
         "first_message": "Investigate the latency regression without changing the repository.",
@@ -125,6 +126,7 @@ async fn template_startup_recipe_snapshot_survives_source_edits_and_reset() {
     let recipe = b.create_recipe("Original method", &source).await;
     let (_, original) = b.get_json(&format!("/api/track-recipes/{recipe}")).await;
     let (status, created) = b.post_create(Some("recipe-context"), json!({
+        "planner_provider": "codex",
         "area_id": b.area_id, "recipe_id": recipe, "first_message": "Carry out this investigation",
         "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
     })).await;
@@ -238,10 +240,10 @@ async fn template_startup_snapshot_is_server_owned_and_sticky() {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{response}");
     }
     let mut replacement = planner["payload"].clone();
-    replacement
-        .as_object_mut()
-        .unwrap()
-        .remove("template_context");
+    let replacement_map = replacement.as_object_mut().unwrap();
+    replacement_map.remove("template_context");
+    // Also server-owned (#1791): a client echo of it is refused on its own.
+    replacement_map.remove("planner_provider");
     let (status, patched) = request(
         &b,
         "PATCH",

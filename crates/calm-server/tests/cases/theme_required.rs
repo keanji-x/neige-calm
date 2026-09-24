@@ -126,6 +126,7 @@ async fn post_tracks_without_theme_is_rejected_with_422() {
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "no theme here",
             "cwd": "/tmp/issue-177-pr1-test",
@@ -153,6 +154,7 @@ async fn post_tracks_with_null_theme_is_rejected_with_422() {
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "null theme",
             "cwd": "/tmp/issue-177-pr1-test",

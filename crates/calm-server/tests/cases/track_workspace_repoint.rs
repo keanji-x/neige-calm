@@ -178,7 +178,7 @@ async fn managed_track(b: &Boot, area_id: &str, title: &str) -> (String, PathBuf
         b.app.clone(),
         "POST",
         "/api/tracks",
-        Some(json!({"area_id": area_id, "title": title, "theme": theme()})),
+        Some(json!({"planner_provider": "codex", "area_id": area_id, "title": title, "theme": theme()})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={text}");
@@ -766,6 +766,7 @@ async fn an_attached_workspace_refuses_the_change() {
         "POST",
         "/api/tracks",
         Some(json!({
+            "planner_provider": "codex",
             "area_id": area,
             "title": "attached",
             "cwd": repo_dir.to_string_lossy(),
@@ -889,6 +890,7 @@ async fn attaching_a_path_that_does_not_exist_is_refused_on_both_routes() {
         "POST",
         "/api/tracks",
         Some(json!({
+            "planner_provider": "codex",
             "area_id": area, "title": "w", "theme": theme(),
             "cwd": missing.to_string_lossy(), "attach_folder": true,
         })),
@@ -942,6 +944,7 @@ async fn attaching_a_directory_that_is_not_a_git_work_tree_is_refused_on_both_ro
         "POST",
         "/api/tracks",
         Some(json!({
+            "planner_provider": "codex",
             "area_id": area, "title": "w", "theme": theme(),
             "cwd": plain.to_string_lossy(), "attach_folder": true,
         })),
@@ -1002,6 +1005,7 @@ async fn a_directory_claimed_by_another_area_is_a_structured_conflict() {
         "POST",
         "/api/tracks",
         Some(json!({
+            "planner_provider": "codex",
             "area_id": owner, "title": "first", "theme": theme(),
             "cwd": repo.to_string_lossy(), "attach_folder": true,
         })),
@@ -1093,6 +1097,7 @@ async fn a_directory_this_area_already_claims_needs_no_new_claim() {
         "POST",
         "/api/tracks",
         Some(json!({
+            "planner_provider": "codex",
             "area_id": area, "title": "first", "theme": theme(),
             "cwd": repo.to_string_lossy(), "attach_folder": true,
         })),

@@ -238,6 +238,18 @@ describe('New track model selection', () => {
     expect(createdTrackRequests(sent)[0]?.body).not.toHaveProperty('model');
     expect(createdTrackRequests(sent)[0]?.body).not.toHaveProperty('reasoning_effort');
   });
+
+  it('names the Codex Planner backend on every create', async () => {
+    const { sent } = harness({ templates: [] });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+    await findComposer();
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Start the Planner');
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(1));
+    expect(createdTrackRequests(sent)[0]?.body).toMatchObject({
+      planner_provider: 'codex', first_message: 'Start the Planner',
+    });
+  });
 });
 
 describe('Track creation drafts survive navigation', () => {

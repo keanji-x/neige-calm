@@ -3146,7 +3146,7 @@ async fn planner_runtime_payload_blob_matches_live_view_without_projected_fields
         &area.id,
         "codex",
         CardRole::Planner,
-        json!({"schemaVersion": 1, "planner_harness": true}),
+        json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex"}),
     )
     .await;
 

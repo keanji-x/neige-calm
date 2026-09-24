@@ -129,7 +129,8 @@ async fn boot() -> Boot {
             title: None,
             kind: "planner".into(),
             sort: None,
-            payload: Value::Null,
+            // A child track inherits its parent Planner's backend.
+            payload: serde_json::json!({"planner_provider": "codex"}),
         })
         .await
         .unwrap();

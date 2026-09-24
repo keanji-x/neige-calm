@@ -74,7 +74,7 @@ describe('interactive writes never queue an offline submission', () => {
   const cases: [string, (writes: ReturnType<typeof useWrites>) => Promise<unknown>][] = [
     ['area create', ({ area }) => area.create({ name: 'Offline area', color: '#123456' }, 'offline-area')],
     ['area update', ({ area }) => area.update('c1', { name: 'Offline rename' })],
-    ['track create', ({ track }) => track.create({ area_id: 'c1', theme: { fg: [0, 0, 0], bg: [255, 255, 255] } })],
+    ['track create', ({ track }) => track.create({ area_id: 'c1', planner_provider: 'codex', theme: { fg: [0, 0, 0], bg: [255, 255, 255] } })],
     ['terminal create', ({ track }) => track.createTerminal('w1', { theme: { fg: [0, 0, 0], bg: [255, 255, 255] } })],
     ['codex create', ({ track }) => track.createCodex('w1', { theme: { fg: [0, 0, 0], bg: [255, 255, 255] } })],
     ['card create', ({ track }) => track.createCard('w1', { kind: 'note', title: 'Offline note', payload: {} })],
@@ -701,6 +701,7 @@ describe('track create folders cache', () => {
     const { result } = renderHook(() => useTrackMutations(transport, unauthorized), { wrapper });
     await act(() => result.current.create({
       area_id: 'c1',
+      planner_provider: 'codex',
       title: 'Ship',
       cwd: '/tmp/x',
       theme: { fg: [1, 2, 3], bg: [4, 5, 6] },

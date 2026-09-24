@@ -101,7 +101,7 @@ async fn seed_planner_card(repo: &SqlxRepo, card_role_cache: &CardRoleCache) -> 
             payload: json!({
                 "schemaVersion": 1,
                 "codex_source": "shared",
-                "planner_harness": true
+                "planner_harness": true, "planner_provider": "codex"
             }),
         },
         CardRole::Planner,

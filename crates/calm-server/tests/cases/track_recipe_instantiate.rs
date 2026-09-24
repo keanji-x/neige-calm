@@ -161,6 +161,7 @@ async fn create_recipe(app: axum::Router, title: &str, body: &str) -> Value {
 
 fn create_track_body(area_id: &str, title: &str, extra: Value) -> Value {
     let mut body = json!({
+        "planner_provider": "codex",
         "area_id": area_id,
         "title": title,
         "cwd": attached_repo_fixture(&format!("1292-s2-{title}")),

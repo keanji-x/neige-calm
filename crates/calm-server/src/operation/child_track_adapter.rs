@@ -23,6 +23,30 @@ use super::{
 
 pub const CHILD_TRACK_KIND: &str = "child-track";
 
+/// A child track's Planner runs on its parent Planner's backend; a parent Planner card without a
+/// known `planner_provider` refuses the child rather than guessing one.
+async fn parent_planner_provider_tx(
+    tx: &mut Tx<'_>,
+    parent_track_id: &str,
+) -> Result<crate::session_projection_repo::AgentProvider> {
+    let payload: Option<String> =
+        sqlx::query_scalar("SELECT payload FROM cards WHERE track_id=?1 AND role='planner'")
+            .bind(parent_track_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    payload
+        .and_then(|payload| serde_json::from_str::<Value>(&payload).ok())
+        .and_then(|payload| {
+            let stored = payload.get(crate::validation::PLANNER_PROVIDER_PAYLOAD_KEY)?;
+            serde_json::from_value(stored.clone()).ok()
+        })
+        .ok_or_else(|| {
+            CalmError::Conflict(format!(
+                "parent track {parent_track_id} has no Planner card naming its planner_provider"
+            ))
+        })
+}
+
 /// Re-exported because the tree depth bound is part of this adapter's public contract.
 pub use calm_truth::db::sqlite::{MAX_TRACK_TREE_DEPTH, TRACK_ROOT_DEPTH_SQL};
 use calm_truth::db::sqlite::{
@@ -210,6 +234,7 @@ impl ProviderAdapter for ChildTrackAdapter {
             frozen_at: None,
         };
         let plan = child_workspace_plan(&parent_workspace, &self.workspace_root)?;
+        let planner_provider = parent_planner_provider_tx(tx, &payload.parent_track_id).await?;
         let seed = render_child_seed(&payload);
         let child = track_create_tx(
             tx,
@@ -256,7 +281,7 @@ impl ProviderAdapter for ChildTrackAdapter {
                 track_id: child.id.clone(),
                 kind: "codex".into(),
                 sort: None,
-                payload: planner_harness_card_payload(Some(seed.clone())),
+                payload: planner_harness_card_payload(Some(seed.clone()), planner_provider),
             },
             CardRole::Planner,
             false,
@@ -530,6 +555,7 @@ mod tests {
             .unwrap();
         }
         tx.commit().await.unwrap();
+        ensure_planner_card(repo, track.id.as_str()).await;
         track.id.to_string()
     }
 
@@ -537,7 +563,43 @@ mod tests {
         seed_task_with_key(repo, track_id, "child", stale).await
     }
 
+    /// Every production track has a Planner card, and a child inherits its `planner_provider`.
+    async fn ensure_planner_card(repo: &SqlxRepo, track_id: &str) {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM cards WHERE track_id=?1 AND role='planner')",
+        )
+        .bind(track_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+        if exists {
+            return;
+        }
+        let mut tx = repo.pool().begin().await.unwrap();
+        card_create_with_id_tx(
+            &mut tx,
+            new_id(),
+            NewCard {
+                title: None,
+                track_id: track_id.into(),
+                kind: "codex".into(),
+                sort: None,
+                payload: planner_harness_card_payload(
+                    None,
+                    crate::session_projection_repo::AgentProvider::Codex,
+                ),
+            },
+            CardRole::Planner,
+            false,
+            repo.card_role_cache(),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+
     async fn seed_task_with_key(repo: &SqlxRepo, track_id: &str, key: &str, stale: bool) -> Task {
+        ensure_planner_card(repo, track_id).await;
         let now = now_ms();
         let task = Task {
             id: format!("{track_id}:{key}"),
@@ -710,6 +772,68 @@ mod tests {
             .unwrap();
         tx.commit().await.unwrap();
         output.data["child_track_id"].as_str().unwrap().to_owned()
+    }
+
+    async fn planner_provider_of(repo: &SqlxRepo, track_id: &str) -> Value {
+        let payload: String =
+            sqlx::query_scalar("SELECT payload FROM cards WHERE track_id=?1 AND role='planner'")
+                .bind(track_id)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+        serde_json::from_str::<Value>(&payload).unwrap()
+            [crate::validation::PLANNER_PROVIDER_PAYLOAD_KEY]
+            .clone()
+    }
+
+    #[tokio::test]
+    async fn a_child_planner_inherits_its_parent_planners_provider() {
+        for provider in ["claude", "codex"] {
+            let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+            let parent = seed_parent(&repo, false).await;
+            sqlx::query(
+                "UPDATE cards SET payload=json_set(payload,'$.planner_provider',?1) \
+                 WHERE track_id=?2 AND role='planner'",
+            )
+            .bind(provider)
+            .bind(&parent)
+            .execute(repo.pool())
+            .await
+            .unwrap();
+            let task = seed_task(&repo, &parent, false).await;
+            let child = create_child_from_task(&repo, &parent, &task.id).await;
+            assert_eq!(planner_provider_of(&repo, &child).await, provider);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_parent_planner_without_a_provider_refuses_the_child() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let parent = seed_parent(&repo, false).await;
+        sqlx::query(
+            "UPDATE cards SET payload=json_remove(payload,'$.planner_provider') \
+             WHERE track_id=?1 AND role='planner'",
+        )
+        .bind(&parent)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+        let task = seed_task(&repo, &parent, false).await;
+        let input = serde_json::to_value(payload(&task)).unwrap();
+        let adapter = ChildTrackAdapter::new(
+            repo.card_role_cache().clone(),
+            repo.track_area_cache().clone(),
+            test_workspace_root(),
+        );
+        let mut tx = repo.pool().begin().await.unwrap();
+        let error = adapter
+            .prepare_tx(&mut tx, &input, &operation(input.clone()))
+            .await
+            .expect_err("no provider to inherit");
+        assert!(
+            matches!(&error, CalmError::Conflict(message) if message.contains("planner_provider")),
+            "{error:?}"
+        );
     }
 
     fn payload(task: &Task) -> ChildTrackOperationPayload {

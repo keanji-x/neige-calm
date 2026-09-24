@@ -66,7 +66,7 @@ def main():
             raise RuntimeError("isolated host did not start")
         recipe = request("/api/track-recipes", {"title": "Paper portfolio", "body": (plugin / "recipe.md").read_text()})
         area = request("/api/areas", {"name": "Investment laboratory", "color": "#267A67"})
-        track = request("/api/tracks", {"area_id": area["id"], "title": "Weekly paper strategy", "recipe_id": recipe["id"],
+        track = request("/api/tracks", {"area_id": area["id"], "planner_provider": "codex", "title": "Weekly paper strategy", "recipe_id": recipe["id"],
                                         "theme": {"fg": [216, 219, 226], "bg": [15, 20, 24]}})
         request("/api/plugins/install", {"source": {"kind": "local_path", "path": str(plugin)}})
         config = {"account_no": "FIXTURE-PAPER", "owner_track_id": track["id"], "broker_home": str(home),

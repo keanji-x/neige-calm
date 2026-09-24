@@ -207,7 +207,7 @@ async fn exercise(history: History, disposal: Disposal) {
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let area: Value = serde_json::from_str(&body).unwrap();
     let area_id = area["id"].as_str().unwrap();
-    let (status,body)=call(app.clone(),"POST","/api/tracks",Some(json!({"area_id":area_id,"title":"owned workspace","theme":{"fg":[255,255,255],"bg":[0,0,0]}}))).await;
+    let (status,body)=call(app.clone(),"POST","/api/tracks",Some(json!({"planner_provider": "codex", "area_id":area_id,"title":"owned workspace","theme":{"fg":[255,255,255],"bg":[0,0,0]}}))).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let track: Value = serde_json::from_str(&body).unwrap();
     let track_id = track["id"].as_str().unwrap().to_string();

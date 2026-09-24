@@ -69,6 +69,7 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
     const attemptKey = replacementKey ?? current.key;
     const body = {
       area_id: areaId,
+      planner_provider: 'codex',
       theme: readHostThemeRgb(),
       ...(current.model.model === null ? {} : { model: current.model.model }),
       ...(current.model.reasoning_effort === null ? {} : { reasoning_effort: current.model.reasoning_effort }),

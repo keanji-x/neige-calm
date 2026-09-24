@@ -139,6 +139,7 @@ async fn git_forge_template_registers_and_track_create_binds() {
     let (status, body) = post_track(
         app.clone(),
         json!({
+            "planner_provider": "codex",
             "area_id": fx.area_id,
             "title": "bound template track",
             "cwd": track_dir.path().display().to_string(),
@@ -185,6 +186,7 @@ async fn git_forge_template_registers_and_track_create_binds() {
     let (status, body) = post_track(
         app.clone(),
         json!({
+            "planner_provider": "codex",
             "area_id": fx.area_id,
             "title": "input without template",
             "cwd": orphan_input_dir.path().display().to_string(),
@@ -205,6 +207,7 @@ async fn git_forge_template_registers_and_track_create_binds() {
     let (status, body) = post_track(
         app.clone(),
         json!({
+            "planner_provider": "codex",
             "area_id": fx.area_id,
             "title": "bound without required input",
             "cwd": required_dir.path().display().to_string(),
@@ -231,6 +234,7 @@ async fn git_forge_template_registers_and_track_create_binds() {
     let (status, body) = post_track(
         app.clone(),
         json!({
+            "planner_provider": "codex",
             "area_id": fx.area_id,
             "title": "bound with partial input",
             "cwd": partial_dir.path().display().to_string(),
@@ -263,6 +267,7 @@ async fn git_forge_template_registers_and_track_create_binds() {
     let (status, body) = post_track(
         app.clone(),
         json!({
+            "planner_provider": "codex",
             "area_id": fx.area_id,
             "title": "bound with invalid input",
             "cwd": invalid_dir.path().display().to_string(),
@@ -297,6 +302,7 @@ async fn git_forge_template_registers_and_track_create_binds() {
     let (status, body) = post_track(
         app.clone(),
         json!({
+            "planner_provider": "codex",
             "area_id": fx.area_id,
             "title": "bound with extra input key",
             "cwd": extra_dir.path().display().to_string(),
@@ -346,6 +352,7 @@ async fn git_forge_template_registers_and_track_create_binds() {
     let (status, body) = post_track(
         app.clone(),
         json!({
+            "planner_provider": "codex",
             "area_id": fx.area_id,
             "title": "input against schema-less template",
             "cwd": no_schema_dir.path().display().to_string(),
@@ -380,6 +387,7 @@ async fn git_forge_template_registers_and_track_create_binds() {
     let (status, body) = post_track(
         app.clone(),
         json!({
+            "planner_provider": "codex",
             "area_id": fx.area_id,
             "title": "schema-less bound track",
             "cwd": no_input_dir.path().display().to_string(),
@@ -406,6 +414,7 @@ async fn git_forge_template_registers_and_track_create_binds() {
     let (status, body) = post_track(
         app.clone(),
         json!({
+            "planner_provider": "codex",
             "area_id": fx.area_id,
             "title": "missing template track",
             "cwd": missing_dir.path().display().to_string(),
@@ -431,6 +440,7 @@ async fn git_forge_template_registers_and_track_create_binds() {
     let (status, body) = post_track(
         app,
         json!({
+            "planner_provider": "codex",
             "area_id": fx.area_id,
             "title": "untrusted template track",
             "cwd": untrusted_dir.path().display().to_string(),

@@ -348,6 +348,7 @@ async fn fork_source_and_area_checks_fail_with_four_hundred_and_roll_back_creati
         "/api/tracks".into(),
         &boot.cookie,
         Some(json!({
+            "planner_provider": "codex",
             "area_id": boot.other_area_id,
             "title": "cross-area target",
             "sort": null,
@@ -392,6 +393,7 @@ async fn fork_source_and_area_checks_fail_with_four_hundred_and_roll_back_creati
         "/api/tracks".into(),
         &boot.cookie,
         Some(json!({
+            "planner_provider": "codex",
             "area_id": boot.other_area_id,
             "title": "system-source target",
             "sort": null,
@@ -420,6 +422,7 @@ async fn fork_source_and_area_checks_fail_with_four_hundred_and_roll_back_creati
         "/api/tracks".into(),
         &boot.cookie,
         Some(json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "missing-source target",
             "sort": null,
@@ -584,6 +587,7 @@ async fn fork_preserves_block_truth_and_rewrites_only_internal_references() {
         "/api/tracks".into(),
         &boot.cookie,
         Some(json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "fork target",
             "sort": null,
@@ -836,6 +840,7 @@ async fn legacy_source_without_crdt_or_block_cache_forks_once_without_remint_or_
         "/api/tracks".into(),
         &boot.cookie,
         Some(json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "legacy fork target",
             "sort": null,
@@ -899,6 +904,7 @@ async fn canonical_fresh_null_crdt_source_forks_through_the_rest_path() {
         "/api/tracks".into(),
         &boot.cookie,
         Some(json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "canonical fresh source",
             "sort": null,
@@ -945,6 +951,7 @@ async fn canonical_fresh_null_crdt_source_forks_through_the_rest_path() {
         "/api/tracks".into(),
         &boot.cookie,
         Some(json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "canonical fresh target",
             "sort": null,
@@ -982,6 +989,7 @@ async fn empty_block_snapshot_written_by_rest_forks_payload_and_crdt_exactly() {
         "/api/tracks".into(),
         &boot.cookie,
         Some(json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "empty source",
             "sort": null,
@@ -1046,6 +1054,7 @@ async fn empty_block_snapshot_written_by_rest_forks_payload_and_crdt_exactly() {
         "/api/tracks".into(),
         &boot.cookie,
         Some(json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "empty target",
             "sort": null,
@@ -1123,6 +1132,7 @@ async fn invalid_fork_payload_rest_path_rolls_back_every_created_row() {
         "/api/tracks".into(),
         &boot.cookie,
         Some(json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "invalid payload target",
             "sort": null,
@@ -1183,6 +1193,7 @@ async fn fork_fails_closed_on_residual_tombstoned_by_on_a_live_task() {
         "/api/tracks".into(),
         &boot.cookie,
         Some(json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "residual tombstoned_by target",
             "sort": null,
@@ -1286,6 +1297,7 @@ async fn unsafe_markdown_destinations_fail_fork_with_block_and_source() {
             "/api/tracks".into(),
             &boot.cookie,
             Some(json!({
+                "planner_provider": "codex",
                 "area_id": boot.area_id,
                 "title": format!("unsafe fork {index}"),
                 "sort": null,
@@ -1313,6 +1325,7 @@ async fn forked_user_tombstone_is_normalized_to_planner_and_stays_planner_editab
         "/api/tracks".into(),
         &boot.cookie,
         Some(json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "tombstone fork target",
             "sort": null,
@@ -1608,6 +1621,7 @@ async fn forked_task_does_not_inherit_the_source_users_release() {
         "/api/tracks".into(),
         &boot.cookie,
         Some(json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "release normalization target",
             "sort": null,
@@ -1732,6 +1746,7 @@ async fn fork_fails_closed_on_a_tombstone_carrying_released_by_user() {
         "/api/tracks".into(),
         &boot.cookie,
         Some(json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "released tombstone target",
             "sort": null,
@@ -1767,6 +1782,7 @@ async fn inv_1110_002_forked_track_requires_report_startup_read() {
         "/api/tracks".into(),
         &boot.cookie,
         Some(json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "startup-read fork target",
             "sort": null,
@@ -1838,6 +1854,7 @@ async fn initial_track_does_not_require_report_startup_read() {
         "/api/tracks".into(),
         &boot.cookie,
         Some(json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "canonical initial source",
             "sort": null,
@@ -1906,6 +1923,7 @@ async fn events_for_track(repo: &dyn Repo, kind: &str, track_id: &str) -> Vec<(V
 /// Create a track through the production REST route and return its id.
 async fn create_track_via_rest(boot: &Boot, title: &str, suffix: &str, extra: Value) -> String {
     let mut body = json!({
+        "planner_provider": "codex",
         "area_id": boot.area_id,
         "title": title,
         "sort": null,
@@ -2163,6 +2181,7 @@ async fn fork_creation_events_do_not_cross_the_append_decision_seam() {
         "/api/tracks".into(),
         &boot.cookie,
         Some(json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "seam nail target",
             "sort": null,
@@ -2230,6 +2249,7 @@ async fn a_fork_of_a_headered_source_keeps_the_header_canonical_on_line_1() {
         "/api/tracks".into(),
         &boot.cookie,
         Some(json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "headered source",
             "sort": null,
@@ -2247,6 +2267,7 @@ async fn a_fork_of_a_headered_source_keeps_the_header_canonical_on_line_1() {
         "/api/tracks".into(),
         &boot.cookie,
         Some(json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "headered target",
             "sort": null,

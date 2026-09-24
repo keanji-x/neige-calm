@@ -170,6 +170,7 @@ async fn request(boot: &Boot, method: &str, uri: &str, body: Option<Value>) -> (
 
 async fn create_track(boot: &Boot, title: &str, fork_from: Option<&str>) -> String {
     let mut body = json!({
+        "planner_provider": "codex",
         "area_id": boot.area_id,
         "title": title,
         "cwd": attached_repo_fixture(&format!("issue-1669-{title}")),

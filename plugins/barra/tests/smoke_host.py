@@ -70,7 +70,7 @@ def main():
         request("/api/plugins/dev-neige-barra/config", {"prices_csv": str(args.prices.resolve())}, "PATCH")
         recipe = request("/api/track-recipes", {"title": "US Barra-style smoke", "body": (plugin / "recipe.md").read_text()})
         area = request("/api/areas", {"name": "Barra plugin smoke", "color": "#267A67"})
-        track = request("/api/tracks", {"area_id": area["id"], "title": "US Barra-style research", "recipe_id": recipe["id"],
+        track = request("/api/tracks", {"area_id": area["id"], "planner_provider": "codex", "title": "US Barra-style research", "recipe_id": recipe["id"],
                                         "theme": {"fg": [216, 219, 226], "bg": [15, 20, 24]}})
         # Seed only user configuration through the same start implementation.
         # The real host launches the plugin, which reads CSV and publishes via MCP.

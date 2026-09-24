@@ -97,7 +97,10 @@ async fn seed_planner_card_row(repo: &SqlxRepo, track_id: &TrackId) -> calm_serv
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: calm_server::routes::tracks::planner_harness_card_payload(None),
+            payload: calm_server::routes::tracks::planner_harness_card_payload(
+                None,
+                calm_server::session_projection_repo::AgentProvider::Codex,
+            ),
         },
         CardRole::Planner,
         false,
@@ -1207,7 +1210,7 @@ async fn force_new_thread_recovery_after_phase2_crash() {
                 payload: json!({
                     "schemaVersion": 1,
                     "codex_source": "shared",
-                    "planner_harness": true
+                    "planner_harness": true, "planner_provider": "codex"
                 }),
             })
             .await

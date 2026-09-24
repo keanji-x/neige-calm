@@ -86,7 +86,7 @@ pub(crate) async fn card_scope_tx(
 
 /// Whether the persisted card shape is allowed to use the headless harness routes. Unknown/malformed profile values fail closed.
 pub(crate) fn card_runs_headless_harness(card: &Card, role: CardRole) -> bool {
-    crate::harness::profile::HarnessProfile::from_card(card, role).is_some()
+    crate::harness::profile::PlannerBinding::from_card(card, role).is_some()
 }
 
 pub(crate) async fn interrupt_shared_card_active_turn(

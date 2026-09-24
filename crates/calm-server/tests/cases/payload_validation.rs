@@ -285,7 +285,8 @@ async fn post_card_with_a_server_owned_key_is_rejected_for_every_kind() {
             "terminal_signals",
             "claude_permissions",
             "claude_permissions_source",
-            "template_context"
+            "template_context",
+            "planner_provider"
         ]
     );
     for key in SERVER_OWNED_CARD_PAYLOAD_KEYS {

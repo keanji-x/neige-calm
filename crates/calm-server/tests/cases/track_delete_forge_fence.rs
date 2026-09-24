@@ -128,6 +128,7 @@ async fn create_track(boot: &Boot, title: &str) -> String {
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id.clone(),
             "title": title,
             "cwd": cwd,

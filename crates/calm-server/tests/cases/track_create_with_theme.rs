@@ -120,6 +120,7 @@ async fn track_create_without_theme_is_rejected() {
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "no theme track",
             "cwd": "/tmp/issue-250-pr2-test",

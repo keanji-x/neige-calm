@@ -11,12 +11,13 @@ use super::{
 use crate::error::CalmError;
 use crate::ids::{CardId, TrackId};
 use crate::session_projection_repo::{
-    Result as WorkerSessionProjectionResult, ThreadAttribution, Tx as WorkerSessionProjectionTx,
-    WorkerSessionInit, WorkerSessionKind, WorkerSessionProjection,
+    AgentProvider, Result as WorkerSessionProjectionResult, ThreadAttribution,
+    Tx as WorkerSessionProjectionTx, WorkerSessionInit, WorkerSessionKind, WorkerSessionProjection,
     WorkerSessionProjectionRepoError,
 };
 use calm_types::worker::{
-    LivenessTag, WorkerContract, WorkerSession, WorkerSessionId, WorkerSessionState,
+    LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId,
+    WorkerSessionState,
 };
 
 pub(super) fn ensure_runtime_status_transition(
@@ -54,9 +55,33 @@ async fn worker_session_track_id_for_card_tx(
     Ok(TrackId(row.try_get("track_id")?))
 }
 
-fn worker_session_from_runtime_init(init: &WorkerSessionInit, track_id: TrackId) -> WorkerSession {
-    let (provider, mode, contract) = derive_session_identity(&init.kind);
-    WorkerSession {
+/// The kind alone names the identity of every runtime but a Planner's, whose provider comes from
+/// the init (`WorkerSessionInit::shared_planner`); a Planner init without one fails closed.
+fn runtime_init_session_identity(
+    init: &WorkerSessionInit,
+) -> WorkerSessionProjectionResult<(WorkerProviderKind, SessionMode, WorkerContract)> {
+    if init.kind != WorkerSessionKind::SharedPlanner {
+        return Ok(derive_session_identity(&init.kind));
+    }
+    let provider = match init.agent_provider {
+        Some(AgentProvider::Codex) => WorkerProviderKind::Codex,
+        Some(AgentProvider::Claude) => WorkerProviderKind::Claude,
+        None => {
+            return Err(runtime_message(format!(
+                "planner runtime init {} names no provider",
+                init.id
+            )));
+        }
+    };
+    Ok((provider, SessionMode::Resumable, WorkerContract::Planner))
+}
+
+fn worker_session_from_runtime_init(
+    init: &WorkerSessionInit,
+    track_id: TrackId,
+) -> WorkerSessionProjectionResult<WorkerSession> {
+    let (provider, mode, contract) = runtime_init_session_identity(init)?;
+    Ok(WorkerSession {
         id: WorkerSessionId(init.id.clone()),
         track_id,
         provider,
@@ -82,7 +107,7 @@ fn worker_session_from_runtime_init(init: &WorkerSessionInit, track_id: TrackId)
         created_at_ms: init.now_ms,
         updated_at_ms: init.now_ms,
         completed_at_ms: None,
-    }
+    })
 }
 
 async fn session_refresh_deferred_placeholder_tx(
@@ -281,7 +306,7 @@ async fn session_start_mirror_tx(
     init: &WorkerSessionInit,
 ) -> WorkerSessionProjectionResult<WorkerSession> {
     let track_id = worker_session_track_id_for_card_tx(tx, &init.card_id).await?;
-    let session = worker_session_from_runtime_init(init, track_id);
+    let session = worker_session_from_runtime_init(init, track_id)?;
     let session = session_insert_or_refresh_start_mirror_tx(tx, session).await?;
     session_repoint_current_links_tx(tx, &init.card_id, &session).await?;
     Ok(session)
@@ -322,7 +347,7 @@ pub async fn session_prepare_deferred_planner_tx(
         session_mark_queue_harvested_tx(tx, &existing_id, init.now_ms).await?;
     }
     let track_id = worker_session_track_id_for_card_tx(tx, &init.card_id).await?;
-    let session = worker_session_from_runtime_init(init, track_id);
+    let session = worker_session_from_runtime_init(init, track_id)?;
     let session = session_insert_or_refresh_start_mirror_tx(tx, session).await?;
     session_repoint_current_links_tx(tx, &init.card_id, &session).await?;
     Ok(session)

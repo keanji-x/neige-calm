@@ -224,7 +224,7 @@ async fn planner_card_codex_daemon_env_contains_mcp_vars() {
     let (status, body) = post(
         app.clone(),
         "/api/tracks",
-        json!({"area_id": area.id, "title": "codex-e2e track", "cwd": "/tmp/issue-250-pr2-test", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"planner_provider": "codex", "area_id": area.id, "title": "codex-e2e track", "cwd": "/tmp/issue-250-pr2-test", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(
