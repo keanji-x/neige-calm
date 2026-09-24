@@ -2,27 +2,26 @@
 // names a registration by `key`; `resolve`, injected by `app/router`, says whether that key is
 // registered, on which gateway port, and whether the dev server answers.
 //
-// Unlike the `app` block's quiet frame, this one wears chrome: a window bar (title, device, rotate,
-// fullscreen) and a size line underneath. The `app` block shows a finished page, and any frame
-// around it is decoration; a preview simulates a device, so the frame is information — which
-// viewport the page believes it has, and how far it was shrunk to fit the column. The page gets
-// that viewport's true CSS-pixel box (its media queries see the real width) and the stage scales
-// the whole box down; nothing is laid out at a width the reader did not pick.
+// Unlike the `app` block's quiet frame, this one wears chrome: a window bar (title, a Desktop |
+// Mobile toggle, fullscreen) and a size line underneath. The `app` block shows a finished page, and
+// any frame around it is decoration; a preview simulates a device, so the frame is information —
+// which viewport the page believes it has, and how far it was shrunk to fit the column. The page
+// gets the device's true CSS-pixel box (1920 × 1080 or 390 × 844; its media queries see the real
+// width) and the stage scales the whole box down; nothing is laid out at a width nobody picked.
 //
 // The frame is another origin (same host, the gateway port), so `allow-same-origin` lets the dev
 // server keep its own storage and HMR socket without reaching this document. The gateway admits
 // only the owner's calm session and speaks plain http, so an https page (a tunnel, a proxy) cannot
 // load it at all: the block says so instead of drawing a frame the browser will block.
 
-import { useEffect, useLayoutEffect, useRef, type KeyboardEvent, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
 
 import { useState } from '../../../ui/state/public.ts';
 
 import type { PreviewBlockPayload, PreviewResolution } from '../../../../../core/domain/report.ts';
 import styles from './preview.module.css';
 import {
-  clampCustomPx, CUSTOM_MAX_PX, CUSTOM_MIN_PX, PREVIEW_PRESETS, readViewportChoice, viewportScale, viewportSize,
-  writeViewportChoice, type PreviewPresetId, type PreviewViewportStore, type ViewportChoice, type ViewportSize,
+  PREVIEW_PRESETS, presetSize, readPreset, viewportScale, writePreset, type PreviewPresetId, type PreviewViewportStore,
 } from './viewport.ts';
 
 export type { PreviewViewportStore } from './viewport.ts';
@@ -117,7 +116,7 @@ function PreviewFrame({ title, height, src, viewportKey, viewports }: {
 }) {
   const figure = useRef<HTMLElement>(null);
   const stage = useRef<HTMLDivElement>(null);
-  const [choice, setChoice] = useState<ViewportChoice>(() => readViewportChoice(viewports, viewportKey));
+  const [preset, setPreset] = useState<PreviewPresetId>(() => readPreset(viewports, viewportKey));
   const [fullscreen, setFullscreen] = useState(false);
   const [box, setBox] = useState<StageBox | null>(null);
 
@@ -143,100 +142,42 @@ function PreviewFrame({ title, height, src, viewportKey, viewports }: {
     return () => { observer.disconnect(); };
   }, []);
 
-  const choose = (next: ViewportChoice) => {
-    setChoice(next);
-    writeViewportChoice(viewports, viewportKey, next);
-  };
-
-  const size = viewportSize(choice);
+  const size = presetSize(preset);
   const maxHeight = fullscreen ? box?.height ?? height : height;
-  const scale = size === null ? 1 : viewportScale(size, box?.width ?? null, maxHeight);
-  const frame = (
-    <iframe
-      className={size === null ? styles.iframe : styles.device}
-      style={size === null ? undefined : {
-        inlineSize: `${size.width}px`, blockSize: `${size.height}px`, transform: `scale(${scale})`,
-      }}
-      src={src}
-      title={title}
-      sandbox={PREVIEW_SANDBOX}
-      allow="fullscreen"
-      referrerPolicy="no-referrer"
-    />
-  );
+  const scale = viewportScale(size, box?.width ?? null, maxHeight);
 
   return (
     <figure ref={figure} className={styles.figure}>
       <PreviewBar title={title}>
         <span className={styles.controls}>
-          <select className={styles.select} aria-label="Device" value={choice.preset}
-            onChange={(event) => { choose({ ...choice, preset: event.target.value as PreviewPresetId }); }}>
-            {PREVIEW_PRESETS.map((preset) => (
-              <option key={preset.id} value={preset.id}>
-                {preset.size === null ? preset.label : `${preset.label} · ${preset.size.width} × ${preset.size.height}`}
-              </option>
+          <span className={styles.toggle} role="group" aria-label="Device">
+            {PREVIEW_PRESETS.map((option) => (
+              <button key={option.id} type="button" className={styles.segment} aria-pressed={preset === option.id}
+                onClick={() => { writePreset(viewports, viewportKey, option.id); setPreset(option.id); }}>
+                {option.label}
+              </button>
             ))}
-          </select>
-          {choice.preset === 'custom' && (
-            <CustomSize key={`${choice.custom.width}x${choice.custom.height}`} size={choice.custom}
-              onCommit={(custom) => { choose({ ...choice, custom }); }} />
-          )}
-          <button type="button" className={styles.control} aria-label="Rotate" title="Rotate"
-            disabled={size === null}
-            onClick={() => {
-              choose(choice.preset === 'custom'
-                ? { ...choice, custom: { width: choice.custom.height, height: choice.custom.width } }
-                : { ...choice, rotated: !choice.rotated });
-            }}>⟳</button>
+          </span>
           <button type="button" className={styles.control} aria-label="Fullscreen" title="Fullscreen"
             onClick={() => { void figure.current?.requestFullscreen?.().catch(() => undefined); }}>⛶</button>
         </span>
       </PreviewBar>
-      <div ref={stage} className={styles.stage}
-        style={size === null && !fullscreen ? { blockSize: `${height}px` } : undefined}>
-        {size === null ? frame : (
-          // The scaled box, so the column holds exactly what is drawn: no dead space under a shrunk device.
-          <div className={styles.viewport}
-            style={{ inlineSize: `${size.width * scale}px`, blockSize: `${size.height * scale}px` }}>
-            {frame}
-          </div>
-        )}
+      <div ref={stage} className={styles.stage}>
+        {/* The scaled box, so the column holds exactly what is drawn: no dead space under a shrunk device. */}
+        <div className={styles.viewport}
+          style={{ inlineSize: `${size.width * scale}px`, blockSize: `${size.height * scale}px` }}>
+          <iframe
+            className={styles.device}
+            style={{ inlineSize: `${size.width}px`, blockSize: `${size.height}px`, transform: `scale(${scale})` }}
+            src={src}
+            title={title}
+            sandbox={PREVIEW_SANDBOX}
+            allow="fullscreen"
+            referrerPolicy="no-referrer"
+          />
+        </div>
       </div>
-      <p className={styles.size}>{sizeLine(size, scale, box, fullscreen ? box?.height ?? height : height)}</p>
+      <p className={styles.size}>{`${size.width} × ${size.height} · ${Math.round(scale * 100)}%`}</p>
     </figure>
-  );
-}
-
-/** `393 × 852 · 62%`; `fit` reports the column it took, once measured. */
-function sizeLine(size: ViewportSize | null, scale: number, box: StageBox | null, fitHeight: number): string {
-  if (size !== null) return `${size.width} × ${size.height} · ${Math.round(scale * 100)}%`;
-  if (box === null || box.width === 0) return 'Fit';
-  return `${box.width} × ${fitHeight} · 100%`;
-}
-
-/** Drafts while typing; clamps and commits on blur or Enter, so typing "1280" never passes through 240. */
-function CustomSize({ size, onCommit }: { size: ViewportSize; onCommit: (size: ViewportSize) => void }) {
-  const [width, setWidth] = useState(String(size.width));
-  const [height, setHeight] = useState(String(size.height));
-  const commit = () => {
-    const w = Number(width);
-    const h = Number(height);
-    const next = {
-      width: width.trim() === '' || !Number.isFinite(w) ? size.width : clampCustomPx(w),
-      height: height.trim() === '' || !Number.isFinite(h) ? size.height : clampCustomPx(h),
-    };
-    setWidth(String(next.width));
-    setHeight(String(next.height));
-    if (next.width !== size.width || next.height !== size.height) onCommit(next);
-  };
-  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => { if (event.key === 'Enter') commit(); };
-  return (
-    <span className={styles.custom}>
-      <input className={styles.number} type="number" aria-label="Width" min={CUSTOM_MIN_PX} max={CUSTOM_MAX_PX}
-        value={width} onChange={(event) => { setWidth(event.target.value); }} onBlur={commit} onKeyDown={onKeyDown} />
-      <span aria-hidden="true">×</span>
-      <input className={styles.number} type="number" aria-label="Height" min={CUSTOM_MIN_PX} max={CUSTOM_MAX_PX}
-        value={height} onChange={(event) => { setHeight(event.target.value); }} onBlur={commit} onKeyDown={onKeyDown} />
-    </span>
   );
 }

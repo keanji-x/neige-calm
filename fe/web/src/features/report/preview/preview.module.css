@@ -2,7 +2,7 @@
   /*
    * Unlike the `app` block (see `../app/app.module.css`), which is a quiet
    * tint named underneath, a preview wears a window: a bar on top (dots,
-   * title, device, rotate, fullscreen) and a size line underneath. It
+   * title, Desktop | Mobile, fullscreen) and a size line underneath. It
    * simulates a device, so the chrome is information, not decoration. Still
    * no border: the bar's fill and the stage's tint are the one boundary.
    * States (not registered, offline, LAN only) take the stage's place at the
@@ -65,50 +65,33 @@
   }
 
   .control,
-  .select,
-  .number {
+  .segment {
+    padding-inline: var(--space-2);
     block-size: var(--control-h-sm);
     border-radius: var(--radius-sm);
     font-family: var(--font-sans);
     font-size: var(--text-xs);
     color: var(--text-2);
     background: transparent;
-  }
-
-  .control {
-    padding-inline: var(--space-2);
     cursor: pointer;
   }
 
-  .select {
-    padding-inline: var(--space-2);
-    border: none;
-    cursor: pointer;
+  /* Two segments, one pressed: the chart range switcher's register. */
+  .toggle {
+    display: flex;
+    gap: var(--space-px);
   }
 
-  .control:disabled {
-    color: var(--text-4);
-    cursor: default;
-  }
-
-  .control:enabled:hover,
-  .control:enabled:focus-visible,
-  .select:hover,
-  .select:focus-visible {
+  .control:hover,
+  .control:focus-visible,
+  .segment:hover,
+  .segment:focus-visible {
     background: var(--overlay-hover);
   }
 
-  .custom {
-    display: flex;
-    align-items: center;
-    gap: var(--space-1);
-  }
-
-  .number {
-    inline-size: 6ch;
-    padding-inline: var(--space-1);
-    border: 1px solid var(--hairline-strong);
-    font-family: var(--font-numeric);
+  .segment[aria-pressed="true"] {
+    background: var(--accent-soft);
+    color: var(--text);
   }
 
   .stage {
@@ -122,15 +105,6 @@
   .figure:fullscreen .stage {
     flex: 1;
     min-block-size: 0;
-  }
-
-  /* Fit: the column's width, the payload's height. */
-  .iframe {
-    display: block;
-    inline-size: 100%;
-    block-size: 100%;
-    border: none;
-    background: var(--surface-code);
   }
 
   /* A device: the scaled box holds the true-size frame, shrunk from its top-left corner. */

@@ -56,13 +56,16 @@ describe('ReportPreviewBlock', () => {
     expect(frame?.getAttribute('referrerpolicy')).toBe('no-referrer');
   });
 
-  it('takes its height from the payload, clamped, and defaults like the app block', () => {
-    const { container, rerender } = render(<ReportPreviewBlock payload={{ key: 'fe', height: 720 }}
+  it('takes its stage height from the payload, clamped, and defaults like the app block', () => {
+    // Unmeasured width: only the payload height binds the Desktop device (1080 px tall).
+    const { container, rerender } = render(<ReportPreviewBlock payload={{ key: 'fe', height: 540 }}
       resolve={() => registered(true)} />);
-    const stage = () => container.querySelector('iframe')?.parentElement;
-    expect(stage()?.style.blockSize).toBe('720px');
+    const frame = () => container.querySelector('iframe');
+    expect(frame()?.style.transform).toBe('scale(0.5)');
+    rerender(<ReportPreviewBlock payload={{ key: 'fe', height: 5 }} resolve={() => registered(true)} />);
+    expect(frame()?.style.transform).toBe(`scale(${120 / 1080})`);
     rerender(<ReportPreviewBlock payload={{ key: 'fe' }} resolve={() => registered(true)} />);
-    expect(stage()?.style.blockSize).toBe('360px');
+    expect(frame()?.style.transform).toBe(`scale(${360 / 1080})`);
   });
 
   it('asks the figure, not the frame, for fullscreen', () => {
@@ -132,136 +135,94 @@ function stubStage(width: number, height = 0) {
   };
 }
 
-function device(value: string) {
-  fireEvent.change(screen.getByRole('combobox', { name: 'Device' }), { target: { value } });
+function toggle(name: 'Desktop' | 'Mobile') {
+  fireEvent.click(screen.getByRole('button', { name }));
 }
+
 
 describe('ReportPreviewBlock device frame', () => {
   const frame = () => document.querySelector('iframe');
 
-  it('opens on Fit: the column\'s width, the payload\'s height, no transform, rotate disabled', () => {
-    stubStage(700);
-    render(<ReportPreviewBlock payload={{ key: 'fe', height: 500 }} resolve={() => registered(true)} />);
-    expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Device' }).value).toBe('fit');
-    expect(frame()?.style.transform).toBe('');
-    expect(frame()?.style.inlineSize).toBe('');
-    expect(frame()?.parentElement?.style.blockSize).toBe('500px');
-    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Rotate' }).disabled).toBe(true);
-    expect(screen.getByText('700 × 500 · 100%')).toBeTruthy();
-  });
-
-  it('gives a device preset its true CSS-pixel box and scales it from the stage width', () => {
-    stubStage(600);
+  it('opens on Desktop at its true 1920 × 1080, scaled from the stage width', () => {
+    stubStage(960);
     render(<ReportPreviewBlock payload={{ key: 'fe', height: 2000 }} resolve={() => registered(true)} />);
-    device('ipad');
-    expect(frame()?.style.inlineSize).toBe('820px');
-    expect(frame()?.style.blockSize).toBe('1180px');
-    // 600 / 820 — the width binds, the 2000 px stage height does not.
-    const scale = 600 / 820;
-    expect(frame()?.style.transform).toBe(`scale(${scale})`);
+    expect(screen.getByRole('button', { name: 'Desktop' }).getAttribute('aria-pressed')).toBe('true');
+    expect(frame()?.style.inlineSize).toBe('1920px');
+    expect(frame()?.style.blockSize).toBe('1080px');
+    // 960 / 1920 — the width binds, the 2000 px stage height does not.
+    expect(frame()?.style.transform).toBe('scale(0.5)');
     // The wrapper takes the scaled box: no dead space under the shrunk device.
-    expect(frame()?.parentElement?.style.inlineSize).toBe(`${820 * scale}px`);
-    expect(frame()?.parentElement?.style.blockSize).toBe(`${1180 * scale}px`);
-    expect(screen.getByText('820 × 1180 · 73%')).toBeTruthy();
+    expect(frame()?.parentElement?.style.inlineSize).toBe('960px');
+    expect(frame()?.parentElement?.style.blockSize).toBe('540px');
+    expect(screen.getByText('1920 × 1080 · 50%')).toBeTruthy();
   });
 
-  it('lets the payload height bind when it is tighter than the width, and never enlarges', () => {
+  it('gives Mobile its true 390 × 844 and never enlarges it', () => {
     stubStage(2000);
-    render(<ReportPreviewBlock payload={{ key: 'fe', height: 426 }} resolve={() => registered(true)} />);
-    device('iphone-15');
-    expect(frame()?.style.transform).toBe('scale(0.5)');
-    device('fit');
-    device('laptop');
-    expect(frame()?.style.transform).toBe(`scale(${426 / 800})`);
+    render(<ReportPreviewBlock payload={{ key: 'fe', height: 2000 }} resolve={() => registered(true)} />);
+    toggle('Mobile');
+    expect(screen.getByRole('button', { name: 'Mobile' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: 'Desktop' }).getAttribute('aria-pressed')).toBe('false');
+    expect(frame()?.style.inlineSize).toBe('390px');
+    expect(frame()?.style.blockSize).toBe('844px');
+    expect(frame()?.style.transform).toBe('scale(1)');
+    expect(screen.getByText('390 × 844 · 100%')).toBeTruthy();
+    toggle('Desktop');
+    expect(frame()?.style.inlineSize).toBe('1920px');
   });
 
   it('rescales when the column resizes', () => {
-    const stage = stubStage(1440);
+    const stage = stubStage(1920);
     render(<ReportPreviewBlock payload={{ key: 'fe', height: 2000 }} resolve={() => registered(true)} />);
-    device('desktop');
     expect(frame()?.style.transform).toBe('scale(1)');
-    stage.resize(720);
-    expect(frame()?.style.transform).toBe('scale(0.5)');
+    stage.resize(480);
+    expect(frame()?.style.transform).toBe('scale(0.25)');
   });
 
-  it('rotate swaps width and height', () => {
-    stubStage(5000);
-    render(<ReportPreviewBlock payload={{ key: 'fe', height: 5000 }} resolve={() => registered(true)} />);
-    device('pixel-8');
-    fireEvent.click(screen.getByRole('button', { name: 'Rotate' }));
-    expect(frame()?.style.inlineSize).toBe('915px');
-    expect(frame()?.style.blockSize).toBe('412px');
-    fireEvent.click(screen.getByRole('button', { name: 'Rotate' }));
-    expect(frame()?.style.inlineSize).toBe('412px');
-  });
-
-  it('clamps a custom size to 240..3840 on commit, and rotates it by swapping its numbers', () => {
-    stubStage(5000);
-    render(<ReportPreviewBlock payload={{ key: 'fe', height: 5000 }} resolve={() => registered(true)} />);
-    device('custom');
-    const width = () => screen.getByRole<HTMLInputElement>('spinbutton', { name: 'Width' });
-    const height = () => screen.getByRole<HTMLInputElement>('spinbutton', { name: 'Height' });
-    fireEvent.change(width(), { target: { value: '100' } });
-    fireEvent.change(height(), { target: { value: '9000' } });
-    fireEvent.blur(height());
-    expect(frame()?.style.inlineSize).toBe('240px');
-    expect(frame()?.style.blockSize).toBe('3840px');
-    expect(width().value).toBe('240');
-    fireEvent.change(width(), { target: { value: '1000' } });
-    fireEvent.keyDown(width(), { key: 'Enter' });
-    expect(frame()?.style.inlineSize).toBe('1000px');
-    fireEvent.click(screen.getByRole('button', { name: 'Rotate' }));
-    expect(frame()?.style.inlineSize).toBe('3840px');
-    expect(frame()?.style.blockSize).toBe('1000px');
-    expect(width().value).toBe('3840');
-  });
-
-  it('remembers the choice per key through the store it is given', () => {
-    stubStage(5000);
+  it('remembers the toggle per key through the store it is given', () => {
+    stubStage(2000);
     const viewports = memoryViewports();
-    const view = render(<ReportPreviewBlock payload={{ key: 'fe', height: 5000 }} viewports={viewports}
+    const view = render(<ReportPreviewBlock payload={{ key: 'fe', height: 2000 }} viewports={viewports}
       resolve={() => registered(true)} />);
-    device('pixel-8');
-    fireEvent.click(screen.getByRole('button', { name: 'Rotate' }));
+    toggle('Mobile');
     view.unmount();
-    render(<ReportPreviewBlock payload={{ key: 'fe', height: 5000 }} viewports={viewports}
+    render(<ReportPreviewBlock payload={{ key: 'fe', height: 2000 }} viewports={viewports}
       resolve={() => registered(true)} />);
-    expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Device' }).value).toBe('pixel-8');
-    expect(frame()?.style.inlineSize).toBe('915px');
+    expect(screen.getByRole('button', { name: 'Mobile' }).getAttribute('aria-pressed')).toBe('true');
+    expect(frame()?.style.inlineSize).toBe('390px');
     cleanup();
     // Another key in the same report: its own choice.
-    render(<ReportPreviewBlock payload={{ key: 'api', height: 5000 }} viewports={viewports}
+    render(<ReportPreviewBlock payload={{ key: 'api', height: 2000 }} viewports={viewports}
       resolve={() => registered(true)} />);
-    expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Device' }).value).toBe('fit');
-    expect([...viewports.values.keys()]).toEqual(['fe']);
+    expect(frame()?.style.inlineSize).toBe('1920px');
+    expect([...viewports.values.entries()]).toEqual([['fe', 'mobile']]);
   });
 
-  it('reads a stored custom size back clamped, and ignores a foreign shape', () => {
-    stubStage(5000);
+  it.each([
+    'iphone-15', 'custom', 'fit', '',
+    JSON.stringify({ preset: 'custom', custom: { width: 800, height: 600 }, rotated: true }),
+    JSON.stringify({ preset: 'mobile' }),
+  ])('opens an unknown or older stored value %j on Desktop', (stored) => {
+    stubStage(2000);
     const viewports = memoryViewports();
-    viewports.write('fe', JSON.stringify({ preset: 'custom', custom: { width: 10, height: 99999 }, rotated: false }));
-    viewports.write('api', '{"preset":"watch"}');
-    render(<ReportPreviewBlock payload={{ key: 'fe', height: 5000 }} viewports={viewports}
+    viewports.write('fe', stored);
+    render(<ReportPreviewBlock payload={{ key: 'fe', height: 2000 }} viewports={viewports}
       resolve={() => registered(true)} />);
-    expect(frame()?.style.inlineSize).toBe('240px');
-    expect(frame()?.style.blockSize).toBe('3840px');
-    cleanup();
-    render(<ReportPreviewBlock payload={{ key: 'api', height: 5000 }} viewports={viewports}
-      resolve={() => registered(true)} />);
-    expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Device' }).value).toBe('fit');
+    expect(screen.getByRole('button', { name: 'Desktop' }).getAttribute('aria-pressed')).toBe('true');
+    expect(frame()?.style.inlineSize).toBe('1920px');
   });
 
-  it('still renders, and still switches devices, when the store throws', () => {
-    stubStage(5000);
+  it('still renders, and still toggles, when the store throws', () => {
+    stubStage(2000);
     const viewports = {
       read: () => { throw new Error('denied'); },
       write: () => { throw new Error('denied'); },
     };
-    render(<ReportPreviewBlock payload={{ key: 'fe', height: 5000 }} viewports={viewports}
+    render(<ReportPreviewBlock payload={{ key: 'fe', height: 2000 }} viewports={viewports}
       resolve={() => registered(true)} />);
-    expect(frame()).not.toBeNull();
-    device('iphone-15');
-    expect(frame()?.style.inlineSize).toBe('393px');
+    expect(frame()?.style.inlineSize).toBe('1920px');
+    toggle('Mobile');
+    expect(frame()?.style.inlineSize).toBe('390px');
   });
 
   it('keeps the notices inside the frame, under the title bar', () => {
