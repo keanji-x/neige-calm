@@ -202,6 +202,30 @@ describe('ReportPreviewBlock device frame', () => {
     expect([...viewports.values.entries()]).toEqual([['fe', 'mobile']]);
   });
 
+  it('reads the new key\'s choice when the same block is rewritten to another preview key', () => {
+    stubStage(2000);
+    const viewports = memoryViewports();
+    viewports.write('fe', 'mobile');
+    viewports.write('api', 'desktop');
+    const { rerender } = render(<ReportPreviewBlock payload={{ key: 'fe', height: 2000 }} viewports={viewports}
+      resolve={() => registered(true)} />);
+    expect(frame()?.style.inlineSize).toBe('390px');
+    rerender(<ReportPreviewBlock payload={{ key: 'api', height: 2000 }} viewports={viewports}
+      resolve={() => registered(true)} />);
+    expect(screen.getByRole('button', { name: 'Desktop' }).getAttribute('aria-pressed')).toBe('true');
+    expect(frame()?.style.inlineSize).toBe('1920px');
+    // Another track's store, same key: that track's choice.
+    const other = memoryViewports();
+    other.write('api', 'mobile');
+    rerender(<ReportPreviewBlock payload={{ key: 'api', height: 2000 }} viewports={other}
+      resolve={() => registered(true)} />);
+    expect(frame()?.style.inlineSize).toBe('390px');
+    // A toggle after the switch is remembered under the new pair only.
+    toggle('Desktop');
+    expect(other.values.get('api')).toBe('desktop');
+    expect(viewports.values.get('fe')).toBe('mobile');
+  });
+
   it.each([
     'iphone-15', 'custom', 'fit', '',
     JSON.stringify({ preset: 'custom', custom: { width: 800, height: 600 }, rotated: true }),

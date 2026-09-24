@@ -989,6 +989,7 @@ jobs:
           CALM_FE_DIST=/tmp
           CALM_PORT=4041
           CALM_DEV_AUTOLOGIN=true
+          CALM_PUBLISH_ADDR=127.0.0.1
           HTTP_PROXY=
           HTTPS_PROXY=
           NO_PROXY=*
@@ -1001,7 +1002,7 @@ jobs:
       - name: wait for stack
         run: |
           for i in {1..30}; do
-            curl -sf http://localhost:4041/api/version > /dev/null && exit 0
+            curl -sf http://127.0.0.1:4041/api/version > /dev/null && exit 0
             sleep 2
           done
           echo "::error::Stack failed to come up within 60s"
@@ -1095,6 +1096,7 @@ jobs:
           CALM_CODEX_CODE_MODE_HOST_BIN=/bin/true
           CALM_EXTRA_MOUNT=/tmp
           CALM_DEV_AUTOLOGIN=true
+          CALM_PUBLISH_ADDR=127.0.0.1
           HTTP_PROXY=
           HTTPS_PROXY=
           NO_PROXY=*

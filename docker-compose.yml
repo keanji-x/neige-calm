@@ -110,6 +110,8 @@ services:
     volumes:
       - ${CALM_FE_DIST:-./fe/web/dist}:/usr/share/nginx/html/next:ro
       - ./docker/nginx.conf:/etc/nginx/conf.d/calm.conf:ro
+    # CALM_PUBLISH_ADDR=127.0.0.1 keeps the stack on loopback; `make dev|dev-fresh|up` require it
+    # whenever CALM_DEV_AUTOLOGIN is on, since autologin makes every request the owner.
     ports:
-      - "${CALM_PORT:-4041}:8080"
+      - "${CALM_PUBLISH_ADDR:-0.0.0.0}:${CALM_PORT:-4041}:8080"
     restart: unless-stopped

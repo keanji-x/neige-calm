@@ -117,7 +117,14 @@ function PreviewFrame({ title, height, src, viewportKey, viewports }: {
 }) {
   const figure = useRef<HTMLElement>(null);
   const stage = useRef<HTMLDivElement>(null);
-  const [preset, setPreset] = useState<PreviewPresetId>(() => readPreset(viewports, viewportKey));
+  // The choice belongs to one (store, key): a block rewritten to another key, or the same block under
+  // another track's store, reads that pair's choice instead of carrying the previous one over.
+  const [choice, setChoice] = useState(() => ({ viewports, viewportKey, preset: readPreset(viewports, viewportKey) }));
+  const current = choice.viewports === viewports && choice.viewportKey === viewportKey
+    ? choice : { viewports, viewportKey, preset: readPreset(viewports, viewportKey) };
+  if (current !== choice) setChoice(current);
+  const preset = current.preset;
+  const setPreset = (next: PreviewPresetId) => { setChoice({ viewports, viewportKey, preset: next }); };
   const [fullscreen, setFullscreen] = useState(false);
   const [box, setBox] = useState<StageBox | null>(null);
 

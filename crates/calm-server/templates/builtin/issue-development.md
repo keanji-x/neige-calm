@@ -119,9 +119,10 @@ tests where present; do not hardcode `cargo test`.
 
 When the change touches calm's web frontend (`fe/`), put the running result in the report.
 Open a terminal in the task worktree with calm.terminal.open and start, each on a free port:
-- the backend: `CALM_DEV_AUTOLOGIN=true make dev-fresh DEV_ID=<short track id> CALM_PORT=<port>`.
+- the backend: `CALM_PUBLISH_ADDR=127.0.0.1 CALM_DEV_AUTOLOGIN=true make dev-fresh DEV_ID=<short track id> CALM_PORT=<port>`.
   Autologin is required: the preview gateway never forwards calm's session cookie, so the
-  dev stack must not ask for a login.
+  dev stack must not ask for a login. Autologin makes anyone who can reach the port the
+  owner, so the stack is published on loopback only (make refuses autologin otherwise).
   It first compiles release binaries (several minutes, CPU-heavy: on a busy host set
   `CARGO_BUILD_JOBS`) and builds the tailnet helper with Go: if it stops because `go` is
   not found, put the Go toolchain on PATH and rerun.
