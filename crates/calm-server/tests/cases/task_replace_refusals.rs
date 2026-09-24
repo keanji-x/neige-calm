@@ -247,7 +247,10 @@ async fn replace_refuses_an_unschedulable_successor_and_keeps_the_predecessor_ru
 
     assert_refusal(&result, "successor_unschedulable");
     let message = result.unwrap_err().message;
-    assert!(message.contains("capped.2: planner_task_ceiling"), "{message}");
+    assert!(
+        message.contains("capped.2: planner_task_ceiling"),
+        "{message}"
+    );
     assert_eq!(
         current(&fx.boot, "capped").await.status,
         TaskStatus::Running
