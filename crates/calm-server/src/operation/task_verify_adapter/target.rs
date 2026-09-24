@@ -583,8 +583,9 @@ pub(crate) async fn prepare_target_tx(
     if gate.cwd.is_some() {
         return Err(CalmError::Conflict(format!(
             "refused: agent task {} gate.cwd is not supported; the gate runs in the worker's \
-             lease worktree — continue from its candidate with calm.task.replace and write a \
-             sub-directory gate as `cd <subdir> && …` inside the step",
+             lease worktree — first edit this task's block: drop gate.cwd and write the \
+             sub-directory gate as `cd <subdir> && …` inside the step; then continue from its \
+             candidate with calm.task.replace, which copies that gate",
             task.key
         )));
     }

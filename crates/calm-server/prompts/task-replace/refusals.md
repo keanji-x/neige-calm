@@ -15,6 +15,7 @@ derived_key_too_long	the successor key would exceed 64 characters; declare the n
 track_terminal	the Track has ended; reopen it before replacing a task.
 predecessor_undeclared	the predecessor has no live task block in the report to copy; declare the next round as a new task.
 successor_unschedulable	the successor declaration would not start (the named diagnostics, e.g. a Planner task ceiling or tree budget now reached); nothing was written and the predecessor was not stopped. Resolve the named condition, then retry.
+recovery-replaced	the work continues under that successor key: recover or replace the successor instead.
 replace-route-changed	this replacement task was edited off the replaceable route (a child-Track route, an isolated selector, or a kind other than codex or claude); declare the work again as a new task.
 carry-conflict	the carried candidate conflicts with the base it is merged onto (the upstream, or the checkout's HEAD) in these paths; replace this task again with carry "none", or declare a task that resolves the conflict.
 carry-infra	the carry commit could not be computed (the carried candidate may be missing from the repository); replace this task again, with carry "none" if the candidate is gone.

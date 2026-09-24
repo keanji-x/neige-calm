@@ -372,9 +372,11 @@ async fn replace_refuses_a_tombstoned_predecessor_block() {
     assert_eq!(receipt_count(&fx).await, 0);
 }
 
-/// A tombstoned dependent block no longer depends on anything.
+/// Guards a validator invariant, not the liveness clause: a tombstone may not carry `depends_on`,
+/// so withdrawing a dependent's block always releases the predecessor (this cannot go red through
+/// the MCP surface while the validator holds; the liveness rule has its own unit test).
 #[tokio::test]
-async fn replace_ignores_a_tombstoned_dependent_block() {
+async fn replace_is_not_blocked_by_a_withdrawn_dependent() {
     let fx = replace_fixture().await;
     let (task, _) = produced(&fx, "base-work", &[("a.txt", "A\n")], json!({})).await;
     declare(
@@ -388,4 +390,39 @@ async fn replace_ignores_a_tombstoned_dependent_block() {
     replace(&fx, replace_args(&task, "td1")).await.unwrap();
 
     assert_eq!(receipt_count(&fx).await, 1);
+}
+
+/// A replaced attempt is not recoverable: its work continues under the successor's key.
+#[tokio::test]
+async fn recovery_of_a_replaced_attempt_names_its_successor() {
+    let fx = replace_fixture().await;
+    declare(
+        &fx.boot,
+        json!({"key": "prep-failed", "kind": "codex", "goal": "g",
+            "declared_by": PLANNER_DECLARATION_AUTHOR, "ready": true, "no_gate_reason": "f"}),
+    )
+    .await;
+    let task = current(&fx.boot, "prep-failed").await;
+    crate::task_recovery::finish(&fx.boot, &task, false).await;
+    let task = current(&fx.boot, "prep-failed").await;
+    replace(&fx, replace_args(&task, "pf1")).await.unwrap();
+
+    let recovered = crate::mcp_track_report::call_tool(
+        &fx.boot,
+        "calm.plan.recover",
+        crate::mcp_track_report::planner_identity(&fx.boot),
+        crate::task_recovery::recovery_args(&task, "rec-pf"),
+    )
+    .await;
+
+    let error = recovered.expect_err("a replaced attempt is not recoverable");
+    assert!(
+        error.message.contains("replaced by prep-failed.2"),
+        "{error:?}"
+    );
+    assert_eq!(
+        current(&fx.boot, "prep-failed").await.id,
+        task.id,
+        "no new attempt"
+    );
 }

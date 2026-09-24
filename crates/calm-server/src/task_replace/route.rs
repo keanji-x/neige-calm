@@ -37,15 +37,18 @@ pub(crate) fn route_is_replaceable(
 
 /// [`route_is_replaceable`] on a task row.
 pub(crate) fn on_route(task: &Task, track: &Track) -> bool {
+    task_on_route(track.workspace.kind, task)
+}
+
+fn task_on_route(workspace: TrackWorkspaceKind, task: &Task) -> bool {
     let kind = match task.kind {
         TaskKind::Codex => "codex",
         TaskKind::Claude => "claude",
         TaskKind::Terminal => "terminal",
     };
     // Unparsable context is a malformed selector: off the route.
-    serde_json::from_str::<Value>(&task.context_json).is_ok_and(|context| {
-        route_is_replaceable(track.workspace.kind, kind, &task.spawn, &context)
-    })
+    serde_json::from_str::<Value>(&task.context_json)
+        .is_ok_and(|context| route_is_replaceable(workspace, kind, &task.spawn, &context))
 }
 
 /// The spawn-failure reason of a successor edited off the route (`spawn-failed: <this>`).
@@ -73,5 +76,39 @@ mod tests {
         ));
         assert!(!on(&serde_json::json!({"neige_execution": {
             "version": "isolated-codex-v1", "workspace": "empty"}})));
+    }
+
+    #[test]
+    fn a_task_row_with_unparsable_context_is_off_the_route() {
+        let task = |context_json: &str| Task {
+            id: "t:k".into(),
+            track_id: "t".into(),
+            key: "k".into(),
+            kind: TaskKind::Codex,
+            goal: "g".into(),
+            context_json: context_json.into(),
+            acceptance_criteria: None,
+            cwd: None,
+            depends_on_json: "[]".into(),
+            priority: 0,
+            gate_json: None,
+            status: crate::model::TaskStatus::Pending,
+            status_detail: None,
+            worker_card_id: None,
+            gate_result_json: None,
+            gate_attempt: 0,
+            gate_pid: None,
+            gate_pid_starttime: None,
+            gate_pid_boot_id: None,
+            running_deadline_ms: None,
+            context_stale_at_ms: None,
+            declared_by: calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR.into(),
+            spawn: TASK_IN_TRACK_ROUTE.into(),
+            created_at_ms: 1,
+            updated_at_ms: 1,
+            finished_at_ms: None,
+        };
+        assert!(task_on_route(TrackWorkspaceKind::Attached, &task("{}")));
+        assert!(!task_on_route(TrackWorkspaceKind::Attached, &task("{")));
     }
 }

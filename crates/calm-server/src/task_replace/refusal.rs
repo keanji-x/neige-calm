@@ -22,6 +22,8 @@ pub(crate) enum Refusal {
     TrackTerminal,
     PredecessorUndeclared,
     SuccessorUnschedulable,
+    /// `calm.plan.recover` of an attempt this Track replaced.
+    RecoveryReplaced,
     /// Kernel-side: a successor's dispatch found its task edited off the replaceable route.
     RouteChanged,
     /// Kernel-side: the carry merge conflicts with the base it is merged onto.
@@ -32,7 +34,7 @@ pub(crate) enum Refusal {
 
 impl Refusal {
     #[cfg(test)]
-    const ALL: [Self; 18] = [
+    const ALL: [Self; 19] = [
         Self::StaleAttempt,
         Self::PredecessorDispatching,
         Self::PredecessorVerifying,
@@ -48,6 +50,7 @@ impl Refusal {
         Self::TrackTerminal,
         Self::PredecessorUndeclared,
         Self::SuccessorUnschedulable,
+        Self::RecoveryReplaced,
         Self::RouteChanged,
         Self::CarryConflict,
         Self::CarryInfra,
@@ -70,6 +73,7 @@ impl Refusal {
             Self::TrackTerminal => "track_terminal",
             Self::PredecessorUndeclared => "predecessor_undeclared",
             Self::SuccessorUnschedulable => "successor_unschedulable",
+            Self::RecoveryReplaced => "recovery-replaced",
             Self::RouteChanged => "replace-route-changed",
             Self::CarryConflict => "carry-conflict",
             Self::CarryInfra => "carry-infra",

@@ -145,6 +145,17 @@ pub(crate) async fn admit_contract_and_predecessor_tx(
     track: &Track,
     previous: &Task,
 ) -> Admission<TaskRecoveryConstraint> {
+    // A replaced attempt's work continues under its successor's key; recovering it would run
+    // the superseded contract beside the successor.
+    if let Some(receipt) = crate::task_replace::receipt::by_predecessor_tx(tx, &previous.id).await?
+    {
+        return Err(refuse(
+            RefusalSite::PredecessorReplaced,
+            RecoveryRefusalCode::Replaced,
+            SupportedContinuation::None,
+            crate::task_replace::recovery_refusal(&receipt.successor_key),
+        ));
+    }
     let constraint = claim_constraint_tx(tx, previous).await?;
     constraint.validate(&previous.track_id).map_err(|reason| {
         refuse(

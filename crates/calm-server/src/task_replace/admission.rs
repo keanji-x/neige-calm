@@ -83,6 +83,9 @@ async fn unfinished_dependents_tx(
         })
         .map(|(key, _)| key)
         .collect();
+    // Liveness is defensive here: validation forbids `depends_on` on a tombstone, so a
+    // tombstoned block never names a dependency today; the shared rule keeps it that way if the
+    // validator ever changes.
     for block in blocks.iter().filter(|block| {
         task_block_is_live(block)
             && block.payload["depends_on"]

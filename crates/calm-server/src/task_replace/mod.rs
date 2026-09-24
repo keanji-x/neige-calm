@@ -118,3 +118,11 @@ pub(crate) fn idempotency_conflict() -> CalmError {
 pub(crate) fn successor_unschedulable(facts: &str) -> CalmError {
     refusal::Refusal::SuccessorUnschedulable.refuse(facts)
 }
+
+/// Why `calm.plan.recover` refuses an attempt this Track replaced (`replaced by <successor>; …`).
+pub(crate) fn recovery_refusal(successor_key: &str) -> String {
+    format!(
+        "replaced by {successor_key}; {}",
+        refusal::Refusal::RecoveryReplaced.sentence()
+    )
+}

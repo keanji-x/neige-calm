@@ -587,6 +587,12 @@ const ROWS: &[(Site, Code, Kind, Next)] = &[
         Next::UserRecovery,
     ),
     (
+        Site::PredecessorReplaced,
+        Code::Replaced,
+        Kind::Conflict,
+        Next::None,
+    ),
+    (
         Site::ConstraintShapeInvalid,
         Code::MissingFrozenContract,
         Kind::Conflict,
@@ -880,6 +886,32 @@ async fn drive(site: Site) -> RecoveryRefusal {
             Box::pin(async {
                 let fx = failed_initial(PLANNER).await;
                 refused(site, admit(&fx, planner(), 2).await)
+            })
+            .await
+        }
+        Site::PredecessorReplaced => {
+            Box::pin(async {
+                let fx = failed_initial(PLANNER).await;
+                sqlx::query(
+                    "INSERT INTO task_replacements VALUES ('r1', ?1, ?2, ?3, ?4, 'k1', 'fp', \
+                     'why', 'failed', 'already_terminal', NULL, NULL, 'no_candidate', 1)",
+                )
+                .bind(&fx.track_id)
+                .bind(&fx.fixture.task.id)
+                .bind(&fx.fixture.task.key)
+                .bind(format!("{}.2", fx.fixture.task.key))
+                .execute(&fx.repo.sqlite_pool().unwrap())
+                .await
+                .unwrap();
+                let refusal = refused(site, admit(&fx, user(), 1).await);
+                assert!(
+                    refusal
+                        .reason
+                        .contains(&format!("replaced by {}.2", fx.fixture.task.key)),
+                    "{}",
+                    refusal.reason
+                );
+                refusal
             })
             .await
         }
@@ -1428,43 +1460,44 @@ fn refusal_site_all_lists_every_variant_exactly_once() {
             Site::ChildTaskRoute => 3,
             Site::PlannerOutsideAutoDeclare => 4,
             Site::PlannerRetryLimit => 5,
-            Site::ConstraintShapeInvalid => 6,
-            Site::FileDeliveryInputUnhonoured => 7,
-            Site::FrozenContextTruncated => 8,
-            Site::FrozenContextMissing => 9,
-            Site::FrozenContextMalformed => 10,
-            Site::DeclarationMissing => 11,
-            Site::DeclarationNotCurrent => 12,
-            Site::DeclarationInvalid => 13,
-            Site::ReleaseWithdrawn => 14,
-            Site::InnerConstraintShapeInvalid => 15,
-            Site::RouteOrAuthorChanged => 16,
-            Site::FrozenTrackMissing => 17,
-            Site::ContextMovedOutsideArea => 18,
-            Site::FrozenReportMissing => 19,
-            Site::FrozenBlockMissing => 20,
-            Site::RootIdentityChanged => 21,
-            Site::RootHashChanged => 22,
-            Site::IsolatedAmbiguousOperations => 23,
-            Site::OrdinaryWorkerPrepared => 24,
-            Site::VerificationEffectsWithoutWorker => 25,
-            Site::NotSpawnFailedWithoutStopProof => 26,
-            Site::OperationUncertainExternalEffects => 27,
-            Site::IsolatedRouteMismatch => 28,
-            Site::IsolatedOperationNotThisExecution => 29,
-            Site::IsolatedCompensationRecorded => 30,
-            Site::IsolatedStopPending => 31,
-            Site::IsolatedOperationTerminalWithoutFailure => 32,
-            Site::IsolatedRecordUnreadable => 33,
-            Site::IsolatedStopUnconfirmed => 34,
-            Site::IsolatedStopIdentityMismatch => 35,
-            Site::AllocationMissing => 36,
-            Site::PredecessorRowMissing => 37,
-            Site::ProvenanceUnsupported => 38,
-            Site::TrackNoLongerSchedules => 39,
+            Site::PredecessorReplaced => 6,
+            Site::ConstraintShapeInvalid => 7,
+            Site::FileDeliveryInputUnhonoured => 8,
+            Site::FrozenContextTruncated => 9,
+            Site::FrozenContextMissing => 10,
+            Site::FrozenContextMalformed => 11,
+            Site::DeclarationMissing => 12,
+            Site::DeclarationNotCurrent => 13,
+            Site::DeclarationInvalid => 14,
+            Site::ReleaseWithdrawn => 15,
+            Site::InnerConstraintShapeInvalid => 16,
+            Site::RouteOrAuthorChanged => 17,
+            Site::FrozenTrackMissing => 18,
+            Site::ContextMovedOutsideArea => 19,
+            Site::FrozenReportMissing => 20,
+            Site::FrozenBlockMissing => 21,
+            Site::RootIdentityChanged => 22,
+            Site::RootHashChanged => 23,
+            Site::IsolatedAmbiguousOperations => 24,
+            Site::OrdinaryWorkerPrepared => 25,
+            Site::VerificationEffectsWithoutWorker => 26,
+            Site::NotSpawnFailedWithoutStopProof => 27,
+            Site::OperationUncertainExternalEffects => 28,
+            Site::IsolatedRouteMismatch => 29,
+            Site::IsolatedOperationNotThisExecution => 30,
+            Site::IsolatedCompensationRecorded => 31,
+            Site::IsolatedStopPending => 32,
+            Site::IsolatedOperationTerminalWithoutFailure => 33,
+            Site::IsolatedRecordUnreadable => 34,
+            Site::IsolatedStopUnconfirmed => 35,
+            Site::IsolatedStopIdentityMismatch => 36,
+            Site::AllocationMissing => 37,
+            Site::PredecessorRowMissing => 38,
+            Site::ProvenanceUnsupported => 39,
+            Site::TrackNoLongerSchedules => 40,
         }
     }
-    const VARIANTS: usize = 40;
+    const VARIANTS: usize = 41;
     assert_eq!(Site::ALL.len(), VARIANTS);
     for (index, site) in Site::ALL.iter().enumerate() {
         assert_eq!(position(*site), index, "{site:?} is misplaced in ALL");
@@ -1485,6 +1518,7 @@ fn refusal_code_spellings_are_distinct_and_stable() {
         Code::MissingFrozenContract,
         Code::ContractChanged,
         Code::RecoveryLineageMissing,
+        Code::Replaced,
     ];
     let spellings: std::collections::BTreeSet<&str> =
         all.iter().map(|code| code.as_str()).collect();
