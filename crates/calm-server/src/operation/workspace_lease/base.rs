@@ -15,10 +15,11 @@
 //! `base_source`: [`BaseSource::Upstream`] and [`BaseSource::Head`] have a
 //! producer ([`resolve_lease_base`]: the upstream of the branch HEAD is on
 //! when HEAD is at or behind it, HEAD when HEAD is ahead or there is none, a
-//! refusal when the two diverged — [`super::upstream`], #1777). `Commit`
-//! and `Attempt` (`TaskDeclaration.base`) are written by slice 5; the column
-//! round-trip covers all four so the CHECK-accepted shapes and the Rust type
-//! never disagree.
+//! refusal when the two diverged — [`super::upstream`], #1777).
+//! [`BaseSource::Attempt`] is the carry branch ([`super::carry`], #1785): a
+//! `calm.task.replace` successor starts from its source candidate merged onto
+//! that upstream. `Commit` has no producer; the column round-trip covers all
+//! four so the CHECK-accepted shapes and the Rust type never disagree.
 
 use std::{
     ffi::{OsStr, OsString},
@@ -41,22 +42,23 @@ use crate::workspace_materialize::neige_git_command;
 /// `workspace_leases.base_source`: how `base_sha` was chosen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BaseSource {
-    /// The attached repository's HEAD at prepare time (`TaskDeclaration.base`
-    /// absent, and the branch HEAD is on has no upstream, no ref of that
-    /// upstream resolves, HEAD is ahead of it — HEAD then contains it — or a
-    /// shallow history leaves the relation unknown).
+    /// The attached repository's HEAD at prepare time (the branch HEAD is on
+    /// has no upstream, no ref of that upstream resolves, HEAD is ahead of it
+    /// — HEAD then contains it — or a shallow history leaves the relation
+    /// unknown).
     Head,
     /// The last known commit of the upstream of the branch HEAD is on, which
     /// HEAD equals or is behind, or which a checkout without commits of its
-    /// own is moved to after an upstream rewrite (`TaskDeclaration.base`
-    /// absent): the receipt of the kernel's most recent fetch when that fetch
-    /// succeeded, else the repository's own remote-tracking ref
+    /// own is moved to after an upstream rewrite: the receipt of the kernel's
+    /// most recent fetch when that fetch succeeded, else the repository's own
+    /// remote-tracking ref
     /// ([`super::upstream::last_known_upstream`], #1777).
     Upstream,
-    /// `TaskDeclaration.base: {commit}` — slice 5.
+    /// A pinned commit; no producer writes it.
     Commit,
-    /// `TaskDeclaration.base: {attempt}`; `base_attempt_id` names the
-    /// producing attempt — slice 5.
+    /// A kernel carry commit (#1785): the source candidate merged onto the
+    /// upstream, for a `calm.task.replace` successor; `base_attempt_id` names
+    /// the attempt that produced the candidate.
     Attempt,
 }
 

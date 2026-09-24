@@ -169,7 +169,7 @@
   },
   {
     "name": "calm.plan.list",
-    "description_sha256": "956f866ad407ea04f7cbf4896b52b699dbfe588a4287e7870e65c286d483b273",
+    "description_sha256": "6d7226199632a3d38d5063019283a1f09910d41c817b7dbb666eeafa6c85584a",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
