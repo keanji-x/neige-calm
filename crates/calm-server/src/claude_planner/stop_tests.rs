@@ -9,7 +9,9 @@ use std::collections::HashSet;
 use std::io::Read as _;
 use std::process::{Command, Stdio};
 
-use super::{MARKER_KEY, MarkerInstance, Member, scan_in, scan_off_thread, signal_verified, stop};
+use super::stop::{
+    MARKER_KEY, MarkerInstance, Member, scan_in, scan_off_thread, signal_verified, stop,
+};
 use crate::proc_identity::{parse_proc_stat_fields, read_proc_start_time};
 
 struct Scope {
@@ -144,10 +146,13 @@ async fn stop_returns_ok_only_after_a_marked_setsid_child_is_gone() {
         Some(&scope.marker()),
         "setsid sleep 300 </dev/null >/dev/null 2>&1 &",
     );
+    // Until `setsid` has run, the forked child is still in this test's session; wait for the
+    // member to have left it, so the test really stops a child outside our process group.
+    let own_session = session_of(0);
     let mut members = Vec::new();
-    for _ in 0..100 {
+    for _ in 0..250 {
         members = scope.marked();
-        if !members.is_empty() {
+        if members.len() == 1 && session_of(members[0].pid) != own_session {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -156,7 +161,7 @@ async fn stop_returns_ok_only_after_a_marked_setsid_child_is_gone() {
     let child = members[0];
     assert_ne!(
         session_of(child.pid),
-        session_of(0),
+        own_session,
         "the child runs in its own session, outside this process's group"
     );
 

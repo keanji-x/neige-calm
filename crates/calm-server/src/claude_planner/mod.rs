@@ -13,4 +13,10 @@ pub mod stop;
 pub mod translate;
 
 #[cfg(test)]
+mod driver_tests;
+#[cfg(test)]
+mod spawn_tests;
+#[cfg(test)]
+mod stop_tests;
+#[cfg(test)]
 mod tests;

@@ -17,7 +17,7 @@ use crate::shared_codex_appserver::SPAWN_ENV_PASSTHROUGH;
 const TOOLS: &str = "Bash,Read,Edit,Write,ToolSearch,WebFetch,WebSearch";
 
 /// Owner decision (§9.6): the sandbox is always on and fails closed; the network is unrestricted.
-fn settings_json() -> String {
+pub(crate) fn settings_json() -> String {
     json!({
         "permissions": { "allow": ["WebFetch(domain:*)"] },
         "sandbox": {
@@ -240,7 +240,3 @@ pub(crate) fn instructions_dir(data_dir: &Path) -> Result<PathBuf> {
     std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
     Ok(dir)
 }
-
-#[cfg(test)]
-#[path = "spawn_tests.rs"]
-mod tests;

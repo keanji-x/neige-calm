@@ -337,7 +337,3 @@ pub fn sigkill_verified_for_test(pid: i32, start_time: u64) -> bool {
 pub fn clear_claude_planner_stop_failure_for_test(worker_session_id: &str) {
     seam::clear(worker_session_id);
 }
-
-#[cfg(test)]
-#[path = "stop_tests.rs"]
-mod tests;

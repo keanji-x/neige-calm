@@ -2,7 +2,7 @@
 
 use uuid::Uuid;
 
-use super::{TerminalEvent, decide, init_check};
+use super::driver::{TerminalEvent, decide, init_check};
 use crate::claude_planner::protocol::{McpStatus, PluginRef, SystemInit};
 use crate::claude_planner::session::TerminalCause;
 use crate::claude_planner::translate::TurnOutcome;

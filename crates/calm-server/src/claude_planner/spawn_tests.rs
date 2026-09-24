@@ -5,7 +5,7 @@ use std::path::Path;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use super::{SessionStart, argv, passthrough_keys, settings_json};
+use super::spawn::{SessionStart, argv, passthrough_keys, settings_json};
 
 const THREAD: &str = "5d0b2694-9ccc-4543-ab84-611aa4287dbe";
 

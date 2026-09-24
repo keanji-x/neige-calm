@@ -599,7 +599,3 @@ async fn settle(shared: &Shared, input: SettleInput, ending: Ending) {
     let _ = shared.notifications.send(completed);
     slot.settled.send_replace(true);
 }
-
-#[cfg(test)]
-#[path = "driver_tests.rs"]
-mod tests;
