@@ -1443,6 +1443,68 @@
     ]
   },
   {
+    "name": "calm.task.replace",
+    "description_sha256": "f52cbd0fee5a250fac050139b52957ae72456f7d9c7e376a9c32ba2c79e834be",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "acceptance": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "carry": {
+          "enum": [
+            "candidate",
+            "none"
+          ],
+          "type": "string"
+        },
+        "context": {
+          "type": "object"
+        },
+        "expected_attempt_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "goal": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "idempotency_key": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "key": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "reason": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "expected_attempt_id",
+        "idempotency_key",
+        "reason",
+        "goal",
+        "acceptance"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
     "name": "calm.task.verdict",
     "description_sha256": "dc353550fb12c0f94c1689f8cbf370749d94fbc33574474e55b38d42943de95c",
     "input_schema": {

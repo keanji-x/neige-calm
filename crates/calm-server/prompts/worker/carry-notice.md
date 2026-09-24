@@ -1,0 +1,1 @@
+Workspace note from the kernel: your worktree already contains the changes of candidate {candidate_sha}, carried onto upstream {upstream_sha}. Do not apply a diff yourself and do not check or reset the base commit; build on the files as they are.

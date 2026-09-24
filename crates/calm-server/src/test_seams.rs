@@ -184,6 +184,38 @@ pub struct KernelWorkspaceLease {
     pub git_common_dir: std::path::PathBuf,
 }
 
+/// [`take_kernel_workspace_lease_for_test`] for one attempt, through the production base
+/// resolution every worker prepare runs: a `calm.task.replace` successor's lease starts from the
+/// kernel carry commit its receipt calls for (#1785 S2).
+#[cfg(feature = "fixtures")]
+pub async fn take_kernel_workspace_lease_for_attempt_for_test(
+    pool: &sqlx::SqlitePool,
+    track_id: &str,
+    card_id: &str,
+    workspace_root: &std::path::Path,
+    attempt_id: &str,
+) -> crate::error::Result<KernelWorkspaceLease> {
+    use crate::operation::workspace_lease::{
+        WorktreeBase, acquire_workspace_lease_tx, carry::resolve_task_lease_base_tx,
+        prepare_workspace_lease_target_tx, provision_workspace_worktree,
+    };
+    let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
+    let target =
+        prepare_workspace_lease_target_tx(&mut tx, track_id, card_id, workspace_root).await?;
+    let (base, _notice) = resolve_task_lease_base_tx(&mut tx, &target, attempt_id).await?;
+    let (lease, _event) =
+        acquire_workspace_lease_tx(&mut tx, card_id, track_id, "op-test", &target, &base).await?;
+    tx.commit().await?;
+    provision_workspace_worktree(&target, &WorktreeBase::from_lease_base(&base))?;
+    Ok(KernelWorkspaceLease {
+        lease_id: lease.lease_id,
+        path: target.path,
+        repo_root: target.repo_root,
+        base_sha: base.base_sha,
+        git_common_dir: base.git_common_dir,
+    })
+}
+
 /// The whole first-worker lease sequence the worker op's `prepare_tx` + spawn run, in
 /// production order and through the production functions: prepare the target from the Track's
 /// workspace, resolve the lease base, INSERT the lease row (`delivery_policy = 'kernel'`, the

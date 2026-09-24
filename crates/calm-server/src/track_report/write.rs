@@ -152,6 +152,10 @@ enum PersistPurpose {
         args: crate::file_delivery::repair::RepairArgs,
         task_budget_default: i64,
     },
+    Replace {
+        identity: crate::mcp_server::registry::ToolCallIdentity,
+        args: crate::task_replace::ReplaceArgs,
+    },
     UserStart {
         key: String,
         goal: String,
@@ -259,6 +263,34 @@ pub(crate) async fn planner_repair(
     )
     .await?;
     response.ok_or_else(|| CalmError::Internal("repair snapshot missing".into()))
+}
+
+/// Planner-only task replacement (#1785): stop, append the successor, write the receipt — one
+/// transaction; authorization and replay stay inside persist.
+pub(crate) async fn planner_replace(
+    repo: &dyn RouteRepo,
+    events: &EventBus,
+    write: &WriteContext,
+    identity: crate::mcp_server::registry::ToolCallIdentity,
+    target: ReportEditTarget,
+    args: crate::task_replace::ReplaceArgs,
+    recorder_shadow: Arc<dyn RecorderShadowProbe>,
+) -> Result<serde_json::Value, CalmError> {
+    let (_, response) = persist(
+        repo,
+        events,
+        write,
+        identity.to_actor_id(),
+        EditAuthor::Planner,
+        target,
+        PersistPurpose::Replace { identity, args },
+        None,
+        None,
+        false,
+        Some(recorder_shadow),
+    )
+    .await?;
+    response.ok_or_else(|| CalmError::Internal("replace snapshot missing".into()))
 }
 
 /// The structural door: track creation laying a forked or templated report onto the report card
@@ -398,7 +430,10 @@ async fn persist(
             let recorder_shadow = recorder_shadow.clone();
             Box::pin(async move {
                 let mut events: Vec<(ActorId, EventScope, Event)> = Vec::new();
-                if let PersistPurpose::Dispatch { identity, .. } | PersistPurpose::Repair { identity, .. } = &purpose {
+                if let PersistPurpose::Dispatch { identity, .. }
+                    | PersistPurpose::Repair { identity, .. }
+                    | PersistPurpose::Replace { identity, .. } = &purpose
+                {
                     super::dispatch::authorize_tx(tx, identity, &track_id, &id).await?;
                 }
                 if auto_promote_draft
@@ -459,6 +494,13 @@ async fn persist(
                         return Err(CalmError::Conflict(DISPATCH_REPLAY.into()));
                     }
                 }
+                if let PersistPurpose::Replace { args, .. } = &purpose
+                    && let Some(response) = super::replace::replay_tx(tx, track_id.as_str(), args).await?
+                {
+                    let card = super::replace::report_card_tx(tx, &id).await?;
+                    *replay_out.lock().map_err(|_| CalmError::Internal("replace replay lock poisoned".into()))? = Some((card, response));
+                    return Err(CalmError::Conflict(DISPATCH_REPLAY.into()));
+                }
                 if let PersistPurpose::Dispatch { args, plugin_tools, .. } = &purpose
                     && let Some(refusal) = plugin_tools.refusal(args.plugin_tools()) {
                     return Err(CalmError::Forbidden(refusal));
@@ -508,6 +550,7 @@ async fn persist(
                 })?;
                 let dispatch_key = format!("dispatch-{}", uuid::Uuid::new_v4().simple());
                 let mut repair_receipt = None;
+                let mut replace_staged = None;
                 let op = match purpose.clone() {
                     PersistPurpose::Repair { args, .. } => {
                         let mut receipt = crate::file_delivery::repair::prepare_tx(tx, track_id.as_str(), &id, &args).await?;
@@ -517,6 +560,11 @@ async fn persist(
                         let second = super::repair::prepare(&doc, &receipt.reviewer)?;
                         repair_receipt = Some(receipt);
                         second
+                    }
+                    PersistPurpose::Replace { args, .. } => {
+                        let (op, staged) = super::replace::stage_tx(tx, track_id.as_str(), &doc, &args).await?;
+                        replace_staged = Some(staged);
+                        op
                     }
                     PersistPurpose::Edit(op) => op,
                     PersistPurpose::Dispatch { args, .. } => {
@@ -560,7 +608,7 @@ async fn persist(
                 let (declarations, block_diagnostics) =
                     calm_types::report_blocks::tasks::project_task_declarations(blocks);
                 // 5. The row write and the task projection, in the one order both writers use.
-                let (updated, task_projection) = write_report_row_and_project_tx(
+                let (updated, mut task_projection) = write_report_row_and_project_tx(
                     tx,
                     &id,
                     track_id.as_str(),
@@ -584,6 +632,9 @@ async fn persist(
                     receipt.reviewer.block_id = outcome.as_ref().ok_or_else(||CalmError::Internal("repair review block outcome missing".into()))?.id.clone();
                     crate::file_delivery::repair::insert_tx(tx, receipt).await?;
                     Some(super::repair::snapshot_tx(tx, receipt, *task_budget_default).await?)
+                } else if let Some(staged) = replace_staged {
+                    staged.add_stopped_key(&mut task_projection.changed_keys);
+                    Some(super::replace::finish_tx(tx, track_id.as_str(), staged).await?)
                 } else { None };
                 //    Then two events on the same card scope: `CardUpdated` first, so a subscriber sees the
                 //    generic "row changed" signal before the structured edit-log entry.

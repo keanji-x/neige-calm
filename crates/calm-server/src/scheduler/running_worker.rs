@@ -36,6 +36,8 @@ pub(crate) enum WorkerCleanupReason {
     LivenessTimeout,
     TurnEnded,
     PlannerCanceled,
+    /// `calm.task.replace` canceled the running predecessor.
+    Superseded,
 }
 
 impl WorkerCleanupReason {
@@ -44,6 +46,7 @@ impl WorkerCleanupReason {
             Self::LivenessTimeout => "running_liveness_timeout",
             Self::TurnEnded => "worker_turn_ended",
             Self::PlannerCanceled => "planner_canceled",
+            Self::Superseded => "planner_superseded",
         }
     }
 }
