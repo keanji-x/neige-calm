@@ -400,7 +400,7 @@ a recovered Claude harness refuses issuance with a retryable refusal and a reade
 ### 5.4 Protocol types (`protocol.rs`)
 
 Discriminate on `type`, then on `subtype` / content kind, **before** reading variant fields; PR2a decodes
-every line of every recorded fixture. Unknown discriminants ⇒ `Ignored{kind}` (debug log).
+every line of every recorded fixture. Unknown discriminants ⇒ `Ignored{kind}`; `decode` does not log, the session (PR2b) logs `Ignored{kind}` at debug.
 
 ```rust
 enum Record {
@@ -412,7 +412,8 @@ enum Record {
   Assistant { uuid: Uuid, blocks: Vec<AssistantBlock> },                // thinking | text | tool_use
   ResultSuccess { is_error: bool, result: String, usage: Usage,
                   model_usage: BTreeMap<String, ModelUsage>, terminal_reason: String },
-  ResultError { subtype: ErrorSubtype, errors: Vec<String>, terminal_reason: Option<String> },
+  ResultError { subtype: ErrorSubtype, errors: Vec<String>, terminal_reason: Option<String>,
+                usage: Usage, model_usage: BTreeMap<String, ModelUsage> },
   ControlResponseIn { response: ControlResponseBody },                  // nested envelope (P-F3)
   ControlRequestIn { request_id: String, request: Value },
   Ignored { kind: String },
@@ -465,7 +466,7 @@ capability (listed in `system/init`, unprobed).
 
 ### 5.10 Token usage
 
-On `ResultSuccess` with a non-empty `usage.iterations`: emit `thread/tokenUsage/updated` `{threadId,
+On `ResultSuccess` or `ResultError` with a non-empty `usage.iterations`: emit `thread/tokenUsage/updated` `{threadId,
 tokenUsage:{last:{totalTokens: input+cache_read+cache_creation+output of the last iteration},
 total:{totalTokens: previous total + this turn}, modelContextWindow: modelUsage[init.model].contextWindow}}`;
 otherwise emit nothing (P-D, P-F3), keeping the previous reading (H11). The total is seeded from the
@@ -509,6 +510,8 @@ A recorded cause wins over the event that follows it; otherwise the first event 
 
 The stop timer (≤ 10 s) settles an interrupted turn inside the harness's 30 s budget; Claude never emits
 `ThreadStatusChanged`, so `Wedged(systemError)` does not apply.
+Tool items still open at settlement are completed as `failed` (`close_open`): Codex item statuses have no
+interrupted variant, and the turn row carries `interrupted`.
 
 ## 7. Oracle trace
 
