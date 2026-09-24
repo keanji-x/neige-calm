@@ -59,7 +59,7 @@ pub(crate) async fn planner_with_daemon(
         card_role_cache: fx.boot.card_role_cache.clone(),
         track_area_cache: areas,
         // The ordinary queue tests use a stub; briefing tests capture real turn input.
-        daemon,
+        backend: daemon.into(),
         config: HarnessConfig::default(),
         snapshot,
     });

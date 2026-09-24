@@ -623,7 +623,7 @@ async fn deferred_recovery_skips_runtime_claimed_after_eligibility_check() {
         events: events.clone(),
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
         track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
-        daemon: daemon.clone(),
+        backend: daemon.clone().into(),
         config: HarnessConfig::default(),
         snapshot: HarnessSnapshot::initial(0, vec![]),
     });

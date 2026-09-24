@@ -139,7 +139,7 @@ async fn duplicate_failed_completions_have_one_persisted_outcome() {
         events: boot.state.events.clone(),
         card_role_cache: boot.state.card_role_cache.clone(),
         track_area_cache: boot.state.track_area_cache.clone(),
-        daemon: boot.state.shared_codex_appserver.clone(),
+        backend: boot.state.shared_codex_appserver.clone().into(),
         config: HarnessConfig::default(),
         snapshot: HarnessSnapshot::from_value_strict(row.handle_state_json.unwrap()),
     });

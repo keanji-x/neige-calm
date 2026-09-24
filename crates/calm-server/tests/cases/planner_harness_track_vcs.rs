@@ -120,7 +120,7 @@ async fn boot() -> Boot {
         events: events.clone(),
         card_role_cache: roles.clone(),
         track_area_cache: track_area_cache.clone(),
-        daemon: daemon.clone(),
+        backend: daemon.clone().into(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_millis(10),
             debounce_max_wait: Duration::from_millis(200),
@@ -200,7 +200,7 @@ async fn plain_chat_turn_does_not_refresh_or_read_track_vcs() {
         events: boot.events.clone(),
         card_role_cache: boot.roles.clone(),
         track_area_cache: boot.track_area_cache.clone(),
-        daemon: boot.daemon.clone(),
+        backend: boot.daemon.clone().into(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_millis(10),
             debounce_max_wait: Duration::from_millis(100),
@@ -335,7 +335,7 @@ async fn assistant_turn_skips_the_transcript_refresh_but_still_reads_the_track_d
         events: boot.events.clone(),
         card_role_cache: boot.roles.clone(),
         track_area_cache: boot.track_area_cache.clone(),
-        daemon: boot.daemon.clone(),
+        backend: boot.daemon.clone().into(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_millis(10),
             debounce_max_wait: Duration::from_millis(100),
@@ -936,7 +936,7 @@ async fn recovered_issued_turn_head_stamps_last_seen_head_on_completion() {
         events: boot.events.clone(),
         card_role_cache: boot.roles.clone(),
         track_area_cache: boot.track_area_cache.clone(),
-        daemon: boot.daemon.clone(),
+        backend: boot.daemon.clone().into(),
         config: HarnessConfig::default(),
         snapshot,
     });

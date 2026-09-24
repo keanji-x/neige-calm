@@ -250,7 +250,7 @@ async fn boot_inner(
         events,
         card_role_cache: role_cache,
         track_area_cache,
-        daemon,
+        backend: daemon.into(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
             debounce_max_wait: Duration::from_secs(60),

@@ -21,6 +21,7 @@ use crate::codex_appserver::{InputItem, Notification};
 use crate::db::{Repo, write_in_tx_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus, EventScope, HarnessQueueChange};
+use crate::harness::backend::PlannerBackend;
 use crate::harness::config::HarnessConfig;
 use crate::harness::observation::Observation;
 use crate::harness::queue::{
@@ -38,7 +39,6 @@ use crate::planner_model::{
     CardModelSelection, FailureKind, InstallationDefaults, TurnModelSelection,
     effective_model_for_catalog_lookup, resolve_turn_selection,
 };
-use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::track_area_cache::TrackAreaCache;
 use crate::track_vcs;
 
@@ -161,7 +161,7 @@ pub struct PlannerHarnessParams {
     pub events: EventBus,
     pub card_role_cache: CardRoleCache,
     pub track_area_cache: TrackAreaCache,
-    pub daemon: Arc<SharedCodexAppServer>,
+    pub backend: PlannerBackend,
     pub config: HarnessConfig,
     pub snapshot: HarnessSnapshot,
 }
@@ -175,7 +175,7 @@ pub(super) struct Inner {
     events: EventBus,
     card_role_cache: CardRoleCache,
     track_area_cache: TrackAreaCache,
-    daemon: Arc<SharedCodexAppServer>,
+    backend: PlannerBackend,
     observations: ObservationIngress,
     state: Mutex<HarnessState>,
     last_phase: Mutex<HarnessPhaseTag>,
@@ -249,13 +249,13 @@ struct SteeredEntry {
 }
 
 pub(super) struct IssueTurnHandle<'a> {
-    daemon: &'a Arc<SharedCodexAppServer>,
+    backend: &'a PlannerBackend,
 }
 
 impl<'a> IssueTurnHandle<'a> {
     pub(super) fn from_reconciliation(inner: &'a Inner) -> Self {
         Self {
-            daemon: &inner.daemon,
+            backend: &inner.backend,
         }
     }
 
@@ -266,9 +266,9 @@ impl<'a> IssueTurnHandle<'a> {
         thread_id: &str,
         input: Vec<InputItem>,
         selection: &TurnModelSelection,
-        client_user_message_id: Option<&str>,
+        client_user_message_id: &str,
     ) -> Result<String> {
-        self.daemon
+        self.backend
             .turn_start(thread_id, input, selection, client_user_message_id)
             .await
     }
@@ -401,7 +401,7 @@ impl PlannerHarness {
         params.snapshot.assert_known_schema();
         let (obs_tx, obs_rx) = mpsc::channel(OBSERVATION_BUFFER);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(4);
-        let notifications = params.daemon.subscribe_notifications();
+        let notifications = params.backend.subscribe_notifications();
         let (inner, announce_dropped_first) =
             inner_from_params(params, ObservationIngress::Running(obs_tx), shutdown_tx);
         let handle = Self {
@@ -654,8 +654,9 @@ impl PlannerHarness {
     /// the caller owns it only after strict interruption succeeds.
     pub async fn shutdown_for_deletion(&self) -> Result<Option<String>> {
         let thread_id = self.inner.thread_id.read().await.clone();
-        let mut seals =
-            crate::shared_codex_appserver::DeletionThreadSeals::new(self.inner.daemon.clone());
+        let mut seals = crate::shared_codex_appserver::DeletionThreadSeals::new(
+            self.inner.backend.codex().clone(),
+        );
         if let Some(thread_id) = thread_id.clone() {
             seals.seal(thread_id);
         }
@@ -676,7 +677,10 @@ impl PlannerHarness {
         }
         let thread_id = self.inner.thread_id.read().await.clone();
         if seal_thread && let Some(thread_id) = thread_id.as_deref() {
-            self.inner.daemon.seal_turn_thread_for_deletion(thread_id);
+            self.inner
+                .backend
+                .codex()
+                .seal_turn_thread_for_deletion(thread_id);
         }
         let _ = self.inner.shutdown.send(());
         // If turn/start is already in flight, wait until its id is recorded in
@@ -687,8 +691,8 @@ impl PlannerHarness {
         let mut interrupt_error = None;
         if let Some(thread_id) = thread_id {
             let last_turn_id = self.inner.last_turn_id.lock().await.clone();
-            let active_turn_id = self.inner.daemon.active_turn_id_for_thread(&thread_id);
-            if let Err(e) = self.inner.daemon.interrupt_active_turn(&thread_id).await {
+            let active_turn_id = self.inner.backend.active_turn_id_for_thread(&thread_id);
+            if let Err(e) = self.inner.backend.interrupt_active_turn(&thread_id).await {
                 tracing::warn!(
                     thread_id,
                     error = %e,
@@ -700,7 +704,7 @@ impl PlannerHarness {
                 && let Some(last_turn_id) = last_turn_id
                 && let Err(e) = self
                     .inner
-                    .daemon
+                    .backend
                     .turn_interrupt(&thread_id, &last_turn_id)
                     .await
             {
@@ -977,7 +981,7 @@ fn inner_from_params(
         events: params.events,
         card_role_cache: params.card_role_cache,
         track_area_cache: params.track_area_cache,
-        daemon: params.daemon,
+        backend: params.backend,
         observations,
         state: Mutex::new(state),
         last_phase: Mutex::new(last_phase),
@@ -1333,11 +1337,11 @@ async fn handle_steer(
         thread_id = %thread_id,
         turn_id = %turn_id,
         entry_id = %entry_id,
-        "calling daemon.turn_steer"
+        "calling backend.turn_steer"
     );
     let steered = inner
-        .daemon
-        .turn_steer(&thread_id, &turn_id, items, Some(entry_id.as_str()))
+        .backend
+        .turn_steer(&thread_id, &turn_id, items, entry_id.as_str())
         .await;
     let error = match steered {
         Ok(taken_by) => {
@@ -2469,7 +2473,8 @@ async fn resolve_model_selection(
     // Codex not answering and codex answering "no model" are different facts; only the first
     // is worth waiting out, so the read's failure returns here rather than degrading to `None`.
     let config = inner
-        .daemon
+        .backend
+        .codex()
         .config_read(Some(cwd.as_str()), deadline)
         .await
         .map_err(|e| {
@@ -2629,7 +2634,7 @@ async fn catalog_default_effort(
         // real absence, not a failed read.
         return Ok(None);
     };
-    match inner.daemon.model_list(deadline).await {
+    match inner.backend.codex().model_list(deadline).await {
         Ok(models) => Ok(models
             .into_iter()
             .find(|m| m.model == slug)
@@ -3137,7 +3142,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         track_id = %inner.track_id,
         thread_id = %thread_id,
         drained_count,
-        "calling daemon.turn_start"
+        "calling backend.turn_start"
     );
 
     // The model is resolved HERE, as late as possible: the transcript refresh and diff above can
@@ -3233,7 +3238,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             .await
             .map_err(IssueFailure::ProjectionWrite)?;
         let turn = IssueTurnHandle::from_reconciliation(inner)
-            .issue(&thread_id, items, &selection, Some(client_id.as_str()))
+            .issue(&thread_id, items, &selection, client_id.as_str())
             .await
             .map_err(IssueFailure::TurnStart)?;
         if let Some(issuance) = issuance {
@@ -3253,7 +3258,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 track_id = %inner.track_id,
                 thread_id = %thread_id,
                 turn_id = %turn_id,
-                "daemon.turn_start ok"
+                "backend.turn_start ok"
             );
             // A turn that went out ends the run of refusals, so the notice and
             // the clock behind it both go with it.
@@ -3598,7 +3603,7 @@ async fn issue_interrupt(inner: &Arc<Inner>, reason: String) -> Result<()> {
             let Some(thread_id) = inner.thread_id.read().await.clone() else {
                 return Ok(());
             };
-            inner.daemon.active_turn_id_for_thread(&thread_id)
+            inner.backend.active_turn_id_for_thread(&thread_id)
         }
         None => None,
     };
@@ -3637,7 +3642,7 @@ async fn issue_interrupt_for_turn(
     ));
     persist_snapshot(inner).await?;
     if let Err(e) = inner
-        .daemon
+        .backend
         .turn_interrupt(&thread_id, &target_turn_id)
         .await
     {

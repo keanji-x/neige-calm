@@ -265,7 +265,7 @@ mod tests {
                 events: crate::event::EventBus::new(),
                 card_role_cache: crate::card_role_cache::CardRoleCache::new(),
                 track_area_cache: crate::track_area_cache::TrackAreaCache::new(),
-                daemon,
+                backend: daemon.into(),
                 config: HarnessConfig::default(),
                 snapshot: HarnessSnapshot::initial(0, vec![]),
             },

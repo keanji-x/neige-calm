@@ -12,6 +12,7 @@ use crate::model::{
 use crate::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
+use crate::shared_codex_appserver::SharedCodexAppServer;
 use serde_json::json;
 
 pub(super) struct Fixture {
@@ -100,7 +101,7 @@ impl Fixture {
                 events: EventBus::new(),
                 card_role_cache: roles,
                 track_area_cache: areas,
-                daemon,
+                backend: daemon.into(),
                 config: HarnessConfig {
                     debounce_min_idle: Duration::ZERO,
                     debounce_max_wait: Duration::ZERO,
@@ -202,7 +203,10 @@ async fn queued_commit_before_done_is_consumed_without_a_turn_and_later_user_inp
     // but the next turn can be issued only after the Planner has marked Done.
     fx.lifecycle(TrackLifecycle::Done).await;
     fx.issue().await;
-    assert_eq!(fx.harness.inner.daemon.turn_start_count_for_test(), 0);
+    assert_eq!(
+        fx.harness.inner.backend.codex().turn_start_count_for_test(),
+        0
+    );
     let stored = fx.stored().await;
     assert!(stored.pending_entries().is_empty());
     assert_eq!(stored.push_watermark, event_id);
@@ -225,7 +229,10 @@ async fn queued_commit_before_done_is_consumed_without_a_turn_and_later_user_inp
         .await
         .unwrap();
     fx.issue().await;
-    assert_eq!(fx.harness.inner.daemon.turn_start_count_for_test(), 1);
+    assert_eq!(
+        fx.harness.inner.backend.codex().turn_start_count_for_test(),
+        1
+    );
 }
 
 /// An OLD snapshot that still holds a queued commit entry is consumed on rehydrate without a
@@ -269,14 +276,14 @@ async fn committed_row_is_not_replayed_and_an_old_queued_commit_is_consumed_once
             events: inner.events.clone(),
             card_role_cache: inner.card_role_cache.clone(),
             track_area_cache: inner.track_area_cache.clone(),
-            daemon: inner.daemon.clone(),
+            backend: inner.backend.clone(),
             config: inner.config,
             snapshot,
         },
         8,
     );
     maybe_issue_turn(&recovered.inner).await.unwrap();
-    assert_eq!(inner.daemon.turn_start_count_for_test(), 0);
+    assert_eq!(inner.backend.codex().turn_start_count_for_test(), 0);
     let mut stored = fx.stored().await;
     assert!(stored.pending_entries().is_empty());
     assert_eq!(stored.push_watermark, event_id);
@@ -297,7 +304,7 @@ async fn committed_row_is_not_replayed_and_an_old_queued_commit_is_consumed_once
         .unwrap();
     maybe_issue_turn(&recovered.inner).await.unwrap();
     assert_eq!(
-        inner.daemon.turn_start_count_for_test(),
+        inner.backend.codex().turn_start_count_for_test(),
         1,
         "the recovered harness must issue a turn for a queued user message"
     );
@@ -332,7 +339,10 @@ async fn completed_commit_filter_keeps_failure_and_user_entries_in_order() {
     assert_eq!(actual[1], expected[1]);
     assert!(stored.pending_entries().is_empty());
     assert_eq!(stored.push_watermark, event_id);
-    assert_eq!(fx.harness.inner.daemon.turn_start_count_for_test(), 1);
+    assert_eq!(
+        fx.harness.inner.backend.codex().turn_start_count_for_test(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -355,7 +365,7 @@ async fn commit_notifications_still_issue_for_every_non_done_lifecycle() {
         fx.enqueue(vec![commit]).await;
         fx.issue().await;
         assert_eq!(
-            fx.harness.inner.daemon.turn_start_count_for_test(),
+            fx.harness.inner.backend.codex().turn_start_count_for_test(),
             1,
             "{lifecycle:?}"
         );
@@ -397,7 +407,10 @@ async fn completed_commit_consumption_restores_queue_and_debounce_on_persist_fai
         .unwrap();
     fx.issue().await;
     assert!(fx.stored().await.pending_entries().is_empty());
-    assert_eq!(fx.harness.inner.daemon.turn_start_count_for_test(), 0);
+    assert_eq!(
+        fx.harness.inner.backend.codex().turn_start_count_for_test(),
+        0
+    );
 }
 
 #[tokio::test]
@@ -430,7 +443,7 @@ async fn consuming_a_commit_does_not_bypass_remaining_soft_observation_debounce(
     }
     fx.issue().await;
     assert_eq!(
-        fx.harness.inner.daemon.turn_start_count_for_test(),
+        fx.harness.inner.backend.codex().turn_start_count_for_test(),
         0,
         "consuming the hard-fire commit must not send the remaining young soft observation"
     );
@@ -442,7 +455,10 @@ async fn consuming_a_commit_does_not_bypass_remaining_soft_observation_debounce(
         assert_eq!(debounce.last_pending_at, Some(young));
     }
     fx.issue().await;
-    assert_eq!(fx.harness.inner.daemon.turn_start_count_for_test(), 0);
+    assert_eq!(
+        fx.harness.inner.backend.codex().turn_start_count_for_test(),
+        0
+    );
     // Advance only the controlled queue timestamps, without a wall-clock wait.
     {
         let mut debounce = fx.harness.inner.debounce.lock().await;
@@ -451,12 +467,15 @@ async fn consuming_a_commit_does_not_bypass_remaining_soft_observation_debounce(
         debounce.last_pending_at = Some(mature);
     }
     fx.issue().await;
-    assert_eq!(fx.harness.inner.daemon.turn_start_count_for_test(), 1);
+    assert_eq!(
+        fx.harness.inner.backend.codex().turn_start_count_for_test(),
+        1
+    );
     assert_eq!(
         fx.projected_segments().await,
         input_segments_for_entries(&fx.harness.inner.card_id, &[leased])
     );
-    let sent = fx.harness.inner.daemon.started_turns_for_test();
+    let sent = fx.harness.inner.backend.codex().started_turns_for_test();
     let InputItem::Text { text } = &sent[0].1[0] else {
         panic!("expected text input")
     };

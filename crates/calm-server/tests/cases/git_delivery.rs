@@ -1047,7 +1047,7 @@ impl Fx {
             events: self.boot.ctx.events.clone(),
             card_role_cache: self.boot.card_role_cache.clone(),
             track_area_cache: areas,
-            daemon: SharedCodexAppServer::new_stub(self.boot.repo.clone()),
+            backend: SharedCodexAppServer::new_stub(self.boot.repo.clone()).into(),
             config: HarnessConfig::default(),
             snapshot,
         });

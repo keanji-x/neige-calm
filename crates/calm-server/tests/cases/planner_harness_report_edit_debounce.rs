@@ -111,7 +111,7 @@ async fn idle_harness(
         events: EventBus::new(),
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
         track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
-        daemon: daemon.clone(),
+        backend: daemon.clone().into(),
         config,
         snapshot,
     });

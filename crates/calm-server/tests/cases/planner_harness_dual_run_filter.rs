@@ -95,7 +95,7 @@ async fn harness_drops_foreign_thread_notifications() {
         events,
         card_role_cache: CardRoleCache::new(),
         track_area_cache: TrackAreaCache::new(),
-        daemon: daemon.clone(),
+        backend: daemon.clone().into(),
         config: HarnessConfig::default(),
         snapshot,
     });
@@ -213,7 +213,7 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
         events: events.clone(),
         card_role_cache: CardRoleCache::new(),
         track_area_cache: TrackAreaCache::new(),
-        daemon: daemon.clone(),
+        backend: daemon.clone().into(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
             debounce_max_wait: Duration::from_secs(60),
@@ -376,7 +376,7 @@ async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
             events: events.clone(),
             card_role_cache: CardRoleCache::new(),
             track_area_cache: TrackAreaCache::new(),
-            daemon: daemon.clone(),
+            backend: daemon.clone().into(),
             config: HarnessConfig::default(),
             snapshot,
         },

@@ -123,7 +123,7 @@ async fn harness_with(
         events: EventBus::new(),
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
         track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
-        daemon,
+        backend: daemon.into(),
         config,
         snapshot,
     });
@@ -172,7 +172,7 @@ async fn harness_from_snapshot(
         events: EventBus::new(),
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
         track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
-        daemon,
+        backend: daemon.into(),
         config: HarnessConfig::default(),
         snapshot,
     });
@@ -806,7 +806,7 @@ async fn restored_track_goal_issues_first_turn_without_new_observation() {
         events: EventBus::new(),
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
         track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
-        daemon: daemon.clone(),
+        backend: daemon.clone().into(),
         config,
         snapshot,
     });

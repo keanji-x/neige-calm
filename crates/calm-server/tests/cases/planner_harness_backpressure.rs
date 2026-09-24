@@ -25,7 +25,7 @@ async fn harness_from_snapshot(snapshot: HarnessSnapshot) -> PlannerHarness {
             events: EventBus::new(),
             card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
             track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
-            daemon,
+            backend: daemon.into(),
             config: HarnessConfig::default(),
             snapshot,
         },

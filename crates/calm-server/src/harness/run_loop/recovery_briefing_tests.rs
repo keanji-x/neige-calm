@@ -49,7 +49,7 @@ async fn recovery_briefing_read_failure_retains_input_and_paces_retry() {
         fx.stored().await.pending_entries(),
         before.pending_entries()
     );
-    assert_eq!(inner.daemon.turn_start_count_for_test(), 0);
+    assert_eq!(inner.backend.codex().turn_start_count_for_test(), 0);
     // A second actual issue attempt must hit the existing pacing guard, not
     // repeat the broken read and the Issuing/Idle persistence cycle.
     let repeated = maybe_issue_turn(inner).await;
@@ -78,7 +78,7 @@ async fn recovery_briefing_read_failure_retains_input_and_paces_retry() {
     // The ordinary explicit retry path clears the delay after the read is fixed.
     fx.harness.retry_issuance_now().await;
     maybe_issue_turn(inner).await.unwrap();
-    assert_eq!(inner.daemon.turn_start_count_for_test(), 1);
+    assert_eq!(inner.backend.codex().turn_start_count_for_test(), 1);
     let issued = fx.stored().await;
     assert!(issued.pending_entries().is_empty());
     assert!(fx.projected_segments().await.iter().any(|segment| {
@@ -127,7 +127,7 @@ async fn recovery_briefing_states_legacy_executor_route_not_isolated_envelope() 
     .unwrap();
     fx.enqueue(vec![notice]).await;
     maybe_issue_turn(inner).await.unwrap();
-    assert_eq!(inner.daemon.turn_start_count_for_test(), 1);
+    assert_eq!(inner.backend.codex().turn_start_count_for_test(), 1);
     // Locate the kernel-snapshot JSON through the briefing fragment's own
     // frame, never through a copy of its wording.
     let (head, tail) = crate::harness::recovery_briefing::BRIEFING

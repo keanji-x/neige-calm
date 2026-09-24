@@ -508,7 +508,7 @@ impl Fx {
                 events: self.events.clone(),
                 card_role_cache: self.role_cache.clone(),
                 track_area_cache: self.area_cache.clone(),
-                daemon,
+                backend: daemon.into(),
                 config: HarnessConfig::default(),
                 snapshot: HarnessSnapshot::initial(0, vec![]),
             },

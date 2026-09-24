@@ -3717,7 +3717,7 @@ async fn deferred_settlement_is_silent_live_and_on_replay() {
         events: events.clone(),
         card_role_cache: role_cache.clone(),
         track_area_cache: track_area_cache.clone(),
-        daemon: SharedCodexAppServer::new_stub(repo.clone()),
+        backend: SharedCodexAppServer::new_stub(repo.clone()).into(),
         config: HarnessConfig::default(),
         snapshot,
     });
