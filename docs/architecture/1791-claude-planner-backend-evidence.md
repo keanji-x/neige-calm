@@ -1,0 +1,201 @@
+# Claude Planner backend (#1791) — evidence companion
+
+Companion to [1791-claude-planner-backend.md](1791-claude-planner-backend.md). It holds the fact
+table, the 4140 queries, the probe log and the review dispositions so the design stays readable.
+Base `origin/main` = `c5abb3c3d`. Paths without a prefix are under `crates/calm-server/src/`.
+Vocabulary: "transcript table/row" = the table created by migration 0031 (its name is spelled in two
+halves in §E2 because `scripts/gate-1316-terminology-ratchet.sh` counts the retiring word in `docs/`).
+
+## E1. Fact table (VERIFIED on `c5abb3c3d`)
+
+### E1.1 Harness ↔ Codex coupling
+
+| # | Fact | Location |
+|---|---|---|
+| H1 | `PlannerHarnessParams.daemon` / `Inner.daemon` are `Arc<SharedCodexAppServer>` | `harness/run_loop.rs:164`, `:178` |
+| H2 | `PlannerHarness::run` subscribes `daemon.subscribe_notifications()` before spawning the loop | `harness/run_loop.rs:404` |
+| H3 | Turn issuance only via `IssueTurnHandle::issue` → `daemon.turn_start(thread, items, selection, client_id)` | `harness/run_loop.rs:264-275` |
+| H4 | One task: `select!` over commands, notifications, tick (`watchdog_tick` + `maybe_issue_turn`), shutdown; notifications arriving while `maybe_issue_turn` awaits are handled after it returns; `Lagged` is logged and skipped | `harness/run_loop.rs:1081-1186`, `:1167` |
+| H5 | `on_notification`: drops frames of other threads; ignores `approval/*`; handles `ThreadStarted`, `ThreadStatusChanged` (systemError → `Wedged`), `TurnStarted`, `TurnCompleted`, `turn/aborted`, `Item`, `turn/plan/updated`, `thread/tokenUsage/updated` | `harness/run_loop.rs:1763-1776`, `:1780`, `:1793`, `:1808`, `:1852`, `:1942`, `:1982`, `:2102`, `:2140` |
+| H6 | `TurnStarted` accepted in `Issuing{TurnStart}` only when `issued_turn_id == turn.id` | `harness/run_loop.rs:1816-1827` |
+| H7 | `TurnCompleted`: interrupt-target arm (`:1860-1891`), systemError arm for the last turn while `Wedged(systemError)` (`:1893-1915`), else only from `TurnRunning` with a matching id (`:1916-1939`) | `harness/run_loop.rs:1852-1939` |
+| H8 | A `userMessage` `item/completed` with `item.clientId` upgrades the drain projection row in place; a started echo of a projected message is skipped | `harness/run_loop.rs:2022-2080`; projection shape `:2315-2327` |
+| H9 | `item/started`/`item/completed` persisted verbatim + `harness.item.added` event; `turn/plan/updated` persisted too but with no event and no reader | `harness/run_loop.rs:2195-2262`, `:2102-2135` |
+| H10 | Turn outcome = one transcript row `method='turn/completed'`, params = Codex `Turn` minus items; idempotent per (session, card, thread, turn) | `harness/turn_outcome.rs:6-29`; `crates/calm-truth/src/db/sqlite/out_of_domain.rs:413-431` |
+| H11 | `TokenUsage::from_params` reads `tokenUsage.last.totalTokens`, `.total.totalTokens`, `.modelContextWindow`; `total_tokens` is not shipped to the FE; `BASELINE_TOKENS = 12_000` (Codex-derived) | `harness/token_usage.rs:10`, `:33-55`; `fe/core/api/generated/openapi.json:9547` |
+| H12 | Steer: `handle_steer` takes the entry, calls `turn_steer`; `CodexRefused` → `NotTaken`, else `Unanswered`; completion sweep `restore_steered_entries_codex_dropped` restores entries whose projection row was never upgraded | `harness/run_loop.rs:1273-1470`, `:1472-1562` |
+| H13 | Interrupt: `Issuing{Interrupt}` + 30 s `interrupt_deadline` + `turn_interrupt` | `harness/run_loop.rs:3572-3653`; `harness/config.rs:27` |
+| H14 | Watchdog: deadline → `Wedged("interrupt_timeout")`; 30 min → interrupt | `harness/run_loop.rs:3519-3570` |
+| H15 | `shutdown_inner` closes ingress, signals shutdown, interrupts through the daemon, then aborts the loop (a buffered completion may never be consumed) | `harness/run_loop.rs:666-729` |
+| H16 | Model resolution: `config_read` / `model_list` only for installation defaults, via `classify_codex_failure`; reader texts say "codex" | `harness/run_loop.rs:2404-2516`, `:2621-2653`, `:2430`, `:2547` |
+| H17 | `semantic_recovery::registered == false` ⇒ exact-interface briefing (`calm.plan.recover`; the Planner keeps its own `idempotency_key`) | `harness/run_loop.rs:3060-3070`; `harness/recovery_briefing.rs:120-128` |
+| H18 | Recovery fns take `Arc<SharedCodexAppServer>`, use `turn_thread_is_sealed` / `readiness_receiver` | `harness/mod.rs:117-254`, `:335`, `:408`, `:476`; uses `:156-160`, `:213`, `:421-426`, `:477` |
+| H19 | `state_from_snapshot`: running phases restore as `Resumed` → `Idle` after 5 s | `harness/run_loop.rs:3925-3960`; `harness/config.rs:28` |
+| H20 | Fixtures fake lives inside `SharedCodexAppServer`; ~70 `daemon:` fields in 31 files build `PlannerHarnessParams` | `shared_codex_appserver.rs:784-860`; `git grep -l PlannerHarnessParams` |
+| H21 | Boot recovery runs only if the Codex daemon started; otherwise a deferred pass waits on Codex readiness | `lib.rs:615-640`; `state.rs:577-598` |
+| H22 | Crash window: the issuing snapshot (with the client id, queue not yet drained) is persisted at `:3045`; `last_turn_id` is set only after `turn_start` returns (`:3262`) | `harness/run_loop.rs:3025-3045`, `:3262` |
+| H23 | Codex notification broadcast capacity 1024, shared by all threads | `shared_codex_appserver.rs:1042` |
+
+### E1.2 Start, stop, identity, deletion
+
+| # | Fact | Location |
+|---|---|---|
+| S1 | `HarnessProfile::from_shape` returns `None` unless `kind == "codex"` | `harness/profile.rs:25-45` |
+| S2 | Headless routes gate on `card_runs_headless_harness`; ratify requires `kind == "codex"` + Planner | `routes/cards.rs:88-90`, `:982` |
+| S3 | Track create mints the Planner card `kind: "codex"` with `planner_harness_card_payload` | `routes/tracks.rs:1409-1439`, `:1864-1879` |
+| S4 | `CreateTrackRequest` (`deny_unknown_fields`) carries `model` / `reasoning_effort` | `routes/tracks.rs:267-298` |
+| S5 | Start adapter: instructions, card token mint, `approval_policy:"never"`, `sandbox_mode:"workspace-write"`, `thread_start_*`, `codex_thread_id`; snapshot phase set to `Idle` | `operation/planner_harness_start_adapter.rs:840-991`, `:955-956`, `:984`, `:1823-1860` |
+| S6 | Start adapter passes `AgentProvider::Codex` | same file `:727`, `:1098`, `:1128` |
+| S7 | Start preflights refuse when the Codex daemon is not running | same file `:420-422`, `:491-494` |
+| S8 | Start compensation `interrupt_thread` → `daemon.interrupt_active_turn`; spawn builds `PlannerHarnessParams{daemon}` | same file `:1424-1430`, `:1275-1290` |
+| S9 | Shutdown adapter (no live harness) interrupts through the daemon; interrupt adapter only calls `harness.interrupt` | `operation/planner_harness_shutdown_adapter.rs:101-135`; `operation/planner_harness_interrupt_adapter.rs:108-121` |
+| S10 | `ensure_live_planner_harness` and planner recovery route refuse when Codex is not running | `routes/cards.rs:1232`, `:1289-1293`; `routes/planner_recovery.rs:58-61` |
+| S11 | Model surfaces: GET `/api/models` calls `model_list` (`routes/models.rs:144`); create-time `catalog_advice` (`routes/tracks.rs:848-850`); PUT `/planner/model` `catalog_advice` (`routes/planner_model.rs:120`) | as listed |
+| S12 | Persisted provider/mode come only from `derive_session_identity(&init.kind)`; `agent_provider` is not read; attribution binding updates only thread/session/turn ids; no `UPDATE … provider` exists | `crates/calm-truth/src/db/sqlite/session_mirror.rs:57-58`, `:420-440`; `session_row.rs:146-166` |
+| S13 | `(Claude, Planner)` is unmappable → error; SharedPlanner-kind queries filter `provider = codex` | `crates/calm-truth/src/session_projection_row.rs:145-163`; `db/sqlite/session_projection.rs:160`, `:731-790`; `db/sqlite/read.rs:802` |
+| S14 | Harness pushes and "shared card" tests key on the SharedPlanner kind | `dispatcher/mod.rs:1363`; `crates/calm-truth/src/session_projection_lookup.rs:253` |
+| S15 | `track_activity` treats `mode=harness` rows as conversations before provider | `track_activity.rs:259-266` |
+| S16 | Claude PTY paths key on `kind == "claude"`; `worker_flow` attaches only Codex/Claude card runtimes | `operation/claude_restart_adapter.rs:133`; `worker_flow/mod.rs:278`, `:519-529` |
+| S17 | FE Planner identity = `kind === 'codex' && payload.planner_harness === true` (5 sites) | `fe/web/src/systems/cards/builtins/planner.ts:11-27`; `fe/web/src/app/router/public.tsx:1819`, `:1853`, `:1951`, `:2087` |
+| S18 | Typed config `claude_bin` | `config.rs:91-92` |
+| S19 | Server-owned payload keys: the list (`validation.rs:35`) and a separate `server_owned_value_is_sticky` match defaulting to false (`:44-58`); `card_update_tx` re-inserts only sticky values | `crates/calm-truth/src/validation.rs:35-66`; `db/sqlite/card.rs:158-170` |
+| S20 | Create idempotency: `CreateRequestShape` + `create_request_digest` enumerate fields; optional fields enter the digest only when set ("preserve the exact pre-selection digest") | `routes/tracks/create.rs:100-120`, `:333-357` |
+| S21 | Deletion seals are owned by the shared daemon and survive harness removal; `shutdown_track` seals every live Planner; card-grade quiesce seals + interrupts ("a destructive workspace move may only follow a confirmed quiesce"); track/area deletion plans hold `turn_daemon` and unseal on rollback | `harness/registry.rs:203-218`; `routes/cards.rs:128-156`; `routes/tracks.rs:128`, `:2677`, `:2870-2956`, `:2991-3009`, `:3160`; `routes/areas.rs:319`, `:398`, `:489-623`, `:652-663`, `:814` |
+| S22 | Production unit: `KillMode=process` (only calm-server is signalled; children stay in the cgroup); SIGTERM runs axum graceful shutdown | `~/.config/systemd/user/neige-next.service.d/preserving.conf`; `main.rs:187-199`, `:253` |
+| S23 | Process identity precedents: `process_group(0)`, `(pid, start_time, boot_id)` verification, env-marker group scan, verified group SIGKILL | `proc_identity.rs:6-88`, `:122-248`, `:346`; `operation/task_verify_adapter/target.rs:1499` |
+| S24 | Codex daemon env: `env_clear()` + `SPAWN_ENV_PASSTHROUGH` | `shared_codex_appserver.rs:55-90` |
+| S25 | Codex trusts the workspace (`trust_level = "trusted"`) | `shared_codex_home.rs:303-313` |
+| S26 | Attachments: png/jpeg/gif/webp, ≤ 8 MiB, bound to absolute paths; `attachments_supported` depends on workspace, not provider; issuance sends `localImage` items | `crates/calm-types/src/planner_attachment.rs:13-47`; `planner_attachments/mod.rs:30`; `planner_attachments/bind.rs:21-26`; `routes/cards.rs:1165-1172`; `harness/run_loop.rs:3178-3184` |
+| S27 | Other Codex-only consumers: `liveness_feeder` subscribes the Codex stream (`dispatcher/mod.rs:798`); dev replay (`replay.rs:390`); TUI initial-prompt takeover query (`db/sqlite/read.rs:798-830`) | as listed |
+
+### E1.3 MCP, tools, prompts, FE
+
+| # | Fact | Location |
+|---|---|---|
+| M1 | Codex home `[mcp_servers.calm]` = shim + daemon token | `shared_codex_home.rs:316-335`; `mcp_server/wiring.rs:61-69` |
+| M2 | Per-thread Codex config: `NEIGE_MCP_SOCKET`, `NEIGE_MCP_TOKEN`, kernel-led `PATH`; three terminal tools pre-approved for Planners | `mcp_server/wiring.rs:11-57` |
+| M3 | `mint_card_mcp_token_pair`, `mint_and_persist_card_token` | `mcp_server/wiring.rs:71`, `:104` |
+| M4 | The shim prefers `NEIGE_MCP_DAEMON_TOKEN` over `NEIGE_MCP_TOKEN` | `crates/neige-mcp-stdio-shim/src/main.rs:60-65` |
+| M5 | Card-bound connections may omit `_meta.threadId` | `mcp_server/registry.rs:53-61`; `mcp_server/transport.rs:277` |
+| M6 | `calm.user.notify` writes nothing; the transcript `mcpToolCall` row (`arguments.text`) is the message | `mcp_server/tools/user_notify.rs:1-2`; `fe/core/domain/conversation.ts:764-798` |
+| M7 | `model_tool_key` strips `mcp__<server>__` and folds to `[A-Za-z0-9_]` | `mcp_server/transport/worker_grants.rs:58-89` |
+| M8 | Codex spellings in prompts | `prompts/planner.md:67`; `prompts/assistant/mechanics.md:14`; `prompts/tools/calm.task.dispatch.md:1`; `prompts/tools/calm.source.capture.md:1` |
+| M9 | `Recover` = Codex dynamic tool registered at Planner `thread/start`, served via `item/tool/call`, provenance by Codex ids (migration 0101) | `shared_codex_appserver.rs:1276-1302`; `codex_appserver/server_requests.rs:235`; `semantic_recovery/mod.rs:22-26`, `:96-160` |
+| M10 | FE reads `agentMessage.text`, `userMessage.content[].text` (or `input_segments`), `mcpToolCall.{tool,arguments,status,error}`, `commandExecution.{command,exitCode,status,aggregatedOutput,durationMs}`, `fileChange.changes.length`, outcome `{id,status,error.message,error.codexErrorInfo}`, envelope `completedAtMs`; `tools/list` answered at `mcp_server/transport.rs:338` | `fe/core/domain/conversation.ts:800-870`, `:979-1026`, `:1054-1091`, `:1116-1144`; `fe/core/keys/mcp-tools.ts:1-34` |
+| M11 | Transcript methods: `item/started`, `item/completed`, `turn/completed` | `fe/core/domain/conversation.ts:1146-1152` |
+
+### E1.4 Gates a slice will trip
+
+| Gate | Pins | Tripped by |
+|---|---|---|
+| `tests/cases/harness_turn_start_invariant.rs` | `.turn_start(` once in `run_loop.rs`, else only allowlisted files | PR1 (`harness/backend.rs`); PR2b if `claude_planner/*` spells `.turn_start(` |
+| `scripts/gate-1316-terminology-ratchet.sh` (CI `ci.yml:464`) | occurrence counts of the five retiring terms listed in the script's `TERMS` block (#1316: old area/track/Planner/runtime/transcript names) in `crates/ fe/ docs/ e2e/`, both directions | any new file using the house tracing field named runtime+id, the transcript insert fn, or the item-added event variant; the Claude backend emits notifications instead (D2) and logs `worker_session_id` |
+| `scripts/gate-prose-ratchet.sh` | no CJK run, no ≥120-char literal in `crates/**/*.rs` | backend error texts; long texts go to `prompts/` |
+| `boot_recovery_sql_literals_track_the_minted_card_shape` (`operation/planner_harness_start_adapter.rs:2303`), `the_persisted_payload_field_names_are_frozen` (`:2140`) | boot SQL literals, payload names | PR3 |
+| goldens `tests/goldens/*prompt*.txt`, `mcp_tool_registry.json` | prompts, registry | PR7 |
+| OpenAPI drift (`scripts/local-rust-gates.sh --quick` step 5), `fe` `npm run gen:api`, handwritten FE `NewTrackBody` | request schema | PR3 |
+| migrations byte-frozen; `SYNC_EVENT_VERSION` lockstep | new migration only; no new event kind | PR3 |
+| 800-line rule | `run_loop.rs` is 4224 lines | all: new code in new files |
+
+## E2. 4140 queries and results (2026-09-24, `events.max(id)=58979`)
+
+```sh
+DB=~/.local/share/neige-next/data/calm.db
+q(){ sqlite3 -readonly -header -column "$DB" "$@"; }
+T='harness''_items'   # the migration-0031 transcript table
+q "SELECT method, item_type, COUNT(*) n FROM $T GROUP BY 1,2 ORDER BY n DESC;"                     # Q1
+q "SELECT COUNT(*) total, COUNT(DISTINCT card_id) cards, COUNT(DISTINCT thread_id) threads FROM $T;" # Q2
+q "SELECT json_extract(params,'\$.status') s, COUNT(*) FROM $T WHERE method='turn/completed' GROUP BY 1;" # Q3
+q "SELECT json_extract(params,'\$.item.server') srv, COUNT(*) FROM $T WHERE method='item/completed' AND item_type='mcpToolCall' GROUP BY 1;" # Q4
+q "SELECT COUNT(*) FROM $T WHERE item_type='dynamicToolCall';"                                     # Q5
+q "SELECT COUNT(*) FROM $T WHERE json_extract(params,'\$._projection')=1;"                           # Q6
+q "SELECT role, kind, COUNT(*) FROM cards GROUP BY 1,2 ORDER BY 3 DESC;"                            # Q7
+q "SELECT provider, contract, state, COUNT(*) FROM worker_sessions GROUP BY 1,2,3;"                 # Q8
+q "SELECT kind, phase, COUNT(*) FROM operations WHERE kind LIKE 'planner-harness-%' GROUP BY 1,2;"   # Q9
+q "SELECT (SELECT COUNT(*) FROM planner_recovery_threads),(SELECT COUNT(*) FROM planner_recovery_turns),(SELECT COUNT(*) FROM planner_recovery_issuances),(SELECT COUNT(*) FROM planner_recovery_calls);" # Q10
+q "SELECT json_extract(payload,'\$.planner_harness') ph, json_type(payload,'\$.harness') legacy, COUNT(*) FROM cards WHERE role='planner' GROUP BY 1,2;" # Q11
+q "SELECT request_fingerprint_version, COUNT(*) FROM track_create_idempotency GROUP BY 1;"           # Q12
+q "SELECT DISTINCT workspace_path FROM tracks WHERE workspace_path<>'';"  # Q13, then test -f CLAUDE.md / AGENTS.md / .claude/settings.json / .mcp.json per path
+```
+
+| Q | Result | Consequence |
+|---|---|---|
+| Q1 | `reasoning` 840/838, `commandExecution` 658/658, `agentMessage` 377/377, `mcpToolCall` 357/357, `userMessage` 123 completed, `turn/completed` 123, `fileChange` 35/35, `webSearch` 18/17, `subAgentActivity` 10/10, `imageView` 9/9, `collabAgentToolCall` 4/4, `contextCompaction` 2/2 | every type the Claude mapping emits already renders |
+| Q2 | 4863 rows, 13 cards, 13 threads (09-16 … 09-24) | all Codex |
+| Q3 | completed 117, interrupted 5, failed 1 | the three statuses the FE draws |
+| Q4 | `calm` 351, `codex_apps` 4, `codex` 2 | dotted names are the rendering contract |
+| Q5 | 0 | `dynamicToolCall` free for Claude-native tools |
+| Q6 | 0 | no drain in flight |
+| Q7 | planner/codex 24, assistant/codex 5, worker/codex 48, worker/claude 12, worker/terminal 12, reportcard 24 | 24 cards to backfill |
+| Q8 | codex/planner idle 24, superseded 17; claude/executor exited 12; no claude/planner | new identity has no legacy rows |
+| Q9 | start 85, shutdown 18, interrupt 19 — all succeeded | no op replay observes a payload change |
+| Q10 | 38 / 4 / 4 / 1 | Codex-only provenance |
+| Q11 | 23 marker, 1 legacy `harness` object | backfill keys on `role='planner'` |
+| Q12 | version 1: 38, version 0: 7 (45 bindings) | the digest must not change for Codex requests |
+| Q13 | 20 workspaces: 2 have only `AGENTS.md`, 18 have neither file; none has `.claude/settings.json` or `.mcp.json` | project executable config is hypothetical on 4140 |
+
+## E3. Probe log (claude 2.1.280, `claude-haiku-4-5`)
+
+Scratch, session-scoped (not preserved): `/tmp/claude-1000/-mnt-data2-kenji-neige-calm/852c3533-7ab9-4c83-ab0e-b2af4bcdbf0e/scratchpad/cc_probe2/`
+(`h.py`, `fake_mcp*.py`, raw NDJSON per probe). Env limited to `HOME PATH USER LOGNAME LANG TERM` +
+proxy vars; cwd `ws/` (a `CLAUDE.md` with marker `PELICAN-7`); no credential file read; never the
+production server. Round 0: 15 runs; round 1: 4 runs. Common prefix: `claude -p --input-format
+stream-json --output-format stream-json --verbose --include-partial-messages --replay-user-messages
+--model claude-haiku-4-5 --session-id <uuid>`.
+
+| Id | Flags beyond the prefix | Observed |
+|---|---|---|
+| P-A (5 runs, `initialize` only) | `--strict-mcp-config --mcp-config mcp.json --permission-prompt-tool stdio` + (a) `--setting-sources project` (b) `--safe-mode` (c) (a)+`--disable-slash-commands` (d) (a)+empty `CLAUDE_CONFIG_DIR` (e) `--bare` | commands 53/53/**0**/46/49, all `builtin: true` (incl. `deep-research`), none from `~/.claude/skills`; `models[].supportedEffortLevels` `low…max`; `account` has `email` when logged in, `{apiProvider, tokenSource}` otherwise |
+| P-B | (a) + `--permission-mode default`, user line with `uuid` | replay echoes our `uuid` (`isReplay`); `command_lifecycle` queued/started/completed; CLAUDE.md read; `mcp__calm__calm_report_write`, `mcp__calm__plugin_dev-neige-market_market_quote`; `ToolSearch select:` first; `can_use_tool` for MCP calls; `result.usage.iterations[]`, `modelUsage.<m>.contextWindow=200000`; `get_context_usage` works; `set_model` → success + a `<local-command-stdout>` replay |
+| P-C | `--safe-mode` + MCP config | `mcp_servers: []`, user plugins listed, CLAUDE.md not read |
+| P-D | (a) + empty `CLAUDE_CONFIG_DIR` | MCP connected; "Not logged in · Please run /login"; `result{subtype:"success", is_error:true, terminal_reason:"api_error", usage.iterations:[], modelUsage:{}}`; exit 1 |
+| P-E | (a) + `--disable-slash-commands --tools Bash,Read,Edit,Write,ToolSearch,WebFetch,WebSearch` | `skills: []`; Write `tool_use_result{type:"create"}`, Edit `structuredPatch`; failing Bash → `is_error`, text `"Exit code 3\none"`; a steer written while `can_use_tool` was pending: `queued`, then `started` after the tool batch, one `result` |
+| P-F1 | as P-E, SIGINT during `sleep 20` | rejected `tool_result` + interrupt text, **no `result`**, exit 0 |
+| P-F2 | as P-E, SIGKILL during `sleep 20`, then `--resume` | nothing emitted before input; context kept; killed turn reported interrupted |
+| P-F3 | as P-E, second line queued, then `interrupt` | `control_response{response:{subtype:"success", request_id, response:{still_queued:[…]}}}`; `result{error_during_execution, result:null, iterations:[], modelUsage:{}}`; lifecycle `cancelled`; queued line then ran as its own turn |
+| P-G | `--bare`, no key | `account{tokenSource:"none"}`; same failure as P-D |
+| P-H | (a) + `--tools Bash,Read,Edit,Write,ToolSearch --permission-mode default --permission-prompts none --allowedTools "Bash Read Edit Write ToolSearch mcp__calm"` | no `control_request`; MCP call, `touch` in cwd, Write **outside** cwd, `git push` all executed |
+| P-S1 (round 1) | P-H flags without `--permission-mode`, `--settings '{"sandbox":{"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false}}'`, `--mcp-config` whose env is `{"NEIGE_MCP_TOKEN":"${PROBE_TOKEN}"}` | turn fails before any request: `result{error_during_execution, errors:["Sandbox required but unavailable…"]}`, stderr "socat not installed"; exit 1; nothing written; the MCP child saw `NEIGE_MCP_TOKEN='tok-123'` (**`${VAR}` expansion works**) |
+| P-S2 (round 1) | same, without `failIfUnavailable` | stderr "⚠ Sandbox disabled: … socat not installed"; **every command ran unsandboxed**: write in cwd, outside cwd, `/tmp`, a Unix-socket connect, `curl` HTTP 200 |
+| P-I (round 1) | `--tools Read --permission-prompts none`, user line content `[text, {type:"image", source:{type:"base64", media_type:"image/png", data}}]` | model answered "Red." (32×32 red PNG); the replay echoes the base64 block; a `Read` attempt was auto-denied: "requires approval, and this session has no approval surface" (**denial path verified**) |
+| P-J (round 1) | as P-I, cwd with only `AGENTS.md` (marker `HERON-3`) | answered `HERON-3`: **AGENTS.md is read when there is no CLAUDE.md** |
+
+Not probed (host lacks `socat`, no install rights): sandbox confinement under the shipping flags;
+network allowlist behaviour; Unix-socket access for the `neige` CLI from inside the sandbox; denial of an
+out-of-cwd `Edit(//<cwd>/**)` write. These are release-gate checks (main doc §9.2).
+
+## E4. Review round 1 dispositions
+
+Channel A = subagent review, channel B = codex review, both on `c2ebf619d`. "Where" = main doc section.
+
+| Id | Finding (short) | Disposition |
+|---|---|---|
+| A1 | provider not persisted at mint | ACCEPTED (verified S12/S13) → §4.4 session identity; must-red in PR3 |
+| A2 | orphans / process groups / KillMode=process | ACCEPTED (verified S22/S23) → §5.1 process group + journal + boot sweep |
+| A3 | consecutive spawn serialization | ACCEPTED → §5.1 "one process per session at a time" |
+| A4 | call-site inventory incomplete | ACCEPTED (verified S7, S8, S11, S21, S27) → §4.1 |
+| A5 | create digest | ACCEPTED (Q12: 45 bindings) → §4.4 |
+| A6 | security honesty / sandbox | ACCEPTED; sandbox probed (P-S1, P-S2) → §5.3 + release gate §9.2; `${VAR}` token kept off disk |
+| A7 | env allowlist diverges | ACCEPTED → §5.2 reuses `SPAWN_ENV_PASSTHROUGH` minus OpenAI/Codex keys |
+| A8 | `--permission-mode default` hidden | ACCEPTED → flag dropped (P-I/P-S ran without it); `init.session_id == thread` check added |
+| A9 | usage on api_error / auxiliary models | ACCEPTED (P-D, P-F3) → §5.10 |
+| A10 | item ids per block, exit code parse, phase Idle | ACCEPTED → §6.1, §4.4 |
+| A11 | `Lagged` loss; ENOENT retry | ACCEPTED as KNOWN GAP (Codex channel is shared and busier, H23) + start preflight → §9.3 |
+| A12 | ratchet runtime+id term | ACCEPTED → E1.4 |
+| A13 | slices | ACCEPTED → §9.1 (PR2a/2b; `claude` refused until PR4; PR1 tests Codex arm only) |
+| A14 | AGENTS.md parity | ACCEPTED, verified (P-J, Q13) → §5.2 |
+| A15 | system-prompt snapshot until compaction | ACCEPTED → §5.2 instructions re-rendered at every spawn |
+| B1 | = A1 | MERGED-WITH A1 |
+| B2 | seal ownership survives registry removal; confirmed stop | ACCEPTED (verified S21) → §5.11 |
+| B3 | = A4 (+ PlainChat/Assistant stay Codex) | MERGED-WITH A4 |
+| B4 | wrong catalog endpoint | ACCEPTED (verified S11) → §5.8 three surfaces |
+| B5 | sticky needs its own arm | ACCEPTED (verified S19) → §4.4 |
+| B6 | = A5 (+ `NewTrackBody`, `wire.ts`) | MERGED-WITH A5 |
+| B7 | turn identity across crash | ACCEPTED (verified H22) → §5.1 journal |
+| B8 | settlement vs consumer teardown; cause arbitration; decode/write failures | ACCEPTED (verified H15) → §5.1, §6.2 |
+| B9 | usage conditional; totals; baseline | ACCEPTED → §5.10 (baseline: KNOWN GAP) |
+| B10 | images dropped | ACCEPTED; image blocks verified (P-I) → §5.6 |
+| B11 | wire types/envelopes incomplete | ACCEPTED (P-F3 envelope) → §5.4 |
+| B12 | permission equivalence is a release decision; project config trust | ACCEPTED → §5.3, §9.2; project config: explicit decision D13 |
+| B13 | = A13 (+ PR5 FE depends on PR4, FE checks in PR3) | MERGED-WITH A13 |
+| B14 | overstated claims (supervision, H7, H9, §5.6 key, #1727/#1785 status, #1542) | ACCEPTED: H7/H9/H17 corrected; #1727 S1–S4 and #1785 slice 1 (#1790) are in the base; #1542 overlaps the reader texts (§9.3); per-turn still needs readers/timers/sweep (§5.1 says so) |
