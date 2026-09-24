@@ -207,13 +207,16 @@ D25 (settlement order, P-L), D26 (stop mechanics).
 
 ### E4.5 Round 5
 
+All 7 items (A-M1, A-M2 = B5-1, A-m3..m6, repoint 409) accepted, verified against S37; per-row table in
+commit `38b84b780` (this file). Resulting decisions: D27 (scoped any-state sweep), D28 (credential
+tables), D29 (inert loser, seam scope, timer budget, instance marker, repoint message).
+
+### E4.6 Round 6
+
 | Id | Finding (short) | Disposition |
 |---|---|---|
-| A-M1 | credential tables unnamed; construction-minted token never authenticates; the mirror copies an old hash back | ACCEPTED, verified (S37) → D28: `mint_and_persist_card_token`; boot overwrites `card_mcp_tokens` + nulls session copies; must-red: post-boot reset never accepts the old token |
-| A-M2 / B5-1 | failed retirement stop left to boot, but deletion/repoint only stop active ids (and deletion removes the rows) | ACCEPTED, verified (S37) → D27 scoped any-state set sweep before every destructive step; two seam-driven must-reds without boot |
-| A-m3 | install-race loser hits the winner | ACCEPTED → D29 inert until `install()`; must-red: a lost race signals nothing |
-| A-m4 | seam semantics | ACCEPTED (precedent one-shot, S37) → one-shot, `stop(id)` and scoped sweeps only, returns `Err` without signalling |
-| A-m5 | timer path budget = 30 s | ACCEPTED, verified (`harness/config.rs:27`) → timer path skips the stdin wait: 25 s |
-| A-m6 | marker not instance-scoped | ACCEPTED → `<instance>:<worker_session_id>`, instance = hash of canonical `data_dir` |
-| A (checked) | repoint `Err` needs its own 409 | ACCEPTED → caller table message |
+| B6-1 = A-m2 | failed activation leaves a dead `Slot::Live` | ACCEPTED, verified (`harness/registry.rs:55-66`, `routes/cards.rs:1251-1255`) → D30 rollback + registry-miss must-red |
+| A-M1 | one-shot seam consumed by shutdown before the sweep | ACCEPTED, verified (`routes/tracks.rs:2125-2150`) → sticky until cleared |
+| A-m3 | "inert" undefined (loop runs before `install()`; late `activate`) | ACCEPTED, verified (`harness/run_loop.rs:400-416`) → D30 definition + queued-input must-red |
+| B6 (closure note) | id-set source | added (`session_repo_impl.rs:154`, `routes/areas.rs:401`) |
 
