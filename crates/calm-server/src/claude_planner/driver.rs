@@ -5,17 +5,18 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::json;
-use tokio::io::{AsyncBufReadExt as _, BufReader};
+use tokio::io::{AsyncBufReadExt as _, BufReader, Lines};
 use tokio::process::{Child, ChildStderr, ChildStdout};
 use tokio::time::Instant;
 use uuid::Uuid;
 
 use super::protocol::{ControlResponseOut, ControlResponseOutBody, Record, SystemInit, decode};
 use super::session::{Shared, TerminalCause, TurnSlot};
-use super::spawn::InstructionsFile;
+use super::spawn::{InstructionsFile, SessionStart};
 use super::stop::stop;
 use super::translate::{TurnOutcome, TurnTranslator};
 use crate::codex_appserver::Notification;
+use crate::session_projection_repo::{AgentProvider, ThreadAttribution};
 
 /// After an interrupt, the turn is stopped if the CLI has not ended it within this bound.
 const STOP_TIMER: Duration = Duration::from_secs(10);
@@ -32,6 +33,9 @@ pub(crate) struct TurnRun {
     pub(crate) translator: TurnTranslator,
     pub(crate) instructions: InstructionsFile,
     pub(crate) thread: Uuid,
+    pub(crate) turn_id: String,
+    /// How this spawn named the Claude session; `New` binds `agent_session_id` on the first init.
+    pub(crate) start: SessionStart,
 }
 
 /// The event that ends a turn (§6.2 columns).
@@ -159,72 +163,50 @@ pub(crate) async fn drive(shared: Arc<Shared>, run: TurnRun) {
         mut translator,
         instructions,
         thread,
+        turn_id,
+        start,
     } = run;
     let stderr_tail = Arc::new(Mutex::new(String::new()));
     let stderr_task = tokio::spawn(keep_stderr_tail(stderr, Arc::clone(&stderr_tail)));
     let mut lines = BufReader::new(stdout).lines();
-    let version = shared.params.host.config.claude_version.clone();
-    let mut bound = false;
-    let mut total_tokens: Option<i64> = None;
+    let mut reading = Reading {
+        shared: &shared,
+        slot: &slot,
+        translator: &mut translator,
+        thread,
+        turn_id,
+        start,
+        bound: false,
+        total_tokens: None,
+    };
     let mut stop_at: Option<Instant> = None;
     let mut exited: Option<(std::process::ExitStatus, Instant)> = None;
     let ending = loop {
         let drain_until = exited.map(|(_, at)| at + DRAIN_AFTER_EXIT);
+        // Biased so a shutdown or the stop timer is never starved by a chatty CLI; both first read
+        // every line that is already available, so a result the CLI finished before the stop
+        // still decides the turn (§6.2: an interrupted turn that finished first is completed).
         tokio::select! {
             biased;
-            _ = slot.force.notified() => break Ending::Stopped,
-            _ = sleep_until_opt(stop_at), if stop_at.is_some() => break Ending::Stopped,
+            _ = slot.force.notified() => break reading.drain_then_stop(&mut lines).await,
+            _ = sleep_until_opt(stop_at), if stop_at.is_some() => {
+                break reading.drain_then_stop(&mut lines).await;
+            }
             _ = slot.interrupt.notified(), if stop_at.is_none() => {
                 stop_at = Some(Instant::now() + STOP_TIMER);
             }
-            line = lines.next_line() => {
-                let line = match line {
-                    Ok(Some(line)) => line,
-                    Ok(None) | Err(_) => break Ending::Exited(exited.map(|(status, _)| status)),
-                };
-                let record = match decode(&line) {
-                    Ok(record) => record,
-                    Err(error) => {
-                        tracing::warn!(%error, "claude planner: undecodable stdout line");
-                        slot.record(TerminalCause::Failed(format!("protocol: {error}")));
-                        break Ending::Stopped;
+            line = lines.next_line() => match line {
+                Ok(Some(line)) => {
+                    if let Some(ending) = reading.on_line(&line).await {
+                        break ending;
                     }
-                };
-                if let Record::SystemInit(init) = &record {
-                    if let Err(check) = init_check(init, thread, &version) {
-                        slot.record(TerminalCause::Failed(format!("check: {check}")));
-                        break Ending::Stopped;
-                    }
-                    bound = true;
                 }
-                if let Record::Ignored { kind } = &record {
-                    tracing::debug!(kind, "claude planner: ignored stream record");
-                }
-                if let Record::ControlRequestIn { request_id, request } = &record {
-                    answer_control_request(&slot, request_id, request).await;
-                }
-                let now = crate::model::now_ms();
-                for notification in translator.translate(&record, now) {
-                    total_tokens = usage_total(&notification).or(total_tokens);
-                    let _ = shared.notifications.send(notification);
-                }
-                match record {
-                    Record::ResultSuccess(success) => {
-                        break Ending::Result(TerminalEvent::ResultSuccess {
-                            is_error: success.is_error,
-                            result: success.result,
-                        });
-                    }
-                    Record::ResultError(error) => {
-                        break Ending::Result(TerminalEvent::ResultError { errors: error.errors });
-                    }
-                    _ => {}
-                }
-            }
+                Ok(None) => break Ending::Exited(exited.map(|(status, _)| status)),
+                Err(error) => break reading.protocol_failure(&error),
+            },
             status = child.wait(), if exited.is_none() => {
                 // Output written just before the exit is still read, for at most the drain bound.
-                let status = status.ok();
-                match status {
+                match status.ok() {
                     Some(status) => exited = Some((status, Instant::now())),
                     None => break Ending::Exited(None),
                 }
@@ -234,6 +216,7 @@ pub(crate) async fn drive(shared: Arc<Shared>, run: TurnRun) {
             }
         }
     };
+    let (bound, total_tokens) = (reading.bound, reading.total_tokens);
     settle(
         &shared,
         SettleInput {
@@ -250,6 +233,127 @@ pub(crate) async fn drive(shared: Arc<Shared>, run: TurnRun) {
     )
     .await;
     stderr_task.abort();
+}
+
+/// At most this many already-available lines are read when a stop fires.
+const DRAIN_CAP: usize = 1024;
+
+/// The per-line half of the read loop.
+struct Reading<'a> {
+    shared: &'a Shared,
+    slot: &'a TurnSlot,
+    translator: &'a mut TurnTranslator,
+    thread: Uuid,
+    turn_id: String,
+    start: SessionStart,
+    /// A valid `system/init` named this thread's session.
+    bound: bool,
+    total_tokens: Option<i64>,
+}
+
+impl Reading<'_> {
+    /// Decode, check, answer and translate one stdout line; `Some` when the line ends the turn.
+    async fn on_line(&mut self, line: &str) -> Option<Ending> {
+        let record = match decode(line) {
+            Ok(record) => record,
+            Err(error) => return Some(self.protocol_failure(&error)),
+        };
+        match &record {
+            Record::SystemInit(init) => {
+                let version = &self.shared.params.host.config.claude_version;
+                if let Err(check) = init_check(init, self.thread, version) {
+                    self.slot
+                        .record(TerminalCause::Failed(format!("check: {check}")));
+                    return Some(Ending::Stopped);
+                }
+                if !self.bound && self.start == SessionStart::New {
+                    self.bind_agent_session().await;
+                }
+                self.bound = true;
+            }
+            Record::Ignored { kind } => {
+                tracing::debug!(kind, "claude planner: ignored stream record");
+            }
+            Record::ControlRequestIn {
+                request_id,
+                request,
+            } => answer_control_request(self.slot, request_id, request).await,
+            _ => {}
+        }
+        for notification in self.translator.translate(&record, crate::model::now_ms()) {
+            self.total_tokens = usage_total(&notification).or(self.total_tokens);
+            let _ = self.shared.notifications.send(notification);
+        }
+        match record {
+            Record::ResultSuccess(success) => Some(Ending::Result(TerminalEvent::ResultSuccess {
+                is_error: success.is_error,
+                result: success.result,
+            })),
+            Record::ResultError(error) => Some(Ending::Result(TerminalEvent::ResultError {
+                errors: error.errors,
+            })),
+            _ => None,
+        }
+    }
+
+    /// Undecodable output, including bytes that are not UTF-8 and read errors, fails the turn.
+    fn protocol_failure(&self, error: &dyn std::fmt::Display) -> Ending {
+        tracing::warn!(%error, "claude planner: undecodable stdout");
+        self.slot
+            .record(TerminalCause::Failed(format!("protocol: {error}")));
+        Ending::Stopped
+    }
+
+    /// Read every line that is available right now (bounded), then let the recorded cause stop
+    /// the turn unless one of those lines already ended it.
+    async fn drain_then_stop(&mut self, lines: &mut Lines<BufReader<ChildStdout>>) -> Ending {
+        for _ in 0..DRAIN_CAP {
+            // `next_line` is cancel-safe; a zero timeout polls it exactly once.
+            match tokio::time::timeout(Duration::ZERO, lines.next_line()).await {
+                Ok(Ok(Some(line))) => {
+                    if let Some(ending) = self.on_line(&line).await {
+                        return ending;
+                    }
+                }
+                Ok(Ok(None)) | Ok(Err(_)) | Err(_) => break,
+            }
+        }
+        Ending::Stopped
+    }
+
+    /// Persist `agent_session_id` through the attribution bind, so a session opened for this row
+    /// later resumes. A failed write is logged: this process still resumes from memory.
+    async fn bind_agent_session(&self) {
+        let params = &self.shared.params;
+        let id = params.worker_session_id.clone();
+        let thread = self.thread.to_string();
+        let turn_id = self.turn_id.clone();
+        let written = crate::db::write_in_tx_typed(params.repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                crate::db::sqlite::session_bind_attribution_tx(
+                    tx,
+                    &id,
+                    ThreadAttribution {
+                        worker_session_id: id.clone(),
+                        provider: AgentProvider::Claude,
+                        thread_id: Some(thread.clone()),
+                        session_id: Some(thread),
+                        active_turn_id: Some(turn_id),
+                    },
+                )
+                .await?;
+                Ok(())
+            })
+        })
+        .await;
+        if let Err(error) = written {
+            tracing::warn!(
+                worker_session_id = %params.worker_session_id,
+                %error,
+                "claude planner: agent session id not persisted"
+            );
+        }
+    }
 }
 
 /// The lifetime total a `thread/tokenUsage/updated` frame carries.

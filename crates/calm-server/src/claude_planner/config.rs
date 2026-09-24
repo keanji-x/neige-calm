@@ -109,3 +109,34 @@ fn version_error(binary: &Path, detail: &str) -> CalmError {
         binary.display()
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ClaudePlannerConfig;
+
+    const FULL: &str =
+        r#"{"claude_binary":"/v/2.1.280","claude_version":"2.1.280","config_dir":"/c"}"#;
+
+    #[test]
+    fn the_three_required_fields_parse() {
+        let config: ClaudePlannerConfig = serde_json::from_str(FULL).expect("parse");
+        assert_eq!(config.claude_version, "2.1.280");
+    }
+
+    #[test]
+    fn an_unknown_field_is_refused() {
+        let with_extra = FULL.replace('}', r#","claude_bin":"/x"}"#);
+        let error = serde_json::from_str::<ClaudePlannerConfig>(&with_extra).unwrap_err();
+        assert!(error.to_string().contains("unknown field"), "{error}");
+    }
+
+    #[test]
+    fn each_missing_required_field_is_refused() {
+        for field in ["claude_binary", "claude_version", "config_dir"] {
+            let mut value: serde_json::Value = serde_json::from_str(FULL).unwrap();
+            value.as_object_mut().unwrap().remove(field);
+            let error = serde_json::from_value::<ClaudePlannerConfig>(value).unwrap_err();
+            assert!(error.to_string().contains(field), "{field}: {error}");
+        }
+    }
+}

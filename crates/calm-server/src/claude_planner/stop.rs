@@ -114,7 +114,7 @@ async fn scan_off_thread(markers: &Arc<HashSet<String>>) -> Result<Vec<Member>> 
     let markers = Arc::clone(markers);
     tokio::task::spawn_blocking(move || scan(&markers))
         .await
-        .map_err(|error| CalmError::Internal(format!("claude planner stop scan: {error}")))
+        .map_err(|error| CalmError::Internal(format!("claude planner stop scan: {error}")))?
 }
 
 /// A process carrying one of the markers, with the `start_time` read BEFORE its environ: if the
@@ -125,13 +125,31 @@ pub(crate) struct Member {
     pub(crate) start_time: u64,
 }
 
-pub(crate) fn scan(markers: &HashSet<String>) -> Vec<Member> {
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return Vec::new();
-    };
+pub(crate) fn scan(markers: &HashSet<String>) -> Result<Vec<Member>> {
+    scan_in(Path::new("/proc"), markers)
+}
+
+/// One pass over `proc_root`. A listing that cannot be read is an `Err`, never an empty (and so
+/// "stopped") scan. Per pid: a process that vanished mid-scan (`ENOENT`/`ESRCH`) is skipped; one
+/// whose `stat` cannot be read or parsed for another reason is an `Err` only when its environ
+/// carries one of the markers, because a member without a `start_time` can be neither signalled
+/// nor proven gone, while a non-member is not this sweep's business.
+pub(crate) fn scan_in(proc_root: &Path, markers: &HashSet<String>) -> Result<Vec<Member>> {
+    let entries = std::fs::read_dir(proc_root).map_err(|error| {
+        CalmError::Conflict(format!(
+            "claude planner stop cannot list {}: {error}",
+            proc_root.display()
+        ))
+    })?;
     let self_pid = std::process::id() as i32;
     let mut members = Vec::new();
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            CalmError::Conflict(format!(
+                "claude planner stop cannot list {}: {error}",
+                proc_root.display()
+            ))
+        })?;
         let Some(pid) = entry
             .file_name()
             .to_str()
@@ -142,26 +160,37 @@ pub(crate) fn scan(markers: &HashSet<String>) -> Vec<Member> {
         if pid <= 1 || pid == self_pid {
             continue;
         }
-        let Some(fields) = std::fs::read_to_string(format!("/proc/{pid}/stat"))
-            .ok()
-            .and_then(|stat| parse_proc_stat_fields(&stat))
-        else {
-            continue;
+        let dir = entry.path();
+        let fields = match std::fs::read_to_string(dir.join("stat")) {
+            Ok(stat) => parse_proc_stat_fields(&stat).ok_or_else(|| "unparseable".to_string()),
+            Err(error) if vanished(&error) => continue,
+            Err(error) => Err(error.to_string()),
         };
-        if carries_marker(pid, markers) {
-            members.push(Member {
+        match fields {
+            Ok(fields) if carries_marker(&dir, markers) => members.push(Member {
                 pid,
                 start_time: fields.start_time,
-            });
+            }),
+            Ok(_) => {}
+            Err(reason) if carries_marker(&dir, markers) => {
+                return Err(CalmError::Conflict(format!(
+                    "claude planner process {pid} carries the marker but its stat is {reason}"
+                )));
+            }
+            Err(_) => {}
         }
     }
-    members
+    Ok(members)
+}
+
+fn vanished(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::NotFound || error.raw_os_error() == Some(libc::ESRCH)
 }
 
 /// Readable environ with an exact `NEIGE_CLAUDE_PLANNER=<marker>` entry for one of `markers`. An
 /// unreadable environ (EACCES, a vanished process) and a zombie's empty environ are not members.
-fn carries_marker(pid: i32, markers: &HashSet<String>) -> bool {
-    let Ok(environ) = std::fs::read(format!("/proc/{pid}/environ")) else {
+fn carries_marker(proc_dir: &Path, markers: &HashSet<String>) -> bool {
+    let Ok(environ) = std::fs::read(proc_dir.join("environ")) else {
         return false;
     };
     let prefix = format!("{MARKER_KEY}=");
@@ -239,6 +268,13 @@ mod seam {
 #[cfg(feature = "fixtures")]
 pub fn fail_claude_planner_stop_for_test(worker_session_id: &str) {
     seam::arm(worker_session_id);
+}
+
+/// Fixtures only: test cleanup kills through the same `start_time`-verified signal as `stop`, so a
+/// cleanup can never hit a pid that was recycled after the test captured it. `true` when signalled.
+#[cfg(feature = "fixtures")]
+pub fn sigkill_verified_for_test(pid: i32, start_time: u64) -> bool {
+    !signal_verified(&[Member { pid, start_time }], libc::SIGKILL).is_empty()
 }
 
 #[cfg(feature = "fixtures")]

@@ -32,6 +32,7 @@ use crate::codex_appserver::{InputItem, Notification};
 use crate::db::Repo;
 use crate::error::{CalmError, Result};
 use crate::shared_codex_appserver::SharedCodexAppServer;
+use calm_types::worker::WorkerSessionId;
 
 /// A stdin line that the CLI does not take within this bound fails the write.
 pub(crate) const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -53,8 +54,6 @@ pub struct ClaudePlannerSessionParams {
     pub calm_tools: CalmToolNames,
     /// `(UPPER, lower, value)` proxy pairs from the server's resolver.
     pub proxy: Vec<(String, String, String)>,
-    /// `Resume` once the row's `agent_session_id` is bound.
-    pub start: SessionStart,
     /// The thread's lifetime token total from the harness snapshot.
     pub prior_total_tokens: i64,
     pub repo: Arc<dyn Repo>,
@@ -192,16 +191,32 @@ pub struct ClaudePlannerSession {
 }
 
 impl ClaudePlannerSession {
-    pub fn new(params: ClaudePlannerSessionParams) -> Self {
+    /// Open the session for its worker-session row: a row whose `agent_session_id` is bound
+    /// resumes that Claude session (`--resume`); otherwise the first spawn creates it.
+    pub async fn open(params: ClaudePlannerSessionParams) -> Result<Self> {
+        let row = params
+            .repo
+            .session_get(&WorkerSessionId(params.worker_session_id.clone()))
+            .await?
+            .ok_or_else(|| {
+                CalmError::NotFound(format!(
+                    "worker session {} for a claude planner",
+                    params.worker_session_id
+                ))
+            })?;
+        let start = match row.agent_session_id {
+            Some(_) => SessionStart::Resume,
+            None => SessionStart::New,
+        };
         let (notifications, _) = broadcast::channel(1024);
         let state = State {
-            start: params.start,
+            start,
             total_tokens: params.prior_total_tokens,
             mcp_token: None,
             shutting_down: false,
             active: None,
         };
-        Self {
+        Ok(Self {
             shared: Arc::new(Shared {
                 params,
                 notifications,
@@ -210,16 +225,24 @@ impl ClaudePlannerSession {
                 #[cfg(feature = "fixtures")]
                 hooks: Mutex::new(TestHooks::default()),
             }),
-        }
+        })
     }
 
     pub fn subscribe_notifications(&self) -> broadcast::Receiver<Notification> {
         self.shared.notifications.subscribe()
     }
 
-    /// The plaintext MCP token of this harness, minted once at its first turn.
-    pub fn install_mcp_token(&self, token: String) {
-        self.shared.state().mcp_token = Some(token);
+    /// The plaintext MCP token of this harness, minted once at its first turn; a second install
+    /// is refused.
+    pub fn install_mcp_token(&self, token: String) -> Result<()> {
+        let mut state = self.shared.state();
+        if state.mcp_token.is_some() {
+            return Err(CalmError::Conflict(
+                "claude planner MCP token is already installed".into(),
+            ));
+        }
+        state.mcp_token = Some(token);
+        Ok(())
     }
 
     /// The shared daemon this session consults for thread seals.
@@ -375,6 +398,8 @@ impl ClaudePlannerSession {
                 translator,
                 instructions,
                 thread: thread_uuid,
+                turn_id: turn_id.clone(),
+                start,
             },
         ));
         Ok(turn_id)

@@ -8,9 +8,10 @@ use std::time::{Duration, Instant};
 use calm_server::claude_planner::session::SettlePause;
 use calm_server::claude_planner::stop::{
     SeamPolicy, clear_claude_planner_stop_failure_for_test, fail_claude_planner_stop_for_test,
-    stop, sweep,
+    sigkill_verified_for_test, stop, sweep,
 };
 use calm_server::codex_appserver::{InputItem, Notification};
+use calm_server::proc_identity::read_proc_start_time;
 use serde_json::Value;
 use tokio::sync::Notify;
 
@@ -44,17 +45,17 @@ async fn exit_path_records_the_outcome_before_turn_completed() {
         entered: Arc::new(Notify::new()),
         release: Arc::new(Notify::new()),
     };
-    rig.session
+    rig.session()
         .set_before_turn_completed_pause_for_test(pause.clone());
-    let mut rx = rig.session.subscribe_notifications();
+    let mut rx = rig.session().subscribe_notifications();
 
     let turn = rig
-        .session
+        .session()
         .turn_start(&rig.thread, rig.text("hello"), &client_id())
         .await
         .expect("turn_start");
     assert_eq!(
-        rig.session
+        rig.session()
             .active_turn_id_for_thread(&rig.thread)
             .as_deref(),
         Some(turn.as_str())
@@ -105,7 +106,7 @@ async fn exit_path_records_the_outcome_before_turn_completed() {
     assert!(before.iter().any(
         |n| matches!(n, Notification::Other { method, .. } if method == "thread/tokenUsage/updated")
     ));
-    assert_eq!(rig.session.active_turn_id_for_thread(&rig.thread), None);
+    assert_eq!(rig.session().active_turn_id_for_thread(&rig.thread), None);
 
     let argv = rig.read_bin("argv").expect("argv");
     let argv: Vec<&str> = argv.lines().collect();
@@ -119,7 +120,7 @@ async fn exit_path_records_the_outcome_before_turn_completed() {
 
     // The first init bound the session: the next turn resumes it.
     let second = rig
-        .session
+        .session()
         .turn_start(&rig.thread, rig.text("again"), &client_id())
         .await
         .expect("second turn_start");
@@ -182,8 +183,8 @@ fn assert_env_is_the_allowlist(rig: &Rig) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_surviving_setsid_child_of_a_successful_exit_is_gone_before_turn_completed() {
     let rig = Rig::new("exit-with-orphan").await;
-    let mut rx = rig.session.subscribe_notifications();
-    rig.session
+    let mut rx = rig.session().subscribe_notifications();
+    rig.session()
         .turn_start(&rig.thread, rig.text("hello"), &client_id())
         .await
         .expect("turn_start");
@@ -209,9 +210,9 @@ async fn a_surviving_setsid_child_of_a_successful_exit_is_gone_before_turn_compl
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_killed_cli_settles_failed_with_its_exit_status() {
     let rig = Rig::new("hold").await;
-    let mut rx = rig.session.subscribe_notifications();
+    let mut rx = rig.session().subscribe_notifications();
     let turn = rig
-        .session
+        .session()
         .turn_start(&rig.thread, rig.text("hello"), &client_id())
         .await
         .expect("turn_start");
@@ -227,15 +228,19 @@ async fn a_killed_cli_settles_failed_with_its_exit_status() {
             break;
         }
     }
+    // The fake is the session's live, unreaped child here, so its pid names it; the kill still goes
+    // through the start_time-verified signal like every other test kill.
     let pid: i32 = rig
         .read_bin("pid")
         .expect("pid")
         .trim()
         .parse()
         .expect("pid");
-    unsafe {
-        libc::kill(pid, libc::SIGKILL);
-    }
+    let start_time = read_proc_start_time(pid).expect("the fake is alive");
+    assert!(
+        sigkill_verified_for_test(pid, start_time),
+        "the fake was killed"
+    );
     let seen = until_completed(&mut rx).await;
     let completed = completed_turn(&seen);
 
@@ -265,8 +270,8 @@ async fn a_killed_cli_settles_failed_with_its_exit_status() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_cli_lingering_after_its_result_is_stopped_and_the_turn_completes() {
     let rig = Rig::new("linger").await;
-    let mut rx = rig.session.subscribe_notifications();
-    rig.session
+    let mut rx = rig.session().subscribe_notifications();
+    rig.session()
         .turn_start(&rig.thread, rig.text("hello"), &client_id())
         .await
         .expect("turn_start");
@@ -283,8 +288,8 @@ async fn a_cli_lingering_after_its_result_is_stopped_and_the_turn_completes() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_undecodable_line_fails_the_turn_as_protocol() {
     let rig = Rig::new("undecodable").await;
-    let mut rx = rig.session.subscribe_notifications();
-    rig.session
+    let mut rx = rig.session().subscribe_notifications();
+    rig.session()
         .turn_start(&rig.thread, rig.text("hello"), &client_id())
         .await
         .expect("turn_start");
@@ -298,10 +303,10 @@ async fn an_undecodable_line_fails_the_turn_as_protocol() {
 }
 
 async fn assert_refused_before_ok(rig: &Rig, input: Vec<InputItem>) -> String {
-    let mut rx = rig.session.subscribe_notifications();
+    let mut rx = rig.session().subscribe_notifications();
     let started = Instant::now();
     let error = rig
-        .session
+        .session()
         .turn_start(&rig.thread, input, &client_id())
         .await
         .expect_err("turn_start must refuse");
@@ -316,7 +321,7 @@ async fn assert_refused_before_ok(rig: &Rig, input: Vec<InputItem>) -> String {
     );
     assert!(rig.marked_pids().is_empty(), "no marked process left");
     assert!(rx.try_recv().is_err(), "no notification for a refused turn");
-    assert_eq!(rig.session.active_turn_id_for_thread(&rig.thread), None);
+    assert_eq!(rig.session().active_turn_id_for_thread(&rig.thread), None);
     error.to_string()
 }
 
@@ -347,9 +352,10 @@ async fn a_seal_after_spawn_stops_the_cli_before_any_input() {
     let rig = Rig::new("hold").await;
     let daemon = Arc::clone(&rig.daemon);
     let thread = rig.thread.clone();
-    rig.session.set_after_spawn_hook_for_test(Arc::new(move || {
-        daemon.seal_turn_thread_for_deletion(&thread);
-    }));
+    rig.session()
+        .set_after_spawn_hook_for_test(Arc::new(move || {
+            daemon.seal_turn_thread_for_deletion(&thread);
+        }));
     let error = assert_refused_before_ok(&rig, rig.text("hello")).await;
     assert!(error.contains("sealed"), "{error}");
     assert!(rig.read_bin("spawns").is_some(), "the fake was spawned");
@@ -387,14 +393,14 @@ async fn a_recorded_interrupt_then_an_is_error_result_is_interrupted() {
     let parsed: Value = serde_json::from_str(&p_d_result).expect("json");
     assert_eq!(parsed["is_error"], true, "the P-D result is is_error:true");
     std::fs::write(rig.bin("result_line"), format!("{p_d_result}\n")).expect("result line");
-    let mut rx = rig.session.subscribe_notifications();
+    let mut rx = rig.session().subscribe_notifications();
     let turn = rig
-        .session
+        .session()
         .turn_start(&rig.thread, rig.text("hello"), &client_id())
         .await
         .expect("turn_start");
     wait_for_file(&rig.bin("stdin")).await;
-    rig.session
+    rig.session()
         .turn_interrupt(&rig.thread, &turn)
         .await
         .expect("interrupt");
@@ -411,9 +417,9 @@ async fn a_recorded_interrupt_then_an_is_error_result_is_interrupted() {
 async fn the_private_instructions_never_reach_a_cmdline() {
     let sentinel = format!("SENTINEL-{}", uuid::Uuid::new_v4().simple());
     let rig = Rig::with_instructions("hold", &format!("Planner. {sentinel}")).await;
-    let mut rx = rig.session.subscribe_notifications();
+    let mut rx = rig.session().subscribe_notifications();
     let turn = rig
-        .session
+        .session()
         .turn_start(&rig.thread, rig.text("hello"), &client_id())
         .await
         .expect("turn_start");
@@ -421,7 +427,7 @@ async fn the_private_instructions_never_reach_a_cmdline() {
     let pids = rig.marked_pids();
     let cmdlines: Vec<String> = pids.iter().map(|pid| cmdline(*pid)).collect();
     let delivered = rig.read_bin("instructions").unwrap_or_default();
-    rig.session
+    rig.session()
         .turn_interrupt(&rig.thread, &turn)
         .await
         .expect("interrupt");
@@ -467,7 +473,7 @@ async fn the_stop_seam_fails_without_signalling_until_cleared() {
     .await;
     let alive_while_armed = alive(pid);
     let turn = rig
-        .session
+        .session()
         .turn_start(&rig.thread, rig.text("hello"), &client_id())
         .await;
     clear_claude_planner_stop_failure_for_test(&rig.worker_session_id);
@@ -516,14 +522,14 @@ async fn the_boot_sweep_ignores_the_seam() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shutdown_interrupts_the_running_turn_and_refuses_the_next() {
     let rig = Rig::new("hold").await;
-    let mut rx = rig.session.subscribe_notifications();
+    let mut rx = rig.session().subscribe_notifications();
     let turn = rig
-        .session
+        .session()
         .turn_start(&rig.thread, rig.text("hello"), &client_id())
         .await
         .expect("turn_start");
     wait_for_file(&rig.bin("stdin")).await;
-    rig.session.shutdown().await.expect("shutdown stops");
+    rig.session().shutdown().await.expect("shutdown stops");
     let completed = completed_turn(&until_completed(&mut rx).await);
 
     assert_eq!(completed["id"], turn.as_str());
@@ -531,7 +537,7 @@ async fn shutdown_interrupts_the_running_turn_and_refuses_the_next() {
     assert_eq!(rig.outcomes().await[0]["status"], "interrupted");
     assert!(rig.marked_pids().is_empty());
     assert!(
-        rig.session
+        rig.session()
             .turn_start(&rig.thread, rig.text("later"), &client_id())
             .await
             .is_err()
@@ -544,8 +550,8 @@ async fn an_image_goes_out_as_base64_and_is_stored_as_its_placeholder() {
     let image = rig.dir.path().join(format!("{}.png", uuid::Uuid::new_v4()));
     std::fs::write(&image, b"PNGDATA").expect("image");
     let path = image.to_string_lossy().into_owned();
-    let mut rx = rig.session.subscribe_notifications();
-    rig.session
+    let mut rx = rig.session().subscribe_notifications();
+    rig.session()
         .turn_start(
             &rig.thread,
             vec![
@@ -583,4 +589,108 @@ async fn an_image_goes_out_as_base64_and_is_stored_as_its_placeholder() {
         serde_json::json!({ "type": "localImage", "path": path })
     );
     assert!(!stored.to_string().contains("UE5HREFUQQ=="));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_ignored_interrupt_is_ended_by_the_stop_timer_within_budget() {
+    let rig = Rig::new("ignore-interrupt").await;
+    let mut rx = rig.session().subscribe_notifications();
+    let turn = rig
+        .session()
+        .turn_start(&rig.thread, rig.text("hello"), &client_id())
+        .await
+        .expect("turn_start");
+    wait_for_file(&rig.bin("stdin")).await;
+    let interrupted_at = Instant::now();
+    rig.session()
+        .turn_interrupt(&rig.thread, &turn)
+        .await
+        .expect("interrupt");
+    let seen = tokio::time::timeout(Duration::from_secs(25), until_completed(&mut rx))
+        .await
+        .expect("settled inside the 25 s interrupt budget");
+    let elapsed = interrupted_at.elapsed();
+
+    assert_eq!(completed_turn(&seen)["status"], "interrupted");
+    assert!(
+        elapsed >= Duration::from_secs(9),
+        "the timer, not the CLI, ended it: {elapsed:?}"
+    );
+    assert_eq!(rig.outcomes().await[0]["status"], "interrupted");
+    assert!(
+        rig.marked_pids().is_empty(),
+        "no marked process after the timer"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stdout_that_is_not_utf8_fails_the_turn_as_protocol() {
+    let rig = Rig::new("invalid-utf8").await;
+    let mut rx = rig.session().subscribe_notifications();
+    rig.session()
+        .turn_start(&rig.thread, rig.text("hello"), &client_id())
+        .await
+        .expect("turn_start");
+    let completed = completed_turn(&until_completed(&mut rx).await);
+
+    assert_eq!(completed["status"], "failed");
+    let message = completed["error"]["message"].as_str().unwrap_or("");
+    assert!(message.starts_with("protocol"), "{message}");
+    assert!(rig.marked_pids().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_first_init_binds_the_row_and_a_reopened_session_resumes() {
+    let rig = Rig::new("exit").await;
+    assert_eq!(rig.agent_session_id().await, None);
+    let mut rx = rig.session().subscribe_notifications();
+    rig.session()
+        .turn_start(&rig.thread, rig.text("hello"), &client_id())
+        .await
+        .expect("turn_start");
+    until_completed(&mut rx).await;
+    assert_eq!(
+        rig.agent_session_id().await.as_deref(),
+        Some(rig.thread.as_str())
+    );
+
+    let reopened = rig.open_session().await;
+    let mut rx = reopened.subscribe_notifications();
+    reopened
+        .turn_start(&rig.thread, rig.text("after a restart"), &client_id())
+        .await
+        .expect("turn_start");
+    until_completed(&mut rx).await;
+    let argv = rig.read_bin("argv").expect("argv");
+    let argv: Vec<&str> = argv.lines().collect();
+    let at = argv.iter().position(|a| *a == "--resume").expect("resume");
+    assert_eq!(argv[at + 1], rig.thread);
+}
+
+/// A shutdown that fires while the CLI's result already waits on stdout: the session is stuck
+/// writing an answer into a full stdin pipe when the result arrives, so the stop and the ready
+/// result line meet in one poll. The result came first, so the turn is completed (§6.2).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_ready_result_wins_over_a_stop_that_fires_with_it() {
+    let rig = Rig::new("flood").await;
+    let mut rx = rig.session().subscribe_notifications();
+    let turn = rig
+        .session()
+        .turn_start(&rig.thread, rig.text("hello"), &client_id())
+        .await
+        .expect("turn_start");
+    wait_for_file(&rig.bin("emitted")).await;
+    rig.session().shutdown().await.expect("shutdown stops");
+    let completed = completed_turn(&until_completed(&mut rx).await);
+
+    assert_eq!(completed["id"], turn.as_str());
+    assert_eq!(completed["status"], "completed");
+    assert_eq!(rig.outcomes().await[0]["status"], "completed");
+    assert!(rig.marked_pids().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_mcp_token_installs_once() {
+    let rig = Rig::new("exit").await;
+    assert!(rig.session().install_mcp_token("second".into()).is_err());
 }

@@ -14,14 +14,18 @@ use std::time::Duration;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::claude_planner::config::{ClaudePlannerConfig, ClaudePlannerHost};
 use calm_server::claude_planner::session::{ClaudePlannerSession, ClaudePlannerSessionParams};
-use calm_server::claude_planner::spawn::SessionStart;
-use calm_server::claude_planner::stop::MARKER_KEY;
+use calm_server::claude_planner::stop::{MARKER_KEY, sigkill_verified_for_test};
 use calm_server::claude_planner::translate::CalmToolNames;
 use calm_server::codex_appserver::{InputItem, Notification};
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx};
+use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, session_start_runtime_tx};
 use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, new_id};
+use calm_server::proc_identity::read_proc_start_time;
+use calm_server::session_projection_repo::{
+    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
+use calm_types::worker::WorkerSessionId;
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
 
@@ -36,11 +40,14 @@ pub const P_D_FIXTURE: &str = concat!(
 
 pub struct Rig {
     pub dir: tempfile::TempDir,
-    pub session: Arc<ClaudePlannerSession>,
+    session: Option<Arc<ClaudePlannerSession>>,
     pub host: Arc<ClaudePlannerHost>,
     pub repo: Arc<SqlxRepo>,
     pub daemon: Arc<SharedCodexAppServer>,
     pub card_id: String,
+    track_id: String,
+    ws: PathBuf,
+    instructions: String,
     pub worker_session_id: String,
     pub thread: String,
 }
@@ -79,31 +86,60 @@ impl Rig {
         );
         let daemon = SharedCodexAppServer::new_stub(repo.clone());
         let worker_session_id = new_id();
-        let session = Arc::new(ClaudePlannerSession::new(ClaudePlannerSessionParams {
-            host: Arc::clone(&host),
-            worker_session_id: worker_session_id.clone(),
-            card_id: card_id.clone(),
-            track_id,
-            cwd: ws,
-            instructions: instructions.to_string(),
-            calm_tools: CalmToolNames::new(["calm.report.write".to_string()]),
-            proxy: Vec::new(),
-            start: SessionStart::New,
-            prior_total_tokens: 0,
-            repo: repo.clone(),
-            seals: Arc::clone(&daemon),
-        }));
-        session.install_mcp_token("tok-rig".into());
-        Self {
+        worker_session_row(&repo, &worker_session_id, &card_id).await;
+        let mut rig = Self {
             dir,
-            session,
+            session: None,
             host,
             repo,
             daemon,
             card_id,
+            track_id,
+            ws,
+            instructions: instructions.to_string(),
             worker_session_id,
             thread: uuid::Uuid::new_v4().to_string(),
-        }
+        };
+        rig.session = Some(Arc::new(rig.open_session().await));
+        rig
+    }
+
+    /// The session every test drives.
+    pub fn session(&self) -> &Arc<ClaudePlannerSession> {
+        self.session.as_ref().expect("opened in the constructor")
+    }
+
+    /// A fresh session for this rig's worker-session row, with the rig's MCP token installed.
+    pub async fn open_session(&self) -> ClaudePlannerSession {
+        let session = ClaudePlannerSession::open(ClaudePlannerSessionParams {
+            host: Arc::clone(&self.host),
+            worker_session_id: self.worker_session_id.clone(),
+            card_id: self.card_id.clone(),
+            track_id: self.track_id.clone(),
+            cwd: self.ws.clone(),
+            instructions: self.instructions.clone(),
+            calm_tools: CalmToolNames::new(["calm.report.write".to_string()]),
+            proxy: Vec::new(),
+            prior_total_tokens: 0,
+            repo: self.repo.clone(),
+            seals: Arc::clone(&self.daemon),
+        })
+        .await
+        .expect("open session");
+        session
+            .install_mcp_token("tok-rig".into())
+            .expect("install token");
+        session
+    }
+
+    /// The row's `agent_session_id`.
+    pub async fn agent_session_id(&self) -> Option<String> {
+        self.repo
+            .session_get(&WorkerSessionId(self.worker_session_id.clone()))
+            .await
+            .expect("session_get")
+            .expect("row")
+            .agent_session_id
     }
 
     pub fn bin(&self, name: &str) -> PathBuf {
@@ -120,7 +156,11 @@ impl Rig {
 
     /// Live (non-zombie) processes carrying this rig's exact marker.
     pub fn marked_pids(&self) -> Vec<i32> {
-        marked_pids(&HashSet::from([self.marker()]))
+        self.marked().into_iter().map(|(pid, _)| pid).collect()
+    }
+
+    fn marked(&self) -> Vec<(i32, u64)> {
+        marked(&HashSet::from([self.marker()]))
     }
 
     pub fn instructions_files(&self) -> Vec<PathBuf> {
@@ -148,11 +188,11 @@ impl Rig {
 }
 
 impl Drop for Rig {
+    /// Kills only through the `start_time`-verified signal, so a pid recycled since the scan is
+    /// never hit.
     fn drop(&mut self) {
-        for pid in self.marked_pids() {
-            unsafe {
-                libc::kill(pid, libc::SIGKILL);
-            }
+        for (pid, start_time) in self.marked() {
+            sigkill_verified_for_test(pid, start_time);
         }
     }
 }
@@ -205,9 +245,37 @@ async fn planner_card(repo: &Arc<SqlxRepo>) -> (String, String) {
     (card.id.to_string(), track.id.to_string())
 }
 
-fn marked_pids(markers: &HashSet<String>) -> Vec<i32> {
+/// `(pid, start_time)` of every live process carrying one of `markers`, found without the code
+/// under test; the `start_time` is read before the environ.
+/// A Planner worker-session row with no `agent_session_id`. It is spelled as the Codex kind: the
+/// `(claude, planner)` identity is PR3's, and the session reads only `agent_session_id`.
+async fn worker_session_row(repo: &Arc<SqlxRepo>, id: &str, card_id: &str) {
+    let mut tx = repo.pool().begin().await.expect("tx");
+    session_start_runtime_tx(
+        &mut tx,
+        WorkerSessionInit {
+            id: id.to_string(),
+            card_id: card_id.to_string(),
+            kind: WorkerSessionKind::SharedPlanner,
+            agent_provider: Some(AgentProvider::Codex),
+            status: WorkerSessionState::Idle,
+            terminal_run_id: None,
+            thread_id: None,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            spawn_op_id: None,
+            now_ms: calm_server::model::now_ms(),
+        },
+    )
+    .await
+    .expect("worker session row");
+    tx.commit().await.expect("commit");
+}
+
+fn marked(markers: &HashSet<String>) -> Vec<(i32, u64)> {
     let prefix = format!("{MARKER_KEY}=");
-    let mut pids = Vec::new();
+    let mut found = Vec::new();
     for entry in std::fs::read_dir("/proc").expect("proc").flatten() {
         let Some(pid) = entry
             .file_name()
@@ -216,20 +284,23 @@ fn marked_pids(markers: &HashSet<String>) -> Vec<i32> {
         else {
             continue;
         };
+        let Some(start_time) = read_proc_start_time(pid) else {
+            continue;
+        };
         let Ok(environ) = std::fs::read(format!("/proc/{pid}/environ")) else {
             continue;
         };
-        let marked = environ.split(|&b| b == 0).any(|entry| {
+        let is_marked = environ.split(|&b| b == 0).any(|entry| {
             entry
                 .strip_prefix(prefix.as_bytes())
                 .and_then(|v| std::str::from_utf8(v).ok())
                 .is_some_and(|v| markers.contains(v))
         });
-        if marked && alive(pid) {
-            pids.push(pid);
+        if is_marked && alive(pid) {
+            found.push((pid, start_time));
         }
     }
-    pids
+    found
 }
 
 /// Present in `/proc` and not a zombie.

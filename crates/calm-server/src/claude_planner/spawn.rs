@@ -188,6 +188,17 @@ impl InstructionsFile {
         turn_id: &str,
         text: &str,
     ) -> Result<Self> {
+        for part in [worker_session_id, turn_id] {
+            if part.is_empty()
+                || !part
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            {
+                return Err(CalmError::BadRequest(format!(
+                    "{part:?} cannot name a claude planner instructions file"
+                )));
+            }
+        }
         let path = dir.join(format!("{worker_session_id}-{turn_id}.md"));
         let mut file = std::fs::OpenOptions::new()
             .write(true)
@@ -229,3 +240,7 @@ pub(crate) fn instructions_dir(data_dir: &Path) -> Result<PathBuf> {
     std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
     Ok(dir)
 }
+
+#[cfg(test)]
+#[path = "spawn_tests.rs"]
+mod tests;

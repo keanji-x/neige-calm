@@ -40,6 +40,10 @@ if [ "$SCENARIO" = "undecodable" ]; then
   echo "this is not a stream-json line"
   exec sleep 300
 fi
+if [ "$SCENARIO" = "invalid-utf8" ]; then
+  printf '\xff\xfe not utf-8\n'
+  exec sleep 300
+fi
 
 INIT='{"type":"system","subtype":"init","session_id":"%s","claude_code_version":"2.1.280",'
 INIT+='"model":"claude-haiku-4-5","capabilities":["interrupt_receipt_v1"],'
@@ -83,6 +87,23 @@ case "$SCENARIO" in
     echo "$ABORTED"
     cat > /dev/null
     exit 0 ;;
+  ignore-interrupt)
+    # Take the interrupt and keep working: only the stop timer ends this turn.
+    IFS= read -r CONTROL || exit 4
+    printf '%s\n' "$CONTROL" >> "$D/stdin"
+    exec sleep 300 ;;
+  flood)
+    # Shrink this end's stdin pipe to one page, then send more control requests than that page
+    # holds answers for, then the result; the CLI never reads stdin again, so the session is stuck
+    # writing an answer while the result already waits on stdout (all output stays under the
+    # 8 KiB a pipe gets even when the user's pipe budget is exhausted).
+    python3 -c 'import fcntl; fcntl.fcntl(0, 1031, 4096)' || exit 5
+    for i in $(seq 1 40); do
+      echo '{"type":"control_request","request_id":"r-'"$i"'","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{}}}'
+    done
+    echo "$SUCCESS"
+    touch "$D/emitted"
+    exec sleep 300 ;;
   interrupt-result-line)
     IFS= read -r CONTROL || exit 4
     printf '%s\n' "$CONTROL" >> "$D/stdin"

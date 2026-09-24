@@ -1,11 +1,15 @@
 //! `stop` against real processes. Every process here is started by the test with a marker minted
 //! from a fresh temporary `data_dir` and a fresh worker session id, so no sweep can match anything
-//! the test did not create; every test kills what it started before asserting.
+//! the test did not create. Cleanup never kills a bare pid: every process is captured with its
+//! `start_time` when it is created and killed only through [`reap`], the `start_time`-verified
+//! signal, so a pid recycled after `stop` (these sleeps are reaped by init, not by the test) is
+//! never hit.
 
+use std::collections::HashSet;
 use std::io::Read as _;
 use std::process::{Command, Stdio};
 
-use super::{MARKER_KEY, MarkerInstance, Member, signal_verified, stop};
+use super::{MARKER_KEY, MarkerInstance, Member, scan_in, signal_verified, stop};
 use crate::proc_identity::{parse_proc_stat_fields, read_proc_start_time};
 
 struct Scope {
@@ -29,31 +33,43 @@ impl Scope {
         self.instance.marker(&self.id)
     }
 
-    /// Live processes carrying this scope's exact marker, found without the code under test.
-    fn marked_pids(&self) -> Vec<i32> {
+    /// Live processes carrying this scope's exact marker, found without the code under test; the
+    /// `start_time` is read before the environ, as the sweep does.
+    fn marked(&self) -> Vec<Member> {
         let needle = format!("{MARKER_KEY}={}", self.marker());
         std::fs::read_dir("/proc")
             .expect("proc")
             .flatten()
             .filter_map(|entry| entry.file_name().to_str()?.parse::<i32>().ok())
-            .filter(|pid| {
-                std::fs::read(format!("/proc/{pid}/environ")).is_ok_and(|environ| {
+            .filter_map(|pid| {
+                Some(Member {
+                    pid,
+                    start_time: read_proc_start_time(pid)?,
+                })
+            })
+            .filter(|member| {
+                std::fs::read(format!("/proc/{}/environ", member.pid)).is_ok_and(|environ| {
                     environ
                         .split(|&b| b == 0)
                         .any(|entry| entry == needle.as_bytes())
                 })
             })
-            .filter(|pid| alive(*pid))
+            .filter(|member| alive(member.pid))
             .collect()
     }
 }
 
 impl Drop for Scope {
     fn drop(&mut self) {
-        for pid in self.marked_pids() {
-            kill(pid);
+        for member in self.marked() {
+            reap(member);
         }
     }
+}
+
+/// The only way a test kills: the `start_time`-verified signal.
+fn reap(member: Member) {
+    signal_verified(&[member], libc::SIGKILL);
 }
 
 /// Run `script` under bash with exactly `PATH` and the given marker value, and return what it
@@ -82,11 +98,14 @@ fn run_with_marker(marker: Option<&str>, script: &str) -> String {
     out
 }
 
-fn background_sleep(marker: Option<&str>) -> i32 {
-    run_with_marker(marker, "sleep 300 </dev/null >/dev/null 2>&1 & echo $!")
+/// A backgrounded `sleep 300`, captured with its `start_time` while it is certainly alive.
+fn background_sleep(marker: Option<&str>) -> Member {
+    let pid = run_with_marker(marker, "sleep 300 </dev/null >/dev/null 2>&1 & echo $!")
         .trim()
         .parse()
-        .expect("pid")
+        .expect("pid");
+    let start_time = read_proc_start_time(pid).expect("a fresh sleep has a start_time");
+    Member { pid, start_time }
 }
 
 /// Dead means gone from `/proc` or a zombie awaiting its reaper.
@@ -97,10 +116,9 @@ fn alive(pid: i32) -> bool {
         .is_some_and(|fields| fields.state != 'Z')
 }
 
-fn kill(pid: i32) {
-    unsafe {
-        libc::kill(pid, libc::SIGKILL);
-    }
+/// Alive AND still the process that was captured.
+fn still(member: Member) -> bool {
+    alive(member.pid) && read_proc_start_time(member.pid) == Some(member.start_time)
 }
 
 fn session_of(pid: i32) -> i32 {
@@ -114,25 +132,25 @@ async fn stop_returns_ok_only_after_a_marked_setsid_child_is_gone() {
         Some(&scope.marker()),
         "setsid sleep 300 </dev/null >/dev/null 2>&1 &",
     );
-    let mut pids = Vec::new();
+    let mut members = Vec::new();
     for _ in 0..100 {
-        pids = scope.marked_pids();
-        if !pids.is_empty() {
+        members = scope.marked();
+        if !members.is_empty() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    assert_eq!(pids.len(), 1, "one marked setsid child: {pids:?}");
-    let pid = pids[0];
+    assert_eq!(members.len(), 1, "one marked setsid child: {members:?}");
+    let child = members[0];
     assert_ne!(
-        session_of(pid),
+        session_of(child.pid),
         session_of(0),
         "the child runs in its own session, outside this process's group"
     );
 
     let result = stop(&scope.instance, &scope.id).await;
-    let still_alive = alive(pid);
-    kill(pid);
+    let still_alive = still(child);
+    reap(child);
 
     assert!(result.is_ok(), "stop: {result:?}");
     assert!(
@@ -151,10 +169,10 @@ async fn stop_never_signals_a_readable_unmarked_or_near_miss_process() {
     let marked = background_sleep(Some(&scope.marker()));
 
     let result = stop(&scope.instance, &scope.id).await;
-    let survivors = [unmarked, longer, other_instance].map(alive);
-    let marked_alive = alive(marked);
-    for pid in [unmarked, longer, other_instance, marked] {
-        kill(pid);
+    let survivors = [unmarked, longer, other_instance].map(still);
+    let marked_alive = still(marked);
+    for member in [unmarked, longer, other_instance, marked] {
+        reap(member);
     }
 
     assert!(result.is_ok(), "stop: {result:?}");
@@ -170,24 +188,51 @@ async fn stop_never_signals_a_readable_unmarked_or_near_miss_process() {
 #[test]
 fn a_member_whose_start_time_changed_is_never_signalled() {
     let scope = Scope::new();
-    let pid = background_sleep(Some(&scope.marker()));
-    let live = read_proc_start_time(pid).expect("start_time");
+    let sleep = background_sleep(Some(&scope.marker()));
+    let recycled = Member {
+        start_time: sleep.start_time + 1,
+        ..sleep
+    };
 
-    let signalled = signal_verified(
-        &[Member {
-            pid,
-            start_time: live + 1,
-        }],
-        libc::SIGKILL,
-    );
+    let signalled = signal_verified(&[recycled], libc::SIGKILL);
     std::thread::sleep(std::time::Duration::from_millis(100));
-    let survived = alive(pid);
-    kill(pid);
+    let survived = still(sleep);
+    reap(sleep);
 
     assert!(signalled.is_empty(), "signalled {signalled:?}");
     assert!(
         survived,
         "a start_time-mismatched pid must never be signalled"
+    );
+}
+
+/// The test cleanup path itself: a captured pid that now names another process is left alone.
+#[test]
+fn test_cleanup_never_kills_a_recycled_pid() {
+    let unrelated = background_sleep(None);
+    reap(Member {
+        start_time: unrelated.start_time + 1,
+        ..unrelated
+    });
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let survived = still(unrelated);
+    reap(unrelated);
+
+    assert!(
+        survived,
+        "cleanup killed a process that was not the one it captured"
+    );
+}
+
+#[test]
+fn an_unlistable_proc_root_is_an_error_not_an_empty_scan() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let markers = HashSet::from(["x:y".to_string()]);
+    let missing = scan_in(&dir.path().join("no-such-proc"), &markers);
+    assert!(missing.is_err(), "{missing:?}");
+    assert_eq!(
+        scan_in(dir.path(), &markers).expect("empty root"),
+        Vec::new()
     );
 }
 
