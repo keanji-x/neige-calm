@@ -189,6 +189,7 @@ async fn post_api_tracks_uses_existing_folder_claim() {
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "w-existing-claim",
             "cwd": cwd.clone(),
@@ -225,6 +226,7 @@ async fn post_api_tracks_with_attach_folder_creates_folder_and_track() {
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "w-attach",
             "cwd": cwd.clone(),
@@ -271,6 +273,7 @@ async fn post_api_tracks_attach_folder_is_idempotent_for_exact_same_area_claim()
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "w-reclaim-exact",
             "cwd": cwd.clone(),
@@ -322,6 +325,7 @@ async fn post_api_tracks_attach_folder_does_not_mint_overlapping_descendant() {
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "w-reclaim-descendant",
             "cwd": cwd.clone(),
@@ -366,6 +370,7 @@ async fn post_api_tracks_rejects_unclaimed_cwd_without_attach_folder() {
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "w-orphan",
             "cwd": attached_repo_fixture("cwd-terminal-unclaimed"),
@@ -413,6 +418,7 @@ async fn post_api_tracks_attach_folder_conflict_rolls_back() {
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "w-conflict",
             "cwd": cwd.clone(),
@@ -464,6 +470,7 @@ async fn post_api_tracks_rejects_cwd_owned_by_another_area() {
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "w-cross",
             "cwd": cwd.clone(),
@@ -515,6 +522,7 @@ async fn post_api_tracks_explicitly_reuses_cwd_owned_by_another_area_without_reb
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "w-explicit-cross-area",
             "cwd": cwd.clone(),
@@ -559,6 +567,7 @@ async fn post_api_tracks_rejects_stale_cross_area_cwd_authorization() {
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "stale-consent",
             "cwd": cwd,
@@ -600,6 +609,7 @@ async fn cross_area_cwd_authorization_rejects_deleted_claim_without_attaching() 
             boot.app.clone(),
             "/api/tracks",
             json!({
+                "planner_provider": "codex",
                 "area_id": boot.area_id,
                 "cwd": cwd,
                 "attach_folder": attach_folder,
@@ -639,6 +649,7 @@ async fn cross_area_cwd_authorization_rejects_replacement_claim_in_target_area()
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "cwd": cwd,
             "attach_folder": true,
@@ -679,6 +690,7 @@ async fn cross_area_cwd_authorization_rejects_claim_exempt_create_shapes() {
             boot.app.clone(),
             "/api/tracks",
             json!({
+                "planner_provider": "codex",
                 "area_id": area_id,
                 "cwd": requested_cwd,
                 "allow_cross_area_cwd": {"folder_id": claim.id, "area_id": boot.other_area_id},
@@ -708,6 +720,7 @@ async fn cross_area_cwd_authorization_does_not_bypass_unclaimed_cwd_fence() {
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "not-actually-shared",
             "cwd": cwd,
@@ -744,6 +757,7 @@ async fn cross_area_cwd_authorization_does_not_bypass_ancestor_conflict() {
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "unsafe-widening",
             "cwd": cwd_path.to_string_lossy(),
@@ -789,6 +803,7 @@ async fn post_api_tracks_for_system_area_skips_folder_claim() {
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": system_area_id,
             "title": "Today",
             "cwd": system_cwd.clone(),
@@ -818,6 +833,7 @@ async fn post_api_tracks_for_system_area_skips_folder_claim() {
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "user track",
             "cwd": user_cwd.clone(),
@@ -854,6 +870,7 @@ async fn post_api_tracks_omitted_cwd_allocates_managed_and_skips_area_folders() 
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "w-title-only",
             "theme": {"fg": [216,219,226], "bg": [15,20,24]},
@@ -893,6 +910,7 @@ async fn post_api_tracks_omitted_cwd_allocates_managed_and_skips_area_folders() 
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "w-null-cwd",
             "cwd": null,
@@ -955,6 +973,7 @@ async fn post_api_tracks_explicit_home_cwd_without_attach_folder_is_refused() {
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "w-explicit-home",
             "cwd": home,
@@ -998,6 +1017,7 @@ async fn post_api_tracks_empty_string_cwd_is_400() {
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "w-empty-cwd",
             "cwd": "",
@@ -1030,6 +1050,7 @@ async fn post_api_tracks_omitted_cwd_ignores_attach_folder_true() {
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "w-omit-attach-true",
             "attach_folder": true,
@@ -1071,6 +1092,7 @@ async fn post_api_tracks_rejects_non_absolute_cwd() {
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "w-relative",
             "cwd": "relative/path",
@@ -1473,6 +1495,7 @@ async fn resolve_and_track_create_agree_on_overlapping_rows() {
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": resolved_area,
             "title": "w-agree",
             "cwd": cwd.clone(),
@@ -1507,6 +1530,7 @@ async fn resolve_and_track_create_agree_on_overlapping_rows() {
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": boot.other_area_id,
             "title": "w-disagree",
             "cwd": cwd.clone(),

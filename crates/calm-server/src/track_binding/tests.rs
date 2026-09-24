@@ -326,6 +326,7 @@ impl Boot {
 
     async fn create_bound_track(&self, template_input: Option<Value>) -> String {
         let mut body = json!({
+            "planner_provider": "codex",
             "area_id": self.area_id,
             "title": "owner binding",
             "template_id": SHARED_TEMPLATE_ID,
@@ -920,6 +921,7 @@ async fn create_time_and_run_time_binding_agree_for_a_stopped_owner() {
     // Create time, owner gone: `template_input` is refused outright.
     let (status, body) = boot
         .create_track(json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "no owner",
             "template_id": SHARED_TEMPLATE_ID,

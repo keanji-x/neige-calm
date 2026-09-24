@@ -158,7 +158,7 @@ async fn post_api_tracks_mints_planner_card_atomically() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/tracks",
-        json!({"area_id": boot.area_id, "title": "first track", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"planner_provider": "codex", "area_id": boot.area_id, "title": "first track", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     // The app-server boot is non-fatal: with a broken codex bin the route still returns 201.

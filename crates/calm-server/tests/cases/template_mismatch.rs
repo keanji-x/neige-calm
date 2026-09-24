@@ -4,6 +4,7 @@ use super::*;
 async fn a_fresh_template_can_report_repository_mismatch_without_tasks_or_ratification() {
     let boot = boot().await;
     let (status, created) = request_json(&boot.app, "POST", "/api/tracks".into(), &boot.cookie, Some(json!({
+        "planner_provider": "codex",
         "area_id": boot.area_id, "title": "Check repository", "template_id": "issue-development",
         "cwd": target_cwd("-mismatch"), "attach_folder": true,
         "theme": routes::theme::RequestTheme::default_dark(),

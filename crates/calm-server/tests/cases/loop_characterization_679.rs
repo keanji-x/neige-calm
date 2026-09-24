@@ -100,7 +100,7 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: json!({"schemaVersion": 1}),
+            payload: json!({"schemaVersion": 1, "planner_provider": "codex"}),
         },
         CardRole::Planner,
         false,

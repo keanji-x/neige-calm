@@ -281,7 +281,7 @@ async fn card_mcp_token_set_tx_replaces_hash() {
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: Value::Null,
+            payload: serde_json::json!({"planner_provider": "codex"}),
         },
         CardRole::Planner,
         true,

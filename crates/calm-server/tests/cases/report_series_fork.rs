@@ -259,6 +259,7 @@ async fn fork_copies_report_series_rows() {
         "/api/tracks".into(),
         // Omitted `cwd`: a managed workspace under the pinned root.
         Some(json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "fork target",
             "theme": routes::theme::RequestTheme::default_dark(),

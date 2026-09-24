@@ -197,3 +197,16 @@ fn document_serializes_to_json() {
         .expect("components.schemas present");
     assert!(!schemas.is_empty(), "schemas must not be empty");
 }
+
+/// The card PATCH contract names every server-owned payload key, so a new key cannot ship with
+/// the documented refusal silently stale.
+#[test]
+fn card_patch_documents_every_server_owned_payload_key() {
+    let doc = serde_json::to_value(ApiDoc::openapi()).unwrap();
+    let payload = doc["components"]["schemas"]["CardPatch"]["properties"]["payload"]["description"]
+        .as_str()
+        .expect("CardPatch.payload is documented");
+    for key in calm_server::validation::SERVER_OWNED_CARD_PAYLOAD_KEYS {
+        assert!(payload.contains(&format!("`{key}`")), "{key}: {payload}");
+    }
+}

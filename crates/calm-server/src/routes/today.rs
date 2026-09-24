@@ -238,10 +238,12 @@ fn launchpad_workspace(workspace_root: &Path, area_id: &str, track_id: &str) -> 
     }
 }
 
+/// The launchpad's Planner is kernel-minted and runs on Codex.
 fn planner_payload() -> serde_json::Value {
     serde_json::json!({
         "schemaVersion": CODEX_PAYLOAD_SCHEMA_VERSION,
-        "harness": { "snapshotVersion": 0, "pendingQueue": [] }
+        "harness": { "snapshotVersion": 0, "pendingQueue": [] },
+        crate::validation::PLANNER_PROVIDER_PAYLOAD_KEY: "codex",
     })
 }
 

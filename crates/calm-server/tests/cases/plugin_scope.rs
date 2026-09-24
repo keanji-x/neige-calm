@@ -130,6 +130,7 @@ async fn unbound_create_leaves_plugin_scope_null() {
         "POST",
         "/api/tracks",
         Some(json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "unbound plugin scope",
             "cwd": attached_repo_fixture("1110-s4-unbound"),
@@ -199,6 +200,7 @@ async fn create_rejects_client_supplied_plugin_scope() {
         "POST",
         "/api/tracks",
         Some(json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "client plugin_scope",
             "cwd": attached_repo_fixture("1110-s4-create-scope"),

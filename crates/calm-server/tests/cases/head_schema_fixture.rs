@@ -54,6 +54,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0114_task_git_delivery_abandonments.sql",
     "0115_workspace_lease_upstream_base.sql",
     "0116_task_replacements.sql",
+    "0117_planner_provider_card_key.sql",
 ];
 
 #[test]

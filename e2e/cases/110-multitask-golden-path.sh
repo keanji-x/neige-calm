@@ -17,7 +17,7 @@ multitask_create_area() {
 
 multitask_create_track() {
   local area_id=$1 body track_id
-  body="$(AREA_ID="$area_id" WORKSPACE="$WORKSPACE" node -e 'process.stdout.write(JSON.stringify({area_id:process.env.AREA_ID,cwd:process.env.WORKSPACE,attach_folder:true,theme:{fg:[220,220,220],bg:[30,30,30]},title:"Dispatch exactly 2 parallel codex workers: create src/greet.py greet(name) returning '\''Hello, {name}!'\''; create USAGE.md docs; then summarize report."}))')"
+  body="$(AREA_ID="$area_id" WORKSPACE="$WORKSPACE" node -e 'process.stdout.write(JSON.stringify({area_id:process.env.AREA_ID,planner_provider:"codex",cwd:process.env.WORKSPACE,attach_folder:true,theme:{fg:[220,220,220],bg:[30,30,30]},title:"Dispatch exactly 2 parallel codex workers: create src/greet.py greet(name) returning '\''Hello, {name}!'\''; create USAGE.md docs; then summarize report."}))')"
   track_id="$(post_id /api/tracks "$body")"
   printf '%s\n' "$track_id"
 }

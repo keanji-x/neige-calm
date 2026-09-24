@@ -206,7 +206,7 @@ async fn workspace_path(b: &Boot, track_id: &str) -> PathBuf {
 async fn managed_track(b: &Boot, area_id: &str, title: &str) -> (String, PathBuf) {
     let track = create_track(
         b,
-        json!({"area_id": area_id, "title": title, "theme": theme()}),
+        json!({"planner_provider": "codex", "area_id": area_id, "title": title, "theme": theme()}),
     )
     .await;
     let id = track["id"].as_str().unwrap().to_string();
@@ -265,6 +265,7 @@ async fn attached_track(b: &Boot, area_id: &str, title: &str, path: &Path) -> St
     let track = create_track(
         b,
         json!({
+            "planner_provider": "codex",
             "area_id": area_id,
             "title": title,
             "cwd": path.to_string_lossy(),
@@ -1245,6 +1246,7 @@ async fn first_message_track_create_cannot_commit_behind_an_area_deletion_snapsh
             .header("idempotency-key", "area-delete-race")
             .body(Body::from(
                 json!({
+                "planner_provider": "codex",
                 "area_id": create_area_id,
                 "title": "too late",
                 "first_message": "start after create",

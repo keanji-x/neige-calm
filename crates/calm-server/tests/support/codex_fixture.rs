@@ -282,24 +282,13 @@ pub async fn boot_forge_e2e_fixture(
     // production planner card shape: kind:"codex" with the `planner_harness_card_payload` object.
     let (planner_kind, planner_payload) = match fixture.plan_source {
         PlanSource::Injected => ("planner".to_string(), Value::Null),
-        PlanSource::RealPlannerTurn => {
-            let mut payload = serde_json::Map::new();
-            payload.insert(
-                "schemaVersion".into(),
-                json!(calm_server::validation::CODEX_PAYLOAD_SCHEMA_VERSION),
-            );
-            payload.insert("codex_source".into(), json!("shared"));
-            payload.insert("planner_harness".into(), json!(true));
-            if let Some(goal) = fixture
-                .goal
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-            {
-                payload.insert("prompt".into(), json!(goal));
-            }
-            ("codex".to_string(), Value::Object(payload))
-        }
+        PlanSource::RealPlannerTurn => (
+            "codex".to_string(),
+            calm_server::routes::tracks::planner_harness_card_payload(
+                fixture.goal.clone(),
+                calm_server::session_projection_repo::AgentProvider::Codex,
+            ),
+        ),
     };
     let planner_card = repo_dyn
         .card_create(NewCard {

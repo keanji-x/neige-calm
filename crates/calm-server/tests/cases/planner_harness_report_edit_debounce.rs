@@ -57,7 +57,7 @@ async fn idle_harness(
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: json!({"schemaVersion": 1}),
+            payload: json!({"schemaVersion": 1, "planner_provider": "codex"}),
         })
         .await
         .unwrap();

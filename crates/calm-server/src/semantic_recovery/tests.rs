@@ -53,7 +53,7 @@ impl Fixture {
                 title: None,
                 kind: "codex".into(),
                 sort: None,
-                payload: json!({}),
+                payload: json!({"planner_provider": "codex"}),
             },
             CardRole::Planner,
             false,

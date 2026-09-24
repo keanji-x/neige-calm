@@ -1,3 +1,6 @@
+#[path = "planner_provider_recovery.rs"]
+mod planner_provider_recovery;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -97,7 +100,10 @@ async fn seed_planner_card_row(repo: &SqlxRepo, track_id: &TrackId) -> calm_serv
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: calm_server::routes::tracks::planner_harness_card_payload(None),
+            payload: calm_server::routes::tracks::planner_harness_card_payload(
+                None,
+                calm_server::session_projection_repo::AgentProvider::Codex,
+            ),
         },
         CardRole::Planner,
         false,
@@ -263,7 +269,7 @@ async fn direct_recovery_boundary_rejects_area_chat_planner_runtime() {
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: json!({"schemaVersion": 1}),
+            payload: json!({"schemaVersion": 1, "planner_provider": "codex"}),
         },
         CardRole::Planner,
         false,
@@ -343,16 +349,7 @@ async fn seed_recoverable_runtime(repo: &Arc<SqlxRepo>, tag: &str, thread_id: &s
         })
         .await
         .unwrap();
-    let card = repo
-        .card_create(NewCard {
-            track_id: track.id,
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({"schemaVersion": 1}),
-        })
-        .await
-        .unwrap();
+    let card = seed_planner_card_row(repo, &track.id).await;
     let runtime_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
@@ -454,16 +451,7 @@ async fn boot_recovery_respawns_harness_with_snapshot() {
         })
         .await
         .unwrap();
-    let card = repo
-        .card_create(NewCard {
-            track_id: track.id,
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({"schemaVersion": 1}),
-        })
-        .await
-        .unwrap();
+    let card = seed_planner_card_row(&repo, &track.id).await;
     let runtime_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(
         42,
@@ -776,16 +764,7 @@ async fn boot_recovery_is_deferred_until_shared_daemon_is_running() {
         })
         .await
         .unwrap();
-    let card = repo
-        .card_create(NewCard {
-            track_id: track.id,
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({"schemaVersion": 1}),
-        })
-        .await
-        .unwrap();
+    let card = seed_planner_card_row(&repo, &track.id).await;
     let runtime_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(
         7,
@@ -1022,16 +1001,7 @@ async fn boot_recovery_skips_terminal_tracks() {
         .execute(repo.pool())
         .await
         .unwrap();
-    let card = repo
-        .card_create(NewCard {
-            track_id: track.id,
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({"schemaVersion": 1}),
-        })
-        .await
-        .unwrap();
+    let card = seed_planner_card_row(&repo, &track.id).await;
     let runtime_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(
         42,
@@ -1105,16 +1075,7 @@ async fn boot_recovery_skips_deferred_worker_session_phantom_ghost() {
         })
         .await
         .unwrap();
-    let card = repo
-        .card_create(NewCard {
-            track_id: track.id,
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({"schemaVersion": 1}),
-        })
-        .await
-        .unwrap();
+    let card = seed_planner_card_row(&repo, &track.id).await;
     let placeholder_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(
         1,
@@ -1207,7 +1168,7 @@ async fn force_new_thread_recovery_after_phase2_crash() {
                 payload: json!({
                     "schemaVersion": 1,
                     "codex_source": "shared",
-                    "planner_harness": true
+                    "planner_harness": true, "planner_provider": "codex"
                 }),
             })
             .await
@@ -1689,7 +1650,10 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_planner_bac
     let planner_card = card_create_with_id_tx(
         &mut tx,
         new_id(),
-        mk(track.id.clone(), json!({"schemaVersion": 1})),
+        mk(
+            track.id.clone(),
+            json!({"schemaVersion": 1, "planner_provider": "codex"}),
+        ),
         CardRole::Planner,
         false,
         repo.card_role_cache(),

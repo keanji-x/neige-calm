@@ -4,6 +4,7 @@
 import { z } from 'zod';
 
 import { cardRuntimeViewSchema } from '../api/schemas.js';
+import type { AgentProvider } from '../api/generated/wire.js';
 import type { ApiFailure, ApiOperation } from '../api/types.js';
 import {
   activityStateOf, type ActivityItem, type ActivityState, type AttentionKind, type CardActivity,
@@ -305,6 +306,8 @@ export function isBlankForKernel(text: string): boolean {
 
 export type NewTrackBody = Readonly<{
   area_id: string;
+  /** The Planner's backend, stamped on its card and never changed. Required: the kernel refuses a create without it. */
+  planner_provider: AgentProvider;
   /** Planner overrides applied before the first message; omitted follows installation defaults. */
   model?: string;
   reasoning_effort?: string;

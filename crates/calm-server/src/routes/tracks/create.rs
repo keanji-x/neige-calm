@@ -98,6 +98,7 @@ pub(super) struct ResumeFirstMessage {
 /// Every request field that decides the minted track, as the caller sent it (cloned
 /// before `CreationSource::stamp` rewrites the template spelling).
 pub(super) struct CreateRequestShape {
+    pub planner_provider: crate::session_projection_repo::AgentProvider,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
     pub title: String,
@@ -353,6 +354,11 @@ fn create_request_digest(shape: &CreateRequestShape) -> Result<String> {
     }
     if let Some(effort) = &shape.reasoning_effort {
         payload["reasoning_effort"] = serde_json::json!(effort);
+    }
+    // Every binding before `planner_provider` existed is a Codex create: Codex keeps that exact
+    // digest, and any other provider can never match one.
+    if shape.planner_provider != crate::session_projection_repo::AgentProvider::Codex {
+        payload["planner_provider"] = serde_json::to_value(&shape.planner_provider)?;
     }
     stable_payload_hash(&payload)
 }
@@ -726,12 +732,17 @@ async fn start_planner_harness_with_first_message(
 }
 
 #[cfg(test)]
+mod provider_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session_projection_repo::AgentProvider;
 
     #[test]
     fn cross_area_authorization_is_part_of_idempotent_create_identity() {
         let shape = |allow_cross_area_cwd| CreateRequestShape {
+            planner_provider: AgentProvider::Codex,
             model: None,
             reasoning_effort: None,
             title: "shared cwd".into(),

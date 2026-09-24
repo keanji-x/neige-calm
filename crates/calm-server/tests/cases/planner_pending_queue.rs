@@ -184,7 +184,7 @@ async fn a_card_with_no_runtime_reports_an_empty_pending_page() {
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: json!({"schemaVersion": 1, "planner_harness": true}),
+            payload: json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex"}),
         },
         CardRole::Planner,
         false,

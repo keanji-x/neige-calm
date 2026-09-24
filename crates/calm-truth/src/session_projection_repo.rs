@@ -68,6 +68,35 @@ pub struct WorkerSessionInit {
     pub now_ms: TimestampMs,
 }
 
+impl WorkerSessionInit {
+    /// A Planner harness runtime. The provider is required: the mirror persists it as the
+    /// session row's provider (`resumable`, `planner`), which the kind alone cannot name.
+    pub fn shared_planner(
+        id: String,
+        card_id: CardId,
+        provider: AgentProvider,
+        status: WorkerSessionState,
+        thread_id: Option<String>,
+        handle_state_json: Value,
+        now_ms: TimestampMs,
+    ) -> Self {
+        Self {
+            id,
+            card_id,
+            kind: WorkerSessionKind::SharedPlanner,
+            agent_provider: Some(provider),
+            status,
+            terminal_run_id: None,
+            thread_id,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(handle_state_json),
+            spawn_op_id: None,
+            now_ms,
+        }
+    }
+}
+
 #[async_trait]
 pub trait WorkerSessionProjectionRepo {
     /// Active = starting/running/idle/turn_pending, matching the active-per-card

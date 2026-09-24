@@ -406,6 +406,7 @@ async fn every_managed_track_lives_under_the_workspace_root() {
     create_track(
         &b,
         serde_json::json!({
+            "planner_provider": "codex",
             "area_id": area["id"],
             "title": "managed track",
             "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
@@ -415,6 +416,7 @@ async fn every_managed_track_lives_under_the_workspace_root() {
     create_track(
         &b,
         serde_json::json!({
+            "planner_provider": "codex",
             "area_id": area["id"],
             "title": "attached track",
             "cwd": attached_dir.clone(),
@@ -479,6 +481,7 @@ async fn no_attached_track_is_ever_unfrozen() {
     create_track(
         &b,
         serde_json::json!({
+            "planner_provider": "codex",
             "area_id": area["id"],
             "title": "user track",
             "cwd": attached_dir.clone(),
@@ -490,6 +493,7 @@ async fn no_attached_track_is_ever_unfrozen() {
     create_track(
         &b,
         serde_json::json!({
+            "planner_provider": "codex",
             "area_id": area["id"],
             "title": "managed track",
             "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
@@ -850,6 +854,7 @@ async fn no_two_tracks_share_a_managed_workspace_path() {
     let managed_parent = create_track(
         &b,
         serde_json::json!({
+            "planner_provider": "codex",
             "area_id": area["id"],
             "title": "managed parent",
             "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
@@ -859,6 +864,7 @@ async fn no_two_tracks_share_a_managed_workspace_path() {
     let attached_parent = create_track(
         &b,
         serde_json::json!({
+            "planner_provider": "codex",
             "area_id": area["id"],
             "title": "attached parent",
             "cwd": attached_dir.clone(),
@@ -920,6 +926,7 @@ async fn shared_managed_path_is_reported_as_a_violation() {
     let first = create_track(
         &b,
         serde_json::json!({
+            "planner_provider": "codex",
             "area_id": area["id"],
             "title": "first",
             "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
@@ -929,6 +936,7 @@ async fn shared_managed_path_is_reported_as_a_violation() {
     let second = create_track(
         &b,
         serde_json::json!({
+            "planner_provider": "codex",
             "area_id": area["id"],
             "title": "second",
             "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},

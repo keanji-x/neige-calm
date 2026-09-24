@@ -69,7 +69,7 @@ pub async fn boot() -> Boot {
             title: None,
             kind: "codex".into(),
             sort: Some(0.0),
-            payload: json!({ "role": "planner" }),
+            payload: json!({ "role": "planner", "planner_provider": "codex" }),
         })
         .await
         .unwrap();

@@ -121,7 +121,7 @@ async fn boot_with(plan: BootPlan) -> Boot {
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: json!({"schemaVersion": 1, "planner_harness": true}),
+            payload: json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex"}),
         })
         .await
         .unwrap();
@@ -771,7 +771,7 @@ async fn an_echo_upgrades_the_projection_of_its_own_card_only() {
                 title: None,
                 kind: "codex".into(),
                 sort: None,
-                payload: json!({"schemaVersion": 1, "planner_harness": true}),
+                payload: json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex"}),
             })
             .await
             .unwrap();

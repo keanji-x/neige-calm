@@ -183,7 +183,7 @@ async fn title_only_create_allocates_and_materializes_a_managed_workspace() {
     let (status, body) = post(
         b.app.clone(),
         "/api/tracks",
-        json!({"area_id": b.area_id, "title": "research", "theme": theme()}),
+        json!({"planner_provider": "codex", "area_id": b.area_id, "title": "research", "theme": theme()}),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
@@ -219,6 +219,7 @@ async fn template_create_without_cwd_allocates_and_materializes_a_managed_worksp
         b.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": b.area_id,
             "title": "from template",
             "template_id": "small-change",
@@ -279,6 +280,7 @@ async fn explicit_cwd_stays_attached_and_is_never_git_inited() {
         b.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": b.area_id,
             "title": "attached",
             "cwd": target.to_string_lossy(),
@@ -315,7 +317,7 @@ async fn materialize_failure_fails_the_create() {
     let (status, body) = post(
         b.app.clone(),
         "/api/tracks",
-        json!({"area_id": b.area_id, "title": "doomed", "theme": theme()}),
+        json!({"planner_provider": "codex", "area_id": b.area_id, "title": "doomed", "theme": theme()}),
     )
     .await;
     assert!(
@@ -350,7 +352,7 @@ async fn materialize_failure_fails_the_create() {
     let (status, body) = post(
         b.app,
         "/api/tracks",
-        json!({"area_id": b.area_id, "title": "fine", "theme": theme()}),
+        json!({"planner_provider": "codex", "area_id": b.area_id, "title": "fine", "theme": theme()}),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
@@ -364,7 +366,7 @@ async fn a_materialized_workspace_can_pass_the_git_and_head_checks_and_still_fai
     let (status, body) = post(
         b.app.clone(),
         "/api/tracks",
-        json!({"area_id": b.area_id, "title": "escape", "theme": theme()}),
+        json!({"planner_provider": "codex", "area_id": b.area_id, "title": "escape", "theme": theme()}),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
@@ -429,7 +431,7 @@ async fn an_unmaterialized_managed_track_heals_when_a_worker_takes_its_lease() {
     let (status, body) = post(
         b.app.clone(),
         "/api/tracks",
-        json!({"area_id": b.area_id, "title": "orphan", "theme": theme()}),
+        json!({"planner_provider": "codex", "area_id": b.area_id, "title": "orphan", "theme": theme()}),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
@@ -511,6 +513,7 @@ async fn attaching_a_repo_that_already_has_a_neige_branch_is_refused() {
         b.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": b.area_id,
             "title": "attached-neige",
             "cwd": user_repo.to_string_lossy(),
@@ -549,6 +552,7 @@ async fn a_neige_branch_created_after_attach_still_blocks_the_first_worker() {
         b.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": b.area_id,
             "title": "attached-clean",
             "cwd": user_repo.to_string_lossy(),

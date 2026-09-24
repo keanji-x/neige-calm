@@ -139,7 +139,7 @@ async fn boot() -> Boot {
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: Value::Null,
+            payload: serde_json::json!({"planner_provider": "codex"}),
         })
         .await
         .unwrap();

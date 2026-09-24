@@ -167,6 +167,7 @@ async fn planner_harness_ops_for_track(repo: &Arc<dyn Repo>, track_id: &str) -> 
 
 fn create_body(area_id: &str, title: &str, extra: Value) -> Value {
     let mut body = json!({
+        "planner_provider": "codex",
         "area_id": area_id,
         "title": title,
         "cwd": attached_repo_fixture(&format!("1110-s6-{title}")),
@@ -1135,6 +1136,7 @@ async fn blank_template_id_is_rejected() {
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "blank template id",
             "theme": theme(),
@@ -1183,6 +1185,7 @@ async fn pre_transaction_404_unknown_area_with_template_does_not_seed() {
     assert_pre_transaction_4xx_does_not_seed(
         "area 404",
         json!({
+            "planner_provider": "codex",
             "area_id": "area_does_not_exist",
             "title": "unknown area",
             "theme": theme(),
@@ -1198,6 +1201,7 @@ async fn pre_transaction_400_relative_cwd_with_template_does_not_seed() {
     assert_pre_transaction_4xx_does_not_seed(
         "relative cwd",
         json!({
+            "planner_provider": "codex",
             "area_id": "",
             "title": "relative cwd",
             "cwd": "relative/not/absolute",
@@ -1217,6 +1221,7 @@ async fn pre_transaction_400_non_repo_cwd_with_template_does_not_seed() {
     assert_pre_transaction_4xx_does_not_seed(
         "cwd is not a git repository",
         json!({
+            "planner_provider": "codex",
             "area_id": "",
             "title": "cwd not a repo",
             "cwd": non_repo.path().display().to_string(),
@@ -1342,6 +1347,7 @@ async fn old_template_id_spelling_is_an_unknown_field() {
     assert_old_spelling_is_an_unknown_field(
         "row 18: workflow_id alone",
         json!({
+            "planner_provider": "codex",
             "area_id": "",
             "title": "old id spelling",
             "attach_folder": false,
@@ -1358,6 +1364,7 @@ async fn old_template_input_spelling_is_an_unknown_field() {
     assert_old_spelling_is_an_unknown_field(
         "row 19: new template_id + old workflow_input",
         json!({
+            "planner_provider": "codex",
             "area_id": "",
             "title": "old input spelling",
             "attach_folder": false,
@@ -1376,6 +1383,7 @@ async fn retired_as_template_is_an_unknown_field() {
     assert_old_spelling_is_an_unknown_field(
         "#1318 S2: as_template retired",
         json!({
+            "planner_provider": "codex",
             "area_id": "",
             "title": "retired as_template",
             "attach_folder": false,
@@ -1392,6 +1400,7 @@ async fn both_spellings_together_are_an_unknown_field() {
     assert_old_spelling_is_an_unknown_field(
         "row 20: template_id and workflow_id together",
         json!({
+            "planner_provider": "codex",
             "area_id": "",
             "title": "both spellings",
             "attach_folder": false,

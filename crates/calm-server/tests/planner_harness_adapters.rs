@@ -202,7 +202,7 @@ async fn seed_planner_card(
             payload: json!({
                 "schemaVersion": 1,
                 "codex_source": "shared",
-                "planner_harness": true
+                "planner_harness": true, "planner_provider": "codex"
             }),
         },
         CardRole::Planner,

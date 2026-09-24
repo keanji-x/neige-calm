@@ -194,7 +194,7 @@ pub(crate) async fn boot_at(db_url: &str) -> Boot {
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: Value::Null,
+            payload: serde_json::json!({"planner_provider": "codex"}),
         })
         .await
         .unwrap();

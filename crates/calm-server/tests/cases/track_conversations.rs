@@ -108,6 +108,7 @@ impl Boot {
                 "/api/tracks",
                 None,
                 Some(json!({
+                    "planner_provider": "codex",
                     "area_id": self.area_id,
                     "title": title,
                     "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},

@@ -47,7 +47,7 @@ async fn seed_harness(
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: json!({"schemaVersion": 1, "planner_harness": true}),
+            payload: json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex"}),
         })
         .await
         .unwrap();

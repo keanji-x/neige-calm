@@ -180,7 +180,7 @@ It writes two things itself: the durable turn outcome (`turn_outcome::record`, i
   fingerprinted bindings replay unchanged, the 7 legacy ones keep failing closed, and a Claude request
   never matches a Codex binding. **PR3 makes every existing caller send `"codex"`** (FE `new-track-route.tsx:66-74`
   body + `NewTrackBody`, `e2e/`, the Rust `/api/tracks` callers) with a regression test; fixtures inserting
-  Planner cards directly get the key. Fork and Planner-opened child tracks inherit the key.
+  Planner cards directly get the key. A fork (`fork_report_from`) takes `planner_provider` from its own required request field; only Planner-opened child tracks inherit the parent Planner's key.
 - **Start adapter (Claude branch).** UUID thread, no RPC, `phase = Idle`, `last_thread_id` (as `:982-985`).
 
 ## 5. The Claude backend

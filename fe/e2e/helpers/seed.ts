@@ -28,6 +28,7 @@ export async function createTrack(
   const response = await request.post('/api/tracks', {
     data: {
       area_id: areaId,
+      planner_provider: 'codex',
       title,
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
     },

@@ -359,7 +359,7 @@ class Round:
             raise EvidenceError("running build SHA does not match the committed source")
         area = self.api.call("POST", "/api/areas", {"name": "Planner Claude UX", "color": "#4a90d9"})
         track = self.api.call("POST", "/api/tracks", {
-            "area_id": area["id"], "cwd": args.workspace, "attach_folder": True,
+            "area_id": area["id"], "planner_provider": "codex", "cwd": args.workspace, "attach_folder": True,
             "theme": {"fg": [220, 220, 220], "bg": [30, 30, 30]},
             "title": "Planner Claude terminal usability test"})
         deadline = time.monotonic() + 60

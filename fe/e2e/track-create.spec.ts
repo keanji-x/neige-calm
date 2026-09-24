@@ -71,7 +71,7 @@ test('creates a track from an Area group with no title, and persists it', async 
     page.getByRole('button', { name: 'Create track' }).click(),
   ]);
   const body = createRequest.postDataJSON() as Record<string, unknown>;
-  expect(body).toMatchObject({ area_id: area.id });
+  expect(body).toMatchObject({ area_id: area.id, planner_provider: 'codex' });
   expect(body).toHaveProperty('theme');
   expect(body).not.toHaveProperty('title');
   /* Asserted against the typed string, so a create that posted other text is not confused with delivery. */
@@ -182,7 +182,7 @@ test('creates a track from a template and seeds its report', async ({ page, requ
   ]);
   const body = createRequest.postDataJSON() as Record<string, unknown>;
   /* A template create carries the sentence too; the kernel runs the same harness start for both. */
-  expect(body).toMatchObject({ area_id: area.id, template_id: 'small-change', first_message: message });
+  expect(body).toMatchObject({ area_id: area.id, planner_provider: 'codex', template_id: 'small-change', first_message: message });
   expect(body).not.toHaveProperty('title');
   // Unbound template: the kernel rejects `template_input` against it.
   expect(body).not.toHaveProperty('template_input');

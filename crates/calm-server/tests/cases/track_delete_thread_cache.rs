@@ -136,7 +136,7 @@ async fn managed_track(b: &Boot, area_id: &str, title: &str) -> String {
         b.app.clone(),
         "POST",
         "/api/tracks",
-        Some(json!({"area_id": area_id, "title": title, "theme": theme()})),
+        Some(json!({"planner_provider": "codex", "area_id": area_id, "title": title, "theme": theme()})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={text}");

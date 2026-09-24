@@ -67,19 +67,19 @@ describe('track create operation', () => {
 
   it('carries the draft key exactly when a first message is present', () => {
     const keyed = createTrackOperation(
-      { area_id: 'area', theme, first_message: 'ship it' },
+      { area_id: 'area', planner_provider: 'codex', theme, first_message: 'ship it' },
       'draft-key',
     );
     expect(keyed.headers).toEqual({ 'Idempotency-Key': 'draft-key' });
 
-    const messageLess = createTrackOperation({ area_id: 'area', theme });
+    const messageLess = createTrackOperation({ area_id: 'area', planner_provider: 'codex', theme });
     expect(messageLess.headers).toBeUndefined();
   });
 
   it('makes a message without a key invalid at both the type and runtime boundaries', () => {
     expect(() => {
       // @ts-expect-error first_message makes Idempotency-Key required.
-      createTrackOperation({ area_id: 'area', theme, first_message: 'missing key' });
+      createTrackOperation({ area_id: 'area', planner_provider: 'codex', theme, first_message: 'missing key' });
     }).toThrow(/Idempotency-Key/);
   });
 

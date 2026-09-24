@@ -127,9 +127,13 @@ async fn boot() -> Boot {
         .card_create(NewCard {
             track_id: track.id.clone(),
             title: None,
-            kind: "planner".into(),
+            kind: "codex".into(),
             sort: None,
-            payload: Value::Null,
+            // The production Planner card shape: a child track inherits its backend.
+            payload: calm_server::routes::tracks::planner_harness_card_payload(
+                None,
+                calm_server::session_projection_repo::AgentProvider::Codex,
+            ),
         })
         .await
         .unwrap();

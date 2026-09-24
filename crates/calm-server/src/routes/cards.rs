@@ -86,7 +86,7 @@ pub(crate) async fn card_scope_tx(
 
 /// Whether the persisted card shape is allowed to use the headless harness routes. Unknown/malformed profile values fail closed.
 pub(crate) fn card_runs_headless_harness(card: &Card, role: CardRole) -> bool {
-    crate::harness::profile::HarnessProfile::from_card(card, role).is_some()
+    crate::harness::profile::PlannerBinding::from_card(card, role).is_some()
 }
 
 pub(crate) async fn interrupt_shared_card_active_turn(
@@ -552,7 +552,7 @@ fn tool_call_bad_gateway(plugin_id: &str, tool_name: &str, detail: &str) -> Resp
     request_body = CardPatch,
     responses(
         (status = 200, description = "Card updated", body = Card),
-        (status = 400, description = "Card patch violates an invariant", body = ErrorBody),
+        (status = 400, description = "Card patch violates an invariant (see `CardPatch.payload`)", body = ErrorBody),
         (status = 404, description = "Card not found", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),

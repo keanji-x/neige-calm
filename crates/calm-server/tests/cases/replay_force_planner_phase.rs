@@ -100,6 +100,7 @@ async fn create_track(boot: &Boot) -> (String, String) {
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "probe track",
             "cwd": attached_repo_fixture("issue-682-force-planner-phase"),

@@ -6,6 +6,9 @@
 #[path = "template_startup_context.rs"]
 mod template_startup_context;
 
+#[path = "planner_provider_identity.rs"]
+mod planner_provider_identity;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -199,6 +202,7 @@ impl Boot {
         first_message: Option<&str>,
     ) -> (StatusCode, Value) {
         let mut body = json!({
+            "planner_provider": "codex",
             "area_id": self.area_id,
             "title": "",
             "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
@@ -218,6 +222,7 @@ impl Boot {
         cwd: &std::path::Path,
     ) -> (StatusCode, Value) {
         let mut body = json!({
+            "planner_provider": "codex",
             "area_id": self.area_id,
             "title": "",
             "cwd": cwd.to_string_lossy(),
@@ -883,6 +888,7 @@ async fn a_template_create_delivers_the_first_message() {
         .post_create(
             Some("idem-template"),
             json!({
+                "planner_provider": "codex",
                 "area_id": b.area_id,
                 "title": "",
                 "template_id": "small-change",
@@ -968,6 +974,7 @@ async fn a_first_message_is_delivered_once_on_a_recipe_create() {
         .post_create(
             Some("idem-recipe"),
             json!({
+                "planner_provider": "codex",
                 "area_id": b.area_id,
                 "title": "",
                 "recipe_id": recipe_id,
@@ -1045,6 +1052,7 @@ async fn a_first_message_with_an_unknown_recipe_leaves_nothing_behind() {
         .post_create(
             Some("idem-missing-recipe"),
             json!({
+                "planner_provider": "codex",
                 "area_id": b.area_id,
                 "title": "",
                 "recipe_id": "recipe-does-not-exist",
@@ -1299,6 +1307,7 @@ async fn a_key_bound_by_one_create_shape_refuses_the_other() {
         .post_create(
             Some("idem-shape"),
             json!({
+                "planner_provider": "codex",
                 "area_id": b.area_id,
                 "title": "a different title",
                 "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
@@ -1722,6 +1731,7 @@ async fn a_failed_operation_does_not_unbind_the_create_shape() {
         .shared_codex_appserver
         .fail_next_thread_start_for_test();
     let original = json!({
+        "planner_provider": "codex",
         "area_id": b.area_id,
         "title": "original title",
         "first_message": "same sentence",
@@ -1779,6 +1789,7 @@ async fn a_key_exhausted_by_64_failed_attempts_answers_409() {
     );
 
     let different_create = json!({
+        "planner_provider": "codex",
         "area_id": b.area_id,
         "title": "different title",
         "first_message": "burn this key",
@@ -1929,6 +1940,7 @@ async fn a_retry_after_a_failure_survives_the_attached_directory_ceasing_to_vali
 async fn a_create_without_a_first_message_still_runs_every_create_check() {
     let b = boot().await;
     let base = json!({
+        "planner_provider": "codex",
         "area_id": b.area_id,
         "title": "",
         "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
@@ -2062,6 +2074,7 @@ async fn an_operationless_binding_rejects_a_different_first_message() {
 
     let running_app = b.app_with_running_daemon();
     let mut edited = json!({
+        "planner_provider": "codex",
         "area_id": b.area_id,
         "title": "",
         "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
@@ -2089,6 +2102,7 @@ async fn an_operationless_binding_rejects_a_different_create_shape() {
     let b = boot_without_daemon().await;
     let key = "idem-operationless-shape";
     let base = json!({
+        "planner_provider": "codex",
         "area_id": b.area_id,
         "title": "original title",
         "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
@@ -2330,6 +2344,7 @@ async fn a_loser_of_the_cross_instance_key_race_writes_nothing_and_retries_onto_
 
     // The loser starts first and parks after its lookup 1 missed, before its create transaction opens.
     let loser_body = json!({
+        "planner_provider": "codex",
         "area_id": loser.area_id,
         "title": "",
         "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
@@ -2416,6 +2431,7 @@ async fn a_loser_of_the_cross_instance_key_race_writes_nothing_and_retries_onto_
             loser.app.clone(),
             Some(key),
             json!({
+                "planner_provider": "codex",
                 "area_id": loser.area_id,
                 "title": "",
                 "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
@@ -2750,6 +2766,7 @@ async fn a_new_idempotency_key_recovers_from_a_deleted_track() {
 async fn the_same_key_with_a_different_title_is_a_conflict() {
     let b = boot().await;
     let base = json!({
+        "planner_provider": "codex",
         "area_id": b.area_id,
         "title": "the original title",
         "first_message": "ship the thing",
@@ -2782,6 +2799,7 @@ async fn the_same_key_with_a_different_title_is_a_conflict() {
     // And a source field on its own key.
     let recipe_id = b.create_recipe("rollout flow", &recipe_body()).await;
     let with_recipe = json!({
+        "planner_provider": "codex",
         "area_id": b.area_id,
         "title": "same title",
         "recipe_id": recipe_id,
@@ -2810,6 +2828,7 @@ async fn every_mint_input_is_bound_to_the_track_create_key() {
     let b = boot().await;
     let key = "idem-complete-create-shape";
     let base = json!({
+        "planner_provider": "codex",
         "area_id": b.area_id,
         "title": "original title",
         "first_message": "same sentence",
@@ -3614,7 +3633,7 @@ async fn the_tracks_first_message_is_addressable_in_the_pending_page() {
 #[tokio::test]
 async fn create_model_selection_runs_first_message_and_binds_replay() {
     let b = boot().await;
-    let body = json!({"area_id": b.area_id, "theme": {"fg": [255,255,255], "bg": [0,0,0]}, "first_message": "selected first turn", "model": "custom-create-model", "reasoning_effort": "high"});
+    let body = json!({"planner_provider": "codex", "area_id": b.area_id, "theme": {"fg": [255,255,255], "bg": [0,0,0]}, "first_message": "selected first turn", "model": "custom-create-model", "reasoning_effort": "high"});
     let (status, created) = b.post_create(Some("create-model"), body.clone()).await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
     assert!(
@@ -3648,7 +3667,7 @@ async fn create_model_selection_runs_first_message_and_binds_replay() {
 #[tokio::test]
 async fn create_model_defaults_preserve_legacy_fingerprint_and_null_replay() {
     let b = boot_without_daemon().await;
-    let body = json!({"area_id": b.area_id, "theme": {"fg": [255,255,255], "bg": [0,0,0]}});
+    let body = json!({"planner_provider": "codex", "area_id": b.area_id, "theme": {"fg": [255,255,255], "bg": [0,0,0]}});
     let (status, created) = b.post_create(Some("default-model"), body.clone()).await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
     // This is the exact pre-model request shape, independent of the new fields.
@@ -3677,7 +3696,7 @@ async fn create_model_defaults_preserve_legacy_fingerprint_and_null_replay() {
 async fn create_model_selection_refuses_agent_before_mint() {
     let b = boot_without_daemon().await;
     for field in ["model", "reasoning_effort"] {
-        let mut body = json!({"area_id": b.area_id, "theme": {"fg": [255,255,255], "bg": [0,0,0]}});
+        let mut body = json!({"planner_provider": "codex", "area_id": b.area_id, "theme": {"fg": [255,255,255], "bg": [0,0,0]}});
         body[field] = json!("high");
         let response = b
             .app

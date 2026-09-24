@@ -553,6 +553,13 @@ async fn wait_for_harness_watermark(harness: &PlannerHarness, watermark: i64) {
 }
 
 async fn seed_codex_card_with_role(boot: &Boot, role: CardRole) -> Card {
+    let mut payload = json!({
+        "schemaVersion": 1,
+        "planner_harness": role == CardRole::Planner
+    });
+    if role == CardRole::Planner {
+        payload["planner_provider"] = json!("codex");
+    }
     let card = boot
         .repo
         .card_create(NewCard {
@@ -560,13 +567,17 @@ async fn seed_codex_card_with_role(boot: &Boot, role: CardRole) -> Card {
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: json!({
-                "schemaVersion": 1,
-                "planner_harness": role == CardRole::Planner
-            }),
+            payload,
         })
         .await
         .expect("seed codex card");
+    // The persisted role is what recovery reads; the cache alone is not a Planner card.
+    sqlx::query("UPDATE cards SET role = ?1 WHERE id = ?2")
+        .bind(role.as_db_str())
+        .bind(card.id.as_str())
+        .execute(boot.repo.pool())
+        .await
+        .expect("persist seeded card role");
     boot.state
         .card_role_cache
         .insert(card.id.clone(), role, TrackId::from(boot.track_id.clone()));
@@ -1712,6 +1723,7 @@ async fn track_delete_shuts_down_active_planner_harness() {
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": area.id,
             "title": "delete harness",
             "cwd": attached_repo_fixture("planner-card-reset-harness-delete"),
@@ -1767,6 +1779,7 @@ async fn acceptance_20_descendant_refusal_preserves_live_track_runtime_and_termi
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": area.id,
             "title": "live parent",
             "cwd": attached_repo_fixture("descendant-refusal-runtime"),
@@ -1986,7 +1999,7 @@ async fn reset_planner_card_restarts_terminal_less_harness_card() {
             sort: None,
             payload: json!({
                 "schemaVersion": 1,
-                "planner_harness": true
+                "planner_harness": true, "planner_provider": "codex"
             }),
         })
         .await
@@ -2073,7 +2086,7 @@ async fn reset_planner_card_tolerates_corrupt_dormant_snapshot() {
             sort: None,
             payload: json!({
                 "schemaVersion": 1,
-                "planner_harness": true
+                "planner_harness": true, "planner_provider": "codex"
             }),
         })
         .await
@@ -2172,7 +2185,7 @@ async fn reset_planner_card_preserves_runtime_pending_queue_and_push_watermark()
             sort: None,
             payload: json!({
                 "schemaVersion": 1,
-                "planner_harness": true
+                "planner_harness": true, "planner_provider": "codex"
             }),
         })
         .await
@@ -2367,7 +2380,7 @@ async fn reset_planner_card_spawn_failure_restores_old_runtime_after_old_harness
             sort: None,
             payload: json!({
                 "schemaVersion": 1,
-                "planner_harness": true
+                "planner_harness": true, "planner_provider": "codex"
             }),
         })
         .await
@@ -2485,7 +2498,7 @@ async fn reset_planner_card_recovers_inert_harness_card_without_active_runtime()
             sort: None,
             payload: json!({
                 "schemaVersion": 1,
-                "planner_harness": true
+                "planner_harness": true, "planner_provider": "codex"
             }),
         })
         .await
@@ -2547,7 +2560,7 @@ async fn reset_planner_card_failure_keeps_old_runtime_when_shared_daemon_down() 
             payload: json!({
                 "schemaVersion": 1,
                 "codex_source": "shared",
-                "planner_harness": true,
+                "planner_harness": true, "planner_provider": "codex",
                 "codex_thread_id": "thread-old"
             }),
         })
@@ -2710,6 +2723,7 @@ async fn track_create_without_title_seeds_no_track_goal() {
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": area.id,
             "cwd": attached_repo_fixture("issue-1211-untitled"),
             "attach_folder": true,
@@ -2745,6 +2759,7 @@ async fn track_create_with_title_seeds_no_track_goal() {
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": area.id,
             "title": title,
             "cwd": attached_repo_fixture("issue-1211-titled"),
@@ -2795,6 +2810,7 @@ async fn planner_reset_seeds_no_track_goal() {
         boot.app.clone(),
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": area.id,
             "title": "reset keeps quiet",
             "cwd": attached_repo_fixture("issue-1211-reset"),

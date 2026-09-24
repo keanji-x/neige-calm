@@ -279,7 +279,7 @@ async fn planner_card_minted_by_track_create_is_undeletable() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/tracks",
-        json!({"area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"planner_provider": "codex", "area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "track create returned: {body}");
@@ -322,7 +322,7 @@ async fn delete_card_returns_403_for_undeletable_planner_card() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/tracks",
-        json!({"area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"planner_provider": "codex", "area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "track create body: {body}");
@@ -355,7 +355,7 @@ async fn delete_card_returns_204_for_deletable_worker_card() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/tracks",
-        json!({"area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"planner_provider": "codex", "area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "track create body: {body}");
@@ -391,7 +391,7 @@ async fn delete_card_releases_active_workspace_lease_row_before_card_row_delete(
     let (status, body) = post(
         boot.app.clone(),
         "/api/tracks",
-        json!({"area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-760-card-delete-lease"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"planner_provider": "codex", "area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-760-card-delete-lease"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "track create body: {body}");
@@ -442,7 +442,7 @@ async fn track_delete_cascades_to_undeletable_planner_card() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/tracks",
-        json!({"area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"planner_provider": "codex", "area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "track create body: {body}");
@@ -532,6 +532,7 @@ async fn rest_track_create_cannot_set_parent_track_id() {
         boot.app,
         "/api/tracks",
         json!({
+            "planner_provider": "codex",
             "area_id": boot.area_id,
             "title": "forged child",
             "cwd": attached_repo_fixture("forged-child"),
@@ -555,7 +556,7 @@ async fn track_delete_releases_active_workspace_lease_rows_before_cascade() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/tracks",
-        json!({"area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-760-track-delete-lease"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"planner_provider": "codex", "area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-760-track-delete-lease"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "track create body: {body}");
@@ -595,7 +596,7 @@ async fn area_delete_releases_track_workspace_lease_rows_before_cascade() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/tracks",
-        json!({"area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-760-area-delete-lease"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"planner_provider": "codex", "area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-760-area-delete-lease"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "track create body: {body}");
@@ -636,7 +637,7 @@ async fn track_delete_route_sweeps_card_track_and_view_overlays() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/tracks",
-        json!({"area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-454-route-overlay-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"planner_provider": "codex", "area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-454-route-overlay-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "track create body: {body}");
@@ -702,7 +703,7 @@ async fn patch_card_with_deletable_returns_400() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/tracks",
-        json!({"area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"planner_provider": "codex", "area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "track create body: {body}");
