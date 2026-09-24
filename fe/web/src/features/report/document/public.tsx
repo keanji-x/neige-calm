@@ -20,7 +20,7 @@ import { Icon } from '../../../ui/icon/public.tsx';
 import { revealReportAnchor } from '../anchor/public.ts';
 import { ReportAppBlock } from '../app/public.tsx';
 import { ReportCandlesBlock } from '../candles/public.tsx';
-import { ReportPreviewBlock } from '../preview/public.tsx';
+import { ReportPreviewBlock, type PreviewViewportStore } from '../preview/public.tsx';
 import { ReportSeriesBlock } from '../series/public.tsx';
 import { ReportSourceCitation } from '../source/public.tsx';
 import { ReportTableBlock } from '../table/public.tsx';
@@ -62,12 +62,14 @@ export type ReportDocumentProps = Readonly<{
   resolveSeries?: (blockId: string, rev: number) => SeriesResolution | undefined;
   /** Resolves a `preview` block's `key` to the app's read of the track's registered previews. Absent ⇒ preview blocks say the view carries none. */
   resolvePreview?: (key: string) => PreviewResolution;
+  /** Where preview blocks remember the reader's device choice, by block key (the app scopes it per track). Absent ⇒ not remembered. */
+  previewViewports?: PreviewViewportStore;
 }>;
 
 /** A report is prose, not navigation: it emits no `<a href>`; typed citations become buttons and every other link keeps its label and drops its destination. */
 export function ReportDocument({
   report, empty, rail, byline, backlinkCounts, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath,
-  resolveLiveTable, resolveSeries, resolvePreview,
+  resolveLiveTable, resolveSeries, resolvePreview, previewViewports,
   arrivalAnchorId, taskVerdicts, taskRows, renderTaskExecution,
 }: ReportDocumentProps) {
   useEffect(() => {
@@ -115,6 +117,7 @@ export function ReportDocument({
                   resolveLiveTable={resolveLiveTable}
                   resolveSeries={resolveSeries}
                   resolvePreview={resolvePreview}
+                  previewViewports={previewViewports}
                 />
               ))}
               {processBlocks.length > 0 && (
@@ -177,7 +180,7 @@ function ReportReference({ blocks, backlinkCounts, tasks, renderTaskExecution }:
 /** One block, plus the sidenote that belongs to it. */
 function BlockSlot({
   block, backlinks, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath, resolveLiveTable, resolveSeries,
-  resolvePreview,
+  resolvePreview, previewViewports,
 }: {
   block: ReportBlock;
   backlinks: number;
@@ -189,6 +192,7 @@ function BlockSlot({
   resolveLiveTable?: ReportDocumentProps['resolveLiveTable'];
   resolveSeries?: ReportDocumentProps['resolveSeries'];
   resolvePreview?: ReportDocumentProps['resolvePreview'];
+  previewViewports?: PreviewViewportStore;
 }) {
   return (
     <div className={styles.row}>
@@ -204,7 +208,8 @@ function BlockSlot({
               fileBasePath={fileBasePath}
             />
           : <BlockBody block={block} onOpenSourceLink={onOpenSourceLink}
-              resolveLiveTable={resolveLiveTable} resolveSeries={resolveSeries} resolvePreview={resolvePreview} />}
+              resolveLiveTable={resolveLiveTable} resolveSeries={resolveSeries} resolvePreview={resolvePreview}
+              previewViewports={previewViewports} />}
       </div>
       {backlinks > 0 && (
         <span className={styles.sidenote} title={`${backlinks} report${backlinks === 1 ? '' : 's'} cite this block`}>
@@ -217,7 +222,7 @@ function BlockSlot({
 
 /** One bad block may not cost the page: an unknown kind or an unparsable payload degrades to one line. */
 function BlockBody({
-  block, task, renderTaskExecution, onOpenSourceLink, resolveLiveTable, resolveSeries, resolvePreview,
+  block, task, renderTaskExecution, onOpenSourceLink, resolveLiveTable, resolveSeries, resolvePreview, previewViewports,
 }: {
   block: ReportBlock; task?: ReportTaskRow; renderTaskExecution?: ReportDocumentProps['renderTaskExecution'];
   /** A table cell that is one source citation is the same control the prose paints. */
@@ -225,6 +230,7 @@ function BlockBody({
   resolveLiveTable?: ReportDocumentProps['resolveLiveTable'];
   resolveSeries?: ReportDocumentProps['resolveSeries'];
   resolvePreview?: ReportDocumentProps['resolvePreview'];
+  previewViewports?: PreviewViewportStore;
 }): ReactNode {
   switch (block.kind) {
     case 'table':
@@ -234,7 +240,8 @@ function BlockBody({
       return <ReportSeriesBlock payload={block.payload} blockId={block.id} rev={block.rev} resolve={resolveSeries} />;
     case 'task': return <ReportTaskBlock payload={block.payload} blockId={block.id} task={task} renderExecution={renderTaskExecution} />;
     case 'app': return <ReportAppBlock payload={block.payload} />;
-    case 'preview': return <ReportPreviewBlock payload={block.payload} resolve={resolvePreview} />;
+    case 'preview': return <ReportPreviewBlock payload={block.payload} resolve={resolvePreview}
+      viewports={previewViewports} />;
     case 'unsupported':
       return (
         <div className={styles.unsupported} role="note">

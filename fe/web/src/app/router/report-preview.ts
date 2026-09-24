@@ -8,7 +8,9 @@ import { useCallback, useMemo } from 'react';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { PreviewResolution, ReportBlock, TrackPreviews } from '../../../../core/domain/report.ts';
+import type { PreviewViewportStore } from '../../features/report/preview/public.tsx';
 import { ApiError, trackPreviewsQueryOptions } from '../providers/queries.ts';
+import { useUiPreferences } from '../providers/ui-preferences.tsx';
 
 export type PreviewResolver = (key: string) => PreviewResolution;
 
@@ -40,4 +42,13 @@ export function useReportPreviewResolver(
     (key: string) => previewResolutionOf({ data, isError, error }, key),
     [data, isError, error],
   );
+}
+
+/** The track's preview blocks remember the reader's device choice in the display preferences, per track and key. */
+export function useReportPreviewViewports(trackId: string): PreviewViewportStore {
+  const preferences = useUiPreferences();
+  return useMemo(() => ({
+    read: (key: string) => preferences.previewViewport(trackId, key),
+    write: (key: string, value: string) => { preferences.setPreviewViewport(trackId, key, value); },
+  }), [preferences, trackId]);
 }
