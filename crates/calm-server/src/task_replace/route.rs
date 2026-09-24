@@ -71,6 +71,12 @@ mod tests {
             )
         };
         assert!(on(&serde_json::json!({})));
+        assert!(!route_is_replaceable(
+            TrackWorkspaceKind::Managed,
+            "codex",
+            TASK_IN_TRACK_ROUTE,
+            &serde_json::json!({})
+        ));
         assert!(!on(
             &serde_json::json!({"neige_execution": {"version": "bogus"}})
         ));

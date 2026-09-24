@@ -38,7 +38,16 @@ pub(super) async fn prepare_replace(fx: &Fx) {
 }
 
 pub(super) async fn hold_claims(fx: &Fx) {
-    sqlx::query("UPDATE tracks SET workspace_kind = 'attached', task_budget = 0 WHERE id = ?1")
+    let kind: String = sqlx::query_scalar("SELECT workspace_kind FROM tracks WHERE id = ?1")
+        .bind(fx.track())
+        .fetch_one(&fx.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        kind, "attached",
+        "the git-delivery fixture's Track is attached"
+    );
+    sqlx::query("UPDATE tracks SET task_budget = 0 WHERE id = ?1")
         .bind(fx.track())
         .execute(&fx.pool())
         .await

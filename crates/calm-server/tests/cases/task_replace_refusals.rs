@@ -144,22 +144,12 @@ async fn replace_refuses_unfinished_dependents() {
     assert!(result.unwrap_err().message.contains("review"));
 }
 
-/// §4.7 off the replaceable route: a managed Track, a terminal task, a child-Track route, an
-/// isolated selector.
+/// §4.7 off the replaceable route: a terminal task, a child-Track route, an isolated selector. A
+/// managed Track is the same predicate's workspace clause (`route_is_replaceable` unit test): the
+/// fixture Track's workspace is frozen, and the latch rightly refuses re-pointing it.
 #[tokio::test]
 async fn replace_refuses_unsupported_routes() {
     let fx = replace_fixture().await;
-    let (task, _) = produced(&fx, "routed", &[("a.txt", "A\n")], json!({})).await;
-    sqlx::query("UPDATE tracks SET workspace_kind = 'managed' WHERE id = ?1")
-        .bind(fx.track())
-        .execute(&fx.pool())
-        .await
-        .unwrap();
-    assert_refusal(
-        &replace(&fx, replace_args(&task, "m1")).await,
-        "unsupported_route",
-    );
-    hold_claims(&fx).await;
     let cases = [
         json!({"key": "term", "kind": "terminal", "command": "true"}),
         json!({"key": "child", "kind": "codex", "goal": "g", "spawn": TASK_CHILD_TRACK_ROUTE}),
