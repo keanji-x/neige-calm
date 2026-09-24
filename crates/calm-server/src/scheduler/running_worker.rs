@@ -327,7 +327,7 @@ impl Scheduler {
                         return Err(race_lost_err());
                     }
                     if let Some(card_id) = timeout_cleanup_card_id.as_deref() {
-                        super::mark_running_timeout_cleanup_tx(
+                        let marked = super::mark_running_timeout_cleanup_tx(
                             tx,
                             card_id,
                             &task_id,
@@ -335,6 +335,13 @@ impl Scheduler {
                             cleanup_reason,
                         )
                         .await?;
+                        if marked == 0 {
+                            tracing::warn!(
+                                task_id = %task_id,
+                                card_id,
+                                "scheduler sweep: no live worker session to mark; the failed worker is not reaped"
+                            );
+                        }
                     }
                     let mut events = vec![(
                         ActorId::KernelDispatcher,

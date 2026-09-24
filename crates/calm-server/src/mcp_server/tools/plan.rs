@@ -539,8 +539,7 @@ where
                     }
                 };
                 let rows = if in_flight {
-                    cancel_running::cancel_running_in_tx(tx, &current, &key).await?;
-                    1
+                    cancel_running::cancel_running_in_tx(tx, &current, &key).await?
                 } else {
                     task_cancel_tx(tx, &task_id, now_ms()).await?
                 };
@@ -593,11 +592,11 @@ where
                         },
                     ));
                 }
-                // An empty batch means a concurrent writer turned the request into a no-op mid-flight; `write_with_actor_events` rejects empty batches, so surface a retryable conflict.
+                // An empty batch means a concurrent cancel already did this request's work and any
+                // lifecycle target is already current; `write_with_actor_events` rejects empty
+                // batches, so roll back through the sentinel and answer the idempotent success.
                 if events.is_empty() {
-                    return Err(CalmError::Conflict(format!(
-                        "task {key} or track changed state concurrently; retry"
-                    )));
+                    return Err(CalmError::Conflict(CANCEL_ALREADY_APPLIED.into()));
                 }
                 Ok(((), events))
             })
@@ -606,6 +605,7 @@ where
     .await;
 
     match result {
+        Err(CalmError::Conflict(m)) if m == CANCEL_ALREADY_APPLIED => Ok(json!({ "ok": true })),
         Ok(_) => {
             // The canceled worker's cleanup marker is committed; reap it now rather than on the
             // next reconcile tick.
@@ -617,6 +617,9 @@ where
         Err(e) => Err(map_plan_error("plan_cancel", e)),
     }
 }
+
+/// Sentinel: the cancel tx found nothing left to write (a concurrent cancel won); never surfaced.
+const CANCEL_ALREADY_APPLIED: &str = "plan_cancel: already applied by a concurrent cancel";
 
 /// Fixtures-only deterministic seam for the cancel pre-read/write race.
 #[cfg(feature = "fixtures")]

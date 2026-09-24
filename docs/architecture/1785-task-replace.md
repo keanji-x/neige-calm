@@ -390,6 +390,7 @@ carry 命令核验（本机 `git version 2.39.5`）：`git merge-tree --write-tr
 
 - **G1** `verifying`（门禁在跑）与 `dispatched` 既不能 cancel 也不能 replace；分别等 `task.gate_result` / running。
 - **G13** `running` 但 `worker_card_id` 为 NULL（`scheduler/mod.rs:1679-1683`）时 cancel 拒绝、空转臂跳过，只剩 2 h deadline。
+- **G14** 清理标记只写该卡处于 `starting|running|idle|turn_pending` 的 session；写 0 行（session 已终态或缺失）时任务照样 `canceled`/`failed`，worker 不被收割，只记 `warn`（超时通路今天同样如此）。
 - **G2** 取消后旧 worker 最多再活一个 sweep 周期，而预算槽已释放 ⇒ 瞬时多一个进程。
 - **G3** 空转检测只覆盖 codex worker；Claude worker 靠 stop hook 唤醒，任务仍 `running`，由 Planner cancel/replace。
 - **G4** 「`active` 但无活动」的挂死（32acbdf9 r6-a/b，112 min）不检测，2 h deadline 兜底。
