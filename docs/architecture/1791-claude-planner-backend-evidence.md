@@ -74,6 +74,7 @@ halves in §E2 because `scripts/gate-1316-terminology-ratchet.sh` counts the ret
 | S33 | Reset: the start transaction supersedes the predecessor (`crates/calm-truth/src/db/sqlite/session_mirror.rs:318-322`), then the adapter shuts it down only if registered (`operation/planner_harness_start_adapter.rs:862-868`); the route runs start, then a shutdown op (`routes/cards.rs:1421-1427`); boot selects only active rows (`db/sqlite/session_projection.rs:771`) | as listed |
 | S34 | Deletion order: card quiesce before `shutdown_track` (`routes/tracks.rs:2663-2695`); Codex re-checks the seal after `turn/start` (`shared_codex_appserver.rs:1386-1390`); MCP auth accepts only active sessions' token hashes (`mcp_server/handshake.rs:55-60`) | as listed |
 | S35 | Instructions carry bound template input and template context (`operation/planner_harness_start_adapter.rs:313-316`, `template_context.rs:53-56`); `IsolatedCodexConfig` is `deny_unknown_fields` with a required `codex_binary` (`isolated_codex/config.rs:14-23`); versioned binaries 2.1.220/2.1.259/2.1.280 behind the `~/.local/bin/claude` symlink; `--version` takes 9 ms | as listed |
+| S36 | Lifecycle facts: MCP listener spawned in `AppState::boot` (`state.rs:1091`) before `boot_harnesses` (`main.rs:43`); the shim reconnects with its cached `initialize` (`crates/neige-mcp-stdio-shim/src/pump.rs:243`); post-handshake calls check session activity only (`mcp_server/transport.rs:1479`); `spawn_recovered_harness` callers `harness/mod.rs:348`, `:429`, `:527`, `routes/cards.rs:1295`, `replay.rs:385`; the start adapter mints the token in `app_server_interact` (`:949`) but builds the harness in `spawn_side_effect` (`:1277`); the shutdown op supersedes first (`operation/planner_harness_shutdown_adapter.rs:82`); repoint fences all active runtimes (`routes/tracks.rs:2104-2118`), shuts down registered handles non-strictly (`:2125-2150`), Dirty branch `:2160`, recycle `:2239`; failure seam precedent `fail_workspace_repoint_shutdown_for_test` (`:1951-1976`); `sigkill_verified_members` verifies `start_time` (`proc_identity.rs:260-267`) | as listed |
 | S27 | Other Codex-only consumers: `liveness_feeder` subscribes the Codex stream (`dispatcher/mod.rs:798`); dev replay (`replay.rs:390`); TUI initial-prompt takeover query (`db/sqlite/read.rs:798-830`) | as listed |
 
 ### E1.3 MCP, tools, prompts, FE
@@ -147,7 +148,7 @@ q "SELECT DISTINCT workspace_path FROM tracks WHERE workspace_path<>'';"  # Q13,
 Scratch, session-scoped (not preserved): `/tmp/claude-1000/-mnt-data2-kenji-neige-calm/852c3533-7ab9-4c83-ab0e-b2af4bcdbf0e/scratchpad/cc_probe2/`
 (`h.py`, `fake_mcp*.py`, raw NDJSON per probe). Env limited to `HOME PATH USER LOGNAME LANG TERM` +
 proxy vars; cwd `ws/` (a `CLAUDE.md` with marker `PELICAN-7`); no credential file read; never the
-production server. Round 0: 15 runs; round 1: 4 runs; round 2: 2 runs. Common prefix: `claude -p --input-format
+production server. Round 0: 15 runs; round 1: 4 runs; round 2: 2 runs; round 4: 2 runs. Common prefix: `claude -p --input-format
 stream-json --output-format stream-json --verbose --include-partial-messages --replay-user-messages
 --model claude-haiku-4-5 --session-id <uuid>`.
 
@@ -167,6 +168,7 @@ stream-json --output-format stream-json --verbose --include-partial-messages --r
 | P-S2 (round 1) | same, without `failIfUnavailable` | stderr "⚠ Sandbox disabled: … socat not installed"; **every command ran unsandboxed**: write in cwd, outside cwd, `/tmp`, a Unix-socket connect, `curl` HTTP 200 |
 | P-I (round 1) | `--tools Read --permission-prompts none`, user line content `[text, {type:"image", source:{type:"base64", media_type:"image/png", data}}]` | model answered "Red." (32×32 red PNG); the replay echoes the base64 block; a `Read` attempt was auto-denied: "requires approval, and this session has no approval surface" (**denial path verified**) |
 | P-K (round 2, 2 runs) | `--tools Bash --permission-prompts none --allowedTools Bash`, child env `NEIGE_CLAUDE_PLANNER=probe-r2-marker`, unsandboxed; SIGKILL `claude` 8 s into `sleep 300; echo done` (run 1 killed at 3 s, before the shell started: inconclusive) | before the kill: `claude` pgid 45904 / sid 45431; its Bash `zsh -c … sleep 300` in **its own session** (pgid = sid = 64676); after the kill `zsh` (re-parented to the user subreaper) and `sleep 300` **survived, both carrying the marker**; removed by the probe script |
+| P-L (round 4, 2 runs) | P-I flags; one turn, `result`, then SIGTERM while `claude` waits on stdin; then `--resume` | exit 143; resumed turn answered "KESTREL. No, my previous reply was complete." — a signal after `result` does not mark the turn interrupted |
 | P-J (round 1) | as P-I, cwd with only `AGENTS.md` (marker `HERON-3`) | answered `HERON-3`: **AGENTS.md is read when there is no CLAUDE.md** |
 
 Not probed (host lacks `socat`, no install rights): sandbox confinement under the shipping flags;
@@ -185,33 +187,10 @@ Channel A = subagent review, channel B = codex review, both on `c2ebf619d`. The 
 
 ### E4.2 Round 2
 
-| Id | Finding (short) | Disposition |
-|---|---|---|
-| A-B1 | Bash runs detached (own session); group kill and group-scoped confirmation miss it | ACCEPTED, **verified by P-K** → D12 `/proc`-wide marker sweep; zombie + same-uid/same-cgroup narrowing added because the live scan shows same-uid unreadable processes (S23) |
-| A-M1 | journal redundant | ACCEPTED (H4, H22, S32) → D13; journal, crash table, identity record deleted |
-| A-M2 | sandbox can fail open silently (`-p` ignores invalid settings; no sandbox field in init; `claude` auto-updates) | ACCEPTED → `verified_claude_version` init check under `Sandbox`; pinning claim removed (§5.2, §9.4) |
-| A-M3 | typed config shape | ACCEPTED (S30) → D14 `--claude-planner-config`, `Confinement` enum carries domains + version only for `Sandbox` |
-| A-M4 | steer race after `result` | ACCEPTED (P-F3 lines 121→126) → D8 steer cut |
-| A-m1 | seals: reuse thread-keyed set | ACCEPTED (S31) → §4.1 row 7 |
-| A-m2 | `model_choice` duplicates `source` | ACCEPTED (S28) → §5.8; PR7 cut |
-| A-m3 | backend's second write (`agent_session_id`) unnamed | ACCEPTED → §4.3 names the attribution bind |
-| A-m4 | network "parity" is stricter | ACCEPTED → §5.3 wording, Q3 |
-| A-m5 | must-red gaps | ACCEPTED → PR2b/PR4 must-red columns |
-| A-m6 | PR1 used a PR3 type | ACCEPTED → PR1 routes the Codex arm only; `AgentProvider` already exists |
-| A-m7 | stale refs | ACCEPTED → run_loop `:3236`/`:1340`, routes/cards `:92-127`/`:129-156`, planner_model `:117`, production precedents (S23) |
-| A-m8 | D6 stated as decided | ACCEPTED → "recommended, pending Q1" |
-| A-m9 | dev servers die with the turn / restart / netns | ACCEPTED → KNOWN GAP + Claude-only prompt fragment (§5.2) |
-| A-m10 | drop the runtime dir | ACCEPTED → inline JSON args; JSON-string `${VAR}` expansion UNVERIFIED with a stated fallback |
-| B2-1 | cleanup authenticated by fresh scan of a recorded pgid; unreadable members excluded | ACCEPTED → D12 (no recorded pgid; `Unreadable` in our cgroup blocks the wait) |
-| B2-2 | wire types reject recorded output | ACCEPTED, verified (results: success has `result` and no `errors`, error has `errors` and no `result`; `UserText` records) → §5.4; PR2a decodes complete fixtures |
-| B2-3 | steer cannot guarantee "no second turn" | ACCEPTED → D8 cut; `SteerUnconsumed` deleted |
-| B2-4 | re-drain not generally possible after `:3262` | ACCEPTED → §5.1 crash windows split at `:3262` |
-| B2-5 | contradictory first-write contract | ACCEPTED → §5.1 single submission contract; durability point named |
-| B2-6 | provider still `Option` + runtime error; duplicate enum | ACCEPTED → `AgentProvider`, `PlannerBinding`, `WorkerSessionInit::shared_planner` |
-| B2-7 | `model_choice` / PR7 producer | ACCEPTED → merged with A-m2 |
-| B2-8 | PR3 must make existing callers send `"codex"` | ACCEPTED (S29) → PR3 |
-| B2-9 | 45 replay overstated | ACCEPTED → 38 replay + 7 fail closed |
-| B2-10 | #1727 S4 incomplete in base | ACCEPTED, verified (`operation/workspace_lease/base.rs:17-21`) → §9.4 |
+All 25 items (A-B1, A-M1..M4, A-m1..m10, B2-1..B2-10) accepted or merged (B2-7→A-m2); the per-row
+table is in commit `9c2d0983e` (this file). Round 2 deleted the journal, recorded process identity,
+registry, provider-keyed seals, runtime dir, steer PR and model-catalog PR (D8, D11–D14); later rounds
+narrowed D12 (D16) and replaced the per-path stop reasoning with the lifecycle invariant (D22).
 
 ### E4.3 Round 3
 
@@ -229,4 +208,18 @@ Channel A = subagent review, channel B = codex review, both on `c2ebf619d`. The 
 | B3-5 | failed cleanup leaves the old credential valid | ACCEPTED, verified (S34) → D20 |
 | B3-6 | `Interrupted + ResultSuccess(is_error:true)` → completed | ACCEPTED → §6.2 split row + P-D fixture |
 | B3-7 | boundary is the commit, not `:3262` | ACCEPTED, verified (H22) → D21 + three PR4 tests |
+
+### E4.4 Round 4
+
+| Id | Finding (short) | Disposition |
+|---|---|---|
+| A-M1 | token mint and stop only at boot; 5 construction sites; plaintext token lost between adapter phases | ACCEPTED, verified (S36) → D22 construction step; must-red: aborted deletion reinstalls a working harness, old token rejected |
+| A-M2 | superseded rows never re-stopped; repoint missing | ACCEPTED, verified (S36) → D22: boot sweeps all Claude Planner ids in any state; repoint stops before the recycle, Dirty on `Err`; reset/shutdown-op `Err` logged (no destructive step there) |
+| A-M3 | `Err` must-reds unconstructible | ACCEPTED → D23 seam; PR2b restated with the pgid-scoped mutation |
+| A-m4 | instructions file leaks on pre-`Ok` failures | ACCEPTED → D24 guard + boot empties the directory |
+| A-m5 | settlement SIGTERMs a live `claude` | ACCEPTED → D25 order; probe P-L: SIGTERM after `result` is harmless for `--resume` |
+| A-m6 | `--version` format | ACCEPTED, verified (`2.1.280 (Claude Code)`) → first-token comparison |
+| A-m7 | SIGKILL phase re-scan; verify by `start_time`; stale `:3262` | ACCEPTED, verified (`proc_identity.rs:264`) → D26; §9.3 fixed |
+| B4-1 | rotation after the listener starts | ACCEPTED, verified (S36) → D22 boot step before the listener; must-red: reconnect from listener start fails |
+| B4-2 | instructions cleanup excludes failed submissions and retired sessions | MERGED-WITH A-m4 (+ reset/replay assertion in PR4) |
 

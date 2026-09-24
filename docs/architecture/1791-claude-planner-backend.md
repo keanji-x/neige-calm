@@ -51,11 +51,16 @@ Claude Planners (cut, §9.5).
 | D13 | **Crash recovery without a journal**: settlement = durable outcome → emit; boot = stop sweep, then idempotent `interrupted` outcome for `snapshot.last_turn_id`. The r1 journal and crash table are deleted | **orchestrator r2** (A MAJOR-1, B2-4/5) | §5.1 |
 | D14 | Typed config: one optional `--claude-planner-config <file>`; absent ⇒ Claude Planner unavailable | **orchestrator r2** (A MAJOR-3) | §5.3 |
 | D16 | Stop membership = `Present` only; `Unreadable` is not a member (no waiting on it); zombie and cgroup narrowing deleted; escapes are a KNOWN GAP | **orchestrator r3** (A BLOCKING-1, A MINOR-3) | §5.1 |
-| D17 | `stop` runs on every terminal and retirement path (settlement, EOF, shutdown awaits it, reset/replay by old id, deletion, boot) + post-spawn seal re-check; settlement = record → stop → emit | **orchestrator r3** (B3-1, B3-2, A MAJOR-2) | §5.1 |
+| D17 | `stop` runs on every terminal and retirement path (settlement, EOF, shutdown awaits it, reset/replay by old id, deletion, boot) + post-spawn seal re-check (settlement order refined by D25) | **orchestrator r3** (B3-1, B3-2, A MAJOR-2) | §5.1 |
 | D18 | Config carries required `claude_binary` + `claude_version` (`deny_unknown_fields`); version verified before any input | **orchestrator r3** (B3-3, A MINOR-4) | §5.3 |
 | D19 | Instructions via `--append-system-prompt-file` (private 0600 file), not argv | **orchestrator r3** (B3-4) | §5.2 |
 | D20 | Boot rotates the MCP credential before cleanup, even if cleanup fails | **orchestrator r3** (B3-5) | §5.1 |
 | D21 | Crash boundary = snapshot transaction commit (`:3882`), not the in-memory `:3262` | **orchestrator r3** (B3-7) | §5.1 |
+| D22 | One lifecycle invariant: boot invalidates all Claude Planner credentials and sweeps all their markers **before the MCP listener starts**; construction mints the token (required `ClaudePlannerSession::new` argument) and stops its own id; every retirement stops by id regardless of registration (reset, shutdown op, repoint → Dirty on `Err`) | **orchestrator r4** (A-M1, A-M2, B4-1) | §5.1 |
+| D23 | Fixtures-only `stop` failure seam; PR2b states `stop` returns `Ok` only after the marked child is gone | **orchestrator r4** (A-M3) | §5.1, §9.1 |
+| D24 | Per-spawn guard for the instructions file; boot empties the directory | **orchestrator r4** (A-m4, B4-2) | §5.1 |
+| D25 | Settlement = record → close stdin → wait ≤ 5 s → `stop` → emit; SIGTERM after `result` is harmless for `--resume` (P-L) | **orchestrator r4** (A-m5) | §5.1 |
+| D26 | `--version` first token; SIGKILL phase re-scans; both phases verify by `start_time` | **orchestrator r4** (A-m6, A-m7) | §5.1 |
 | D15 | Project config (`CLAUDE.md`/`AGENTS.md`, project settings) trusted like Codex trusts the workspace (S25); 4140 has no project settings (Q13) | r1 | §5.2 |
 
 ## 2. Evidence summary
@@ -101,6 +106,7 @@ ignores invalid settings and `system/init` does not report the sandbox.
 | 19–21 | GET `/api/models` (`routes/models.rs:144`), create advice (`routes/tracks.rs:848`), PUT advice (`routes/planner_model.rs:117`) | S11 | Claude: `source:"unavailable"` / 400 / 409 (§5.8) |
 | 22 | reader texts naming codex | run_loop `:2430`, `:2547` | provider name from the backend (overlaps #1542) |
 | 23 | `liveness_feeder`, dev replay, TUI takeover | S27 | Codex-only by nature |
+| 24 | workspace repoint fence + recycle | `routes/tracks.rs:2104-2150`, `:2160`, `:2239` | Claude ids ⇒ `stop` before the pristine check (§5.1 caller list) |
 
 PlainChat and Assistant stay Codex everywhere.
 
@@ -175,7 +181,7 @@ It writes two things itself: the durable turn outcome (`turn_outcome::record`, i
 Module `claude_planner/` (files ≤ 800 lines): `protocol.rs`, `translate.rs` (pure), `session.rs`,
 `stop.rs`, `config.rs`.
 
-### 5.1 Process model, stop primitive, crash recovery (D4, D12, D13)
+### 5.1 Process model, stop, lifecycle (D4, D12, D13, D22)
 
 **One process per turn.** `turn_start` spawns `claude -p …` (§5.2), writes one `user` line, and the
 process lives until the turn settles; then stdin is closed. First turn: `--session-id <thread>`; later:
@@ -187,64 +193,71 @@ Readers, timers and the stop sweep remain. Per-turn cost: startup + resume parse
 UNVERIFIED (PR2b measures).
 
 **Stop primitive `stop(worker_session_id)`** (precedent `operation/task_verify_adapter/target.rs:712-740`
-`stop_group`, `operation/gate_process.rs:350-372`, `proc_identity.rs:180-212`). Every child is spawned with
-the env marker `NEIGE_CLAUDE_PLANNER=<worker_session_id>` (inherited by Bash's detached sessions, P-K).
-Scan all of `/proc` and classify with `proc_env_marker`: **only `Present` is a member**; `Unreadable` and
-`Foreign` are never signalled and never waited on (a same-uid unreadable process — setgid `ssh-agent` in the
-service cgroup, privsep `sshd` — would otherwise make every stop fail, companion S23). SIGTERM the members
-→ ≤ 5 s → `sigkill_verified_members` (re-reads each member's environ, so a pid recycled between scan and
-kill is rejected) → wait (≤ 10 s) until no member remains, else `Err`. No pid/pgid is recorded (B2-1).
-What "stopped" means is therefore **"no process carrying the exact marker remains"**: descendants that turn
-non-dumpable, rewrite or scrub their environ (headless Chromium does, companion S23), or leave the service
-cgroup escape the sweep (KNOWN GAP).
+`stop_group`, `operation/gate_process.rs:350-372`, `proc_identity.rs:180-264`). Every child carries the env
+marker `NEIGE_CLAUDE_PLANNER=<worker_session_id>` (inherited by Bash's detached sessions, P-K). One `/proc`
+scan, `proc_env_marker`: **only `Present` is a member**; `Unreadable`/`Foreign` are never signalled nor
+waited on (setgid `ssh-agent`, privsep `sshd` would otherwise fail every stop, S23). SIGTERM the members
+(each verified by `start_time`) → ≤ 5 s → **re-scan** `/proc` and SIGKILL the members found (verified by
+`start_time`, `proc_identity.rs:264`, so a recycled pid is rejected) → wait ≤ 10 s until a scan finds no
+member, else `Err`. `stopped` means **no process carrying the exact marker remains**; descendants that
+turn non-dumpable, rewrite or scrub their environ (headless Chromium), or leave the service cgroup escape
+(KNOWN GAP). A fixtures-only `fail_claude_planner_stop_for_test(worker_session_id)` forces `Err`
+(precedent `fail_workspace_repoint_shutdown_for_test`, `routes/tracks.rs:1951-1976`).
 
-**Stop runs on every terminal and retirement path** (as `stop_group` runs on every gate completion path):
+#### Claude process and credential lifecycle (the invariant)
 
-| Path | Where | Contract |
+1. **Boot, before the MCP listener starts** (the listener is spawned in `AppState::boot`, `state.rs:1091`,
+   before harness recovery, `main.rs:43`; a surviving shim reconnects with its cached `initialize`,
+   `crates/neige-mcp-stdio-shim/src/pump.rs:243`, and later calls check only session activity,
+   `mcp_server/transport.rs:1479`): (a) invalidate the stored MCP credential of **every** `(claude,
+   planner)` session row in any state; (b) **one** `/proc` sweep over the markers of all those session ids
+   (set lookup) — right after boot no Claude Planner process may legitimately be alive, which covers the
+   crash windows of reset, the shutdown op and repoint; (c) empty `<data_dir>/claude-planner/tmp/`.
+2. **Harness construction.** The Claude arm of `spawn_recovered_harness` (callers: boot `harness/mod.rs:348`,
+   aborted deletion `:429`, deferred `:527`, lazy re-spawn `routes/cards.rs:1295`, dev replay
+   `replay.rs:385`) and of `spawn_side_effect` mints the card token and runs `stop(own id)` before the
+   first spawn. `ClaudePlannerSession::new(…, mcp_token: String)` takes the plaintext token as a required
+   argument (only the hash is persisted, so the token must be minted where the session is built). `stop`
+   `Err` ⇒ the harness is not installed (recovery warns and continues per runtime, `harness/mod.rs:346-368`).
+3. **Every turn ends with `stop`** (settlement order below) and every retirement of a Claude id
+   (supersede, shutdown, deletion) calls `stop(id)` **whether or not the id is registered** — the table
+   below is only the caller list.
+4. **Outcome.** Recovery records `interrupted` for `snapshot.last_turn_id` (idempotent SELECT-then-INSERT,
+   `crates/calm-truth/src/db/sqlite/out_of_domain.rs:423-434`; precedent
+   `shared_codex_appserver/preserving_recovery.rs:120-160`).
+
+| Caller | Where | On `Err` |
 |---|---|---|
-| turn settlement: any result, unexpected EOF/exit (even after a successful `wait()` of the direct child — a marked `setsid` child outlives its parent, P-K) | `session.rs` | record → `stop` → emit (below) |
-| next spawn | `turn_start` | previous child's `wait()` ≤ 5 s, then `stop`; `Err` ⇒ `turn_start` fails (retryable refusal) |
-| interrupt timer | `session.rs` | cause first, then `stop` after ≤ 10 s |
-| harness shutdown | Claude arm of the interrupt calls in `shutdown_inner` (run_loop `:666-729`) | records `Interrupted(shutdown)` and **awaits** `stop`; `shutdown_for_deletion` (strict) propagates `Err` |
-| reset / replay | start adapter `app_server_interact` (`:862-868` today stops only a registered predecessor) | `stop(old worker_session_id)` for a Claude predecessor **regardless of registry membership**, before the successor starts; replay repeats it idempotently |
-| deletion quiesce, registry-miss paths | §4.1 rows 13, 15–17 | `stop`, `Err` propagates |
-| boot | recovery | §5.1 Boot |
+| turn settlement / unexpected EOF | `session.rs` | logged; the turn is still emitted; the next spawn's `stop` fails closed |
+| next spawn (serialization is the settlement wait; `stop` covers a crash-leftover) | `turn_start` | `turn_start` fails → retryable refusal |
+| interrupt timer | `session.rs` | cause already recorded; as settlement |
+| harness shutdown | Claude arm of `shutdown_inner`'s interrupt (run_loop `:666-729`), records `Interrupted(shutdown)`, awaits `stop` | strict `shutdown_for_deletion` propagates; non-strict logs |
+| reset (start adapter `:862-870`) and shutdown op (`operation/planner_harness_shutdown_adapter.rs:82`, `:109`) | `stop(old id)` for a Claude predecessor, registered or not; replay repeats it | logged, left to the next boot sweep: neither path moves or deletes a workspace, and the old id's token no longer authenticates once the row is superseded (handshake accepts active rows only, `mcp_server/handshake.rs:55-60`) |
+| workspace repoint | fence supersedes every active runtime (`routes/tracks.rs:2104-2118`); `stop(id)` for each superseded Claude id **before** the pristine check and recycle (`:2160`, `:2239`) | take the existing Dirty branch (Planner restarted at the old path, 409) |
+| deletion quiesce, registry-miss paths | §4.1 rows 13, 15–17 | propagates; the destructive step does not run |
 
-**Seal checks.** The session checks `turn_thread_is_sealed(thread)` before spawning **and again after the
-spawn, before writing the user line** (mirroring Codex's post-`turn/start` re-check,
+**Seal checks.** Before spawning and again after the spawn, before writing the user line (mirroring Codex,
 `shared_codex_appserver.rs:1386-1390`); sealed ⇒ `stop` + `Err`. With the issuance lock that
-`shutdown_inner` waits on, a deletion that seals while a spawn is held ends with that process stopped.
+`shutdown_inner` waits on (run_loop `:685`), a deletion that seals while a spawn is held ends stopped.
 
 **Submission contract.** `turn_start` mints `turn_id`, checks the seal, runs `<claude_binary> --version`
-(9 ms measured) and refuses unless it equals the configured `claude_version` (**before any user input**),
-writes the instructions file (§5.2), spawns, re-checks the seal, writes the `user` line (bounded 5 s), and
-returns `Ok(turn_id)` once the write succeeded. Any failure before that ⇒ `stop` + `Err`: the existing
-path deletes the projection and re-buffers (run_loop `:3268-3300`); no outcome is recorded because no turn
-id was persisted. **The turn id becomes durable** when the snapshot transaction started by
-`persist_issuance_outcome` (`:3267`) commits (`:3876-3882`); the in-memory assignment at `:3262` is not
-the boundary. Before that commit the snapshot persisted pre-drain at `:3045` still owns the batch.
+and refuses unless its **first whitespace token** equals `claude_version` (it prints `2.1.280 (Claude
+Code)`) — before any user input — writes the instructions file under a **per-spawn guard**, spawns,
+re-checks the seal, writes the `user` line (bounded 5 s), and returns `Ok(turn_id)`. Every exit before
+`Ok` ⇒ `stop` + the guard removes the file + `Err`; the existing path deletes the projection and
+re-buffers (run_loop `:3268-3300`); no outcome, because no turn id was persisted. After `Ok` the guard
+hands the file to settlement. **The turn id becomes durable** when the snapshot transaction started by
+`persist_issuance_outcome` (`:3267`) commits (`:3876-3882`); before that commit the pre-drain snapshot
+(`:3045`) still owns the batch (re-drain; possibly a second delivery, the at-least-once window Codex has
+too, H22); after it a crash leaves `interrupted` and no re-drain.
 
-**Settlement.** One `TurnSlot { cause: Option<TerminalCause> }` per turn; any path about to interrupt or
-stop records its cause first; mapping §6.2. Order: `turn_outcome::record` (durable) → `stop` → emit
-`TurnCompleted`. Record first so the outcome survives a crash during a stop that may take 15 s; emit last so
-the harness never issues the next turn while this turn's marked processes live. A settlement `stop`
-failure is logged and the turn is still emitted: the next spawn, quiesce and boot run `stop` again and
-fail closed there. So an outcome also survives `shutdown_inner` aborting the loop (H15) or a `Lagged`
-receiver. Undecodable stdout ⇒ cause `Failed("protocol")` + `stop`. The instructions file is removed on
-this path.
-
-**Boot.** Before installing a Claude harness: (1) re-mint the card MCP token, so the previous session's
-credential stops authenticating (the handshake accepts only the active session's stored hash,
-`mcp_server/handshake.rs:55-60`) — **even if the next step fails**; (2) `stop(worker_session_id)`;
-`Err` ⇒ skip installing that harness (recovery already warns and continues per runtime,
-`harness/mod.rs:346-368`); (3) `turn_outcome::record(interrupted, "neige restarted during this turn")`
-for `snapshot.last_turn_id` — a no-op when that turn already has an outcome (SELECT-then-INSERT,
-`crates/calm-truth/src/db/sqlite/out_of_domain.rs:423-434`; precedent
-`shared_codex_appserver/preserving_recovery.rs:120-160`); (4) remove leftover instruction files for that
-session. Crash windows: before the `:3882` commit the snapshot still holds the batch and the previous
-`last_turn_id` (already settled ⇒ no-op) ⇒ re-drain, possibly delivering a batch Claude already accepted
-(the same at-least-once window as Codex, H22); after the commit the new turn is recorded `interrupted`,
-nothing is re-drained, and the Planner waits for new input.
+**Settlement.** One `TurnSlot { cause: Option<TerminalCause> }`; paths about to interrupt or stop record
+their cause first (§6.2). Order: `turn_outcome::record` → close stdin → wait ≤ 5 s for the direct child →
+`stop` (only descendants remain in the normal case) → remove the instructions file → emit `TurnCompleted`.
+Record first so a crash during the stop keeps the outcome; emit last so the next turn never overlaps this
+turn's processes; closing stdin first avoids signalling a `claude` that is about to exit (a SIGTERM after
+`result` exits 143 and `--resume` then sees the previous reply as complete, P-L). Undecodable stdout ⇒
+cause `Failed("protocol")`.
 
 ### 5.2 Spawn contract (no runtime directory)
 
@@ -457,7 +470,7 @@ The stop timer (≤ 10 s) settles an interrupted turn inside the harness's 30 s 
 | 10 | settle | backend | `ResultError aborted_streaming` | outcome row, `stop` (detached Bash included), then emit | `TurnCompleted` | durable before emit | NEW |
 | 11 | next turn | run loop | observation | previous child exited or `stop`; spawn `--resume` | normal turn | ≤ 1 process per session | NEW |
 | 12 | restart mid-turn | ops | deploy restart (`KillMode=process`) | `claude` and its detached Bash keep running | none | — | existing ops |
-| 13 | boot | kernel | `recover_harnesses_after_daemon_boot` | token re-minted first; `stop` sweep (incl. detached Bash, P-K), `Err` ⇒ harness not installed; `interrupted` outcome for `last_turn_id` (no-op if settled); harness in both arms | outcome row | no marked process survives boot | NEW |
+| 13 | boot | kernel | `AppState::boot` before the MCP listener; then `recover_harnesses_after_daemon_boot` | all Claude Planner credentials invalidated; one marker sweep over all Claude Planner ids (incl. detached Bash, P-K); tmp dir emptied; per harness: token minted, `stop(own id)`, `interrupted` outcome for `last_turn_id` (no-op if settled) | outcome row | no marked process and no valid old token when the listener opens | NEW |
 | 14 | resume | run loop | new input | `--resume` | normal turn | killed turn visible to the model (P-F2) | NEW |
 | 15 | delete track | user | `DELETE /api/tracks/{id}` | seal (existing set); quiesce `stop`; harness shutdown awaits `stop`; a held spawn sees the seal after spawning and stops; rollback unseals | deletion events | destructive move only after a sweep finds no marked process (escapes: KNOWN GAP) | NEW call |
 
@@ -482,9 +495,9 @@ account email, P-A).
 |---|---|---|---|
 | **PR1 Seam** (~500) | `PlannerBackend` (Codex arm only), `PlannerHarnessParams.backend`, rows 1–6, 14 of §4.1; `client_id: &str`; invariant allowlist gains `harness/backend.rs` | targeted nextest of Planner harness, recovery, interrupt, deletion suites; `local-rust-gates.sh --quick` | a second `.turn_start(` in run_loop still red |
 | **PR2a Translate** (~700) | `protocol.rs`, `translate.rs`; complete recorded fixtures (redacted) | every line of every fixture decodes | dotted name restored; per-block ids; base64 not stored; empty `iterations` ⇒ no usage frame; `UserText` is not a protocol error |
-| **PR2b Session + stop** (~800) | `session.rs`, `stop.rs`, `config.rs`: spawn contract, env, `TurnSlot`, settlement, serialization, submission contract | fake `claude` (bash) through the real session: exit / kill / linger / undecodable / stalled-write / immediate-exit paths | outcome durable before `TurnCompleted`; recorded interrupt + `ResultSuccess is_error:true` ⇒ `interrupted` (P-D fixture); a fake whose child runs `setsid sleep 300` with the marker ⇒ `stop` returns `Err` while it lives; a fake that exits successfully while its marked `setsid` child survives ⇒ settlement stops the child before `TurnCompleted`; a readable unmarked process is never signalled, and a pid recycled between scan and kill is rejected; a wrong-version fake binary receives **no** user input; a private sentinel in the instructions never appears in `/proc/<pid>/cmdline`; immediate exit ⇒ `Err` and no outcome. Every test uses a unique `worker_session_id` (the sweep is host-wide; nextest runs in parallel) |
+| **PR2b Session + stop** (~800) | `session.rs`, `stop.rs`, `config.rs`: spawn contract, env, `TurnSlot`, settlement, submission contract, instructions guard, failure seam | fake `claude` (bash) through the real session: exit / kill / linger / undecodable / stalled-write / immediate-exit paths | outcome durable before `TurnCompleted`; recorded interrupt + `ResultSuccess is_error:true` ⇒ `interrupted` (P-D fixture); `stop` returns `Ok` only after a marked `setsid sleep 300` child is gone (mutation: a pgid-scoped scan returns `Ok` while it lives); a fake that exits successfully while its marked `setsid` child survives ⇒ the child is gone before `TurnCompleted`; a readable unmarked process is never signalled, a recycled pid is rejected by `start_time`; the fake's `--version` prints the real `2.1.280 (Claude Code)` and a wrong version receives **no** user input; a private sentinel never appears in `/proc/<pid>/cmdline`; every pre-`Ok` exit (spawn failure, immediate exit, post-spawn seal) leaves no instructions file; immediate exit ⇒ `Err` and no outcome. Unique `worker_session_id` per test (host-wide sweep, parallel nextest) |
 | **PR3 Provider identity** (~900, sweep-heavy) | key + migration + sticky; `PlannerBinding`; `WorkerSessionInit::shared_planner`; mirror + query sites; boot SQL arm; create field + digest; **every existing caller sends `"codex"`**; OpenAPI / `wire.ts` / `NewTrackBody`; fixture sweep; `claude` refused at create until PR4 | migration on a scratch `.backup` of the live DB (24 keys); FE lint/build/test | `(SharedPlanner, Claude)` mint persists `claude/resumable`; key omission keeps it; missing key ⇒ not a harness card; 38 v1 bindings replay, 7 v0 conflict, same key + other provider ⇒ conflict; an FE create without the field is a test failure |
-| **PR4 Wiring** (~700) | start adapter branch; recovery by `PlannerBinding`; boot (`stop` + outcome); Claude calls to `stop` in rows 13, 15–17; `--claude-planner-config`; model surfaces (§5.8); steer pre-check; provider-named reader texts; the Claude prompt fragment | fake-`claude` stack test via real routes: create → image message → MCP call → interrupt → restart → resume → next turn → track delete; without the flag: create 4xx, recovered harness refuses | provider persists through start, reset and boot; boot with a live marked orphan and no outcome ⇒ orphan gone + one `interrupted` outcome; boot rotates the token before cleanup and the old token cannot reconnect even when `stop` fails (harness then not installed); crash boundary: crash before the `:3882` commit ⇒ batch re-drained, after it ⇒ `interrupted` without re-drain, an already-settled outcome is preserved; reset-commit → crash → recover → delete leaves no predecessor process; after reset during a running turn no old-marker process is alive when the reset response returns; delete while a spawn is held between seal check and spawn does not complete while a marked process lives; Codex daemon down at boot still recovers Claude; delete aborts while a marked process lives |
+| **PR4 Wiring** (~750) | start adapter branch; recovery by `PlannerBinding`; the §5.1 lifecycle (boot steps before the listener, construction mint + stop, caller list incl. repoint); `--claude-planner-config`; model surfaces (§5.8); steer pre-check; provider-named reader texts; the Claude prompt fragment | fake-`claude` stack test via real routes: create → image message → MCP call → interrupt → restart → resume → next turn → track delete; without the flag: create 4xx, recovered harness refuses | provider persists through start, reset and boot; an aborted deletion reinstalls a working Claude harness and the old token no longer authenticates; a reconnect with the old token from listener start fails; a superseded Claude row with a live marked process has none after boot; repoint of a Claude track with a live marked `setsid` child leaves no marked process by the recycle (and takes Dirty when `stop` is forced to fail via the seam); crash before the `:3882` commit ⇒ re-drain, after it ⇒ `interrupted` without re-drain, a settled outcome is preserved; reset-commit → crash → recover → delete leaves no predecessor process; after reset during a running turn no old-marker process is alive when the reset returns, and the reset/replay leaves no instructions file; delete while a spawn is held between seal check and spawn does not complete while a marked process lives; the seam-forced `stop` failure makes delete abort and boot skip installation; Codex daemon down at boot still recovers Claude |
 | **PR5 FE selection** | provider choice in new-track / first-message flows; selection reset; neutral label | FE gates + browser test against the fake stack + real-browser preview | switching provider clears a retained model/effort |
 
 PR1, PR2a, PR2b, PR3 are parallel; PR4 needs all; PR5 needs PR4. The pain point is solved at PR4 + PR5
@@ -514,7 +527,7 @@ image message, interrupt, restart, resume, delete; `ps` shows no Planner `claude
 - No model/effort choice; Claude runs its CLI default; pickers show `source:"unavailable"`.
 - No bound `Recover`; exact `calm.plan.recover`.
 - Every deploy restart loses in-flight Claude turns (Codex's daemon survives restarts).
-- A crash between the line write and `:3262` may deliver a batch twice (same window as Codex).
+- A crash between the line write and the `:3882` commit may deliver a batch twice (same window as Codex).
 - Started tool lines of a lost turn stay "running" in the FE; the outcome line is correct.
 - Long-lived Bash processes (e.g. a dev server for `calm.preview.register`) die at turn end, at restart,
   and may be unreachable under the sandbox's network namespace; the prompt fragment says to use
