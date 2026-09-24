@@ -1,5 +1,9 @@
 mod support;
 
+#[path = "cases/claude_planner_session.rs"]
+mod claude_planner_session;
+#[path = "cases/claude_planner_session_fixture.rs"]
+mod claude_planner_session_fixture;
 #[path = "cases/harness_turn_start_invariant.rs"]
 mod harness_turn_start_invariant;
 #[path = "cases/planner_attachments_bind.rs"]

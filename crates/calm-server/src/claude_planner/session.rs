@@ -1,0 +1,526 @@
+//! One Claude Planner session: one `claude -p` process per turn, at most one at a time (design
+//! #1791 §5.1, §5.2, §5.6, §6.2).
+//!
+//! Submission contract ([`ClaudePlannerSession::turn_start`]): mint the turn id, check the seal, run
+//! `--version` (before any user input), `stop` whatever still carries this session's marker, write
+//! the instructions file under a per-spawn guard, spawn, re-check the seal, write the one `user` line
+//! (bounded), and return `Ok(turn_id)`. Every exit before `Ok` stops the marker, removes the file and
+//! returns `Err`; no outcome is recorded, because no turn id was handed out.
+//!
+//! Settlement (`driver`): one [`TurnSlot`] per turn holds the first recorded [`TerminalCause`]; the
+//! outcome is recorded durably, stdin is closed, the direct child gets a bounded wait, `stop` runs,
+//! the instructions file goes, and only then is `TurnCompleted` emitted.
+
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use base64::Engine as _;
+use calm_types::planner_attachment::AttachmentId;
+use tokio::io::AsyncWriteExt as _;
+use tokio::process::{Child, ChildStdin, Command};
+use tokio::sync::{Notify, broadcast, watch};
+use uuid::Uuid;
+
+use super::config::ClaudePlannerHost;
+use super::driver::{TurnRun, drive};
+use super::protocol::{Base64Image, UserLine, UserLineContent, client_line_uuid};
+use super::spawn::{self, EnvInputs, InstructionsFile, SessionStart};
+use super::stop::stop;
+use super::translate::{CalmToolNames, TurnContext, TurnTranslator};
+use crate::codex_appserver::{InputItem, Notification};
+use crate::db::Repo;
+use crate::error::{CalmError, Result};
+use crate::shared_codex_appserver::SharedCodexAppServer;
+
+/// A stdin line that the CLI does not take within this bound fails the write.
+pub(crate) const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long [`ClaudePlannerSession::shutdown`] waits for the running turn to settle after its stop.
+const SHUTDOWN_SETTLE_WAIT: Duration = Duration::from_secs(20);
+
+/// Everything one Claude Planner harness is built from; the caller (the start adapter and
+/// recovery) supplies every field.
+pub struct ClaudePlannerSessionParams {
+    pub host: Arc<ClaudePlannerHost>,
+    pub worker_session_id: String,
+    pub card_id: String,
+    pub track_id: String,
+    /// The track workspace, the CLI's `cwd`.
+    pub cwd: PathBuf,
+    /// The rendered Planner instructions, written to a private file at every spawn.
+    pub instructions: String,
+    /// The calm tools visible to the card, to restore their dotted names.
+    pub calm_tools: CalmToolNames,
+    /// `(UPPER, lower, value)` proxy pairs from the server's resolver.
+    pub proxy: Vec<(String, String, String)>,
+    /// `Resume` once the row's `agent_session_id` is bound.
+    pub start: SessionStart,
+    /// The thread's lifetime token total from the harness snapshot.
+    pub prior_total_tokens: i64,
+    pub repo: Arc<dyn Repo>,
+    /// The shared daemon, held only for its thread-keyed deletion seals.
+    pub seals: Arc<SharedCodexAppServer>,
+}
+
+/// Why a turn is ending, recorded before the path that ends it acts; the first one recorded wins.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TerminalCause {
+    /// A user or watchdog interrupt, or a harness shutdown.
+    Interrupted,
+    /// An init check or an undecodable line.
+    Failed(String),
+}
+
+/// The live turn's shared state.
+pub(crate) struct TurnSlot {
+    cause: Mutex<Option<TerminalCause>>,
+    pub(crate) stdin: tokio::sync::Mutex<Option<ChildStdin>>,
+    /// An interrupt was sent: arms the stop timer.
+    pub(crate) interrupt: Notify,
+    /// Shutdown: settle now, skipping the stdin wait.
+    pub(crate) force: Notify,
+    pub(crate) settled: watch::Sender<bool>,
+}
+
+impl TurnSlot {
+    fn new(stdin: ChildStdin) -> Self {
+        Self {
+            cause: Mutex::new(None),
+            stdin: tokio::sync::Mutex::new(Some(stdin)),
+            interrupt: Notify::new(),
+            force: Notify::new(),
+            settled: watch::Sender::new(false),
+        }
+    }
+
+    pub(crate) fn record(&self, cause: TerminalCause) {
+        let mut slot = self.cause.lock().expect("turn slot poisoned");
+        if slot.is_none() {
+            *slot = Some(cause);
+        }
+    }
+
+    pub(crate) fn cause(&self) -> Option<TerminalCause> {
+        self.cause.lock().expect("turn slot poisoned").clone()
+    }
+
+    /// Write one line to the CLI's stdin within [`WRITE_TIMEOUT`].
+    pub(crate) async fn write_line(&self, line: &str) -> Result<()> {
+        write_line(&self.stdin, line).await
+    }
+}
+
+async fn write_line(stdin: &tokio::sync::Mutex<Option<ChildStdin>>, line: &str) -> Result<()> {
+    let write = async {
+        let mut guard = stdin.lock().await;
+        let stdin = guard
+            .as_mut()
+            .ok_or_else(|| CalmError::Conflict("claude stdin is already closed".into()))?;
+        stdin.write_all(line.as_bytes()).await?;
+        stdin.write_all(b"\n").await?;
+        stdin.flush().await?;
+        Ok::<_, CalmError>(())
+    };
+    tokio::time::timeout(WRITE_TIMEOUT, write)
+        .await
+        .map_err(|_| CalmError::Conflict("claude did not take its stdin line in time".into()))?
+}
+
+struct ActiveTurn {
+    thread_id: String,
+    turn_id: String,
+    slot: Arc<TurnSlot>,
+}
+
+struct State {
+    start: SessionStart,
+    total_tokens: i64,
+    mcp_token: Option<String>,
+    shutting_down: bool,
+    active: Option<ActiveTurn>,
+}
+
+pub(crate) struct Shared {
+    pub(crate) params: ClaudePlannerSessionParams,
+    pub(crate) notifications: broadcast::Sender<Notification>,
+    state: Mutex<State>,
+    /// Serializes `turn_start` and `shutdown`, so no spawn outlives a shutdown.
+    issue: tokio::sync::Mutex<()>,
+    #[cfg(feature = "fixtures")]
+    pub(crate) hooks: Mutex<TestHooks>,
+}
+
+impl Shared {
+    fn state(&self) -> std::sync::MutexGuard<'_, State> {
+        self.state
+            .lock()
+            .expect("claude planner session state poisoned")
+    }
+
+    /// The driver's last step before `TurnCompleted`: the session's facts move forward and the
+    /// slot is free for the next turn.
+    pub(crate) fn finish_turn(&self, bound: bool, total_tokens: Option<i64>) {
+        let mut state = self.state();
+        if bound {
+            state.start = SessionStart::Resume;
+        }
+        if let Some(total_tokens) = total_tokens {
+            state.total_tokens = total_tokens;
+        }
+        state.active = None;
+    }
+}
+
+/// Fixtures-only interleaving points.
+#[cfg(feature = "fixtures")]
+#[derive(Default)]
+pub(crate) struct TestHooks {
+    pub(crate) after_spawn: Option<Arc<dyn Fn() + Send + Sync>>,
+    pub(crate) before_turn_completed: Option<SettlePause>,
+}
+
+/// An awaitable pause: the driver signals `entered` and waits for `release`.
+#[cfg(feature = "fixtures")]
+#[derive(Clone)]
+pub struct SettlePause {
+    pub entered: Arc<Notify>,
+    pub release: Arc<Notify>,
+}
+
+pub struct ClaudePlannerSession {
+    shared: Arc<Shared>,
+}
+
+impl ClaudePlannerSession {
+    pub fn new(params: ClaudePlannerSessionParams) -> Self {
+        let (notifications, _) = broadcast::channel(1024);
+        let state = State {
+            start: params.start,
+            total_tokens: params.prior_total_tokens,
+            mcp_token: None,
+            shutting_down: false,
+            active: None,
+        };
+        Self {
+            shared: Arc::new(Shared {
+                params,
+                notifications,
+                state: Mutex::new(state),
+                issue: tokio::sync::Mutex::new(()),
+                #[cfg(feature = "fixtures")]
+                hooks: Mutex::new(TestHooks::default()),
+            }),
+        }
+    }
+
+    pub fn subscribe_notifications(&self) -> broadcast::Receiver<Notification> {
+        self.shared.notifications.subscribe()
+    }
+
+    /// The plaintext MCP token of this harness, minted once at its first turn.
+    pub fn install_mcp_token(&self, token: String) {
+        self.shared.state().mcp_token = Some(token);
+    }
+
+    /// The shared daemon this session consults for thread seals.
+    pub fn codex(&self) -> &Arc<SharedCodexAppServer> {
+        &self.shared.params.seals
+    }
+
+    pub fn active_turn_id_for_thread(&self, thread: &str) -> Option<String> {
+        self.shared
+            .state()
+            .active
+            .as_ref()
+            .filter(|active| active.thread_id == thread)
+            .map(|active| active.turn_id.clone())
+    }
+
+    /// See the module docs for the submission contract.
+    pub async fn turn_start(
+        &self,
+        thread: &str,
+        items: Vec<InputItem>,
+        client_id: &str,
+    ) -> Result<String> {
+        let shared = &self.shared;
+        let params = &shared.params;
+        let _issue = shared.issue.lock().await;
+        let (start, token, prior_total_tokens) = {
+            let state = shared.state();
+            if state.shutting_down {
+                return Err(CalmError::Conflict(
+                    "claude planner session is shutting down".into(),
+                ));
+            }
+            if state.active.is_some() {
+                return Err(CalmError::Conflict(
+                    "a claude planner turn is still running".into(),
+                ));
+            }
+            let token = state.mcp_token.clone().ok_or_else(|| {
+                CalmError::Conflict("claude planner has no MCP credential yet".into())
+            })?;
+            (state.start, token, state.total_tokens)
+        };
+        let thread_uuid = Uuid::try_parse(thread).map_err(|_| {
+            CalmError::BadRequest(format!("claude planner thread {thread} is not a UUID"))
+        })?;
+        let turn_id = Uuid::new_v4().to_string();
+        if params.seals.turn_thread_is_sealed(thread) {
+            return Err(sealed(thread));
+        }
+        let host = &params.host;
+        let kernel_path = crate::kernel_bin_path::kernel_led_path()?;
+        let env = spawn::base_env(&EnvInputs {
+            path: kernel_path.path,
+            config_dir: &host.config.config_dir,
+            mcp_socket: &host.mcp_socket,
+            marker: host.instance.marker(&params.worker_session_id),
+            proxy: &params.proxy,
+        });
+        host.config.verify_version(&env).await?;
+        stop(&host.instance, &params.worker_session_id).await?;
+
+        let line = serde_json::to_string(&UserLine::new(
+            thread_uuid,
+            client_line_uuid(client_id).map_err(|e| CalmError::BadRequest(e.to_string()))?,
+            user_line_content(&items).await?,
+        ))?;
+        let translator = TurnTranslator::new(
+            TurnContext {
+                thread_id: thread.to_string(),
+                turn_id: turn_id.clone(),
+                client_id: client_id.to_string(),
+                input: items,
+                cwd: params.cwd.to_string_lossy().into_owned(),
+                prior_total_tokens,
+            },
+            params.calm_tools.clone(),
+        )
+        .map_err(|e| CalmError::BadRequest(e.to_string()))?;
+        let instructions = InstructionsFile::write(
+            &host.instructions_dir,
+            &params.worker_session_id,
+            &turn_id,
+            &params.instructions,
+        )?;
+        let argv = spawn::argv(
+            thread_uuid,
+            start,
+            &params.cwd,
+            &host.mcp_shim,
+            instructions.path(),
+        );
+        let argv = match argv {
+            Ok(argv) => argv,
+            Err(error) => return Err(self.abort_before_ok(None, instructions, error).await),
+        };
+        let spawned = Command::new(&host.config.claude_binary)
+            .args(argv)
+            .env_clear()
+            .envs(env)
+            .env("NEIGE_MCP_TOKEN", token)
+            .current_dir(&params.cwd)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn();
+        let mut child = match spawned {
+            Ok(child) => child,
+            Err(error) => {
+                let error = CalmError::Conflict(format!(
+                    "claude planner spawn of {} failed: {error}",
+                    host.config.claude_binary.display()
+                ));
+                return Err(self.abort_before_ok(None, instructions, error).await);
+            }
+        };
+        #[cfg(feature = "fixtures")]
+        {
+            let hook = shared.hooks.lock().expect("hooks").after_spawn.clone();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
+        if params.seals.turn_thread_is_sealed(thread) {
+            return Err(self
+                .abort_before_ok(Some(child), instructions, sealed(thread))
+                .await);
+        }
+        let (Some(stdin), Some(stdout), Some(stderr)) =
+            (child.stdin.take(), child.stdout.take(), child.stderr.take())
+        else {
+            let error = CalmError::Internal("claude planner child has no piped stdio".into());
+            return Err(self.abort_before_ok(Some(child), instructions, error).await);
+        };
+        let slot = Arc::new(TurnSlot::new(stdin));
+        if let Err(error) = slot.write_line(&line).await {
+            return Err(self.abort_before_ok(Some(child), instructions, error).await);
+        }
+
+        shared.state().active = Some(ActiveTurn {
+            thread_id: thread.to_string(),
+            turn_id: turn_id.clone(),
+            slot: Arc::clone(&slot),
+        });
+        let _ = shared.notifications.send(translator.turn_started());
+        tokio::spawn(drive(
+            Arc::clone(shared),
+            TurnRun {
+                child,
+                stdout,
+                stderr,
+                slot,
+                translator,
+                instructions,
+                thread: thread_uuid,
+            },
+        ));
+        Ok(turn_id)
+    }
+
+    /// Stop the marker (which ends a spawned child and anything it started), reap the child, and
+    /// drop the instructions guard; the caller's error is what `turn_start` returns.
+    async fn abort_before_ok(
+        &self,
+        child: Option<Child>,
+        instructions: InstructionsFile,
+        error: CalmError,
+    ) -> CalmError {
+        let params = &self.shared.params;
+        if let Err(stop_error) = stop(&params.host.instance, &params.worker_session_id).await {
+            tracing::warn!(
+                worker_session_id = %params.worker_session_id,
+                error = %stop_error,
+                "claude planner: stop after a failed turn start did not confirm"
+            );
+        }
+        if let Some(mut child) = child {
+            let _ = child.start_kill();
+            let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
+        }
+        drop(instructions);
+        error
+    }
+
+    /// Record `Interrupted`, ask the CLI to interrupt, and arm the stop timer; a turn that is not
+    /// this session's live one has nothing to interrupt.
+    pub async fn turn_interrupt(&self, thread: &str, turn: &str) -> Result<()> {
+        let slot = self
+            .shared
+            .state()
+            .active
+            .as_ref()
+            .filter(|active| active.thread_id == thread && active.turn_id == turn)
+            .map(|active| Arc::clone(&active.slot));
+        match slot {
+            Some(slot) => {
+                interrupt(&slot).await;
+                Ok(())
+            }
+            None => Ok(()),
+        }
+    }
+
+    pub async fn interrupt_active_turn(&self, thread: &str) -> Result<()> {
+        match self.active_turn_id_for_thread(thread) {
+            Some(turn) => self.turn_interrupt(thread, &turn).await,
+            None => Ok(()),
+        }
+    }
+
+    /// Harness shutdown: refuse new turns, end the live one as `Interrupted`, and stop the marker
+    /// whether or not a turn runs. The `stop` result is returned for strict callers.
+    pub async fn shutdown(&self) -> Result<()> {
+        let shared = &self.shared;
+        shared.state().shutting_down = true;
+        let _issue = shared.issue.lock().await;
+        let slot = shared
+            .state()
+            .active
+            .as_ref()
+            .map(|active| Arc::clone(&active.slot));
+        if let Some(slot) = &slot {
+            slot.record(TerminalCause::Interrupted);
+            slot.force.notify_one();
+        }
+        let params = &shared.params;
+        let stopped = stop(&params.host.instance, &params.worker_session_id).await;
+        if let Some(slot) = slot {
+            let mut settled = slot.settled.subscribe();
+            if tokio::time::timeout(SHUTDOWN_SETTLE_WAIT, settled.wait_for(|done| *done))
+                .await
+                .is_err()
+            {
+                tracing::warn!(
+                    worker_session_id = %params.worker_session_id,
+                    "claude planner: the running turn did not settle during shutdown"
+                );
+            }
+        }
+        stopped
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn set_after_spawn_hook_for_test(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+        self.shared.hooks.lock().expect("hooks").after_spawn = Some(hook);
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn set_before_turn_completed_pause_for_test(&self, pause: SettlePause) {
+        self.shared
+            .hooks
+            .lock()
+            .expect("hooks")
+            .before_turn_completed = Some(pause);
+    }
+}
+
+async fn interrupt(slot: &TurnSlot) {
+    slot.record(TerminalCause::Interrupted);
+    let request = super::protocol::ControlRequestOut::new(
+        format!("interrupt-{}", Uuid::new_v4().simple()),
+        super::protocol::ControlRequestKind::Interrupt,
+    );
+    let written = match serde_json::to_string(&request) {
+        Ok(line) => slot.write_line(&line).await,
+        Err(error) => Err(error.into()),
+    };
+    if let Err(error) = written {
+        tracing::warn!(%error, "claude planner: interrupt request not written; the stop timer ends the turn");
+    }
+    slot.interrupt.notify_one();
+}
+
+fn sealed(thread: &str) -> CalmError {
+    CalmError::Conflict(format!("thread {thread} is sealed for deletion"))
+}
+
+/// Text blocks, and one base64 image block per bound attachment (§5.6); the attachment's file name
+/// is its id, which names its format.
+async fn user_line_content(items: &[InputItem]) -> Result<Vec<UserLineContent>> {
+    let mut content = Vec::with_capacity(items.len());
+    for item in items {
+        match item {
+            InputItem::Text { text } => content.push(UserLineContent::Text { text: text.clone() }),
+            InputItem::LocalImage { path } => {
+                let id = std::path::Path::new(path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(|name| AttachmentId::parse(name).ok())
+                    .ok_or_else(|| {
+                        CalmError::BadRequest(format!("{path} is not a bound attachment"))
+                    })?;
+                let bytes = tokio::fs::read(path).await?;
+                content.push(UserLineContent::Image {
+                    source: Base64Image::new(
+                        id.format().mime(),
+                        base64::engine::general_purpose::STANDARD.encode(bytes),
+                    ),
+                });
+            }
+        }
+    }
+    Ok(content)
+}

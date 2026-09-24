@@ -1,8 +1,15 @@
-//! Claude Code as a Planner backend (#1791). This module holds the wire (`protocol`) and the pure
-//! translation of a Claude turn into the Codex-shaped notifications the Planner harness consumes
-//! (`translate`); the process, session and stop live beside them once wired.
+//! Claude Code as a Planner backend (#1791). `protocol` is the wire and `translate` the pure
+//! translation of a Claude turn into the Codex-shaped notifications the Planner harness consumes;
+//! `session` runs one `claude -p` process per turn (`spawn` is its argv, environment and
+//! instructions file, `driver` its read loop and settlement), `stop` is the marker sweep, and
+//! `config` the typed configuration.
 
+pub mod config;
+mod driver;
 pub mod protocol;
+pub mod session;
+pub mod spawn;
+pub mod stop;
 pub mod translate;
 
 #[cfg(test)]
