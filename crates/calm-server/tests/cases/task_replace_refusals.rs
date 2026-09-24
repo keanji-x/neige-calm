@@ -1,5 +1,6 @@
 //! #1785 S2: `calm.task.replace` refusals (design §4.7): each is decided before the first write,
 //! so a refused request stops nothing and writes no receipt.
+use super::git_delivery::Fx;
 use super::task_replace::*;
 use crate::task_recovery::{current, declare};
 use calm_server::model::TaskStatus;
@@ -341,4 +342,50 @@ async fn replace_refuses_a_predecessor_block_edited_off_the_route() {
     assert_eq!(current(&fx.boot, "moved").await.status, TaskStatus::Running);
     assert_eq!(receipt_count(&fx).await, 0);
     assert_eq!(report_blocks(&fx).await, blocks);
+}
+
+/// Tombstone the task block declaring `key` (the Planner's withdrawal), in place.
+async fn tombstone_block(fx: &Fx, key: &str) {
+    let block = block_of(fx, key).await;
+    crate::mcp_track_report::call_tool(
+        &fx.boot,
+        "calm.report.blocks.upsert",
+        crate::mcp_track_report::planner_identity(&fx.boot),
+        json!({"id": block.id, "kind": "task", "if_rev": block.rev, "payload": {
+            "key": key, "declared_by": PLANNER_DECLARATION_AUTHOR,
+            "tombstoned_by": PLANNER_DECLARATION_AUTHOR, "tombstone": {"reason": "withdrawn"}}}),
+    )
+    .await
+    .unwrap();
+}
+
+/// A tombstoned predecessor block is not a live declaration to copy.
+#[tokio::test]
+async fn replace_refuses_a_tombstoned_predecessor_block() {
+    let fx = replace_fixture().await;
+    let (task, _) = produced(&fx, "withdrawn", &[("a.txt", "A\n")], json!({})).await;
+    tombstone_block(&fx, "withdrawn").await;
+
+    let result = replace(&fx, replace_args(&task, "tb1")).await;
+
+    assert_refusal(&result, "predecessor_undeclared");
+    assert_eq!(receipt_count(&fx).await, 0);
+}
+
+/// A tombstoned dependent block no longer depends on anything.
+#[tokio::test]
+async fn replace_ignores_a_tombstoned_dependent_block() {
+    let fx = replace_fixture().await;
+    let (task, _) = produced(&fx, "base-work", &[("a.txt", "A\n")], json!({})).await;
+    declare(
+        &fx.boot,
+        json!({"key": "dropped-review", "kind": "codex", "goal": "review", "depends_on": ["base-work"],
+            "declared_by": PLANNER_DECLARATION_AUTHOR, "ready": false, "no_gate_reason": "f"}),
+    )
+    .await;
+    tombstone_block(&fx, "dropped-review").await;
+
+    replace(&fx, replace_args(&task, "td1")).await.unwrap();
+
+    assert_eq!(receipt_count(&fx).await, 1);
 }

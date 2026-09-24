@@ -42,8 +42,33 @@ pub(crate) fn on_route(task: &Task, track: &Track) -> bool {
         TaskKind::Claude => "claude",
         TaskKind::Terminal => "terminal",
     };
-    let context = serde_json::from_str(&task.context_json).unwrap_or(Value::Null);
-    route_is_replaceable(track.workspace.kind, kind, &task.spawn, &context)
+    // Unparsable context is a malformed selector: off the route.
+    serde_json::from_str::<Value>(&task.context_json).is_ok_and(|context| {
+        route_is_replaceable(track.workspace.kind, kind, &task.spawn, &context)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_malformed_or_isolated_context_is_off_the_route() {
+        let on = |context: &Value| {
+            route_is_replaceable(
+                TrackWorkspaceKind::Attached,
+                "codex",
+                TASK_IN_TRACK_ROUTE,
+                context,
+            )
+        };
+        assert!(on(&serde_json::json!({})));
+        assert!(!on(
+            &serde_json::json!({"neige_execution": {"version": "bogus"}})
+        ));
+        assert!(!on(&serde_json::json!({"neige_execution": {
+            "version": "isolated-codex-v1", "workspace": "empty"}})));
+    }
 }
 
 /// The spawn-failure reason of a successor edited off the route (`spawn-failed: <this>`).

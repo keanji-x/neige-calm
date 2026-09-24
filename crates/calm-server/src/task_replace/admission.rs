@@ -2,7 +2,7 @@
 //! every refusal (2, 2a) before the first write, then the stop (3) and the carry source (4).
 
 use calm_types::report_blocks::KIND_TASK;
-use calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR;
+use calm_types::report_blocks::tasks::{PLANNER_DECLARATION_AUTHOR, task_block_is_live};
 use calm_types::task_recovery::TASK_IN_TRACK_ROUTE;
 use calm_types::track_report::ReportBlock;
 use serde_json::{Value, json};
@@ -16,7 +16,7 @@ use crate::db::sqlite::{
 };
 use crate::error::{CalmError, Result};
 use crate::ids::TrackId;
-use crate::model::{Task, TaskKind, TaskStatus, TrackWorkspaceKind, now_ms};
+use crate::model::{Task, TaskStatus, now_ms};
 use crate::operation::Tx;
 use crate::scheduler::{WorkerCleanupReason, mark_running_timeout_cleanup_tx};
 
@@ -39,11 +39,12 @@ fn status_str(status: TaskStatus) -> String {
         .unwrap_or_default()
 }
 
-/// The predecessor's live task block: the first non-tombstone block declaring `key`.
+/// The predecessor's live task block: the first live block declaring `key`.
 fn predecessor_block<'a>(blocks: &'a [ReportBlock], key: &str) -> Option<(usize, &'a ReportBlock)> {
-    blocks.iter().enumerate().find(|(_, block)| {
-        block.kind == KIND_TASK && block.payload["key"] == key && block.payload["tombstone"] != true
-    })
+    blocks
+        .iter()
+        .enumerate()
+        .find(|(_, block)| task_block_is_live(block) && block.payload["key"] == key)
 }
 
 /// `<root>.<n>`: a predecessor that is itself a successor is `<root>.<m>` by construction and
@@ -83,8 +84,7 @@ async fn unfinished_dependents_tx(
         .map(|(key, _)| key)
         .collect();
     for block in blocks.iter().filter(|block| {
-        block.kind == KIND_TASK
-            && block.payload["tombstone"] != true
+        task_block_is_live(block)
             && block.payload["depends_on"]
                 .as_array()
                 .is_some_and(|deps| deps.iter().any(|d| d == key))
@@ -141,12 +141,10 @@ pub(crate) async fn admit_tx(
     if track.lifecycle.is_terminal() {
         return Err(Refusal::TrackTerminal.refuse(track.lifecycle.as_db_str()));
     }
-    let isolated = !matches!(crate::isolated_codex::selected(&predecessor), Ok(false))
-        || crate::isolated_codex::lookup::is_isolated_task_tx(tx, &predecessor.id).await?;
-    if track.workspace.kind != TrackWorkspaceKind::Attached
-        || !matches!(predecessor.kind, TaskKind::Codex | TaskKind::Claude)
-        || predecessor.spawn != TASK_IN_TRACK_ROUTE
-        || isolated
+    // The declared route (the one predicate), and the execution fact that an isolated worker
+    // operation already ran for this attempt.
+    if !super::route::on_route(&predecessor, &track)
+        || crate::isolated_codex::lookup::is_isolated_task_tx(tx, &predecessor.id).await?
     {
         return Err(Refusal::UnsupportedRoute.refuse(""));
     }
@@ -194,6 +192,7 @@ pub(crate) async fn admit_tx(
     }
     let declared = blocks
         .iter()
+        // Any task block, tombstones included: a tombstoned key blocks its redeclaration.
         .any(|block| block.kind == KIND_TASK && block.payload["key"] == successor_key.as_str());
     if declared
         || task_attempt_current_tx(tx, track_id, &successor_key)
