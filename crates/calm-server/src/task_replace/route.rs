@@ -2,7 +2,9 @@
 //! the successor's block like any declaration, and an edit can move it off the route the
 //! replacement admitted. `drive_spawn` asks here first, before the child-Track branch.
 
+use calm_types::task_execution::IsolatedCodexSelection;
 use calm_types::task_recovery::TASK_IN_TRACK_ROUTE;
+use serde_json::Value;
 
 use super::receipt;
 use super::refusal::Refusal;
@@ -18,12 +20,30 @@ pub(crate) async fn is_successor_tx(tx: &mut Tx<'_>, task: &Task) -> Result<bool
 }
 
 /// The replaceable route (design §4.1): an attached Track, a codex or claude task running inside
-/// it, no isolated selector. A malformed selector is off the route, not an error.
+/// it, no isolated selector. A malformed selector is off the route, not an error. The one
+/// predicate both the replacement's admission (on the successor declaration it builds) and
+/// `drive_spawn` (on the successor row it dispatches) apply.
+pub(crate) fn route_is_replaceable(
+    workspace: TrackWorkspaceKind,
+    kind: &str,
+    spawn: &str,
+    context: &Value,
+) -> bool {
+    workspace == TrackWorkspaceKind::Attached
+        && matches!(kind, "codex" | "claude")
+        && spawn == TASK_IN_TRACK_ROUTE
+        && matches!(IsolatedCodexSelection::from_context(context), Ok(None))
+}
+
+/// [`route_is_replaceable`] on a task row.
 pub(crate) fn on_route(task: &Task, track: &Track) -> bool {
-    track.workspace.kind == TrackWorkspaceKind::Attached
-        && matches!(task.kind, TaskKind::Codex | TaskKind::Claude)
-        && task.spawn == TASK_IN_TRACK_ROUTE
-        && matches!(crate::isolated_codex::selected(task), Ok(false))
+    let kind = match task.kind {
+        TaskKind::Codex => "codex",
+        TaskKind::Claude => "claude",
+        TaskKind::Terminal => "terminal",
+    };
+    let context = serde_json::from_str(&task.context_json).unwrap_or(Value::Null);
+    route_is_replaceable(track.workspace.kind, kind, &task.spawn, &context)
 }
 
 /// The spawn-failure reason of a successor edited off the route (`spawn-failed: <this>`).

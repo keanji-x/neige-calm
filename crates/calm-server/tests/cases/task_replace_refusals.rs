@@ -246,7 +246,8 @@ async fn replace_refuses_an_unschedulable_successor_and_keeps_the_predecessor_ru
     let result = replace(&fx, replace_args(&task, "cap1")).await;
 
     assert_refusal(&result, "successor_unschedulable");
-    assert!(result.unwrap_err().message.contains("capped.2"));
+    let message = result.unwrap_err().message;
+    assert!(message.contains("capped.2: planner_task_ceiling"), "{message}");
     assert_eq!(
         current(&fx.boot, "capped").await.status,
         TaskStatus::Running
@@ -286,4 +287,55 @@ async fn replace_refuses_a_predecessor_without_a_block() {
         "predecessor_undeclared",
     );
     assert_eq!(receipt_count(&fx).await, 0);
+}
+
+/// A dependent declared `ready: false` has no execution row yet; it still depends on the
+/// predecessor's key, so the replacement is refused before the running predecessor is stopped.
+#[tokio::test]
+async fn replace_refuses_an_unready_dependent_declaration() {
+    let fx = replace_fixture().await;
+    let (_worker, task) = running(&fx, "upstream-work", json!({})).await;
+    declare(
+        &fx.boot,
+        json!({"key": "later-review", "kind": "codex", "goal": "review", "depends_on": ["upstream-work"],
+            "declared_by": PLANNER_DECLARATION_AUTHOR, "ready": false, "no_gate_reason": "f"}),
+    )
+    .await;
+
+    let result = replace(&fx, replace_args(&task, "ud1")).await;
+
+    assert_refusal(&result, "pending_dependents");
+    assert!(result.unwrap_err().message.contains("later-review"));
+    assert_eq!(
+        current(&fx.boot, "upstream-work").await.status,
+        TaskStatus::Running
+    );
+    assert_eq!(receipt_count(&fx).await, 0);
+}
+
+/// The predecessor's block was edited to a child-Track route after its execution started: the
+/// successor would copy that route, so the replacement is refused before the stop.
+#[tokio::test]
+async fn replace_refuses_a_predecessor_block_edited_off_the_route() {
+    let fx = replace_fixture().await;
+    let (_worker, task) = running(&fx, "moved", json!({})).await;
+    let block = block_of(&fx, "moved").await;
+    let mut payload = block.payload.clone();
+    payload["spawn"] = json!(TASK_CHILD_TRACK_ROUTE);
+    crate::mcp_track_report::call_tool(
+        &fx.boot,
+        "calm.report.blocks.upsert",
+        crate::mcp_track_report::planner_identity(&fx.boot),
+        json!({"id": block.id, "kind": "task", "payload": payload, "if_rev": block.rev}),
+    )
+    .await
+    .unwrap();
+    let blocks = report_blocks(&fx).await;
+
+    let result = replace(&fx, replace_args(&task, "mv1")).await;
+
+    assert_refusal(&result, "unsupported_route");
+    assert_eq!(current(&fx.boot, "moved").await.status, TaskStatus::Running);
+    assert_eq!(receipt_count(&fx).await, 0);
+    assert_eq!(report_blocks(&fx).await, blocks);
 }

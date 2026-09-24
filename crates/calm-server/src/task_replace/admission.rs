@@ -58,9 +58,13 @@ async fn successor_key_tx(tx: &mut Tx<'_>, track_id: &str, key: &str) -> Result<
     Ok(format!("{key}.2"))
 }
 
+/// Every task still to finish that depends on `key`: execution rows not yet terminal, and live
+/// report declarations naming `key` whose own key has no terminal execution — an unready or
+/// ceiling-held declaration has no row yet but will wait on `key` once it starts.
 async fn unfinished_dependents_tx(
     tx: &mut Tx<'_>,
     track_id: &str,
+    blocks: &[ReportBlock],
     key: &str,
 ) -> Result<Vec<String>> {
     let rows: Vec<(String, String)> = sqlx::query_as(
@@ -70,14 +74,42 @@ async fn unfinished_dependents_tx(
     .bind(track_id)
     .fetch_all(&mut **tx)
     .await?;
-    Ok(rows
+    let mut dependents: std::collections::BTreeSet<String> = rows
         .into_iter()
         .filter(|(_, depends)| {
             serde_json::from_str::<Vec<String>>(depends)
                 .is_ok_and(|deps| deps.iter().any(|d| d == key))
         })
         .map(|(key, _)| key)
-        .collect())
+        .collect();
+    for block in blocks.iter().filter(|block| {
+        block.kind == KIND_TASK
+            && block.payload["tombstone"] != true
+            && block.payload["depends_on"]
+                .as_array()
+                .is_some_and(|deps| deps.iter().any(|d| d == key))
+    }) {
+        let Some(dependent) = block.payload["key"].as_str() else {
+            continue;
+        };
+        let finished = match task_attempt_current_tx(tx, track_id, dependent).await? {
+            Some(allocation) => {
+                task_get_tx(tx, &allocation.attempt_id)
+                    .await?
+                    .is_some_and(|task| {
+                        matches!(
+                            task.status,
+                            TaskStatus::Done | TaskStatus::Failed | TaskStatus::Canceled
+                        )
+                    })
+            }
+            None => false,
+        };
+        if !finished {
+            dependents.insert(dependent.to_string());
+        }
+    }
+    Ok(dependents.into_iter().collect())
 }
 
 /// Steps 2 and 2a: the expected attempt is current and every refusal is decided, before any write.
@@ -149,7 +181,7 @@ pub(crate) async fn admit_tx(
     if delivery_pending {
         return Err(Refusal::CandidatePending.refuse(""));
     }
-    let dependents = unfinished_dependents_tx(tx, track_id, &predecessor.key).await?;
+    let dependents = unfinished_dependents_tx(tx, track_id, blocks, &predecessor.key).await?;
     if !dependents.is_empty() {
         return Err(Refusal::PendingDependents.refuse(&dependents.join(", ")));
     }
@@ -174,6 +206,19 @@ pub(crate) async fn admit_tx(
         return Err(Refusal::DerivedKeyTaken.refuse(&successor_key));
     }
     let successor_payload = successor_payload(&block.payload, &successor_key, args)?;
+    // The block may have been edited since the predecessor started: the successor copies the
+    // block, so its own route is what must be replaceable, before anything is stopped.
+    let spawn = successor_payload["spawn"]
+        .as_str()
+        .unwrap_or(TASK_IN_TRACK_ROUTE);
+    if !super::route::route_is_replaceable(
+        track.workspace.kind,
+        successor_payload["kind"].as_str().unwrap_or_default(),
+        spawn,
+        &successor_payload["context"],
+    ) {
+        return Err(Refusal::UnsupportedRoute.refuse("the predecessor's block names another route"));
+    }
     Ok(Admitted {
         predecessor,
         successor_key,
