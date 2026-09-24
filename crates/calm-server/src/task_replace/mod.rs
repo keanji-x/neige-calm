@@ -2,7 +2,8 @@
 //! when it still runs) and the kernel appends the successor declaration `<root>.<n>` in the same
 //! report transaction, with an immutable receipt. The receipt is the replay answer and the carry
 //! plan: when the successor's lease is prepared, the predecessor's settled candidate is merged
-//! onto the base a new task would start from then (the upstream, or HEAD when ahead or without one) ([`crate::operation::workspace_lease::carry`]).
+//! onto the base a new task would start from then (the upstream, or HEAD when ahead or without
+//! one) ([`crate::operation::workspace_lease::carry`]).
 
 pub(crate) mod admission;
 pub(crate) mod receipt;
@@ -93,7 +94,7 @@ impl ReplaceArgs {
 /// A carry that failed while the successor's lease was prepared.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CarryFailure {
-    /// The candidate conflicts with the upstream (`refused: carry-conflict: <paths>`).
+    /// The candidate conflicts with the base (`refused: carry-conflict: <paths>`).
     Conflict,
     /// The carry commit could not be computed (`carry-infra: <why>`).
     Infra,

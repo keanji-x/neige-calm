@@ -237,7 +237,7 @@ Planner 事后编辑后继块 = 普通声明编辑（在途执行照旧变 conte
 
 两条 `Command` 各自判 `ExitStatus`（不走 shell 管道）；两条命令都经 S4 G26 的有界执行器跑（`operation/task_verify_adapter/target.rs:317` 的 `run_sampling_command` 模式：`plugin_host/child_process.rs:114` `spawn_within` + `child_process/timed.rs:53` `finish_within`，进程组、4 s 总期限、`-c core.fsmonitor=false`）；`neige_git_command` 本身是无期限的 `std::process::Command`（`workspace_materialize.rs:55-61`），不能直接在 prepare 事务里用（U3）。纯对象库操作，不碰工作树、不建 ref；租约行冻结 `C'` 后崩溃重试幂等。
 
-**读面**：`plan.list.candidate.carry{receipt_id, upstream_sha: C'^1, carry_sha: C'}`。整条改动 = `C'^1..candidate`；本轮修复 = `C'..candidate`。
+**读面**：`plan.list.candidate.carry{receipt_id, onto_sha: C'^1（合并所基于的 base：上游，或 HEAD 领先/无上游时的 HEAD）, carry_sha: C'}`。整条改动 = `C'^1..candidate`；本轮修复 = `C'..candidate`。
 carry 租约上的 `no_change`（`candidate == base_sha == C'`，F31）表示「carry 之外无新改动」，不是「无改动」——`calm.plan.list.md` 与 replace 描述写明。
 
 冲突 ⇒ `refused: carry-conflict: <paths>` 经 `spawn-failed` 通路（`scheduler/mod.rs:1753`）落成 `task.failed` ⇒ 推送（`spawn-failed` 已在 pre-gate 列表）。该执行无候选，Planner 可对它再 replace `carry:"none"` 或自己声明解冲突任务（Q2）。

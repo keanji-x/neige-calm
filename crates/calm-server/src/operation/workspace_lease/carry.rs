@@ -30,7 +30,7 @@ const CARRY_OUTPUT_CAP: usize = 1024 * 1024;
 const CARRY_AUTHOR_NAME: &str = "neige kernel";
 const CARRY_AUTHOR_EMAIL: &str = "kernel@neige.invalid";
 /// The only variables of the server's environment a carry git run inherits.
-const CARRY_INHERITED_ENV: [&str; 2] = ["PATH", "HOME"];
+const CARRY_INHERITED_ENV: [&str; 3] = ["PATH", "HOME", "XDG_CONFIG_HOME"];
 
 /// What the worker prompt says about a carried worktree.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,7 +47,9 @@ impl CarryNotice {
     fn base_label(&self) -> &'static str {
         match self.base_source {
             BaseSource::Upstream => "the upstream",
-            _ => "the attached checkout's HEAD",
+            BaseSource::Head => "the attached checkout's HEAD",
+            BaseSource::Commit => "the pinned commit",
+            BaseSource::Attempt => "the carried base",
         }
     }
 
@@ -191,8 +193,9 @@ async fn carry_commit(repo_root: &Path, upstream: &str, plan: &CarryPlan) -> Res
 /// One git run under the carry deadline, through the gate's bounded runner. The environment is an
 /// allowlist, not the server's: `merge-tree` runs any merge driver the attached repository
 /// configures, and such repository-selected code must not see the kernel's own variables. Kept:
-/// `PATH` (git and the driver resolve binaries), `HOME` (git reads the user's global config there,
-/// e.g. `safe.directory`), the C locale, and the caller's commit identity.
+/// `PATH` (git and the driver resolve binaries), `HOME` and `XDG_CONFIG_HOME` when set (git reads
+/// the user's global config there, e.g. `safe.directory`), the C locale, and the caller's commit
+/// identity.
 async fn run_git(
     repo_root: &Path,
     args: &[&str],

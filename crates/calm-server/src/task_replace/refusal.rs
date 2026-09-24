@@ -24,7 +24,7 @@ pub(crate) enum Refusal {
     SuccessorUnschedulable,
     /// Kernel-side: a successor's dispatch found its task edited off the replaceable route.
     RouteChanged,
-    /// Kernel-side: the carry merge conflicts with the upstream.
+    /// Kernel-side: the carry merge conflicts with the base it is merged onto.
     CarryConflict,
     /// Kernel-side: the carry commit could not be computed.
     CarryInfra,
