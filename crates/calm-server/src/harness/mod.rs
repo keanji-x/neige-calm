@@ -131,6 +131,17 @@ pub async fn spawn_recovered_harness(
         return Ok(RecoveryOutcome::Skipped);
     };
     let role = repo.card_role_get(card.id.as_str()).await?;
+    if runtime.kind == crate::session_projection_repo::WorkerSessionKind::SharedPlanner
+        && !profile::planner_row_recoverable_on_codex(runtime.agent_provider.as_ref(), &card, role)
+    {
+        tracing::warn!(
+            worker_session_id = %runtime.id,
+            card_id = %card.id,
+            provider = ?runtime.agent_provider,
+            "refusing harness recovery: the Planner row is not a Codex row bound to a Codex Planner card"
+        );
+        return Ok(RecoveryOutcome::Skipped);
+    }
     let Some(track) = repo.track_get(card.track_id.as_str()).await? else {
         return Ok(RecoveryOutcome::Skipped);
     };

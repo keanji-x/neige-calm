@@ -1542,7 +1542,7 @@ async fn boot_fixture() -> Fixture {
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: Value::Null,
+            payload: serde_json::json!({"planner_provider": "codex"}),
         })
         .await
         .expect("create planner card");

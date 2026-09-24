@@ -551,8 +551,8 @@ fn tool_call_bad_gateway(plugin_id: &str, tool_name: &str, detail: &str) -> Resp
     params(("id" = String, Path, description = "Card id")),
     request_body = CardPatch,
     responses(
-        (status = 200, description = "Card updated", body = Card),
-        (status = 400, description = "Card patch violates an invariant", body = ErrorBody),
+        (status = 200, description = "Card updated. A replacement `payload` keeps every server-owned key the card already carries.", body = Card),
+        (status = 400, description = "Card patch violates an invariant, including a `payload` that carries a server-owned key (`terminal_signals`, `claude_permissions`, `claude_permissions_source`, `template_context`, `planner_provider`).", body = ErrorBody),
         (status = 404, description = "Card not found", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),

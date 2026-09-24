@@ -131,7 +131,7 @@ async fn dispatcher_pending_thread_bind_persists_thread_id_and_broadcasts_card_u
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: serde_json::json!({}),
+            payload: serde_json::json!({"planner_provider": "codex"}),
         })
         .await
         .expect("create planner card");

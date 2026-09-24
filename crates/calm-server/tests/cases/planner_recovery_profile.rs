@@ -238,3 +238,91 @@ async fn cold_daemon_replay_keeps_active_plain_chat_without_mcp() {
             .unwrap();
     assert!(token.is_none());
 }
+
+/// #1791: a cold daemon replay classifies a Planner card by `PlannerBinding`, so a Planner card
+/// without a known `planner_provider` is not a harness card and gets no MCP credential.
+async fn cold_daemon_replay_of_planner(payload: Value) -> (bool, bool) {
+    use calm_server::shared_codex_appserver::{
+        ReplacePrecondition, SharedThreadStartParams, ThreadConfig,
+    };
+    let _env = ENV_LOCK.lock().await;
+    let capture = TempDir::new().unwrap();
+    let path = capture.path().join("wire.ndjson");
+    unsafe {
+        std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &path);
+    }
+    let boot = boot_shared().await;
+    let (card, runtime, _, _) = failed_conversation(&boot).await;
+    sqlx::query("UPDATE cards SET payload=? WHERE id=?")
+        .bind(payload.to_string())
+        .bind(card.id.as_str())
+        .execute(boot.repo.pool())
+        .await
+        .unwrap();
+    let thread = boot
+        .state
+        .shared_codex_appserver
+        .thread_start_for_card(
+            card.id.as_str(),
+            CardRole::Planner,
+            Some(&boot.track_id),
+            SharedThreadStartParams {
+                cwd: boot._tmp.path().to_string_lossy().into_owned(),
+                approval_policy: "never".into(),
+                sandbox_mode: "workspace-write".into(),
+                developer_instructions: None,
+                config: ThreadConfig::NoMcp,
+            },
+        )
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE worker_sessions SET state='idle',thread_id=?2,handle_state_json=?3 WHERE id=?1",
+    )
+    .bind(&runtime)
+    .bind(&thread)
+    .bind(idle_snapshot_value(&thread).to_string())
+    .execute(boot.repo.pool())
+    .await
+    .unwrap();
+    let replaced = boot
+        .state
+        .shared_codex_appserver
+        .transition_replace_for_test("planner provider replay", ReplacePrecondition::Always)
+        .await;
+    unsafe {
+        std::env::remove_var("FAKE_CODEX_CAPTURE_REQUESTS");
+    }
+    replaced.unwrap();
+    let requests = request_lines_containing(&path, "thread/resume", 1).await;
+    let token: Option<String> =
+        sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id=?")
+            .bind(&runtime)
+            .fetch_one(boot.repo.pool())
+            .await
+            .unwrap();
+    (
+        requests[0]["params"].get("config").is_some(),
+        token.is_some(),
+    )
+}
+
+#[tokio::test]
+async fn cold_daemon_replay_gives_a_codex_planner_its_mcp_credential() {
+    let payload = json!({"schemaVersion":1,"planner_harness":true,"planner_provider":"codex"});
+    assert_eq!(cold_daemon_replay_of_planner(payload).await, (true, true));
+}
+
+#[tokio::test]
+async fn cold_daemon_replay_gives_a_planner_without_a_provider_no_mcp() {
+    for payload in [
+        json!({"schemaVersion":1,"planner_harness":true}),
+        json!({"schemaVersion":1,"planner_harness":true,"planner_provider":"gpt"}),
+    ] {
+        assert_eq!(
+            cold_daemon_replay_of_planner(payload.clone()).await,
+            (false, false),
+            "{payload}"
+        );
+    }
+}

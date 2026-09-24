@@ -1,3 +1,6 @@
+#[path = "planner_provider_recovery.rs"]
+mod planner_provider_recovery;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -266,7 +269,7 @@ async fn direct_recovery_boundary_rejects_area_chat_planner_runtime() {
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: json!({"schemaVersion": 1}),
+            payload: json!({"schemaVersion": 1, "planner_provider": "codex"}),
         },
         CardRole::Planner,
         false,
@@ -1692,7 +1695,10 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_planner_bac
     let planner_card = card_create_with_id_tx(
         &mut tx,
         new_id(),
-        mk(track.id.clone(), json!({"schemaVersion": 1})),
+        mk(
+            track.id.clone(),
+            json!({"schemaVersion": 1, "planner_provider": "codex"}),
+        ),
         CardRole::Planner,
         false,
         repo.card_role_cache(),

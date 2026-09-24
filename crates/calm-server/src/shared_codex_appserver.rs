@@ -3405,8 +3405,15 @@ impl SharedCodexAppServer {
                         if runtime.thread_id.as_deref() != Some(thread_id.as_str()) {
                             return Ok(ColdResumeAuthorization::NoMcp);
                         }
-                        if crate::harness::profile::HarnessProfile::from_shape(&shape.kind,shape.role,&shape.payload)
-                            .is_some_and(|profile|profile.mcp_role().is_none()) {
+                        // One decoder for harness identity: a Planner card without a known Codex binding is not a
+                        // harness card and gets no credential; a conversation profile without an MCP role neither.
+                        let binding = crate::harness::profile::PlannerBinding::from_shape(&shape.kind,shape.role,&shape.payload);
+                        let no_mcp = match &binding {
+                            Some(binding) => binding.profile.mcp_role().is_none()
+                                || binding.provider != crate::session_projection_repo::AgentProvider::Codex,
+                            None => shape.role == CardRole::Planner,
+                        };
+                        if no_mcp {
                             return Ok(ColdResumeAuthorization::NoMcp);
                         }
                         let raw=mint_and_persist_card_token(tx, &card_id, &runtime.id).await?;

@@ -28,7 +28,11 @@ async fn cold_resume_selects_terminal_policy_from_current_card_role() {
                 title: None,
                 kind: "codex".into(),
                 sort: None,
-                payload: json!({"codex_source":"shared"}),
+                payload: if role == CardRole::Planner {
+                    json!({"codex_source":"shared","planner_provider":"codex"})
+                } else {
+                    json!({"codex_source":"shared"})
+                },
             },
             role,
             true,

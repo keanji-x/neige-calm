@@ -115,7 +115,6 @@ pub async fn mint_and_persist_card_token(
 mod tests {
     use std::path::Path;
 
-    use serde_json::Value;
 
     use super::*;
     use crate::card_role_cache::CardRoleCache;
@@ -281,7 +280,7 @@ mod tests {
                 title: None,
                 kind: "codex".into(),
                 sort: None,
-                payload: Value::Null,
+                payload: serde_json::json!({"planner_provider": "codex"}),
             },
             CardRole::Planner,
             true,

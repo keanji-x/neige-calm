@@ -63,16 +63,34 @@ impl PlannerBinding {
     /// A Planner card names its backend in the server-owned `planner_provider` key; missing or
     /// unknown makes it not a harness card (fail closed). PlainChat and Assistant run on Codex.
     pub(crate) fn from_card(card: &Card, role: CardRole) -> Option<Self> {
-        let profile = HarnessProfile::from_shape(&card.kind, role, &card.payload)?;
+        Self::from_shape(&card.kind, role, &card.payload)
+    }
+
+    pub(crate) fn from_shape(kind: &str, role: CardRole, payload: &Value) -> Option<Self> {
+        let profile = HarnessProfile::from_shape(kind, role, payload)?;
         let provider = match profile {
             HarnessProfile::Planner => {
-                let stored = card.payload.get(PLANNER_PROVIDER_PAYLOAD_KEY)?;
+                let stored = payload.get(PLANNER_PROVIDER_PAYLOAD_KEY)?;
                 serde_json::from_value(stored.clone()).ok()?
             }
             HarnessProfile::PlainChat | HarnessProfile::Assistant => AgentProvider::Codex,
         };
         Some(Self { profile, provider })
     }
+}
+
+/// Whether a recovered Planner row may run on the Codex recovery path: the row must be a Codex row,
+/// and a Planner card must bind the same backend. Anything else fails closed until a Claude
+/// recovery arm exists.
+pub(crate) fn planner_row_recoverable_on_codex(
+    row_provider: Option<&AgentProvider>,
+    card: &Card,
+    role: Option<CardRole>,
+) -> bool {
+    row_provider == Some(&AgentProvider::Codex)
+        && (role != Some(CardRole::Planner)
+            || PlannerBinding::from_card(card, CardRole::Planner)
+                .is_some_and(|binding| binding.provider == AgentProvider::Codex))
 }
 
 #[cfg(test)]
