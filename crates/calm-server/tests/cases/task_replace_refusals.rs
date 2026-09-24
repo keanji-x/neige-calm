@@ -1,6 +1,5 @@
 //! #1785 S2: `calm.task.replace` refusals (design §4.7): each is decided before the first write,
 //! so a refused request stops nothing and writes no receipt.
-use super::git_delivery::*;
 use super::task_replace::*;
 use crate::task_recovery::{current, declare};
 use calm_server::model::TaskStatus;

@@ -121,4 +121,4 @@ if [ "$failures" -ne 0 ]; then
   exit 1
 fi
 
-echo "OK: the track-report write boundary in $BOUNDARY_FILE holds its four pinned shapes (private writer, no module escape hatch, eight exported entries, test entry cfg-gated)"
+echo "OK: the track-report write boundary in $BOUNDARY_FILE holds its four pinned shapes (private writer, no module escape hatch, $(printf '%s\n' "$EXPECTED_ENTRIES" | wc -l) exported entries, test entry cfg-gated)"
