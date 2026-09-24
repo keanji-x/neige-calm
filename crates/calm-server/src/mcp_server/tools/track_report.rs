@@ -128,7 +128,7 @@ fn read_descriptor() -> ToolDescriptor {
                 "resolve": {
                     "type": "object",
                     "description": concat!(
-                        "Per-block hydration override for `chart.series` and live `table` ",
+                        "Per-block hydration override for `chart.series`, live `table`, and `view.live` ",
                         "blocks: `{ [block_id]: \"full\" | \"none\" }`. ",
                         "Default (no entry) is the summary."
                     ),

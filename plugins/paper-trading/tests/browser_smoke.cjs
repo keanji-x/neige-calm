@@ -14,15 +14,31 @@ const { chromium, expect } = createRequire(path.resolve(frontend, 'package.json'
       const errors = [];
       page.on('pageerror', error => errors.push(error.message));
       await page.goto(`${metadata.base}/next/track/${metadata.track_id}`, { waitUntil: 'networkidle' });
-      await expect(page.getByRole('heading', { name: 'Paper portfolio', exact: true })).toBeVisible();
-      await expect(page.getByRole('table')).toHaveCount(6);
-      await expect(page.getByRole('cell', { name: 'Supervised paper trading', exact: true })).toBeVisible();
-      await expect(page.getByRole('cell', { name: '100000', exact: true })).toHaveCount(2);
+      await expect(page.getByRole('heading', { name: '交易概览', exact: true })).toBeVisible();
+      await expect(page.getByText('账户权益', { exact: true })).toBeVisible();
+      await expect(page.getByRole('table')).toHaveCount(0);
+      if (metadata.phase === 'approved') {
+        await expect(page.getByText('$100,000.00', { exact: true })).toBeVisible();
+        await expect(page.getByRole('meter', { name: '策略预算使用' })).toBeVisible();
+      } else {
+        await expect(page.getByRole('note').getByText('存在待确认草案', { exact: true })).toBeVisible();
+        await expect(page.getByRole('meter')).toHaveCount(0);
+      }
       expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
       expect(errors).toEqual([]);
       await page.screenshot({ path: path.join(output, `${name}.png`), fullPage: true });
       fs.writeFileSync(path.join(output, `${name}.txt`), await page.locator('body').innerText());
-      console.log(`${name}: six native paper-ledger tables, account snapshot and viewport checks passed`);
+      await page.getByText('策略参数与待确认修改', { exact: true }).click();
+      await expect(page.getByRole('table')).toHaveCount(1);
+      await expect(page.getByRole('cell', { name: 'FIXTURE-PAPER', exact: true })).toBeVisible();
+      console.log(`${name}: visual overview, ${metadata.phase}, collapsed details and viewport checks passed`);
+      await page.goto(`${metadata.base}/next/settings/plugins`, { waitUntil: 'networkidle' });
+      await page.getByRole('button', { name: 'Configure Longbridge paper portfolio', exact: true }).click();
+      await expect(page.getByRole('textbox', { name: 'account_no', exact: true })).toBeVisible();
+      await expect(page.getByRole('textbox', { name: 'broker_home', exact: true })).toBeVisible();
+      await expect(page.getByRole('textbox', { name: 'owner_track_id', exact: true })).toHaveCount(0);
+      await expect(page.getByRole('textbox', { name: 'max_order_usd', exact: true })).toHaveCount(0);
+      await page.screenshot({ path: path.join(output, `${name}-account.png`), fullPage: true });
       await page.close();
     }
   } finally {

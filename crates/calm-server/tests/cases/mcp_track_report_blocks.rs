@@ -225,7 +225,7 @@ async fn old_create_and_move_shapes_return_self_healing_invalid_params() {
 }
 
 #[tokio::test]
-async fn kinds_returns_all_six_schemas() {
+async fn kinds_returns_all_supported_schemas() {
     let boot = boot().await;
     let out = call_tool(
         &boot,
@@ -251,7 +251,9 @@ async fn kinds_returns_all_six_schemas() {
             "chart.series",
             "table",
             "app",
-            "task"
+            "task",
+            "view.live",
+            "view"
         ]
     );
     for kind in kinds {
@@ -277,7 +279,7 @@ async fn kinds_returns_all_six_schemas() {
         chart.pointer("/schema/required").unwrap(),
         &json!(["symbol", "candles"]),
     );
-    let task = &kinds[5];
+    let task = kinds.iter().find(|kind| kind["kind"] == "task").unwrap();
     assert_eq!(
         task.pointer("/schema/properties/context/$ref"),
         Some(&json!("#/$defs/contextValue"))
@@ -353,7 +355,7 @@ async fn kinds_returns_all_six_schemas() {
         chart["usage"].as_str().unwrap().contains("chart.series"),
         "chart.candles usage points at chart.series"
     );
-    let table = &kinds[3];
+    let table = kinds.iter().find(|kind| kind["kind"] == "table").unwrap();
     // Assert each branch's `required` AND its `not`: a `oneOf` listing only required keys would admit
     // the payload the kernel's validator rejects.
     assert_eq!(
@@ -383,14 +385,14 @@ async fn kinds_returns_all_six_schemas() {
             .and_then(Value::as_str),
         Some("^neige://plugin/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"),
     );
-    let app = &kinds[4];
+    let app = kinds.iter().find(|kind| kind["kind"] == "app").unwrap();
     assert_eq!(app.pointer("/schema/required").unwrap(), &json!(["src"]));
     assert_eq!(
         app.pointer("/schema/properties/height/maximum")
             .and_then(Value::as_u64),
         Some(2000),
     );
-    let task = &kinds[5];
+    let task = kinds.iter().find(|kind| kind["kind"] == "task").unwrap();
     assert_eq!(
         task.pointer("/schema/additionalProperties"),
         Some(&Value::Bool(false))

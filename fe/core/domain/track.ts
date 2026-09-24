@@ -105,10 +105,10 @@ export const overlayWireSchema = z.object({
 export type OverlayWire = z.infer<typeof overlayWireSchema>;
 
 /**
- * Resolves a live table's `neige://plugin/<plugin_id>/<kind>` source to at most one overlay's
+ * Resolves a report's `neige://plugin/<plugin_id>/<kind>` source to at most one overlay's
  * payload, unvalidated (the renderer decodes it); `undefined` when nothing matches.
  */
-export function liveTableOverlayPayload(
+export function trackOverlayPayload(
   trackId: string,
   overlays: readonly OverlayWire[],
   source: string,

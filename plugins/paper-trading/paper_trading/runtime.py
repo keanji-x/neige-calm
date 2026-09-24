@@ -5,8 +5,8 @@ from .report import tables
 
 
 class Runtime:
-    def __init__(self, engine, publish):
-        self.engine = engine
+    def __init__(self, portfolio, publish):
+        self.portfolio = portfolio
         self.publish = publish
         self.wake = threading.Event()
         self.closed = threading.Event()
@@ -16,15 +16,15 @@ class Runtime:
         while not self.closed.is_set():
             self.wake.clear()
             try:
-                state = self.engine.process_once()
-                for kind, payload in tables(state).items():
-                    if self.closed.is_set():
-                        return
-                    self.publish(self.engine.config.owner_track_id, kind, payload)
+                for track, state in self.portfolio.process_once():
+                    for kind, payload in tables(state).items():
+                        if self.closed.is_set():
+                            return
+                        self.publish(track, kind, payload)
             except Exception:
                 # Publication has no broker side effect; retry projections next tick.
                 pass
-            self.wake.wait(self.engine.config.poll_seconds)
+            self.wake.wait(self.portfolio.account.poll_seconds)
 
     def launch(self):
         self.thread = threading.Thread(target=self.run, name="paper-reconcile", daemon=True)

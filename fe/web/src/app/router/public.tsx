@@ -19,7 +19,7 @@ import {
 } from '../../features/planner/attachments.tsx';
 import { hasUnseenMatchingConversationMessage, failedConversationDelivery } from '../../../../core/domain/conversation-delivery.ts';
 import {
-  cardGoalTitle, liveTableOverlayPayload, toTrack, trackActivityFrom, trackDisplayTitle,
+  cardGoalTitle, trackOverlayPayload, toTrack, trackActivityFrom, trackDisplayTitle,
   type Track, type TrackActivity, type TrackDetailWire,
 } from '../../../../core/domain/track.ts';
 import { cardActivityOf, foldAttentionByCard, type CardActivity } from '../../../../core/domain/activity.ts';
@@ -2071,8 +2071,8 @@ function TrackRouteBody({
   );
   /* Stable across renders that do not change the overlays, so a live table is
      not handed a new resolver identity on every keystroke elsewhere. */
-  const resolveLiveTable = useCallback(
-    (source: string) => liveTableOverlayPayload(track.id, overlays, source),
+  const resolveOverlay = useCallback(
+    (source: string) => trackOverlayPayload(track.id, overlays, source),
     [track.id, overlays],
   );
   /* One query per `chart.series` block, keyed by the block's rev; opening the
@@ -2340,7 +2340,7 @@ function TrackRouteBody({
         report={report}
         /* `overlay.set` already invalidates this track's detail, so a plugin push
                    re-renders the block without the report being rewritten. */
-        resolveLiveTable={resolveLiveTable}
+        resolveOverlay={resolveOverlay}
         resolveSeries={resolveSeries}
         taskVerdicts={verdicts}
         taskRows={tasks}
