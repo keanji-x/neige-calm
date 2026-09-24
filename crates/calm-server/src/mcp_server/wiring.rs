@@ -115,7 +115,6 @@ pub async fn mint_and_persist_card_token(
 mod tests {
     use std::path::Path;
 
-
     use super::*;
     use crate::card_role_cache::CardRoleCache;
     use crate::db::prelude::*;
