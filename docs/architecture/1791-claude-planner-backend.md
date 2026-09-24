@@ -381,13 +381,18 @@ Absent ⇒ create with `planner_provider:"claude"` answers 4xx naming the flag; 
 a recovered Claude harness refuses issuance with a retryable refusal and a reader message naming the flag.
 
 - The sandbox is always on (owner decision): `--settings {"permissions":{"allow":["WebFetch(domain:*)"]},"sandbox":{"enabled":true,
-  "failIfUnavailable":true,"allowUnsandboxedCommands":false,"network":{"allowUnixSockets":["<NEIGE_MCP_SOCKET>"]}}}`
+  "failIfUnavailable":true,"allowUnsandboxedCommands":false,"network":{"allowAllUnixSockets":true}}}`
   and allow rules `Bash Read ToolSearch WebFetch WebSearch mcp__calm Edit(//<cwd>/**) Write(//<cwd>/**)`.
   Documented semantics: sandboxed Bash writes cwd + session temp and reads everywhere (as Codex); the
   bare `*` in `WebFetch(domain:*)` pre-allows every domain for sandboxed commands (sandboxing docs,
   "Network isolation", v2.1.186+), so the network is unrestricted like Codex's `network_access=true`
   (`shared_codex_home.rs:302`) while filesystem isolation stays on; `strictAllowlist` is not set. `socat`
-  is still required (the sandbox proxy runs even when every domain is allowed). `failIfUnavailable` is mandatory: without it the CLI only warns and runs everything unconfined (P-S2);
+  is still required (the sandbox proxy runs even when every domain is allowed). `socat` is found on the
+  child's `PATH` (`kernel_led_path()`, which inherits the server's PATH); a user-local static binary in a
+  directory on the service PATH suffices. `sandbox.socatPath` is not used: it is honoured only in managed
+  settings (root-owned). `allowAllUnixSockets` is required on Linux so the Planner's Bash can run the
+  `neige` CLI against `NEIGE_MCP_SOCKET` (`prompts/planner.md` uses `neige cat`/`neige state`); the
+  per-path `allowUnixSockets` list is macOS-only (settings reference). `failIfUnavailable` is mandatory: without it the CLI only warns and runs everything unconfined (P-S2);
   with it the turn fails before any request (P-S1). Because `-p` silently drops invalid settings and
   `system/init` does not report the sandbox, the release-gate verification is recorded against
   `claude_version`, which the pinned binary and the pre-spawn check keep constant.
@@ -572,6 +577,9 @@ image message, interrupt, restart, resume, delete; `ps` shows no Planner `claude
 - `stop` only sees processes carrying the exact marker: descendants that turn non-dumpable, rewrite or scrub
   their environ (e.g. headless Chromium), or leave the service cgroup escape it; deletion is fenced only
   up to that.
+- Sandboxed Bash can connect to every Unix socket the neige user can (Linux has no per-path list), e.g.
+  `/var/run/docker.sock` when the user is in `docker` ⇒ an escape; same as a Codex `workspace-write`
+  Planner with network.
 - The auto-updater may delete an old versioned binary; `claude_binary` then fails the readiness check until
   the owner updates the config (and re-runs the release gate for `Sandbox`).
 
