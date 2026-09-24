@@ -219,9 +219,16 @@ activation parts were replaced in round 7 (D31); the sticky seam and the id-set 
 
 ### E4.7 Round 7
 
+A-M1 (activation wait deadlocks shutdown) and A-M2 (late mint overwrites a replacer) accepted and
+verified; the preferred fix passed its three checks and was adopted as D31. Per-row table in commit
+`ea5dec19c` (this file).
+
+### E4.8 Round 8
+
 | Id | Finding (short) | Disposition |
 |---|---|---|
-| A-M1 | "`turn_start` waits for activation" deadlocks `shutdown` (issuance lock held in the tick arm, run_loop `:2958`, `:1172-1181`; shutdown waits for it, `:685`) | ACCEPTED, verified → D31: `turn_start` never waits; not installed ⇒ retryable `Err` |
-| A-M2 | late mint after shutdown overwrites the replacer's hash (`wiring.rs:103-111`; replacer after `existing.shutdown()`) | ACCEPTED, verified → D31: mint only inside `turn_start` under the issuance lock after the `shutting_down` check; must-red 3 |
-| Fallback check | Pending refusal safe? token needed earlier? adapter first turn through `turn_start`? | yes (existing re-buffer path); no (only the spawned process uses it; the Claude branch skips the Codex reuse token-row check, adapter `:892`); yes (H3, invariant test) → preferred fix adopted |
+| B8 MAJOR = A MAJOR | lazy mint leaves the old token valid after an aborted deletion (`harness/mod.rs:429` reinstalls the same active row; shutdown clears nothing) | ACCEPTED, verified → D32 scoped revoke-then-sweep; must-red: old token rejected with no new input, then a queued input mints |
+| A MAJOR-1 / B MEDIUM | stale construction-mint text (D22, D28, §5.2 env, oracle row 13, PR4) | ACCEPTED → rewritten to first-turn mint + stop |
+| A MINOR-1 | where `installed` is set | ACCEPTED (`registry.rs:55-66`) → inside `install()`'s true arm |
+| A MINOR-2 | must-red 3 mutation shadowed by `:2959` | ACCEPTED, verified (run_loop `:2958-2959`) → mutation renamed |
 
