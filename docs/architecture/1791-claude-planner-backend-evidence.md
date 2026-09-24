@@ -251,3 +251,6 @@ replaced per-path revocation; per-row table in commit `0119d32ab` (this file).
 | A MAJOR | mutation 2 (drop mirror skip) does not redden the failed-reset test | ACCEPTED → fixture-point assertion added; red set per mutation stated |
 | B MINOR-1 | `session_mirror.rs:148` → `:149` | ACCEPTED, verified |
 
+### E4.12 Round 12
+
+Stale Claude-mint writer name fixed (§5.1 item 2, D28); red set labelled assertion-level with mutation 2's second red test and the full-suite enumeration rule; failed-reset fixture specified as an awaitable pause.
