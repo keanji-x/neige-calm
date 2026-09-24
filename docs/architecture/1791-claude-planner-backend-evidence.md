@@ -62,10 +62,15 @@ halves in §E2 because `scripts/gate-1316-terminology-ratchet.sh` counts the ret
 | S20 | Create idempotency: `CreateRequestShape` + `create_request_digest` enumerate fields; optional fields enter the digest only when set ("preserve the exact pre-selection digest") | `routes/tracks/create.rs:100-120`, `:333-357` |
 | S21 | Deletion seals are owned by the shared daemon and survive harness removal; `shutdown_track` seals every live Planner; card-grade quiesce seals + interrupts ("a destructive workspace move may only follow a confirmed quiesce"); track/area deletion plans hold `turn_daemon` and unseal on rollback | `harness/registry.rs:203-218`; `routes/cards.rs:128-156`; `routes/tracks.rs:128`, `:2677`, `:2870-2956`, `:2991-3009`, `:3160`; `routes/areas.rs:319`, `:398`, `:489-623`, `:652-663`, `:814` |
 | S22 | Production unit: `KillMode=process` (only calm-server is signalled; children stay in the cgroup); SIGTERM runs axum graceful shutdown | `~/.config/systemd/user/neige-next.service.d/preserving.conf`; `main.rs:187-199`, `:253` |
-| S23 | Process identity precedents: `process_group(0)`, `(pid, start_time, boot_id)` verification, env-marker group scan, verified group SIGKILL | `proc_identity.rs:6-88`, `:122-248`, `:346`; `operation/task_verify_adapter/target.rs:1499` |
+| S23 | Stop precedents (production): marker-authenticated sweep + fail-closed wait (`operation/task_verify_adapter/target.rs:715-740` `stop_group`; `operation/gate_process.rs:350-372`); `proc_env_marker` → `Present`/`Foreign`/`Unreadable` (`proc_identity.rs:180-212`); `sigkill_verified_members` (`:247-252`); daemon spawn `process_group(0)` (`shared_codex_appserver.rs:2601`). Live scan (2026-09-24): same-uid processes with unreadable environ = 4 zombie `sh` in the neige-next service cgroup + `sshd` in session scopes | as listed |
 | S24 | Codex daemon env: `env_clear()` + `SPAWN_ENV_PASSTHROUGH` | `shared_codex_appserver.rs:55-90` |
 | S25 | Codex trusts the workspace (`trust_level = "trusted"`) | `shared_codex_home.rs:303-313` |
 | S26 | Attachments: png/jpeg/gif/webp, ≤ 8 MiB, bound to absolute paths; `attachments_supported` depends on workspace, not provider; issuance sends `localImage` items | `crates/calm-types/src/planner_attachment.rs:13-47`; `planner_attachments/mod.rs:30`; `planner_attachments/bind.rs:21-26`; `routes/cards.rs:1165-1172`; `harness/run_loop.rs:3178-3184` |
+| S28 | Model UI: `ModelsResponse.source` (`routes/models.rs:92-101`), empty catalog + `source:"unavailable"` when unreachable (`:155-161`); FE disables the picker on it (`fe/web/src/features/chat/thread/model-pill.tsx:39`) with label "codex is not running" (`:109`) | as listed |
+| S29 | Legacy create bindings (v0) are refused outright (`routes/tracks/create.rs:370-378`); the FE create body omits provider today (`fe/web/src/app/router/new-track-route.tsx:66-74`) | as listed |
+| S30 | Optional-backend config precedent: `isolated_codex_config: Option<PathBuf>`, "missing keeps this backend unavailable" (`config.rs:33-36`; `state.rs:971`) | as listed |
+| S31 | Seal set = thread-keyed `DashMap` on the daemon (`shared_codex_appserver.rs:672`); `DeletionThreadSeals` seals, retains, unseals on drop (`:733-771`) | as listed |
+| S32 | Recovered-outcome precedent from `handle_state_json.last_turn_id` (`shared_codex_appserver/preserving_recovery.rs:120-160`); outcome put is SELECT-then-INSERT (`crates/calm-truth/src/db/sqlite/out_of_domain.rs:423-434`) | as listed |
 | S27 | Other Codex-only consumers: `liveness_feeder` subscribes the Codex stream (`dispatcher/mod.rs:798`); dev replay (`replay.rs:390`); TUI initial-prompt takeover query (`db/sqlite/read.rs:798-830`) | as listed |
 
 ### E1.3 MCP, tools, prompts, FE
@@ -92,7 +97,7 @@ halves in §E2 because `scripts/gate-1316-terminology-ratchet.sh` counts the ret
 | `scripts/gate-1316-terminology-ratchet.sh` (CI `ci.yml:464`) | occurrence counts of the five retiring terms listed in the script's `TERMS` block (#1316: old area/track/Planner/runtime/transcript names) in `crates/ fe/ docs/ e2e/`, both directions | any new file using the house tracing field named runtime+id, the transcript insert fn, or the item-added event variant; the Claude backend emits notifications instead (D2) and logs `worker_session_id` |
 | `scripts/gate-prose-ratchet.sh` | no CJK run, no ≥120-char literal in `crates/**/*.rs` | backend error texts; long texts go to `prompts/` |
 | `boot_recovery_sql_literals_track_the_minted_card_shape` (`operation/planner_harness_start_adapter.rs:2303`), `the_persisted_payload_field_names_are_frozen` (`:2140`) | boot SQL literals, payload names | PR3 |
-| goldens `tests/goldens/*prompt*.txt`, `mcp_tool_registry.json` | prompts, registry | PR7 |
+| goldens `tests/goldens/*prompt*.txt`, `mcp_tool_registry.json` | prompts, registry | none: shared prompt wording is cut; the Claude-only fragment is a new file |
 | OpenAPI drift (`scripts/local-rust-gates.sh --quick` step 5), `fe` `npm run gen:api`, handwritten FE `NewTrackBody` | request schema | PR3 |
 | migrations byte-frozen; `SYNC_EVENT_VERSION` lockstep | new migration only; no new event kind | PR3 |
 | 800-line rule | `run_loop.rs` is 4224 lines | all: new code in new files |
@@ -131,7 +136,7 @@ q "SELECT DISTINCT workspace_path FROM tracks WHERE workspace_path<>'';"  # Q13,
 | Q9 | start 85, shutdown 18, interrupt 19 — all succeeded | no op replay observes a payload change |
 | Q10 | 38 / 4 / 4 / 1 | Codex-only provenance |
 | Q11 | 23 marker, 1 legacy `harness` object | backfill keys on `role='planner'` |
-| Q12 | version 1: 38, version 0: 7 (45 bindings) | the digest must not change for Codex requests |
+| Q12 | version 1: 38, version 0: 7 | 38 replay contracts preserved; 7 keep failing closed (S29) |
 | Q13 | 20 workspaces: 2 have only `AGENTS.md`, 18 have neither file; none has `.claude/settings.json` or `.mcp.json` | project executable config is hypothetical on 4140 |
 
 ## E3. Probe log (claude 2.1.280, `claude-haiku-4-5`)
@@ -139,7 +144,7 @@ q "SELECT DISTINCT workspace_path FROM tracks WHERE workspace_path<>'';"  # Q13,
 Scratch, session-scoped (not preserved): `/tmp/claude-1000/-mnt-data2-kenji-neige-calm/852c3533-7ab9-4c83-ab0e-b2af4bcdbf0e/scratchpad/cc_probe2/`
 (`h.py`, `fake_mcp*.py`, raw NDJSON per probe). Env limited to `HOME PATH USER LOGNAME LANG TERM` +
 proxy vars; cwd `ws/` (a `CLAUDE.md` with marker `PELICAN-7`); no credential file read; never the
-production server. Round 0: 15 runs; round 1: 4 runs. Common prefix: `claude -p --input-format
+production server. Round 0: 15 runs; round 1: 4 runs; round 2: 2 runs. Common prefix: `claude -p --input-format
 stream-json --output-format stream-json --verbose --include-partial-messages --replay-user-messages
 --model claude-haiku-4-5 --session-id <uuid>`.
 
@@ -158,23 +163,26 @@ stream-json --output-format stream-json --verbose --include-partial-messages --r
 | P-S1 (round 1) | P-H flags without `--permission-mode`, `--settings '{"sandbox":{"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false}}'`, `--mcp-config` whose env is `{"NEIGE_MCP_TOKEN":"${PROBE_TOKEN}"}` | turn fails before any request: `result{error_during_execution, errors:["Sandbox required but unavailable…"]}`, stderr "socat not installed"; exit 1; nothing written; the MCP child saw `NEIGE_MCP_TOKEN='tok-123'` (**`${VAR}` expansion works**) |
 | P-S2 (round 1) | same, without `failIfUnavailable` | stderr "⚠ Sandbox disabled: … socat not installed"; **every command ran unsandboxed**: write in cwd, outside cwd, `/tmp`, a Unix-socket connect, `curl` HTTP 200 |
 | P-I (round 1) | `--tools Read --permission-prompts none`, user line content `[text, {type:"image", source:{type:"base64", media_type:"image/png", data}}]` | model answered "Red." (32×32 red PNG); the replay echoes the base64 block; a `Read` attempt was auto-denied: "requires approval, and this session has no approval surface" (**denial path verified**) |
+| P-K (round 2, 2 runs) | `--tools Bash --permission-prompts none --allowedTools Bash`, child env `NEIGE_CLAUDE_PLANNER=probe-r2-marker`, unsandboxed; SIGKILL `claude` 8 s into `sleep 300; echo done` (run 1 killed at 3 s, before the shell started: inconclusive) | before the kill: `claude` pgid 45904 / sid 45431; its Bash `zsh -c … sleep 300` in **its own session** (pgid = sid = 64676); after the kill `zsh` (re-parented to the user subreaper) and `sleep 300` **survived, both carrying the marker**; removed by the probe script |
 | P-J (round 1) | as P-I, cwd with only `AGENTS.md` (marker `HERON-3`) | answered `HERON-3`: **AGENTS.md is read when there is no CLAUDE.md** |
 
 Not probed (host lacks `socat`, no install rights): sandbox confinement under the shipping flags;
 network allowlist behaviour; Unix-socket access for the `neige` CLI from inside the sandbox; denial of an
 out-of-cwd `Edit(//<cwd>/**)` write. These are release-gate checks (main doc §9.2).
 
-## E4. Review round 1 dispositions
+## E4. Review dispositions
+
+### E4.1 Round 1
 
 Channel A = subagent review, channel B = codex review, both on `c2ebf619d`. "Where" = main doc section.
 
 | Id | Finding (short) | Disposition |
 |---|---|---|
 | A1 | provider not persisted at mint | ACCEPTED (verified S12/S13) → §4.4 session identity; must-red in PR3 |
-| A2 | orphans / process groups / KillMode=process | ACCEPTED (verified S22/S23) → §5.1 process group + journal + boot sweep |
-| A3 | consecutive spawn serialization | ACCEPTED → §5.1 "one process per session at a time" |
+| A2 | orphans / process groups / KillMode=process | ACCEPTED (verified S22/S23) → superseded in r2 by the marker sweep (D12) |
+| A3 | consecutive spawn serialization | ACCEPTED → §5.1 (r2: `wait()` then `stop`) |
 | A4 | call-site inventory incomplete | ACCEPTED (verified S7, S8, S11, S21, S27) → §4.1 |
-| A5 | create digest | ACCEPTED (Q12: 45 bindings) → §4.4 |
+| A5 | create digest | ACCEPTED → §4.4 (r2 wording: 38 replay + 7 fail closed) |
 | A6 | security honesty / sandbox | ACCEPTED; sandbox probed (P-S1, P-S2) → §5.3 + release gate §9.2; `${VAR}` token kept off disk |
 | A7 | env allowlist diverges | ACCEPTED → §5.2 reuses `SPAWN_ENV_PASSTHROUGH` minus OpenAI/Codex keys |
 | A8 | `--permission-mode default` hidden | ACCEPTED → flag dropped (P-I/P-S ran without it); `init.session_id == thread` check added |
@@ -186,16 +194,47 @@ Channel A = subagent review, channel B = codex review, both on `c2ebf619d`. "Whe
 | A14 | AGENTS.md parity | ACCEPTED, verified (P-J, Q13) → §5.2 |
 | A15 | system-prompt snapshot until compaction | ACCEPTED → §5.2 instructions re-rendered at every spawn |
 | B1 | = A1 | MERGED-WITH A1 |
-| B2 | seal ownership survives registry removal; confirmed stop | ACCEPTED (verified S21) → §5.11 |
+| B2 | seal ownership survives registry removal; confirmed stop | ACCEPTED (verified S21) → r2: existing thread-keyed seals + `stop` (§4.1 rows 7, 16, 17) |
 | B3 | = A4 (+ PlainChat/Assistant stay Codex) | MERGED-WITH A4 |
-| B4 | wrong catalog endpoint | ACCEPTED (verified S11) → §5.8 three surfaces |
+| B4 | wrong catalog endpoint | ACCEPTED (verified S11) → r2: model choice cut, `source:"unavailable"` (§5.8) |
 | B5 | sticky needs its own arm | ACCEPTED (verified S19) → §4.4 |
 | B6 | = A5 (+ `NewTrackBody`, `wire.ts`) | MERGED-WITH A5 |
-| B7 | turn identity across crash | ACCEPTED (verified H22) → §5.1 journal |
-| B8 | settlement vs consumer teardown; cause arbitration; decode/write failures | ACCEPTED (verified H15) → §5.1, §6.2 |
+| B7 | turn identity across crash | ACCEPTED (verified H22) → r2: journal deleted; `last_turn_id` + idempotent outcome (§5.1) |
+| B8 | settlement vs consumer teardown; cause arbitration; decode/write failures | ACCEPTED (verified H15) → §5.1, §6.2 (r2: record → emit, one submission contract) |
 | B9 | usage conditional; totals; baseline | ACCEPTED → §5.10 (baseline: KNOWN GAP) |
 | B10 | images dropped | ACCEPTED; image blocks verified (P-I) → §5.6 |
 | B11 | wire types/envelopes incomplete | ACCEPTED (P-F3 envelope) → §5.4 |
 | B12 | permission equivalence is a release decision; project config trust | ACCEPTED → §5.3, §9.2; project config: explicit decision D13 |
 | B13 | = A13 (+ PR5 FE depends on PR4, FE checks in PR3) | MERGED-WITH A13 |
-| B14 | overstated claims (supervision, H7, H9, §5.6 key, #1727/#1785 status, #1542) | ACCEPTED: H7/H9/H17 corrected; #1727 S1–S4 and #1785 slice 1 (#1790) are in the base; #1542 overlaps the reader texts (§9.3); per-turn still needs readers/timers/sweep (§5.1 says so) |
+| B14 | overstated claims (supervision, H7, H9, §5.6 key, #1727/#1785 status, #1542) | ACCEPTED: H7/H9/H17 corrected; #1727 S1–S3 and S4 slices 1–4 and #1785 slice 1 (#1790) are in the base (r2 correction); #1542 overlaps the reader texts (§9.3); per-turn still needs readers/timers/sweep (§5.1 says so) |
+
+### E4.2 Round 2
+
+| Id | Finding (short) | Disposition |
+|---|---|---|
+| A-B1 | Bash runs detached (own session); group kill and group-scoped confirmation miss it | ACCEPTED, **verified by P-K** → D12 `/proc`-wide marker sweep; zombie + same-uid/same-cgroup narrowing added because the live scan shows same-uid unreadable processes (S23) |
+| A-M1 | journal redundant | ACCEPTED (H4, H22, S32) → D13; journal, crash table, identity record deleted |
+| A-M2 | sandbox can fail open silently (`-p` ignores invalid settings; no sandbox field in init; `claude` auto-updates) | ACCEPTED → `verified_claude_version` init check under `Sandbox`; pinning claim removed (§5.2, §9.4) |
+| A-M3 | typed config shape | ACCEPTED (S30) → D14 `--claude-planner-config`, `Confinement` enum carries domains + version only for `Sandbox` |
+| A-M4 | steer race after `result` | ACCEPTED (P-F3 lines 121→126) → D8 steer cut |
+| A-m1 | seals: reuse thread-keyed set | ACCEPTED (S31) → §4.1 row 7 |
+| A-m2 | `model_choice` duplicates `source` | ACCEPTED (S28) → §5.8; PR7 cut |
+| A-m3 | backend's second write (`agent_session_id`) unnamed | ACCEPTED → §4.3 names the attribution bind |
+| A-m4 | network "parity" is stricter | ACCEPTED → §5.3 wording, Q3 |
+| A-m5 | must-red gaps | ACCEPTED → PR2b/PR4 must-red columns |
+| A-m6 | PR1 used a PR3 type | ACCEPTED → PR1 routes the Codex arm only; `AgentProvider` already exists |
+| A-m7 | stale refs | ACCEPTED → run_loop `:3236`/`:1340`, routes/cards `:92-127`/`:129-156`, planner_model `:117`, production precedents (S23) |
+| A-m8 | D6 stated as decided | ACCEPTED → "recommended, pending Q1" |
+| A-m9 | dev servers die with the turn / restart / netns | ACCEPTED → KNOWN GAP + Claude-only prompt fragment (§5.2) |
+| A-m10 | drop the runtime dir | ACCEPTED → inline JSON args; JSON-string `${VAR}` expansion UNVERIFIED with a stated fallback |
+| B2-1 | cleanup authenticated by fresh scan of a recorded pgid; unreadable members excluded | ACCEPTED → D12 (no recorded pgid; `Unreadable` in our cgroup blocks the wait) |
+| B2-2 | wire types reject recorded output | ACCEPTED, verified (results: success has `result` and no `errors`, error has `errors` and no `result`; `UserText` records) → §5.4; PR2a decodes complete fixtures |
+| B2-3 | steer cannot guarantee "no second turn" | ACCEPTED → D8 cut; `SteerUnconsumed` deleted |
+| B2-4 | re-drain not generally possible after `:3262` | ACCEPTED → §5.1 crash windows split at `:3262` |
+| B2-5 | contradictory first-write contract | ACCEPTED → §5.1 single submission contract; durability point named |
+| B2-6 | provider still `Option` + runtime error; duplicate enum | ACCEPTED → `AgentProvider`, `PlannerBinding`, `WorkerSessionInit::shared_planner` |
+| B2-7 | `model_choice` / PR7 producer | ACCEPTED → merged with A-m2 |
+| B2-8 | PR3 must make existing callers send `"codex"` | ACCEPTED (S29) → PR3 |
+| B2-9 | 45 replay overstated | ACCEPTED → 38 replay + 7 fail closed |
+| B2-10 | #1727 S4 incomplete in base | ACCEPTED, verified (`operation/workspace_lease/base.rs:17-21`) → §9.4 |
+
