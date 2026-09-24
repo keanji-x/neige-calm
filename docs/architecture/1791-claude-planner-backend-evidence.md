@@ -161,7 +161,7 @@ stream-json --output-format stream-json --verbose --include-partial-messages --r
 | P-C | `--safe-mode` + MCP config | `mcp_servers: []`, user plugins listed, CLAUDE.md not read |
 | P-D | (a) + empty `CLAUDE_CONFIG_DIR` | MCP connected; "Not logged in · Please run /login"; `result{subtype:"success", is_error:true, terminal_reason:"api_error", usage.iterations:[], modelUsage:{}}`; exit 1 |
 | P-E | (a) + `--disable-slash-commands --tools Bash,Read,Edit,Write,ToolSearch,WebFetch,WebSearch` | `skills: []`; Write `tool_use_result{type:"create"}`, Edit `structuredPatch`; failing Bash → `is_error`, text `"Exit code 3\none"`; a steer written while `can_use_tool` was pending: `queued`, then `started` after the tool batch, one `result` |
-| P-F1 | as P-E, SIGINT during `sleep 20` | rejected `tool_result` + interrupt text, **no `result`**, exit 0 |
+| P-F1 | as P-E, SIGINT during `sleep 20` | rejected `tool_result` + "[Request interrupted by user for tool use]", then `result{error_during_execution, terminal_reason:"aborted_tools"}` with non-empty `iterations`; exit 0 |
 | P-F2 | as P-E, SIGKILL during `sleep 20`, then `--resume` | nothing emitted before input; context kept; killed turn reported interrupted |
 | P-F3 | as P-E, second line queued, then `interrupt` | `control_response{response:{subtype:"success", request_id, response:{still_queued:[…]}}}`; `result{error_during_execution, result:null, iterations:[], modelUsage:{}}`; lifecycle `cancelled`; queued line then ran as its own turn |
 | P-G | `--bare`, no key | `account{tokenSource:"none"}`; same failure as P-D |

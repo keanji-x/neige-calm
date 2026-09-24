@@ -498,8 +498,8 @@ A recorded cause wins over the event that follows it; otherwise the first event 
 |---|---|---|---|
 | none | `ResultSuccess`, `is_error:false` | completed | — |
 | none | `ResultSuccess`, `is_error:true` (not logged in, P-D/P-G) | failed | `result` |
-| none | `ResultError` (e.g. sandbox unavailable, P-S1) | failed | `errors` joined |
-| none | EOF + exit before a result (crash, SIGINT P-F1) | failed | `claude exited (<status>)` + last stderr line |
+| none | `ResultError` (e.g. sandbox unavailable P-S1, SIGINT P-F1) | failed | `errors` joined |
+| none | EOF + exit before a result (crash) | failed | `claude exited (<status>)` + last stderr line |
 | `Interrupted(user\|watchdog\|shutdown)` | `ResultError`, EOF, or stop timer | interrupted | — |
 | `Interrupted(…)` | `ResultSuccess`, `is_error:false` (finished first) | completed | — |
 | `Interrupted(…)` | `ResultSuccess`, `is_error:true` | interrupted | — |
@@ -602,6 +602,7 @@ image message, interrupt, restart, resume, delete; `ps` shows no Planner `claude
 - `Lagged` may delay the harness state (the outcome is durable; the Codex channel has the same risk, H23).
 - Planner card `kind: "codex"` is a legacy view name.
 - `ToolSearch` schema reload per resume unmeasured.
+- A tool_result line carrying several results loses the per-result structured payload (never recorded).
 
 ### 9.4 Risks and conflicts
 
