@@ -45,7 +45,7 @@ pub(crate) async fn carry_view_tx(tx: &mut Tx<'_>, task: &Task) -> Result<Option
     }))
 }
 
-/// `{receipt_id, carry_sha, upstream_sha}`; `upstream_sha` is left out when git cannot read the
+/// `{receipt_id, carry_sha, onto_sha}`; `onto_sha` is left out when git cannot read the
 /// parent (advisory, like `candidate.upstream`: a read never fails over it).
 fn carry_json(view: &CarryView) -> Value {
     let mut command = neige_git_command();
@@ -64,7 +64,7 @@ fn carry_json(view: &CarryView) -> Value {
     };
     let mut carry = json!({ "receipt_id": view.receipt_id, "carry_sha": view.carry_sha });
     if let Some(parent) = parent.filter(|parent| !parent.is_empty()) {
-        carry["upstream_sha"] = json!(parent);
+        carry["onto_sha"] = json!(parent);
     }
     carry
 }

@@ -13,6 +13,7 @@ use calm_server::dispatcher::task_event_pushes_planner_for_test;
 use calm_server::model::{Task, TaskStatus};
 use calm_server::operation::ProviderAdapter;
 use calm_server::operation::codex_adapter::CodexWorkerAdapter;
+use calm_server::session_projection_repo::AgentProvider;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::CodexClient;
 use calm_server::test_seams::take_kernel_workspace_lease_for_attempt_for_test;
@@ -97,7 +98,7 @@ async fn carry_merges_the_candidate_onto_the_upstream() {
     let entry = fx.plan_entry("feat.2").await;
     assert_eq!(
         entry["candidate"]["carry"],
-        json!({"receipt_id": response["receipt_id"], "carry_sha": carry, "upstream_sha": upstream})
+        json!({"receipt_id": response["receipt_id"], "carry_sha": carry, "onto_sha": upstream})
     );
     let summary = fx.plan_summary_entry("feat.2").await;
     assert_eq!(summary["candidate"]["carry"], entry["candidate"]["carry"]);
@@ -219,12 +220,7 @@ async fn missing_carry_source_fails_as_carry_infra() {
         .join(&candidate.commit_sha[2..]);
     std::fs::remove_file(&loose).unwrap();
 
-    let worker = fx
-        .new_worker(
-            "gone-2",
-            calm_server::session_projection_repo::AgentProvider::Codex,
-        )
-        .await;
+    let worker = fx.new_worker("gone-2", AgentProvider::Codex).await;
     let error = take_kernel_workspace_lease_for_attempt_for_test(
         &fx.pool(),
         fx.track(),
@@ -256,7 +252,7 @@ async fn carry_is_deterministic_for_one_receipt() {
     assert_eq!(first.base_sha, second.base_sha);
 }
 
-/// `carry: "none"`: the successor starts from the upstream alone.
+/// `carry: "none"`: the successor starts from the ordinary base alone.
 #[tokio::test]
 async fn carry_none_starts_from_the_upstream() {
     let fx = replace_fixture().await;
@@ -472,4 +468,113 @@ async fn carry_merge_driver_sees_only_the_allowlisted_environment() {
         file_at(&fx.track_root, &lease.base_sha, "probe.txt").as_deref(),
         Some("worker\n")
     );
+}
+
+/// Run the real worker adapter's `prepare_tx` for `task` (the payload the scheduler builds) and
+/// return the rendered worker prompt; the transaction is rolled back.
+async fn prepared_prompt(fx: &Fx, adapter: &dyn ProviderAdapter, task: &Task) -> String {
+    use calm_server::operation::OperationRepo as _;
+    let (kind, payload) = calm_server::scheduler::build_worker_payload(task).unwrap();
+    // A real operations row (the lease and card reference it) of a kind no adapter drives.
+    let id = calm_server::operation::SqlxOperationRepo::new(fx.pool())
+        .insert_operation(
+            "prompt-probe",
+            calm_server::operation::OperationKey {
+                operation_key: format!("op-key-prompt-{}", task.key),
+                idempotency_key: Some(format!("prompt-probe-{}", task.id)),
+                payload_hash: "hash".into(),
+            },
+            payload.clone(),
+        )
+        .await
+        .unwrap();
+    let op = calm_server::operation::Operation {
+        id,
+        operation_key: format!("op-key-prompt-{}", task.key),
+        kind: kind.to_string(),
+        idempotency_key: Some(task.id.clone()),
+        payload_hash: "hash".into(),
+        target_type: "unknown".into(),
+        target_id: None,
+        target: json!({"type": "unknown", "id": null}),
+        payload: payload.clone(),
+        tx_output: None,
+        phase: calm_server::operation::Phase::Pending,
+        phase_detail: None,
+        attempt: 0,
+        last_error: None,
+        compensation_state: None,
+        lease_owner: None,
+        lease_until_ms: None,
+        spawn_artifacts: None,
+        parked_at_ms: None,
+        parked_deadline_ms: None,
+    };
+    let pool = fx.pool();
+    // The state the scheduler's claim leaves an attempt in before its worker prepares.
+    sqlx::query("UPDATE tasks SET status = 'dispatched' WHERE id = ?1")
+        .bind(&task.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+        .await
+        .unwrap();
+    let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
+    tx.rollback().await.unwrap();
+    output.data["prompt"].as_str().unwrap().to_string()
+}
+
+/// A clean carry's worker prompt ends with the kernel's carry notice, naming the candidate and the
+/// base it was merged onto — through the real Codex and Claude worker adapters.
+#[tokio::test]
+async fn carried_worker_prompts_carry_the_notice() {
+    let fx = replace_fixture().await;
+    let route_repo = || -> Arc<dyn calm_server::db::RouteRepo> { fx.boot.repo.clone() };
+    let codex = CodexWorkerAdapter::new(
+        route_repo(),
+        Arc::new(CodexClient::new_stub()),
+        SharedCodexAppServer::new_stub(fx.boot.repo.clone()),
+        None,
+        fx.boot.card_role_cache.clone(),
+        calm_server::track_area_cache::TrackAreaCache::new(),
+        fx.workspace_root.clone(),
+    );
+    let claude = calm_server::operation::claude_adapter::ClaudeWorkerAdapter::new(
+        route_repo(),
+        Arc::new(CodexClient::new_stub()),
+        None,
+        fx.boot.card_role_cache.clone(),
+        calm_server::track_area_cache::TrackAreaCache::new(),
+        fx.workspace_root.clone(),
+    );
+    let head = git(&fx.track_root, &["rev-parse", "HEAD"]);
+    let mut carried = Vec::new();
+    for (key, kind, provider) in [
+        ("cx", "codex", AgentProvider::Codex),
+        ("cl", "claude", AgentProvider::Claude),
+    ] {
+        let worker = fx.new_worker(key, provider).await;
+        let lease = fx.kernel_lease(&worker.card_id).await;
+        let task = fx.running_task(key, kind, &worker.card_id, json!({})).await;
+        write_files(&lease.path, &[(&format!("{key}.txt"), "X\n")]);
+        let candidate = report_and_settle(&fx, &worker, &task.id).await;
+        let predecessor = current(&fx.boot, key).await;
+        replace(&fx, replace_args(&predecessor, &format!("{key}-p")))
+            .await
+            .unwrap();
+        carried.push((kind, candidate.commit_sha));
+    }
+    let adapters: [&dyn ProviderAdapter; 2] = [&codex, &claude];
+    for ((kind, candidate_sha), adapter) in carried.into_iter().zip(adapters) {
+        let key = if kind == "codex" { "cx.2" } else { "cl.2" };
+        let successor = current(&fx.boot, key).await;
+
+        let prompt = prepared_prompt(&fx, adapter, &successor).await;
+
+        let notice = format!(
+            "changes of candidate {candidate_sha}, merged onto the attached checkout's HEAD {head}"
+        );
+        assert!(prompt.contains(&notice), "{kind}: {prompt}");
+    }
 }

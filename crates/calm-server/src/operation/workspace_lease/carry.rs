@@ -1,6 +1,7 @@
 //! The carry branch of the lease base (#1785 S2, design §4.5). A `calm.task.replace` successor
 //! whose receipt names a candidate starts from a kernel carry commit `C'`: the candidate merged
-//! onto the upstream `U` the ordinary base resolution chose, with `U` as its only parent. Two
+//! onto the base `U` the ordinary resolution chose (the upstream, or HEAD when the checkout is
+//! ahead of it or has none), with `U` as its only parent. Two
 //! bounded `git` runs inside the prepare transaction, object store only (no worktree, no ref):
 //!
 //! 1. `git merge-tree --write-tree --name-only --no-messages -z <U> <cand>` (the two-argument
@@ -35,16 +36,28 @@ const CARRY_INHERITED_ENV: [&str; 2] = ["PATH", "HOME"];
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CarryNotice {
     pub candidate_sha: String,
-    pub upstream_sha: String,
+    /// The commit the candidate was merged onto (`C'^1`) and where it came from.
+    pub base_sha: String,
+    pub base_source: BaseSource,
 }
 
 impl CarryNotice {
+    /// What the merged-onto commit is: the ordinary base resolution picks the upstream, or the
+    /// attached checkout's HEAD when it is ahead of the upstream or has none.
+    fn base_label(&self) -> &'static str {
+        match self.base_source {
+            BaseSource::Upstream => "the upstream",
+            _ => "the attached checkout's HEAD",
+        }
+    }
+
     /// The fixed line appended to a carried attempt's worker prompt.
     pub(crate) fn render(&self) -> String {
         include_str!("../../../prompts/worker/carry-notice.md")
             .trim_end()
             .replace("{candidate_sha}", &self.candidate_sha)
-            .replace("{upstream_sha}", &self.upstream_sha)
+            .replace("{base_label}", self.base_label())
+            .replace("{base_sha}", &self.base_sha)
     }
 }
 
@@ -62,7 +75,8 @@ pub(crate) async fn resolve_task_lease_base_tx(
     let carry_sha = carry_commit(&target.repo_root, &base.base_sha, &plan).await?;
     let notice = CarryNotice {
         candidate_sha: plan.candidate_sha,
-        upstream_sha: base.base_sha.clone(),
+        base_sha: base.base_sha.clone(),
+        base_source: base.base_source,
     };
     Ok((
         LeaseBase {
@@ -259,14 +273,23 @@ mod tests {
     }
 
     #[test]
-    fn carry_notice_names_the_candidate_and_the_upstream() {
-        let line = CarryNotice {
-            candidate_sha: "c".repeat(40),
-            upstream_sha: "u".repeat(40),
+    fn carry_notice_names_the_candidate_and_the_base_it_was_merged_onto() {
+        for (source, label) in [
+            (BaseSource::Upstream, "the upstream"),
+            (BaseSource::Head, "the attached checkout's HEAD"),
+        ] {
+            let line = CarryNotice {
+                candidate_sha: "c".repeat(40),
+                base_sha: "b".repeat(40),
+                base_source: source,
+            }
+            .render();
+            assert!(line.contains(&"c".repeat(40)), "{line}");
+            assert!(
+                line.contains(&format!("{label} {}", "b".repeat(40))),
+                "{line}"
+            );
+            assert!(!line.contains('\n'), "one line: {line}");
         }
-        .render();
-        assert!(line.contains(&"c".repeat(40)), "{line}");
-        assert!(line.contains(&"u".repeat(40)), "{line}");
-        assert!(!line.contains('\n'), "one line: {line}");
     }
 }

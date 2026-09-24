@@ -2,7 +2,7 @@
 //! when it still runs) and the kernel appends the successor declaration `<root>.<n>` in the same
 //! report transaction, with an immutable receipt. The receipt is the replay answer and the carry
 //! plan: when the successor's lease is prepared, the predecessor's settled candidate is merged
-//! onto the upstream of that moment ([`crate::operation::workspace_lease::carry`]).
+//! onto the base a new task would start from then (the upstream, or HEAD when ahead or without one) ([`crate::operation::workspace_lease::carry`]).
 
 pub(crate) mod admission;
 pub(crate) mod receipt;
@@ -23,7 +23,7 @@ pub(crate) enum CarryMode {
     /// The predecessor's settled candidate, else the carry the predecessor itself received.
     #[default]
     Candidate,
-    /// The upstream alone.
+    /// The ordinary base alone.
     None,
 }
 

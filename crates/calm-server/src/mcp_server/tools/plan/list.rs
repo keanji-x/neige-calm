@@ -135,7 +135,7 @@ pub(super) fn summary(entry: &Value) -> Value {
             "candidate/upstream/behind",
             "candidate/carry/receipt_id",
             "candidate/carry/carry_sha",
-            "candidate/carry/upstream_sha",
+            "candidate/carry/onto_sha",
             "recovery/guidance/blocking_condition",
             "recovery/guidance/supported_continuation",
             // An empty `{}` (terminal worker, no lease) must survive the summary.
