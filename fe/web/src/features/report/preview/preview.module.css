@@ -141,7 +141,7 @@
     text-align: center;
   }
 
-  /* `393 × 852 · 62%`: which viewport the page believes it has, and the shrink. */
+  /* `390 × 844 · 43%`: which viewport the page believes it has, and the shrink. */
   .size {
     margin: 0;
     padding-block: var(--space-2);

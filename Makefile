@@ -340,18 +340,24 @@ e2e-codex-isolated-check: ## shellcheck + dry-run golden + fence & tool-prefligh
 
 # An autologin stack answers every request as the owner, and the server container mounts the
 # host home: publishing it beyond loopback hands owner access to anyone who can reach the port.
-# `docker-compose.yml` publishes on CALM_PUBLISH_ADDR (default 0.0.0.0), so any non-falsey
-# CALM_DEV_AUTOLOGIN (the server's bool parse) requires a loopback publish. Recipes run compose
-# with make's view of these variables (environment, command line and `.env` alike), so this
-# check sees what compose will interpolate.
+# `docker-compose.yml` publishes on CALM_PUBLISH_ADDR when it is set (unset: no host IP, i.e.
+# every interface), so any non-falsey CALM_DEV_AUTOLOGIN (the server's bool parse) requires a
+# loopback publish. Recipes run compose with make's view of these variables (environment,
+# command line and `.env` alike), so this check sees what compose will interpolate — except that
+# compose strips one pair of quotes from a `.env` value and make does not, so the check strips
+# them too. The values reach the shell through the environment, never spliced into its text.
 .PHONY: check-autologin-publish
+check-autologin-publish: export GUARD_AUTOLOGIN := $(CALM_DEV_AUTOLOGIN)
+check-autologin-publish: export GUARD_PUBLISH_ADDR := $(CALM_PUBLISH_ADDR)
 check-autologin-publish: ## Refuse an autologin stack published beyond loopback (CALM_PUBLISH_ADDR=127.0.0.1).
-	@autologin="$$(printf '%s' '$(CALM_DEV_AUTOLOGIN)' | tr '[:upper:]' '[:lower:]')"; \
+	@unquote() { case "$$1" in \"*\") v="$${1#\"}"; printf '%s' "$${v%\"}" ;; \'*\') v="$${1#\'}"; printf '%s' "$${v%\'}" ;; *) printf '%s' "$$1" ;; esac; }; \
+	autologin="$$(unquote "$$GUARD_AUTOLOGIN" | tr '[:upper:]' '[:lower:]')"; \
+	addr="$$(unquote "$$GUARD_PUBLISH_ADDR")"; \
 	case "$$autologin" in ''|0|n|no|f|false|off) exit 0 ;; esac; \
-	case '$(CALM_PUBLISH_ADDR)' in 127.0.0.1|'[::1]') exit 0 ;; esac; \
-	echo "Refusing: CALM_DEV_AUTOLOGIN=$(CALM_DEV_AUTOLOGIN) makes every request the owner, but the stack" >&2; \
-	echo "would be published on '$(or $(CALM_PUBLISH_ADDR),0.0.0.0)':$(CALM_PORT). Set CALM_PUBLISH_ADDR=127.0.0.1" >&2; \
-	echo "(or [::1]) to publish on loopback only, or turn autologin off." >&2; \
+	case "$$addr" in 127.0.0.1|'[::1]') exit 0 ;; esac; \
+	echo "Refusing: CALM_DEV_AUTOLOGIN=$$GUARD_AUTOLOGIN makes every request the owner, but the stack would be" >&2; \
+	echo "published on $${addr:-every interface}, port $(CALM_PORT). Set CALM_PUBLISH_ADDR=127.0.0.1 (or [::1])" >&2; \
+	echo "to publish on loopback only, or turn autologin off." >&2; \
 	exit 1
 
 .PHONY: dev
