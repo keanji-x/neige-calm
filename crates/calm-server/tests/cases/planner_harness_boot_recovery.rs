@@ -349,7 +349,7 @@ async fn seed_recoverable_runtime(repo: &Arc<SqlxRepo>, tag: &str, thread_id: &s
         })
         .await
         .unwrap();
-    let card = seed_planner_card_row(&repo, &track.id).await;
+    let card = seed_planner_card_row(repo, &track.id).await;
     let runtime_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
