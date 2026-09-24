@@ -8,7 +8,7 @@ afterEach(cleanup);
 
 const names: readonly IconName[] = [
   'chevron-left', 'chevron-right', 'arrow-left', 'arrow-up', 'plus', 'close',
-  'chat', 'notification', 'folder', 'file',
+  'chat', 'notification', 'folder', 'file', 'fullscreen',
 ];
 
 describe('Icon', () => {

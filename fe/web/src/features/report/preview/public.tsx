@@ -16,6 +16,7 @@
 
 import { useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
 
+import { Icon } from '../../../ui/icon/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 
 import type { PreviewBlockPayload, PreviewResolution } from '../../../../../core/domain/report.ts';
@@ -159,7 +160,7 @@ function PreviewFrame({ title, height, src, viewportKey, viewports }: {
             ))}
           </span>
           <button type="button" className={styles.control} aria-label="Fullscreen" title="Fullscreen"
-            onClick={() => { void figure.current?.requestFullscreen?.().catch(() => undefined); }}>⛶</button>
+            onClick={() => { void figure.current?.requestFullscreen?.().catch(() => undefined); }}><Icon name="fullscreen" size="sm" /></button>
         </span>
       </PreviewBar>
       <div ref={stage} className={styles.stage}>

@@ -75,6 +75,10 @@ describe('ReportPreviewBlock', () => {
     if (figure !== null) figure.requestFullscreen = requestFullscreen;
     fireEvent.click(screen.getByRole('button', { name: 'Fullscreen' }));
     expect(requestFullscreen).toHaveBeenCalledTimes(1);
+    // A stroked icon in currentColor, not a font glyph that may render as tofu.
+    const button = screen.getByRole('button', { name: 'Fullscreen' });
+    expect(button.textContent).toBe('');
+    expect(button.querySelector('svg')?.getAttribute('stroke')).toBe('currentColor');
   });
 
   it('names the key when nothing is registered under it, and draws no frame', () => {

@@ -76,6 +76,12 @@
     cursor: pointer;
   }
 
+  /* The fullscreen mark is a stroked icon, not a font glyph: its ink cannot fall back to tofu. */
+  .control {
+    display: inline-flex;
+    align-items: center;
+  }
+
   /* Two segments, one pressed: the chart range switcher's register. */
   .toggle {
     display: flex;
