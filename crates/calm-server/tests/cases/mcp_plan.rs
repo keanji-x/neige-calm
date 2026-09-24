@@ -736,6 +736,47 @@ async fn concurrent_second_cancel_of_a_running_task_is_idempotent() {
 }
 
 #[tokio::test]
+async fn concurrent_second_cancel_of_a_pending_task_is_idempotent() {
+    let boot = boot().await;
+    set_track_lifecycle(&boot, TrackLifecycle::Planning).await;
+    write_task_block(&boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
+    let handler = boot.registry.lookup(TOOL_PLAN_CANCEL).expect("cancel tool");
+    let (ctx, identity) = (boot.ctx.clone(), planner_identity(&boot));
+    let mut rx = boot.ctx.events.subscribe();
+
+    // Both calls pre-read `pending`; the first commits its cancel before the second's tx runs.
+    plan_cancel_after_pre_read_for_test(
+        boot.ctx.clone(),
+        planner_identity(&boot),
+        json!({ "key": "a", "message": "second" }),
+        move || async move {
+            handler(ctx, identity, json!({ "key": "a", "message": "first" }))
+                .await
+                .expect("first cancel wins");
+        },
+    )
+    .await
+    .expect("a cancel that loses to another cancel is an idempotent success");
+
+    let row = boot
+        .repo
+        .task_get(&format!("{}:a", boot.track_id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.status, TaskStatus::Canceled);
+    let plan_updates = drain_events(&mut rx)
+        .await
+        .into_iter()
+        .filter(|event| matches!(event, Event::PlanUpdated { .. }))
+        .count();
+    assert_eq!(
+        plan_updates, 1,
+        "only the winning cancel emits plan.updated"
+    );
+}
+
+#[tokio::test]
 async fn cancel_verifying_task_refused_with_status() {
     let boot = boot().await;
     declare_bound_task(&boot, "verifying").await;
