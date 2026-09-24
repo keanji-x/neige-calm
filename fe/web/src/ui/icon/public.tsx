@@ -3,7 +3,7 @@ import styles from './icon.module.css';
 export type IconName =
   | 'chevron-left' | 'chevron-right' | 'arrow-left' | 'arrow-up'
   | 'plus' | 'close' | 'more' | 'chat' | 'notification' | 'folder' | 'file'
-  | 'paperclip';
+  | 'paperclip' | 'fullscreen';
 
 const paths: Readonly<Record<IconName, readonly string[]>> = Object.freeze({
   'chevron-right': Object.freeze(['M6 3.5 10.5 8 6 12.5']),
@@ -21,6 +21,8 @@ const paths: Readonly<Record<IconName, readonly string[]>> = Object.freeze({
   /* Closed outlines rather than filled shapes: every other icon here is line work and a filled folder would read as the heaviest mark in the app at its smallest size. */
   folder: Object.freeze(['M2 12.5V3.5h4.2l1.6 2H14v7z']),
   file: Object.freeze(['M4 2.5h5l3 3v8H4z', 'M9 2.5v3h3']),
+  /* Four corner brackets: the frame grows to fill the screen. */
+  fullscreen: Object.freeze(['M2.5 6V2.5H6', 'M10 2.5h3.5V6', 'M13.5 10v3.5H10', 'M6 13.5H2.5V10']),
   /* A paperclip and not a picture frame: a frame at 16px has about 7×5 of interior left after its own 1.5 stroke, and the horizon and sun inside it merged into one dark mass. */
   paperclip: Object.freeze([
     'M14.29 7.37l-6.13 6.13a4 4 0 0 1-5.66-5.66l6.13-6.13a2.67 2.67 0 0 1 3.77 3.77l-6.13 6.13a1.33 1.33 0 0 1-1.89-1.89l5.66-5.65',

@@ -338,8 +338,19 @@ e2e-codex-isolated-check: ## shellcheck + dry-run golden + fence & tool-prefligh
 	scripts/e2e-isolated/check_fence.sh
 	scripts/e2e-isolated/check_tools.sh
 
+# An autologin stack answers every request as the owner, and the server container mounts the
+# host home: publishing it beyond loopback hands owner access to anyone who can reach the port.
+# The check asks compose for the configuration it will run (its own `.env` parsing and
+# interpolation, in this recipe's environment, as every compose call here) and refuses autologin
+# with any published port off loopback. It fails closed when compose cannot resolve the config.
+.PHONY: check-autologin-publish
+check-autologin-publish: ## Refuse an autologin stack published beyond loopback (CALM_PUBLISH_ADDR=127.0.0.1).
+	@config="$$($(COMPOSE) config --format json)" || { \
+	  echo "Refusing: docker compose config failed, so the autologin/publish check cannot run." >&2; exit 1; }; \
+	printf '%s' "$$config" | python3 "$(CURDIR)/scripts/check-autologin-publish.py"
+
 .PHONY: dev
-dev: check-codex-host proxy-forwarder-up dev-bundles dirs ## Build the maintained frontend, then bring the stack up in the background (FRESH=1 wipes this DEV_ID first).
+dev: check-autologin-publish check-codex-host proxy-forwarder-up dev-bundles dirs ## Build the maintained frontend, then bring the stack up in the background (FRESH=1 wipes this DEV_ID first).
 ifeq ($(FRESH),1)
 	@echo "  FRESH=1 — stopping stack, removing container state, then bringing up"
 	-$(COMPOSE) down -v --remove-orphans
@@ -360,7 +371,7 @@ endif
 	@echo "  health: make health DEV_ID=$(DEV_ID) CALM_PORT=$(CALM_PORT)"
 
 .PHONY: dev-fresh
-dev-fresh: check-codex-host proxy-forwarder-up dev-bundles ## Remove this DEV_ID's containers/state, then start a fresh stack with the maintained frontend.
+dev-fresh: check-autologin-publish check-codex-host proxy-forwarder-up dev-bundles ## Remove this DEV_ID's containers/state, then start a fresh stack with the maintained frontend.
 	-$(COMPOSE) down -v --remove-orphans
 	$(MAKE) dirs
 	$(COMPOSE) up -d --build
@@ -374,7 +385,7 @@ dev-fresh: check-codex-host proxy-forwarder-up dev-bundles ## Remove this DEV_ID
 	@echo "  health: make health DEV_ID=$(DEV_ID) CALM_PORT=$(CALM_PORT)"
 
 .PHONY: up
-up: check-codex-host proxy-forwarder-up dirs ## Bring the stack up without rebuilding.
+up: check-autologin-publish check-codex-host proxy-forwarder-up dirs ## Bring the stack up without rebuilding.
 	$(COMPOSE) up -d
 
 .PHONY: stop

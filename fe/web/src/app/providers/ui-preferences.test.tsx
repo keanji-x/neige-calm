@@ -38,6 +38,23 @@ describe('browser display preferences', () => {
     expect(preferences.railCollapsed()).toBeNull();
   });
 
+  it('remembers a preview block\'s device choice per Track and key across instances (#1780)', () => {
+    const storage = memoryStorage();
+    const first = createUiPreferences(storage);
+    first.setPreviewViewport('t1', 'fe', 'mobile');
+    first.setPreviewViewport('t2', 'fe', 'desktop');
+    const restored = createUiPreferences(storage);
+    expect(restored.previewViewport('t1', 'fe')).toBe('mobile');
+    expect(restored.previewViewport('t2', 'fe')).toBe('desktop');
+    expect(restored.previewViewport('t1', 'api')).toBeNull();
+    const throwing = createUiPreferences({
+      getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('denied'); },
+    });
+    expect(throwing.previewViewport('t1', 'fe')).toBeNull();
+    throwing.setPreviewViewport('t1', 'fe', 'mobile');
+    expect(throwing.previewViewport('t1', 'fe')).toBe('mobile');
+  });
+
   it('rejects valid JSON of the wrong preference type', () => {
     const string = createUiPreferences({ getItem: () => '"chat"', setItem: () => {} });
     expect(string.areaExpanded('area')).toBe(true);

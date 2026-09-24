@@ -126,6 +126,12 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
       return typeof value === 'boolean' ? value : null;
     },
     setRailCollapsed: (value: boolean) => write('rail-collapsed', value, true),
+    /** A report preview block's device choice (#1780), as the block serialized it; per Track and block key. */
+    previewViewport(trackId: string, key: string): string | null {
+      const value = read(`preview-viewport:${trackId}:${key}`);
+      return typeof value === 'string' ? value : null;
+    },
+    setPreviewViewport: (trackId: string, key: string, value: string) => write(`preview-viewport:${trackId}:${key}`, value, false),
   });
 }
 

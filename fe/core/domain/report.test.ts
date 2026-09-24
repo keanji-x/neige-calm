@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest';
 import type { CardWire } from './track.js';
 import {
   backlinkCountsByBlock, deriveReportOutline, deriveReportTasks, groupBacklinks, hasLiveTaskRun,
-  parseReportLink, readTrackReport, TASK_STATUS_DETAIL_LIMIT, TRACK_REPORT_CARD_KIND, trackTaskVerdictsOperation,
+  parseReportLink, readTrackReport, TASK_STATUS_DETAIL_LIMIT, TRACK_REPORT_CARD_KIND, trackPreviewsOperation,
+  trackTaskVerdictsOperation,
   type TaskVerdict, type TrackBacklink,
 } from './report.js';
 
@@ -151,6 +152,44 @@ describe('readTrackReport', () => {
       payload: { body: 'x', blocks: [{ id: 'b-1', kind: 'app', rev: 1, payload: { src } }] },
     })]);
     expect(report?.blocks?.[0]?.kind).toBe('unsupported');
+  });
+});
+
+describe('preview blocks', () => {
+  function firstBlock(payload: unknown) {
+    return readTrackReport([card({
+      payload: { body: 'x', blocks: [{ id: 'b-1', kind: 'preview', rev: 1, payload }] },
+    })])?.blocks?.[0];
+  }
+
+  it('reads a preview block with every optional field', () => {
+    expect(firstBlock({ key: 'fe', title: '前端', path: '/next/', height: 720 })).toEqual({
+      id: 'b-1', kind: 'preview', payload: { key: 'fe', title: '前端', path: '/next/', height: 720 },
+    });
+    expect(firstBlock({ key: 'a' })).toEqual({ id: 'b-1', kind: 'preview', payload: { key: 'a' } });
+  });
+
+  it.each([
+    ['an upper-case key', { key: 'FE' }],
+    ['a key starting with a dash', { key: '-fe' }],
+    ['a 65-character key', { key: `a${'b'.repeat(64)}` }],
+    ['a protocol-relative path', { key: 'fe', path: '//evil.example/x' }],
+    ['a backslash path', { key: 'fe', path: '/\\evil.example/x' }],
+    ['a height below 120', { key: 'fe', height: 50 }],
+    ['a field the kernel refuses', { key: 'fe', port: 4050 }],
+  ])('degrades a preview block with %s to unsupported', (_label, payload) => {
+    expect(firstBlock(payload)).toEqual({ id: 'b-1', kind: 'unsupported', declaredKind: 'preview' });
+  });
+});
+
+describe('trackPreviewsOperation', () => {
+  it('GETs the previews route with the id escaped and reads the list', () => {
+    const operation = trackPreviewsOperation('w/1');
+    expect(operation.method).toBe('GET');
+    expect(operation.path).toBe('/api/tracks/w%2F1/previews');
+    const previews = [{ key: 'fe', title: 'FE', port: 4050, live: true }];
+    expect(operation.responseSchema.parse({ previews })).toEqual({ previews });
+    expect(() => operation.responseSchema.parse({ previews: [{ key: 'fe', title: 'FE', port: 4050 }] })).toThrow();
   });
 });
 

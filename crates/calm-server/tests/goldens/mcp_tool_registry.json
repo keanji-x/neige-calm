@@ -427,7 +427,7 @@
   },
   {
     "name": "calm.preview.register",
-    "description_sha256": "82773b0c8b66abdfd441afd49f2561a9c720068b44f0cea418f9cc909ac41ec0",
+    "description_sha256": "8ce02efc72982defcefd324bb90e126842071fc76ef8d520336e5217e1b95434",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -547,7 +547,7 @@
   },
   {
     "name": "calm.report.blocks.kinds",
-    "description_sha256": "055ff2484b6a7873286923becafdb848b6e9aaffd01a467499a3f78873ae19c7",
+    "description_sha256": "cabf4db6a9a26649e06768c2c1271809890235348ed7f57b0a6db288f2a26698",
     "input_schema": {
       "properties": {},
       "type": "object"
@@ -597,7 +597,7 @@
   },
   {
     "name": "calm.report.blocks.upsert",
-    "description_sha256": "9e68f60bc27a615832c9bde1dc863603799fdebe64f1016fd0e789cfb2b41575",
+    "description_sha256": "0c78be4d1aa9ccee767c305050176d88da899f6274aebe0dca69452b0d294f2f",
     "input_schema": {
       "properties": {
         "id": {
@@ -622,7 +622,8 @@
             "chart.series",
             "table",
             "app",
-            "task"
+            "task",
+            "preview"
           ],
           "type": "string"
         },
@@ -726,7 +727,8 @@
                   "chart.series",
                   "table",
                   "app",
-                  "task"
+                  "task",
+                  "preview"
                 ],
                 "type": "string"
               },

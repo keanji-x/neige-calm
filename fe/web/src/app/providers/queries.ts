@@ -17,8 +17,8 @@ import {
   type Area, type AreaPatchBody, type FolderConflict, type NewAreaBody,
 } from '../../../../core/domain/area.ts';
 import {
-  deriveReportTasks, hasLiveTaskRun, trackBacklinksOperation, trackTaskVerdictsOperation,
-  type ReportBlock, type TaskVerdict, type TrackBacklinks,
+  deriveReportTasks, hasLiveTaskRun, trackBacklinksOperation, trackPreviewsOperation, trackTaskVerdictsOperation,
+  type ReportBlock, type TaskVerdict, type TrackBacklinks, type TrackPreviews,
 } from '../../../../core/domain/report.ts';
 import {
   staleRevBodySchema, trackReportSeriesOperation, type ResolvedSeries, type SeriesDetail,
@@ -132,6 +132,8 @@ export const queryKeys = Object.freeze({
   tracksInArea: (areaId: string) => ['tracks', areaId] as const,
   trackDetail: (trackId: string) => ['track', trackId] as const,
   trackBacklinks: (trackId: string) => ['track-backlinks', trackId] as const,
+  /* The track's registered previews (#1780). Registrations emit no event; `trackPreviewsQueryOptions` polls. */
+  trackPreviews: (trackId: string) => ['track-previews', trackId] as const,
   /* Exactly the shape the invalidation plan emits for `track.report_edited` and every `task.*` event. */
   trackReport: (trackId: string) => ['track-report', trackId] as const,
   /**
@@ -396,6 +398,19 @@ export function trackBacklinksQueryOptions(transport: ApiTransportPort, trackId:
     queryKey: queryKeys.trackBacklinks(trackId),
     queryFn: ({ signal }: { signal: AbortSignal }): Promise<TrackBacklinks> =>
       runOperation(transport, { ...trackBacklinksOperation(trackId), signal }, unauthorized),
+  };
+}
+
+/** How often an open report with a `preview` block re-reads the registrations and their liveness. */
+export const TRACK_PREVIEWS_POLL_MS = 5000;
+
+/** The track's registered previews, each with a just-probed `live` bit. Polled: nothing announces a registration or a dev server coming up. */
+export function trackPreviewsQueryOptions(transport: ApiTransportPort, trackId: string, unauthorized: UnauthorizedChannel) {
+  return {
+    queryKey: queryKeys.trackPreviews(trackId),
+    queryFn: ({ signal }: { signal: AbortSignal }): Promise<TrackPreviews> =>
+      runOperation(transport, { ...trackPreviewsOperation(trackId), signal }, unauthorized),
+    refetchInterval: TRACK_PREVIEWS_POLL_MS,
   };
 }
 

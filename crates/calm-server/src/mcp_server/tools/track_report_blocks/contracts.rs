@@ -28,7 +28,7 @@ pub(super) fn kinds_descriptor() -> ToolDescriptor {
 
 /// The static kind table; the schemas here must stay in lock-step with `calm_types::report_blocks::kinds`.
 pub(super) fn kinds_table() -> Value {
-    json!({
+    let mut kinds = json!({
         "kinds": [
             {
                 "kind": "prose",
@@ -361,6 +361,39 @@ pub(super) fn kinds_table() -> Value {
                 "usage": "Task declaration block. Set `ready: true` to opt into projection once task projection ships in slice 3b; this slice validates and stores declarations but does not project or schedule them. Use `goal` for codex/claude and `command` for terminal; the two fields are mutually exclusive. The terminal runner passes `command` verbatim to `/bin/sh -c`. Every string nested anywhere in `context` is limited to 2048 characters."
             }
         ]
+    });
+    // Appended, not inlined: one more element in the literal exceeds `json!`'s recursion limit.
+    kinds["kinds"]
+        .as_array_mut()
+        .expect("kinds array literal")
+        .push(preview_kind());
+    kinds
+}
+
+/// Keep this schema in sync with `report_blocks::validate_payload`'s preview validation.
+fn preview_kind() -> Value {
+    json!({
+        "kind": "preview",
+        "schema": {
+            "type": "object",
+            "required": ["key"],
+            "additionalProperties": false,
+            "properties": {
+                "key": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$", "description": "The `key` you passed to `calm.preview.register`." },
+                "title": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS },
+                "path": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^/(?![/\\\\])[^\\\\]*$", "description": "Path on the preview (default `/`; `/next/` for a dev-calm FE). Same rules as the `app` block's `src`." },
+                "height": { "type": "number", "minimum": 120, "maximum": 2000, "description": "Frame height in px (default chosen by the renderer)." }
+            }
+        },
+        "usage": "Embed a live dev server you registered with \
+             `calm.preview.register` (its `block_hint` is this block's \
+             payload). Minimal example — calm.report.blocks.upsert { \
+             \"kind\": \"preview\", \"payload\": { \"key\": \"fe\", \
+             \"title\": \"前端\", \"path\": \"/next/\" } }. The block names \
+             the registration by `key`, not a port: it shows an \
+             offline or not-registered placeholder until a dev server \
+             is registered under that key and answering, and is \
+             viewable over LAN http only."
     })
 }
 

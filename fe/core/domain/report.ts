@@ -131,21 +131,38 @@ export const tableBlockPayloadSchema = z.union([
 ]);
 
 /**
- * `src` is a same-origin absolute path: a leading `/`, not `//`, and no backslashes (browsers
- * normalize `\` to `/` inside a URL). The renderer re-asserts the origin: two checks for the one
- * block that loads someone else's markup.
+ * A same-origin absolute path: a leading `/`, not `//`, and no backslashes (browsers normalize `\`
+ * to `/` inside a URL). The `app` renderer re-asserts the origin: two checks for the one block that
+ * loads someone else's markup.
  */
+function sameOriginPath() {
+  return max2048CodePoints(z.string()
+  .regex(/^\/(?!\/)[^\\]*$/, { message: 'must be a same-origin absolute path' })
+  .refine((value) => {
+    for (let index = 0; index < value.length; index += 1) {
+      const code = value.charCodeAt(index);
+      if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) return false;
+    }
+    return true;
+  }, { message: 'must not contain control characters' }));
+}
+
 export const appBlockPayloadSchema = z.strictObject({
-  src: max2048CodePoints(z.string()
-    .regex(/^\/(?!\/)[^\\]*$/, { message: 'src must be a same-origin absolute path' })
-    .refine((value) => {
-      for (let index = 0; index < value.length; index += 1) {
-        const code = value.charCodeAt(index);
-        if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) return false;
-      }
-      return true;
-    }, { message: 'src must not contain control characters' })),
+  src: sameOriginPath(),
   title: max2048CodePoints(z.string()).nullish(),
+  height: z.number().min(120).max(2000).nullish(),
+});
+
+/**
+ * `preview` (#1780): a dev server the Planner registered with `calm.preview.register`, named by
+ * its `key`. `path` follows the `app` block's `src` rules; it is opened on the preview's own port.
+ */
+const PREVIEW_KEY_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+export const previewBlockPayloadSchema = z.strictObject({
+  key: z.string().regex(PREVIEW_KEY_PATTERN),
+  title: max2048CodePoints(z.string()).nullish(),
+  path: sameOriginPath().nullish(),
   height: z.number().min(120).max(2000).nullish(),
 });
 
@@ -227,6 +244,7 @@ export function isLiveTablePayload(payload: TableBlockPayload): payload is LiveT
 }
 export type AppBlockPayload = z.infer<typeof appBlockPayloadSchema>;
 export type TaskBlockPayload = z.infer<typeof taskBlockPayloadSchema>;
+export type PreviewBlockPayload = z.infer<typeof previewBlockPayloadSchema>;
 
 /**
  * A block, discriminated by `kind`, with `unsupported` as the closed default. `rev` is carried
@@ -240,6 +258,7 @@ export type ReportBlock =
   | Readonly<{ id: string; kind: 'table'; payload: TableBlockPayload }>
   | Readonly<{ id: string; kind: 'app'; payload: AppBlockPayload }>
   | Readonly<{ id: string; kind: 'task'; payload: TaskBlockPayload }>
+  | Readonly<{ id: string; kind: 'preview'; payload: PreviewBlockPayload }>
   | Readonly<{ id: string; kind: 'unsupported'; declaredKind: string }>;
 
 const blockWireSchema = z.object({
@@ -259,6 +278,7 @@ function payloadSchemaFor(kind: string): z.ZodType | null {
     case 'table': return tableBlockPayloadSchema;
     case 'app': return appBlockPayloadSchema;
     case 'task': return taskBlockPayloadSchema;
+    case 'preview': return previewBlockPayloadSchema;
     default: return null;
   }
 }
@@ -701,6 +721,37 @@ export function trackBacklinksOperation(trackId: string): ApiOperation<TrackBack
     responseSchema: trackBacklinksSchema,
   };
 }
+
+/* A track's registered previews (`GET /api/tracks/{id}/previews`, #1780). In-memory on the
+   kernel: a restart empties the list until the Planner registers again. */
+export const trackPreviewSchema = z.object({
+  key: z.string(),
+  title: z.string(),
+  /** The gateway pool port the browser loads. */
+  port: z.number().int().min(1).max(65535),
+  /** Whether the dev server behind it accepted a connection just now. */
+  live: z.boolean(),
+});
+
+export const trackPreviewsSchema = z.object({ previews: z.array(trackPreviewSchema) });
+
+export type TrackPreview = z.infer<typeof trackPreviewSchema>;
+export type TrackPreviews = z.infer<typeof trackPreviewsSchema>;
+
+export function trackPreviewsOperation(trackId: string): ApiOperation<TrackPreviews> {
+  return {
+    method: 'GET',
+    path: `/api/tracks/${encodeURIComponent(trackId)}/previews`,
+    responseSchema: trackPreviewsSchema,
+  };
+}
+
+/** What a `preview` block knows about its key: still loading, unreadable, not registered, or registered. */
+export type PreviewResolution =
+  | Readonly<{ status: 'loading' }>
+  | Readonly<{ status: 'error'; message: string }>
+  | Readonly<{ status: 'missing' }>
+  | Readonly<{ status: 'registered'; preview: TrackPreview }>;
 
 /** Group by source track, preserving server order. */
 export function groupBacklinks(

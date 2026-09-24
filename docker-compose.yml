@@ -110,6 +110,10 @@ services:
     volumes:
       - ${CALM_FE_DIST:-./fe/web/dist}:/usr/share/nginx/html/next:ro
       - ./docker/nginx.conf:/etc/nginx/conf.d/calm.conf:ro
+    # Unset CALM_PUBLISH_ADDR publishes with no host IP (every interface, IPv4 and IPv6);
+    # CALM_PUBLISH_ADDR=127.0.0.1 keeps the stack on loopback, which `make dev|dev-fresh|up`
+    # require whenever CALM_DEV_AUTOLOGIN is on, since autologin makes every request the owner.
+    # The inner `:-` only keeps compose from warning when the variable is unset.
     ports:
-      - "${CALM_PORT:-4041}:8080"
+      - "${CALM_PUBLISH_ADDR:+${CALM_PUBLISH_ADDR:-}:}${CALM_PORT:-4041}:8080"
     restart: unless-stopped

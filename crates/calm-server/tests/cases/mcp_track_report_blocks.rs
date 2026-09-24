@@ -225,7 +225,7 @@ async fn old_create_and_move_shapes_return_self_healing_invalid_params() {
 }
 
 #[tokio::test]
-async fn kinds_returns_all_six_schemas() {
+async fn kinds_returns_all_seven_schemas() {
     let boot = boot().await;
     let out = call_tool(
         &boot,
@@ -251,7 +251,8 @@ async fn kinds_returns_all_six_schemas() {
             "chart.series",
             "table",
             "app",
-            "task"
+            "task",
+            "preview"
         ]
     );
     for kind in kinds {
@@ -389,6 +390,30 @@ async fn kinds_returns_all_six_schemas() {
         app.pointer("/schema/properties/height/maximum")
             .and_then(Value::as_u64),
         Some(2000),
+    );
+    let preview = &kinds[6];
+    assert_eq!(
+        preview.pointer("/schema/required").unwrap(),
+        &json!(["key"])
+    );
+    assert_eq!(
+        preview.pointer("/schema/additionalProperties"),
+        Some(&Value::Bool(false))
+    );
+    // The key pattern is `calm.preview.register`'s; the path pattern is the `app` block's `src`.
+    assert_eq!(
+        preview.pointer("/schema/properties/key/pattern"),
+        Some(&json!("^[a-z0-9][a-z0-9_-]{0,63}$"))
+    );
+    assert_eq!(
+        preview.pointer("/schema/properties/path/pattern"),
+        app.pointer("/schema/properties/src/pattern")
+    );
+    assert_eq!(
+        preview
+            .pointer("/schema/properties/height/minimum")
+            .and_then(Value::as_u64),
+        Some(120),
     );
     let task = &kinds[5];
     assert_eq!(
@@ -814,6 +839,23 @@ async fn upsert_rejects_unknown_kind_and_invalid_payloads() {
         .expect_err("non-same-origin app src");
         assert_eq!(err.code, RpcError::INVALID_PARAMS);
         assert!(err.message.contains("src"), "{src} → {err:?}");
+    }
+    for (payload, needle) in [
+        (json!({ "key": "Fe" }), "key: required"),
+        (json!({ "key": "fe", "path": "//x" }), "path: must be"),
+        (json!({ "key": "fe", "height": 50 }), "height"),
+        (json!({ "key": "fe", "port": 4050 }), "port: unknown field"),
+    ] {
+        let err = call_tool(
+            &boot,
+            TOOL_REPORT_BLOCKS_UPSERT,
+            planner_identity(&boot),
+            json!({ "kind": "preview", "payload": payload }),
+        )
+        .await
+        .expect_err("invalid preview payload");
+        assert_eq!(err.code, RpcError::INVALID_PARAMS);
+        assert!(err.message.contains(needle), "{payload} → {err:?}");
     }
     let candles: Vec<Value> = (0..5001i64).map(|i| json!([i, 1, 2, 0, 1])).collect();
     let err = call_tool(
@@ -1314,6 +1356,24 @@ async fn upsert_chart(boot: &Boot, payload: Value) -> (String, u64) {
         out.get("id").and_then(Value::as_str).unwrap().to_string(),
         out.get("rev").and_then(Value::as_u64).unwrap(),
     )
+}
+
+#[tokio::test]
+async fn upsert_preview_block_round_trips_its_payload() {
+    let boot = boot().await;
+    let if_doc_rev = read(&boot, json!({})).await["docRev"].as_u64().unwrap();
+    let payload = json!({ "key": "fe", "title": "前端", "path": "/next/", "height": 720 });
+    call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        planner_identity(&boot),
+        json!({ "kind": "preview", "payload": payload, "if_doc_rev": if_doc_rev }),
+    )
+    .await
+    .expect("preview upsert succeeds");
+    let stored = current_payload(&boot).await;
+    let fence = calm_types::report_blocks::render_fence("preview", &payload);
+    assert_eq!(stored.body, format!("{}{fence}", seed_body()));
 }
 
 #[tokio::test]
