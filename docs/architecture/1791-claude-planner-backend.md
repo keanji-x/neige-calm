@@ -41,10 +41,10 @@ Claude Planners (cut, §9.5).
 | D3 | Provider = existing `AgentProvider`, stored as a required, server-owned, sticky card key `planner_provider` (migration backfill); required at the Planner construction boundary; persisted to the session row from the mint input | v1; fixed r1; typed r2 | §4.4 |
 | D4 | One `claude -p` process per turn; ≤ 1 per session; resident keepalive only if measured latency matters | orchestrator r1 | §5.1 |
 | D5 | Permissions are static CLI rules (`--permission-prompts none` + `--allowedTools`) | v1 | §5.3 |
-| D6 | Auth/isolation: dedicated `CLAUDE_CONFIG_DIR` + the user's own `/login` — **recommended, pending owner Q1** (encoded as the optional `config_dir` field) | v1; r2 wording | §8 |
+| D6 | Auth/isolation: dedicated `CLAUDE_CONFIG_DIR` (required `config_dir`) + the owner's own `/login` — **decided by the owner** | v1; r2 wording | §8 |
 | D7 | `Recover` not offered; exact-interface briefing | v1 | §5.7 |
 | D8 | **Steer cut.** The CLI dequeues a queued line immediately after `result` (P-F3, P-E), so the parent has no boundary to refuse it; v1 refusal stays and the entry runs as the next turn | **orchestrator r2** (was "scheduled" in r1) | §5.9 |
-| D9 | Bash confinement: native sandbox with `failIfUnavailable`; enablement **release-gated** on sandbox verification or explicit owner acceptance | orchestrator r1 | §5.3, §9.2 |
+| D9 | Bash confinement: native sandbox with `failIfUnavailable` (**owner decided: sandbox**; the unconfined option is removed); enablement release-gated on §9.2 | orchestrator r1 | §5.3, §9.2 |
 | D10 | Images: base64 image blocks (P-I) | orchestrator r1 | §5.6 |
 | D11 | **Model choice cut**: Claude Planners run the CLI default; pickers show the existing `source:"unavailable"` | **orchestrator r2** | §5.8 |
 | D12 | **Stop primitive**: one `/proc`-wide exact env-marker sweep (`NEIGE_CLAUDE_PLANNER=<worker_session_id>`), SIGTERM → bounded wait → verified SIGKILL → wait-empty (membership narrowed in r3, D16; users widened, D17). The r1 `(pid, pgid, start_time, boot_id)` record and group kill are deleted | **orchestrator r2** (A BLOCKING-1, B2-1) | §5.1 |
@@ -345,7 +345,7 @@ cause `Failed("protocol")`.
   `CLAUDE.md`, else `AGENTS.md` (P-J).
 - **Env** (`env_clear()` + allowlist): `SPAWN_ENV_PASSTHROUGH` (S24) minus `OPENAI_*`, `CODEX_*`, `RUST_*`,
   `LOG_FORMAT`; `HTTP(S)_PROXY` from the daemon's resolver (`shared_codex_appserver.rs:1862`); `PATH` =
-  `kernel_led_path()`; `CLAUDE_CONFIG_DIR` iff `config_dir` is set; `NEIGE_MCP_SOCKET`, `NEIGE_MCP_TOKEN`,
+  `kernel_led_path()`; `CLAUDE_CONFIG_DIR` = `config_dir`; `NEIGE_MCP_SOCKET`, `NEIGE_MCP_TOKEN`,
   `NEIGE_CLAUDE_PLANNER`, `DISABLE_AUTOUPDATER=1`. Never `NEIGE_MCP_DAEMON_TOKEN` (M4), `ANTHROPIC_*`,
   `CLAUDE_CODE_*`. The token is minted at the harness's first turn (§5.1 item 2, M3).
 - **Init checks** (every spawn, second line of defence after the pre-spawn `--version` check):
@@ -368,32 +368,29 @@ Option<PathBuf>`, `config.rs:33-36`, "missing keeps this backend unavailable"):
 struct ClaudePlannerConfig {
     claude_binary: PathBuf,        // versioned binary, e.g. ~/.local/share/claude/versions/2.1.280
     claude_version: String,        // must equal `<claude_binary> --version` before any input is written
-    confinement: Confinement,
-    config_dir: Option<PathBuf>,   // Q1: None = the user's ~/.claude
+    config_dir: PathBuf,           // dedicated CLAUDE_CONFIG_DIR; the owner runs /login in it
 }
-#[derive(Deserialize)] #[serde(deny_unknown_fields, tag = "mode")]
-enum Confinement { Sandbox { allowed_domains: Vec<String> }, AcceptUnconfined }
 ```
 
-`claude_binary` and `claude_version` are required in both modes: simplest, same as `codex_binary` in
+`claude_binary` and `claude_version` are required: simplest, same as `codex_binary` in
 `IsolatedCodexConfig` (`isolated_codex/config.rs:14-23`, also `deny_unknown_fields`), and the auto-updater
 swaps the `~/.local/bin/claude` symlink (2.1.220, 2.1.259, 2.1.280 are installed side by side on this
-host). `deny_unknown_fields` stops a mistyped `config_dir` from silently falling back to `~/.claude`.
+host). `deny_unknown_fields` stops a mistyped field from being silently ignored.
 
 Absent ⇒ create with `planner_provider:"claude"` answers 4xx naming the flag; `is_ready(Claude) = false`;
 a recovered Claude harness refuses issuance with a retryable refusal and a reader message naming the flag.
 
-- `Sandbox` ⇒ `--settings {"sandbox":{"enabled":true,"failIfUnavailable":true,
-  "allowUnsandboxedCommands":false,"network":{"allowedDomains":[…],"allowUnixSockets":["<NEIGE_MCP_SOCKET>"]}}}`
+- The sandbox is always on (owner decision): `--settings {"permissions":{"allow":["WebFetch(domain:*)"]},"sandbox":{"enabled":true,
+  "failIfUnavailable":true,"allowUnsandboxedCommands":false,"network":{"allowUnixSockets":["<NEIGE_MCP_SOCKET>"]}}}`
   and allow rules `Bash Read ToolSearch WebFetch WebSearch mcp__calm Edit(//<cwd>/**) Write(//<cwd>/**)`.
-  Documented semantics: sandboxed Bash writes cwd + session temp, reads everywhere (as Codex), network
-  only to allowed domains — **stricter than Codex's unrestricted network**, by the owner's list (Q3).
-  `failIfUnavailable` is mandatory: without it the CLI only warns and runs everything unconfined (P-S2);
+  Documented semantics: sandboxed Bash writes cwd + session temp and reads everywhere (as Codex); the
+  bare `*` in `WebFetch(domain:*)` pre-allows every domain for sandboxed commands (sandboxing docs,
+  "Network isolation", v2.1.186+), so the network is unrestricted like Codex's `network_access=true`
+  (`shared_codex_home.rs:302`) while filesystem isolation stays on; `strictAllowlist` is not set. `socat`
+  is still required (the sandbox proxy runs even when every domain is allowed). `failIfUnavailable` is mandatory: without it the CLI only warns and runs everything unconfined (P-S2);
   with it the turn fails before any request (P-S1). Because `-p` silently drops invalid settings and
   `system/init` does not report the sandbox, the release-gate verification is recorded against
   `claude_version`, which the pinned binary and the pre-spawn check keep constant.
-- `AcceptUnconfined` ⇒ no `--settings`; allow rules `Bash Read Edit Write ToolSearch WebFetch WebSearch
-  mcp__calm` (path-scoped Edit/Write alone would give false comfort).
 
 ### 5.4 Protocol types (`protocol.rs`)
 
@@ -532,10 +529,10 @@ The stop timer (≤ 10 s) settles an interrupted turn inside the harness's 30 s 
 
 | Option | Evidence | Verdict |
 |---|---|---|
-| A. `config_dir` set: dedicated `CLAUDE_CONFIG_DIR`, user runs `CLAUDE_CONFIG_DIR=<dir> claude` + `/login` | only built-ins; not logged in ⇒ "Not logged in · Please run /login" (P-D) | recommended, pending Q1 |
+| A. `config_dir` set: dedicated `CLAUDE_CONFIG_DIR`, user runs `CLAUDE_CONFIG_DIR=<dir> claude` + `/login` | only built-ins; not logged in ⇒ "Not logged in · Please run /login" (P-D) | **chosen by the owner** |
 | B. `--bare` + API key | hooks/plugins/OAuth skipped; loses CLAUDE.md discovery (P-G) | compliant alternative (not in v1 config) |
 | C. `--safe-mode` | disables `--mcp-config` servers (P-C) | rejected |
-| D. `config_dir` absent: user's `~/.claude` | user skills/plugins not loaded (P-B, P-E) | works; sessions land in the user's own list |
+| D. user's `~/.claude` | user skills/plugins not loaded (P-B, P-E) | not used (`config_dir` is required) |
 
 Compliance: no login UI; neige never collects, stores, copies or relays OAuth credentials or session tokens;
 the unmodified binary runs as a subprocess; neige never sends `initialize` (its response carries the
@@ -559,11 +556,10 @@ once the release gate passes.
 
 ### 9.2 Release gate
 
-The Claude Planner is unavailable until the owner writes `--claude-planner-config`. `AcceptUnconfined` is
-the owner's explicit acceptance of §5.3's escalation list. `Sandbox` additionally requires, on the target
+The Claude Planner is unavailable until the owner writes `--claude-planner-config`, which requires, on the target
 host with `socat` installed and the exact shipping flags, recorded against `claude_version`:
 Bash write inside cwd succeeds, outside cwd and session temp fails; the `neige` CLI reaches
-`NEIGE_MCP_SOCKET`; allowed domains reachable, others refused; out-of-cwd `Edit`/`Write` denied; `calm` MCP
+`NEIGE_MCP_SOCKET`; a sandboxed `curl` to an arbitrary host succeeds; a Bash write outside the workspace is denied; out-of-cwd `Edit`/`Write` denied; `calm` MCP
 works; removing `socat` fails closed; SIGKILL of `claude` mid sandboxed `sleep 300` leaves no survivor
 after `stop`. Plus live acceptance on the owner's box (never Codex E2E): report write, worker dispatch,
 image message, interrupt, restart, resume, delete; `ps` shows no Planner `claude` between turns.
@@ -579,7 +575,6 @@ image message, interrupt, restart, resume, delete; `ps` shows no Planner `claude
 - The auto-updater may delete an old versioned binary; `claude_binary` then fails the readiness check until
   the owner updates the config (and re-runs the release gate for `Sandbox`).
 
-- With `AcceptUnconfined`, Bash is unconfined (owner's choice).
 - No steer; future path via `interrupt_cancel_queued_v1`, unprobed.
 - No model/effort choice; Claude runs its CLI default; pickers show `source:"unavailable"`.
 - No bound `Recover`; exact `calm.plan.recover`.
@@ -603,7 +598,7 @@ image message, interrupt, restart, resume, delete; `ps` shows no Planner `claude
 ### 9.4 Risks and conflicts
 
 - **Undocumented protocol drift** (input lines and control envelopes are Agent-SDK internal): v1 writes
-  only `user` lines and `interrupt`; fixtures come from the recorded version; both confinement modes run a
+  only `user` lines and `interrupt`; fixtures come from the recorded version; the Planner runs a
   pinned versioned binary whose version is checked before any input (D18).
 - **#1542**: PR4 changes the reader texts at `run_loop.rs:2430`/`:2547` that #1542 also touches.
 - **#1727**: S1–S3 and S4 slices 1–4 are in the base; S4 slice 5 (`TaskDeclaration.base`,
@@ -619,10 +614,9 @@ identity, process-wide registry and provider-keyed seal API (r2); Claude for Pla
 `Recover`; streaming deltas, per-request usage, rate-limit surfacing, todo → plan; renaming the card kind;
 a provider-neutral item model.
 
-### 9.6 Open questions that are the owner's
+### 9.6 Owner decisions
 
-- **Q1** Auth/isolation: set `config_dir` (dedicated `CLAUDE_CONFIG_DIR` + your own `/login`,
-  recommended), leave it unset (your `~/.claude`), or an API key (would need a config variant).
-- **Q2** Confinement: install `socat` and verify the sandbox (`Sandbox`), or accept unconfined Bash
-  (`AcceptUnconfined`)?
-- **Q3** If `Sandbox`: the network allowlist for Planner Bash (stricter than Codex's unrestricted network).
+- **Auth/isolation:** dedicated `CLAUDE_CONFIG_DIR` (`config_dir`, required); the owner runs `/login` in it.
+- **Confinement:** sandbox always on (no unconfined mode); the release gate is installing `socat` and passing §9.2 under the pinned
+  `claude_version`.
+- **Network:** unrestricted (parity with Codex) via `WebFetch(domain:*)`.

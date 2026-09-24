@@ -174,7 +174,7 @@ stream-json --output-format stream-json --verbose --include-partial-messages --r
 | P-J (round 1) | as P-I, cwd with only `AGENTS.md` (marker `HERON-3`) | answered `HERON-3`: **AGENTS.md is read when there is no CLAUDE.md** |
 
 Not probed (host lacks `socat`, no install rights): sandbox confinement under the shipping flags;
-network allowlist behaviour; Unix-socket access for the `neige` CLI from inside the sandbox; denial of an
+network behaviour under `WebFetch(domain:*)`; Unix-socket access for the `neige` CLI from inside the sandbox; denial of an
 out-of-cwd `Edit(//<cwd>/**)` write. These are release-gate checks (main doc §9.2).
 
 ## E4. Review dispositions
@@ -254,3 +254,7 @@ replaced per-path revocation; per-row table in commit `0119d32ab` (this file).
 ### E4.12 Round 12
 
 Stale Claude-mint writer name fixed (§5.1 item 2, D28); red set labelled assertion-level with mutation 2's second red test and the full-suite enumeration rule; failed-reset fixture specified as an awaitable pause.
+
+### E4.13 Owner decisions
+
+Q1 dedicated `CLAUDE_CONFIG_DIR` (`config_dir` required), Q2 sandbox always on, unconfined mode removed (release gate: `socat` + §9.2 under the pinned version), Q3 unrestricted network via `WebFetch(domain:*)` (no domain list); recorded in D6, D9, §5.3, §8, §9.2, §9.6.
