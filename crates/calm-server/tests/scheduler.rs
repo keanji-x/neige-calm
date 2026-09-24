@@ -48,7 +48,8 @@ use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes::terminal_cards::stable_payload_hash;
 use calm_server::scheduler::{
     ClaimFenceTestHook, PostClaimDriveTestHook, Scheduler, TerminalTaskHook,
-    build_child_track_payload, build_worker_payload,
+    WORKER_IDLE_PROBE_TIMEOUT, WORKER_IDLE_TURN_GRACE, WorkerIdleWake, build_child_track_payload,
+    build_worker_payload,
 };
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
@@ -327,6 +328,7 @@ fn build_scheduler_with_timeouts(
         adapters,
         Arc::new(tokio::sync::Semaphore::new(8)),
         Some(task_run_timeout),
+        production_idle(boot),
     );
     // These tests model the post-boot steady state so backstop sweeps run for real.
     scheduler.mark_boot_sweep_complete();
@@ -340,7 +342,33 @@ fn build_scheduler_unbooted(
     adapters: Vec<Arc<dyn ProviderAdapter>>,
     semaphore: Arc<tokio::sync::Semaphore>,
 ) -> (Arc<OperationRuntime>, Arc<Scheduler>) {
-    build_scheduler_unbooted_with_timeouts(boot, adapters, semaphore, None)
+    build_scheduler_unbooted_with_timeouts(boot, adapters, semaphore, None, production_idle(boot))
+}
+
+/// The production idle recheck over the boot's fake-running shared codex app-server.
+fn production_idle(boot: &Boot) -> WorkerIdleWake {
+    WorkerIdleWake::new(
+        boot.shared_codex_appserver.clone(),
+        WORKER_IDLE_TURN_GRACE,
+        WORKER_IDLE_PROBE_TIMEOUT,
+    )
+}
+
+/// A booted scheduler whose idle arm rechecks through `worker_idle`.
+fn build_scheduler_with_idle(
+    boot: &Boot,
+    worker_idle: WorkerIdleWake,
+) -> (Arc<OperationRuntime>, Arc<Scheduler>) {
+    let (runtime, scheduler) = build_scheduler_unbooted_with_timeouts(
+        boot,
+        vec![],
+        Arc::new(tokio::sync::Semaphore::new(8)),
+        None,
+        worker_idle,
+    );
+    scheduler.mark_boot_sweep_complete();
+    scheduler.mark_context_sweep_boot_complete();
+    (runtime, scheduler)
 }
 
 fn build_scheduler_unbooted_with_timeouts(
@@ -348,6 +376,7 @@ fn build_scheduler_unbooted_with_timeouts(
     adapters: Vec<Arc<dyn ProviderAdapter>>,
     semaphore: Arc<tokio::sync::Semaphore>,
     task_run_timeout: Option<std::time::Duration>,
+    worker_idle: WorkerIdleWake,
 ) -> (Arc<OperationRuntime>, Arc<Scheduler>) {
     let operation_repo = Arc::new(SqlxOperationRepo::new(
         boot.repo
@@ -386,6 +415,7 @@ fn build_scheduler_unbooted_with_timeouts(
             semaphore,
             std::env::temp_dir().join("neige-test-gate-logs"),
             task_run_timeout,
+            worker_idle,
         )
     } else {
         Scheduler::new(
@@ -395,6 +425,7 @@ fn build_scheduler_unbooted_with_timeouts(
             Arc::downgrade(&runtime),
             semaphore,
             std::env::temp_dir().join("neige-test-gate-logs"),
+            worker_idle,
         )
     };
     (runtime, scheduler)
@@ -7587,6 +7618,9 @@ static GATE_SPAWN_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_
 
 #[path = "cases/long_task_reliability.rs"]
 mod long_task_reliability;
+
+#[path = "cases/scheduler_running_worker.rs"]
+mod scheduler_running_worker;
 
 fn unique_gate_dir(tag: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(

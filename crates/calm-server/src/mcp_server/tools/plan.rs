@@ -29,6 +29,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+mod cancel_running;
 mod list;
 mod recovery_guidance;
 
@@ -482,32 +483,22 @@ where
         .lifecycle
         .is_none_or(|target| target == track.lifecycle);
 
-    match task.status {
+    // Past `pending`, the row's in-tx state decides: a running Track worker is canceled and
+    // reaped, anything else is refused with its current status.
+    let in_flight = match task.status {
         // Already-canceled is idempotent success: no write, no event (a retry must not re-trigger the scheduler). A real lifecycle request still falls through into the tx.
         TaskStatus::Canceled if lifecycle_is_noop => {
             return Ok(json!({ "ok": true }));
         }
-        TaskStatus::Canceled | TaskStatus::Pending => {}
-        TaskStatus::Dispatched | TaskStatus::Running | TaskStatus::Verifying => {
-            return Err(RpcError::custom(
-                -32409,
-                format!(
-                    "plan_cancel: task {key} is in-flight; interrupting running tasks is \
-                     out of scope (#644). The worker will finish; its result will be \
-                     gated/reported as usual. Cancel or rewire its successors instead."
-                ),
-            ));
-        }
+        TaskStatus::Canceled | TaskStatus::Pending => false,
+        TaskStatus::Dispatched | TaskStatus::Running | TaskStatus::Verifying => true,
         TaskStatus::Done | TaskStatus::Failed => {
             return Err(RpcError::invalid_params(format!(
-                "plan_cancel: task {key} is already {}; only pending tasks can be canceled",
-                serde_json::to_value(task.status)
-                    .ok()
-                    .and_then(|v| v.as_str().map(str::to_string))
-                    .unwrap_or_default()
+                "plan_cancel: task {key} is already {}; only pending and running tasks can be canceled",
+                cancel_running::status_str(task.status)
             )));
         }
-    }
+    };
 
     // Fixtures advance the row here to exercise the guarded UPDATE; production supplies a no-op future.
     after_pre_read().await;
@@ -539,12 +530,20 @@ where
                 let current =
                     crate::db::sqlite::task_current_get_tx(tx, track_id_typed.as_str(), &key)
                         .await?;
-                if current.as_ref().map(|task| task.id.as_str()) != Some(task_id.as_str()) {
-                    return Err(CalmError::Conflict(
-                        "current execution changed; refresh calm.plan.list".into(),
-                    ));
-                }
-                let rows = task_cancel_tx(tx, &task_id, now_ms()).await?;
+                let current = match current {
+                    Some(current) if current.id == task_id => current,
+                    _ => {
+                        return Err(CalmError::Conflict(
+                            "current execution changed; refresh calm.plan.list".into(),
+                        ));
+                    }
+                };
+                let rows = if in_flight {
+                    cancel_running::cancel_running_in_tx(tx, &current, &key).await?;
+                    1
+                } else {
+                    task_cancel_tx(tx, &task_id, now_ms()).await?
+                };
                 if rows == 0 {
                     // Disambiguate the 0-row flip: a concurrent `canceled` is the idempotent path (no `plan.updated`); anything else is a real concurrent state change.
                     let now_canceled = task_get_tx(tx, &task_id)
@@ -607,7 +606,14 @@ where
     .await;
 
     match result {
-        Ok(_) => Ok(json!({ "ok": true })),
+        Ok(_) => {
+            // The canceled worker's cleanup marker is committed; reap it now rather than on the
+            // next reconcile tick.
+            if in_flight && let Some(poke) = ctx.scheduler_poke.get() {
+                poke.poke_worker_cleanups();
+            }
+            Ok(json!({ "ok": true }))
+        }
         Err(e) => Err(map_plan_error("plan_cancel", e)),
     }
 }

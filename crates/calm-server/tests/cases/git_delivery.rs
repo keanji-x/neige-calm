@@ -245,13 +245,10 @@ pub(super) async fn fixture_on(boot: Boot, track_root: impl FnOnce(&Path) -> Pat
     // The tool-side scheduler poke (`calm.task.delivery{retry}`), as `AppState::new` binds it;
     // `respawn_dispatcher` repoints it at the new scheduler.
     let poke_target = Arc::new(std::sync::RwLock::new(dispatcher.scheduler()));
-    let poke_scheduler = poke_target.clone();
     assert!(
         boot.ctx
             .scheduler_poke
-            .set(Arc::new(move |track| {
-                poke_scheduler.read().unwrap().poke(track)
-            }))
+            .set(Arc::new(RepointablePoke(poke_target.clone())))
             .is_ok()
     );
     Fx {
@@ -263,6 +260,19 @@ pub(super) async fn fixture_on(boot: Boot, track_root: impl FnOnce(&Path) -> Pat
         track_root,
         workspace_root,
         _tmp: tmp,
+    }
+}
+
+/// The tool-side scheduler triggers, forwarded to whichever scheduler `poke_target` names now.
+struct RepointablePoke(Arc<std::sync::RwLock<Arc<calm_server::scheduler::Scheduler>>>);
+
+impl calm_server::mcp_server::registry::SchedulerPokes for RepointablePoke {
+    fn poke(&self, track: calm_server::ids::TrackId) {
+        self.0.read().unwrap().poke(track);
+    }
+
+    fn poke_worker_cleanups(&self) {
+        self.0.read().unwrap().poke_worker_cleanups();
     }
 }
 

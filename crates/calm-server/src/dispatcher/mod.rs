@@ -225,7 +225,10 @@ pub(crate) async fn is_deferred_self_report(repo: &dyn crate::db::Repo, event: &
                     task.status_detail
                         .as_deref()
                         .map(crate::db::sqlite::status_detail_class),
-                    Some("worker-reported") | Some("spawn-failed") | Some("worker-timeout")
+                    Some("worker-reported")
+                        | Some("spawn-failed")
+                        | Some("worker-timeout")
+                        | Some(crate::scheduler::WORKER_TURN_ENDED)
                 );
             !failure_landed_pre_gate
         }
@@ -239,6 +242,29 @@ pub(crate) async fn is_deferred_self_report(repo: &dyn crate::db::Repo, event: &
             false
         }
     }
+}
+
+/// A task-outcome event pushes to the Planner when it warrants a push and is not a self-report
+/// whose wake a later kernel event carries.
+pub(crate) async fn task_event_pushes_planner(
+    repo: &dyn crate::db::Repo,
+    write: &WriteContext,
+    event: &Event,
+    actor: &ActorId,
+) -> bool {
+    event_warrants_planner_push(event, actor, write) && !is_deferred_self_report(repo, event).await
+}
+
+/// Fixture seam over [`task_event_pushes_planner`] for integration tests.
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub async fn task_event_pushes_planner_for_test(
+    repo: &dyn crate::db::Repo,
+    write: &WriteContext,
+    event: &Event,
+    actor: &ActorId,
+) -> bool {
+    task_event_pushes_planner(repo, write, event, actor).await
 }
 
 /// A worker stop hook is a wake only while its tasks row is still `dispatched | running`; past that
@@ -755,6 +781,11 @@ impl Dispatcher {
             Arc::clone(&semaphore),
             gate_logs_dir,
             task_budget_default,
+            crate::scheduler::WorkerIdleWake::new(
+                shared_codex_appserver.clone(),
+                crate::scheduler::WORKER_IDLE_TURN_GRACE,
+                crate::scheduler::WORKER_IDLE_PROBE_TIMEOUT,
+            ),
         );
         let context_monitor = Arc::new(TaskContextMonitor::new_with_metrics(
             repo.clone(),
@@ -973,8 +1004,13 @@ impl Inner {
             | Event::TaskGateResult { .. }
             | Event::TaskGitDeliverySettled { .. }
             | Event::TaskExecutionSettled { .. } | Event::TaskCandidateVerificationSettled { .. } | Event::TaskFilePublicationSettled { .. } => {
-                if event_warrants_planner_push(&envelope.event, &envelope.actor, &self.write)
-                    && !is_deferred_self_report(self.repo.as_ref(), &envelope.event).await
+                if task_event_pushes_planner(
+                    self.repo.as_ref(),
+                    &self.write,
+                    &envelope.event,
+                    &envelope.actor,
+                )
+                .await
                 {
                     if let Some(track_id) = envelope.scope.track_id().cloned() {
                         self.observe_harness(track_id, &envelope.event, envelope.id)

@@ -626,36 +626,112 @@ async fn cancel_already_canceled_with_same_state_lifecycle_is_idempotent_success
     );
 }
 
-#[tokio::test]
-async fn cancel_in_flight_task_refused_with_409_text() {
-    let boot = boot().await;
-    set_track_lifecycle(&boot, TrackLifecycle::Planning).await;
-    write_task_block(&boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
-
-    for status in ["dispatched", "running", "verifying"] {
-        exec_sql(
-            &boot,
-            &format!("UPDATE tasks SET status = '{status}' WHERE key = 'a'"),
-        )
-        .await;
-        let err = call_tool(
-            &boot,
-            TOOL_PLAN_CANCEL,
-            planner_identity(&boot),
-            json!({ "key": "a", "message": "too late" }),
-        )
+/// Every in-flight refusal is a `-32409` naming the current status, leaves the row and emits nothing.
+async fn assert_cancel_refused(boot: &Boot, status: &str, expect: &str) {
+    let mut rx = boot.ctx.events.subscribe();
+    let err = call_tool(
+        boot,
+        TOOL_PLAN_CANCEL,
+        planner_identity(boot),
+        json!({ "key": "a", "message": "stop" }),
+    )
+    .await
+    .expect_err("cancel refused");
+    assert_eq!(err.code, -32409, "status={status}: {err:?}");
+    assert!(
+        err.message.contains(&format!("task a is {status}: "))
+            && err.message.contains(expect)
+            && !err.message.contains("#644"),
+        "status={status}: {err:?}"
+    );
+    let row = boot
+        .repo
+        .task_get(&format!("{}:a", boot.track_id))
         .await
-        .expect_err("in-flight cancel refused");
-        assert_eq!(err.code, -32409, "status={status}: {err:?}");
-        assert!(
-            err.message.contains("task a is in-flight")
-                && err.message.contains("out of scope (#644)")
-                && err
-                    .message
-                    .contains("Cancel or rewire its successors instead"),
-            "status={status}: {err:?}"
-        );
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(row.status).unwrap(),
+        json!(status),
+        "refusal leaves the row"
+    );
+    assert!(row.finished_at_ms.is_none());
+    assert!(
+        drain_events(&mut rx).await.is_empty(),
+        "refusal emits nothing"
+    );
+}
+
+async fn declare_bound_task(boot: &Boot, status: &str) {
+    set_track_lifecycle(boot, TrackLifecycle::Planning).await;
+    write_task_block(boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
+    exec_sql(
+        boot,
+        &format!(
+            "UPDATE tasks SET status = '{status}', worker_card_id = '{}' WHERE key = 'a'",
+            boot.worker_card_id
+        ),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn cancel_dispatched_task_refused_with_status() {
+    let boot = boot().await;
+    // A bound card too, so the running CAS itself is what refuses `dispatched`.
+    declare_bound_task(&boot, "dispatched").await;
+    assert_cancel_refused(&boot, "dispatched", "shows it running").await;
+}
+
+#[tokio::test]
+async fn cancel_verifying_task_refused_with_status() {
+    let boot = boot().await;
+    declare_bound_task(&boot, "verifying").await;
+    assert_cancel_refused(&boot, "verifying", "task.gate_result").await;
+}
+
+#[tokio::test]
+async fn cancel_running_terminal_or_child_track_task_refused() {
+    let child_track_route = format!(
+        "spawn = '{}'",
+        calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE
+    );
+    for column in ["kind = 'terminal'", child_track_route.as_str()] {
+        let boot = boot().await;
+        declare_bound_task(&boot, "running").await;
+        exec_sql(&boot, &format!("UPDATE tasks SET {column} WHERE key = 'a'")).await;
+        assert_cancel_refused(&boot, "running", "codex or claude worker running inside").await;
     }
+}
+
+#[tokio::test]
+async fn cancel_running_isolated_task_refused() {
+    let boot = boot().await;
+    declare_bound_task(&boot, "running").await;
+    exec_sql(
+        &boot,
+        &format!(
+            "INSERT INTO operations (id, operation_key, kind, idempotency_key, payload_hash, \
+             target_type, target_json, payload_json, phase, created_at_ms, updated_at_ms) \
+             VALUES ('op-iso', 'op-iso', 'codex-isolated-worker', '{}:a', 'h', 'card', '{{}}', \
+             '{{}}', 'pending', 1, 1)",
+            boot.track_id
+        ),
+    )
+    .await;
+    assert_cancel_refused(&boot, "running", "its own controller").await;
+}
+
+#[tokio::test]
+async fn cancel_running_task_without_worker_card_refused() {
+    let boot = boot().await;
+    declare_bound_task(&boot, "running").await;
+    exec_sql(
+        &boot,
+        "UPDATE tasks SET worker_card_id = NULL WHERE key = 'a'",
+    )
+    .await;
+    assert_cancel_refused(&boot, "running", "no worker card is bound").await;
 }
 
 #[tokio::test]
@@ -726,7 +802,10 @@ async fn cancel_terminal_or_unknown_task_rejected() {
     .await
     .expect_err("done task can't be canceled");
     assert_eq!(err.code, -32602);
-    assert!(err.message.contains("only pending tasks"), "{err:?}");
+    assert!(
+        err.message.contains("only pending and running tasks"),
+        "{err:?}"
+    );
 
     let err = call_tool(
         &boot,

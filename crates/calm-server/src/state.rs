@@ -1217,12 +1217,12 @@ impl AppState {
                 gate_logs_dir.clone(),
             ),
         );
-        // The MCP tools' late-bound scheduler poke (`calm.task.delivery{retry}` submits work
-        // without an event): bound once the Dispatcher's scheduler exists.
-        let poke_scheduler = dispatcher.scheduler();
+        // The MCP tools' late-bound scheduler triggers (`calm.task.delivery{retry}` submits work
+        // without an event; a running-task cancel reaps its worker): bound once the Dispatcher's
+        // scheduler exists.
         let _ = mcp_context
             .scheduler_poke
-            .set(Arc::new(move |track| poke_scheduler.poke(track)));
+            .set(Arc::new(dispatcher.scheduler()));
 
         // Per-plugin errors are logged inside `autospawn_enabled`; one broken plugin never blocks boot.
         plugin.autospawn_enabled().await;

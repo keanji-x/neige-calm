@@ -550,6 +550,9 @@ async fn gated_self_report_predicate() {
     let mut gated_worker_timeout = mk_task("gated-worker-timeout", gate_json());
     gated_worker_timeout.status = crate::model::TaskStatus::Failed;
     gated_worker_timeout.status_detail = Some("worker-timeout".into());
+    let mut gated_worker_turn_ended = mk_task("gated-worker-turn-ended", gate_json());
+    gated_worker_turn_ended.status = crate::model::TaskStatus::Failed;
+    gated_worker_turn_ended.status_detail = Some("worker-turn-ended".into());
     // Gated row the gate already failed — a late worker
     // `task.failed` retry must not re-wake the planner.
     let mut gated_gate_failed = mk_task("gated-gate-failed", gate_json());
@@ -572,6 +575,7 @@ async fn gated_self_report_predicate() {
                 &gated_spawn_failed_reason,
                 &gated_gate_failed_reason,
                 &gated_worker_timeout,
+                &gated_worker_turn_ended,
                 &gated_gate_failed,
                 &gated_done,
                 &ungated_failed,
@@ -634,6 +638,10 @@ async fn gated_self_report_predicate() {
     assert!(
         !is_deferred_self_report(&repo, &failed("gated-worker-timeout")).await,
         "a worker liveness timeout pushes as a pre-gate failure"
+    );
+    assert!(
+        !is_deferred_self_report(&repo, &failed("gated-worker-turn-ended")).await,
+        "a codex worker turn that ended without a report pushes as a pre-gate failure"
     );
     assert!(
         !is_deferred_self_report(&repo, &failed("ungated-failed")).await,
@@ -3734,6 +3742,11 @@ async fn deferred_settlement_is_silent_live_and_on_replay() {
         Arc::clone(&semaphore),
         std::env::temp_dir().join("neige-dispatcher-test-gate-logs"),
         crate::scheduler::DEFAULT_TRACK_TASK_BUDGET,
+        crate::scheduler::WorkerIdleWake::new(
+            crate::shared_codex_appserver::SharedCodexAppServer::new_stub(repo.clone()),
+            crate::scheduler::WORKER_IDLE_TURN_GRACE,
+            crate::scheduler::WORKER_IDLE_PROBE_TIMEOUT,
+        ),
     );
     let context_monitor = Arc::new(TaskContextMonitor::new_with_metrics(
         repo.clone(),

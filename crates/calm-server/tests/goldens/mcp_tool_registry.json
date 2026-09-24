@@ -124,7 +124,7 @@
   },
   {
     "name": "calm.plan.cancel",
-    "description_sha256": "e4c7323b20e7aa18c35af87a6718788fda27d92cbe9f7bf07f06b072e45793f9",
+    "description_sha256": "e07e0329db9ea357e16fdcbc4da04f4c7529fcedb8b26c2409558338167fe08d",
     "input_schema": {
       "properties": {
         "key": {

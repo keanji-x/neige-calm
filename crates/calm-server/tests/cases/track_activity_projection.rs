@@ -544,6 +544,13 @@ impl Fx {
             Arc::downgrade(&runtime),
             Arc::new(tokio::sync::Semaphore::new(4)),
             std::env::temp_dir().join("neige-test-gate-logs"),
+            calm_server::scheduler::WorkerIdleWake::new(
+                calm_server::shared_codex_appserver::SharedCodexAppServer::new_stub(
+                    self.repo_dyn.clone(),
+                ),
+                calm_server::scheduler::WORKER_IDLE_TURN_GRACE,
+                calm_server::scheduler::WORKER_IDLE_PROBE_TIMEOUT,
+            ),
         );
         (runtime, scheduler)
     }
