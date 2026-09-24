@@ -1,5 +1,5 @@
 # Refusal and failure sentences for `calm.task.replace` (#1785 S2). One line per key: `<key>` TAB `<sentence>`.
-# The kernel prefixes each with `<key>: ` and the facts the refusal names; Rust only maps a refusal to a key.
+# The kernel prefixes each with `<key>: ` and the facts the refusal names (except `recovery-replaced`, prefixed `replaced by <successor>; `); Rust only maps a refusal to a key.
 stale_attempt	expected_attempt_id is not the task's current attempt; read calm.plan.list and replace the attempt it shows.
 predecessor_dispatching	its worker start is not confirmed and its worker card may be unbound; replace it once calm.plan.list shows it running.
 predecessor_verifying	its gate is running; wait for task.gate_result, then decide on the result.
