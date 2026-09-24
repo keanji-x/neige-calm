@@ -82,6 +82,12 @@ mod file_delivery;
 mod gate_binding;
 #[path = "cases/git_delivery.rs"]
 mod git_delivery;
+#[path = "cases/task_replace.rs"]
+mod task_replace;
+#[path = "cases/task_replace_carry.rs"]
+mod task_replace_carry;
+#[path = "cases/task_replace_refusals.rs"]
+mod task_replace_refusals;
 
 #[path = "cases/mcp_task_dispatch.rs"]
 mod mcp_task_dispatch;

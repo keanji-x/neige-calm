@@ -579,6 +579,7 @@ pub mod state;
 pub mod task_context;
 pub(crate) mod task_privilege;
 pub mod task_recovery;
+pub(crate) mod task_replace;
 pub mod terminal_hooks;
 pub mod terminal_interaction;
 pub mod terminal_permissions;

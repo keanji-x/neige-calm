@@ -514,6 +514,13 @@ pub fn dup_keys(declarations: &[TaskDeclaration]) -> Vec<String> {
     duplicates
 }
 
+/// A live task declaration block: a `task` block without a tombstone. A tombstone is an object
+/// (`{reason}`); an absent or null `tombstone` is live — the one rule the projection and every
+/// kernel reader of task blocks apply.
+pub fn task_block_is_live(block: &ReportBlock) -> bool {
+    block.kind == super::KIND_TASK && block.payload.get("tombstone").is_none_or(Value::is_null)
+}
+
 /// Keys blocked by an uncleared tombstone in the current document.
 pub fn tombstoned_keys(declarations: &[TaskDeclaration]) -> Vec<String> {
     declarations
@@ -865,9 +872,8 @@ pub fn project_task_declarations(
             .and_then(|declaration| declaration.tombstoned_by.as_deref())
             .unwrap_or(PLANNER_DECLARATION_AUTHOR);
         for (index, _block) in blocks.iter().enumerate().filter(|(_, block)| {
-            block.kind == super::KIND_TASK
+            task_block_is_live(block)
                 && block.payload.get("key").and_then(Value::as_str) == Some(key.as_str())
-                && block.payload.get("tombstone").is_none_or(Value::is_null)
         }) {
             let related = blocks
                 .iter()
@@ -975,6 +981,41 @@ pub fn project_task_declarations(
         }
     }
     (declarations, diagnostics)
+}
+
+#[cfg(test)]
+mod liveness_tests {
+    use super::*;
+
+    fn block(kind: &str, payload: Value) -> ReportBlock {
+        ReportBlock {
+            id: "b".into(),
+            kind: kind.into(),
+            rev: 1,
+            payload,
+        }
+    }
+
+    #[test]
+    fn a_task_block_is_live_unless_it_carries_a_tombstone_object() {
+        let key = serde_json::json!("k");
+        assert!(task_block_is_live(&block(
+            "task",
+            serde_json::json!({"key": key})
+        )));
+        assert!(task_block_is_live(&block(
+            "task",
+            serde_json::json!({"key": key, "tombstone": null})
+        )));
+        assert!(!task_block_is_live(&block(
+            "task",
+            serde_json::json!({"key": key, "tombstone": {"reason": "withdrawn"}})
+        )));
+        assert!(!task_block_is_live(&block(
+            "prose",
+            serde_json::json!({"key": key})
+        )));
+    }
 }
 
 #[cfg(test)]

@@ -23,7 +23,7 @@ use crate::mcp_server::wiring::{card_mcp_env, mint_and_persist_card_token};
 use crate::model::{Card, CardRole, new_id, now_ms};
 use crate::operation::worker_cleanup::{WorkerCleanupOutcome, compensate_worker_rows};
 use crate::operation::workspace_lease::{
-    WorkspaceLeaseTarget, WorktreeBase, acquire_workspace_lease_tx, base::resolve_lease_base,
+    WorkspaceLeaseTarget, WorktreeBase, acquire_workspace_lease_tx,
     prepare_workspace_lease_target_tx, provision_workspace_worktree, release_workspace_lease_by_id,
     remove_workspace_artifact_for_lease_by_id, upstream_fetch::refresh_track_upstream,
 };
@@ -794,15 +794,24 @@ impl ProviderAdapter for CodexWorkerAdapter {
         .await?;
         // The base is decided here, in the prepare tx, and frozen below; the
         // spawn pins the worktree to it (design D4).
-        let lease_base = resolve_lease_base(&lease_target)?;
+        let (lease_base, carry_notice) = super::workspace_lease::carry::resolve_task_lease_base_tx(
+            tx,
+            &lease_target,
+            &payload.idempotency_key,
+        )
+        .await?;
         let cwd = lease_target.path_string();
         let env = build_codex_env(self.repo.as_ref(), self.codex.as_ref(), &card_id).await?;
-        let rendered_prompt = render_task_worker_prompt(
+        let mut rendered_prompt = render_task_worker_prompt(
             &payload.idempotency_key,
             &payload.goal,
             &payload.context,
             payload.acceptance_criteria.as_deref(),
         );
+        if let Some(notice) = &carry_notice {
+            rendered_prompt.push_str("\n\n");
+            rendered_prompt.push_str(&notice.render());
+        }
         let scope = card_scope(
             self.repo.as_ref(),
             CardId::from(card_id.clone()),

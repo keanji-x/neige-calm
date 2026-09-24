@@ -342,7 +342,7 @@ impl Observation {
                     "{head} Log tail:\n{log_tail}\nRead the full log at runs/{idempotency_key}/gates/{attempt}.log; read the worker output at runs/{idempotency_key}.md."
                 )
             }
-            // Slice 2 wording: no delivery tool and no `base:{attempt}` yet (slices 3 and 5 append them).
+            // Slice 2 wording: no delivery tool yet (slice 3 appends it); continuing from the candidate is `calm.task.replace`.
             Observation::TaskGitDeliverySettled {
                 key,
                 attempt_id,

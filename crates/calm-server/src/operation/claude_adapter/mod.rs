@@ -24,9 +24,8 @@ use crate::model::{Card, CardRole, new_id};
 use crate::operation::codex_adapter::render_task_worker_prompt;
 use crate::operation::worker_cleanup::{compensate_worker_rows, worker_spawn_failure_preserved};
 use crate::operation::workspace_lease::{
-    acquire_workspace_lease_tx, base::resolve_lease_base, prepare_workspace_lease_target_tx,
-    release_workspace_lease_by_id, remove_workspace_artifact_for_lease_by_id,
-    upstream_fetch::refresh_track_upstream,
+    acquire_workspace_lease_tx, prepare_workspace_lease_target_tx, release_workspace_lease_by_id,
+    remove_workspace_artifact_for_lease_by_id, upstream_fetch::refresh_track_upstream,
 };
 use crate::routes::cards::card_scope;
 use crate::routes::claude_cards::{
@@ -784,7 +783,12 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         .await?;
         // The base is decided here, in the prepare tx, and frozen below; the
         // spawn pins the worktree to it (design D4).
-        let lease_base = resolve_lease_base(&lease_target)?;
+        let (lease_base, carry_notice) = super::workspace_lease::carry::resolve_task_lease_base_tx(
+            tx,
+            &lease_target,
+            &payload.idempotency_key,
+        )
+        .await?;
         let cwd = lease_target.path_string();
         let settings_path = self
             .codex
@@ -792,12 +796,16 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             .join(&card_id)
             .join("settings.json");
         let settings_dir = settings_path_parent(&settings_path)?;
-        let rendered_prompt = render_task_worker_prompt(
+        let mut rendered_prompt = render_task_worker_prompt(
             &payload.idempotency_key,
             &payload.goal,
             &payload.context,
             payload.acceptance_criteria.as_deref(),
         );
+        if let Some(notice) = &carry_notice {
+            rendered_prompt.push_str("\n\n");
+            rendered_prompt.push_str(&notice.render());
+        }
         let command_line = build_claude_worker_command_line(
             &self.codex.claude_bin,
             &settings_path,

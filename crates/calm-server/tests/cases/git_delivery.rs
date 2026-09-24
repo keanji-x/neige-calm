@@ -199,6 +199,16 @@ pub(super) async fn fixture_with(track_root: impl FnOnce(&Path) -> PathBuf) -> F
 /// [`fixture_with`] over an existing [`Boot`] (a file-backed one, for a test that launches the
 /// kernel binary against the same database afterwards).
 pub(super) async fn fixture_on(boot: Boot, track_root: impl FnOnce(&Path) -> PathBuf) -> Fx {
+    fixture_on_with_adapters(boot, track_root, |_| Vec::new()).await
+}
+
+/// [`fixture_on`] with further adapters in the runtime (a real worker adapter, for a test that
+/// drives a worker operation's `prepare_tx`); `extra` sees the Boot before the runtime exists.
+pub(super) async fn fixture_on_with_adapters(
+    boot: Boot,
+    track_root: impl FnOnce(&Path) -> PathBuf,
+    extra: impl FnOnce(&Boot) -> Vec<Arc<dyn ProviderAdapter>>,
+) -> Fx {
     let tmp = tempfile::Builder::new()
         .prefix("neige-git-delivery-")
         .tempdir()
@@ -229,12 +239,14 @@ pub(super) async fn fixture_on(boot: Boot, track_root: impl FnOnce(&Path) -> Pat
         completion.clone(),
     );
     let gate_logs_dir = boot.ctx.gate_logs_dir.clone();
+    let mut adapters = vec![
+        Arc::new(ForgeActionAdapter::new()) as Arc<dyn ProviderAdapter>,
+        Arc::new(TaskVerifyAdapter::new(gate_logs_dir.clone())) as Arc<dyn ProviderAdapter>,
+    ];
+    adapters.extend(extra(&boot));
     let runtime = Arc::new(OperationRuntime::new_unchecked(
         operation_repo,
-        vec![
-            Arc::new(ForgeActionAdapter::new()) as Arc<dyn ProviderAdapter>,
-            Arc::new(TaskVerifyAdapter::new(gate_logs_dir.clone())) as Arc<dyn ProviderAdapter>,
-        ],
+        adapters,
         events.clone(),
         completion,
         spawn_ctx,

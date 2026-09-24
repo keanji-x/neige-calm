@@ -117,6 +117,27 @@ pub async fn task_cancel_tx(tx: &mut Transaction<'_, Sqlite>, id: &str, now: i64
     Ok(res.rows_affected())
 }
 
+/// `pending → canceled` with a `status_detail`, for a pending predecessor that
+/// `calm.task.replace` supersedes (#1785). Returns rows moved (`0` = the task left `pending`).
+pub async fn task_cancel_pending_with_detail_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    status_detail: &str,
+    now: i64,
+) -> Result<u64> {
+    let res = sqlx::query(
+        r#"UPDATE tasks
+           SET status = 'canceled', status_detail = ?1, updated_at_ms = ?2, finished_at_ms = ?2
+           WHERE id = ?3 AND status = 'pending'"#,
+    )
+    .bind(status_detail)
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(res.rows_affected())
+}
+
 /// `running → canceled` for the Planner's in-flight cancel (#1785). The card guard pins the
 /// worker the caller marks for reaping; `dispatched` is excluded because its card may be unbound.
 /// Returns rows moved (`0` = the row left `running` or changed worker; the caller re-reads).

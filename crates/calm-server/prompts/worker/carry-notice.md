@@ -1,0 +1,1 @@
+Workspace note from the kernel: your worktree already contains the changes of candidate {candidate_sha}, merged onto {base_label} {base_sha}, the base a new task of this Track starts from. Do not apply a diff yourself and do not check or reset the base commit; build on the files as they are.

@@ -1364,6 +1364,24 @@ impl Scheduler {
     /// task.id`), `wait()` it to a terminal phase, then reconcile the row with guarded
     /// writes. Shared between the live dispatch path and the sweep's `dispatched` arm.
     async fn drive_spawn(&self, task: &Task, track: &Track) -> Result<()> {
+        // One transaction, before any route branch: whether this task is a `calm.task.replace`
+        // successor (its receipt) and the backend a created operation recorded. A successor
+        // edited off the replaceable route fails here, whatever route it names now (#1785).
+        let probe = task.clone();
+        let (successor, recorded) = crate::db::write_in_tx_typed(self.repo.as_ref(), move |tx| {
+            let probe = probe.clone();
+            Box::pin(async move {
+                let successor = crate::task_replace::route::is_successor_tx(tx, &probe).await?;
+                let recorded =
+                    crate::isolated_codex::lookup::recorded_worker_kind_tx(tx, &probe.id).await?;
+                Ok((successor, recorded))
+            })
+        })
+        .await?;
+        if successor && !crate::task_replace::route::on_route(task, track) {
+            let reason = crate::task_replace::route::route_changed_reason();
+            return self.fail_spawn(task, track, &reason).await;
+        }
         if task.spawn == calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE {
             crate::isolated_codex::selected(task)?;
             return self.drive_child_track(task, track).await;
@@ -1375,13 +1393,6 @@ impl Scheduler {
             );
             return Ok(());
         };
-        let task_id = task.id.clone();
-        let recorded = crate::db::write_in_tx_typed(self.repo.as_ref(), move |tx| {
-            Box::pin(async move {
-                crate::isolated_codex::lookup::recorded_worker_kind_tx(tx, &task_id).await
-            })
-        })
-        .await?;
         let (op_kind, payload) = match recorded.as_deref() {
             Some(crate::isolated_codex::OPERATION_KIND) => {
                 let selected = build_worker_payload(task)?;

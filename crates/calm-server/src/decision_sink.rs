@@ -450,6 +450,31 @@ impl CardDecisionSink {
         .await
     }
 
+    pub(crate) async fn commit_task_replace(
+        &self,
+        identity: &ToolCallIdentity,
+        track: Track,
+        card: Card,
+        payload: TrackReportPayload,
+        args: crate::task_replace::ReplaceArgs,
+    ) -> Result<serde_json::Value, CalmError> {
+        let recorder_shadow: Arc<dyn RecorderShadowProbe> =
+            Arc::new(CardDecisionSinkRecorderShadowProbe {
+                principal: identity.to_principal(),
+                track_id: track.id.clone(),
+            });
+        track_report::write::planner_replace(
+            self.repo.as_ref(),
+            &self.events,
+            &self.write,
+            identity.clone(),
+            ReportEditTarget::for_resolved_parts(track, card, payload)?,
+            args,
+            recorder_shadow,
+        )
+        .await
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn commit_report_write(
         &self,
