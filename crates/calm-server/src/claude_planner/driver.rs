@@ -7,6 +7,7 @@ use std::time::Duration;
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt as _, BufReader, Lines};
 use tokio::process::{Child, ChildStderr, ChildStdout};
+use tokio::sync::watch;
 use tokio::time::Instant;
 use uuid::Uuid;
 
@@ -16,10 +17,12 @@ use super::spawn::{InstructionsFile, SessionStart};
 use super::stop::stop;
 use super::translate::{TurnOutcome, TurnTranslator};
 use crate::codex_appserver::Notification;
+use crate::error::CalmError;
 use crate::session_projection_repo::{AgentProvider, ThreadAttribution};
+use calm_types::worker::WorkerSessionId;
 
-/// After an interrupt, the turn is stopped if the CLI has not ended it within this bound.
-const STOP_TIMER: Duration = Duration::from_secs(10);
+/// When a stop fires, stdout lines already written are still read for at most this long.
+const DRAIN_WINDOW: Duration = Duration::from_secs(1);
 /// After a result or EOF, the direct child's own exit is awaited this long before `stop`.
 const EXIT_WAIT: Duration = Duration::from_secs(5);
 /// After the child exited, stdout lines it wrote before exiting are still read this long.
@@ -33,7 +36,6 @@ pub(crate) struct TurnRun {
     pub(crate) translator: TurnTranslator,
     pub(crate) instructions: InstructionsFile,
     pub(crate) thread: Uuid,
-    pub(crate) turn_id: String,
     /// How this spawn named the Claude session; `New` binds `agent_session_id` on the first init.
     pub(crate) start: SessionStart,
 }
@@ -163,38 +165,32 @@ pub(crate) async fn drive(shared: Arc<Shared>, run: TurnRun) {
         mut translator,
         instructions,
         thread,
-        turn_id,
         start,
     } = run;
     let stderr_tail = Arc::new(Mutex::new(String::new()));
     let stderr_task = tokio::spawn(keep_stderr_tail(stderr, Arc::clone(&stderr_tail)));
     let mut lines = BufReader::new(stdout).lines();
+    let mut stop_rx = slot.stop_at.subscribe();
     let mut reading = Reading {
         shared: &shared,
         slot: &slot,
+        stop_rx: slot.stop_at.subscribe(),
+        answering: true,
         translator: &mut translator,
         thread,
-        turn_id,
         start,
         bound: false,
         total_tokens: None,
     };
-    let mut stop_at: Option<Instant> = None;
     let mut exited: Option<(std::process::ExitStatus, Instant)> = None;
     let ending = loop {
         let drain_until = exited.map(|(_, at)| at + DRAIN_AFTER_EXIT);
-        // Biased so a shutdown or the stop timer is never starved by a chatty CLI; both first read
-        // every line that is already available, so a result the CLI finished before the stop
-        // still decides the turn (§6.2: an interrupted turn that finished first is completed).
+        // Biased so a stop (the interrupt's timer, or a shutdown) is never starved by a chatty CLI;
+        // it first reads, for a bounded window, the lines already written, so a result the CLI
+        // finished before the stop still decides the turn (§6.2: finished first ⇒ completed).
         tokio::select! {
             biased;
-            _ = slot.force.notified() => break reading.drain_then_stop(&mut lines).await,
-            _ = sleep_until_opt(stop_at), if stop_at.is_some() => {
-                break reading.drain_then_stop(&mut lines).await;
-            }
-            _ = slot.interrupt.notified(), if stop_at.is_none() => {
-                stop_at = Some(Instant::now() + STOP_TIMER);
-            }
+            _ = stop_reached(&mut stop_rx) => break reading.drain_then_stop(&mut lines).await,
             line = lines.next_line() => match line {
                 Ok(Some(line)) => {
                     if let Some(ending) = reading.on_line(&line).await {
@@ -235,16 +231,16 @@ pub(crate) async fn drive(shared: Arc<Shared>, run: TurnRun) {
     stderr_task.abort();
 }
 
-/// At most this many already-available lines are read when a stop fires.
-const DRAIN_CAP: usize = 1024;
-
 /// The per-line half of the read loop.
 struct Reading<'a> {
     shared: &'a Shared,
     slot: &'a TurnSlot,
+    /// The slot's stop deadline: a control answer the CLI does not take is abandoned there.
+    stop_rx: watch::Receiver<Option<Instant>>,
+    /// Off while draining after a stop: stdin closes next, so nothing more is answered.
+    answering: bool,
     translator: &'a mut TurnTranslator,
     thread: Uuid,
-    turn_id: String,
     start: SessionStart,
     /// A valid `system/init` named this thread's session.
     bound: bool,
@@ -260,16 +256,20 @@ impl Reading<'_> {
         };
         match &record {
             Record::SystemInit(init) => {
+                // The CLI created (or resumed) this thread's session as soon as it names it, even
+                // when a later check fails the turn: bind it, so the next spawn resumes it.
+                if init.session_id == self.thread {
+                    if !self.bound && self.start == SessionStart::New {
+                        self.bind_agent_session().await;
+                    }
+                    self.bound = true;
+                }
                 let version = &self.shared.params.host.config.claude_version;
                 if let Err(check) = init_check(init, self.thread, version) {
                     self.slot
                         .record(TerminalCause::Failed(format!("check: {check}")));
                     return Some(Ending::Stopped);
                 }
-                if !self.bound && self.start == SessionStart::New {
-                    self.bind_agent_session().await;
-                }
-                self.bound = true;
             }
             Record::Ignored { kind } => {
                 tracing::debug!(kind, "claude planner: ignored stream record");
@@ -277,7 +277,22 @@ impl Reading<'_> {
             Record::ControlRequestIn {
                 request_id,
                 request,
-            } => answer_control_request(self.slot, request_id, request).await,
+            } if self.answering => {
+                // A CLI that stopped reading stdin must not hold the turn past its stop.
+                tokio::select! {
+                    biased;
+                    _ = stop_reached(&mut self.stop_rx) => {
+                        tracing::debug!(request_id, "claude planner: control answer abandoned at the stop");
+                    }
+                    _ = answer_control_request(self.slot, request_id, request) => {}
+                }
+            }
+            Record::ControlRequestIn { request_id, .. } => {
+                tracing::debug!(
+                    request_id,
+                    "claude planner: control request not answered while stopping"
+                );
+            }
             _ => {}
         }
         for notification in self.translator.translate(&record, crate::model::now_ms()) {
@@ -304,21 +319,29 @@ impl Reading<'_> {
         Ending::Stopped
     }
 
-    /// Read every line that is available right now (bounded), then let the recorded cause stop
-    /// the turn unless one of those lines already ended it.
+    /// Read the lines the CLI already wrote, for at most [`DRAIN_WINDOW`] and without answering
+    /// control requests (stdin closes next), then let the recorded cause stop the turn unless one
+    /// of those lines already ended it.
     async fn drain_then_stop(&mut self, lines: &mut Lines<BufReader<ChildStdout>>) -> Ending {
-        for _ in 0..DRAIN_CAP {
-            // `next_line` is cancel-safe; a zero timeout polls it exactly once.
-            match tokio::time::timeout(Duration::ZERO, lines.next_line()).await {
-                Ok(Ok(Some(line))) => {
-                    if let Some(ending) = self.on_line(&line).await {
-                        return ending;
+        self.answering = false;
+        let drain = async {
+            loop {
+                // `next_line` is cancel-safe; the zero timeout gives up as soon as no complete
+                // line is ready (tokio may poll it again within the next timer tick).
+                match tokio::time::timeout(Duration::ZERO, lines.next_line()).await {
+                    Ok(Ok(Some(line))) => {
+                        if let Some(ending) = self.on_line(&line).await {
+                            return Some(ending);
+                        }
                     }
+                    Ok(Ok(None)) | Ok(Err(_)) | Err(_) => return None,
                 }
-                Ok(Ok(None)) | Ok(Err(_)) | Err(_) => break,
             }
+        };
+        match tokio::time::timeout(DRAIN_WINDOW, drain).await {
+            Ok(Some(ending)) => ending,
+            Ok(None) | Err(_) => Ending::Stopped,
         }
-        Ending::Stopped
     }
 
     /// Persist `agent_session_id` through the attribution bind, so a session opened for this row
@@ -327,9 +350,13 @@ impl Reading<'_> {
         let params = &self.shared.params;
         let id = params.worker_session_id.clone();
         let thread = self.thread.to_string();
-        let turn_id = self.turn_id.clone();
         let written = crate::db::write_in_tx_typed(params.repo.as_ref(), move |tx| {
             Box::pin(async move {
+                // The bind writes `active_turn_id` too; the harness's snapshot owns that column,
+                // so the row's current value is passed through unchanged.
+                let row = crate::db::sqlite::session_get_tx(tx, &WorkerSessionId(id.clone()))
+                    .await?
+                    .ok_or_else(|| CalmError::NotFound(format!("worker session {id}")))?;
                 crate::db::sqlite::session_bind_attribution_tx(
                     tx,
                     &id,
@@ -338,7 +365,7 @@ impl Reading<'_> {
                         provider: AgentProvider::Claude,
                         thread_id: Some(thread.clone()),
                         session_id: Some(thread),
-                        active_turn_id: Some(turn_id),
+                        active_turn_id: row.active_turn_id,
                     },
                 )
                 .await?;
@@ -363,6 +390,27 @@ fn usage_total(notification: &Notification) -> Option<i64> {
             params["tokenUsage"]["total"]["totalTokens"].as_i64()
         }
         _ => None,
+    }
+}
+
+/// Resolves once the slot's stop deadline is armed and has passed.
+async fn stop_reached(rx: &mut watch::Receiver<Option<Instant>>) {
+    loop {
+        let armed = *rx.borrow_and_update();
+        match armed {
+            Some(at) => tokio::select! {
+                _ = tokio::time::sleep_until(at) => return,
+                changed = rx.changed() => if changed.is_err() {
+                    tokio::time::sleep_until(at).await;
+                    return;
+                },
+            },
+            None => {
+                if rx.changed().await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+            }
+        }
     }
 }
 

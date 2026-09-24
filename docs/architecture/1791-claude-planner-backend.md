@@ -285,7 +285,7 @@ arm, run the failing phase, clear, run the next phase. It is never consulted by 
 |---|---|---|
 | turn settlement / unexpected EOF | `session.rs` | logged; the turn is still emitted; the next spawn's `stop` fails closed |
 | next spawn (serialization is the settlement wait; `stop` covers a crash-leftover) | `turn_start` | `turn_start` fails → retryable refusal |
-| interrupt timer | `session.rs`; skips the stdin wait (the child already ignored the interrupt): 10 s timer + 5 s SIGTERM grace + ≤ 10 s wait = 25 s < `interrupt_completion_budget` 30 s (`harness/config.rs:27`) | cause already recorded; as settlement |
+| interrupt timer | `session.rs`; skips the stdin wait (the child already ignored the interrupt): 10 s timer (armed before the interrupt line is written) + ≤ 1 s drain + 5 s SIGTERM grace + ≤ 10 s wait = 26 s < `interrupt_completion_budget` 30 s (`harness/config.rs:27`) | cause already recorded; as settlement |
 | harness shutdown | Claude arm of `shutdown_inner`'s interrupt (run_loop `:666-729`), records `Interrupted(shutdown)`, awaits `stop` | strict `shutdown_for_deletion` propagates; non-strict logs |
 | reset (start adapter `:862-870`) and shutdown op (`operation/planner_harness_shutdown_adapter.rs:82`, `:109`) | `stop(old id)` for a Claude predecessor, registered or not; replay repeats it | logged; left to the next boot sweep or the next destructive step's scoped sweep (item 4); the old id's token no longer authenticates once the row is superseded (handshake accepts active rows only, `mcp_server/handshake.rs:55-60`) |
 | workspace repoint | fence supersedes every active runtime (`routes/tracks.rs:2104-2118`); the scoped sweep over the track's Claude ids runs **before** the pristine check and recycle (`:2160`, `:2239`) | the Dirty branch's restart at the old path, with its own 409 message ("a previous Claude Planner process of this track could not be stopped; the workspace was not moved") |
@@ -315,9 +315,13 @@ turn's processes; closing stdin first avoids signalling a `claude` that is about
 (including bytes that are not UTF-8, or a read error) ⇒ cause `Failed("protocol")`. The stop timer,
 shutdown and `Failed(check|protocol)` skip the stdin wait and go straight to `stop`. On EOF the direct
 child's exit status is awaited (≤ 5 s) *before* recording, because the failure message carries it. A stop
-(timer or shutdown) first reads every stdout line already available, so a result the CLI finished first
-still decides the turn (§6.2). The first valid `system/init` of a `--session-id` spawn persists
-`agent_session_id` through the attribution bind; a session opened for a row that has it spawns `--resume`.
+(timer or shutdown) first reads the stdout lines already written, for at most 1 s and without answering
+control requests (stdin closes next), so a result the CLI finished first still decides the turn (§6.2); a
+control answer the CLI does not take is abandoned at the stop deadline. The stop timer is armed when the
+interrupt is asked for, before its line is written. The first `system/init` of a `--session-id` spawn that names the thread
+persists `agent_session_id` through the attribution bind, even when a later init check fails the turn (the
+CLI has created the session); the bind passes the row's `active_turn_id` through unchanged, since the
+harness snapshot owns it. A session opened for a row that has `agent_session_id` spawns `--resume`.
 
 ### 5.2 Spawn contract (no runtime directory)
 

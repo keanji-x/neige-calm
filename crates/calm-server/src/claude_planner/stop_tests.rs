@@ -72,6 +72,18 @@ fn reap(member: Member) {
     signal_verified(&[member], libc::SIGKILL);
 }
 
+/// Reaps (verified) the processes a test started without this scope's marker, even when an
+/// assertion fails first.
+struct Started(Vec<Member>);
+
+impl Drop for Started {
+    fn drop(&mut self) {
+        for member in &self.0 {
+            reap(*member);
+        }
+    }
+}
+
 /// Run `script` under bash with exactly `PATH` and the given marker value, and return what it
 /// printed; the script backgrounds its long-lived children with their output detached.
 fn run_with_marker(marker: Option<&str>, script: &str) -> String {
@@ -167,13 +179,11 @@ async fn stop_never_signals_a_readable_unmarked_or_near_miss_process() {
     let longer = background_sleep(Some(&format!("{}x", scope.marker())));
     let other_instance = background_sleep(Some(&other.instance.marker(&scope.id)));
     let marked = background_sleep(Some(&scope.marker()));
+    let _started = Started(vec![unmarked, longer, other_instance, marked]);
 
     let result = stop(&scope.instance, &scope.id).await;
     let survivors = [unmarked, longer, other_instance].map(still);
     let marked_alive = still(marked);
-    for member in [unmarked, longer, other_instance, marked] {
-        reap(member);
-    }
 
     assert!(result.is_ok(), "stop: {result:?}");
     assert_eq!(
@@ -210,13 +220,13 @@ fn a_member_whose_start_time_changed_is_never_signalled() {
 #[test]
 fn test_cleanup_never_kills_a_recycled_pid() {
     let unrelated = background_sleep(None);
+    let _started = Started(vec![unrelated]);
     reap(Member {
         start_time: unrelated.start_time + 1,
         ..unrelated
     });
     std::thread::sleep(std::time::Duration::from_millis(100));
     let survived = still(unrelated);
-    reap(unrelated);
 
     assert!(
         survived,
@@ -233,6 +243,57 @@ fn an_unlistable_proc_root_is_an_error_not_an_empty_scan() {
     assert_eq!(
         scan_in(dir.path(), &markers).expect("empty root"),
         Vec::new()
+    );
+}
+
+/// A fake `/proc` with one pid directory whose `stat` and `environ` the test writes.
+fn fake_proc(pid: i32, stat: Option<&str>, environ: &str) -> tempfile::TempDir {
+    let root = tempfile::tempdir().expect("tempdir");
+    let dir = root.path().join(pid.to_string());
+    std::fs::create_dir(&dir).expect("pid dir");
+    if let Some(stat) = stat {
+        std::fs::write(dir.join("stat"), stat).expect("stat");
+    }
+    std::fs::write(dir.join("environ"), environ).expect("environ");
+    root
+}
+
+const GOOD_STAT: &str = "4242 (sleep) S 1 4242 4242 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 7777 0 0";
+
+#[test]
+fn a_fake_proc_root_pins_the_per_pid_rules() {
+    let markers = HashSet::from(["inst:ws".to_string()]);
+    let marked = "PATH=/bin\0NEIGE_CLAUDE_PLANNER=inst:ws\0";
+    let foreign = "PATH=/bin\0NEIGE_CLAUDE_PLANNER=inst:other\0";
+
+    let root = fake_proc(4242, Some(GOOD_STAT), marked);
+    assert_eq!(
+        scan_in(root.path(), &markers).expect("scan"),
+        vec![Member {
+            pid: 4242,
+            start_time: 7777
+        }],
+        "a marked pid with a readable stat is a member"
+    );
+
+    let root = fake_proc(4242, Some("garbage"), marked);
+    assert!(
+        scan_in(root.path(), &markers).is_err(),
+        "a marked pid whose stat is unreadable cannot be signalled or proven gone"
+    );
+
+    let root = fake_proc(4242, Some("garbage"), foreign);
+    assert_eq!(
+        scan_in(root.path(), &markers).expect("scan"),
+        Vec::new(),
+        "an unmarked pid with a garbage stat is not this sweep's business"
+    );
+
+    let root = fake_proc(4242, None, marked);
+    assert_eq!(
+        scan_in(root.path(), &markers).expect("scan"),
+        Vec::new(),
+        "a pid whose stat vanished is skipped"
     );
 }
 

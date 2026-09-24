@@ -18,7 +18,10 @@ use calm_server::claude_planner::stop::{MARKER_KEY, sigkill_verified_for_test};
 use calm_server::claude_planner::translate::CalmToolNames;
 use calm_server::codex_appserver::{InputItem, Notification};
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, session_start_runtime_tx};
+use calm_server::db::sqlite::{
+    SqlxRepo, card_create_with_id_tx, session_set_harness_observation_runtime_tx,
+    session_start_runtime_tx,
+};
 use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, new_id};
 use calm_server::proc_identity::read_proc_start_time;
 use calm_server::session_projection_repo::{
@@ -130,6 +133,31 @@ impl Rig {
             .install_mcp_token("tok-rig".into())
             .expect("install token");
         session
+    }
+
+    /// Write the row's `active_turn_id` the way the harness snapshot does.
+    pub async fn set_active_turn_id(&self, turn: Option<&str>) {
+        let mut tx = self.repo.pool().begin().await.expect("tx");
+        session_set_harness_observation_runtime_tx(
+            &mut tx,
+            &self.worker_session_id,
+            WorkerSessionState::Idle,
+            None,
+            turn,
+        )
+        .await
+        .expect("observation");
+        tx.commit().await.expect("commit");
+    }
+
+    /// The row's `active_turn_id`.
+    pub async fn active_turn_id(&self) -> Option<String> {
+        self.repo
+            .session_get(&WorkerSessionId(self.worker_session_id.clone()))
+            .await
+            .expect("session_get")
+            .expect("row")
+            .active_turn_id
     }
 
     /// The row's `agent_session_id`.
@@ -245,8 +273,6 @@ async fn planner_card(repo: &Arc<SqlxRepo>) -> (String, String) {
     (card.id.to_string(), track.id.to_string())
 }
 
-/// `(pid, start_time)` of every live process carrying one of `markers`, found without the code
-/// under test; the `start_time` is read before the environ.
 /// A Planner worker-session row with no `agent_session_id`. It is spelled as the Codex kind: the
 /// `(claude, planner)` identity is PR3's, and the session reads only `agent_session_id`.
 async fn worker_session_row(repo: &Arc<SqlxRepo>, id: &str, card_id: &str) {
@@ -273,6 +299,8 @@ async fn worker_session_row(repo: &Arc<SqlxRepo>, id: &str, card_id: &str) {
     tx.commit().await.expect("commit");
 }
 
+/// `(pid, start_time)` of every live process carrying one of `markers`, found without the code
+/// under test; the `start_time` is read before the environ.
 fn marked(markers: &HashSet<String>) -> Vec<(i32, u64)> {
     let prefix = format!("{MARKER_KEY}=");
     let mut found = Vec::new();

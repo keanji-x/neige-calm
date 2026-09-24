@@ -3,7 +3,8 @@
 # copies it into a private directory next to a `scenario` file; the spawn's environment is an
 # allowlist, so everything the fake needs or records lives in that directory:
 #   in:  scenario, version (optional; default 2.1.280), result_line (optional)
-#   out: spawns, pid, argv, env, stdin, instructions, orphan
+#   out: spawns, pid, argv, env, stdin, instructions, orphan, emitted
+# Needs on PATH: bash, jq, setsid, sleep, seq, touch; `flood` also needs python3 (F_SETPIPE_SZ).
 D=$(cd "$(dirname "$0")" && pwd)
 SCENARIO=$(cat "$D/scenario")
 
@@ -47,7 +48,10 @@ fi
 
 INIT='{"type":"system","subtype":"init","session_id":"%s","claude_code_version":"2.1.280",'
 INIT+='"model":"claude-haiku-4-5","capabilities":["interrupt_receipt_v1"],'
-INIT+='"mcp_servers":[{"name":"calm","status":"connected"}],"skills":[],'
+SKILLS='[]'
+# A skill fails the init check after the CLI has already named (and created) the session.
+if [ "$SCENARIO" = "bad-init" ]; then SKILLS='["dataviz"]'; fi
+INIT+='"mcp_servers":[{"name":"calm","status":"connected"}],"skills":'"$SKILLS"','
 INIT+='"plugins":[{"name":"telemetry","source":"telemetry@builtin"}]}\n'
 # shellcheck disable=SC2059
 printf "$INIT" "$SID"
@@ -92,18 +96,28 @@ case "$SCENARIO" in
     IFS= read -r CONTROL || exit 4
     printf '%s\n' "$CONTROL" >> "$D/stdin"
     exec sleep 300 ;;
-  flood)
+  flood|flood-no-result)
     # Shrink this end's stdin pipe to one page, then send more control requests than that page
     # holds answers for, then the result; the CLI never reads stdin again, so the session is stuck
     # writing an answer while the result already waits on stdout (all output stays under the
     # 8 KiB a pipe gets even when the user's pipe budget is exhausted).
-    python3 -c 'import fcntl; fcntl.fcntl(0, 1031, 4096)' || exit 5
+    python3 -c 'import fcntl, sys; fcntl.fcntl(0, 1031, 4096); sys.exit(fcntl.fcntl(0, 1032) != 4096)' || {
+      echo "flood: this host cannot give stdin a one-page (4096-byte) pipe" >&2
+      exit 5
+    }
     for i in $(seq 1 40); do
       echo '{"type":"control_request","request_id":"r-'"$i"'","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{}}}'
     done
-    echo "$SUCCESS"
+    if [ "$SCENARIO" = flood ]; then echo "$SUCCESS"; fi
     touch "$D/emitted"
     exec sleep 300 ;;
+  bad-init)
+    exec sleep 300 ;;
+  chatty-after-interrupt)
+    # Ignore the interrupt and write ignored records as fast as the pipe takes them.
+    IFS= read -r CONTROL || exit 4
+    printf '%s\n' "$CONTROL" >> "$D/stdin"
+    while :; do echo '{"type":"system","subtype":"status","status":"requesting"}'; done ;;
   interrupt-result-line)
     IFS= read -r CONTROL || exit 4
     printf '%s\n' "$CONTROL" >> "$D/stdin"

@@ -19,7 +19,7 @@ use base64::Engine as _;
 use calm_types::planner_attachment::AttachmentId;
 use tokio::io::AsyncWriteExt as _;
 use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::{Notify, broadcast, watch};
+use tokio::sync::{broadcast, watch};
 use uuid::Uuid;
 
 use super::config::ClaudePlannerHost;
@@ -34,6 +34,8 @@ use crate::error::{CalmError, Result};
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use calm_types::worker::WorkerSessionId;
 
+/// After an interrupt, the turn is stopped if the CLI has not ended it within this bound.
+pub(crate) const STOP_TIMER: Duration = Duration::from_secs(10);
 /// A stdin line that the CLI does not take within this bound fails the write.
 pub(crate) const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long [`ClaudePlannerSession::shutdown`] waits for the running turn to settle after its stop.
@@ -74,10 +76,9 @@ pub enum TerminalCause {
 pub(crate) struct TurnSlot {
     cause: Mutex<Option<TerminalCause>>,
     pub(crate) stdin: tokio::sync::Mutex<Option<ChildStdin>>,
-    /// An interrupt was sent: arms the stop timer.
-    pub(crate) interrupt: Notify,
-    /// Shutdown: settle now, skipping the stdin wait.
-    pub(crate) force: Notify,
+    /// When the turn is stopped whatever the CLI does: armed by an interrupt (now + the stop
+    /// timer) or a shutdown (now); the earliest arming wins.
+    pub(crate) stop_at: watch::Sender<Option<tokio::time::Instant>>,
     pub(crate) settled: watch::Sender<bool>,
 }
 
@@ -86,8 +87,7 @@ impl TurnSlot {
         Self {
             cause: Mutex::new(None),
             stdin: tokio::sync::Mutex::new(Some(stdin)),
-            interrupt: Notify::new(),
-            force: Notify::new(),
+            stop_at: watch::Sender::new(None),
             settled: watch::Sender::new(false),
         }
     }
@@ -97,6 +97,17 @@ impl TurnSlot {
         if slot.is_none() {
             *slot = Some(cause);
         }
+    }
+
+    /// Arm the stop at `at` unless an earlier one is armed.
+    pub(crate) fn arm_stop(&self, at: tokio::time::Instant) {
+        self.stop_at.send_if_modified(|current| match current {
+            Some(armed) if *armed <= at => false,
+            _ => {
+                *current = Some(at);
+                true
+            }
+        });
     }
 
     pub(crate) fn cause(&self) -> Option<TerminalCause> {
@@ -182,8 +193,8 @@ pub(crate) struct TestHooks {
 #[cfg(feature = "fixtures")]
 #[derive(Clone)]
 pub struct SettlePause {
-    pub entered: Arc<Notify>,
-    pub release: Arc<Notify>,
+    pub entered: Arc<tokio::sync::Notify>,
+    pub release: Arc<tokio::sync::Notify>,
 }
 
 pub struct ClaudePlannerSession {
@@ -398,7 +409,6 @@ impl ClaudePlannerSession {
                 translator,
                 instructions,
                 thread: thread_uuid,
-                turn_id: turn_id.clone(),
                 start,
             },
         ));
@@ -468,7 +478,7 @@ impl ClaudePlannerSession {
             .map(|active| Arc::clone(&active.slot));
         if let Some(slot) = &slot {
             slot.record(TerminalCause::Interrupted);
-            slot.force.notify_one();
+            slot.arm_stop(tokio::time::Instant::now());
         }
         let params = &shared.params;
         let stopped = stop(&params.host.instance, &params.worker_session_id).await;
@@ -502,8 +512,11 @@ impl ClaudePlannerSession {
     }
 }
 
+/// The stop timer is armed before the interrupt line is written, so a CLI that stopped reading
+/// stdin cannot delay it.
 async fn interrupt(slot: &TurnSlot) {
     slot.record(TerminalCause::Interrupted);
+    slot.arm_stop(tokio::time::Instant::now() + STOP_TIMER);
     let request = super::protocol::ControlRequestOut::new(
         format!("interrupt-{}", Uuid::new_v4().simple()),
         super::protocol::ControlRequestKind::Interrupt,
@@ -515,7 +528,6 @@ async fn interrupt(slot: &TurnSlot) {
     if let Err(error) = written {
         tracing::warn!(%error, "claude planner: interrupt request not written; the stop timer ends the turn");
     }
-    slot.interrupt.notify_one();
 }
 
 fn sealed(thread: &str) -> CalmError {
