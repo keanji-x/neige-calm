@@ -1337,7 +1337,7 @@ async fn handle_steer(
         thread_id = %thread_id,
         turn_id = %turn_id,
         entry_id = %entry_id,
-        "calling daemon.turn_steer"
+        "calling backend.turn_steer"
     );
     let steered = inner
         .backend
@@ -3142,7 +3142,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         track_id = %inner.track_id,
         thread_id = %thread_id,
         drained_count,
-        "calling daemon.turn_start"
+        "calling backend.turn_start"
     );
 
     // The model is resolved HERE, as late as possible: the transcript refresh and diff above can
@@ -3258,7 +3258,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 track_id = %inner.track_id,
                 thread_id = %thread_id,
                 turn_id = %turn_id,
-                "daemon.turn_start ok"
+                "backend.turn_start ok"
             );
             // A turn that went out ends the run of refusals, so the notice and
             // the clock behind it both go with it.

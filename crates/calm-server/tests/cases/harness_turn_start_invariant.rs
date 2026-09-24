@@ -32,6 +32,25 @@ fn harness_turn_start_is_gated() {
     assert!(isolated_guard.contains(".run_isolated_observed("));
     assert_eq!(isolated_guard.matches("launch.issue()").count(), 1);
 
+    // One issuance per backend arm, inside `PlannerBackend::turn_start`; run_loop reaches it only
+    // through `IssueTurnHandle::issue`.
+    let backend = std::fs::read_to_string(manifest_dir.join("src/harness/backend.rs"))
+        .expect("read harness backend");
+    assert_eq!(
+        backend.matches(".turn_start(").count(),
+        1,
+        "harness/backend.rs should call .turn_start once per arm, inside PlannerBackend::turn_start"
+    );
+    let turn_start_fn = backend
+        .split("pub async fn turn_start(")
+        .nth(1)
+        .and_then(|rest| rest.split("\n    pub ").next())
+        .expect("PlannerBackend::turn_start present");
+    assert!(
+        turn_start_fn.contains(".turn_start("),
+        "the backend's .turn_start call should sit inside PlannerBackend::turn_start"
+    );
+
     let allowed = [
         "src/dedicated_codex/admission.rs",
         "src/dispatcher/mod.rs",

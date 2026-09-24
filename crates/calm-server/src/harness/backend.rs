@@ -3,6 +3,9 @@
 //! Every provider-coupled call the run loop makes on a Planner turn goes through
 //! [`PlannerBackend`]. Calls with no provider-neutral meaning (thread seals, the Codex
 //! config and model catalog) reach the Codex daemon through [`PlannerBackend::codex`].
+//!
+//! `client_id` on [`PlannerBackend::turn_start`] and [`PlannerBackend::turn_steer`] is the
+//! projection row's key; codex hands it back as `item.clientId`.
 
 use std::sync::Arc;
 
@@ -31,7 +34,6 @@ impl PlannerBackend {
         }
     }
 
-    /// `client_id` is the projection row's key; codex hands it back as `item.clientId`.
     pub async fn turn_start(
         &self,
         thread_id: &str,
