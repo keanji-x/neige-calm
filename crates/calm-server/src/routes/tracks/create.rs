@@ -843,7 +843,11 @@ mod tests {
                 CreateShape::WithFirstMessage,
             )
             .expect_err("a legacy binding fails closed");
-            assert!(matches!(refused, CalmError::Conflict(_)), "{refused:?}");
+            assert!(
+                matches!(&refused, CalmError::Conflict(message)
+                    if message.contains("predates durable request fingerprints")),
+                "{refused:?}"
+            );
         }
     }
 
