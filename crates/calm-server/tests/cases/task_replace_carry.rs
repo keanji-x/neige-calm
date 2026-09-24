@@ -434,3 +434,42 @@ async fn successor_edited_to_an_isolated_selector_fails_its_first_dispatch() {
 
     assert_route_changed_on_first_dispatch(&fx, "iso.2").await;
 }
+
+/// A repository-selected merge driver runs inside the carry's `git merge-tree`; it sees only the
+/// allowlisted environment, never a variable of the server's own.
+#[tokio::test]
+async fn carry_merge_driver_sees_only_the_allowlisted_environment() {
+    // SAFETY: nextest runs each test in its own process; nothing else reads the environment here.
+    unsafe { std::env::set_var("NEIGE_CARRY_ENV_SENTINEL", "server-secret") };
+    let fx = replace_fixture().await;
+    let probe = fx.track_root.parent().unwrap().join("driver-env.txt");
+    git(
+        &fx.track_root,
+        &[
+            "config",
+            "merge.probe.driver",
+            &format!("env > '{}'; cp %B %A; exit 0", probe.display()),
+        ],
+    );
+    let info = fx.track_root.join(".git/info");
+    std::fs::create_dir_all(&info).unwrap();
+    std::fs::write(info.join("attributes"), "probe.txt merge=probe\n").unwrap();
+    commit_file(&fx.track_root, "probe.txt", "base\n", "probe file");
+    let (_, _, _, successor) = replaced(&fx, "driven", &[("probe.txt", "worker\n")]).await;
+    commit_file(
+        &fx.track_root,
+        "probe.txt",
+        "upstream\n",
+        "upstream edits the probe",
+    );
+
+    let (_, lease) = attempt_lease(&fx, "driven-2", &successor.id).await;
+
+    let seen = std::fs::read_to_string(&probe).expect("the merge driver ran");
+    assert!(seen.contains("PATH="), "{seen}");
+    assert!(!seen.contains("NEIGE_CARRY_ENV_SENTINEL"), "leaked: {seen}");
+    assert_eq!(
+        file_at(&fx.track_root, &lease.base_sha, "probe.txt").as_deref(),
+        Some("worker\n")
+    );
+}

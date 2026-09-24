@@ -13,17 +13,13 @@
 //! The lease row then records `base_sha = C'`, `base_source = 'attempt'` and the source attempt.
 
 use std::path::Path;
-use std::process::Stdio;
 use std::time::Duration;
 
 use super::WorkspaceLeaseTarget;
 use super::base::{BaseSource, LeaseBase, resolve_lease_base};
 use crate::error::{CalmError, Result};
 use crate::operation::Tx;
-use crate::plugin_host::child_process::{
-    ChildFinishError, SpawnTimedOut, finish_within, read_capped, set_process_group_leader,
-    spawn_within,
-};
+use crate::plugin_host::child_process::{BoundedRunError, run_bounded};
 use crate::task_replace::receipt::{CarryPlan, carry_plan_tx};
 use crate::workspace_materialize::neige_git_command;
 
@@ -32,6 +28,8 @@ pub(crate) const CARRY_TIMEOUT: Duration = Duration::from_secs(4);
 const CARRY_OUTPUT_CAP: usize = 1024 * 1024;
 const CARRY_AUTHOR_NAME: &str = "neige kernel";
 const CARRY_AUTHOR_EMAIL: &str = "kernel@neige.invalid";
+/// The only variables of the server's environment a carry git run inherits.
+const CARRY_INHERITED_ENV: [&str; 2] = ["PATH", "HOME"];
 
 /// What the worker prompt says about a carried worktree.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -176,9 +174,11 @@ async fn carry_commit(repo_root: &Path, upstream: &str, plan: &CarryPlan) -> Res
     )))
 }
 
-/// One git run under the carry deadline, as the gate's sampling commands run (own process group,
-/// output drained then the leader reaped, the group swept); a spawn failure, an unreadable or
-/// oversized output and the deadline are all infrastructure failures.
+/// One git run under the carry deadline, through the gate's bounded runner. The environment is an
+/// allowlist, not the server's: `merge-tree` runs any merge driver the attached repository
+/// configures, and such repository-selected code must not see the kernel's own variables. Kept:
+/// `PATH` (git and the driver resolve binaries), `HOME` (git reads the user's global config there,
+/// e.g. `safe.directory`), the C locale, and the caller's commit identity.
 async fn run_git(
     repo_root: &Path,
     args: &[&str],
@@ -186,61 +186,35 @@ async fn run_git(
     deadline: tokio::time::Instant,
 ) -> Result<std::process::Output> {
     let mut command = neige_git_command();
+    command.env_clear();
+    for key in CARRY_INHERITED_ENV {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
     command
+        .envs([("LANG", "C"), ("LC_ALL", "C")])
+        .envs(env.iter().copied())
         .arg("-C")
         .arg(repo_root)
         .args(["-c", "core.fsmonitor=false"])
-        .args(args)
-        .envs(env.iter().copied())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut command = tokio::process::Command::from(command);
-    command.kill_on_drop(true);
-    set_process_group_leader(&mut command);
+        .args(args);
     let what = args.first().copied().unwrap_or("git");
-    let mut child = match spawn_within(command, deadline).await {
-        Ok(Ok(child)) => child,
-        Ok(Err(error)) => return Err(infra(format_args!("git {what} did not start: {error}"))),
-        Err(SpawnTimedOut) => return Err(infra(format_args!("git {what} timed out"))),
-    };
-    let (Some(mut stdout), Some(mut stderr)) = (child.stdout(), child.stderr()) else {
-        return Err(infra(format_args!("git {what}: output pipes missing")));
-    };
-    let mut out = Vec::new();
-    let mut err = Vec::new();
-    let finished = finish_within(
+    run_bounded(
+        tokio::process::Command::from(command),
         deadline,
-        async {
-            let (o, e) = tokio::join!(
-                read_capped(&mut stdout, CARRY_OUTPUT_CAP, &mut out),
-                read_capped(&mut stderr, CARRY_OUTPUT_CAP, &mut err),
-            );
-            o?;
-            e?;
-            Ok::<(), std::io::Error>(())
-        },
-        child.wait_and_release_group(),
+        CARRY_OUTPUT_CAP,
     )
-    .await;
-    let (status, released) = match finished {
-        Ok(value) => value,
-        Err(ChildFinishError::Drain(error)) => {
-            return Err(infra(format_args!("git {what} output unreadable: {error}")));
+    .await
+    .map_err(|error| match error {
+        BoundedRunError::Spawn(error) => infra(format_args!("git {what} did not start: {error}")),
+        BoundedRunError::TimedOut => infra(format_args!("git {what} timed out")),
+        BoundedRunError::PipesMissing => infra(format_args!("git {what}: output pipes missing")),
+        BoundedRunError::Drain(error) => {
+            infra(format_args!("git {what} output unreadable: {error}"))
         }
-        Err(ChildFinishError::TimedOut) => {
-            return Err(infra(format_args!("git {what} timed out")));
-        }
-    };
-    released.sweep();
-    let status = status.map_err(|error| infra(format_args!("git {what} not reaped: {error}")))?;
-    if out.len() > CARRY_OUTPUT_CAP || err.len() > CARRY_OUTPUT_CAP {
-        return Err(infra(format_args!("git {what} printed too much")));
-    }
-    Ok(std::process::Output {
-        status,
-        stdout: out,
-        stderr: err,
+        BoundedRunError::Reap(error) => infra(format_args!("git {what} not reaped: {error}")),
+        BoundedRunError::Oversized => infra(format_args!("git {what} printed too much")),
     })
 }
 

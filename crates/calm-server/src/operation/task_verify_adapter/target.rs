@@ -10,7 +10,6 @@
 //! here and never restated (5.1.5).
 
 use std::path::Path;
-use std::process::Stdio;
 use std::time::Duration;
 
 use calm_types::forge_git::GIT_LEASE_PROVENANCE_SCRIPT;
@@ -34,10 +33,7 @@ use crate::operation::gate_process::{kill, wait_marked_group_stopped};
 use crate::operation::workspace_lease::facts::{LeaseStates, latest_workspace_lease_for_card_tx};
 use crate::operation::workspace_lease::{DeliveryPolicy, WorkspaceLease};
 use crate::operation::{OperationOutcome, SpawnArtifacts, Tx, TxOutput};
-use crate::plugin_host::child_process::{
-    ChildFinishError, SpawnTimedOut, finish_within, read_capped, set_process_group_leader,
-    spawn_within,
-};
+use crate::plugin_host::child_process::{BoundedRunError, run_bounded};
 use crate::proc_identity::{group_members_with_env_marker, read_boot_id, sigkill_verified_members};
 
 /// `status_detail` of a verdict whose target check failed (the fourth value; isolated never
@@ -330,67 +326,26 @@ async fn run_sampling_command(
         ),
     };
     let mut cmd = tokio::process::Command::new(argv[0]);
-    cmd.args(&argv[1..])
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+    cmd.args(&argv[1..]).current_dir(cwd);
     forge_base_env(&mut cmd);
-    set_process_group_leader(&mut cmd);
-    let mut child = match spawn_within(cmd, deadline).await {
-        Ok(Ok(child)) => child,
-        Ok(Err(error)) => {
-            return Err(SampleFailure {
-                reason: format!("{what} could not be spawned in {}: {error}", cwd.display()),
-            });
-        }
-        Err(SpawnTimedOut) => return Err(timed_out()),
-    };
-    let (Some(mut stdout), Some(mut stderr)) = (child.stdout(), child.stderr()) else {
-        return Err(SampleFailure {
-            reason: format!("{what}: output pipes missing"),
-        });
-    };
-    let mut out = Vec::new();
-    let mut err = Vec::new();
-    let finished = finish_within(
-        deadline,
-        async {
-            let (o, e) = tokio::join!(
-                read_capped(&mut stdout, SAMPLE_OUTPUT_CAP, &mut out),
-                read_capped(&mut stderr, SAMPLE_OUTPUT_CAP, &mut err),
-            );
-            o?;
-            e?;
-            Ok::<(), std::io::Error>(())
-        },
-        child.wait_and_release_group(),
-    )
-    .await;
-    let (status, released) = match finished {
-        Ok(value) => value,
-        Err(ChildFinishError::Drain(error)) => {
-            return Err(SampleFailure {
-                reason: format!("{what} output could not be read: {error}"),
-            });
-        }
-        Err(ChildFinishError::TimedOut) => return Err(timed_out()),
-    };
-    released.sweep();
-    let status = status.map_err(|error| SampleFailure {
-        reason: format!("{what} could not be reaped: {error}"),
-    })?;
-    if out.len() > SAMPLE_OUTPUT_CAP || err.len() > SAMPLE_OUTPUT_CAP {
-        return Err(SampleFailure {
-            reason: format!("{what} printed more than {SAMPLE_OUTPUT_CAP} bytes"),
-        });
-    }
-    Ok(std::process::Output {
-        status,
-        stdout: out,
-        stderr: err,
-    })
+    let failure = |reason: String| SampleFailure { reason };
+    run_bounded(cmd, deadline, SAMPLE_OUTPUT_CAP)
+        .await
+        .map_err(|error| match error {
+            BoundedRunError::Spawn(error) => failure(format!(
+                "{what} could not be spawned in {}: {error}",
+                cwd.display()
+            )),
+            BoundedRunError::TimedOut => timed_out(),
+            BoundedRunError::PipesMissing => failure(format!("{what}: output pipes missing")),
+            BoundedRunError::Drain(error) => {
+                failure(format!("{what} output could not be read: {error}"))
+            }
+            BoundedRunError::Reap(error) => failure(format!("{what} could not be reaped: {error}")),
+            BoundedRunError::Oversized => failure(format!(
+                "{what} printed more than {SAMPLE_OUTPUT_CAP} bytes"
+            )),
+        })
 }
 
 fn stderr_tail(output: &std::process::Output) -> String {
@@ -1060,6 +1015,7 @@ mod tests {
     use super::*;
     use crate::model::now_ms;
     use serde_json::json;
+    use std::process::Stdio;
 
     fn sample_of(head: &str, dirty: &[&str], holds: bool) -> Sampled {
         Sampled {
