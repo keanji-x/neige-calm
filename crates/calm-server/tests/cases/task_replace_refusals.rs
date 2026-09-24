@@ -224,3 +224,66 @@ async fn replace_refuses_on_an_ended_track() {
         "track_terminal",
     );
 }
+
+/// The successor declaration would not be projected (here: the Planner ceiling was lowered to 0
+/// while the predecessor ran): the whole replacement rolls back with a named refusal instead of
+/// canceling the predecessor and answering an attempt that does not exist.
+#[tokio::test]
+async fn replace_refuses_an_unschedulable_successor_and_keeps_the_predecessor_running() {
+    let fx = replace_fixture().await;
+    let (_worker, task) = running(&fx, "capped", json!({})).await;
+    sqlx::query("UPDATE tracks SET planner_task_ceiling = 0 WHERE id = ?1")
+        .bind(fx.track())
+        .execute(&fx.pool())
+        .await
+        .unwrap();
+    let blocks = report_blocks(&fx).await;
+    let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+        .fetch_one(&fx.pool())
+        .await
+        .unwrap();
+
+    let result = replace(&fx, replace_args(&task, "cap1")).await;
+
+    assert_refusal(&result, "successor_unschedulable");
+    assert!(result.unwrap_err().message.contains("capped.2"));
+    assert_eq!(
+        current(&fx.boot, "capped").await.status,
+        TaskStatus::Running
+    );
+    assert_eq!(receipt_count(&fx).await, 0);
+    assert_eq!(report_blocks(&fx).await, blocks);
+    let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+        .fetch_one(&fx.pool())
+        .await
+        .unwrap();
+    assert_eq!(after, events);
+}
+
+/// §4.7 (added): the predecessor's task block is gone from the report, so there is nothing to copy.
+#[tokio::test]
+async fn replace_refuses_a_predecessor_without_a_block() {
+    let fx = replace_fixture().await;
+    let (task, _) = produced(&fx, "gone-block", &[("a.txt", "A\n")], json!({})).await;
+    let block = block_of(&fx, "gone-block").await;
+    crate::mcp_track_report::call_tool(
+        &fx.boot,
+        "calm.report.blocks.delete",
+        crate::mcp_track_report::planner_identity(&fx.boot),
+        json!({"id": block.id, "if_rev": block.rev}),
+    )
+    .await
+    .unwrap();
+    assert!(
+        report_blocks(&fx)
+            .await
+            .iter()
+            .all(|b| b.payload["key"] != "gone-block")
+    );
+
+    assert_refusal(
+        &replace(&fx, replace_args(&task, "gb1")).await,
+        "predecessor_undeclared",
+    );
+    assert_eq!(receipt_count(&fx).await, 0);
+}

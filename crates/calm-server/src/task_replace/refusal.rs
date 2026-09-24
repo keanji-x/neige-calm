@@ -21,6 +21,7 @@ pub(crate) enum Refusal {
     DerivedKeyTooLong,
     TrackTerminal,
     PredecessorUndeclared,
+    SuccessorUnschedulable,
     /// Kernel-side: a successor's dispatch found its task edited off the replaceable route.
     RouteChanged,
     /// Kernel-side: the carry merge conflicts with the upstream.
@@ -31,7 +32,7 @@ pub(crate) enum Refusal {
 
 impl Refusal {
     #[cfg(test)]
-    const ALL: [Self; 17] = [
+    const ALL: [Self; 18] = [
         Self::StaleAttempt,
         Self::PredecessorDispatching,
         Self::PredecessorVerifying,
@@ -46,6 +47,7 @@ impl Refusal {
         Self::DerivedKeyTooLong,
         Self::TrackTerminal,
         Self::PredecessorUndeclared,
+        Self::SuccessorUnschedulable,
         Self::RouteChanged,
         Self::CarryConflict,
         Self::CarryInfra,
@@ -67,6 +69,7 @@ impl Refusal {
             Self::DerivedKeyTooLong => "derived_key_too_long",
             Self::TrackTerminal => "track_terminal",
             Self::PredecessorUndeclared => "predecessor_undeclared",
+            Self::SuccessorUnschedulable => "successor_unschedulable",
             Self::RouteChanged => "replace-route-changed",
             Self::CarryConflict => "carry-conflict",
             Self::CarryInfra => "carry-infra",

@@ -4,6 +4,7 @@
 //! All of it commits with the report write or none of it does.
 
 use super::{ReportDoc, ReportDocOp};
+use crate::db::sqlite::{BlockVerdict, task_attempt_current_tx, task_get_tx};
 use crate::error::{CalmError, Result};
 use crate::model::{Card, TaskStatus, now_ms};
 use crate::operation::Tx;
@@ -88,8 +89,33 @@ pub(super) async fn stage_tx(
     ))
 }
 
-/// Step 6: the receipt, then the response rebuilt from it exactly as a replay would.
-pub(super) async fn finish_tx(tx: &mut Tx<'_>, track_id: &str, staged: Staged) -> Result<Value> {
+/// Step 6: the receipt, then the response rebuilt from it exactly as a replay would. The appended
+/// block must have projected into the successor's first attempt; any reason it did not (a lowered
+/// Planner ceiling, a tree budget, a diagnostic) refuses the whole replacement, stop included.
+pub(super) async fn finish_tx(
+    tx: &mut Tx<'_>,
+    track_id: &str,
+    staged: Staged,
+    verdicts: &[BlockVerdict],
+) -> Result<Value> {
+    let successor_key = staged.admitted.successor_key.as_str();
+    let attempt_id = format!("{track_id}:{successor_key}");
+    let allocated = task_attempt_current_tx(tx, track_id, successor_key)
+        .await?
+        .is_some_and(|allocation| allocation.attempt_id == attempt_id);
+    if !allocated || task_get_tx(tx, &attempt_id).await?.is_none() {
+        let codes: Vec<&str> = verdicts
+            .iter()
+            .filter(|verdict| verdict.key == successor_key)
+            .flat_map(|verdict| verdict.diagnostics.iter().map(|d| d.code.as_str()))
+            .collect();
+        let facts = if codes.is_empty() {
+            successor_key.to_string()
+        } else {
+            format!("{successor_key}: {}", codes.join(", "))
+        };
+        return Err(crate::task_replace::successor_unschedulable(&facts));
+    }
     let receipt = Receipt {
         receipt_id: uuid::Uuid::new_v4().to_string(),
         track_id: track_id.to_string(),

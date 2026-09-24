@@ -634,7 +634,7 @@ async fn persist(
                     Some(super::repair::snapshot_tx(tx, receipt, *task_budget_default).await?)
                 } else if let Some(staged) = replace_staged {
                     staged.add_stopped_key(&mut task_projection.changed_keys);
-                    Some(super::replace::finish_tx(tx, track_id.as_str(), staged).await?)
+                    Some(super::replace::finish_tx(tx, track_id.as_str(), staged, &task_projection.diagnostics).await?)
                 } else { None };
                 //    Then two events on the same card scope: `CardUpdated` first, so a subscriber sees the
                 //    generic "row changed" signal before the structured edit-log entry.

@@ -112,3 +112,8 @@ pub(crate) fn carry_failure(failure: CarryFailure, facts: &str) -> String {
 pub(crate) fn idempotency_conflict() -> CalmError {
     refusal::Refusal::IdempotencyConflict.refuse("")
 }
+
+/// The appended successor would not be projected into a runnable attempt.
+pub(crate) fn successor_unschedulable(facts: &str) -> CalmError {
+    refusal::Refusal::SuccessorUnschedulable.refuse(facts)
+}
