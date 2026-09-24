@@ -213,10 +213,15 @@ tables), D29 (inert loser, seam scope, timer budget, instance marker, repoint me
 
 ### E4.6 Round 6
 
+B6-1 = A-m2 (dead `Slot::Live` after failed activation), A-M1 (one-shot seam consumed by shutdown before
+the sweep) and A-m3 ("inert" undefined) accepted; per-row table in commit `927702bc1` (this file). D30's
+activation parts were replaced in round 7 (D31); the sticky seam and the id-set source remain.
+
+### E4.7 Round 7
+
 | Id | Finding (short) | Disposition |
 |---|---|---|
-| B6-1 = A-m2 | failed activation leaves a dead `Slot::Live` | ACCEPTED, verified (`harness/registry.rs:55-66`, `routes/cards.rs:1251-1255`) → D30 rollback + registry-miss must-red |
-| A-M1 | one-shot seam consumed by shutdown before the sweep | ACCEPTED, verified (`routes/tracks.rs:2125-2150`) → sticky until cleared |
-| A-m3 | "inert" undefined (loop runs before `install()`; late `activate`) | ACCEPTED, verified (`harness/run_loop.rs:400-416`) → D30 definition + queued-input must-red |
-| B6 (closure note) | id-set source | added (`session_repo_impl.rs:154`, `routes/areas.rs:401`) |
+| A-M1 | "`turn_start` waits for activation" deadlocks `shutdown` (issuance lock held in the tick arm, run_loop `:2958`, `:1172-1181`; shutdown waits for it, `:685`) | ACCEPTED, verified → D31: `turn_start` never waits; not installed ⇒ retryable `Err` |
+| A-M2 | late mint after shutdown overwrites the replacer's hash (`wiring.rs:103-111`; replacer after `existing.shutdown()`) | ACCEPTED, verified → D31: mint only inside `turn_start` under the issuance lock after the `shutting_down` check; must-red 3 |
+| Fallback check | Pending refusal safe? token needed earlier? adapter first turn through `turn_start`? | yes (existing re-buffer path); no (only the spawned process uses it; the Claude branch skips the Codex reuse token-row check, adapter `:892`); yes (H3, invariant test) → preferred fix adopted |
 

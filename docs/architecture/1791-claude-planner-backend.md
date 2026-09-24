@@ -63,8 +63,9 @@ Claude Planners (cut, §9.5).
 | D26 | `--version` first token; SIGKILL phase re-scans; both phases verify by `start_time` | **orchestrator r4** (A-m6, A-m7) | §5.1 |
 | D27 | Pre-destruction scoped set sweep over all Claude Planner ids of the card/track/area in any state; `Err` aborts before anything moves | **orchestrator r5** (A-M2 = B5-1) | §5.1 |
 | D28 | Credential storage named: construction uses `mint_and_persist_card_token`; boot overwrites `card_mcp_tokens` with a discarded-plaintext hash and nulls `worker_sessions.mcp_token_hash` | **orchestrator r5** (A-M1) | §5.1 |
-| D29 | Install-race loser stays inert; seam only in `stop(id)` and scoped sweeps (stickiness: D30); timer path skips the stdin wait; instance-scoped marker; repoint's own 409 | **orchestrator r5** (A-m3..m6) | §5.1 |
-| D30 | Failed activation rolls back its own registry slot; seam sticky until cleared; "inert" defined (turn_start waits, shutdown waits for `activate`, late `activate` is a no-op) | **orchestrator r6** (B6 MAJOR = A MINOR 2, A MAJOR 1, A MINOR 3) | §5.1 |
+| D29 | Seam only in `stop(id)` and scoped sweeps; timer path skips the stdin wait; instance-scoped marker; repoint's own 409 (its "inert loser" text is superseded by D31) | **orchestrator r5** (A-m3..m6) | §5.1 |
+| D30 | Seam sticky until an explicit clear (its activation rollback and "inert" text are superseded by D31) | **orchestrator r6** (A MAJOR 1) | §5.1 |
+| D31 | Activation phase deleted: `installed` flag + first-turn setup under the issuance lock (mint once, `stop(own id)`, spawn); `turn_start` never waits; supersedes D29's "inert loser" and D30's rollback and "inert" text | **orchestrator r7** (A MAJOR 1–2, cap rule) | §5.1 |
 | D15 | Project config (`CLAUDE.md`/`AGENTS.md`, project settings) trusted like Codex trusts the workspace (S25); 4140 has no project settings (Q13) | r1 | §5.2 |
 
 ## 2. Evidence summary
@@ -223,26 +224,27 @@ arm, run the failing phase, clear, run the next phase. It is never consulted by 
    `mcp_server/transport.rs:1479`; the step runs inside `AppState` construction, where the DB and
    `data_dir` are available): (a) for every Claude Planner card, **overwrite** its `card_mcp_tokens` hash
    with a fresh hash whose plaintext is discarded, and null `worker_sessions.mcp_token_hash` of every
-   `(claude, planner)` row in any state — overwrite, not delete, because thread reuse requires the card
-   row (start adapter `:892`), and a nulled card row would let `session_mirror_card_mcp_token_tx`
-   (`crates/calm-truth/src/db/sqlite/session_mirror.rs:223-259`) copy the old hash back into a successor
-   row; (b) **one set sweep** over the markers of all those session ids — right after boot no Claude
+   `(claude, planner)` row in any state — so `session_mirror_card_mcp_token_tx`
+   (`crates/calm-truth/src/db/sqlite/session_mirror.rs:223-259`) can never copy the old hash back into a
+   successor row; (b) **one set sweep** over the markers of all those session ids — right after boot no Claude
    Planner process may legitimately be alive; (c) empty `<data_dir>/claude-planner/tmp/`.
-2. **Harness construction.** The Claude arm of `spawn_recovered_harness` (callers: boot `harness/mod.rs:348`,
-   aborted deletion `:429`, deferred `:527`, lazy re-spawn `routes/cards.rs:1295`, dev replay
-   `replay.rs:385`) and of `spawn_side_effect` builds an **inert** session: nothing is minted, stopped or
-   spawned until `install()` returns true (the install-race loser is shut down while inert and signals
-   nothing). After a successful install it mints with `mint_and_persist_card_token`
-   (`mcp_server/wiring.rs:103-111`: `card_mcp_tokens` and `worker_sessions.mcp_token_hash` in one
-   transaction), hands the plaintext to the session (`ClaudePlannerSession::activate(mcp_token: String)`,
-   required argument — only hashes are persisted), and runs `stop(own id)` before the first spawn. `stop`
-   `Err` ⇒ roll back: remove the registry slot only if it still holds this handle (`install()` published
-   `Slot::Live`, `harness/registry.rs:55-66`, and `shutdown_inner` does not unregister, so the lazy
-   re-spawn would otherwise return the dead handle, `routes/cards.rs:1251-1255`), shut it down, propagate
-   the error (recovery warns and continues per runtime, `harness/mod.rs:346-368`). **Inert** means:
-   `turn_start` waits for activation (the run loop starts before `install()`, `harness/run_loop.rs:400-416`),
-   shutdown waits for an in-flight `activate`, and `activate` after shutdown is a no-op (a replacer builds
-   after `existing.shutdown()` returns, start adapter `:1271-1276`, `harness/mod.rs:201-205`).
+2. **First-turn setup, not construction.** A Claude harness is built by the Claude arm of
+   `spawn_recovered_harness` (callers `harness/mod.rs:348`, `:429`, `:527`, `routes/cards.rs:1295`,
+   `replay.rs:385`) or of `spawn_side_effect` with an `installed` flag set to true only after `install()`
+   returns true. `turn_start` never waits: not installed ⇒ `Err` (the existing retryable pre-`Ok` path:
+   projection deleted, input re-buffered, retried after 2 s, run_loop `:3268-3300`); `shutting_down` ⇒
+   `Err`. On the harness's first admitted turn, under the issuance lock it already holds (run_loop
+   `:2958`): `mint_and_persist_card_token` (`mcp_server/wiring.rs:103-111`: `card_mcp_tokens` and
+   `worker_sessions.mcp_token_hash` in one transaction; plaintext kept only in the session, minted at most
+   once per harness), then `stop(own id)`, then spawn. Because `shutdown_inner` sets `shutting_down`
+   before taking the issuance lock (`:675`, `:685`) and a replacer builds only after `existing.shutdown()`
+   returns (start adapter `:1271-1276`, `harness/mod.rs:201-205`), no mint can follow a shutdown or
+   overwrite a replacer's hash. A setup `stop` `Err` returns `Err` from `turn_start`; the harness stays
+   Live and retries on the next paced tick, so no dead Live handle blocks recovery. Nothing needs the
+   token before the first turn (only the spawned process and its Bash use it), and the start adapter's
+   first message is issued through `turn_start` like any other (H3). The Claude branch skips the Codex
+   thread-reuse token-row check (start adapter `:892`): it guards a token baked into a Codex thread
+   config, whereas a Claude harness mints its own at its first turn.
 3. **Every turn ends with `stop`** (settlement order below) and every retirement of a Claude id
    (supersede, shutdown, deletion) calls `stop(id)` **whether or not the id is registered** — the table
    below is only the caller list.
@@ -528,7 +530,7 @@ account email, P-A).
 | **PR2a Translate** (~700) | `protocol.rs`, `translate.rs`; complete recorded fixtures (redacted) | every line of every fixture decodes | dotted name restored; per-block ids; base64 not stored; empty `iterations` ⇒ no usage frame; `UserText` is not a protocol error |
 | **PR2b Session + stop** (~800) | `session.rs`, `stop.rs`, `config.rs`: spawn contract, env, `TurnSlot`, settlement, submission contract, instructions guard, failure seam | fake `claude` (bash) through the real session: exit / kill / linger / undecodable / stalled-write / immediate-exit paths | outcome durable before `TurnCompleted`; recorded interrupt + `ResultSuccess is_error:true` ⇒ `interrupted` (P-D fixture); `stop` returns `Ok` only after a marked `setsid sleep 300` child is gone (mutation: a pgid-scoped scan returns `Ok` while it lives); a fake that exits successfully while its marked `setsid` child survives ⇒ the child is gone before `TurnCompleted`; a readable unmarked process is never signalled, a recycled pid is rejected by `start_time`; the fake's `--version` prints the real `2.1.280 (Claude Code)` and a wrong version receives **no** user input; a private sentinel never appears in `/proc/<pid>/cmdline`; every pre-`Ok` exit (spawn failure, immediate exit, post-spawn seal) leaves no instructions file; immediate exit ⇒ `Err` and no outcome. Unique `worker_session_id` per test (host-wide sweep, parallel nextest) |
 | **PR3 Provider identity** (~900, sweep-heavy) | key + migration + sticky; `PlannerBinding`; `WorkerSessionInit::shared_planner`; mirror + query sites; boot SQL arm; create field + digest; **every existing caller sends `"codex"`**; OpenAPI / `wire.ts` / `NewTrackBody`; fixture sweep; `claude` refused at create until PR4 | migration on a scratch `.backup` of the live DB (24 keys); FE lint/build/test | `(SharedPlanner, Claude)` mint persists `claude/resumable`; key omission keeps it; missing key ⇒ not a harness card; 38 v1 bindings replay, 7 v0 conflict, same key + other provider ⇒ conflict; an FE create without the field is a test failure |
-| **PR4 Wiring** (~750) | start adapter branch; recovery by `PlannerBinding`; the §5.1 lifecycle (boot steps before the listener, construction mint + stop, caller list incl. repoint); `--claude-planner-config`; model surfaces (§5.8); steer pre-check; provider-named reader texts; the Claude prompt fragment | fake-`claude` stack test via real routes: create → image message → MCP call → interrupt → restart → resume → next turn → track delete; without the flag: create 4xx, recovered harness refuses | provider persists through start, reset and boot; an aborted deletion reinstalls a working Claude harness and the old token no longer authenticates; a reconnect with the old token from listener start fails; a superseded Claude row with a live marked process has none after boot; repoint of a Claude track with a live marked `setsid` child leaves no marked process by the recycle (and takes Dirty when `stop` is forced to fail via the seam); crash before the `:3882` commit ⇒ re-drain, after it ⇒ `interrupted` without re-drain, a settled outcome is preserved; reset-commit → crash → recover → delete leaves no predecessor process; after reset during a running turn no old-marker process is alive when the reset returns, and the reset/replay leaves no instructions file; delete while a spawn is held between seal check and spawn does not complete while a marked process lives; the seam-forced `stop` failure makes delete abort and construction skip installation; reset with a seam-failed `stop` then delete (no boot in between) leaves no old-id marked process before the move; a seam-failed repoint then a retried repoint leaves none before the recycle; after boot, a reset of a Claude card whose harness was not reinstalled never accepts the old token; a lost install race signals nothing; after a seam-failed activation there is no Live harness for the id (registry miss) and a later recovery succeeds; an input queued before activation waits and is issued after it; Codex daemon down at boot still recovers Claude |
+| **PR4 Wiring** (~750) | start adapter branch; recovery by `PlannerBinding`; the §5.1 lifecycle (boot steps before the listener, construction mint + stop, caller list incl. repoint); `--claude-planner-config`; model surfaces (§5.8); steer pre-check; provider-named reader texts; the Claude prompt fragment | fake-`claude` stack test via real routes: create → image message → MCP call → interrupt → restart → resume → next turn → track delete; without the flag: create 4xx, recovered harness refuses | provider persists through start, reset and boot; an aborted deletion reinstalls a working Claude harness and the old token no longer authenticates; a reconnect with the old token from listener start fails; a superseded Claude row with a live marked process has none after boot; repoint of a Claude track with a live marked `setsid` child leaves no marked process by the recycle (and takes Dirty when `stop` is forced to fail via the seam); crash before the `:3882` commit ⇒ re-drain, after it ⇒ `interrupted` without re-drain, a settled outcome is preserved; reset-commit → crash → recover → delete leaves no predecessor process; after reset during a running turn no old-marker process is alive when the reset returns, and the reset/replay leaves no instructions file; delete while a spawn is held between seal check and spawn does not complete while a marked process lives; the seam-forced `stop` failure makes delete abort and construction skip installation; reset with a seam-failed `stop` then delete (no boot in between) leaves no old-id marked process before the move; a seam-failed repoint then a retried repoint leaves none before the recycle; after boot, a reset of a Claude card whose harness was not reinstalled never accepts the old token; an install-race loser with a queued input: `shutdown` returns within a bound and signals nothing; a seam-failed first-turn setup with a queued input: `turn_start` returns `Err` within a bound, the input stays queued, and it is issued once the seam is cleared (no dead handle); shutdown after install but before the first mint, then a replacer installs and mints, then the stale harness's tick: the replacer's token still authenticates and the card hash is unchanged; Codex daemon down at boot still recovers Claude |
 | **PR5 FE selection** | provider choice in new-track / first-message flows; selection reset; neutral label | FE gates + browser test against the fake stack + real-browser preview | switching provider clears a retained model/effort |
 
 PR1, PR2a, PR2b, PR3 are parallel; PR4 needs all; PR5 needs PR4. The pain point is solved at PR4 + PR5
