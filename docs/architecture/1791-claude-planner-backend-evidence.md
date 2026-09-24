@@ -75,6 +75,7 @@ halves in §E2 because `scripts/gate-1316-terminology-ratchet.sh` counts the ret
 | S34 | Deletion order: card quiesce before `shutdown_track` (`routes/tracks.rs:2663-2695`); Codex re-checks the seal after `turn/start` (`shared_codex_appserver.rs:1386-1390`); MCP auth accepts only active sessions' token hashes (`mcp_server/handshake.rs:55-60`) | as listed |
 | S35 | Instructions carry bound template input and template context (`operation/planner_harness_start_adapter.rs:313-316`, `template_context.rs:53-56`); `IsolatedCodexConfig` is `deny_unknown_fields` with a required `codex_binary` (`isolated_codex/config.rs:14-23`); versioned binaries 2.1.220/2.1.259/2.1.280 behind the `~/.local/bin/claude` symlink; `--version` takes 9 ms | as listed |
 | S36 | Lifecycle facts: MCP listener spawned in `AppState::boot` (`state.rs:1091`) before `boot_harnesses` (`main.rs:43`); the shim reconnects with its cached `initialize` (`crates/neige-mcp-stdio-shim/src/pump.rs:243`); post-handshake calls check session activity only (`mcp_server/transport.rs:1479`); `spawn_recovered_harness` callers `harness/mod.rs:348`, `:429`, `:527`, `routes/cards.rs:1295`, `replay.rs:385`; the start adapter mints the token in `app_server_interact` (`:949`) but builds the harness in `spawn_side_effect` (`:1277`); the shutdown op supersedes first (`operation/planner_harness_shutdown_adapter.rs:82`); repoint fences all active runtimes (`routes/tracks.rs:2104-2118`), shuts down registered handles non-strictly (`:2125-2150`), Dirty branch `:2160`, recycle `:2239`; failure seam precedent `fail_workspace_repoint_shutdown_for_test` (`:1951-1976`); `sigkill_verified_members` verifies `start_time` (`proc_identity.rs:260-267`) | as listed |
+| S37 | Credential storage: `persist_card_mcp_token_hash` writes only `card_mcp_tokens` (`mcp_server/wiring.rs:77-85`); `mint_and_persist_card_token` writes card and session rows in one transaction (`:103-111`); handshake reads `worker_sessions.mcp_token_hash` of active rows (`crates/calm-truth/src/db/sqlite/session_row.rs:94-113`); `session_mirror_card_mcp_token_tx` copies the card hash into an active row with a NULL hash (`session_mirror.rs:223-259`); thread reuse requires a card token row (`operation/planner_harness_start_adapter.rs:892`); track deletion deletes its session rows (`db/sqlite/track.rs:438-442`); deletion quiesce reads only the active runtime (`routes/cards.rs:131-136`); the repoint seam is one-shot (`routes/tracks.rs:1963-1970`) | as listed |
 | S27 | Other Codex-only consumers: `liveness_feeder` subscribes the Codex stream (`dispatcher/mod.rs:798`); dev replay (`replay.rs:390`); TUI initial-prompt takeover query (`db/sqlite/read.rs:798-830`) | as listed |
 
 ### E1.3 MCP, tools, prompts, FE
@@ -194,32 +195,25 @@ narrowed D12 (D16) and replaced the per-path stop reasoning with the lifecycle i
 
 ### E4.3 Round 3
 
-| Id | Finding (short) | Disposition |
-|---|---|---|
-| A-B1 | `Unreadable` + same uid/cgroup makes `stop` a host-wide liveness trap (setgid `ssh-agent`, privsep `sshd`) | ACCEPTED (live scan S23) → D16: only `Present` is a member; narrowing and zombie case deleted; must-red deleted |
-| A-M2 | shutdown not a confirmed stop; deletion quiesce before harness shutdown; reset sweeps nothing | ACCEPTED, verified (S33, S34) → D17: shutdown awaits `stop`, post-spawn seal re-check, reset stops the old id |
-| A-m3 | environ rewriting (Chromium), cgroup escape | ACCEPTED → merged into the D16 KNOWN GAP; "confirmed stop" qualified |
-| A-m4 | `deny_unknown_fields`; versioned binary; version before input | ACCEPTED (S35) → D18 |
-| A-m5 | unique `worker_session_id` in tests; restate pgid must-red | ACCEPTED → PR2b must-red column |
-| B3-1 | reset can orphan a retired Claude session | ACCEPTED, verified (S33) → D17 reset/replay row; PR4 must-red |
-| B3-2 | settlement does not stop descendants | ACCEPTED (P-K; channel B's own bounded probe) → D17 settlement row; PR2b must-red |
-| B3-3 | version check after admission | ACCEPTED → D18 pre-spawn `--version`; wrong-version fake gets no input |
-| B3-4 | instructions on argv | ACCEPTED, verified (S35; no `hidepid`) → D19 |
-| B3-5 | failed cleanup leaves the old credential valid | ACCEPTED, verified (S34) → D20 |
-| B3-6 | `Interrupted + ResultSuccess(is_error:true)` → completed | ACCEPTED → §6.2 split row + P-D fixture |
-| B3-7 | boundary is the commit, not `:3262` | ACCEPTED, verified (H22) → D21 + three PR4 tests |
+All 12 items (A-B1, A-M2, A-m3..m5, B3-1..B3-7) accepted; the per-row table is in commit `7964b01cb`
+(this file). Resulting decisions: D16 (marker-present membership), D17 (stop on every path), D18
+(pinned binary and version), D19 (instructions file), D20 (credential rotation), D21 (commit boundary).
 
 ### E4.4 Round 4
 
+All 9 items (A-M1..M3, A-m4..m7, B4-1, B4-2→A-m4) accepted; per-row table in commit `637578f71` (this
+file). Resulting decisions: D22 (lifecycle invariant), D23 (failure seam), D24 (instructions guard),
+D25 (settlement order, P-L), D26 (stop mechanics).
+
+### E4.5 Round 5
+
 | Id | Finding (short) | Disposition |
 |---|---|---|
-| A-M1 | token mint and stop only at boot; 5 construction sites; plaintext token lost between adapter phases | ACCEPTED, verified (S36) → D22 construction step; must-red: aborted deletion reinstalls a working harness, old token rejected |
-| A-M2 | superseded rows never re-stopped; repoint missing | ACCEPTED, verified (S36) → D22: boot sweeps all Claude Planner ids in any state; repoint stops before the recycle, Dirty on `Err`; reset/shutdown-op `Err` logged (no destructive step there) |
-| A-M3 | `Err` must-reds unconstructible | ACCEPTED → D23 seam; PR2b restated with the pgid-scoped mutation |
-| A-m4 | instructions file leaks on pre-`Ok` failures | ACCEPTED → D24 guard + boot empties the directory |
-| A-m5 | settlement SIGTERMs a live `claude` | ACCEPTED → D25 order; probe P-L: SIGTERM after `result` is harmless for `--resume` |
-| A-m6 | `--version` format | ACCEPTED, verified (`2.1.280 (Claude Code)`) → first-token comparison |
-| A-m7 | SIGKILL phase re-scan; verify by `start_time`; stale `:3262` | ACCEPTED, verified (`proc_identity.rs:264`) → D26; §9.3 fixed |
-| B4-1 | rotation after the listener starts | ACCEPTED, verified (S36) → D22 boot step before the listener; must-red: reconnect from listener start fails |
-| B4-2 | instructions cleanup excludes failed submissions and retired sessions | MERGED-WITH A-m4 (+ reset/replay assertion in PR4) |
+| A-M1 | credential tables unnamed; construction-minted token never authenticates; the mirror copies an old hash back | ACCEPTED, verified (S37) → D28: `mint_and_persist_card_token`; boot overwrites `card_mcp_tokens` + nulls session copies; must-red: post-boot reset never accepts the old token |
+| A-M2 / B5-1 | failed retirement stop left to boot, but deletion/repoint only stop active ids (and deletion removes the rows) | ACCEPTED, verified (S37) → D27 scoped any-state set sweep before every destructive step; two seam-driven must-reds without boot |
+| A-m3 | install-race loser hits the winner | ACCEPTED → D29 inert until `install()`; must-red: a lost race signals nothing |
+| A-m4 | seam semantics | ACCEPTED (precedent one-shot, S37) → one-shot, `stop(id)` and scoped sweeps only, returns `Err` without signalling |
+| A-m5 | timer path budget = 30 s | ACCEPTED, verified (`harness/config.rs:27`) → timer path skips the stdin wait: 25 s |
+| A-m6 | marker not instance-scoped | ACCEPTED → `<instance>:<worker_session_id>`, instance = hash of canonical `data_dir` |
+| A (checked) | repoint `Err` needs its own 409 | ACCEPTED → caller table message |
 
