@@ -612,7 +612,7 @@ async fn seed_live_planner_harness(boot: &Boot) -> (Card, String, PlannerHarness
         events: boot.state.events.clone(),
         card_role_cache: boot.state.card_role_cache.clone(),
         track_area_cache: boot.state.track_area_cache.clone(),
-        daemon: boot.state.shared_codex_appserver.clone(),
+        backend: boot.state.shared_codex_appserver.clone().into(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
             debounce_max_wait: Duration::from_secs(60),
@@ -679,7 +679,7 @@ async fn seed_live_plain_chat_harness(boot: &Boot) -> (Card, String, PlannerHarn
         events: boot.state.events.clone(),
         card_role_cache: boot.state.card_role_cache.clone(),
         track_area_cache: boot.state.track_area_cache.clone(),
-        daemon: boot.state.shared_codex_appserver.clone(),
+        backend: boot.state.shared_codex_appserver.clone().into(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
             debounce_max_wait: Duration::from_secs(60),
@@ -2219,7 +2219,7 @@ async fn reset_planner_card_preserves_runtime_pending_queue_and_push_watermark()
         events: boot.state.events.clone(),
         card_role_cache: boot.state.card_role_cache.clone(),
         track_area_cache: boot.state.track_area_cache.clone(),
-        daemon: boot.state.shared_codex_appserver.clone(),
+        backend: boot.state.shared_codex_appserver.clone().into(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
             debounce_max_wait: Duration::from_secs(60),
@@ -2414,7 +2414,7 @@ async fn reset_planner_card_spawn_failure_restores_old_runtime_after_old_harness
         events: boot.state.events.clone(),
         card_role_cache: boot.state.card_role_cache.clone(),
         track_area_cache: boot.state.track_area_cache.clone(),
-        daemon: boot.state.shared_codex_appserver.clone(),
+        backend: boot.state.shared_codex_appserver.clone().into(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
             debounce_max_wait: Duration::from_secs(60),

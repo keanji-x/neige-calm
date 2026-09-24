@@ -1129,7 +1129,7 @@ async fn force_new_thread_kills_old_pty_immediately() {
         events: state.events.clone(),
         card_role_cache: role_cache.clone(),
         track_area_cache: state.track_area_cache.clone(),
-        daemon: state.shared_codex_appserver.clone(),
+        backend: state.shared_codex_appserver.clone().into(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
             debounce_max_wait: Duration::from_secs(60),
@@ -1232,7 +1232,7 @@ async fn fresh_start_supersedes_existing_shared_planner_runtime() {
         events: state.events.clone(),
         card_role_cache: role_cache.clone(),
         track_area_cache: state.track_area_cache.clone(),
-        daemon: state.shared_codex_appserver.clone(),
+        backend: state.shared_codex_appserver.clone().into(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
             debounce_max_wait: Duration::from_secs(60),

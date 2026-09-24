@@ -178,7 +178,7 @@ async fn boot() -> Boot {
         events: events.clone(),
         card_role_cache: card_role_cache.clone(),
         track_area_cache: track_area_cache.clone(),
-        daemon: shared.clone(),
+        backend: shared.clone().into(),
         config: HarnessConfig::default(),
         snapshot,
     });

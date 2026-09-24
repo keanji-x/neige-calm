@@ -107,7 +107,7 @@ async fn seed_harness_with_pending(
         events,
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
         track_area_cache,
-        daemon: daemon.clone(),
+        backend: daemon.clone().into(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
             debounce_max_wait: Duration::from_secs(60),

@@ -116,7 +116,7 @@ async fn deep_completion_and_same_batch_user_reach_transport() {
             );
         }
         let issued = maybe_issue_turn(&fx.harness.inner).await;
-        let sent = fx.harness.inner.daemon.started_turns_for_test();
+        let sent = fx.harness.inner.backend.codex().started_turns_for_test();
         assert_eq!(
             sent.len(),
             1,
@@ -158,7 +158,7 @@ async fn completed_result_receipt_reaches_planner_turn() {
     fx.enqueue(vec![QueueEntry::system(observation, None).unwrap()])
         .await;
     maybe_issue_turn(&fx.harness.inner).await.unwrap();
-    let sent = fx.harness.inner.daemon.started_turns_for_test();
+    let sent = fx.harness.inner.backend.codex().started_turns_for_test();
     assert_eq!(sent.len(), 1);
     let InputItem::Text { text } = &sent[0].1[0] else {
         panic!("expected text input")
@@ -219,7 +219,7 @@ async fn enqueue_event(fx: &Fixture, event: Event) -> i64 {
 
 async fn turn(fx: &Fixture) -> String {
     maybe_issue_turn(&fx.harness.inner).await.unwrap();
-    let sent = fx.harness.inner.daemon.started_turns_for_test();
+    let sent = fx.harness.inner.backend.codex().started_turns_for_test();
     assert_eq!(sent.len(), 1);
     let InputItem::Text { text } = &sent[0].1[0] else {
         panic!("expected text input")
@@ -449,14 +449,14 @@ async fn receipt_recovery_keeps_original_attempt_and_replay_deduplicates() {
             events: inner.events.clone(),
             card_role_cache: inner.card_role_cache.clone(),
             track_area_cache: inner.track_area_cache.clone(),
-            daemon: inner.daemon.clone(),
+            backend: inner.backend.clone(),
             config: inner.config,
             snapshot,
         },
         8,
     );
     maybe_issue_turn(&recovered.inner).await.unwrap();
-    let sent = inner.daemon.started_turns_for_test();
+    let sent = inner.backend.codex().started_turns_for_test();
     let InputItem::Text { text } = &sent[0].1[0] else {
         panic!("expected text input")
     };

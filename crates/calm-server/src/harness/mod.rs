@@ -1,3 +1,4 @@
+pub mod backend;
 pub(crate) mod catch_up;
 pub mod config;
 pub mod lock;
@@ -29,6 +30,7 @@ use crate::session_projection_repo::{WorkerSessionProjection, WorkerSessionState
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::track_area_cache::TrackAreaCache;
 
+pub use backend::PlannerBackend;
 pub use config::HarnessConfig;
 pub use lock::PushLockGuard;
 pub use observation::{HookKind, Observation};
@@ -244,7 +246,7 @@ pub async fn spawn_recovered_harness(
         events,
         card_role_cache,
         track_area_cache,
-        daemon,
+        backend: daemon.into(),
         config: HarnessConfig::default(),
         snapshot,
     });
@@ -609,7 +611,7 @@ mod tests {
             events: EventBus::new(),
             card_role_cache: CardRoleCache::new(),
             track_area_cache: TrackAreaCache::new(),
-            daemon,
+            backend: daemon.into(),
             config: HarnessConfig::default(),
             snapshot: HarnessSnapshot::initial(0, vec![]),
         });

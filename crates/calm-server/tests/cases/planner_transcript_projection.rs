@@ -208,7 +208,7 @@ async fn boot_with(plan: BootPlan) -> Boot {
         events: events.clone(),
         card_role_cache: role_cache.clone(),
         track_area_cache: track_area_cache.clone(),
-        daemon: daemon.clone(),
+        backend: daemon.clone().into(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
             debounce_max_wait: Duration::from_secs(60),

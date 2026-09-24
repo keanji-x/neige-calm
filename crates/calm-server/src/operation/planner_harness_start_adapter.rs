@@ -1283,7 +1283,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             events: ctx.events.clone(),
             card_role_cache: self.card_role_cache.clone(),
             track_area_cache: self.track_area_cache.clone(),
-            daemon: self.daemon.clone(),
+            backend: self.daemon.clone().into(),
             config: HarnessConfig::default(),
             snapshot,
         });

@@ -171,7 +171,7 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
             events: events.clone(),
             card_role_cache: CardRoleCache::new(),
             track_area_cache: TrackAreaCache::new(),
-            daemon: daemon.clone(),
+            backend: daemon.clone().into(),
             config: HarnessConfig::default(),
             snapshot,
         },

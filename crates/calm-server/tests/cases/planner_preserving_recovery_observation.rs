@@ -24,7 +24,7 @@ async fn recovery_cannot_commit_an_observation_watermark_without_its_queue_entry
         events: boot.state.events.clone(),
         card_role_cache: boot.state.card_role_cache.clone(),
         track_area_cache: boot.state.track_area_cache.clone(),
-        daemon: boot.state.shared_codex_appserver.clone(),
+        backend: boot.state.shared_codex_appserver.clone().into(),
         config: HarnessConfig::default(),
         snapshot: HarnessSnapshot::from_value_strict(row.handle_state_json.unwrap()),
     });

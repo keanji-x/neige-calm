@@ -35,6 +35,7 @@ fn harness_turn_start_is_gated() {
     let allowed = [
         "src/dedicated_codex/admission.rs",
         "src/dispatcher/mod.rs",
+        "src/harness/backend.rs",
         "src/harness/run_loop.rs",
         "src/operation/codex_adapter/mod.rs",
         "src/shared_codex_appserver.rs",
