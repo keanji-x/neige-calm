@@ -26,7 +26,7 @@
 **Goal (v1).** A track can be created with a Claude Planner that receives the same queued observations
 and user messages (images included), calls the same `calm.*` MCP tools and `neige` CLI, can be
 interrupted, survives a neige restart by resuming its Claude session, is fenced by card/track deletion
-with a confirmed stop, and renders in the existing conversation UI with no FE renderer change.
+with a stop that confirms no marker-carrying process remains, and renders in the existing conversation UI with no FE renderer change.
 
 **Non-goals.** ACP, a Node sidecar, the Agent SDK; a provider-neutral item model; Codex behaviour changes
 beyond extracting the seam; worker cards; Claude for PlainChat / Assistant; steer and model choice for
@@ -47,26 +47,24 @@ Claude Planners (cut, §9.5).
 | D9 | Bash confinement: native sandbox with `failIfUnavailable`; enablement **release-gated** on sandbox verification or explicit owner acceptance | orchestrator r1 | §5.3, §9.2 |
 | D10 | Images: base64 image blocks (P-I) | orchestrator r1 | §5.6 |
 | D11 | **Model choice cut**: Claude Planners run the CLI default; pickers show the existing `source:"unavailable"` | **orchestrator r2** | §5.8 |
-| D12 | **Stop primitive**: one `/proc`-wide exact env-marker sweep (`NEIGE_CLAUDE_PLANNER=<worker_session_id>`), SIGTERM → bounded wait → verified SIGKILL → wait-empty, fail closed — used for serialization, interrupt timeout, quiesce, registry-miss paths and boot. The r1 `(pid, pgid, start_time, boot_id)` record and group kill are deleted | **orchestrator r2** (A BLOCKING-1, B2-1) | §5.1 |
+| D12 | **Stop primitive**: one `/proc`-wide exact env-marker sweep (`NEIGE_CLAUDE_PLANNER=<worker_session_id>`), SIGTERM → bounded wait → verified SIGKILL → wait-empty (membership narrowed in r3, D16; users widened, D17). The r1 `(pid, pgid, start_time, boot_id)` record and group kill are deleted | **orchestrator r2** (A BLOCKING-1, B2-1) | §5.1 |
 | D13 | **Crash recovery without a journal**: settlement = durable outcome → emit; boot = stop sweep, then idempotent `interrupted` outcome for `snapshot.last_turn_id`. The r1 journal and crash table are deleted | **orchestrator r2** (A MAJOR-1, B2-4/5) | §5.1 |
 | D14 | Typed config: one optional `--claude-planner-config <file>`; absent ⇒ Claude Planner unavailable | **orchestrator r2** (A MAJOR-3) | §5.3 |
+| D16 | Stop membership = `Present` only; `Unreadable` is not a member (no waiting on it); zombie and cgroup narrowing deleted; escapes are a KNOWN GAP | **orchestrator r3** (A BLOCKING-1, A MINOR-3) | §5.1 |
+| D17 | `stop` runs on every terminal and retirement path (settlement, EOF, shutdown awaits it, reset/replay by old id, deletion, boot) + post-spawn seal re-check; settlement = record → stop → emit | **orchestrator r3** (B3-1, B3-2, A MAJOR-2) | §5.1 |
+| D18 | Config carries required `claude_binary` + `claude_version` (`deny_unknown_fields`); version verified before any input | **orchestrator r3** (B3-3, A MINOR-4) | §5.3 |
+| D19 | Instructions via `--append-system-prompt-file` (private 0600 file), not argv | **orchestrator r3** (B3-4) | §5.2 |
+| D20 | Boot rotates the MCP credential before cleanup, even if cleanup fails | **orchestrator r3** (B3-5) | §5.1 |
+| D21 | Crash boundary = snapshot transaction commit (`:3882`), not the in-memory `:3262` | **orchestrator r3** (B3-7) | §5.1 |
 | D15 | Project config (`CLAUDE.md`/`AGENTS.md`, project settings) trusted like Codex trusts the workspace (S25); 4140 has no project settings (Q13) | r1 | §5.2 |
 
 ## 2. Evidence summary
 
-Details: companion §E1–§E3. The facts that shape the design:
-
-- The harness is one task consuming one notification stream; transitions and persistence are written
-  against Codex frames (H4–H10). Notifications are handled only after `turn_start` returns and the turn
-  id is persisted (H4, H22).
-- The session row's provider comes from its kind only; `(Claude, Planner)` is unmappable (S12, S13);
-  pushes key on the SharedPlanner kind (S14), so the kind stays.
-- Deletion seals are a thread-keyed set on the Codex daemon that outlives harnesses (S21); production
-  restarts signal only calm-server (`KillMode=process`, S22).
-- **Claude's Bash tool runs each command in its own session** (setsid): after SIGKILL of `claude`, the
-  `sleep 300` it started survived, re-parented, still carrying the env marker (P-K). Group kills miss it.
-- `-p` mode silently ignores settings that fail validation, and `system/init` does not report the
-  sandbox (`claude --help`; P-S2 keys) — the sandbox arm must pin the verified CLI version.
+Companion §E1–§E3. Shaping facts: the harness consumes one Codex-shaped stream and persists the turn id
+before handling items (H4–H10, H22); session provider comes from the kind only (S12–S14); seals are a
+thread-keyed set outliving harnesses (S21, S31); production restarts signal only calm-server (S22);
+Claude's Bash runs each command in its own session and survives a `claude` SIGKILL (P-K); `-p` silently
+ignores invalid settings and `system/init` does not report the sandbox.
 
 ## 3. 4140 compatibility (summary; queries in §E2)
 
@@ -92,7 +90,7 @@ Details: companion §E1–§E3. The facts that shape the design:
 | 8 | `turn_thread_is_sealed` in recovery | harness/mod `:158`, `:424` | unchanged |
 | 9 | `config_read`, `model_list` in resolution | run_loop `:2472`, `:2632` | Codex-only; the Claude arm resolves to "CLI default" (§5.8) |
 | 10 | Codex readiness / deferred recovery | harness/mod `:213`, `:477`; `state.rs:577-598`; `lib.rs:615-640` (H21) | Codex rows only; Claude rows recovered in both boot arms |
-| 11 | `is_running` preflights | start adapter `:420`, `:491` (S7); routes/cards `:1289`; planner_recovery `:58` | per provider: Claude ⇒ `claude_planner_config` present and `claude_bin` resolves |
+| 11 | `is_running` preflights | start adapter `:420`, `:491` (S7); routes/cards `:1289`; planner_recovery `:58` | per provider: Claude ⇒ `claude_planner_config` present and `claude_binary --version` equals `claude_version` |
 | 12 | `thread_start_*`, `remote_uri` | start adapter `:970-991` | Claude branch: UUID thread, no RPC |
 | 13 | compensation `interrupt_thread` | start adapter `:1424-1430` | Claude row ⇒ `claude_planner::stop` |
 | 14 | `PlannerHarnessParams{daemon}` | start adapter `:1277`; recovery; ~70 tests (H20) | `backend: PlannerBackend` (`From<Arc<SharedCodexAppServer>>`) |
@@ -188,59 +186,90 @@ Readers, timers and the stop sweep remain. Per-turn cost: startup + resume parse
 (~0.5–1.5 s to `system/init`, P-B/P-E); whether `ToolSearch`-loaded schemas survive `--resume` is
 UNVERIFIED (PR2b measures).
 
-**Stop primitive `stop(worker_session_id)`** (precedent `operation/task_verify_adapter/target.rs:715-740`
+**Stop primitive `stop(worker_session_id)`** (precedent `operation/task_verify_adapter/target.rs:712-740`
 `stop_group`, `operation/gate_process.rs:350-372`, `proc_identity.rs:180-212`). Every child is spawned with
 the env marker `NEIGE_CLAUDE_PLANNER=<worker_session_id>` (inherited by Bash's detached sessions, P-K).
-Scan all of `/proc`, skip zombies, classify with `proc_env_marker`:
-`Present` ⇒ member; `Unreadable` **and** same uid **and** same cgroup as calm-server ⇒ uncertain;
-anything else ⇒ foreign. SIGTERM the members → ≤ 5 s → `sigkill_verified_members` → wait (≤ 10 s) until no
-member and no uncertain process remains, else `Err` (fail closed, like `stop_group`). The zombie and cgroup
-narrowing are needed because the host has same-uid unreadable processes: 4 zombie `sh` in the service
-cgroup and `sshd` in session scopes (live scan, companion S23). No pid/pgid is recorded, so a recycled
-group is never touched (B2-1). Users: next-spawn serialization (previous child's `wait()` ≤ 5 s, then
-`stop`), interrupt stop timer, quiesce, registry-miss paths, boot.
+Scan all of `/proc` and classify with `proc_env_marker`: **only `Present` is a member**; `Unreadable` and
+`Foreign` are never signalled and never waited on (a same-uid unreadable process — setgid `ssh-agent` in the
+service cgroup, privsep `sshd` — would otherwise make every stop fail, companion S23). SIGTERM the members
+→ ≤ 5 s → `sigkill_verified_members` (re-reads each member's environ, so a pid recycled between scan and
+kill is rejected) → wait (≤ 10 s) until no member remains, else `Err`. No pid/pgid is recorded (B2-1).
+What "stopped" means is therefore **"no process carrying the exact marker remains"**: descendants that turn
+non-dumpable, rewrite or scrub their environ (headless Chromium does, companion S23), or leave the service
+cgroup escape the sweep (KNOWN GAP).
 
-**Submission contract.** `turn_start` mints `turn_id`, checks the seal, spawns, writes the `user` line
-(bounded 5 s), and returns `Ok(turn_id)` once the write succeeded. Spawn failure, write failure, or exit
-before the write ⇒ `stop` + `Err`: the existing path deletes the projection and re-buffers
-(run_loop `:3268-3300`); no outcome is recorded because no turn id was persisted. **The turn id becomes
-durable** when `persist_issuance_outcome` stores `last_turn_id` right after `turn_start` returns (`:3262`);
-before that the snapshot still owns the batch (persisted pre-drain at `:3045`).
+**Stop runs on every terminal and retirement path** (as `stop_group` runs on every gate completion path):
+
+| Path | Where | Contract |
+|---|---|---|
+| turn settlement: any result, unexpected EOF/exit (even after a successful `wait()` of the direct child — a marked `setsid` child outlives its parent, P-K) | `session.rs` | record → `stop` → emit (below) |
+| next spawn | `turn_start` | previous child's `wait()` ≤ 5 s, then `stop`; `Err` ⇒ `turn_start` fails (retryable refusal) |
+| interrupt timer | `session.rs` | cause first, then `stop` after ≤ 10 s |
+| harness shutdown | Claude arm of the interrupt calls in `shutdown_inner` (run_loop `:666-729`) | records `Interrupted(shutdown)` and **awaits** `stop`; `shutdown_for_deletion` (strict) propagates `Err` |
+| reset / replay | start adapter `app_server_interact` (`:862-868` today stops only a registered predecessor) | `stop(old worker_session_id)` for a Claude predecessor **regardless of registry membership**, before the successor starts; replay repeats it idempotently |
+| deletion quiesce, registry-miss paths | §4.1 rows 13, 15–17 | `stop`, `Err` propagates |
+| boot | recovery | §5.1 Boot |
+
+**Seal checks.** The session checks `turn_thread_is_sealed(thread)` before spawning **and again after the
+spawn, before writing the user line** (mirroring Codex's post-`turn/start` re-check,
+`shared_codex_appserver.rs:1386-1390`); sealed ⇒ `stop` + `Err`. With the issuance lock that
+`shutdown_inner` waits on, a deletion that seals while a spawn is held ends with that process stopped.
+
+**Submission contract.** `turn_start` mints `turn_id`, checks the seal, runs `<claude_binary> --version`
+(9 ms measured) and refuses unless it equals the configured `claude_version` (**before any user input**),
+writes the instructions file (§5.2), spawns, re-checks the seal, writes the `user` line (bounded 5 s), and
+returns `Ok(turn_id)` once the write succeeded. Any failure before that ⇒ `stop` + `Err`: the existing
+path deletes the projection and re-buffers (run_loop `:3268-3300`); no outcome is recorded because no turn
+id was persisted. **The turn id becomes durable** when the snapshot transaction started by
+`persist_issuance_outcome` (`:3267`) commits (`:3876-3882`); the in-memory assignment at `:3262` is not
+the boundary. Before that commit the snapshot persisted pre-drain at `:3045` still owns the batch.
 
 **Settlement.** One `TurnSlot { cause: Option<TerminalCause> }` per turn; any path about to interrupt or
-stop records its cause first; mapping §6.2. Order: `turn_outcome::record` (durable) → emit
-`TurnCompleted`. So an outcome survives `shutdown_inner` aborting the loop (H15) or a `Lagged` receiver.
-Undecodable stdout ⇒ cause `Failed("protocol")` + `stop`.
+stop records its cause first; mapping §6.2. Order: `turn_outcome::record` (durable) → `stop` → emit
+`TurnCompleted`. Record first so the outcome survives a crash during a stop that may take 15 s; emit last so
+the harness never issues the next turn while this turn's marked processes live. A settlement `stop`
+failure is logged and the turn is still emitted: the next spawn, quiesce and boot run `stop` again and
+fail closed there. So an outcome also survives `shutdown_inner` aborting the loop (H15) or a `Lagged`
+receiver. Undecodable stdout ⇒ cause `Failed("protocol")` + `stop`. The instructions file is removed on
+this path.
 
-**Boot.** Before installing a Claude harness: `stop(worker_session_id)`, then
-`turn_outcome::record(interrupted, "neige restarted during this turn")` for `snapshot.last_turn_id`
-unconditionally — a no-op when that turn already has an outcome (SELECT-then-INSERT,
+**Boot.** Before installing a Claude harness: (1) re-mint the card MCP token, so the previous session's
+credential stops authenticating (the handshake accepts only the active session's stored hash,
+`mcp_server/handshake.rs:55-60`) — **even if the next step fails**; (2) `stop(worker_session_id)`;
+`Err` ⇒ skip installing that harness (recovery already warns and continues per runtime,
+`harness/mod.rs:346-368`); (3) `turn_outcome::record(interrupted, "neige restarted during this turn")`
+for `snapshot.last_turn_id` — a no-op when that turn already has an outcome (SELECT-then-INSERT,
 `crates/calm-truth/src/db/sqlite/out_of_domain.rs:423-434`; precedent
-`shared_codex_appserver/preserving_recovery.rs:120-160`). The card token is re-minted, so any process that
-escaped the sweep cannot call `calm.*`. Crash windows: before `:3262` the snapshot still holds the batch
-and the previous `last_turn_id` (already settled ⇒ no-op) ⇒ re-drain, possibly delivering a batch Claude
-already accepted (the same at-least-once window as Codex, H22); after `:3262` the new turn is recorded
-`interrupted` and the Planner waits for new input.
+`shared_codex_appserver/preserving_recovery.rs:120-160`); (4) remove leftover instruction files for that
+session. Crash windows: before the `:3882` commit the snapshot still holds the batch and the previous
+`last_turn_id` (already settled ⇒ no-op) ⇒ re-drain, possibly delivering a batch Claude already accepted
+(the same at-least-once window as Codex, H22); after the commit the new turn is recorded `interrupted`,
+nothing is re-drained, and the Planner waits for new input.
 
 ### 5.2 Spawn contract (no runtime directory)
 
 ```
-<claude_bin> -p --input-format stream-json --output-format stream-json --verbose --replay-user-messages
+<claude_binary> -p --input-format stream-json --output-format stream-json --verbose --replay-user-messages
   (--session-id <thread> | --resume <thread>)
   --setting-sources project --disable-slash-commands
   --tools Bash,Read,Edit,Write,ToolSearch,WebFetch,WebSearch
   --strict-mcp-config --mcp-config '<json>'  --settings '<json>'
   --permission-prompts none --allowedTools '<rules, §5.3>'
-  --append-system-prompt '<rendered instructions>'
+  --append-system-prompt-file <data_dir>/claude-planner/tmp/<worker_session_id>-<turn_id>.md
 ```
+
+`<claude_binary>` is the configured versioned path (§5.3), never the auto-updated `~/.local/bin/claude` symlink.
 
 - `--mcp-config`: `{"mcpServers":{"calm":{"type":"stdio","command":"<neige-mcp-stdio-shim>","args":[],
   "env":{"NEIGE_MCP_SOCKET":"${NEIGE_MCP_SOCKET}","NEIGE_MCP_TOKEN":"${NEIGE_MCP_TOKEN}"}}}}` — argv
   carries no secret; `${VAR}` expansion verified for a config *file* (P-S1), the JSON-string form is
   UNVERIFIED (PR2b checks it; fallback: one 0600 file per spawn, deleted on exit). `--settings` as a JSON
   string is verified (P-S1). No runtime directory, so nothing to clean up on reset or delete.
-- Instructions are rendered at every spawn by the start adapter's renderer (~47 KB as measured by review
-  channel A, below Linux's 128 KiB single-argument limit; an oversized rendering fails the spawn, KNOWN GAP). Claude reuses its
+- Instructions are rendered at every spawn by the start adapter's renderer into a 0600 file in the 0700
+  directory `<data_dir>/claude-planner/tmp/`, removed by settlement (and by boot for leftovers). They are
+  kept off argv because they include bound template input and template context
+  (`operation/planner_harness_start_adapter.rs:314`, `template_context.rs:55`) and `/proc/<pid>/cmdline` is
+  world-readable on this host (no `hidepid`). Non-secret JSON config stays inline. Claude reuses its
   recorded system prompt until compaction, then the current rendering applies. For Claude only, the
   rendering appends one sentence from a new `prompts/` fragment: start long-lived servers with
   `calm.terminal.open`, not Bash (they die with the turn and at restart).
@@ -252,9 +281,9 @@ already accepted (the same at-least-once window as Codex, H22); after `:3262` th
   `kernel_led_path()`; `CLAUDE_CONFIG_DIR` iff `config_dir` is set; `NEIGE_MCP_SOCKET`, `NEIGE_MCP_TOKEN`,
   `NEIGE_CLAUDE_PLANNER`, `DISABLE_AUTOUPDATER=1`. Never `NEIGE_MCP_DAEMON_TOKEN` (M4), `ANTHROPIC_*`,
   `CLAUDE_CODE_*`. The token is minted once per harness construction (M3).
-- **Init checks** (every spawn): `session_id == thread`; `capabilities ⊇ {interrupt_receipt_v1}`; `calm`
-  connected; `skills == []`; all plugins `@builtin`; with `confinement = sandbox`,
-  `claude_code_version == verified_claude_version`. Failure ⇒ cause `Failed(check)` + `stop`.
+- **Init checks** (every spawn, second line of defence after the pre-spawn `--version` check):
+  `claude_code_version == claude_version`; `session_id == thread`; `capabilities ⊇ {interrupt_receipt_v1}`;
+  `calm` connected; `skills == []`; all plugins `@builtin`. Failure ⇒ cause `Failed(check)` + `stop`.
 
 ### 5.3 Confinement and typed config (D5, D9, D14)
 
@@ -268,12 +297,21 @@ push anywhere and kill neige processes. Codex Planners run `workspace-write` wit
 Option<PathBuf>`, `config.rs:33-36`, "missing keeps this backend unavailable"):
 
 ```rust
-struct ClaudePlannerConfig { confinement: Confinement, config_dir: Option<PathBuf> /* Q1 */ }
-enum Confinement {
-    Sandbox { allowed_domains: Vec<String>, verified_claude_version: String },
-    AcceptUnconfined,
+#[derive(Deserialize)] #[serde(deny_unknown_fields)]
+struct ClaudePlannerConfig {
+    claude_binary: PathBuf,        // versioned binary, e.g. ~/.local/share/claude/versions/2.1.280
+    claude_version: String,        // must equal `<claude_binary> --version` before any input is written
+    confinement: Confinement,
+    config_dir: Option<PathBuf>,   // Q1: None = the user's ~/.claude
 }
+#[derive(Deserialize)] #[serde(deny_unknown_fields, tag = "mode")]
+enum Confinement { Sandbox { allowed_domains: Vec<String> }, AcceptUnconfined }
 ```
+
+`claude_binary` and `claude_version` are required in both modes: simplest, same as `codex_binary` in
+`IsolatedCodexConfig` (`isolated_codex/config.rs:14-23`, also `deny_unknown_fields`), and the auto-updater
+swaps the `~/.local/bin/claude` symlink (2.1.220, 2.1.259, 2.1.280 are installed side by side on this
+host). `deny_unknown_fields` stops a mistyped `config_dir` from silently falling back to `~/.claude`.
 
 Absent ⇒ create with `planner_provider:"claude"` answers 4xx naming the flag; `is_ready(Claude) = false`;
 a recovered Claude harness refuses issuance with a retryable refusal and a reader message naming the flag.
@@ -285,7 +323,8 @@ a recovered Claude harness refuses issuance with a retryable refusal and a reade
   only to allowed domains — **stricter than Codex's unrestricted network**, by the owner's list (Q3).
   `failIfUnavailable` is mandatory: without it the CLI only warns and runs everything unconfined (P-S2);
   with it the turn fails before any request (P-S1). Because `-p` silently drops invalid settings and
-  `system/init` does not report the sandbox, the init check pins `verified_claude_version`.
+  `system/init` does not report the sandbox, the release-gate verification is recorded against
+  `claude_version`, which the pinned binary and the pre-spawn check keep constant.
 - `AcceptUnconfined` ⇒ no `--settings`; allow rules `Bash Read Edit Write ToolSearch WebFetch WebSearch
   mcp__calm` (path-scoped Edit/Write alone would give false comfort).
 
@@ -393,7 +432,8 @@ A recorded cause wins over the event that follows it; otherwise the first event 
 | none | `ResultError` (e.g. sandbox unavailable, P-S1) | failed | `errors` joined |
 | none | EOF + exit before a result (crash, SIGINT P-F1) | failed | `claude exited (<status>)` + last stderr line |
 | `Interrupted(user\|watchdog\|shutdown)` | `ResultError`, EOF, or stop timer | interrupted | — |
-| `Interrupted(…)` | `ResultSuccess` (finished first) | completed | — |
+| `Interrupted(…)` | `ResultSuccess`, `is_error:false` (finished first) | completed | — |
+| `Interrupted(…)` | `ResultSuccess`, `is_error:true` | interrupted | — |
 | `Failed(check\|protocol)` | any | failed | the cause |
 | (boot) | `last_turn_id` without an outcome | interrupted | "neige restarted during this turn" |
 | — | spawn / write fails before `Ok` | **no turn** (projection deleted, batch re-buffered) | — |
@@ -409,17 +449,17 @@ The stop timer (≤ 10 s) settles an interrupted turn inside the harness's 30 s 
 | 2 | start | kernel | `planner-harness-start` | row `claude/resumable/planner`; UUID thread; token; phase Idle | op phases (`operation/planner_harness_start_adapter.rs:840`) | provider from the construction boundary | NEW |
 | 3 | message | user | `POST /api/cards/{id}/planner/input` (+ image) | entry persisted before 200 | `harness.user_message.enqueued` (`routes/cards.rs:921`) | durable before ack | existing |
 | 4 | drain | run loop | tick | projection; seal checked; spawn with marker; one `user` line | `harness.item.added` (projection) | `Ok` only after the write | NEW spawn |
-| 5 | turn begins | backend | `Ok(turn_id)` | `last_turn_id` persisted (`:3262`) | `TurnStarted` → `TurnRunning` | turn id durable before any item row | NEW producer |
+| 5 | turn begins | backend | `Ok(turn_id)` | snapshot commit with `last_turn_id` (`:3267`→`:3882`) | `TurnStarted` → `TurnRunning` | turn id durable before any item row | NEW producer |
 | 6 | echo / init | CLI | `UserReplay`, `system/init` | projection upgraded; `agent_session_id` bound; checks | `harness.item.added` | `session_id == thread`; sandbox version pinned | NEW |
 | 7 | tool call + result | model / CLI | `tool_use mcp__calm__…` | MCP via shim | `item/started`, `item/completed` (dotted) | no approval prompt (P-H) | NEW producer |
 | 8 | steer | user | `POST …/planner/input/{entry}/steer` | none | 409 `NotTaken` | id/rev unchanged | NEW refusal |
 | 9 | interrupt | user | `POST /api/cards/{id}/planner/interrupt` | cause recorded; `interrupt` line; stop timer | `IssuingInterrupt` | one outcome | NEW producer |
-| 10 | settle | backend | `ResultError aborted_streaming` | outcome row, then emit; child exits | `TurnCompleted` | durable before emit | NEW |
+| 10 | settle | backend | `ResultError aborted_streaming` | outcome row, `stop` (detached Bash included), then emit | `TurnCompleted` | durable before emit | NEW |
 | 11 | next turn | run loop | observation | previous child exited or `stop`; spawn `--resume` | normal turn | ≤ 1 process per session | NEW |
 | 12 | restart mid-turn | ops | deploy restart (`KillMode=process`) | `claude` and its detached Bash keep running | none | — | existing ops |
-| 13 | boot | kernel | `recover_harnesses_after_daemon_boot` | `stop` sweep (incl. detached Bash, P-K); `interrupted` outcome for `last_turn_id` (no-op if settled); token re-minted; harness in both arms | outcome row | no marked process survives boot | NEW |
+| 13 | boot | kernel | `recover_harnesses_after_daemon_boot` | token re-minted first; `stop` sweep (incl. detached Bash, P-K), `Err` ⇒ harness not installed; `interrupted` outcome for `last_turn_id` (no-op if settled); harness in both arms | outcome row | no marked process survives boot | NEW |
 | 14 | resume | run loop | new input | `--resume` | normal turn | killed turn visible to the model (P-F2) | NEW |
-| 15 | delete track | user | `DELETE /api/tracks/{id}` | seal (existing set); `stop` must return `Ok`; rollback unseals | deletion events | destructive move only after a confirmed empty sweep | NEW call |
+| 15 | delete track | user | `DELETE /api/tracks/{id}` | seal (existing set); quiesce `stop`; harness shutdown awaits `stop`; a held spawn sees the seal after spawning and stops; rollback unseals | deletion events | destructive move only after a sweep finds no marked process (escapes: KNOWN GAP) | NEW call |
 
 ## 8. Auth and isolation (D6), compliance
 
@@ -442,9 +482,9 @@ account email, P-A).
 |---|---|---|---|
 | **PR1 Seam** (~500) | `PlannerBackend` (Codex arm only), `PlannerHarnessParams.backend`, rows 1–6, 14 of §4.1; `client_id: &str`; invariant allowlist gains `harness/backend.rs` | targeted nextest of Planner harness, recovery, interrupt, deletion suites; `local-rust-gates.sh --quick` | a second `.turn_start(` in run_loop still red |
 | **PR2a Translate** (~700) | `protocol.rs`, `translate.rs`; complete recorded fixtures (redacted) | every line of every fixture decodes | dotted name restored; per-block ids; base64 not stored; empty `iterations` ⇒ no usage frame; `UserText` is not a protocol error |
-| **PR2b Session + stop** (~800) | `session.rs`, `stop.rs`, `config.rs`: spawn contract, env, `TurnSlot`, settlement, serialization, submission contract | fake `claude` (bash) through the real session: exit / kill / linger / undecodable / stalled-write / immediate-exit paths | outcome durable before `TurnCompleted`; recorded interrupt beats a following failure; a fake whose child runs `setsid sleep 300` with the marker ⇒ `stop` returns `Err` while it lives; a same-uid unreadable non-zombie in the service cgroup blocks `stop`; a foreign process in a recycled pgid is never signalled; immediate exit ⇒ `Err` and no outcome |
+| **PR2b Session + stop** (~800) | `session.rs`, `stop.rs`, `config.rs`: spawn contract, env, `TurnSlot`, settlement, serialization, submission contract | fake `claude` (bash) through the real session: exit / kill / linger / undecodable / stalled-write / immediate-exit paths | outcome durable before `TurnCompleted`; recorded interrupt + `ResultSuccess is_error:true` ⇒ `interrupted` (P-D fixture); a fake whose child runs `setsid sleep 300` with the marker ⇒ `stop` returns `Err` while it lives; a fake that exits successfully while its marked `setsid` child survives ⇒ settlement stops the child before `TurnCompleted`; a readable unmarked process is never signalled, and a pid recycled between scan and kill is rejected; a wrong-version fake binary receives **no** user input; a private sentinel in the instructions never appears in `/proc/<pid>/cmdline`; immediate exit ⇒ `Err` and no outcome. Every test uses a unique `worker_session_id` (the sweep is host-wide; nextest runs in parallel) |
 | **PR3 Provider identity** (~900, sweep-heavy) | key + migration + sticky; `PlannerBinding`; `WorkerSessionInit::shared_planner`; mirror + query sites; boot SQL arm; create field + digest; **every existing caller sends `"codex"`**; OpenAPI / `wire.ts` / `NewTrackBody`; fixture sweep; `claude` refused at create until PR4 | migration on a scratch `.backup` of the live DB (24 keys); FE lint/build/test | `(SharedPlanner, Claude)` mint persists `claude/resumable`; key omission keeps it; missing key ⇒ not a harness card; 38 v1 bindings replay, 7 v0 conflict, same key + other provider ⇒ conflict; an FE create without the field is a test failure |
-| **PR4 Wiring** (~700) | start adapter branch; recovery by `PlannerBinding`; boot (`stop` + outcome); Claude calls to `stop` in rows 13, 15–17; `--claude-planner-config`; model surfaces (§5.8); steer pre-check; provider-named reader texts; the Claude prompt fragment | fake-`claude` stack test via real routes: create → image message → MCP call → interrupt → restart → resume → next turn → track delete; without the flag: create 4xx, recovered harness refuses | provider persists through start, reset and boot; boot with a live marked orphan and no outcome ⇒ orphan gone + one `interrupted` outcome; Codex daemon down at boot still recovers Claude; delete aborts while a marked process lives |
+| **PR4 Wiring** (~700) | start adapter branch; recovery by `PlannerBinding`; boot (`stop` + outcome); Claude calls to `stop` in rows 13, 15–17; `--claude-planner-config`; model surfaces (§5.8); steer pre-check; provider-named reader texts; the Claude prompt fragment | fake-`claude` stack test via real routes: create → image message → MCP call → interrupt → restart → resume → next turn → track delete; without the flag: create 4xx, recovered harness refuses | provider persists through start, reset and boot; boot with a live marked orphan and no outcome ⇒ orphan gone + one `interrupted` outcome; boot rotates the token before cleanup and the old token cannot reconnect even when `stop` fails (harness then not installed); crash boundary: crash before the `:3882` commit ⇒ batch re-drained, after it ⇒ `interrupted` without re-drain, an already-settled outcome is preserved; reset-commit → crash → recover → delete leaves no predecessor process; after reset during a running turn no old-marker process is alive when the reset response returns; delete while a spawn is held between seal check and spawn does not complete while a marked process lives; Codex daemon down at boot still recovers Claude; delete aborts while a marked process lives |
 | **PR5 FE selection** | provider choice in new-track / first-message flows; selection reset; neutral label | FE gates + browser test against the fake stack + real-browser preview | switching provider clears a retained model/effort |
 
 PR1, PR2a, PR2b, PR3 are parallel; PR4 needs all; PR5 needs PR4. The pain point is solved at PR4 + PR5
@@ -454,7 +494,7 @@ once the release gate passes.
 
 The Claude Planner is unavailable until the owner writes `--claude-planner-config`. `AcceptUnconfined` is
 the owner's explicit acceptance of §5.3's escalation list. `Sandbox` additionally requires, on the target
-host with `socat` installed and the exact shipping flags, recorded against `verified_claude_version`:
+host with `socat` installed and the exact shipping flags, recorded against `claude_version`:
 Bash write inside cwd succeeds, outside cwd and session temp fails; the `neige` CLI reaches
 `NEIGE_MCP_SOCKET`; allowed domains reachable, others refused; out-of-cwd `Edit`/`Write` denied; `calm` MCP
 works; removing `socat` fails closed; SIGKILL of `claude` mid sandboxed `sleep 300` leaves no survivor
@@ -462,6 +502,12 @@ after `stop`. Plus live acceptance on the owner's box (never Codex E2E): report 
 image message, interrupt, restart, resume, delete; `ps` shows no Planner `claude` between turns.
 
 ### 9.3 KNOWN GAPS (one line each)
+
+- `stop` only sees processes carrying the exact marker: descendants that turn non-dumpable, rewrite or scrub
+  their environ (e.g. headless Chromium), or leave the service cgroup escape it; deletion is fenced only
+  up to that.
+- The auto-updater may delete an old versioned binary; `claude_binary` then fails the readiness check until
+  the owner updates the config (and re-runs the release gate for `Sandbox`).
 
 - With `AcceptUnconfined`, Bash is unconfined (owner's choice).
 - No steer; future path via `interrupt_cancel_queued_v1`, unprobed.
@@ -481,16 +527,14 @@ image message, interrupt, restart, resume, delete; `ps` shows no Planner `claude
 - Oversized image or instruction rendering fails the turn / spawn.
 - After compaction, the current instruction rendering applies.
 - `Lagged` may delay the harness state (the outcome is durable; the Codex channel has the same risk, H23).
-- `claude_bin` removed after start ⇒ transient refusal (reader told after 30 s).
 - Planner card `kind: "codex"` is a legacy view name.
 - `ToolSearch` schema reload per resume unmeasured.
 
 ### 9.4 Risks and conflicts
 
 - **Undocumented protocol drift** (input lines and control envelopes are Agent-SDK internal): v1 writes
-  only `user` lines and `interrupt`; fixtures come from the recorded version; the sandbox arm pins the
-  verified version; the unconfined arm runs whatever `claude_bin` is (the user's binary auto-updates) and
-  relies on the capability and shape checks.
+  only `user` lines and `interrupt`; fixtures come from the recorded version; both confinement modes run a
+  pinned versioned binary whose version is checked before any input (D18).
 - **#1542**: PR4 changes the reader texts at `run_loop.rs:2430`/`:2547` that #1542 also touches.
 - **#1727**: S1–S3 and S4 slices 1–4 are in the base; S4 slice 5 (`TaskDeclaration.base`,
   `operation/workspace_lease/base.rs:17-21`) is not — expect textual conflicts in `planner.md`, goldens and

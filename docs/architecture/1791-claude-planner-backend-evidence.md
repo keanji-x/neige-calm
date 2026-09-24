@@ -33,7 +33,7 @@ halves in §E2 because `scripts/gate-1316-terminology-ratchet.sh` counts the ret
 | H19 | `state_from_snapshot`: running phases restore as `Resumed` → `Idle` after 5 s | `harness/run_loop.rs:3925-3960`; `harness/config.rs:28` |
 | H20 | Fixtures fake lives inside `SharedCodexAppServer`; ~70 `daemon:` fields in 31 files build `PlannerHarnessParams` | `shared_codex_appserver.rs:784-860`; `git grep -l PlannerHarnessParams` |
 | H21 | Boot recovery runs only if the Codex daemon started; otherwise a deferred pass waits on Codex readiness | `lib.rs:615-640`; `state.rs:577-598` |
-| H22 | Crash window: the issuing snapshot (with the client id, queue not yet drained) is persisted at `:3045`; `last_turn_id` is set only after `turn_start` returns (`:3262`) | `harness/run_loop.rs:3025-3045`, `:3262` |
+| H22 | Crash window: the issuing snapshot (client id, queue not yet drained) is persisted at `:3045`; after `turn_start` returns, `last_turn_id` is assigned in memory (`:3262`), persisted by `persist_issuance_outcome` (`:3267`), durable when that transaction commits (`:3876-3882`) | `harness/run_loop.rs:3025-3045`, `:3262-3267`, `:3876-3882` |
 | H23 | Codex notification broadcast capacity 1024, shared by all threads | `shared_codex_appserver.rs:1042` |
 
 ### E1.2 Start, stop, identity, deletion
@@ -62,7 +62,7 @@ halves in §E2 because `scripts/gate-1316-terminology-ratchet.sh` counts the ret
 | S20 | Create idempotency: `CreateRequestShape` + `create_request_digest` enumerate fields; optional fields enter the digest only when set ("preserve the exact pre-selection digest") | `routes/tracks/create.rs:100-120`, `:333-357` |
 | S21 | Deletion seals are owned by the shared daemon and survive harness removal; `shutdown_track` seals every live Planner; card-grade quiesce seals + interrupts ("a destructive workspace move may only follow a confirmed quiesce"); track/area deletion plans hold `turn_daemon` and unseal on rollback | `harness/registry.rs:203-218`; `routes/cards.rs:128-156`; `routes/tracks.rs:128`, `:2677`, `:2870-2956`, `:2991-3009`, `:3160`; `routes/areas.rs:319`, `:398`, `:489-623`, `:652-663`, `:814` |
 | S22 | Production unit: `KillMode=process` (only calm-server is signalled; children stay in the cgroup); SIGTERM runs axum graceful shutdown | `~/.config/systemd/user/neige-next.service.d/preserving.conf`; `main.rs:187-199`, `:253` |
-| S23 | Stop precedents (production): marker-authenticated sweep + fail-closed wait (`operation/task_verify_adapter/target.rs:715-740` `stop_group`; `operation/gate_process.rs:350-372`); `proc_env_marker` → `Present`/`Foreign`/`Unreadable` (`proc_identity.rs:180-212`); `sigkill_verified_members` (`:247-252`); daemon spawn `process_group(0)` (`shared_codex_appserver.rs:2601`). Live scan (2026-09-24): same-uid processes with unreadable environ = 4 zombie `sh` in the neige-next service cgroup + `sshd` in session scopes | as listed |
+| S23 | Stop precedents (production): marker-authenticated sweep + fail-closed wait (`operation/task_verify_adapter/target.rs:715-740` `stop_group`; `operation/gate_process.rs:350-372`); `proc_env_marker` → `Present`/`Foreign`/`Unreadable` (`proc_identity.rs:180-212`); `sigkill_verified_members` (`:247-252`); daemon spawn `process_group(0)` (`shared_codex_appserver.rs:2601`). Live scan (2026-09-24): same-uid processes with unreadable environ exist (zombie `sh` in the service cgroup, privsep `sshd`); review channel A adds setgid `ssh-agent` inside the service cgroup and headless Chromium rewriting its environ (marker gone) | as listed |
 | S24 | Codex daemon env: `env_clear()` + `SPAWN_ENV_PASSTHROUGH` | `shared_codex_appserver.rs:55-90` |
 | S25 | Codex trusts the workspace (`trust_level = "trusted"`) | `shared_codex_home.rs:303-313` |
 | S26 | Attachments: png/jpeg/gif/webp, ≤ 8 MiB, bound to absolute paths; `attachments_supported` depends on workspace, not provider; issuance sends `localImage` items | `crates/calm-types/src/planner_attachment.rs:13-47`; `planner_attachments/mod.rs:30`; `planner_attachments/bind.rs:21-26`; `routes/cards.rs:1165-1172`; `harness/run_loop.rs:3178-3184` |
@@ -71,6 +71,9 @@ halves in §E2 because `scripts/gate-1316-terminology-ratchet.sh` counts the ret
 | S30 | Optional-backend config precedent: `isolated_codex_config: Option<PathBuf>`, "missing keeps this backend unavailable" (`config.rs:33-36`; `state.rs:971`) | as listed |
 | S31 | Seal set = thread-keyed `DashMap` on the daemon (`shared_codex_appserver.rs:672`); `DeletionThreadSeals` seals, retains, unseals on drop (`:733-771`) | as listed |
 | S32 | Recovered-outcome precedent from `handle_state_json.last_turn_id` (`shared_codex_appserver/preserving_recovery.rs:120-160`); outcome put is SELECT-then-INSERT (`crates/calm-truth/src/db/sqlite/out_of_domain.rs:423-434`) | as listed |
+| S33 | Reset: the start transaction supersedes the predecessor (`crates/calm-truth/src/db/sqlite/session_mirror.rs:318-322`), then the adapter shuts it down only if registered (`operation/planner_harness_start_adapter.rs:862-868`); the route runs start, then a shutdown op (`routes/cards.rs:1421-1427`); boot selects only active rows (`db/sqlite/session_projection.rs:771`) | as listed |
+| S34 | Deletion order: card quiesce before `shutdown_track` (`routes/tracks.rs:2663-2695`); Codex re-checks the seal after `turn/start` (`shared_codex_appserver.rs:1386-1390`); MCP auth accepts only active sessions' token hashes (`mcp_server/handshake.rs:55-60`) | as listed |
+| S35 | Instructions carry bound template input and template context (`operation/planner_harness_start_adapter.rs:313-316`, `template_context.rs:53-56`); `IsolatedCodexConfig` is `deny_unknown_fields` with a required `codex_binary` (`isolated_codex/config.rs:14-23`); versioned binaries 2.1.220/2.1.259/2.1.280 behind the `~/.local/bin/claude` symlink; `--version` takes 9 ms | as listed |
 | S27 | Other Codex-only consumers: `liveness_feeder` subscribes the Codex stream (`dispatcher/mod.rs:798`); dev replay (`replay.rs:390`); TUI initial-prompt takeover query (`db/sqlite/read.rs:798-830`) | as listed |
 
 ### E1.3 MCP, tools, prompts, FE
@@ -174,39 +177,11 @@ out-of-cwd `Edit(//<cwd>/**)` write. These are release-gate checks (main doc §9
 
 ### E4.1 Round 1
 
-Channel A = subagent review, channel B = codex review, both on `c2ebf619d`. "Where" = main doc section.
+Channel A = subagent review, channel B = codex review, both on `c2ebf619d`. The per-row round-1 table is in commit `92fadd1f8` (this file, §E4); it is condensed here.
 
 | Id | Finding (short) | Disposition |
 |---|---|---|
-| A1 | provider not persisted at mint | ACCEPTED (verified S12/S13) → §4.4 session identity; must-red in PR3 |
-| A2 | orphans / process groups / KillMode=process | ACCEPTED (verified S22/S23) → superseded in r2 by the marker sweep (D12) |
-| A3 | consecutive spawn serialization | ACCEPTED → §5.1 (r2: `wait()` then `stop`) |
-| A4 | call-site inventory incomplete | ACCEPTED (verified S7, S8, S11, S21, S27) → §4.1 |
-| A5 | create digest | ACCEPTED → §4.4 (r2 wording: 38 replay + 7 fail closed) |
-| A6 | security honesty / sandbox | ACCEPTED; sandbox probed (P-S1, P-S2) → §5.3 + release gate §9.2; `${VAR}` token kept off disk |
-| A7 | env allowlist diverges | ACCEPTED → §5.2 reuses `SPAWN_ENV_PASSTHROUGH` minus OpenAI/Codex keys |
-| A8 | `--permission-mode default` hidden | ACCEPTED → flag dropped (P-I/P-S ran without it); `init.session_id == thread` check added |
-| A9 | usage on api_error / auxiliary models | ACCEPTED (P-D, P-F3) → §5.10 |
-| A10 | item ids per block, exit code parse, phase Idle | ACCEPTED → §6.1, §4.4 |
-| A11 | `Lagged` loss; ENOENT retry | ACCEPTED as KNOWN GAP (Codex channel is shared and busier, H23) + start preflight → §9.3 |
-| A12 | ratchet runtime+id term | ACCEPTED → E1.4 |
-| A13 | slices | ACCEPTED → §9.1 (PR2a/2b; `claude` refused until PR4; PR1 tests Codex arm only) |
-| A14 | AGENTS.md parity | ACCEPTED, verified (P-J, Q13) → §5.2 |
-| A15 | system-prompt snapshot until compaction | ACCEPTED → §5.2 instructions re-rendered at every spawn |
-| B1 | = A1 | MERGED-WITH A1 |
-| B2 | seal ownership survives registry removal; confirmed stop | ACCEPTED (verified S21) → r2: existing thread-keyed seals + `stop` (§4.1 rows 7, 16, 17) |
-| B3 | = A4 (+ PlainChat/Assistant stay Codex) | MERGED-WITH A4 |
-| B4 | wrong catalog endpoint | ACCEPTED (verified S11) → r2: model choice cut, `source:"unavailable"` (§5.8) |
-| B5 | sticky needs its own arm | ACCEPTED (verified S19) → §4.4 |
-| B6 | = A5 (+ `NewTrackBody`, `wire.ts`) | MERGED-WITH A5 |
-| B7 | turn identity across crash | ACCEPTED (verified H22) → r2: journal deleted; `last_turn_id` + idempotent outcome (§5.1) |
-| B8 | settlement vs consumer teardown; cause arbitration; decode/write failures | ACCEPTED (verified H15) → §5.1, §6.2 (r2: record → emit, one submission contract) |
-| B9 | usage conditional; totals; baseline | ACCEPTED → §5.10 (baseline: KNOWN GAP) |
-| B10 | images dropped | ACCEPTED; image blocks verified (P-I) → §5.6 |
-| B11 | wire types/envelopes incomplete | ACCEPTED (P-F3 envelope) → §5.4 |
-| B12 | permission equivalence is a release decision; project config trust | ACCEPTED → §5.3, §9.2; project config: explicit decision D13 |
-| B13 | = A13 (+ PR5 FE depends on PR4, FE checks in PR3) | MERGED-WITH A13 |
-| B14 | overstated claims (supervision, H7, H9, §5.6 key, #1727/#1785 status, #1542) | ACCEPTED: H7/H9/H17 corrected; #1727 S1–S3 and S4 slices 1–4 and #1785 slice 1 (#1790) are in the base (r2 correction); #1542 overlaps the reader texts (§9.3); per-turn still needs readers/timers/sweep (§5.1 says so) |
+| A1–A15, B1–B14 | all accepted or merged (B1→A1, B3→A4, B6→A5, B13→A13); the round-1 fixes that round 2 replaced are: A2/B2 process identity + registry (→ D12), B7 journal (→ D13), B4 three model surfaces (→ D11 cut), A6 path rules (kept only with the sandbox), A13 steer PR (→ D8 cut). The rest stand as written in the main doc: A1/B5/A5 provider identity (§4.4), A3 serialization, A4 inventory (§4.1), A7 env, A8 flags, A9/B9 usage, A10 mapping, A11 gaps, A12 gate rows, A14 AGENTS.md (P-J), A15 re-rendering, B8 settlement, B10 images (P-I), B11 wire types, B12 release gate, B14 claim corrections (#1727 S1–S3 + S4 slices 1–4, #1785 slice 1 in base) |
 
 ### E4.2 Round 2
 
@@ -237,4 +212,21 @@ Channel A = subagent review, channel B = codex review, both on `c2ebf619d`. "Whe
 | B2-8 | PR3 must make existing callers send `"codex"` | ACCEPTED (S29) → PR3 |
 | B2-9 | 45 replay overstated | ACCEPTED → 38 replay + 7 fail closed |
 | B2-10 | #1727 S4 incomplete in base | ACCEPTED, verified (`operation/workspace_lease/base.rs:17-21`) → §9.4 |
+
+### E4.3 Round 3
+
+| Id | Finding (short) | Disposition |
+|---|---|---|
+| A-B1 | `Unreadable` + same uid/cgroup makes `stop` a host-wide liveness trap (setgid `ssh-agent`, privsep `sshd`) | ACCEPTED (live scan S23) → D16: only `Present` is a member; narrowing and zombie case deleted; must-red deleted |
+| A-M2 | shutdown not a confirmed stop; deletion quiesce before harness shutdown; reset sweeps nothing | ACCEPTED, verified (S33, S34) → D17: shutdown awaits `stop`, post-spawn seal re-check, reset stops the old id |
+| A-m3 | environ rewriting (Chromium), cgroup escape | ACCEPTED → merged into the D16 KNOWN GAP; "confirmed stop" qualified |
+| A-m4 | `deny_unknown_fields`; versioned binary; version before input | ACCEPTED (S35) → D18 |
+| A-m5 | unique `worker_session_id` in tests; restate pgid must-red | ACCEPTED → PR2b must-red column |
+| B3-1 | reset can orphan a retired Claude session | ACCEPTED, verified (S33) → D17 reset/replay row; PR4 must-red |
+| B3-2 | settlement does not stop descendants | ACCEPTED (P-K; channel B's own bounded probe) → D17 settlement row; PR2b must-red |
+| B3-3 | version check after admission | ACCEPTED → D18 pre-spawn `--version`; wrong-version fake gets no input |
+| B3-4 | instructions on argv | ACCEPTED, verified (S35; no `hidepid`) → D19 |
+| B3-5 | failed cleanup leaves the old credential valid | ACCEPTED, verified (S34) → D20 |
+| B3-6 | `Interrupted + ResultSuccess(is_error:true)` → completed | ACCEPTED → §6.2 split row + P-D fixture |
+| B3-7 | boundary is the commit, not `:3262` | ACCEPTED, verified (H22) → D21 + three PR4 tests |
 
