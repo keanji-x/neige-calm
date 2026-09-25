@@ -82,6 +82,8 @@ mod file_delivery;
 mod gate_binding;
 #[path = "cases/git_delivery.rs"]
 mod git_delivery;
+#[path = "cases/lease_git_env.rs"]
+mod lease_git_env;
 #[path = "cases/task_replace.rs"]
 mod task_replace;
 #[path = "cases/task_replace_carry.rs"]

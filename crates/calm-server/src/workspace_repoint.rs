@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use crate::workspace_materialize::neige_git_command;
+use crate::workspace_materialize::isolated_git_command;
 
 /// Exactly the one empty init commit from `materialize_managed_workspace`.
 const MATERIALIZE_BASELINE_COMMITS: &str = "1";
@@ -100,10 +100,11 @@ pub fn workspace_pristine(path: &Path) -> PristineVerdict {
     PristineVerdict::Pristine
 }
 
-/// Shares [`neige_git_command`] because an inherited `GIT_DIR` would silently point these commands at a
-/// different repository, and this predicate's answer is what authorises a rename.
+/// [`isolated_git_command`]: an inherited `GIT_DIR` would silently point these commands at a
+/// different repository, and this predicate's answer is what authorises a rename; `status` also runs
+/// the repository's fsmonitor and clean filters, which must not see the kernel's environment.
 fn git_stdout(path: &Path, args: &[&str]) -> std::result::Result<String, String> {
-    let mut command: Command = neige_git_command();
+    let mut command: Command = isolated_git_command();
     let output = command
         .arg("-C")
         .arg(path)

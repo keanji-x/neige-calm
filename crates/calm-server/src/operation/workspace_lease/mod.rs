@@ -14,7 +14,7 @@ use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VE
 use crate::ids::{ActorId, AreaId, CardId, TrackId};
 use crate::model::{TrackWorkspaceKind, new_id, now_ms};
 use crate::proc_identity::read_boot_id;
-use crate::workspace_materialize::neige_git_command;
+use crate::workspace_materialize::{isolated_git_command, neige_git_command};
 
 use super::forge_action_adapter::FORGE_ACTION_KIND;
 use super::{PhaseTag, TimestampMs, Tx};
@@ -933,7 +933,8 @@ fn sweep_workspace_slice_branches_for_track(repo_root: &Path, track_id: &str) {
             continue;
         }
         let branch_ref = format!("refs/heads/{branch}");
-        let delete = neige_git_command()
+        // Isolated: a ref deletion runs the repository's `reference-transaction` hook.
+        let delete = isolated_git_command()
             .arg("-C")
             .arg(repo_root)
             .args(["branch", "-D", branch])
@@ -1209,7 +1210,9 @@ pub(crate) fn provision_workspace_worktree(
 
     let branch_ref = format!("refs/heads/{}", target.branch);
     let branch_exists = git_ref_exists(&target.repo_root, &branch_ref)?;
-    let mut command = neige_git_command();
+    // Isolated: the checkout runs the repository's own code (`post-checkout` and
+    // `reference-transaction` hooks, smudge/process filters, fsmonitor).
+    let mut command = isolated_git_command();
     command
         .arg("-C")
         .arg(&target.repo_root)
@@ -1339,7 +1342,8 @@ pub(crate) fn remove_workspace_worktree(target: &WorkspaceLeaseTarget) -> Result
     let branch_ref = format!("refs/heads/{}", target.branch);
     let branch_existed = git_ref_exists(&target.repo_root, &branch_ref)?;
     if branch_existed {
-        let output = neige_git_command()
+        // Isolated: a ref deletion runs the repository's `reference-transaction` hook.
+        let output = isolated_git_command()
             .arg("-C")
             .arg(&target.repo_root)
             .args(["branch", "-D", &target.branch])

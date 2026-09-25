@@ -51,12 +51,33 @@ const HOSTILE_GIT_ENV: &[&str] = &[
     "GIT_CONFIG_COUNT",
 ];
 
-/// A `git` command with the hostile ambient variables removed; every git spawn on this path must use it.
+/// A `git` command with the hostile ambient variables removed; every git spawn on this path that is
+/// not an [`isolated_git_command`] must use it.
 pub(crate) fn neige_git_command() -> Command {
     let mut command = Command::new("git");
     for key in HOSTILE_GIT_ENV {
         command.env_remove(key);
     }
+    command
+}
+
+/// The only variables of the server's environment an [`isolated_git_command`] run inherits.
+const ISOLATED_GIT_INHERITED_ENV: [&str; 3] = ["PATH", "HOME", "XDG_CONFIG_HOME"];
+
+/// A `git` command whose environment is an allowlist, not the server's, for every git run that
+/// executes repository-selected code (hooks, smudge/clean/process filters, merge drivers,
+/// fsmonitor) and needs no credentials. Kept: `PATH` (git and that code resolve binaries), `HOME`
+/// and `XDG_CONFIG_HOME` when set (git reads the user's global config there, e.g.
+/// `safe.directory`), and the C locale. Callers add what a run needs, such as a commit identity.
+pub(crate) fn isolated_git_command() -> Command {
+    let mut command = Command::new("git");
+    command.env_clear();
+    for key in ISOLATED_GIT_INHERITED_ENV {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
+    command.envs([("LANG", "C"), ("LC_ALL", "C")]);
     command
 }
 
@@ -296,9 +317,10 @@ fn materialize_managed_workspace_inner(
     }
 
     if init_commit == InitCommit::Create && !git_head_resolves(path) {
+        // Isolated: `commit` reads the index, so it runs the repository's configured fsmonitor.
         run_git(
             path,
-            neige_git_command().arg("-C").arg(path).args([
+            isolated_git_command().arg("-C").arg(path).args([
                 "-c",
                 "commit.gpgsign=false",
                 "-c",

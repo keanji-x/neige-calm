@@ -1033,8 +1033,9 @@ async fn git_root(dir: &Path) -> Result<PathBuf> {
     Ok(PathBuf::from(s.trim()))
 }
 
+/// Isolated: `status` runs the repository's fsmonitor, clean filters and `post-index-change` hook.
 async fn git_output(root: &Path, args: &[&str]) -> Result<std::process::Output> {
-    let out = Command::new("git")
+    let out = Command::from(crate::workspace_materialize::isolated_git_command())
         .arg("-C")
         .arg(root)
         .args(args)

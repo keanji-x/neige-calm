@@ -193,6 +193,35 @@ fn workspace_worktree_remove_deletes_branch_and_is_idempotent() {
     remove_workspace_worktree(&target).unwrap();
 }
 
+/// #1792: the slice-branch delete runs the repository's `reference-transaction` hook, so it runs
+/// with the allowlisted environment. nextest gives this test its own process.
+#[test]
+fn workspace_worktree_remove_hook_sees_only_the_allowlisted_environment() {
+    // SAFETY: one test, one process under nextest; no other thread reads the environment.
+    unsafe { std::env::set_var("NEIGE_LEASE_ENV_SENTINEL", "server-secret") };
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+    let target = WorkspaceLeaseTarget {
+        repo_root: repo.clone(),
+        path: repo.join(".claude/worktrees/track-hook/card-hook"),
+        branch: workspace_slice_branch_for("track-hook", "card-hook").unwrap(),
+    };
+    provision_workspace_worktree(&target, &pinned(&head_base(&target))).unwrap();
+    let probe = tmp.path().join("hook-env.txt");
+    let hook = repo.join(".git/hooks/reference-transaction");
+    std::fs::write(&hook, format!("#!/bin/sh\nenv >> '{}'\n", probe.display())).unwrap();
+    let mut permissions = std::fs::metadata(&hook).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+    std::fs::set_permissions(&hook, permissions).unwrap();
+
+    remove_workspace_worktree(&target).unwrap();
+
+    let seen = std::fs::read_to_string(&probe).expect("the reference-transaction hook ran");
+    assert!(seen.contains("PATH="), "{seen}");
+    assert!(!seen.contains("NEIGE_LEASE_ENV_SENTINEL"), "leaked: {seen}");
+}
+
 #[test]
 fn workspace_worktree_provision_excludes_root_from_base_status() {
     let tmp = tempfile::tempdir().unwrap();
