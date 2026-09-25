@@ -139,6 +139,12 @@ Docker 开发端口默认发布到主机的**所有网络接口**。容器还会
 
 ## 开发与验证
 
+任何改动（包括纯文档改动）在提交评审前都要通过 CI lint job 的文本棘轮（术语与 prose）：
+
+```bash
+scripts/local-ratchet-gates.sh
+```
+
 日常 Rust 开发只运行覆盖受影响 package 和行为的测试（请将占位符替换为实际选择器）：
 
 ```bash

@@ -74,6 +74,9 @@ Run only the smallest relevant checks while iterating and before requesting
 review. Workspace-wide Rust tests run in CI and are not a routine local step:
 
 ```bash
+# Every change, including docs-only: the CI lint job's text ratchets
+scripts/local-ratchet-gates.sh
+
 # Rust: select the affected package and test-name filter
 env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 \
   cargo nextest run --locked \
@@ -92,7 +95,10 @@ scripts/local-rust-gates.sh --quick
 ./e2e/run.sh
 ```
 
-Add `--features calm-server/codex-e2e` only when the affected Rust test requires
+Run `scripts/local-ratchet-gates.sh` for every change, including docs-only ones;
+it runs the CI lint job's terminology and prose ratchets over tracked files in
+the working tree (`git add -N` new files first). Add
+`--features calm-server/codex-e2e` only when the affected Rust test requires
 it. Narrow further with `--lib` or `--test <test-target>` when useful. Do not run
 the full `scripts/local-rust-gates.sh` unless explicitly requested or changing
 the gate/nextest configuration itself; CI is authoritative for the broad

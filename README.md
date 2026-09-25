@@ -187,6 +187,13 @@ The Docker development port is published on **all host interfaces by default**. 
 
 ## Development
 
+Every change, including a docs-only one, must pass the CI lint job's text
+ratchets (terminology and prose) before review:
+
+```bash
+scripts/local-ratchet-gates.sh
+```
+
 During normal Rust development, run only the tests that cover the affected
 package and behavior (replace the placeholders with real selectors):
 
