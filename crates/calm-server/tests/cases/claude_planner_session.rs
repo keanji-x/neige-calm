@@ -313,6 +313,22 @@ async fn an_undecodable_line_fails_the_turn_as_protocol() {
     assert!(rig.marked_pids().is_empty());
 }
 
+/// Count every successful spawn on the session's side (the after-spawn hook runs only then), so a
+/// test never depends on a CLI that the refusal stopped having recorded itself first.
+fn count_spawns(rig: &Rig) -> Arc<std::sync::atomic::AtomicUsize> {
+    let spawns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&spawns);
+    rig.session()
+        .set_after_spawn_hook_for_test(Arc::new(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+    spawns
+}
+
+fn spawned(spawns: &std::sync::atomic::AtomicUsize) -> usize {
+    spawns.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 async fn assert_refused_before_ok(rig: &Rig, input: Vec<InputItem>) -> String {
     let mut rx = rig.session().subscribe_notifications();
     let started = Instant::now();
@@ -339,16 +355,28 @@ async fn assert_refused_before_ok(rig: &Rig, input: Vec<InputItem>) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_stalled_write_is_refused_before_ok() {
     let rig = Rig::new("stall").await;
+    let spawns = count_spawns(&rig);
     let error = assert_refused_before_ok(&rig, oversized_text()).await;
     assert!(error.contains("in time"), "{error}");
-    assert!(rig.read_bin("spawns").is_some(), "the fake was spawned");
+    assert_eq!(spawned(&spawns), 1, "the fake was spawned");
+    assert_eq!(
+        rig.session().user_line_writes_for_test(),
+        1,
+        "the write was tried"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_immediate_exit_is_refused_before_ok_with_no_outcome() {
     let rig = Rig::new("immediate-exit").await;
+    let spawns = count_spawns(&rig);
     assert_refused_before_ok(&rig, oversized_text()).await;
-    assert!(rig.read_bin("spawns").is_some(), "the fake was spawned");
+    assert_eq!(spawned(&spawns), 1, "the fake was spawned");
+    assert_eq!(
+        rig.session().user_line_writes_for_test(),
+        1,
+        "the write was tried"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -363,15 +391,20 @@ async fn a_seal_after_spawn_stops_the_cli_before_any_input() {
     let rig = Rig::new("hold").await;
     let daemon = Arc::clone(&rig.daemon);
     let thread = rig.thread.clone();
+    let spawns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&spawns);
     rig.session()
         .set_after_spawn_hook_for_test(Arc::new(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             daemon.seal_turn_thread_for_deletion(&thread);
         }));
     let error = assert_refused_before_ok(&rig, rig.text("hello")).await;
     assert!(error.contains("sealed"), "{error}");
-    assert!(rig.read_bin("spawns").is_some(), "the fake was spawned");
-    assert!(
-        rig.read_bin("stdin").is_none(),
+    // Both observed on the session's side: the stop may end the fake before it records anything.
+    assert_eq!(spawned(&spawns), 1, "the fake was spawned");
+    assert_eq!(
+        rig.session().user_line_writes_for_test(),
+        0,
         "no user line after the seal"
     );
 }
@@ -386,8 +419,9 @@ async fn a_wrong_version_receives_no_user_input() {
         rig.read_bin("spawns").is_none(),
         "no turn process after a wrong version"
     );
-    assert!(
-        rig.read_bin("stdin").is_none(),
+    assert_eq!(
+        rig.session().user_line_writes_for_test(),
+        0,
         "no user input after a wrong version"
     );
 }

@@ -289,6 +289,8 @@ pub(crate) struct FinishedTurn {
 pub(crate) struct TestHooks {
     pub(crate) after_spawn: Option<Arc<dyn Fn() + Send + Sync>>,
     pub(crate) before_turn_completed: Option<SettlePause>,
+    /// How many user lines `turn_start` has tried to write to a spawned CLI.
+    pub(crate) user_line_writes: usize,
 }
 
 /// An awaitable pause: the driver signals `entered` and waits for `release`.
@@ -519,6 +521,10 @@ impl ClaudePlannerSession {
             return Err(self.abort_before_ok(Some(child), instructions, error).await);
         };
         let slot = Arc::new(TurnSlot::new(stdin, settle_after_stop));
+        #[cfg(feature = "fixtures")]
+        {
+            shared.hooks.lock().expect("hooks").user_line_writes += 1;
+        }
         if let Err(error) = slot.write_line(&line).await {
             return Err(self.abort_before_ok(Some(child), instructions, error).await);
         }
@@ -673,6 +679,13 @@ impl ClaudePlannerSession {
             }
         }
         stopped
+    }
+
+    /// Fixtures only: how many user lines this session has tried to write, observed on the
+    /// session's side so a test does not depend on the CLI recording a line before it is stopped.
+    #[cfg(feature = "fixtures")]
+    pub fn user_line_writes_for_test(&self) -> usize {
+        self.shared.hooks.lock().expect("hooks").user_line_writes
     }
 
     #[cfg(feature = "fixtures")]
