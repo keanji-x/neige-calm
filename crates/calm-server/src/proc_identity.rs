@@ -427,25 +427,11 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_reaped_process_environ_is_foreign_not_unreadable() {
-        use std::os::fd::AsRawFd as _;
-        let mut child = std::process::Command::new("sleep")
-            .arg("300")
-            .env("NEIGE_GATE_OP", "w:reaped#g1")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn sleep");
-        let pid = i32::try_from(child.id()).expect("pid fits i32");
-        let held = std::fs::File::open(format!("/proc/{pid}")).expect("hold proc dir");
-        child.kill().expect("kill");
-        child.wait().expect("reap");
+        let reaped = calm_worker_runtime::test_support::ReapedProcDir::new();
+        let pid = reaped.pid;
         let root = tempfile::tempdir().expect("tempdir");
-        std::os::unix::fs::symlink(
-            format!("/proc/self/fd/{}", held.as_raw_fd()),
-            root.path().join(pid.to_string()),
-        )
-        .expect("symlink");
+        std::os::unix::fs::symlink(reaped.path(), root.path().join(pid.to_string()))
+            .expect("symlink");
 
         let read = std::fs::read(root.path().join(format!("{pid}/environ")));
         assert_eq!(

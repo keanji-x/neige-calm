@@ -249,6 +249,7 @@ pub(crate) fn verify_network(pid: i32, policy: NetworkPolicy) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{ChildGuard, ReapedProcDir};
 
     #[test]
     fn boundary_identity_wrong_namespace_is_unknown() {
@@ -272,6 +273,29 @@ mod tests {
         assert!(matches!(observe(&own), Observation::Live(_)));
     }
 
+    fn describe(observed: Result<Observation>) -> String {
+        match observed {
+            Ok(Observation::Live(_)) => "live".into(),
+            Ok(Observation::Gone(why)) => format!("gone {why}"),
+            Ok(Observation::Unknown(why)) => format!("unknown {why}"),
+            Err(error) => format!("err {error}"),
+        }
+    }
+
+    /// A fake proc root whose `pid` entry resolves to the held directory of `reaped`, so every
+    /// read under it is ESRCH.
+    fn root_pointing_at(pid: i32, reaped: &ReapedProcDir) -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(reaped.path(), root.path().join(pid.to_string())).unwrap();
+        let read = std::fs::read_to_string(root.path().join(format!("{pid}/stat")));
+        assert_eq!(
+            read.as_ref().map_err(io::Error::raw_os_error).err(),
+            Some(Some(libc::ESRCH)),
+            "the fixture must reproduce the reaped-mid-read stat: {read:?}"
+        );
+        root
+    }
+
     /// An init reaped after its pidfd was pinned but before its `stat` (or `ns/pid`) was read fails
     /// that read with ESRCH, not ENOENT (#1793). That is a reaped init (`Gone`), not missing
     /// evidence (`Unknown`, which `stop` returns without retrying). Pinned with a real pidfd and a
@@ -279,42 +303,30 @@ mod tests {
     /// directory of the same, already reaped, child.
     #[test]
     fn an_init_reaped_after_its_pidfd_is_gone_not_unknown() {
-        use std::os::fd::AsRawFd as _;
-        let mut child = std::process::Command::new("sleep")
-            .arg("300")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .unwrap();
-        let pid = child.id() as i32;
+        let mut child = ChildGuard::sleep();
+        let pid = child.pid();
         let expected = identity(pid, false).unwrap();
         let pidfd = PidFd::open(pid).unwrap();
         let held = File::open(format!("/proc/{pid}")).unwrap();
-        child.kill().unwrap();
-        child.wait().unwrap();
-        let root = tempfile::tempdir().unwrap();
-        std::os::unix::fs::symlink(
-            format!("/proc/self/fd/{}", held.as_raw_fd()),
-            root.path().join(pid.to_string()),
-        )
-        .unwrap();
+        child.kill_and_reap();
+        let reaped = ReapedProcDir::from_held(pid, held);
+        let root = root_pointing_at(pid, &reaped);
+        let observed = describe(observe_pinned(root.path(), &expected, pidfd));
+        assert_eq!(observed, "gone init_reaped");
+    }
 
-        let read = std::fs::read_to_string(root.path().join(format!("{pid}/stat")));
-        assert_eq!(
-            read.as_ref().map_err(io::Error::raw_os_error).err(),
-            Some(Some(libc::ESRCH)),
-            "the fixture must reproduce the reaped-mid-read stat: {read:?}"
-        );
-        let observed = observe_pinned(root.path(), &expected, pidfd);
-        assert!(
-            matches!(observed, Ok(Observation::Gone("init_reaped"))),
-            "{:?}",
-            observed.map(|o| match o {
-                Observation::Live(_) => "live".to_string(),
-                Observation::Gone(why) => format!("gone {why}"),
-                Observation::Unknown(why) => format!("unknown {why}"),
-            })
-        );
+    /// The vanished-entry arm trusts a failed read only while the pinned pidfd reports the init
+    /// exited: a LIVE init whose `/proc` read fails with ESRCH (here the fake root resolves to a
+    /// different, reaped child) is missing evidence (`Err` → `Unknown`), never `Gone`.
+    #[test]
+    fn a_live_init_with_a_vanished_proc_read_is_not_gone() {
+        let live = ChildGuard::sleep();
+        let pid = live.pid();
+        let expected = identity(pid, false).unwrap();
+        let pidfd = PidFd::open(pid).unwrap();
+        let reaped = ReapedProcDir::new();
+        let root = root_pointing_at(pid, &reaped);
+        let observed = describe(observe_pinned(root.path(), &expected, pidfd));
+        assert!(observed.starts_with("err "), "{observed}");
     }
 }

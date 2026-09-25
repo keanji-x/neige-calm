@@ -308,24 +308,12 @@ fn a_fake_proc_root_pins_the_per_pid_rules() {
 /// the held `/proc/<pid>` directory of a reaped child; its `environ` still shows the marker.
 #[test]
 fn a_marked_pid_reaped_before_its_stat_read_is_skipped() {
-    use std::os::fd::AsRawFd as _;
-    let mut child = Command::new("sleep")
-        .arg("300")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn sleep");
-    let pid = child.id() as i32;
-    let held = std::fs::File::open(format!("/proc/{pid}")).expect("hold proc dir");
-    child.kill().expect("kill");
-    child.wait().expect("reap");
-
+    let reaped = calm_worker_runtime::test_support::ReapedProcDir::new();
+    let pid = reaped.pid;
     let markers = HashSet::from(["inst:ws".to_string()]);
     let root = fake_proc(pid, None, "PATH=/bin\0NEIGE_CLAUDE_PLANNER=inst:ws\0");
     let stat = root.path().join(pid.to_string()).join("stat");
-    std::os::unix::fs::symlink(format!("/proc/self/fd/{}/stat", held.as_raw_fd()), &stat)
-        .expect("symlink stat");
+    std::os::unix::fs::symlink(format!("{}/stat", reaped.path()), &stat).expect("symlink stat");
 
     let read = std::fs::read_to_string(&stat);
     assert_eq!(

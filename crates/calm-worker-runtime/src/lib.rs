@@ -103,6 +103,8 @@ mod linux;
 mod runtime;
 #[cfg(target_os = "linux")]
 mod storage;
+#[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+pub mod test_support;
 #[cfg(target_os = "linux")]
 mod transport;
 

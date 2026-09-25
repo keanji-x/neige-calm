@@ -418,25 +418,11 @@ pub(crate) fn kill(artifacts: &super::SpawnArtifacts) {
 mod tests {
     use super::{group_stopped_in, marked_member_blocks};
     use crate::operation::SpawnArtifacts;
-    use std::os::fd::AsRawFd as _;
+    use calm_worker_runtime::test_support::{ChildGuard, ReapedProcDir};
     use std::os::unix::process::CommandExt as _;
-    use std::process::{Command, Stdio};
+    use std::process::Command;
 
     const MARKER: &str = "w:reaped#g1";
-
-    fn sleeper(marker: bool) -> std::process::Child {
-        let mut command = Command::new("sleep");
-        command
-            .arg("300")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .process_group(0);
-        if marker {
-            command.env("NEIGE_GATE_OP", MARKER);
-        }
-        command.spawn().expect("spawn sleep")
-    }
 
     fn artifacts(pgid: i32) -> SpawnArtifacts {
         SpawnArtifacts {
@@ -457,42 +443,32 @@ mod tests {
     /// and a live marked member listed beside it still holds the group running.
     #[test]
     fn a_process_reaped_mid_scan_is_not_a_cleanup_failure() {
-        let mut reaped = sleeper(false);
-        let reaped_pid = reaped.id() as i32;
-        let held = std::fs::File::open(format!("/proc/{reaped_pid}")).expect("hold proc dir");
-        reaped.kill().expect("kill");
-        reaped.wait().expect("reap");
-
-        let mut live = sleeper(true);
-        let live_pid = live.id() as i32;
+        let reaped = ReapedProcDir::new();
+        let live = ChildGuard::spawn(
+            Command::new("sleep")
+                .arg("300")
+                .env("NEIGE_GATE_OP", MARKER)
+                .process_group(0),
+        );
+        let live_pid = live.pid();
         // `spawn` can return while the child is still inside execve, when its environ reads empty
         // (so `Foreign`); the live-member case below needs the marker actually visible.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        let marker_visible = loop {
-            if crate::proc_identity::proc_env_marker(live_pid, "NEIGE_GATE_OP", MARKER)
-                == crate::proc_identity::MarkerAuth::Present
-            {
-                break true;
-            }
-            if std::time::Instant::now() >= deadline {
-                break false;
-            }
+        while crate::proc_identity::proc_env_marker(live_pid, "NEIGE_GATE_OP", MARKER)
+            != crate::proc_identity::MarkerAuth::Present
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the live sleeper's environ never showed the marker"
+            );
             std::thread::sleep(std::time::Duration::from_millis(5));
-        };
-        if !marker_visible {
-            let _ = live.kill();
-            let _ = live.wait();
-            panic!("the live sleeper's environ never showed the marker");
         }
 
         let vanished_only = tempfile::tempdir().expect("tempdir");
         let with_live = tempfile::tempdir().expect("tempdir");
         for root in [vanished_only.path(), with_live.path()] {
-            std::os::unix::fs::symlink(
-                format!("/proc/self/fd/{}", held.as_raw_fd()),
-                root.join(reaped_pid.to_string()),
-            )
-            .expect("symlink reaped");
+            std::os::unix::fs::symlink(reaped.path(), root.join(reaped.pid.to_string()))
+                .expect("symlink reaped");
         }
         std::os::unix::fs::symlink(
             format!("/proc/{live_pid}"),
@@ -500,25 +476,22 @@ mod tests {
         )
         .expect("symlink live");
 
-        let read = std::fs::read_to_string(vanished_only.path().join(format!("{reaped_pid}/stat")));
-        let plain = group_stopped_in(vanished_only.path(), &artifacts(live_pid), |_| true);
-        let marked = group_stopped_in(vanished_only.path(), &artifacts(live_pid), |pid| {
-            marked_member_blocks(pid, MARKER)
-        });
-        let held_live = group_stopped_in(with_live.path(), &artifacts(live_pid), |pid| {
-            marked_member_blocks(pid, MARKER)
-        });
-
-        let _ = live.kill();
-        let _ = live.wait();
-
+        let read =
+            std::fs::read_to_string(vanished_only.path().join(format!("{}/stat", reaped.pid)));
         assert_eq!(
             read.as_ref().map_err(std::io::Error::raw_os_error).err(),
             Some(Some(libc::ESRCH)),
             "the fixture must reproduce the reaped-mid-scan read: {read:?}"
         );
+        let plain = group_stopped_in(vanished_only.path(), &artifacts(live_pid), |_| true);
         assert!(matches!(plain, Ok(true)), "{plain:?}");
+        let marked = group_stopped_in(vanished_only.path(), &artifacts(live_pid), |pid| {
+            marked_member_blocks(pid, MARKER)
+        });
         assert!(matches!(marked, Ok(true)), "{marked:?}");
+        let held_live = group_stopped_in(with_live.path(), &artifacts(live_pid), |pid| {
+            marked_member_blocks(pid, MARKER)
+        });
         assert!(
             matches!(held_live, Ok(false)),
             "a live marked member must still hold the group: {held_live:?}"
