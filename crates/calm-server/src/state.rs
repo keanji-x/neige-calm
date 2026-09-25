@@ -7,6 +7,8 @@ use crate::db::{Repo, RouteRepo};
 use crate::dispatcher::Dispatcher;
 use crate::event::{Event, EventBus, EventScope};
 
+use crate::claude_planner::config::{ClaudePlannerConfig, ClaudePlannerHost};
+use crate::claude_planner::wiring::ClaudePlannerWiring;
 use crate::harness::HarnessRegistry;
 use crate::ids::ActorId;
 use crate::isolated_codex::config::{Backend as IsolatedCodexBackend, IsolatedCodexConfig};
@@ -122,6 +124,19 @@ pub struct RouteState {
     /// The creator holds it through workspace materialization and planner
     /// startup; deletion therefore snapshots a closed member set.
     pub(crate) area_delete_locks: crate::per_card_lock::KeyedLocks,
+    /// The Claude Planner backend (#1791): its config (absent without `--claude-planner-config`)
+    /// and marker instance, for creates, readiness, recovery and the scoped sweeps.
+    pub(crate) claude_planner: Arc<ClaudePlannerHost>,
+}
+
+impl RouteState {
+    /// What recovery and the start adapter open a Claude Planner session with.
+    pub(crate) fn claude_planner_wiring(&self) -> ClaudePlannerWiring {
+        ClaudePlannerWiring {
+            host: Arc::clone(&self.claude_planner),
+            plugin: Arc::clone(&self.plugin),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -171,6 +186,7 @@ pub struct BootState {
     pub operation_runtime: Arc<OperationRuntime>,
     pub worker_flow: Arc<WorkerFlowDriver>,
     pub isolated_codex_backend: Option<Arc<IsolatedCodexBackend>>,
+    pub claude_planner: Arc<ClaudePlannerHost>,
 }
 
 impl BootState {
@@ -201,6 +217,7 @@ impl BootState {
             planner_attachment_locks: crate::per_card_lock::new_per_card_locks(),
             track_delete_locks: crate::per_card_lock::new_keyed_locks(),
             area_delete_locks: crate::per_card_lock::new_keyed_locks(),
+            claude_planner: self.claude_planner,
         };
         let worker = WorkerState {
             repo: self.repo.clone(),
@@ -341,6 +358,7 @@ struct OperationAdapterInputs {
     mcp_server: Option<Arc<McpServer>>,
     gate_logs_dir: PathBuf,
     workspace_root: PathBuf,
+    claude_planner: Arc<ClaudePlannerHost>,
 }
 
 fn terminal_hook_settings(codex: &CodexClient) -> crate::terminal_hooks::TerminalHookSettings {
@@ -452,12 +470,17 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
                 .mcp_server
                 .as_ref()
                 .map(|server| server.shim_config.socket_path.clone()),
+            input.claude_planner.clone(),
         ));
     let planner_harness_interrupt_adapter: Arc<dyn ProviderAdapter> =
         Arc::new(PlannerHarnessInterruptAdapter::new(input.harness.clone()));
-    let planner_harness_shutdown_adapter: Arc<dyn ProviderAdapter> = Arc::new(
-        PlannerHarnessShutdownAdapter::new(input.harness, input.shared_codex_appserver, input.repo),
-    );
+    let planner_harness_shutdown_adapter: Arc<dyn ProviderAdapter> =
+        Arc::new(PlannerHarnessShutdownAdapter::new(
+            input.harness,
+            input.shared_codex_appserver,
+            input.repo,
+            input.claude_planner,
+        ));
     let task_verify_adapter: Arc<dyn ProviderAdapter> =
         Arc::new(TaskVerifyAdapter::new(input.gate_logs_dir));
     let forge_action_adapter: Arc<dyn ProviderAdapter> = Arc::new(ForgeActionAdapter::new());
@@ -573,17 +596,51 @@ impl AppState {
         self
     }
 
-    pub async fn recover_harnesses_on_boot(&self) -> crate::error::Result<usize> {
+    pub async fn recover_harnesses_on_boot(
+        &self,
+        rows: crate::harness::BootRows,
+    ) -> crate::error::Result<usize> {
         crate::harness::recover_harnesses_on_boot(
             self.raw.clone(),
             self.events.clone(),
             self.card_role_cache.clone(),
             self.track_area_cache.clone(),
             self.shared_codex_appserver.clone(),
+            &self.claude_planner_wiring(),
             &self.harness,
             &self.route.track_delete_locks,
+            rows,
         )
         .await
+    }
+
+    /// What recovery and the start adapter open a Claude Planner session with.
+    pub fn claude_planner_wiring(&self) -> ClaudePlannerWiring {
+        self.route.claude_planner_wiring()
+    }
+
+    /// Fixture assembly only: run this state's Claude Planners under `config` (the typed
+    /// `--claude-planner-config`), keeping its marker instance and instructions directory.
+    #[cfg(feature = "fixtures")]
+    pub fn with_claude_planner_config(mut self, config: ClaudePlannerConfig) -> Self {
+        let current = &self.route.claude_planner;
+        let data_dir = current
+            .instructions_dir
+            .parent()
+            .and_then(std::path::Path::parent)
+            .expect("instructions dir sits at <data_dir>/claude-planner/tmp")
+            .to_path_buf();
+        self.route.claude_planner = Arc::new(
+            ClaudePlannerHost::new(
+                Some(config),
+                &data_dir,
+                current.mcp_shim.clone(),
+                current.mcp_socket.clone(),
+            )
+            .expect("claude planner host"),
+        );
+        self.rebuild_operation_runtime();
+        self
     }
 
     /// Arm the deferred (post-heal) planner harness recovery task; called from boot only
@@ -596,6 +653,7 @@ impl AppState {
                 card_role_cache: self.card_role_cache.clone(),
                 track_area_cache: self.track_area_cache.clone(),
                 daemon: self.shared_codex_appserver.clone(),
+                claude: self.claude_planner_wiring(),
                 registry: self.harness.clone(),
                 track_delete_locks: self.route.track_delete_locks.clone(),
                 #[cfg(feature = "fixtures")]
@@ -686,6 +744,10 @@ impl AppState {
             repo.sqlite_pool()
                 .expect("AppState::from_parts requires a sqlite-backed Repo"),
         ));
+        let claude_planner = Arc::new(
+            ClaudePlannerHost::unconfigured_scratch()
+                .expect("a scratch Claude Planner host for AppState::from_parts"),
+        );
         let adapters = build_operation_adapters(OperationAdapterInputs {
             isolated_codex_backend: None,
             route_repo: route_repo.clone(),
@@ -702,6 +764,7 @@ impl AppState {
             mcp_server: None,
             gate_logs_dir: TaskVerifyAdapter::default_gate_logs_dir(),
             workspace_root: workspace_root_sandbox.path().to_path_buf(),
+            claude_planner: claude_planner.clone(),
         });
         let completion = OperationCompletionBus::new();
         let operation_runtime = Arc::new(OperationRuntime::new_unchecked(
@@ -787,6 +850,7 @@ impl AppState {
             operation_runtime,
             worker_flow,
             isolated_codex_backend: None,
+            claude_planner,
         }
         .into_app_state()
     }
@@ -888,6 +952,7 @@ impl AppState {
             mcp_server: self.mcp_server.clone(),
             gate_logs_dir: TaskVerifyAdapter::default_gate_logs_dir(),
             workspace_root: self.route.workspace_root.clone(),
+            claude_planner: self.route.claude_planner.clone(),
         });
         let completion = OperationCompletionBus::new();
         let runtime = Arc::new(OperationRuntime::new_unchecked(
@@ -1088,6 +1153,18 @@ impl AppState {
             task_budget_default,
         )
         .with_preview(preview);
+        // #1791 §5.1 item 1: every Claude Planner credential is revoked and every Claude Planner
+        // marker swept BEFORE the listener opens, so no surviving process or old token is served.
+        let claude_planner = Arc::new(ClaudePlannerHost::new(
+            cfg.claude_planner_config
+                .as_deref()
+                .map(ClaudePlannerConfig::read)
+                .transpose()?,
+            &cfg.data_dir_resolved(),
+            mcp_shim_bin.clone(),
+            mcp_socket_path.clone(),
+        )?);
+        crate::claude_planner::lifecycle::boot(repo.as_ref(), &claude_planner).await?;
         let mcp_server = crate::mcp_server::McpServer::spawn_with_context(
             mcp_context.clone(),
             mcp_socket_path,
@@ -1176,6 +1253,7 @@ impl AppState {
             mcp_server: Some(mcp_server.clone()),
             gate_logs_dir: gate_logs_dir.clone(),
             workspace_root: workspace_root.clone(),
+            claude_planner: claude_planner.clone(),
         });
         let completion = OperationCompletionBus::new();
         let operation_runtime = Arc::new(
@@ -1293,6 +1371,7 @@ impl AppState {
             operation_runtime,
             worker_flow,
             isolated_codex_backend,
+            claude_planner,
         };
         let state = state.into_app_state();
 

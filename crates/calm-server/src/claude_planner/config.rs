@@ -10,7 +10,9 @@ use serde::Deserialize;
 
 use super::spawn::instructions_dir;
 use super::stop::MarkerInstance;
+use super::translate::CalmToolNames;
 use crate::error::{CalmError, Result};
+use crate::model::CardRole;
 
 /// How long `<claude_binary> --version` may take; it answers in milliseconds.
 const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
@@ -75,32 +77,91 @@ impl ClaudePlannerConfig {
     }
 }
 
-/// What every Claude Planner of this server shares: the typed config, the marker instance and the
-/// instructions directory derived from `data_dir`, and the MCP shim and socket.
+/// The flag whose absence keeps the Claude Planner unavailable (design #1791 §5.3).
+pub const CONFIG_FLAG: &str = "--claude-planner-config";
+
+/// What every Claude Planner of this server shares: the typed config (absent without
+/// [`CONFIG_FLAG`]), the marker instance and the instructions directory derived from `data_dir`,
+/// the MCP shim and socket, and the calm tools a Planner card sees. The marker instance exists
+/// without the config, so the boot sweep and every retirement `stop` work either way.
 #[derive(Debug)]
 pub struct ClaudePlannerHost {
-    pub config: ClaudePlannerConfig,
+    config: Option<ClaudePlannerConfig>,
     pub instance: MarkerInstance,
     pub instructions_dir: PathBuf,
     pub mcp_shim: PathBuf,
     pub mcp_socket: PathBuf,
+    pub calm_tools: CalmToolNames,
+    /// Owns the data dir of [`Self::unconfigured_scratch`].
+    _scratch: Option<tempfile::TempDir>,
 }
 
 impl ClaudePlannerHost {
     pub fn new(
-        config: ClaudePlannerConfig,
+        config: Option<ClaudePlannerConfig>,
         data_dir: &Path,
         mcp_shim: PathBuf,
         mcp_socket: PathBuf,
     ) -> Result<Self> {
+        let calm_tools = CalmToolNames::new(
+            crate::mcp_server::build_default_registry()
+                .descriptors_for_role(CardRole::Planner)
+                .into_iter()
+                .map(|descriptor| descriptor.name),
+        );
         Ok(Self {
             config,
             instance: MarkerInstance::for_data_dir(data_dir)?,
             instructions_dir: instructions_dir(data_dir)?,
             mcp_shim,
             mcp_socket,
+            calm_tools,
+            _scratch: None,
         })
     }
+
+    /// A host with no config over a private temporary data dir, for runtimes assembled without a
+    /// data dir (`AppState::from_parts`, the dispatcher's own runtime): it never spawns, and its
+    /// marker instance matches no other calm-server's processes.
+    pub fn unconfigured_scratch() -> Result<Self> {
+        let scratch = tempfile::Builder::new()
+            .prefix("calm-claude-planner-")
+            .tempdir()?;
+        let mut host = Self::new(
+            None,
+            scratch.path(),
+            PathBuf::from("neige-mcp-stdio-shim"),
+            scratch.path().join("mcp.sock"),
+        )?;
+        host._scratch = Some(scratch);
+        Ok(host)
+    }
+
+    /// The config, or the refusal that names [`CONFIG_FLAG`].
+    pub fn configured(&self) -> Result<&ClaudePlannerConfig> {
+        self.config
+            .as_ref()
+            .ok_or_else(|| CalmError::Conflict(unavailable_message()))
+    }
+
+    /// The readiness preflight (§4.1 row 11): configured, and the pinned binary answers
+    /// `--version` with the pinned version.
+    pub async fn check_ready(&self) -> Result<()> {
+        let config = self.configured()?;
+        let env = super::spawn::base_env(&super::spawn::EnvInputs {
+            path: crate::kernel_bin_path::kernel_led_path()?.path,
+            config_dir: &config.config_dir,
+            mcp_socket: &self.mcp_socket,
+            marker: self.instance.marker("readiness"),
+            proxy: &[],
+        });
+        config.verify_version(&env).await
+    }
+}
+
+/// What a reader and a refused caller are told while [`CONFIG_FLAG`] is absent.
+pub fn unavailable_message() -> String {
+    format!("the Claude Planner is unavailable: calm-server was started without {CONFIG_FLAG}")
 }
 
 fn version_error(binary: &Path, detail: &str) -> CalmError {

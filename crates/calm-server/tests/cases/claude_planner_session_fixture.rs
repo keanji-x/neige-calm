@@ -80,7 +80,7 @@ impl Rig {
         };
         let host = Arc::new(
             ClaudePlannerHost::new(
-                config,
+                Some(config),
                 &data,
                 PathBuf::from("/nonexistent/neige-mcp-stdio-shim"),
                 dir.path().join("mcp.sock"),
@@ -112,9 +112,17 @@ impl Rig {
         self.session.as_ref().expect("opened in the constructor")
     }
 
-    /// A fresh session for this rig's worker-session row, with the rig's MCP token installed.
+    /// A fresh session for this rig's worker-session row, installed as the registry would; its
+    /// first turn mints the MCP credential.
     pub async fn open_session(&self) -> ClaudePlannerSession {
-        let session = ClaudePlannerSession::open(ClaudePlannerSessionParams {
+        let session = self.open_session_uninstalled().await;
+        session.mark_installed();
+        session
+    }
+
+    /// A fresh session the registry never installed.
+    pub async fn open_session_uninstalled(&self) -> ClaudePlannerSession {
+        ClaudePlannerSession::open(ClaudePlannerSessionParams {
             host: Arc::clone(&self.host),
             worker_session_id: self.worker_session_id.clone(),
             card_id: self.card_id.clone(),
@@ -128,11 +136,7 @@ impl Rig {
             seals: Arc::clone(&self.daemon),
         })
         .await
-        .expect("open session");
-        session
-            .install_mcp_token("tok-rig".into())
-            .expect("install token");
-        session
+        .expect("open session")
     }
 
     /// Write the row's `active_turn_id` the way the harness snapshot does.
@@ -158,6 +162,16 @@ impl Rig {
             .expect("session_get")
             .expect("row")
             .active_turn_id
+    }
+
+    /// The row's `mcp_token_hash`.
+    pub async fn mcp_token_hash(&self) -> Option<String> {
+        self.repo
+            .session_get(&WorkerSessionId(self.worker_session_id.clone()))
+            .await
+            .expect("session_get")
+            .expect("row")
+            .mcp_token_hash
     }
 
     /// The row's `agent_session_id`.
@@ -200,14 +214,7 @@ impl Rig {
     }
 
     pub async fn outcomes(&self) -> Vec<Value> {
-        self.repo
-            .harness_item_list_by_card(&self.card_id, 0, 1000, false)
-            .await
-            .expect("list")
-            .into_iter()
-            .filter(|row| row.method == "turn/completed")
-            .map(|row| serde_json::from_str(&row.params).expect("params"))
-            .collect()
+        card_rows(self.repo.as_ref(), &self.card_id, "turn/completed").await
     }
 
     pub fn text(&self, text: &str) -> Vec<InputItem> {
@@ -223,6 +230,17 @@ impl Drop for Rig {
             sigkill_verified_for_test(pid, start_time);
         }
     }
+}
+
+/// The card's stored transcript rows of one `method`, oldest first, as their params.
+pub async fn card_rows(repo: &dyn Repo, card_id: &str, method: &str) -> Vec<Value> {
+    repo.harness_item_list_by_card(card_id, 0, 10_000, false)
+        .await
+        .expect("list")
+        .into_iter()
+        .filter(|row| row.method == method)
+        .map(|row| serde_json::from_str(&row.params).expect("params"))
+        .collect()
 }
 
 pub fn client_id() -> String {

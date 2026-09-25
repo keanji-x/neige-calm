@@ -57,6 +57,9 @@ impl HarnessReservation {
         match self.registry.0.map.entry(self.worker_session_id.clone()) {
             Entry::Occupied(mut occupied) => {
                 if matches!(occupied.get(), Slot::Reserved(id) if *id == self.id) {
+                    // The only production writer of `Slot::Live`: from here on a Claude session
+                    // may mint and spawn (#1791 §5.1 item 2).
+                    handle.mark_installed();
                     occupied.insert(Slot::Live(handle));
                     true
                 } else {
@@ -111,6 +114,7 @@ impl HarnessRegistry {
     /// Direct Live install (test seams). Stomps whatever occupies the slot; production goes
     /// through reserve → install.
     pub fn insert(&self, runtime_id: String, handle: PlannerHarness) -> Option<PlannerHarness> {
+        handle.mark_installed();
         match self.0.map.insert(runtime_id, Slot::Live(handle)) {
             Some(Slot::Live(previous)) => Some(previous),
             _ => None,

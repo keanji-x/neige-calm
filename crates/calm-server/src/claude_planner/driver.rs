@@ -12,8 +12,10 @@ use tokio::time::Instant;
 use uuid::Uuid;
 
 use super::protocol::{ControlResponseOut, ControlResponseOutBody, Record, SystemInit, decode};
-use super::session::{Shared, TerminalCause, TurnSlot, WRITE_TIMEOUT, deadline_reached};
-use super::spawn::{InstructionsFile, SessionStart};
+use super::session::{
+    FinishedTurn, Shared, TerminalCause, TurnSlot, WRITE_TIMEOUT, deadline_reached,
+};
+use super::spawn::InstructionsFile;
 use super::stop::{STOP_BOUND, stop_by};
 use super::translate::{TurnOutcome, TurnTranslator};
 use crate::codex_appserver::Notification;
@@ -41,8 +43,11 @@ pub(crate) struct TurnRun {
     pub(crate) translator: TurnTranslator,
     pub(crate) instructions: InstructionsFile,
     pub(crate) thread: Uuid,
-    /// How this spawn named the Claude session; `New` binds `agent_session_id` on the first init.
-    pub(crate) start: SessionStart,
+    /// The row's `agent_session_id` is not persisted yet: the first init naming the thread binds
+    /// it (a `--session-id` spawn, or a `--resume` spawn after a bind that failed).
+    pub(crate) bind: bool,
+    /// The pinned `claude_version` this spawn was verified against.
+    pub(crate) version: String,
 }
 
 /// The event that ends a turn (§6.2 columns).
@@ -170,7 +175,8 @@ pub(crate) async fn drive(shared: Arc<Shared>, run: TurnRun) {
         mut translator,
         instructions,
         thread,
-        start,
+        bind,
+        version,
     } = run;
     let stderr_tail = Arc::new(Mutex::new(String::new()));
     let stderr_task = tokio::spawn(keep_stderr_tail(stderr, Arc::clone(&stderr_tail)));
@@ -183,8 +189,10 @@ pub(crate) async fn drive(shared: Arc<Shared>, run: TurnRun) {
         answering: true,
         translator: &mut translator,
         thread,
-        start,
+        bind,
+        version: &version,
         bound: false,
+        row_bound: false,
         total_tokens: None,
     };
     let mut exited: Option<(std::process::ExitStatus, Instant)> = None;
@@ -217,7 +225,11 @@ pub(crate) async fn drive(shared: Arc<Shared>, run: TurnRun) {
             }
         }
     };
-    let (bound, total_tokens) = (reading.bound, reading.total_tokens);
+    let finished = FinishedTurn {
+        named_session: reading.bound,
+        row_bound: reading.row_bound,
+        total_tokens: reading.total_tokens,
+    };
     settle(
         &shared,
         SettleInput {
@@ -226,8 +238,7 @@ pub(crate) async fn drive(shared: Arc<Shared>, run: TurnRun) {
             translator,
             instructions,
             thread,
-            bound,
-            total_tokens,
+            finished,
             stderr_tail,
         },
         ending,
@@ -246,9 +257,13 @@ struct Reading<'a> {
     answering: bool,
     translator: &'a mut TurnTranslator,
     thread: Uuid,
-    start: SessionStart,
-    /// A valid `system/init` named this thread's session.
+    /// See [`TurnRun::bind`].
+    bind: bool,
+    version: &'a str,
+    /// A `system/init` named this thread's session.
     bound: bool,
+    /// The bind of `agent_session_id` was persisted during this turn.
+    row_bound: bool,
     total_tokens: Option<i64>,
 }
 
@@ -264,21 +279,21 @@ impl Reading<'_> {
                 // The CLI created (or resumed) this thread's session as soon as it names it, even
                 // when a later check fails the turn: bind it, so the next spawn resumes it.
                 if init.session_id == self.thread {
-                    if !self.bound && self.start == SessionStart::New {
-                        let bound = self
+                    if !self.bound && self.bind {
+                        match self
                             .slot
                             .bounded(BIND_TIMEOUT, self.bind_agent_session())
-                            .await;
-                        if bound.is_none() {
-                            tracing::warn!(
-                                "claude planner: agent session bind cut off by its bound"
-                            );
+                            .await
+                        {
+                            Some(persisted) => self.row_bound = persisted,
+                            None => tracing::warn!(
+                                "claude planner: agent session bind cut off by its bound; the next turn retries it"
+                            ),
                         }
                     }
                     self.bound = true;
                 }
-                let version = &self.shared.params.host.config.claude_version;
-                if let Err(check) = init_check(init, self.thread, version) {
+                if let Err(check) = init_check(init, self.thread, self.version) {
                     self.slot
                         .record(TerminalCause::Failed(format!("check: {check}")));
                     return Some(Ending::Stopped);
@@ -368,8 +383,9 @@ impl Reading<'_> {
     }
 
     /// Persist `agent_session_id` through the attribution bind, so a session opened for this row
-    /// later resumes. A failed write is logged: this process still resumes from memory.
-    async fn bind_agent_session(&self) {
+    /// later resumes. A failed write is logged and `false`: this process resumes from memory and
+    /// the next turn retries the bind.
+    async fn bind_agent_session(&self) -> bool {
         let params = &self.shared.params;
         let id = params.worker_session_id.clone();
         let thread = self.thread.to_string();
@@ -396,12 +412,16 @@ impl Reading<'_> {
             })
         })
         .await;
-        if let Err(error) = written {
-            tracing::warn!(
-                worker_session_id = %params.worker_session_id,
-                %error,
-                "claude planner: agent session id not persisted"
-            );
+        match written {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(
+                    worker_session_id = %params.worker_session_id,
+                    %error,
+                    "claude planner: agent session id not persisted; the next turn retries it"
+                );
+                false
+            }
         }
     }
 }
@@ -465,8 +485,7 @@ struct SettleInput {
     translator: TurnTranslator,
     instructions: InstructionsFile,
     thread: Uuid,
-    bound: bool,
-    total_tokens: Option<i64>,
+    finished: FinishedTurn,
     stderr_tail: Arc<Mutex<String>>,
 }
 
@@ -483,8 +502,7 @@ async fn settle(shared: &Shared, input: SettleInput, ending: Ending) {
         mut translator,
         instructions,
         thread,
-        bound,
-        total_tokens,
+        finished,
         stderr_tail,
     } = input;
     let params = &shared.params;
@@ -579,7 +597,8 @@ async fn settle(shared: &Shared, input: SettleInput, ending: Ending) {
     let _ = slot.bounded(REAP_WAIT, child.wait()).await;
     drop(instructions);
     let closes = translator.close_open(crate::model::now_ms());
-    shared.finish_turn(bound, total_tokens);
+    // Fixtures only; like the rest of settlement it runs after `stop`, but it is NOT bounded by
+    // `settle_by`: a test holding it holds `TurnCompleted`.
     #[cfg(feature = "fixtures")]
     {
         let pause = shared
@@ -593,9 +612,6 @@ async fn settle(shared: &Shared, input: SettleInput, ending: Ending) {
             pause.release.notified().await;
         }
     }
-    for notification in closes {
-        let _ = shared.notifications.send(notification);
-    }
-    let _ = shared.notifications.send(completed);
+    shared.finish_turn(finished, closes.into_iter().chain([completed]));
     slot.settled.send_replace(true);
 }

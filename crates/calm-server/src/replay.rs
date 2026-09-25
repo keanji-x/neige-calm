@@ -388,6 +388,7 @@ pub async fn force_planner_phase(
             state.card_role_cache.clone(),
             state.track_area_cache.clone(),
             state.shared_codex_appserver.clone(),
+            &state.claude_planner_wiring(),
             &state.harness,
             state.track_delete_locks(),
             runtime.clone(),

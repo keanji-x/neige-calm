@@ -370,6 +370,10 @@ impl Boot {
             CardRoleCache::new(),
             TrackAreaCache::new(),
             None,
+            std::sync::Arc::new(
+                crate::claude_planner::config::ClaudePlannerHost::unconfigured_scratch()
+                    .expect("scratch claude planner host"),
+            ),
         )
     }
 

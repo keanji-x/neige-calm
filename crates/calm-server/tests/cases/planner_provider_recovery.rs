@@ -1,6 +1,6 @@
-//! #1791: the Codex recovery path only recovers a Codex Planner row on a Planner-role card that
-//! binds Codex; a Claude row, a row whose card names another (or no) backend, or a Planner row on a
-//! card whose persisted role is not Planner, is skipped.
+//! #1791: recovery runs a Planner row on its own provider only when its Planner-role card names
+//! that same provider; a row whose card names another (or no) backend, or a Planner row on a card
+//! whose persisted role is not Planner, is skipped.
 
 use super::*;
 
@@ -79,12 +79,17 @@ async fn recover_planner_row(
         .unwrap()
         .unwrap();
     let registry = HarnessRegistry::new();
+    let claude_wiring =
+        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
+            repo.clone(),
+        );
     let outcome = spawn_recovered_harness(
         repo.clone(),
         EventBus::new(),
         repo.card_role_cache().clone(),
         repo.track_area_cache().clone(),
         SharedCodexAppServer::new_stub(repo.clone()),
+        &claude_wiring,
         &registry,
         &calm_server::harness::new_track_delete_locks(),
         runtime,
@@ -106,10 +111,22 @@ async fn a_codex_planner_row_on_a_codex_planner_card_is_recovered() {
     assert!(installed, "the Codex control case must recover");
 }
 
+/// The Claude arm installs a harness (its session never spawns until a turn, and this server has
+/// no Claude config, so that turn would refuse).
 #[tokio::test]
-async fn a_planner_row_the_codex_path_cannot_run_is_skipped() {
+async fn a_claude_planner_row_on_a_claude_planner_card_is_recovered() {
+    let (outcome, installed) =
+        recover_planner_row(CardRole::Planner, Some("claude"), AgentProvider::Claude).await;
+    assert!(matches!(
+        outcome,
+        calm_server::harness::RecoveryOutcome::Installed(_)
+    ));
+    assert!(installed);
+}
+
+#[tokio::test]
+async fn a_planner_row_whose_provider_is_not_its_cards_is_skipped() {
     for (card_provider, row_provider) in [
-        (Some("claude"), AgentProvider::Claude),
         (Some("codex"), AgentProvider::Claude),
         (Some("claude"), AgentProvider::Codex),
         (None, AgentProvider::Codex),

@@ -1323,12 +1323,17 @@ async fn review_round_does_not_recover_into_pending_queue_but_ratify_events_do()
     let repo: Arc<dyn Repo> = fx.repo.clone();
     let daemon = SharedCodexAppServer::new_stub(repo.clone());
     let registry = HarnessRegistry::new();
+    let claude_wiring =
+        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
+            repo.clone(),
+        );
     let handle = spawn_recovered_harness(
         repo,
         fx.events.clone(),
         fx.card_role_cache.clone(),
         fx.track_area_cache.clone(),
         daemon,
+        &claude_wiring,
         &registry,
         &calm_server::harness::new_track_delete_locks(),
         runtime,

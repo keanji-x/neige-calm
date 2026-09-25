@@ -10,6 +10,7 @@ use utoipa::{IntoParams, ToSchema};
 
 use crate::codex_appserver::{CodexConfig, CodexModel};
 use crate::error::{CalmError, ErrorBody, Result};
+use crate::session_projection_repo::AgentProvider;
 use crate::state::{AppState, CodexShellState, RouteState};
 
 /// Budget for the whole request, not each codex read. Passed down into
@@ -108,6 +109,10 @@ pub struct ModelsQuery {
     /// Resolve the default against this card's workspace; without one the read has no
     /// `cwd` and `default_source` is `unknown`.
     pub card_id: Option<String>,
+    /// The Planner provider a card is about to be created with. `claude` (like a `card_id`
+    /// naming a Claude Planner card) answers `source: "unavailable"` with an empty catalog: a
+    /// Claude Planner runs its CLI's default model and offers no choice.
+    pub provider: Option<AgentProvider>,
 }
 
 pub fn router() -> Router<AppState> {
@@ -132,7 +137,7 @@ pub(crate) async fn list_models(
 ) -> Result<Json<ModelsResponse>> {
     // Resolved before codex is asked so a bad `card_id` is rejected regardless of daemon
     // state. A blank `card_id=` means "no card supplied".
-    let cwd = match q
+    let card = match q
         .card_id
         .as_deref()
         .map(str::trim)
@@ -141,6 +146,19 @@ pub(crate) async fn list_models(
         Some(card_id) => Some(resolve_card_workspace(&s, card_id).await?),
         None => None,
     };
+    // #1791 §5.8: no catalog and no default for a Claude Planner, and Codex is not asked.
+    if q.provider == Some(AgentProvider::Claude)
+        || card.as_ref().is_some_and(|card| card.claude_planner)
+    {
+        return Ok(Json(ModelsResponse {
+            models: Vec::new(),
+            default: ModelDefaults::default(),
+            default_source: DefaultSource::Unknown,
+            source: ModelSource::Unavailable,
+            fetched_at_ms: None,
+        }));
+    }
+    let cwd = card.map(|card| card.workspace);
     let daemon = &codex.shared_codex_appserver;
     let deadline = tokio::time::Instant::now() + CODEX_READ_TIMEOUT;
 
@@ -208,14 +226,24 @@ fn defaults_from_config_read(config: CodexConfig) -> ModelDefaults {
     }
 }
 
+/// A card's workspace and whether it is a Claude Planner card.
+struct ResolvedCard {
+    workspace: String,
+    claude_planner: bool,
+}
+
 /// The workspace path a card's codex thread runs in — the same value
 /// `planner-harness-start` puts on its payload. Any card resolves, not only a planner card.
-async fn resolve_card_workspace(s: &RouteState, card_id: &str) -> Result<String> {
+async fn resolve_card_workspace(s: &RouteState, card_id: &str) -> Result<ResolvedCard> {
     let card = s
         .repo
         .card_get(card_id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
+    let claude_planner = s.write.verify_role(&card.id).is_some_and(|role| {
+        crate::harness::profile::PlannerBinding::from_card(&card, role)
+            .is_some_and(|binding| binding.provider == AgentProvider::Claude)
+    });
     let track = s
         .repo
         .track_get(card.track_id.as_str())
@@ -223,5 +251,8 @@ async fn resolve_card_workspace(s: &RouteState, card_id: &str) -> Result<String>
         .ok_or_else(|| {
             CalmError::NotFound(format!("track {} for card {card_id}", card.track_id))
         })?;
-    Ok(track.workspace.path)
+    Ok(ResolvedCard {
+        workspace: track.workspace.path,
+        claude_planner,
+    })
 }

@@ -3,10 +3,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+use crate::claude_planner::config::ClaudePlannerHost;
+use crate::claude_planner::stop::stop;
 use crate::db::Repo;
 use crate::db::sqlite::{session_mark_superseded_runtime_tx, session_projection_by_id_tx};
 use crate::error::{CalmError, Result};
 use crate::harness::HarnessRegistry;
+use crate::session_projection_repo::{AgentProvider, WorkerSessionKind};
 use crate::shared_codex_appserver::SharedCodexAppServer;
 
 use super::{
@@ -25,6 +28,7 @@ pub struct PlannerHarnessShutdownAdapter {
     harness_registry: HarnessRegistry,
     daemon: Arc<SharedCodexAppServer>,
     repo: Arc<dyn Repo>,
+    claude_host: Arc<ClaudePlannerHost>,
 }
 
 impl PlannerHarnessShutdownAdapter {
@@ -32,11 +36,13 @@ impl PlannerHarnessShutdownAdapter {
         harness_registry: HarnessRegistry,
         daemon: Arc<SharedCodexAppServer>,
         repo: Arc<dyn Repo>,
+        claude_host: Arc<ClaudePlannerHost>,
     ) -> Self {
         Self {
             harness_registry,
             daemon,
             repo,
+            claude_host,
         }
     }
 }
@@ -104,16 +110,35 @@ impl ProviderAdapter for PlannerHarnessShutdownAdapter {
         _op: &Operation,
         _ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome> {
-        let runtime_id = output.output_string("runtime_id", "planner harness")?;
-        if let Some(harness) = self.harness_registry.remove(&runtime_id) {
+        let worker_session_id = output.output_string("runtime_id", "planner harness")?;
+        let runtime = self
+            .repo
+            .session_projection_by_id(&worker_session_id)
+            .await?;
+        let claude = runtime.as_ref().is_some_and(|runtime| {
+            runtime.kind == WorkerSessionKind::SharedPlanner
+                && runtime.agent_provider == Some(AgentProvider::Claude)
+        });
+        let registered = self.harness_registry.remove(&worker_session_id);
+        let was_registered = registered.is_some();
+        if let Some(harness) = registered {
             harness.shutdown().await?;
-        } else if let Some(runtime) = self.repo.session_projection_by_id(&runtime_id).await?
+        }
+        if claude {
+            // #1791 §5.1: a Claude Planner is stopped by id, registered or not (a replay repeats it). A failure is
+            // logged and left to the boot sweep or the next destructive step's scoped sweep; the superseded row's
+            // token no longer authenticates.
+            if let Err(error) = stop(&self.claude_host.instance, &worker_session_id).await {
+                tracing::warn!(%worker_session_id, %error, "planner harness shutdown: the Claude Planner stop did not confirm");
+            }
+        } else if !was_registered
+            && let Some(runtime) = runtime
             && let Some(thread_id) = runtime.thread_id.as_deref()
         {
             let cached_turn = self.daemon.active_turn_id_for_thread(thread_id);
             if let Err(e) = self.daemon.interrupt_active_turn(thread_id).await {
                 tracing::warn!(
-                    runtime_id,
+                    runtime_id = %worker_session_id,
                     thread_id,
                     error = %e,
                     "planner harness shutdown replay thread interrupt failed"
@@ -124,7 +149,7 @@ impl ProviderAdapter for PlannerHarnessShutdownAdapter {
                 && let Err(e) = self.daemon.turn_interrupt(thread_id, persisted_turn).await
             {
                 tracing::warn!(
-                    runtime_id,
+                    runtime_id = %worker_session_id,
                     thread_id,
                     turn_id = persisted_turn,
                     error = %e,

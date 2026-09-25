@@ -439,6 +439,7 @@ pub async fn boot_forge_e2e_fixture(
                     cache.clone(),
                     track_area_cache.clone(),
                     Some(server.shim_config.socket_path.clone()),
+                    std::sync::Arc::new(calm_server::claude_planner::config::ClaudePlannerHost::unconfigured_scratch().expect("scratch claude planner host")),
                 )) as Arc<dyn ProviderAdapter>,
             ],
             events.clone(),

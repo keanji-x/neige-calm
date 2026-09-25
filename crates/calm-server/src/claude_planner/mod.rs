@@ -6,11 +6,13 @@
 
 pub mod config;
 mod driver;
+pub mod lifecycle;
 pub mod protocol;
 pub mod session;
 pub mod spawn;
 pub mod stop;
 pub mod translate;
+pub mod wiring;
 
 #[cfg(test)]
 mod driver_tests;

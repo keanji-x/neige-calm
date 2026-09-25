@@ -207,12 +207,17 @@ async fn boot_recovery_includes_marked_plain_chat_but_excludes_pty_codex() {
     assert_eq!(recovered[0].id, chat_runtime_id);
     assert_eq!(recovered[0].kind, WorkerSessionKind::CodexCard);
     let registry = HarnessRegistry::new();
+    let claude_wiring =
+        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
+            repo.clone(),
+        );
     let outcome = spawn_recovered_harness(
         repo.clone(),
         EventBus::new(),
         repo.card_role_cache().clone(),
         repo.track_area_cache().clone(),
         SharedCodexAppServer::new_stub(repo.clone()),
+        &claude_wiring,
         &registry,
         &calm_server::harness::new_track_delete_locks(),
         recovered.into_iter().next().unwrap(),
@@ -305,12 +310,17 @@ async fn direct_recovery_boundary_rejects_area_chat_planner_runtime() {
         .unwrap()
         .unwrap();
     let registry = HarnessRegistry::new();
+    let claude_wiring =
+        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
+            repo.clone(),
+        );
     let result = spawn_recovered_harness(
         repo.clone(),
         EventBus::new(),
         repo.card_role_cache().clone(),
         repo.track_area_cache().clone(),
         SharedCodexAppServer::new_stub(repo.clone()),
+        &claude_wiring,
         &registry,
         &calm_server::harness::new_track_delete_locks(),
         runtime,
@@ -406,14 +416,20 @@ async fn boot_recovery_skips_area_chat_planner_and_recovers_later_valid_runtime(
     let valid_id = seed_recoverable_runtime(&repo, "valid-second", "thread-valid").await;
     let registry = HarnessRegistry::new();
 
+    let claude_wiring =
+        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
+            repo.clone(),
+        );
     let recovered = recover_harnesses_on_boot(
         repo.clone(),
         EventBus::new(),
         repo.card_role_cache().clone(),
         repo.track_area_cache().clone(),
         SharedCodexAppServer::new_stub(repo.clone()),
+        &claude_wiring,
         &registry,
         &calm_server::harness::new_track_delete_locks(),
+        calm_server::harness::BootRows::All,
     )
     .await
     .unwrap();
@@ -486,14 +502,20 @@ async fn boot_recovery_respawns_harness_with_snapshot() {
 
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let registry = HarnessRegistry::new();
+    let claude_wiring =
+        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
+            repo.clone(),
+        );
     let recovered = recover_harnesses_on_boot(
         repo,
         EventBus::new(),
         calm_server::card_role_cache::CardRoleCache::new(),
         calm_server::track_area_cache::TrackAreaCache::new(),
         daemon,
+        &claude_wiring,
         &registry,
         &calm_server::harness::new_track_delete_locks(),
+        calm_server::harness::BootRows::All,
     )
     .await
     .unwrap();
@@ -531,12 +553,17 @@ async fn boot_spawn_failure_defers_recovery_until_heal_then_recovers_claim_based
         .await
         .unwrap()
         .unwrap();
+    let claude_wiring =
+        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
+            repo.clone(),
+        );
     let user_handle = spawn_recovered_harness(
         repo.clone(),
         state.events.clone(),
         calm_server::card_role_cache::CardRoleCache::new(),
         calm_server::track_area_cache::TrackAreaCache::new(),
         state.shared_codex_appserver.clone(),
+        &claude_wiring,
         &state.harness,
         &calm_server::harness::new_track_delete_locks(),
         user_runtime,
@@ -644,6 +671,9 @@ async fn deferred_recovery_skips_runtime_claimed_after_eligibility_check() {
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
         track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
         daemon: daemon.clone(),
+        claude: calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
+            repo.clone(),
+        ),
         registry: registry.clone(),
         track_delete_locks: calm_server::harness::new_track_delete_locks(),
         post_eligibility_hook: Some(post_eligibility_hook),
@@ -702,6 +732,9 @@ async fn deferred_recovery_abandons_claim_and_rearms_when_daemon_transitions_dur
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
         track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
         daemon: daemon.clone(),
+        claude: calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
+            repo.clone(),
+        ),
         registry: registry.clone(),
         track_delete_locks: calm_server::harness::new_track_delete_locks(),
         post_eligibility_hook: Some(post_eligibility_hook),
@@ -804,14 +837,20 @@ async fn boot_recovery_is_deferred_until_shared_daemon_is_running() {
     assert!(registry.get(&runtime_id).is_none());
 
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    let claude_wiring =
+        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
+            repo.clone(),
+        );
     let recovered = recover_harnesses_on_boot(
         repo,
         EventBus::new(),
         calm_server::card_role_cache::CardRoleCache::new(),
         calm_server::track_area_cache::TrackAreaCache::new(),
         daemon.clone(),
+        &claude_wiring,
         &registry,
         &calm_server::harness::new_track_delete_locks(),
+        calm_server::harness::BootRows::All,
     )
     .await
     .unwrap();
@@ -940,14 +979,20 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
 
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let registry = HarnessRegistry::new();
+    let claude_wiring =
+        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
+            repo.clone(),
+        );
     let recovered = recover_harnesses_on_boot(
         repo.clone(),
         EventBus::new(),
         calm_server::card_role_cache::CardRoleCache::new(),
         calm_server::track_area_cache::TrackAreaCache::new(),
         daemon,
+        &claude_wiring,
         &registry,
         &calm_server::harness::new_track_delete_locks(),
+        calm_server::harness::BootRows::All,
     )
     .await
     .unwrap();
@@ -1035,14 +1080,20 @@ async fn boot_recovery_skips_terminal_tracks() {
 
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let registry = HarnessRegistry::new();
+    let claude_wiring =
+        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
+            repo.clone(),
+        );
     let recovered = recover_harnesses_on_boot(
         repo,
         EventBus::new(),
         calm_server::card_role_cache::CardRoleCache::new(),
         calm_server::track_area_cache::TrackAreaCache::new(),
         daemon,
+        &claude_wiring,
         &registry,
         &calm_server::harness::new_track_delete_locks(),
+        calm_server::harness::BootRows::All,
     )
     .await
     .unwrap();
@@ -1116,14 +1167,20 @@ async fn boot_recovery_skips_deferred_worker_session_phantom_ghost() {
 
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let registry = HarnessRegistry::new();
+    let claude_wiring =
+        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
+            repo.clone(),
+        );
     let recovered = recover_harnesses_on_boot(
         repo,
         EventBus::new(),
         calm_server::card_role_cache::CardRoleCache::new(),
         calm_server::track_area_cache::TrackAreaCache::new(),
         daemon,
+        &claude_wiring,
         &registry,
         &calm_server::harness::new_track_delete_locks(),
+        calm_server::harness::BootRows::All,
     )
     .await
     .unwrap();
@@ -1518,14 +1575,20 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
 
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let registry = HarnessRegistry::new();
+    let claude_wiring =
+        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
+            repo.clone(),
+        );
     let recovered = recover_harnesses_on_boot(
         repo.clone(),
         EventBus::new(),
         calm_server::card_role_cache::CardRoleCache::new(),
         calm_server::track_area_cache::TrackAreaCache::new(),
         daemon,
+        &claude_wiring,
         &registry,
         &calm_server::harness::new_track_delete_locks(),
+        calm_server::harness::BootRows::All,
     )
     .await
     .unwrap();
@@ -1826,14 +1889,20 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_planner_bac
     );
 
     let registry = HarnessRegistry::new();
+    let claude_wiring =
+        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
+            repo.clone(),
+        );
     let recovered = recover_harnesses_on_boot(
         repo.clone(),
         EventBus::new(),
         role_cache.clone(),
         area_cache.clone(),
         SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None),
+        &claude_wiring,
         &registry,
         &calm_server::harness::new_track_delete_locks(),
+        calm_server::harness::BootRows::All,
     )
     .await
     .unwrap();

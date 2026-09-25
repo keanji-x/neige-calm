@@ -1285,8 +1285,13 @@ async fn ensure_live_planner_harness(
     {
         return Err(dormant());
     }
-    // A recovered harness can't issue turns without the shared app-server; surface backpressure instead of spawning a silently-wedged task.
-    if !cs.shared_codex_appserver.is_running() {
+    // A recovered harness can't issue turns without its backend; surface that instead of spawning a silently-wedged task.
+    // A Claude Planner needs its config and its pinned binary, not the shared app-server (#1791 §4.1 row 11).
+    if runtime.kind == crate::session_projection_repo::WorkerSessionKind::SharedPlanner
+        && runtime.agent_provider == Some(crate::session_projection_repo::AgentProvider::Claude)
+    {
+        s.claude_planner.check_ready().await?;
+    } else if !cs.shared_codex_appserver.is_running() {
         return Err(CalmError::ServiceUnavailable(
             cs.shared_codex_appserver.not_running_message(),
         ));
@@ -1298,6 +1303,7 @@ async fn ensure_live_planner_harness(
         s.write.role_cache().clone(),
         s.write.area_cache().clone(),
         cs.shared_codex_appserver.clone(),
+        &s.claude_planner_wiring(),
         &s.harness,
         &s.track_delete_locks,
         runtime.clone(),

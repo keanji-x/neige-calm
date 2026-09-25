@@ -625,18 +625,26 @@ pub async fn recover_harnesses_after_daemon_boot(
     daemon_start: error::Result<()>,
 ) -> error::Result<usize> {
     match daemon_start {
-        Ok(()) => state.recover_harnesses_on_boot().await,
+        Ok(()) => {
+            state
+                .recover_harnesses_on_boot(harness::BootRows::All)
+                .await
+        }
         Err(e) => {
             tracing::error!(
                 error = %e,
                 "shared codex app-server start/takeover failed; continuing boot"
             );
+            // A Claude Planner does not need the daemon: its rows are recovered now.
+            let recovered = state
+                .recover_harnesses_on_boot(harness::BootRows::ClaudePlannersOnly)
+                .await?;
             // Deferred, not skipped forever: the first observed Running triggers a claim-based recovery
             // pass that never stomps a runtime the user resumed in the meantime.
             tracing::warn!("deferring planner harness recovery until the shared daemon self-heals");
             // The JoinHandle is intentionally detached: the task owns every part it needs.
             state.arm_deferred_harness_recovery();
-            Ok(0)
+            Ok(recovered)
         }
     }
 }
@@ -705,6 +713,23 @@ mod boot_order_tests {
             .expect("main boot starts daemon and gates planner harness recovery");
         assert!(card_id_assert < folders_fence);
         assert!(folders_fence < boot_harnesses);
+    }
+
+    /// #1791 §5.1 item 1: every Claude Planner credential is revoked and every marker swept
+    /// before the MCP listener opens, and a failed revocation fails the boot.
+    #[test]
+    fn claude_planner_boot_revokes_before_the_mcp_listener_starts() {
+        let state_rs = include_str!("state.rs");
+        let boot = state_rs
+            .find("crate::claude_planner::lifecycle::boot(repo.as_ref(), &claude_planner).await?")
+            .expect("AppState::new runs the Claude Planner boot step and ?-propagates it");
+        let listener = state_rs
+            .find("McpServer::spawn_with_context(")
+            .expect("AppState::new spawns the MCP listener");
+        assert!(
+            boot < listener,
+            "the listener must open after the revocation"
+        );
     }
 
     #[test]

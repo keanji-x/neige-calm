@@ -689,7 +689,18 @@ impl PlannerHarness {
         let _issuance_guard = self.inner.issuance.lock().await;
         self.persist_snapshot().await?;
         let mut interrupt_error = None;
-        if let Some(thread_id) = thread_id {
+        if let PlannerBackend::Claude(session) = &self.inner.backend {
+            // #1791 §5.1: the running turn is recorded `Interrupted` and this waits for `stop`,
+            // whether or not a turn runs or a thread is known.
+            if let Err(e) = session.shutdown().await {
+                tracing::warn!(
+                    worker_session_id = %self.inner.worker_session_id,
+                    error = %e,
+                    "planner harness shutdown: the Claude Planner stop did not confirm"
+                );
+                interrupt_error = Some(e);
+            }
+        } else if let Some(thread_id) = thread_id {
             let last_turn_id = self.inner.last_turn_id.lock().await.clone();
             let active_turn_id = self.inner.backend.active_turn_id_for_thread(&thread_id);
             if let Err(e) = self.inner.backend.interrupt_active_turn(&thread_id).await {
@@ -734,6 +745,27 @@ impl PlannerHarness {
 
     pub async fn snapshot(&self) -> HarnessSnapshot {
         snapshot_for(&self.inner).await
+    }
+
+    /// Called by the registry when this handle becomes its `Live` slot (#1791 §5.1 item 2).
+    pub(crate) fn mark_installed(&self) {
+        self.inner.backend.mark_installed();
+    }
+
+    /// Which provider runs this harness's turns.
+    pub fn provider(&self) -> crate::session_projection_repo::AgentProvider {
+        self.inner.backend.provider()
+    }
+
+    /// Fixtures only: the Claude session behind this harness, for its interleaving hooks.
+    #[cfg(feature = "fixtures")]
+    pub fn claude_session_for_test(
+        &self,
+    ) -> Option<Arc<crate::claude_planner::session::ClaudePlannerSession>> {
+        match &self.inner.backend {
+            PlannerBackend::Claude(session) => Some(Arc::clone(session)),
+            PlannerBackend::Codex(_) => None,
+        }
     }
 
     /// Why this conversation's queue is not draining, or `None`. `None` does NOT mean waiting is
@@ -1284,6 +1316,16 @@ async fn handle_steer(
     // `select!`; a Stop landing after codex accepted is what `SteeredEntry` exists for.
     let running = inner.state.lock().await.clone();
     let phase = HarnessPhaseTag::from(&running);
+    // #1791 §5.9: decided before the entry is taken, so its id and rev stay as they are and it
+    // runs as the next turn.
+    if !inner.backend.supports_steer() {
+        return Ok(Err(SteerRefused::NotTaken {
+            message: "this Planner's provider (Claude) cannot take messages into a running \
+                      turn; it stays queued"
+                .into(),
+            phase,
+        }));
+    }
     let turn_id = match running {
         HarnessState::TurnRunning { turn_id, .. } => Some(turn_id),
         _ => None,
@@ -2372,6 +2414,20 @@ const NEEDS_A_CHOICE_RETRY_DELAY: Duration = Duration::from_secs(30);
 async fn resolve_model_selection_for_issue(
     inner: &Arc<Inner>,
 ) -> std::result::Result<TurnModelSelection, IssuanceRefusal> {
+    // #1791 §5.8: a Claude Planner runs the CLI's default model; nothing is asked of Codex. The
+    // one thing that can stop it here is a server started without its config.
+    if let PlannerBackend::Claude(session) = &inner.backend {
+        return match session.host().configured() {
+            Ok(_) => Ok(TurnModelSelection::inherit()),
+            Err(error) => Err(IssuanceRefusal::needs_a_choice(
+                error.to_string(),
+                format!(
+                    "{}. Your message is still queued and will be sent once the server runs with it.",
+                    crate::claude_planner::config::unavailable_message()
+                ),
+            )),
+        };
+    }
     let card = match inner.repo.card_get(inner.card_id.as_str()).await {
         // A read that failed is a read that can succeed next time.
         Err(e) => {
@@ -2548,10 +2604,15 @@ async fn transient_notice(inner: &Arc<Inner>) -> Option<String> {
         let mut since = inner.refusing_since.lock().await;
         *since.get_or_insert(now)
     };
+    let provider = match inner.backend.provider() {
+        crate::session_projection_repo::AgentProvider::Codex => "codex",
+        crate::session_projection_repo::AgentProvider::Claude => "claude",
+    };
     (now.duration_since(began) >= inner.config.transient_silence_budget).then(|| {
-        "Waiting for codex — it has not accepted this conversation's last few turns. Your \
-         message is still queued and will be sent when it answers."
-            .to_string()
+        format!(
+            "Waiting for {provider} — it has not accepted this conversation's last few turns. \
+             Your message is still queued and will be sent when it answers."
+        )
     })
 }
 
