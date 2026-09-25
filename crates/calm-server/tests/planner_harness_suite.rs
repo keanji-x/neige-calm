@@ -2,6 +2,8 @@ mod support;
 
 #[path = "cases/claude_planner_credentials.rs"]
 mod claude_planner_credentials;
+#[path = "cases/claude_planner_models.rs"]
+mod claude_planner_models;
 #[path = "cases/claude_planner_retirement.rs"]
 mod claude_planner_retirement;
 #[path = "cases/claude_planner_session.rs"]

@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 use uuid::Uuid;
 
+use super::models::ClaudeModel;
 use super::stop::MARKER_KEY;
 use crate::error::{CalmError, Result};
 use crate::shared_codex_appserver::SPAWN_ENV_PASSTHROUGH;
@@ -81,9 +82,11 @@ pub enum SessionStart {
     Resume,
 }
 
+/// `model` is the card's choice; `None` passes no `--model`, so the CLI runs its default.
 pub(crate) fn argv(
     thread: Uuid,
     start: SessionStart,
+    model: Option<&ClaudeModel>,
     cwd: &Path,
     mcp_shim: &Path,
     instructions: &Path,
@@ -106,6 +109,10 @@ pub(crate) fn argv(
     .collect();
     args.push(session_flag.into());
     args.push(thread.to_string().into());
+    if let Some(model) = model {
+        args.push("--model".into());
+        args.push(model.alias.into());
+    }
     for arg in [
         "--setting-sources",
         "project",

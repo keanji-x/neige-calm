@@ -1,5 +1,6 @@
 //! `GET /api/models` — the model catalog the planner's model picker reads, plus the
 //! default this installation follows. Daemon failures answer 200 with an explicit `source`.
+//! A Claude Planner's catalog is the fixed alias list of `claude_planner::models` (#1810).
 
 use std::time::Duration;
 
@@ -30,16 +31,22 @@ pub struct ReasoningEffortOption {
 /// One entry of the model catalog.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct CatalogModel {
-    /// Codex's preset identifier, presentation only; never send it back as a model selection.
+    /// Codex's preset identifier (a Claude alias for a Claude Planner), presentation only; never
+    /// send it back as a model selection.
     pub id: String,
-    /// The slug codex is invoked by.
+    /// The slug codex is invoked by, or the Claude alias passed as `--model`.
     pub model: String,
     pub display_name: String,
     pub description: String,
-    /// Codex's catalog-level default marker; not "what am I following now".
+    /// Codex's catalog-level default marker; not "what am I following now". Always `false` for
+    /// a Claude alias: the Claude CLI's default is the `null` selection.
     pub is_default: bool,
+    /// Empty for a Claude alias: a Claude Planner offers no effort choice.
     pub supported_reasoning_efforts: Vec<ReasoningEffortOption>,
-    pub default_reasoning_effort: String,
+    /// The model's own default effort; `null` exactly when the provider offers no effort choice
+    /// (a Claude alias). Always a string for a Codex entry.
+    #[schema(required = true)]
+    pub default_reasoning_effort: Option<String>,
 }
 
 impl From<CodexModel> for CatalogModel {
@@ -58,7 +65,21 @@ impl From<CodexModel> for CatalogModel {
                     description: o.description,
                 })
                 .collect(),
-            default_reasoning_effort: m.default_reasoning_effort,
+            default_reasoning_effort: Some(m.default_reasoning_effort),
+        }
+    }
+}
+
+impl From<&crate::claude_planner::models::ClaudeModel> for CatalogModel {
+    fn from(m: &crate::claude_planner::models::ClaudeModel) -> Self {
+        Self {
+            id: m.alias.into(),
+            model: m.alias.into(),
+            display_name: m.display_name.into(),
+            description: m.description.into(),
+            is_default: false,
+            supported_reasoning_efforts: Vec::new(),
+            default_reasoning_effort: None,
         }
     }
 }
@@ -79,7 +100,8 @@ pub enum DefaultSource {
     /// The shared CODEX_HOME `config.toml`, read directly when no daemon connection exists;
     /// weaker than `config_read` because a managed-config layer can override it.
     ConfigToml,
-    /// No default could be established: the read failed or no `card_id` was supplied.
+    /// No default could be established: the read failed or no `card_id` was supplied. Always
+    /// this for a Claude Planner, whose CLI picks its default model itself.
     Unknown,
 }
 
@@ -89,7 +111,12 @@ pub enum DefaultSource {
 pub enum ModelSource {
     /// Codex answered; `models` may still be empty, which is different from "could not ask".
     Live,
-    /// Codex could not be asked. `models` is empty for lack of an answer.
+    /// The server's fixed list of Claude model aliases (`opus`, `sonnet`, `haiku`), which the
+    /// Claude CLI resolves to its current models. Only for a Claude Planner on a server started
+    /// with `--claude-planner-config`.
+    BuiltIn,
+    /// Codex could not be asked, or a Claude Planner is unavailable because the server was started
+    /// without `--claude-planner-config`. `models` is empty for lack of an answer.
     Unavailable,
 }
 
@@ -110,8 +137,9 @@ pub struct ModelsQuery {
     /// `cwd` and `default_source` is `unknown`.
     pub card_id: Option<String>,
     /// The Planner provider a card is about to be created with. `claude` (like a `card_id`
-    /// naming a Claude Planner card) answers `source: "unavailable"` with an empty catalog: a
-    /// Claude Planner runs its CLI's default model and offers no choice.
+    /// naming a Claude Planner card) answers the Claude alias catalog with `source: "built_in"`
+    /// without asking Codex, or `source: "unavailable"` with an empty catalog when the server was
+    /// started without `--claude-planner-config`.
     pub provider: Option<AgentProvider>,
 }
 
@@ -125,7 +153,7 @@ pub fn router() -> Router<AppState> {
     tag = "models",
     params(ModelsQuery),
     responses(
-        (status = 200, description = "Model catalog and the default this installation follows. Answered with `source: \"unavailable\"` and an empty catalog when codex cannot be reached, never with an error and never with a hardcoded catalog", body = ModelsResponse),
+        (status = 200, description = "Model catalog and the default this installation follows. Codex: `source: \"live\"`, or `source: \"unavailable\"` with an empty catalog if codex cannot be reached (never an error or a hardcoded list). A Claude Planner: `source: \"built_in\"` with its alias list, or `unavailable` without `--claude-planner-config`", body = ModelsResponse),
         (status = 404, description = "`card_id` names a card that does not exist", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
@@ -146,15 +174,26 @@ pub(crate) async fn list_models(
         Some(card_id) => Some(resolve_card_workspace(&s, card_id).await?),
         None => None,
     };
-    // #1791 §5.8: no catalog and no default for a Claude Planner, and Codex is not asked.
+    // #1810: a Claude Planner's catalog is the alias list, and Codex is not asked. Without the
+    // config there is no Claude Planner to choose for, which the picker reads as `unavailable`.
     if q.provider == Some(AgentProvider::Claude)
         || card.as_ref().is_some_and(|card| card.claude_planner)
     {
+        let (models, source) = match s.claude_planner.configured() {
+            Ok(_) => (
+                crate::claude_planner::models::MODELS
+                    .iter()
+                    .map(CatalogModel::from)
+                    .collect(),
+                ModelSource::BuiltIn,
+            ),
+            Err(_) => (Vec::new(), ModelSource::Unavailable),
+        };
         return Ok(Json(ModelsResponse {
-            models: Vec::new(),
+            models,
             default: ModelDefaults::default(),
             default_source: DefaultSource::Unknown,
-            source: ModelSource::Unavailable,
+            source,
             fetched_at_ms: None,
         }));
     }

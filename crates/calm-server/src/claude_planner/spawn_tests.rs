@@ -5,14 +5,20 @@ use std::path::Path;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+use super::models::{ClaudeModel, MODELS};
 use super::spawn::{SessionStart, argv, passthrough_keys, settings_json};
 
 const THREAD: &str = "5d0b2694-9ccc-4543-ab84-611aa4287dbe";
 
 fn args(start: SessionStart, cwd: &str) -> Vec<String> {
+    args_with(start, None, cwd)
+}
+
+fn args_with(start: SessionStart, model: Option<&ClaudeModel>, cwd: &str) -> Vec<String> {
     argv(
         Uuid::parse_str(THREAD).unwrap(),
         start,
+        model,
         Path::new(cwd),
         Path::new("/opt/neige/neige-mcp-stdio-shim"),
         Path::new("/data/claude-planner/tmp/ws1-turn1.md"),
@@ -78,6 +84,20 @@ fn argv_is_exactly_the_spawn_contract() {
     }
 }
 
+/// #1810: a chosen alias rides as `--model <alias>` right after the session; without one the
+/// argv is exactly the contract above.
+#[test]
+fn a_chosen_alias_is_passed_as_model_and_nothing_else_changes() {
+    for model in MODELS {
+        for start in [SessionStart::New, SessionStart::Resume] {
+            let without = args(start, "/ws/track");
+            let mut expected = without.clone();
+            expected.splice(9..9, ["--model".to_string(), model.alias.to_string()]);
+            assert_eq!(args_with(start, Some(model), "/ws/track"), expected);
+        }
+    }
+}
+
 #[test]
 fn a_resumed_session_names_the_thread_with_resume() {
     let got = args(SessionStart::Resume, "/ws/track/");
@@ -113,6 +133,7 @@ fn a_workspace_that_would_split_a_rule_is_refused() {
         let result = argv(
             Uuid::parse_str(THREAD).unwrap(),
             SessionStart::New,
+            None,
             Path::new(cwd),
             Path::new("/opt/shim"),
             Path::new("/data/x.md"),

@@ -40,7 +40,8 @@ impl PlannerBackend {
         }
     }
 
-    /// The Claude arm runs the CLI's default model (§5.8): `selection` is not sent.
+    /// The Claude arm passes the chosen alias as `--model` (#1810); a selection it cannot run is
+    /// refused here too, never dropped.
     pub async fn turn_start(
         &self,
         thread_id: &str,
@@ -54,7 +55,14 @@ impl PlannerBackend {
                     .turn_start(thread_id, items, selection, Some(client_id))
                     .await
             }
-            Self::Claude(session) => session.turn_start(thread_id, items, client_id).await,
+            Self::Claude(session) => {
+                let model = crate::claude_planner::models::resolve(
+                    selection.model.as_deref(),
+                    selection.effort.as_deref(),
+                )
+                .map_err(|e| CalmError::BadRequest(e.to_string()))?;
+                session.turn_start(thread_id, items, model, client_id).await
+            }
         }
     }
 

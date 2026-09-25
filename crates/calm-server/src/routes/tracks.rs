@@ -307,19 +307,20 @@ pub struct CreateTrackRequest {
     /// committed track is not undone).
     #[serde(default)]
     pub first_message: Option<String>,
-    /// Model slug for the planner's first and subsequent turns. Omitted or null
-    /// follows installation defaults, as on the conversation model endpoint.
+    /// Model slug for the planner's first and subsequent turns (a Claude alias for a `claude`
+    /// Planner). Omitted or null follows installation defaults, as on the conversation model
+    /// endpoint.
     #[serde(default)]
     pub model: Option<String>,
     /// Reasoning effort. Values unsupported by the chosen model's current
     /// catalog entry are rejected with 400 before creation; no silent adjustment.
-    /// Omitted or null follows installation defaults.
+    /// Omitted or null follows installation defaults. Must be omitted or null for `claude`.
     #[serde(default)]
     pub reasoning_effort: Option<String>,
     /// The backend of the track's Planner, stamped on its card as the server-owned
     /// `planner_provider` and never changed afterwards. `claude` is refused with 400 when the
-    /// server runs without `--claude-planner-config`, or with a `model` / `reasoning_effort`
-    /// (a Claude Planner runs its CLI's default).
+    /// server runs without `--claude-planner-config`, with a `model` that is not one of its
+    /// aliases, or with any `reasoning_effort`.
     pub planner_provider: AgentProvider,
 }
 
@@ -788,7 +789,7 @@ pub(crate) async fn get_track_detail(
     request_body = CreateTrackRequest,
     responses(
         (status = 201, description = "Track created. With `first_message`, the message is also queued for the planner agent inside the harness-start transaction; a retry under the same `Idempotency-Key` returns the same track without re-delivering it.", body = Track),
-        (status = 400, description = "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`, a `planner_provider` this server cannot run or `claude` with a `model` / `reasoning_effort`, or `reasoning_effort` unsupported by the selected model's current catalog entry; no track is minted and no effort is silently adjusted), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), a malformed `Idempotency-Key` header (empty or non-ASCII) on any create, or — with `first_message` — a missing `Idempotency-Key` or an empty/over-long message. Decided before anything is minted; the multi-source refusal, like every other create-path check, is not re-run on an `Idempotency-Key` replay, which mints nothing.", body = ErrorBody),
+        (status = 400, description = "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`, a `planner_provider` this server cannot run, `claude` with a `model` that is not one of its aliases (`opus`, `sonnet`, `haiku`) or with any `reasoning_effort`, or `reasoning_effort` unsupported by the selected model's current catalog entry; no track is minted and no effort is silently adjusted), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), a malformed `Idempotency-Key` header (empty or non-ASCII) on any create, or — with `first_message` — a missing `Idempotency-Key` or an empty/over-long message. Decided before anything is minted; the multi-source refusal, like every other create-path check, is not re-run on an `Idempotency-Key` replay, which mints nothing.", body = ErrorBody),
         (status = 404, description = "Area not found", body = ErrorBody),
         (status = 409, description = "Folder-claim conflict (structured `FolderConflict` body), `conflict` when an `Idempotency-Key` is bound to a different create or to a legacy binding whose request cannot be proven, or `idempotency_key_exhausted` when the key used all 64 retry slots, when the track it names has been deleted, or when its managed workspace can no longer be materialized. Recovery depends on `code`: fix a folder conflict and retry the same key; preserve the original request for a payload conflict (use a new key only for an explicit new create); use a new key after `idempotency_key_exhausted`.", body = ErrorBody),
         (status = 500, description = "Internal error. One case leaves the track behind: when the request carried a `first_message` and the planner harness start did not complete, the track, its cards and its workspace are already committed, and whether the message reached the agent is **unknown to the server** — depending on how far the start got, it may never have been handed over, or it may already have been delivered and answered. Nothing is rolled back and nothing compensates. What the server *can* promise, and this is what the `Idempotency-Key` buys: retrying the identical request under the **same** key creates no second track and delivers no second copy of the message. It does not promise the track is usable — a replay does not repair an attached workspace whose directory was deleted. Without `first_message` the same harness failure is logged and still returns 201, because no user text was riding on it — which also holds when such a create sends an `Idempotency-Key` and is answered from its binding.", body = ErrorBody),
@@ -809,20 +810,19 @@ pub(crate) async fn create_track(
     let _area_delete_guard =
         crate::per_card_lock::lock_key(&s.area_delete_locks, create_area_id.as_str()).await;
     if request.planner_provider == AgentProvider::Claude {
-        // #1791 §5.3, §5.8: available only with the typed config, and it runs its CLI's default model.
+        // #1791 §5.3: available only with the typed config. #1810: a model is one of its aliases,
+        // and there is no effort choice.
         if s.claude_planner.configured().is_err() {
             return Err(CalmError::BadRequest(format!(
                 "track create: `planner_provider` `claude` is unavailable: calm-server was started without {}",
                 crate::claude_planner::config::CONFIG_FLAG
             )));
         }
-        if request.model.is_some() || request.reasoning_effort.is_some() {
-            return Err(CalmError::BadRequest(
-                "track create: a Claude Planner runs the Claude CLI's default model and effort; \
-                 `model` and `reasoning_effort` must be omitted"
-                    .into(),
-            ));
-        }
+        crate::claude_planner::models::resolve(
+            request.model.as_deref(),
+            request.reasoning_effort.as_deref(),
+        )
+        .map_err(|e| CalmError::BadRequest(format!("track create: {e}")))?;
     }
     // First, before every other check: a rejected first message must leave no track,
     // no cards, no folder claim and no materialized workspace behind.
@@ -868,9 +868,13 @@ pub(crate) async fn create_track(
     // Resolve mutable catalog advice only for a new mint, never on replay.
     let model = request.model.take();
     let reasoning_effort = request.reasoning_effort.take();
-    let advice =
+    // A Claude selection was judged against its alias list above; Codex's catalog has no say.
+    let advice = if request.planner_provider == AgentProvider::Claude {
+        super::planner_model::CatalogAdvice::default()
+    } else {
         super::planner_model::catalog_advice(&codex, model.as_deref(), reasoning_effort.as_deref())
-            .await;
+            .await
+    };
     if let (Some(default), Some(model), Some(effort)) = (
         advice.adjusted_to,
         model.as_deref(),

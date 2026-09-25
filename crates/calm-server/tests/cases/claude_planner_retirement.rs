@@ -341,6 +341,7 @@ async fn a_stale_harness_tick_after_shutdown_never_mints_over_the_replacer() {
             vec![InputItem::Text {
                 text: "stale".into(),
             }],
+            None,
             &uuid::Uuid::new_v4().simple().to_string(),
         )
         .await;

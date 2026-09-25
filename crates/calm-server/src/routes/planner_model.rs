@@ -1,6 +1,7 @@
 //! `PUT /api/cards/{id}/planner/model` — records which model a card's conversation
 //! runs with. Both keys are required and `null` is a value; an unknown slug is
 //! reported, not refused; an unsupported effort is moved to the model's default.
+//! A Claude Planner takes a Claude alias or `null` and no effort; anything else is a 400 (#1810).
 
 use axum::extract::{Path, State};
 use axum::{Json, http::StatusCode};
@@ -40,14 +41,15 @@ where
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SetPlannerModelBody {
-    /// The model **slug** to run with (never a catalog entry's `id`), or `null` to follow
-    /// the installation default. `#[schema(required = true)]` is needed because utoipa
+    /// The model **slug** to run with (never a catalog entry's `id`; a Claude alias for a Claude
+    /// Planner), or `null` to follow the installation default (for a Claude Planner, the Claude
+    /// CLI's own). `#[schema(required = true)]` is needed because utoipa
     /// derives optionality from the `Option<T>` alone and cannot see `deserialize_with`.
     #[schema(required = true)]
     #[serde(deserialize_with = "required_nullable")]
     pub model: Option<String>,
     /// The reasoning effort, or `null` to follow the default. Required. A bare string:
-    /// codex accepts any non-empty effort.
+    /// codex accepts any non-empty effort. Always `null` for a Claude Planner.
     #[schema(required = true)]
     #[serde(deserialize_with = "required_nullable")]
     pub reasoning_effort: Option<String>,
@@ -77,10 +79,10 @@ pub struct SetPlannerModelResponse {
     request_body = SetPlannerModelBody,
     responses(
         (status = 200, description = "Selection stored. `effort_adjusted` and `unknown_model` report what the catalog said about it; neither is an error", body = SetPlannerModelResponse),
+        (status = 400, description = "On a Claude Planner card: a `model` other than `null` or a Claude alias, or any `reasoning_effort`. Nothing is stored", body = ErrorBody),
         (status = 401, description = "Unauthenticated", body = ErrorBody),
         (status = 403, description = "Not `X-Calm-Actor: user`, or the card is not a planner codex card", body = ErrorBody),
         (status = 404, description = "Card not found", body = ErrorBody),
-        (status = 409, description = "The card is a Claude Planner, which runs the Claude CLI's default model and effort", body = ErrorBody),
         (status = 422, description = "`model` or `reasoning_effort` is missing from the body, or an unknown key is present. Both keys are required; `null` is how the default is chosen", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
@@ -111,20 +113,21 @@ pub(crate) async fn set_planner_model(
             "card {id} is not a planner codex card",
         )));
     }
-    // #1791 §5.8: a Claude Planner runs its CLI's default model and effort.
-    if crate::harness::profile::PlannerBinding::from_card(&card, role)
-        .is_some_and(|binding| binding.provider == AgentProvider::Claude)
-    {
-        return Err(CalmError::Conflict(format!(
-            "card {id} is a Claude Planner: it runs the Claude CLI's default model and effort, which cannot be chosen"
-        )));
-    }
+    let claude = crate::harness::profile::PlannerBinding::from_card(&card, role)
+        .is_some_and(|binding| binding.provider == AgentProvider::Claude);
 
     let SetPlannerModelBody {
         model,
         reasoning_effort,
     } = body;
-    let advice = catalog_advice(&codex, model.as_deref(), reasoning_effort.as_deref()).await;
+    let advice = if claude {
+        // #1810: the alias list is the whole catalog; Codex is not asked and nothing is adjusted.
+        crate::claude_planner::models::resolve(model.as_deref(), reasoning_effort.as_deref())
+            .map_err(|e| CalmError::BadRequest(format!("card {id}: {e}")))?;
+        CatalogAdvice::default()
+    } else {
+        catalog_advice(&codex, model.as_deref(), reasoning_effort.as_deref()).await
+    };
     let stored_effort = advice
         .adjusted_to
         .clone()

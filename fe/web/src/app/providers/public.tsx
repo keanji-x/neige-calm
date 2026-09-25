@@ -13,7 +13,7 @@ import styles from './preflight-status.module.css';
  * This bundle's view of the negotiated wire contract. Must equal `WEB_COMPAT_VERSION` in
  * `crates/calm-server/src/routes/version.rs` and `web/src/api/version.ts`; CI compares them textually.
  */
-export const WEB_COMPAT_VERSION = 30;
+export const WEB_COMPAT_VERSION = 31;
 /** `databaseId` / `nowMs` are optional in the type so an older kernel still parses before the curtain decides; absent means a `null` receipt scope, under which nothing is ever unread. */
 export type ServerVersionInfo = Readonly<{ conversationCreateModel?: boolean; webCompatVersion: number; minWebCompatVersion: number; syncEventVersion: number; dbInstanceId: string; databaseId?: string; nowMs?: number }>;
 export interface ProviderRuntime {

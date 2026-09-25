@@ -905,6 +905,8 @@ function useConversationPanel(
   /* The composer's pending images, keyed to the open card so moving to another
        conversation does not carry a picked image into it. */
   const attachments = usePlannerAttachments(store.uploadAttachment, scope?.cardId ?? '');
+  /* A conversation's provider is fixed for its life; its model picker offers that provider's group alone. */
+  const scopeProvider: AgentProvider = scope === null ? 'codex' : scope.provider;
   const registry = useConversationRegistry();
   const go = useGo();
   const open = store.conversations.find((conversation) => conversation.id === openRowId) ?? null;
@@ -1302,7 +1304,7 @@ function useConversationPanel(
             )}
             <ChatComposer disabled={creating} onSend={sendDraft} onNewConversation={startAnother}
               draft={{ text: composerDraft, onChange: setComposerDraft }}
-              footerActions={<ModelPill provider="codex" catalog={draftCatalog.data ?? null} selection={draft.model}
+              footerActions={<ModelPill groups={[{ provider: 'codex', catalog: draftCatalog.data ?? null }]} provider="codex" selection={draft.model}
                 onChange={model => withDraft(draft, current => current.creating || current.sentText !== null
                   ? current : { ...current, model })}
                 isDisabled={creating || draft.sentText !== null || !supportsDraftModel} />} />
@@ -1437,8 +1439,8 @@ function useConversationPanel(
                   />
                   <ModelPill
                     /* Without a scope the catalog read is disabled, so no `unavailable` label can show. */
-                    provider={scope === null ? 'codex' : scope.provider}
-                    catalog={store.modelCatalog}
+                    groups={[{ provider: scopeProvider, catalog: store.modelCatalog }]}
+                    provider={scopeProvider}
                     selection={store.model}
                     onChange={store.setModel}
                     isDisabled={!store.historyReady}
