@@ -213,7 +213,7 @@ test('creates a track from a template and seeds its report', async ({ page, requ
 
 test('creates the planner with the model and effort selected beside Send', async ({ page, request }) => {
   // A deterministic roster for the UI; creation and the persisted planner read still use the real kernel.
-  await page.route('**/api/models', (route) => route.fulfill({ json: {
+  await page.route((url) => url.pathname === '/api/models' && url.searchParams.get('provider') === 'codex', (route) => route.fulfill({ json: {
     models: [{ id: 'e2e-model', model: 'e2e-model', display_name: 'E2E model', description: '',
       is_default: false, default_reasoning_effort: 'low', supported_reasoning_efforts: [
         { reasoning_effort: 'low', description: 'Faster' },
@@ -248,4 +248,57 @@ test('creates the planner with the model and effort selected beside Send', async
   const run = await request.get(`/api/cards/${planner.id}/planner/run`);
   expect(run.ok()).toBe(true);
   expect(await run.json()).toMatchObject({ model: 'e2e-model', reasoning_effort: 'high' });
+});
+
+/* The e2e stack runs without `--claude-planner-config`, so the Claude choice is exercised up to the
+ * kernel's refusal; the real `claude` binary is never needed. The refusal is shown, not hidden, and the
+ * same sentence then creates on Codex. */
+test('offers Claude as the Planner, shows the kernel refusing it here, and creates on Codex instead', async ({ page, request }) => {
+  /* The one expected console error is the browser logging the refused create itself; anything else fails. */
+  const errors: string[] = [];
+  page.on('console', (entry) => {
+    if (entry.type() !== 'error') return;
+    const url = entry.location().url;
+    const refusedCreate = entry.text().includes('status of 400') && url !== ''
+      && new URL(url).pathname === '/api/tracks';
+    if (!refusedCreate) errors.push(entry.text());
+  });
+  page.on('pageerror', (error) => errors.push(error.message));
+  const area = await createArea(request);
+  createdAreaIds.push(area.id);
+  await page.goto('/next/');
+  await page.getByRole('button', { name: `New track in ${area.name}` }).click();
+  await page.waitForURL(/\/area\/[^/]+\/new$/);
+  const message = `FE e2e Claude planner ${Date.now()}`;
+  await page.getByLabel(TASK_LABEL).fill(message);
+  await page.getByRole('button', { name: 'Planner: Codex' }).click();
+  await page.getByRole('menuitem', { name: /^Claude/ }).click();
+  /* The kernel's own answer for a Claude Planner: no catalog, so no model or effort to choose. */
+  await expect(page.getByRole('button', { name: 'Model: Default' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: /^Reasoning effort:/ })).toHaveCount(0);
+
+  const refused = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/tracks');
+  await page.getByRole('button', { name: 'Create track' }).click();
+  const refusal = await refused;
+  expect(refusal.status()).toBe(400);
+  const refusedBody = refusal.request().postDataJSON() as Record<string, unknown>;
+  expect(refusedBody).toMatchObject({ area_id: area.id, planner_provider: 'claude', first_message: message });
+  expect(refusedBody).not.toHaveProperty('model');
+  expect(refusedBody).not.toHaveProperty('reasoning_effort');
+  await expect(page.getByRole('alert')).toContainText('--claude-planner-config');
+  await expect(page).toHaveURL(/\/area\/[^/]+\/new$/);
+
+  /* Reopened by keyboard: astryx swallows a trigger click that lands right after its menu hid. */
+  await page.getByRole('button', { name: 'Planner: Claude' }).focus();
+  await page.keyboard.press('ArrowDown');
+  await page.getByRole('menuitem', { name: /^Codex/ }).click();
+  const created = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/tracks');
+  await page.getByRole('button', { name: 'Create track' }).click();
+  const creation = await created;
+  expect(creation.status()).toBe(201);
+  expect(creation.request().postDataJSON()).toMatchObject({ planner_provider: 'codex', first_message: message });
+  await expect(page).toHaveURL(/\/track\/[0-9a-f-]+$/i);
+  expect(errors).toEqual([]);
 });

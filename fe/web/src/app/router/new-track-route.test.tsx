@@ -72,6 +72,8 @@ function harness(options: {
   /** Ordered create outcomes for retry/recovery paths that cross Area scope. */
   trackCreateSequence?: readonly ApiTransportResponse[];
   loseFirstCreateAck?: boolean;
+  /** Hold the `?provider=claude` catalog read open, to observe the picker before it lands. */
+  heldClaudeCatalog?: Promise<void>;
   /** Override the detail read the track page makes when the create lands. */
   trackDetail?: ApiTransportResponse;
   /** Hold the detail read open until this resolves, to drive a slow landing. */
@@ -113,7 +115,14 @@ function harness(options: {
           body: { ...TRACK_ROW, area_id: posted?.area_id ?? 'c1' },
         }));
       }
-      if (request.path === '/api/models') {
+      /* What `routes/models.rs` answers for a Claude Planner: no catalog and no default (#1791 §5.8). */
+      if (request.path === '/api/models?provider=claude') {
+        return (options.heldClaudeCatalog ?? Promise.resolve()).then(() => ({ status: 200, statusText: 'OK', body: {
+          models: [], default: { model: null, reasoning_effort: null }, default_source: 'unknown',
+          source: 'unavailable', fetched_at_ms: null,
+        } }));
+      }
+      if (request.path === '/api/models?provider=codex') {
         return Promise.resolve({ status: 200, statusText: 'OK', body: {
           models: [{ id: 'fast', model: 'gpt-5', display_name: 'GPT-5', description: 'Everyday model',
             is_default: true, default_reasoning_effort: 'low', supported_reasoning_efforts: [
@@ -215,6 +224,7 @@ describe('New track model selection', () => {
       first_message: 'Use these settings from the first turn' });
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Model: GPT-5' }).disabled).toBe(true);
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Reasoning effort: high' }).disabled).toBe(true);
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Planner: Codex' }).disabled).toBe(true);
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
     await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(2));
     expect(createdTrackRequests(sent)[1]?.body).toEqual(original?.body);
@@ -237,6 +247,96 @@ describe('New track model selection', () => {
     await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(1));
     expect(createdTrackRequests(sent)[0]?.body).not.toHaveProperty('model');
     expect(createdTrackRequests(sent)[0]?.body).not.toHaveProperty('reasoning_effort');
+  });
+
+  it('switching provider clears a retained model and effort', async () => {
+    const { sent } = harness({ templates: [] });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+    await findComposer();
+    await userEvent.click(await screen.findByRole('button', { name: 'Model: Default' }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'GPT-5' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Reasoning effort: low (the default)' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: /high/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'Planner: Codex' }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /^Claude/ }));
+    /* The server's `unavailable` answer for Claude disables the picker; nothing retained shows through it. */
+    await waitFor(() => expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Model: Default' }).disabled).toBe(true));
+    expect(screen.queryByRole('button', { name: /^Reasoning effort:/ })).toBeNull();
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Plan with Claude');
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(1));
+    const body = createdTrackRequests(sent)[0]?.body;
+    expect(body).toMatchObject({ planner_provider: 'claude', first_message: 'Plan with Claude' });
+    expect(body).not.toHaveProperty('model');
+    expect(body).not.toHaveProperty('reasoning_effort');
+  });
+
+  it('keeps the model picker disabled for Claude before its catalog has answered', async () => {
+    harness({ templates: [], heldClaudeCatalog: new Promise<void>(() => undefined) });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+    await findComposer();
+    await userEvent.click(screen.getByRole('button', { name: 'Planner: Codex' }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /^Claude/ }));
+    await screen.findByRole('button', { name: 'Planner: Claude' });
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Model: Default' }).disabled).toBe(true);
+  });
+
+  it('switching back to Codex starts again from the installation default', async () => {
+    harness({ templates: [] });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+    await findComposer();
+    await userEvent.click(await screen.findByRole('button', { name: 'Model: Default' }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'GPT-5' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Planner: Codex' }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /^Claude/ }));
+    /* Reopened by keyboard: astryx swallows a trigger click that lands right after its menu hid. */
+    (await screen.findByRole('button', { name: 'Planner: Claude' })).focus();
+    await userEvent.keyboard('{ArrowDown}');
+    await userEvent.click(await screen.findByRole('menuitem', { name: /^Codex/ }));
+    await waitFor(() => expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Model: Default' }).disabled).toBe(false));
+  });
+
+  it('shows a refused Claude create readably and lets the reader create on Codex instead', async () => {
+    const refusal = 'bad request: track create: `planner_provider` `claude` is unavailable: '
+      + 'calm-server was started without --claude-planner-config';
+    const { sent } = harness({ templates: [], trackCreateSequence: [
+      { status: 400, statusText: 'Bad Request', body: { error: refusal, code: 'bad_request' } },
+    ] });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+    await findComposer();
+    await userEvent.click(screen.getByRole('button', { name: 'Planner: Codex' }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /^Claude/ }));
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Try Claude first');
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('--claude-planner-config');
+    expect(composerText()).toBe('Try Claude first');
+    await userEvent.click(screen.getByRole('button', { name: 'Planner: Claude' }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /^Codex/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(2));
+    expect(createdTrackRequests(sent).map((request) => (request.body as { planner_provider: string }).planner_provider))
+      .toEqual(['claude', 'codex']);
+    await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/track/w-new`));
+  });
+
+  it('keeps the choice per Area draft and resets it once the track is created', async () => {
+    harness({ templates: [] });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+    await findComposer();
+    await userEvent.click(screen.getByRole('button', { name: 'Planner: Codex' }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /^Claude/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'Go to Today' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
+    expect(await screen.findByRole('button', { name: 'Planner: Codex' })).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Go to Today' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+    expect(await screen.findByRole('button', { name: 'Planner: Claude' })).toBeTruthy();
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Plan with Claude');
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/track/w-new`));
+    await userEvent.click(screen.getByRole('button', { name: 'Go to Today' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+    expect(await screen.findByRole('button', { name: 'Planner: Codex' })).toBeTruthy();
   });
 
   it('names the Codex Planner backend on every create', async () => {

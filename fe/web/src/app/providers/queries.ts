@@ -56,7 +56,7 @@ import {
   createSerialWriter, deletePlannerInputOperation, steerPlannerInputOperation,
   modelCatalogOperation, plannerQueueWriteFailure, setPlannerModelOperation,
   uploadPlannerAttachmentOperation,
-  type Conversation, type ModelSelection, type ModelSelectionResult,
+  type Conversation, type ModelCatalogScope, type ModelSelection, type ModelSelectionResult,
   type PlannerQueueWriteOutcome,
 } from '../../../../core/domain/conversation.ts';
 import { useState } from '../../ui/state/public.ts';
@@ -166,10 +166,10 @@ export const queryKeys = Object.freeze({
   harnessItems: (cardId: string) => ['harness-items', cardId] as const,
   plannerRun: (cardId: string) => ['planner-run', cardId] as const,
   /**
-   * `GET /api/models` for one card. Keyed by card because the default is resolved against that card's
-   * workspace. Absent from the invalidation plan: nothing this kernel emits changes codex's catalog.
+   * `GET /api/models` for one scope: a card (its default resolves against that card's workspace) or a
+   * provider about to be created on. Absent from the invalidation plan: nothing this kernel emits changes codex's catalog.
    */
-  modelCatalog: (cardId: string | null) => ['model-catalog', cardId] as const,
+  modelCatalog: (scope: ModelCatalogScope) => ['model-catalog', scope] as const,
   /** One track's conversation list, keyed by its track. */
   trackConversations: (trackId: string) => ['track-conversations', trackId] as const,
   /**
@@ -207,11 +207,11 @@ function queueWriteMessage(error: unknown, fallback: string): string {
 }
 
 /** No `staleTime` of its own: codex keeps a 300 s disk cache behind this. */
-export function modelCatalogQueryOptions(transport: ApiTransportPort, cardId: string | null, unauthorized: UnauthorizedChannel) {
+export function modelCatalogQueryOptions(transport: ApiTransportPort, scope: ModelCatalogScope, unauthorized: UnauthorizedChannel) {
   return {
-    queryKey: queryKeys.modelCatalog(cardId),
+    queryKey: queryKeys.modelCatalog(scope),
     queryFn: ({ signal }: { signal: AbortSignal }) =>
-      runOperation(transport, { ...modelCatalogOperation(cardId), signal }, unauthorized),
+      runOperation(transport, { ...modelCatalogOperation(scope), signal }, unauthorized),
   };
 }
 
@@ -271,7 +271,7 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
     setModel: (selection: ModelSelection): Promise<ModelSelectionResult> =>
       setModelWrite(selection)
         .then((result) => {
-          void client.invalidateQueries({ queryKey: queryKeys.modelCatalog(cardId) })
+          void client.invalidateQueries({ queryKey: queryKeys.modelCatalog({ kind: 'card', cardId }) })
             .catch(() => undefined);
           return refreshAfter(result);
         }),

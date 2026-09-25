@@ -7,7 +7,7 @@ import {
   sortAreaTracksByRecent, trackRecentAt,
   trackActivityState, trackDetailSchema, updateTrackOperation,
   NEUTRAL_ACTIVITY, UNTITLED_TRACK_LABEL, trackDisplayTitle, trackLifecycleSchema, trackWireSchema, tracksInAreaOperation,
-  trackCreateKeyAction, userVisibleTracks, liveTableOverlayPayload,
+  trackCreateKeyAction, userVisibleTracks, liveTableOverlayPayload, plannerProviderOf,
   type Track, type OverlayWire,
 } from './track.js';
 import type { Area } from './area.js';
@@ -59,6 +59,15 @@ describe('track wire decode', () => {
 
   it('percent-encodes the area id into the list path', () => {
     expect(tracksInAreaOperation('a/b').path).toBe('/api/areas/a%2Fb/tracks');
+  });
+});
+
+describe('plannerProviderOf', () => {
+  it('reads the server-owned key, and Codex for anything else', () => {
+    expect(plannerProviderOf({ planner_harness: true, planner_provider: 'claude' })).toBe('claude');
+    expect(plannerProviderOf({ planner_harness: true, planner_provider: 'codex' })).toBe('codex');
+    expect(plannerProviderOf({ planner_harness: true })).toBe('codex');
+    expect(plannerProviderOf(null)).toBe('codex');
   });
 });
 
