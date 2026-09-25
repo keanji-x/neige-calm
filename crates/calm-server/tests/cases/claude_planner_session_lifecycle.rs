@@ -418,7 +418,9 @@ async fn a_shutdown_or_seal_during_the_version_check_mints_nothing() {
         let thread = rig.thread.clone();
         let text = rig.text("hello");
         let turn =
-            tokio::spawn(async move { session.turn_start(&thread, text, None, &client_id()).await });
+            tokio::spawn(
+                async move { session.turn_start(&thread, text, None, &client_id()).await },
+            );
         wait_for_file(&rig.bin("version-entered")).await;
         let shutdown = if seal {
             rig.daemon.seal_turn_thread_for_deletion(&rig.thread);

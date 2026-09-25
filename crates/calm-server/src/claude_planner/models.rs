@@ -115,7 +115,10 @@ mod tests {
     #[test]
     fn an_alias_or_null_resolves_and_anything_else_is_refused() {
         assert_eq!(resolve(None, None), Ok(None));
-        assert_eq!(resolve(Some("sonnet"), None).unwrap().unwrap().alias, "sonnet");
+        assert_eq!(
+            resolve(Some("sonnet"), None).unwrap().unwrap().alias,
+            "sonnet"
+        );
         assert_eq!(
             resolve(Some("claude-sonnet-4-5"), None),
             Err(InvalidSelection::UnknownModel("claude-sonnet-4-5".into()))

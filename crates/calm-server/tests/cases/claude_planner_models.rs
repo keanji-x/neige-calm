@@ -210,7 +210,11 @@ async fn the_catalog_is_the_alias_list_only_with_the_flag() {
             assert_eq!(entry["is_default"], false, "{entry}");
             assert_eq!(entry["supported_reasoning_efforts"], json!([]), "{entry}");
             assert_eq!(entry["default_reasoning_effort"], Value::Null, "{entry}");
-            assert!(entry["display_name"].as_str().is_some_and(|s| !s.is_empty()));
+            assert!(
+                entry["display_name"]
+                    .as_str()
+                    .is_some_and(|s| !s.is_empty())
+            );
             assert!(entry["description"].as_str().is_some_and(|s| !s.is_empty()));
         }
     }
