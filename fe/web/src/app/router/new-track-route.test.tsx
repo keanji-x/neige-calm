@@ -90,6 +90,8 @@ function harness(options: {
   heldClaudeCatalog?: Promise<void>;
   /** The server runs with `--claude-planner-config`: `?provider=claude` answers the alias list. */
   claudePlanner?: boolean;
+  /** The created Planner card's `planner_provider`; its `?card_id=` catalog is that provider's. */
+  plannerProvider?: 'codex' | 'claude';
   /** Override the detail read the track page makes when the create lands. */
   trackDetail?: ApiTransportResponse;
   /** Hold the detail read open until this resolves, to drive a slow landing. */
@@ -140,7 +142,19 @@ function harness(options: {
           source: options.claudePlanner === true ? 'built_in' : 'unavailable', fetched_at_ms: null,
         } }));
       }
-      if (request.path === '/api/models?provider=codex') {
+      if (request.path === '/api/models?card_id=card-planner' && options.plannerProvider === 'claude') {
+        return Promise.resolve({ status: 200, statusText: 'OK', body: {
+          models: CLAUDE_MODELS, default: { model: null, reasoning_effort: null }, default_source: 'unknown',
+          source: 'built_in', fetched_at_ms: null,
+        } });
+      }
+      if (request.method === 'PUT' && request.path === '/api/cards/card-planner/planner/model') {
+        const { model, reasoning_effort } = request.body as { model: string | null; reasoning_effort: string | null };
+        return Promise.resolve({ status: 200, statusText: 'OK', body: {
+          card_id: 'card-planner', model, reasoning_effort, effort_adjusted: false, unknown_model: false,
+        } });
+      }
+      if (request.path === '/api/models?provider=codex' || request.path === '/api/models?card_id=card-planner') {
         return Promise.resolve({ status: 200, statusText: 'OK', body: {
           models: [{ id: 'fast', model: 'gpt-5', display_name: 'GPT-5', description: 'Everyday model',
             is_default: true, default_reasoning_effort: 'low', supported_reasoning_efforts: [
@@ -170,7 +184,8 @@ function harness(options: {
             can_resume: false,
             cards: [{
               id: 'card-planner', track_id: 'w-new', kind: 'codex', title: 'Planner',
-              payload: { planner_harness: true }, sort: 0, created_at: 1, updated_at: 1,
+              payload: { planner_harness: true, planner_provider: options.plannerProvider ?? 'codex' },
+              sort: 0, created_at: 1, updated_at: 1,
             }],
             overlays: [],
           },
@@ -369,6 +384,31 @@ describe('New track model selection', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Go to Today' }));
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     expect(await screen.findByRole('button', { name: 'Model: Codex Default' })).toBeTruthy();
+  });
+
+  it('inside a Claude track lists only the Claude aliases and stores a pick with a null effort', async () => {
+    const { sent } = harness({ templates: [], claudePlanner: true, plannerProvider: 'claude' });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+    await findComposer();
+    await pick('Model: Codex Default', 'Claude', 'Sonnet');
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Plan with Claude');
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/track/w-new`));
+    const drawer = await screen.findByRole('complementary', { name: 'Planner' });
+    const trigger = await within(drawer).findByRole('button', { name: 'Model: Default' });
+    await waitFor(() => expect((trigger as HTMLButtonElement).disabled).toBe(false));
+    expect(within(drawer).queryByRole('button', { name: /^Reasoning effort:/ })).toBeNull();
+    trigger.focus();
+    await userEvent.keyboard('{ArrowDown}');
+    const menu = await screen.findByRole('menu');
+    expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent))
+      .toEqual(['DefaultSelected', 'Opus', 'Sonnet', 'Haiku']);
+    expect(within(menu).queryByRole('group')).toBeNull();
+    await userEvent.click(within(menu).getByRole('menuitem', { name: 'Haiku' }));
+    await waitFor(() => expect(sent.filter((request) => request.method === 'PUT'
+      && request.path === '/api/cards/card-planner/planner/model').map((request) => request.body))
+      .toEqual([{ model: 'haiku', reasoning_effort: null }]));
+    expect(sent.some((request) => request.path === '/api/models?card_id=card-planner')).toBe(true);
   });
 
   it('names the Codex Planner backend on every create', async () => {
