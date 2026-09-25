@@ -1626,7 +1626,7 @@
             }
           },
           "400": {
-            "description": "The card is a Claude Planner and `model` is neither `null` nor one of the Claude aliases `GET /api/models` lists, or `reasoning_effort` is not `null`; nothing is stored or adjusted",
+            "description": "On a Claude Planner card: a `model` other than `null` or a Claude alias, or any `reasoning_effort`. Nothing is stored",
             "content": {
               "application/json": {
                 "schema": {
@@ -2875,7 +2875,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Model catalog and the default this installation follows. For Codex, answered with `source: \"unavailable\"` and an empty catalog when codex cannot be reached, never with an error and never with a hardcoded catalog. For a Claude Planner, the fixed alias list with `source: \"built_in\"`, or `unavailable` without `--claude-planner-config`",
+            "description": "Model catalog and the default this installation follows. Codex: `source: \"live\"`, or `source: \"unavailable\"` with an empty catalog if codex cannot be reached (never an error or a hardcoded list). A Claude Planner: `source: \"built_in\"` with its alias list, or `unavailable` without `--claude-planner-config`",
             "content": {
               "application/json": {
                 "schema": {

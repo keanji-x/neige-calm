@@ -153,7 +153,7 @@ pub fn router() -> Router<AppState> {
     tag = "models",
     params(ModelsQuery),
     responses(
-        (status = 200, description = "Model catalog and the default this installation follows. For Codex, answered with `source: \"unavailable\"` and an empty catalog when codex cannot be reached, never with an error and never with a hardcoded catalog. For a Claude Planner, the fixed alias list with `source: \"built_in\"`, or `unavailable` without `--claude-planner-config`", body = ModelsResponse),
+        (status = 200, description = "Model catalog and the default this installation follows. Codex: `source: \"live\"`, or `source: \"unavailable\"` with an empty catalog if codex cannot be reached (never an error or a hardcoded list). A Claude Planner: `source: \"built_in\"` with its alias list, or `unavailable` without `--claude-planner-config`", body = ModelsResponse),
         (status = 404, description = "`card_id` names a card that does not exist", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),

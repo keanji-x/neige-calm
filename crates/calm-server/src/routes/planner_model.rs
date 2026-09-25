@@ -79,7 +79,7 @@ pub struct SetPlannerModelResponse {
     request_body = SetPlannerModelBody,
     responses(
         (status = 200, description = "Selection stored. `effort_adjusted` and `unknown_model` report what the catalog said about it; neither is an error", body = SetPlannerModelResponse),
-        (status = 400, description = "The card is a Claude Planner and `model` is neither `null` nor one of the Claude aliases `GET /api/models` lists, or `reasoning_effort` is not `null`; nothing is stored or adjusted", body = ErrorBody),
+        (status = 400, description = "On a Claude Planner card: a `model` other than `null` or a Claude alias, or any `reasoning_effort`. Nothing is stored", body = ErrorBody),
         (status = 401, description = "Unauthenticated", body = ErrorBody),
         (status = 403, description = "Not `X-Calm-Actor: user`, or the card is not a planner codex card", body = ErrorBody),
         (status = 404, description = "Card not found", body = ErrorBody),
