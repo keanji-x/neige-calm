@@ -7,6 +7,8 @@ use serde_json::{Value, json};
 
 use crate::activity_window::launchpad_opening_briefing;
 use crate::card_role_cache::CardRoleCache;
+use crate::claude_planner::config::ClaudePlannerHost;
+use crate::claude_planner::wiring::{ClaudePlannerRow, ClaudePlannerWiring};
 use crate::db::sqlite::{
     HarnessTranscriptMeasure, HarvestOutcome, HarvestedFrom, HarvestedMessage,
     append_decision_event_in_tx, card_create_with_id_tx, card_delete_tx, card_update_tx,
@@ -23,8 +25,8 @@ use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
 use crate::harness::{
     HARNESS_MODE, HarnessConfig, HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, Observation,
-    PlannerHarness, PlannerHarnessParams, QueueEntry, QueueEntryId, initial_snapshot_with_goal,
-    is_harness_snapshot_value,
+    PlannerBackend, PlannerHarness, PlannerHarnessParams, QueueEntry, QueueEntryId,
+    initial_snapshot_with_goal, is_harness_snapshot_value,
 };
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::mcp_server::wiring::{
@@ -82,9 +84,11 @@ pub struct PlannerHarnessStartAdapter {
     track_area_cache: TrackAreaCache,
     mcp_socket_path: Option<PathBuf>,
     per_card_mint_locks: PerCardLocks,
+    claude_host: Arc<ClaudePlannerHost>,
 }
 
 impl PlannerHarnessStartAdapter {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         repo: Arc<dyn Repo>,
         daemon: Arc<SharedCodexAppServer>,
@@ -93,6 +97,7 @@ impl PlannerHarnessStartAdapter {
         card_role_cache: CardRoleCache,
         track_area_cache: TrackAreaCache,
         mcp_socket_path: Option<PathBuf>,
+        claude_host: Arc<ClaudePlannerHost>,
     ) -> Self {
         Self {
             repo,
@@ -103,6 +108,24 @@ impl PlannerHarnessStartAdapter {
             track_area_cache,
             mcp_socket_path,
             per_card_mint_locks: new_per_card_locks(),
+            claude_host,
+        }
+    }
+
+    /// The readiness preflight per provider (§4.1 row 11).
+    async fn check_ready(&self, provider: &AgentProvider) -> Result<()> {
+        match provider {
+            AgentProvider::Codex if self.daemon.is_running() => Ok(()),
+            // Message carries the live failure and the background-retry fact; preflights stay non-blocking.
+            AgentProvider::Codex => Err(self.daemon.not_running_error()),
+            AgentProvider::Claude => self.claude_host.check_ready().await,
+        }
+    }
+
+    fn claude_wiring(&self) -> ClaudePlannerWiring {
+        ClaudePlannerWiring {
+            host: Arc::clone(&self.claude_host),
+            plugin: Arc::clone(&self.plugin),
         }
     }
 
@@ -130,67 +153,77 @@ impl PlannerHarnessStartAdapter {
     }
 
     /// Resolve through the track's recorded owner (`tracks.plugin_scope`), never by scanning the running roster for `template_id`, so this reader and the MCP tool scope share one owner answer.
+    #[cfg(test)]
     pub(crate) async fn bound_template(&self, track_id: &str) -> Result<Option<BoundTemplate>> {
-        let track = match self.repo.track_get(track_id).await {
-            Ok(Some(track)) => track,
-            Ok(None) => {
-                tracing::error!(
-                    target: "planner_harness::template_binding",
-                    track_id,
-                    "bound template track was not found while resolving descriptor; using vanilla planner prompt"
-                );
-                return Ok(None);
-            }
-            Err(error) => {
-                tracing::error!(
-                    target: "planner_harness::template_binding",
-                    track_id,
-                    error = %error,
-                    "template binding lookup failed; using vanilla planner prompt"
-                );
-                return Ok(None);
-            }
-        };
-        let binding = resolve_track_owner_binding(&track, Some(self.plugin.as_ref())).await;
-        match binding {
-            TrackOwnerBinding::Owned {
-                contract: TemplateContract::Honored { template, input },
-                ..
-            } => Ok(Some(BoundTemplate {
-                descriptor: template,
-                input,
-            })),
-            // The track names no template, or is unbound: an ordinary vanilla prompt, not a degradation.
-            TrackOwnerBinding::Owned {
-                contract: TemplateContract::NotTemplated,
-                ..
-            }
-            | TrackOwnerBinding::Unbound => Ok(None),
-            // The owner is alive and keeps its tool scope; only the template contract is unusable, so the descriptor and `template_input` are dropped.
-            TrackOwnerBinding::Owned {
-                plugin,
-                contract: TemplateContract::Broken(failure),
-            } => {
-                tracing::error!(
-                    target: "planner_harness::template_binding",
-                    track_id,
-                    template_id = track.template_id.as_deref().unwrap_or("<none>"),
-                    plugin_id = %plugin.id,
-                    failure = %failure,
-                    "the track's owner is live but its template contract no longer holds; using vanilla planner prompt (tool scope is unaffected)"
-                );
-                Ok(None)
-            }
-            TrackOwnerBinding::OwnerUnavailable { plugin_id } => {
-                tracing::error!(
-                    target: "planner_harness::template_binding",
-                    track_id,
-                    template_id = track.template_id.as_deref().unwrap_or("<none>"),
-                    plugin_id = %plugin_id,
-                    "the track's recorded owner is not running ∧ trusted; using vanilla planner prompt"
-                );
-                Ok(None)
-            }
+        bound_template(self.repo.as_ref(), &self.plugin, track_id).await
+    }
+}
+
+/// See [`PlannerHarnessStartAdapter::bound_template`].
+pub(crate) async fn bound_template(
+    repo: &dyn Repo,
+    plugin: &PluginHost,
+    track_id: &str,
+) -> Result<Option<BoundTemplate>> {
+    let track = match repo.track_get(track_id).await {
+        Ok(Some(track)) => track,
+        Ok(None) => {
+            tracing::error!(
+                target: "planner_harness::template_binding",
+                track_id,
+                "bound template track was not found while resolving descriptor; using vanilla planner prompt"
+            );
+            return Ok(None);
+        }
+        Err(error) => {
+            tracing::error!(
+                target: "planner_harness::template_binding",
+                track_id,
+                error = %error,
+                "template binding lookup failed; using vanilla planner prompt"
+            );
+            return Ok(None);
+        }
+    };
+    let binding = resolve_track_owner_binding(&track, Some(plugin)).await;
+    match binding {
+        TrackOwnerBinding::Owned {
+            contract: TemplateContract::Honored { template, input },
+            ..
+        } => Ok(Some(BoundTemplate {
+            descriptor: template,
+            input,
+        })),
+        // The track names no template, or is unbound: an ordinary vanilla prompt, not a degradation.
+        TrackOwnerBinding::Owned {
+            contract: TemplateContract::NotTemplated,
+            ..
+        }
+        | TrackOwnerBinding::Unbound => Ok(None),
+        // The owner is alive and keeps its tool scope; only the template contract is unusable, so the descriptor and `template_input` are dropped.
+        TrackOwnerBinding::Owned {
+            plugin,
+            contract: TemplateContract::Broken(failure),
+        } => {
+            tracing::error!(
+                target: "planner_harness::template_binding",
+                track_id,
+                template_id = track.template_id.as_deref().unwrap_or("<none>"),
+                plugin_id = %plugin.id,
+                failure = %failure,
+                "the track's owner is live but its template contract no longer holds; using vanilla planner prompt (tool scope is unaffected)"
+            );
+            Ok(None)
+        }
+        TrackOwnerBinding::OwnerUnavailable { plugin_id } => {
+            tracing::error!(
+                target: "planner_harness::template_binding",
+                track_id,
+                template_id = track.template_id.as_deref().unwrap_or("<none>"),
+                plugin_id = %plugin_id,
+                "the track's recorded owner is not running ∧ trusted; using vanilla planner prompt"
+            );
+            Ok(None)
         }
     }
 }
@@ -279,24 +312,16 @@ fn session_kind_for(profile: HarnessProfile) -> WorkerSessionKind {
 }
 
 /// The provider the session row persists. A Planner card names it in `planner_provider` (missing or unknown is not a
-/// harness card); only a Codex binding is startable here. The conversation profiles run on Codex.
+/// harness card); the conversation profiles run on Codex.
 fn startable_provider(profile: HarnessProfile, card: &Card) -> Result<AgentProvider> {
     let role = match profile {
         HarnessProfile::Planner => CardRole::Planner,
         HarnessProfile::PlainChat => CardRole::Worker,
         HarnessProfile::Assistant => CardRole::Assistant,
     };
-    match crate::harness::profile::PlannerBinding::from_card(card, role) {
-        Some(binding) if binding.provider == AgentProvider::Codex => Ok(AgentProvider::Codex),
-        Some(_) => Err(CalmError::Conflict(format!(
-            "card {}: this server cannot start a Claude Planner",
-            card.id
-        ))),
-        None => Err(CalmError::BadRequest(format!(
-            "card {} is not a harness card",
-            card.id
-        ))),
-    }
+    crate::harness::profile::PlannerBinding::from_card(card, role)
+        .map(|binding| binding.provider)
+        .ok_or_else(|| CalmError::BadRequest(format!("card {} is not a harness card", card.id)))
 }
 
 /// A Planner row carries its provider (`WorkerSessionInit::shared_planner`); a conversation row is a Codex card.
@@ -377,6 +402,35 @@ pub(crate) fn render_planner_developer_instructions(
         instructions.push_str("\n```");
     }
     instructions
+}
+
+/// The Planner's instructions for a thread or session started now: the rendering, the bound
+/// template's input, and the card's template context. Shared by the Codex `thread/start` and the
+/// Claude session, which appends its own fragment.
+pub(crate) async fn planner_instructions(
+    repo: &dyn Repo,
+    plugin: &PluginHost,
+    track_id: &str,
+    card_id: &str,
+) -> Result<String> {
+    let bound_template = bound_template(repo, plugin, track_id).await?;
+    let mut instructions = render_planner_developer_instructions(
+        track_id,
+        bound_template.as_ref().map(|bound| &bound.descriptor),
+        bound_template
+            .as_ref()
+            .and_then(|bound| bound.input.as_ref()),
+    );
+    let card = repo
+        .card_get(card_id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
+    if let Some(context) =
+        crate::template_context::TemplateContext::from_card_payload(&card.payload)?
+    {
+        context.append_to(&mut instructions)?;
+    }
+    Ok(instructions)
 }
 
 #[cfg(feature = "fixtures")]
@@ -538,7 +592,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             };
             return Err(CalmError::BadRequest(message));
         }
-        startable_provider(payload.profile, &card)?;
+        let provider = startable_provider(payload.profile, &card)?;
         if expected_role == CardRole::Planner
             && track.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE)
         {
@@ -547,11 +601,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 track.id
             )));
         }
-        if !self.daemon.is_running() {
-            // Message carries the live failure and the background-retry fact; preflights stay non-blocking.
-            return Err(self.daemon.not_running_error());
-        }
-        Ok(())
+        self.check_ready(&provider).await
     }
 
     async fn prepare_tx<'tx>(
@@ -913,13 +963,40 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         let worker_session_id = output.output_string("runtime_id", "planner harness")?;
         let runtime_deferred = output_bool(output, "runtime_deferred")?;
         let cwd = output.output_string("cwd", "planner harness")?;
+        // The card's sticky `planner_provider` (`prepare_tx` admitted it); every row of the card shares it.
+        let provider = {
+            let card = self
+                .repo
+                .card_get(&card_id)
+                .await?
+                .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
+            startable_provider(profile, &card)?
+        };
         // OLD PTY shutdown at Phase-2 entry: force_new_thread is a hard reset; the handle kill is the first app-server-side action after commit.
         if let Some(old_worker_session_id) =
             output.output_optional_string("old_runtime_id", "planner harness")?
             && old_worker_session_id != worker_session_id
-            && let Some(old_handle) = self.harness_registry.remove(&old_worker_session_id)
         {
-            old_handle.shutdown().await?;
+            if let Some(old_handle) = self.harness_registry.remove(&old_worker_session_id) {
+                old_handle.shutdown().await?;
+            }
+            // #1791 §5.1: a Claude predecessor is stopped by id, registered or not (a replay repeats it). A failure is
+            // logged and left to the boot sweep or the next destructive step's scoped sweep; the superseded row's token
+            // no longer authenticates.
+            if provider == AgentProvider::Claude
+                && let Err(error) = crate::claude_planner::stop::stop(
+                    &self.claude_host.instance,
+                    &old_worker_session_id,
+                )
+                .await
+            {
+                tracing::warn!(
+                    card_id = %card_id,
+                    old_worker_session_id = %old_worker_session_id,
+                    %error,
+                    "planner harness reset: the Claude Planner predecessor's stop did not confirm"
+                );
+            }
         }
         if let Some(existing) = output_existing_thread_id(output)? {
             return Ok(AppServerInteractOutcome::MintedAndAwaited {
@@ -942,7 +1019,10 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         };
         let mut new_mcp_token_hash = None;
         let thread_id = if let Some(thread_id) = reusable_thread_id {
-            if !self.repo.card_mcp_token_exists_for_card(&card_id).await? {
+            // The token-row check guards a token baked into a Codex thread's config; a Claude Planner mints its own at its first turn.
+            if provider == AgentProvider::Codex
+                && !self.repo.card_mcp_token_exists_for_card(&card_id).await?
+            {
                 let message = format!(
                     "planner card {card_id} reuses thread {thread_id} with \
                      {REUSABLE_THREAD_MISSING_CARD_MCP_TOKEN_ERROR} \
@@ -958,6 +1038,9 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 return Err(CalmError::Conflict(message));
             }
             thread_id
+        } else if provider == AgentProvider::Claude {
+            // #1791 §4.4: a fresh UUID names the Claude session, with no RPC; the MCP credential is minted at the first turn.
+            uuid::Uuid::new_v4().to_string()
         } else {
             let developer_instructions = match profile {
                 // A plain chat is a bare codex thread: no kernel prompt, no MCP tools to describe.
@@ -977,27 +1060,10 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                         template, &track_id,
                     ))
                 }
-                HarnessProfile::Planner => {
-                    let bound_template = self.bound_template(&track_id).await?;
-                    let mut instructions = render_planner_developer_instructions(
-                        &track_id,
-                        bound_template.as_ref().map(|bound| &bound.descriptor),
-                        bound_template
-                            .as_ref()
-                            .and_then(|bound| bound.input.as_ref()),
-                    );
-                    let card = self
-                        .repo
-                        .card_get(&card_id)
-                        .await?
-                        .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
-                    if let Some(context) =
-                        crate::template_context::TemplateContext::from_card_payload(&card.payload)?
-                    {
-                        context.append_to(&mut instructions)?;
-                    }
-                    Some(instructions)
-                }
+                HarnessProfile::Planner => Some(
+                    planner_instructions(self.repo.as_ref(), &self.plugin, &track_id, &card_id)
+                        .await?,
+                ),
             };
             let (raw, hashed) = mint_card_mcp_token_pair();
             new_mcp_token_hash = Some(hashed);
@@ -1058,6 +1124,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         let op_clone = op.clone();
         let output_clone = output.clone();
         let thread_for_tx = thread_id.clone();
+        let provider_for_tx = provider.clone();
         let (tx_out, _id) = write_with_event_typed(
             ctx.repo.as_ref(),
             payload.actor,
@@ -1144,10 +1211,9 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                                 runtime_snapshot.set_pending_entries(entries);
                             }
                         }
-                        // `prepare_tx` admitted only a Codex binding, and this is its `thread/start` path.
                         let runtime_init = starting_runtime_init(
                             profile,
-                            AgentProvider::Codex,
+                            provider_for_tx.clone(),
                             worker_session_id.clone(),
                             card_id.clone(),
                             Some(thread_for_tx.clone()),
@@ -1169,14 +1235,25 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                             }
                         }
                     } else {
+                        // A Claude row keeps a bound `agent_session_id`: nulling it would make the next spawn create a session
+                        // that already exists (`--session-id`) instead of resuming it.
+                        let session_id = match provider_for_tx {
+                            AgentProvider::Codex => None,
+                            AgentProvider::Claude => crate::db::sqlite::session_get_tx(
+                                tx,
+                                &calm_types::worker::WorkerSessionId(worker_session_id.clone()),
+                            )
+                            .await?
+                            .and_then(|row| row.agent_session_id),
+                        };
                         session_bind_attribution_tx(
                             tx,
                             &worker_session_id,
                             ThreadAttribution {
                                 worker_session_id: worker_session_id.clone(),
-                                provider: AgentProvider::Codex,
+                                provider: provider_for_tx.clone(),
                                 thread_id: Some(thread_for_tx.clone()),
-                                session_id: None,
+                                session_id,
                                 active_turn_id: None,
                             },
                         )
@@ -1316,6 +1393,39 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             &mut snapshot,
         )
         .await?;
+        let provider = {
+            let card = self
+                .repo
+                .card_get(&card_id)
+                .await?
+                .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
+            startable_provider(op_profile(_op)?, &card)?
+        };
+        let backend: PlannerBackend = match provider {
+            AgentProvider::Codex => self.daemon.clone().into(),
+            AgentProvider::Claude => {
+                #[cfg(feature = "fixtures")]
+                claude_spawn_failure::fire(&card_id).await?;
+                // The session only: nothing is minted or spawned before the harness is installed and its first turn runs.
+                PlannerBackend::Claude(
+                    self.claude_wiring()
+                        .open_session(
+                            self.repo.clone(),
+                            self.daemon.clone(),
+                            ClaudePlannerRow {
+                                worker_session_id: &worker_session_id,
+                                card_id: &card_id,
+                                track_id: &track_id,
+                                prior_total_tokens: snapshot
+                                    .token_usage
+                                    .as_ref()
+                                    .map_or(0, |usage| usage.total_tokens),
+                            },
+                        )
+                        .await?,
+                )
+            }
+        };
         // Atomic replace claim: `reserve_replacing` swaps the slot to Reserved in one entry op and hands back the previous Live handle for shutdown outside the map lock.
         let (reservation, previous_live) = self
             .harness_registry
@@ -1332,7 +1442,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             events: ctx.events.clone(),
             card_role_cache: self.card_role_cache.clone(),
             track_area_cache: self.track_area_cache.clone(),
-            backend: self.daemon.clone().into(),
+            backend,
             config: HarnessConfig::default(),
             snapshot,
         });
@@ -1471,6 +1581,19 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 Ok(())
             }
             "interrupt_thread" => {
+                // Both cleanups, whatever the card's binding says now (it may no longer be readable): a Claude stop by this
+                // operation's runtime id signals nothing when nothing carries its marker, and a Codex interrupt of a thread the
+                // daemon does not run is a no-op. Failures are logged; the compensation goes on (#1791 §4.1 row 13). The
+                // runtime id is always in the output (`plan_compensation` already requires it), so a missing one is an error.
+                let worker_session_id = _output.output_string("runtime_id", "planner harness")?;
+                if let Err(e) = crate::claude_planner::stop::stop(
+                    &self.claude_host.instance,
+                    &worker_session_id,
+                )
+                .await
+                {
+                    tracing::warn!(worker_session_id, error = %e, "planner harness compensation stop failed");
+                }
                 if let Some(thread_id) = step.args.get("thread_id").and_then(Value::as_str)
                     && let Err(e) = self.daemon.interrupt_active_turn(thread_id).await
                 {
@@ -1557,6 +1680,59 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 "unknown planner harness start compensation op {other}"
             ))),
         }
+    }
+}
+
+/// The profile this operation was submitted with.
+fn op_profile(op: &Operation) -> Result<HarnessProfile> {
+    let payload: PlannerHarnessStartOperationPayload = serde_json::from_value(op.payload.clone())?;
+    Ok(payload.profile)
+}
+
+/// Fixtures only: a one-shot failure of the Claude arm of `spawn_side_effect`, before anything is
+/// built or installed, behind an awaitable pause, so a test can act between the reset's commit and
+/// the injected `Err` (#1791 §9.1 PR4).
+#[cfg(feature = "fixtures")]
+pub mod claude_spawn_failure {
+    use std::collections::HashMap;
+    use std::sync::{Arc, LazyLock, Mutex};
+
+    use tokio::sync::Notify;
+
+    use crate::error::{CalmError, Result};
+
+    #[derive(Clone, Default)]
+    pub struct ClaudeSpawnFailure {
+        pub entered: Arc<Notify>,
+        pub release: Arc<Notify>,
+    }
+
+    static ARMED: LazyLock<Mutex<HashMap<String, ClaudeSpawnFailure>>> =
+        LazyLock::new(Default::default);
+
+    /// Arm the next Claude `spawn_side_effect` for `card_id`.
+    pub fn arm(card_id: &str) -> ClaudeSpawnFailure {
+        let failure = ClaudeSpawnFailure::default();
+        ARMED
+            .lock()
+            .expect("claude spawn failure fixture poisoned")
+            .insert(card_id.to_string(), failure.clone());
+        failure
+    }
+
+    pub(super) async fn fire(card_id: &str) -> Result<()> {
+        let armed = ARMED
+            .lock()
+            .expect("claude spawn failure fixture poisoned")
+            .remove(card_id);
+        let Some(failure) = armed else {
+            return Ok(());
+        };
+        failure.entered.notify_one();
+        failure.release.notified().await;
+        Err(CalmError::Internal(
+            "injected Claude Planner spawn failure (fixture)".into(),
+        ))
     }
 }
 
@@ -2695,6 +2871,10 @@ mod tests {
             CardRoleCache::new(),
             TrackAreaCache::new(),
             None,
+            std::sync::Arc::new(
+                crate::claude_planner::config::ClaudePlannerHost::unconfigured_scratch()
+                    .expect("scratch claude planner host"),
+            ),
         )
     }
 

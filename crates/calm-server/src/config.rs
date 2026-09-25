@@ -35,6 +35,12 @@ pub struct Config {
     #[arg(long)]
     pub isolated_codex_config: Option<PathBuf>,
 
+    /// Typed configuration of the Claude Planner backend (a JSON `ClaudePlannerConfig`).
+    /// Missing keeps it unavailable: a Claude Planner create is refused and an existing Claude
+    /// Planner keeps its queue without issuing turns.
+    #[arg(long)]
+    pub claude_planner_config: Option<PathBuf>,
+
     /// Unix socket used to ask calm-proc-supervisor to fork session daemons.
     /// Defaults to `<CALM_DATA_DIR>/proc-supervisor.sock`.
     #[arg(long, env = "CALM_PROC_SUPERVISOR_SOCK")]

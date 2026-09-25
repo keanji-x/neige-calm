@@ -11,6 +11,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use tokio::time::Instant;
@@ -159,23 +160,65 @@ async fn wait_empty(
     }
 }
 
+/// Scans abandoned at their deadline whose blocking thread has not returned yet. While one is
+/// hung, every new scan fails closed at once instead of leaking one more blocking thread per stop
+/// attempt (a `turn_start` retry stops every few seconds). Wrapping arithmetic: the abandoned
+/// scan's own decrement may land before the abandoning increment.
+static HUNG_SCANS: AtomicUsize = AtomicUsize::new(0);
+const SCAN_RUNNING: u8 = 0;
+const SCAN_DONE: u8 = 1;
+const SCAN_ABANDONED: u8 = 2;
+
 /// A scan reads every process's `stat` and `environ` on the blocking pool, bounded by `until`. A
 /// same-user process can make an `environ` read block (its mm lock held); past `until` the scan is
-/// an `Err` (fail closed) and its blocking thread is leaked until the read returns.
+/// an `Err` (fail closed) and its blocking thread is leaked until the read returns; until then no
+/// other scan starts (see [`HUNG_SCANS`]).
 pub(crate) async fn scan_off_thread(
     proc_root: &Path,
     markers: &Arc<HashSet<String>>,
     until: Instant,
 ) -> Result<Vec<Member>> {
+    if HUNG_SCANS.load(Ordering::SeqCst) != 0 {
+        return Err(CalmError::Conflict(
+            "claude planner stop: an earlier /proc scan is still hung".into(),
+        ));
+    }
     let markers = Arc::clone(markers);
     let proc_root = proc_root.to_path_buf();
-    let scan = tokio::task::spawn_blocking(move || scan_in(&proc_root, &markers));
-    tokio::time::timeout_at(until, scan)
-        .await
-        .map_err(|_| {
-            CalmError::Conflict("claude planner stop: a /proc scan did not finish in time".into())
-        })?
-        .map_err(|error| CalmError::Internal(format!("claude planner stop scan: {error}")))?
+    let phase = Arc::new(AtomicU8::new(SCAN_RUNNING));
+    let scan_phase = Arc::clone(&phase);
+    let scan = tokio::task::spawn_blocking(move || {
+        #[cfg(feature = "fixtures")]
+        seam::wait_if_scan_held();
+        let members = scan_in(&proc_root, &markers);
+        if scan_phase
+            .compare_exchange(SCAN_RUNNING, SCAN_DONE, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            HUNG_SCANS.fetch_sub(1, Ordering::SeqCst);
+        }
+        members
+    });
+    match tokio::time::timeout_at(until, scan).await {
+        Ok(joined) => joined
+            .map_err(|error| CalmError::Internal(format!("claude planner stop scan: {error}")))?,
+        Err(_) => {
+            if phase
+                .compare_exchange(
+                    SCAN_RUNNING,
+                    SCAN_ABANDONED,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                )
+                .is_ok()
+            {
+                HUNG_SCANS.fetch_add(1, Ordering::SeqCst);
+            }
+            Err(CalmError::Conflict(
+                "claude planner stop: a /proc scan did not finish in time".into(),
+            ))
+        }
+    }
 }
 
 /// A process carrying one of the markers, with the `start_time` read BEFORE its environ: if the
@@ -307,6 +350,24 @@ mod seam {
             .expect("claude planner stop seam poisoned")
             .remove(worker_session_id);
     }
+
+    /// While held, every `/proc` scan blocks on its blocking thread, as a scan stuck on an
+    /// `environ` read does.
+    static SCAN_HELD: LazyLock<(Mutex<bool>, std::sync::Condvar)> = LazyLock::new(Default::default);
+
+    pub(super) fn hold_scans(held: bool) {
+        let (lock, released) = &*SCAN_HELD;
+        *lock.lock().expect("scan hold poisoned") = held;
+        released.notify_all();
+    }
+
+    pub(super) fn wait_if_scan_held() {
+        let (lock, released) = &*SCAN_HELD;
+        let mut held = lock.lock().expect("scan hold poisoned");
+        while *held {
+            held = released.wait(held).expect("scan hold poisoned");
+        }
+    }
 }
 
 #[cfg(not(feature = "fixtures"))]
@@ -333,4 +394,16 @@ pub fn sigkill_verified_for_test(pid: i32, start_time: u64) -> bool {
 #[cfg(feature = "fixtures")]
 pub fn clear_claude_planner_stop_failure_for_test(worker_session_id: &str) {
     seam::clear(worker_session_id);
+}
+
+/// Fixtures only: `true` makes every later `/proc` scan hang on its blocking thread until `false`.
+#[cfg(feature = "fixtures")]
+pub fn hold_claude_planner_scans_for_test(held: bool) {
+    seam::hold_scans(held);
+}
+
+/// Fixtures only: how many abandoned scans are still hung.
+#[cfg(feature = "fixtures")]
+pub fn hung_claude_planner_scans_for_test() -> usize {
+    HUNG_SCANS.load(Ordering::SeqCst)
 }

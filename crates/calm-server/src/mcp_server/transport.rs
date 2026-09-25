@@ -167,6 +167,21 @@ impl McpServer {
             listener_task: std::sync::Mutex::new(Some(task)),
         }))
     }
+
+    /// Fixtures only: close the listener (as a process exit would), so another boot of the same
+    /// data dir in this test process can bind the socket.
+    #[cfg(feature = "fixtures")]
+    pub async fn stop_listener_for_test(&self) {
+        let task = self
+            .listener_task
+            .lock()
+            .expect("mcp listener task mutex")
+            .take();
+        if let Some(task) = task {
+            task.abort();
+            let _ = task.await;
+        }
+    }
 }
 
 async fn accept_loop(

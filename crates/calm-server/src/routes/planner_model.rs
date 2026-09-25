@@ -20,6 +20,7 @@ use crate::planner_model::CardModelSelection;
 use crate::routes::cards::{card_runs_headless_harness, card_scope};
 use crate::routes::models::CODEX_READ_TIMEOUT;
 use crate::routes::track_report_blocks::require_rest_user_actor_for;
+use crate::session_projection_repo::AgentProvider;
 use crate::state::{CodexShellState, RouteState, WorkerState};
 
 const ACTOR_SUBJECT: &str = "planner model selection";
@@ -79,6 +80,7 @@ pub struct SetPlannerModelResponse {
         (status = 401, description = "Unauthenticated", body = ErrorBody),
         (status = 403, description = "Not `X-Calm-Actor: user`, or the card is not a planner codex card", body = ErrorBody),
         (status = 404, description = "Card not found", body = ErrorBody),
+        (status = 409, description = "The card is a Claude Planner, which runs the Claude CLI's default model and effort", body = ErrorBody),
         (status = 422, description = "`model` or `reasoning_effort` is missing from the body, or an unknown key is present. Both keys are required; `null` is how the default is chosen", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
@@ -107,6 +109,14 @@ pub(crate) async fn set_planner_model(
     if !card_runs_headless_harness(&card, role) {
         return Err(CalmError::Forbidden(format!(
             "card {id} is not a planner codex card",
+        )));
+    }
+    // #1791 §5.8: a Claude Planner runs its CLI's default model and effort.
+    if crate::harness::profile::PlannerBinding::from_card(&card, role)
+        .is_some_and(|binding| binding.provider == AgentProvider::Claude)
+    {
+        return Err(CalmError::Conflict(format!(
+            "card {id} is a Claude Planner: it runs the Claude CLI's default model and effort, which cannot be chosen"
         )));
     }
 

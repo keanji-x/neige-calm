@@ -3,12 +3,18 @@
 # copies it into a private directory next to a `scenario` file; the spawn's environment is an
 # allowlist, so everything the fake needs or records lives in that directory:
 #   in:  scenario, version (optional; default 2.1.280), result_line (optional)
-#   out: spawns, pid, argv, env, stdin, instructions, orphan, emitted
-# Needs on PATH: bash, jq, setsid, sleep, seq, touch, yes; `flood` also needs python3 (F_SETPIPE_SZ).
+#   out: spawns, pid, argv, env, stdin, instructions, orphan, emitted, mcp_reply
+# Needs on PATH: bash, jq, setsid, sleep, seq, touch, yes; `flood` (F_SETPIPE_SZ) and `mcp` (a unix
+# socket client) also need python3.
 D=$(cd "$(dirname "$0")" && pwd)
 SCENARIO=$(cat "$D/scenario")
 
 if [ "$1" = "--version" ]; then
+  # `hold-version` answers only once the test creates `release-version`.
+  if [ "$SCENARIO" = "hold-version" ]; then
+    touch "$D/version-entered"
+    while [ ! -e "$D/release-version" ]; do sleep 0.05; done
+  fi
   echo "$(cat "$D/version" 2>/dev/null || echo 2.1.280) (Claude Code)"
   if [ "$SCENARIO" = "vanish-after-version" ]; then rm -f -- "$0"; fi
   exit 0
@@ -53,9 +59,13 @@ SKILLS='[]'
 if [ "$SCENARIO" = "bad-init" ]; then SKILLS='["dataviz"]'; fi
 INIT+='"mcp_servers":[{"name":"calm","status":"connected"}],"skills":'"$SKILLS"','
 INIT+='"plugins":[{"name":"telemetry","source":"telemetry@builtin"}]}\n'
+# `slow-bind` names the session a second late and then works for seven more seconds, so a test
+# can hold the database across the bind of `agent_session_id` and release it before the result.
+if [ "$SCENARIO" = "slow-bind" ]; then sleep 1; fi
 # shellcheck disable=SC2059
 printf "$INIT" "$SID"
 jq -c '. + {isReplay: true}' <<< "$LINE"
+if [ "$SCENARIO" = "slow-bind" ]; then sleep 7; SCENARIO=exit; fi
 
 USAGE='"usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,'
 USAGE+='"output_tokens":5,"iterations":[{"input_tokens":10,"cache_creation_input_tokens":0,'
@@ -69,6 +79,41 @@ ABORTED='{"type":"result","subtype":"error_during_execution","errors":[],"termin
 case "$SCENARIO" in
   exit)
     echo "$TEXT"; echo "$SUCCESS"
+    cat > /dev/null
+    exit 0 ;;
+  mcp)
+    # One real MCP handshake with the spawn's own credential against the kernel's socket (the
+    # reply lands in `mcp_reply`), then the calm tool call and its result as Claude reports them.
+    python3 - "$D/mcp_reply" <<'PY' || { echo "mcp: handshake script failed" >&2; exit 6; }
+import json, os, socket, sys
+s = socket.socket(socket.AF_UNIX)
+s.connect(os.environ["NEIGE_MCP_SOCKET"])
+f = s.makefile("rw")
+f.write(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+    "protocolVersion": "2024-11-05", "capabilities": {},
+    "clientInfo": {"name": "fake-claude", "version": "0"},
+    "_meta": {"dev.neige/auth": {"token": os.environ["NEIGE_MCP_TOKEN"]}}}}) + "\n")
+f.flush()
+open(sys.argv[1], "w").write(f.readline())
+PY
+    CALL='{"type":"assistant","uuid":"0b6d1d4e-6f5a-4c2e-9d8e-2a51f3c7b003","message":{"content":'
+    CALL+='[{"type":"tool_use","id":"toolu_mcp","name":"mcp__calm__calm_report_write","input":{"text":"x"}}]}}'
+    RESULT='{"type":"user","uuid":"0b6d1d4e-6f5a-4c2e-9d8e-2a51f3c7b004","message":{"role":"user","content":'
+    RESULT+='[{"tool_use_id":"toolu_mcp","type":"tool_result","content":[{"type":"text","text":"ok"}]}]},'
+    RESULT+='"tool_use_result":[{"type":"text","text":"ok"}]}'
+    echo "$CALL"; echo "$RESULT"; echo "$TEXT"; echo "$SUCCESS"
+    cat > /dev/null
+    exit 0 ;;
+  hold-orphan)
+    # `hold`, with a detached marked child that outlives this process (a Bash tool's own session).
+    setsid sleep 300 < /dev/null > /dev/null 2>&1 &
+    echo "$!" > "$D/orphan"
+    TOOL='{"type":"assistant","uuid":"0b6d1d4e-6f5a-4c2e-9d8e-2a51f3c7b002","message":{"content":'
+    TOOL+='[{"type":"tool_use","id":"toolu_hold","name":"Bash","input":{"command":"sleep 20"}}]}}'
+    echo "$TOOL"
+    IFS= read -r CONTROL || exit 4
+    printf '%s\n' "$CONTROL" >> "$D/stdin"
+    echo "$ABORTED"
     cat > /dev/null
     exit 0 ;;
   exit-with-orphan)

@@ -293,12 +293,17 @@ async fn restore_planner_with_daemon(
         .unwrap();
     let areas = calm_server::track_area_cache::TrackAreaCache::new();
     fx.boot.repo.seed_track_area_cache(&areas).await.unwrap();
+    let claude_wiring =
+        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
+            fx.boot.repo.clone(),
+        );
     let outcome = spawn_recovered_harness(
         fx.boot.repo.clone(),
         fx.boot.ctx.events.clone(),
         fx.boot.card_role_cache.clone(),
         areas,
         daemon,
+        &claude_wiring,
         &fx.state.harness,
         &new_track_delete_locks(),
         runtime,

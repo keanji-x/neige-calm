@@ -114,10 +114,51 @@ async fn a_ready_result_wins_over_a_stop_that_fires_with_it() {
     assert!(rig.marked_pids().is_empty());
 }
 
+/// #1791 §5.1 item 2: the credential is minted at the first turn and at most once per harness;
+/// the second turn spawns with the same token and the row's hash is unchanged.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_mcp_token_installs_once() {
+async fn the_mcp_token_is_minted_once_at_the_first_turn() {
     let rig = Rig::new("exit").await;
-    assert!(rig.session().install_mcp_token("second".into()).is_err());
+    assert_eq!(
+        rig.mcp_token_hash().await,
+        None,
+        "nothing minted before a turn"
+    );
+    let mut tokens = Vec::new();
+    for text in ["one", "two"] {
+        let mut rx = rig.session().subscribe_notifications();
+        rig.session()
+            .turn_start(&rig.thread, rig.text(text), &client_id())
+            .await
+            .expect("turn_start");
+        until_completed(&mut rx).await;
+        let env = rig.read_bin("env").expect("env");
+        let token = env
+            .lines()
+            .find_map(|line| line.strip_prefix("NEIGE_MCP_TOKEN="))
+            .expect("token")
+            .to_string();
+        tokens.push(token);
+    }
+    assert_eq!(tokens[0], tokens[1], "one mint per harness");
+    assert_eq!(
+        rig.mcp_token_hash().await.as_deref(),
+        Some(calm_server::mcp_server::auth::hash_token(&tokens[0]).as_str())
+    );
+}
+
+/// An install-race loser (never installed) refuses its turn without minting or spawning.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_session_that_was_never_installed_refuses_without_minting() {
+    let rig = Rig::new("exit").await;
+    let loser = rig.open_session_uninstalled().await;
+    let error = loser
+        .turn_start(&rig.thread, rig.text("hello"), &client_id())
+        .await
+        .expect_err("not installed");
+    assert!(error.to_string().contains("not installed"), "{error}");
+    assert_eq!(rig.mcp_token_hash().await, None);
+    assert!(rig.read_bin("spawns").is_none(), "nothing spawned");
 }
 
 /// A CLI that stopped reading stdin and keeps sending control requests: neither the interrupt's
@@ -294,4 +335,116 @@ async fn a_cli_ignoring_sigterm_still_settles_by_settle_by() {
         rig.marked_pids().is_empty(),
         "the stubborn CLI did not survive"
     );
+}
+
+/// #1791 PR4 (§5.1 token invariant): a first-turn mint on a row superseded after the run loop's
+/// carrier check returns `Err` and writes nothing, card row included; nothing is spawned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_first_turn_mint_on_a_superseded_row_fails_and_writes_nothing() {
+    let rig = Rig::new("exit").await;
+    let mut tx = rig.repo.pool().begin().await.expect("tx");
+    calm_server::db::sqlite::session_mark_superseded_runtime_tx(&mut tx, &rig.worker_session_id)
+        .await
+        .expect("supersede");
+    tx.commit().await.expect("commit");
+
+    let error = rig
+        .session()
+        .turn_start(&rig.thread, rig.text("hello"), &client_id())
+        .await
+        .expect_err("the guarded mint refuses a retired row");
+    assert!(error.to_string().contains("no longer active"), "{error}");
+    assert_eq!(rig.mcp_token_hash().await, None);
+    let card_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM card_mcp_tokens WHERE card_id = ?1")
+            .bind(&rig.card_id)
+            .fetch_one(rig.repo.pool())
+            .await
+            .expect("count");
+    assert_eq!(
+        card_rows, 0,
+        "the card write rolled back with the session write"
+    );
+    assert!(rig.read_bin("spawns").is_none(), "nothing spawned");
+}
+
+/// #1791 PR4 (PR2b follow-up): a bind of `agent_session_id` that fails (here cut off by its bound
+/// while the database is held) leaves the row unbound; the next turn resumes from memory AND
+/// retries the bind, so a later reopen resumes too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_bind_is_retried_on_the_next_turn() {
+    let rig = Rig::new("slow-bind").await;
+    let mut rx = rig.session().subscribe_notifications();
+    rig.session()
+        .turn_start(&rig.thread, rig.text("hello"), &client_id())
+        .await
+        .expect("turn_start");
+    // Hold the database write lock across the bind (the CLI names the session a second in).
+    let mut held = rig.repo.pool().begin().await.expect("tx");
+    sqlx::query("UPDATE worker_sessions SET updated_at_ms = updated_at_ms WHERE id = ?1")
+        .bind(&rig.worker_session_id)
+        .execute(&mut *held)
+        .await
+        .expect("take the write lock");
+    tokio::time::sleep(Duration::from_millis(6_500)).await;
+    held.rollback().await.expect("release");
+    let completed = completed_turn(&until_completed(&mut rx).await);
+    assert_eq!(completed["status"], "completed");
+    assert_eq!(rig.agent_session_id().await, None, "the bind was cut off");
+
+    std::fs::write(rig.bin("scenario"), "exit").expect("scenario");
+    let mut rx = rig.session().subscribe_notifications();
+    rig.session()
+        .turn_start(&rig.thread, rig.text("again"), &client_id())
+        .await
+        .expect("turn_start");
+    until_completed(&mut rx).await;
+    let argv = rig.read_bin("argv").expect("argv");
+    assert!(argv.lines().any(|a| a == "--resume"), "resumed from memory");
+    assert_eq!(
+        rig.agent_session_id().await.as_deref(),
+        Some(rig.thread.as_str()),
+        "the next turn retried the bind"
+    );
+}
+
+/// #1791 PR4 review: a shutdown or a deletion seal that lands while the pre-spawn `--version`
+/// check runs is re-checked right before the mint, so nothing is minted and nothing spawned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_shutdown_or_seal_during_the_version_check_mints_nothing() {
+    for seal in [false, true] {
+        let rig = Rig::new("hold-version").await;
+        let session = std::sync::Arc::clone(rig.session());
+        let thread = rig.thread.clone();
+        let text = rig.text("hello");
+        let turn =
+            tokio::spawn(async move { session.turn_start(&thread, text, &client_id()).await });
+        wait_for_file(&rig.bin("version-entered")).await;
+        let shutdown = if seal {
+            rig.daemon.seal_turn_thread_for_deletion(&rig.thread);
+            None
+        } else {
+            let session = std::sync::Arc::clone(rig.session());
+            let shutdown = tokio::spawn(async move { session.shutdown().await });
+            // `shutdown` sets its flag before it waits for the issuance lock `turn_start` holds.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            Some(shutdown)
+        };
+        std::fs::write(rig.bin("release-version"), "").expect("release");
+        let error = turn.await.expect("turn task").expect_err("refused");
+        let expected = if seal { "sealed" } else { "shutting down" };
+        assert!(error.to_string().contains(expected), "seal={seal}: {error}");
+        if let Some(shutdown) = shutdown {
+            shutdown.await.expect("shutdown task").expect("shutdown");
+        }
+        assert_eq!(
+            rig.mcp_token_hash().await,
+            None,
+            "seal={seal}: nothing minted"
+        );
+        assert!(
+            rig.read_bin("spawns").is_none(),
+            "seal={seal}: nothing spawned"
+        );
+    }
 }

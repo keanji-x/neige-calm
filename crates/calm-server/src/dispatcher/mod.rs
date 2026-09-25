@@ -391,6 +391,11 @@ fn dispatcher_operation_runtime(
         write.role_cache().clone(),
         write.area_cache().clone(),
     ));
+    // This runtime has no data dir, so it runs no Claude Planner.
+    let claude_planner = Arc::new(
+        crate::claude_planner::config::ClaudePlannerHost::unconfigured_scratch()
+            .expect("a scratch Claude Planner host for the dispatcher's own runtime"),
+    );
     let planner_harness_start_adapter = Arc::new(PlannerHarnessStartAdapter::new(
         repo.clone(),
         shared_codex_appserver.clone(),
@@ -399,6 +404,7 @@ fn dispatcher_operation_runtime(
         write.role_cache().clone(),
         write.area_cache().clone(),
         mcp_socket_path,
+        claude_planner.clone(),
     ));
     let planner_harness_interrupt_adapter =
         Arc::new(PlannerHarnessInterruptAdapter::new(harness.clone()));
@@ -406,6 +412,7 @@ fn dispatcher_operation_runtime(
         harness,
         shared_codex_appserver.clone(),
         repo,
+        claude_planner,
     ));
     let task_verify_adapter = Arc::new(
         crate::operation::task_verify_adapter::TaskVerifyAdapter::new(

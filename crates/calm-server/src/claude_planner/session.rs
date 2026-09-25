@@ -1,17 +1,20 @@
 //! One Claude Planner session: one `claude -p` process per turn, at most one at a time (design
 //! #1791 §5.1, §5.2, §5.6, §6.2).
 //!
-//! Submission contract ([`ClaudePlannerSession::turn_start`]): mint the turn id, check the seal, run
-//! `--version` (before any user input), `stop` whatever still carries this session's marker, write
-//! the instructions file under a per-spawn guard, spawn, re-check the seal, write the one `user` line
-//! (bounded), and return `Ok(turn_id)`. Every exit before `Ok` stops the marker, removes the file and
-//! returns `Err`; no outcome is recorded, because no turn id was handed out.
+//! Submission contract ([`ClaudePlannerSession::turn_start`]): refuse until the harness is
+//! installed, mint the turn id, check the seal, run `--version` (before any user input), on the
+//! harness's first turn mint its MCP credential (§5.1 item 2), `stop` whatever still carries this
+//! session's marker, write the instructions file under a per-spawn guard, spawn, re-check the seal,
+//! write the one `user` line (bounded), and return `Ok(turn_id)`. Every exit before `Ok` stops the
+//! marker, removes the file and returns `Err`; no outcome is recorded, because no turn id was handed
+//! out.
 //!
 //! Settlement (`driver`): one [`TurnSlot`] per turn holds the first recorded [`TerminalCause`]; the
 //! outcome is recorded durably, stdin is closed, the direct child gets a bounded wait, `stop` runs,
 //! the instructions file goes, and only then is `TurnCompleted` emitted.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -215,6 +218,9 @@ struct ActiveTurn {
 
 struct State {
     start: SessionStart,
+    /// Whether the row's `agent_session_id` is persisted; a turn whose bind failed leaves it
+    /// unset, and the next `--resume` spawn retries the bind.
+    row_bound: bool,
     settle_after_stop: Duration,
     total_tokens: i64,
     mcp_token: Option<String>,
@@ -228,6 +234,9 @@ pub(crate) struct Shared {
     state: Mutex<State>,
     /// Serializes `turn_start` and `shutdown`, so no spawn outlives a shutdown.
     issue: tokio::sync::Mutex<()>,
+    /// Set once the harness holding this session is installed in the registry (§5.1 item 2);
+    /// before that `turn_start` refuses, so an install-race loser never mints or spawns.
+    installed: AtomicBool,
     #[cfg(feature = "fixtures")]
     pub(crate) hooks: Mutex<TestHooks>,
 }
@@ -239,18 +248,39 @@ impl Shared {
             .expect("claude planner session state poisoned")
     }
 
-    /// The driver's last step before `TurnCompleted`: the session's facts move forward and the
-    /// slot is free for the next turn.
-    pub(crate) fn finish_turn(&self, bound: bool, total_tokens: Option<i64>) {
+    /// The driver's last step: the session's facts move forward, the slot is freed and the turn's
+    /// last notifications go out under one state lock, the same lock under which `turn_start`
+    /// registers the next turn and sends its `TurnStarted`, so a subscriber never sees the next
+    /// turn start before this one completed.
+    pub(crate) fn finish_turn(
+        &self,
+        ended: FinishedTurn,
+        notifications: impl IntoIterator<Item = Notification>,
+    ) {
         let mut state = self.state();
-        if bound {
+        if ended.named_session {
             state.start = SessionStart::Resume;
         }
-        if let Some(total_tokens) = total_tokens {
+        if ended.row_bound {
+            state.row_bound = true;
+        }
+        if let Some(total_tokens) = ended.total_tokens {
             state.total_tokens = total_tokens;
         }
         state.active = None;
+        for notification in notifications {
+            let _ = self.notifications.send(notification);
+        }
     }
+}
+
+/// What a settled turn tells the session.
+pub(crate) struct FinishedTurn {
+    /// A `system/init` named this thread's session: later spawns resume it.
+    pub(crate) named_session: bool,
+    /// The row's `agent_session_id` is persisted.
+    pub(crate) row_bound: bool,
+    pub(crate) total_tokens: Option<i64>,
 }
 
 /// Fixtures-only interleaving points.
@@ -259,6 +289,8 @@ impl Shared {
 pub(crate) struct TestHooks {
     pub(crate) after_spawn: Option<Arc<dyn Fn() + Send + Sync>>,
     pub(crate) before_turn_completed: Option<SettlePause>,
+    /// How many user lines `turn_start` has tried to write to a spawned CLI.
+    pub(crate) user_line_writes: usize,
 }
 
 /// An awaitable pause: the driver signals `entered` and waits for `release`.
@@ -287,13 +319,16 @@ impl ClaudePlannerSession {
                     params.worker_session_id
                 ))
             })?;
-        let start = match row.agent_session_id {
-            Some(_) => SessionStart::Resume,
-            None => SessionStart::New,
+        let row_bound = row.agent_session_id.is_some();
+        let start = if row_bound {
+            SessionStart::Resume
+        } else {
+            SessionStart::New
         };
         let (notifications, _) = broadcast::channel(1024);
         let state = State {
             start,
+            row_bound,
             settle_after_stop: SETTLE_AFTER_STOP,
             total_tokens: params.prior_total_tokens,
             mcp_token: None,
@@ -306,6 +341,7 @@ impl ClaudePlannerSession {
                 notifications,
                 state: Mutex::new(state),
                 issue: tokio::sync::Mutex::new(()),
+                installed: AtomicBool::new(false),
                 #[cfg(feature = "fixtures")]
                 hooks: Mutex::new(TestHooks::default()),
             }),
@@ -316,17 +352,14 @@ impl ClaudePlannerSession {
         self.shared.notifications.subscribe()
     }
 
-    /// The plaintext MCP token of this harness, minted once at its first turn; a second install
-    /// is refused.
-    pub fn install_mcp_token(&self, token: String) -> Result<()> {
-        let mut state = self.shared.state();
-        if state.mcp_token.is_some() {
-            return Err(CalmError::Conflict(
-                "claude planner MCP token is already installed".into(),
-            ));
-        }
-        state.mcp_token = Some(token);
-        Ok(())
+    /// The registry installed the harness holding this session; turns may start from now on.
+    pub fn mark_installed(&self) {
+        self.shared.installed.store(true, Ordering::SeqCst);
+    }
+
+    /// The shared Claude Planner facility (config, marker instance).
+    pub fn host(&self) -> &Arc<ClaudePlannerHost> {
+        &self.shared.params.host
     }
 
     /// The shared daemon this session consults for thread seals.
@@ -353,7 +386,12 @@ impl ClaudePlannerSession {
         let shared = &self.shared;
         let params = &shared.params;
         let _issue = shared.issue.lock().await;
-        let (start, token, prior_total_tokens, settle_after_stop) = {
+        if !shared.installed.load(Ordering::SeqCst) {
+            return Err(CalmError::Conflict(
+                "claude planner harness is not installed yet".into(),
+            ));
+        }
+        let (start, row_bound, token, prior_total_tokens, settle_after_stop) = {
             let state = shared.state();
             if state.shutting_down {
                 return Err(CalmError::Conflict(
@@ -365,12 +403,10 @@ impl ClaudePlannerSession {
                     "a claude planner turn is still running".into(),
                 ));
             }
-            let token = state.mcp_token.clone().ok_or_else(|| {
-                CalmError::Conflict("claude planner has no MCP credential yet".into())
-            })?;
             (
                 state.start,
-                token,
+                state.row_bound,
+                state.mcp_token.clone(),
                 state.total_tokens,
                 state.settle_after_stop,
             )
@@ -383,15 +419,33 @@ impl ClaudePlannerSession {
             return Err(sealed(thread));
         }
         let host = &params.host;
+        let config = host.configured()?;
         let kernel_path = crate::kernel_bin_path::kernel_led_path()?;
         let env = spawn::base_env(&EnvInputs {
             path: kernel_path.path,
-            config_dir: &host.config.config_dir,
+            config_dir: &config.config_dir,
             mcp_socket: &host.mcp_socket,
             marker: host.instance.marker(&params.worker_session_id),
             proxy: &params.proxy,
         });
-        host.config.verify_version(&env).await?;
+        config.verify_version(&env).await?;
+        // A shutdown or a deletion seal may have landed while `--version` ran; nothing is minted
+        // for a session that can no longer start a turn.
+        if shared.state().shutting_down {
+            return Err(CalmError::Conflict(
+                "claude planner session is shutting down".into(),
+            ));
+        }
+        if params.seals.turn_thread_is_sealed(thread) {
+            return Err(sealed(thread));
+        }
+        // A revocation under a live harness (e.g. one an aborted deletion's recovery could not
+        // replace, §5.1 item 4) nulls the row's hash; the next spawn must not carry a credential that
+        // no longer authenticates.
+        let token = match token {
+            Some(token) if self.row_hash_present().await? => token,
+            _ => self.mint_mcp_token().await?,
+        };
         stop(&host.instance, &params.worker_session_id).await?;
 
         let line = serde_json::to_string(&UserLine::new(
@@ -428,7 +482,7 @@ impl ClaudePlannerSession {
             Ok(argv) => argv,
             Err(error) => return Err(self.abort_before_ok(None, instructions, error).await),
         };
-        let spawned = Command::new(&host.config.claude_binary)
+        let spawned = Command::new(&config.claude_binary)
             .args(argv)
             .env_clear()
             .envs(env)
@@ -443,7 +497,7 @@ impl ClaudePlannerSession {
             Err(error) => {
                 let error = CalmError::Conflict(format!(
                     "claude planner spawn of {} failed: {error}",
-                    host.config.claude_binary.display()
+                    config.claude_binary.display()
                 ));
                 return Err(self.abort_before_ok(None, instructions, error).await);
             }
@@ -467,16 +521,25 @@ impl ClaudePlannerSession {
             return Err(self.abort_before_ok(Some(child), instructions, error).await);
         };
         let slot = Arc::new(TurnSlot::new(stdin, settle_after_stop));
+        #[cfg(feature = "fixtures")]
+        {
+            shared.hooks.lock().expect("hooks").user_line_writes += 1;
+        }
         if let Err(error) = slot.write_line(&line).await {
             return Err(self.abort_before_ok(Some(child), instructions, error).await);
         }
 
-        shared.state().active = Some(ActiveTurn {
-            thread_id: thread.to_string(),
-            turn_id: turn_id.clone(),
-            slot: Arc::clone(&slot),
-        });
-        let _ = shared.notifications.send(translator.turn_started());
+        {
+            // One lock with `finish_turn`'s emit, so this `TurnStarted` never overtakes the
+            // previous turn's `TurnCompleted`.
+            let mut state = shared.state();
+            state.active = Some(ActiveTurn {
+                thread_id: thread.to_string(),
+                turn_id: turn_id.clone(),
+                slot: Arc::clone(&slot),
+            });
+            let _ = shared.notifications.send(translator.turn_started());
+        }
         tokio::spawn(drive(
             Arc::clone(shared),
             TurnRun {
@@ -487,10 +550,48 @@ impl ClaudePlannerSession {
                 translator,
                 instructions,
                 thread: thread_uuid,
-                start,
+                bind: !row_bound,
+                version: config.claude_version.clone(),
             },
         ));
         Ok(turn_id)
+    }
+
+    /// Whether the worker-session row still carries an MCP hash.
+    async fn row_hash_present(&self) -> Result<bool> {
+        let params = &self.shared.params;
+        let row = params
+            .repo
+            .session_get(&WorkerSessionId(params.worker_session_id.clone()))
+            .await?
+            .ok_or_else(|| {
+                CalmError::NotFound(format!("worker session {}", params.worker_session_id))
+            })?;
+        Ok(row.mcp_token_hash.is_some())
+    }
+
+    /// The harness's first-turn credential (§5.1 item 2): card row and session hash in one
+    /// transaction, the session write guarded on the row still being active. Runs under the
+    /// issuance lock, after the install and shutdown checks, so it happens at most once per harness
+    /// and never after a shutdown (again only if a revocation nulled the row's hash); the plaintext stays
+    /// in this session.
+    async fn mint_mcp_token(&self) -> Result<String> {
+        let params = &self.shared.params;
+        let card_id = params.card_id.clone();
+        let worker_session_id = params.worker_session_id.clone();
+        let token = crate::db::write_in_tx_typed(params.repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                crate::mcp_server::wiring::mint_and_persist_claude_planner_token(
+                    tx,
+                    &card_id,
+                    &worker_session_id,
+                )
+                .await
+            })
+        })
+        .await?;
+        self.shared.state().mcp_token = Some(token.clone());
+        Ok(token)
     }
 
     /// Stop the marker (which ends a spawned child and anything it started), reap the child, and
@@ -544,11 +645,16 @@ impl ClaudePlannerSession {
     }
 
     /// Harness shutdown: refuse new turns, end the live one as `Interrupted`, and stop the marker
-    /// whether or not a turn runs. The `stop` result is returned for strict callers.
+    /// whether or not a turn runs. The `stop` result is returned for strict callers. A session that
+    /// was never installed (an install-race loser) minted and spawned nothing, so it signals nothing:
+    /// its id may belong to the winner's live turn.
     pub async fn shutdown(&self) -> Result<()> {
         let shared = &self.shared;
         shared.state().shutting_down = true;
         let _issue = shared.issue.lock().await;
+        if !shared.installed.load(Ordering::SeqCst) {
+            return Ok(());
+        }
         let slot = shared
             .state()
             .active
@@ -573,6 +679,13 @@ impl ClaudePlannerSession {
             }
         }
         stopped
+    }
+
+    /// Fixtures only: how many user lines this session has tried to write, observed on the
+    /// session's side so a test does not depend on the CLI recording a line before it is stopped.
+    #[cfg(feature = "fixtures")]
+    pub fn user_line_writes_for_test(&self) -> usize {
+        self.shared.hooks.lock().expect("hooks").user_line_writes
     }
 
     #[cfg(feature = "fixtures")]
@@ -645,4 +758,38 @@ async fn user_line_content(items: &[InputItem]) -> Result<Vec<UserLineContent>> 
         }
     }
     Ok(content)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::TurnSlot;
+
+    /// `bounded` gives up at `settle_by` when the stop is armed WHILE its future is pending, far
+    /// ahead of the future's own bound (the settle_by arm, #1791 PR2b follow-up).
+    #[tokio::test(start_paused = true)]
+    async fn bounded_gives_up_at_settle_by_armed_while_pending() {
+        let mut child = tokio::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn cat");
+        let slot = TurnSlot::new(child.stdin.take().expect("stdin"), Duration::from_secs(2));
+        let started = tokio::time::Instant::now();
+        let arm = async {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            slot.arm_stop(tokio::time::Instant::now());
+        };
+        let (bounded, ()) = tokio::join!(
+            slot.bounded(Duration::from_secs(60), std::future::pending::<()>()),
+            arm
+        );
+        assert_eq!(bounded, None);
+        assert_eq!(
+            started.elapsed(),
+            Duration::from_secs(3),
+            "armed at 1 s + 2 s margin"
+        );
+    }
 }

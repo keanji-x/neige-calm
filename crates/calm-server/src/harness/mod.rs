@@ -18,6 +18,7 @@ use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
 use crate::card_role_cache::CardRoleCache;
+use crate::claude_planner::wiring::{ClaudePlannerRow, ClaudePlannerWiring};
 use crate::db::{Repo, write_in_tx_typed};
 use crate::error::Result;
 #[cfg(test)]
@@ -26,7 +27,9 @@ use crate::event::EventBus;
 use crate::ids::{CardId, TrackId};
 use crate::model::CardRole;
 use crate::per_card_lock::{KeyedLocks, lock_key};
-use crate::session_projection_repo::{WorkerSessionProjection, WorkerSessionState};
+use crate::session_projection_repo::{
+    AgentProvider, WorkerSessionKind, WorkerSessionProjection, WorkerSessionState,
+};
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::track_area_cache::TrackAreaCache;
 
@@ -122,6 +125,7 @@ pub async fn spawn_recovered_harness(
     card_role_cache: CardRoleCache,
     track_area_cache: TrackAreaCache,
     daemon: Arc<SharedCodexAppServer>,
+    claude: &ClaudePlannerWiring,
     registry: &HarnessRegistry,
     track_delete_locks: &KeyedLocks,
     runtime: WorkerSessionProjection,
@@ -131,17 +135,22 @@ pub async fn spawn_recovered_harness(
         return Ok(RecoveryOutcome::Skipped);
     };
     let role = repo.card_role_get(card.id.as_str()).await?;
-    if runtime.kind == crate::session_projection_repo::WorkerSessionKind::SharedPlanner
-        && !profile::planner_row_recoverable_on_codex(runtime.agent_provider.as_ref(), &card, role)
-    {
-        tracing::warn!(
-            worker_session_id = %runtime.id,
-            card_id = %card.id,
-            provider = ?runtime.agent_provider,
-            "refusing harness recovery: the Planner row is not a Codex row bound to a Codex Planner card"
-        );
-        return Ok(RecoveryOutcome::Skipped);
-    }
+    let provider = if runtime.kind == WorkerSessionKind::SharedPlanner {
+        match profile::planner_row_provider(runtime.agent_provider.as_ref(), &card, role) {
+            Some(provider) => provider,
+            None => {
+                tracing::warn!(
+                    worker_session_id = %runtime.id,
+                    card_id = %card.id,
+                    provider = ?runtime.agent_provider,
+                    "refusing harness recovery: the Planner row's provider is not the one its Planner card names"
+                );
+                return Ok(RecoveryOutcome::Skipped);
+            }
+        }
+    } else {
+        AgentProvider::Codex
+    };
     let Some(track) = repo.track_get(card.track_id.as_str()).await? else {
         return Ok(RecoveryOutcome::Skipped);
     };
@@ -246,6 +255,35 @@ pub async fn spawn_recovered_harness(
             }
         }
     };
+    let backend: PlannerBackend = match provider {
+        AgentProvider::Codex => daemon.into(),
+        AgentProvider::Claude => {
+            record_interrupted_claude_turn(
+                repo.as_ref(),
+                &runtime,
+                card.track_id.as_str(),
+                &snapshot,
+            )
+            .await?;
+            PlannerBackend::Claude(
+                claude
+                    .open_session(
+                        repo.clone(),
+                        daemon,
+                        ClaudePlannerRow {
+                            worker_session_id: &runtime.id,
+                            card_id: &runtime.card_id,
+                            track_id: card.track_id.as_str(),
+                            prior_total_tokens: snapshot
+                                .token_usage
+                                .as_ref()
+                                .map_or(0, |usage| usage.total_tokens),
+                        },
+                    )
+                    .await?,
+            )
+        }
+    };
     let handle = PlannerHarness::run(PlannerHarnessParams {
         worker_session_id: runtime_id.clone(),
         track_id: card.track_id,
@@ -257,7 +295,7 @@ pub async fn spawn_recovered_harness(
         events,
         card_role_cache,
         track_area_cache,
-        backend: daemon.into(),
+        backend,
         config: HarnessConfig::default(),
         snapshot,
     });
@@ -265,6 +303,48 @@ pub async fn spawn_recovered_harness(
         Some(handle) => RecoveryOutcome::Installed(handle),
         None => RecoveryOutcome::Skipped,
     })
+}
+
+/// #1791 §5.1 item 5: no Claude Planner process survives a restart (the boot sweep ends it), so
+/// the snapshot's last turn is `interrupted` unless it already settled; the write is idempotent.
+/// Only a snapshot whose phase says a turn may still have been running names such a turn: a
+/// settled phase means the outcome was recorded (a reset's transcript clear may since have removed
+/// it, which is no reason to invent one), and a turn whose id never reached the snapshot commit
+/// left the pre-drain snapshot, whose batch re-drains.
+async fn record_interrupted_claude_turn(
+    repo: &dyn Repo,
+    runtime: &WorkerSessionProjection,
+    track_id: &str,
+    snapshot: &HarnessSnapshot,
+) -> Result<()> {
+    if !matches!(
+        snapshot.phase,
+        HarnessPhaseTag::TurnRunning | HarnessPhaseTag::IssuingInterrupt | HarnessPhaseTag::Resumed
+    ) {
+        return Ok(());
+    }
+    let (Some(turn_id), Some(thread_id)) = (
+        snapshot.last_turn_id.as_deref(),
+        effective_runtime_thread_id(runtime),
+    ) else {
+        return Ok(());
+    };
+    let turn = serde_json::json!({
+        "id": turn_id,
+        "status": "interrupted",
+        "error": {"message": "neige restarted during this turn"},
+    });
+    turn_outcome::record(
+        repo,
+        &runtime.id,
+        &runtime.card_id,
+        track_id,
+        &thread_id,
+        turn_id,
+        &turn,
+    )
+    .await?;
+    Ok(())
 }
 
 async fn replay_harness_events_since(
@@ -345,18 +425,39 @@ async fn snapshot_runtime_id(repo: &dyn Repo, card_id: &str) -> Result<String> {
     Ok(runtime.id)
 }
 
+/// Which recoverable rows a boot pass takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootRows {
+    All,
+    /// The shared Codex daemon did not start: only Claude Planner rows, which do not need it; the
+    /// deferred pass takes the rest once the daemon heals.
+    ClaudePlannersOnly,
+}
+
+/// A Claude Planner row: recovered at boot whatever the Codex daemon does, never by the deferred pass.
+fn is_claude_planner_row(runtime: &WorkerSessionProjection) -> bool {
+    runtime.kind == WorkerSessionKind::SharedPlanner
+        && runtime.agent_provider == Some(AgentProvider::Claude)
+}
+
+#[allow(clippy::too_many_arguments)]
 pub async fn recover_harnesses_on_boot(
     repo: Arc<dyn Repo>,
     events: EventBus,
     card_role_cache: CardRoleCache,
     track_area_cache: TrackAreaCache,
     daemon: Arc<SharedCodexAppServer>,
+    claude: &ClaudePlannerWiring,
     registry: &HarnessRegistry,
     track_delete_locks: &KeyedLocks,
+    rows: BootRows,
 ) -> Result<usize> {
     let runtimes = repo.session_projection_recover_harnesses_on_boot().await?;
     let mut recovered = 0usize;
     for runtime in runtimes {
+        if rows == BootRows::ClaudePlannersOnly && !is_claude_planner_row(&runtime) {
+            continue;
+        }
         let runtime_id = runtime.id.clone();
         match spawn_recovered_harness(
             repo.clone(),
@@ -364,6 +465,7 @@ pub async fn recover_harnesses_on_boot(
             card_role_cache.clone(),
             track_area_cache.clone(),
             daemon.clone(),
+            claude,
             registry,
             track_delete_locks,
             runtime,
@@ -390,17 +492,20 @@ pub struct HarnessRecoveryContext {
     card_role_cache: CardRoleCache,
     track_area_cache: TrackAreaCache,
     daemon: Arc<SharedCodexAppServer>,
+    claude: ClaudePlannerWiring,
     registry: HarnessRegistry,
     track_delete_locks: KeyedLocks,
 }
 
 impl HarnessRecoveryContext {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         repo: Arc<dyn Repo>,
         events: EventBus,
         card_role_cache: CardRoleCache,
         track_area_cache: TrackAreaCache,
         daemon: Arc<SharedCodexAppServer>,
+        claude: ClaudePlannerWiring,
         registry: HarnessRegistry,
         track_delete_locks: KeyedLocks,
     ) -> Self {
@@ -410,6 +515,7 @@ impl HarnessRecoveryContext {
             card_role_cache,
             track_area_cache,
             daemon,
+            claude,
             registry,
             track_delete_locks,
         }
@@ -445,6 +551,7 @@ pub async fn recover_harnesses_for_tracks(
             context.card_role_cache.clone(),
             context.track_area_cache.clone(),
             context.daemon.clone(),
+            &context.claude,
             &context.registry,
             &context.track_delete_locks,
             runtime,
@@ -475,6 +582,7 @@ pub struct DeferredRecoveryParams {
     pub card_role_cache: CardRoleCache,
     pub track_area_cache: TrackAreaCache,
     pub daemon: Arc<SharedCodexAppServer>,
+    pub claude: ClaudePlannerWiring,
     pub registry: HarnessRegistry,
     pub track_delete_locks: KeyedLocks,
     /// Fixtures-only race hook: fired once per runtime AFTER the eligibility check and BEFORE
@@ -522,6 +630,10 @@ pub async fn recover_harnesses_deferred(params: DeferredRecoveryParams) {
         };
         let mut recovered = 0usize;
         for runtime in runtimes {
+            // Boot already recovered these: they never waited for the daemon.
+            if is_claude_planner_row(&runtime) {
+                continue;
+            }
             // Per-runtime eligibility: still running, same generation as the readiness we acted on.
             let current = *readiness.borrow();
             if !current.running || current.generation != observed.generation {
@@ -543,6 +655,7 @@ pub async fn recover_harnesses_deferred(params: DeferredRecoveryParams) {
                 params.card_role_cache.clone(),
                 params.track_area_cache.clone(),
                 params.daemon.clone(),
+                &params.claude,
                 &params.registry,
                 &params.track_delete_locks,
                 runtime,
@@ -1006,6 +1119,7 @@ mod tests {
             role_cache,
             track_area_cache,
             daemon.clone(),
+            &ClaudePlannerWiring::unconfigured_for_test(repo.clone()),
             &registry,
             &crate::per_card_lock::new_keyed_locks(),
             runtime,

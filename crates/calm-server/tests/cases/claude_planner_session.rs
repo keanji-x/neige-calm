@@ -116,7 +116,7 @@ async fn exit_path_records_the_outcome_before_turn_completed() {
         .expect("new session");
     assert_eq!(argv[at + 1], rig.thread);
     assert!(!argv.contains(&"--resume"));
-    assert_env_is_the_allowlist(&rig);
+    assert_env_is_the_allowlist(&rig).await;
 
     // The first init bound the session: the next turn resumes it.
     let second = rig
@@ -133,7 +133,7 @@ async fn exit_path_records_the_outcome_before_turn_completed() {
     assert_eq!(argv[at + 1], rig.thread);
 }
 
-fn assert_env_is_the_allowlist(rig: &Rig) {
+async fn assert_env_is_the_allowlist(rig: &Rig) {
     let env = rig.read_bin("env").expect("env");
     let allowed = [
         "HOME",
@@ -171,11 +171,22 @@ fn assert_env_is_the_allowlist(rig: &Rig) {
     }
     let get = |key: &str| pairs.iter().find(|(k, _)| *k == key).map(|(_, v)| *v);
     assert_eq!(get("NEIGE_CLAUDE_PLANNER"), Some(rig.marker().as_str()));
-    assert_eq!(get("NEIGE_MCP_TOKEN"), Some("tok-rig"));
+    // The first turn minted the credential: the spawn carries the plaintext of the row's hash.
+    let token = get("NEIGE_MCP_TOKEN").expect("token");
+    assert_eq!(
+        rig.mcp_token_hash().await.as_deref(),
+        Some(calm_server::mcp_server::auth::hash_token(token).as_str())
+    );
     assert_eq!(get("DISABLE_AUTOUPDATER"), Some("1"));
     assert_eq!(
         get("CLAUDE_CONFIG_DIR").map(std::path::PathBuf::from),
-        Some(rig.host.config.config_dir.clone())
+        Some(
+            rig.host
+                .configured()
+                .expect("configured")
+                .config_dir
+                .clone()
+        )
     );
     assert!(get("PATH").is_some());
 }
@@ -302,6 +313,22 @@ async fn an_undecodable_line_fails_the_turn_as_protocol() {
     assert!(rig.marked_pids().is_empty());
 }
 
+/// Count every successful spawn on the session's side (the after-spawn hook runs only then), so a
+/// test never depends on a CLI that the refusal stopped having recorded itself first.
+fn count_spawns(rig: &Rig) -> Arc<std::sync::atomic::AtomicUsize> {
+    let spawns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&spawns);
+    rig.session()
+        .set_after_spawn_hook_for_test(Arc::new(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+    spawns
+}
+
+fn spawned(spawns: &std::sync::atomic::AtomicUsize) -> usize {
+    spawns.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 async fn assert_refused_before_ok(rig: &Rig, input: Vec<InputItem>) -> String {
     let mut rx = rig.session().subscribe_notifications();
     let started = Instant::now();
@@ -328,16 +355,28 @@ async fn assert_refused_before_ok(rig: &Rig, input: Vec<InputItem>) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_stalled_write_is_refused_before_ok() {
     let rig = Rig::new("stall").await;
+    let spawns = count_spawns(&rig);
     let error = assert_refused_before_ok(&rig, oversized_text()).await;
     assert!(error.contains("in time"), "{error}");
-    assert!(rig.read_bin("spawns").is_some(), "the fake was spawned");
+    assert_eq!(spawned(&spawns), 1, "the fake was spawned");
+    assert_eq!(
+        rig.session().user_line_writes_for_test(),
+        1,
+        "the write was tried"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_immediate_exit_is_refused_before_ok_with_no_outcome() {
     let rig = Rig::new("immediate-exit").await;
+    let spawns = count_spawns(&rig);
     assert_refused_before_ok(&rig, oversized_text()).await;
-    assert!(rig.read_bin("spawns").is_some(), "the fake was spawned");
+    assert_eq!(spawned(&spawns), 1, "the fake was spawned");
+    assert_eq!(
+        rig.session().user_line_writes_for_test(),
+        1,
+        "the write was tried"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -352,15 +391,20 @@ async fn a_seal_after_spawn_stops_the_cli_before_any_input() {
     let rig = Rig::new("hold").await;
     let daemon = Arc::clone(&rig.daemon);
     let thread = rig.thread.clone();
+    let spawns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&spawns);
     rig.session()
         .set_after_spawn_hook_for_test(Arc::new(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             daemon.seal_turn_thread_for_deletion(&thread);
         }));
     let error = assert_refused_before_ok(&rig, rig.text("hello")).await;
     assert!(error.contains("sealed"), "{error}");
-    assert!(rig.read_bin("spawns").is_some(), "the fake was spawned");
-    assert!(
-        rig.read_bin("stdin").is_none(),
+    // Both observed on the session's side: the stop may end the fake before it records anything.
+    assert_eq!(spawned(&spawns), 1, "the fake was spawned");
+    assert_eq!(
+        rig.session().user_line_writes_for_test(),
+        0,
         "no user line after the seal"
     );
 }
@@ -375,8 +419,9 @@ async fn a_wrong_version_receives_no_user_input() {
         rig.read_bin("spawns").is_none(),
         "no turn process after a wrong version"
     );
-    assert!(
-        rig.read_bin("stdin").is_none(),
+    assert_eq!(
+        rig.session().user_line_writes_for_test(),
+        0,
         "no user input after a wrong version"
     );
 }
@@ -589,4 +634,57 @@ async fn an_image_goes_out_as_base64_and_is_stored_as_its_placeholder() {
         serde_json::json!({ "type": "localImage", "path": path })
     );
     assert!(!stored.to_string().contains("UE5HREFUQQ=="));
+}
+
+/// A `/proc` scan that hangs (an `environ` read blocked on a process's mm lock) fails its stop at
+/// the deadline and leaks its blocking thread; until it returns, every later stop fails closed at
+/// once instead of leaking one more thread per attempt.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_hung_proc_scan_fails_later_stops_at_once_until_it_returns() {
+    use calm_server::claude_planner::stop::{
+        MarkerInstance, hold_claude_planner_scans_for_test, hung_claude_planner_scans_for_test,
+        stop_by,
+    };
+    let dir = tempfile::tempdir().expect("tempdir");
+    let instance = MarkerInstance::for_data_dir(dir.path()).expect("instance");
+    let id = calm_server::model::new_id();
+    hold_claude_planner_scans_for_test(true);
+    let first = stop_by(
+        &instance,
+        &id,
+        tokio::time::Instant::now() + Duration::from_millis(300),
+    )
+    .await;
+    let hung_after_first = hung_claude_planner_scans_for_test();
+    let asked = Instant::now();
+    let second = stop_by(
+        &instance,
+        &id,
+        tokio::time::Instant::now() + Duration::from_secs(3),
+    )
+    .await;
+    let second_took = asked.elapsed();
+    let hung_after_second = hung_claude_planner_scans_for_test();
+    // Released before asserting, so a red run does not leave blocking threads parked.
+    hold_claude_planner_scans_for_test(false);
+
+    let first = first.expect_err("the hung scan fails closed");
+    assert!(
+        first.to_string().contains("did not finish in time"),
+        "{first}"
+    );
+    assert_eq!(hung_after_first, 1);
+    let second = second.expect_err("fails closed at once");
+    assert!(second_took < Duration::from_secs(1), "{second_took:?}");
+    assert!(second.to_string().contains("still hung"), "{second}");
+    assert_eq!(hung_after_second, 1, "no second leaked thread");
+
+    for _ in 0..200 {
+        if hung_claude_planner_scans_for_test() == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(hung_claude_planner_scans_for_test(), 0);
+    stop(&instance, &id).await.expect("scans run again");
 }

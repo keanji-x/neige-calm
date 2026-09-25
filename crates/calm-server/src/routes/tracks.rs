@@ -317,8 +317,9 @@ pub struct CreateTrackRequest {
     #[serde(default)]
     pub reasoning_effort: Option<String>,
     /// The backend of the track's Planner, stamped on its card as the server-owned
-    /// `planner_provider` and never changed afterwards. `claude` is refused with 400 while
-    /// this server has no Claude Planner backend.
+    /// `planner_provider` and never changed afterwards. `claude` is refused with 400 when the
+    /// server runs without `--claude-planner-config`, or with a `model` / `reasoning_effort`
+    /// (a Claude Planner runs its CLI's default).
     pub planner_provider: AgentProvider,
 }
 
@@ -787,7 +788,7 @@ pub(crate) async fn get_track_detail(
     request_body = CreateTrackRequest,
     responses(
         (status = 201, description = "Track created. With `first_message`, the message is also queued for the planner agent inside the harness-start transaction; a retry under the same `Idempotency-Key` returns the same track without re-delivering it.", body = Track),
-        (status = 400, description = "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`, a `planner_provider` this server cannot run, or `reasoning_effort` unsupported by the selected model's current catalog entry; no track is minted and no effort is silently adjusted), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), a malformed `Idempotency-Key` header (empty or non-ASCII) on any create, or — with `first_message` — a missing `Idempotency-Key` or an empty/over-long message. Decided before anything is minted; the multi-source refusal, like every other create-path check, is not re-run on an `Idempotency-Key` replay, which mints nothing.", body = ErrorBody),
+        (status = 400, description = "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`, a `planner_provider` this server cannot run or `claude` with a `model` / `reasoning_effort`, or `reasoning_effort` unsupported by the selected model's current catalog entry; no track is minted and no effort is silently adjusted), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), a malformed `Idempotency-Key` header (empty or non-ASCII) on any create, or — with `first_message` — a missing `Idempotency-Key` or an empty/over-long message. Decided before anything is minted; the multi-source refusal, like every other create-path check, is not re-run on an `Idempotency-Key` replay, which mints nothing.", body = ErrorBody),
         (status = 404, description = "Area not found", body = ErrorBody),
         (status = 409, description = "Folder-claim conflict (structured `FolderConflict` body), `conflict` when an `Idempotency-Key` is bound to a different create or to a legacy binding whose request cannot be proven, or `idempotency_key_exhausted` when the key used all 64 retry slots, when the track it names has been deleted, or when its managed workspace can no longer be materialized. Recovery depends on `code`: fix a folder conflict and retry the same key; preserve the original request for a payload conflict (use a new key only for an explicit new create); use a new key after `idempotency_key_exhausted`.", body = ErrorBody),
         (status = 500, description = "Internal error. One case leaves the track behind: when the request carried a `first_message` and the planner harness start did not complete, the track, its cards and its workspace are already committed, and whether the message reached the agent is **unknown to the server** — depending on how far the start got, it may never have been handed over, or it may already have been delivered and answered. Nothing is rolled back and nothing compensates. What the server *can* promise, and this is what the `Idempotency-Key` buys: retrying the identical request under the **same** key creates no second track and delivers no second copy of the message. It does not promise the track is usable — a replay does not repair an attached workspace whose directory was deleted. Without `first_message` the same harness failure is logged and still returns 201, because no user text was riding on it — which also holds when such a create sends an `Idempotency-Key` and is answered from its binding.", body = ErrorBody),
@@ -807,10 +808,21 @@ pub(crate) async fn create_track(
     let create_area_id = request.area_id.clone();
     let _area_delete_guard =
         crate::per_card_lock::lock_key(&s.area_delete_locks, create_area_id.as_str()).await;
-    if request.planner_provider != AgentProvider::Codex {
-        return Err(CalmError::BadRequest(
-            "track create: `planner_provider` `claude` is not available on this server".into(),
-        ));
+    if request.planner_provider == AgentProvider::Claude {
+        // #1791 §5.3, §5.8: available only with the typed config, and it runs its CLI's default model.
+        if s.claude_planner.configured().is_err() {
+            return Err(CalmError::BadRequest(format!(
+                "track create: `planner_provider` `claude` is unavailable: calm-server was started without {}",
+                crate::claude_planner::config::CONFIG_FLAG
+            )));
+        }
+        if request.model.is_some() || request.reasoning_effort.is_some() {
+            return Err(CalmError::BadRequest(
+                "track create: a Claude Planner runs the Claude CLI's default model and effort; \
+                 `model` and `reasoning_effort` must be omitted"
+                    .into(),
+            ));
+        }
     }
     // First, before every other check: a rejected first message must leave no track,
     // no cards, no folder claim and no materialized workspace behind.
@@ -2178,6 +2190,27 @@ async fn repoint_track_workspace(
     // Deterministic race window for the timing test. No-op in production.
     wait_at_workspace_repoint_race_hook(&track_id).await;
 
+    // #1791 §5.1 item 4: no Claude Planner process of this track may outlive the fence into the
+    // pristine check and the move; one that cannot be stopped keeps the workspace where it is.
+    if let Err(error) =
+        crate::claude_planner::lifecycle::sweep_track(s.repo.as_ref(), &s.claude_planner, &track_id)
+            .await
+    {
+        tracing::error!(
+            track_id,
+            %error,
+            "workspace repoint: a Claude Planner process of the track could not be stopped"
+        );
+        drop(track_guard.take());
+        drop(operation_guard.take());
+        restart_planner_harness_at(s, actor, track, &fence.old_workspace.path).await;
+        return Err(CalmError::Conflict(
+            "a previous Claude Planner process of this track could not be stopped; the \
+             workspace was not moved"
+                .into(),
+        ));
+    }
+
     let verdict = workspace_pristine(&old_path);
     if let PristineVerdict::Dirty { .. } = &verdict {
         drop(track_guard.take());
@@ -2702,6 +2735,15 @@ async fn teardown_track_deletion(
             seals.seal(thread_id);
         }
     }
+    // #1791 §5.1 item 4: once the threads are sealed, revoke then sweep every Claude Planner id of
+    // the track in any state, before the harness shutdowns; `Err` aborts before anything moves or
+    // is deleted, and the revocation stands for a harness the abort reinstalls.
+    crate::claude_planner::lifecycle::sweep_track(
+        s.repo.as_ref(),
+        &s.claude_planner,
+        plan.track_id.as_str(),
+    )
+    .await?;
     for terminal in &plan.terminals {
         quiesce_terminal_artifacts_for_deletion(
             Some(w.terminal_renderer.as_ref()),
@@ -3072,6 +3114,7 @@ async fn finish_prepared_track_deletion_owned(
             route.write.role_cache().clone(),
             route.write.area_cache().clone(),
             codex.shared_codex_appserver.clone(),
+            route.claude_planner_wiring(),
             worker.harness.clone(),
             route.track_delete_locks.clone(),
         );

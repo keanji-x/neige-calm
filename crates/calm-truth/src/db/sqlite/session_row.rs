@@ -75,6 +75,72 @@ pub async fn session_mcp_token_set_tx(
     Ok(())
 }
 
+/// The Claude Planner first-turn mint's session write (#1791 §5.1 token invariant): the only
+/// writer of a `(claude, planner)` row's hash, and only while the row is active. A row count other
+/// than 1 (superseded or deleted since the carrier check) is an `Err`, so the caller's transaction,
+/// card write included, rolls back.
+pub async fn session_mcp_token_set_if_active_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    session_id: &str,
+    hashed_token: &str,
+) -> Result<()> {
+    let res = sqlx::query(
+        r#"UPDATE worker_sessions SET mcp_token_hash = ?1
+            WHERE id = ?2
+              AND state IN ('starting', 'running', 'idle', 'turn_pending')"#,
+    )
+    .bind(hashed_token)
+    .bind(session_id)
+    .execute(&mut **tx)
+    .await?;
+    if res.rows_affected() != 1 {
+        return Err(CalmError::Conflict(format!(
+            "worker session {session_id} is no longer active; its Claude Planner credential was not minted"
+        )));
+    }
+    Ok(())
+}
+
+/// Which Claude Planner rows a revocation covers.
+#[derive(Clone, Copy, Debug)]
+pub enum ClaudePlannerScope<'a> {
+    /// Every row: boot, before the MCP listener starts.
+    All,
+    /// Every row of one track: before a destructive step on it.
+    Track(&'a str),
+}
+
+/// Null the MCP hash of every `(claude, planner)` row in `scope`, in any state, and return their
+/// ids for the marker sweep that follows (#1791 §5.1 items 1 and 4). A revoked row authenticates
+/// again only after its next first-turn mint.
+pub async fn claude_planner_revoke_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    scope: ClaudePlannerScope<'_>,
+) -> Result<Vec<String>> {
+    let track = match scope {
+        ClaudePlannerScope::All => None,
+        ClaudePlannerScope::Track(track_id) => Some(track_id),
+    };
+    let ids: Vec<String> = sqlx::query_scalar(
+        r#"SELECT id FROM worker_sessions
+            WHERE provider = 'claude' AND contract = 'planner'
+              AND (?1 IS NULL OR track_id = ?1)
+            ORDER BY id"#,
+    )
+    .bind(track)
+    .fetch_all(&mut **tx)
+    .await?;
+    sqlx::query(
+        r#"UPDATE worker_sessions SET mcp_token_hash = NULL
+            WHERE provider = 'claude' AND contract = 'planner'
+              AND (?1 IS NULL OR track_id = ?1)"#,
+    )
+    .bind(track)
+    .execute(&mut **tx)
+    .await?;
+    Ok(ids)
+}
+
 pub async fn session_mark_track_root_tx(
     tx: &mut SessionTx<'_>,
     track_id: &TrackId,
