@@ -231,11 +231,12 @@ Planner（codex 和 claude 两种）、终端 PTY、claude worker 的 `neige tas
 | M1 删掉 `name == "neige"` 判断 | `handshake.rs` | `old_fat_neige_client_is_refused_with_kernel_bin_path`、`old_client_fence_precedes_token_check` |
 | M4 diff 第二个位置参数的键 `to` 改成 `from` | `cli/commands.rs` | `cli_output_equals_direct_tool_call`、`diff_maps_positionals_to_from_to_and_path`（即迁入的 `tests/neige_cli.rs:428-436` 参数映射与 `main.rs:1278` 单测）、`diff_rejects_the_same_key_twice` |
 | M5 删掉 `call_registered_tool` 里的 `worker_grants::require` | `transport/call.rs` | `cli_authorization_equals_direct_call` |
-| M8a 去掉 `track-gc` 的确认门 | `cli/commands.rs` | `force_gate_refuses_before_the_tool`（track-gc 子断言）、`track_gc_requires_force_unless_dry_run` |
-| M8b 去掉 `vacuum` 的确认门 | `cli/commands.rs` | `force_gate_refuses_before_the_tool`（vacuum 子断言）、`vacuum_requires_force` |
+| M8a 去掉 `track-gc` 的确认门 | `cli/commands.rs::parse` 的确认门条件对 `track-gc` 恒放行（`--force` 仍被解析） | `force_gate_refuses_before_the_tool`（track-gc 子断言）、`track_gc_requires_force_unless_dry_run` |
+| M8b 去掉 `vacuum` 的确认门 | 同上，对 `vacuum` | `force_gate_refuses_before_the_tool`（vacuum 子断言）、`vacuum_requires_force` |
 | M11 把围栏挪到 token 校验成功之后 | `handshake.rs` | `old_client_fence_precedes_token_check` |
 | M15 删掉 `calm.task.fail` 的 trim 判空 | `tools/emit.rs` | `task_fail_rejects_blank_reason` |
 
+M8 不能删掉命令表里整个 `Confirm`：那样 `--force` 也不再被解析，所有带 `--force` 的 track-gc 用例都会红，是两处变化而非单因子。
 M5 只能改共用函数：CLI 与 `tools/call` 走同一个 `call_registered_tool`，不存在只属于 CLI 的 grants 调用可删，这正是 §2 要的结构。
 
 **门禁**：上表的定向 nextest；`scripts/local-rust-gates.sh --quick`；`scripts/gate-prose-ratchet.sh`
