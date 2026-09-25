@@ -18,7 +18,8 @@ use tokio::time::Instant;
 use sha2::{Digest, Sha256};
 
 use crate::error::{CalmError, Result};
-use crate::proc_identity::{parse_proc_stat_fields, proc_entry_vanished, read_proc_start_time};
+use crate::proc_identity::{parse_proc_stat_fields, read_proc_start_time};
+use calm_worker_runtime::proc_entry_vanished;
 
 /// The environ key every Claude Planner process carries.
 pub const MARKER_KEY: &str = "NEIGE_CLAUDE_PLANNER";

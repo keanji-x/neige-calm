@@ -1,4 +1,4 @@
-use crate::{Error, NetworkPolicy, ProcessIdentity, Result};
+use crate::{Error, NetworkPolicy, ProcessIdentity, Result, proc_entry_vanished};
 use std::fs::File;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -62,7 +62,13 @@ pub(crate) fn boot_id() -> Result<String> {
 }
 
 pub(crate) fn identity(pid: i32, require_init: bool) -> Result<ProcessIdentity> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
+    identity_in(Path::new("/proc"), pid, require_init)
+}
+
+/// [`identity`] read from `proc_root` (`/proc` in production).
+fn identity_in(proc_root: &Path, pid: i32, require_init: bool) -> Result<ProcessIdentity> {
+    let proc_dir = proc_root.join(pid.to_string());
+    let stat = std::fs::read_to_string(proc_dir.join("stat"))?;
     let fields = stat
         .rsplit_once(')')
         .ok_or_else(|| Error::Evidence("malformed process stat".into()))?
@@ -73,7 +79,7 @@ pub(crate) fn identity(pid: i32, require_init: bool) -> Result<ProcessIdentity> 
         .and_then(|value| value.parse().ok())
         .ok_or_else(|| Error::Evidence("missing process start time".into()))?;
     if require_init {
-        let status = std::fs::read_to_string(format!("/proc/{pid}/status"))?;
+        let status = std::fs::read_to_string(proc_dir.join("status"))?;
         let inner_pid = status
             .lines()
             .find(|line| line.starts_with("NSpid:"))
@@ -82,7 +88,7 @@ pub(crate) fn identity(pid: i32, require_init: bool) -> Result<ProcessIdentity> 
             return Err(Error::Evidence("process is not namespace init".into()));
         }
     }
-    let namespace_inode = std::fs::metadata(format!("/proc/{pid}/ns/pid"))?.ino();
+    let namespace_inode = std::fs::metadata(proc_dir.join("ns/pid"))?.ino();
     if require_init && namespace_inode == std::fs::metadata("/proc/self/ns/pid")?.ino() {
         return Err(Error::Evidence("process is in caller namespace".into()));
     }
@@ -113,28 +119,38 @@ pub(crate) fn observe(expected: &ProcessIdentity) -> Observation {
             }
             Err(error) => return Err(error),
         };
-        let actual = match identity(expected.pid, false) {
-            Ok(actual) => actual,
-            Err(Error::Io(error))
-                if error.kind() == io::ErrorKind::NotFound && pidfd.exited()? =>
-            {
-                // A zombie has no ns symlink; absence of stat means actual reaping.
-                if !Path::new(&format!("/proc/{}/stat", expected.pid)).try_exists()? {
-                    return Ok(Observation::Gone("init_reaped"));
-                }
-                return Ok(Observation::Live(pidfd));
-            }
-            Err(error) => return Err(error),
-        };
-        if actual.start_time != expected.start_time {
-            return Ok(Observation::Gone("init_pid_reused"));
-        }
-        if actual.namespace_inode != expected.namespace_inode {
-            return Err(Error::Evidence("PID namespace identity mismatch".into()));
-        }
-        Ok(Observation::Live(pidfd))
+        observe_pinned(Path::new("/proc"), expected, pidfd)
     };
     check().unwrap_or_else(|error| Observation::Unknown(error.to_string()))
+}
+
+/// Identity check of an already pinned `pidfd`, reading `proc_root` (`/proc` in production).
+fn observe_pinned(
+    proc_root: &Path,
+    expected: &ProcessIdentity,
+    pidfd: PidFd,
+) -> Result<Observation> {
+    let stat = proc_root.join(expected.pid.to_string()).join("stat");
+    let actual = match identity_in(proc_root, expected.pid, false) {
+        Ok(actual) => actual,
+        Err(Error::Io(error)) if proc_entry_vanished(&error) && pidfd.exited()? => {
+            // A zombie has no ns symlink; absence of stat means actual reaping (`ENOENT`, or
+            // `ESRCH` when the init is reaped while this lookup is under way).
+            return match std::fs::metadata(&stat) {
+                Ok(_) => Ok(Observation::Live(pidfd)),
+                Err(error) if proc_entry_vanished(&error) => Ok(Observation::Gone("init_reaped")),
+                Err(error) => Err(error.into()),
+            };
+        }
+        Err(error) => return Err(error),
+    };
+    if actual.start_time != expected.start_time {
+        return Ok(Observation::Gone("init_pid_reused"));
+    }
+    if actual.namespace_inode != expected.namespace_inode {
+        return Err(Error::Evidence("PID namespace identity mismatch".into()));
+    }
+    Ok(Observation::Live(pidfd))
 }
 
 pub(crate) fn pipe() -> Result<(OwnedFd, OwnedFd)> {
@@ -254,5 +270,51 @@ mod tests {
             Observation::Gone("init_pid_reused")
         ));
         assert!(matches!(observe(&own), Observation::Live(_)));
+    }
+
+    /// An init reaped after its pidfd was pinned but before its `stat` (or `ns/pid`) was read fails
+    /// that read with ESRCH, not ENOENT (#1793). That is a reaped init (`Gone`), not missing
+    /// evidence (`Unknown`, which `stop` returns without retrying). Pinned with a real pidfd and a
+    /// fake proc root whose entry resolves, through `/proc/self/fd`, to the held `/proc/<pid>`
+    /// directory of the same, already reaped, child.
+    #[test]
+    fn an_init_reaped_after_its_pidfd_is_gone_not_unknown() {
+        use std::os::fd::AsRawFd as _;
+        let mut child = std::process::Command::new("sleep")
+            .arg("300")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id() as i32;
+        let expected = identity(pid, false).unwrap();
+        let pidfd = PidFd::open(pid).unwrap();
+        let held = File::open(format!("/proc/{pid}")).unwrap();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(
+            format!("/proc/self/fd/{}", held.as_raw_fd()),
+            root.path().join(pid.to_string()),
+        )
+        .unwrap();
+
+        let read = std::fs::read_to_string(root.path().join(format!("{pid}/stat")));
+        assert_eq!(
+            read.as_ref().map_err(io::Error::raw_os_error).err(),
+            Some(Some(libc::ESRCH)),
+            "the fixture must reproduce the reaped-mid-read stat: {read:?}"
+        );
+        let observed = observe_pinned(root.path(), &expected, pidfd);
+        assert!(
+            matches!(observed, Ok(Observation::Gone("init_reaped"))),
+            "{:?}",
+            observed.map(|o| match o {
+                Observation::Live(_) => "live".to_string(),
+                Observation::Gone(why) => format!("gone {why}"),
+                Observation::Unknown(why) => format!("unknown {why}"),
+            })
+        );
     }
 }

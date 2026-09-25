@@ -373,7 +373,7 @@ fn group_stopped_in(
         };
         let stat = match std::fs::read_to_string(entry.path().join("stat")) {
             Ok(stat) => stat,
-            Err(error) if crate::proc_identity::proc_entry_vanished(&error) => continue,
+            Err(error) if calm_worker_runtime::proc_entry_vanished(&error) => continue,
             Err(error) => return Err(error.into()),
         };
         let fields = crate::proc_identity::parse_proc_stat_fields(&stat).ok_or_else(|| {
@@ -465,6 +465,25 @@ mod tests {
 
         let mut live = sleeper(true);
         let live_pid = live.id() as i32;
+        // `spawn` can return while the child is still inside execve, when its environ reads empty
+        // (so `Foreign`); the live-member case below needs the marker actually visible.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let marker_visible = loop {
+            if crate::proc_identity::proc_env_marker(live_pid, "NEIGE_GATE_OP", MARKER)
+                == crate::proc_identity::MarkerAuth::Present
+            {
+                break true;
+            }
+            if std::time::Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        if !marker_visible {
+            let _ = live.kill();
+            let _ = live.wait();
+            panic!("the live sleeper's environ never showed the marker");
+        }
 
         let vanished_only = tempfile::tempdir().expect("tempdir");
         let with_live = tempfile::tempdir().expect("tempdir");

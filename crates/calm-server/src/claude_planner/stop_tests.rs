@@ -302,6 +302,44 @@ fn a_fake_proc_root_pins_the_per_pid_rules() {
     );
 }
 
+/// A marked process reaped between the listing and the read of its `stat` fails that read with
+/// ESRCH, not ENOENT (#1793): it is gone, so the scan skips it instead of reporting a marked member
+/// whose `stat` is unreadable. The pid directory's `stat` resolves, through `/proc/self/fd`, into
+/// the held `/proc/<pid>` directory of a reaped child; its `environ` still shows the marker.
+#[test]
+fn a_marked_pid_reaped_before_its_stat_read_is_skipped() {
+    use std::os::fd::AsRawFd as _;
+    let mut child = Command::new("sleep")
+        .arg("300")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn sleep");
+    let pid = child.id() as i32;
+    let held = std::fs::File::open(format!("/proc/{pid}")).expect("hold proc dir");
+    child.kill().expect("kill");
+    child.wait().expect("reap");
+
+    let markers = HashSet::from(["inst:ws".to_string()]);
+    let root = fake_proc(pid, None, "PATH=/bin\0NEIGE_CLAUDE_PLANNER=inst:ws\0");
+    let stat = root.path().join(pid.to_string()).join("stat");
+    std::os::unix::fs::symlink(format!("/proc/self/fd/{}/stat", held.as_raw_fd()), &stat)
+        .expect("symlink stat");
+
+    let read = std::fs::read_to_string(&stat);
+    assert_eq!(
+        read.as_ref().map_err(std::io::Error::raw_os_error).err(),
+        Some(Some(libc::ESRCH)),
+        "the fixture must reproduce the reaped-mid-scan read: {read:?}"
+    );
+    assert_eq!(
+        scan_in(root.path(), &markers).expect("scan"),
+        Vec::new(),
+        "a pid reaped before its stat read is skipped"
+    );
+}
+
 #[test]
 fn instances_differ_by_data_dir() {
     let one = Scope::new();
