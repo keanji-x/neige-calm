@@ -1655,6 +1655,16 @@
               }
             }
           },
+          "409": {
+            "description": "The card is a Claude Planner, which runs the Claude CLI's default model and effort",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "`model` or `reasoning_effort` is missing from the body, or an unknown key is present. Both keys are required; `null` is how the default is chosen",
             "content": {
@@ -2843,6 +2853,22 @@
               "type": [
                 "string",
                 "null"
+              ]
+            }
+          },
+          {
+            "name": "provider",
+            "in": "query",
+            "description": "The Planner provider a card is about to be created with. `claude` (like a `card_id`\nnaming a Claude Planner card) answers `source: \"unavailable\"` with an empty catalog: a\nClaude Planner runs its CLI's default model and offers no choice.",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/AgentProvider"
+                }
               ]
             }
           }
@@ -4642,7 +4668,7 @@
             }
           },
           "400": {
-            "description": "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`, a `planner_provider` this server cannot run, or `reasoning_effort` unsupported by the selected model's current catalog entry; no track is minted and no effort is silently adjusted), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), a malformed `Idempotency-Key` header (empty or non-ASCII) on any create, or — with `first_message` — a missing `Idempotency-Key` or an empty/over-long message. Decided before anything is minted; the multi-source refusal, like every other create-path check, is not re-run on an `Idempotency-Key` replay, which mints nothing.",
+            "description": "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`, a `planner_provider` this server cannot run or `claude` with a `model` / `reasoning_effort`, or `reasoning_effort` unsupported by the selected model's current catalog entry; no track is minted and no effort is silently adjusted), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), a malformed `Idempotency-Key` header (empty or non-ASCII) on any create, or — with `first_message` — a missing `Idempotency-Key` or an empty/over-long message. Decided before anything is minted; the multi-source refusal, like every other create-path check, is not re-run on an `Idempotency-Key` replay, which mints nothing.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7928,7 +7954,7 @@
           },
           "planner_provider": {
             "$ref": "#/components/schemas/AgentProvider",
-            "description": "The backend of the track's Planner, stamped on its card as the server-owned\n`planner_provider` and never changed afterwards. `claude` is refused with 400 while\nthis server has no Claude Planner backend."
+            "description": "The backend of the track's Planner, stamped on its card as the server-owned\n`planner_provider` and never changed afterwards. `claude` is refused with 400 when the\nserver runs without `--claude-planner-config`, or with a `model` / `reasoning_effort`\n(a Claude Planner runs its CLI's default)."
           },
           "reasoning_effort": {
             "type": [
