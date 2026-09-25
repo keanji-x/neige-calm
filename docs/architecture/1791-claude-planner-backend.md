@@ -29,8 +29,8 @@ interrupted, survives a neige restart by resuming its Claude session, is fenced 
 with a stop that confirms no marker-carrying process remains, and renders in the existing conversation UI with no FE renderer change.
 
 **Non-goals.** ACP, a Node sidecar, the Agent SDK; a provider-neutral item model; Codex behaviour changes
-beyond extracting the seam; worker cards; Claude for PlainChat / Assistant; steer and model choice for
-Claude Planners (cut, §9.5).
+beyond extracting the seam; worker cards; Claude for PlainChat / Assistant; steer for Claude Planners
+(cut, §9.5). Model choice was cut here too and added afterwards by #1810 (§5.8).
 
 ### 1.1 Decision log
 
@@ -46,7 +46,7 @@ Claude Planners (cut, §9.5).
 | D8 | **Steer cut.** The CLI dequeues a queued line immediately after `result` (P-F3, P-E), so the parent has no boundary to refuse it; v1 refusal stays and the entry runs as the next turn | **orchestrator r2** (was "scheduled" in r1) | §5.9 |
 | D9 | Bash confinement: native sandbox with `failIfUnavailable` (**owner decided: sandbox**; the unconfined option is removed); enablement release-gated on §9.2 | orchestrator r1 | §5.3, §9.2 |
 | D10 | Images: base64 image blocks (P-I) | orchestrator r1 | §5.6 |
-| D11 | **Model choice cut**: Claude Planners run the CLI default; pickers show the existing `source:"unavailable"` | **orchestrator r2** | §5.8 |
+| D11 | **Model choice cut**: Claude Planners run the CLI default; pickers show the existing `source:"unavailable"`. **Amended by #1810**: a fixed alias list (`opus`, `sonnet`, `haiku`) or the CLI default, passed as `--model`; no effort choice | **orchestrator r2**; #1810 | §5.8 |
 | D12 | **Stop primitive**: one `/proc`-wide exact env-marker sweep (`NEIGE_CLAUDE_PLANNER=<worker_session_id>`), SIGTERM → bounded wait → verified SIGKILL → wait-empty (membership narrowed in r3, D16; users widened, D17). The r1 `(pid, pgid, start_time, boot_id)` record and group kill are deleted | **orchestrator r2** (A BLOCKING-1, B2-1) | §5.1 |
 | D13 | **Crash recovery without a journal**: settlement = durable outcome → emit; boot = stop sweep, then idempotent `interrupted` outcome for `snapshot.last_turn_id`. The r1 journal and crash table are deleted | **orchestrator r2** (A MAJOR-1, B2-4/5) | §5.1 |
 | D14 | Typed config: one optional `--claude-planner-config <file>`; absent ⇒ Claude Planner unavailable | **orchestrator r2** (A MAJOR-3) | §5.3 |
@@ -100,7 +100,7 @@ ignores invalid settings and `system/init` does not report the sandbox.
 | 1–6 | `subscribe_notifications`, `turn_start`, `turn_steer`, `turn_interrupt`, `interrupt_active_turn`, `active_turn_id_for_thread` | run_loop `:404`, `:271`, `:1340`, `:704`/`:3640`, `:691`, `:690`/`:3601` | `PlannerBackend` |
 | 7 | seals (`seal_turn_thread_for_deletion`, `DeletionThreadSeals`, unseal on rollback) | run_loop `:658-679`; registry `:203-218`; deletion plans (S21) | **unchanged**: Claude thread ids are fresh UUIDs, so the same thread-keyed set works; the Claude session checks `turn_thread_is_sealed(thread)` before every spawn |
 | 8 | `turn_thread_is_sealed` in recovery | harness/mod `:158`, `:424` | unchanged |
-| 9 | `config_read`, `model_list` in resolution | run_loop `:2472`, `:2632` | Codex-only; the Claude arm resolves to "CLI default" (§5.8) |
+| 9 | `config_read`, `model_list` in resolution | run_loop `:2472`, `:2632` | Codex-only; the Claude arm reads the card at issue and resolves an alias or the CLI default without Codex (§5.8, #1810) |
 | 10 | Codex readiness / deferred recovery | harness/mod `:213`, `:477`; `state.rs:577-598`; `lib.rs:615-640` (H21) | Codex rows only; Claude rows recovered in both boot arms |
 | 11 | `is_running` preflights | start adapter `:420`, `:491` (S7); routes/cards `:1289`; planner_recovery `:58` | per provider: Claude ⇒ `claude_planner_config` present and `claude_binary --version` equals `claude_version` |
 | 12 | `thread_start_*`, `remote_uri` | start adapter `:970-991` | Claude branch: UUID thread, no RPC |
@@ -110,7 +110,7 @@ ignores invalid settings and `system/init` does not report the sandbox.
 | 16 | card teardown / deletion-grade quiesce | routes/cards `:92-127`, `:129-156` | Claude card ⇒ seal as today + scoped sweep over all its Claude Planner ids, any state (§5.1 item 4; propagates `Err`) |
 | 17 | track / area deletion plans | S21 | unchanged fields; scoped sweep over all Claude Planner ids of the track/area, any state, before the destructive step (the track row delete removes the session rows, `crates/calm-truth/src/db/sqlite/track.rs:438-442`) |
 | 18 | `resume_system_error_conversation` | planner_recovery | Codex-only (Claude never enters `Wedged(systemError)`) |
-| 19–21 | GET `/api/models` (`routes/models.rs:144`), create advice (`routes/tracks.rs:848`), PUT advice (`routes/planner_model.rs:117`) | S11 | Claude: `source:"unavailable"` / 400 / 409 (§5.8) |
+| 19–21 | GET `/api/models` (`routes/models.rs:144`), create advice (`routes/tracks.rs:848`), PUT advice (`routes/planner_model.rs:117`) | S11 | Claude (#1810): the alias catalog (`source:"built_in"`; `unavailable` without the flag) / an alias or 400 / an alias or 400 (§5.8) |
 | 22 | reader texts naming codex | run_loop `:2430`, `:2547` | provider name from the backend (overlaps #1542) |
 | 23 | `liveness_feeder`, dev replay, TUI takeover | S27 | Codex-only by nature |
 | 24 | workspace repoint fence + recycle | `routes/tracks.rs:2104-2150`, `:2160`, `:2239` | scoped sweep over the track's Claude Planner ids before the pristine check (§5.1 item 4) |
@@ -370,7 +370,8 @@ harness snapshot owns it. A session opened for a row that has `agent_session_id`
   recorded system prompt until compaction, then the current rendering applies. For Claude only, the
   rendering appends one sentence from a new `prompts/` fragment: start long-lived servers with
   `calm.terminal.open`, not Bash (they die with the turn and at restart).
-- No `--permission-mode`, no `--include-partial-messages`, no `--model`/`--effort` (D11).
+- No `--permission-mode`, no `--include-partial-messages`, no `--effort`; `--model <alias>` only when the
+  card has chosen one (D11 as amended by #1810, §5.8).
 - `cwd` = track workspace; a moved workspace cannot resume (KNOWN GAP, #857 class). Project context:
   `CLAUDE.md`, else `AGENTS.md` (P-J).
 - **Env** (`env_clear()` + allowlist): `SPAWN_ENV_PASSTHROUGH` (S24) minus `OPENAI_*`, `CODEX_*`, `RUST_*`,
@@ -478,14 +479,32 @@ Image-only messages are valid lines. KNOWN GAP: an image over the API's limit fa
 Claude threads are never registered (M9) ⇒ the exact-interface briefing (`calm.plan.recover` with `key`,
 `expected_attempt_id` and a Planner-kept `idempotency_key`, H17). KNOWN GAP: no bound `Recover`.
 
-### 5.8 Model and effort (D11)
+### 5.8 Model and effort (D11, amended by #1810)
 
-Claude Planners run the CLI's default model and effort; the backend passes no `--model`/`--effort` and the
-turn resolution's Claude arm returns that fact without calling Codex. GET `/api/models` for a Claude card
-(or `?provider=claude` before a card exists) answers the existing `source:"unavailable"` with an empty
-catalog, which the FE already turns into a disabled picker (`model-pill.tsx:39`); its label "codex is not
-running" (`:109`) becomes provider-neutral when the card is Claude. Create with `claude` and a model/effort
-⇒ 400; PUT `/planner/model` on a Claude card ⇒ 409.
+*v1 (D11) cut the choice: a Claude Planner ran the CLI's default and every model surface refused. #1810
+replaces that with the following.*
+
+A Claude Planner chooses from one fixed alias list, `claude_planner/models.rs`: `opus`, `sonnet`, `haiku`.
+The CLI resolves each alias to its current model, so the list does not go stale and needs no config key.
+`null` is the CLI's default and passes no `--model`. There is no effort choice: the effort is always
+`null`. The card keeps the selection in the same payload keys as Codex (`model`, `reasoning_effort`).
+
+- **Turn.** The run loop's Claude arm reads the card at issue time, like Codex, but asks Codex nothing and
+  needs no `*_ever_set` resolution (each turn is a fresh process). An alias spawns `claude -p …
+  --model <alias>`. A payload the list cannot satisfy (unknown model, any effort, malformed keys) is
+  refused at issue as "needs a choice": the message stays queued and the reader is told to pick a model.
+  It is never sent under a guess. A PUT between turns applies from the next turn.
+- **GET `/api/models`** for a Claude card (or `?provider=claude` before a card exists) answers the alias
+  list with `source:"built_in"`, `default_source:"unknown"`, a `null` default, `fetched_at_ms: null`, and
+  per entry `is_default: false`, no supported efforts and `default_reasoning_effort: null`. On a server
+  without `--claude-planner-config` it answers `source:"unavailable"` with an empty catalog, and the FE
+  hides the Claude group.
+- **Create** with `claude` accepts a `model` from the list; any other model or any `reasoning_effort` ⇒ 400.
+- **PUT `/planner/model`** on a Claude card accepts an alias or `null` with a `null` effort; anything else
+  ⇒ 400, with nothing stored or adjusted.
+- **FE.** On the new-track page one grouped picker replaces the provider pill: a Codex group (Default and
+  the live catalog, with effort) and a Claude group (Default and the aliases, no effort). The pick decides
+  `planner_provider` and `model`. Inside a track the picker lists only the track's provider group.
 
 ### 5.9 Steer (D8)
 
@@ -619,7 +638,7 @@ image message, interrupt, restart, resume, delete; `ps` shows no Planner `claude
   the owner updates the config (and re-runs the release gate for `Sandbox`).
 
 - No steer; future path via `interrupt_cancel_queued_v1`, unprobed.
-- No model/effort choice; Claude runs its CLI default; pickers show `source:"unavailable"`.
+- No effort choice; the model is one of the fixed aliases or the CLI default (#1810, §5.8).
 - No bound `Recover`; exact `calm.plan.recover`.
 - Every deploy restart loses in-flight Claude turns (Codex's daemon survives restarts).
 - A crash between the line write and the `:3882` commit may deliver a batch twice (same window as Codex).

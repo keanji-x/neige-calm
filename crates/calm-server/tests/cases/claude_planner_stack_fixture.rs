@@ -263,27 +263,35 @@ impl Stack {
     /// `POST /api/tracks` with a Claude Planner on a managed workspace; returns the track and its
     /// Planner card.
     pub async fn create_claude_track(&self) -> (String, String) {
-        let area = self
-            .repo()
+        self.create_claude_track_with(json!({})).await
+    }
+
+    /// A fresh area for a create body.
+    pub async fn area(&self) -> String {
+        self.repo()
             .area_create(NewArea {
                 name: "claude planner".into(),
                 color: "#111111".into(),
                 sort: None,
             })
             .await
-            .expect("area");
-        let (status, body) = self
-            .send(
-                "POST",
-                "/api/tracks",
-                Some(json!({
-                    "planner_provider": "claude",
-                    "area_id": area.id,
-                    "title": "claude planner",
-                    "theme": {"fg": [216, 219, 226], "bg": [15, 20, 24]},
-                })),
-            )
-            .await;
+            .expect("area")
+            .id
+            .to_string()
+    }
+
+    /// [`Self::create_claude_track`] with `extra` merged into the create body.
+    pub async fn create_claude_track_with(&self, extra: Value) -> (String, String) {
+        let mut request = json!({
+            "planner_provider": "claude",
+            "area_id": self.area().await,
+            "title": "claude planner",
+            "theme": {"fg": [216, 219, 226], "bg": [15, 20, 24]},
+        });
+        for (key, value) in extra.as_object().expect("extra is an object") {
+            request[key] = value.clone();
+        }
+        let (status, body) = self.send("POST", "/api/tracks", Some(request)).await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
         let track_id = body["id"].as_str().expect("track id").to_string();
         let card = self

@@ -1625,6 +1625,16 @@
               }
             }
           },
+          "400": {
+            "description": "The card is a Claude Planner and `model` is neither `null` nor one of the Claude aliases `GET /api/models` lists, or `reasoning_effort` is not `null`; nothing is stored or adjusted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "401": {
             "description": "Unauthenticated",
             "content": {
@@ -1647,16 +1657,6 @@
           },
           "404": {
             "description": "Card not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "The card is a Claude Planner, which runs the Claude CLI's default model and effort",
             "content": {
               "application/json": {
                 "schema": {
@@ -2859,7 +2859,7 @@
           {
             "name": "provider",
             "in": "query",
-            "description": "The Planner provider a card is about to be created with. `claude` (like a `card_id`\nnaming a Claude Planner card) answers `source: \"unavailable\"` with an empty catalog: a\nClaude Planner runs its CLI's default model and offers no choice.",
+            "description": "The Planner provider a card is about to be created with. `claude` (like a `card_id`\nnaming a Claude Planner card) answers the Claude alias catalog with `source: \"built_in\"`\nwithout asking Codex, or `source: \"unavailable\"` with an empty catalog when the server was\nstarted without `--claude-planner-config`.",
             "required": false,
             "schema": {
               "oneOf": [
@@ -2875,7 +2875,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Model catalog and the default this installation follows. Answered with `source: \"unavailable\"` and an empty catalog when codex cannot be reached, never with an error and never with a hardcoded catalog",
+            "description": "Model catalog and the default this installation follows. For Codex, answered with `source: \"unavailable\"` and an empty catalog when codex cannot be reached, never with an error and never with a hardcoded catalog. For a Claude Planner, the fixed alias list with `source: \"built_in\"`, or `unavailable` without `--claude-planner-config`",
             "content": {
               "application/json": {
                 "schema": {
@@ -4668,7 +4668,7 @@
             }
           },
           "400": {
-            "description": "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`, a `planner_provider` this server cannot run or `claude` with a `model` / `reasoning_effort`, or `reasoning_effort` unsupported by the selected model's current catalog entry; no track is minted and no effort is silently adjusted), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), a malformed `Idempotency-Key` header (empty or non-ASCII) on any create, or — with `first_message` — a missing `Idempotency-Key` or an empty/over-long message. Decided before anything is minted; the multi-source refusal, like every other create-path check, is not re-run on an `Idempotency-Key` replay, which mints nothing.",
+            "description": "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`, a `planner_provider` this server cannot run, `claude` with a `model` that is not one of its aliases (`opus`, `sonnet`, `haiku`) or with any `reasoning_effort`, or `reasoning_effort` unsupported by the selected model's current catalog entry; no track is minted and no effort is silently adjusted), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), a malformed `Idempotency-Key` header (empty or non-ASCII) on any create, or — with `first_message` — a missing `Idempotency-Key` or an empty/over-long message. Decided before anything is minted; the multi-source refusal, like every other create-path check, is not re-run on an `Idempotency-Key` replay, which mints nothing.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7630,7 +7630,11 @@
         ],
         "properties": {
           "default_reasoning_effort": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The model's own default effort; `null` exactly when the provider offers no effort choice\n(a Claude alias). Always a string for a Codex entry."
           },
           "description": {
             "type": "string"
@@ -7640,21 +7644,22 @@
           },
           "id": {
             "type": "string",
-            "description": "Codex's preset identifier, presentation only; never send it back as a model selection."
+            "description": "Codex's preset identifier (a Claude alias for a Claude Planner), presentation only; never\nsend it back as a model selection."
           },
           "is_default": {
             "type": "boolean",
-            "description": "Codex's catalog-level default marker; not \"what am I following now\"."
+            "description": "Codex's catalog-level default marker; not \"what am I following now\". Always `false` for\na Claude alias: the Claude CLI's default is the `null` selection."
           },
           "model": {
             "type": "string",
-            "description": "The slug codex is invoked by."
+            "description": "The slug codex is invoked by, or the Claude alias passed as `--model`."
           },
           "supported_reasoning_efforts": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ReasoningEffortOption"
-            }
+            },
+            "description": "Empty for a Claude alias: a Claude Planner offers no effort choice."
           }
         }
       },
@@ -7950,18 +7955,18 @@
               "string",
               "null"
             ],
-            "description": "Model slug for the planner's first and subsequent turns. Omitted or null\nfollows installation defaults, as on the conversation model endpoint."
+            "description": "Model slug for the planner's first and subsequent turns (a Claude alias for a `claude`\nPlanner). Omitted or null follows installation defaults, as on the conversation model\nendpoint."
           },
           "planner_provider": {
             "$ref": "#/components/schemas/AgentProvider",
-            "description": "The backend of the track's Planner, stamped on its card as the server-owned\n`planner_provider` and never changed afterwards. `claude` is refused with 400 when the\nserver runs without `--claude-planner-config`, or with a `model` / `reasoning_effort`\n(a Claude Planner runs its CLI's default)."
+            "description": "The backend of the track's Planner, stamped on its card as the server-owned\n`planner_provider` and never changed afterwards. `claude` is refused with 400 when the\nserver runs without `--claude-planner-config`, with a `model` that is not one of its\naliases, or with any `reasoning_effort`."
           },
           "reasoning_effort": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Reasoning effort. Values unsupported by the chosen model's current\ncatalog entry are rejected with 400 before creation; no silent adjustment.\nOmitted or null follows installation defaults."
+            "description": "Reasoning effort. Values unsupported by the chosen model's current\ncatalog entry are rejected with 400 before creation; no silent adjustment.\nOmitted or null follows installation defaults. Must be omitted or null for `claude`."
           },
           "recipe_id": {
             "type": [
@@ -8867,6 +8872,7 @@
         "description": "Whether `models` reflects a live catalog.",
         "enum": [
           "live",
+          "built_in",
           "unavailable"
         ]
       },
@@ -10284,14 +10290,14 @@
               "string",
               "null"
             ],
-            "description": "The model **slug** to run with (never a catalog entry's `id`), or `null` to follow\nthe installation default. `#[schema(required = true)]` is needed because utoipa\nderives optionality from the `Option<T>` alone and cannot see `deserialize_with`."
+            "description": "The model **slug** to run with (never a catalog entry's `id`; a Claude alias for a Claude\nPlanner), or `null` to follow the installation default (for a Claude Planner, the Claude\nCLI's own). `#[schema(required = true)]` is needed because utoipa\nderives optionality from the `Option<T>` alone and cannot see `deserialize_with`."
           },
           "reasoning_effort": {
             "type": [
               "string",
               "null"
             ],
-            "description": "The reasoning effort, or `null` to follow the default. Required. A bare string:\ncodex accepts any non-empty effort."
+            "description": "The reasoning effort, or `null` to follow the default. Required. A bare string:\ncodex accepts any non-empty effort. Always `null` for a Claude Planner."
           }
         },
         "additionalProperties": false

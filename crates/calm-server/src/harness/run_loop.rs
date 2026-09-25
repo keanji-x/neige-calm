@@ -2414,20 +2414,23 @@ const NEEDS_A_CHOICE_RETRY_DELAY: Duration = Duration::from_secs(30);
 async fn resolve_model_selection_for_issue(
     inner: &Arc<Inner>,
 ) -> std::result::Result<TurnModelSelection, IssuanceRefusal> {
-    // #1791 §5.8: a Claude Planner runs the CLI's default model; nothing is asked of Codex. The
-    // one thing that can stop it here is a server started without its config.
-    if let PlannerBackend::Claude(session) = &inner.backend {
-        return match session.host().configured() {
-            Ok(_) => Ok(TurnModelSelection::inherit()),
-            Err(error) => Err(IssuanceRefusal::needs_a_choice(
-                error.to_string(),
-                format!(
-                    "{}. Your message is still queued and will be sent once the server runs with it.",
-                    crate::claude_planner::config::unavailable_message()
-                ),
-            )),
-        };
-    }
+    // #1810: a Claude Planner reads its card like Codex does, but nothing is asked of Codex. A
+    // server started without its config stops it first.
+    let claude = match &inner.backend {
+        PlannerBackend::Claude(session) => match session.host().configured() {
+            Ok(_) => true,
+            Err(error) => {
+                return Err(IssuanceRefusal::needs_a_choice(
+                    error.to_string(),
+                    format!(
+                        "{}. Your message is still queued and will be sent once the server runs with it.",
+                        crate::claude_planner::config::unavailable_message()
+                    ),
+                ));
+            }
+        },
+        PlannerBackend::Codex(_) => false,
+    };
     let card = match inner.repo.card_get(inner.card_id.as_str()).await {
         // A read that failed is a read that can succeed next time.
         Err(e) => {
@@ -2444,6 +2447,10 @@ async fn resolve_model_selection_for_issue(
         }
         Ok(Some(card)) => card,
     };
+    if claude {
+        return crate::claude_planner::models::turn_selection(&card.payload)
+            .map_err(|(log, reader)| IssuanceRefusal::needs_a_choice(log, reader));
+    }
     resolve_model_selection(inner, &card.payload).await
 }
 

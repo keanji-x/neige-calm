@@ -27,6 +27,7 @@ use uuid::Uuid;
 
 use super::config::ClaudePlannerHost;
 use super::driver::{TurnRun, drive};
+use super::models::ClaudeModel;
 use super::protocol::{Base64Image, UserLine, UserLineContent, client_line_uuid};
 use super::spawn::{self, EnvInputs, InstructionsFile, SessionStart};
 use super::stop::stop;
@@ -376,11 +377,12 @@ impl ClaudePlannerSession {
             .map(|active| active.turn_id.clone())
     }
 
-    /// See the module docs for the submission contract.
+    /// See the module docs for the submission contract. `model` is the card's choice, read at issue.
     pub async fn turn_start(
         &self,
         thread: &str,
         items: Vec<InputItem>,
+        model: Option<&'static ClaudeModel>,
         client_id: &str,
     ) -> Result<String> {
         let shared = &self.shared;
@@ -474,6 +476,7 @@ impl ClaudePlannerSession {
         let argv = spawn::argv(
             thread_uuid,
             start,
+            model,
             &params.cwd,
             &host.mcp_shim,
             instructions.path(),
