@@ -18,5 +18,9 @@ export default defineConfig({
     url: `http://127.0.0.1:${port}/next/`,
     reuseExistingServer: false,
     timeout: 120_000,
+    // Pages are routed to a signed-out API response, but Chrome's background
+    // fetch during PWA.install is not; point the preview proxy at a closed port
+    // (discard, 9) so that fetch can never reach a real backend.
+    env: { FE_API_PROXY_TARGET: 'http://127.0.0.1:9' },
   },
 });

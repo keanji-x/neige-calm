@@ -1,8 +1,7 @@
 import type { Plugin } from 'vite';
 
-// Links the web build's install manifest (web/public/manifest.webmanifest).
-// The Android bundle ships neither the manifest nor its icons, so vite.config.ts
-// registers this plugin only for the web platform.
+// Links the install manifest served from the public directory
+// (web/public/manifest.webmanifest) into index.html, under the resolved base.
 export function pwaManifestLink(): Plugin {
   let base = '/';
   return {

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -28,6 +28,20 @@ test('the Android frontend build carries no web-only PWA install metadata and pa
       dist, output: join(root, 'bundle'), sourceRevision: 'a'.repeat(40), sourceDirty: false, webCompatVersion: 1,
     });
     assert.ok(bundle.files.some((file) => file.path === 'index.html'));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('the frontend build refuses an unknown mode instead of defaulting to a platform', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'neige-unknown-mode-'));
+  try {
+    const dist = join(root, 'dist');
+    const build = spawnSync('npx', ['--no-install', 'vite', 'build', '--mode', 'bogus', '--outDir', dist],
+      { cwd: fe, encoding: 'utf8' });
+    assert.notEqual(build.status, 0);
+    assert.match(build.stderr, /Unknown Vite mode "bogus"/);
+    assert.equal(await exists(dist), false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

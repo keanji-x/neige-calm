@@ -2,7 +2,7 @@ import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import type { ClientRequest, IncomingMessage } from 'node:http';
 
-import { defineConfig } from 'vite';
+import { defineConfig, type PluginOption } from 'vite';
 import react from '@vitejs/plugin-react';
 
 import { pwaManifestLink } from './tools/pwa/vite-plugin.ts';
@@ -33,21 +33,64 @@ try {
   // Not a git checkout (a tarball build); 'dev' is the documented fallback.
 }
 
+// What each platform's build delivers. The Tauri Android client bundles this
+// same frontend but ships only index.html and assets/
+// (mobile/scripts/bundle-frontend.mjs), so web/public (the PWA manifest and its
+// icons) and the manifest link belong to the web build alone.
+type Platform = 'web' | 'android';
+interface PlatformDelivery {
+  /** Relative to `root`; `false` copies no public files. */
+  readonly publicDir: string | false;
+  readonly plugins: () => PluginOption[];
+  readonly target: string | undefined;
+  /** `__NC_BUNDLED__`: the frontend ships inside a native client. */
+  readonly bundled: boolean;
+  readonly version: () => string;
+}
+const PLATFORMS: Readonly<Record<Platform, PlatformDelivery>> = Object.freeze({
+  web: Object.freeze({
+    publicDir: 'public',
+    plugins: () => [react(), pwaManifestLink()],
+    target: undefined,
+    bundled: false,
+    version: () => version,
+  }),
+  android: Object.freeze({
+    publicDir: false,
+    plugins: () => [react()],
+    target: 'chrome111',
+    bundled: true,
+    version: () => (JSON.parse(readFileSync(new URL('../mobile/package.json', import.meta.url), 'utf8')) as { version: string }).version,
+  }),
+});
+
+// Every mode this config is loaded with: Vite's defaults (`development` for
+// `vite`, `production` for `vite build` and `vite preview`) and the Android
+// packagers' `--mode android`. Vitest reads vitest.config.ts instead of this
+// file. Any other mode is refused rather than defaulting to a platform.
+const PLATFORM_BY_MODE: Readonly<Record<string, Platform>> = Object.freeze({
+  development: 'web',
+  production: 'web',
+  android: 'android',
+});
+function platformFor(mode: string): PlatformDelivery {
+  if (!Object.hasOwn(PLATFORM_BY_MODE, mode)) {
+    throw new Error(`Unknown Vite mode "${mode}"; expected one of: ${Object.keys(PLATFORM_BY_MODE).join(', ')}`);
+  }
+  return PLATFORMS[PLATFORM_BY_MODE[mode]];
+}
+
 export default defineConfig(({ mode }) => {
-  // The Tauri Android client bundles this same frontend (`--mode android`) but
-  // ships only index.html and assets/ (mobile/scripts/bundle-frontend.mjs), so
-  // web-only public files and the PWA manifest link belong to the web build.
-  const platform: 'web' | 'android' = mode === 'android' ? 'android' : 'web';
+  const platform = platformFor(mode);
   return {
     // `vite <root>` resolves its config file *inside* that root, so passing the
     // root on the command line silently dropped this file — and the React plugin
     // with it. Declaring the root here keeps dev and build on this config.
     root: 'web',
     base: '/next/',
-    // Relative to `root`, i.e. web/public.
-    publicDir: platform === 'web' ? 'public' : false,
-    build: { target: platform === 'android' ? 'chrome111' : undefined },
-    plugins: platform === 'web' ? [react(), pwaManifestLink()] : [react()],
+    publicDir: platform.publicDir,
+    build: { target: platform.target },
+    plugins: platform.plugins(),
     resolve: {
       dedupe: ['react', 'react-dom'],
     },
@@ -55,11 +98,9 @@ export default defineConfig(({ mode }) => {
       include: [...OPTIMIZED_DEPENDENCIES],
     },
     define: {
-      __NC_VERSION__: JSON.stringify(platform === 'android'
-        ? (JSON.parse(readFileSync(new URL('../mobile/package.json', import.meta.url), 'utf8')) as { version: string }).version
-        : version),
+      __NC_VERSION__: JSON.stringify(platform.version()),
       __NC_BUILD__: JSON.stringify(build),
-      __NC_BUNDLED__: JSON.stringify(platform === 'android'),
+      __NC_BUNDLED__: JSON.stringify(platform.bundled),
     },
     server: {
       host: devHost,

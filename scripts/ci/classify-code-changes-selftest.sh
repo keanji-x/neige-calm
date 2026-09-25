@@ -105,9 +105,17 @@ check_mode stack false "legacy web source does not alter stack wiring" web/src/a
 
 # These entry points control how production bundles are generated or served.
 for path in fe/vite.config.ts fe/web/index.html web/vite.config.ts web/index.html \
+  fe/tools/pwa/vite-plugin.ts fe/web/public/manifest.webmanifest fe/web/public/icons/neige-192.png \
   docker-compose.yml Makefile e2e/cases/010-stack-smoke.sh; do
   check_mode stack true "stack/build entry point $path" "$path"
 done
+# The PWA plugin shapes the shipped index.html, unlike the rest of fe/tools.
+for path in fe/vite.config.ts fe/web/index.html fe/tools/pwa/vite-plugin.ts \
+  fe/web/public/manifest.webmanifest fe/web/public/icons/neige-192.png; do
+  check_mode fe-e2e true "FE build entry point $path" "$path"
+done
+check_mode fe-e2e false "other PWA tooling is not a build input" fe/tools/pwa/generate-icons.mjs
+check_mode stack false "other PWA tooling is not stack input" fe/tools/pwa/generate-icons.mjs
 
 # Generator dependencies and checked-in products must keep the drift gate on.
 for path in web/package-lock.json web/src/api/generated.ts \
