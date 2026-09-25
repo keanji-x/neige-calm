@@ -1,0 +1,209 @@
+# `neige` 命令语义进内核，二进制只做转发（#1801）— 设计 v1
+
+> **owner 规则（本设计的约束，优先于其余一切）**
+> 1. 只解决观察到的痛点，先选最简单的做法：用最少的机制消除版本分叉；假想情形写成一行 KNOWN GAP。
+> 2. 兼容只看 4140 部署（`~/.local/share/neige-next`），不做通用兼容方案。
+> 3. **避免双重语义**：每条 CLI 命令只有一个语义来源，内核 CLI 层只把 argv 映射到现有 MCP 工具处理函数，不重新实现；
+>    客户端不做解析、校验、渲染或兜底；旧的胖客户端 `neige` 按 initialize `clientInfo` 识别并拒绝，拒绝信息给出正确路径；
+>    冻结的只有转发协议本身。
+>
+> 基线 `origin/main` = `dd6773667`（工作树 `design/1801-kernel-cli`）。file:line 均在该基线实测；
+> `cli/` 指 `crates/neige-cli/src/`，`srv/` 指 `crates/calm-server/src/`，`mcp/` 指 `srv/mcp_server/`。
+
+## 0. 结论先行
+
+- 新增一个 JSON-RPC 方法 `neige/cli`，与 `tools/call` 同在内核的每卡 MCP UDS 上（`mcp/transport.rs:329` 的 `dispatch_request`）。
+  内核拿到 argv 后，按一张命令表解析，再经 `tools/call` 用的**同一个**内部函数（身份解析、worker grants、处理函数）执行，最后渲染出
+  `{stdout, stderr, exit}`。`neige` 二进制缩到约 120 行：读两个环境变量，连接，发 argv，原样打印，按给出的退出码退出。
+- 围栏：在 `handle_initialize` 里判断，`clientInfo.name == "neige"` 就是旧胖客户端（4140 盘上 46 个副本全部如此，§4.3）。
+  这类连接以 `-32426` 拒绝，消息里带上 `<kernel current_exe 目录>/neige`。新转发器改用 `clientInfo {name:"neige-forward", version:"1"}`，
+  其中 `version` 即转发协议版本。
+- 保留 #1784 的 PATH 前置（§6）：正确性由围栏保证，PATH 前置只是让用户默认就找到正确的转发器，一般碰不到拒绝。
+- 一个 PR：新增生产代码约 0.95k 行（其中约 0.45k 行由 `cli/` 搬入），删除约 2.5k 行（`cli/main.rs` 胖逻辑、`help.rs`、客户端单测和假服务器测试）。
+- 与 issue 相左或补充的发现见 §9，要点：`--help` 今后也需要 socket，因此 gate guard 的 `--help` 豁免要删掉；
+  隔离 worker 的 grants 必须在 CLI 路径上同样生效，否则会扩大权限。
+
+## 1. 现状清单（`cli/main.rs`，1570 行 + `cli/help.rs` 235 行）
+
+每个连接的流程：initialize（`main.rs:115-141`）→ 一次 `tools/call`（`:225-238`）→ 取 `structuredContent`，取不到就回退去解析 `content[0].text`
+（`:259-270`，属于兜底）→ 渲染（`:78-100`）。所有命令都不流式输出，也不读 stdin。
+
+| 命令 | 调用的工具（处理函数） | 客户端额外逻辑（main.rs 行） | 输出 | 内核新归宿 |
+|---|---|---|---|---|
+| `ls [path]` | `calm.track.ls`，`mcp/tools/track_file.rs:72-87`（Planner/Worker） | 默认 path `"/"`（`:658`）；最多一个 path（`:652`）；文本渲染 `d name`/`- name`，`kind` 缺失时当 `"file"`（`:344-390`，:378 是兜底） | 短 | `mcp/cli/commands.rs` 表内默认值；`mcp/cli/render.rs::ls`（`kind` 缺失 = 渲染错误，不回退） |
+| `cat <path>` | `calm.track.cat`，`track_file.rs:89-106` | 必须恰好一个 path（`:663-681`）；`content_type == application/json` 时 pretty 打印，解析失败则打原文（`:392-433`） | **可能很长**（整个视图文件） | `render::cat_like` |
+| `state` | `calm.track.state`，`mcp/tools/track_state.rs:64-115` | 不接受参数（`:683-696`）；默认 pretty，`--json` 输出紧凑 JSON（`:435-459`） | 中等 | `render::state` |
+| `diff <from> [to] [path]`，`--to`/`--path` | `calm.track.diff`，`mcp/tools/track_history.rs:104-137` | 位置参数与选项二选一、每项只能一次、拒绝空值（`:697-770`）；文本 `path new/deleted/edited` + patch（`:461-531`）；**`added→new`、`modified→edited` 重命名**（`:604-611`），`status` 缺失时当 `modified`（`:500`，兜底） | **可能很长**（每文件 patch ≤200 行，`calm-truth/src/track_vcs/mod.rs:6`，文件数无上限） | argv 形状 → `commands.rs`；重命名改用已有的 `DiffStatus::observation_label`（`calm-truth/src/track_vcs/types.rs:65`，§5 H3） |
+| `cat-at <commit> <path>` | `calm.track.cat_at`，`track_history.rs:139-158` | 恰好两个位置参数（`:771-792`）；渲染同 `cat` | **可能很长** | `render::cat_like` |
+| `log [path] --limit N --include-empty` | `calm.track.log`，`track_history.rs:160-180` | `--limit` 必须是正整数，拒绝 0（`:801-817`）；文本 `hash8 event=N lifecycle msg`，`lifecycle` 缺失时当 `unknown`（`:533-602`，:572 是兜底） | ≤200 条（工具内 clamp，`track_history.rs:244-259`） | 整数解析 → `commands.rs`；**范围只由工具决定**（H4）；`render::log` |
+| `task-completed --idempotency-key K [--result R] [--artifact P]...` | `calm.task.complete`，`mcp/tools/emit.rs:121-168`（仅 Worker） | key 非空、只能一次（`:844-863`）；**`--result` 先按 JSON 解析，失败就当字符串**（`:871-873`）；输出原始 JSON（`:85-99`） | 短 | `--result` 的 JSON-或-文本转换 → `commands.rs`（这是 argv 层的语义，工具只接收 `Value`）；空 key 由工具拒绝（`emit.rs:128-135`） |
+| `task-failed --idempotency-key K --reason T` | `calm.task.fail`，`emit.rs:367-396`（仅 Worker） | key 和 reason 都拒绝空值（`:926-954`），但**工具接受空 reason**（`emit.rs:382-386`） | 短 | 客户端的空 reason 检查删除，以工具为准（H4） |
+| `track-gc --track-id T [--keep N] [--dry-run] --force` | `calm.admin.track_gc`，`mcp/tools/admin.rs:74-132`（仅 Planner） | **默认 `keep=50`**（`:1046`，工具要求显式传 keep，`admin.rs:52`）；`keep>0`（`:1009-1017`，与工具 `admin.rs:97-103` 重复）；**确认门：不是 `--dry-run` 就必须 `--force`**（`:1037-1042`） | 短 | 确认门和 keep 默认值 → `commands.rs`，是 CLI 层唯一的非映射规则；`keep>0` 只保留工具那一处 |
+| `vacuum --force` | `calm.admin.vacuum`，`admin.rs:134-147`（仅 Planner） | **确认门 `--force`**（`:1070-1075`） | 短 | `commands.rs` 确认门 |
+| `--json`（全局或命令后） | — | 前置或出现在任意位置（`:634-637`、各分支）；ls/state/diff/log 输出紧凑 JSON；其余命令只把**错误**转成 JSON（`:617-623`，`AppError.structured` 在 `:1175-1180`） | — | `commands.rs` 解析；`mcp/cli/mod.rs::error_output` |
+| usage / help / `--version` / 未知命令 | — | `help::request` 在任何网络连接**之前**处理（`main.rs:32-48`，`help.rs:170-185`）；usage 串（`:1191`）；未知命令提示（`help.rs:205-210`）；`--version` 打印客户端版本（`:32-35`） | 短 | `help.rs` 原样搬到 `mcp/cli/help.rs`；`--version` 改为打印内核版本 |
+| 退出码 | — | 0 成功；1 usage；2 缺环境变量（`:1200-1207`）；3 连接失败（`:104-111`）；4 rpc/工具/协议错误（`:1209-1221`） | — | 1 和 4 由内核给出；2、3 以及转发层的 4 是转发器固定的三种传输失败（§3.3） |
+
+结论：10 个命令都只调用**一个**工具，没有哪条命令组合多个工具。不属于纯工具调用的逻辑有：默认值（ls path、keep=50）、
+`--result` 的 JSON-或-文本转换、两个 `--force` 确认门、diff 状态重命名、`cat` 的 JSON pretty 打印、四处缺字段兜底、
+`structuredContent` 缺失时的文本回退，以及一组与工具重复的校验。
+
+## 2. 内核中的 CLI 层
+
+**归属**：`calm-server` 新增 `mcp/cli/`，只依赖 `mcp_server` 已有的类型：
+
+- `mcp/cli/mod.rs`（约 90 行）：`pub(crate) async fn serve(ctx, registry, conn, params) -> Result<Value, RpcError>`，返回 `{stdout, stderr, exit}`。
+- `mcp/cli/commands.rs`（约 330 行）：命令表 `COMMANDS: &[Command { name, tool, parse: fn(&[String]) -> Result<Parsed, Usage> }]`。
+  `Parsed { tool_args: Value, json: bool, render: Render }`。只处理 argv 形状、默认值和确认门。
+- `mcp/cli/render.rs`（约 150 行）：`fn render(Render, &Value) -> Result<String, RenderError>`，逐字从 `cli/main.rs:344-615` 搬来，去掉兜底。
+- `mcp/cli/help.rs`（约 200 行）：从 `cli/help.rs` 原样搬来；root help 里的版本号改用内核的 `CARGO_PKG_VERSION`。
+
+**只有一个执行来源**：把 `mcp/transport.rs:521-528`（`resolve_tools_call_identity` → `worker_grants::require` → `handler(ctx, identity, args)`）
+提取成 `pub(crate) async fn call_registered_tool(ctx, registry, conn, name, args) -> Result<ToolResult, RpcError>`。
+`dispatch_tools_call` 和 `cli::serve` **都**调用它。`dispatch_request`（`transport.rs:337-444`）增加一个分支 `"neige/cli" => cli::serve(...)`。
+CLI 层从 `ToolResult::into_structured()`（`mcp/result.rs:77`）拿数据，不再经过 `content[0].text`，于是 `main.rs:259-270` 的回退不复存在。
+
+**授权与直接调用完全相同，权限不会变宽**：
+- 连接身份仍由同一个 `handle_initialize`（`mcp/handshake.rs:25`）和同一个每卡 token 建立。`mcp/cli/` 不接触 token 以外的任何凭据。
+- `threadId` 传 `None`：CardBound 连接走 `card_bound_tool_identity`（`transport.rs:1463`，含 session 活跃检查）；DaemonTrust 连接没有 thread，
+  照旧在 `resolve_thread_identity` 被拒，也就是今天 `cli_uses_per_card_token_only_not_daemon_token` 钉住的行为。
+- `worker_grants::require` 对每次 CLI 调用照样执行。**这一步是承重的**：隔离 worker 的原生白名单只有 4 个工具（`srv/dedicated_codex/policy.rs:42-47`），
+  `calm.track.ls/cat/state/...` 不在里面。如果 CLI 路径绕过 grants，隔离 worker 就能用 `neige cat` 读到直接调用读不到的内容。
+- 角色门保留在各处理函数内（`require_role_any`/`require_role`），CLI 层**不**另做角色判断，错误文本就是处理函数原本的 `RpcError`。
+- CLI 层能到达的工具只有命令表里这 10 个名字，不存在 argv 直通任意工具名的入口。
+
+## 3. 冻结的转发协议 v1
+
+### 3.1 请求
+1. 连接 `$NEIGE_MCP_SOCKET`，发一行 `initialize`：
+   `{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"neige-forward","version":"1"},"_meta":{"dev.neige/auth":{"token":$NEIGE_MCP_TOKEN}}}`。
+   `clientInfo.version` 就是转发协议版本，只此一处。
+2. 发一行 `{"method":"neige/cli","params":{"argv":[...]}}`，其中 argv 是 `argv[1..]` 原样（UTF-8；非 UTF-8 参数由转发器以退出码 2 拒绝）。
+
+**不传 cwd、env 或 stdin，理由如下**：每个工具都从卡片身份解析 track（`track_file.rs:126-154`）；path 是 track 视图路径，不是文件系统路径；
+`--artifact` 是不透明字符串（`calm-types/src/event.rs:47-49` 的 `ArtifactRef(String)`），不按 cwd 解析；没有任何命令读 stdin 或判断 tty。
+环境变量里只有 socket 和 token 两项，属于传输层，本身就是连接凭据。
+
+### 3.2 响应
+- 成功：`result = {"stdout": String, "stderr": String, "exit": 0..=255}`。转发器把 stdout 和 stderr **逐字节**写出，然后 `exit(exit)`。
+  `--json` 的输出由内核生成、转发器原样透传，转发器完全不知道 `--json` 的存在。
+- 命令层面的错误（usage、工具的 `RpcError`、渲染错误）都是**成功的** JSON-RPC 响应，只是 `exit` 为 1 或 4，
+  stderr 的格式与今天一致：`neige: <msg>` 或 `{"error":{message,detail}}`。
+- JSON-RPC `error` 只用于传输层：围栏拒绝（§4）、协议版本不符、非 CardBound 身份，以及旧内核回的 `-32601`。
+
+### 3.3 转发器自己的输出（冻结，只有这些）
+缺环境变量 → `neige: missing <VAR> env var; run from a neige planner terminal`，退出码 2；连接失败 → `neige: connect <sock>: <err>`，退出码 3；
+JSON-RPC error、断连或帧无法解析 → `neige: <method>: <message> (code N)`，退出码 4。这三种一律输出纯文本，因为转发器不解析 argv，也就不认识 `--json`（KNOWN GAP K2）。
+
+### 3.4 help
+`--help`、`-h`、`help [cmd]`、`--version` 和未知命令一样作为 argv 发到内核，由 `mcp/cli/help.rs` 返回，所以需要有效的 socket 和 token（K1）。
+帮助文字只在内核里有一份。
+
+### 3.5 为什么不需要再改
+协议只承载 argv 进、字节和退出码出。命令、参数、默认值、渲染、帮助、错误文字全部在内核一侧，增删或修改它们都只动内核，转发器和协议不变。
+只有需要 stdin、流式输出、tty 或 cwd 的命令才需要 v2，而目前没有这样的命令。真到那一步时，内核对未知的 `version` 以 §4 的同一条消息拒绝。
+
+## 4. 旧客户端围栏
+
+### 4.1 规则（`mcp/handshake.rs::handle_initialize`，放在取 token（`:31`）之前，不查数据库）
+- `clientInfo.name == "neige"` → `RpcError::custom(-32426, msg)`，名为 `OLD_NEIGE_CLIENT_CODE`（沿用 `-32401`/`-32403` 映射 HTTP 状态码的约定，426 = Upgrade Required）。
+- `clientInfo.name == "neige-forward"` 且 `version != "1"` → 同一个码，消息里写明不支持的版本号。
+- 其他 `clientInfo`，或没有 `clientInfo`：行为与今天完全相同。
+
+消息内容（路径取自 `srv/kernel_bin_path.rs:31` 的 `kernel_bin_dir()`，改为 `pub(crate)`，再 `.join("neige")`）：
+`this neige binary parses commands itself and is no longer served; run /home/kenji/.local/share/neige-next/bin/neige`。
+如果 `current_exe` 取不到，消息改为 `...; the kernel bin dir is unavailable: <err>`，但**照样拒绝**。
+
+旧客户端看到的是 `main.rs:135-140` + `:1209-1221` 渲染的结果：
+`neige: initialize: this neige binary ... run <abs>/neige (code -32426)`，退出码 4。带 `--json` 时输出 `{"error":{..."rpc_error":{code,message}}}`。
+
+### 4.2 不会误伤的客户端（实测）
+- 仓库里所有向内核 socket 发 initialize 的地方，只有 `cli/main.rs:122-125` 用了 `"neige"`（`rg clientInfo` 的结果：测试夹具
+  `mcp-test`、`e2e-test-client`、`terminal-test`、`codex-e2e-test` 等；`plugin_host/http_mcp.rs:306` 的 `neige-kernel` 是内核**向外**连插件时用的）。
+- `neige-mcp-stdio-shim` 不改 `clientInfo`，只注入 token（`crates/neige-mcp-stdio-shim/src/frames.rs:65-112`），所以对内核而言 clientInfo 就是上游客户端自己的。
+- codex 0.153.4（`CALM_CODEX_BIN`）二进制里的名字是 `codex-mcp-client`；Claude 2.1.280 二进制里是 `claude-code`，标题为 "Claude Code"。
+
+### 4.3 4140 盘上的副本（实测，假 socket 截获的 initialize）
+截获方法：用一个假 UDS 监听，依次运行 `<bin> state`，记录发来的第一帧（草稿脚本 `cap.py`，没有接触运行中的内核）。
+46 个二进制全部发出 `{"name":"neige","version":"0.1.0"}` 和 `protocolVersion 2024-11-05`，分布如下：
+`neige-next/bin/neige`；`release-backups/*/bin/neige`（27 个，2026-09-08 至 09-24）；`.stage-*/old-bin/neige`（11 个）；
+`neige-calm/target/debug/neige`；`wt1699-target`、`rv1781a-target`、`r1699a-target` 的 `debug/neige`；`neige-alpha*/.../bin/neige`（3 个）。
+`clientInfo.name` 自 #344（`0d384ca69`）起就没变过，因此它们都会被围栏拦下。`version` 字段没有区分力，所以不拿它来判断。
+
+## 5. 双重语义风险清单
+
+| # | 可能留下两份真相的地方 | 处置 |
+|---|---|---|
+| H1 | 客户端命令表 vs 内核命令表 | `cli/main.rs` 的 `Cli::parse`、`Command` 和 `cli/help.rs` 删除，只保留 `mcp/cli/commands.rs`。 |
+| H2 | gate guard 另有一份命令表和 `--help` 豁免（`srv/track_report_gate_guard.rs:55-87`） | 删除命令列表和 `--help` 豁免：以后**任何**直接调用 `neige` 的 gate 都会被拒，因为 help 也需要 socket（§9 F1）。`:119-129` 的正例和 `tests/cases/mcp_track_report_blocks.rs:1660-1662` 改为反例。 |
+| H3 | `added→new` 重命名：客户端 `main.rs:604-611` 与 `calm-truth` 的 `observation_label`（`types.rs:65-71`，`read.rs:253` 在用） | 在 `calm-truth` 增加 `DiffStatus::from_wire_label`，并把 `observation_label` 改为 `pub`；`render::diff` 只调用它们。未知状态算渲染错误，不透传。 |
+| H4 | 客户端与工具重复的校验：`log --limit 0`（客户端拒绝，工具 clamp 到 1）、空 `--reason`（客户端拒绝，工具接受）、空 `--to/--path`（客户端拒绝，工具当 None）、`keep>0`、空 key | 以工具为准。CLI 层只负责把字符串解析成整数，不检查范围或非空。这三处行为变化（limit 0、空 reason、空 to/path）写进 PR 描述。 |
+| H5 | CLI 参数名 vs 工具参数名（`--idempotency-key`↔`idempotency_key`、`--include-empty`↔`include_empty`、`--track-id`↔`track_id` 等） | 命令表中每个选项都声明它对应的工具参数键。测试 `every_cli_option_maps_to_a_tool_schema_property`：每个键都必须出现在 `ToolDescriptor.input_schema.properties` 里；只有 `--json`、`--force`、`--dry-run`↔`dry_run`（有对应属性）以及 help 列在显式豁免表中。 |
+| H6 | 错误文字 | 工具的错误原样透传（`neige: <tool>: <msg> (code N)`，格式同 `main.rs:1209-1221`）。CLI 层自己的文字只有 usage 和确认门这两类，它们本来就只存在于 CLI。 |
+| H7 | 工具描述（`srv/prompts/tools/calm.track.*.md` 等） | 实测这些描述都不提 `neige`，所以不需要改。`track_file.rs:36` 和 `track_history.rs:5-6` 注释里的"consumed by `neige`"改为"consumed by `mcp/cli`"。 |
+| H8 | 提示词和模板里的 `neige` 用法：`prompts/planner.md:56,60,120,140-145`、`prompts/worker/head-cli.md:5-9`、`head-mcp.md:5`、`tail.md:3`、`templates/builtin/*.md:9`、`calm-types/src/report/default.md:5`；以及钉住它们的 golden：`tests/goldens/issue_development_planner_prompt.txt`、`worker_prompt_cli.txt` | 命令面**不变**，所以这些文件和 golden 都不改。新增测试 `prompt_neige_mentions_name_served_commands`：扫描 `prompts/**`、`templates/builtin/**` 和 `calm-types/src/report/*.md` 里的 `` `neige <word>`` ``，`<word>` 必须在 `COMMANDS` 中。以后改名时这条测试会先失败。 |
+| H9 | 现有测试：`crates/neige-cli/tests/neige_cli.rs`（719 行，用假服务器钉客户端的解析和渲染）、`main.rs:1224-1570` 的单测 | 这两处测试本身就是第二份规格，全部删除。解析测试搬进 `mcp/cli/commands.rs`；渲染和 help 测试改为针对真内核运行（沿用 `tests/cases/neige_cli_task_report.rs` 的做法）。转发器只保留协议测试（§7 T6、T7）。 |
+| H10 | 转发器内置的环境变量名和退出码 2/3/4 | 这属于冻结协议的一部分（§3.3），不算命令语义。 |
+
+## 6. #1784 的 PATH 前置：保留，不改
+
+`srv/kernel_bin_path.rs`，调用处为 `shared_codex_appserver.rs:530,1831`、`claude_planner/session.rs:386`、`routes/terminal.rs:123`。
+
+理由：围栏只保证旧客户端**不会以旧语义执行**，但被拦下时代理仍要多走一轮，看提示再改用正确路径。PATH 前置让裸 `neige` 在绝大多数情况下直接命中内核旁边的新转发器。
+这部分已经写好并有测试，保留它没有成本；删掉反而要改 env 签名盐（`shared_codex_appserver.rs:1814`），导致共享 daemon 被接管重启。
+它不再承担正确性责任，所以前置失效时（例如 #1791 的 Claude shell 快照重排）也只是多一次拒绝，不会产生分叉语义。
+围栏消息与 PATH 前置用同一个 `kernel_bin_dir()`，两处给出的路径必然一致。
+
+## 7. 切片：一个 PR
+
+**改动**（按生产代码行数估算）：`mcp/cli/`（约 770 行，其中约 450 行从 `cli/` 搬入）；`transport.rs` 的 `call_registered_tool` 提取加一个分支（约 +40）；
+`handshake.rs` 围栏（约 +45）；`kernel_bin_path.rs` 改为 `pub(crate)`（+2）；`calm-truth` 的 `from_wire_label`（+10）；gate guard（约 -25）；
+`cli/main.rs` 从 1570 行改写为约 120 行，删除 `help.rs`，删除 `tests/neige_cli.rs`，换成约 150 行协议测试。
+新增的内核集成测试约 400 行，放在 `srv/tests/cases/neige_cli_*.rs`。
+
+不拆分的理由：围栏必须和新转发器一起部署，否则会拦下唯一可用的客户端；而如果先上 CLI 层、后上围栏，中间那段时间就会同时存在两种语义。
+
+**验收**：4140 原子发布之后，`neige-next/bin/neige state` 输出与发布前逐字节相同；运行任意 `release-backups/*/bin/neige state` 都得到 §4.1 的消息，退出码 4；
+Planner（codex 和 claude 两种）、终端 PTY、claude worker 的 `neige task-completed` 都能端到端跑通（Tier 2 栈在专用主机上跑，本机不跑真 codex）。
+
+**必须先红的测试**（标 M 的做单因子变异，预测失败集合只包含该测试）：
+
+| # | 测试 | 钉住的内容 | 变异 |
+|---|---|---|---|
+| T1 M | `old_fat_neige_client_is_refused_with_kernel_bin_path` | 用真内核重放 §4.3 截获的原帧，断言 `-32426`，且消息里包含 `current_exe().parent()/neige` | 删掉 name 判断 |
+| T2 | `forward_protocol_version_other_than_1_is_refused` | `neige-forward` 且 `version:"2"` → `-32426` | — |
+| T3 | `non_neige_client_infos_still_initialize` | `codex-mcp-client`、`claude-code`、无 clientInfo，以及经 shim 的 round trip 都能成功 | — |
+| T4 M | `cli_json_equals_direct_tool_call` | 对 ls、state、diff、cat-at、log：`neige --json <cmd>` 的 stdout 等于同一个 token 直接 `tools/call` 得到的 `structuredContent`；cat 的文本输出等于 `content`；文本模式等于 `render(直接结果)` | 在 `commands.rs` 里把 diff 的 `to` 映射成 `from` |
+| T5 M | `cli_authorization_equals_direct_call` | Worker 调 `vacuum --force`、Planner 调 `task-completed`、**隔离 worker 调 `cat`**：exit 4，stderr 与直接调用的 `RpcError` 文字相同 | 在 CLI 路径里跳过 `worker_grants::require` |
+| T6 | `forwarder_writes_bytes_and_exit_verbatim` | 假服务器返回 `{stdout:"a\n",stderr:"b",exit:7}`，转发器逐字节写出并以 7 退出 | — |
+| T7 | `forwarder_frames_are_frozen` | 逐字节钉住 initialize 和 `neige/cli` 两帧 | — |
+| T8 | `track_gc_without_force_is_refused_before_the_tool` | exit 1，`track_vcs` commit 数不变 | — |
+| T9 | `every_cli_option_maps_to_a_tool_schema_property` / `prompt_neige_mentions_name_served_commands` | H5、H8 | — |
+| T10 | gate guard 翻转后的正例和反例 | H2 | — |
+
+**门禁**：用 `-p calm-server neige_cli` 和 `-p neige-cli` 两组定向 nextest；`scripts/local-rust-gates.sh --quick`；`scripts/gate-prose-ratchet.sh`
+（usage 长串 `main.rs:1191` 会移动位置，如果 `long_literal` 计数变了就用 `--update-baseline` 更新）；`scripts/gate-1316-terminology-ratchet.sh`。
+工具注册 golden（`tests/goldens/mcp_tool_registry.json`）**不应变化**，因为 `neige/cli` 不是工具。
+
+## 8. 风险
+
+- R1 响应是一整行 JSON，`cat` 或 `diff` 输出很大时内存占用会升高。实际上限就是今天 `structuredContent` 已经承载的大小（内容本来就经同一条 socket 传一次），所以没有新增风险。
+- R2 4140 必须原子切换 `calm-server` 和 `neige`（issue 的部署一节，不在本仓库）。如果只换了内核，旧的 `bin/neige` 会被自己的内核拦下，
+  消息指向同一个 `bin/neige`，看起来像死循环。验收时第一条就检查这个；原子发布是前提条件。
+- R3 `current_exe` 在二进制原地被替换后会带 ` (deleted)` 后缀，但它的 parent 目录不变，给出的路径仍然正确。
+
+## 9. 与 issue 相左或补充的发现
+
+- F1 issue 写的是"`neige` 只做转发"。这意味着 `--help` 也要连内核，所以 gate guard 的 `--help` 豁免（`track_report_gate_guard.rs:70-72`）会变成错误的豁免，必须删除（H2）。
+- F2 issue 没提到 worker grants。CLI 路径如果只做角色判断，就会让隔离 worker 读到直接调用读不到的视图（§2、T5）。
+- F3 状态重命名在内核里已经有一份（`calm-truth` 的 `observation_label`），客户端那份属于第三份来源，现在一并收敛（H3）。
+- F4 只有 `clientInfo.name` 能区分新旧客户端，`version` 在所有副本中都是 `0.1.0`（§4.3），不能用来区分。
+- F5 `task-failed` 的空 reason 和 `log --limit 0` 会因为"以工具为准"而改变行为（H4）；如果 owner 希望维持今天的拒绝，应当改工具，不应把检查留在 CLI 层。
+
+## 10. KNOWN GAPS
+
+- K1 在卡片 shell 以外（没有 socket 或 token）运行 `neige --help`，只会得到缺环境变量的提示。
+- K2 传输层失败（退出码 2、3、4）即使带了 `--json` 也输出纯文本。
+- K3 新转发器连接 #1801 之前的内核时，只会得到 `neige/cli: Method not found`，不带路径提示；兼容只看 4140，这种情况靠原子发布排除。
+- K4 未来需要 stdin、流式输出或 cwd 的命令要用 v2 协议，当前没有这样的命令。
+- K5 直接用 `tools/call` 调隐藏的 `calm.admin.*` 仍然不经过 `--force` 确认门，与今天相同；本设计不改工具。
