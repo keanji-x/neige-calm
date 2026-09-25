@@ -25,7 +25,7 @@ if [ "$probe_status" -ge 2 ]; then
 fi
 
 dirty_note() {
-  [ -n "$(git --no-optional-locks status --porcelain)" ] || return 0
+  [ -n "$(git --no-optional-locks status --porcelain --untracked-files=normal)" ] || return 0
   echo "note: the working tree is not clean. Results measure tracked files in the working tree, not HEAD;"
   echo "      untracked files are not counted (run \`git add -N <file>\` on new files you intend to commit)."
 }
