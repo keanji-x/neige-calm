@@ -128,10 +128,9 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
     assert_eq!(
         v["apiVersion"].as_str().unwrap(),
-        "10",
-        "#1722 S1b: conversation rows gained the required `lastTurnCompletedAt` \
-         and this response gained `databaseId` / `nowMs`; \
-         #1712 scan-only enrollment needs the new API capability revision"
+        "11",
+        "#1810: GET /api/models gained `source: \"built_in\"` and a nullable \
+         `default_reasoning_effort`, which older clients' schemas reject"
     );
     assert_eq!(
         v["syncEventVersion"].as_u64().unwrap(),
@@ -144,12 +143,12 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         v["webCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 30);
+    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 31);
     assert_eq!(
         v["minWebCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 30);
+    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 31);
     assert_eq!(
         v["supervisorControlVersion"].as_u64().unwrap(),
         SUPERVISOR_CONTROL_VERSION as u64,
@@ -321,6 +320,21 @@ async fn web_compat_floor_excludes_bundles_without_last_turn_completed_at() {
     assert!(
         floor > LAST_FLOOR_WITHOUT_LAST_TURN_COMPLETED_AT,
         "minWebCompatVersion must exclude bundles without `lastTurnCompletedAt`, got {floor}"
+    );
+}
+
+/// The last floor whose bundles reject the Claude alias catalog (`source: "built_in"`, a `null`
+/// `default_reasoning_effort`, #1810); historical literal, do not move it with `WEB_COMPAT_VERSION`.
+#[tokio::test]
+async fn web_compat_floor_excludes_bundles_that_reject_the_claude_catalog() {
+    const LAST_FLOOR_WITHOUT_CLAUDE_CATALOG: u64 = 30;
+
+    let floor = version_body(fresh_state().await).await["minWebCompatVersion"]
+        .as_u64()
+        .expect("minWebCompatVersion is a number");
+    assert!(
+        floor > LAST_FLOOR_WITHOUT_CLAUDE_CATALOG,
+        "minWebCompatVersion must exclude bundles that reject the Claude alias catalog, got {floor}"
     );
 }
 

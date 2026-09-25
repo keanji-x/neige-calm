@@ -505,6 +505,8 @@ The CLI resolves each alias to its current model, so the list does not go stale 
 - **FE.** On the new-track page one grouped picker replaces the provider pill: a Codex group (Default and
   the live catalog, with effort) and a Claude group (Default and the aliases, no effort). The pick decides
   `planner_provider` and `model`. Inside a track the picker lists only the track's provider group.
+- **Compatibility.** An older bundle's schema rejects `source:"built_in"` and a `null`
+  `default_reasoning_effort`, so #1810 bumps `REST_API_VERSION` 10 → 11 and `WEB_COMPAT_VERSION` 30 → 31.
 
 ### 5.9 Steer (D8)
 
@@ -674,8 +676,9 @@ image message, interrupt, restart, resume, delete; `ps` shows no Planner `claude
 
 ### 9.5 Cuts (recorded, not built)
 
-Resident process per harness; approval responder; **steer** (r2); **Claude model catalog, create/PUT
-validation and provider-neutral prompt wording** (r2, formerly PR7); the r1 journal, recorded process
+Resident process per harness; approval responder; **steer** (r2); **provider-neutral prompt wording**
+(r2, formerly PR7). The Claude model catalog and create/PUT validation were cut in r2 too, and were
+later delivered by #1810 (§5.8). Also cut: the r1 journal, recorded process
 identity, process-wide registry and provider-keyed seal API (r2); Claude for PlainChat/Assistant; SDK-served
 `Recover`; streaming deltas, per-request usage, rate-limit surfacing, todo → plan; renaming the card kind;
 a provider-neutral item model.
