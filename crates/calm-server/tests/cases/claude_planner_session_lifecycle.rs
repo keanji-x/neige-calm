@@ -407,3 +407,44 @@ async fn a_failed_bind_is_retried_on_the_next_turn() {
         "the next turn retried the bind"
     );
 }
+
+/// #1791 PR4 review: a shutdown or a deletion seal that lands while the pre-spawn `--version`
+/// check runs is re-checked right before the mint, so nothing is minted and nothing spawned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_shutdown_or_seal_during_the_version_check_mints_nothing() {
+    for seal in [false, true] {
+        let rig = Rig::new("hold-version").await;
+        let session = std::sync::Arc::clone(rig.session());
+        let thread = rig.thread.clone();
+        let text = rig.text("hello");
+        let turn =
+            tokio::spawn(async move { session.turn_start(&thread, text, &client_id()).await });
+        wait_for_file(&rig.bin("version-entered")).await;
+        let shutdown = if seal {
+            rig.daemon.seal_turn_thread_for_deletion(&rig.thread);
+            None
+        } else {
+            let session = std::sync::Arc::clone(rig.session());
+            let shutdown = tokio::spawn(async move { session.shutdown().await });
+            // `shutdown` sets its flag before it waits for the issuance lock `turn_start` holds.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            Some(shutdown)
+        };
+        std::fs::write(rig.bin("release-version"), "").expect("release");
+        let error = turn.await.expect("turn task").expect_err("refused");
+        let expected = if seal { "sealed" } else { "shutting down" };
+        assert!(error.to_string().contains(expected), "seal={seal}: {error}");
+        if let Some(shutdown) = shutdown {
+            shutdown.await.expect("shutdown task").expect("shutdown");
+        }
+        assert_eq!(
+            rig.mcp_token_hash().await,
+            None,
+            "seal={seal}: nothing minted"
+        );
+        assert!(
+            rig.read_bin("spawns").is_none(),
+            "seal={seal}: nothing spawned"
+        );
+    }
+}

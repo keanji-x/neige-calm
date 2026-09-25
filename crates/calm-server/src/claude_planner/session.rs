@@ -427,8 +427,19 @@ impl ClaudePlannerSession {
             proxy: &params.proxy,
         });
         config.verify_version(&env).await?;
-        // A revocation (a deletion that then aborted, §5.1 item 4) nulls the row's hash under a live
-        // harness; its next spawn must not carry a credential that no longer authenticates.
+        // A shutdown or a deletion seal may have landed while `--version` ran; nothing is minted
+        // for a session that can no longer start a turn.
+        if shared.state().shutting_down {
+            return Err(CalmError::Conflict(
+                "claude planner session is shutting down".into(),
+            ));
+        }
+        if params.seals.turn_thread_is_sealed(thread) {
+            return Err(sealed(thread));
+        }
+        // A revocation under a live harness (e.g. one an aborted deletion's recovery could not
+        // replace, §5.1 item 4) nulls the row's hash; the next spawn must not carry a credential that
+        // no longer authenticates.
         let token = match token {
             Some(token) if self.row_hash_present().await? => token,
             _ => self.mint_mcp_token().await?,

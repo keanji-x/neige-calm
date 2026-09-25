@@ -377,9 +377,9 @@ async fn boot_after_a_crash_records_interrupted_or_re_drains_and_keeps_settled_o
     );
 }
 
-/// #1791 PR4 review: a revocation under a live harness (a deletion that aborts at its sweep and
-/// whose harness stays installed) nulls the row's hash; the harness's next spawn re-mints instead
-/// of carrying a credential that no longer authenticates.
+/// #1791 PR4 review: a revocation under a live harness (e.g. one an aborted deletion's recovery
+/// could not replace) nulls the row's hash; the harness's next spawn re-mints instead of carrying a
+/// credential that no longer authenticates.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_live_harness_whose_row_was_revoked_re_mints_before_its_next_spawn() {
     let root = Root::new("exit");

@@ -10,6 +10,11 @@ D=$(cd "$(dirname "$0")" && pwd)
 SCENARIO=$(cat "$D/scenario")
 
 if [ "$1" = "--version" ]; then
+  # `hold-version` answers only once the test creates `release-version`.
+  if [ "$SCENARIO" = "hold-version" ]; then
+    touch "$D/version-entered"
+    while [ ! -e "$D/release-version" ]; do sleep 0.05; done
+  fi
   echo "$(cat "$D/version" 2>/dev/null || echo 2.1.280) (Claude Code)"
   if [ "$SCENARIO" = "vanish-after-version" ]; then rm -f -- "$0"; fi
   exit 0

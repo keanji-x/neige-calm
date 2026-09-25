@@ -1583,14 +1583,14 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             "interrupt_thread" => {
                 // Both cleanups, whatever the card's binding says now (it may no longer be readable): a Claude stop by this
                 // operation's runtime id signals nothing when nothing carries its marker, and a Codex interrupt of a thread the
-                // daemon does not run is a no-op. Failures are logged; the compensation goes on (#1791 §4.1 row 13).
-                if let Ok(worker_session_id) =
-                    _output.output_string("runtime_id", "planner harness")
-                    && let Err(e) = crate::claude_planner::stop::stop(
-                        &self.claude_host.instance,
-                        &worker_session_id,
-                    )
-                    .await
+                // daemon does not run is a no-op. Failures are logged; the compensation goes on (#1791 §4.1 row 13). The
+                // runtime id is always in the output (`plan_compensation` already requires it), so a missing one is an error.
+                let worker_session_id = _output.output_string("runtime_id", "planner harness")?;
+                if let Err(e) = crate::claude_planner::stop::stop(
+                    &self.claude_host.instance,
+                    &worker_session_id,
+                )
+                .await
                 {
                     tracing::warn!(worker_session_id, error = %e, "planner harness compensation stop failed");
                 }

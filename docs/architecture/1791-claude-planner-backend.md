@@ -262,8 +262,9 @@ arm, run the failing phase, clear, run the next phase. It is never consulted by 
    next first-turn mint. The writer and activation list is companion S38. No production reader of
    `card_mcp_tokens` authenticates a Claude Planner (the handshake reads session rows only), so the card
    row needs no revocation.
-   *PR4 amendment:* a spawn whose row hash was nulled under a live harness (a revocation by an aborted
-   deletion that left the harness installed) re-mints through the same guarded writer before spawning;
+   *PR4 amendment:* a spawn whose row hash was nulled under a live harness (a revocation under a live
+   harness, e.g. one the aborted deletion's recovery could not replace) re-mints through the same guarded
+   writer before spawning, after re-checking `shutting_down` and the seal;
    a session that was never installed (an install-race loser) signals nothing on shutdown, since its id
    may carry the winner's live turn.
 3. **Every turn ends with `stop`** (settlement order below) and every retirement of a Claude id
