@@ -52,11 +52,12 @@ const REV_PARSE_ARGV: [&str; 4] = ["git", "rev-parse", "--verify", "HEAD^{commit
 /// D3.0 (iii), 5.1.6 verbatim: the porcelain status with untracked files enumerated whatever
 /// the checkout's `status.showUntrackedFiles` says (the `-c` and the flag are redundant with
 /// each other on purpose: either alone is enough, both are pinned). `-c core.fsmonitor=false`
-/// disables the one hook `git status` runs: a worker can write the shared `.git/config` with a
+/// disables the fsmonitor command: a worker can write the shared `.git/config` with a
 /// `core.fsmonitor` command that never returns, and `status` is the only sampling command that
-/// would honour it (`rev-parse` / `worktree list` run no hooks). The porcelain bytes are unchanged
-/// by the switch — fsmonitor is only a stat cache — so this closes the hook-holds-prepare hazard
-/// class at the root rather than merely bounding it.
+/// would honour it (`rev-parse` / `worktree list` run no repository code). The porcelain bytes are
+/// unchanged by the switch — fsmonitor is only a stat cache. `status` still runs the clean filter
+/// of a stat-dirty file and the `post-index-change` hook when it refreshes the index; those stay
+/// under [`SAMPLE_TIMEOUT`] and its process-group kill.
 const STATUS_ARGV: [&str; 11] = [
     "git",
     "-c",
@@ -73,8 +74,9 @@ const STATUS_ARGV: [&str; 11] = [
 
 /// One deadline for the three commands of one D3.0 sample. The prepare-time sample runs inside
 /// the driver's `BEGIN IMMEDIATE` (D3), so it must not hold the kernel's only write slot for longer
-/// than other writers tolerate. `STATUS_ARGV` already disables `core.fsmonitor`, the one hook a
-/// worker could weaponise; what remains under this bound is real I/O stall only. U4 measured the
+/// than other writers tolerate. `STATUS_ARGV` already disables `core.fsmonitor`; what remains
+/// under this bound is real I/O stall and any clean filter or `post-index-change` hook the
+/// repository configures. U4 measured the
 /// sample at p99 101 ms and 264 ms cold, G23 at ≤ 212 ms after heavy I/O; 4 s is ~15× the worst
 /// observed and, crucially, stays UNDER the single 5 s `busy_timeout` of the pool's auto-commit
 /// writers (lease releases, `today` upserts), so a sample that stalls the full bound never makes

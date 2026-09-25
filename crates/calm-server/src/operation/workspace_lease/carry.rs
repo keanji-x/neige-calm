@@ -22,15 +22,13 @@ use crate::error::{CalmError, Result};
 use crate::operation::Tx;
 use crate::plugin_host::child_process::{BoundedRunError, run_bounded};
 use crate::task_replace::receipt::{CarryPlan, carry_plan_tx};
-use crate::workspace_materialize::neige_git_command;
+use crate::workspace_materialize::isolated_git_command;
 
 /// Total bound on both git runs of one carry.
 pub(crate) const CARRY_TIMEOUT: Duration = Duration::from_secs(4);
 const CARRY_OUTPUT_CAP: usize = 1024 * 1024;
 const CARRY_AUTHOR_NAME: &str = "neige kernel";
 const CARRY_AUTHOR_EMAIL: &str = "kernel@neige.invalid";
-/// The only variables of the server's environment a carry git run inherits.
-const CARRY_INHERITED_ENV: [&str; 3] = ["PATH", "HOME", "XDG_CONFIG_HOME"];
 
 /// What the worker prompt says about a carried worktree.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -190,27 +188,18 @@ async fn carry_commit(repo_root: &Path, upstream: &str, plan: &CarryPlan) -> Res
     )))
 }
 
-/// One git run under the carry deadline, through the gate's bounded runner. The environment is an
-/// allowlist, not the server's: `merge-tree` runs any merge driver the attached repository
-/// configures, and such repository-selected code must not see the kernel's own variables. Kept:
-/// `PATH` (git and the driver resolve binaries), `HOME` and `XDG_CONFIG_HOME` when set (git reads
-/// the user's global config there, e.g. `safe.directory`), the C locale, and the caller's commit
-/// identity.
+/// One git run under the carry deadline, through the gate's bounded runner. The environment is
+/// [`isolated_git_command`]'s allowlist plus the caller's commit identity: `merge-tree` runs any
+/// merge driver the attached repository configures, and such repository-selected code must not see
+/// the kernel's own variables.
 async fn run_git(
     repo_root: &Path,
     args: &[&str],
     env: &[(&str, &str)],
     deadline: tokio::time::Instant,
 ) -> Result<std::process::Output> {
-    let mut command = neige_git_command();
-    command.env_clear();
-    for key in CARRY_INHERITED_ENV {
-        if let Some(value) = std::env::var_os(key) {
-            command.env(key, value);
-        }
-    }
+    let mut command = isolated_git_command();
     command
-        .envs([("LANG", "C"), ("LC_ALL", "C")])
         .envs(env.iter().copied())
         .arg("-C")
         .arg(repo_root)

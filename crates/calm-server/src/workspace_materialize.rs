@@ -51,12 +51,37 @@ const HOSTILE_GIT_ENV: &[&str] = &[
     "GIT_CONFIG_COUNT",
 ];
 
-/// A `git` command with the hostile ambient variables removed; every git spawn on this path must use it.
+/// A `git` command with the hostile ambient variables removed; every git spawn on this path that is
+/// not an [`isolated_git_command`] must use it.
 pub(crate) fn neige_git_command() -> Command {
     let mut command = Command::new("git");
     for key in HOSTILE_GIT_ENV {
         command.env_remove(key);
     }
+    command
+}
+
+/// A `git` command whose environment is an allowlist, not the server's, for every git run that
+/// executes repository-selected code (hooks, smudge/clean/process filters, merge drivers,
+/// fsmonitor). Kept: the base allowlist ([`inherited_env`]: `PATH`, `HOME`), `XDG_CONFIG_HOME`
+/// when set (git reads the user's global config there too, e.g. `safe.directory`), and the C
+/// locale. Callers add what a run needs, such as a commit identity; the upstream fetch adds its
+/// network variables.
+///
+/// No network credential or proxy variable is inherited, so a filter that needs the network (a
+/// Git LFS smudge, a credentialed process filter) cannot fetch during lease provisioning's
+/// checkout. Supported scope: the attached repositories in use have no LFS or network filters, and
+/// `worktree add` does not recurse into submodules.
+///
+/// [`inherited_env`]: crate::plugin_host::child_process::inherited_env
+pub(crate) fn isolated_git_command() -> Command {
+    let mut command = Command::new("git");
+    command
+        .env_clear()
+        .envs(crate::plugin_host::child_process::inherited_env(&[
+            "XDG_CONFIG_HOME",
+        ]))
+        .envs([("LANG", "C"), ("LC_ALL", "C")]);
     command
 }
 
@@ -296,9 +321,10 @@ fn materialize_managed_workspace_inner(
     }
 
     if init_commit == InitCommit::Create && !git_head_resolves(path) {
+        // Isolated: `commit` reads the index, so it runs the repository's configured fsmonitor.
         run_git(
             path,
-            neige_git_command().arg("-C").arg(path).args([
+            isolated_git_command().arg("-C").arg(path).args([
                 "-c",
                 "commit.gpgsign=false",
                 "-c",

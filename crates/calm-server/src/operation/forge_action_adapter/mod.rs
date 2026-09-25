@@ -50,7 +50,8 @@ const RELEASE_TIMEOUT: Duration = Duration::from_secs(60);
 const REATTACH_POLL: Duration = Duration::from_secs(2);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 static NEXT_FORGE_ARTIFACT_TMP: AtomicU64 = AtomicU64::new(1);
-const FORGE_BASE_ENV_KEYS: &[&str] = &["PATH", "HOME", "LANG", "LC_ALL", "TERM"];
+/// What a forge child inherits on top of the base allowlist (`PATH`, `HOME`).
+const FORGE_EXTRA_ENV_KEYS: [&str; 3] = ["LANG", "LC_ALL", "TERM"];
 /// The passthrough keys that ARE the operator's forge identity. Also the denylist for `cli_query.env_allow`; only genuine credentials
 /// belong here, because a key added to this list retroactively invalidates already-installed manifests on boot re-parse.
 pub const FORGE_CREDENTIAL_ENV_KEYS: &[&str] = &[
@@ -349,12 +350,10 @@ where
 /// every kernel-side git observation runs under — the forge action and its probes below, and the
 /// task-verify target sampler (#1727 S4 D3.0), which must resolve `git` from the same `PATH`.
 pub(crate) fn forge_base_env(cmd: &mut tokio::process::Command) {
-    cmd.env_clear();
-    for key in FORGE_BASE_ENV_KEYS {
-        if let Some(v) = std::env::var_os(key) {
-            cmd.env(key, v);
-        }
-    }
+    cmd.env_clear()
+        .envs(crate::plugin_host::child_process::inherited_env(
+            &FORGE_EXTRA_ENV_KEYS,
+        ));
 }
 
 /// env_clear + a tight allowlist, applied identically to the action and to recovery probes: both run plugin-supplied argv and neither may inherit daemon secrets.

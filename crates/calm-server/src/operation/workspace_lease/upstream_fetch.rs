@@ -16,8 +16,10 @@
 //!   object store, nothing else.
 //! - It never prompts: `GIT_TERMINAL_PROMPT=0`, and `GIT_ASKPASS` /
 //!   `SSH_ASKPASS` are `/bin/false` (with `SSH_ASKPASS_REQUIRE=force`), which
-//!   outrank a configured `core.askPass`. Credential helpers and ssh-agent keys
-//!   still work: they do not prompt.
+//!   outrank a configured `core.askPass`. Credential helpers found through the
+//!   global git config still work: they do not prompt. The environment is an
+//!   allowlist ([`FETCH_NETWORK_ENV`]), so an ssh-agent socket is not
+//!   inherited.
 //! - It is bounded ([`UPSTREAM_FETCH_TIMEOUT`], the fetch's whole process
 //!   group killed past it), and a repository whose fetch just failed is not
 //!   fetched again for [`FETCH_BACKOFF`]: an offline remote costs one timeout
@@ -68,7 +70,7 @@ use crate::plugin_host::child_process::{
     ChildFinishError, SpawnTimedOut, finish_within, read_capped, set_process_group_leader,
     spawn_within,
 };
-use crate::workspace_materialize::neige_git_command;
+use crate::workspace_materialize::isolated_git_command;
 
 /// The hard bound on one upstream fetch, spawn to reap.
 pub(crate) const UPSTREAM_FETCH_TIMEOUT: Duration = Duration::from_secs(20);
@@ -80,13 +82,34 @@ pub(crate) const FETCH_BACKOFF: Duration = Duration::from_secs(60);
 /// Stderr kept for the warning a failed fetch logs; the rest is drained unread.
 const FETCH_OUTPUT_CAP: usize = 64 * 1024;
 
-/// The environment every upstream fetch runs with, on top of
-/// `neige_git_command()`'s hostile-variable strip: nothing may prompt.
+/// The environment every upstream fetch runs with, on top of its allowlist
+/// ([`FETCH_NETWORK_ENV`]): nothing may prompt.
 pub(crate) const FETCH_ENV: [(&str, &str); 4] = [
     ("GIT_TERMINAL_PROMPT", "0"),
     ("GIT_ASKPASS", "/bin/false"),
     ("SSH_ASKPASS", "/bin/false"),
     ("SSH_ASKPASS_REQUIRE", "force"),
+];
+
+/// What the fetch inherits on top of [`isolated_git_command`]'s allowlist: the proxy variables
+/// libcurl reads when git has no `http.proxy` (upper-case `HTTP_PROXY` is left out because libcurl
+/// ignores it). Credentials come from the helper git's global config names, which `HOME` /
+/// `XDG_CONFIG_HOME` already locate (4140: HTTPS remotes, `gh auth git-credential`). Not
+/// inherited, so none reaches the hook the kernel-ref write runs: `SSH_AUTH_SOCK` (an agent
+/// socket is a live credential; no attached repository uses an SSH remote), `GIT_SSH_COMMAND`,
+/// token variables. Also deliberately dropped: the TLS trust variables (`SSL_CERT_FILE`,
+/// `SSL_CERT_DIR`, `GIT_SSL_CAINFO`, `CURL_CA_BUNDLE`), `GH_CONFIG_DIR`, the keyring / D-Bus
+/// session, and everything SSH. A fetch that needs one fails soft (a `warn!`, the backoff, and the
+/// lease falls back to the last known upstream). 4140 was verified not to need them: both remotes
+/// are https, `gh` keeps its token in `hosts.yml`, and `http.proxy` is set in the global gitconfig.
+pub(crate) const FETCH_NETWORK_ENV: [&str; 7] = [
+    "http_proxy",
+    "https_proxy",
+    "HTTPS_PROXY",
+    "all_proxy",
+    "ALL_PROXY",
+    "no_proxy",
+    "NO_PROXY",
 ];
 
 /// What one [`refresh_upstream`] did. Informational: every arm leaves the
@@ -455,8 +478,13 @@ fn clear_symbolic_destination(
         kernel_ref,
         "kernel upstream ref is symbolic; deleting the link before fetching"
     );
-    let deleted = git_output(repo_root, &["update-ref", "--no-deref", "-d", kernel_ref])
-        .map_err(|error| error.to_string())?;
+    // Isolated: a ref deletion runs the repository's `reference-transaction` hook.
+    let deleted = isolated_git_command()
+        .arg("-C")
+        .arg(repo_root)
+        .args(["update-ref", "--no-deref", "-d", kernel_ref])
+        .output()
+        .map_err(|error| format!("spawn git update-ref -d {kernel_ref}: {error}"))?;
     if deleted.status.success() {
         Ok(())
     } else {
@@ -498,11 +526,13 @@ async fn fetch_into(
 ) -> std::result::Result<(), String> {
     let deadline = tokio::time::Instant::now() + bound;
     let timed_out = || format!("git fetch {} timed out after {bound:?}", upstream.remote);
-    // The kernel environment is inherited (hostile git variables stripped), not
-    // an allowlist: credential helpers and ssh-agent need HOME / SSH_AUTH_SOCK
-    // etc., as every `neige_git_command` caller relies on.
-    let mut std_command = neige_git_command();
+    // An allowlist, not the kernel's environment: the kernel-ref write runs the
+    // repository's `reference-transaction` hook.
+    let mut std_command = isolated_git_command();
     std_command
+        .envs(crate::plugin_host::child_process::inherited_env(
+            &FETCH_NETWORK_ENV,
+        ))
         .arg("-C")
         .arg(repo_root)
         .args(fetch_args(upstream, kernel_ref))

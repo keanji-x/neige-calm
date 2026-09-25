@@ -24,7 +24,6 @@ use serde_json::Map;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 
 const TOOL_DISPATCH_REQUEST: &str = "calm.dispatch_request";
@@ -285,7 +284,7 @@ fn is_isolated_git_worktree(path: &Path) -> bool {
     let Ok(path_top) = path.canonicalize() else {
         return false;
     };
-    let output = Command::new("git")
+    let output = crate::workspace_materialize::isolated_git_command()
         .arg("-C")
         .arg(path)
         .args(["rev-parse", "--show-toplevel"])
@@ -443,6 +442,7 @@ mod tests {
     use crate::terminal_renderer::TerminalRendererRegistry;
     use crate::track_area_cache::TrackAreaCache;
     use std::fs;
+    use std::process::Command;
     use tempfile::TempDir;
     use tokio::sync::OnceCell;
 
