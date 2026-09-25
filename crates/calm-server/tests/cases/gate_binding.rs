@@ -1056,7 +1056,11 @@ async fn gate_catches_untracked_under_suppressing_config() {
     fx.wait_settled(&task.id).await;
     let gate = gate_result(&wait_gate_result(&fx, &task.id).await);
     assert!(!gate.passed, "{gate:?}");
-    assert_eq!(gate.status_detail.as_deref(), Some("gate-target-mismatch"));
+    assert_eq!(
+        gate.status_detail.as_deref(),
+        Some("gate-target-mismatch"),
+        "{gate:?}"
+    );
     let (_, _, _, evidence) = gate.candidate();
     let VerifyTargetEvidence::Verified { after, reasons, .. } = evidence else {
         panic!("{evidence:?}");
@@ -1083,7 +1087,11 @@ async fn gate_catches_untracked_under_suppressing_config() {
     fx.complete(&worker, &task.id).await;
     fx.wait_settled(&task.id).await;
     let gate = gate_result(&wait_gate_result(&fx, &task.id).await);
-    assert_eq!(gate.status_detail.as_deref(), Some("gate-target-mismatch"));
+    assert_eq!(
+        gate.status_detail.as_deref(),
+        Some("gate-target-mismatch"),
+        "{gate:?}"
+    );
     let (_, _, _, evidence) = gate.candidate();
     let VerifyTargetEvidence::Verified { after, .. } = evidence else {
         panic!("{evidence:?}");

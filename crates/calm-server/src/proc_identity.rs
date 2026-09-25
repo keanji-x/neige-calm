@@ -43,6 +43,14 @@ pub fn parse_proc_stat_fields(content: &str) -> Option<ProcStatFields> {
     })
 }
 
+/// Did a `/proc/<pid>/…` read fail only because the process is gone? A process reaped after the
+/// `/proc` listing fails the path lookup with `ENOENT`, but one reaped between the open and the
+/// read of its file (or while its directory is held) fails with `ESRCH`. Either way it is not a
+/// live process, so a scan skips it rather than failing.
+pub fn proc_entry_vanished(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::NotFound || error.raw_os_error() == Some(libc::ESRCH)
+}
+
 /// Non-Linux stub: `/proc` identity verification is Linux-only.
 #[cfg(not(target_os = "linux"))]
 pub fn read_proc_start_time(_pid: i32) -> Option<u64> {

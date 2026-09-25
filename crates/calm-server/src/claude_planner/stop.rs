@@ -18,7 +18,7 @@ use tokio::time::Instant;
 use sha2::{Digest, Sha256};
 
 use crate::error::{CalmError, Result};
-use crate::proc_identity::{parse_proc_stat_fields, read_proc_start_time};
+use crate::proc_identity::{parse_proc_stat_fields, proc_entry_vanished, read_proc_start_time};
 
 /// The environ key every Claude Planner process carries.
 pub const MARKER_KEY: &str = "NEIGE_CLAUDE_PLANNER";
@@ -219,7 +219,7 @@ pub(crate) fn scan_in(proc_root: &Path, markers: &HashSet<String>) -> Result<Vec
         let dir = entry.path();
         let fields = match std::fs::read_to_string(dir.join("stat")) {
             Ok(stat) => parse_proc_stat_fields(&stat).ok_or_else(|| "unparseable".to_string()),
-            Err(error) if vanished(&error) => continue,
+            Err(error) if proc_entry_vanished(&error) => continue,
             Err(error) => Err(error.to_string()),
         };
         match fields {
@@ -237,10 +237,6 @@ pub(crate) fn scan_in(proc_root: &Path, markers: &HashSet<String>) -> Result<Vec
         }
     }
     Ok(members)
-}
-
-fn vanished(error: &std::io::Error) -> bool {
-    error.kind() == std::io::ErrorKind::NotFound || error.raw_os_error() == Some(libc::ESRCH)
 }
 
 /// Readable environ with an exact `NEIGE_CLAUDE_PLANNER=<marker>` entry for one of `markers`. An
