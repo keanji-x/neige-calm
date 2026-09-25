@@ -1,9 +1,0 @@
-@layer features {
-  /* The same quiet setting as the model trigger beside it: a pill, small, secondary text. */
-  .trigger {
-    border-radius: var(--radius-pill);
-    font-size: var(--text-xs);
-    color: var(--text-3);
-    min-inline-size: 0;
-  }
-}

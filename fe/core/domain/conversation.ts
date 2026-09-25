@@ -301,18 +301,20 @@ const catalogModelSchema = z.object({
   /* Which entry codex's own picker highlights, NOT what this installation follows (that is `default` below). */
   is_default: z.boolean(),
   supported_reasoning_efforts: z.array(reasoningEffortOptionSchema),
-  default_reasoning_effort: z.string(),
+  /* `null` exactly for a provider with no effort choice (a Claude alias, #1810). */
+  default_reasoning_effort: z.string().nullable(),
 });
 
 /**
  * `GET /api/models`. `source` and `default_source` are separate answers: otherwise an empty live
- * catalog would read like one the server could not produce.
+ * catalog would read like one the server could not produce. `built_in` is the Claude Planner's fixed
+ * alias list; a Claude catalog is `unavailable` only on a server without the Claude Planner.
  */
 export const modelCatalogSchema = z.object({
   models: z.array(catalogModelSchema),
   default: z.object({ model: z.string().nullable(), reasoning_effort: z.string().nullable() }),
   default_source: z.enum(['config_read', 'config_toml', 'unknown']),
-  source: z.enum(['live', 'unavailable']),
+  source: z.enum(['live', 'built_in', 'unavailable']),
   fetched_at_ms: z.number().nullable(),
 });
 
@@ -320,7 +322,7 @@ export type ModelCatalog = z.infer<typeof modelCatalogSchema>;
 
 /**
  * Whose catalog: an existing card's, or one for a conversation about to be created on `provider`.
- * A Claude Planner (either way) has none: the server answers `source: 'unavailable'`.
+ * A Claude Planner's (either way) is the server's alias list (#1810).
  */
 export type ModelCatalogScope =
   | Readonly<{ kind: 'card'; cardId: string }>

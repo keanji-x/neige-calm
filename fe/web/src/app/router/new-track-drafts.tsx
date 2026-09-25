@@ -14,9 +14,9 @@ export type TrackCreationRequest =
 export type NewTrackSession = Readonly<{
   area: Area;
   form: NewTrackFormState | null;
-  /** The Planner's backend; `codex` until the reader picks another. */
+  /** The Planner's backend; `codex` until the reader picks a model from another provider's group. */
   provider: AgentProvider;
-  /** Always the default while `provider` is `claude`: switching provider clears it. */
+  /** A selection from `provider`'s catalog; set together with `provider` by one pick. */
   model: ModelSelection;
   key: string;
   creating: boolean;

@@ -1302,7 +1302,7 @@ function useConversationPanel(
             )}
             <ChatComposer disabled={creating} onSend={sendDraft} onNewConversation={startAnother}
               draft={{ text: composerDraft, onChange: setComposerDraft }}
-              footerActions={<ModelPill provider="codex" catalog={draftCatalog.data ?? null} selection={draft.model}
+              footerActions={<ModelPill groups={[{ provider: 'codex', catalog: draftCatalog.data ?? null }]} provider="codex" selection={draft.model}
                 onChange={model => withDraft(draft, current => current.creating || current.sentText !== null
                   ? current : { ...current, model })}
                 isDisabled={creating || draft.sentText !== null || !supportsDraftModel} />} />
@@ -1436,9 +1436,9 @@ function useConversationPanel(
                     disabled={store.sendBlocked || !store.historyReady}
                   />
                   <ModelPill
-                    /* Without a scope the catalog read is disabled, so no `unavailable` label can show. */
+                    /* Only the track's own provider: it is fixed for the conversation's life. Without a scope the catalog read is disabled, so no `unavailable` label can show. */
+                    groups={[{ provider: scope === null ? 'codex' : scope.provider, catalog: store.modelCatalog }]}
                     provider={scope === null ? 'codex' : scope.provider}
-                    catalog={store.modelCatalog}
                     selection={store.model}
                     onChange={store.setModel}
                     isDisabled={!store.historyReady}

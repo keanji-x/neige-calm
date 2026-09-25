@@ -1,5 +1,6 @@
-// The model picker in a planner conversation's composer footer. Presentational:
-// every value is a prop; the queries and the write live in `app/router`.
+// The model picker in a planner conversation's composer footer, and on the new-track page. Presentational:
+// every value is a prop; the queries and the write live in `app/router`. Each provider's catalog is one
+// group; on the new-track page the pick also decides the Planner's provider (#1810).
 
 import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
 import { Divider } from '@astryxdesign/core/Divider';
@@ -7,7 +8,7 @@ import { HStack } from '@astryxdesign/core/HStack';
 import { Icon as AstryxIcon } from '@astryxdesign/core/Icon';
 import { Text } from '@astryxdesign/core/Text';
 import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
-import { useRef, type KeyboardEvent } from 'react';
+import { Fragment, useRef, type KeyboardEvent } from 'react';
 
 import type { AgentProvider } from '../../../../../core/api/generated/wire.ts';
 import type { ModelCatalog, ModelSelection } from '../../../../../core/domain/conversation.ts';
@@ -19,22 +20,55 @@ const FOLLOW_DEFAULT_LABEL = 'Default';
 /** A standing note rather than a per-switch warning: the catalog carries no context window, so whether a switch compacts is unknowable here. */
 const SWITCH_NOTE = 'Switching to a model with a smaller context window can make codex compact the history first.';
 
-/** Why a `source: 'unavailable'` catalog is empty: Codex's daemon could not be asked; a Claude Planner has no catalog at all (#1791 §5.8). */
-const UNAVAILABLE_LABEL: Readonly<Record<AgentProvider, string>> = Object.freeze({
-  codex: 'codex is not running',
-  claude: 'No model list is available',
+/**
+ * Total over `AgentProvider`, so a new backend is a compile error here rather than a missing group.
+ * `unavailable` says why that provider's `source: 'unavailable'` catalog is empty. A Claude catalog is
+ * unavailable only on a server without the Claude Planner, so its group is left out of a menu that offers
+ * other providers (`hiddenUnlessAvailable`); a Codex one means the daemon is down and stays, saying so.
+ * A Claude Planner has no reasoning-effort choice (`effort: false`), and only codex compacts (`switchNote`).
+ */
+const PROVIDERS: Readonly<Record<AgentProvider, Readonly<{
+  label: string; unavailable: string; hiddenUnlessAvailable: boolean; effort: boolean; switchNote: boolean;
+}>>> = Object.freeze({
+  codex: Object.freeze({
+    label: 'Codex', unavailable: 'codex is not running', hiddenUnlessAvailable: false, effort: true, switchNote: true,
+  }),
+  claude: Object.freeze({
+    label: 'Claude', unavailable: 'This server does not run Claude Planners', hiddenUnlessAvailable: true,
+    effort: false, switchNote: false,
+  }),
 });
 
+/** One provider's section of the menu: its catalog, `null` while it loads. */
+export type ModelGroup = Readonly<{ provider: AgentProvider; catalog: ModelCatalog | null }>;
+
+type CatalogEntry = ModelCatalog['models'][number];
+
+/** The groups a menu shows. A lone group always shows: it is the conversation's own provider. */
+function visibleModelGroups(groups: readonly ModelGroup[]): readonly ModelGroup[] {
+  if (groups.length === 1) return groups;
+  return groups.filter((group) => !PROVIDERS[group.provider].hiddenUnlessAvailable
+    || (group.catalog !== null && group.catalog.source !== 'unavailable'));
+}
+
+/** The name of the default a catalog says is followed, or `null` when it cannot say. */
+function defaultNameOf(catalog: ModelCatalog | null): string | null {
+  return catalog?.default_source === 'config_read' || catalog?.default_source === 'config_toml'
+    ? catalog.default.model
+    : null;
+}
+
 export function ModelPill({
-  provider, catalog, selection, onChange, isDisabled = false, placement = 'above', triggerId, effortControl = 'separate',
+  groups, provider, selection, onChange, isDisabled = false, placement = 'above', triggerId, effortControl = 'separate',
 }: Readonly<{
-  /** Whose catalog this is; names why an unavailable one is empty. */
+  /** What can be chosen, one group per provider, in menu order. A conversation passes only its own provider's. */
+  groups: readonly ModelGroup[];
+  /** The provider `selection` belongs to. */
   provider: AgentProvider;
-  /** What can be chosen, and what the installation follows. `null` while it loads. */
-  catalog: ModelCatalog | null;
   /** What this conversation has chosen. `null` in both fields is "follow the default". */
   selection: ModelSelection;
-  onChange: (next: ModelSelection) => void;
+  /** A pick in another group also hands back that group's provider. */
+  onChange: (next: ModelSelection, provider: AgentProvider) => void;
   isDisabled?: boolean;
   placement?: 'above' | 'below';
   triggerId?: string;
@@ -44,11 +78,13 @@ export function ModelPill({
   const [open, setOpen] = useState(false);
   const hostRef = useRef<HTMLSpanElement | null>(null);
 
+  const shown = visibleModelGroups(groups);
+  const grouped = shown.length > 1;
+  const catalog = groups.find((group) => group.provider === provider)?.catalog ?? null;
   const models = catalog?.models ?? [];
-  const unreachable = catalog !== null && catalog.source === 'unavailable';
-  const defaultName = catalog?.default_source === 'config_read' || catalog?.default_source === 'config_toml'
-    ? catalog.default.model
-    : null;
+  const unreachable = shown.length > 0
+    && shown.every((group) => group.catalog !== null && group.catalog.source === 'unavailable');
+  const defaultName = defaultNameOf(catalog);
   /* Following the installation default is still running a model, so the effort control belongs here too: these are the efforts of whatever the default resolves to now. */
   const followed = catalog?.default.model == null
     ? undefined
@@ -57,16 +93,22 @@ export function ModelPill({
     ? followed
     : models.find((model) => model.model === selection.model);
   /* The trigger names the model, not the route to it; `Default` alone only when nothing truer can be said, and an unlisted slug still names what runs. */
-  const label = selection.model === null
+  const named = selection.model === null
     ? (defaultName ?? FOLLOW_DEFAULT_LABEL)
     : (chosen?.display_name ?? selection.model);
+  /* With more than one provider on offer, the pick is a provider too, and the trigger says whose. */
+  const label = grouped ? `${PROVIDERS[provider].label} ${named}` : named;
   /* The accessible name keeps what the visible one dropped. A person reading
      the pill has the menu one press away; a person hearing it does not. */
   const spokenLabel = selection.model === null && defaultName !== null
     ? `Model: ${label} (this installation's default)`
     : `Model: ${label}`;
 
-  const efforts = chosen?.supported_reasoning_efforts ?? [];
+  const efforts = PROVIDERS[provider].effort ? chosen?.supported_reasoning_efforts ?? [] : [];
+  const effortDefault = selection.model === null
+    ? catalog?.default.reasoning_effort ?? null
+    : chosen?.default_reasoning_effort ?? null;
+  const switchNote = shown.some((group) => PROVIDERS[group.provider].switchNote);
   const closeOnEscape = (event: KeyboardEvent<HTMLSpanElement>) => {
     if (event.key !== 'Escape' || !open) return;
     // A host Dialog's document listener would otherwise take Escape first and the trigger would not get its focus back.
@@ -99,40 +141,39 @@ export function ModelPill({
             className: styles.trigger,
           }}
         >
-          <Choice
-            label={defaultName === null ? FOLLOW_DEFAULT_LABEL : `${FOLLOW_DEFAULT_LABEL} (${defaultName})`}
-            isSelected={selection.model === null}
-            onSelect={() => onChange({ model: null, reasoning_effort: null })}
-          />
-          {models.map((model) => (
-            <Choice
-              key={model.id}
-              label={model.display_name}
-              isSelected={selection.model === model.model}
-              /* Switching model drops the effort: one chosen for the previous model may not exist on this one. */
-              onSelect={() => onChange({ model: model.model, reasoning_effort: null })}
-            />
-          ))}
-          {models.length === 0 && (
-            <DropdownMenuItem
-              label={unreachable ? UNAVAILABLE_LABEL[provider] : 'No models available on this account'}
-              isDisabled
-            />
-          )}
+          {shown.map((group, index) => {
+            const choices = (
+              <GroupChoices group={group} selection={group.provider === provider ? selection : null}
+                onChange={(next) => onChange(next, group.provider)} />
+            );
+            return grouped ? (
+              <Fragment key={group.provider}>
+                {index > 0 && <Divider />}
+                <div role="group" aria-label={PROVIDERS[group.provider].label}>
+                  <div className={styles.groupHeading} aria-hidden="true">{PROVIDERS[group.provider].label}</div>
+                  {choices}
+                </div>
+              </Fragment>
+            ) : <Fragment key={group.provider}>{choices}</Fragment>;
+          })}
           {effortControl === 'in-menu' && efforts.length > 1 && (
             <>
               <Divider />
               <div role="group" aria-label="Reasoning effort">
                 <div className={styles.groupHeading} aria-hidden="true">Reasoning effort</div>
-                <EffortChoices defaultName={selection.model === null ? catalog?.default.reasoning_effort ?? null : chosen?.default_reasoning_effort ?? null} efforts={efforts} value={selection.reasoning_effort}
-                  onChange={(effort) => onChange({ model: selection.model, reasoning_effort: effort })} />
+                <EffortChoices defaultName={effortDefault} efforts={efforts} value={selection.reasoning_effort}
+                  onChange={(effort) => onChange({ model: selection.model, reasoning_effort: effort }, provider)} />
               </div>
             </>
           )}
-          <Divider />
-          <div className={styles.note} role="note">
-            <Text type="supporting">{SWITCH_NOTE}</Text>
-          </div>
+          {switchNote && (
+            <>
+              <Divider />
+              <div className={styles.note} role="note">
+                <Text type="supporting">{SWITCH_NOTE}</Text>
+              </div>
+            </>
+          )}
         </DropdownMenu>
       </span>
       {effortControl === 'separate' && efforts.length > 1 && (
@@ -140,22 +181,53 @@ export function ModelPill({
           efforts={efforts}
           value={selection.reasoning_effort}
           /* While a model is chosen the entry's own `default_reasoning_effort` applies; while the default is followed, the catalog's. */
-          defaultName={selection.model === null
-            ? catalog?.default.reasoning_effort ?? null
-            : chosen?.default_reasoning_effort ?? null}
+          defaultName={effortDefault}
           isDisabled={isDisabled}
           placement={placement}
-          onChange={(effort) => onChange({ model: selection.model, reasoning_effort: effort })}
+          onChange={(effort) => onChange({ model: selection.model, reasoning_effort: effort }, provider)}
         />
       )}
     </HStack>
   );
 }
 
+/** One group's rows: Default, then the catalog. `selection` is `null` when the pick lies in another group. */
+function GroupChoices({ group, selection, onChange }: Readonly<{
+  group: ModelGroup;
+  selection: ModelSelection | null;
+  onChange: (next: ModelSelection) => void;
+}>) {
+  const models: readonly CatalogEntry[] = group.catalog?.models ?? [];
+  const defaultName = defaultNameOf(group.catalog);
+  const unreachable = group.catalog !== null && group.catalog.source === 'unavailable';
+  return <>
+    <Choice
+      label={defaultName === null ? FOLLOW_DEFAULT_LABEL : `${FOLLOW_DEFAULT_LABEL} (${defaultName})`}
+      isSelected={selection !== null && selection.model === null}
+      onSelect={() => onChange({ model: null, reasoning_effort: null })}
+    />
+    {models.map((model) => (
+      <Choice
+        key={model.id}
+        label={model.display_name}
+        isSelected={selection !== null && selection.model === model.model}
+        /* Switching model drops the effort: one chosen for the previous model may not exist on this one. */
+        onSelect={() => onChange({ model: model.model, reasoning_effort: null })}
+      />
+    ))}
+    {models.length === 0 && (
+      <DropdownMenuItem
+        label={unreachable ? PROVIDERS[group.provider].unavailable : 'No models available on this account'}
+        isDisabled
+      />
+    )}
+  </>;
+}
+
 function EffortPill({
   efforts, value, defaultName, onChange, placement, isDisabled,
 }: Readonly<{
-  efforts: ModelCatalog['models'][number]['supported_reasoning_efforts'];
+  efforts: CatalogEntry['supported_reasoning_efforts'];
   value: string | null;
   /** What "Default" resolves to, or `null` when nothing has said. */
   defaultName: string | null;
@@ -201,7 +273,7 @@ function EffortPill({
 
 function EffortChoices({ efforts, value, defaultName, onChange }: Readonly<{
   defaultName: string | null;
-  efforts: ModelCatalog['models'][number]['supported_reasoning_efforts'];
+  efforts: CatalogEntry['supported_reasoning_efforts'];
   value: string | null;
   onChange: (value: string | null) => void;
 }>) {

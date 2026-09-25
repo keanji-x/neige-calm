@@ -1,5 +1,5 @@
-// The Planner provider choice on the real new-track route, in a real engine: what a switch
-// resets, what the create carries, and that the row still fits a phone (#1791 PR5).
+// The grouped model picker on the real new-track route, in a real engine: a Claude pick sets the
+// Planner's provider and model, drops a Codex effort, and the row still fits a phone (#1810).
 import '../../styles/entry.css';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
@@ -23,25 +23,28 @@ const LIVE_CATALOG = {
     ] }],
   default: { model: null, reasoning_effort: null }, default_source: 'unknown', source: 'live', fetched_at_ms: 1,
 };
-/* What `routes/models.rs` answers for `?provider=claude`. */
+/* What `routes/models.rs` answers for `?provider=claude` on a server with and without Claude Planners. */
 const CLAUDE_CATALOG = {
-  models: [], default: { model: null, reasoning_effort: null }, default_source: 'unknown',
-  source: 'unavailable', fetched_at_ms: null,
+  models: [['opus', 'Opus'], ['sonnet', 'Sonnet'], ['haiku', 'Haiku']].map(([alias, name]) => ({
+    id: alias, model: alias, display_name: name, description: '', is_default: false,
+    supported_reasoning_efforts: [], default_reasoning_effort: null,
+  })),
+  default: { model: null, reasoning_effort: null }, default_source: 'unknown', source: 'built_in', fetched_at_ms: null,
 };
-const REFUSAL = 'bad request: track create: `planner_provider` `claude` is unavailable: '
-  + 'calm-server was started without --claude-planner-config';
+const NO_CLAUDE = { ...CLAUDE_CATALOG, models: [], source: 'unavailable' };
 
-function mount() {
+function mount(claude: unknown) {
   const creates: ApiRequest[] = [];
   const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
   const transport: ApiTransportPort = { send(request) {
     if (request.method === 'POST' && request.path === '/api/tracks') {
       creates.push(request);
-      return Promise.resolve({ status: 400, statusText: 'Bad Request', body: { error: REFUSAL, code: 'bad_request' } });
+      /* Held: the page stays put, so the request is all there is to read. */
+      return new Promise<ApiTransportResponse>(() => undefined);
     }
     if (request.path === '/api/areas') return Promise.resolve(ok([AREA]));
     if (request.path === '/api/models?provider=codex') return Promise.resolve(ok(LIVE_CATALOG));
-    if (request.path === '/api/models?provider=claude') return Promise.resolve(ok(CLAUDE_CATALOG));
+    if (request.path === '/api/models?provider=claude') return Promise.resolve(ok(claude));
     if (request.path === '/api/settings') return Promise.resolve(ok({}));
     return Promise.resolve(ok([]));
   } };
@@ -53,46 +56,49 @@ function mount() {
   return { creates };
 }
 
-it.each([1280, 390])('switching to Claude clears the retained model and effort, and the create carries claude (%ipx)', async (width) => {
+/** Open the model menu by keyboard: astryx swallows a trigger click that lands right after its menu hid. */
+async function openModelMenu(name: string) {
+  (await page.getByRole('button', { name }).findElement()).focus();
+  await userEvent.keyboard('{ArrowDown}');
+}
+
+it.each([1280, 390])('a Claude pick sets provider and model and drops the Codex effort (%ipx)', async (width) => {
   await page.viewport(width, 844);
-  const { creates } = mount();
-  const model = page.getByRole('button', { name: /^Model: / });
-  await model.click();
-  await page.getByRole('menuitem', { name: 'GPT-5' }).click();
+  const { creates } = mount(CLAUDE_CATALOG);
+  await openModelMenu('Model: Codex Default');
+  await page.getByRole('group', { name: 'Codex' }).getByRole('menuitem', { name: 'GPT-5' }).click();
   if (width < 600) {
     /* Phone: effort lives inside the model menu. */
-    (await page.getByRole('button', { name: 'Model: GPT-5' }).findElement()).focus();
-    await userEvent.keyboard('{ArrowDown}');
+    await openModelMenu('Model: Codex GPT-5');
   } else {
     await page.getByRole('button', { name: 'Reasoning effort: low (the default)' }).click();
   }
   await page.getByRole('menuitem', { name: /high/ }).click();
 
-  await page.getByRole('button', { name: 'Planner: Codex' }).click();
-  await page.getByRole('menuitem', { name: /^Claude/ }).click();
-  await expect.element(page.getByRole('button', { name: 'Planner: Claude' })).toBeVisible();
-  await expect.element(page.getByRole('button', { name: 'Model: Default' })).toBeDisabled();
+  await openModelMenu('Model: Codex GPT-5');
+  await page.getByRole('group', { name: 'Claude' }).getByRole('menuitem', { name: 'Sonnet' }).click();
+  await expect.element(page.getByRole('button', { name: 'Model: Claude Sonnet' })).toBeVisible();
   await expect.element(page.getByRole('button', { name: /^Reasoning effort:/ })).not.toBeInTheDocument();
 
-  /* Provider, model and Create share one row, with no horizontal scroll. */
-  const provider = (await page.getByRole('button', { name: 'Planner: Claude' }).findElement()).getBoundingClientRect();
+  /* The picker and Create share one row, with no horizontal scroll. */
+  const model = (await page.getByRole('button', { name: 'Model: Claude Sonnet' }).findElement()).getBoundingClientRect();
   const send = (await page.getByRole('button', { name: 'Create track' }).findElement()).getBoundingClientRect();
-  expect(Math.abs(provider.top + provider.height / 2 - send.top - send.height / 2)).toBeLessThan(2);
-  expect(provider.right).toBeLessThanOrEqual(send.left);
+  expect(Math.abs(model.top + model.height / 2 - send.top - send.height / 2)).toBeLessThan(2);
+  expect(model.right).toBeLessThanOrEqual(send.left);
   expect(send.right).toBeLessThanOrEqual(width);
   expect(document.documentElement.scrollWidth).toBe(width);
 
   await page.getByRole('textbox', { name: 'What this track should do' }).fill('Plan with Claude');
   await page.getByRole('button', { name: 'Create track' }).click();
-  await expect.element(page.getByRole('alert')).toHaveTextContent('--claude-planner-config');
-  expect(creates).toHaveLength(1);
-  expect(creates[0]?.body).toMatchObject({ planner_provider: 'claude', first_message: 'Plan with Claude' });
-  expect(creates[0]?.body).not.toHaveProperty('model');
+  await expect.poll(() => creates.length).toBe(1);
+  expect(creates[0]?.body).toMatchObject({ planner_provider: 'claude', model: 'sonnet', first_message: 'Plan with Claude' });
   expect(creates[0]?.body).not.toHaveProperty('reasoning_effort');
+});
 
-  /* Back on Codex the picker is live again, at the installation default rather than the old choice. */
-  (await page.getByRole('button', { name: 'Planner: Claude' }).findElement()).focus();
-  await userEvent.keyboard('{ArrowDown}');
-  await page.getByRole('menuitem', { name: /^Codex/ }).click();
-  await expect.element(page.getByRole('button', { name: 'Model: Default' })).toBeEnabled();
+it('offers only Codex on a server without Claude Planners', async () => {
+  mount(NO_CLAUDE);
+  await openModelMenu('Model: Default');
+  await expect.element(page.getByRole('menuitem', { name: 'GPT-5' })).toBeVisible();
+  await expect.element(page.getByRole('group', { name: 'Claude' })).not.toBeInTheDocument();
+  await expect.element(page.getByRole('menuitem', { name: 'Sonnet' })).not.toBeInTheDocument();
 });
