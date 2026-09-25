@@ -1019,7 +1019,7 @@ async fn read_text_file_capped(
 }
 
 async fn git_root(dir: &Path) -> Result<PathBuf> {
-    let out = Command::new("git")
+    let out = Command::from(crate::workspace_materialize::isolated_git_command())
         .arg("-C")
         .arg(dir)
         .args(["rev-parse", "--show-toplevel"])
@@ -1034,6 +1034,10 @@ async fn git_root(dir: &Path) -> Result<PathBuf> {
 }
 
 /// Isolated: `status` runs the repository's fsmonitor, clean filters and `post-index-change` hook.
+/// Every git run of this route shares [`isolated_git_command`]'s environment, so `rev-parse`,
+/// `status` and `cat-file` always resolve the same repository.
+///
+/// [`isolated_git_command`]: crate::workspace_materialize::isolated_git_command
 async fn git_output(root: &Path, args: &[&str]) -> Result<std::process::Output> {
     let out = Command::from(crate::workspace_materialize::isolated_git_command())
         .arg("-C")
@@ -1054,7 +1058,7 @@ async fn git_output(root: &Path, args: &[&str]) -> Result<std::process::Output> 
 }
 
 async fn git_show_head(root: &Path, rel: &str) -> Result<(Option<String>, bool)> {
-    let size_out = Command::new("git")
+    let size_out = Command::from(crate::workspace_materialize::isolated_git_command())
         .arg("-C")
         .arg(root)
         .args(["cat-file", "-s", &format!("HEAD:{rel}")])
@@ -1070,7 +1074,7 @@ async fn git_show_head(root: &Path, rel: &str) -> Result<(Option<String>, bool)>
         .map_err(|e| CalmError::Internal(format!("git cat-file -s HEAD:{rel}: {e}")))?;
     let truncated = size > MAX_READFILE_BYTES;
 
-    let mut child = Command::new("git")
+    let mut child = Command::from(crate::workspace_materialize::isolated_git_command())
         .arg("-C")
         .arg(root)
         .args(["cat-file", "blob", &format!("HEAD:{rel}")])

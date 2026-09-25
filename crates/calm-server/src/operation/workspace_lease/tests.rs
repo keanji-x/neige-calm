@@ -197,8 +197,7 @@ fn workspace_worktree_remove_deletes_branch_and_is_idempotent() {
 /// with the allowlisted environment. nextest gives this test its own process.
 #[test]
 fn workspace_worktree_remove_hook_sees_only_the_allowlisted_environment() {
-    // SAFETY: one test, one process under nextest; no other thread reads the environment.
-    unsafe { std::env::set_var("NEIGE_LEASE_ENV_SENTINEL", "server-secret") };
+    let _sentinel = EnvVar::set(ENV_SENTINEL, "server-secret");
     let tmp = tempfile::tempdir().unwrap();
     let repo = tmp.path().join("repo");
     init_git_repo(&repo);
@@ -208,18 +207,66 @@ fn workspace_worktree_remove_hook_sees_only_the_allowlisted_environment() {
         branch: workspace_slice_branch_for("track-hook", "card-hook").unwrap(),
     };
     provision_workspace_worktree(&target, &pinned(&head_base(&target))).unwrap();
-    let probe = tmp.path().join("hook-env.txt");
-    let hook = repo.join(".git/hooks/reference-transaction");
-    std::fs::write(&hook, format!("#!/bin/sh\nenv >> '{}'\n", probe.display())).unwrap();
-    let mut permissions = std::fs::metadata(&hook).unwrap().permissions();
-    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
-    std::fs::set_permissions(&hook, permissions).unwrap();
+    let probes = install_ref_hook_env_probe(&repo, tmp.path());
 
     remove_workspace_worktree(&target).unwrap();
 
-    let seen = std::fs::read_to_string(&probe).expect("the reference-transaction hook ran");
+    assert_env_allowlisted(&probes.join("delete.env"));
+}
+
+/// The parent variable the hook-environment tests plant; it must never reach repository code.
+pub(super) const ENV_SENTINEL: &str = "NEIGE_LEASE_ENV_SENTINEL";
+
+/// Sets a variable of this test process and restores the previous value on drop. `cargo nextest`
+/// (what CI and the local gate run) gives each test its own process; the restore keeps a
+/// shared-process runner honest.
+pub(super) struct EnvVar(&'static str, Option<std::ffi::OsString>);
+
+impl EnvVar {
+    pub(super) fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+        let previous = std::env::var_os(key);
+        // SAFETY: one test, one process under nextest; no other thread of the test reads the
+        // environment while it is written.
+        unsafe { std::env::set_var(key, value) };
+        Self(key, previous)
+    }
+}
+
+impl Drop for EnvVar {
+    fn drop(&mut self) {
+        // SAFETY: see `set`.
+        unsafe {
+            match self.1.take() {
+                Some(previous) => std::env::set_var(self.0, previous),
+                None => std::env::remove_var(self.0),
+            }
+        }
+    }
+}
+
+/// A `reference-transaction` hook in `repo` that appends its environment to `<dir>/delete.env`
+/// for each ref deletion and `<dir>/update.env` for each other ref update; returns `dir`.
+pub(super) fn install_ref_hook_env_probe(repo: &Path, dir: &Path) -> std::path::PathBuf {
+    let hook = repo.join(".git/hooks/reference-transaction");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    let zero = "0".repeat(40);
+    let body = format!(
+        "#!/bin/sh\nwhile read -r old new ref; do\n  kind=update\n  [ \"$new\" = {zero} ] && kind=delete\n  env >> '{}'/\"$kind.env\"\ndone\n",
+        dir.display()
+    );
+    std::fs::write(&hook, body).unwrap();
+    let mut permissions = std::fs::metadata(&hook).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+    std::fs::set_permissions(&hook, permissions).unwrap();
+    dir.to_path_buf()
+}
+
+/// The probe at `path` was written, and by a process that saw `PATH` but not [`ENV_SENTINEL`].
+pub(super) fn assert_env_allowlisted(path: &Path) {
+    let seen = std::fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("the hook wrote {}: {error}", path.display()));
     assert!(seen.contains("PATH="), "{seen}");
-    assert!(!seen.contains("NEIGE_LEASE_ENV_SENTINEL"), "leaked: {seen}");
+    assert!(!seen.contains(ENV_SENTINEL), "leaked: {seen}");
 }
 
 #[test]
@@ -1261,28 +1308,6 @@ fn symlinked_parent_second_provision_keeps_existing_worktree() {
 /// previous value on drop for a shared-process runner.
 #[test]
 fn hostile_git_env_does_not_leak_into_lease_git() {
-    struct EnvVar(&'static str, Option<std::ffi::OsString>);
-    impl EnvVar {
-        fn set(key: &'static str, value: &Path) -> Self {
-            let previous = std::env::var_os(key);
-            // SAFETY: one test, one process under nextest (see the test
-            // docstring); no other thread of this test reads the environment.
-            unsafe { std::env::set_var(key, value) };
-            Self(key, previous)
-        }
-    }
-    impl Drop for EnvVar {
-        fn drop(&mut self) {
-            // SAFETY: see `set`.
-            unsafe {
-                match self.1.take() {
-                    Some(previous) => std::env::set_var(self.0, previous),
-                    None => std::env::remove_var(self.0),
-                }
-            }
-        }
-    }
-
     let tmp = tempfile::tempdir().unwrap();
     let repo = tmp.path().join("repo");
     init_git_repo(&repo);
@@ -1319,7 +1344,7 @@ fn hostile_git_env_does_not_leak_into_lease_git() {
     assert_ne!(foreign_head, c0);
 
     {
-        let _git_dir = EnvVar::set("GIT_DIR", &repo.join(".git"));
+        let _git_dir = EnvVar::set("GIT_DIR", repo.join(".git"));
         let err = provision_workspace_worktree(&target, &pinned(&base))
             .expect_err("the worktree at C1 is refused against base C0");
         let message = err.to_string();
@@ -1335,7 +1360,7 @@ fn hostile_git_env_does_not_leak_into_lease_git() {
         );
     }
     {
-        let _git_dir = EnvVar::set("GIT_DIR", &foreign.join(".git"));
+        let _git_dir = EnvVar::set("GIT_DIR", foreign.join(".git"));
         let resolved = base::resolve_lease_base(&target).unwrap();
         assert_eq!(
             resolved.base_sha, c0,

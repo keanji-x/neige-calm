@@ -6,6 +6,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use super::tests::{ENV_SENTINEL, EnvVar, assert_env_allowlisted, install_ref_hook_env_probe};
 use super::upstream::*;
 use super::upstream_fetch::*;
 use super::upstream_tests::{
@@ -93,6 +94,48 @@ async fn symbolic_kernel_ref_never_moves_the_branch_it_points_at() {
         .unwrap()
         .success();
     assert!(!still_symbolic);
+}
+
+/// #1792: the fetch's kernel-ref write runs the repository's `reference-transaction` hook, so the
+/// fetch runs with its explicit allowlist, never the kernel's environment.
+#[tokio::test]
+async fn fetch_hook_sees_only_the_allowlisted_environment() {
+    let _sentinel = EnvVar::set(ENV_SENTINEL, "server-secret");
+    let attached = attached_repo();
+    let origin = attach_origin(attached.path());
+    origin.commit("upstream moved");
+    let probes = tempfile::tempdir().unwrap();
+    install_ref_hook_env_probe(attached.path(), probes.path());
+
+    assert!(matches!(
+        refresh_upstream(attached.path()).await,
+        UpstreamRefresh::Fetched { .. }
+    ));
+
+    assert_env_allowlisted(&probes.path().join("update.env"));
+}
+
+/// #1792: deleting a symbolic kernel ref runs the `reference-transaction` hook too.
+#[tokio::test]
+async fn symbolic_kernel_ref_delete_hook_sees_only_the_allowlisted_environment() {
+    let _sentinel = EnvVar::set(ENV_SENTINEL, "server-secret");
+    let attached = attached_repo();
+    let origin = attach_origin(attached.path());
+    git(attached.path(), &["branch", "victim"]);
+    git(
+        attached.path(),
+        &["symbolic-ref", &kernel_ref(&origin), "refs/heads/victim"],
+    );
+    origin.commit("upstream moved");
+    let probes = tempfile::tempdir().unwrap();
+    install_ref_hook_env_probe(attached.path(), probes.path());
+
+    assert!(matches!(
+        refresh_upstream(attached.path()).await,
+        UpstreamRefresh::Fetched { .. }
+    ));
+
+    assert_env_allowlisted(&probes.path().join("delete.env"));
 }
 
 /// A remote whose name has a `/` and a merge ref outside `refs/heads/` are
@@ -519,6 +562,18 @@ fn fetch_args_and_env_are_pinned() {
             ("GIT_ASKPASS", "/bin/false"),
             ("SSH_ASKPASS", "/bin/false"),
             ("SSH_ASKPASS_REQUIRE", "force"),
+        ]
+    );
+    assert_eq!(
+        FETCH_NETWORK_ENV,
+        [
+            "http_proxy",
+            "https_proxy",
+            "HTTPS_PROXY",
+            "all_proxy",
+            "ALL_PROXY",
+            "no_proxy",
+            "NO_PROXY",
         ]
     );
 }

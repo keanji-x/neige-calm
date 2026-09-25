@@ -61,23 +61,27 @@ pub(crate) fn neige_git_command() -> Command {
     command
 }
 
-/// The only variables of the server's environment an [`isolated_git_command`] run inherits.
-const ISOLATED_GIT_INHERITED_ENV: [&str; 3] = ["PATH", "HOME", "XDG_CONFIG_HOME"];
-
 /// A `git` command whose environment is an allowlist, not the server's, for every git run that
 /// executes repository-selected code (hooks, smudge/clean/process filters, merge drivers,
-/// fsmonitor) and needs no credentials. Kept: `PATH` (git and that code resolve binaries), `HOME`
-/// and `XDG_CONFIG_HOME` when set (git reads the user's global config there, e.g.
-/// `safe.directory`), and the C locale. Callers add what a run needs, such as a commit identity.
+/// fsmonitor). Kept: the base allowlist ([`inherited_env`]: `PATH`, `HOME`), `XDG_CONFIG_HOME`
+/// when set (git reads the user's global config there too, e.g. `safe.directory`), and the C
+/// locale. Callers add what a run needs, such as a commit identity; the upstream fetch adds its
+/// network variables.
+///
+/// No network credential or proxy variable is inherited, so a filter that needs the network (a
+/// Git LFS smudge, a credentialed process filter) cannot fetch during lease provisioning's
+/// checkout. Supported scope: the attached repositories in use have no LFS or network filters, and
+/// `worktree add` does not recurse into submodules.
+///
+/// [`inherited_env`]: crate::plugin_host::child_process::inherited_env
 pub(crate) fn isolated_git_command() -> Command {
     let mut command = Command::new("git");
-    command.env_clear();
-    for key in ISOLATED_GIT_INHERITED_ENV {
-        if let Some(value) = std::env::var_os(key) {
-            command.env(key, value);
-        }
-    }
-    command.envs([("LANG", "C"), ("LC_ALL", "C")]);
+    command
+        .env_clear()
+        .envs(crate::plugin_host::child_process::inherited_env(&[
+            "XDG_CONFIG_HOME",
+        ]))
+        .envs([("LANG", "C"), ("LC_ALL", "C")]);
     command
 }
 

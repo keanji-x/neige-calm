@@ -3,8 +3,10 @@
 use tokio::io::{AsyncRead, AsyncReadExt as _};
 
 mod bounded;
+mod env;
 mod timed;
 pub(crate) use bounded::{BoundedRunError, run_bounded};
+pub(crate) use env::inherited_env;
 pub(crate) use timed::{ChildFinishError, finish_within};
 #[cfg(test)]
 pub(crate) use timed::{TEST_DRAIN_STARTED, TEST_REAP_STARTED, TestPhaseObserver};
