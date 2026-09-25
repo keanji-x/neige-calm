@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useSyncExternalStore, type ReactNode } from 'react';
 import { FOLLOW_INSTALLATION_DEFAULT, type ModelSelection } from '../../../../core/domain/conversation.ts';
+import type { AgentProvider } from '../../../../core/api/generated/wire.ts';
 import type { Area } from '../../../../core/domain/area.ts';
 import type { NewTrackBodyWithFirstMessage, NewTrackBodyWithoutFirstMessage } from '../../../../core/domain/track.ts';
 import type { NewTrackFormState } from '../../features/area/new-track/public.tsx';
@@ -13,6 +14,9 @@ export type TrackCreationRequest =
 export type NewTrackSession = Readonly<{
   area: Area;
   form: NewTrackFormState | null;
+  /** The Planner's backend; `codex` until the reader picks another. */
+  provider: AgentProvider;
+  /** Always the default while `provider` is `claude`: switching provider clears it. */
   model: ModelSelection;
   key: string;
   creating: boolean;
@@ -34,7 +38,7 @@ function createDraftStore() {
     get: (areaId: string) => drafts.get(areaId) ?? null,
     ensure: (area: Area) => {
       if (drafts.has(area.id)) return;
-      drafts.set(area.id, { area, form: null, model: FOLLOW_INSTALLATION_DEFAULT, key: mintIdempotencyKey(), creating: false,
+      drafts.set(area.id, { area, form: null, provider: 'codex', model: FOLLOW_INSTALLATION_DEFAULT, key: mintIdempotencyKey(), creating: false,
         request: null, createdTrackId: null, error: null, canRetryAsNewTrack: false, folderConflict: null });
       notify();
     },

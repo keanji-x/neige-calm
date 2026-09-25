@@ -3,9 +3,11 @@ import { useCallback, useEffect, useRef } from 'react';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { folderConflictMessage } from '../../../../core/domain/area.ts';
+import { FOLLOW_INSTALLATION_DEFAULT } from '../../../../core/domain/conversation.ts';
 import { isBlankForKernel, trackCreateKeyAction, type NewTrackBodyWithoutFirstMessage } from '../../../../core/domain/track.ts';
 import { ModelPill } from '../../features/chat/thread/model-pill.tsx';
 import { NewTrackForm, type NewTrackDraft, type NewTrackFormState } from '../../features/area/new-track/public.tsx';
+import { PlannerProviderPill } from '../../features/area/new-track/planner-provider-pill.tsx';
 import { useCompactViewport } from '../../ui/viewport/public.ts';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
 import { createDirectoryLister } from '../providers/directory.ts';
@@ -40,7 +42,8 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
 }) {
   const compactViewport = useCompactViewport();
   const areaId = session.area.id;
-  const modelCatalog = useQuery(modelCatalogQueryOptions(transport, null, unauthorized));
+  /* Per provider: a Claude Planner has no catalog, and the server says so (`source: 'unavailable'`), which disables the picker. */
+  const modelCatalog = useQuery(modelCatalogQueryOptions(transport, { kind: 'provider', provider: session.provider }, unauthorized));
   const trackMutations = useTrackMutations(transport, unauthorized);
   const templates = useTrackTemplates(transport, unauthorized);
   const recipes = useTrackRecipes(transport, unauthorized);
@@ -69,7 +72,7 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
     const attemptKey = replacementKey ?? current.key;
     const body = {
       area_id: areaId,
-      planner_provider: 'codex',
+      planner_provider: current.provider,
       theme: readHostThemeRgb(),
       ...(current.model.model === null ? {} : { model: current.model.model }),
       ...(current.model.reasoning_effort === null ? {} : { reasoning_effort: current.model.reasoning_effort }),
@@ -141,14 +144,24 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
     ? `Areas could not be refreshed. Your draft is kept here. ${workspace.areasError.message}`
     : !available ? 'Area unavailable. Your draft is kept here; select and copy it to use elsewhere.' : null;
   const createdTrackId = session.createdTrackId;
+  const configurationLocked = session.creating || session.request !== null || !available || createdTrackId !== null;
   return <NewTrackForm
-    modelControls={<ModelPill
-      effortControl={compactViewport ? 'in-menu' : 'separate'}
-      catalog={modelCatalog.data ?? null}
-      selection={session.model}
-      onChange={(model) => { store.update(areaId, { model }); }}
-      isDisabled={session.creating || session.request !== null || !available || createdTrackId !== null}
-    />}
+    modelControls={<>
+      <PlannerProviderPill
+        value={session.provider}
+        /* A model or effort is one provider's catalog entry, and a Claude create refuses any: a switch drops it. */
+        onChange={(provider) => { store.update(areaId, { provider, model: FOLLOW_INSTALLATION_DEFAULT }); }}
+        isDisabled={configurationLocked}
+        variant={compactViewport ? 'secondary' : 'ghost'}
+      />
+      <ModelPill
+        effortControl={compactViewport ? 'in-menu' : 'separate'}
+        catalog={modelCatalog.data ?? null}
+        selection={session.model}
+        onChange={(model) => { store.update(areaId, { model }); }}
+        isDisabled={configurationLocked}
+      />
+    </>}
     initialDraft={session.form ?? undefined}
     onDraftChange={saveForm}
     submitBlocked={!available || createdTrackId !== null}

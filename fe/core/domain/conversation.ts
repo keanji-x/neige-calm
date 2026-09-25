@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import type {
-  HarnessInputPresentation, HarnessInputSegment, HarnessItem, HarnessPhaseTag,
+  AgentProvider, HarnessInputPresentation, HarnessInputSegment, HarnessItem, HarnessPhaseTag,
   PlannerAttachment, TrackConversationSummary, UploadAttachmentResponse,
 } from '../api/generated/wire.js';
 import type { ApiFailure, ApiOperation } from '../api/types.js';
@@ -318,11 +318,21 @@ export const modelCatalogSchema = z.object({
 
 export type ModelCatalog = z.infer<typeof modelCatalogSchema>;
 
+/**
+ * Whose catalog: an existing card's, or one for a conversation about to be created on `provider`.
+ * A Claude Planner (either way) has none: the server answers `source: 'unavailable'`.
+ */
+export type ModelCatalogScope =
+  | Readonly<{ kind: 'card'; cardId: string }>
+  | Readonly<{ kind: 'provider'; provider: AgentProvider }>;
+
 /** Config layers are per-directory, so without `card_id` the server answers `default_source: 'unknown'`. */
-export function modelCatalogOperation(cardId: string | null): ApiOperation<ModelCatalog> {
+export function modelCatalogOperation(scope: ModelCatalogScope): ApiOperation<ModelCatalog> {
   return {
     method: 'GET',
-    path: cardId === null ? '/api/models' : `/api/models?card_id=${encodeURIComponent(cardId)}`,
+    path: scope.kind === 'card'
+      ? `/api/models?card_id=${encodeURIComponent(scope.cardId)}`
+      : `/api/models?provider=${scope.provider}`,
     responseSchema: modelCatalogSchema,
   };
 }

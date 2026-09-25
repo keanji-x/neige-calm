@@ -284,7 +284,7 @@ export function useConversationStore(
   /* The catalog rides alongside the run query: the trigger has to render the chosen
        model's name, and `planner-run` gives only its slug. */
   const modelCatalog = useQuery({
-    ...modelCatalogQueryOptions(transport, cardId, unauthorized), enabled: scope !== null,
+    ...modelCatalogQueryOptions(transport, { kind: 'card', cardId }, unauthorized), enabled: scope !== null,
   });
   const phase = run.data?.phase ?? null;
   const stalled = phase === 'wedged';
@@ -882,7 +882,8 @@ function useConversationPanel(
   const [resendConfirmation, setResendConfirmation] = useState<string | null>(null);
   const [composerDraft, setComposerDraft] = useState('');
   const openRowId = openTarget?.kind === 'row' ? openTarget.id : null;
-  const draftCatalog = useQuery({ ...modelCatalogQueryOptions(transport, null, unauthorized),
+  /* A track conversation runs on Codex; Claude is a Planner-only backend (#1791). */
+  const draftCatalog = useQuery({ ...modelCatalogQueryOptions(transport, { kind: 'provider', provider: 'codex' }, unauthorized),
     enabled: openTarget?.kind === 'draft' });
   const draftCapabilities = useQuery({ queryKey: ['server-version'],
     queryFn: () => runOperation(transport, serverVersionOperation(), unauthorized),

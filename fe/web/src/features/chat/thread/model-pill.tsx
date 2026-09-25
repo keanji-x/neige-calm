@@ -106,7 +106,8 @@ export function ModelPill({
           ))}
           {models.length === 0 && (
             <DropdownMenuItem
-              label={unreachable ? 'codex is not running' : 'No models available on this account'}
+              /* Provider-neutral: a Claude Planner answers `unavailable` too, with no daemon to be down (#1791). */
+              label={unreachable ? 'No model list is available' : 'No models available on this account'}
               isDisabled
             />
           )}

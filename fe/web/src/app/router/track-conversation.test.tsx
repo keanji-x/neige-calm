@@ -1761,7 +1761,7 @@ it.each([false, true])('selects a model before the first conversation message an
   const { requests } = setup(request => {
     if (request.path === '/api/version') return ok({ webCompatVersion: 28, minWebCompatVersion: 28,
       syncEventVersion: 20, dbInstanceId: 'test', conversationCreateModel: true });
-    if (request.path === '/api/models') return ok({
+    if (request.path === '/api/models?provider=codex') return ok({
       models: [{ id: 'preset-fast', model: 'gpt-5', display_name: 'GPT-5', description: '', is_default: false,
         supported_reasoning_efforts: [{ reasoning_effort: 'low', description: 'Faster' }, { reasoning_effort: 'high', description: 'Thinks longer' }], default_reasoning_effort: 'high' }],
       default: { model: 'gpt-5', reasoning_effort: 'high' }, default_source: 'config_read', source: 'live', fetched_at_ms: 1,
@@ -1837,7 +1837,7 @@ it('keeps the first-message model fixed when a menu opened before sending is sel
   const { requests } = setup(request => {
     if (request.path === '/api/version') return ok({ webCompatVersion: 28, minWebCompatVersion: 28,
       syncEventVersion: 20, dbInstanceId: 'test', conversationCreateModel: true });
-    if (request.path === '/api/models') return ok({
+    if (request.path === '/api/models?provider=codex') return ok({
       models: [{ id: 'preset', model: 'chosen-model', display_name: 'Chosen model', description: '', is_default: false,
         supported_reasoning_efforts: [], default_reasoning_effort: 'low' }],
       default: { model: 'default-model', reasoning_effort: null }, default_source: 'config_read', source: 'live', fetched_at_ms: 1,
