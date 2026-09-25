@@ -29,6 +29,8 @@
 - { path: fe/tools/test-tier, type: directory, owner: tooling/test-tier, readonly: false, basis: "test-tier policy enforcement infrastructure (#997)" }
 - { path: fe/tools/vitest, type: directory, owner: tooling/test-tier, readonly: false, basis: "test-run setup; supplies §0.5's build-time constants Vitest cannot get from vite.config.ts (#997)" }
 - { path: fe/web/index.html, type: file, owner: app/bootstrap, readonly: false, basis: "architecture §5 repository tree; web bootstrap shell" }
+- { path: fe/web/public, type: directory, owner: app/bootstrap, readonly: false, basis: "#1802 public PWA manifest and installation icons" }
+- { path: fe/tools/pwa, type: directory, owner: tooling/pwa, readonly: false, basis: "#1802 reproducible brand icons and production PWA browser verification" }
 - { path: fe/core/AGENTS.md, type: file, owner: architecture, readonly: false, basis: "architecture §2/§14" }
 - { path: fe/web/src/main.tsx, type: file, owner: app/bootstrap, readonly: false, basis: "architecture disease 9" }
 - { path: fe/web/src/app/AGENTS.md, type: file, owner: architecture, readonly: false, basis: "architecture §2/§14" }

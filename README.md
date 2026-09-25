@@ -83,6 +83,11 @@ PROD_AUTH_PASSWORD=choose-a-local-password make prod
 
 Open <http://localhost:4040/next/> and sign in as `owner` with the password you chose. This mode listens on loopback by default, stores state under `~/.local/share/neige-calm`, and links two helper binaries into `~/.local/bin`.
 
+In Chrome, use the address-bar install icon to install **Neige Calm** and launch
+it in a separate app window. Installation requires HTTPS or localhost; the app
+still needs its server connection. See [Chrome installation](fe/README.md#install-in-chrome)
+for menu instructions and troubleshooting.
+
 The first message in the New Track composer is submitted with the create request; you do not need to send it again. For Alpha packaging and installation from a release archive, follow the [Linux Alpha runbook](docs/alpha-release.md).
 
 `make prod` is a foreground host-local run mode. For a supervised installation and upgrade procedure, see the [Deploy & Upgrade Guide](docs/deploy-and-upgrade.md).

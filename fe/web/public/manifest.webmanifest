@@ -1,0 +1,25 @@
+{
+  "id": "/next/",
+  "name": "Neige Calm",
+  "short_name": "Neige Calm",
+  "description": "Your workspace for agent-assisted work.",
+  "start_url": "/next/",
+  "scope": "/next/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#3c528d",
+  "icons": [
+    {
+      "src": "icons/neige-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/neige-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
