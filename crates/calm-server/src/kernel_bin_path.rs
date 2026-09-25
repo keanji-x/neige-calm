@@ -27,8 +27,8 @@ impl KernelLedPath {
     }
 }
 
-/// Parent directory of the running calm-server executable.
-fn kernel_bin_dir() -> io::Result<PathBuf> {
+/// Parent directory of the running calm-server executable; the old-client fence names `neige` here too.
+pub(crate) fn kernel_bin_dir() -> io::Result<PathBuf> {
     let exe = std::env::current_exe()?;
     exe.parent().map(Path::to_path_buf).ok_or_else(|| {
         io::Error::other(format!(

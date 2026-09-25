@@ -1,5 +1,6 @@
-//! Read the literal arguments of the first simple shell command without executing it.
-//! Expansions, substitutions, heredocs and compound syntax must never become grounds for rejecting a gate.
+//! Read the literal executable word of the first simple shell command without executing it.
+//! Only that word is read: later words may expand freely. An executable that is itself an expansion,
+//! substitution, heredoc or compound syntax is never grounds for rejecting a gate.
 
 fn finish_word(
     words: &mut Vec<String>,
@@ -19,15 +20,18 @@ fn finish_word(
     *started = false;
 }
 
-pub(super) fn first_literal_command(command: &str) -> Option<Vec<String>> {
+pub(super) fn first_literal_word(command: &str) -> Option<String> {
     let mut chars = command.chars().peekable();
-    let mut words = Vec::new();
+    let mut words: Vec<String> = Vec::new();
     let mut word = String::new();
     let mut started = false;
     let mut plain = true;
     let mut quote = None;
     let mut redirect = false;
     while let Some(ch) = chars.next() {
+        if let Some(first) = words.first() {
+            return Some(first.clone());
+        }
         if quote == Some('\'') {
             if ch == '\'' {
                 quote = None;
@@ -102,5 +106,9 @@ pub(super) fn first_literal_command(command: &str) -> Option<Vec<String>> {
         return None;
     }
     finish_word(&mut words, &mut word, &mut started, &mut redirect);
-    if redirect { None } else { Some(words) }
+    if redirect {
+        None
+    } else {
+        words.into_iter().next()
+    }
 }

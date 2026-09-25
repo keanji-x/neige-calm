@@ -1,7 +1,9 @@
 //! UDS listener + per-connection JSON-RPC pump for the kernel-as-MCP-server.
 //! One socket under `<data_dir>/mcp/kernel.sock` (mode 0600); a connection must `initialize` before any `tools/*` request.
 
+mod call;
 pub(crate) mod worker_grants;
+pub(crate) use call::call_registered_tool;
 pub(crate) use worker_grants::resolve_dispatch_plugin_tools;
 
 use crate::db::{Repo, SessionCardIdentity};
@@ -438,6 +440,9 @@ async fn dispatch_request(
         "tools/call" => {
             dispatch_tools_call(ctx, request_meta, params, connection_identity, registry).await
         }
+        "neige/cli" => {
+            crate::mcp_server::cli::serve(ctx, registry, connection_identity, params).await
+        }
         "resources/list" => Ok(json!({ "resources": [] })),
         "prompts/list" => Ok(json!({ "prompts": [] })),
         other => Err(RpcError::method_not_found(other)),
@@ -521,13 +526,18 @@ async fn dispatch_tools_call(
         .cloned()
         .unwrap_or(Value::Object(Default::default()));
 
-    if let Some(handler) = registry.lookup(name) {
-        let identity =
-            resolve_tools_call_identity(ctx, thread_id, name, connection_identity).await?;
-        worker_grants::require(ctx, &identity, name).await?;
-        let fut = handler(ctx.clone(), identity, arguments);
+    if registry.lookup(name).is_some() {
+        let result = call_registered_tool(
+            ctx,
+            registry,
+            connection_identity,
+            thread_id,
+            name,
+            arguments,
+        )
+        .await?;
         // Serialize the typed envelope once; native images must not be converted into text by wrapping again.
-        return Ok(json!(fut.await?));
+        return Ok(json!(result));
     }
 
     dispatch_plugin_tools_call(ctx, thread_id, name, arguments, connection_identity).await

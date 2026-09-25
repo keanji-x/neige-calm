@@ -14,6 +14,14 @@ use serde_json::{Value, json};
 /// `-32401` mirrors HTTP 401 in JSON-RPC's implementation-defined range.
 pub const TOKEN_NOT_RECOGNIZED_CODE: i64 = -32401;
 
+/// `-32426` (HTTP 426 Upgrade Required): the client is a `neige` binary this kernel no longer serves (#1801).
+pub const OLD_NEIGE_CLIENT_CODE: i64 = -32426;
+/// `clientInfo.name` of the forwarder; its `clientInfo.version` is the forwarding protocol version.
+pub const FORWARD_CLIENT_NAME: &str = "neige-forward";
+pub const FORWARD_PROTOCOL_VERSION: &str = "1";
+/// `clientInfo.name` every fat `neige` since #344 sends.
+const OLD_NEIGE_CLIENT_NAME: &str = "neige";
+
 /// Result of a successful handshake.
 pub struct HandshakeOk {
     pub connection_identity: ConnectionIdentity,
@@ -28,6 +36,9 @@ pub async fn handle_initialize(
     params: &Value,
     protocol_version_advertised: &str,
 ) -> Result<HandshakeOk, RpcError> {
+    // 0. Fence a `neige` that parses commands itself, before any token or database work.
+    fence_unserved_neige_client(params)?;
+
     // 1. Extract the token from `params._meta["dev.neige/auth"].token`; a top-level params field
     //    is deliberately NOT accepted.
     let token = params
@@ -102,6 +113,33 @@ pub async fn handle_initialize(
         connection_identity,
         result_payload,
     })
+}
+
+/// Any other `clientInfo`, or none, initializes exactly as before.
+fn fence_unserved_neige_client(params: &Value) -> Result<(), RpcError> {
+    let info = params.get("clientInfo");
+    let field = |key: &str| info.and_then(|i| i.get(key)).and_then(Value::as_str);
+    let lead = match field("name") {
+        Some(OLD_NEIGE_CLIENT_NAME) => include_str!("../../prompts/cli/old_client_refused.md")
+            .trim_end()
+            .to_string(),
+        Some(FORWARD_CLIENT_NAME) if field("version") != Some(FORWARD_PROTOCOL_VERSION) => {
+            include_str!("../../prompts/cli/forward_version_refused.md")
+                .trim_end()
+                .replace("{version}", field("version").unwrap_or("<missing>"))
+        }
+        _ => return Ok(()),
+    };
+    let fix = match crate::kernel_bin_path::kernel_bin_dir() {
+        Ok(dir) => include_str!("../../prompts/cli/run_kernel_neige.md")
+            .trim_end()
+            .replace("{neige}", &dir.join("neige").display().to_string()),
+        Err(e) => format!("the kernel bin dir is unavailable: {e}"),
+    };
+    Err(RpcError::custom(
+        OLD_NEIGE_CLIENT_CODE,
+        lead.replace("{where}", &fix),
+    ))
 }
 
 fn agent_provider_from_worker_provider(provider: WorkerProviderKind) -> AgentProvider {

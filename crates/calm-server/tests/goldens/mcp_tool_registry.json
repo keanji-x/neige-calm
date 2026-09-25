@@ -1386,7 +1386,7 @@
   },
   {
     "name": "calm.task.fail",
-    "description_sha256": "9f0257d8e9f90a706058f548ab515f33d2e7ee48d1031f95eda610b4398025a0",
+    "description_sha256": "ef955eed54a6a34e0cf7ab684bc3a5f327c50f4298360fbfd925ff0c54ae5711",
     "input_schema": {
       "properties": {
         "idempotency_key": {

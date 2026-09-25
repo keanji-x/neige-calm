@@ -13,7 +13,8 @@ rows, summaries and hover explanations are already implemented and are not bugs.
 Gate admission will reject obvious direct calls to the credential-dependent
 `neige` CLI on new task writes. This is an authoring check, not a shell sandbox:
 scripts, wrappers, aliases and dynamically constructed commands cannot all be
-statically diagnosed. Local `neige --help` / `--version` remain usable. The
+statically diagnosed. Since #1801 the kernel serves every `neige` argv, help
+included, so any literal `neige` call in a gate is rejected. The
 credential allowlist is unchanged. Existing stored declarations and attempts are
 not migrated or rewritten.
 

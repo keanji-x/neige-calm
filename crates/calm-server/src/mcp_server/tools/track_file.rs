@@ -33,7 +33,7 @@ where
     })
 }
 
-/// Return-shape contract consumed by `neige`: `ls` returns a bare JSON array; `cat` returns `{ content, content_type }`.
+/// Return-shape contract consumed by `mcp_server::cli::render`: `ls` returns a bare JSON array; `cat` returns `{ content, content_type }`.
 fn ls_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TRACK_LS.into(),

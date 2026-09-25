@@ -54,6 +54,18 @@ pub enum DiffStatus {
 }
 
 impl DiffStatus {
+    /// Every variant: `index_in_all` matches exhaustively and the const assertion below pins each
+    /// variant's slot, so a new variant fails to compile until it is listed here.
+    pub const ALL: [Self; 3] = [Self::Added, Self::Deleted, Self::Modified];
+
+    const fn index_in_all(self) -> usize {
+        match self {
+            Self::Added => 0,
+            Self::Deleted => 1,
+            Self::Modified => 2,
+        }
+    }
+
     pub fn wire_label(self) -> &'static str {
         match self {
             Self::Added => "added",
@@ -62,7 +74,15 @@ impl DiffStatus {
         }
     }
 
-    pub(super) fn observation_label(self) -> &'static str {
+    /// Inverse of [`Self::wire_label`]; any other label is not a diff status.
+    pub fn from_wire_label(label: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|status| status.wire_label() == label)
+    }
+
+    /// Human-facing label shared by the since-last-turn block and `neige diff`.
+    pub fn observation_label(self) -> &'static str {
         match self {
             Self::Added => "new",
             Self::Deleted => "deleted",
@@ -70,6 +90,14 @@ impl DiffStatus {
         }
     }
 }
+
+const _: () = {
+    let mut index = 0;
+    while index < DiffStatus::ALL.len() {
+        assert!(DiffStatus::ALL[index].index_in_all() == index);
+        index += 1;
+    }
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileDiff {
@@ -190,4 +218,22 @@ pub(super) fn has_legacy_card_lens_paths(manifest: &TreeManifest) -> bool {
         .entries
         .keys()
         .any(|path| is_legacy_card_lens_path(path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DiffStatus;
+
+    #[test]
+    fn from_wire_label_inverts_wire_label_and_rejects_unknown() {
+        for status in DiffStatus::ALL {
+            assert_eq!(
+                DiffStatus::from_wire_label(status.wire_label()),
+                Some(status)
+            );
+        }
+        for label in ["", "new", "edited", "renamed", "Added"] {
+            assert_eq!(DiffStatus::from_wire_label(label), None, "{label:?}");
+        }
+    }
 }

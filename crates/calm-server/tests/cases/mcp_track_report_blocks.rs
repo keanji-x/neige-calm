@@ -1627,6 +1627,9 @@ async fn task_gate_rejects_kernel_cli_before_persisting_or_scheduling() {
         "neige 'cat' plan/analyze/output",
         "neige state>/dev/null",
         "neige 2>/dev/null state",
+        "neige cat '--help'",
+        "neige cat --help|cat",
+        "neige cat>/dev/null --help",
     ] {
         let mut payload = planner_task_payload("analyze", "Analyze artifacts");
         payload["gate"]["steps"][0]["cmd"] = json!(cmd);
@@ -1654,12 +1657,9 @@ async fn task_gate_rejects_kernel_cli_before_persisting_or_scheduling() {
 }
 
 #[tokio::test]
-async fn task_gate_accepts_local_help_and_artifact_checks() {
+async fn task_gate_accepts_artifact_checks() {
     let boot = boot().await;
     for (index, cmd) in [
-        "neige cat '--help'",
-        "neige cat --help|cat",
-        "neige cat>/dev/null --help",
         "python3 -m unittest discover",
         "test -s artifacts/result.json",
     ]
@@ -1677,7 +1677,7 @@ async fn task_gate_accepts_local_help_and_artifact_checks() {
                 "if_doc_rev": current_payload(&boot).await.doc_rev}),
         )
         .await
-        .expect("local help and artifact verification must remain authorable");
+        .expect("artifact verification must remain authorable");
         assert!(task_keys(&boot).await.contains(&key));
     }
 }

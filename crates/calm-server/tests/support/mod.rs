@@ -37,4 +37,6 @@ pub mod task;
 #[allow(dead_code)]
 pub mod track_file;
 #[allow(dead_code)]
+pub mod track_vcs_seed;
+#[allow(dead_code)]
 pub mod worker_flow;

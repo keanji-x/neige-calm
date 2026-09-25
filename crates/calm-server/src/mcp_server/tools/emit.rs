@@ -381,7 +381,8 @@ async fn task_fail(
     let reason = args
         .get("reason")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| RpcError::invalid_params("task_fail: missing `reason`"))?
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| RpcError::invalid_params("task_fail: missing `reason` (non-empty)"))?
         .to_string();
 
     let event = Event::TaskFailed {
