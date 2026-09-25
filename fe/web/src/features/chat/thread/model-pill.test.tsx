@@ -350,6 +350,16 @@ describe('ModelPill', () => {
       }
     });
 
+    it('keeps a Claude pick in its own group, named, when its catalog turns unavailable', () => {
+      render(<ModelPill groups={both(claudeCatalog({ models: [], source: 'unavailable' }))} provider="claude"
+        selection={{ model: 'sonnet', reasoning_effort: null }} onChange={vi.fn()} />);
+      expect(trigger(/^Model:/).textContent).toBe('Claude sonnet');
+      const menu = openMenu(/^Model:/);
+      const claude = within(menu).getByRole('group', { name: 'Claude' });
+      expect(within(claude).getByText('This server does not run Claude Planners')).toBeTruthy();
+      expect(within(menu).getByRole('group', { name: 'Codex' })).toBeTruthy();
+    });
+
     it('offers each provider as a group, Default first, when the server runs Claude Planners', () => {
       render(<ModelPill groups={both()} provider="codex" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
       const menu = openMenu(/^Model:/);

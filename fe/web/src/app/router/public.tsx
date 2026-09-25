@@ -905,6 +905,8 @@ function useConversationPanel(
   /* The composer's pending images, keyed to the open card so moving to another
        conversation does not carry a picked image into it. */
   const attachments = usePlannerAttachments(store.uploadAttachment, scope?.cardId ?? '');
+  /* A conversation's provider is fixed for its life; its model picker offers that provider's group alone. */
+  const scopeProvider: AgentProvider = scope === null ? 'codex' : scope.provider;
   const registry = useConversationRegistry();
   const go = useGo();
   const open = store.conversations.find((conversation) => conversation.id === openRowId) ?? null;
@@ -1436,9 +1438,9 @@ function useConversationPanel(
                     disabled={store.sendBlocked || !store.historyReady}
                   />
                   <ModelPill
-                    /* Only the track's own provider: it is fixed for the conversation's life. Without a scope the catalog read is disabled, so no `unavailable` label can show. */
-                    groups={[{ provider: scope === null ? 'codex' : scope.provider, catalog: store.modelCatalog }]}
-                    provider={scope === null ? 'codex' : scope.provider}
+                    /* Without a scope the catalog read is disabled, so no `unavailable` label can show. */
+                    groups={[{ provider: scopeProvider, catalog: store.modelCatalog }]}
+                    provider={scopeProvider}
                     selection={store.model}
                     onChange={store.setModel}
                     isDisabled={!store.historyReady}

@@ -44,10 +44,9 @@ export type ModelGroup = Readonly<{ provider: AgentProvider; catalog: ModelCatal
 
 type CatalogEntry = ModelCatalog['models'][number];
 
-/** The groups a menu shows. A lone group always shows: it is the conversation's own provider. */
-function visibleModelGroups(groups: readonly ModelGroup[]): readonly ModelGroup[] {
-  if (groups.length === 1) return groups;
-  return groups.filter((group) => !PROVIDERS[group.provider].hiddenUnlessAvailable
+/** The groups a menu shows. The selection's own group always shows, so a pick never passes for another provider's. */
+function visibleModelGroups(groups: readonly ModelGroup[], provider: AgentProvider): readonly ModelGroup[] {
+  return groups.filter((group) => group.provider === provider || !PROVIDERS[group.provider].hiddenUnlessAvailable
     || (group.catalog !== null && group.catalog.source !== 'unavailable'));
 }
 
@@ -78,7 +77,7 @@ export function ModelPill({
   const [open, setOpen] = useState(false);
   const hostRef = useRef<HTMLSpanElement | null>(null);
 
-  const shown = visibleModelGroups(groups);
+  const shown = visibleModelGroups(groups, provider);
   const grouped = shown.length > 1;
   const catalog = groups.find((group) => group.provider === provider)?.catalog ?? null;
   const models = catalog?.models ?? [];
