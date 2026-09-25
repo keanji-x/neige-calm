@@ -212,11 +212,17 @@ async fn a_seam_failed_first_turn_keeps_the_input_queued_until_the_seam_clears()
     }
     assert_eq!(spawn_count(&root), 0);
     assert!(stack.outcomes(&card_id).await.is_empty());
-    assert_eq!(
-        harness.snapshot().await.pending_entries().len(),
-        1,
-        "still queued"
-    );
+    // The refusal counter is bumped before the drained batch is put back at the head of the
+    // queue, so the re-buffer is awaited here (bounded) rather than read once.
+    let mut queued = 0;
+    for _ in 0..200 {
+        queued = harness.snapshot().await.pending_entries().len();
+        if queued == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(queued, 1, "still queued");
     assert!(
         stack.row_hash(&runtime.id).await.is_some(),
         "the credential was minted once, before the failing setup stop"
