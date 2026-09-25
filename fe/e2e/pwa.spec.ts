@@ -30,7 +30,12 @@ test('PWA metadata stays valid at the entry point and deep links', async ({ page
 test('Chrome installs and launches Neige Calm in a standalone window', async ({ baseURL }, testInfo) => {
   // PWA installation needs a regular profile and full Chromium, not an incognito
   // context or the headless shell used for ordinary browser tests.
-  const context = await chromium.launchPersistentContext(testInfo.outputPath('profile'), { channel: 'chromium' });
+  // Chromium writes installed-app launchers under XDG_DATA_HOME/XDG_CONFIG_HOME;
+  // keep them in the test output rather than the host's ~/.local/share and ~/.config.
+  const context = await chromium.launchPersistentContext(testInfo.outputPath('profile'), {
+    channel: 'chromium',
+    env: { ...process.env, XDG_DATA_HOME: testInfo.outputPath('xdg-data'), XDG_CONFIG_HOME: testInfo.outputPath('xdg-config') },
+  });
   try {
     await context.route(/^https?:\/\/[^/]+\/api\//, route => route.fulfill({ status: 401, body: '{}' }));
     const page = await context.newPage();

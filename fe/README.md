@@ -37,8 +37,8 @@ node tools/pwa/generate-icons.mjs
 Run `npx playwright test --config tools/pwa/playwright.config.ts` for a production
 build check covering Chrome manifest diagnostics, deep links, installation and
 standalone launch. It uses a temporary browser profile and a signed-out API
-response, so it needs no kernel or agent runtime. The same tests also run against
-the dev server as part of `npm run e2e`.
+response, so it needs no kernel or agent runtime. CI runs it in the `fe-browser`
+job; the same tests also run against the dev server as part of `npm run e2e`.
 
 `@astryxdesign/core` is pinned exactly. Astryx shipped 12 releases in 5.5 weeks, 67% with breaking changes and no codemod, so upgrades must be reviewed as dedicated work.
 
