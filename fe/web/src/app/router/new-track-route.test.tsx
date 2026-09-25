@@ -72,6 +72,8 @@ function harness(options: {
   /** Ordered create outcomes for retry/recovery paths that cross Area scope. */
   trackCreateSequence?: readonly ApiTransportResponse[];
   loseFirstCreateAck?: boolean;
+  /** Hold the `?provider=claude` catalog read open, to observe the picker before it lands. */
+  heldClaudeCatalog?: Promise<void>;
   /** Override the detail read the track page makes when the create lands. */
   trackDetail?: ApiTransportResponse;
   /** Hold the detail read open until this resolves, to drive a slow landing. */
@@ -115,10 +117,10 @@ function harness(options: {
       }
       /* What `routes/models.rs` answers for a Claude Planner: no catalog and no default (#1791 §5.8). */
       if (request.path === '/api/models?provider=claude') {
-        return Promise.resolve({ status: 200, statusText: 'OK', body: {
+        return (options.heldClaudeCatalog ?? Promise.resolve()).then(() => ({ status: 200, statusText: 'OK', body: {
           models: [], default: { model: null, reasoning_effort: null }, default_source: 'unknown',
           source: 'unavailable', fetched_at_ms: null,
-        } });
+        } }));
       }
       if (request.path === '/api/models?provider=codex') {
         return Promise.resolve({ status: 200, statusText: 'OK', body: {
@@ -267,6 +269,16 @@ describe('New track model selection', () => {
     expect(body).toMatchObject({ planner_provider: 'claude', first_message: 'Plan with Claude' });
     expect(body).not.toHaveProperty('model');
     expect(body).not.toHaveProperty('reasoning_effort');
+  });
+
+  it('keeps the model picker disabled for Claude before its catalog has answered', async () => {
+    harness({ templates: [], heldClaudeCatalog: new Promise<void>(() => undefined) });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+    await findComposer();
+    await userEvent.click(screen.getByRole('button', { name: 'Planner: Codex' }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /^Claude/ }));
+    await screen.findByRole('button', { name: 'Planner: Claude' });
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Model: Default' }).disabled).toBe(true);
   });
 
   it('switching back to Codex starts again from the installation default', async () => {

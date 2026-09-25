@@ -155,11 +155,13 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
         variant={compactViewport ? 'secondary' : 'ghost'}
       />
       <ModelPill
+        provider={session.provider}
         effortControl={compactViewport ? 'in-menu' : 'separate'}
         catalog={modelCatalog.data ?? null}
         selection={session.model}
         onChange={(model) => { store.update(areaId, { model }); }}
-        isDisabled={configurationLocked}
+        /* A Claude Planner has no model choice, whatever its catalog read has answered so far. */
+        isDisabled={configurationLocked || session.provider === 'claude'}
       />
     </>}
     initialDraft={session.form ?? undefined}

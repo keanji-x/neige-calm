@@ -58,7 +58,7 @@
   why: >
     #1706 将手机来源阅读纳入统一页面导航；响应式布局由共享 Drawer 决定，报告正文与表格不重复判断视口。
     #1687 的共用引用渲染保留，缺少来源、读取错误及锚点定位继续由同一个来源详情组件处理。
-  source: fe/web/src/app/router/public.tsx:2249,2358,2454; fe/web/src/features/report/source/public.tsx:18-42; fe/web/src/features/report/document/public.tsx:400-407; fe/web/src/features/report/table/public.tsx:20-32
+  source: fe/web/src/app/router/public.tsx:2256,2365,2461; fe/web/src/features/report/source/public.tsx:18-42; fe/web/src/features/report/document/public.tsx:400-407; fe/web/src/features/report/table/public.tsx:20-32
   authoritative_test: fe/web/src/features/report/document/public.test.tsx:214-223; fe/web/src/features/report/table/public.test.tsx:126-135; fe/web/src/app/router/report-source.test.tsx:111-125
   owner_slice: features/report/source
   intentional_omission: false

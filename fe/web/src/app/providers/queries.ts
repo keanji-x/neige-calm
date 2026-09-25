@@ -166,8 +166,8 @@ export const queryKeys = Object.freeze({
   harnessItems: (cardId: string) => ['harness-items', cardId] as const,
   plannerRun: (cardId: string) => ['planner-run', cardId] as const,
   /**
-   * `GET /api/models` for one card or one provider. Keyed by card because the default is resolved against
-   * that card's workspace. Absent from the invalidation plan: nothing this kernel emits changes codex's catalog.
+   * `GET /api/models` for one scope: a card (its default resolves against that card's workspace) or a
+   * provider about to be created on. Absent from the invalidation plan: nothing this kernel emits changes codex's catalog.
    */
   modelCatalog: (scope: ModelCatalogScope) => ['model-catalog', scope] as const,
   /** One track's conversation list, keyed by its track. */

@@ -39,7 +39,7 @@ function ModelForm({
   return <NewTrackForm submitting={submitting} locked={locked} error={null} templates={templates} templatesLoaded
     initialTemplateId={initialTemplateId} initialCwd={initialCwd} onManageRecipes={vi.fn()}
     listDirectory={listDirectory} onSubmit={vi.fn()}
-    modelControls={<ModelPill catalog={catalog} selection={selection} effortControl="in-menu" onChange={(next) => { setSelection(next); onChange(next); }} />}
+    modelControls={<ModelPill provider="codex" catalog={catalog} selection={selection} effortControl="in-menu" onChange={(next) => { setSelection(next); onChange(next); }} />}
   />;
 }
 

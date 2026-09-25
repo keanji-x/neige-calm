@@ -254,7 +254,16 @@ test('creates the planner with the model and effort selected beside Send', async
  * kernel's refusal; the real `claude` binary is never needed. The refusal is shown, not hidden, and the
  * same sentence then creates on Codex. */
 test('offers Claude as the Planner, shows the kernel refusing it here, and creates on Codex instead', async ({ page, request }) => {
-  const errors = captureBrowserErrors(page);
+  /* The one expected console error is the browser logging the refused create itself; anything else fails. */
+  const errors: string[] = [];
+  page.on('console', (entry) => {
+    if (entry.type() !== 'error') return;
+    const url = entry.location().url;
+    const refusedCreate = entry.text().includes('status of 400') && url !== ''
+      && new URL(url).pathname === '/api/tracks';
+    if (!refusedCreate) errors.push(entry.text());
+  });
+  page.on('pageerror', (error) => errors.push(error.message));
   const area = await createArea(request);
   createdAreaIds.push(area.id);
   await page.goto('/next/');
@@ -291,6 +300,5 @@ test('offers Claude as the Planner, shows the kernel refusing it here, and creat
   expect(creation.status()).toBe(201);
   expect(creation.request().postDataJSON()).toMatchObject({ planner_provider: 'codex', first_message: message });
   await expect(page).toHaveURL(/\/track\/[0-9a-f-]+$/i);
-  /* The 400 is the page's own expected answer, not an uncaught error. */
-  expect(errors.filter((text) => !text.includes('400'))).toEqual([]);
+  expect(errors).toEqual([]);
 });

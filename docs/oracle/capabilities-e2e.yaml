@@ -78,7 +78,7 @@
   source: fe/web/src/features/area/new-track/public.tsx:44-52,213-221,318-325;
     fe/web/src/app/router/new-track-route.tsx:72-88
   authoritative_test: fe/web/src/features/area/new-track/public.test.tsx:729-734;
-    fe/web/src/app/router/new-track-route.test.tsx:562-587
+    fe/web/src/app/router/new-track-route.test.tsx:574-599
   owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
@@ -141,7 +141,7 @@
     repository does not conflict. The legacy resolve round trip only ever chose false in that
     same-area case, which the kernel's in-transaction scan already reaches atomically.
   source: fe/web/src/app/router/new-track-route.tsx:72-82
-  authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:649-666
+  authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:661-678
   owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
@@ -246,7 +246,7 @@
     "Conflict". The area name comes from the workspace read, which is why the decode is rendered
     by the route that owns the create and not by the presentational form.
   source: fe/core/domain/area.ts:159-189; fe/web/src/app/router/new-track-route.tsx:98-109
-  authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:693-706
+  authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:705-718
   owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
@@ -281,7 +281,7 @@
   source: fe/web/src/features/area/new-track/public.tsx:44-52,213-235;
     fe/web/src/app/router/new-track-route.tsx:72-88
   authoritative_test: fe/web/src/features/area/new-track/public.test.tsx:149;
-    fe/web/src/app/router/new-track-route.test.tsx:548-560
+    fe/web/src/app/router/new-track-route.test.tsx:560-572
   owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
@@ -306,7 +306,7 @@
     would silently focus nothing. Asserted as behaviour — type, then read the field back — because
     that is what the reader notices; an `activeElement` check alone passes on a focused wrapper.
   source: fe/web/src/features/area/new-track/public.tsx:154-157
-  authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:534-537
+  authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:546-549
   owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
@@ -391,7 +391,7 @@
     entry do the same thing. The last is the price of the first, and both are pinned rather than
     left to be discovered.
   source: fe/web/src/app/router/navigation.ts:22,33-38,78-92,112-134;
-    fe/web/src/app/router/new-track-route.tsx:63; fe/web/src/app/router/public.tsx:1388,1975-1981;
+    fe/web/src/app/router/new-track-route.tsx:63; fe/web/src/app/router/public.tsx:1390,1980-1986;
     fe/web/src/features/chat/thread/public.tsx:502-506,517,539,544-563,601-603
   # One line per clause of the statement, because no single case covers it: 205 the landing and the
   # caret, 261 that a fresh navigation carries no mark, 298 that returning by Back to the entry whose

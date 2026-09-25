@@ -49,20 +49,20 @@ function openMenu(name: RegExp): HTMLElement {
 describe('ModelPill', () => {
   it('names the default it is actually following, and only the name', () => {
     render(
-      <ModelPill catalog={catalog()} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
+      <ModelPill provider="codex" catalog={catalog()} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
     );
     expect(trigger(/^Model:/).textContent).toBe('gpt-5-codex');
   });
 
   it('still says, to a screen reader, that it is following the default', () => {
     const { rerender } = render(
-      <ModelPill catalog={catalog()} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
+      <ModelPill provider="codex" catalog={catalog()} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
     );
     expect(trigger(/^Model:/).getAttribute('aria-label'))
       .toBe("Model: gpt-5-codex (this installation's default)");
 
     rerender(
-      <ModelPill
+      <ModelPill provider="codex"
         catalog={catalog()}
         selection={{ model: 'gpt-5', reasoning_effort: null }}
         onChange={vi.fn()}
@@ -73,7 +73,7 @@ describe('ModelPill', () => {
 
   it('keeps the word in the menu, where it is the choice being offered', () => {
     render(
-      <ModelPill catalog={catalog()} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
+      <ModelPill provider="codex" catalog={catalog()} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
     );
     const menu = openMenu(/^Model:/);
     expect(within(menu).getByText('Default (gpt-5-codex)')).toBeTruthy();
@@ -81,14 +81,14 @@ describe('ModelPill', () => {
 
   it('draws no chevron on the trigger', () => {
     render(
-      <ModelPill catalog={catalog()} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
+      <ModelPill provider="codex" catalog={catalog()} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
     );
     expect(trigger(/^Model:/).querySelector('svg')).toBeNull();
   });
 
   it('will not name a default it was told it could not resolve', () => {
     render(
-      <ModelPill
+      <ModelPill provider="codex"
         catalog={catalog({ default_source: 'unknown', default: { model: 'gpt-5-global', reasoning_effort: null } })}
         selection={FOLLOW_INSTALLATION_DEFAULT}
         onChange={vi.fn()}
@@ -100,7 +100,7 @@ describe('ModelPill', () => {
 
   it('shows the chosen model by its display name', () => {
     render(
-      <ModelPill
+      <ModelPill provider="codex"
         catalog={catalog()}
         selection={{ model: 'gpt-5', reasoning_effort: null }}
         onChange={vi.fn()}
@@ -111,7 +111,7 @@ describe('ModelPill', () => {
 
   it('falls back to the slug for a model the catalog does not list', () => {
     render(
-      <ModelPill
+      <ModelPill provider="codex"
         catalog={catalog()}
         selection={{ model: 'gpt-6-preview', reasoning_effort: null }}
         onChange={vi.fn()}
@@ -123,7 +123,7 @@ describe('ModelPill', () => {
   it('hands back the slug and never the preset id', () => {
     const onChange = vi.fn();
     render(
-      <ModelPill catalog={catalog()} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={onChange} />,
+      <ModelPill provider="codex" catalog={catalog()} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={onChange} />,
     );
     fireEvent.click(within(openMenu(/^Model:/)).getByRole('menuitem', { name: /GPT-5/ }));
     expect(onChange).toHaveBeenCalledWith({ model: 'gpt-5', reasoning_effort: null });
@@ -133,7 +133,7 @@ describe('ModelPill', () => {
   it('drops the effort back to the default when the model changes', () => {
     const onChange = vi.fn();
     render(
-      <ModelPill
+      <ModelPill provider="codex"
         catalog={catalog()}
         selection={{ model: 'gpt-6-preview', reasoning_effort: 'high' }}
         onChange={onChange}
@@ -146,7 +146,7 @@ describe('ModelPill', () => {
   it('offers "Default" as a real choice and sends both nulls for it', () => {
     const onChange = vi.fn();
     render(
-      <ModelPill
+      <ModelPill provider="codex"
         catalog={catalog()}
         selection={{ model: 'gpt-5', reasoning_effort: 'high' }}
         onChange={onChange}
@@ -159,7 +159,7 @@ describe('ModelPill', () => {
   describe('the effort control', () => {
     it('offers the followed model’s efforts while no model is chosen', () => {
       render(
-        <ModelPill
+        <ModelPill provider="codex"
           catalog={catalog({ default: { model: 'gpt-5', reasoning_effort: 'low' } })}
           selection={FOLLOW_INSTALLATION_DEFAULT}
           onChange={vi.fn()}
@@ -175,7 +175,7 @@ describe('ModelPill', () => {
     it('sends the effort with a null model when the default is being followed', () => {
       const onChange = vi.fn();
       render(
-        <ModelPill
+        <ModelPill provider="codex"
           catalog={catalog({ default: { model: 'gpt-5', reasoning_effort: 'low' } })}
           selection={FOLLOW_INSTALLATION_DEFAULT}
           onChange={onChange}
@@ -188,14 +188,14 @@ describe('ModelPill', () => {
 
     it('is absent when the followed model is not in the catalog', () => {
       render(
-        <ModelPill catalog={catalog()} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
+        <ModelPill provider="codex" catalog={catalog()} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
       );
       expect(screen.queryByRole('button', { name: /^Reasoning effort:/ })).toBeNull();
     });
 
     it('is absent for a model that offers only one effort', () => {
       render(
-        <ModelPill
+        <ModelPill provider="codex"
           catalog={catalog({
             models: [model({ supported_reasoning_efforts: [{ reasoning_effort: 'medium', description: 'The only one.' }] })],
           })}
@@ -208,7 +208,7 @@ describe('ModelPill', () => {
 
     it('offers the chosen model\'s efforts with codex\'s own descriptions', () => {
       render(
-        <ModelPill
+        <ModelPill provider="codex"
           catalog={catalog()}
           selection={{ model: 'gpt-5', reasoning_effort: 'high' }}
           onChange={vi.fn()}
@@ -223,7 +223,7 @@ describe('ModelPill', () => {
     it('keeps the model when only the effort changes', () => {
       const onChange = vi.fn();
       render(
-        <ModelPill
+        <ModelPill provider="codex"
           catalog={catalog()}
           selection={{ model: 'gpt-5', reasoning_effort: null }}
           onChange={onChange}
@@ -236,14 +236,14 @@ describe('ModelPill', () => {
 
   it('keeps effort selection in the model menu when its host asks for one control', () => {
     const onChange = vi.fn();
-    const view = render(<ModelPill catalog={catalog()}
+    const view = render(<ModelPill provider="codex" catalog={catalog()}
       selection={{ model: 'gpt-5', reasoning_effort: null }}
       effortControl="in-menu" onChange={onChange} />);
     expect(screen.queryByRole('button', { name: /^Reasoning effort:/ })).toBeNull();
     const efforts = within(openMenu(/^Model:/)).getByRole('group', { name: 'Reasoning effort' });
     fireEvent.click(within(efforts).getByRole('menuitem', { name: /high/ }));
     expect(onChange).toHaveBeenLastCalledWith({ model: 'gpt-5', reasoning_effort: 'high' });
-    view.rerender(<ModelPill catalog={catalog()}
+    view.rerender(<ModelPill provider="codex" catalog={catalog()}
       selection={{ model: 'gpt-5', reasoning_effort: 'high' }}
       effortControl="in-menu" onChange={onChange} />);
     // Reopen through the keyboard; DropdownMenu guards immediate repeat pointer clicks.
@@ -256,7 +256,7 @@ describe('ModelPill', () => {
 
   it('separates a daemon that could not be asked from an account with nothing to offer', () => {
     const { unmount } = render(
-      <ModelPill
+      <ModelPill provider="codex"
         catalog={catalog({ models: [], source: 'unavailable', default_source: 'config_toml' })}
         selection={FOLLOW_INSTALLATION_DEFAULT}
         onChange={vi.fn()}
@@ -268,7 +268,7 @@ describe('ModelPill', () => {
     unmount();
 
     render(
-      <ModelPill
+      <ModelPill provider="codex"
         catalog={catalog({ models: [], source: 'live' })}
         selection={FOLLOW_INSTALLATION_DEFAULT}
         onChange={vi.fn()}
@@ -279,9 +279,20 @@ describe('ModelPill', () => {
     expect(within(openMenu(/^Model:/)).getByText(/No models available on this account/)).toBeTruthy();
   });
 
+  it('says why an unavailable catalog is empty in the words of its provider', () => {
+    const unavailable = catalog({ models: [], source: 'unavailable', default_source: 'unknown' });
+    const { unmount } = render(<ModelPill provider="codex" catalog={unavailable} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
+    /* The menu cannot open while unavailable, but its rows are rendered; the text is what a Codex reader is told. */
+    expect(document.body.textContent).toContain('codex is not running');
+    unmount();
+    render(<ModelPill provider="claude" catalog={unavailable} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
+    expect(document.body.textContent).toContain('No model list is available');
+    expect(document.body.textContent).not.toContain('codex is not running');
+  });
+
   it('explains the compaction risk once, as a note rather than a per-switch warning', () => {
     render(
-      <ModelPill catalog={catalog()} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
+      <ModelPill provider="codex" catalog={catalog()} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
     );
     const note = within(openMenu(/^Model:/)).getByRole('note');
     expect(note.textContent).toContain('smaller context window');
@@ -290,7 +301,7 @@ describe('ModelPill', () => {
 
   it('shows the default and stays quiet while the catalog is still loading', () => {
     render(
-      <ModelPill catalog={null} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
+      <ModelPill provider="codex" catalog={null} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
     );
     expect(trigger(/^Model:/).textContent).toBe('Default');
     expect(screen.queryByRole('button', { name: /^Reasoning effort:/ })).toBeNull();
@@ -299,7 +310,7 @@ describe('ModelPill', () => {
   it('is unavailable while its host says so', () => {
     const selection: ModelSelection = { model: 'gpt-5', reasoning_effort: 'high' };
     render(
-      <ModelPill catalog={catalog()} selection={selection} onChange={vi.fn()} isDisabled />,
+      <ModelPill provider="codex" catalog={catalog()} selection={selection} onChange={vi.fn()} isDisabled />,
     );
     for (const name of [/^Model:/, /^Reasoning effort:/] as const) {
       const button = trigger(name);

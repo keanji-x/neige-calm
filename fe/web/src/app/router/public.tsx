@@ -11,7 +11,7 @@ import { HStack } from '@astryxdesign/core/HStack';
 import { onlineManager, useInfiniteQuery, useQuery, type QueryClient } from '@tanstack/react-query';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
-import type { PlannerAttachment } from '../../../../core/api/generated/wire.ts';
+import type { AgentProvider, PlannerAttachment } from '../../../../core/api/generated/wire.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import {
   ATTACHED_WORKSPACE_REASON, PlannerAttachButton, PlannerAttachmentDrawer,
@@ -19,7 +19,7 @@ import {
 } from '../../features/planner/attachments.tsx';
 import { hasUnseenMatchingConversationMessage, failedConversationDelivery } from '../../../../core/domain/conversation-delivery.ts';
 import {
-  cardGoalTitle, liveTableOverlayPayload, toTrack, trackActivityFrom, trackDisplayTitle,
+  cardGoalTitle, liveTableOverlayPayload, plannerProviderOf, toTrack, trackActivityFrom, trackDisplayTitle,
   type Track, type TrackActivity, type TrackDetailWire,
 } from '../../../../core/domain/track.ts';
 import { cardActivityOf, foldAttentionByCard, type CardActivity } from '../../../../core/domain/activity.ts';
@@ -708,6 +708,8 @@ export function useConversationStore(
  */
 type PlannerConversationScope = Readonly<{
   id: string;
+  /** The conversation's backend: `claude` only for a Claude Planner card (#1791). */
+  provider: AgentProvider;
   title?: string;
   cardId: string;
   cardTitle: string | null;
@@ -1300,7 +1302,7 @@ function useConversationPanel(
             )}
             <ChatComposer disabled={creating} onSend={sendDraft} onNewConversation={startAnother}
               draft={{ text: composerDraft, onChange: setComposerDraft }}
-              footerActions={<ModelPill catalog={draftCatalog.data ?? null} selection={draft.model}
+              footerActions={<ModelPill provider="codex" catalog={draftCatalog.data ?? null} selection={draft.model}
                 onChange={model => withDraft(draft, current => current.creating || current.sentText !== null
                   ? current : { ...current, model })}
                 isDisabled={creating || draft.sentText !== null || !supportsDraftModel} />} />
@@ -1434,6 +1436,8 @@ function useConversationPanel(
                     disabled={store.sendBlocked || !store.historyReady}
                   />
                   <ModelPill
+                    /* Without a scope the catalog read is disabled, so no `unavailable` label can show. */
+                    provider={scope === null ? 'codex' : scope.provider}
                     catalog={store.modelCatalog}
                     selection={store.model}
                     onChange={store.setModel}
@@ -1552,8 +1556,9 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
         const row = launchpadRows.find((candidate) => candidate.id === conversationId);
         /* `id: row.trackId`, never `launchpadTrackId`: otherwise the `rememberOn`
                    comparison compares a value with itself. */
+        /* Launchpad rows are assistant conversations, which run on Codex. */
         return row === undefined ? null : {
-          id: row.trackId, title: row.trackTitle, cardId: row.id, cardTitle: row.title,
+          id: row.trackId, provider: 'codex', title: row.trackTitle, cardId: row.id, cardTitle: row.title,
           updatedAt: row.updatedAt, kind: row.kind, state: row.state,
         };
       },
@@ -2008,7 +2013,9 @@ function TrackRouteBody({
         /* `id: row.trackId`, never `track.id`: this is the line the `rememberOn`
          * comparison rests on, and written the other way it would be a tautology. */
         return row === undefined ? null : {
-          id: row.trackId, title: trackTitle, cardId: row.id, cardTitle: row.title,
+          id: row.trackId,
+          provider: plannerCard !== undefined && row.id === plannerCard.id ? plannerProviderOf(plannerCard.payload) : 'codex',
+          title: trackTitle, cardId: row.id, cardTitle: row.title,
           updatedAt: row.updatedAt, kind: row.kind, state: row.state,
         };
       },

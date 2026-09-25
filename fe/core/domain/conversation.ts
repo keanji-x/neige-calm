@@ -305,8 +305,8 @@ const catalogModelSchema = z.object({
 });
 
 /**
- * `GET /api/models`. `source` and `default_source` are separate answers: an empty live catalog
- * reads like "codex is not running" otherwise.
+ * `GET /api/models`. `source` and `default_source` are separate answers: otherwise an empty live
+ * catalog would read like one the server could not produce.
  */
 export const modelCatalogSchema = z.object({
   models: z.array(catalogModelSchema),

@@ -1405,7 +1405,7 @@ describe('track conversations', () => {
  * row, so closing the drawer is handing this store a null scope while it stays mounted. */
 describe('registry write-through', () => {
   const SCOPE = {
-    id: 'w1', title: 'Test track', cardId: ASSISTANT_CARD.id, cardTitle: null,
+    id: 'w1', provider: 'codex' as const, title: 'Test track', cardId: ASSISTANT_CARD.id, cardTitle: null,
     updatedAt: 30, kind: 'track-assistant' as const, state: 'idle' as const,
   };
   const ROWS: readonly Conversation[] = [{

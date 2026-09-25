@@ -9,6 +9,7 @@ import { Text } from '@astryxdesign/core/Text';
 import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 import { useRef, type KeyboardEvent } from 'react';
 
+import type { AgentProvider } from '../../../../../core/api/generated/wire.ts';
 import type { ModelCatalog, ModelSelection } from '../../../../../core/domain/conversation.ts';
 import { useState } from '../../../ui/state/public.ts';
 import styles from './model-pill.module.css';
@@ -18,9 +19,17 @@ const FOLLOW_DEFAULT_LABEL = 'Default';
 /** A standing note rather than a per-switch warning: the catalog carries no context window, so whether a switch compacts is unknowable here. */
 const SWITCH_NOTE = 'Switching to a model with a smaller context window can make codex compact the history first.';
 
+/** Why a `source: 'unavailable'` catalog is empty: Codex's daemon could not be asked; a Claude Planner has no catalog at all (#1791 §5.8). */
+const UNAVAILABLE_LABEL: Readonly<Record<AgentProvider, string>> = Object.freeze({
+  codex: 'codex is not running',
+  claude: 'No model list is available',
+});
+
 export function ModelPill({
-  catalog, selection, onChange, isDisabled = false, placement = 'above', triggerId, effortControl = 'separate',
+  provider, catalog, selection, onChange, isDisabled = false, placement = 'above', triggerId, effortControl = 'separate',
 }: Readonly<{
+  /** Whose catalog this is; names why an unavailable one is empty. */
+  provider: AgentProvider;
   /** What can be chosen, and what the installation follows. `null` while it loads. */
   catalog: ModelCatalog | null;
   /** What this conversation has chosen. `null` in both fields is "follow the default". */
@@ -106,8 +115,7 @@ export function ModelPill({
           ))}
           {models.length === 0 && (
             <DropdownMenuItem
-              /* Provider-neutral: a Claude Planner answers `unavailable` too, with no daemon to be down (#1791). */
-              label={unreachable ? 'No model list is available' : 'No models available on this account'}
+              label={unreachable ? UNAVAILABLE_LABEL[provider] : 'No models available on this account'}
               isDisabled
             />
           )}
