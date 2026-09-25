@@ -174,7 +174,8 @@ pub enum MarkerAuth {
     /// blocks the wait.
     Present,
     /// Environ readable WITHOUT the marker (a recycled-pgid stranger), or the process is already
-    /// gone (`ENOENT`): not ours and not live — never killed, never blocks the wait.
+    /// gone (`ENOENT`, or `ESRCH` once reaped): not ours and not live — never killed, never blocks
+    /// the wait.
     Foreign,
     /// Environ unreadable while the process is live (`EACCES`, …): cleanup-uncertain, NOT
     /// proven-foreign. Never killed (identity unproven), but blocks the wait (fail closed →
@@ -184,7 +185,13 @@ pub enum MarkerAuth {
 
 #[cfg(target_os = "linux")]
 pub fn proc_env_marker(pid: i32, key: &str, value: &str) -> MarkerAuth {
-    match std::fs::read(format!("/proc/{pid}/environ")) {
+    proc_env_marker_in(std::path::Path::new("/proc"), pid, key, value)
+}
+
+/// [`proc_env_marker`] against `proc_root` (`/proc` in production).
+#[cfg(target_os = "linux")]
+fn proc_env_marker_in(proc_root: &std::path::Path, pid: i32, key: &str, value: &str) -> MarkerAuth {
+    match std::fs::read(proc_root.join(pid.to_string()).join("environ")) {
         Ok(bytes) => {
             let needle = format!("{key}={value}");
             if bytes
@@ -196,9 +203,9 @@ pub fn proc_env_marker(pid: i32, key: &str, value: &str) -> MarkerAuth {
                 MarkerAuth::Foreign
             }
         }
-        // The process left between the scan and this read: not a live member to wait for and not a
-        // live process to kill — fold into `Foreign`.
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => MarkerAuth::Foreign,
+        // The process left between the scan and this read (`ENOENT`, or `ESRCH` once it is reaped
+        // mid-open): not a live member to wait for and not a live process to kill — `Foreign`.
+        Err(error) if calm_worker_runtime::proc_entry_vanished(&error) => MarkerAuth::Foreign,
         // Live but unreadable (EACCES from `PR_SET_DUMPABLE=0`, etc.): membership cannot be proven
         // OR disproven — cleanup-uncertain.
         Err(_) => MarkerAuth::Unreadable,
@@ -410,6 +417,31 @@ mod tests {
         assert!(
             leader_still_zombie,
             "the sweep must not have reaped or signaled the held zombie"
+        );
+    }
+
+    /// A process reaped between the group scan and the read of its environ fails that read with
+    /// ESRCH (#1793): it is gone, so `Foreign` (never killed, never waited for), not `Unreadable`
+    /// (which only a LIVE hidden-environ member may be). Pinned with a fake proc root whose entry
+    /// resolves, through `/proc/self/fd`, to the held `/proc/<pid>` directory of a reaped child.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_reaped_process_environ_is_foreign_not_unreadable() {
+        let reaped = calm_worker_runtime::test_support::ReapedProcDir::new();
+        let pid = reaped.pid;
+        let root = tempfile::tempdir().expect("tempdir");
+        std::os::unix::fs::symlink(reaped.path(), root.path().join(pid.to_string()))
+            .expect("symlink");
+
+        let read = std::fs::read(root.path().join(format!("{pid}/environ")));
+        assert_eq!(
+            read.as_ref().map_err(std::io::Error::raw_os_error).err(),
+            Some(Some(libc::ESRCH)),
+            "the fixture must reproduce the reaped-mid-scan read: {read:?}"
+        );
+        assert_eq!(
+            proc_env_marker_in(root.path(), pid, "NEIGE_GATE_OP", "w:reaped#g1"),
+            MarkerAuth::Foreign
         );
     }
 }

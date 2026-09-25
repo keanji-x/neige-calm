@@ -303,34 +303,7 @@ pub(crate) async fn observe_verdict(
 
 /// Never infer cleanup from a missing leader or signal an unauthenticated PGID; inability to inspect the group fails closed.
 pub(crate) fn group_stopped(artifacts: &super::SpawnArtifacts) -> Result<bool> {
-    let boot = crate::proc_identity::read_boot_id()
-        .ok_or_else(|| CalmError::Conflict("gate cleanup boot identity unavailable".into()))?;
-    if boot != artifacts.boot_id {
-        return Ok(true);
-    }
-    if artifacts.pgid <= 1 {
-        return Err(CalmError::Conflict(
-            "gate cleanup group identity invalid".into(),
-        ));
-    }
-    for entry in std::fs::read_dir("/proc")? {
-        let entry = entry?;
-        if entry.file_name().to_string_lossy().parse::<i32>().is_err() {
-            continue;
-        }
-        let stat = match std::fs::read_to_string(entry.path().join("stat")) {
-            Ok(stat) => stat,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error.into()),
-        };
-        let fields = crate::proc_identity::parse_proc_stat_fields(&stat).ok_or_else(|| {
-            CalmError::Conflict("gate cleanup process identity unreadable".into())
-        })?;
-        if fields.pgrp == artifacts.pgid && fields.state != 'Z' && fields.state != 'X' {
-            return Ok(false);
-        }
-    }
-    Ok(true)
+    group_stopped_in(Path::new("/proc"), artifacts, |_| true)
 }
 
 pub(crate) async fn wait_group_stopped(artifacts: &super::SpawnArtifacts) -> Result<()> {
@@ -358,6 +331,31 @@ pub(crate) fn marked_group_stopped(
     artifacts: &super::SpawnArtifacts,
     op_marker: &str,
 ) -> Result<bool> {
+    group_stopped_in(Path::new("/proc"), artifacts, |pid| {
+        marked_member_blocks(pid, op_marker)
+    })
+}
+
+/// Fail closed on an unreadable live member: `Present` (proven ours) OR `Unreadable` (live but
+/// environ hidden — cannot be proven foreign) both block the wait; only a proven-`Foreign` member
+/// (readable without the marker, or already gone) is passed over.
+fn marked_member_blocks(pid: i32, op_marker: &str) -> bool {
+    match crate::proc_identity::proc_env_marker(pid, "NEIGE_GATE_OP", op_marker) {
+        crate::proc_identity::MarkerAuth::Present
+        | crate::proc_identity::MarkerAuth::Unreadable => true,
+        crate::proc_identity::MarkerAuth::Foreign => false,
+    }
+}
+
+/// One pass over `proc_root` (`/proc` in production): `Ok(false)` while a live (not `Z`/`X`)
+/// process in the recorded pgid for which `blocks` holds is listed. Another boot's group is
+/// stopped; an entry that vanished mid-scan (`ENOENT`/`ESRCH`) is skipped; an invalid pgid, an
+/// unreadable listing, any other `stat` read error or an unparseable `stat` is `Err`.
+fn group_stopped_in(
+    proc_root: &Path,
+    artifacts: &super::SpawnArtifacts,
+    blocks: impl Fn(i32) -> bool,
+) -> Result<bool> {
     let boot = crate::proc_identity::read_boot_id()
         .ok_or_else(|| CalmError::Conflict("gate cleanup boot identity unavailable".into()))?;
     if boot != artifacts.boot_id {
@@ -368,28 +366,25 @@ pub(crate) fn marked_group_stopped(
             "gate cleanup group identity invalid".into(),
         ));
     }
-    for entry in std::fs::read_dir("/proc")? {
+    for entry in std::fs::read_dir(proc_root)? {
         let entry = entry?;
         let Ok(pid) = entry.file_name().to_string_lossy().parse::<i32>() else {
             continue;
         };
         let stat = match std::fs::read_to_string(entry.path().join("stat")) {
             Ok(stat) => stat,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) if calm_worker_runtime::proc_entry_vanished(&error) => continue,
             Err(error) => return Err(error.into()),
         };
         let fields = crate::proc_identity::parse_proc_stat_fields(&stat).ok_or_else(|| {
             CalmError::Conflict("gate cleanup process identity unreadable".into())
         })?;
-        if fields.pgrp == artifacts.pgid && fields.state != 'Z' && fields.state != 'X' {
-            // Fail closed on an unreadable live member: `Present` (proven ours) OR `Unreadable`
-            // (live but environ hidden — cannot be proven foreign) both block the wait; only a
-            // proven-`Foreign` member (readable without the marker, or already gone) is passed over.
-            match crate::proc_identity::proc_env_marker(pid, "NEIGE_GATE_OP", op_marker) {
-                crate::proc_identity::MarkerAuth::Present
-                | crate::proc_identity::MarkerAuth::Unreadable => return Ok(false),
-                crate::proc_identity::MarkerAuth::Foreign => {}
-            }
+        if fields.pgrp == artifacts.pgid
+            && fields.state != 'Z'
+            && fields.state != 'X'
+            && blocks(pid)
+        {
+            return Ok(false);
         }
     }
     Ok(true)
@@ -416,5 +411,90 @@ pub(crate) fn kill(artifacts: &super::SpawnArtifacts) {
         &artifacts.boot_id,
     ) {
         crate::proc_identity::signal_process_group(artifacts.pgid, libc::SIGKILL);
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::{group_stopped_in, marked_member_blocks};
+    use crate::operation::SpawnArtifacts;
+    use calm_worker_runtime::test_support::{ChildGuard, ReapedProcDir};
+    use std::os::unix::process::CommandExt as _;
+    use std::process::Command;
+
+    const MARKER: &str = "w:reaped#g1";
+
+    fn artifacts(pgid: i32) -> SpawnArtifacts {
+        SpawnArtifacts {
+            pid: 2_000_000_003,
+            pgid,
+            start_time: 0,
+            boot_id: crate::proc_identity::read_boot_id().expect("boot id"),
+            log_path: None,
+            extra: serde_json::json!({}),
+        }
+    }
+
+    /// Any host process reaped between the `/proc` listing and the read of its `stat` fails that
+    /// read with ESRCH, not ENOENT (#1793). The race is pinned without timing: a fake proc root
+    /// entry resolves, through `/proc/self/fd`, to the held `/proc/<pid>` directory of a child that
+    /// is already reaped, so reading its `stat` is ESRCH every time. Such an entry is not a live
+    /// member of any group: both the plain and the marked stop predicates count the group stopped,
+    /// and a live marked member listed beside it still holds the group running.
+    #[test]
+    fn a_process_reaped_mid_scan_is_not_a_cleanup_failure() {
+        let reaped = ReapedProcDir::new();
+        let live = ChildGuard::spawn(
+            Command::new("sleep")
+                .arg("300")
+                .env("NEIGE_GATE_OP", MARKER)
+                .process_group(0),
+        );
+        let live_pid = live.pid();
+        // `spawn` can return while the child is still inside execve, when its environ reads empty
+        // (so `Foreign`); the live-member case below needs the marker actually visible.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while crate::proc_identity::proc_env_marker(live_pid, "NEIGE_GATE_OP", MARKER)
+            != crate::proc_identity::MarkerAuth::Present
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the live sleeper's environ never showed the marker"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        let vanished_only = tempfile::tempdir().expect("tempdir");
+        let with_live = tempfile::tempdir().expect("tempdir");
+        for root in [vanished_only.path(), with_live.path()] {
+            std::os::unix::fs::symlink(reaped.path(), root.join(reaped.pid.to_string()))
+                .expect("symlink reaped");
+        }
+        std::os::unix::fs::symlink(
+            format!("/proc/{live_pid}"),
+            with_live.path().join(live_pid.to_string()),
+        )
+        .expect("symlink live");
+
+        let read =
+            std::fs::read_to_string(vanished_only.path().join(format!("{}/stat", reaped.pid)));
+        assert_eq!(
+            read.as_ref().map_err(std::io::Error::raw_os_error).err(),
+            Some(Some(libc::ESRCH)),
+            "the fixture must reproduce the reaped-mid-scan read: {read:?}"
+        );
+        let plain = group_stopped_in(vanished_only.path(), &artifacts(live_pid), |_| true);
+        assert!(matches!(plain, Ok(true)), "{plain:?}");
+        let marked = group_stopped_in(vanished_only.path(), &artifacts(live_pid), |pid| {
+            marked_member_blocks(pid, MARKER)
+        });
+        assert!(matches!(marked, Ok(true)), "{marked:?}");
+        let held_live = group_stopped_in(with_live.path(), &artifacts(live_pid), |pid| {
+            marked_member_blocks(pid, MARKER)
+        });
+        assert!(
+            matches!(held_live, Ok(false)),
+            "a live marked member must still hold the group: {held_live:?}"
+        );
     }
 }

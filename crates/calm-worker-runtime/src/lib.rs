@@ -19,6 +19,14 @@ pub enum Error {
 }
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Did a `/proc/<pid>/…` read fail only because the process is gone? A process reaped after the
+/// `/proc` listing fails the path lookup with `ENOENT`, but one reaped between the open and the
+/// read of its file (or while its directory is held) fails with `ESRCH`. Either way it is not a
+/// live process, so a scan skips it rather than failing.
+pub fn proc_entry_vanished(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::NotFound || error.raw_os_error() == Some(libc::ESRCH)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Mount {
     pub source: PathBuf,
@@ -95,6 +103,8 @@ mod linux;
 mod runtime;
 #[cfg(target_os = "linux")]
 mod storage;
+#[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+pub mod test_support;
 #[cfg(target_os = "linux")]
 mod transport;
 
