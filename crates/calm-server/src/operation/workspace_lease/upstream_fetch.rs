@@ -97,7 +97,11 @@ pub(crate) const FETCH_ENV: [(&str, &str); 4] = [
 /// `XDG_CONFIG_HOME` already locate (4140: HTTPS remotes, `gh auth git-credential`). Not
 /// inherited, so none reaches the hook the kernel-ref write runs: `SSH_AUTH_SOCK` (an agent
 /// socket is a live credential; no attached repository uses an SSH remote), `GIT_SSH_COMMAND`,
-/// token variables.
+/// token variables. Also deliberately dropped: the TLS trust variables (`SSL_CERT_FILE`,
+/// `SSL_CERT_DIR`, `GIT_SSL_CAINFO`, `CURL_CA_BUNDLE`), `GH_CONFIG_DIR`, the keyring / D-Bus
+/// session, and everything SSH. A fetch that needs one fails soft (a `warn!`, the backoff, and the
+/// lease falls back to the last known upstream). 4140 was verified not to need them: both remotes
+/// are https, `gh` keeps its token in `hosts.yml`, and `http.proxy` is set in the global gitconfig.
 pub(crate) const FETCH_NETWORK_ENV: [&str; 7] = [
     "http_proxy",
     "https_proxy",

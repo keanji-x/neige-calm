@@ -217,9 +217,10 @@ fn workspace_worktree_remove_hook_sees_only_the_allowlisted_environment() {
 /// The parent variable the hook-environment tests plant; it must never reach repository code.
 pub(super) const ENV_SENTINEL: &str = "NEIGE_LEASE_ENV_SENTINEL";
 
-/// Sets a variable of this test process and restores the previous value on drop. `cargo nextest`
-/// (what CI and the local gate run) gives each test its own process; the restore keeps a
-/// shared-process runner honest.
+/// Sets a variable of this test process and restores the previous value on drop. Correct under
+/// `cargo nextest`'s process-per-test model, the documented runner (CI and the local gate). Under a
+/// shared-process runner it is not: two concurrent tests setting the same variable can see each
+/// other's value and restore the wrong one.
 pub(super) struct EnvVar(&'static str, Option<std::ffi::OsString>);
 
 impl EnvVar {
