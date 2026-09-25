@@ -299,24 +299,24 @@ pub(crate) fn parse(argv: &[String]) -> Result<Parsed, Usage> {
         };
         return Err(fail(message, json));
     }
-    for (index, spec) in command.positionals.iter().enumerate() {
+    for (index, slot) in command.positionals.iter().enumerate() {
         match positionals.get(index) {
             Some(value) => {
-                if let Some(opt) = command.options.iter().find(|o| o.key == spec.key)
-                    && args.contains_key(spec.key)
+                if let Some(opt) = command.options.iter().find(|o| o.key == slot.key)
+                    && args.contains_key(slot.key)
                 {
                     return Err(fail(
                         format!(
                             "{cmd} accepts either positional {} or {}, not both",
-                            spec.key, opt.flag
+                            slot.key, opt.flag
                         ),
                         json,
                     ));
                 }
-                args.insert(spec.key.into(), Value::String(value.clone()));
+                args.insert(slot.key.into(), Value::String(value.clone()));
             }
             None => {
-                if let Some(missing) = spec.missing {
+                if let Some(missing) = slot.missing {
                     return Err(fail(missing.to_string(), json));
                 }
             }
@@ -365,5 +365,4 @@ fn missing_command() -> String {
 }
 
 #[cfg(test)]
-#[path = "commands_tests.rs"]
 mod tests;

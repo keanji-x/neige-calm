@@ -219,7 +219,7 @@ Planner（codex 和 claude 两种）、终端 PTY、claude worker 的 `neige tas
 | T1、T2、T3、T11、T12 | `crates/calm-server/tests/cases/neige_cli_fence.rs`（`mcp_core_suite`）；T3 的 shim 一腿就是同 suite 已有的 `mcp_shim_round_trip::shim_round_trip_initialize_and_tools_call_completes`，它经过同一个 `handle_initialize` | `-p calm-server --test mcp_core_suite -E 'test(neige_cli_fence) \| test(mcp_shim_round_trip)'` |
 | T4、T5、T8、T13 | `crates/calm-server/tests/cases/neige_cli_commands.rs`（`mcp_core_suite`） | `-p calm-server --test mcp_core_suite neige_cli_commands` |
 | T15 | `crates/calm-server/tests/cases/mcp_emit_tools.rs`（`mcp_core_suite`） | `-p calm-server --test mcp_core_suite task_fail_rejects_blank_reason` |
-| T9、迁入的解析单测、`kernel_exit_codes_are_exactly_0_1_4`、渲染规则单测 | `crates/calm-server/src/mcp_server/cli/{commands,mod,render}.rs` | `-p calm-server --lib mcp_server::cli` |
+| T9、迁入的解析单测、`kernel_exit_codes_are_exactly_0_1_4`、渲染规则单测 | `crates/calm-server/src/mcp_server/cli/{commands/tests,mod,render}.rs` | `-p calm-server --lib mcp_server::cli` |
 | T10 | `crates/calm-server/src/track_report_gate_guard.rs`（单测）与 `crates/calm-server/tests/cases/mcp_track_report_blocks.rs`（`mcp_integration_suite`） | `-p calm-server --lib track_report_gate_guard`；`-p calm-server --test mcp_integration_suite task_gate` |
 | T6、T7、T14 | `crates/neige-cli/tests/forwarder.rs` | `-p neige-cli` |
 | H3 `from_wire_label` | `crates/calm-truth/src/track_vcs/types.rs`（单测 `from_wire_label_inverts_wire_label_and_rejects_unknown`） | `-p calm-truth from_wire_label` |
