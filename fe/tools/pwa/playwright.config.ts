@@ -5,10 +5,13 @@ import base from '../../playwright.config.ts';
 const port = Number(process.env.FE_DEV_PORT ?? 5287);
 
 // Exercise the shipped assets as well as the dev server covered by `npm run e2e`.
-export default defineConfig(base, {
+// Use one config object: defineConfig(base, overrides) concatenates webServers
+// and would also start the dev server (colliding when FE_DEV_PORT is provided).
+export default defineConfig({
+  ...base,
   testDir: '../../e2e',
   testMatch: 'pwa.spec.ts',
-  use: { baseURL: `http://127.0.0.1:${port}` },
+  use: { ...base.use, baseURL: `http://127.0.0.1:${port}` },
   webServer: {
     command: `npm run build && npx vite preview --host 127.0.0.1 --port ${port} --strictPort`,
     cwd: fileURLToPath(new URL('../..', import.meta.url)),
