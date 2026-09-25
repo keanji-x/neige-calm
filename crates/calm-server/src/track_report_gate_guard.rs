@@ -51,12 +51,11 @@ pub(crate) fn check_changed_task_gates(
     Ok(())
 }
 
-/// Recognize only direct, literal calls; `rg neige README.md` and quoted fixture data are valid
-/// verification inputs, not kernel capability requests. Every `neige` argv, help included, is served by
-/// the kernel over the socket gates lack (#1801), so the command after `neige` does not matter.
+/// One rule: a literal `neige` executable is a direct call, whatever its arguments, dynamic ones and
+/// `--version` included; gates have no socket, so no such call can do its job there (#1801).
+/// `rg neige README.md` and quoted fixture data are valid verification inputs, not kernel calls.
 fn direct_kernel_cli(command: &str) -> bool {
-    shell::first_literal_command(command)
-        .and_then(|words| words.into_iter().next())
+    shell::first_literal_word(command)
         .is_some_and(|executable| executable.rsplit('/').next() == Some("neige"))
 }
 
@@ -71,7 +70,8 @@ mod tests {
 
     use super::direct_kernel_cli;
 
-    /// #1801: help and `--version` go through the same binary, so every literal `neige` call is a kernel call.
+    /// #1801: a literal `neige` executable is flagged whatever its arguments; only a non-literal
+    /// executable or a different command passes.
     #[test]
     fn every_direct_neige_call_is_a_kernel_call_including_help() {
         for cmd in [
@@ -97,12 +97,15 @@ mod tests {
             "neige help cat",
             "neige snow",
             "neige",
+            "neige $command",
+            "neige cat \"$F\"",
+            "neige cat $(printf -- --help)",
         ] {
             assert!(direct_kernel_cli(cmd), "missed {cmd}");
         }
         for cmd in [
-            "neige $command",
-            "neige cat $(printf -- --help)",
+            "$NEIGE cat plan/build/output",
+            "$(which neige) state",
             "rg neige README.md",
             "printf '%s' 'neige cat plan/build/output'",
             "python3 -m unittest discover",
