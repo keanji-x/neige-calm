@@ -376,3 +376,81 @@ async fn boot_after_a_crash_records_interrupted_or_re_drains_and_keeps_settled_o
         "the settled outcome is kept"
     );
 }
+
+/// #1791 PR4 review: a revocation under a live harness (a deletion that aborts at its sweep and
+/// whose harness stays installed) nulls the row's hash; the harness's next spawn re-mints instead
+/// of carrying a credential that no longer authenticates.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_live_harness_whose_row_was_revoked_re_mints_before_its_next_spawn() {
+    let root = Root::new("exit");
+    let stack = Stack::boot(&root).await;
+    let (track_id, card_id) = stack.create_claude_track().await;
+    let (_, token) = stack.run_turn(&root, &card_id, "exit", "hello").await;
+    let runtime = stack.runtime(&card_id).await;
+    let host = stack.state.claude_planner_wiring().host;
+    calm_server::claude_planner::lifecycle::sweep_track(stack.repo(), &host, &track_id)
+        .await
+        .expect("revoke then sweep");
+    assert!(!stack.token_authenticates(&token).await);
+    assert!(
+        stack.state.harness.get(&runtime.id).is_some(),
+        "the same harness stays Live"
+    );
+
+    let (outcome, new_token) = stack.run_turn(&root, &card_id, "exit", "after").await;
+    assert_eq!(outcome["status"], "completed");
+    assert_ne!(new_token, token, "the next spawn re-minted");
+    assert!(stack.token_authenticates(&new_token).await);
+}
+
+/// #1791 PR4 review: a Claude reset whose spawn step fails after the card's binding became
+/// unreadable still compensates completely (the stop/interrupt step does not depend on the
+/// binding), so the old row is restored.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_reset_compensates_even_when_the_binding_became_unreadable() {
+    let root = Root::new("exit");
+    let stack = Stack::boot(&root).await;
+    let (_track, card_id) = stack.create_claude_track().await;
+    stack.run_turn(&root, &card_id, "exit", "hello").await;
+    let old = stack.runtime(&card_id).await;
+
+    let failure = claude_spawn_failure::arm(&card_id);
+    let reset = {
+        let app = stack.app.clone();
+        let card_id = card_id.clone();
+        tokio::spawn(async move {
+            use axum::body::Body;
+            use axum::http::Request;
+            use tower::ServiceExt;
+            app.oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/cards/{card_id}/planner/reset"))
+                    .header("x-calm-actor", "user")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+        })
+    };
+    tokio::time::timeout(BUDGET, failure.entered.notified())
+        .await
+        .expect("the reset reached the spawn");
+    sqlx::query(
+        "UPDATE cards SET payload = json_set(payload, '$.planner_provider', 'unknown') WHERE id = ?1",
+    )
+    .bind(&card_id)
+    .execute(&stack.repo().sqlite_pool().expect("pool"))
+    .await
+    .expect("corrupt the binding");
+    failure.release.notify_one();
+    let status = reset.await.expect("reset task");
+    assert!(!status.is_success(), "{status}");
+    assert_eq!(
+        stack.runtime(&card_id).await.id,
+        old.id,
+        "compensation ran to the end and restored the old row"
+    );
+}

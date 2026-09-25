@@ -427,9 +427,11 @@ impl ClaudePlannerSession {
             proxy: &params.proxy,
         });
         config.verify_version(&env).await?;
+        // A revocation (a deletion that then aborted, §5.1 item 4) nulls the row's hash under a live
+        // harness; its next spawn must not carry a credential that no longer authenticates.
         let token = match token {
-            Some(token) => token,
-            None => self.mint_mcp_token().await?,
+            Some(token) if self.row_hash_present().await? => token,
+            _ => self.mint_mcp_token().await?,
         };
         stop(&host.instance, &params.worker_session_id).await?;
 
@@ -538,10 +540,24 @@ impl ClaudePlannerSession {
         Ok(turn_id)
     }
 
+    /// Whether the worker-session row still carries an MCP hash.
+    async fn row_hash_present(&self) -> Result<bool> {
+        let params = &self.shared.params;
+        let row = params
+            .repo
+            .session_get(&WorkerSessionId(params.worker_session_id.clone()))
+            .await?
+            .ok_or_else(|| {
+                CalmError::NotFound(format!("worker session {}", params.worker_session_id))
+            })?;
+        Ok(row.mcp_token_hash.is_some())
+    }
+
     /// The harness's first-turn credential (§5.1 item 2): card row and session hash in one
     /// transaction, the session write guarded on the row still being active. Runs under the
     /// issuance lock, after the install and shutdown checks, so it happens at most once per harness
-    /// and never after a shutdown; the plaintext stays in this session.
+    /// and never after a shutdown (again only if a revocation nulled the row's hash); the plaintext stays
+    /// in this session.
     async fn mint_mcp_token(&self) -> Result<String> {
         let params = &self.shared.params;
         let card_id = params.card_id.clone();

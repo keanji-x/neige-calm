@@ -262,6 +262,10 @@ arm, run the failing phase, clear, run the next phase. It is never consulted by 
    next first-turn mint. The writer and activation list is companion S38. No production reader of
    `card_mcp_tokens` authenticates a Claude Planner (the handshake reads session rows only), so the card
    row needs no revocation.
+   *PR4 amendment:* a spawn whose row hash was nulled under a live harness (a revocation by an aborted
+   deletion that left the harness installed) re-mints through the same guarded writer before spawning;
+   a session that was never installed (an install-race loser) signals nothing on shutdown, since its id
+   may carry the winner's live turn.
 3. **Every turn ends with `stop`** (settlement order below) and every retirement of a Claude id
    (supersede, shutdown, deletion) calls `stop(id)` **whether or not the id is registered** — the table
    below is only the caller list.
@@ -277,9 +281,15 @@ arm, run the failing phase, clear, run the next phase. It is never consulted by 
    Id set: `session_list_by_track` (`crates/calm-truth/src/db/sqlite/session_repo_impl.rs:154`, no state
    filter) filtered to `(claude, planner)`; a card filters by `card_id`; an area iterates its tracks
    (`routes/areas.rs:401`).
+   *PR4 amendment:* for track and area deletion the revoke-then-sweep runs after the threads are sealed
+   and before the harness shutdowns (oracle row 15), so a stop that fails in a shutdown cannot abort the
+   deletion before the revocation.
 5. **Outcome.** Recovery records `interrupted` for `snapshot.last_turn_id` (idempotent SELECT-then-INSERT,
    `crates/calm-truth/src/db/sqlite/out_of_domain.rs:423-434`; precedent
    `shared_codex_appserver/preserving_recovery.rs:120-160`).
+   *PR4 amendment:* only when the snapshot's phase says a turn may still have been running
+   (`TurnRunning`, `IssuingInterrupt`, `Resumed`): a settled phase means the outcome was recorded, and a
+   reset's transcript clear may since have removed it, which is no reason to invent one.
 
 | Caller | Where | On `Err` |
 |---|---|---|
@@ -627,6 +637,9 @@ image message, interrupt, restart, resume, delete; `ps` shows no Planner `claude
 - Planner card `kind: "codex"` is a legacy view name.
 - `ToolSearch` schema reload per resume unmeasured.
 - A tool_result line carrying several results loses the per-result structured payload (never recorded).
+- Plugin calm tools keep the Claude spelling `mcp__calm__<sanitized>` in the transcript: the dotted name is
+  restored only from the kernel's Planner tool descriptors (`claude_planner/config.rs:106-111`,
+  `claude_planner/translate.rs:305-311` keeps an unknown name and warns).
 
 ### 9.4 Risks and conflicts
 

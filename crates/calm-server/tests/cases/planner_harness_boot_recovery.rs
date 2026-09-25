@@ -2794,3 +2794,67 @@ async fn the_give_back_keeps_a_pre_upgrade_sentence_it_cannot_identify() {
         "premise: what WAS returned is pruned from the failing runtime"
     );
 }
+
+/// #1791 PR4 review: with the Codex daemon down at boot, the Claude-only boot pass must never keep
+/// deferred Codex recovery from being armed — here that pass's read fails (the recoverable-runtime
+/// table is briefly unreadable), and the deferred pass still recovers the Codex Planner.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failing_claude_boot_pass_still_arms_deferred_codex_recovery() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let worker_session_id =
+        seed_recoverable_runtime(&repo, "claude-pass-fails", "thread-codex").await;
+    let daemon = SharedCodexAppServer::new_stub_with_pending(repo.clone(), None);
+    let state = AppState::from_parts(
+        repo.clone(),
+        EventBus::new(),
+        Arc::new(DaemonClient::new_stub()),
+        Arc::new(PluginHost::new_full(
+            Arc::new(PluginRegistry::empty()),
+            repo.clone(),
+            std::path::PathBuf::new(),
+            std::env::temp_dir().join("calm-plugins-data-claude-pass-fails"),
+            Vec::new(),
+            EventBus::new(),
+            WriteContext::new(
+                repo.card_role_cache().clone(),
+                repo.track_area_cache().clone(),
+            ),
+        )),
+        Arc::new(CodexClient::new_stub()),
+        Some(repo.card_role_cache().clone()),
+        Some(repo.track_area_cache().clone()),
+    )
+    .with_shared_codex_appserver(daemon.clone());
+
+    sqlx::query("ALTER TABLE worker_sessions RENAME TO worker_sessions_hidden")
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    let boot = calm_server::recover_harnesses_after_daemon_boot(
+        &state,
+        Err(CalmError::Internal(
+            "fixture: the shared codex daemon is down".into(),
+        )),
+    )
+    .await;
+    sqlx::query("ALTER TABLE worker_sessions_hidden RENAME TO worker_sessions")
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    assert!(
+        boot.is_err(),
+        "the Claude-only pass could not read its rows"
+    );
+    // The daemon heals.
+    daemon.publish_readiness_for_test(1, true);
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while state.harness.get(&worker_session_id).is_none() {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("deferred Codex recovery was armed and recovered the Codex Planner");
+    let handle = state.harness.remove(&worker_session_id).expect("recovered");
+    handle.shutdown().await.unwrap();
+}

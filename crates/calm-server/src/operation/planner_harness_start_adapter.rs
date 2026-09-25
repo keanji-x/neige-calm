@@ -1581,31 +1581,25 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 Ok(())
             }
             "interrupt_thread" => {
-                let card_id = step.arg_string("card_id", "planner harness")?;
-                let claude = match ctx.repo.card_get(&card_id).await? {
-                    Some(card) => {
-                        startable_provider(op_profile(_op)?, &card)? == AgentProvider::Claude
-                    }
-                    None => false,
-                };
-                if claude {
-                    // #1791 §4.1 row 13: the Claude session is stopped by this operation's runtime id; a failure is logged and
-                    // left to the boot sweep or the next destructive step's scoped sweep.
-                    let worker_session_id =
-                        _output.output_string("runtime_id", "planner harness")?;
-                    if let Err(e) = crate::claude_planner::stop::stop(
+                // Both cleanups, whatever the card's binding says now (it may no longer be readable): a Claude stop by this
+                // operation's runtime id signals nothing when nothing carries its marker, and a Codex interrupt of a thread the
+                // daemon does not run is a no-op. Failures are logged; the compensation goes on (#1791 §4.1 row 13).
+                if let Ok(worker_session_id) =
+                    _output.output_string("runtime_id", "planner harness")
+                    && let Err(e) = crate::claude_planner::stop::stop(
                         &self.claude_host.instance,
                         &worker_session_id,
                     )
                     .await
-                    {
-                        tracing::warn!(worker_session_id, error = %e, "planner harness compensation stop failed");
-                    }
-                } else if let Some(thread_id) = step.args.get("thread_id").and_then(Value::as_str)
+                {
+                    tracing::warn!(worker_session_id, error = %e, "planner harness compensation stop failed");
+                }
+                if let Some(thread_id) = step.args.get("thread_id").and_then(Value::as_str)
                     && let Err(e) = self.daemon.interrupt_active_turn(thread_id).await
                 {
                     tracing::warn!(thread_id, error = %e, "planner harness compensation interrupt failed");
                 }
+                let card_id = step.arg_string("card_id", "planner harness")?;
                 clear_card_runtime_fields(ctx, &card_id).await?;
                 Ok(())
             }

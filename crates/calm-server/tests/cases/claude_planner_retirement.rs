@@ -429,3 +429,65 @@ async fn a_delete_during_a_held_spawn_does_not_complete_while_a_marked_process_l
     assert!(root.marked_pids(&runtime.id).is_empty());
     assert!(stack.repo().track_get(&track_id).await.unwrap().is_none());
 }
+
+/// #1791 PR4 review: an area deletion revokes then sweeps the Claude Planner ids of its tracks, in
+/// any state, before anything moves: with the stop seam armed it aborts with the credentials
+/// revoked and the harness reinstalled (which mints on its next turn); retried, it leaves no
+/// marked process of a superseded row behind.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_area_deletion_revokes_and_sweeps_its_tracks_claude_planners() {
+    let root = Root::new("exit");
+    let stack = Stack::boot(&root).await;
+    let (track_id, card_id) = stack.create_claude_track().await;
+    let area_id = stack
+        .repo()
+        .track_get(&track_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .area_id;
+    let old = stack.runtime(&card_id).await;
+    let (status, body) = stack.reset(&card_id).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, token) = stack.run_turn(&root, &card_id, "exit", "hello").await;
+    let current = stack.runtime(&card_id).await;
+    root.spawn_marked_orphan(&old.id);
+
+    fail_claude_planner_stop_for_test(&current.id);
+    let (status, body) = stack
+        .send("DELETE", &format!("/api/areas/{area_id}"), None)
+        .await;
+    assert!(
+        !status.is_success(),
+        "the area delete aborts: {status} {body}"
+    );
+    assert!(stack.repo().track_get(&track_id).await.unwrap().is_some());
+    assert!(
+        !stack.token_authenticates(&token).await,
+        "revoked before the abort"
+    );
+    assert!(
+        stack.state.harness.get(&current.id).is_some(),
+        "reinstalled"
+    );
+    assert_eq!(
+        root.marked_pids(&old.id).len(),
+        1,
+        "the seam signalled nothing"
+    );
+
+    clear_claude_planner_stop_failure_for_test(&current.id);
+    let (outcome, new_token) = stack.run_turn(&root, &card_id, "exit", "again").await;
+    assert_eq!(outcome["status"], "completed");
+    assert!(stack.token_authenticates(&new_token).await);
+
+    let (status, body) = stack
+        .send("DELETE", &format!("/api/areas/{area_id}"), None)
+        .await;
+    assert!(status.is_success(), "{status} {body}");
+    assert!(
+        root.marked_pids(&old.id).is_empty(),
+        "the superseded row's process is gone"
+    );
+    assert!(root.marked_pids(&current.id).is_empty());
+}

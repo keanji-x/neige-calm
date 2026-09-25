@@ -635,16 +635,16 @@ pub async fn recover_harnesses_after_daemon_boot(
                 error = %e,
                 "shared codex app-server start/takeover failed; continuing boot"
             );
-            // A Claude Planner does not need the daemon: its rows are recovered now.
-            let recovered = state
-                .recover_harnesses_on_boot(harness::BootRows::ClaudePlannersOnly)
-                .await?;
             // Deferred, not skipped forever: the first observed Running triggers a claim-based recovery
-            // pass that never stomps a runtime the user resumed in the meantime.
+            // pass that never stomps a runtime the user resumed in the meantime. Armed first, so the
+            // Claude pass below can never keep Codex recovery from being armed.
             tracing::warn!("deferring planner harness recovery until the shared daemon self-heals");
             // The JoinHandle is intentionally detached: the task owns every part it needs.
             state.arm_deferred_harness_recovery();
-            Ok(recovered)
+            // A Claude Planner does not need the daemon: its rows are recovered now.
+            state
+                .recover_harnesses_on_boot(harness::BootRows::ClaudePlannersOnly)
+                .await
         }
     }
 }
