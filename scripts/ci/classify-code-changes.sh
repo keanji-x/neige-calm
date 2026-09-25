@@ -86,7 +86,7 @@ while IFS= read -r -d '' path; do
         crates/calm-server/tests/fixtures/osc-probe-child/*) relevant=true ;;
         crates/*/tests/*|crates/*/benches/*) ;;
         crates/*/src/*|crates/*/migrations/*|plugins/*|Cargo.toml|Cargo.lock|*/Cargo.toml|rust-toolchain|rust-toolchain.toml|docker/*|docker-compose.yml|Makefile) relevant=true ;;
-        fe/e2e/*|fe/package.json|fe/package-lock.json|fe/vite.config.*|fe/web/index.html) relevant=true ;;
+        fe/e2e/*|fe/package.json|fe/package-lock.json|fe/vite.config.*|fe/tools/pwa/vite-plugin.ts|fe/web/index.html|fe/web/public/*) relevant=true ;;
         fe/*.test.*|fe/*.spec.*|fe/*/tests/*|fe/*/__tests__/*|fe/tools/*) ;;
         fe/*) relevant=true ;;
         web/*|scripts/*|e2e/*|rustfmt.toml|.cargo/*|.config/*) ;;
@@ -101,7 +101,7 @@ while IFS= read -r -d '' path; do
         crates/*/tests/*|crates/*/benches/*) ;;
         crates/*/src/*|crates/*/migrations/*|plugins/*|Cargo.toml|Cargo.lock|*/Cargo.toml|rust-toolchain|rust-toolchain.toml) relevant=true ;;
         docker/*|docker-compose.yml|Makefile|e2e/*) relevant=true ;;
-        fe/package.json|fe/package-lock.json|fe/vite.config.*|fe/web/index.html|web/package.json|web/package-lock.json|web/vite.config.*|web/index.html) relevant=true ;;
+        fe/package.json|fe/package-lock.json|fe/vite.config.*|fe/tools/pwa/vite-plugin.ts|fe/web/index.html|fe/web/public/*|web/package.json|web/package-lock.json|web/vite.config.*|web/index.html) relevant=true ;;
         fe/*|web/*|scripts/*|rustfmt.toml|.cargo/*|.config/*) ;;
         *) relevant=true ;;
       esac

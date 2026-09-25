@@ -44,7 +44,7 @@ neige-calm-0.1.0-alpha.1-linux-x86_64/
     ├── bin/{neige-app,calm-server,calm-proc-supervisor,
     │        neige-codex-bridge,neige-mcp-stdio-shim,neige}
     └── web/dist/
-        └── next/{index.html,assets/...} # new /next/
+        └── next/{index.html,assets/...,manifest.webmanifest,icons/...} # new /next/
 ```
 
 `web/dist/next` is included in the **Web manifest unit and hashes** as the

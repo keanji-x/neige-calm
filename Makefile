@@ -223,7 +223,7 @@ $(FE_NODE_MODULES_STAMP): $(WORKTREE)/fe/package-lock.json
 	@$(CHECK_FE_NODE)
 	cd $(WORKTREE)/fe && npm ci
 
-$(FE_DIST): $(shell find $(WORKTREE)/fe/core $(WORKTREE)/fe/web/src -type f 2>/dev/null) $(WORKTREE)/fe/package.json $(WORKTREE)/fe/vite.config.ts $(WORKTREE)/fe/web/index.html $(FE_NODE_MODULES_STAMP)
+$(FE_DIST): $(shell find $(WORKTREE)/fe/core $(WORKTREE)/fe/web/src $(WORKTREE)/fe/web/public -type f 2>/dev/null) $(WORKTREE)/fe/package.json $(WORKTREE)/fe/vite.config.ts $(WORKTREE)/fe/tools/pwa/vite-plugin.ts $(WORKTREE)/fe/web/index.html $(FE_NODE_MODULES_STAMP)
 	@$(CHECK_FE_NODE)
 	cd $(WORKTREE)/fe && npm run build
 
