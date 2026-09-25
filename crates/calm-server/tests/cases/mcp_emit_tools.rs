@@ -12,8 +12,8 @@ use tokio::time::timeout;
 use crate::support;
 
 use support::mcp::{
-    CardBoot, TEST_BUDGET, boot_with_role, connect, handshake, recv_frame, send_frame,
-    tools_call_frame, wait_for_kind,
+    CardBoot, TEST_BUDGET, boot_with_role, cli_output, connect, handshake, neige_cli_via_socket,
+    recv_frame, send_frame, tools_call_frame, wait_for_kind,
 };
 
 async fn boot_track(b: &CardBoot) -> Track {
@@ -459,6 +459,69 @@ async fn task_failed_emits_task_failed_with_worker_actor() {
         other => panic!("expected TaskFailed; got {other:?}"),
     }
     let _ = (&b.server, &b.repo);
+}
+
+async fn task_failed_event_count(b: &CardBoot) -> i64 {
+    let pool = b.repo.sqlite_pool().expect("sqlite pool");
+    sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'task.failed'")
+        .fetch_one(&pool)
+        .await
+        .expect("count task.failed events")
+}
+
+/// #1801 F5: the tool is the one source for the blank-reason rule; MCP and `neige task-failed` both meet it.
+#[tokio::test]
+async fn task_fail_rejects_blank_reason() {
+    let b = boot_with_role(CardRole::Worker).await;
+    let (mut rd, mut wr) = connect(&b.socket_path).await;
+    handshake(&mut rd, &mut wr, &b.raw_token).await;
+    for (id, reason) in [(40, ""), (41, "  "), (42, "\t\n")] {
+        send_frame(
+            &mut wr,
+            tools_call_frame_no_thread(
+                id,
+                "calm.task.fail",
+                json!({"idempotency_key": "tf-blank", "reason": reason}),
+            ),
+        )
+        .await;
+        let resp = recv_frame(&mut rd).await;
+        assert_eq!(
+            resp["error"]["code"],
+            json!(-32602),
+            "{reason:?}: {resp:#?}"
+        );
+        assert_eq!(
+            resp["error"]["message"],
+            json!("task_fail: missing `reason` (non-empty)"),
+            "{reason:?}"
+        );
+    }
+
+    let resp = neige_cli_via_socket(
+        &b.socket_path,
+        &b.raw_token,
+        &[
+            "task-failed",
+            "--idempotency-key",
+            "tf-blank",
+            "--reason",
+            "  ",
+        ],
+    )
+    .await;
+    let (stdout, stderr, exit) = cli_output(&resp);
+    assert_eq!(exit, 4, "stderr = {stderr}");
+    assert_eq!(stdout, "");
+    assert_eq!(
+        stderr,
+        "neige: calm.task.fail: task_fail: missing `reason` (non-empty) (code -32602)\n"
+    );
+    assert_eq!(
+        task_failed_event_count(&b).await,
+        0,
+        "a blank reason wrote an event"
+    );
 }
 
 #[tokio::test]

@@ -3,7 +3,8 @@
 //! These handlers are registered as wire-callable tools but use
 //! `visible_to_roles: &[]`, so they do not appear in `tools/list` for any
 //! role. Human-facing drill-in goes through `neige diff`, `neige cat-at`, and
-//! `neige log`; planner turns receive the summarized since-last-turn block.
+//! `neige log`, served by `mcp_server::cli`; planner turns receive the summarized
+//! since-last-turn block.
 
 use crate::ids::TrackId;
 use crate::mcp_server::framing::RpcError;

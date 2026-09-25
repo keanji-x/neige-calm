@@ -13,8 +13,8 @@ use super::{CommitHash, CommitRecord, ObjectHash, TreeManifest};
 const OBJECT_SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const OBJECT_SWEEP_GRACE_MS: i64 = 60 * 60 * 1000;
 pub(super) const TRACK_HISTORY_PRUNE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
-// Keep aligned with the existing `neige track-gc` default.
-pub(super) const DEFAULT_TRACK_HISTORY_PRUNE_KEEP: usize = 50;
+/// Commits the periodic pruner keeps per track; `neige track-gc`'s default `--keep` is this constant.
+pub const DEFAULT_TRACK_HISTORY_PRUNE_KEEP: usize = 50;
 pub(super) const TRACK_HISTORY_PRUNE_INTERVAL_SECS_ENV: &str = "NEIGE_TRACK_PRUNE_INTERVAL_SECS";
 pub(super) const TRACK_HISTORY_PRUNE_KEEP_ENV: &str = "NEIGE_TRACK_PRUNE_KEEP";
 

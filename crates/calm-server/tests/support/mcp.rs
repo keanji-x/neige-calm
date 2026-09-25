@@ -392,3 +392,78 @@ pub async fn wait_for_kind(
         }
     }
 }
+
+/// Frozen forwarding protocol v1 `initialize` line (docs/architecture/1801-kernel-served-cli.md §3.1), byte for byte.
+pub fn forward_initialize_line(token: &str) -> String {
+    format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"protocolVersion":"2024-11-05","capabilities":{{}},"clientInfo":{{"name":"neige-forward","version":"1"}},"_meta":{{"dev.neige/auth":{{"token":{}}}}}}}}}"#,
+        serde_json::to_string(token).unwrap()
+    )
+}
+
+/// Frozen forwarding protocol v1 `neige/cli` line, byte for byte.
+pub fn neige_cli_line(argv: &[&str]) -> String {
+    format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"neige/cli","params":{{"argv":{}}}}}"#,
+        serde_json::to_string(argv).unwrap()
+    )
+}
+
+pub async fn send_line(wr: &mut tokio::net::unix::OwnedWriteHalf, line: &str) {
+    wr.write_all(line.as_bytes()).await.expect("write line");
+    wr.write_all(b"\n").await.expect("write newline");
+    wr.flush().await.expect("flush line");
+}
+
+/// One forwarder connection: the frozen `initialize` (which must succeed), then one `neige/cli`; returns that response frame.
+pub async fn neige_cli_via_socket(
+    socket_path: &std::path::Path,
+    token: &str,
+    argv: &[&str],
+) -> Value {
+    let (mut rd, mut wr) = connect(socket_path).await;
+    send_line(&mut wr, &forward_initialize_line(token)).await;
+    let init = recv_frame(&mut rd).await;
+    assert!(
+        init.get("error").is_none(),
+        "forwarder initialize failed: {init:#?}"
+    );
+    send_line(&mut wr, &neige_cli_line(argv)).await;
+    recv_frame(&mut rd).await
+}
+
+/// `{stdout, stderr, exit}` of a successful `neige/cli` response.
+pub fn cli_output(resp: &Value) -> (String, String, i64) {
+    let result = resp
+        .get("result")
+        .unwrap_or_else(|| panic!("neige/cli returned a JSON-RPC error: {resp:#?}"));
+    (
+        result["stdout"]
+            .as_str()
+            .expect("stdout string")
+            .to_string(),
+        result["stderr"]
+            .as_str()
+            .expect("stderr string")
+            .to_string(),
+        result["exit"].as_i64().expect("exit integer"),
+    )
+}
+
+/// Direct `tools/call` on a card-bound connection without `_meta.threadId`: the same identity path `neige/cli` takes.
+pub async fn call_tool_card_bound(
+    socket_path: &std::path::Path,
+    token: &str,
+    name: &str,
+    args: Value,
+) -> Value {
+    let (mut rd, mut wr) = connect(socket_path).await;
+    handshake(&mut rd, &mut wr, token).await;
+    send_frame(
+        &mut wr,
+        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+               "params": {"name": name, "arguments": args}}),
+    )
+    .await;
+    recv_frame(&mut rd).await
+}

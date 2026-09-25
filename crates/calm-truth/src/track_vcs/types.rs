@@ -62,7 +62,15 @@ impl DiffStatus {
         }
     }
 
-    pub(super) fn observation_label(self) -> &'static str {
+    /// Inverse of [`Self::wire_label`]; any other label is not a diff status.
+    pub fn from_wire_label(label: &str) -> Option<Self> {
+        [Self::Added, Self::Deleted, Self::Modified]
+            .into_iter()
+            .find(|status| status.wire_label() == label)
+    }
+
+    /// Human-facing label shared by the since-last-turn block and `neige diff`.
+    pub fn observation_label(self) -> &'static str {
         match self {
             Self::Added => "new",
             Self::Deleted => "deleted",
@@ -190,4 +198,22 @@ pub(super) fn has_legacy_card_lens_paths(manifest: &TreeManifest) -> bool {
         .entries
         .keys()
         .any(|path| is_legacy_card_lens_path(path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DiffStatus;
+
+    #[test]
+    fn from_wire_label_inverts_wire_label_and_rejects_unknown() {
+        for status in [DiffStatus::Added, DiffStatus::Deleted, DiffStatus::Modified] {
+            assert_eq!(
+                DiffStatus::from_wire_label(status.wire_label()),
+                Some(status)
+            );
+        }
+        for label in ["", "new", "edited", "renamed", "Added"] {
+            assert_eq!(DiffStatus::from_wire_label(label), None, "{label:?}");
+        }
+    }
 }

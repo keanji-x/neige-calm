@@ -52,39 +52,12 @@ pub(crate) fn check_changed_task_gates(
 }
 
 /// Recognize only direct, literal calls; `rg neige README.md` and quoted fixture data are valid
-/// verification inputs, not kernel capability requests.
+/// verification inputs, not kernel capability requests. Every `neige` argv, help included, is served by
+/// the kernel over the socket gates lack (#1801), so the command after `neige` does not matter.
 fn direct_kernel_cli(command: &str) -> bool {
-    let Some(words) = shell::first_literal_command(command) else {
-        return false;
-    };
-    let Some((executable, args)) = words.split_first() else {
-        return false;
-    };
-    if executable.rsplit('/').next() != Some("neige") {
-        return false;
-    }
-    let args: Vec<_> = args
-        .iter()
-        .map(String::as_str)
-        .filter(|word| *word != "--json")
-        .collect();
-    if args.iter().any(|word| matches!(*word, "--help" | "-h")) {
-        return false;
-    }
-    matches!(
-        args.first().copied(),
-        Some(
-            "ls" | "cat"
-                | "state"
-                | "diff"
-                | "cat-at"
-                | "log"
-                | "task-completed"
-                | "task-failed"
-                | "track-gc"
-                | "vacuum"
-        )
-    )
+    shell::first_literal_command(command)
+        .and_then(|words| words.into_iter().next())
+        .is_some_and(|executable| executable.rsplit('/').next() == Some("neige"))
 }
 
 #[cfg(test)]
@@ -98,8 +71,9 @@ mod tests {
 
     use super::direct_kernel_cli;
 
+    /// #1801: help and `--version` go through the same binary, so every literal `neige` call is a kernel call.
     #[test]
-    fn direct_gate_kernel_calls_are_distinguished_from_help_and_fixture_text() {
+    fn every_direct_neige_call_is_a_kernel_call_including_help() {
         for cmd in [
             "neige cat plan/build/output",
             "neige --json state",
@@ -112,10 +86,6 @@ mod tests {
             "/usr/local/bin/neige ls plan",
             "'neige' task-completed --idempotency-key build",
             "neige cat plan/build/output | jq .",
-        ] {
-            assert!(direct_kernel_cli(cmd), "missed {cmd}");
-        }
-        for cmd in [
             "neige --help",
             "neige cat --help",
             "neige cat '--help'",
@@ -123,10 +93,16 @@ mod tests {
             "neige cat>/dev/null '--help'",
             "neige cat \"--help\"",
             "neige cat --he\\lp",
-            "neige $command",
-            "neige cat $(printf -- --help)",
             "neige --version",
             "neige help cat",
+            "neige snow",
+            "neige",
+        ] {
+            assert!(direct_kernel_cli(cmd), "missed {cmd}");
+        }
+        for cmd in [
+            "neige $command",
+            "neige cat $(printf -- --help)",
             "rg neige README.md",
             "printf '%s' 'neige cat plan/build/output'",
             "python3 -m unittest discover",

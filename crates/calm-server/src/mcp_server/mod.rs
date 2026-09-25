@@ -2,6 +2,7 @@
 //! domain socket with per-card token identity.
 
 pub mod auth;
+pub mod cli;
 pub mod framing;
 pub mod handshake;
 pub mod registry;

@@ -24,8 +24,8 @@ pub use commit::{
     snapshot_transcripts_for_cards_in_track,
 };
 pub use gc::{
-    prune_all_tracks_once, prune_track_history_tx, spawn_track_history_pruner,
-    spawn_unreferenced_object_sweeper, sweep_unreferenced_objects_once,
+    DEFAULT_TRACK_HISTORY_PRUNE_KEEP, prune_all_tracks_once, prune_track_history_tx,
+    spawn_track_history_pruner, spawn_unreferenced_object_sweeper, sweep_unreferenced_objects_once,
 };
 pub use read::{
     cat_at, commit_belongs_to_track, commit_record, diff, diff_with_patches, log,

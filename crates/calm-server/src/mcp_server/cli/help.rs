@@ -1,13 +1,18 @@
+//! `neige` help text, moved verbatim from the former fat client (#1801). Served by the kernel like
+//! every other argv; the forwarder answers only a lone `--version`.
+
 use std::fmt::Write as _;
 
+use crate::track_vcs::DEFAULT_TRACK_HISTORY_PRUNE_KEEP;
+
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum HelpRequest<'a> {
+pub enum HelpRequest<'a> {
     Root,
     Command(&'a str),
 }
 
 impl<'a> HelpRequest<'a> {
-    pub(crate) fn command(self) -> Option<&'a str> {
+    pub fn command(self) -> Option<&'a str> {
         match self {
             Self::Root => None,
             Self::Command(command) => Some(command),
@@ -138,7 +143,7 @@ const COMMANDS: &[CommandHelp] = &[
         "",
         "Options:",
         "      --track-id <id>  Track to prune",
-        "      --keep <count>   Number of recent commits to keep [default: 50]",
+        "      --keep <count>   Number of recent commits to keep [default: {default_keep}]",
         "      --dry-run        Report what would be pruned without changing data",
         "      --force          Confirm destructive pruning (required without --dry-run)",
         "      --json           Emit errors as JSON",
@@ -167,7 +172,7 @@ const COMMANDS: &[CommandHelp] = &[
     ),
 ];
 
-pub(crate) fn request(args: &[String]) -> Option<HelpRequest<'_>> {
+pub fn request(args: &[String]) -> Option<HelpRequest<'_>> {
     let mut args = args.iter().filter(|arg| arg.as_str() != "--json");
     let first = args.next()?.as_str();
 
@@ -184,17 +189,22 @@ pub(crate) fn request(args: &[String]) -> Option<HelpRequest<'_>> {
     }
 }
 
-pub(crate) fn render(request: HelpRequest<'_>) -> Option<String> {
+pub fn render(request: HelpRequest<'_>) -> Option<String> {
     match request {
         HelpRequest::Root => Some(root_help()),
         HelpRequest::Command(command) => COMMANDS
             .iter()
             .find(|candidate| candidate.name == command)
-            .map(|command| command.text.to_owned()),
+            .map(|command| {
+                command.text.replace(
+                    "{default_keep}",
+                    &DEFAULT_TRACK_HISTORY_PRUNE_KEEP.to_string(),
+                )
+            }),
     }
 }
 
-pub(crate) fn available_commands() -> String {
+pub fn available_commands() -> String {
     COMMANDS
         .iter()
         .map(|command| command.name)
@@ -202,7 +212,7 @@ pub(crate) fn available_commands() -> String {
         .join(", ")
 }
 
-pub(crate) fn unknown_command_message(command: &str) -> String {
+pub fn unknown_command_message(command: &str) -> String {
     format!(
         "unknown command `{command}`\n\nAvailable commands: {}\nRun `neige --help` for usage.",
         available_commands()
@@ -210,16 +220,13 @@ pub(crate) fn unknown_command_message(command: &str) -> String {
 }
 
 fn root_help() -> String {
-    let mut output = format!(
-        concat!(
-            "neige {}\n\n",
-            "Read track views, inspect history, and report worker tasks.\n\n",
-            "Usage: neige [--json] <command> [options]\n",
-            "       neige help [command]\n\n",
-            "Commands:\n",
-        ),
-        env!("CARGO_PKG_VERSION")
-    );
+    let mut output = String::from(concat!(
+        "neige\n\n",
+        "Read track views, inspect history, and report worker tasks.\n\n",
+        "Usage: neige [--json] <command> [options]\n",
+        "       neige help [command]\n\n",
+        "Commands:\n",
+    ));
     for command in COMMANDS {
         writeln!(output, "  {:<16} {}", command.name, command.summary)
             .expect("writing help to a String cannot fail");
@@ -227,9 +234,22 @@ fn root_help() -> String {
     output.push_str(concat!(
         "\nOptions:\n",
         "      --json     Use JSON output where supported; otherwise emit errors as JSON\n",
-        "      --version  Print version\n",
+        "      --version  (only argument): print the forwarder version\n",
         "  -h, --help     Print help\n\n",
         "Run `neige help <command>` for command-specific help.\n",
     ));
     output
+}
+
+/// The synopsis of `command`'s help, or of the root help without one; `--json` usage errors carry it.
+pub fn usage_line(command: Option<&str>) -> String {
+    let text = match command {
+        Some(command) => render(HelpRequest::Command(command)),
+        None => Some(root_help()),
+    }
+    .expect("usage lines are asked only for served commands");
+    text.lines()
+        .find_map(|line| line.strip_prefix("Usage: "))
+        .expect("every help text has a Usage line")
+        .to_string()
 }
