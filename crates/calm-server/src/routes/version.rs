@@ -14,6 +14,11 @@ use utoipa::ToSchema;
 
 /// Diagnostic only on the wire, but `neige-app`'s `compute_verdict` compares it against
 /// the installed release, so a REST contract break must bump it.
+///
+/// #1817 bumps `"11"` -> `"12"`: `GET /api/agent-providers` is new. The new-track picker and
+/// Settings › Planners read it, and against an older kernel the answer is a 404 — so a
+/// web-only update onto such a kernel must be refused. Additive for older bundles, so
+/// `WEB_COMPAT_VERSION` stays.
 pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 
 /// Monotonically increasing frontend compatibility floor. Must equal `WEB_COMPAT_VERSION`

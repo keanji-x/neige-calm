@@ -77,8 +77,8 @@ Astryx's built-in registry only. That set has 26 semantic names and none of them
 is "network" or "appearance", so each nav entry takes the nearest available
 sense and says so where it is chosen (`externalLink` for traffic leaving the
 machine, `menu` for General's short list, `viewColumns` for how the app is
-painted, `wrench` for tooling, `success` for whether each Planner passes its
-checks, `info` for read-only facts). The app deliberately does not draw one-off
+painted, `wrench` for tooling, `checkDouble` for the checks run per Planner
+provider, `info` for read-only facts). The app deliberately does not draw one-off
 glyphs for this.
 
 ## Sections and routes

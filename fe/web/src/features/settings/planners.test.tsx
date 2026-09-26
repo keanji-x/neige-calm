@@ -44,6 +44,17 @@ describe('PlannersPane', () => {
     expect(within(row('Claude')).getByText('calm-server was started without --claude-planner-config')).toBeTruthy();
   });
 
+  it('says a Codex outage still lets tracks be created, and says nothing like it for Claude (#1817)', () => {
+    pane({ providers: [
+      { provider: 'codex', status: 'unavailable', reason: 'shared codex app-server is not running', checked_at_ms: 1 },
+      { provider: 'claude', status: 'unavailable', reason: 'not logged in', checked_at_ms: 1 },
+    ] });
+    expect(within(row('Codex')).getByText(
+      'shared codex app-server is not running Tracks can still be created; their Planner runs once it is back.',
+    )).toBeTruthy();
+    expect(within(row('Claude')).getByText('not logged in')).toBeTruthy();
+  });
+
   it('rechecks on request and says when a recheck failed', () => {
     const props = pane({ recheckError: 'network down' });
     fireEvent.click(screen.getByRole('button', { name: 'Recheck planners' }));

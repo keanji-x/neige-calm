@@ -30,6 +30,19 @@ export function agentProvidersOperation(recheck: boolean): ApiOperation<Provider
   };
 }
 
+/**
+ * Whether track create refuses `provider` while it is not `ready` (#1817), and so whether a picker may
+ * offer it then. Claude: refused with the reason. Codex: never refused — its create answers 201 during a
+ * daemon outage (#293), and the Planner runs once Codex is back.
+ */
+export const CREATE_REFUSED_WHEN_UNAVAILABLE: Readonly<Record<AgentProvider, boolean>> = Object.freeze({
+  codex: false,
+  claude: true,
+});
+
+/** Said beside the reason of an unavailable provider that create still accepts. */
+export const STILL_CREATES_NOTE = 'Tracks can still be created; their Planner runs once it is back.';
+
 /** `provider`'s entry, or `null` when the answer is not in yet or does not name it. */
 export function availabilityOf(
   answers: readonly ProviderAvailability[] | undefined,

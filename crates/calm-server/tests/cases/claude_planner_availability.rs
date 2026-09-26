@@ -259,3 +259,64 @@ async fn get(app: axum::Router) -> Value {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&bytes).expect("json")
 }
+
+/// A replay is answered from its binding, never gated: a Claude create under an `Idempotency-Key`
+/// while logged in, then a logout the server has seen (`refresh=true`), then the same request
+/// under the same key answers the same track with 201.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_replay_after_logout_answers_the_bound_track() {
+    let root = root_with_auth("logged-in");
+    let stack = Stack::boot(&root).await;
+    let body = json!({
+        "planner_provider": "claude",
+        "area_id": stack.area().await,
+        "title": "replayed",
+        "theme": {"fg": [216, 219, 226], "bg": [15, 20, 24]},
+    });
+    let (status, first) = create_with_key(&stack, &body, "replay-1817").await;
+    assert_eq!(status, StatusCode::CREATED, "{first}");
+
+    std::fs::write(root.fake_dir().join("auth"), "logged-out").expect("log out");
+    let rechecked = providers(&stack, "?refresh=true").await;
+    assert_eq!(
+        entry(&rechecked, "claude")["status"],
+        "unavailable",
+        "{rechecked}"
+    );
+
+    let (status, replay) = create_with_key(&stack, &body, "replay-1817").await;
+    assert_eq!(status, StatusCode::CREATED, "{replay}");
+    assert_eq!(replay["id"], first["id"], "the bound track, not a new one");
+    let (status, fresh) = create_with_key(&stack, &body, "fresh-1817").await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a new mint is still gated: {fresh}"
+    );
+}
+
+async fn create_with_key(stack: &Stack, body: &Value, key: &str) -> (StatusCode, Value) {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let response = stack
+        .app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/tracks")
+                .header("x-calm-actor", "user")
+                .header("content-type", "application/json")
+                .header("idempotency-key", key)
+                .body(axum::body::Body::from(body.to_string()))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}

@@ -6,7 +6,9 @@ import { Button as AstryxButton } from '@astryxdesign/core/Button';
 import { Text as AstryxText } from '@astryxdesign/core/Text';
 
 import type { AgentProvider } from '../../../../core/api/schemas.ts';
-import type { ProviderAvailability } from '../../../../core/domain/agent-providers.ts';
+import {
+  CREATE_REFUSED_WHEN_UNAVAILABLE, STILL_CREATES_NOTE, type ProviderAvailability,
+} from '../../../../core/domain/agent-providers.ts';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
 import { SettingRow, SettingsList, SettingsPane } from './public.tsx';
 import styles from './settings.module.css';
@@ -36,6 +38,14 @@ const STATUS_BADGES: Readonly<Record<ProviderAvailability['status'], Readonly<{
 
 const READY_DESCRIPTION = 'Passed every check; new tracks can use it.';
 
+/** The server's reason, and for a provider create still accepts (Codex), that it still does (#1817). */
+function describe(entry: ProviderAvailability): string {
+  if (entry.reason === null) return READY_DESCRIPTION;
+  return entry.status === 'unavailable' && !CREATE_REFUSED_WHEN_UNAVAILABLE[entry.provider]
+    ? `${entry.reason} ${STILL_CREATES_NOTE}`
+    : entry.reason;
+}
+
 /** The oldest answer on screen: what "last checked" can honestly claim for the whole list. */
 function oldestCheck(providers: readonly ProviderAvailability[]): number | null {
   return providers.reduce<number | null>(
@@ -62,7 +72,7 @@ export function PlannersPane({
                 key={entry.provider}
                 title={PROVIDER_LABELS[entry.provider]}
                 /* A node, not a string: a string description is cut to one line, and a reason is a fix to read whole. */
-                description={<span className={styles.plannerReason}>{entry.reason ?? READY_DESCRIPTION}</span>}
+                description={<span className={styles.plannerReason}>{describe(entry)}</span>}
                 control={<AstryxBadge className={styles.pluginStateChip}
                   variant={STATUS_BADGES[entry.status].variant} label={STATUS_BADGES[entry.status].label} />}
               />

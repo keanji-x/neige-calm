@@ -78,7 +78,7 @@
   source: fe/web/src/features/area/new-track/public.tsx:44-52,213-221,318-325;
     fe/web/src/app/router/new-track-route.tsx:76-92
   authoritative_test: fe/web/src/features/area/new-track/public.test.tsx:729-734;
-    fe/web/src/app/router/new-track-route.test.tsx:603-628
+    fe/web/src/app/router/new-track-route.test.tsx:634-659
   owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
@@ -141,7 +141,7 @@
     repository does not conflict. The legacy resolve round trip only ever chose false in that
     same-area case, which the kernel's in-transaction scan already reaches atomically.
   source: fe/web/src/app/router/new-track-route.tsx:76-86
-  authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:690-707
+  authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:721-738
   owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
@@ -246,7 +246,7 @@
     "Conflict". The area name comes from the workspace read, which is why the decode is rendered
     by the route that owns the create and not by the presentational form.
   source: fe/core/domain/area.ts:159-189; fe/web/src/app/router/new-track-route.tsx:102-113
-  authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:734-747
+  authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:765-778
   owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
@@ -281,7 +281,7 @@
   source: fe/web/src/features/area/new-track/public.tsx:44-52,213-235;
     fe/web/src/app/router/new-track-route.tsx:76-92
   authoritative_test: fe/web/src/features/area/new-track/public.test.tsx:149;
-    fe/web/src/app/router/new-track-route.test.tsx:589-601
+    fe/web/src/app/router/new-track-route.test.tsx:620-632
   owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
@@ -306,7 +306,7 @@
     would silently focus nothing. Asserted as behaviour — type, then read the field back — because
     that is what the reader notices; an `activeElement` check alone passes on a focused wrapper.
   source: fe/web/src/features/area/new-track/public.tsx:154-157
-  authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:575-578
+  authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:606-609
   owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features

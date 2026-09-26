@@ -806,6 +806,23 @@ pub(crate) async fn create_track(
     // Common area lifecycle fence for legacy mint, first-message mint, and
     // idempotent replay. Holding it through workspace materialization and
     // operation submission makes area deletion snapshot a closed member set.
+    // #1817: a Claude create's availability (the cached check, at most `TTL` old, or a new check
+    // of up to ~20 s) is read before the area lock below, which it must not hold; it gates only a
+    // new mint, after the replay arms.
+    let claude_availability = if request.planner_provider == AgentProvider::Claude {
+        Some(
+            s.provider_availability
+                .get(
+                    &request.planner_provider,
+                    crate::agent_providers::Freshness::Cached,
+                    &s.claude_planner,
+                    &codex.shared_codex_appserver,
+                )
+                .await,
+        )
+    } else {
+        None
+    };
     let create_area_id = request.area_id.clone();
     let _area_delete_guard =
         crate::per_card_lock::lock_key(&s.area_delete_locks, create_area_id.as_str()).await;
@@ -858,22 +875,13 @@ pub(crate) async fn create_track(
         create::CreatePlan::Mint(plan) => (Some(plan), None),
         create::CreatePlan::MessageLessMint(plan) => (None, Some(plan)),
     };
-    // #1817: a new Claude mint needs its provider ready now (the cached check, at most `TTL`
-    // old); a replay mints nothing and is answered from its binding above. A Codex create is not
-    // gated: without a first message it still answers 201 during a daemon outage (#293).
-    if request.planner_provider == AgentProvider::Claude {
-        s.provider_availability
-            .get(
-                &request.planner_provider,
-                crate::agent_providers::Freshness::Cached,
-                &s.claude_planner,
-                &codex.shared_codex_appserver,
-            )
-            .await
-            .require_ready()
-            .map_err(|refusal| {
-                CalmError::BadRequest(format!("track create: `planner_provider` {refusal}"))
-            })?;
+    // #1817: a new Claude mint needs its provider ready; a replay mints nothing and is answered
+    // from its binding above. A Codex create is not gated: without a first message it still
+    // answers 201 during a daemon outage (#293).
+    if let Some(checked) = &claude_availability {
+        checked.require_ready().map_err(|refusal| {
+            CalmError::BadRequest(format!("track create: `planner_provider` {refusal}"))
+        })?;
     }
     let allow_cross_area_cwd = request.allow_cross_area_cwd.clone();
     // Resolve mutable catalog advice only for a new mint, never on replay.

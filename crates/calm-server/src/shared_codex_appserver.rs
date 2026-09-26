@@ -1721,6 +1721,17 @@ impl SharedCodexAppServer {
         self.notifications.subscribe()
     }
 
+    /// Whether a Running daemon is installed, read from the readiness channel (#1817): unlike
+    /// [`Self::is_running`]'s `try_lock`, never a spurious `false` while another task holds the
+    /// core lock, so an availability answer cached for 30 s does not record one.
+    pub fn is_running_per_readiness(&self) -> bool {
+        #[cfg(feature = "fixtures")]
+        if self.fake.is_some() {
+            return true;
+        }
+        self.readiness.borrow().running
+    }
+
     pub fn is_running(&self) -> bool {
         #[cfg(feature = "fixtures")]
         if self.fake.is_some() {

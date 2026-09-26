@@ -69,6 +69,11 @@
     overflow-wrap: anywhere;
   }
 
+  /* A provider create still accepts: its rows stay pickable, so the reason is a warning. */
+  .warning {
+    color: var(--warn-text);
+  }
+
   /* A standing explanation, not a menu row: it must not look pressable. The
      type is `Text type="supporting"`; what is left here is the box. */
   .note {

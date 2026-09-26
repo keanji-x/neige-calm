@@ -173,7 +173,7 @@ impl ProviderAvailabilityCache {
 }
 
 async fn check_codex(daemon: &SharedCodexAppServer) -> Verdict {
-    if !daemon.is_running() {
+    if !daemon.is_running_per_readiness() {
         return Verdict::Unavailable(daemon.not_running_message());
     }
     match daemon

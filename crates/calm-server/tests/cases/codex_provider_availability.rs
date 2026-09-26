@@ -4,6 +4,7 @@
 
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
+use calm_server::db::prelude::*;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -83,6 +84,46 @@ async fn codex_without_an_account_that_needs_one_is_unavailable() {
     assert!(
         reason.starts_with("codex is not logged in — run `codex login` with CODEX_HOME="),
         "{reason}"
+    );
+}
+
+/// Codex create is not gated (#293): an unavailable Codex still answers a create with 201.
+#[tokio::test]
+async fn an_unavailable_codex_still_creates_a_track() {
+    let boot = boot_with_account(json!({"account": null, "requiresOpenaiAuth": true})).await;
+    assert_eq!(codex_entry(&boot).await["status"], "unavailable");
+    let area = boot
+        .repo
+        .area_create(calm_server::model::NewArea {
+            name: "codex down".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/tracks")
+        .header("x-calm-actor", "user")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "planner_provider": "codex",
+                "area_id": area.id,
+                "title": "still created",
+                "theme": {"fg": [216, 219, 226], "bg": [15, 20, 24]},
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let response = boot.app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "{}",
+        String::from_utf8_lossy(&bytes)
     );
 }
 

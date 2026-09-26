@@ -3,7 +3,6 @@
 //! against.
 
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -49,28 +48,26 @@ impl ClaudePlannerConfig {
     }
 
     /// [`Self::verify_version`]'s check, answering why the binary is refused (`None` = it is not).
+    /// Runs through [`super::readiness_command::run`]: bounded, capped, killed and reaped.
     pub async fn version_problem(&self, env: &[(String, std::ffi::OsString)]) -> Option<String> {
-        let mut command = tokio::process::Command::new(&self.claude_binary);
-        command
-            .arg("--version")
-            .env_clear()
-            .envs(env.iter().map(|(key, value)| (key, value)))
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
-        let output = match tokio::time::timeout(VERSION_TIMEOUT, command.output()).await {
-            Err(_) => return Some(version_error(&self.claude_binary, "timed out")),
-            Ok(Err(error)) => return Some(version_error(&self.claude_binary, &error.to_string())),
-            Ok(Ok(output)) => output,
+        let (status, stdout) = match super::readiness_command::run(
+            &self.claude_binary,
+            &["--version"],
+            env,
+            VERSION_TIMEOUT,
+        )
+        .await
+        {
+            Ok(output) => output,
+            Err(failure) => return Some(version_error(&self.claude_binary, &failure.to_string())),
         };
-        if !output.status.success() {
+        if !status.success() {
             return Some(version_error(
                 &self.claude_binary,
-                &format!("exited with {}", output.status),
+                &format!("exited with {status}"),
             ));
         }
-        let printed = String::from_utf8_lossy(&output.stdout);
+        let printed = String::from_utf8_lossy(&stdout);
         match printed.split_whitespace().next() {
             Some(first) if first == self.claude_version => None,
             other => Some(version_error(

@@ -464,6 +464,7 @@ describe('ModelPill', () => {
         selection={FOLLOW_INSTALLATION_DEFAULT} onChange={onChange} />);
       const claude = within(openMenu(/^Model:/)).getByRole('group', { name: 'Claude' });
       expect(within(claude).getByRole('note').textContent).toBe(`Claude is unavailable: ${CLAUDE_LOGGED_OUT}`);
+      expect(within(claude).getByRole('note').textContent).not.toContain('can still be created');
       for (const name of [/^Default/, /^Opus/, /^Sonnet/, /^Haiku/]) {
         const choice = within(claude).getByRole('menuitem', { name });
         expect(isDisabled(choice), String(name)).toBe(true);
@@ -479,18 +480,22 @@ describe('ModelPill', () => {
       expect(isDisabled(within(claude).getByRole('menuitem', { name: 'Opus' }))).toBe(false);
     });
 
-    it('shows an unavailable Codex group disabled with its reason while Claude stays choosable', () => {
+    it('keeps an unavailable Codex group pickable, its reason a warning, because create still accepts it', () => {
       const reason = 'codex is not logged in — run `codex login` with CODEX_HOME=/srv/codex';
+      const onChange = vi.fn();
       render(<ModelPill groups={[
         { provider: 'codex', availability: unavailable('codex', reason), catalog: catalog() },
         { provider: 'claude', availability: ready('claude'), catalog: claudeCatalog() },
-      ]} provider="codex" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
+      ]} provider="claude" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={onChange} />);
       const menu = openMenu(/^Model:/);
       const codex = within(menu).getByRole('group', { name: 'Codex' });
-      expect(within(codex).getByRole('note').textContent).toBe(`Codex is unavailable: ${reason}`);
-      expect(isDisabled(within(codex).getByRole('menuitem', { name: 'GPT-5' }))).toBe(true);
-      expect(isDisabled(within(within(menu).getByRole('group', { name: 'Claude' })).getByRole('menuitem', { name: 'Opus' })))
-        .toBe(false);
+      expect(within(codex).getByRole('note').textContent)
+        .toBe(`Codex is unavailable: ${reason} Tracks can still be created; their Planner runs once it is back.`);
+      for (const name of [/^Default/, 'GPT-5']) {
+        expect(isDisabled(within(codex).getByRole('menuitem', { name })), String(name)).toBe(false);
+      }
+      fireEvent.click(within(codex).getByRole('menuitem', { name: /^Default/ }));
+      expect(onChange).toHaveBeenLastCalledWith({ model: null, reasoning_effort: null }, 'codex');
     });
   });
 });

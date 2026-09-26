@@ -12,7 +12,9 @@ import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 import { Fragment, useRef, type KeyboardEvent } from 'react';
 
 import type { AgentProvider } from '../../../../../core/api/generated/wire.ts';
-import type { ProviderAvailability } from '../../../../../core/domain/agent-providers.ts';
+import {
+  CREATE_REFUSED_WHEN_UNAVAILABLE, STILL_CREATES_NOTE, type ProviderAvailability,
+} from '../../../../../core/domain/agent-providers.ts';
 import type { ModelCatalog, ModelSelection } from '../../../../../core/domain/conversation.ts';
 import { useState } from '../../../ui/state/public.ts';
 import styles from './model-pill.module.css';
@@ -28,6 +30,8 @@ const SWITCH_NOTE = 'Switching to a model with a smaller context window can make
  * its availability and catalog before it joins a menu that offers other providers (`hiddenUntilKnown`); a
  * Codex one stays while the daemon is down, saying so.
  * A Claude Planner has no reasoning-effort choice (`effort: false`), and only codex compacts (`switchNote`).
+ * Whether an unavailable group stays pickable is core's `CREATE_REFUSED_WHEN_UNAVAILABLE` (#1817), the
+ * one per-provider flag Settings reads too.
  */
 const PROVIDERS: Readonly<Record<AgentProvider, Readonly<{
   label: string; unavailable: string; hiddenUntilKnown: boolean; effort: boolean; switchNote: boolean;
@@ -213,12 +217,17 @@ function GroupChoices({ group, selection, onChange }: Readonly<{
   const models: readonly CatalogEntry[] = group.catalog?.models ?? [];
   const defaultName = defaultNameOf(group.catalog);
   const unreachable = group.catalog !== null && group.catalog.source === 'unavailable';
-  /* A provider that cannot run now offers nothing to pick, and says why in the server's own words. */
-  const blocked = group.availability?.status === 'unavailable' ? group.availability.reason : null;
+  /* A provider that cannot run now says why in the server's own words; one create refuses then offers
+     nothing to pick, and one create still accepts stays pickable under a warning. */
+  const reason = group.availability?.status === 'unavailable' ? group.availability.reason : null;
+  const refused = CREATE_REFUSED_WHEN_UNAVAILABLE[group.provider];
+  const blocked = refused ? reason : null;
   return <>
-    {blocked !== null && (
-      <div className={styles.reason} role="note">
-        <Text type="supporting">{`${PROVIDERS[group.provider].label} is unavailable: ${blocked}`}</Text>
+    {reason !== null && (
+      <div className={refused ? styles.reason : `${styles.reason} ${styles.warning}`} role="note">
+        <Text type="supporting" color={refused ? undefined : 'inherit'}>
+          {`${PROVIDERS[group.provider].label} is unavailable: ${reason}${refused ? '' : ` ${STILL_CREATES_NOTE}`}`}
+        </Text>
       </div>
     )}
     <Choice
@@ -237,7 +246,7 @@ function GroupChoices({ group, selection, onChange }: Readonly<{
         onSelect={() => onChange({ model: model.model, reasoning_effort: null })}
       />
     ))}
-    {models.length === 0 && blocked === null && (
+    {models.length === 0 && reason === null && (
       <DropdownMenuItem
         label={unreachable ? PROVIDERS[group.provider].unavailable : 'No models available on this account'}
         isDisabled
