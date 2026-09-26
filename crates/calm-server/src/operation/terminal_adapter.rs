@@ -680,7 +680,10 @@ impl ProviderAdapter for TerminalWorkerAdapter {
             explicit_terminal_cwd(payload.cwd.clone()),
         )
         .await?;
-        let env = terminal_worker_env(self.repo.as_ref()).await?;
+        let mut env = terminal_worker_env(self.repo.as_ref()).await?;
+        // A Planner-dispatched task may run `claude`: auto-memory off, as for every kernel-launched Claude (#1814).
+        let (key, value) = crate::claude_code_env::DISABLE_AUTO_MEMORY;
+        env[key] = Value::String(value.into());
         let scope = card_scope(
             self.repo.as_ref(),
             CardId::from(card_id.clone()),

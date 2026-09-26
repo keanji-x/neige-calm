@@ -543,6 +543,12 @@ async fn post_claude_card_with_prompt_succeeds_through_saga() {
         term.env["NEIGE_HOOK_PROVIDER"],
         Value::String("claude".into())
     );
+    // #1814: the owner's config dir means the owner's auto-memory; a worker card keeps out of it.
+    assert_eq!(
+        term.env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"], "1",
+        "{}",
+        term.env
+    );
     assert!(Path::new(card["payload"]["settings_path"].as_str().unwrap()).exists());
 }
 
@@ -585,6 +591,11 @@ async fn post_claude_restart_after_exit_reuses_terminal_and_resumes_session() {
     assert_eq!(
         restart_call.env["NEIGE_CARD_ID"],
         Value::String(card_id.to_string())
+    );
+    assert_eq!(
+        restart_call.env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"], "1",
+        "{}",
+        restart_call.env
     );
     assert!(
         restart_call
@@ -1038,6 +1049,41 @@ async fn post_claude_card_idempotency_same_key_same_normalized_payload_reuses_op
     assert_eq!(first_status, StatusCode::CREATED, "body={first_card:?}");
     assert_eq!(second_status, StatusCode::CREATED, "body={second_card:?}");
     assert_eq!(first_card["id"], second_card["id"]);
+    assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 1);
+}
+
+/// The kernel-generated env (here a proxy setting changed between the calls) is not part of the
+/// request's identity: a replay with the same key and body hits the cached success.
+#[tokio::test]
+async fn post_claude_card_idempotency_ignores_the_kernel_generated_env() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot_success().await;
+    let key = "claude-generated-env-changes";
+
+    let (first_status, first_card) = post(
+        boot.app.clone(),
+        &boot.track_id,
+        body(Some("hello")),
+        Some(key),
+        None,
+    )
+    .await;
+    assert_eq!(first_status, StatusCode::CREATED, "body={first_card:?}");
+    boot.repo
+        .settings_upsert("http_proxy", "http://127.0.0.1:3128")
+        .await
+        .unwrap();
+
+    let (replay_status, replayed) = post(
+        boot.app.clone(),
+        &boot.track_id,
+        body(Some("hello")),
+        Some(key),
+        None,
+    )
+    .await;
+    assert_eq!(replay_status, StatusCode::CREATED, "body={replayed:?}");
+    assert_eq!(replayed["id"], first_card["id"]);
     assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 1);
 }
 

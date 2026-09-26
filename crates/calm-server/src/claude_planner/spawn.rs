@@ -137,7 +137,7 @@ pub(crate) fn argv(
 }
 
 /// Ambient keys a Claude Planner inherits: the Codex daemon's list without the Codex, OpenAI and
-/// Rust-diagnostics keys. Never `ANTHROPIC_*`, `CLAUDE_CODE_*` or `NEIGE_MCP_DAEMON_TOKEN`.
+/// Rust-diagnostics keys. Never an inherited `ANTHROPIC_*`, `CLAUDE_CODE_*` or `NEIGE_MCP_DAEMON_TOKEN`.
 pub(crate) fn passthrough_keys() -> impl Iterator<Item = &'static str> {
     SPAWN_ENV_PASSTHROUGH.iter().copied().filter(|key| {
         !key.starts_with("OPENAI_")
@@ -177,6 +177,8 @@ pub(crate) fn base_env(inputs: &EnvInputs<'_>) -> Vec<(String, OsString)> {
     ));
     env.push((MARKER_KEY.into(), inputs.marker.clone().into()));
     env.push(("DISABLE_AUTOUPDATER".into(), "1".into()));
+    let (key, value) = crate::claude_code_env::DISABLE_AUTO_MEMORY;
+    env.push((key.into(), value.into()));
     env
 }
 

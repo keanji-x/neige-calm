@@ -89,15 +89,11 @@ pub(crate) async fn create_claude_card(
     let prepared =
         prepare_claude_create_request(s.repo.as_ref(), cs.codex.as_ref(), request.clone()).await?;
     let operation_key = new_id();
-    let mut hash_env = prepared.env.clone();
-    if let Some(map) = hash_env.as_object_mut() {
-        map.remove("NEIGE_CARD_ID");
-    }
     let runtime_id = new_id();
+    // The env is all kernel-generated (the body carries none), so it never enters the identity hash.
     let payload_hash = stable_payload_hash(&serde_json::json!({
         "actor": actor.as_str(),
         "request": &request,
-        "env": hash_env,
     }))?;
     let actor = actor.to_actor_id();
     let payload = serde_json::to_value(ClaudeCreateOperationPayload {

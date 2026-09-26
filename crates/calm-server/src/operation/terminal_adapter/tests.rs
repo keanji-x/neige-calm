@@ -143,6 +143,27 @@ async fn terminal_worker_prepare_titles_card_with_task_key() {
     );
 }
 
+/// #1814: a Planner-dispatched terminal task may run `claude`; it gets auto-memory off in the env the
+/// spawn side effect hands the PTY and the terminal row persists.
+#[tokio::test]
+async fn terminal_worker_env_disables_claude_auto_memory() {
+    let harness = terminal_worker_harness().await;
+    let output = prepare_terminal_worker(&harness, "memory").await;
+    assert_eq!(
+        output.data["env"]["CLAUDE_CODE_DISABLE_AUTO_MEMORY"], "1",
+        "{}",
+        output.data["env"]
+    );
+    let card_id = output.output_string("card_id", "test").unwrap();
+    let stored: String = sqlx::query_scalar("SELECT env FROM terminals WHERE card_id = ?1")
+        .bind(&card_id)
+        .fetch_one(harness.repo.pool())
+        .await
+        .unwrap();
+    let stored: Value = serde_json::from_str(&stored).unwrap();
+    assert_eq!(stored["CLAUDE_CODE_DISABLE_AUTO_MEMORY"], "1", "{stored}");
+}
+
 /// The task row carries `cwd: None` because that is the shape production sends.
 #[tokio::test]
 async fn terminal_worker_without_cwd_lands_in_the_track_workspace() {

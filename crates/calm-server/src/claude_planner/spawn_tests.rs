@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::models::{ClaudeModel, MODELS};
-use super::spawn::{SessionStart, argv, passthrough_keys, settings_json};
+use super::spawn::{EnvInputs, SessionStart, argv, base_env, passthrough_keys, settings_json};
 
 const THREAD: &str = "5d0b2694-9ccc-4543-ab84-611aa4287dbe";
 
@@ -168,4 +168,23 @@ fn the_ambient_allowlist_drops_codex_openai_and_rust_keys() {
             "SSL_CERT_FILE",
         ]
     );
+}
+
+/// #1814: the config dir is the owner's, so its auto-memory is the owner's; a Planner neither
+/// reads nor writes it. The `--version` check runs on the same env, so it carries it too.
+#[test]
+fn the_spawn_env_disables_claude_auto_memory() {
+    let env = base_env(&EnvInputs {
+        path: "/usr/bin".into(),
+        config_dir: Path::new("/home/owner/.claude"),
+        mcp_socket: Path::new("/run/calm/mcp.sock"),
+        marker: "marker".into(),
+        proxy: &[],
+    });
+    let values: Vec<&std::ffi::OsString> = env
+        .iter()
+        .filter(|(key, _)| key == "CLAUDE_CODE_DISABLE_AUTO_MEMORY")
+        .map(|(_, value)| value)
+        .collect();
+    assert_eq!(values, ["1"], "{env:?}");
 }

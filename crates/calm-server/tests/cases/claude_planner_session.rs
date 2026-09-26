@@ -159,7 +159,9 @@ async fn assert_env_is_the_allowlist(rig: &Rig) {
         "NEIGE_MCP_SOCKET",
         "NEIGE_MCP_TOKEN",
         "NEIGE_CLAUDE_PLANNER",
-        "DISABLE_AUTOUPDATER", // bash's own
+        "DISABLE_AUTOUPDATER",
+        "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
+        // bash's own
         "PWD",
         "SHLVL",
         "_",
@@ -178,6 +180,8 @@ async fn assert_env_is_the_allowlist(rig: &Rig) {
         Some(calm_server::mcp_server::auth::hash_token(token).as_str())
     );
     assert_eq!(get("DISABLE_AUTOUPDATER"), Some("1"));
+    // #1814: past `env_clear()`, the spawned process itself sees auto-memory off.
+    assert_eq!(get("CLAUDE_CODE_DISABLE_AUTO_MEMORY"), Some("1"));
     assert_eq!(
         get("CLAUDE_CONFIG_DIR").map(std::path::PathBuf::from),
         Some(
