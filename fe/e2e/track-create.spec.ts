@@ -213,6 +213,7 @@ test('creates a track from a template and seeds its report', async ({ page, requ
 
 test('creates the planner with the model and effort selected beside Send', async ({ page, request }) => {
   // A deterministic roster for the UI; creation and the persisted planner read still use the real kernel.
+  await routeAvailability(page, ['codex']);
   await page.route((url) => url.pathname === '/api/models' && url.searchParams.get('provider') === 'codex', (route) => route.fulfill({ json: {
     models: [{ id: 'e2e-model', model: 'e2e-model', display_name: 'E2E model', description: '',
       is_default: false, default_reasoning_effort: 'low', supported_reasoning_efforts: [
@@ -250,6 +251,20 @@ test('creates the planner with the model and effort selected beside Send', async
   expect(await run.json()).toMatchObject({ model: 'e2e-model', reasoning_effort: 'high' });
 });
 
+/**
+ * `GET /api/agent-providers` as the real kernel answers it, with each provider in `ready` answering
+ * `ready`: the picker disables a provider that cannot run (#1817), and the routed catalogs stand in for
+ * backends this stack does not run.
+ */
+async function routeAvailability(page: Page, ready: readonly ('codex' | 'claude')[]) {
+  await page.route((url) => url.pathname === '/api/agent-providers', async (route) => {
+    const response = await route.fetch();
+    const answers = await response.json() as { provider: 'codex' | 'claude'; status: string; reason: string | null }[];
+    await route.fulfill({ response, json: answers.map((entry) => ready.includes(entry.provider)
+      ? { ...entry, status: 'ready', reason: null } : entry) });
+  });
+}
+
 /** A deterministic Codex roster for the picker; creation still goes to the real kernel. */
 async function routeCodexCatalog(page: Page) {
   await page.route((url) => url.pathname === '/api/models' && url.searchParams.get('provider') === 'codex', (route) => route.fulfill({ json: {
@@ -260,14 +275,18 @@ async function routeCodexCatalog(page: Page) {
   } }));
 }
 
-/* The e2e stack runs without `--claude-planner-config`, so the kernel answers the Claude catalog
- * `unavailable` and the picker offers Codex alone (#1810). */
+/* The e2e stack runs without `--claude-planner-config`, so the kernel answers Claude `not_configured`
+ * (#1817) with an `unavailable` catalog, and the picker offers Codex alone (#1810). */
 test('offers no Claude group on a kernel without Claude Planners', async ({ page, request }) => {
   await routeCodexCatalog(page);
+  await routeAvailability(page, ['codex']);
   const area = await createArea(request);
   createdAreaIds.push(area.id);
   const claudeCatalog = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/models'
     && new URL(response.url()).searchParams.get('provider') === 'claude');
+  const availability = await request.get('/api/agent-providers');
+  expect(availability.ok()).toBe(true);
+  expect(await availability.json()).toContainEqual(expect.objectContaining({ provider: 'claude', status: 'not_configured' }));
   await page.goto('/next/');
   await page.getByRole('button', { name: `New track in ${area.name}` }).click();
   expect(await (await claudeCatalog).json()).toMatchObject({ source: 'unavailable', models: [] });
@@ -276,9 +295,9 @@ test('offers no Claude group on a kernel without Claude Planners', async ({ page
   await expect(page.getByRole('group', { name: 'Claude' })).toHaveCount(0);
 });
 
-/* With the Claude catalog served as a kernel with the flag would, a Claude pick reaches this kernel,
- * which refuses it (it runs without the flag); the refusal is shown, not hidden, and the same sentence
- * then creates on Codex. The real `claude` binary is never needed. */
+/* With the Claude catalog and availability served as a kernel with the flag would, a Claude pick reaches
+ * this kernel, which refuses it (it runs without the flag); the refusal is shown, not hidden, and the same
+ * sentence then creates on Codex. The real `claude` binary is never needed. */
 test('a Claude pick carries provider and model to the kernel, and a Codex pick creates instead', async ({ page, request }) => {
   /* The one expected console error is the browser logging the refused create itself; anything else fails. */
   const errors: string[] = [];
@@ -291,6 +310,7 @@ test('a Claude pick carries provider and model to the kernel, and a Codex pick c
   });
   page.on('pageerror', (error) => errors.push(error.message));
   await routeCodexCatalog(page);
+  await routeAvailability(page, ['codex', 'claude']);
   await page.route((url) => url.pathname === '/api/models' && url.searchParams.get('provider') === 'claude', (route) => route.fulfill({ json: {
     models: [['opus', 'Opus'], ['sonnet', 'Sonnet'], ['haiku', 'Haiku']].map(([alias, name]) => ({
       id: alias, model: alias, display_name: name, description: '', is_default: false,

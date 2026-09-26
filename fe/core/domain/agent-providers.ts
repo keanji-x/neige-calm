@@ -1,0 +1,56 @@
+// Whether each Planner provider can run on this server right now, and why not (#1817).
+
+import { z } from 'zod';
+
+import { agentProviderSchema, type AgentProvider } from '../api/schemas.js';
+import type { ApiOperation } from '../api/types.js';
+
+const checkedAtSchema = z.number();
+
+/**
+ * One provider's answer. `reason` is the server's own sentence with its fix, present exactly when the
+ * provider is not `ready`; `not_configured` is a backend this server was not started with.
+ */
+export const providerAvailabilitySchema = z.discriminatedUnion('status', [
+  z.object({ provider: agentProviderSchema, status: z.literal('ready'), reason: z.null(), checked_at_ms: checkedAtSchema }),
+  z.object({ provider: agentProviderSchema, status: z.literal('unavailable'), reason: z.string(), checked_at_ms: checkedAtSchema }),
+  z.object({ provider: agentProviderSchema, status: z.literal('not_configured'), reason: z.string(), checked_at_ms: checkedAtSchema }),
+]);
+
+export type ProviderAvailability = z.infer<typeof providerAvailabilitySchema>;
+
+export const agentProvidersSchema = z.array(providerAvailabilitySchema);
+
+/** `GET /api/agent-providers`; `recheck` runs every check again instead of reading the server's 30 s cache. */
+export function agentProvidersOperation(recheck: boolean): ApiOperation<ProviderAvailability[]> {
+  return {
+    method: 'GET',
+    path: recheck ? '/api/agent-providers?refresh=true' : '/api/agent-providers',
+    responseSchema: agentProvidersSchema,
+  };
+}
+
+/**
+ * Whether track create refuses `provider` while it is not `ready` (#1817), and so whether a picker may
+ * offer it then. Claude: refused with the reason. Codex: never refused — its create answers 201 during a
+ * daemon outage (#293), and the Planner runs once Codex is back.
+ */
+export const CREATE_REFUSED_WHEN_UNAVAILABLE: Readonly<Record<AgentProvider, boolean>> = Object.freeze({
+  codex: false,
+  claude: true,
+});
+
+/**
+ * Said beside the reason of an unavailable provider that create still accepts (only Codex). True on both
+ * create paths: without a first message the track answers 201; with one, a daemon outage fails the
+ * create (500) before the message is queued, so it goes out on a retry once Codex is back.
+ */
+export const STILL_CREATES_NOTE = 'A track can still be created, but a first message is only sent once Codex is back.';
+
+/** `provider`'s entry, or `null` when the answer is not in yet or does not name it. */
+export function availabilityOf(
+  answers: readonly ProviderAvailability[] | undefined,
+  provider: AgentProvider,
+): ProviderAvailability | null {
+  return answers?.find((answer) => answer.provider === provider) ?? null;
+}

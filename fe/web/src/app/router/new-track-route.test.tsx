@@ -90,6 +90,10 @@ function harness(options: {
   heldClaudeCatalog?: Promise<void>;
   /** The server runs with `--claude-planner-config`: `?provider=claude` answers the alias list. */
   claudePlanner?: boolean;
+  /** `GET /api/agent-providers` says why a configured Claude Planner cannot run now (#1817); else it is ready. */
+  claudeUnavailable?: string;
+  /** `GET /api/agent-providers` says Codex cannot run now (#1817); create still accepts it. */
+  codexUnavailable?: string;
   /** The created Planner card's `planner_provider`; its `?card_id=` catalog is that provider's. */
   plannerProvider?: 'codex' | 'claude';
   /** Override the detail read the track page makes when the create lands. */
@@ -132,6 +136,21 @@ function harness(options: {
           statusText: 'OK',
           body: { ...TRACK_ROW, area_id: posted?.area_id ?? 'c1' },
         }));
+      }
+      /* What `routes/agent_providers.rs` answers (#1817): Codex ready; Claude ready, unavailable with a
+         reason, or `not_configured` on a server without the Claude Planner. */
+      if (request.path === '/api/agent-providers') {
+        const claude = options.claudePlanner !== true
+          ? { status: 'not_configured', reason: 'calm-server was started without --claude-planner-config' }
+          : options.claudeUnavailable === undefined
+            ? { status: 'ready', reason: null }
+            : { status: 'unavailable', reason: options.claudeUnavailable };
+        return Promise.resolve({ status: 200, statusText: 'OK', body: [
+          options.codexUnavailable === undefined
+            ? { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1 }
+            : { provider: 'codex', status: 'unavailable', reason: options.codexUnavailable, checked_at_ms: 1 },
+          { provider: 'claude', ...claude, checked_at_ms: 1 },
+        ] });
       }
       /* What `routes/models.rs` answers for a Claude Planner (#1810): the alias list on a server that
          runs Claude Planners, `unavailable` with no catalog on one that does not. */
@@ -298,6 +317,47 @@ describe('New track model selection', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Model: Default' }));
     await screen.findByRole('menuitem', { name: 'GPT-5' });
     expect(screen.queryByRole('group', { name: 'Claude' })).toBeNull();
+  });
+
+  it('shows a configured Claude that cannot run now disabled, with the server reason (#1817)', async () => {
+    const reason = 'not logged in — run `claude /login` with CLAUDE_CONFIG_DIR=/srv/claude';
+    const { sent } = harness({ templates: [], claudePlanner: true, claudeUnavailable: reason });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+    await findComposer();
+    (await screen.findByRole('button', { name: 'Model: Codex Default' })).focus();
+    await userEvent.keyboard('{ArrowDown}');
+    const claude = await screen.findByRole('group', { name: 'Claude' });
+    expect(within(claude).getByRole('note').textContent).toBe(`Claude is unavailable: ${reason}`);
+    const sonnet = within(claude).getByRole('menuitem', { name: 'Sonnet' });
+    expect(sonnet.getAttribute('aria-disabled') === 'true' || sonnet.hasAttribute('disabled')).toBe(true);
+    expect(sent.some((request) => request.path === '/api/agent-providers')).toBe(true);
+  });
+
+  it('creates on an unavailable Codex: its rows stay pickable, as create still accepts it (#1817)', async () => {
+    const reason = 'shared codex app-server is not running';
+    const { sent } = harness({ templates: [], claudePlanner: true, codexUnavailable: reason });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+    await findComposer();
+    await pick('Model: Codex Default', 'Codex', 'GPT-5');
+    expect(await screen.findByRole('button', { name: 'Model: Codex GPT-5' })).toBeTruthy();
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Plan while Codex is down');
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(1));
+    expect(createdTrackRequests(sent)[0]?.body).toMatchObject({ planner_provider: 'codex', model: 'gpt-5' });
+    await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/track/w-new`));
+  });
+
+  it('switches a Claude draft back to Codex while Codex is unavailable (#1817)', async () => {
+    const { sent } = harness({ templates: [], claudePlanner: true, codexUnavailable: 'shared codex app-server is not running' });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+    await findComposer();
+    await pick('Model: Codex Default', 'Claude', 'Sonnet');
+    await pick('Model: Claude Sonnet', 'Codex', /^Default/);
+    expect(await screen.findByRole('button', { name: 'Model: Codex Default' })).toBeTruthy();
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Back on Codex');
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(1));
+    expect(createdTrackRequests(sent)[0]?.body).toMatchObject({ planner_provider: 'codex' });
   });
 
   it('a Claude pick sets the provider and the alias, and drops a retained effort', async () => {

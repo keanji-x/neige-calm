@@ -60,6 +60,20 @@
     font-weight: var(--weight-medium);
   }
 
+  /* Why a provider cannot run (#1817): a standing explanation like `.note`, a
+     little wider because it carries a fix, and broken anywhere because that fix
+     can hold a long path. */
+  .reason {
+    max-inline-size: 14rem;
+    padding: var(--space-1) var(--space-3);
+    overflow-wrap: anywhere;
+  }
+
+  /* A provider create still accepts: its rows stay pickable, so the reason is a warning. */
+  .warning {
+    color: var(--warn-text);
+  }
+
   /* A standing explanation, not a menu row: it must not look pressable. The
      type is `Text type="supporting"`; what is left here is the box. */
   .note {

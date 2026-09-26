@@ -267,6 +267,8 @@ impl WedgeControl {
 ///   * `<sock>.model-list-<cursor>` — the result for a `model/list` carrying
 ///     that `cursor`, so a test can script a genuinely paginated catalog.
 ///   * `<sock>.config-read`  — verbatim JSON-RPC `result` for `config/read`.
+///   * `<sock>.account-read` — verbatim JSON-RPC `result` for `account/read` (#1817);
+///     absent ⇒ an API-key account, i.e. logged in.
 ///   * `<sock>.model-list-no-answer` / `<sock>.config-read-no-answer` —
 ///     present ⇒ that method is read and then never answered, modelling a
 ///     daemon that has accepted the request and stalled. Every other method
@@ -276,6 +278,7 @@ struct ReadFixtures {
     sock: PathBuf,
     model_list: PathBuf,
     config_read: PathBuf,
+    account_read: PathBuf,
     model_list_no_answer: PathBuf,
     config_read_no_answer: PathBuf,
 }
@@ -286,6 +289,7 @@ impl ReadFixtures {
             sock: sock.to_path_buf(),
             model_list: sock.with_extension("model-list"),
             config_read: sock.with_extension("config-read"),
+            account_read: sock.with_extension("account-read"),
             model_list_no_answer: sock.with_extension("model-list-no-answer"),
             config_read_no_answer: sock.with_extension("config-read-no-answer"),
         }
@@ -529,6 +533,13 @@ async fn serve_conn(
                 let result = ReadFixtures::result_or(
                     &reads.config_read,
                     json!({ "config": {}, "origins": {} }),
+                );
+                send_result(&mut write, &id, result).await?;
+            }
+            "account/read" => {
+                let result = ReadFixtures::result_or(
+                    &reads.account_read,
+                    json!({ "account": { "type": "apiKey" }, "requiresOpenaiAuth": true }),
                 );
                 send_result(&mut write, &id, result).await?;
             }

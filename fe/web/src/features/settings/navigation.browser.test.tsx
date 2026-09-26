@@ -16,7 +16,7 @@ it('groups settings categories in one borderless rounded list with no row divide
   expect(getComputedStyle(group).borderTopWidth).toBe('0px');
   expect(getComputedStyle(group).padding).toBe('4px');
   const rows = [...navigation.querySelectorAll('li')];
-  expect(rows).toHaveLength(5);
+  expect(rows).toHaveLength(6);
   for (const row of rows) {
     expect(getComputedStyle(row).borderBottomWidth).toBe('0px');
     expect(getComputedStyle(row).borderRadius).toBe('12px');

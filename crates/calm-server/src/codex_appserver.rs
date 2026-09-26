@@ -354,6 +354,38 @@ pub struct ConfigReadResponse {
     pub config: CodexConfig,
 }
 
+/// `account/read` narrowed to what "logged in" is decided from (#1817). `account` is decoded as
+/// present-or-null only, so the account identity codex returns (email, plan) is never kept.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountRead {
+    #[serde(deserialize_with = "present_or_null")]
+    account: bool,
+    requires_openai_auth: bool,
+}
+
+impl AccountRead {
+    /// Codex's own rule: an account is present, or this configuration needs no OpenAI auth.
+    pub fn logged_in(&self) -> bool {
+        self.account || !self.requires_openai_auth
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn for_test(account: bool, requires_openai_auth: bool) -> Self {
+        Self {
+            account,
+            requires_openai_auth,
+        }
+    }
+}
+
+/// `true` for any non-null value, without keeping it.
+fn present_or_null<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<bool, D::Error> {
+    Ok(Option::<serde::de::IgnoredAny>::deserialize(deserializer)?.is_some())
+}
+
 /// The layer-merged effective config, narrowed to the two keys the model picker needs; field names are snake_case verbatim. Both are genuinely optional on codex's side.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct CodexConfig {
@@ -938,6 +970,12 @@ impl CodexAppServer {
             params["cwd"] = Value::String(cwd.to_string());
         }
         self.request_until("config/read", params, deadline).await
+    }
+
+    /// `account/read` without a token refresh — whether this daemon is logged in.
+    pub async fn account_read(&self, deadline: tokio::time::Instant) -> Result<AccountRead> {
+        self.request_until("account/read", json!({}), deadline)
+            .await
     }
 
     /// `turn/steer` — push more input into the running turn. Codex refuses with `-32600` when no turn or a different turn is active (reaches the caller as [`CalmError::CodexRefused`]).

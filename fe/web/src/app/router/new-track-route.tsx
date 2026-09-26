@@ -2,12 +2,14 @@ import { useQuery } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef } from 'react';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
+import { availabilityOf } from '../../../../core/domain/agent-providers.ts';
 import { folderConflictMessage } from '../../../../core/domain/area.ts';
 import { isBlankForKernel, trackCreateKeyAction, type NewTrackBodyWithoutFirstMessage } from '../../../../core/domain/track.ts';
 import { ModelPill } from '../../features/chat/thread/model-pill.tsx';
 import { NewTrackForm, type NewTrackDraft, type NewTrackFormState } from '../../features/area/new-track/public.tsx';
 import { useCompactViewport } from '../../ui/viewport/public.ts';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
+import { agentProvidersQueryOptions } from '../providers/agent-providers.ts';
 import { createDirectoryLister } from '../providers/directory.ts';
 import { ApiError, OfflineSubmissionError, folderConflictOf, modelCatalogQueryOptions, useTrackMutations, useTrackRecipes, useTrackTemplates, useWorkspace, type Workspace } from '../providers/queries.ts';
 import { readHostThemeRgb } from '../theme/host-rgb.ts';
@@ -40,9 +42,12 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
 }) {
   const compactViewport = useCompactViewport();
   const areaId = session.area.id;
-  /* One group per provider; the picker leaves Claude out while the server answers `unavailable` (no Claude Planner here). */
+  /* One group per provider, each following its provider's availability (#1817): `not_configured` leaves it
+     out; `unavailable` shows the server's reason, and disables the group only where create refuses it
+     (`CREATE_REFUSED_WHEN_UNAVAILABLE`: Claude). */
   const codexCatalog = useQuery(modelCatalogQueryOptions(transport, { kind: 'provider', provider: 'codex' }, unauthorized));
   const claudeCatalog = useQuery(modelCatalogQueryOptions(transport, { kind: 'provider', provider: 'claude' }, unauthorized));
+  const availability = useQuery(agentProvidersQueryOptions(transport, unauthorized));
   const trackMutations = useTrackMutations(transport, unauthorized);
   const templates = useTrackTemplates(transport, unauthorized);
   const recipes = useTrackRecipes(transport, unauthorized);
@@ -148,8 +153,8 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
     modelControls={
       <ModelPill
         groups={[
-          { provider: 'codex', catalog: codexCatalog.data ?? null },
-          { provider: 'claude', catalog: claudeCatalog.data ?? null },
+          { provider: 'codex', catalog: codexCatalog.data ?? null, availability: availabilityOf(availability.data, 'codex') },
+          { provider: 'claude', catalog: claudeCatalog.data ?? null, availability: availabilityOf(availability.data, 'claude') },
         ]}
         provider={session.provider}
         effortControl={compactViewport ? 'in-menu' : 'separate'}

@@ -46,6 +46,9 @@ async fn main() -> anyhow::Result<()> {
             "planner harness boot recovery failed; continuing without recovered harness tasks"
         );
     }
+    // #1817: one availability check per Planner provider, off the boot path; a provider that
+    // cannot run is a warning, never a boot failure. The handle is detached on purpose.
+    drop(calm_server::agent_providers::spawn_boot_check(&state));
 
     calm_server::reconcile_supervisor_on_boot(&state).await;
 

@@ -128,9 +128,9 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
     assert_eq!(
         v["apiVersion"].as_str().unwrap(),
-        "11",
-        "#1810: GET /api/models gained `source: \"built_in\"` and a nullable \
-         `default_reasoning_effort`, which older clients' schemas reject"
+        "12",
+        "#1817: GET /api/agent-providers is new; a bundle that reads it gets a 404 from an \
+         older kernel"
     );
     assert_eq!(
         v["syncEventVersion"].as_u64().unwrap(),

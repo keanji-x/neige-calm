@@ -127,6 +127,9 @@ pub struct RouteState {
     /// The Claude Planner backend (#1791): its config (absent without `--claude-planner-config`)
     /// and marker instance, for creates, readiness, recovery and the scoped sweeps.
     pub(crate) claude_planner: Arc<ClaudePlannerHost>,
+    /// Each Planner provider's last availability check (#1817), read by
+    /// `GET /api/agent-providers` and track create.
+    pub(crate) provider_availability: Arc<crate::agent_providers::ProviderAvailabilityCache>,
 }
 
 impl RouteState {
@@ -218,6 +221,7 @@ impl BootState {
             track_delete_locks: crate::per_card_lock::new_keyed_locks(),
             area_delete_locks: crate::per_card_lock::new_keyed_locks(),
             claude_planner: self.claude_planner,
+            provider_availability: Arc::default(),
         };
         let worker = WorkerState {
             repo: self.repo.clone(),
@@ -639,6 +643,8 @@ impl AppState {
             )
             .expect("claude planner host"),
         );
+        // An answer about the replaced backend must not outlive it.
+        self.route.provider_availability = Arc::default();
         self.rebuild_operation_runtime();
         self
     }
@@ -866,6 +872,8 @@ impl AppState {
     pub fn with_shared_codex_appserver(mut self, shared: Arc<SharedCodexAppServer>) -> Self {
         self.shared_codex_appserver = shared.clone();
         self.codex_shell.shared_codex_appserver = shared;
+        // An answer about the replaced daemon must not outlive it.
+        self.route.provider_availability = Arc::default();
         self.worker_flow = WorkerFlowDriver::from_state_parts(
             self.raw.clone(),
             self.shared_codex_appserver.clone(),

@@ -822,6 +822,12 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
     component: renderNothing,
   });
 
+  const plannersRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/settings/planners',
+    component: renderNothing,
+  });
+
   const appearanceRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/settings/appearance',
@@ -836,7 +842,7 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
 
   return rootRoute.addChildren([
     indexRoute, newTrackRoute, trackRoute, recipesRoute, settingsRoute,
-    generalRoute, networkRoute, pluginsRoute, appearanceRoute, aboutRoute,
+    generalRoute, networkRoute, pluginsRoute, plannersRoute, appearanceRoute, aboutRoute,
   ]);
 }
 
@@ -1304,7 +1310,8 @@ function useConversationPanel(
             )}
             <ChatComposer disabled={creating} onSend={sendDraft} onNewConversation={startAnother}
               draft={{ text: composerDraft, onChange: setComposerDraft }}
-              footerActions={<ModelPill groups={[{ provider: 'codex', catalog: draftCatalog.data ?? null }]} provider="codex" selection={draft.model}
+              /* A track conversation is not a Planner create: no availability gate here (#1817). */
+              footerActions={<ModelPill groups={[{ provider: 'codex', catalog: draftCatalog.data ?? null, availability: null }]} provider="codex" selection={draft.model}
                 onChange={model => withDraft(draft, current => current.creating || current.sentText !== null
                   ? current : { ...current, model })}
                 isDisabled={creating || draft.sentText !== null || !supportsDraftModel} />} />
@@ -1439,7 +1446,8 @@ function useConversationPanel(
                   />
                   <ModelPill
                     /* Without a scope the catalog read is disabled, so no `unavailable` label can show. */
-                    groups={[{ provider: scopeProvider, catalog: store.modelCatalog }]}
+                    /* An existing conversation keeps issue-time handling: no availability gate here (#1817). */
+                    groups={[{ provider: scopeProvider, catalog: store.modelCatalog, availability: null }]}
                     provider={scopeProvider}
                     selection={store.model}
                     onChange={store.setModel}

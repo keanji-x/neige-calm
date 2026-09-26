@@ -9,6 +9,51 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/agent-providers": {
+      "get": {
+        "tags": [
+          "agent_providers"
+        ],
+        "summary": "Whether each Planner provider can run right now. `ready` passed every check; `unavailable`\nnames the first failed check and its fix in `reason`; `not_configured` is a provider this\nserver was not started with (Claude without `--claude-planner-config`). Codex: the shared\napp-server runs and `account/read` says it is logged in. Claude: the pinned binary answers\n`--version` with the pinned version and `auth status --json` says `loggedIn`. Answers are\ncached per provider for 30 s; a failed check is an answer, never an error.",
+        "operationId": "list_agent_providers",
+        "parameters": [
+          {
+            "name": "refresh",
+            "in": "query",
+            "description": "`true` runs every check again instead of answering from the last one (at most 30 s old).",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One entry per Planner provider: Codex, then Claude",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProviderAvailability"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/areas": {
       "get": {
         "tags": [
@@ -4668,7 +4713,7 @@
             }
           },
           "400": {
-            "description": "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`, a `planner_provider` this server cannot run, `claude` with a `model` that is not one of its aliases (`opus`, `sonnet`, `haiku`) or with any `reasoning_effort`, or `reasoning_effort` unsupported by the selected model's current catalog entry; no track is minted and no effort is silently adjusted), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), a malformed `Idempotency-Key` header (empty or non-ASCII) on any create, or — with `first_message` — a missing `Idempotency-Key` or an empty/over-long message. Decided before anything is minted; the multi-source refusal, like every other create-path check, is not re-run on an `Idempotency-Key` replay, which mints nothing.",
+            "description": "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`, a `claude` Planner this server cannot run right now (not configured, a wrong binary version, or not logged in; the error carries the reason `GET /api/agent-providers` reports), `claude` with a `model` that is not one of its aliases (`opus`, `sonnet`, `haiku`) or with any `reasoning_effort`, or `reasoning_effort` unsupported by the selected model's current catalog entry; no track is minted and no effort is silently adjusted), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), a malformed `Idempotency-Key` header (empty or non-ASCII) on any create, or — with `first_message` — a missing `Idempotency-Key` or an empty/over-long message. Decided before anything is minted; the multi-source refusal, like every other create-path check, is not re-run on an `Idempotency-Key` replay, which mints nothing.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9828,6 +9873,44 @@
           }
         }
       },
+      "ProviderAvailability": {
+        "type": "object",
+        "description": "One provider's current availability.",
+        "required": [
+          "provider",
+          "status",
+          "reason",
+          "checked_at_ms"
+        ],
+        "properties": {
+          "checked_at_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Wall-clock ms at which the check that produced this answer started."
+          },
+          "provider": {
+            "$ref": "#/components/schemas/AgentProvider"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "neige's own sentence naming the failed check and its fix; `null` exactly when `ready`."
+          },
+          "status": {
+            "$ref": "#/components/schemas/ProviderStatus"
+          }
+        }
+      },
+      "ProviderStatus": {
+        "type": "string",
+        "enum": [
+          "ready",
+          "unavailable",
+          "not_configured"
+        ]
+      },
       "RatifyCardDecision": {
         "type": "string",
         "enum": [
@@ -12687,6 +12770,10 @@
     {
       "name": "models",
       "description": "Codex model catalog and the default model/reasoning-effort this installation follows"
+    },
+    {
+      "name": "agent_providers",
+      "description": "Whether each Planner provider (Codex, Claude) can run right now, and why not"
     },
     {
       "name": "version",

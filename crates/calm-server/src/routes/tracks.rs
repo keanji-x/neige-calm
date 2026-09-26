@@ -789,7 +789,7 @@ pub(crate) async fn get_track_detail(
     request_body = CreateTrackRequest,
     responses(
         (status = 201, description = "Track created. With `first_message`, the message is also queued for the planner agent inside the harness-start transaction; a retry under the same `Idempotency-Key` returns the same track without re-delivering it.", body = Track),
-        (status = 400, description = "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`, a `planner_provider` this server cannot run, `claude` with a `model` that is not one of its aliases (`opus`, `sonnet`, `haiku`) or with any `reasoning_effort`, or `reasoning_effort` unsupported by the selected model's current catalog entry; no track is minted and no effort is silently adjusted), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), a malformed `Idempotency-Key` header (empty or non-ASCII) on any create, or — with `first_message` — a missing `Idempotency-Key` or an empty/over-long message. Decided before anything is minted; the multi-source refusal, like every other create-path check, is not re-run on an `Idempotency-Key` replay, which mints nothing.", body = ErrorBody),
+        (status = 400, description = "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`, a `claude` Planner this server cannot run right now (not configured, a wrong binary version, or not logged in; the error carries the reason `GET /api/agent-providers` reports), `claude` with a `model` that is not one of its aliases (`opus`, `sonnet`, `haiku`) or with any `reasoning_effort`, or `reasoning_effort` unsupported by the selected model's current catalog entry; no track is minted and no effort is silently adjusted), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), a malformed `Idempotency-Key` header (empty or non-ASCII) on any create, or — with `first_message` — a missing `Idempotency-Key` or an empty/over-long message. Decided before anything is minted; the multi-source refusal, like every other create-path check, is not re-run on an `Idempotency-Key` replay, which mints nothing.", body = ErrorBody),
         (status = 404, description = "Area not found", body = ErrorBody),
         (status = 409, description = "Folder-claim conflict (structured `FolderConflict` body), `conflict` when an `Idempotency-Key` is bound to a different create or to a legacy binding whose request cannot be proven, or `idempotency_key_exhausted` when the key used all 64 retry slots, when the track it names has been deleted, or when its managed workspace can no longer be materialized. Recovery depends on `code`: fix a folder conflict and retry the same key; preserve the original request for a payload conflict (use a new key only for an explicit new create); use a new key after `idempotency_key_exhausted`.", body = ErrorBody),
         (status = 500, description = "Internal error. One case leaves the track behind: when the request carried a `first_message` and the planner harness start did not complete, the track, its cards and its workspace are already committed, and whether the message reached the agent is **unknown to the server** — depending on how far the start got, it may never have been handed over, or it may already have been delivered and answered. Nothing is rolled back and nothing compensates. What the server *can* promise, and this is what the `Idempotency-Key` buys: retrying the identical request under the **same** key creates no second track and delivers no second copy of the message. It does not promise the track is usable — a replay does not repair an attached workspace whose directory was deleted. Without `first_message` the same harness failure is logged and still returns 201, because no user text was riding on it — which also holds when such a create sends an `Idempotency-Key` and is answered from its binding.", body = ErrorBody),
@@ -803,6 +803,23 @@ pub(crate) async fn create_track(
     State(codex): State<CodexShellState>,
     Json(mut request): Json<CreateTrackRequest>,
 ) -> Result<Response> {
+    // #1817: a Claude create's availability (the cached check, at most `TTL` old, or a new check
+    // of up to ~20 s) is read before the area lock below, which it must not hold; it gates only a
+    // new mint, after the replay arms.
+    let claude_availability = if request.planner_provider == AgentProvider::Claude {
+        Some(
+            s.provider_availability
+                .get(
+                    &request.planner_provider,
+                    crate::agent_providers::Freshness::Cached,
+                    &s.claude_planner,
+                    &codex.shared_codex_appserver,
+                )
+                .await,
+        )
+    } else {
+        None
+    };
     // Common area lifecycle fence for legacy mint, first-message mint, and
     // idempotent replay. Holding it through workspace materialization and
     // operation submission makes area deletion snapshot a closed member set.
@@ -810,14 +827,8 @@ pub(crate) async fn create_track(
     let _area_delete_guard =
         crate::per_card_lock::lock_key(&s.area_delete_locks, create_area_id.as_str()).await;
     if request.planner_provider == AgentProvider::Claude {
-        // #1791 §5.3: available only with the typed config. #1810: a model is one of its aliases,
-        // and there is no effort choice.
-        if s.claude_planner.configured().is_err() {
-            return Err(CalmError::BadRequest(format!(
-                "track create: `planner_provider` `claude` is unavailable: calm-server was started without {}",
-                crate::claude_planner::config::CONFIG_FLAG
-            )));
-        }
+        // #1810: a model is one of its aliases, and there is no effort choice. Whether a Claude
+        // Planner can run at all is the availability gate below (#1817).
         crate::claude_planner::models::resolve(
             request.model.as_deref(),
             request.reasoning_effort.as_deref(),
@@ -864,6 +875,14 @@ pub(crate) async fn create_track(
         create::CreatePlan::Mint(plan) => (Some(plan), None),
         create::CreatePlan::MessageLessMint(plan) => (None, Some(plan)),
     };
+    // #1817: a new Claude mint needs its provider ready; a replay mints nothing and is answered
+    // from its binding above. A Codex create is not gated: without a first message it still
+    // answers 201 during a daemon outage (#293).
+    if let Some(checked) = &claude_availability {
+        checked.require_ready().map_err(|refusal| {
+            CalmError::BadRequest(format!("track create: `planner_provider` {refusal}"))
+        })?;
+    }
     let allow_cross_area_cwd = request.allow_cross_area_cwd.clone();
     // Resolve mutable catalog advice only for a new mint, never on replay.
     let model = request.model.take();
