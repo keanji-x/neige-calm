@@ -282,12 +282,28 @@ pub struct ThreadView {
     pub turns: Option<Vec<TurnView>>,
 }
 
-/// Narrowed mirror of upstream `Turn`: `completedAt` is the only field the arbiter reads (`null` = died mid-turn).
+/// Narrowed mirror of upstream `Turn`: `completedAt` (`null` = died mid-turn) and the turn's
+/// own `status`, which upstream requires.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnView {
     #[serde(default)]
     pub completed_at: Option<i64>,
+    pub status: TurnStatus,
+}
+
+/// Mirror of upstream `TurnStatus`. The field stays required; `Unknown` only absorbs a value
+/// this build does not model, so one new upstream status cannot fail the whole `thread/read`
+/// and silence the liveness recheck (#1813).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TurnStatus {
+    Completed,
+    Interrupted,
+    Failed,
+    InProgress,
+    #[serde(other)]
+    Unknown,
 }
 
 /// `thread/loaded/list` response; only `data` is kept, the pagination cursor is dropped.
@@ -1155,8 +1171,8 @@ mod tests {
             "thread": {
                 "status": { "type": "idle" },
                 "turns": [
-                    { "completedAt": 1700 },
-                    { "completedAt": null }
+                    { "completedAt": 1700, "status": "completed" },
+                    { "completedAt": null, "status": "inProgress" }
                 ]
             }
         }))
@@ -1164,6 +1180,7 @@ mod tests {
         assert_eq!(resp.thread.status, ThreadStatus::Idle);
         let turns = resp.thread.turns.unwrap();
         assert_eq!(turns.last().unwrap().completed_at, None);
+        assert_eq!(turns.last().unwrap().status, TurnStatus::InProgress);
     }
 
     #[test]
@@ -1172,14 +1189,54 @@ mod tests {
         let resp: ThreadReadResponse = serde_json::from_value(json!({
             "thread": {
                 "status": { "type": "idle" },
-                "turns": [ { "completedAt": 1700 }, { "completedAt": 1800 } ]
+                "turns": [
+                    { "completedAt": 1700, "status": "completed" },
+                    { "completedAt": 1800, "status": "failed" }
+                ]
             }
         }))
         .unwrap();
+        let turns = resp.thread.turns.unwrap();
+        assert_eq!(turns.last().unwrap().completed_at, Some(1800));
+        assert_eq!(turns.last().unwrap().status, TurnStatus::Failed);
+    }
+
+    #[test]
+    fn thread_read_parses_an_unmodelled_turn_status_as_unknown() {
+        let resp: ThreadReadResponse = serde_json::from_value(json!({
+            "thread": {
+                "status": { "type": "idle" },
+                "turns": [
+                    { "completedAt": 1700, "status": "queued" },
+                    { "completedAt": 1800, "status": "completed" },
+                    { "completedAt": 1900, "status": "queued" }
+                ]
+            }
+        }))
+        .unwrap();
+        let statuses: Vec<_> = resp
+            .thread
+            .turns
+            .unwrap()
+            .iter()
+            .map(|t| t.status)
+            .collect();
         assert_eq!(
-            resp.thread.turns.unwrap().last().unwrap().completed_at,
-            Some(1800)
+            statuses,
+            [
+                TurnStatus::Unknown,
+                TurnStatus::Completed,
+                TurnStatus::Unknown
+            ]
         );
+    }
+
+    #[test]
+    fn thread_read_requires_the_turn_status_field() {
+        let absent = serde_json::from_value::<ThreadReadResponse>(json!({
+            "thread": { "status": { "type": "idle" }, "turns": [ { "completedAt": 1700 } ] }
+        }));
+        assert!(absent.is_err(), "{absent:?}");
     }
 
     #[test]

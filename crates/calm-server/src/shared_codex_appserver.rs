@@ -4529,8 +4529,10 @@ fn liveness_facts_from_read(
     read: crate::codex_appserver::ThreadReadResponse,
     loaded: bool,
 ) -> calm_provider::provider::CodexLivenessFacts {
-    use crate::codex_appserver::{ThreadActiveFlag, ThreadStatus};
-    use calm_provider::provider::{CodexLivenessFacts, ThreadStatusLite};
+    use crate::codex_appserver::{ThreadActiveFlag, ThreadStatus, TurnStatus};
+    use calm_provider::provider::{
+        CodexLivenessFacts, LastTurnFacts, ThreadStatusLite, TurnStatusLite,
+    };
 
     let status = match read.thread.status {
         ThreadStatus::NotLoaded => ThreadStatusLite::NotLoaded,
@@ -4541,18 +4543,26 @@ fn liveness_facts_from_read(
             waiting_on_approval: active_flags.contains(&ThreadActiveFlag::WaitingOnApproval),
         },
     };
-    // `last_turn_completed_at`: None = no turns present (None or empty list);
-    // Some(None) = last turn never finished; Some(Some(ts)) = finished/aborted.
-    let last_turn_completed_at = read
+    // `last_turn`: None = no turns present (None or empty list).
+    let last_turn = read
         .thread
         .turns
         .as_deref()
         .and_then(|turns| turns.last())
-        .map(|turn| turn.completed_at);
+        .map(|turn| LastTurnFacts {
+            completed_at: turn.completed_at,
+            status: match turn.status {
+                TurnStatus::Completed => TurnStatusLite::Completed,
+                TurnStatus::Interrupted => TurnStatusLite::Interrupted,
+                TurnStatus::Failed => TurnStatusLite::Failed,
+                TurnStatus::InProgress => TurnStatusLite::InProgress,
+                TurnStatus::Unknown => TurnStatusLite::Unknown,
+            },
+        });
     CodexLivenessFacts {
         loaded,
         status,
-        last_turn_completed_at,
+        last_turn,
     }
 }
 
@@ -4579,6 +4589,41 @@ pub fn drop_spawned_child_guard_for_test(child: Child, pgid: i32) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// #1813: the liveness facts carry the last turn's own status next to the thread's, so a
+    /// failed turn on a reloaded (`idle`) thread still reads back as failed. Every wire value.
+    #[test]
+    fn liveness_facts_carry_the_last_turns_own_status() {
+        use calm_provider::provider::{LastTurnFacts, ThreadStatusLite, TurnStatusLite};
+        for (wire, lite) in [
+            ("completed", TurnStatusLite::Completed),
+            ("interrupted", TurnStatusLite::Interrupted),
+            ("failed", TurnStatusLite::Failed),
+            ("inProgress", TurnStatusLite::InProgress),
+            ("queued", TurnStatusLite::Unknown),
+        ] {
+            let read: crate::codex_appserver::ThreadReadResponse = serde_json::from_value(json!({
+                "thread": {
+                    "status": { "type": "idle" },
+                    "turns": [
+                        { "completedAt": 1700, "status": "completed" },
+                        { "completedAt": 1800, "status": wire }
+                    ]
+                }
+            }))
+            .unwrap();
+            let facts = liveness_facts_from_read(read, true);
+            assert_eq!(facts.status, ThreadStatusLite::Idle);
+            assert_eq!(
+                facts.last_turn,
+                Some(LastTurnFacts {
+                    completed_at: Some(1800),
+                    status: lite,
+                }),
+                "{wire}"
+            );
+        }
+    }
 
     /// Entries leave the tombstone set by FIFO eviction at the cap and by nothing else; a
     /// re-remembered id does not consume a second slot.

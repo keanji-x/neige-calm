@@ -1,11 +1,14 @@
 //! Ending a `running` Track worker's execution (#1785 S1): the liveness deadline, a codex worker
-//! whose turn ended without a task report, and the Planner's cancel all fail or cancel the row
-//! and write the same cleanup marker, which the reconcile sweep turns into a worker reap.
+//! whose turn ended (normally or in an error) without a task report, and the Planner's cancel
+//! all fail or cancel the row and write the same cleanup marker, which the reconcile sweep turns
+//! into a worker reap.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use calm_provider::provider::{CodexDaemonProbe, CodexLivenessFacts, ThreadStatusLite};
+use calm_provider::provider::{
+    CodexDaemonProbe, CodexLivenessFacts, ThreadStatusLite, TurnStatusLite,
+};
 use dashmap::DashMap;
 
 use super::{InflightGuard, Scheduler, duration_ms_i64, is_race_lost, race_lost_err};
@@ -17,8 +20,8 @@ use crate::ids::ActorId;
 use crate::model::{Task, TaskKind, Track, TrackLifecycle, now_ms};
 use crate::track_lifecycle::auto_transition_if_current_in_tx;
 
-/// How long a codex worker's last turn must have been over, with the thread idle and no turn
-/// active, before the sweep fails its task as `worker-turn-ended`.
+/// How long a codex worker's last turn must have been over, with the thread at rest (`idle` or
+/// `systemError`) and no turn active, before the sweep fails its task as `worker-turn-ended`.
 pub const WORKER_IDLE_TURN_GRACE: Duration = Duration::from_secs(300);
 
 /// Bound on one live `thread/read` recheck (connect plus two RPCs of at most 10 s each).
@@ -81,20 +84,40 @@ impl WorkerIdleWake {
     }
 }
 
-/// True when the thread's most recent turn ended at least `grace_ms` ago and nothing runs now.
-/// `completed_at` is Unix SECONDS on the wire.
+/// How the worker's last turn itself ended, from the turn's own `status`: the thread status
+/// only says the thread is resting, and it keeps `systemError` after a turn that completed and
+/// comes back `idle` on reload after a failed one (#1813).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TurnEnd {
+    Ended,
+    Failed,
+}
+
+/// How the thread's most recent turn ended, when it ended at least `grace_ms` ago, the thread
+/// rests (`Idle` or `SystemError`) and nothing runs now. `completed_at` is Unix SECONDS.
 fn turn_ended_past_grace(
     facts: &CodexLivenessFacts,
     active_turn_id: Option<&str>,
     now_ms: i64,
     grace_ms: i64,
-) -> bool {
-    let Some(Some(completed_at_s)) = facts.last_turn_completed_at else {
-        return false;
+) -> Option<TurnEnd> {
+    let turn = facts.last_turn?;
+    let completed_at_s = turn.completed_at?;
+    let resting = matches!(
+        facts.status,
+        ThreadStatusLite::Idle | ThreadStatusLite::SystemError
+    );
+    let end = match turn.status {
+        TurnStatusLite::Failed => TurnEnd::Failed,
+        TurnStatusLite::Completed
+        | TurnStatusLite::Interrupted
+        | TurnStatusLite::InProgress
+        | TurnStatusLite::Unknown => TurnEnd::Ended,
     };
-    facts.status == ThreadStatusLite::Idle
+    (resting
         && active_turn_id.is_none()
-        && now_ms.saturating_sub(completed_at_s.saturating_mul(1000)) >= grace_ms
+        && now_ms.saturating_sub(completed_at_s.saturating_mul(1000)) >= grace_ms)
+        .then_some(end)
 }
 
 /// How a running worker's execution ends; each variant fixes the row detail and the event text.
@@ -103,6 +126,7 @@ pub(super) enum RunningWorkerFailure {
     /// The live read ran against this card's thread, so the fail CAS is pinned to it.
     TurnEnded {
         card_id: String,
+        end: TurnEnd,
     },
 }
 
@@ -117,14 +141,28 @@ impl RunningWorkerFailure {
     const fn reason(&self) -> &'static str {
         match self {
             Self::LivenessTimeout => "worker exceeded the running liveness deadline",
-            Self::TurnEnded { .. } => "worker turn ended without a task report",
+            Self::TurnEnded {
+                end: TurnEnd::Ended,
+                ..
+            } => "worker turn ended without a task report",
+            Self::TurnEnded {
+                end: TurnEnd::Failed,
+                ..
+            } => "worker turn ended in an error without a task report",
         }
     }
 
     const fn auto_message(&self) -> &'static str {
         match self {
             Self::LivenessTimeout => "[auto] worker liveness timeout",
-            Self::TurnEnded { .. } => "[auto] worker turn ended",
+            Self::TurnEnded {
+                end: TurnEnd::Ended,
+                ..
+            } => "[auto] worker turn ended",
+            Self::TurnEnded {
+                end: TurnEnd::Failed,
+                ..
+            } => "[auto] worker turn ended in an error",
         }
     }
 
@@ -138,13 +176,14 @@ impl RunningWorkerFailure {
     fn guard_card_id(&self) -> Option<&str> {
         match self {
             Self::LivenessTimeout => None,
-            Self::TurnEnded { card_id } => Some(card_id),
+            Self::TurnEnded { card_id, .. } => Some(card_id),
         }
     }
 }
 
 /// The candidate's thread: the card's latest codex session, only while its persisted status is
-/// `idle`. Each execution gets a fresh card and thread, so this thread is this execution's.
+/// `idle` or `systemError` (the liveness feeder's spelling for a thread whose turn failed). Each
+/// execution gets a fresh card and thread, so this thread is this execution's.
 async fn idle_candidate_thread(pool: &sqlx::SqlitePool, card_id: &str) -> Result<Option<String>> {
     let latest: Option<(Option<String>, Option<String>)> = sqlx::query_as(
         "SELECT thread_id, last_thread_status FROM worker_sessions \
@@ -155,7 +194,11 @@ async fn idle_candidate_thread(pool: &sqlx::SqlitePool, card_id: &str) -> Result
     .fetch_optional(pool)
     .await?;
     Ok(match latest {
-        Some((Some(thread_id), Some(status))) if status == "idle" => Some(thread_id),
+        Some((Some(thread_id), Some(status)))
+            if matches!(status.as_str(), "idle" | "systemError") =>
+        {
+            Some(thread_id)
+        }
         _ => None,
     })
 }
@@ -221,15 +264,15 @@ impl Scheduler {
             }
         };
         let active_turn_id = idle.probe.active_turn_id_for_thread(&thread_id);
-        if !turn_ended_past_grace(
+        let Some(end) = turn_ended_past_grace(
             &facts,
             active_turn_id.as_deref(),
             (idle.clock)(),
             duration_ms_i64(idle.grace),
-        ) {
+        ) else {
             return;
-        }
-        self.fail_running_worker(task, RunningWorkerFailure::TurnEnded { card_id })
+        };
+        self.fail_running_worker(task, RunningWorkerFailure::TurnEnded { card_id, end })
             .await;
     }
 
@@ -398,45 +441,71 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use calm_provider::provider::LastTurnFacts;
 
-    fn facts(status: ThreadStatusLite, last: Option<Option<i64>>) -> CodexLivenessFacts {
+    fn facts(status: ThreadStatusLite, last_turn: Option<LastTurnFacts>) -> CodexLivenessFacts {
         CodexLivenessFacts {
             loaded: true,
             status,
-            last_turn_completed_at: last,
+            last_turn,
         }
+    }
+
+    fn turn(completed_at: Option<i64>, status: TurnStatusLite) -> Option<LastTurnFacts> {
+        Some(LastTurnFacts {
+            completed_at,
+            status,
+        })
     }
 
     const GRACE_MS: i64 = 300_000;
     const COMPLETED_S: i64 = 1_790_160_084;
 
     #[test]
-    fn turn_ended_needs_idle_ended_turn_no_active_turn_and_elapsed_grace() {
+    fn turn_ended_needs_a_resting_thread_ended_turn_no_active_turn_and_elapsed_grace() {
         let at = |secs: i64| COMPLETED_S * 1000 + secs * 1000;
-        let ended = facts(ThreadStatusLite::Idle, Some(Some(COMPLETED_S)));
-        assert!(!turn_ended_past_grace(&ended, None, at(299), GRACE_MS));
-        assert!(turn_ended_past_grace(&ended, None, at(300), GRACE_MS));
-        assert!(!turn_ended_past_grace(
-            &ended,
-            Some("turn-live"),
-            at(301),
-            GRACE_MS
-        ));
-        for other in [
-            facts(ThreadStatusLite::Idle, None),
-            facts(ThreadStatusLite::Idle, Some(None)),
+        let resting = [ThreadStatusLite::Idle, ThreadStatusLite::SystemError];
+        let ended = [
+            (TurnStatusLite::Completed, TurnEnd::Ended),
+            (TurnStatusLite::Interrupted, TurnEnd::Ended),
+            (TurnStatusLite::Failed, TurnEnd::Failed),
+            (TurnStatusLite::InProgress, TurnEnd::Ended),
+            (TurnStatusLite::Unknown, TurnEnd::Ended),
+        ];
+        for status in resting {
+            for (turn_status, end) in ended {
+                let ended = facts(status, turn(Some(COMPLETED_S), turn_status));
+                assert_eq!(turn_ended_past_grace(&ended, None, at(299), GRACE_MS), None);
+                assert_eq!(
+                    turn_ended_past_grace(&ended, None, at(300), GRACE_MS),
+                    Some(end),
+                    "{ended:?}"
+                );
+                assert_eq!(
+                    turn_ended_past_grace(&ended, Some("turn-live"), at(301), GRACE_MS),
+                    None
+                );
+            }
+        }
+        let active = ThreadStatusLite::Active {
+            waiting_on_user_input: false,
+            waiting_on_approval: false,
+        };
+        let mut others = vec![
+            facts(active, turn(Some(COMPLETED_S), TurnStatusLite::Completed)),
             facts(
-                ThreadStatusLite::Active {
-                    waiting_on_user_input: false,
-                    waiting_on_approval: false,
-                },
-                Some(Some(COMPLETED_S)),
+                ThreadStatusLite::NotLoaded,
+                turn(Some(COMPLETED_S), TurnStatusLite::Completed),
             ),
-            facts(ThreadStatusLite::NotLoaded, Some(Some(COMPLETED_S))),
-            facts(ThreadStatusLite::SystemError, Some(Some(COMPLETED_S))),
-        ] {
-            assert!(
-                !turn_ended_past_grace(&other, None, at(301), GRACE_MS),
+        ];
+        for status in resting {
+            others.push(facts(status, None));
+            others.push(facts(status, turn(None, TurnStatusLite::InProgress)));
+        }
+        for other in others {
+            assert_eq!(
+                turn_ended_past_grace(&other, None, at(301), GRACE_MS),
+                None,
                 "{other:?}"
             );
         }
