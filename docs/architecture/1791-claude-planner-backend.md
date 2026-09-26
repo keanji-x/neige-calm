@@ -504,8 +504,9 @@ The CLI resolves each alias to its current model, so the list does not go stale 
 - **GET `/api/models`** for a Claude card (or `?provider=claude` before a card exists) answers the alias
   list with `source:"built_in"`, `default_source:"unknown"`, a `null` default, `fetched_at_ms: null`, and
   per entry `is_default: false`, no supported efforts and `default_reasoning_effort: null`. On a server
-  without `--claude-planner-config` it answers `source:"unavailable"` with an empty catalog, and the FE
-  hides the Claude group.
+  without `--claude-planner-config` it answers `source:"unavailable"` with an empty catalog. The FE group
+  follows `GET /api/agent-providers` (#1817): `not_configured` hides it, `unavailable` shows it disabled
+  with the reason.
 - **Create** with `claude` accepts a `model` from the list; any other model or any `reasoning_effort` ⇒ 400.
 - **PUT `/planner/model`** on a Claude card accepts an alias or `null` with a `null` effort; anything else
   ⇒ 400, with nothing stored or adjusted.
