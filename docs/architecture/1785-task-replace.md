@@ -9,7 +9,7 @@
 ## 0. 结论先行
 
 - **片 1（最小、止痛最多）**：`calm.plan.cancel` 接受 `running`（仅限内核超时通路已能收割的 codex/claude 执行），复用「liveness 超时 → 清理标记 → sweep 杀 worker」；
-  外加 scheduler sweep 的空转臂：持久化的 `idle` 只当**候选信号**，再用权威的实时 `thread/read`（reaper 已在用）确认本执行线程的最后一个 turn 已结束 ≥ 300 s，
+  外加 scheduler sweep 的空转臂：持久化的 `idle`（或 `systemError`，#1813）只当**候选信号**，再用权威的实时 `thread/read`（reaper 已在用）确认本执行线程的最后一个 turn 已结束 ≥ 300 s，
   才以 `worker-turn-ended` 失败该任务（唤醒 Planner）。无新事件种类、无迁移、无新环境变量。消除 #1772 r4 的 **118 分钟静默卡死**与唤醒后 **28 次收拾调用**（§2.3）。
 - **片 2**：`calm.task.replace`——停旧（片 1 的 CAS）→ 内核**追加**后继声明块（确定性 key `<root>.<n>`，继承门禁/kind/依赖/优先级；goal、acceptance 必填、context 整体替换）
   → 新租约准备时用 git 2.39.5 可跑的两参数 `git merge-tree --write-tree <U> <cand>` 把整条谱系的改动搬到当前上游，冲突 ⇒ `spawn-failed: refused: carry-conflict` 唤醒。
@@ -144,15 +144,15 @@ codex worker 会话的 `userMessage` 条数：46 个任务为 2（38 done、8 fa
 
 持久化列是 best-effort（F22），只用来**挑候选**，终止证据来自权威实时读（F23）：
 
-1. 候选：sweep 的 `Running` 臂（`scheduler/mod.rs:1897-1923`，已跳过 isolated，`:1866-1881`）里，kind=codex、`task_has_running_liveness_deadline`、`worker_card_id` 非空，且该卡 session 的 `last_thread_status='idle'`。
+1. 候选：sweep 的 `Running` 臂（`scheduler/mod.rs:1897-1923`，已跳过 isolated，`:1866-1881`）里，kind=codex、`task_has_running_liveness_deadline`、`worker_card_id` 非空，且该卡 session 的 `last_thread_status` 为 `'idle'` 或 `'systemError'`（#1813：turn 失败后线程停在 `systemError`，`liveness_feeder.rs` 的 `turn_completed_status`）。
    每次执行都新建卡与线程（`operation/codex_adapter/mod.rs:784`；4140 上无任务卡有多于一个 session，§9），所以「该卡的线程」就是本执行的线程，不需要时间下界。
-2. 权威确认：经 `Scheduler` 构造参数注入的 `CodexDaemonProbe`（今天 `Scheduler` 没有该句柄，`scheduler/mod.rs:466-510`）对该线程调 `read_liveness_facts`，要求**全部**成立：`status=Idle`；`last_turn_completed_at = Some(Some(ts))`（至少一个 turn 且已结束）；
+2. 权威确认：经 `Scheduler` 构造参数注入的 `CodexDaemonProbe`（今天 `Scheduler` 没有该句柄，`scheduler/mod.rs:466-510`）对该线程调 `read_liveness_facts`，要求**全部**成立：`status` 为 `Idle` 或 `SystemError`（`NotLoaded`、`Active` 不算）；最后一个 turn 存在且 `completed_at = Some(ts)`（`last_turn = Some(LastTurnFacts { completed_at: Some(ts), .. })`，至少一个 turn 且已结束）；
    `now_ms - ts*1000 ≥ WORKER_IDLE_TURN_GRACE`（`ts` 是 Unix **秒**，`crates/calm-server/tests/fixtures/turn_completed_failed.json:25`；r4 为 `1790160084`）；`active_turn_id_for_thread` 为 `None`。
-   每个候选的复核放进单独 spawn 并套总超时（该读是两次各 10 s 上限的 RPC），不阻塞串行 sweep；`read_liveness_facts` 返回 `None`（连接或 `thread/read` 失败）或总超时 ⇒ 本轮不动作，2 h deadline 兜底；`thread/loaded/list` 单独失败不影响判定（本臂不看 `loaded`）。
+   每个候选的复核放进单独 spawn 并套总超时（该读是两次各 10 s 上限的 RPC），不阻塞串行 sweep；`read_liveness_facts` 返回 `None`（连接或 `thread/read` 失败）或总超时 ⇒ 本轮不动作，2 h deadline 兜底；`thread/loaded/list` 单独失败不影响判定（本臂不看 `loaded`）。「RPC 不可达」与「读到了但线程 `status` 是我们未建模的值」（`ThreadStatus` 是封闭枚举，解析失败）同样得到 `None` ⇒ 不动作、2 h deadline 兜底；刻意不给 `ThreadStatus` 加 `Unknown`，否则它会进入 reaper 的 `verdict_from_facts` 而可能误收割。turn 的 `status` 则相反：未建模值落到 `TurnStatus::Unknown`（措辞按正常结束，从不算出错），不再让整次 `thread/read` 失败（#1813）。
    turn 在 running 戳之前就结束（spawn 里开 turn，`operation/codex_adapter/mod.rs:1250`，早于 `mark_running`，`scheduler/mod.rs:1679`）同样被检测。
-3. 失败：`fail_task_liveness_timeout` 增 `detail` 参数（今天硬编码 `"worker-timeout"`，`scheduler/mod.rs:2048`），CAS 追加 `worker_card_id=?`，detail `worker-turn-ended`。事件是现有 `task.failed`（`KernelDispatcher` 作者 ⇒ 推送）。
+3. 失败：`fail_task_liveness_timeout` 增 `detail` 参数（今天硬编码 `"worker-timeout"`，`scheduler/mod.rs:2048`），CAS 追加 `worker_card_id=?`，detail `worker-turn-ended`。事件是现有 `task.failed`（`KernelDispatcher` 作者 ⇒ 推送）。措辞取自最后一个 turn **自身**的 `status`（上游 `Turn.status` 必填），而非线程状态：`failed` ⇒ `reason` 为 `worker turn ended in an error without a task report`、自动消息 `[auto] worker turn ended in an error`；`completed`/`interrupted` ⇒ `worker turn ended without a task report`、`[auto] worker turn ended`。线程状态只判断线程已静止：codex 在一轮中出现非致命错误后即使该 turn 正常完成也保留 `systemError`，而重新加载的线程从默认状态起步、失败 turn 后读回 `idle`（#1813）。
 
-**为什么 300 s + 实时复核是安全的**：误杀只可能发生在「最后一个 turn 已结束 ≥ 300 s、线程当前 idle、无活动 turn」时仍有人会再开一轮。内核只为 worker 开一个 turn（无续轮机制，F33 渲染一次提示词），
+**为什么 300 s + 实时复核是安全的**：误杀只可能发生在「最后一个 turn 已结束 ≥ 300 s、线程当前 idle 或 systemError、无活动 turn」时仍有人会再开一轮。内核只为 worker 开一个 turn（无续轮机制，F33 渲染一次提示词），
 唯一能续轮的是人往 worker 卡打字——#1784 对 Planner 关掉该入口；人 300 s 后才续轮的代价是一次 `worker-turn-ended` 唤醒，Planner 可 replace（G5）。4140 上 46/46 个非 r4 codex worker 会话都是单轮（§2.3）。
 
 **宽限的归属**：`WORKER_IDLE_TURN_GRACE` 是 `scheduler` 模块常量，经 `Scheduler` 构造参数（typed）注入，测试传短值；**不加环境变量**（`task_run_timeout` 的 `NEIGE_TASK_RUN_TIMEOUT_SECS` 是既有遗留，`scheduler/mod.rs:56,483-484`，不效仿）。
@@ -262,7 +262,7 @@ carry 租约上的 `no_change`（`candidate == base_sha == C'`，F31）表示「
 | 12a | carry 冲突 | kernel | merge-tree 退出 1 | 无工作树 | `task.failed` `event.rs:533`，`spawn-failed: refused: carry-conflict: …` | kernel 作者 ⇒ 推送 | NEW detail |
 | 12b | lease | kernel | 无冲突 | `worktree add … C'` | `workspace.leased` `event.rs:635`、`worktree.provisioned` | `verify_worktree_base`（`mod.rs:1163-1238`） | 复用 |
 | 13a | 完成 | worker→kernel | `calm.task.complete` | 交付 commit + ref | `task.git_delivery_settled` `event.rs:561`；gated 再 `task.gate_result` `event.rs:772` | 恰好一次推送 | 复用 |
-| 13b | 空转 | kernel sweep | 候选 idle + 实时复核 | 收割 | `task.failed` `worker-turn-ended` | 在 pre-gate 列表 | 片 1 |
+| 13b | 空转 | kernel sweep | 候选 idle/systemError + 实时复核 | 收割 | `task.failed` `worker-turn-ended` | 在 pre-gate 列表 | 片 1 |
 | 13c | 超时 | kernel sweep | deadline | 收割 | `task.failed` `worker-timeout` | — | 复用（`scheduler/mod.rs:1972`） |
 | 14 | replay | Planner | 同请求重试 | — | — | 同回执、`replayed:true`、无事件 | NEW |
 

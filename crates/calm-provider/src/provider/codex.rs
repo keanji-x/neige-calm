@@ -25,16 +25,36 @@ pub enum ThreadStatusLite {
     },
 }
 
+/// calm-provider-local mirror of the wire `TurnStatus` (a required field of upstream `Turn`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnStatusLite {
+    Completed,
+    Interrupted,
+    Failed,
+    InProgress,
+    /// A status value this build does not model; never read as a failure.
+    Unknown,
+}
+
+/// The thread's MOST RECENT turn, as a live `thread/read` reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LastTurnFacts {
+    /// `None` = started but never finished (the positive death signal); `Some(ts)` (Unix SECONDS)
+    /// = finished cleanly, failed or deliberately aborted — not a death.
+    pub completed_at: Option<i64>,
+    /// How the turn itself ended, independent of the thread's status.
+    pub status: TurnStatusLite,
+}
+
 /// The liveness facts the death arbiter needs from a live `thread/read`; `None` from the probe means the RPC was unreachable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CodexLivenessFacts {
-    /// Whether the thread is loaded in daemon memory. Secondary signal; the arbiter keys on `status` + `last_turn_completed_at`.
+    /// Whether the thread is loaded in daemon memory. Secondary signal; the arbiter keys on `status` + the last turn's `completed_at`.
     pub loaded: bool,
     /// The thread's current status.
     pub status: ThreadStatusLite,
-    /// The MOST RECENT turn's `completed_at`: `None` = no turns at all; `Some(None)` = started but never finished (the positive death signal);
-    /// `Some(Some(ts))` = finished cleanly or deliberately aborted — not a death.
-    pub last_turn_completed_at: Option<Option<i64>>,
+    /// The most recent turn; `None` = no turns at all.
+    pub last_turn: Option<LastTurnFacts>,
 }
 
 #[async_trait]
@@ -198,7 +218,7 @@ pub(crate) fn verdict_from_facts(facts: Option<CodexLivenessFacts>) -> DeathVerd
         return DeathVerdict::Alive;
     }
     // Idle | SystemError | NotLoaded: no turn running. The discriminator is the last turn's completed_at, NOT the status.
-    match facts.last_turn_completed_at {
+    match facts.last_turn.map(|turn| turn.completed_at) {
         // S2: died-mid-turn — started, never finished, won't re-drive.
         Some(None) => DeathVerdict::Dead,
         // Finished cleanly OR deliberately aborted (both carry a ts) — not a death.
@@ -277,11 +297,18 @@ mod tests {
         )
     }
 
+    /// `last` is the last turn's `completed_at`; an unfinished turn reads back `inProgress`.
     fn facts(status: ThreadStatusLite, last: Option<Option<i64>>) -> CodexLivenessFacts {
         CodexLivenessFacts {
             loaded: true,
             status,
-            last_turn_completed_at: last,
+            last_turn: last.map(|completed_at| LastTurnFacts {
+                completed_at,
+                status: match completed_at {
+                    Some(_) => TurnStatusLite::Completed,
+                    None => TurnStatusLite::InProgress,
+                },
+            }),
         }
     }
 

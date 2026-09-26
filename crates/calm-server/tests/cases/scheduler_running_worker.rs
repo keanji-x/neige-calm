@@ -3,7 +3,9 @@
 
 use super::*;
 
-use calm_provider::provider::{CodexDaemonProbe, CodexLivenessFacts, ThreadStatusLite};
+use calm_provider::provider::{
+    CodexDaemonProbe, CodexLivenessFacts, LastTurnFacts, ThreadStatusLite, TurnStatusLite,
+};
 use calm_server::dispatcher::task_event_pushes_planner_for_test;
 use calm_server::event::BroadcastEnvelope;
 use calm_server::mcp_server::tools::plan::TOOL_PLAN_CANCEL;
@@ -69,19 +71,27 @@ impl CodexDaemonProbe for ScriptedProbe {
     }
 }
 
-fn thread_facts(
-    status: ThreadStatusLite,
-    last_turn_completed_at: Option<Option<i64>>,
-) -> CodexLivenessFacts {
+fn thread_facts(status: ThreadStatusLite, last_turn: Option<LastTurnFacts>) -> CodexLivenessFacts {
     CodexLivenessFacts {
         loaded: true,
         status,
-        last_turn_completed_at,
+        last_turn,
     }
 }
 
+fn last_turn(completed_at: Option<i64>, status: TurnStatusLite) -> Option<LastTurnFacts> {
+    Some(LastTurnFacts {
+        completed_at,
+        status,
+    })
+}
+
+/// r4's turn was aborted (`turn_aborted`), which reads back `interrupted`.
 fn r4_facts() -> CodexLivenessFacts {
-    thread_facts(ThreadStatusLite::Idle, Some(Some(R4_COMPLETED_AT_S)))
+    thread_facts(
+        ThreadStatusLite::Idle,
+        last_turn(Some(R4_COMPLETED_AT_S), TurnStatusLite::Interrupted),
+    )
 }
 
 /// The production grace and probe bound, with `now` pinned.
@@ -155,16 +165,19 @@ async fn session_state(boot: &Boot, session_row_id: &str) -> WorkerSessionState 
         .status
 }
 
-fn task_failed_envelopes(
+/// The `task.failed` and `track.lifecycle_changed` envelopes broadcast so far.
+fn failure_envelopes(
     rx: &mut tokio::sync::broadcast::Receiver<BroadcastEnvelope>,
-) -> Vec<BroadcastEnvelope> {
-    let mut seen = Vec::new();
+) -> (Vec<BroadcastEnvelope>, Vec<BroadcastEnvelope>) {
+    let (mut failed, mut lifecycle) = (Vec::new(), Vec::new());
     while let Ok(envelope) = rx.try_recv() {
-        if matches!(envelope.event, Event::TaskFailed { .. }) {
-            seen.push(envelope);
+        match envelope.event {
+            Event::TaskFailed { .. } => failed.push(envelope),
+            Event::TrackLifecycleChanged { .. } => lifecycle.push(envelope),
+            _ => {}
         }
     }
-    seen
+    (failed, lifecycle)
 }
 
 /// The worker was left exactly as seeded: nothing failed, reaped or released.
@@ -181,11 +194,38 @@ async fn assert_untouched(boot: &Boot, worker: &IdleWorker) {
     assert!(event_rows(boot, "task.failed").await.is_empty());
 }
 
+/// The `task.failed` reason the Planner reads and the lifecycle auto message.
+struct Wording {
+    reason: &'static str,
+    auto_message: &'static str,
+}
+
+/// The worker's last turn ended normally (completed or interrupted).
+const ENDED: Wording = Wording {
+    reason: "worker turn ended without a task report",
+    auto_message: "[auto] worker turn ended",
+};
+
+/// The worker's last turn failed.
+const ENDED_IN_ERROR: Wording = Wording {
+    reason: "worker turn ended in an error without a task report",
+    auto_message: "[auto] worker turn ended in an error",
+};
+
 /// The idle arm failed the task as `worker-turn-ended`, reaped the worker and pushed the wake.
 async fn assert_turn_ended_and_woken(
     boot: &Boot,
     worker: &IdleWorker,
     rx: &mut tokio::sync::broadcast::Receiver<BroadcastEnvelope>,
+) {
+    assert_turn_ended_and_woken_with(boot, worker, rx, &ENDED).await;
+}
+
+async fn assert_turn_ended_and_woken_with(
+    boot: &Boot,
+    worker: &IdleWorker,
+    rx: &mut tokio::sync::broadcast::Receiver<BroadcastEnvelope>,
+    wording: &Wording,
 ) {
     let row = task_row(boot, &worker.task_key).await;
     assert_eq!(row.status, TaskStatus::Failed);
@@ -199,9 +239,29 @@ async fn assert_turn_ended_and_woken(
         "released"
     );
     assert!(!timeout_cleanup_marker_exists(boot, &worker.card_id).await);
-    let failed = task_failed_envelopes(rx);
+    let (failed, lifecycle) = failure_envelopes(rx);
     assert_eq!(failed.len(), 1, "exactly one task.failed");
     assert_eq!(failed[0].actor, ActorId::KernelDispatcher);
+    match &failed[0].event {
+        Event::TaskFailed { reason, .. } => assert_eq!(reason, wording.reason),
+        other => panic!("not task.failed: {other:?}"),
+    }
+    assert_eq!(lifecycle.len(), 1, "exactly one lifecycle transition");
+    match &lifecycle[0].event {
+        Event::TrackLifecycleChanged {
+            from,
+            to,
+            agent_message,
+            ..
+        } => {
+            assert_eq!(
+                (*from, *to),
+                (TrackLifecycle::Working, TrackLifecycle::Reviewing)
+            );
+            assert_eq!(agent_message.as_deref(), Some(wording.auto_message));
+        }
+        other => panic!("not track.lifecycle_changed: {other:?}"),
+    }
     assert!(
         task_event_pushes_planner_for_test(
             boot.repo.as_ref(),
@@ -240,6 +300,77 @@ async fn r4_idle_gated_worker_past_grace_fails_as_turn_ended_and_wakes_planner()
     run_r4_past_grace(true, "r4-gated-past-grace").await;
 }
 
+/// A worker past the grace whose persisted and live thread status and last turn are given; the
+/// idle arm fails the task, wakes the Planner and words the end from the turn's own status.
+async fn run_turn_end_wording(
+    label: &str,
+    persisted: &str,
+    live: ThreadStatusLite,
+    turn_status: TurnStatusLite,
+    wording: &Wording,
+) {
+    let boot = boot().await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let worker = seed_idle_codex_worker(&boot, label, false).await;
+    sqlx::query("UPDATE worker_sessions SET last_thread_status = ?1 WHERE id = ?2")
+        .bind(persisted)
+        .bind(&worker.session_row_id)
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    let facts = thread_facts(live, last_turn(Some(R4_COMPLETED_AT_S), turn_status));
+    let probe = ScriptedProbe::new(Answer::Facts(facts), None);
+    let (_runtime, scheduler) =
+        build_scheduler_with_idle(&boot, idle_at(probe.clone(), R4_COMPLETED_AT_MS + 301_000));
+    let mut rx = boot.events.subscribe();
+
+    sweep_and_settle_idle_checks(&scheduler).await;
+
+    assert_eq!(probe.reads(), vec![worker.thread_id.clone()]);
+    assert_turn_ended_and_woken_with(&boot, &worker, &mut rx, wording).await;
+}
+
+/// #1813: a first turn that failed upstream leaves the thread `systemError`, persisted and live.
+/// The turn still ended, so the idle arm fails the task and wakes the Planner in error wording.
+#[tokio::test]
+async fn system_error_worker_past_grace_fails_as_turn_ended_in_error_and_wakes_planner() {
+    run_turn_end_wording(
+        "system-error-past-grace",
+        "systemError",
+        ThreadStatusLite::SystemError,
+        TurnStatusLite::Failed,
+        &ENDED_IN_ERROR,
+    )
+    .await;
+}
+
+/// A reloaded thread starts `idle` although its last turn failed: the turn's status decides.
+#[tokio::test]
+async fn reloaded_idle_thread_whose_last_turn_failed_is_worded_as_an_error() {
+    run_turn_end_wording(
+        "reloaded-failed-turn",
+        "systemError",
+        ThreadStatusLite::Idle,
+        TurnStatusLite::Failed,
+        &ENDED_IN_ERROR,
+    )
+    .await;
+}
+
+/// codex keeps `systemError` across a turn that completed after a non-fatal error: the turn's
+/// status decides.
+#[tokio::test]
+async fn system_error_thread_whose_last_turn_completed_is_worded_as_ended() {
+    run_turn_end_wording(
+        "system-error-completed-turn",
+        "idle",
+        ThreadStatusLite::SystemError,
+        TurnStatusLite::Completed,
+        &ENDED,
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn r4_idle_worker_within_grace_is_untouched() {
     let boot = boot().await;
@@ -273,7 +404,7 @@ async fn idle_turn_that_ended_before_the_running_stamp_is_detected() {
     let probe = ScriptedProbe::new(
         Answer::Facts(thread_facts(
             ThreadStatusLite::Idle,
-            Some(Some(completed_s)),
+            last_turn(Some(completed_s), TurnStatusLite::Completed),
         )),
         None,
     );
@@ -338,7 +469,10 @@ async fn idle_candidate_whose_live_thread_is_active_is_untouched() {
         waiting_on_user_input: false,
         waiting_on_approval: false,
     };
-    let facts = thread_facts(active, Some(Some(R4_COMPLETED_AT_S)));
+    let facts = thread_facts(
+        active,
+        last_turn(Some(R4_COMPLETED_AT_S), TurnStatusLite::Completed),
+    );
     assert_live_recheck_vetoes("live-active", Answer::Facts(facts), None).await;
 }
 
@@ -350,7 +484,10 @@ async fn idle_candidate_whose_live_thread_has_no_turn_is_untouched() {
 
 #[tokio::test]
 async fn idle_candidate_whose_live_turn_never_finished_is_untouched() {
-    let facts = thread_facts(ThreadStatusLite::Idle, Some(None));
+    let facts = thread_facts(
+        ThreadStatusLite::Idle,
+        last_turn(None, TurnStatusLite::InProgress),
+    );
     assert_live_recheck_vetoes("live-unfinished", Answer::Facts(facts), None).await;
 }
 
