@@ -89,6 +89,9 @@ Run only the smallest relevant tests while iterating and before delivery. Do
 not run workspace-wide `nextest` by default; the broad suite belongs to CI.
 
 ```bash
+# Every change, including docs-only: the CI lint job's text ratchets
+scripts/local-ratchet-gates.sh
+
 # Rust: select the affected package and test-name filter
 env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 \
   cargo nextest run --locked \
@@ -104,6 +107,10 @@ scripts/local-rust-gates.sh --quick
 (cd fe && npx playwright install --with-deps chromium && npm run test:browser)
 ```
 
+- Run `scripts/local-ratchet-gates.sh` for every change, including docs-only
+  ones. It runs the CI lint job's terminology and prose ratchets, which the
+  commands above do not; it measures tracked files in the working tree, so
+  `git add -N` new files first.
 - Add `--features calm-server/codex-e2e` to a targeted Rust command only when
   the affected test requires that feature. Narrow further with `--lib` or
   `--test <test-target>` when useful. Keep `NEIGE_CODEX_BIN` unset and cap local
