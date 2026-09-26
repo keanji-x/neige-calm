@@ -61,7 +61,8 @@ const EXPECTED_EVENTS: [&str; 7] = [
     "SessionEnd",
     "SubagentStop",
 ];
-const INJECTED_ENV: [&str; 5] = [
+const INJECTED_ENV: [&str; 6] = [
+    "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
     "NEIGE_CLAUDE_SETTINGS",
     "NEIGE_CARD_ID",
     "NEIGE_CALM_BASE_URL",
@@ -200,6 +201,7 @@ async fn open_writes_hook_settings_injects_env_and_replays_idempotently() {
     );
     assert_eq!(env["NEIGE_CARD_ID"], card_id);
     assert_eq!(env["NEIGE_HOOK_PROVIDER"], "claude");
+    assert_eq!(env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"], "1");
     assert_eq!(env["NEIGE_CALM_BASE_URL"], h.base_url);
     assert_eq!(
         env["NEIGE_HOOK_URL"],

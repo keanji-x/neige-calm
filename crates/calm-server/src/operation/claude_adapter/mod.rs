@@ -341,6 +341,8 @@ pub async fn build_claude_env(
         "NEIGE_HOOK_PROVIDER".to_string(),
         Value::String("claude".into()),
     );
+    let (key, value) = crate::claude_code_env::DISABLE_AUTO_MEMORY;
+    env_map.insert(key.to_string(), Value::String(value.to_string()));
     if let Some(p) = settings.http_proxy.as_deref().filter(|s| !s.is_empty()) {
         env_map.insert("HTTP_PROXY".to_string(), Value::String(p.to_string()));
         env_map.insert("http_proxy".to_string(), Value::String(p.to_string()));

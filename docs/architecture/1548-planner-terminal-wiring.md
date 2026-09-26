@@ -399,7 +399,11 @@ reusing the Claude Worker hook transport, plus two bounded composite actions.
 the env from it and persists identical values in the terminal row and the spawn
 output: `NEIGE_CLAUDE_SETTINGS=<data_dir>/terminal-hooks/<card_id>.json`,
 `NEIGE_CARD_ID`, `NEIGE_CALM_BASE_URL`, `NEIGE_HOOK_PROVIDER=claude`,
-`NEIGE_HOOK_URL` (the bridge's existing env contract). The spawn side effect
+`NEIGE_HOOK_URL` (the bridge's existing env contract), plus
+`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` (#1814: the Claude started there shares the
+owner's config dir, so its auto-memory is the owner's; Planner-dispatched terminal
+tasks carry it too, human-created terminals do not, and a `claude` run from a Codex
+Planner's or Codex worker's own shell is not covered). The spawn side effect
 writes the hooks-only settings file (mkdir → write → spawn, so operation recovery
 re-creates it) before the child starts. The file registers exactly seven events —
 SessionStart, UserPromptSubmit, Stop, Notification, PermissionRequest,

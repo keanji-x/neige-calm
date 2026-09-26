@@ -377,8 +377,13 @@ harness snapshot owns it. A session opened for a row that has `agent_session_id`
 - **Env** (`env_clear()` + allowlist): `SPAWN_ENV_PASSTHROUGH` (S24) minus `OPENAI_*`, `CODEX_*`, `RUST_*`,
   `LOG_FORMAT`; `HTTP(S)_PROXY` from the daemon's resolver (`shared_codex_appserver.rs:1862`); `PATH` =
   `kernel_led_path()`; `CLAUDE_CONFIG_DIR` = `config_dir`; `NEIGE_MCP_SOCKET`, `NEIGE_MCP_TOKEN`,
-  `NEIGE_CLAUDE_PLANNER`, `DISABLE_AUTOUPDATER=1`. Never `NEIGE_MCP_DAEMON_TOKEN` (M4), `ANTHROPIC_*`,
-  `CLAUDE_CODE_*`. The token is minted at the harness's first turn (§5.1 item 2, M3).
+  `NEIGE_CLAUDE_PLANNER`, `DISABLE_AUTOUPDATER=1`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` (#1814: the
+  config dir is shared with the owner, so its auto-memory is the owner's). From `claude_code_env.rs`
+  it covers kernel-launched Claude (Planner, Claude workers), Planner-opened terminals and
+  Planner-dispatched terminal tasks (a Claude process's own shell inherits it); a `claude` run
+  from a Codex Planner's or Codex worker's own shell is not covered. Never `NEIGE_MCP_DAEMON_TOKEN`
+  (M4), `ANTHROPIC_*`, an inherited `CLAUDE_CODE_*`. The token is minted at the harness's first turn
+  (§5.1 item 2, M3).
 - **Init checks** (every spawn, second line of defence after the pre-spawn `--version` check):
   `claude_code_version == claude_version`; `session_id == thread`; `capabilities ⊇ {interrupt_receipt_v1}`;
   `calm` connected; `skills == []`; all plugins `@builtin`. Failure ⇒ cause `Failed(check)` + `stop`.

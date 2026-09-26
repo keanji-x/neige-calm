@@ -111,6 +111,23 @@ async fn claude_worker_prepare_acquires_held_workspace_lease_and_spawn_op() {
     );
 }
 
+/// #1814: a task-dispatched Claude worker runs with the owner's config dir, so its auto-memory is
+/// off; the env the spawn side effect hands the PTY is the prepared one.
+#[tokio::test]
+async fn claude_worker_env_disables_claude_auto_memory() {
+    let harness = claude_worker_harness().await;
+    let (output, _, _) = prepare_claude_worker(&harness, "memory").await;
+    let card_id = output.output_string("card_id", "test").unwrap();
+    assert_eq!(
+        output.data["env"]["CLAUDE_CODE_DISABLE_AUTO_MEMORY"], "1",
+        "{}",
+        output.data["env"]
+    );
+    release_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &card_id)
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn claude_worker_prepare_stores_idempotency_key_in_card_payload() {
     let harness = claude_worker_harness().await;
