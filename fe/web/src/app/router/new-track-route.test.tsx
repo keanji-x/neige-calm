@@ -323,7 +323,7 @@ describe('New track model selection', () => {
     (await screen.findByRole('button', { name: 'Model: Codex Default' })).focus();
     await userEvent.keyboard('{ArrowDown}');
     const claude = await screen.findByRole('group', { name: 'Claude' });
-    expect(within(claude).getByRole('menuitem', { name: /Claude is unavailable/ }).textContent).toContain(reason);
+    expect(within(claude).getByRole('note').textContent).toBe(`Claude is unavailable: ${reason}`);
     const sonnet = within(claude).getByRole('menuitem', { name: 'Sonnet' });
     expect(sonnet.getAttribute('aria-disabled') === 'true' || sonnet.hasAttribute('disabled')).toBe(true);
     expect(sent.some((request) => request.path === '/api/agent-providers')).toBe(true);

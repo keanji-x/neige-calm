@@ -14,6 +14,7 @@
         "tags": [
           "agent_providers"
         ],
+        "summary": "Whether each Planner provider can run right now. `ready` passed every check; `unavailable`\nnames the first failed check and its fix in `reason`; `not_configured` is a provider this\nserver was not started with (Claude without `--claude-planner-config`). Codex: the shared\napp-server runs and `account/read` says it is logged in. Claude: the pinned binary answers\n`--version` with the pinned version and `auth status --json` says `loggedIn`. Answers are\ncached per provider for 30 s; a failed check is an answer, never an error.",
         "operationId": "list_agent_providers",
         "parameters": [
           {
@@ -28,7 +29,7 @@
         ],
         "responses": {
           "200": {
-            "description": "One entry per Planner provider, Codex then Claude. `ready` passed every check; `unavailable` names the first failed check and its fix in `reason`; `not_configured` is a provider this server was not started with (Claude without `--claude-planner-config`). Codex: the shared app-server runs and `account/read` says it is logged in. Claude: the pinned binary answers `--version` with the pinned version and `auth status --json` says `loggedIn`. Answers are cached per provider for 30 s; a failed check is an answer, never an error.",
+            "description": "One entry per Planner provider: Codex, then Claude",
             "content": {
               "application/json": {
                 "schema": {

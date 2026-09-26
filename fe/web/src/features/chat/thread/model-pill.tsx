@@ -217,7 +217,9 @@ function GroupChoices({ group, selection, onChange }: Readonly<{
   const blocked = group.availability?.status === 'unavailable' ? group.availability.reason : null;
   return <>
     {blocked !== null && (
-      <DropdownMenuItem label={`${PROVIDERS[group.provider].label} is unavailable`} description={blocked} isDisabled />
+      <div className={styles.reason} role="note">
+        <Text type="supporting">{`${PROVIDERS[group.provider].label} is unavailable: ${blocked}`}</Text>
+      </div>
     )}
     <Choice
       label={defaultName === null ? FOLLOW_DEFAULT_LABEL : `${FOLLOW_DEFAULT_LABEL} (${defaultName})`}

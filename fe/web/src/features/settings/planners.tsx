@@ -61,7 +61,8 @@ export function PlannersPane({
               <SettingRow
                 key={entry.provider}
                 title={PROVIDER_LABELS[entry.provider]}
-                description={entry.reason ?? READY_DESCRIPTION}
+                /* A node, not a string: a string description is cut to one line, and a reason is a fix to read whole. */
+                description={<span className={styles.plannerReason}>{entry.reason ?? READY_DESCRIPTION}</span>}
                 control={<AstryxBadge className={styles.pluginStateChip}
                   variant={STATUS_BADGES[entry.status].variant} label={STATUS_BADGES[entry.status].label} />}
               />

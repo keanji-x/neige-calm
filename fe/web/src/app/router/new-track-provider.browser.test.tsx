@@ -33,6 +33,16 @@ const CLAUDE_CATALOG = {
 };
 const NO_CLAUDE = { ...CLAUDE_CATALOG, models: [], source: 'unavailable' };
 
+/** What `routes/agent_providers.rs` answers alongside each catalog (#1817). */
+function availability(claude: 'ready' | 'not_configured') {
+  return [
+    { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1 },
+    claude === 'ready'
+      ? { provider: 'claude', status: 'ready', reason: null, checked_at_ms: 1 }
+      : { provider: 'claude', status: 'not_configured', reason: 'calm-server was started without --claude-planner-config', checked_at_ms: 1 },
+  ];
+}
+
 function mount(claude: unknown) {
   const creates: ApiRequest[] = [];
   const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
@@ -45,6 +55,7 @@ function mount(claude: unknown) {
     if (request.path === '/api/areas') return Promise.resolve(ok([AREA]));
     if (request.path === '/api/models?provider=codex') return Promise.resolve(ok(LIVE_CATALOG));
     if (request.path === '/api/models?provider=claude') return Promise.resolve(ok(claude));
+    if (request.path === '/api/agent-providers') return Promise.resolve(ok(availability(claude === NO_CLAUDE ? 'not_configured' : 'ready')));
     if (request.path === '/api/settings') return Promise.resolve(ok({}));
     return Promise.resolve(ok([]));
   } };

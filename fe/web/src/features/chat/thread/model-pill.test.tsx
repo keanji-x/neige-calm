@@ -463,9 +463,7 @@ describe('ModelPill', () => {
       render(<ModelPill groups={both(claudeCatalog(), unavailable('claude', CLAUDE_LOGGED_OUT))} provider="codex"
         selection={FOLLOW_INSTALLATION_DEFAULT} onChange={onChange} />);
       const claude = within(openMenu(/^Model:/)).getByRole('group', { name: 'Claude' });
-      const notice = within(claude).getByRole('menuitem', { name: /Claude is unavailable/ });
-      expect(notice.textContent).toContain(CLAUDE_LOGGED_OUT);
-      expect(isDisabled(notice)).toBe(true);
+      expect(within(claude).getByRole('note').textContent).toBe(`Claude is unavailable: ${CLAUDE_LOGGED_OUT}`);
       for (const name of [/^Default/, /^Opus/, /^Sonnet/, /^Haiku/]) {
         const choice = within(claude).getByRole('menuitem', { name });
         expect(isDisabled(choice), String(name)).toBe(true);
@@ -477,7 +475,7 @@ describe('ModelPill', () => {
     it('keeps a ready group choosable and says nothing about availability', () => {
       render(<ModelPill groups={both()} provider="codex" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
       const claude = within(openMenu(/^Model:/)).getByRole('group', { name: 'Claude' });
-      expect(within(claude).queryByRole('menuitem', { name: /is unavailable/ })).toBeNull();
+      expect(within(claude).queryByRole('note')).toBeNull();
       expect(isDisabled(within(claude).getByRole('menuitem', { name: 'Opus' }))).toBe(false);
     });
 
@@ -489,7 +487,7 @@ describe('ModelPill', () => {
       ]} provider="codex" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
       const menu = openMenu(/^Model:/);
       const codex = within(menu).getByRole('group', { name: 'Codex' });
-      expect(within(codex).getByRole('menuitem', { name: /Codex is unavailable/ }).textContent).toContain(reason);
+      expect(within(codex).getByRole('note').textContent).toBe(`Codex is unavailable: ${reason}`);
       expect(isDisabled(within(codex).getByRole('menuitem', { name: 'GPT-5' }))).toBe(true);
       expect(isDisabled(within(within(menu).getByRole('group', { name: 'Claude' })).getByRole('menuitem', { name: 'Opus' })))
         .toBe(false);

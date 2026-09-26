@@ -20,13 +20,19 @@ pub fn router() -> Router<AppState> {
     Router::new().route("/api/agent-providers", get(list_agent_providers))
 }
 
+/// Whether each Planner provider can run right now. `ready` passed every check; `unavailable`
+/// names the first failed check and its fix in `reason`; `not_configured` is a provider this
+/// server was not started with (Claude without `--claude-planner-config`). Codex: the shared
+/// app-server runs and `account/read` says it is logged in. Claude: the pinned binary answers
+/// `--version` with the pinned version and `auth status --json` says `loggedIn`. Answers are
+/// cached per provider for 30 s; a failed check is an answer, never an error.
 #[utoipa::path(
     get,
     path = "/api/agent-providers",
     tag = "agent_providers",
     params(AgentProvidersQuery),
     responses(
-        (status = 200, description = "One entry per Planner provider, Codex then Claude. `ready` passed every check; `unavailable` names the first failed check and its fix in `reason`; `not_configured` is a provider this server was not started with (Claude without `--claude-planner-config`). Codex: the shared app-server runs and `account/read` says it is logged in. Claude: the pinned binary answers `--version` with the pinned version and `auth status --json` says `loggedIn`. Answers are cached per provider for 30 s; a failed check is an answer, never an error.", body = [ProviderAvailability]),
+        (status = 200, description = "One entry per Planner provider: Codex, then Claude", body = [ProviderAvailability]),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]

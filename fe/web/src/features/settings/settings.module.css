@@ -228,6 +228,12 @@
     align-items: start;
   }
 
+  /* Settings › Planners (#1817): the whole reason, wrapped anywhere, because
+     its fix can carry a path longer than the row. */
+  .plannerReason {
+    overflow-wrap: anywhere;
+  }
+
   .pluginId {
     font-family: var(--font-mono);
     font-size: var(--text-xs);
