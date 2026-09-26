@@ -43,6 +43,13 @@ impl ClaudePlannerConfig {
     /// `claude_version` (the CLI prints `2.1.280 (Claude Code)`). `env` is the spawn's own
     /// allowlisted environment, so the check runs the binary exactly as the turn will.
     pub async fn verify_version(&self, env: &[(String, std::ffi::OsString)]) -> Result<()> {
+        self.version_problem(env)
+            .await
+            .map_or(Ok(()), |problem| Err(CalmError::Conflict(problem)))
+    }
+
+    /// [`Self::verify_version`]'s check, answering why the binary is refused (`None` = it is not).
+    pub async fn version_problem(&self, env: &[(String, std::ffi::OsString)]) -> Option<String> {
         let mut command = tokio::process::Command::new(&self.claude_binary);
         command
             .arg("--version")
@@ -52,20 +59,21 @@ impl ClaudePlannerConfig {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true);
-        let output = tokio::time::timeout(VERSION_TIMEOUT, command.output())
-            .await
-            .map_err(|_| version_error(&self.claude_binary, "timed out"))?
-            .map_err(|error| version_error(&self.claude_binary, &error.to_string()))?;
+        let output = match tokio::time::timeout(VERSION_TIMEOUT, command.output()).await {
+            Err(_) => return Some(version_error(&self.claude_binary, "timed out")),
+            Ok(Err(error)) => return Some(version_error(&self.claude_binary, &error.to_string())),
+            Ok(Ok(output)) => output,
+        };
         if !output.status.success() {
-            return Err(version_error(
+            return Some(version_error(
                 &self.claude_binary,
                 &format!("exited with {}", output.status),
             ));
         }
         let printed = String::from_utf8_lossy(&output.stdout);
         match printed.split_whitespace().next() {
-            Some(first) if first == self.claude_version => Ok(()),
-            other => Err(version_error(
+            Some(first) if first == self.claude_version => None,
+            other => Some(version_error(
                 &self.claude_binary,
                 &format!(
                     "reports {:?}, the config pins {:?}",
@@ -148,14 +156,22 @@ impl ClaudePlannerHost {
     /// `--version` with the pinned version.
     pub async fn check_ready(&self) -> Result<()> {
         let config = self.configured()?;
-        let env = super::spawn::base_env(&super::spawn::EnvInputs {
+        config.verify_version(&self.readiness_env(config)?).await
+    }
+
+    /// The environment of every readiness command (`--version`, `auth status`): the spawn's own
+    /// allowlist under the `readiness` marker, without the MCP token.
+    pub(crate) fn readiness_env(
+        &self,
+        config: &ClaudePlannerConfig,
+    ) -> Result<Vec<(String, std::ffi::OsString)>> {
+        Ok(super::spawn::base_env(&super::spawn::EnvInputs {
             path: crate::kernel_bin_path::kernel_led_path()?.path,
             config_dir: &config.config_dir,
             mcp_socket: &self.mcp_socket,
             marker: self.instance.marker("readiness"),
             proxy: &[],
-        });
-        config.verify_version(&env).await
+        }))
     }
 }
 
@@ -164,11 +180,11 @@ pub fn unavailable_message() -> String {
     format!("the Claude Planner is unavailable: calm-server was started without {CONFIG_FLAG}")
 }
 
-fn version_error(binary: &Path, detail: &str) -> CalmError {
-    CalmError::Conflict(format!(
+fn version_error(binary: &Path, detail: &str) -> String {
+    format!(
         "claude planner binary {} --version {detail}",
         binary.display()
-    ))
+    )
 }
 
 #[cfg(test)]

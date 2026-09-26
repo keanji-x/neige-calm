@@ -170,6 +170,8 @@ export const queryKeys = Object.freeze({
    * provider about to be created on. Absent from the invalidation plan: nothing this kernel emits changes codex's catalog.
    */
   modelCatalog: (scope: ModelCatalogScope) => ['model-catalog', scope] as const,
+  /** `GET /api/agent-providers` (#1817). No event reaches it: the server's own 30 s cache is its freshness. */
+  agentProviders: () => ['agent-providers'] as const,
   /** One track's conversation list, keyed by its track. */
   trackConversations: (trackId: string) => ['track-conversations', trackId] as const,
   /**

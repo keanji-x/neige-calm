@@ -9,6 +9,7 @@ mod application;
 pub use application::application_router;
 pub use application::public_mobile_router;
 
+pub mod agent_providers;
 pub mod area_folders;
 pub mod areas;
 pub mod cards;
@@ -80,6 +81,7 @@ pub fn protected_router() -> Router<AppState> {
         .merge(codex_cards::router())
         .merge(fs::router())
         .merge(models::router())
+        .merge(agent_providers::router())
         .merge(settings::router())
 }
 

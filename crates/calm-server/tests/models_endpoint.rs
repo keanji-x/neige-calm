@@ -1,7 +1,11 @@
 //! `GET /api/models` driven through the real `SharedCodexAppServer` and a fake `codex app-server`
 //! child that answers `model/list` / `config/read` from sidecar files next to its listen socket.
+//! The same rig drives the Codex entry of `GET /api/agent-providers` (#1817).
 
 mod common;
+
+#[path = "cases/codex_provider_availability.rs"]
+mod codex_provider_availability;
 
 use std::path::PathBuf;
 use std::sync::Arc;

@@ -12,7 +12,7 @@ an explicit `presentation`: desktop, mobile-index, or mobile-detail. Its pane
 keeps the same React position as presentation changes, including when hidden
 on the index, so resizing does not recreate unsaved plugin forms.
 
-Only the five top-level panes pass `category` to `SettingsPane`. That marks
+Only the six top-level panes pass `category` to `SettingsPane`. That marks
 their heading for scoped concealment when the mobile page header already
 names that category. Plugin installation and configuration drill-ins omit it
 and keep their meaningful headings. This uses no new context or global style
@@ -77,8 +77,9 @@ Astryx's built-in registry only. That set has 26 semantic names and none of them
 is "network" or "appearance", so each nav entry takes the nearest available
 sense and says so where it is chosen (`externalLink` for traffic leaving the
 machine, `menu` for General's short list, `viewColumns` for how the app is
-painted, `wrench` for tooling, `info` for read-only facts). The app deliberately
-does not draw one-off glyphs for this.
+painted, `wrench` for tooling, `success` for whether each Planner passes its
+checks, `info` for read-only facts). The app deliberately does not draw one-off
+glyphs for this.
 
 ## Sections and routes
 
@@ -90,6 +91,7 @@ does not draw one-off glyphs for this.
 | `/settings/plugins` | Plugins | `PluginsPane` (`plugins.tsx`) |
 | `/settings/plugins` (2nd level) | one plugin's configuration | `PluginConfigPane` (`plugin-config.tsx`) |
 | `/settings/plugins` (2nd level) | the install form | `PluginAddPane` (`plugin-add.tsx`) |
+| `/settings/planners` | Planners | `PlannersPane` (`planners.tsx`) |
 | `/settings/about` | About | `AboutPane` (`public.tsx`) |
 
 Real routes rather than pane-local state: every pane can be linked to, and Back
@@ -108,6 +110,15 @@ action *on* the thing, not as the way back out of it.
 `align-items: start` and lives in `styles/`, which is frozen; changing it needs
 an `OWNERSHIP-CHANGE` trailer against an issue. The pane's `min-block-size`
 floor is the mitigation available from this layer, and it is not centring.
+
+## Planners is read-only apart from Recheck (#1817)
+
+One row per Planner provider: its status as a chip (`Ready`, `Unavailable` in
+warn tones, `Not configured` neutral) and, when it is not ready, the server's own
+sentence naming the failed check and its fix. The pane never words a reason
+itself. A last **Recheck** row asks the server to run every check again
+(`refresh=true`) and writes the answer into the same query the new-track model
+picker reads, so both show one answer.
 
 ## Plugin configuration is the one two-level section (#1284 S4)
 

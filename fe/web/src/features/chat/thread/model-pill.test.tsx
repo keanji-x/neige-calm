@@ -2,6 +2,8 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { AgentProvider } from '../../../../../core/api/schemas.ts';
+import type { ProviderAvailability } from '../../../../../core/domain/agent-providers.ts';
 import {
   FOLLOW_INSTALLATION_DEFAULT,
   type ModelCatalog, type ModelSelection,
@@ -52,8 +54,33 @@ function claudeCatalog(overrides: Partial<ModelCatalog> = {}): ModelCatalog {
   };
 }
 
-function both(claude: ModelCatalog | null = claudeCatalog()): readonly ModelGroup[] {
-  return [{ provider: 'codex', catalog: catalog() }, { provider: 'claude', catalog: claude }];
+/** What `GET /api/agent-providers` answers for a provider (#1817). */
+function ready(provider: AgentProvider): ProviderAvailability {
+  return { provider, status: 'ready', reason: null, checked_at_ms: 1 };
+}
+
+function unavailable(provider: AgentProvider, reason: string): ProviderAvailability {
+  return { provider, status: 'unavailable', reason, checked_at_ms: 1 };
+}
+
+function notConfigured(provider: AgentProvider): ProviderAvailability {
+  return { provider, status: 'not_configured', reason: 'calm-server was started without --claude-planner-config', checked_at_ms: 1 };
+}
+
+const CLAUDE_LOGGED_OUT = 'not logged in — run `claude /login` with CLAUDE_CONFIG_DIR=/srv/claude';
+
+function both(
+  claude: ModelCatalog | null = claudeCatalog(),
+  claudeAvailability: ProviderAvailability | null = ready('claude'),
+): readonly ModelGroup[] {
+  return [
+    { provider: 'codex', availability: ready('codex'), catalog: catalog() },
+    { provider: 'claude', availability: claudeAvailability, catalog: claude },
+  ];
+}
+
+function isDisabled(element: HTMLElement): boolean {
+  return element.hasAttribute('disabled') || element.getAttribute('aria-disabled') === 'true';
 }
 
 function trigger(name: RegExp): HTMLElement {
@@ -68,21 +95,21 @@ function openMenu(name: RegExp): HTMLElement {
 describe('ModelPill', () => {
   it('names the default it is actually following, and only the name', () => {
     render(
-      <ModelPill provider="codex" groups={[{ provider: 'codex', catalog: catalog() }]} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
+      <ModelPill provider="codex" groups={[{ provider: 'codex', availability: null, catalog: catalog() }]} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
     );
     expect(trigger(/^Model:/).textContent).toBe('gpt-5-codex');
   });
 
   it('still says, to a screen reader, that it is following the default', () => {
     const { rerender } = render(
-      <ModelPill provider="codex" groups={[{ provider: 'codex', catalog: catalog() }]} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
+      <ModelPill provider="codex" groups={[{ provider: 'codex', availability: null, catalog: catalog() }]} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
     );
     expect(trigger(/^Model:/).getAttribute('aria-label'))
       .toBe("Model: gpt-5-codex (this installation's default)");
 
     rerender(
       <ModelPill provider="codex"
-        groups={[{ provider: 'codex', catalog: catalog() }]}
+        groups={[{ provider: 'codex', availability: null, catalog: catalog() }]}
         selection={{ model: 'gpt-5', reasoning_effort: null }}
         onChange={vi.fn()}
       />,
@@ -92,7 +119,7 @@ describe('ModelPill', () => {
 
   it('keeps the word in the menu, where it is the choice being offered', () => {
     render(
-      <ModelPill provider="codex" groups={[{ provider: 'codex', catalog: catalog() }]} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
+      <ModelPill provider="codex" groups={[{ provider: 'codex', availability: null, catalog: catalog() }]} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
     );
     const menu = openMenu(/^Model:/);
     expect(within(menu).getByText('Default (gpt-5-codex)')).toBeTruthy();
@@ -100,7 +127,7 @@ describe('ModelPill', () => {
 
   it('draws no chevron on the trigger', () => {
     render(
-      <ModelPill provider="codex" groups={[{ provider: 'codex', catalog: catalog() }]} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
+      <ModelPill provider="codex" groups={[{ provider: 'codex', availability: null, catalog: catalog() }]} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
     );
     expect(trigger(/^Model:/).querySelector('svg')).toBeNull();
   });
@@ -108,7 +135,7 @@ describe('ModelPill', () => {
   it('will not name a default it was told it could not resolve', () => {
     render(
       <ModelPill provider="codex"
-        groups={[{ provider: 'codex', catalog: catalog({ default_source: 'unknown', default: { model: 'gpt-5-global', reasoning_effort: null } }) }]}
+        groups={[{ provider: 'codex', availability: null, catalog: catalog({ default_source: 'unknown', default: { model: 'gpt-5-global', reasoning_effort: null } }) }]}
         selection={FOLLOW_INSTALLATION_DEFAULT}
         onChange={vi.fn()}
       />,
@@ -120,7 +147,7 @@ describe('ModelPill', () => {
   it('shows the chosen model by its display name', () => {
     render(
       <ModelPill provider="codex"
-        groups={[{ provider: 'codex', catalog: catalog() }]}
+        groups={[{ provider: 'codex', availability: null, catalog: catalog() }]}
         selection={{ model: 'gpt-5', reasoning_effort: null }}
         onChange={vi.fn()}
       />,
@@ -131,7 +158,7 @@ describe('ModelPill', () => {
   it('falls back to the slug for a model the catalog does not list', () => {
     render(
       <ModelPill provider="codex"
-        groups={[{ provider: 'codex', catalog: catalog() }]}
+        groups={[{ provider: 'codex', availability: null, catalog: catalog() }]}
         selection={{ model: 'gpt-6-preview', reasoning_effort: null }}
         onChange={vi.fn()}
       />,
@@ -142,7 +169,7 @@ describe('ModelPill', () => {
   it('hands back the slug and never the preset id', () => {
     const onChange = vi.fn();
     render(
-      <ModelPill provider="codex" groups={[{ provider: 'codex', catalog: catalog() }]} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={onChange} />,
+      <ModelPill provider="codex" groups={[{ provider: 'codex', availability: null, catalog: catalog() }]} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={onChange} />,
     );
     fireEvent.click(within(openMenu(/^Model:/)).getByRole('menuitem', { name: /GPT-5/ }));
     expect(onChange).toHaveBeenCalledWith({ model: 'gpt-5', reasoning_effort: null }, 'codex');
@@ -153,7 +180,7 @@ describe('ModelPill', () => {
     const onChange = vi.fn();
     render(
       <ModelPill provider="codex"
-        groups={[{ provider: 'codex', catalog: catalog() }]}
+        groups={[{ provider: 'codex', availability: null, catalog: catalog() }]}
         selection={{ model: 'gpt-6-preview', reasoning_effort: 'high' }}
         onChange={onChange}
       />,
@@ -166,7 +193,7 @@ describe('ModelPill', () => {
     const onChange = vi.fn();
     render(
       <ModelPill provider="codex"
-        groups={[{ provider: 'codex', catalog: catalog() }]}
+        groups={[{ provider: 'codex', availability: null, catalog: catalog() }]}
         selection={{ model: 'gpt-5', reasoning_effort: 'high' }}
         onChange={onChange}
       />,
@@ -179,7 +206,7 @@ describe('ModelPill', () => {
     it('offers the followed model’s efforts while no model is chosen', () => {
       render(
         <ModelPill provider="codex"
-          groups={[{ provider: 'codex', catalog: catalog({ default: { model: 'gpt-5', reasoning_effort: 'low' } }) }]}
+          groups={[{ provider: 'codex', availability: null, catalog: catalog({ default: { model: 'gpt-5', reasoning_effort: 'low' } }) }]}
           selection={FOLLOW_INSTALLATION_DEFAULT}
           onChange={vi.fn()}
         />,
@@ -195,7 +222,7 @@ describe('ModelPill', () => {
       const onChange = vi.fn();
       render(
         <ModelPill provider="codex"
-          groups={[{ provider: 'codex', catalog: catalog({ default: { model: 'gpt-5', reasoning_effort: 'low' } }) }]}
+          groups={[{ provider: 'codex', availability: null, catalog: catalog({ default: { model: 'gpt-5', reasoning_effort: 'low' } }) }]}
           selection={FOLLOW_INSTALLATION_DEFAULT}
           onChange={onChange}
         />,
@@ -207,7 +234,7 @@ describe('ModelPill', () => {
 
     it('is absent when the followed model is not in the catalog', () => {
       render(
-        <ModelPill provider="codex" groups={[{ provider: 'codex', catalog: catalog() }]} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
+        <ModelPill provider="codex" groups={[{ provider: 'codex', availability: null, catalog: catalog() }]} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
       );
       expect(screen.queryByRole('button', { name: /^Reasoning effort:/ })).toBeNull();
     });
@@ -215,7 +242,7 @@ describe('ModelPill', () => {
     it('is absent for a model that offers only one effort', () => {
       render(
         <ModelPill provider="codex"
-          groups={[{ provider: 'codex', catalog: catalog({
+          groups={[{ provider: 'codex', availability: null, catalog: catalog({
             models: [model({ supported_reasoning_efforts: [{ reasoning_effort: 'medium', description: 'The only one.' }] })],
           }) }]}
           selection={{ model: 'gpt-5', reasoning_effort: null }}
@@ -228,7 +255,7 @@ describe('ModelPill', () => {
     it('offers the chosen model\'s efforts with codex\'s own descriptions', () => {
       render(
         <ModelPill provider="codex"
-          groups={[{ provider: 'codex', catalog: catalog() }]}
+          groups={[{ provider: 'codex', availability: null, catalog: catalog() }]}
           selection={{ model: 'gpt-5', reasoning_effort: 'high' }}
           onChange={vi.fn()}
         />,
@@ -243,7 +270,7 @@ describe('ModelPill', () => {
       const onChange = vi.fn();
       render(
         <ModelPill provider="codex"
-          groups={[{ provider: 'codex', catalog: catalog() }]}
+          groups={[{ provider: 'codex', availability: null, catalog: catalog() }]}
           selection={{ model: 'gpt-5', reasoning_effort: null }}
           onChange={onChange}
         />,
@@ -255,14 +282,14 @@ describe('ModelPill', () => {
 
   it('keeps effort selection in the model menu when its host asks for one control', () => {
     const onChange = vi.fn();
-    const view = render(<ModelPill provider="codex" groups={[{ provider: 'codex', catalog: catalog() }]}
+    const view = render(<ModelPill provider="codex" groups={[{ provider: 'codex', availability: null, catalog: catalog() }]}
       selection={{ model: 'gpt-5', reasoning_effort: null }}
       effortControl="in-menu" onChange={onChange} />);
     expect(screen.queryByRole('button', { name: /^Reasoning effort:/ })).toBeNull();
     const efforts = within(openMenu(/^Model:/)).getByRole('group', { name: 'Reasoning effort' });
     fireEvent.click(within(efforts).getByRole('menuitem', { name: /high/ }));
     expect(onChange).toHaveBeenLastCalledWith({ model: 'gpt-5', reasoning_effort: 'high' }, 'codex');
-    view.rerender(<ModelPill provider="codex" groups={[{ provider: 'codex', catalog: catalog() }]}
+    view.rerender(<ModelPill provider="codex" groups={[{ provider: 'codex', availability: null, catalog: catalog() }]}
       selection={{ model: 'gpt-5', reasoning_effort: 'high' }}
       effortControl="in-menu" onChange={onChange} />);
     // Reopen through the keyboard; DropdownMenu guards immediate repeat pointer clicks.
@@ -276,7 +303,7 @@ describe('ModelPill', () => {
   it('separates a daemon that could not be asked from an account with nothing to offer', () => {
     const { unmount } = render(
       <ModelPill provider="codex"
-        groups={[{ provider: 'codex', catalog: catalog({ models: [], source: 'unavailable', default_source: 'config_toml' }) }]}
+        groups={[{ provider: 'codex', availability: null, catalog: catalog({ models: [], source: 'unavailable', default_source: 'config_toml' }) }]}
         selection={FOLLOW_INSTALLATION_DEFAULT}
         onChange={vi.fn()}
       />,
@@ -288,7 +315,7 @@ describe('ModelPill', () => {
 
     render(
       <ModelPill provider="codex"
-        groups={[{ provider: 'codex', catalog: catalog({ models: [], source: 'live' }) }]}
+        groups={[{ provider: 'codex', availability: null, catalog: catalog({ models: [], source: 'live' }) }]}
         selection={FOLLOW_INSTALLATION_DEFAULT}
         onChange={vi.fn()}
       />,
@@ -300,18 +327,18 @@ describe('ModelPill', () => {
 
   it('says why an unavailable catalog is empty in the words of its provider', () => {
     const unavailable = catalog({ models: [], source: 'unavailable', default_source: 'unknown' });
-    const { unmount } = render(<ModelPill provider="codex" groups={[{ provider: 'codex', catalog: unavailable }]} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
+    const { unmount } = render(<ModelPill provider="codex" groups={[{ provider: 'codex', availability: null, catalog: unavailable }]} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
     /* The menu cannot open while unavailable, but its rows are rendered; the text is what a Codex reader is told. */
     expect(document.body.textContent).toContain('codex is not running');
     unmount();
-    render(<ModelPill provider="claude" groups={[{ provider: 'claude', catalog: unavailable }]} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
+    render(<ModelPill provider="claude" groups={[{ provider: 'claude', availability: null, catalog: unavailable }]} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
     expect(document.body.textContent).toContain('This server does not run Claude Planners');
     expect(document.body.textContent).not.toContain('codex is not running');
   });
 
   it('explains the compaction risk once, as a note rather than a per-switch warning', () => {
     render(
-      <ModelPill provider="codex" groups={[{ provider: 'codex', catalog: catalog() }]} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
+      <ModelPill provider="codex" groups={[{ provider: 'codex', availability: null, catalog: catalog() }]} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
     );
     const note = within(openMenu(/^Model:/)).getByRole('note');
     expect(note.textContent).toContain('smaller context window');
@@ -320,7 +347,7 @@ describe('ModelPill', () => {
 
   it('shows the default and stays quiet while the catalog is still loading', () => {
     render(
-      <ModelPill provider="codex" groups={[{ provider: 'codex', catalog: null }]} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
+      <ModelPill provider="codex" groups={[{ provider: 'codex', availability: null, catalog: null }]} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
     );
     expect(trigger(/^Model:/).textContent).toBe('Default');
     expect(screen.queryByRole('button', { name: /^Reasoning effort:/ })).toBeNull();
@@ -329,7 +356,7 @@ describe('ModelPill', () => {
   it('is unavailable while its host says so', () => {
     const selection: ModelSelection = { model: 'gpt-5', reasoning_effort: 'high' };
     render(
-      <ModelPill provider="codex" groups={[{ provider: 'codex', catalog: catalog() }]} selection={selection} onChange={vi.fn()} isDisabled />,
+      <ModelPill provider="codex" groups={[{ provider: 'codex', availability: null, catalog: catalog() }]} selection={selection} onChange={vi.fn()} isDisabled />,
     );
     for (const name of [/^Model:/, /^Reasoning effort:/] as const) {
       const button = trigger(name);
@@ -340,8 +367,13 @@ describe('ModelPill', () => {
 
   describe('grouped by provider (#1810)', () => {
     it('leaves the Claude group out while the server has no Claude Planner or has not answered', () => {
-      for (const claude of [claudeCatalog({ models: [], source: 'unavailable' }), null]) {
-        const view = render(<ModelPill groups={both(claude)} provider="codex" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
+      for (const [claude, availability] of [
+        [claudeCatalog({ models: [], source: 'unavailable' }), notConfigured('claude')],
+        [claudeCatalog(), notConfigured('claude')],
+        [claudeCatalog(), null],
+        [null, ready('claude')],
+      ] as const) {
+        const view = render(<ModelPill groups={both(claude, availability)} provider="codex" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
         expect(trigger(/^Model:/).textContent).toBe('gpt-5-codex');
         const menu = openMenu(/^Model:/);
         expect(within(menu).queryByRole('group', { name: 'Claude' })).toBeNull();
@@ -351,7 +383,7 @@ describe('ModelPill', () => {
     });
 
     it('keeps a Claude pick in its own group, named, when its catalog turns unavailable', () => {
-      render(<ModelPill groups={both(claudeCatalog({ models: [], source: 'unavailable' }))} provider="claude"
+      render(<ModelPill groups={both(claudeCatalog({ models: [], source: 'unavailable' }), notConfigured('claude'))} provider="claude"
         selection={{ model: 'sonnet', reasoning_effort: null }} onChange={vi.fn()} />);
       expect(trigger(/^Model:/).textContent).toBe('Claude sonnet');
       const menu = openMenu(/^Model:/);
@@ -397,7 +429,7 @@ describe('ModelPill', () => {
     it('offers no reasoning effort for Claude, even for an entry that lists some', () => {
       const listed = claudeCatalog({ models: [model({ id: 'opus', model: 'opus', display_name: 'Opus' })] });
       for (const effortControl of ['separate', 'in-menu'] as const) {
-        const view = render(<ModelPill groups={[{ provider: 'claude', catalog: listed }]} provider="claude"
+        const view = render(<ModelPill groups={[{ provider: 'claude', availability: null, catalog: listed }]} provider="claude"
           selection={{ model: 'opus', reasoning_effort: null }} effortControl={effortControl} onChange={vi.fn()} />);
         expect(screen.queryByRole('button', { name: /^Reasoning effort:/ })).toBeNull();
         expect(within(openMenu(/^Model:/)).queryByRole('group', { name: 'Reasoning effort' })).toBeNull();
@@ -406,7 +438,7 @@ describe('ModelPill', () => {
     });
 
     it('inside a Claude track lists only the Claude aliases, without headings or the codex note', () => {
-      render(<ModelPill groups={[{ provider: 'claude', catalog: claudeCatalog() }]} provider="claude"
+      render(<ModelPill groups={[{ provider: 'claude', availability: null, catalog: claudeCatalog() }]} provider="claude"
         selection={{ model: 'haiku', reasoning_effort: null }} onChange={vi.fn()} />);
       expect(trigger(/^Model:/).textContent).toBe('Haiku');
       const menu = openMenu(/^Model:/);
@@ -417,11 +449,50 @@ describe('ModelPill', () => {
     });
 
     it('keeps Claude choosable while codex is not running', () => {
-      render(<ModelPill groups={[{ provider: 'codex', catalog: catalog({ models: [], source: 'unavailable' }) },
-        { provider: 'claude', catalog: claudeCatalog() }]} provider="codex" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
+      render(<ModelPill groups={[{ provider: 'codex', availability: null, catalog: catalog({ models: [], source: 'unavailable' }) },
+        { provider: 'claude', availability: ready('claude'), catalog: claudeCatalog() }]} provider="codex" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
       const menu = openMenu(/^Model:/);
       expect(within(within(menu).getByRole('group', { name: 'Codex' })).getByText('codex is not running')).toBeTruthy();
       expect(within(within(menu).getByRole('group', { name: 'Claude' })).getByRole('menuitem', { name: 'Opus' })).toBeTruthy();
+    });
+  });
+
+  describe('following provider availability (#1817)', () => {
+    it('shows an unavailable Claude group with the server reason and nothing in it to pick', () => {
+      const onChange = vi.fn();
+      render(<ModelPill groups={both(claudeCatalog(), unavailable('claude', CLAUDE_LOGGED_OUT))} provider="codex"
+        selection={FOLLOW_INSTALLATION_DEFAULT} onChange={onChange} />);
+      const claude = within(openMenu(/^Model:/)).getByRole('group', { name: 'Claude' });
+      const notice = within(claude).getByRole('menuitem', { name: /Claude is unavailable/ });
+      expect(notice.textContent).toContain(CLAUDE_LOGGED_OUT);
+      expect(isDisabled(notice)).toBe(true);
+      for (const name of [/^Default/, /^Opus/, /^Sonnet/, /^Haiku/]) {
+        const choice = within(claude).getByRole('menuitem', { name });
+        expect(isDisabled(choice), String(name)).toBe(true);
+        fireEvent.click(choice);
+      }
+      expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it('keeps a ready group choosable and says nothing about availability', () => {
+      render(<ModelPill groups={both()} provider="codex" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
+      const claude = within(openMenu(/^Model:/)).getByRole('group', { name: 'Claude' });
+      expect(within(claude).queryByRole('menuitem', { name: /is unavailable/ })).toBeNull();
+      expect(isDisabled(within(claude).getByRole('menuitem', { name: 'Opus' }))).toBe(false);
+    });
+
+    it('shows an unavailable Codex group disabled with its reason while Claude stays choosable', () => {
+      const reason = 'codex is not logged in — run `codex login` with CODEX_HOME=/srv/codex';
+      render(<ModelPill groups={[
+        { provider: 'codex', availability: unavailable('codex', reason), catalog: catalog() },
+        { provider: 'claude', availability: ready('claude'), catalog: claudeCatalog() },
+      ]} provider="codex" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
+      const menu = openMenu(/^Model:/);
+      const codex = within(menu).getByRole('group', { name: 'Codex' });
+      expect(within(codex).getByRole('menuitem', { name: /Codex is unavailable/ }).textContent).toContain(reason);
+      expect(isDisabled(within(codex).getByRole('menuitem', { name: 'GPT-5' }))).toBe(true);
+      expect(isDisabled(within(within(menu).getByRole('group', { name: 'Claude' })).getByRole('menuitem', { name: 'Opus' })))
+        .toBe(false);
     });
   });
 });

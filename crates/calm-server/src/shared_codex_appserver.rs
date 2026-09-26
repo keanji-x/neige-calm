@@ -25,7 +25,7 @@ use tokio::sync::{Mutex, broadcast};
 use tokio::task::JoinHandle;
 
 use crate::codex_appserver::{
-    ClientInfo, CodexAppServer, CodexConfig, CodexModel, InputItem, Notification,
+    AccountRead, ClientInfo, CodexAppServer, CodexConfig, CodexModel, InputItem, Notification,
     ThreadStartParams, redact_thread_start_config,
 };
 use crate::config::Config;
@@ -800,6 +800,8 @@ pub struct FakeSharedCodexAppServer {
     reject_config_read: AtomicBool,
     /// Answer `model/list` the way codex does when it refuses the request.
     reject_model_list: AtomicBool,
+    /// The `account/read` answer; logged in (an account present) unless a test says otherwise.
+    account_read: std::sync::Mutex<AccountRead>,
     fail_turn_interrupt: AtomicBool,
     started_thread_params: std::sync::Mutex<Vec<StartedThreadParam>>,
     started_turns: std::sync::Mutex<Vec<(String, Vec<InputItem>)>>,
@@ -840,6 +842,7 @@ impl FakeSharedCodexAppServer {
             config_read: std::sync::Mutex::new(None),
             reject_config_read: AtomicBool::new(false),
             reject_model_list: AtomicBool::new(false),
+            account_read: std::sync::Mutex::new(AccountRead::for_test(true, true)),
             fail_turn_interrupt: AtomicBool::new(false),
             started_thread_params: std::sync::Mutex::new(Vec::new()),
             started_turns: std::sync::Mutex::new(Vec::new()),
@@ -1476,6 +1479,21 @@ impl SharedCodexAppServer {
         Err(CalmError::CodexAppServer(format!(
             "model/list did not terminate its pagination within {MODEL_LIST_MAX_PAGES} pages"
         )))
+    }
+
+    /// `account/read` — whether the daemon is logged in (#1817). Read-only and connection-only,
+    /// like [`Self::model_list`].
+    pub async fn account_read(&self, deadline: tokio::time::Instant) -> Result<AccountRead> {
+        #[cfg(feature = "fixtures")]
+        if let Some(fake) = self.fake.as_ref() {
+            return Ok(fake
+                .account_read
+                .lock()
+                .expect("fake shared codex account-read mutex poisoned")
+                .clone());
+        }
+        let client = self.connected_client().await?;
+        client.account_read(deadline).await
     }
 
     /// `config/read` — the layer-merged effective config, narrowed to the model defaults;
@@ -3662,6 +3680,18 @@ impl SharedCodexAppServer {
                 .lock()
                 .expect("fake shared codex config-read mutex poisoned") = Some(config);
         }
+    }
+
+    /// What the fixtures fake answers `account/read` with from now on.
+    #[cfg(feature = "fixtures")]
+    pub fn set_account_read_for_test(&self, account: AccountRead) {
+        *self
+            .fake
+            .as_ref()
+            .expect("set_account_read_for_test needs the fixtures fake")
+            .account_read
+            .lock()
+            .expect("fake shared codex account-read mutex poisoned") = account;
     }
 
     /// Make every subsequent `model/list` be REFUSED by codex.

@@ -102,7 +102,7 @@ ignores invalid settings and `system/init` does not report the sandbox.
 | 8 | `turn_thread_is_sealed` in recovery | harness/mod `:158`, `:424` | unchanged |
 | 9 | `config_read`, `model_list` in resolution | run_loop `:2472`, `:2632` | Codex-only; the Claude arm reads the card at issue and resolves an alias or the CLI default without Codex (§5.8, #1810) |
 | 10 | Codex readiness / deferred recovery | harness/mod `:213`, `:477`; `state.rs:577-598`; `lib.rs:615-640` (H21) | Codex rows only; Claude rows recovered in both boot arms |
-| 11 | `is_running` preflights | start adapter `:420`, `:491` (S7); routes/cards `:1289`; planner_recovery `:58` | per provider: Claude ⇒ `claude_planner_config` present and `claude_binary --version` equals `claude_version` |
+| 11 | `is_running` preflights | start adapter `:420`, `:491` (S7); routes/cards `:1289`; planner_recovery `:58` | per provider: Claude ⇒ `claude_planner_config` present and `claude_binary --version` equals `claude_version` (login is not preflighted here: a not-logged-in turn fails at issue, #1817) |
 | 12 | `thread_start_*`, `remote_uri` | start adapter `:970-991` | Claude branch: UUID thread, no RPC |
 | 13 | compensation `interrupt_thread` | start adapter `:1424-1430` | Claude row ⇒ `claude_planner::stop` |
 | 14 | `PlannerHarnessParams{daemon}` | start adapter `:1277`; recovery; ~70 tests (H20) | `backend: PlannerBackend` (`From<Arc<SharedCodexAppServer>>`) |
@@ -411,6 +411,13 @@ host). `deny_unknown_fields` stops a mistyped field from being silently ignored.
 Absent ⇒ create with `planner_provider:"claude"` answers 4xx naming the flag; `is_ready(Claude) = false`;
 a recovered Claude harness refuses issuance with a retryable refusal and a reader message naming the flag.
 
+Availability (#1817): `GET /api/agent-providers` and a new Claude mint read one check per provider
+(`agent_providers.rs`, cached 30 s, `?refresh=true` rechecks): configured (else `not_configured`), then
+`--version`, then `<claude_binary> auth status --json` under the same allowlisted environment and readiness
+marker, bounded and killed-and-reaped on timeout, of which only the boolean `loggedIn` is decoded. A Claude
+create whose status is not `ready` answers 400 with the reason. The harness preflights of §4.1 row 11 are
+unchanged.
+
 - The sandbox is always on (owner decision): `--settings {"permissions":{"allow":["WebFetch(domain:*)"]},"sandbox":{"enabled":true,
   "failIfUnavailable":true,"allowUnsandboxedCommands":false,"network":{"allowAllUnixSockets":true}}}`
   and allow rules `Bash Read ToolSearch WebFetch WebSearch mcp__calm Edit(//<cwd>/**) Write(//<cwd>/**)`.
@@ -595,7 +602,7 @@ interrupted variant, and the turn row carries `interrupted`.
 
 Compliance: no login UI; neige never collects, stores, copies or relays OAuth credentials or session tokens;
 the unmodified binary runs as a subprocess; neige never sends `initialize` (its response carries the
-account email, P-A).
+account email, P-A). `auth status --json` prints account fields too; neige decodes only `loggedIn` (#1817).
 
 ## 9. Delivery
 

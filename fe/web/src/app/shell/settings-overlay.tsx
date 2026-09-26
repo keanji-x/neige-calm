@@ -10,6 +10,7 @@ import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { PluginConfigPane } from '../../features/settings/plugin-config.tsx';
 import { PluginAddPane } from '../../features/settings/plugin-add.tsx';
+import { PlannersPane } from '../../features/settings/planners.tsx';
 import { PluginsPane } from '../../features/settings/plugins.tsx';
 import {
   AboutPane, AppearancePane, GeneralPane, NetworkPane, SettingsSurface,
@@ -25,6 +26,7 @@ import {
   pluginDetailQueryOptions, pluginsQueryOptions, settingsQueryOptions, usePluginConfigMutations,
   usePluginInstall, usePluginMutations, useSettingsMutation,
 } from '../providers/queries.ts';
+import { agentProvidersQueryOptions, useAgentProvidersRecheck } from '../providers/agent-providers.ts';
 import { useCurrentPath, useGo, type NavTarget } from '../router/navigation.ts';
 import { useTheme } from '../theme/public.tsx';
 import { MobileAccessHost } from './mobile-access-host.tsx';
@@ -144,6 +146,7 @@ function SectionPane({ section, transport, unauthorized }: SettingsOverlayProps 
     case 'general': return <GeneralPaneHost transport={transport} unauthorized={unauthorized} />;
     case 'appearance': return <AppearancePaneHost />;
     case 'plugins': return <PluginsPaneHost transport={transport} unauthorized={unauthorized} />;
+    case 'planners': return <PlannersPaneHost transport={transport} unauthorized={unauthorized} />;
     case 'about': return <AboutPane />;
     case 'network': return <NetworkPaneHost transport={transport} unauthorized={unauthorized} />;
   }
@@ -158,6 +161,22 @@ function GeneralPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
       loadError={settings.error instanceof Error ? settings.error.message : null}
       onRetryLoad={() => { void settings.refetch(); }}
       onSave={(patch) => save(patch).then(() => undefined)}
+    />
+  );
+}
+
+/** Settings › Planners: the shared availability answer the new-track picker also reads, and its Recheck. */
+function PlannersPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
+  const providers = useQuery(agentProvidersQueryOptions(transport, unauthorized));
+  const recheck = useAgentProvidersRecheck(transport, unauthorized);
+  return (
+    <PlannersPane
+      providers={providers.data}
+      loadError={providers.error instanceof Error ? providers.error.message : null}
+      onRetryLoad={() => { void providers.refetch(); }}
+      onRecheck={recheck.recheck}
+      rechecking={recheck.rechecking}
+      recheckError={recheck.error}
     />
   );
 }

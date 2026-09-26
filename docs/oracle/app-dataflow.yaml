@@ -602,7 +602,7 @@
   why: >
     HTTP 响应与事件流没有固定到达顺序。尤其 Area 创建响应返回前，另一窗口可以先更新同一 Area；
     若创建响应无条件替换 cache，编辑后的默认 template/cwd 会在 refetch 前回滚并被 New Track 快照。
-  source: fe/core/domain/area.ts:51-56; fe/web/src/app/providers/queries.ts:578-603
+  source: fe/core/domain/area.ts:51-56; fe/web/src/app/providers/queries.ts:580-605
   authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:158-189;
     fe/web/src/app/providers/queries.contract.test.ts:246-292,315-352
   owner_slice: app/providers
@@ -623,7 +623,7 @@
     响应可能在服务端提交后丢失。等待 refetch 可让错误/重试界面先观察最新 Area 列表，并让更新后的
     template/cwd 回到 cache。创建重试另由已协商的服务器幂等能力与稳定操作键保护；
     refetch 不通过同名查找推断某次创建是否提交。
-  source: fe/web/src/app/providers/queries.ts:693-740
+  source: fe/web/src/app/providers/queries.ts:695-742
   authoritative_test: fe/web/src/app/providers/queries.contract.test.ts:259-305
   owner_slice: app/providers
   runtime_layer: app
@@ -650,7 +650,7 @@
     当「在动」、用 lifecycle ∨ `anyCardNeedsInput` 当「等你」，与内核从持久行算出的结论不一致；判定收敛到内核一处
     （`track_activity.rs`），FE 只解码 overlay。第二套推导必然再度分叉。
   source: fe/core/domain/activity.ts:28-36,77-90; fe/core/domain/track.ts:527-547;
-    fe/web/src/app/router/public.tsx:1870-1897; fe/web/src/features/today/public.tsx:137-138,256-257;
+    fe/web/src/app/router/public.tsx:1878-1905; fe/web/src/features/today/public.tsx:137-138,256-257;
     fe/web/src/app/providers/ui-preferences.tsx:69-105; fe/web/src/ui/activity-indicator/activity-indicator.module.css:7-8;
     fe/web/src/features/chat/list/public.tsx:32-88; fe/core/view/track-page.ts:14-18,59-61,69-70,90,107,119;
     fe/web/src/systems/cards/builtins/terminal-card.tsx:12-87;

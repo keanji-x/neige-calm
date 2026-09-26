@@ -2,12 +2,39 @@
 # A fake `claude -p` for the #1791 session tests (tests/cases/claude_planner_session.rs). The test
 # copies it into a private directory next to a `scenario` file; the spawn's environment is an
 # allowlist, so everything the fake needs or records lives in that directory:
-#   in:  scenario, version (optional; default 2.1.280), result_line (optional)
-#   out: spawns, pid, argv, env, stdin, instructions, orphan, emitted, mcp_reply
+#   in:  scenario, version (optional; default 2.1.280), result_line (optional),
+#        auth (optional; the `auth status --json` answer, default logged-in)
+#   out: spawns, pid, argv, env, stdin, instructions, orphan, emitted, mcp_reply,
+#        auth-pid, auth-env, auth-calls
 # Needs on PATH: bash, jq, setsid, sleep, seq, touch, yes; `flood` (F_SETPIPE_SZ) and `mcp` (a unix
 # socket client) also need python3.
 D=$(cd "$(dirname "$0")" && pwd)
 SCENARIO=$(cat "$D/scenario")
+
+if [ "$1" = "auth" ]; then
+  # #1817: `auth status --json`. The real CLI prints more fields (auth method, the account's
+  # email); neige must read `loggedIn` only, so the logged-in answer carries an email to leak.
+  [ "$2 $3" = "status --json" ] || { echo "fake claude: unexpected auth argv: $*" >&2; exit 2; }
+  echo "$$" > "$D/auth-pid"
+  echo "$$" >> "$D/auth-calls"
+  env > "$D/auth-env"
+  case "$(cat "$D/auth" 2>/dev/null || echo logged-in)" in
+    logged-in) echo '{"loggedIn": true, "authMethod": "claude.ai", "apiProvider": "firstParty", "email": "owner@example.invalid", "orgName": "fake org"}' ;;
+    # The parse does not depend on the exit status; this answer also exits 1.
+    logged-out) echo '{"loggedIn": false, "authMethod": "none", "apiProvider": "firstParty"}'; exit 1 ;;
+    no-field) echo '{"authMethod": "none", "apiProvider": "firstParty"}' ;;
+    not-bool) echo '{"loggedIn": "true"}' ;;
+    not-json) echo 'Logged in as owner@example.invalid' ;;
+    # Answers only once the test creates `release-auth`, so concurrent readers overlap.
+    hold) touch "$D/auth-entered"
+      while [ ! -e "$D/release-auth" ]; do sleep 0.05; done
+      echo '{"loggedIn": true}' ;;
+    hang) exec sleep 300 ;;
+    flood) exec yes '{"loggedIn": true}' ;;
+    *) echo "fake claude: unknown auth answer" >&2; exit 2 ;;
+  esac
+  exit 0
+fi
 
 if [ "$1" = "--version" ]; then
   # `hold-version` answers only once the test creates `release-version`.

@@ -1,6 +1,7 @@
 // The model picker in a planner conversation's composer footer, and on the new-track page. Presentational:
 // every value is a prop; the queries and the write live in `app/router`. Each provider's catalog is one
-// group; on the new-track page the pick also decides the Planner's provider (#1810).
+// group; on the new-track page the pick also decides the Planner's provider (#1810), and each group
+// follows its provider's availability (#1817).
 
 import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
 import { Divider } from '@astryxdesign/core/Divider';
@@ -11,6 +12,7 @@ import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 import { Fragment, useRef, type KeyboardEvent } from 'react';
 
 import type { AgentProvider } from '../../../../../core/api/generated/wire.ts';
+import type { ProviderAvailability } from '../../../../../core/domain/agent-providers.ts';
 import type { ModelCatalog, ModelSelection } from '../../../../../core/domain/conversation.ts';
 import { useState } from '../../../ui/state/public.ts';
 import styles from './model-pill.module.css';
@@ -22,32 +24,44 @@ const SWITCH_NOTE = 'Switching to a model with a smaller context window can make
 
 /**
  * Total over `AgentProvider`, so a new backend is a compile error here rather than a missing group.
- * `unavailable` says why that provider's `source: 'unavailable'` catalog is empty. A Claude catalog is
- * unavailable only on a server without the Claude Planner, so its group is left out of a menu that offers
- * other providers (`hiddenUnlessAvailable`); a Codex one means the daemon is down and stays, saying so.
+ * `unavailable` says why that provider's `source: 'unavailable'` catalog is empty. A Claude group waits for
+ * its availability and catalog before it joins a menu that offers other providers (`hiddenUntilKnown`); a
+ * Codex one stays while the daemon is down, saying so.
  * A Claude Planner has no reasoning-effort choice (`effort: false`), and only codex compacts (`switchNote`).
  */
 const PROVIDERS: Readonly<Record<AgentProvider, Readonly<{
-  label: string; unavailable: string; hiddenUnlessAvailable: boolean; effort: boolean; switchNote: boolean;
+  label: string; unavailable: string; hiddenUntilKnown: boolean; effort: boolean; switchNote: boolean;
 }>>> = Object.freeze({
   codex: Object.freeze({
-    label: 'Codex', unavailable: 'codex is not running', hiddenUnlessAvailable: false, effort: true, switchNote: true,
+    label: 'Codex', unavailable: 'codex is not running', hiddenUntilKnown: false, effort: true, switchNote: true,
   }),
   claude: Object.freeze({
-    label: 'Claude', unavailable: 'This server does not run Claude Planners', hiddenUnlessAvailable: true,
+    label: 'Claude', unavailable: 'This server does not run Claude Planners', hiddenUntilKnown: true,
     effort: false, switchNote: false,
   }),
 });
 
-/** One provider's section of the menu: its catalog, `null` while it loads. */
-export type ModelGroup = Readonly<{ provider: AgentProvider; catalog: ModelCatalog | null }>;
+/**
+ * One provider's section of the menu: its catalog, `null` while it loads, and whether the provider can run
+ * right now (`GET /api/agent-providers`). `availability` is `null` while that answer is unknown, and for a
+ * conversation that already exists: its turns keep issue-time handling (#1817).
+ */
+export type ModelGroup = Readonly<{
+  provider: AgentProvider;
+  catalog: ModelCatalog | null;
+  availability: ProviderAvailability | null;
+}>;
 
 type CatalogEntry = ModelCatalog['models'][number];
 
-/** The groups a menu shows. The selection's own group always shows, so a pick never passes for another provider's. */
+/**
+ * The groups a menu shows. The selection's own group always shows, so a pick never passes for another
+ * provider's. Any other group is hidden while its provider is `not_configured` on this server.
+ */
 function visibleModelGroups(groups: readonly ModelGroup[], provider: AgentProvider): readonly ModelGroup[] {
-  return groups.filter((group) => group.provider === provider || !PROVIDERS[group.provider].hiddenUnlessAvailable
-    || (group.catalog !== null && group.catalog.source !== 'unavailable'));
+  return groups.filter((group) => group.provider === provider || (
+    group.availability?.status !== 'not_configured'
+    && (!PROVIDERS[group.provider].hiddenUntilKnown || (group.availability !== null && group.catalog !== null))));
 }
 
 /** The name of the default a catalog says is followed, or `null` when it cannot say. */
@@ -199,10 +213,16 @@ function GroupChoices({ group, selection, onChange }: Readonly<{
   const models: readonly CatalogEntry[] = group.catalog?.models ?? [];
   const defaultName = defaultNameOf(group.catalog);
   const unreachable = group.catalog !== null && group.catalog.source === 'unavailable';
+  /* A provider that cannot run now offers nothing to pick, and says why in the server's own words. */
+  const blocked = group.availability?.status === 'unavailable' ? group.availability.reason : null;
   return <>
+    {blocked !== null && (
+      <DropdownMenuItem label={`${PROVIDERS[group.provider].label} is unavailable`} description={blocked} isDisabled />
+    )}
     <Choice
       label={defaultName === null ? FOLLOW_DEFAULT_LABEL : `${FOLLOW_DEFAULT_LABEL} (${defaultName})`}
       isSelected={selection !== null && selection.model === null}
+      isDisabled={blocked !== null}
       onSelect={() => onChange({ model: null, reasoning_effort: null })}
     />
     {models.map((model) => (
@@ -210,11 +230,12 @@ function GroupChoices({ group, selection, onChange }: Readonly<{
         key={model.id}
         label={model.display_name}
         isSelected={selection !== null && selection.model === model.model}
+        isDisabled={blocked !== null}
         /* Switching model drops the effort: one chosen for the previous model may not exist on this one. */
         onSelect={() => onChange({ model: model.model, reasoning_effort: null })}
       />
     ))}
-    {models.length === 0 && (
+    {models.length === 0 && blocked === null && (
       <DropdownMenuItem
         label={unreachable ? PROVIDERS[group.provider].unavailable : 'No models available on this account'}
         isDisabled

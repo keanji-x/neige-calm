@@ -46,6 +46,8 @@ export type NavTarget =
   | Readonly<{ name: 'settings-network' }>
   /** Settings › Plugins — the installed list and its enable/disable switch. */
   | Readonly<{ name: 'settings-plugins' }>
+  /** Settings › Planners — whether each Planner provider can run now (#1817). */
+  | Readonly<{ name: 'settings-planners' }>
   | Readonly<{ name: 'settings-appearance' }>
   | Readonly<{ name: 'settings-about' }>;
 
@@ -62,6 +64,7 @@ export function pathFor(target: NavTarget): string {
     case 'settings-general': return '/settings/general';
     case 'settings-network': return '/settings/network';
     case 'settings-plugins': return '/settings/plugins';
+    case 'settings-planners': return '/settings/planners';
     case 'settings-appearance': return '/settings/appearance';
     case 'settings-about': return '/settings/about';
   }
