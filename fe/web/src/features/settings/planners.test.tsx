@@ -50,7 +50,7 @@ describe('PlannersPane', () => {
       { provider: 'claude', status: 'unavailable', reason: 'not logged in', checked_at_ms: 1 },
     ] });
     expect(within(row('Codex')).getByText(
-      'shared codex app-server is not running Tracks can still be created; their Planner runs once it is back.',
+      'shared codex app-server is not running A track can still be created, but a first message is only sent once Codex is back.',
     )).toBeTruthy();
     expect(within(row('Claude')).getByText('not logged in')).toBeTruthy();
   });

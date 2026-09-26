@@ -803,9 +803,6 @@ pub(crate) async fn create_track(
     State(codex): State<CodexShellState>,
     Json(mut request): Json<CreateTrackRequest>,
 ) -> Result<Response> {
-    // Common area lifecycle fence for legacy mint, first-message mint, and
-    // idempotent replay. Holding it through workspace materialization and
-    // operation submission makes area deletion snapshot a closed member set.
     // #1817: a Claude create's availability (the cached check, at most `TTL` old, or a new check
     // of up to ~20 s) is read before the area lock below, which it must not hold; it gates only a
     // new mint, after the replay arms.
@@ -823,6 +820,9 @@ pub(crate) async fn create_track(
     } else {
         None
     };
+    // Common area lifecycle fence for legacy mint, first-message mint, and
+    // idempotent replay. Holding it through workspace materialization and
+    // operation submission makes area deletion snapshot a closed member set.
     let create_area_id = request.area_id.clone();
     let _area_delete_guard =
         crate::per_card_lock::lock_key(&s.area_delete_locks, create_area_id.as_str()).await;

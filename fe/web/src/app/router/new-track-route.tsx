@@ -42,8 +42,9 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
 }) {
   const compactViewport = useCompactViewport();
   const areaId = session.area.id;
-  /* One group per provider, each following its provider's availability: `not_configured` leaves it out,
-     `unavailable` shows it disabled with the server's reason (#1817). */
+  /* One group per provider, each following its provider's availability (#1817): `not_configured` leaves it
+     out; `unavailable` shows the server's reason, and disables the group only where create refuses it
+     (`CREATE_REFUSED_WHEN_UNAVAILABLE`: Claude). */
   const codexCatalog = useQuery(modelCatalogQueryOptions(transport, { kind: 'provider', provider: 'codex' }, unauthorized));
   const claudeCatalog = useQuery(modelCatalogQueryOptions(transport, { kind: 'provider', provider: 'claude' }, unauthorized));
   const availability = useQuery(agentProvidersQueryOptions(transport, unauthorized));

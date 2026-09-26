@@ -40,8 +40,12 @@ export const CREATE_REFUSED_WHEN_UNAVAILABLE: Readonly<Record<AgentProvider, boo
   claude: true,
 });
 
-/** Said beside the reason of an unavailable provider that create still accepts. */
-export const STILL_CREATES_NOTE = 'Tracks can still be created; their Planner runs once it is back.';
+/**
+ * Said beside the reason of an unavailable provider that create still accepts (only Codex). True on both
+ * create paths: without a first message the track answers 201; with one, a daemon outage fails the
+ * create (500) before the message is queued, so it goes out on a retry once Codex is back.
+ */
+export const STILL_CREATES_NOTE = 'A track can still be created, but a first message is only sent once Codex is back.';
 
 /** `provider`'s entry, or `null` when the answer is not in yet or does not name it. */
 export function availabilityOf(

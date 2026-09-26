@@ -116,7 +116,9 @@ floor is the mitigation available from this layer, and it is not centring.
 One row per Planner provider: its status as a chip (`Ready`, `Unavailable` in
 warn tones, `Not configured` neutral) and, when it is not ready, the server's own
 sentence naming the failed check and its fix. The pane never words a reason
-itself. A last **Recheck** row asks the server to run every check again
+itself; the one thing it adds is, for a provider create still accepts while
+unavailable (Codex, `CREATE_REFUSED_WHEN_UNAVAILABLE`), core's note on what a
+create does then. A last **Recheck** row asks the server to run every check again
 (`refresh=true`) and writes the answer into the same query the new-track model
 picker reads, so both show one answer.
 

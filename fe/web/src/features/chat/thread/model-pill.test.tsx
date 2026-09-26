@@ -490,7 +490,7 @@ describe('ModelPill', () => {
       const menu = openMenu(/^Model:/);
       const codex = within(menu).getByRole('group', { name: 'Codex' });
       expect(within(codex).getByRole('note').textContent)
-        .toBe(`Codex is unavailable: ${reason} Tracks can still be created; their Planner runs once it is back.`);
+        .toBe(`Codex is unavailable: ${reason} A track can still be created, but a first message is only sent once Codex is back.`);
       for (const name of [/^Default/, 'GPT-5']) {
         expect(isDisabled(within(codex).getByRole('menuitem', { name })), String(name)).toBe(false);
       }
