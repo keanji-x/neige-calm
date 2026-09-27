@@ -9,9 +9,9 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 use uuid::Uuid;
 
-use super::models::ClaudeModel;
 use super::stop::MARKER_KEY;
 use crate::error::{CalmError, Result};
+use crate::planner_model::TurnModelSelection;
 use crate::shared_codex_appserver::SPAWN_ENV_PASSTHROUGH;
 
 /// The CLI's own tools a Planner may use; everything else (Task, Skill, …) stays off.
@@ -82,11 +82,13 @@ pub enum SessionStart {
     Resume,
 }
 
-/// `model` is the card's choice; `None` passes no `--model`, so the CLI runs its default.
+/// `selection` is the card's choice, judged against the CLI's model list at issue (#1822): a model
+/// is passed verbatim as `--model` and an effort as `--effort`. `None` passes neither flag, so the
+/// CLI runs its default.
 pub(crate) fn argv(
     thread: Uuid,
     start: SessionStart,
-    model: Option<&ClaudeModel>,
+    selection: &TurnModelSelection,
     cwd: &Path,
     mcp_shim: &Path,
     instructions: &Path,
@@ -109,9 +111,13 @@ pub(crate) fn argv(
     .collect();
     args.push(session_flag.into());
     args.push(thread.to_string().into());
-    if let Some(model) = model {
+    if let Some(model) = &selection.model {
         args.push("--model".into());
-        args.push(model.alias.into());
+        args.push(model.into());
+    }
+    if let Some(effort) = &selection.effort {
+        args.push("--effort".into());
+        args.push(effort.into());
     }
     for arg in [
         "--setting-sources",

@@ -16,6 +16,7 @@ function model(overrides: Partial<ModelCatalog['models'][number]> = {}): ModelCa
   return {
     id: 'preset-fast',
     model: 'gpt-5',
+    resolved_model: null,
     display_name: 'GPT-5',
     description: 'The everyday one.',
     is_default: false,
@@ -31,7 +32,7 @@ function model(overrides: Partial<ModelCatalog['models'][number]> = {}): ModelCa
 function catalog(overrides: Partial<ModelCatalog> = {}): ModelCatalog {
   return {
     models: [model()],
-    default: { model: 'gpt-5-codex', reasoning_effort: null },
+    default: { model: 'gpt-5-codex', reasoning_effort: null, supported_reasoning_efforts: null },
     default_source: 'config_read',
     source: 'live',
     fetched_at_ms: 1_760_000_000_000,
@@ -39,20 +40,34 @@ function catalog(overrides: Partial<ModelCatalog> = {}): ModelCatalog {
   };
 }
 
-/** What `routes/models.rs` answers for a Claude Planner on a server that runs them (#1810). */
+/** The Claude CLI's effort levels: declared without a description. */
+const CLAUDE_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'].map((level) => ({ reasoning_effort: level, description: null }));
+
+function claudeEntry(value: string, resolved: string, name: string, levels = CLAUDE_LEVELS): ModelCatalog['models'][number] {
+  return model({
+    id: value, model: value, resolved_model: resolved, display_name: name, description: `${name}, as the CLI says.`,
+    supported_reasoning_efforts: levels, default_reasoning_effort: null,
+  });
+}
+
+/** What `routes/models.rs` answers for a ready Claude Planner (#1822): the list the pinned CLI reports. */
 function claudeCatalog(overrides: Partial<ModelCatalog> = {}): ModelCatalog {
   return {
-    models: ['opus', 'sonnet', 'haiku'].map((alias) => model({
-      id: alias, model: alias, display_name: alias[0].toUpperCase() + alias.slice(1), description: `The ${alias} alias.`,
-      supported_reasoning_efforts: [], default_reasoning_effort: null,
-    })),
-    default: { model: null, reasoning_effort: null },
-    default_source: 'unknown',
-    source: 'built_in',
-    fetched_at_ms: null,
+    models: [
+      claudeEntry('opus[1m]', 'claude-opus-5-5[1m]', 'Opus (1M context)'),
+      claudeEntry('claude-fable-5-1[1m]', 'claude-fable-5-1', 'Fable'),
+      claudeEntry('sonnet', 'claude-sonnet-5', 'Sonnet'),
+      claudeEntry('haiku', 'claude-haiku-4-5-20251001', 'Haiku', []),
+    ],
+    default: { model: 'claude-opus-5-5[1m]', reasoning_effort: null, supported_reasoning_efforts: CLAUDE_LEVELS },
+    default_source: 'claude_cli',
+    source: 'live',
+    fetched_at_ms: 1_760_000_000_000,
     ...overrides,
   };
 }
+
+const CLAUDE_UNAVAILABLE = 'Claude cannot run on this server right now';
 
 /** What `GET /api/agent-providers` answers for a provider (#1817). */
 function ready(provider: AgentProvider): ProviderAvailability {
@@ -135,7 +150,7 @@ describe('ModelPill', () => {
   it('will not name a default it was told it could not resolve', () => {
     render(
       <ModelPill provider="codex"
-        groups={[{ provider: 'codex', availability: null, catalog: catalog({ default_source: 'unknown', default: { model: 'gpt-5-global', reasoning_effort: null } }) }]}
+        groups={[{ provider: 'codex', availability: null, catalog: catalog({ default_source: 'unknown', default: { model: 'gpt-5-global', reasoning_effort: null, supported_reasoning_efforts: null } }) }]}
         selection={FOLLOW_INSTALLATION_DEFAULT}
         onChange={vi.fn()}
       />,
@@ -206,7 +221,7 @@ describe('ModelPill', () => {
     it('offers the followed model’s efforts while no model is chosen', () => {
       render(
         <ModelPill provider="codex"
-          groups={[{ provider: 'codex', availability: null, catalog: catalog({ default: { model: 'gpt-5', reasoning_effort: 'low' } }) }]}
+          groups={[{ provider: 'codex', availability: null, catalog: catalog({ default: { model: 'gpt-5', reasoning_effort: 'low', supported_reasoning_efforts: null } }) }]}
           selection={FOLLOW_INSTALLATION_DEFAULT}
           onChange={vi.fn()}
         />,
@@ -222,7 +237,7 @@ describe('ModelPill', () => {
       const onChange = vi.fn();
       render(
         <ModelPill provider="codex"
-          groups={[{ provider: 'codex', availability: null, catalog: catalog({ default: { model: 'gpt-5', reasoning_effort: 'low' } }) }]}
+          groups={[{ provider: 'codex', availability: null, catalog: catalog({ default: { model: 'gpt-5', reasoning_effort: 'low', supported_reasoning_efforts: null } }) }]}
           selection={FOLLOW_INSTALLATION_DEFAULT}
           onChange={onChange}
         />,
@@ -332,7 +347,7 @@ describe('ModelPill', () => {
     expect(document.body.textContent).toContain('codex is not running');
     unmount();
     render(<ModelPill provider="claude" groups={[{ provider: 'claude', availability: null, catalog: unavailable }]} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
-    expect(document.body.textContent).toContain('This server does not run Claude Planners');
+    expect(document.body.textContent).toContain(CLAUDE_UNAVAILABLE);
     expect(document.body.textContent).not.toContain('codex is not running');
   });
 
@@ -388,7 +403,7 @@ describe('ModelPill', () => {
       expect(trigger(/^Model:/).textContent).toBe('Claude sonnet');
       const menu = openMenu(/^Model:/);
       const claude = within(menu).getByRole('group', { name: 'Claude' });
-      expect(within(claude).getByText('This server does not run Claude Planners')).toBeTruthy();
+      expect(within(claude).getByText(CLAUDE_UNAVAILABLE)).toBeTruthy();
       expect(within(menu).getByRole('group', { name: 'Codex' })).toBeTruthy();
     });
 
@@ -400,10 +415,10 @@ describe('ModelPill', () => {
         .toEqual(['Default (gpt-5-codex)Selected', 'GPT-5']);
       const claude = within(menu).getByRole('group', { name: 'Claude' });
       expect(within(claude).getAllByRole('menuitem').map((item) => item.textContent))
-        .toEqual(['Default', 'Opus', 'Sonnet', 'Haiku']);
+        .toEqual(['Default (claude-opus-5-5[1m])', 'Opus (1M context)', 'Fable', 'Sonnet', 'Haiku']);
     });
 
-    it('hands back the Claude alias and the provider with a Claude pick, and codex with a Codex one', () => {
+    it('hands back the Claude value and the provider with a Claude pick, and codex with a Codex one', () => {
       const onChange = vi.fn();
       const view = render(<ModelPill groups={both()} provider="codex" selection={{ model: 'gpt-5', reasoning_effort: 'high' }} onChange={onChange} />);
       fireEvent.click(within(within(openMenu(/^Model:/)).getByRole('group', { name: 'Claude' })).getByRole('menuitem', { name: 'Sonnet' }));
@@ -421,29 +436,54 @@ describe('ModelPill', () => {
       const view = render(<ModelPill groups={both()} provider="claude" selection={{ model: 'sonnet', reasoning_effort: null }} onChange={vi.fn()} />);
       expect(trigger(/^Model:/).textContent).toBe('Claude Sonnet');
       view.rerender(<ModelPill groups={both()} provider="claude" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
-      expect(trigger(/^Model:/).getAttribute('aria-label')).toBe('Model: Claude Default');
+      expect(trigger(/^Model:/).getAttribute('aria-label')).toBe("Model: Claude claude-opus-5-5[1m] (this installation's default)");
       view.rerender(<ModelPill groups={both()} provider="codex" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
       expect(trigger(/^Model:/).getAttribute('aria-label')).toBe("Model: Codex gpt-5-codex (this installation's default)");
     });
 
-    it('offers no reasoning effort for Claude, even for an entry that lists some', () => {
-      const listed = claudeCatalog({ models: [model({ id: 'opus', model: 'opus', display_name: 'Opus' })] });
+    it('offers exactly a Claude model\'s declared effort levels, and sends the chosen one (#1822)', () => {
+      const onChange = vi.fn();
+      render(<ModelPill groups={[{ provider: 'claude', availability: null, catalog: claudeCatalog() }]} provider="claude"
+        selection={{ model: 'claude-fable-5-1[1m]', reasoning_effort: null }} onChange={onChange} />);
+      expect(trigger(/^Model:/).textContent).toBe('Fable');
+      expect(trigger(/^Reasoning effort:/).textContent).toBe('Default');
+      const menu = openMenu(/^Reasoning effort:/);
+      expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent))
+        .toEqual(['DefaultSelected', 'low', 'medium', 'high', 'xhigh', 'max']);
+      fireEvent.click(within(menu).getByRole('menuitem', { name: 'high' }));
+      expect(onChange).toHaveBeenLastCalledWith({ model: 'claude-fable-5-1[1m]', reasoning_effort: 'high' }, 'claude');
+    });
+
+    it('offers no reasoning effort for a Claude model that declares none', () => {
       for (const effortControl of ['separate', 'in-menu'] as const) {
-        const view = render(<ModelPill groups={[{ provider: 'claude', availability: null, catalog: listed }]} provider="claude"
-          selection={{ model: 'opus', reasoning_effort: null }} effortControl={effortControl} onChange={vi.fn()} />);
+        const view = render(<ModelPill groups={[{ provider: 'claude', availability: null, catalog: claudeCatalog() }]} provider="claude"
+          selection={{ model: 'haiku', reasoning_effort: null }} effortControl={effortControl} onChange={vi.fn()} />);
         expect(screen.queryByRole('button', { name: /^Reasoning effort:/ })).toBeNull();
         expect(within(openMenu(/^Model:/)).queryByRole('group', { name: 'Reasoning effort' })).toBeNull();
         view.unmount();
       }
     });
 
-    it('inside a Claude track lists only the Claude aliases, without headings or the codex note', () => {
+    it('names what the Claude CLI default resolves to, and offers the default entry\'s levels for it', () => {
+      const onChange = vi.fn();
+      render(<ModelPill groups={[{ provider: 'claude', availability: null, catalog: claudeCatalog({
+        default: { model: 'claude-opus-5-5[1m]', reasoning_effort: null, supported_reasoning_efforts: CLAUDE_LEVELS.slice(0, 2) },
+      }) }]} provider="claude" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={onChange} />);
+      expect(trigger(/^Model:/).textContent).toBe('claude-opus-5-5[1m]');
+      const menu = openMenu(/^Reasoning effort:/);
+      expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent))
+        .toEqual(['DefaultSelected', 'low', 'medium']);
+      fireEvent.click(within(menu).getByRole('menuitem', { name: 'medium' }));
+      expect(onChange).toHaveBeenLastCalledWith({ model: null, reasoning_effort: 'medium' }, 'claude');
+    });
+
+    it('inside a Claude track lists only the Claude CLI\'s models, without headings or the codex note', () => {
       render(<ModelPill groups={[{ provider: 'claude', availability: null, catalog: claudeCatalog() }]} provider="claude"
         selection={{ model: 'haiku', reasoning_effort: null }} onChange={vi.fn()} />);
       expect(trigger(/^Model:/).textContent).toBe('Haiku');
       const menu = openMenu(/^Model:/);
       expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent))
-        .toEqual(['Default', 'Opus', 'Sonnet', 'HaikuSelected']);
+        .toEqual(['Default (claude-opus-5-5[1m])', 'Opus (1M context)', 'Fable', 'Sonnet', 'HaikuSelected']);
       expect(within(menu).queryByRole('group')).toBeNull();
       expect(within(menu).queryByRole('note')).toBeNull();
     });
@@ -453,7 +493,7 @@ describe('ModelPill', () => {
         { provider: 'claude', availability: ready('claude'), catalog: claudeCatalog() }]} provider="codex" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
       const menu = openMenu(/^Model:/);
       expect(within(within(menu).getByRole('group', { name: 'Codex' })).getByText('codex is not running')).toBeTruthy();
-      expect(within(within(menu).getByRole('group', { name: 'Claude' })).getByRole('menuitem', { name: 'Opus' })).toBeTruthy();
+      expect(within(within(menu).getByRole('group', { name: 'Claude' })).getByRole('menuitem', { name: 'Opus (1M context)' })).toBeTruthy();
     });
   });
 
@@ -477,7 +517,7 @@ describe('ModelPill', () => {
       render(<ModelPill groups={both()} provider="codex" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
       const claude = within(openMenu(/^Model:/)).getByRole('group', { name: 'Claude' });
       expect(within(claude).queryByRole('note')).toBeNull();
-      expect(isDisabled(within(claude).getByRole('menuitem', { name: 'Opus' }))).toBe(false);
+      expect(isDisabled(within(claude).getByRole('menuitem', { name: 'Opus (1M context)' }))).toBe(false);
     });
 
     it('keeps an unavailable Codex group pickable, its reason a warning, because create still accepts it', () => {

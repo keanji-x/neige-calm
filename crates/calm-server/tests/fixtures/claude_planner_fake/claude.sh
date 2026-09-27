@@ -3,9 +3,11 @@
 # copies it into a private directory next to a `scenario` file; the spawn's environment is an
 # allowlist, so everything the fake needs or records lives in that directory:
 #   in:  scenario, version (optional; default 2.1.280), result_line (optional),
-#        auth (optional; the `auth status --json` answer, default logged-in)
+#        auth (optional; the `auth status --json` answer, default logged-in),
+#        catalog (optional; the `initialize` answer, default ok)
 #   out: spawns, pid, argv, env, stdin, instructions, orphan, emitted, mcp_reply,
-#        auth-pid, auth-env, auth-calls
+#        auth-pid, auth-env, auth-calls, init-calls, init-pid, init-argv, init-env, init-cwd,
+#        init-stdin
 # Needs on PATH: bash, jq, setsid, sleep, seq, touch, yes; `flood` (F_SETPIPE_SZ) and `mcp` (a unix
 # socket client) also need python3.
 D=$(cd "$(dirname "$0")" && pwd)
@@ -46,6 +48,48 @@ if [ "$1" = "--version" ]; then
   if [ "$SCENARIO" = "vanish-after-version" ]; then rm -f -- "$0"; fi
   exit 0
 fi
+
+case " $* " in
+  *" --session-id "*|*" --resume "*) ;;
+  *)
+    # #1822: the model-list exchange. neige writes one `initialize` control request and closes
+    # stdin; the CLI answers with its `/model` list (measured from the pinned 2.1.280) and exits.
+    # The answer also carries the account, as the real one does, for neige never to pass on.
+    echo "$$" >> "$D/init-calls"
+    echo "$$" > "$D/init-pid"
+    printf '%s\n' "$@" > "$D/init-argv"
+    env > "$D/init-env"
+    pwd > "$D/init-cwd"
+    IFS= read -r REQUEST || exit 3
+    printf '%s\n' "$REQUEST" > "$D/init-stdin"
+    [ "$(jq -r '.request.subtype' <<< "$REQUEST")" = initialize ] || {
+      echo "fake claude: expected an initialize request" >&2; exit 2; }
+    ID=$(jq -r '.request_id' <<< "$REQUEST")
+    EFFORT='"supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"]'
+    DEFAULT='{"value":"default","resolvedModel":"claude-opus-5-5[1m]","displayName":"Default (recommended)","description":"Opus 5.5 with 1M context · Best for everyday, complex tasks",'"$EFFORT"'}'
+    OPUS='{"value":"opus[1m]","resolvedModel":"claude-opus-5-5[1m]","displayName":"Opus (1M context)","description":"Opus 5.5 with 1M context · Best for everyday, complex tasks",'"$EFFORT"'}'
+    FABLE='{"value":"claude-fable-5-1[1m]","resolvedModel":"claude-fable-5-1","displayName":"Fable","description":"Fable 5.1 · Most capable for your hardest and longest-running tasks",'"$EFFORT"'}'
+    SONNET='{"value":"sonnet","resolvedModel":"claude-sonnet-5","displayName":"Sonnet","description":"Sonnet 5 · Efficient for routine tasks",'"$EFFORT"'}'
+    HAIKU='{"value":"haiku","resolvedModel":"claude-haiku-4-5-20251001","displayName":"Haiku","description":"Haiku 4.5 · Fastest for quick answers"}'
+    MODELS="[$DEFAULT,$OPUS,$FABLE,$SONNET,$HAIKU]"
+    case "$(cat "$D/catalog" 2>/dev/null || echo ok)" in
+      ok) ;;
+      # What an entitlement change would list: the default and Haiku only.
+      restricted) MODELS="[$DEFAULT,$HAIKU]" ;;
+      # Well-formed but for one entry, whose `resolvedModel` is empty.
+      malformed) MODELS="[$DEFAULT,$HAIKU,"'{"value":"sonnet","resolvedModel":"","displayName":"Sonnet","description":""}]' ;;
+      empty-list) MODELS='[]' ;;
+      # No answer at all, and a clean exit.
+      empty) cat > /dev/null; exit 0 ;;
+      hang) exec sleep 300 ;;
+      flood) exec yes '{"type":"system","subtype":"status"}' ;;
+      *) echo "fake claude: unknown catalog answer" >&2; exit 2 ;;
+    esac
+    echo '{"type":"system","subtype":"status","status":null}'
+    printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{"commands":[],"agents":[],"models":%s,"account":{"email":"owner@example.invalid","organization":"fake org","subscriptionType":"max"},"pid":%s}}}\n' "$ID" "$MODELS" "$$"
+    cat > /dev/null
+    exit 0 ;;
+esac
 
 echo "$$" >> "$D/spawns"
 echo "$$" > "$D/pid"

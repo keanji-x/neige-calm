@@ -1,5 +1,6 @@
 // `GET /api/agent-providers` for the new-track model picker and Settings › Planners (#1817): one
-// shared answer, and the Settings pane's Recheck that replaces it with a fresh one.
+// shared answer, and the Settings pane's Recheck that replaces it with a fresh one. A Recheck also
+// re-fetches the Claude CLI's model list on the server (#1822), so every model catalog is refreshed.
 
 import { useQueryClient } from '@tanstack/react-query';
 
@@ -24,7 +25,7 @@ export type AgentProvidersRecheck = Readonly<{
   error: string | null;
 }>;
 
-/** Recheck: one `refresh=true` read, written into the shared answer so the picker sees it too. */
+/** Recheck: one `refresh=true` read, written into the shared answer so the picker sees it too, and its catalogs refreshed. */
 export function useAgentProvidersRecheck(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): AgentProvidersRecheck {
   const client = useQueryClient();
   const [state, setState] = useState<Readonly<{ rechecking: boolean; error: string | null }>>({ rechecking: false, error: null });
@@ -33,6 +34,7 @@ export function useAgentProvidersRecheck(transport: ApiTransportPort, unauthoriz
     setState({ rechecking: true, error: null });
     runOperation(transport, agentProvidersOperation(true), unauthorized).then((answers) => {
       client.setQueryData(queryKeys.agentProviders(), answers);
+      void client.invalidateQueries({ queryKey: queryKeys.modelCatalogPrefix() }).catch(() => undefined);
       setState({ rechecking: false, error: null });
     }, (failure: unknown) => {
       setState({ rechecking: false, error: failure instanceof Error ? failure.message : 'The recheck failed.' });

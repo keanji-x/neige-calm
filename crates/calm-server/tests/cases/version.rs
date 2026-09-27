@@ -128,9 +128,9 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
     assert_eq!(
         v["apiVersion"].as_str().unwrap(),
-        "12",
-        "#1817: GET /api/agent-providers is new; a bundle that reads it gets a 404 from an \
-         older kernel"
+        "13",
+        "#1822: a Claude Planner's GET /api/models answers the CLI's live list and \
+         `source: \"built_in\"` is gone, which each side's schema rejects from the other"
     );
     assert_eq!(
         v["syncEventVersion"].as_u64().unwrap(),
@@ -143,12 +143,12 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         v["webCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 31);
+    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 32);
     assert_eq!(
         v["minWebCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 31);
+    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 32);
     assert_eq!(
         v["supervisorControlVersion"].as_u64().unwrap(),
         SUPERVISOR_CONTROL_VERSION as u64,
@@ -335,6 +335,22 @@ async fn web_compat_floor_excludes_bundles_that_reject_the_claude_catalog() {
     assert!(
         floor > LAST_FLOOR_WITHOUT_CLAUDE_CATALOG,
         "minWebCompatVersion must exclude bundles that reject the Claude alias catalog, got {floor}"
+    );
+}
+
+/// The last floor whose bundles reject the Claude CLI's live catalog (a `null` effort
+/// `description`, `default_source: "claude_cli"`, #1822); historical literal, do not move it with
+/// `WEB_COMPAT_VERSION`.
+#[tokio::test]
+async fn web_compat_floor_excludes_bundles_that_reject_the_live_claude_catalog() {
+    const LAST_FLOOR_WITHOUT_LIVE_CLAUDE_CATALOG: u64 = 31;
+
+    let floor = version_body(fresh_state().await).await["minWebCompatVersion"]
+        .as_u64()
+        .expect("minWebCompatVersion is a number");
+    assert!(
+        floor > LAST_FLOOR_WITHOUT_LIVE_CLAUDE_CATALOG,
+        "minWebCompatVersion must exclude bundles that reject the live Claude catalog, got {floor}"
     );
 }
 

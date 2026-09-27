@@ -12,11 +12,14 @@ import { ModelPill } from './model-pill.tsx';
 
 const REASON = 'not logged in — run `claude /login` with CLAUDE_CONFIG_DIR=/home/owner/.local/share/claude-planner';
 
-function catalog(models: readonly [string, string][], source: ModelCatalog['source']): ModelCatalog {
+/** A live catalog; a Claude one (#1822) reports each entry's resolved model and no default effort. */
+function catalog(models: readonly [string, string][], provider: 'codex' | 'claude'): ModelCatalog {
   return {
-    models: models.map(([model, name]) => ({ id: model, model, display_name: name, description: '', is_default: false,
-      supported_reasoning_efforts: [], default_reasoning_effort: source === 'built_in' ? null : 'low' })),
-    default: { model: null, reasoning_effort: null }, default_source: 'unknown', source, fetched_at_ms: null,
+    models: models.map(([model, name]) => ({ id: model, model, resolved_model: provider === 'claude' ? `claude-${model}` : null,
+      display_name: name, description: '', is_default: false,
+      supported_reasoning_efforts: [], default_reasoning_effort: provider === 'claude' ? null : 'low' })),
+    default: { model: null, reasoning_effort: null, supported_reasoning_efforts: null }, default_source: 'unknown',
+    source: 'live', fetched_at_ms: 1,
   };
 }
 
@@ -28,8 +31,8 @@ it('shows why Claude cannot run, inside the viewport, and picks nothing from its
   const onChange = vi.fn();
   render(<ModelPill provider="codex" effortControl="in-menu" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={onChange}
     groups={[
-      { provider: 'codex', availability: ready, catalog: catalog([['gpt-5', 'GPT-5']], 'live') },
-      { provider: 'claude', availability: claudeUnavailable, catalog: catalog([['opus', 'Opus'], ['sonnet', 'Sonnet']], 'built_in') },
+      { provider: 'codex', availability: ready, catalog: catalog([['gpt-5', 'GPT-5']], 'codex') },
+      { provider: 'claude', availability: claudeUnavailable, catalog: catalog([['opus[1m]', 'Opus'], ['sonnet', 'Sonnet']], 'claude') },
     ]} />);
   await userEvent.click(screen.getByRole('button', { name: /^Model:/ }));
   const claude = await screen.findByRole('group', { name: 'Claude' });

@@ -12,6 +12,7 @@ import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts'
 import { ThemeProvider } from '../theme/public.tsx';
 import { createAppRouter } from '../router/public.tsx';
 import { bootTestCardRuntime } from '../router/test-card-runtime.ts';
+import { queryKeys } from '../providers/queries.ts';
 import { settingsSectionForPath } from './settings-overlay.tsx';
 
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
@@ -51,6 +52,7 @@ function renderPlanners() {
     },
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(queryKeys.modelCatalog({ kind: 'provider', provider: 'claude' }), { models: [] });
   const router = createAppRouter({
     transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined,
   });
@@ -62,7 +64,7 @@ function renderPlanners() {
       </ThemeProvider>
     </QueryClientProvider>,
   );
-  return { sent };
+  return { sent, client };
 }
 
 function row(title: string): HTMLElement {
@@ -76,15 +78,19 @@ it('maps the Planners path to its pane', () => {
   expect(settingsSectionForPath('/settings/planners')).toBe('planners');
 });
 
-it('lists each provider with its status and reason, and Recheck replaces the answer', async () => {
-  const { sent } = renderPlanners();
+it('lists each provider with its status and reason, and Recheck replaces the answer and refreshes the catalogs', async () => {
+  const { sent, client } = renderPlanners();
+  const claudeCatalog = queryKeys.modelCatalog({ kind: 'provider', provider: 'claude' });
   await screen.findByText(LOGGED_OUT);
   expect(within(row('Claude')).getByText('Unavailable')).toBeTruthy();
   expect(within(row('Codex')).getByText('Ready')).toBeTruthy();
   expect(sent.filter((request) => request.path === '/api/agent-providers?refresh=true')).toHaveLength(0);
+  expect(client.getQueryState(claudeCatalog)?.isInvalidated).toBe(false);
 
   await userEvent.click(screen.getByRole('button', { name: 'Recheck planners' }));
   await waitFor(() => expect(screen.queryByText(LOGGED_OUT)).toBeNull());
   expect(within(row('Claude')).getByText('Ready')).toBeTruthy();
   expect(sent.filter((request) => request.path === '/api/agent-providers?refresh=true')).toHaveLength(1);
+  /* The recheck re-fetched the Claude CLI's model list on the server (#1822). */
+  expect(client.getQueryState(claudeCatalog)?.isInvalidated).toBe(true);
 });

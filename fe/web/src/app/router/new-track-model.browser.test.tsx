@@ -28,12 +28,12 @@ function ModelForm({
 }>) {
   const [selection, setSelection] = useState<ModelSelection>(FOLLOW_INSTALLATION_DEFAULT);
   const catalog: ModelCatalog = {
-    models: [{ id: 'test-model', model: 'test-model', display_name: modelName, description: '',
+    models: [{ id: 'test-model', model: 'test-model', resolved_model: null, display_name: modelName, description: '',
       is_default: true, default_reasoning_effort: 'low', supported_reasoning_efforts: [
         { reasoning_effort: 'low', description: 'Faster' },
         { reasoning_effort: 'high', description: 'More reasoning' },
       ] }],
-    default: { model: null, reasoning_effort: null }, default_source: 'unknown',
+    default: { model: null, reasoning_effort: null, supported_reasoning_efforts: null }, default_source: 'unknown',
     source: 'live', fetched_at_ms: 1,
   };
   return <NewTrackForm submitting={submitting} locked={locked} error={null} templates={templates} templatesLoaded

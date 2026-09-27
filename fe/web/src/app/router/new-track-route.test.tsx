@@ -64,10 +64,31 @@ const TEMPLATES = [
   },
 ];
 
-const CLAUDE_MODELS = [['opus', 'Opus'], ['sonnet', 'Sonnet'], ['haiku', 'Haiku']].map(([alias, name]) => ({
-  id: alias, model: alias, display_name: name, description: `${name}.`, is_default: false,
-  supported_reasoning_efforts: [], default_reasoning_effort: null,
-}));
+/* The Claude CLI's own list (#1822): its effort levels carry no description, and Haiku declares none. */
+const CLAUDE_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'].map((level) => ({ reasoning_effort: level, description: null }));
+function claudeModel(value: string, resolved: string, name: string, levels: typeof CLAUDE_LEVELS = CLAUDE_LEVELS) {
+  return {
+    id: value, model: value, resolved_model: resolved, display_name: name, description: `${name}.`, is_default: false,
+    supported_reasoning_efforts: levels, default_reasoning_effort: null,
+  };
+}
+const CLAUDE_MODELS = [
+  claudeModel('opus[1m]', 'claude-opus-5-5[1m]', 'Opus (1M context)'),
+  claudeModel('claude-fable-5-1[1m]', 'claude-fable-5-1', 'Fable'),
+  claudeModel('sonnet', 'claude-sonnet-5', 'Sonnet'),
+  claudeModel('haiku', 'claude-haiku-4-5-20251001', 'Haiku', []),
+];
+const CLAUDE_CATALOG = {
+  models: CLAUDE_MODELS,
+  default: { model: 'claude-opus-5-5[1m]', reasoning_effort: null, supported_reasoning_efforts: CLAUDE_LEVELS },
+  default_source: 'claude_cli', source: 'live', fetched_at_ms: 1,
+};
+const NO_CATALOG = {
+  models: [], default: { model: null, reasoning_effort: null, supported_reasoning_efforts: null },
+  default_source: 'unknown', source: 'unavailable', fetched_at_ms: null,
+};
+/* What the grouped trigger says while a Claude pick follows the CLI's default. */
+const CLAUDE_DEFAULT_TRIGGER = "Model: Claude claude-opus-5-5[1m] (this installation's default)";
 
 /** Pick `item` from the `group` section of the open model menu. */
 async function pick(trigger: string, group: 'Codex' | 'Claude', item: string | RegExp) {
@@ -88,7 +109,7 @@ function harness(options: {
   loseFirstCreateAck?: boolean;
   /** Hold the `?provider=claude` catalog read open, to observe the picker before it lands. */
   heldClaudeCatalog?: Promise<void>;
-  /** The server runs with `--claude-planner-config`: `?provider=claude` answers the alias list. */
+  /** Claude is ready: `?provider=claude` answers the Claude CLI's list. */
   claudePlanner?: boolean;
   /** `GET /api/agent-providers` says why a configured Claude Planner cannot run now (#1817); else it is ready. */
   claudeUnavailable?: string;
@@ -152,20 +173,14 @@ function harness(options: {
           { provider: 'claude', ...claude, checked_at_ms: 1 },
         ] });
       }
-      /* What `routes/models.rs` answers for a Claude Planner (#1810): the alias list on a server that
-         runs Claude Planners, `unavailable` with no catalog on one that does not. */
+      /* What `routes/models.rs` answers for a Claude Planner (#1822): the Claude CLI's list on a server
+         whose Claude is ready, `unavailable` with no catalog on one without Claude Planners. */
       if (request.path === '/api/models?provider=claude') {
-        return (options.heldClaudeCatalog ?? Promise.resolve()).then(() => ({ status: 200, statusText: 'OK', body: {
-          models: options.claudePlanner === true ? CLAUDE_MODELS : [],
-          default: { model: null, reasoning_effort: null }, default_source: 'unknown',
-          source: options.claudePlanner === true ? 'built_in' : 'unavailable', fetched_at_ms: null,
-        } }));
+        return (options.heldClaudeCatalog ?? Promise.resolve()).then(() => ({ status: 200, statusText: 'OK',
+          body: options.claudePlanner === true ? CLAUDE_CATALOG : NO_CATALOG }));
       }
       if (request.path === '/api/models?card_id=card-planner' && options.plannerProvider === 'claude') {
-        return Promise.resolve({ status: 200, statusText: 'OK', body: {
-          models: CLAUDE_MODELS, default: { model: null, reasoning_effort: null }, default_source: 'unknown',
-          source: 'built_in', fetched_at_ms: null,
-        } });
+        return Promise.resolve({ status: 200, statusText: 'OK', body: CLAUDE_CATALOG });
       }
       if (request.method === 'PUT' && request.path === '/api/cards/card-planner/planner/model') {
         const { model, reasoning_effort } = request.body as { model: string | null; reasoning_effort: string | null };
@@ -175,12 +190,12 @@ function harness(options: {
       }
       if (request.path === '/api/models?provider=codex' || request.path === '/api/models?card_id=card-planner') {
         return Promise.resolve({ status: 200, statusText: 'OK', body: {
-          models: [{ id: 'fast', model: 'gpt-5', display_name: 'GPT-5', description: 'Everyday model',
+          models: [{ id: 'fast', model: 'gpt-5', resolved_model: null, display_name: 'GPT-5', description: 'Everyday model',
             is_default: true, default_reasoning_effort: 'low', supported_reasoning_efforts: [
               { reasoning_effort: 'low', description: 'Answers sooner' },
               { reasoning_effort: 'high', description: 'Thinks longer' },
             ] }],
-          default: { model: null, reasoning_effort: null }, default_source: 'unknown',
+          default: { model: null, reasoning_effort: null, supported_reasoning_efforts: null }, default_source: 'unknown',
           source: 'live', fetched_at_ms: 1,
         } });
       }
@@ -360,7 +375,7 @@ describe('New track model selection', () => {
     expect(createdTrackRequests(sent)[0]?.body).toMatchObject({ planner_provider: 'codex' });
   });
 
-  it('a Claude pick sets the provider and the alias, and drops a retained effort', async () => {
+  it('a Claude pick sets the provider and the value, and drops a retained effort', async () => {
     const { sent } = harness({ templates: [], claudePlanner: true });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
@@ -369,7 +384,8 @@ describe('New track model selection', () => {
     await userEvent.click(screen.getByRole('menuitem', { name: /high/ }));
     await pick('Model: Codex GPT-5', 'Claude', 'Sonnet');
     expect(await screen.findByRole('button', { name: 'Model: Claude Sonnet' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /^Reasoning effort:/ })).toBeNull();
+    /* Sonnet's own levels are offered, starting from its default: Codex's `high` did not come along. */
+    expect(screen.getByRole('button', { name: 'Reasoning effort: Default' })).toBeTruthy();
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Plan with Claude');
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
     await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(1));
@@ -382,7 +398,8 @@ describe('New track model selection', () => {
     const { sent } = harness({ templates: [], claudePlanner: true });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
-    await pick('Model: Codex Default', 'Claude', 'Default');
+    await pick('Model: Codex Default', 'Claude', /^Default/);
+    expect(await screen.findByRole('button', { name: CLAUDE_DEFAULT_TRIGGER })).toBeTruthy();
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Plan with Claude');
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
     await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(1));
@@ -395,8 +412,8 @@ describe('New track model selection', () => {
     const { sent } = harness({ templates: [], claudePlanner: true });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
-    await pick('Model: Codex Default', 'Claude', 'Opus');
-    await pick('Model: Claude Opus', 'Codex', /^Default/);
+    await pick('Model: Codex Default', 'Claude', 'Opus (1M context)');
+    await pick('Model: Claude Opus (1M context)', 'Codex', /^Default/);
     expect(await screen.findByRole('button', { name: 'Model: Codex Default' })).toBeTruthy();
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Back on Codex');
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
@@ -414,12 +431,12 @@ describe('New track model selection', () => {
     ] });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
-    await pick('Model: Codex Default', 'Claude', 'Default');
+    await pick('Model: Codex Default', 'Claude', /^Default/);
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Try Claude first');
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
     expect((await screen.findByRole('alert')).textContent).toContain('--claude-planner-config');
     expect(composerText()).toBe('Try Claude first');
-    await pick('Model: Claude Default', 'Codex', /^Default/);
+    await pick(CLAUDE_DEFAULT_TRIGGER, 'Codex', /^Default/);
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
     await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(2));
     expect(createdTrackRequests(sent).map((request) => (request.body as { planner_provider: string }).planner_provider))
@@ -446,7 +463,7 @@ describe('New track model selection', () => {
     expect(await screen.findByRole('button', { name: 'Model: Codex Default' })).toBeTruthy();
   });
 
-  it('inside a Claude track lists only the Claude aliases and stores a pick with a null effort', async () => {
+  it('inside a Claude track lists only the Claude CLI\'s models, offers the default\'s levels and stores a pick', async () => {
     const { sent } = harness({ templates: [], claudePlanner: true, plannerProvider: 'claude' });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
@@ -455,14 +472,14 @@ describe('New track model selection', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
     await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/track/w-new`));
     const drawer = await screen.findByRole('complementary', { name: 'Planner' });
-    const trigger = await within(drawer).findByRole('button', { name: 'Model: Default' });
+    const trigger = await within(drawer).findByRole('button', { name: /^Model: claude-opus-5-5\[1m\]/ });
     await waitFor(() => expect((trigger as HTMLButtonElement).disabled).toBe(false));
-    expect(within(drawer).queryByRole('button', { name: /^Reasoning effort:/ })).toBeNull();
+    expect(within(drawer).getByRole('button', { name: 'Reasoning effort: Default' })).toBeTruthy();
     trigger.focus();
     await userEvent.keyboard('{ArrowDown}');
     const menu = await screen.findByRole('menu');
     expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent))
-      .toEqual(['DefaultSelected', 'Opus', 'Sonnet', 'Haiku']);
+      .toEqual(['Default (claude-opus-5-5[1m])Selected', 'Opus (1M context)', 'Fable', 'Sonnet', 'Haiku']);
     expect(within(menu).queryByRole('group')).toBeNull();
     await userEvent.click(within(menu).getByRole('menuitem', { name: 'Haiku' }));
     await waitFor(() => expect(sent.filter((request) => request.method === 'PUT'

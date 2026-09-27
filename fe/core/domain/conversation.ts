@@ -288,33 +288,42 @@ export const FOLLOW_INSTALLATION_DEFAULT: ModelSelection = Object.freeze({
 
 const reasoningEffortOptionSchema = z.object({
   reasoning_effort: z.string(),
-  /* codex's own words for its own setting, shown verbatim. */
-  description: z.string(),
+  /* codex's own words for its own setting, shown verbatim; `null` for a Claude effort level, which the CLI declares without one. */
+  description: z.string().nullable(),
 });
 
 const catalogModelSchema = z.object({
   /* A React key and nothing else — the value that travels to the server is `model`. */
   id: z.string(),
   model: z.string(),
+  /* The model this entry runs where the provider says (the Claude CLI's `resolvedModel`); `null` for codex. */
+  resolved_model: z.string().nullable(),
   display_name: z.string(),
   description: z.string(),
   /* Which entry codex's own picker highlights, NOT what this installation follows (that is `default` below). */
   is_default: z.boolean(),
+  /* A Claude entry's are the CLI's own `supportedEffortLevels`: empty when it declares none. */
   supported_reasoning_efforts: z.array(reasoningEffortOptionSchema),
-  /* `null` exactly for a provider with no effort choice (a Claude alias, #1810). */
+  /* `null` exactly when the provider declares no default effort (every Claude entry, #1822). */
   default_reasoning_effort: z.string().nullable(),
 });
 
 /**
  * `GET /api/models`. `source` and `default_source` are separate answers: otherwise an empty live
- * catalog would read like one the server could not produce. `built_in` is the Claude Planner's fixed
- * alias list; a Claude catalog is `unavailable` only on a server without the Claude Planner.
+ * catalog would read like one the server could not produce. A Claude Planner's catalog is the Claude
+ * CLI's own list (#1822), `unavailable` while Claude is not ready; its CLI `default` entry is not a row
+ * but the `default` here (`claude_cli`): what it resolves to, and the efforts the `null` selection takes.
  */
 export const modelCatalogSchema = z.object({
   models: z.array(catalogModelSchema),
-  default: z.object({ model: z.string().nullable(), reasoning_effort: z.string().nullable() }),
-  default_source: z.enum(['config_read', 'config_toml', 'unknown']),
-  source: z.enum(['live', 'built_in', 'unavailable']),
+  default: z.object({
+    model: z.string().nullable(),
+    reasoning_effort: z.string().nullable(),
+    /* `null` for codex, whose default's efforts are those of the entry `model` names. */
+    supported_reasoning_efforts: z.array(reasoningEffortOptionSchema).nullable(),
+  }),
+  default_source: z.enum(['config_read', 'config_toml', 'claude_cli', 'unknown']),
+  source: z.enum(['live', 'unavailable']),
   fetched_at_ms: z.number().nullable(),
 });
 
@@ -322,7 +331,7 @@ export type ModelCatalog = z.infer<typeof modelCatalogSchema>;
 
 /**
  * Whose catalog: an existing card's, or one for a conversation about to be created on `provider`.
- * A Claude Planner's (either way) is the server's alias list (#1810).
+ * A Claude Planner's (either way) is the Claude CLI's list the server cached (#1822).
  */
 export type ModelCatalogScope =
   | Readonly<{ kind: 'card'; cardId: string }>

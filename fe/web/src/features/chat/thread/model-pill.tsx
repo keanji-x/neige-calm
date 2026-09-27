@@ -1,7 +1,7 @@
 // The model picker in a planner conversation's composer footer, and on the new-track page. Presentational:
 // every value is a prop; the queries and the write live in `app/router`. Each provider's catalog is one
 // group; on the new-track page the pick also decides the Planner's provider (#1810), and each group
-// follows its provider's availability (#1817).
+// follows its provider's availability (#1817). A Claude group is the Claude CLI's own list (#1822).
 
 import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
 import { Divider } from '@astryxdesign/core/Divider';
@@ -28,20 +28,19 @@ const SWITCH_NOTE = 'Switching to a model with a smaller context window can make
  * Total over `AgentProvider`, so a new backend is a compile error here rather than a missing group.
  * `unavailable` says why that provider's `source: 'unavailable'` catalog is empty. A Claude group waits for
  * its availability and catalog before it joins a menu that offers other providers (`hiddenUntilKnown`); a
- * Codex one stays while the daemon is down, saying so.
- * A Claude Planner has no reasoning-effort choice (`effort: false`), and only codex compacts (`switchNote`).
+ * Codex one stays while the daemon is down, saying so. Only codex compacts (`switchNote`).
  * Whether an unavailable group stays pickable is core's `CREATE_REFUSED_WHEN_UNAVAILABLE` (#1817), the
  * one per-provider flag Settings reads too.
  */
 const PROVIDERS: Readonly<Record<AgentProvider, Readonly<{
-  label: string; unavailable: string; hiddenUntilKnown: boolean; effort: boolean; switchNote: boolean;
+  label: string; unavailable: string; hiddenUntilKnown: boolean; switchNote: boolean;
 }>>> = Object.freeze({
   codex: Object.freeze({
-    label: 'Codex', unavailable: 'codex is not running', hiddenUntilKnown: false, effort: true, switchNote: true,
+    label: 'Codex', unavailable: 'codex is not running', hiddenUntilKnown: false, switchNote: true,
   }),
   claude: Object.freeze({
-    label: 'Claude', unavailable: 'This server does not run Claude Planners', hiddenUntilKnown: true,
-    effort: false, switchNote: false,
+    label: 'Claude', unavailable: 'Claude cannot run on this server right now', hiddenUntilKnown: true,
+    switchNote: false,
   }),
 });
 
@@ -68,9 +67,10 @@ function visibleModelGroups(groups: readonly ModelGroup[], provider: AgentProvid
     && (!PROVIDERS[group.provider].hiddenUntilKnown || (group.availability !== null && group.catalog !== null))));
 }
 
-/** The name of the default a catalog says is followed, or `null` when it cannot say. */
+/** The name of the default a catalog says is followed (for Claude, the model its CLI default resolves to), or `null` when it cannot say. */
 function defaultNameOf(catalog: ModelCatalog | null): string | null {
   return catalog?.default_source === 'config_read' || catalog?.default_source === 'config_toml'
+    || catalog?.default_source === 'claude_cli'
     ? catalog.default.model
     : null;
 }
@@ -121,7 +121,9 @@ export function ModelPill({
     ? `Model: ${label} (this installation's default)`
     : `Model: ${label}`;
 
-  const efforts = PROVIDERS[provider].effort ? chosen?.supported_reasoning_efforts ?? [] : [];
+  /* A Claude default is no row of its own: the catalog's `default` carries the efforts it takes. */
+  const efforts = (selection.model === null ? catalog?.default.supported_reasoning_efforts : null)
+    ?? chosen?.supported_reasoning_efforts ?? [];
   const effortDefault = selection.model === null
     ? catalog?.default.reasoning_effort ?? null
     : chosen?.default_reasoning_effort ?? null;
@@ -313,7 +315,7 @@ function EffortChoices({ efforts, value, defaultName, onChange }: Readonly<{
       onSelect={() => onChange(null)} />
     {efforts.map((effort) => (
       <Choice key={effort.reasoning_effort} label={effort.reasoning_effort}
-        description={effort.description} isSelected={value === effort.reasoning_effort}
+        description={effort.description ?? undefined} isSelected={value === effort.reasoning_effort}
         onSelect={() => onChange(effort.reasoning_effort)} />
     ))}
   </>;

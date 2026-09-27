@@ -5,20 +5,21 @@ use std::path::Path;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use super::models::{ClaudeModel, MODELS};
+use crate::planner_model::TurnModelSelection;
+
 use super::spawn::{EnvInputs, SessionStart, argv, base_env, passthrough_keys, settings_json};
 
 const THREAD: &str = "5d0b2694-9ccc-4543-ab84-611aa4287dbe";
 
 fn args(start: SessionStart, cwd: &str) -> Vec<String> {
-    args_with(start, None, cwd)
+    args_with(start, &TurnModelSelection::inherit(), cwd)
 }
 
-fn args_with(start: SessionStart, model: Option<&ClaudeModel>, cwd: &str) -> Vec<String> {
+fn args_with(start: SessionStart, selection: &TurnModelSelection, cwd: &str) -> Vec<String> {
     argv(
         Uuid::parse_str(THREAD).unwrap(),
         start,
-        model,
+        selection,
         Path::new(cwd),
         Path::new("/opt/neige/neige-mcp-stdio-shim"),
         Path::new("/data/claude-planner/tmp/ws1-turn1.md"),
@@ -84,16 +85,28 @@ fn argv_is_exactly_the_spawn_contract() {
     }
 }
 
-/// #1810: a chosen alias rides as `--model <alias>` right after the session; without one the
-/// argv is exactly the contract above.
+/// #1810, #1822: a chosen model rides verbatim as `--model <value>` right after the session, and
+/// a chosen effort as `--effort <level>` after it; without either the argv is exactly the contract
+/// above.
 #[test]
-fn a_chosen_alias_is_passed_as_model_and_nothing_else_changes() {
-    for model in MODELS {
-        for start in [SessionStart::New, SessionStart::Resume] {
-            let without = args(start, "/ws/track");
+fn a_chosen_model_and_effort_are_passed_as_flags_and_nothing_else_changes() {
+    let pick = |model: Option<&str>, effort: Option<&str>| TurnModelSelection {
+        model: model.map(str::to_string),
+        effort: effort.map(str::to_string),
+    };
+    for start in [SessionStart::New, SessionStart::Resume] {
+        let without = args(start, "/ws/track");
+        for (selection, flags) in [
+            (
+                pick(Some("claude-fable-5-1[1m]"), Some("high")),
+                vec!["--model", "claude-fable-5-1[1m]", "--effort", "high"],
+            ),
+            (pick(Some("haiku"), None), vec!["--model", "haiku"]),
+            (pick(None, Some("max")), vec!["--effort", "max"]),
+        ] {
             let mut expected = without.clone();
-            expected.splice(9..9, ["--model".to_string(), model.alias.to_string()]);
-            assert_eq!(args_with(start, Some(model), "/ws/track"), expected);
+            expected.splice(9..9, flags.into_iter().map(str::to_string));
+            assert_eq!(args_with(start, &selection, "/ws/track"), expected);
         }
     }
 }
@@ -133,7 +146,7 @@ fn a_workspace_that_would_split_a_rule_is_refused() {
         let result = argv(
             Uuid::parse_str(THREAD).unwrap(),
             SessionStart::New,
-            None,
+            &TurnModelSelection::inherit(),
             Path::new(cwd),
             Path::new("/opt/shim"),
             Path::new("/data/x.md"),

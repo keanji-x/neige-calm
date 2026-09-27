@@ -215,12 +215,12 @@ test('creates the planner with the model and effort selected beside Send', async
   // A deterministic roster for the UI; creation and the persisted planner read still use the real kernel.
   await routeAvailability(page, ['codex']);
   await page.route((url) => url.pathname === '/api/models' && url.searchParams.get('provider') === 'codex', (route) => route.fulfill({ json: {
-    models: [{ id: 'e2e-model', model: 'e2e-model', display_name: 'E2E model', description: '',
+    models: [{ id: 'e2e-model', model: 'e2e-model', resolved_model: null, display_name: 'E2E model', description: '',
       is_default: false, default_reasoning_effort: 'low', supported_reasoning_efforts: [
         { reasoning_effort: 'low', description: 'Faster' },
         { reasoning_effort: 'high', description: 'More reasoning' },
       ] }],
-    default: { model: null, reasoning_effort: null }, default_source: 'unknown',
+    default: { model: null, reasoning_effort: null, supported_reasoning_efforts: null }, default_source: 'unknown',
     source: 'live', fetched_at_ms: 1,
   } }));
   const area = await createArea(request);
@@ -268,9 +268,9 @@ async function routeAvailability(page: Page, ready: readonly ('codex' | 'claude'
 /** A deterministic Codex roster for the picker; creation still goes to the real kernel. */
 async function routeCodexCatalog(page: Page) {
   await page.route((url) => url.pathname === '/api/models' && url.searchParams.get('provider') === 'codex', (route) => route.fulfill({ json: {
-    models: [{ id: 'e2e-model', model: 'e2e-model', display_name: 'E2E model', description: '',
+    models: [{ id: 'e2e-model', model: 'e2e-model', resolved_model: null, display_name: 'E2E model', description: '',
       is_default: false, default_reasoning_effort: 'low', supported_reasoning_efforts: [] }],
-    default: { model: null, reasoning_effort: null }, default_source: 'unknown',
+    default: { model: null, reasoning_effort: null, supported_reasoning_efforts: null }, default_source: 'unknown',
     source: 'live', fetched_at_ms: 1,
   } }));
 }
@@ -311,13 +311,20 @@ test('a Claude pick carries provider and model to the kernel, and a Codex pick c
   page.on('pageerror', (error) => errors.push(error.message));
   await routeCodexCatalog(page);
   await routeAvailability(page, ['codex', 'claude']);
+  /* The Claude CLI's own list as a ready Claude answers it (#1822). */
+  const levels = ['low', 'medium', 'high', 'xhigh', 'max'].map((level) => ({ reasoning_effort: level, description: null }));
   await page.route((url) => url.pathname === '/api/models' && url.searchParams.get('provider') === 'claude', (route) => route.fulfill({ json: {
-    models: [['opus', 'Opus'], ['sonnet', 'Sonnet'], ['haiku', 'Haiku']].map(([alias, name]) => ({
-      id: alias, model: alias, display_name: name, description: '', is_default: false,
-      supported_reasoning_efforts: [], default_reasoning_effort: null,
+    models: [
+      ['opus[1m]', 'claude-opus-5-5[1m]', 'Opus (1M context)', levels],
+      ['claude-fable-5-1[1m]', 'claude-fable-5-1', 'Fable', levels],
+      ['sonnet', 'claude-sonnet-5', 'Sonnet', levels],
+      ['haiku', 'claude-haiku-4-5-20251001', 'Haiku', []],
+    ].map(([value, resolved, name, efforts]) => ({
+      id: value, model: value, resolved_model: resolved, display_name: name, description: '', is_default: false,
+      supported_reasoning_efforts: efforts, default_reasoning_effort: null,
     })),
-    default: { model: null, reasoning_effort: null }, default_source: 'unknown',
-    source: 'built_in', fetched_at_ms: null,
+    default: { model: 'claude-opus-5-5[1m]', reasoning_effort: null, supported_reasoning_efforts: levels },
+    default_source: 'claude_cli', source: 'live', fetched_at_ms: 1,
   } }));
   const area = await createArea(request);
   createdAreaIds.push(area.id);
@@ -327,9 +334,10 @@ test('a Claude pick carries provider and model to the kernel, and a Codex pick c
   const message = `FE e2e Claude planner ${Date.now()}`;
   await page.getByLabel(TASK_LABEL).fill(message);
   await page.getByRole('button', { name: 'Model: Codex Default' }).click();
-  await page.getByRole('group', { name: 'Claude' }).getByRole('menuitem', { name: 'Sonnet' }).click();
-  await expect(page.getByRole('button', { name: 'Model: Claude Sonnet' })).toBeVisible();
-  await expect(page.getByRole('button', { name: /^Reasoning effort:/ })).toHaveCount(0);
+  await page.getByRole('group', { name: 'Claude' }).getByRole('menuitem', { name: 'Fable' }).click();
+  await expect(page.getByRole('button', { name: 'Model: Claude Fable' })).toBeVisible();
+  await page.getByRole('button', { name: 'Reasoning effort: Default' }).click();
+  await page.getByRole('menuitem', { name: 'high', exact: true }).click();
 
   const refused = page.waitForResponse((response) => response.request().method() === 'POST'
     && new URL(response.url()).pathname === '/api/tracks');
@@ -337,13 +345,14 @@ test('a Claude pick carries provider and model to the kernel, and a Codex pick c
   const refusal = await refused;
   expect(refusal.status()).toBe(400);
   const refusedBody = refusal.request().postDataJSON() as Record<string, unknown>;
-  expect(refusedBody).toMatchObject({ area_id: area.id, planner_provider: 'claude', model: 'sonnet', first_message: message });
-  expect(refusedBody).not.toHaveProperty('reasoning_effort');
+  expect(refusedBody).toMatchObject({
+    area_id: area.id, planner_provider: 'claude', model: 'claude-fable-5-1[1m]', reasoning_effort: 'high', first_message: message,
+  });
   await expect(page.getByRole('alert')).toContainText('--claude-planner-config');
   await expect(page).toHaveURL(/\/area\/[^/]+\/new$/);
 
   /* Reopened by keyboard: astryx swallows a trigger click that lands right after its menu hid. */
-  await page.getByRole('button', { name: 'Model: Claude Sonnet' }).focus();
+  await page.getByRole('button', { name: 'Model: Claude Fable' }).focus();
   await page.keyboard.press('ArrowDown');
   await page.getByRole('group', { name: 'Codex' }).getByRole('menuitem', { name: /^Default/ }).click();
   const created = page.waitForResponse((response) => response.request().method() === 'POST'

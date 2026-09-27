@@ -11,6 +11,7 @@ use calm_server::claude_planner::stop::{
     sigkill_verified_for_test, stop, sweep,
 };
 use calm_server::codex_appserver::{InputItem, Notification};
+use calm_server::planner_model::TurnModelSelection;
 use calm_server::proc_identity::read_proc_start_time;
 use serde_json::Value;
 use tokio::sync::Notify;
@@ -51,7 +52,12 @@ async fn exit_path_records_the_outcome_before_turn_completed() {
 
     let turn = rig
         .session()
-        .turn_start(&rig.thread, rig.text("hello"), None, &client_id())
+        .turn_start(
+            &rig.thread,
+            rig.text("hello"),
+            &TurnModelSelection::inherit(),
+            &client_id(),
+        )
         .await
         .expect("turn_start");
     assert_eq!(
@@ -121,7 +127,12 @@ async fn exit_path_records_the_outcome_before_turn_completed() {
     // The first init bound the session: the next turn resumes it.
     let second = rig
         .session()
-        .turn_start(&rig.thread, rig.text("again"), None, &client_id())
+        .turn_start(
+            &rig.thread,
+            rig.text("again"),
+            &TurnModelSelection::inherit(),
+            &client_id(),
+        )
         .await
         .expect("second turn_start");
     pause.release.notify_one();
@@ -200,7 +211,12 @@ async fn a_surviving_setsid_child_of_a_successful_exit_is_gone_before_turn_compl
     let rig = Rig::new("exit-with-orphan").await;
     let mut rx = rig.session().subscribe_notifications();
     rig.session()
-        .turn_start(&rig.thread, rig.text("hello"), None, &client_id())
+        .turn_start(
+            &rig.thread,
+            rig.text("hello"),
+            &TurnModelSelection::inherit(),
+            &client_id(),
+        )
         .await
         .expect("turn_start");
     let seen = until_completed(&mut rx).await;
@@ -228,7 +244,12 @@ async fn a_killed_cli_settles_failed_with_its_exit_status() {
     let mut rx = rig.session().subscribe_notifications();
     let turn = rig
         .session()
-        .turn_start(&rig.thread, rig.text("hello"), None, &client_id())
+        .turn_start(
+            &rig.thread,
+            rig.text("hello"),
+            &TurnModelSelection::inherit(),
+            &client_id(),
+        )
         .await
         .expect("turn_start");
     // Kill only once the tool call is open, so settlement has an item to close.
@@ -287,7 +308,12 @@ async fn a_cli_lingering_after_its_result_is_stopped_and_the_turn_completes() {
     let rig = Rig::new("linger").await;
     let mut rx = rig.session().subscribe_notifications();
     rig.session()
-        .turn_start(&rig.thread, rig.text("hello"), None, &client_id())
+        .turn_start(
+            &rig.thread,
+            rig.text("hello"),
+            &TurnModelSelection::inherit(),
+            &client_id(),
+        )
         .await
         .expect("turn_start");
     let seen = until_completed(&mut rx).await;
@@ -305,7 +331,12 @@ async fn an_undecodable_line_fails_the_turn_as_protocol() {
     let rig = Rig::new("undecodable").await;
     let mut rx = rig.session().subscribe_notifications();
     rig.session()
-        .turn_start(&rig.thread, rig.text("hello"), None, &client_id())
+        .turn_start(
+            &rig.thread,
+            rig.text("hello"),
+            &TurnModelSelection::inherit(),
+            &client_id(),
+        )
         .await
         .expect("turn_start");
     let completed = completed_turn(&until_completed(&mut rx).await);
@@ -338,7 +369,12 @@ async fn assert_refused_before_ok(rig: &Rig, input: Vec<InputItem>) -> String {
     let started = Instant::now();
     let error = rig
         .session()
-        .turn_start(&rig.thread, input, None, &client_id())
+        .turn_start(
+            &rig.thread,
+            input,
+            &TurnModelSelection::inherit(),
+            &client_id(),
+        )
         .await
         .expect_err("turn_start must refuse");
     assert!(started.elapsed() < Duration::from_secs(30));
@@ -445,7 +481,12 @@ async fn a_recorded_interrupt_then_an_is_error_result_is_interrupted() {
     let mut rx = rig.session().subscribe_notifications();
     let turn = rig
         .session()
-        .turn_start(&rig.thread, rig.text("hello"), None, &client_id())
+        .turn_start(
+            &rig.thread,
+            rig.text("hello"),
+            &TurnModelSelection::inherit(),
+            &client_id(),
+        )
         .await
         .expect("turn_start");
     wait_for_file(&rig.bin("stdin")).await;
@@ -469,7 +510,12 @@ async fn the_private_instructions_never_reach_a_cmdline() {
     let mut rx = rig.session().subscribe_notifications();
     let turn = rig
         .session()
-        .turn_start(&rig.thread, rig.text("hello"), None, &client_id())
+        .turn_start(
+            &rig.thread,
+            rig.text("hello"),
+            &TurnModelSelection::inherit(),
+            &client_id(),
+        )
         .await
         .expect("turn_start");
     wait_for_file(&rig.bin("stdin")).await;
@@ -523,7 +569,12 @@ async fn the_stop_seam_fails_without_signalling_until_cleared() {
     let alive_while_armed = alive(pid);
     let turn = rig
         .session()
-        .turn_start(&rig.thread, rig.text("hello"), None, &client_id())
+        .turn_start(
+            &rig.thread,
+            rig.text("hello"),
+            &TurnModelSelection::inherit(),
+            &client_id(),
+        )
         .await;
     clear_claude_planner_stop_failure_for_test(&rig.worker_session_id);
     let cleared = stop(&rig.host.instance, &rig.worker_session_id).await;
@@ -574,7 +625,12 @@ async fn shutdown_interrupts_the_running_turn_and_refuses_the_next() {
     let mut rx = rig.session().subscribe_notifications();
     let turn = rig
         .session()
-        .turn_start(&rig.thread, rig.text("hello"), None, &client_id())
+        .turn_start(
+            &rig.thread,
+            rig.text("hello"),
+            &TurnModelSelection::inherit(),
+            &client_id(),
+        )
         .await
         .expect("turn_start");
     wait_for_file(&rig.bin("stdin")).await;
@@ -587,7 +643,12 @@ async fn shutdown_interrupts_the_running_turn_and_refuses_the_next() {
     assert!(rig.marked_pids().is_empty());
     assert!(
         rig.session()
-            .turn_start(&rig.thread, rig.text("later"), None, &client_id())
+            .turn_start(
+                &rig.thread,
+                rig.text("later"),
+                &TurnModelSelection::inherit(),
+                &client_id()
+            )
             .await
             .is_err()
     );
@@ -609,7 +670,7 @@ async fn an_image_goes_out_as_base64_and_is_stored_as_its_placeholder() {
                 },
                 InputItem::LocalImage { path: path.clone() },
             ],
-            None,
+            &TurnModelSelection::inherit(),
             &client_id(),
         )
         .await

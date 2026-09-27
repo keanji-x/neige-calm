@@ -2,11 +2,14 @@
 //! translation of a Claude turn into the Codex-shaped notifications the Planner harness consumes;
 //! `session` runs one `claude -p` process per turn (`spawn` is its argv, environment and
 //! instructions file, `driver` its read loop and settlement), `stop` is the marker sweep,
-//! `config` the typed configuration and `models` the model aliases a Planner may choose.
-//! `auth_status` is the login check and `readiness_command` the bounded run it and the
-//! `--version` check share (#1817).
+//! `config` the typed configuration. `availability` is the readiness check (#1817): `auth_status`
+//! is its login step, `catalog_fetch` its model-list step (#1822), and `readiness_command` the
+//! bounded run they and the `--version` check share. `models` is the CLI's model list that check
+//! caches, which every model surface judges a selection against.
 
 pub mod auth_status;
+pub mod availability;
+pub mod catalog_fetch;
 pub mod config;
 mod driver;
 pub mod lifecycle;
@@ -21,6 +24,8 @@ pub mod wiring;
 
 #[cfg(test)]
 mod auth_status_tests;
+#[cfg(test)]
+mod catalog_fetch_tests;
 #[cfg(test)]
 mod driver_tests;
 #[cfg(test)]

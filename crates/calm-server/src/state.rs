@@ -623,6 +623,20 @@ impl AppState {
         self.route.claude_planner_wiring()
     }
 
+    /// Fixtures only: make every provider's cached availability older than the 30 s TTL, so the
+    /// next cached read re-checks as it would then.
+    #[cfg(feature = "fixtures")]
+    pub async fn age_provider_availability_past_ttl_for_test(&self) {
+        self.route
+            .provider_availability
+            .age_past_ttl_for_test()
+            .await;
+        self.route
+            .claude_planner
+            .age_availability_past_ttl_for_test()
+            .await;
+    }
+
     /// Fixture assembly only: run this state's Claude Planners under `config` (the typed
     /// `--claude-planner-config`), keeping its marker instance and instructions directory.
     #[cfg(feature = "fixtures")]

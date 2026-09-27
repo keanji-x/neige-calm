@@ -14,7 +14,7 @@
         "tags": [
           "agent_providers"
         ],
-        "summary": "Whether each Planner provider can run right now. `ready` passed every check; `unavailable`\nnames the first failed check and its fix in `reason`; `not_configured` is a provider this\nserver was not started with (Claude without `--claude-planner-config`). Codex: the shared\napp-server runs and `account/read` says it is logged in. Claude: the pinned binary answers\n`--version` with the pinned version and `auth status --json` says `loggedIn`. Answers are\ncached per provider for 30 s; a failed check is an answer, never an error.",
+        "summary": "Whether each Planner provider can run right now. `ready` passed every check; `unavailable`\nnames the first failed check and its fix in `reason`; `not_configured` is a provider this\nserver was not started with (Claude without `--claude-planner-config`). Codex: the shared\napp-server runs and `account/read` says it is logged in. Claude: the pinned binary answers\n`--version` with the pinned version, `auth status --json` says `loggedIn`, and the CLI lists\nits models (`initialize`, #1822). Answers are cached per provider for 30 s; the Claude model\nlist is kept across that re-check and fetched again only by `refresh=true`. A failed check is\nan answer, never an error.",
         "operationId": "list_agent_providers",
         "parameters": [
           {
@@ -1671,7 +1671,7 @@
             }
           },
           "400": {
-            "description": "On a Claude Planner card: a `model` other than `null` or a Claude alias, or any `reasoning_effort`. Nothing is stored",
+            "description": "Claude Planner card: a selection its CLI's model list refuses, or none while Claude is not ready; nothing is stored",
             "content": {
               "application/json": {
                 "schema": {
@@ -2904,7 +2904,7 @@
           {
             "name": "provider",
             "in": "query",
-            "description": "The Planner provider a card is about to be created with. `claude` (like a `card_id`\nnaming a Claude Planner card) answers the Claude alias catalog with `source: \"built_in\"`\nwithout asking Codex, or `source: \"unavailable\"` with an empty catalog when the server was\nstarted without `--claude-planner-config`.",
+            "description": "The Planner provider a card is about to be created with. `claude` (like a `card_id`\nnaming a Claude Planner card) answers the Claude CLI's cached model list with\n`source: \"live\"` without asking Codex, or `source: \"unavailable\"` with an empty catalog\nwhile Claude is not ready.",
             "required": false,
             "schema": {
               "oneOf": [
@@ -2920,7 +2920,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Model catalog and the default this installation follows. Codex: `source: \"live\"`, or `source: \"unavailable\"` with an empty catalog if codex cannot be reached (never an error or a hardcoded list). A Claude Planner: `source: \"built_in\"` with its alias list, or `unavailable` without `--claude-planner-config`",
+            "description": "Model catalog and the default this installation follows. Codex: `source: \"live\"`, or `source: \"unavailable\"` with an empty catalog if codex cannot be reached (never an error or a hardcoded list). A Claude Planner: `source: \"live\"` with the Claude CLI's cached model list (its `default` entry as `default`, `default_source: \"claude_cli\"`), or `unavailable` with an empty catalog while Claude is not ready",
             "content": {
               "application/json": {
                 "schema": {
@@ -4713,7 +4713,7 @@
             }
           },
           "400": {
-            "description": "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`, a `claude` Planner this server cannot run right now (not configured, a wrong binary version, or not logged in; the error carries the reason `GET /api/agent-providers` reports), `claude` with a `model` that is not one of its aliases (`opus`, `sonnet`, `haiku`) or with any `reasoning_effort`, or `reasoning_effort` unsupported by the selected model's current catalog entry; no track is minted and no effort is silently adjusted), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), a malformed `Idempotency-Key` header (empty or non-ASCII) on any create, or — with `first_message` — a missing `Idempotency-Key` or an empty/over-long message. Decided before anything is minted; the multi-source refusal, like every other create-path check, is not re-run on an `Idempotency-Key` replay, which mints nothing.",
+            "description": "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`, a `claude` Planner this server cannot run right now (not configured, a wrong binary version, not logged in, or no model list from the CLI; the error carries the reason `GET /api/agent-providers` reports), `claude` with a `model` that is not a value of the Claude CLI's model list (the refusal names the listed values) or with a `reasoning_effort` that entry does not declare, or `reasoning_effort` unsupported by the selected model's current catalog entry; no track is minted and no effort is silently adjusted), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), a malformed `Idempotency-Key` header (empty or non-ASCII) on any create, or — with `first_message` — a missing `Idempotency-Key` or an empty/over-long message. Decided before anything is minted; the multi-source refusal, like every other create-path check, is not re-run on an `Idempotency-Key` replay, which mints nothing.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7667,6 +7667,7 @@
         "required": [
           "id",
           "model",
+          "resolved_model",
           "display_name",
           "description",
           "is_default",
@@ -7679,7 +7680,7 @@
               "string",
               "null"
             ],
-            "description": "The model's own default effort; `null` exactly when the provider offers no effort choice\n(a Claude alias). Always a string for a Codex entry."
+            "description": "The model's own default effort; `null` exactly when the provider declares none (every\nClaude entry: the CLI picks the effort of a `null` selection itself). Always a string for\na Codex entry."
           },
           "description": {
             "type": "string"
@@ -7689,22 +7690,29 @@
           },
           "id": {
             "type": "string",
-            "description": "Codex's preset identifier (a Claude alias for a Claude Planner), presentation only; never\nsend it back as a model selection."
+            "description": "Codex's preset identifier (the Claude CLI's `value` for a Claude Planner), presentation\nonly; never send it back as a model selection."
           },
           "is_default": {
             "type": "boolean",
-            "description": "Codex's catalog-level default marker; not \"what am I following now\". Always `false` for\na Claude alias: the Claude CLI's default is the `null` selection."
+            "description": "Codex's catalog-level default marker; not \"what am I following now\". Always `false` for\na Claude entry: the Claude CLI's default is the `null` selection, described by the\nresponse's `default`."
           },
           "model": {
             "type": "string",
-            "description": "The slug codex is invoked by, or the Claude alias passed as `--model`."
+            "description": "The slug codex is invoked by, or the Claude CLI's `value`, passed verbatim as `--model`."
+          },
+          "resolved_model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The model this entry runs, where the provider reports one (the Claude CLI's\n`resolvedModel`); `null` for Codex, which reports none."
           },
           "supported_reasoning_efforts": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ReasoningEffortOption"
             },
-            "description": "Empty for a Claude alias: a Claude Planner offers no effort choice."
+            "description": "The efforts a selection of this model may carry: Codex's options, or the Claude CLI's\n`supportedEffortLevels` (empty when it declares none, and then only `null` is accepted)."
           }
         }
       },
@@ -8000,18 +8008,18 @@
               "string",
               "null"
             ],
-            "description": "Model slug for the planner's first and subsequent turns (a Claude alias for a `claude`\nPlanner). Omitted or null follows installation defaults, as on the conversation model\nendpoint."
+            "description": "Model slug for the planner's first and subsequent turns (for a `claude` Planner, a value of\nthe Claude CLI's model list, `GET /api/models?provider=claude`). Omitted or null follows installation defaults, as on the conversation model\nendpoint."
           },
           "planner_provider": {
             "$ref": "#/components/schemas/AgentProvider",
-            "description": "The backend of the track's Planner, stamped on its card as the server-owned\n`planner_provider` and never changed afterwards. `claude` is refused with 400 when the\nserver runs without `--claude-planner-config`, with a `model` that is not one of its\naliases, or with any `reasoning_effort`."
+            "description": "The backend of the track's Planner, stamped on its card as the server-owned\n`planner_provider` and never changed afterwards. `claude` is refused with 400 when Claude\nis not ready (`GET /api/agent-providers`), with a `model` that is not a value of the Claude\nCLI's model list, or with a `reasoning_effort` that entry does not declare."
           },
           "reasoning_effort": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Reasoning effort. Values unsupported by the chosen model's current\ncatalog entry are rejected with 400 before creation; no silent adjustment.\nOmitted or null follows installation defaults. Must be omitted or null for `claude`."
+            "description": "Reasoning effort. Values unsupported by the chosen model's current\ncatalog entry are rejected with 400 before creation; no silent adjustment.\nOmitted or null follows installation defaults. For `claude`, one the chosen entry declares\n(for a null model, the CLI's `default` entry), or omitted or null."
           },
           "recipe_id": {
             "type": [
@@ -8073,6 +8081,7 @@
         "enum": [
           "config_read",
           "config_toml",
+          "claude_cli",
           "unknown"
         ]
       },
@@ -8897,18 +8906,32 @@
       "ModelDefaults": {
         "type": "object",
         "description": "What a card that has selected nothing currently runs; `null` = not configured anywhere readable.",
+        "required": [
+          "supported_reasoning_efforts"
+        ],
         "properties": {
           "model": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "For Codex the slug; for a Claude Planner the model the CLI's `default` entry resolves to."
           },
           "reasoning_effort": {
             "type": [
               "string",
               "null"
             ]
+          },
+          "supported_reasoning_efforts": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ReasoningEffortOption"
+            },
+            "description": "The efforts a `null` model selection may carry, where the provider describes its default\nas an entry of its own (the Claude CLI's `default`: its `supportedEffortLevels`). `null`\nfor Codex, whose default's efforts are those of the catalog entry `model` names."
           }
         }
       },
@@ -8917,7 +8940,6 @@
         "description": "Whether `models` reflects a live catalog.",
         "enum": [
           "live",
-          "built_in",
           "unavailable"
         ]
       },
@@ -8943,7 +8965,7 @@
               "null"
             ],
             "format": "int64",
-            "description": "Wall-clock ms at which the catalog was fetched, or `null` when it was not fetched."
+            "description": "Wall-clock ms at which the catalog was fetched (for a Claude Planner, when the cached list\nwas), or `null` when it was not fetched."
           },
           "models": {
             "type": "array",
@@ -9989,7 +10011,11 @@
         ],
         "properties": {
           "description": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Codex's own words for the effort; `null` for a Claude effort level, which the CLI declares\nwithout a description."
           },
           "reasoning_effort": {
             "type": "string",
@@ -10373,14 +10399,14 @@
               "string",
               "null"
             ],
-            "description": "The model **slug** to run with (never a catalog entry's `id`; a Claude alias for a Claude\nPlanner), or `null` to follow the installation default (for a Claude Planner, the Claude\nCLI's own). `#[schema(required = true)]` is needed because utoipa\nderives optionality from the `Option<T>` alone and cannot see `deserialize_with`."
+            "description": "The model **slug** to run with (never a catalog entry's `id`; for a Claude Planner a\n`model` of its catalog, the Claude CLI's `value`), or `null` to follow the installation\ndefault (for a Claude Planner, the Claude CLI's own). `#[schema(required = true)]` is needed because utoipa\nderives optionality from the `Option<T>` alone and cannot see `deserialize_with`."
           },
           "reasoning_effort": {
             "type": [
               "string",
               "null"
             ],
-            "description": "The reasoning effort, or `null` to follow the default. Required. A bare string:\ncodex accepts any non-empty effort. Always `null` for a Claude Planner."
+            "description": "The reasoning effort, or `null` to follow the default. Required. A bare string:\ncodex accepts any non-empty effort. For a Claude Planner, one the chosen entry declares\n(for `null`, the CLI's `default` entry), or `null`."
           }
         },
         "additionalProperties": false

@@ -27,7 +27,6 @@ use uuid::Uuid;
 
 use super::config::ClaudePlannerHost;
 use super::driver::{TurnRun, drive};
-use super::models::ClaudeModel;
 use super::protocol::{Base64Image, UserLine, UserLineContent, client_line_uuid};
 use super::spawn::{self, EnvInputs, InstructionsFile, SessionStart};
 use super::stop::stop;
@@ -35,6 +34,7 @@ use super::translate::{CalmToolNames, TurnContext, TurnTranslator};
 use crate::codex_appserver::{InputItem, Notification};
 use crate::db::Repo;
 use crate::error::{CalmError, Result};
+use crate::planner_model::TurnModelSelection;
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use calm_types::worker::WorkerSessionId;
 
@@ -377,12 +377,13 @@ impl ClaudePlannerSession {
             .map(|active| active.turn_id.clone())
     }
 
-    /// See the module docs for the submission contract. `model` is the card's choice, read at issue.
+    /// See the module docs for the submission contract. `selection` is the card's choice, read
+    /// and judged against the CLI's model list at issue.
     pub async fn turn_start(
         &self,
         thread: &str,
         items: Vec<InputItem>,
-        model: Option<&'static ClaudeModel>,
+        selection: &TurnModelSelection,
         client_id: &str,
     ) -> Result<String> {
         let shared = &self.shared;
@@ -476,7 +477,7 @@ impl ClaudePlannerSession {
         let argv = spawn::argv(
             thread_uuid,
             start,
-            model,
+            selection,
             &params.cwd,
             &host.mcp_shim,
             instructions.path(),

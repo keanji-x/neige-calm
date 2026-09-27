@@ -15,16 +15,17 @@ use utoipa::ToSchema;
 /// Diagnostic only on the wire, but `neige-app`'s `compute_verdict` compares it against
 /// the installed release, so a REST contract break must bump it.
 ///
-/// #1817 bumps `"11"` -> `"12"`: `GET /api/agent-providers` is new. The new-track picker and
-/// Settings › Planners read it, and against an older kernel the answer is a 404 — so a
-/// web-only update onto such a kernel must be refused. Additive for older bundles, so
-/// `WEB_COMPAT_VERSION` stays.
+/// #1822 bumps `"12"` -> `"13"`: a Claude Planner's `GET /api/models` catalog is the CLI's live
+/// list, and `source: "built_in"` is gone. A new bundle's schema rejects an older kernel's
+/// `built_in` answer, so a web-only update onto such a kernel must be refused; an older bundle's
+/// schema rejects the new answer (a `null` effort description, `default_source: "claude_cli"`),
+/// so `WEB_COMPAT_VERSION` moves too.
 pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 
 /// Monotonically increasing frontend compatibility floor. Must equal `WEB_COMPAT_VERSION`
 /// in both bundles (`web/src/api/version.ts`, `fe/web/src/app/providers/public.tsx`);
 /// only a textual CI gate relates the three.
-pub const WEB_COMPAT_VERSION: u32 = 31;
+pub const WEB_COMPAT_VERSION: u32 = 32;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]

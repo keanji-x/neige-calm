@@ -16,6 +16,7 @@ use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, PlannerBackend, PlannerHarness,
     PlannerHarnessParams, QueueEntry,
 };
+use calm_server::planner_model::TurnModelSelection;
 use serde_json::json;
 
 use super::claude_planner_stack_fixture::{Root, Stack};
@@ -341,7 +342,7 @@ async fn a_stale_harness_tick_after_shutdown_never_mints_over_the_replacer() {
             vec![InputItem::Text {
                 text: "stale".into(),
             }],
-            None,
+            &TurnModelSelection::inherit(),
             &uuid::Uuid::new_v4().simple().to_string(),
         )
         .await;

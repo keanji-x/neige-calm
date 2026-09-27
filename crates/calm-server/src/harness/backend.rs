@@ -40,8 +40,9 @@ impl PlannerBackend {
         }
     }
 
-    /// The Claude arm passes the chosen alias as `--model` (#1810); a selection it cannot run is
-    /// refused here too, never dropped.
+    /// The Claude arm passes the model as `--model` and the effort as `--effort` (#1810, #1822):
+    /// the run loop judged the selection against the CLI's model list at issue, and neither half
+    /// is dropped.
     pub async fn turn_start(
         &self,
         thread_id: &str,
@@ -56,12 +57,9 @@ impl PlannerBackend {
                     .await
             }
             Self::Claude(session) => {
-                let model = crate::claude_planner::models::resolve(
-                    selection.model.as_deref(),
-                    selection.effort.as_deref(),
-                )
-                .map_err(|e| CalmError::BadRequest(e.to_string()))?;
-                session.turn_start(thread_id, items, model, client_id).await
+                session
+                    .turn_start(thread_id, items, selection, client_id)
+                    .await
             }
         }
     }
