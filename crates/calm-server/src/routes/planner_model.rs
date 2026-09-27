@@ -1,8 +1,10 @@
 //! `PUT /api/cards/{id}/planner/model` — records which model a card's conversation
 //! runs with. Both keys are required and `null` is a value; an unknown slug is
-//! reported, not refused; an unsupported effort is moved to the model's default.
-//! A Claude Planner takes a value of the Claude CLI's model list or `null`, with an effort that
-//! entry declares or `null`; anything else, or no list to judge against, is a 400 (#1810, #1822).
+//! reported, not refused; an unsupported effort is moved to the model's default. One advice for
+//! both providers (#1822 6′): only the catalog's source differs, Codex's `model/list` asked now or
+//! the Claude CLI's list the availability check cached. A Claude write needs Claude ready (400
+//! with the reason otherwise); a Claude entry declares no default effort, so an unsupported one
+//! is dropped.
 
 use axum::extract::{Path, State};
 use axum::{Json, http::StatusCode};
@@ -11,6 +13,7 @@ use utoipa::ToSchema;
 
 use crate::actor::Actor;
 use crate::auth::Principal;
+use crate::claude_planner::models::{ClaudeCatalog, ClaudeModel};
 use crate::db::sqlite::card_update_tx;
 use crate::db::write_with_event_typed;
 use crate::error::{CalmError, ErrorBody, Result};
@@ -51,7 +54,7 @@ pub struct SetPlannerModelBody {
     pub model: Option<String>,
     /// The reasoning effort, or `null` to follow the default. Required. A bare string:
     /// codex accepts any non-empty effort. For a Claude Planner, one the chosen entry declares
-    /// (for `null`, the CLI's `default` entry), or `null`.
+    /// (for a `null` model, the CLI's `default` entry); any other is dropped (`effort_adjusted`).
     #[schema(required = true)]
     #[serde(deserialize_with = "required_nullable")]
     pub reasoning_effort: Option<String>,
@@ -66,9 +69,9 @@ pub struct SetPlannerModelResponse {
     /// The stored effort. Differs from the request when `effort_adjusted`.
     pub reasoning_effort: Option<String>,
     /// The requested effort was not supported by the chosen model and was moved to that
-    /// model's own default.
+    /// model's own default (for a Claude Planner, which declares none, dropped to `null`).
     pub effort_adjusted: bool,
-    /// The slug is not in the catalog codex currently reports. A hint, not a refusal;
+    /// The slug is not in the catalog the provider currently reports. A hint, not a refusal;
     /// always `false` when the catalog could not be read.
     pub unknown_model: bool,
 }
@@ -81,7 +84,7 @@ pub struct SetPlannerModelResponse {
     request_body = SetPlannerModelBody,
     responses(
         (status = 200, description = "Selection stored. `effort_adjusted` and `unknown_model` report what the catalog said about it; neither is an error", body = SetPlannerModelResponse),
-        (status = 400, description = "Claude Planner card: a selection its CLI's model list refuses, or none while Claude is not ready; nothing is stored", body = ErrorBody),
+        (status = 400, description = "A Claude Planner card while Claude is not ready, with the `GET /api/agent-providers` reason; nothing is stored", body = ErrorBody),
         (status = 401, description = "Unauthenticated", body = ErrorBody),
         (status = 403, description = "Not `X-Calm-Actor: user`, or the card is not a planner codex card", body = ErrorBody),
         (status = 404, description = "Card not found", body = ErrorBody),
@@ -123,23 +126,34 @@ pub(crate) async fn set_planner_model(
         reasoning_effort,
     } = body;
     let advice = if claude {
-        // #1822: the CLI's cached list is the whole catalog; Codex is not asked and nothing is
-        // adjusted.
-        s.claude_planner
-            .availability(crate::agent_providers::Freshness::Cached)
+        // #1822 6′: a Claude write needs Claude ready, as its create does (#1817), so its effort is
+        // always judged; Codex is not asked.
+        let catalog = s
+            .provider_availability
+            .claude(crate::agent_providers::Freshness::Cached, &s.claude_planner)
             .await
             .catalog()
-            .map_err(|refusal| CalmError::BadRequest(format!("card {id}: {refusal}")))?
-            .judge(model.as_deref(), reasoning_effort.as_deref())
-            .map_err(|e| CalmError::BadRequest(format!("card {id}: {e}")))?;
-        CatalogAdvice::default()
+            .map_err(|refusal| {
+                CalmError::BadRequest(format!("card {id}: `planner_provider` {refusal}"))
+            })?;
+        catalog_advice(
+            CatalogSource::Claude(&catalog),
+            model.as_deref(),
+            reasoning_effort.as_deref(),
+        )
+        .await
     } else {
-        catalog_advice(&codex, model.as_deref(), reasoning_effort.as_deref()).await
+        catalog_advice(
+            CatalogSource::Codex(&codex),
+            model.as_deref(),
+            reasoning_effort.as_deref(),
+        )
+        .await
     };
-    let stored_effort = advice
-        .adjusted_to
-        .clone()
-        .or_else(|| reasoning_effort.clone());
+    let stored_effort = match &advice.adjustment {
+        Some(adjustment) => adjustment.to.clone(),
+        None => reasoning_effort.clone(),
+    };
 
     let scope = card_scope(s.repo.as_ref(), card.id.clone(), card.track_id.clone()).await?;
     let card_id = card.id.clone();
@@ -203,7 +217,7 @@ pub(crate) async fn set_planner_model(
         card_id = %card_id,
         model = ?model,
         reasoning_effort = ?stored_effort,
-        effort_adjusted = advice.adjusted_to.is_some(),
+        effort_adjusted = advice.adjustment.is_some(),
         unknown_model = advice.unknown_model,
         "planner conversation model selection stored"
     );
@@ -214,7 +228,7 @@ pub(crate) async fn set_planner_model(
             card_id,
             model,
             reasoning_effort: stored_effort,
-            effort_adjusted: advice.adjusted_to.is_some(),
+            effort_adjusted: advice.adjustment.is_some(),
             unknown_model: advice.unknown_model,
         }),
     ))
@@ -223,45 +237,197 @@ pub(crate) async fn set_planner_model(
 /// What the catalog says about a requested selection.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(super) struct CatalogAdvice {
-    /// `Some(effort)` when the requested effort is not supported by the chosen model.
-    pub(super) adjusted_to: Option<String>,
+    /// `Some` when the requested effort is not one the chosen entry supports.
+    pub(super) adjustment: Option<EffortAdjustment>,
     unknown_model: bool,
 }
 
-/// Ask codex's catalog about the requested pair. Every failure to ask yields
+/// Where an unsupported effort is moved: the entry's own default, `None` for a provider that
+/// declares none (every Claude entry), which drops the effort.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct EffortAdjustment {
+    pub(super) to: Option<String>,
+}
+
+/// Where a write's catalog comes from; the advice itself is the same for both.
+pub(super) enum CatalogSource<'a> {
+    /// Codex's `model/list`, asked now. A catalog that cannot be read advises nothing: the
+    /// selection is stored unjudged (#293).
+    Codex(&'a CodexShellState),
+    /// The Claude CLI's list, as the ready availability check cached it (#1822).
+    Claude(&'a ClaudeCatalog),
+}
+
+/// One catalog entry as the advice judges it.
+struct AdviceEntry<'a> {
+    model: &'a str,
+    efforts: Vec<&'a str>,
+    default_effort: Option<&'a str>,
+}
+
+/// Ask `source`'s catalog about the requested pair. Every failure to ask Codex yields
 /// [`CatalogAdvice::default`] — no adjustment, not unknown.
 pub(super) async fn catalog_advice(
-    codex: &CodexShellState,
+    source: CatalogSource<'_>,
     model: Option<&str>,
     reasoning_effort: Option<&str>,
 ) -> CatalogAdvice {
-    // With no model chosen there is no catalog entry to judge against.
-    let Some(model) = model else {
-        return CatalogAdvice::default();
-    };
-    let deadline = tokio::time::Instant::now() + CODEX_READ_TIMEOUT;
-    let models = match codex.shared_codex_appserver.model_list(deadline).await {
-        Ok(models) => models,
-        Err(e) => {
-            tracing::warn!(error = %e, "planner model selection: model/list unavailable");
-            return CatalogAdvice::default();
+    match source {
+        CatalogSource::Codex(codex) => {
+            // With no model chosen there is no catalog entry to judge against.
+            let Some(model) = model else {
+                return CatalogAdvice::default();
+            };
+            let deadline = tokio::time::Instant::now() + CODEX_READ_TIMEOUT;
+            let models = match codex.shared_codex_appserver.model_list(deadline).await {
+                Ok(models) => models,
+                Err(e) => {
+                    tracing::warn!(error = %e, "planner model selection: model/list unavailable");
+                    return CatalogAdvice::default();
+                }
+            };
+            let entries: Vec<AdviceEntry<'_>> = models
+                .iter()
+                .map(|m| AdviceEntry {
+                    model: &m.model,
+                    efforts: m
+                        .supported_reasoning_efforts
+                        .iter()
+                        .map(|o| o.reasoning_effort.as_str())
+                        .collect(),
+                    default_effort: Some(&m.default_reasoning_effort),
+                })
+                .collect();
+            advise(&entries, None, Some(model), reasoning_effort)
         }
-    };
-    let Some(entry) = models.into_iter().find(|m| m.model == model) else {
-        return CatalogAdvice {
-            adjusted_to: None,
-            unknown_model: true,
-        };
+        CatalogSource::Claude(catalog) => {
+            let entries: Vec<AdviceEntry<'_>> = catalog.models.iter().map(claude_entry).collect();
+            // A `null` model runs the CLI's `default` entry, so its effort is judged there.
+            let default = claude_entry(&catalog.default);
+            advise(&entries, Some(&default), model, reasoning_effort)
+        }
+    }
+}
+
+fn claude_entry(m: &ClaudeModel) -> AdviceEntry<'_> {
+    AdviceEntry {
+        model: &m.value,
+        efforts: m.effort_levels.iter().map(String::as_str).collect(),
+        default_effort: None,
+    }
+}
+
+/// The advice of `entries` (and `null_model`, the entry a `null` model runs where the provider
+/// lists one) about the pair: an unlisted model is unknown, an unsupported effort moves to the
+/// entry's default.
+fn advise(
+    entries: &[AdviceEntry<'_>],
+    null_model: Option<&AdviceEntry<'_>>,
+    model: Option<&str>,
+    reasoning_effort: Option<&str>,
+) -> CatalogAdvice {
+    let entry = match model {
+        None => match null_model {
+            Some(entry) => entry,
+            None => return CatalogAdvice::default(),
+        },
+        Some(model) => match entries.iter().find(|e| e.model == model) {
+            Some(entry) => entry,
+            None => {
+                return CatalogAdvice {
+                    adjustment: None,
+                    unknown_model: true,
+                };
+            }
+        },
     };
     let Some(requested) = reasoning_effort else {
         return CatalogAdvice::default();
     };
-    let supported = entry
-        .supported_reasoning_efforts
-        .iter()
-        .any(|o| o.reasoning_effort == requested);
+    let supported = entry.efforts.contains(&requested);
     CatalogAdvice {
-        adjusted_to: (!supported).then(|| entry.default_reasoning_effort.clone()),
+        adjustment: (!supported).then(|| EffortAdjustment {
+            to: entry.default_effort.map(str::to_string),
+        }),
         unknown_model: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry<'a>(
+        model: &'a str,
+        efforts: &[&'a str],
+        default_effort: Option<&'a str>,
+    ) -> AdviceEntry<'a> {
+        AdviceEntry {
+            model,
+            efforts: efforts.to_vec(),
+            default_effort,
+        }
+    }
+
+    fn adjusted(to: Option<&str>) -> CatalogAdvice {
+        CatalogAdvice {
+            adjustment: Some(EffortAdjustment {
+                to: to.map(str::to_string),
+            }),
+            unknown_model: false,
+        }
+    }
+
+    #[test]
+    fn codex_entries_move_an_unsupported_effort_to_the_entry_default() {
+        let entries = [entry("gpt-5", &["low", "high"], Some("low"))];
+        assert_eq!(
+            advise(&entries, None, Some("gpt-5"), Some("high")),
+            CatalogAdvice::default()
+        );
+        assert_eq!(
+            advise(&entries, None, Some("gpt-5"), Some("max")),
+            adjusted(Some("low"))
+        );
+        assert_eq!(
+            advise(&entries, None, Some("gpt-6"), Some("max")),
+            CatalogAdvice {
+                adjustment: None,
+                unknown_model: true
+            }
+        );
+        // No entry is named for a null model on a provider without a default entry.
+        assert_eq!(
+            advise(&entries, None, None, Some("max")),
+            CatalogAdvice::default()
+        );
+    }
+
+    #[test]
+    fn claude_entries_drop_an_unsupported_effort_and_judge_a_null_model_on_the_default_entry() {
+        let entries = [
+            entry("claude-fable-5-1[1m]", &["low", "max"], None),
+            entry("haiku", &[], None),
+        ];
+        let default = entry("default", &["low", "high"], None);
+        let judge = |model, effort| advise(&entries, Some(&default), model, effort);
+        assert_eq!(
+            judge(Some("claude-fable-5-1[1m]"), Some("max")),
+            CatalogAdvice::default()
+        );
+        assert_eq!(
+            judge(Some("claude-fable-5-1[1m]"), Some("high")),
+            adjusted(None)
+        );
+        assert_eq!(judge(Some("haiku"), Some("low")), adjusted(None));
+        assert_eq!(judge(None, Some("high")), CatalogAdvice::default());
+        assert_eq!(judge(None, Some("max")), adjusted(None));
+        assert_eq!(
+            judge(Some("opus"), Some("low")),
+            CatalogAdvice {
+                adjustment: None,
+                unknown_model: true
+            }
+        );
     }
 }

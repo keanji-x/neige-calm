@@ -631,10 +631,6 @@ impl AppState {
             .provider_availability
             .age_past_ttl_for_test()
             .await;
-        self.route
-            .claude_planner
-            .age_availability_past_ttl_for_test()
-            .await;
     }
 
     /// Fixture assembly only: run this state's Claude Planners under `config` (the typed

@@ -1,7 +1,8 @@
 //! A Claude Planner's model catalog (#1822, amending design #1791 §5.8 and #1810): the Claude
-//! CLI's own `/model` list, as its `initialize` answer reports it (`catalog_fetch`), cached beside
-//! the availability check (`availability`). There is no fixed list. `GET /api/models`,
-//! `PUT /planner/model`, track create and the run loop all judge a selection here.
+//! CLI's own `/model` list, as its `initialize` answer reports it (`catalog_fetch`), cached by the
+//! availability check (`availability`). There is no fixed list. `GET /api/models` answers it, and
+//! `PUT /planner/model` and track create advise a selection against it as they do against Codex's
+//! (6′); at issue a turn only reads the stored selection (`turn_selection`).
 
 use serde_json::Value;
 
@@ -62,112 +63,25 @@ impl ClaudeCatalog {
             fetched_at_ms,
         })
     }
-
-    /// What a turn runs for the selection, or why the catalog refuses it. `model` must be a listed
-    /// value (`null` is the CLI's default), and an effort must be one that entry declares.
-    pub fn judge(
-        &self,
-        model: Option<&str>,
-        reasoning_effort: Option<&str>,
-    ) -> Result<TurnModelSelection, InvalidSelection> {
-        let entry = match model {
-            None => &self.default,
-            Some(model) => self
-                .models
-                .iter()
-                .find(|m| m.value == model)
-                .ok_or_else(|| InvalidSelection::UnknownModel {
-                    model: model.to_string(),
-                    listed: self.models.iter().map(|m| m.value.clone()).collect(),
-                })?,
-        };
-        if let Some(effort) = reasoning_effort
-            && !entry.effort_levels.iter().any(|level| level == effort)
-        {
-            return Err(InvalidSelection::Effort {
-                effort: effort.to_string(),
-                model: model.map(str::to_string),
-                supported: entry.effort_levels.clone(),
-            });
-        }
-        Ok(TurnModelSelection {
-            model: model.map(str::to_string),
-            effort: reasoning_effort.map(str::to_string),
-        })
-    }
-
-    /// What a Claude Planner card's payload says its next turn runs, read at issue time. Each turn
-    /// is a fresh process, so `null` is simply the CLI default: no `*_ever_set` resolution is
-    /// needed. `Err((log, reader))` for a payload that cannot run; the turn is not sent.
-    pub fn turn_selection(&self, payload: &Value) -> Result<TurnModelSelection, (String, String)> {
-        let card = CardModelSelection::from_payload(payload).map_err(|e| {
-            (
-                e.to_string(),
-                "This conversation's saved model selection cannot be read. Pick a model to replace it."
-                    .to_string(),
-            )
-        })?;
-        self.judge(card.model.as_deref(), card.reasoning_effort.as_deref())
-            .map_err(|e| {
-                (
-                    format!("the card's saved Claude selection cannot run: {e}"),
-                    format!(
-                        "This conversation's saved model selection cannot run: {e}. Pick a model \
-                         to replace it."
-                    ),
-                )
-            })
-    }
 }
 
-/// Why a selection cannot run on a Claude Planner. Refused, never adjusted.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum InvalidSelection {
-    /// `model` is not a value of the catalog, which lists `listed`.
-    UnknownModel { model: String, listed: Vec<String> },
-    /// `effort` is not one the entry (`model`, `None` for the CLI default) declares.
-    Effort {
-        effort: String,
-        model: Option<String>,
-        supported: Vec<String>,
-    },
-}
-
-impl std::fmt::Display for InvalidSelection {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::UnknownModel { model, listed } => write!(
-                f,
-                "`{model}` is not in the Claude CLI's model list; choose one of {}, or null for \
-                 the Claude CLI's default",
-                listed.join(", ")
-            ),
-            Self::Effort {
-                effort,
-                model,
-                supported,
-            } => {
-                let named = model.as_deref().map_or_else(
-                    || "the Claude CLI's default".to_string(),
-                    |model| format!("`{model}`"),
-                );
-                if supported.is_empty() {
-                    write!(
-                        f,
-                        "{named} declares no reasoning effort; `reasoning_effort` must be null, \
-                         not `{effort}`"
-                    )
-                } else {
-                    write!(
-                        f,
-                        "{named} does not support reasoning effort `{effort}`; choose one of {}, \
-                         or null",
-                        supported.join(", ")
-                    )
-                }
-            }
-        }
-    }
+/// What a Claude Planner card's payload says its next turn runs, read at issue time: a type check
+/// of the stored keys only (#1822 6′). The catalog judged the selection when it was written; at
+/// issue the CLI is the judge of the model, and refuses one it cannot run with its own words. Each
+/// turn is a fresh process, so `null` is simply the CLI default: no `*_ever_set` resolution is
+/// needed. `Err((log, reader))` for a payload that cannot be read; the turn is not sent.
+pub fn turn_selection(payload: &Value) -> Result<TurnModelSelection, (String, String)> {
+    let card = CardModelSelection::from_payload(payload).map_err(|e| {
+        (
+            e.to_string(),
+            "This conversation's saved model selection cannot be read. Pick a model to replace it."
+                .to_string(),
+        )
+    })?;
+    Ok(TurnModelSelection {
+        model: card.model,
+        effort: card.reasoning_effort,
+    })
 }
 
 #[cfg(test)]
@@ -184,58 +98,6 @@ mod tests {
             description: String::new(),
             effort_levels: levels.iter().map(|level| level.to_string()).collect(),
         }
-    }
-
-    fn catalog() -> ClaudeCatalog {
-        ClaudeCatalog::from_entries(
-            vec![
-                entry(DEFAULT_VALUE, &["low", "high"]),
-                entry("claude-fable-5-1[1m]", &["low", "max"]),
-                entry("haiku", &[]),
-            ],
-            1,
-        )
-        .expect("a well-formed list")
-    }
-
-    #[test]
-    fn a_listed_value_or_null_runs_with_a_declared_effort_and_nothing_else_does() {
-        let catalog = catalog();
-        assert_eq!(catalog.judge(None, None), Ok(TurnModelSelection::inherit()));
-        let fable = catalog
-            .judge(Some("claude-fable-5-1[1m]"), Some("max"))
-            .unwrap();
-        assert_eq!(fable.model.as_deref(), Some("claude-fable-5-1[1m]"));
-        assert_eq!(fable.effort.as_deref(), Some("max"));
-        // The null selection takes the default entry's levels.
-        assert_eq!(
-            catalog.judge(None, Some("high")).unwrap().effort.as_deref(),
-            Some("high")
-        );
-        let unknown = catalog.judge(Some("opus"), None).unwrap_err();
-        assert!(
-            unknown
-                .to_string()
-                .contains("choose one of claude-fable-5-1[1m], haiku"),
-            "{unknown}"
-        );
-        // `default` is the null selection, never a value to store.
-        assert!(matches!(
-            catalog.judge(Some(DEFAULT_VALUE), None),
-            Err(InvalidSelection::UnknownModel { .. })
-        ));
-        assert!(matches!(
-            catalog.judge(Some("haiku"), Some("low")),
-            Err(InvalidSelection::Effort { .. })
-        ));
-        assert!(matches!(
-            catalog.judge(Some("claude-fable-5-1[1m]"), Some("high")),
-            Err(InvalidSelection::Effort { .. })
-        ));
-        assert!(matches!(
-            catalog.judge(None, Some("max")),
-            Err(InvalidSelection::Effort { .. })
-        ));
     }
 
     #[test]
@@ -261,24 +123,20 @@ mod tests {
     }
 
     #[test]
-    fn the_turn_carries_the_value_and_the_effort() {
-        let catalog = catalog();
-        let got = catalog
-            .turn_selection(&json!({"model": "claude-fable-5-1[1m]", "reasoning_effort": "low", "model_ever_set": true}))
+    fn the_turn_carries_the_stored_value_and_effort_and_refuses_only_an_unreadable_payload() {
+        let got = turn_selection(&json!({"model": "claude-fable-5-1[1m]", "reasoning_effort": "low", "model_ever_set": true}))
             .unwrap();
         assert_eq!(got.model.as_deref(), Some("claude-fable-5-1[1m]"));
         assert_eq!(got.effort.as_deref(), Some("low"));
         // A card that chose once and then chose the default again runs the CLI default.
-        let got = catalog
-            .turn_selection(&json!({"model": null, "model_ever_set": true}))
-            .unwrap();
+        let got = turn_selection(&json!({"model": null, "model_ever_set": true})).unwrap();
         assert_eq!(got, TurnModelSelection::inherit());
-        for payload in [
-            json!({"model": "gpt-5"}),
-            json!({"model": "haiku", "reasoning_effort": "high"}),
-            json!({"model": 42}),
-        ] {
-            assert!(catalog.turn_selection(&payload).is_err(), "{payload}");
+        // A value no catalog lists still reaches the CLI, which judges it.
+        let got =
+            turn_selection(&json!({"model": "claude-bogus-9-9", "model_ever_set": true})).unwrap();
+        assert_eq!(got.model.as_deref(), Some("claude-bogus-9-9"));
+        for payload in [json!({"model": 42}), json!({"reasoning_effort": ["high"]})] {
+            assert!(turn_selection(&payload).is_err(), "{payload}");
         }
     }
 }

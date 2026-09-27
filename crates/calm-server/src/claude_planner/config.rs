@@ -97,9 +97,6 @@ pub struct ClaudePlannerHost {
     pub mcp_shim: PathBuf,
     pub mcp_socket: PathBuf,
     pub calm_tools: CalmToolNames,
-    /// The last availability check and the model list it cached (#1817, #1822); read through
-    /// [`Self::availability`].
-    pub(super) availability: crate::agent_providers::Slot<super::availability::ClaudeReadiness>,
     /// Owns the data dir of [`Self::unconfigured_scratch`].
     _scratch: Option<tempfile::TempDir>,
 }
@@ -124,7 +121,6 @@ impl ClaudePlannerHost {
             mcp_shim,
             mcp_socket,
             calm_tools,
-            availability: Default::default(),
             _scratch: None,
         })
     }
@@ -158,12 +154,6 @@ impl ClaudePlannerHost {
     pub async fn check_ready(&self) -> Result<()> {
         let config = self.configured()?;
         config.verify_version(&self.readiness_env(config)?).await
-    }
-
-    /// Fixtures only: make the cached availability older than the TTL.
-    #[cfg(feature = "fixtures")]
-    pub async fn age_availability_past_ttl_for_test(&self) {
-        self.availability.age_past_ttl_for_test().await;
     }
 
     /// The environment of every readiness command (`--version`, `auth status`, the model list): the spawn's own

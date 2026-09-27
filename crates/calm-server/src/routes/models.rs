@@ -212,8 +212,8 @@ pub(crate) async fn list_models(
         || card.as_ref().is_some_and(|card| card.claude_planner)
     {
         let checked = s
-            .claude_planner
-            .availability(crate::agent_providers::Freshness::Cached)
+            .provider_availability
+            .claude(crate::agent_providers::Freshness::Cached, &s.claude_planner)
             .await;
         return Ok(Json(match checked.catalog() {
             Ok(catalog) => claude_catalog(&catalog),

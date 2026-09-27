@@ -52,17 +52,9 @@ impl Stamped<ClaudeReadiness> {
     }
 }
 
-impl ClaudePlannerHost {
-    /// The Claude check: the cached answer when `freshness` allows and it is younger than
-    /// [`TTL`](crate::agent_providers::TTL), else a new check (see the module docs for when that re-fetches the model list).
-    pub async fn availability(&self, freshness: Freshness) -> Stamped<ClaudeReadiness> {
-        self.availability
-            .get(freshness, |previous| check(self, previous, freshness))
-            .await
-    }
-}
-
-async fn check(
+/// One Claude check, given the previous outcome of its cache slot; `freshness` is why it runs
+/// (`Cached`: the TTL expired). See the module docs for when it re-fetches the model list.
+pub(crate) async fn check(
     host: &ClaudePlannerHost,
     previous: Option<ClaudeReadiness>,
     freshness: Freshness,

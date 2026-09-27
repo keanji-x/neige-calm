@@ -46,7 +46,7 @@ beyond extracting the seam; worker cards; Claude for PlainChat / Assistant; stee
 | D8 | **Steer cut.** The CLI dequeues a queued line immediately after `result` (P-F3, P-E), so the parent has no boundary to refuse it; v1 refusal stays and the entry runs as the next turn | **orchestrator r2** (was "scheduled" in r1) | §5.9 |
 | D9 | Bash confinement: native sandbox with `failIfUnavailable` (**owner decided: sandbox**; the unconfined option is removed); enablement release-gated on §9.2 | orchestrator r1 | §5.3, §9.2 |
 | D10 | Images: base64 image blocks (P-I) | orchestrator r1 | §5.6 |
-| D11 | **Model choice cut**: Claude Planners run the CLI default; pickers show the existing `source:"unavailable"`. **Amended by #1810**: a fixed alias list (`opus`, `sonnet`, `haiku`) or the CLI default, passed as `--model`; no effort choice. **Amended by #1822**: the CLI's own live list (`initialize` → `models`), cached by the #1817 check; `--model <value>` and `--effort <level>` | **orchestrator r2**; #1810; #1822 | §5.8 |
+| D11 | **Model choice cut**: Claude Planners run the CLI default; pickers show the existing `source:"unavailable"`. **Amended by #1810**: a fixed alias list (`opus`, `sonnet`, `haiku`) or the CLI default, passed as `--model`; no effort choice. **Amended by #1822**: the CLI's own live list (`initialize` → `models`), cached by the #1817 check; writes advised as Codex's (6′), `--model=<value>` and `--effort=<level>` | **orchestrator r2**; #1810; #1822 | §5.8 |
 | D12 | **Stop primitive**: one `/proc`-wide exact env-marker sweep (`NEIGE_CLAUDE_PLANNER=<worker_session_id>`), SIGTERM → bounded wait → verified SIGKILL → wait-empty (membership narrowed in r3, D16; users widened, D17). The r1 `(pid, pgid, start_time, boot_id)` record and group kill are deleted | **orchestrator r2** (A BLOCKING-1, B2-1) | §5.1 |
 | D13 | **Crash recovery without a journal**: settlement = durable outcome → emit; boot = stop sweep, then idempotent `interrupted` outcome for `snapshot.last_turn_id`. The r1 journal and crash table are deleted | **orchestrator r2** (A MAJOR-1, B2-4/5) | §5.1 |
 | D14 | Typed config: one optional `--claude-planner-config <file>`; absent ⇒ Claude Planner unavailable | **orchestrator r2** (A MAJOR-3) | §5.3 |
@@ -100,7 +100,7 @@ ignores invalid settings and `system/init` does not report the sandbox.
 | 1–6 | `subscribe_notifications`, `turn_start`, `turn_steer`, `turn_interrupt`, `interrupt_active_turn`, `active_turn_id_for_thread` | run_loop `:404`, `:271`, `:1340`, `:704`/`:3640`, `:691`, `:690`/`:3601` | `PlannerBackend` |
 | 7 | seals (`seal_turn_thread_for_deletion`, `DeletionThreadSeals`, unseal on rollback) | run_loop `:658-679`; registry `:203-218`; deletion plans (S21) | **unchanged**: Claude thread ids are fresh UUIDs, so the same thread-keyed set works; the Claude session checks `turn_thread_is_sealed(thread)` before every spawn |
 | 8 | `turn_thread_is_sealed` in recovery | harness/mod `:158`, `:424` | unchanged |
-| 9 | `config_read`, `model_list` in resolution | run_loop `:2472`, `:2632` | Codex-only; the Claude arm reads the card at issue and judges it against the CLI's cached model list without Codex (§5.8, #1810, #1822) |
+| 9 | `config_read`, `model_list` in resolution | run_loop `:2472`, `:2632` | Codex-only; the Claude arm reads the card at issue (a type check only) and asks neither Codex nor a catalog; the CLI judges the model (§5.8, #1810, #1822 6′) |
 | 10 | Codex readiness / deferred recovery | harness/mod `:213`, `:477`; `state.rs:577-598`; `lib.rs:615-640` (H21) | Codex rows only; Claude rows recovered in both boot arms |
 | 11 | `is_running` preflights | start adapter `:420`, `:491` (S7); routes/cards `:1289`; planner_recovery `:58` | per provider: Claude ⇒ `claude_planner_config` present and `claude_binary --version` equals `claude_version` (login is not preflighted here: a not-logged-in turn fails at issue, #1817) |
 | 12 | `thread_start_*`, `remote_uri` | start adapter `:970-991` | Claude branch: UUID thread, no RPC |
@@ -110,7 +110,7 @@ ignores invalid settings and `system/init` does not report the sandbox.
 | 16 | card teardown / deletion-grade quiesce | routes/cards `:92-127`, `:129-156` | Claude card ⇒ seal as today + scoped sweep over all its Claude Planner ids, any state (§5.1 item 4; propagates `Err`) |
 | 17 | track / area deletion plans | S21 | unchanged fields; scoped sweep over all Claude Planner ids of the track/area, any state, before the destructive step (the track row delete removes the session rows, `crates/calm-truth/src/db/sqlite/track.rs:438-442`) |
 | 18 | `resume_system_error_conversation` | planner_recovery | Codex-only (Claude never enters `Wedged(systemError)`) |
-| 19–21 | GET `/api/models` (`routes/models.rs:144`), create advice (`routes/tracks.rs:848`), PUT advice (`routes/planner_model.rs:117`) | S11 | Claude (#1822): the CLI's cached list (`source:"live"`; `unavailable` while Claude is not ready) / a listed value and declared effort or 400 / the same or 400 (§5.8) |
+| 19–21 | GET `/api/models` (`routes/models.rs:144`), create advice (`routes/tracks.rs:848`), PUT advice (`routes/planner_model.rs:117`) | S11 | Claude (#1822): the CLI's cached list (`source:"live"`; `unavailable` while Claude is not ready) / the Codex advice over that list, 400 while not ready / the same (§5.8, 6′) |
 | 22 | reader texts naming codex | run_loop `:2430`, `:2547` | provider name from the backend (overlaps #1542) |
 | 23 | `liveness_feeder`, dev replay, TUI takeover | S27 | Codex-only by nature |
 | 24 | workspace repoint fence + recycle | `routes/tracks.rs:2104-2150`, `:2160`, `:2239` | scoped sweep over the track's Claude Planner ids before the pristine check (§5.1 item 4) |
@@ -370,7 +370,7 @@ harness snapshot owns it. A session opened for a row that has `agent_session_id`
   recorded system prompt until compaction, then the current rendering applies. For Claude only, the
   rendering appends one sentence from a new `prompts/` fragment: start long-lived servers with
   `calm.terminal.open`, not Bash (they die with the turn and at restart).
-- No `--permission-mode`, no `--include-partial-messages`; `--model <value>` and `--effort <level>` only
+- No `--permission-mode`, no `--include-partial-messages`; `--model=<value>` and `--effort=<level>` only
   when the card has chosen them (D11 as amended by #1810 and #1822, §5.8).
 - `cwd` = track workspace; a moved workspace cannot resume (KNOWN GAP, #857 class). Project context:
   `CLAUDE.md`, else `AGENTS.md` (P-J).
@@ -515,8 +515,8 @@ and exits. No user message is sent, so no model is called. Each entry has `value
   `displayName` and no empty or repeated level. Anything else makes the check `unavailable` with neige's
   own reason; no answer text is quoted. Only `models` is decoded: `account` and every other key are skipped
   by the decoder and never logged, cached or returned.
-- **Lifetime (`claude_planner/availability.rs`).** The list lives beside the #1817 cache entry, on the
-  `ClaudePlannerHost`, and only a `ready` check carries one. It is fetched when none is cached (the boot
+- **Lifetime (`claude_planner/availability.rs`).** The list lives in the Claude slot of the #1817 cache
+  (`ProviderAvailabilityCache`), and only a `ready` check carries one. It is fetched when none is cached (the boot
   check, the first read, or any check after one that was not ready) and on an explicit recheck
   (`?refresh=true`, Settings › Planners Recheck). The 30 s TTL re-check of version and login keeps it: the
   binary is pinned, so the list changes only with the account or its entitlement, and a person then presses
@@ -529,22 +529,36 @@ and exits. No user message is sent, so no model is called. Each entry has `value
   `default` (`model` = what it resolves to, `supported_reasoning_efforts` = its levels) with
   `default_source:"claude_cli"`, so the picker's Default row names it ("Default (claude-opus-5-5[1m])").
   While Claude is not ready: `source:"unavailable"`, no list.
-- **Judging.** Create, `PUT /planner/model` and the run loop at issue all judge a Claude selection against
-  the same cached list (`ClaudeCatalog::judge`): `model` is a listed value or `null`; `reasoning_effort` is
-  one of that entry's levels (for `null`, the `default` entry's) or `null`; a model with no declared levels
-  refuses any effort. A refusal names the listed values. With no list obtainable, a create or PUT is 400 with
-  the provider's unavailable reason, and a turn is refused at issue as "needs a choice" with it (a CLI that
-  cannot answer `initialize` cannot run a turn either). A stored value the list no longer carries is refused
-  at issue the same way, never substituted. Create judges after its replay arms, like the availability gate.
+- **Judging (6′, owner amendment 2026-09-27: one selection policy for Codex and Claude).** Measured with
+  the pinned 2.1.280: `--model <unlisted>` fails the turn (`result.is_error`, "There's an issue with the
+  selected model (…)", exit 1, stderr `unrecognized_model`), while `--effort <undeclared>` is ignored with
+  a stderr warning only; `--model=<v>` / `--effort=<v>` parse. So the CLI judges a model but not an effort.
+  - *Write* (`PUT /planner/model`, create): one advice for both providers
+    (`routes/planner_model.rs::catalog_advice`); only the catalog's source differs (Codex `model/list`,
+    Claude the cached list). An unlisted model is stored with `unknown_model: true`; an undeclared effort
+    moves to the entry's `default_reasoning_effort`, which for a Claude entry is `null`, i.e. it is dropped
+    (`effort_adjusted: true`); a `null` model's effort is judged on the CLI `default` entry's levels. Create
+    keeps its rule for both: an effort the advice would move is 400, no track minted.
+  - *Claude writes need Claude ready*: create (#1817) and PUT answer 400 with the provider's unavailable
+    reason (``… `planner_provider` `claude` is unavailable: <reason>``), so a Claude write always has the
+    list and its effort is always judged. Codex keeps its #293 outage tolerance (unreachable catalog ⇒
+    stored unjudged).
+  - *Issue*: neither provider consults a catalog. A Claude turn type-checks the stored selection
+    (`models::turn_selection`; an unreadable payload is still "needs a choice") and passes it on; a model
+    the CLI rejects fails the turn in the CLI's words (`driver::decide`), the shape of Codex's `rejected`.
+    Nothing is substituted.
 - **Turn.** The run loop reads the card at issue, like Codex, but asks Codex nothing and needs no
-  `*_ever_set` resolution (each turn is a fresh process). A value spawns `--model <value>`, an effort
-  `--effort <level>`; `null` passes neither. A PUT between turns applies from the next turn.
+  `*_ever_set` resolution (each turn is a fresh process). A value spawns `--model=<value>`, an effort
+  `--effort=<level>` (one token each, so a value cannot be read as a flag); `null` passes neither. A PUT
+  between turns applies from the next turn.
 - **FE.** On the new-track page one grouped picker offers a Codex group and a Claude group (Default naming
-  its resolved model, then the list); the pick decides `planner_provider` and `model`, and a model's effort
-  control offers exactly its levels. Inside a track the picker lists only the track's provider group.
+  its resolved model, then the list, each row with its resolved model beneath); the pick decides
+  `planner_provider` and `model`, and a model's effort control offers exactly its levels. Following the
+  default, the trigger names the listed entry that runs the same model ("Opus (1M context)"), else the
+  resolved id. Inside a track the picker lists only the track's provider group.
 - **Compatibility.** No Claude Planner card in the 4140 DB stores a model (checked 2026-09-27: every stored
-  `model` is a `gpt-6-*` slug), so a stored `opus` / `sonnet` / `haiku` needs no migration; one would be
-  refused at issue with the listed values named. #1810 bumped `REST_API_VERSION` 10 → 11 and
+  `model` is a `gpt-6-*` slug), so a stored `opus` / `sonnet` / `haiku` needs no migration; the CLI would
+  judge one at its next turn. #1810 bumped `REST_API_VERSION` 10 → 11 and
   `WEB_COMPAT_VERSION` 30 → 31 for `source:"built_in"`; #1822 removes it and adds a nullable effort
   description and `default_source:"claude_cli"`, which each side's schema rejects from the other, so it
   bumps `REST_API_VERSION` 12 → 13 and `WEB_COMPAT_VERSION` 31 → 32.

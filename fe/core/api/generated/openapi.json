@@ -1671,7 +1671,7 @@
             }
           },
           "400": {
-            "description": "Claude Planner card: a selection its CLI's model list refuses, or none while Claude is not ready; nothing is stored",
+            "description": "A Claude Planner card while Claude is not ready, with the `GET /api/agent-providers` reason; nothing is stored",
             "content": {
               "application/json": {
                 "schema": {
@@ -4713,7 +4713,7 @@
             }
           },
           "400": {
-            "description": "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`, a `claude` Planner this server cannot run right now (not configured, a wrong binary version, not logged in, or no model list from the CLI; the error carries the reason `GET /api/agent-providers` reports), `claude` with a `model` that is not a value of the Claude CLI's model list (the refusal names the listed values) or with a `reasoning_effort` that entry does not declare, or `reasoning_effort` unsupported by the selected model's current catalog entry; no track is minted and no effort is silently adjusted), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), a malformed `Idempotency-Key` header (empty or non-ASCII) on any create, or — with `first_message` — a missing `Idempotency-Key` or an empty/over-long message. Decided before anything is minted; the multi-source refusal, like every other create-path check, is not re-run on an `Idempotency-Key` replay, which mints nothing.",
+            "description": "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`, a `claude` Planner this server cannot run right now (not configured, a wrong binary version, not logged in, or no model list from the CLI; the error carries the reason `GET /api/agent-providers` reports), or `reasoning_effort` unsupported by the selected model's current catalog entry; no track is minted and no effort is silently adjusted), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), a malformed `Idempotency-Key` header (empty or non-ASCII) on any create, or — with `first_message` — a missing `Idempotency-Key` or an empty/over-long message. Decided before anything is minted; the multi-source refusal, like every other create-path check, is not re-run on an `Idempotency-Key` replay, which mints nothing.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8008,18 +8008,18 @@
               "string",
               "null"
             ],
-            "description": "Model slug for the planner's first and subsequent turns (for a `claude` Planner, a value of\nthe Claude CLI's model list, `GET /api/models?provider=claude`). Omitted or null follows installation defaults, as on the conversation model\nendpoint."
+            "description": "Model slug for the planner's first and subsequent turns (for a `claude` Planner, a value of\nthe Claude CLI's model list, `GET /api/models?provider=claude`). Omitted or null follows\ninstallation defaults, as on the conversation model endpoint."
           },
           "planner_provider": {
             "$ref": "#/components/schemas/AgentProvider",
-            "description": "The backend of the track's Planner, stamped on its card as the server-owned\n`planner_provider` and never changed afterwards. `claude` is refused with 400 when Claude\nis not ready (`GET /api/agent-providers`), with a `model` that is not a value of the Claude\nCLI's model list, or with a `reasoning_effort` that entry does not declare."
+            "description": "The backend of the track's Planner, stamped on its card as the server-owned\n`planner_provider` and never changed afterwards. `claude` is refused with 400 when Claude\nis not ready (`GET /api/agent-providers`)."
           },
           "reasoning_effort": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Reasoning effort. Values unsupported by the chosen model's current\ncatalog entry are rejected with 400 before creation; no silent adjustment.\nOmitted or null follows installation defaults. For `claude`, one the chosen entry declares\n(for a null model, the CLI's `default` entry), or omitted or null."
+            "description": "Reasoning effort. Values unsupported by the chosen model's current\ncatalog entry are rejected with 400 before creation; no silent adjustment.\nOmitted or null follows installation defaults. For `claude`, the entry of a null model is the\nCLI's `default` one."
           },
           "recipe_id": {
             "type": [
@@ -10406,7 +10406,7 @@
               "string",
               "null"
             ],
-            "description": "The reasoning effort, or `null` to follow the default. Required. A bare string:\ncodex accepts any non-empty effort. For a Claude Planner, one the chosen entry declares\n(for `null`, the CLI's `default` entry), or `null`."
+            "description": "The reasoning effort, or `null` to follow the default. Required. A bare string:\ncodex accepts any non-empty effort. For a Claude Planner, one the chosen entry declares\n(for a `null` model, the CLI's `default` entry); any other is dropped (`effort_adjusted`)."
           }
         },
         "additionalProperties": false
@@ -10424,7 +10424,7 @@
           },
           "effort_adjusted": {
             "type": "boolean",
-            "description": "The requested effort was not supported by the chosen model and was moved to that\nmodel's own default."
+            "description": "The requested effort was not supported by the chosen model and was moved to that\nmodel's own default (for a Claude Planner, which declares none, dropped to `null`)."
           },
           "model": {
             "type": [
@@ -10442,7 +10442,7 @@
           },
           "unknown_model": {
             "type": "boolean",
-            "description": "The slug is not in the catalog codex currently reports. A hint, not a refusal;\nalways `false` when the catalog could not be read."
+            "description": "The slug is not in the catalog the provider currently reports. A hint, not a refusal;\nalways `false` when the catalog could not be read."
           }
         }
       },

@@ -1,25 +1,28 @@
 //! #1822: a Claude Planner chooses its model from the Claude CLI's own model list, through the
 //! real routes and the fake `claude` (see `claude_planner_stack_fixture.rs`), which answers
-//! `initialize` with the list measured from the pinned CLI. The card is read at issue time, so a
-//! PUT between turns reaches the next spawn's `--model` and `--effort`.
-
-use std::time::Duration;
+//! `initialize` with the list measured from the pinned CLI and refuses a model it does not list as
+//! the pinned CLI does. A write is advised against the list as Codex's is (6′); the card is read at
+//! issue time, so a PUT between turns reaches the next spawn's `--model=` and `--effort=`.
 
 use axum::http::StatusCode;
-use calm_server::model::CardPatch;
 use serde_json::{Value, json};
 
 use super::claude_planner_stack_fixture::{Root, Stack};
 
-/// Every value the fake CLI lists besides its `default`, in its order.
-const LISTED: &str = "opus[1m], claude-fable-5-1[1m], sonnet, haiku";
-
-/// The value after `flag` in the last spawn's argv, or `None` when it passed no `flag`.
+/// The value of the last spawn's `<flag>=<value>` token, or `None` when it passed no `flag`.
 fn spawned_flag(root: &Root, flag: &str) -> Option<String> {
     let argv = root.read_fake("argv").expect("a spawn recorded its argv");
-    let argv: Vec<&str> = argv.lines().collect();
-    let at = argv.iter().position(|arg| *arg == flag)?;
-    Some(argv[at + 1].to_string())
+    let prefix = format!("{flag}=");
+    let values: Vec<String> = argv
+        .lines()
+        .filter_map(|arg| arg.strip_prefix(&prefix).map(str::to_string))
+        .collect();
+    assert!(values.len() <= 1, "{flag} passed twice: {argv}");
+    assert!(
+        !argv.lines().any(|arg| arg == flag),
+        "{flag} passed as its own token: {argv}"
+    );
+    values.into_iter().next()
 }
 
 async fn put_model(stack: &Stack, card_id: &str, body: Value) -> (StatusCode, Value) {
@@ -92,34 +95,83 @@ async fn the_chosen_model_and_effort_reach_each_next_turn() {
     }
 }
 
-/// Create and PUT refuse a value the list does not carry (naming the listed values, and the
-/// pre-#1822 alias `opus` among them), the CLI's own `default` as a value, and an effort the entry
-/// does not declare, with 400, and store nothing.
+/// A PUT is advised like Codex's (6′): a value the list does not carry (the pre-#1822 alias `opus`)
+/// is stored and reported `unknown_model`; an effort the entry does not declare is dropped, since a
+/// Claude entry declares no default effort, and reported `effort_adjusted`; a null model's effort
+/// is judged on the CLI's `default` entry.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_value_or_effort_the_list_does_not_carry_is_refused_at_create_and_put() {
+async fn a_put_stores_an_unlisted_value_as_unknown_and_drops_an_undeclared_effort() {
     let root = Root::new("exit");
     let stack = Stack::boot(&root).await;
-    let refusals = [
-        (json!({"model": "opus"}), format!("choose one of {LISTED}")),
+    let (_track, card_id) = stack.create_claude_track().await;
+    for (body, stored_effort, adjusted, unknown) in [
         (
-            json!({"model": "default"}),
-            format!("choose one of {LISTED}"),
+            json!({"model": "opus", "reasoning_effort": null}),
+            None,
+            false,
+            true,
         ),
-        (json!({"model": "gpt-5"}), format!("choose one of {LISTED}")),
         (
             json!({"model": "haiku", "reasoning_effort": "low"}),
-            "`haiku` declares no reasoning effort".to_string(),
+            None,
+            true,
+            false,
         ),
         (
-            json!({"model": "sonnet", "reasoning_effort": "ultra"}),
-            "choose one of low, medium, high, xhigh, max".to_string(),
+            json!({"model": null, "reasoning_effort": "ultra"}),
+            None,
+            true,
+            false,
+        ),
+        (
+            json!({"model": "sonnet", "reasoning_effort": "max"}),
+            Some("max"),
+            false,
+            false,
+        ),
+        (
+            json!({"model": null, "reasoning_effort": "xhigh"}),
+            Some("xhigh"),
+            false,
+            false,
+        ),
+    ] {
+        let (status, answer) = put_model(&stack, &card_id, body.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{body}: {answer}");
+        assert_eq!(answer["model"], body["model"], "{body}: {answer}");
+        assert_eq!(
+            answer["reasoning_effort"],
+            json!(stored_effort),
+            "{body}: {answer}"
+        );
+        assert_eq!(answer["effort_adjusted"], adjusted, "{body}: {answer}");
+        assert_eq!(answer["unknown_model"], unknown, "{body}: {answer}");
+        let stored = payload(&stack, &card_id).await;
+        assert_eq!(stored["model"], body["model"], "{body}: {stored}");
+        assert_eq!(
+            stored["reasoning_effort"],
+            json!(stored_effort),
+            "{body}: {stored}"
+        );
+    }
+}
+
+/// Create uses the same advice and, as for Codex, refuses an effort the entry does not declare
+/// rather than adjusting it; a value the list does not carry is minted, for the CLI to judge.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn create_refuses_an_undeclared_effort_and_mints_an_unlisted_value() {
+    let root = Root::new("exit");
+    let stack = Stack::boot(&root).await;
+    for (extra, expected) in [
+        (
+            json!({"model": "haiku", "reasoning_effort": "low"}),
+            "reasoning_effort `low` is unsupported for model `haiku`; it declares no default effort",
         ),
         (
             json!({"reasoning_effort": "ultra"}),
-            "the Claude CLI's default does not support".to_string(),
+            "reasoning_effort `ultra` is unsupported for the default model",
         ),
-    ];
-    for (extra, expected) in &refusals {
+    ] {
         let area = stack.area().await;
         let mut request = json!({
             "planner_provider": "claude",
@@ -132,10 +184,7 @@ async fn a_value_or_effort_the_list_does_not_carry_is_refused_at_create_and_put(
         }
         let (status, body) = stack.send("POST", "/api/tracks", Some(request)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{extra}: {body}");
-        assert!(
-            body.to_string().contains(expected.as_str()),
-            "{extra}: {body}"
-        );
+        assert!(body.to_string().contains(expected), "{extra}: {body}");
         let tracks = stack
             .repo()
             .tracks_by_area(&area)
@@ -143,83 +192,45 @@ async fn a_value_or_effort_the_list_does_not_carry_is_refused_at_create_and_put(
             .expect("tracks read");
         assert!(tracks.is_empty(), "{extra}: no track is minted");
     }
-
     let (_track, card_id) = stack
-        .create_claude_track_with(json!({"model": "sonnet"}))
+        .create_claude_track_with(json!({"model": "opus"}))
         .await;
-    let before = payload(&stack, &card_id).await;
-    for (extra, expected) in &refusals {
-        let body = json!({
-            "model": extra.get("model").cloned().unwrap_or(Value::Null),
-            "reasoning_effort": extra.get("reasoning_effort").cloned().unwrap_or(Value::Null),
-        });
-        let (status, answer) = put_model(&stack, &card_id, body.clone()).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {answer}");
-        assert!(
-            answer.to_string().contains(expected.as_str()),
-            "{body}: {answer}"
-        );
-    }
-    assert_eq!(payload(&stack, &card_id).await, before, "nothing stored");
+    assert_eq!(payload(&stack, &card_id).await["model"], "opus");
 }
 
-/// A Claude card whose stored value the list no longer carries (here the pre-#1822 alias `opus`)
-/// is refused at issue, naming the listed values; the reader is told, nothing is spawned or
-/// substituted, and a PUT of a listed value releases the queued message.
+/// At issue no catalog is consulted: a stored value the CLI does not list (one that looks like a
+/// flag among them) reaches argv as a single `--model=` token, and the CLI fails the turn in its
+/// own words; nothing substitutes another model.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_stored_value_the_list_does_not_carry_is_refused_at_issue() {
+async fn a_model_the_cli_rejects_fails_the_turn_in_the_cli_words() {
     let root = Root::new("exit");
     let stack = Stack::boot(&root).await;
     let (_track, card_id) = stack.create_claude_track().await;
-    let runtime = stack.runtime(&card_id).await;
-    let mut stored = payload(&stack, &card_id).await;
-    stored["model"] = json!("opus");
-    stored["model_ever_set"] = json!(true);
-    stack
-        .repo()
-        .card_update(
+    for (at, model) in ["claude-bogus-9-9", "-x"].into_iter().enumerate() {
+        let (status, answer) = put_model(
+            &stack,
             &card_id,
-            CardPatch {
-                title: None,
-                kind: None,
-                sort: None,
-                payload: Some(stored),
-                deletable: None,
-            },
+            json!({"model": model, "reasoning_effort": null}),
         )
-        .await
-        .expect("write a value the list does not carry");
-
-    let harness = stack.harness(&runtime.id);
-    let (status, body) = stack.post_input(&card_id, "hello?").await;
-    assert_eq!(status, StatusCode::OK, "the message is queued: {body}");
-    let mut block = None;
-    for _ in 0..200 {
-        block = harness.issuance_block().await;
-        if block.is_some() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        .await;
+        assert_eq!(status, StatusCode::OK, "{model}: {answer}");
+        assert_eq!(answer["unknown_model"], true, "{model}: {answer}");
+        let (status, body) = stack.post_input(&card_id, "hello?").await;
+        assert_eq!(status, StatusCode::OK, "{model}: {body}");
+        let outcome = stack.wait_outcomes(&card_id, at + 1).await[at].clone();
+        assert_eq!(outcome["status"], "failed", "{model}: {outcome}");
+        let words = format!(
+            "There's an issue with the selected model ({model}). It may not exist or you may not \
+             have access to it."
+        );
+        assert!(outcome.to_string().contains(&words), "{model}: {outcome}");
+        assert_eq!(spawned_flag(&root, "--model").as_deref(), Some(model));
+        let argv = root.read_fake("argv").expect("argv");
+        assert!(
+            !argv.lines().any(|arg| arg == model),
+            "{model} as its own token: {argv}"
+        );
     }
-    let block = block.expect("the reader is told why nothing is sent");
-    assert!(block.contains("`opus`"), "{block}");
-    assert!(
-        block.contains(&format!("choose one of {LISTED}")),
-        "{block}"
-    );
-    assert!(root.read_fake("spawns").is_none(), "nothing was spawned");
-    assert!(stack.outcomes(&card_id).await.is_empty());
-
-    let (status, body) = put_model(
-        &stack,
-        &card_id,
-        json!({"model": "opus[1m]", "reasoning_effort": null}),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let outcomes = stack.wait_outcomes(&card_id, 1).await;
-    assert_eq!(outcomes[0]["status"], "completed", "{outcomes:?}");
-    assert_eq!(spawned_flag(&root, "--model").as_deref(), Some("opus[1m]"));
 }
 
 /// `GET /api/models` for a Claude Planner: the CLI's list with its resolved models and effort

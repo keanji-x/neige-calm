@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 use utoipa::ToSchema;
 
+use crate::claude_planner::availability::ClaudeReadiness;
 use crate::claude_planner::config::ClaudePlannerHost;
 use crate::session_projection_repo::AgentProvider;
 use crate::shared_codex_appserver::SharedCodexAppServer;
@@ -181,11 +182,11 @@ impl<T: Clone> Slot<T> {
     }
 }
 
-/// The Codex slot. Claude's lives on its [`ClaudePlannerHost`], beside the model catalog the
-/// same check fetches (#1822), so a Claude Planner session reaches it too.
+/// One slot per provider. Claude's also holds the model list its check fetches (#1822).
 #[derive(Default)]
 pub struct ProviderAvailabilityCache {
     codex: Slot<Verdict>,
+    claude: Slot<ClaudeReadiness>,
 }
 
 impl ProviderAvailabilityCache {
@@ -210,8 +211,23 @@ impl ProviderAvailabilityCache {
                     checked_at_ms: stamped.checked_at_ms,
                 }
             }
-            AgentProvider::Claude => claude.availability(freshness).await.checked(),
+            AgentProvider::Claude => self.claude(freshness, claude).await.checked(),
         }
+    }
+
+    /// The Claude check with the model list it caches: the cached answer when `freshness` allows
+    /// and it is younger than [`TTL`], else a new check (see `claude_planner::availability` for
+    /// when that re-fetches the list).
+    pub async fn claude(
+        &self,
+        freshness: Freshness,
+        host: &ClaudePlannerHost,
+    ) -> Stamped<ClaudeReadiness> {
+        self.claude
+            .get(freshness, |previous| {
+                crate::claude_planner::availability::check(host, previous, freshness)
+            })
+            .await
     }
 
     /// Every provider: Codex, then Claude.
@@ -232,6 +248,7 @@ impl ProviderAvailabilityCache {
     #[cfg(feature = "fixtures")]
     pub async fn age_past_ttl_for_test(&self) {
         self.codex.age_past_ttl_for_test().await;
+        self.claude.age_past_ttl_for_test().await;
     }
 }
 

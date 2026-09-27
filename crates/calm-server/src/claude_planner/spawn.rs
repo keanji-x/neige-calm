@@ -82,9 +82,10 @@ pub enum SessionStart {
     Resume,
 }
 
-/// `selection` is the card's choice, judged against the CLI's model list at issue (#1822): a model
-/// is passed verbatim as `--model` and an effort as `--effort`. `None` passes neither flag, so the
-/// CLI runs its default.
+/// `selection` is the card's stored choice (#1822 6′): a model rides as `--model=<value>` and an
+/// effort as `--effort=<level>`, one token each so a value can never be read as a flag; the CLI
+/// judges the model and refuses one it cannot run. `None` passes the flag not at all, so the CLI
+/// runs its default.
 pub(crate) fn argv(
     thread: Uuid,
     start: SessionStart,
@@ -112,12 +113,10 @@ pub(crate) fn argv(
     args.push(session_flag.into());
     args.push(thread.to_string().into());
     if let Some(model) = &selection.model {
-        args.push("--model".into());
-        args.push(model.into());
+        args.push(format!("--model={model}").into());
     }
     if let Some(effort) = &selection.effort {
-        args.push("--effort".into());
-        args.push(effort.into());
+        args.push(format!("--effort={effort}").into());
     }
     for arg in [
         "--setting-sources",

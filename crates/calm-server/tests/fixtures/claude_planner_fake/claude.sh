@@ -97,10 +97,12 @@ printf '%s\n' "$@" > "$D/argv"
 env > "$D/env"
 SID=""
 PF=""
+MODEL=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --session-id|--resume) SID="$2"; shift ;;
     --append-system-prompt-file) PF="$2"; shift ;;
+    --model=*) MODEL="${1#--model=}" ;;
   esac
   shift
 done
@@ -137,6 +139,16 @@ if [ "$SCENARIO" = "slow-bind" ]; then sleep 1; fi
 printf "$INIT" "$SID"
 jq -c '. + {isReplay: true}' <<< "$LINE"
 if [ "$SCENARIO" = "slow-bind" ]; then sleep 7; SCENARIO=exit; fi
+
+# #1822: a model the CLI does not list ends the turn as the pinned 2.1.280 does, with an error
+# result in its own words and exit 1 (stderr then says `unrecognized_model`).
+case "$MODEL" in
+  ''|default|'opus[1m]'|'claude-fable-5-1[1m]'|sonnet|haiku) ;;
+  *)
+    printf '{"type":"result","subtype":"success","is_error":true,"result":"There'"'"'s an issue with the selected model (%s). It may not exist or you may not have access to it. Run --model to pick a different model.","usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0,"iterations":[]},"modelUsage":{},"terminal_reason":"completed"}\n' "$MODEL"
+    echo "unrecognized_model" >&2
+    exit 1 ;;
+esac
 
 USAGE='"usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,'
 USAGE+='"output_tokens":5,"iterations":[{"input_tokens":10,"cache_creation_input_tokens":0,'

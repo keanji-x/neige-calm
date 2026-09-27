@@ -175,18 +175,20 @@ async fn a_malformed_or_empty_list_is_unavailable_with_a_reason_and_no_list() {
     }
 }
 
-/// A card created while the list was readable, whose CLI then stops listing: PUT is refused with
-/// the reason, and so is the turn (the message stays queued, nothing is spawned).
+/// A card created while the list was readable, whose CLI then stops listing: a PUT needs Claude
+/// ready (6′), so it is refused with the reason, in the create gate's words, and nothing is stored.
+/// A turn consults no catalog: it still runs with the stored selection.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn with_no_list_a_put_and_a_turn_are_refused() {
+async fn with_no_list_a_put_is_refused_and_a_turn_still_runs() {
     let root = root_with_catalog("ok");
     let stack = Stack::boot(&root).await;
-    let (_track, card_id) = stack.create_claude_track().await;
+    let (_track, card_id) = stack
+        .create_claude_track_with(json!({"model": "sonnet", "reasoning_effort": "high"}))
+        .await;
     std::fs::write(root.fake_dir().join("catalog"), "empty").expect("break the CLI");
-    assert_eq!(
-        claude_entry(&stack, "?refresh=true").await["status"],
-        "unavailable"
-    );
+    let claude = claude_entry(&stack, "?refresh=true").await;
+    assert_eq!(claude["status"], "unavailable");
+    let reason = claude["reason"].as_str().expect("a reason").to_string();
 
     let (status, body) = stack
         .send(
@@ -196,26 +198,22 @@ async fn with_no_list_a_put_and_a_turn_are_refused() {
         )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert!(
-        body.to_string().contains("printed no usable model list"),
-        "{body}"
-    );
+    let expected = format!("`planner_provider` `claude` is unavailable: {reason}");
+    assert!(body.to_string().contains(&expected), "{body}");
+    let stored = stack
+        .repo()
+        .card_get(&card_id)
+        .await
+        .expect("card read")
+        .expect("card")
+        .payload;
+    assert_eq!(stored["model"], "sonnet", "nothing stored: {stored}");
 
-    let runtime = stack.runtime(&card_id).await;
-    let harness = stack.harness(&runtime.id);
-    let (status, body) = stack.post_input(&card_id, "hello?").await;
-    assert_eq!(status, StatusCode::OK, "queued: {body}");
-    let mut block = None;
-    for _ in 0..200 {
-        block = harness.issuance_block().await;
-        if block.is_some() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    let block = block.expect("the reader is told why nothing is sent");
-    assert!(block.contains("printed no usable model list"), "{block}");
-    assert!(root.read_fake("spawns").is_none(), "nothing was spawned");
+    let (outcome, _) = stack.run_turn(&root, &card_id, "exit", "hello?").await;
+    assert_eq!(outcome["status"], "completed", "{outcome}");
+    let argv = root.read_fake("argv").expect("argv");
+    assert!(argv.lines().any(|arg| arg == "--model=sonnet"), "{argv}");
+    assert!(argv.lines().any(|arg| arg == "--effort=high"), "{argv}");
 }
 
 /// Every log line of the process, captured for the account check below.

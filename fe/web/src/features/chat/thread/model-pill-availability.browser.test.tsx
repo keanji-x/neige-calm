@@ -42,7 +42,7 @@ it('shows why Claude cannot run, inside the viewport, and picks nothing from its
   const bounds = notice.getBoundingClientRect();
   expect(bounds.left).toBeGreaterThanOrEqual(0);
   expect(bounds.right).toBeLessThanOrEqual(390);
-  await userEvent.click(within(claude).getByRole('menuitem', { name: 'Opus' }), { force: true } as never);
+  await userEvent.click(within(claude).getByRole('menuitem', { name: /^Opus/ }), { force: true } as never);
   expect(onChange).not.toHaveBeenCalled();
   await page.screenshot({ path: '../../../../../test-results/model-pill-claude-unavailable.png' });
 });

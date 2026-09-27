@@ -2418,7 +2418,7 @@ async fn resolve_model_selection_for_issue(
     // server started without its config stops it first.
     let claude = match &inner.backend {
         PlannerBackend::Claude(session) => match session.host().configured() {
-            Ok(_) => Some(session.host()),
+            Ok(_) => true,
             Err(error) => {
                 return Err(IssuanceRefusal::needs_a_choice(
                     error.to_string(),
@@ -2429,7 +2429,7 @@ async fn resolve_model_selection_for_issue(
                 ));
             }
         },
-        PlannerBackend::Codex(_) => None,
+        PlannerBackend::Codex(_) => false,
     };
     let card = match inner.repo.card_get(inner.card_id.as_str()).await {
         // A read that failed is a read that can succeed next time.
@@ -2447,24 +2447,9 @@ async fn resolve_model_selection_for_issue(
         }
         Ok(Some(card)) => card,
     };
-    if let Some(host) = claude {
-        // #1822: judged against the CLI's model list the availability check cached. A CLI that
-        // cannot list its models cannot run a turn either; the message waits for it.
-        let catalog = host
-            .availability(crate::agent_providers::Freshness::Cached)
-            .await
-            .catalog()
-            .map_err(|refusal| {
-                IssuanceRefusal::needs_a_choice(
-                    format!("no Claude model list to judge the selection against: {refusal}"),
-                    format!(
-                        "The Claude Planner cannot run right now: {refusal}. Your message is \
-                         still queued and will be sent once it can."
-                    ),
-                )
-            })?;
-        return catalog
-            .turn_selection(&card.payload)
+    if claude {
+        // #1822 6′: no catalog is consulted at issue; the CLI judges the model it is given.
+        return crate::claude_planner::models::turn_selection(&card.payload)
             .map_err(|(log, reader)| IssuanceRefusal::needs_a_choice(log, reader));
     }
     resolve_model_selection(inner, &card.payload).await

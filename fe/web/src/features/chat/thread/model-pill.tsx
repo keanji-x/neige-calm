@@ -109,9 +109,11 @@ export function ModelPill({
   const chosen = selection.model === null
     ? followed
     : models.find((model) => model.model === selection.model);
+  /* A Claude default resolves to a model a listed entry also runs (#1822): that entry's name is the one to show. */
+  const defaultEntry = defaultName === null ? undefined : models.find((model) => model.resolved_model === defaultName);
   /* The trigger names the model, not the route to it; `Default` alone only when nothing truer can be said, and an unlisted slug still names what runs. */
   const named = selection.model === null
-    ? (defaultName ?? FOLLOW_DEFAULT_LABEL)
+    ? (defaultEntry?.display_name ?? defaultName ?? FOLLOW_DEFAULT_LABEL)
     : (chosen?.display_name ?? selection.model);
   /* With more than one provider on offer, the pick is a provider too, and the trigger says whose. */
   const label = grouped ? `${PROVIDERS[provider].label} ${named}` : named;
@@ -242,6 +244,8 @@ function GroupChoices({ group, selection, onChange }: Readonly<{
       <Choice
         key={model.id}
         label={model.display_name}
+        /* What the entry runs, where its provider says (a Claude entry's resolved model, #1822). */
+        description={model.resolved_model ?? undefined}
         isSelected={selection !== null && selection.model === model.model}
         isDisabled={blocked !== null}
         /* Switching model drops the effort: one chosen for the previous model may not exist on this one. */

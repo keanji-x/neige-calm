@@ -85,9 +85,9 @@ fn argv_is_exactly_the_spawn_contract() {
     }
 }
 
-/// #1810, #1822: a chosen model rides verbatim as `--model <value>` right after the session, and
-/// a chosen effort as `--effort <level>` after it; without either the argv is exactly the contract
-/// above.
+/// #1810, #1822: a chosen model rides verbatim as the one token `--model=<value>` right after the
+/// session, and a chosen effort as `--effort=<level>` after it; without either the argv is exactly
+/// the contract above. A value that looks like a flag stays inside its token.
 #[test]
 fn a_chosen_model_and_effort_are_passed_as_flags_and_nothing_else_changes() {
     let pick = |model: Option<&str>, effort: Option<&str>| TurnModelSelection {
@@ -99,10 +99,14 @@ fn a_chosen_model_and_effort_are_passed_as_flags_and_nothing_else_changes() {
         for (selection, flags) in [
             (
                 pick(Some("claude-fable-5-1[1m]"), Some("high")),
-                vec!["--model", "claude-fable-5-1[1m]", "--effort", "high"],
+                vec!["--model=claude-fable-5-1[1m]", "--effort=high"],
             ),
-            (pick(Some("haiku"), None), vec!["--model", "haiku"]),
-            (pick(None, Some("max")), vec!["--effort", "max"]),
+            (pick(Some("haiku"), None), vec!["--model=haiku"]),
+            (pick(None, Some("max")), vec!["--effort=max"]),
+            (
+                pick(Some("-x"), Some("--dangerously-skip-permissions")),
+                vec!["--model=-x", "--effort=--dangerously-skip-permissions"],
+            ),
         ] {
             let mut expected = without.clone();
             expected.splice(9..9, flags.into_iter().map(str::to_string));

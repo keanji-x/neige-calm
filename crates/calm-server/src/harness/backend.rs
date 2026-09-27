@@ -40,9 +40,8 @@ impl PlannerBackend {
         }
     }
 
-    /// The Claude arm passes the model as `--model` and the effort as `--effort` (#1810, #1822):
-    /// the run loop judged the selection against the CLI's model list at issue, and neither half
-    /// is dropped.
+    /// The Claude arm passes the stored model and effort as `--model=` and `--effort=` (#1810,
+    /// #1822 6′); no catalog is consulted here, and the CLI judges the model.
     pub async fn turn_start(
         &self,
         thread_id: &str,
