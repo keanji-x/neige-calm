@@ -678,8 +678,9 @@ pub(crate) async fn prepare_target_tx(
 /// a marker-carrying descendant that outlives the wrapper is what the sweep reaches. A live member
 /// whose environ cannot be read (`PR_SET_DUMPABLE=0` → EACCES) is cleanup-uncertain,
 /// NOT proven-foreign: the sweep never kills it (only proven members are killed) and the wait never
-/// counts the group stopped, so `stop_group` returns `Err` → `gate-infra`. Only a member whose
-/// environ is readable AND lacks the marker is proven foreign and skipped. `Err` = a marked or
+/// counts the group stopped, so `stop_group` returns `Err` → `gate-infra`. An environ that reads
+/// empty (a descendant inside execve) is unreadable in the same sense. Only a member whose environ
+/// is readable, non-empty AND lacks the marker is proven foreign and skipped. `Err` = a marked or
 /// unreadable descendant is still alive after the wait: the caller must not sample, see [`finalize`].
 pub(crate) async fn stop_group(artifacts: &SpawnArtifacts, op_marker: &str) -> Result<()> {
     kill(artifacts);
@@ -1552,9 +1553,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn unreadable_member_blocks_group_stop_without_killing() {
         use crate::operation::gate_process::marked_group_stopped;
-        use crate::proc_identity::{
-            MarkerAuth, group_members_with_env_marker, proc_env_marker, read_proc_start_time,
-        };
+        use crate::proc_identity::{group_members_with_env_marker, read_proc_start_time};
         use std::os::unix::process::CommandExt as _;
 
         let marker = format!("w:hide#g1-{}-{}", std::process::id(), now_ms());
@@ -1576,10 +1575,12 @@ mod tests {
             .expect("spawn hidden-environ descendant");
         let hidden_pid = hidden.id() as i32;
 
-        // Wait until prctl has run and the environ is genuinely unreadable (EACCES → `Unreadable`).
+        // Wait until prctl has run and the environ read genuinely fails with EACCES. Not "classified
+        // `Unreadable`": the empty read inside execve (#1805) is `Unreadable` too, before prctl.
         let became_unreadable = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
-                if proc_env_marker(hidden_pid, "NEIGE_GATE_OP", &marker) == MarkerAuth::Unreadable {
+                let read = std::fs::read(format!("/proc/{hidden_pid}/environ"));
+                if read.err().and_then(|error| error.raw_os_error()) == Some(libc::EACCES) {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;

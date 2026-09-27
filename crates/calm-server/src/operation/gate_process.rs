@@ -320,13 +320,14 @@ pub(crate) async fn wait_group_stopped(artifacts: &super::SpawnArtifacts) -> Res
 /// Like [`group_stopped`], but a live member's classification comes from
 /// [`crate::proc_identity::proc_env_marker`] against `NEIGE_GATE_OP=<op_marker>`. On the recovery
 /// paths the wrapper's leader is dead and the numeric pgid can be reused by an unrelated process;
-/// a proven-`Foreign` member (environ readable without the marker, or already gone) is NOT waited
-/// for (nor swept), so a recycled pgid never turns a recovery into a 5 s timeout. Boot mismatch and
-/// an invalid pgid are handled exactly as [`group_stopped`]. A live member whose environ is
-/// UNREADABLE ([`crate::proc_identity::MarkerAuth::Unreadable`] — e.g. a same-uid descendant that
-/// set `PR_SET_DUMPABLE=0`) is cleanup-uncertain, not proven foreign: it blocks the wait (fail
-/// closed → the group never counts as stopped → `gate-infra`) yet is never killed (the sweep signals
-/// only `Present`). An unparseable `stat` still returns `Err`.
+/// a proven-`Foreign` member (environ readable, non-empty and without the marker, or already gone)
+/// is NOT waited for (nor swept), so a recycled pgid never turns a recovery into a 5 s timeout. Boot
+/// mismatch and an invalid pgid are handled exactly as [`group_stopped`]. A live member whose
+/// environ is UNREADABLE ([`crate::proc_identity::MarkerAuth::Unreadable`] — e.g. a same-uid
+/// descendant that set `PR_SET_DUMPABLE=0`, or one inside execve whose environ reads empty) is
+/// cleanup-uncertain, not proven foreign: it blocks the wait (fail closed → the group never counts
+/// as stopped → `gate-infra`) yet is never killed (the sweep signals only `Present`). An
+/// unparseable `stat` still returns `Err`.
 pub(crate) fn marked_group_stopped(
     artifacts: &super::SpawnArtifacts,
     op_marker: &str,
@@ -337,8 +338,9 @@ pub(crate) fn marked_group_stopped(
 }
 
 /// Fail closed on an unreadable live member: `Present` (proven ours) OR `Unreadable` (live but
-/// environ hidden — cannot be proven foreign) both block the wait; only a proven-`Foreign` member
-/// (readable without the marker, or already gone) is passed over.
+/// environ hidden or empty mid-execve — cannot be proven foreign) both block the wait; only a
+/// proven-`Foreign` member (readable, non-empty and without the marker, or already gone) is passed
+/// over.
 fn marked_member_blocks(pid: i32, op_marker: &str) -> bool {
     match crate::proc_identity::proc_env_marker(pid, "NEIGE_GATE_OP", op_marker) {
         crate::proc_identity::MarkerAuth::Present
@@ -416,7 +418,7 @@ pub(crate) fn kill(artifacts: &super::SpawnArtifacts) {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
-    use super::{group_stopped_in, marked_member_blocks};
+    use super::{group_stopped_in, marked_group_stopped, marked_member_blocks};
     use crate::operation::SpawnArtifacts;
     use calm_worker_runtime::test_support::{ChildGuard, ReapedProcDir};
     use std::os::unix::process::CommandExt as _;
@@ -452,7 +454,7 @@ mod tests {
         );
         let live_pid = live.pid();
         // `spawn` can return while the child is still inside execve, when its environ reads empty
-        // (so `Foreign`); the live-member case below needs the marker actually visible.
+        // (so `Unreadable`); the live-member case below needs the marker actually visible.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while crate::proc_identity::proc_env_marker(live_pid, "NEIGE_GATE_OP", MARKER)
             != crate::proc_identity::MarkerAuth::Present
@@ -495,6 +497,57 @@ mod tests {
         assert!(
             matches!(held_live, Ok(false)),
             "a live marked member must still hold the group: {held_live:?}"
+        );
+    }
+
+    /// Spawn `sleep 300` as its own group leader with exactly `env`, and wait until it has left
+    /// execve (`comm` is `sleep`, state `S`) and its environ reads back as `expect_environ`.
+    fn settled_sleeper(env: &[(&str, &str)], expect_environ: &[u8]) -> ChildGuard {
+        let mut command = Command::new("/bin/sleep");
+        command.arg("300").env_clear().envs(env.iter().copied());
+        let child = ChildGuard::spawn(command.process_group(0));
+        let pid = child.pid();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+            let state = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                .ok()
+                .and_then(|stat| crate::proc_identity::parse_proc_stat_fields(&stat))
+                .map(|fields| fields.state);
+            let environ = std::fs::read(format!("/proc/{pid}/environ")).ok();
+            if comm.trim() == "sleep"
+                && state == Some('S')
+                && environ.as_deref() == Some(expect_environ)
+            {
+                return child;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "sleeper never settled: comm={comm:?} state={state:?} environ={environ:?}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// A live member whose environ reads empty — as a gate descendant's does while it is inside
+    /// execve, between `exec_mmap` and `create_elf_tables` (#1805) — cannot be proven foreign, so
+    /// it holds the marked group running. The empty read is produced deterministically by a live
+    /// process exec'd with an empty environment; the kernel returns the same zero bytes. A live
+    /// member whose environ is non-empty and lacks the marker is still proven foreign.
+    #[test]
+    fn a_member_whose_environ_reads_empty_as_mid_execve_holds_the_group() {
+        let empty = settled_sleeper(&[], b"");
+        let held = marked_group_stopped(&artifacts(empty.pid()), MARKER);
+        assert!(
+            matches!(held, Ok(false)),
+            "an empty-environ live member must hold the group: {held:?}"
+        );
+
+        let foreign = settled_sleeper(&[("OTHER", "x")], b"OTHER=x\0");
+        let stopped = marked_group_stopped(&artifacts(foreign.pid()), MARKER);
+        assert!(
+            matches!(stopped, Ok(true)),
+            "a live member with a markerless non-empty environ must not hold the group: {stopped:?}"
         );
     }
 }

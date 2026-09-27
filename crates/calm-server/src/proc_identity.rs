@@ -173,13 +173,16 @@ pub enum MarkerAuth {
     /// Environ readable and carrying the exact marker: a proven descendant. Killed by the sweep;
     /// blocks the wait.
     Present,
-    /// Environ readable WITHOUT the marker (a recycled-pgid stranger), or the process is already
-    /// gone (`ENOENT`, or `ESRCH` once reaped): not ours and not live — never killed, never blocks
-    /// the wait.
+    /// Environ readable, NON-empty and WITHOUT the marker (a recycled-pgid stranger), or the process
+    /// is already gone (`ENOENT`, or `ESRCH` once reaped): not ours and not live — never killed,
+    /// never blocks the wait.
     Foreign,
-    /// Environ unreadable while the process is live (`EACCES`, …): cleanup-uncertain, NOT
-    /// proven-foreign. Never killed (identity unproven), but blocks the wait (fail closed →
-    /// `gate-infra`) so a hidden-environ descendant cannot slip a clean after-sample past the gate.
+    /// Environ unreadable while the process is live (`EACCES`, …), or read as zero bytes — what a
+    /// live process shows inside execve before its new environ is set up (#1805): no environ image
+    /// proves membership either way, so cleanup-uncertain, NOT proven-foreign. Never killed
+    /// (identity unproven), but blocks the wait (fail closed → `gate-infra`) so a hidden-environ or
+    /// mid-exec descendant cannot slip a clean after-sample past the gate. A recycled-pgid stranger
+    /// whose environ is truly empty therefore also blocks the wait.
     Unreadable,
 }
 
@@ -192,6 +195,9 @@ pub fn proc_env_marker(pid: i32, key: &str, value: &str) -> MarkerAuth {
 #[cfg(target_os = "linux")]
 fn proc_env_marker_in(proc_root: &std::path::Path, pid: i32, key: &str, value: &str) -> MarkerAuth {
     match std::fs::read(proc_root.join(pid.to_string()).join("environ")) {
+        // Zero bytes is indistinguishable from a task inside execve, which has no environ image yet
+        // (#1805): membership cannot be proven OR disproven — cleanup-uncertain.
+        Ok(bytes) if bytes.is_empty() => MarkerAuth::Unreadable,
         Ok(bytes) => {
             let needle = format!("{key}={value}");
             if bytes
@@ -441,6 +447,27 @@ mod tests {
         );
         assert_eq!(
             proc_env_marker_in(root.path(), pid, "NEIGE_GATE_OP", "w:reaped#g1"),
+            MarkerAuth::Foreign
+        );
+    }
+
+    /// An environ that reads zero bytes is what a live process shows while it is inside execve
+    /// (#1805): no environ image proves membership either way, so it is `Unreadable`, not
+    /// `Foreign`. An environ with entries but without the marker stays `Foreign`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_empty_environ_is_unreadable_and_a_markerless_one_is_foreign() {
+        let root = tempfile::tempdir().expect("tempdir");
+        for (pid, environ) in [(4101, &b""[..]), (4102, &b"PATH=/bin\0HOME=/h\0"[..])] {
+            std::fs::create_dir(root.path().join(pid.to_string())).expect("pid dir");
+            std::fs::write(root.path().join(format!("{pid}/environ")), environ).expect("environ");
+        }
+        assert_eq!(
+            proc_env_marker_in(root.path(), 4101, "NEIGE_GATE_OP", "w:empty#g1"),
+            MarkerAuth::Unreadable
+        );
+        assert_eq!(
+            proc_env_marker_in(root.path(), 4102, "NEIGE_GATE_OP", "w:empty#g1"),
             MarkerAuth::Foreign
         );
     }
