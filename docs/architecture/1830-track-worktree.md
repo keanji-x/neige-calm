@@ -2,7 +2,8 @@
 
 **Owner rules.** (1) Simple first, pain points only: the fewest mechanisms that cover the
 observed symptoms; anything hypothetical is a one-line KNOWN GAP. (2) Compatibility means the
-4140 database only.
+4140 database only. (3) S1–S3 land before anything is deployed to 4140; no intermediate
+state is designed for.
 
 **Outcome.** A new attached track gets one kernel-made git worktree and branch, based on the
 upstream the way worker leases are (#1777). Every Planner turn, Codex or Claude, runs there.
@@ -20,7 +21,6 @@ Verified at c7c7f82ae by reading the code, or by the command shown.
 | F1 | `tracks.workspace_path` is the only stored path; `TrackWorkspace` = kind, path, frozen_at | `calm-types/src/model.rs:270`, `calm-truth/src/db/rows.rs:101-105` | read |
 | F2 | Attached create (`TrackWorkspacePlan::AttachedFromCwd`) freezes the workspace at birth | `calm-truth/src/db/sqlite/track.rs:137-141`, route `routes/tracks.rs:991` | read |
 | F3 | Re-point refuses an attached or frozen source, so an attached track never moves | `routes/tracks.rs:2128-2142` | read |
-| F4 | Attached admission runs before the tx: absolute, exists, `show-toplevel` succeeds, `refs/heads/neige` free | `workspace_materialize.rs:119-168`, `routes/tracks.rs:931-937` | read |
 | F5 | Managed materialization runs after the track tx commits and before the planner starts; a failure is non-2xx and leaves the row | `routes/tracks.rs:911-913`, `:1616-1634` | read |
 | F6 | An idempotent create replay re-materializes (`adopt_prior_track`) | `routes/tracks/create.rs:531-555` | read |
 | F7 | Worker `repo_root` = `show-toplevel` of `workspace_path`; lease = `<repo_root>/.claude/worktrees/<track>/<card>`, branch `neige/<track>/<card>` | `operation/workspace_lease/mod.rs:132-163`, `:1549-1583`, `:1599-1641` | read |
@@ -39,6 +39,7 @@ Verified at c7c7f82ae by reading the code, or by the command shown.
 | F20 | neige-calm checkout: 3,411 tracked files, 48 MB; shared `.git` 705 MB (objects are not copied); 83 registered worktrees, 83 `refs/heads/neige/*` | `du -sh --exclude=.git`, `git ls-files \| wc -l`, `git worktree list \| wc -l` | command |
 | F21 | #1815: Claude's Bash sandbox adds about 2 deny paths per registered worktree; E2BIG at about 590 worktrees | `gh issue view 1815` | read |
 | F22 | Test fixtures attach repositories with no commit (`git init` only) | `tests/cases/area_defaults.rs:63-75` and other `tests/cases` files | grep |
+| F23 | Claude Code 2.1.280 with `--setting-sources project` and cwd `<repo>/.claude/worktrees/track-x` loads only the worktree's AGENTS.md, not the parent repository's (a marker in each file: the nested cwd reported only the child marker, the root cwd only the parent marker) | orchestrator probe | probe |
 
 ## 2. Decisions
 
@@ -65,38 +66,33 @@ Verified at c7c7f82ae by reading the code, or by the command shown.
   is a 48 MB checkout plus one sandbox registration per track (F20, F21). 4140 creates
   17 attached tracks per 23 days, and live ones grow by about 12 per month against a ceiling of
   about 590. Child tracks: 0 in 4140.
-- **D5 When:** (a) Before the track tx, next to `validate_attached_workspace`: resolve
-  `repo_root`, run `refresh_upstream(repo_root)` (bounded, fail-soft), then
-  `choose_lease_start`. `Diverged` is refused with `diverged_refusal` (409), and an unborn HEAD
-  or other chooser error with 400. Nothing is minted. (b) In the tx, the new plan variant
+- **D5 When:** (a) In the create tx, the new plan variant
   `TrackWorkspacePlan::AttachedWithTrackWorktree(repo_root)` writes the path through the existing
-  single writer. (c) After commit, where managed workspaces materialize (F5),
-  `ensure_track_worktree` runs `git worktree add -b <branch> <path> <base>` in
-  `spawn_blocking`. A failure here is non-2xx and leaves the row, as with managed (F5). The
-  replay (`adopt_prior_track`, F6) runs the same ensure: a registered directory is Ok, an
-  existing branch is added without `-b`, otherwise the base is chosen again (locally).
-  *Why:* refusals happen before any row, as with the other attached checks (F4). The fetch
-  receipt is shared with the first worker's lease, which then uses the same upstream.
-- **D6 Dirty user checkout: irrelevant.** `worktree add` checks out a commit and never reads
-  the user's working tree. The Planner does not see the user's uncommitted edits, by design.
-- **D7 Removal: track delete and area delete only.** `WorkspaceTrackSweep` also reads
-  `workspace_worktree_path`, and `sweep_workspace_worktrees_for_track_repo` removes it first,
-  independent of lease rows, with
-  `remove_workspace_worktree` (Discard: `--force`, `branch -D`) on the target
-  {repo_root = path's third ancestor, path, branch}. It emits no `WorktreeRemoved` event: that
-  event is card-scoped, and the track worktree has no card. A dirty track worktree is discarded,
-  as lease worktrees are. *Why:* F14 already covers both deletes. Removal on reaching a terminal
-  state would mean re-creating the worktree on reopen, which is S3's post-merge reclaim.
+  single writer (`repo_root` from `git_repo_root_for_track_cwd`, run before the tx). (b) After
+  commit, where managed workspaces materialize (F5), `ensure_track_worktree` does it all:
+  `refresh_upstream(repo_root)` (bounded, fail-soft), then in `spawn_blocking` a registered
+  directory is Ok, an existing branch is added without `-b`, else `choose_lease_start` picks the
+  base and `git worktree add -b <branch> <path> <base>` runs. `Diverged` (`diverged_refusal`) or
+  an unborn HEAD fails the create non-2xx and leaves the row, exactly like a managed
+  materialization failure (F5). The replay (`adopt_prior_track`, F6) runs the same ensure.
+  *Why:* one function, one place, the contract F5 already has.
+- **D6** A dirty user checkout is irrelevant: `worktree add` checks out a commit, not the
+  user's working tree.
+- **D7 Removal: track delete and area delete.** `WorkspaceTrackSweep` also reads
+  `workspace_worktree_path`. `sweep_workspace_worktrees_for_track_repo` removes it before its
+  early returns (`workspace_lease/mod.rs:671`, `:688`, `:713`), independent of lease rows, with
+  `remove_workspace_worktree` (Discard: `--force`, `branch -D`) on the target {repo_root = the
+  path's third ancestor, path, branch}. A failure is `warn!`-logged and never propagated: the
+  area loop uses `?` (`mod.rs:765`), so an error would abort the other tracks' sweeps. No
+  `WorktreeRemoved` event (it is card-scoped). A dirty track worktree is discarded, as lease
+  worktrees are. *Why:* F14 already covers both deletes.
 - **D8 Re-point and freeze: unchanged.** Attached tracks are frozen at birth (F2, F3), so a row
   with a worktree is never re-pointed. The column is written only by
   `track_workspace_write_tx` in the create tx; a re-point writes `None`.
 - **D9 The readers that move to `agent_cwd()`** are those that name where the Planner runs
-  (table in §3). Every reader for workers, terminals, gates, files and staleness stays on
-  `workspace.path`.
-- **D10 4140 rows:** the migration adds the column NULL with no backfill. The 9 attached tracks
-  keep running in `/mnt/data2/kenji/neige-calm` and `/mnt/data2/kenji/galxe/jugge`. Moving them
-  would break resume: a Codex thread keeps its start cwd (F10), and a Claude `--resume` session
-  is stored per cwd. To move the draft `40b02ce4`, delete it and create it again.
+  (table in §3). All others stay on `workspace.path`.
+- **D10** Existing rows keep their cwd: the column is added NULL, with no backfill (a Codex
+  thread and a Claude session are bound to their start cwd, F10, F12).
 
 ## 3. Readers of the track workspace (grep of `workspace_path|workspace\.path|workspace_kind|workspace\.kind`)
 
@@ -110,20 +106,18 @@ Verified at c7c7f82ae by reading the code, or by the command shown.
 | Codex `config/read` cwd | `harness/run_loop.rs:2678` | `agent_cwd()` |
 | Model defaults for a card ("the same value planner-harness-start puts on its payload") | `routes/models.rs:273-296` | `agent_cwd()` |
 | Planner forge cwd (Planner arm only) | `mcp_server/transport.rs:974-981` | `agent_cwd()`, so a Planner `git.commit` lands on the track branch, not the user's checkout |
-| Launchpad start and today summary | `routes/today.rs:524-530`, `today_summary.rs:342-350` | unchanged (managed: `agent_cwd() == path`) |
-| Child bootstrap cwd | `child_track_adapter.rs:113-124`, `:407`; `scheduler/mod.rs:1533-1549` | unchanged (child: `None`) |
-| Re-point restart | `routes/tracks.rs:2229-2360` | unchanged (unreachable for rows with a worktree, D8) |
-| Worker lease `repo_root`, managed last-chance materialize | `workspace_lease/mod.rs:141-157` | unchanged: user's checkout, so workers never nest in the track worktree |
-| Worker upstream refresh | `workspace_lease/upstream_fetch.rs:597-627` | unchanged |
-| Worker success commit | `mcp_server/tools/emit.rs:196` | unchanged |
-| Candidate staleness (`plan.list`) | `mcp_server/tools/plan.rs:781-785` | unchanged (measured against workers' base) |
-| Gate fallback cwd | `task_verify_adapter/mod.rs:441-487` | unchanged |
-| Terminal default cwd (cards, terminal tasks, Claude restart) | `terminal_adapter.rs:225-240`; callers `:292`, `:677`, `claude_restart_adapter.rs:176` | unchanged (KNOWN GAP) |
 | Teardown sweep | `workspace_lease/mod.rs:586-610` | also reads the new column (D7) |
-| FE file reads | `routes/fs.rs:294`, `:329`; FE `fileRoot={track.cwd}` `fe/web/src/app/router/public.tsx:2338`, `:2382` | unchanged (KNOWN GAP) |
-| Planner attachments, managed recycle | `planner_attachments/mod.rs:53-60`, `workspace_recycle.rs:19-24` | unchanged (managed only) |
-| Replace admission and routing (kind only) | `task_replace/route.rs:40`, `admission.rs:217` | unchanged |
-| Freeze points | `workspace_lease/mod.rs:252`, `calm-truth/.../card.rs:566`, `track.rs:299` | unchanged |
+
+Unchanged (`workspace.path`): launchpad and today summary (`routes/today.rs:524-530`,
+`today_summary.rs:342-350`; managed, so equal anyway), child bootstrap
+(`child_track_adapter.rs:407`, `scheduler/mod.rs:1533-1549`), re-point restart
+(`routes/tracks.rs:2229-2360`, unreachable here by D8), worker lease `repo_root`
+(`workspace_lease/mod.rs:141-157`, so workers never nest in the track worktree), worker upstream
+refresh (`upstream_fetch.rs:597-627`), worker success commit (`emit.rs:196`), candidate staleness
+(`plan.rs:781-785`), gate fallback (`task_verify_adapter/mod.rs:441-487`), terminal default cwd
+(`terminal_adapter.rs:225-240`), FE file reads (`routes/fs.rs:294`, `:329`), managed-only
+readers (`planner_attachments/mod.rs:53-60`, `workspace_recycle.rs:19-24`), replace routing
+(kind only), freeze points (`workspace_lease/mod.rs:252`, `card.rs:566`, `track.rs:299`).
 
 ## 4. S1 change list
 
@@ -139,23 +133,20 @@ Verified at c7c7f82ae by reading the code, or by the command shown.
   the path from the minted id. `AttachedFromCwd` (fixtures, `Repo::track_create`) stays
   worktree-less.
 - `calm-server/src/operation/workspace_lease/track_worktree.rs` (new, about 120 lines):
-  `track_worktree_path_for`, `track_branch_for`, `admit_track_worktree_base` (async: fetch +
-  chooser) and `ensure_track_worktree` (sync). It reuses `git_worktree_registration`,
+  `track_worktree_path_for`, `track_branch_for` and `ensure_track_worktree` (async fetch, then
+  the git work in `spawn_blocking`). It reuses `git_worktree_registration`,
   `git_ref_exists`, `ensure_workspace_worktree_root_excluded` and `isolated_git_command`, but
   not `provision_workspace_worktree` (F9).
-- `routes/tracks.rs`: admission before the tx, the plan variant, ensure after
+- `routes/tracks.rs`: `repo_root` before the tx, the plan variant, ensure after
   `materialize_workspace`, and the Planner-start `agent_cwd()`. `routes/tracks/create.rs`:
   `:495`, `:572-573`, and ensure inside `adopt_prior_track`.
 - `routes/cards.rs`, `routes/track_conversations.rs`, `routes/models.rs`,
   `claude_planner/wiring.rs`, `harness/run_loop.rs`, `mcp_server/transport.rs`: `agent_cwd()`.
 - `workspace_lease/mod.rs`: `WorkspaceTrackSweep.track_worktree`, read at `:586` and removed in
   `sweep_workspace_worktrees_for_track_repo`.
-- `prompts/planner.md`, one bullet (and the golden
-  `tests/goldens/issue_development_planner_prompt.txt`):
-  > On an attached Track your working directory is the Track's own git worktree (branch
-  > `neige/track-<track id>`), made from the upstream when the Track was created. The Track's
-  > `cwd` is the user's checkout: read it if you must, never write to it. Commit with
-  > `git.commit`. Workers still run in their own worktrees and do not see your uncommitted edits.
+- `operation/planner_harness_start_adapter.rs:410-433` `planner_instructions`: only when
+  `track.workspace.worktree` is `Some`, append one line: "Your working directory is this Track's
+  git worktree `<path>`; commit with `git.commit`." `planner.md` and its golden are unchanged.
 - Test fixtures that attach a commit-less `git init` repository (F22) get an initial commit.
   Assertions that the Planner payload `cwd` equals the track `cwd` on an attached create
   (`track_create_first_message.rs:323` `first_message_payload_cwds` and its users) now expect
@@ -184,45 +175,37 @@ real git (a bare origin plus a clone).
 | Test | Pins | Mutation that must turn it red |
 |---|---|---|
 | T1 `attached_create_makes_the_track_worktree_at_the_upstream` (clone one commit behind origin): row `worktree == <clone>/.claude/worktrees/track-<id>`; worktree HEAD == origin tip on `neige/track-<id>`; the clone's HEAD and `status --porcelain` unchanged; `planner-harness-start` payload `cwd` == worktree | D5 (c), D3, `routes/tracks.rs:1654` | M1 drop the ensure call after commit; M2 payload `cwd: track.workspace.path`; M3 base = `resolve_head_base` instead of `choose_lease_start` |
-| T2 `diverged_checkout_is_refused_before_any_row`: local commit plus a moved origin → 409 naming `attached-repo-diverged`; no track row in the area, no `refs/heads/neige/track-*`, no directory | D5 (a) | M4 skip the admission (the ensure after commit still refuses, but the row exists) |
-| T3 `claude_planner_turn_runs_in_the_track_worktree` (`claude_planner_wiring.rs` stack, attached `cwd`; the fake also records `pwd`): the fake's cwd == worktree and argv has `Edit(/<worktree>/**)` | `claude_planner/wiring.rs:69` | M5 wiring passes `workspace.path` |
-| T4 `track_delete_removes_the_track_worktree_and_branch` (with an untracked file in it): directory gone, not in `worktree list`, ref gone, the clone untouched | D7 | M6 drop the removal in `sweep_workspace_worktrees_for_track_repo` |
-| T5 `planner_git_commit_lands_on_the_track_branch`: a Planner `git.commit` forge action moves `neige/track-<id>`, and the clone's HEAD is unchanged | `transport.rs:981` | M7 Planner arm returns `workspace.path` |
+| T3 `claude_planner_turn_runs_in_the_track_worktree` (`claude_planner_wiring.rs` stack, attached `cwd`; the fake also records `pwd`): the fake's cwd == worktree and argv has `Edit(/<worktree>/**)` | `claude_planner/wiring.rs:69` | M4 wiring passes `workspace.path` |
+| T4 `track_delete_removes_the_track_worktree_and_branch` (with an untracked file in it): directory gone, not in `worktree list`, ref gone, the clone untouched | D7 | M5 drop the removal in `sweep_workspace_worktrees_for_track_repo` |
+| T5 `planner_git_commit_lands_on_the_track_branch`: a Planner `git.commit` forge action moves `neige/track-<id>`, and the clone's HEAD is unchanged | `transport.rs:981` | M6 Planner arm returns `workspace.path` |
 
 Ordinary (not mutation-verified) tests: `agent_cwd()` for `None` / `Some`; the replay ensure is
-idempotent; a commit-less repository gets 400 at admission; `installation_cwd` uses the worktree.
+idempotent; a diverged or commit-less repository fails the create non-2xx and leaves no
+worktree; `installation_cwd` uses the worktree; the instructions line appears only with `Some`.
 Each mutation changes one production line. Predicted red sets: M1 → T1, T3, T4, T5 (each first
 asserts that the worktree exists); every other mutation → only its own test. T1 creates without
 a first message; the first-message arm is covered by the updated `first_message_payload_cwds`
 assertions.
 
-## 7. KNOWN GAPS
+## 7. KNOWN GAPS (after S3)
 
-- The Planner cannot `git commit` from a shell. For Codex, `workspace-write` makes the linked
-  worktree's gitdir (in the common dir) read-only. For Claude it depends on the sandbox (not
-  resolvable from code). S1 answer: `git.commit` (T5).
-- The terminal default cwd, the FE file view (`fs.rs`) and the gate fallback still use the
-  user's checkout. A file the Planner links to resolves there.
-- Workers are unchanged, so they do not see the Planner's edits. That is S2.
-- Child tracks and managed→attached re-points get no worktree (0 in 4140).
-- The worktree is removed only on delete. `done` tracks keep theirs (the 4140 net growth is
-  about 12 per month; 8 of 17 attached tracks were deleted).
-- If someone removes the worktree by hand, the Planner's spawn fails. There is no re-ensure at
-  planner start; delete the track.
-- A track delete that races the ensure after commit can leak one worktree (the same window
-  managed materialization has).
-- An attached `cwd` that is a subdirectory runs the Planner at the worktree root (every 4140 attach
-  was a toplevel).
-- Pre-#1830 Claude sessions that re-render instructions (`wiring.rs` at recovery) read the new
-  bullet while still running in the checkout (2 `done` tracks).
+- A worktree removed by hand makes the Planner's spawn fail; nothing re-ensures it at planner
+  start. Delete the track.
+- A track delete racing the ensure after commit can leak one worktree (the window managed
+  materialization already has).
+- An attached `cwd` below the repository toplevel runs the Planner at the worktree root (every
+  4140 attach was a toplevel).
+- A managed→attached re-point gets no worktree.
 
 ## 8. S1 / S2 / S3 boundary
 
-- **S1 (this doc):** column, accessor, create-time worktree and branch, Planner/assistant/forge
-  cwd, removal on delete, prompt bullet.
-- **S2:** the lease targets the track worktree (one per track), a per-attempt kernel commit, a
-  clean-tree check before a worker starts, #1785 carry deleted. S2 decides whether the terminal,
-  gate and FE file defaults and child tracks move to the worktree, and gives the Planner a
-  writable gitdir if one is still needed.
+- **S1:** column, accessor, create-time worktree and branch, Planner/assistant/forge cwd,
+  removal on delete, conditional instructions line.
+- **S2:** workers lease the track worktree (one per track), a per-attempt kernel commit, a
+  clean-tree check before a worker starts, #1785 carry deleted. S2 also decides whether the
+  terminal, gate and FE file defaults and child tracks move to the worktree, and whether the
+  Planner needs a writable gitdir to commit from its shell (Codex `workspace-write` makes the
+  linked worktree's gitdir read-only; Claude's sandbox is not resolvable from code; until then,
+  `git.commit`).
 - **S3:** push equal to the candidate, `gh.pr.create`, and reclaim of the worktree and branch
   after merge or on reaching a terminal state (#1815 pattern).
