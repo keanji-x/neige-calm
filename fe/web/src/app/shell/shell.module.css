@@ -631,9 +631,9 @@
    * the row takes that padding over (negative margin + own padding) and keeps
    * the avatar where it sat before. The rail fill hides rows scrolling behind
    * it. The z-index makes this row a stacking context that also holds
-   * `.menu`, which overhangs `.main` (always so in the collapsed 44px strip), so it is the
-   * menu's own `--z-overlay`: the menu keeps the rank it had before, and the
-   * row still clears the `--z-raised` area action buttons.
+   * `.menu`, which overhangs `.main` (always so in the collapsed 44px strip),
+   * so it is the menu's own `--z-overlay`: the menu keeps the rank it had
+   * before, and the row still clears the `--z-raised` area action buttons.
    */
   .userRow {
     position: sticky;
