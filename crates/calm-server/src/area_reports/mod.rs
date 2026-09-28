@@ -90,11 +90,8 @@ struct Named {
     file: String,
 }
 
-async fn named(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    area_id: &str,
-) -> Result<Vec<Named>, TrackFsError> {
-    let rows = store::rows(tx, area_id).await.map_err(internal)?;
+async fn named(pool: &SqlitePool, area_id: &str) -> Result<Vec<Named>, TrackFsError> {
+    let rows = store::rows(pool, area_id).await.map_err(internal)?;
     let pairs: Vec<(&str, &str)> = rows
         .iter()
         .map(|row| (row.title.as_str(), row.track_id.as_str()))
@@ -114,18 +111,10 @@ pub async fn list(
     area_id: &str,
     filter: &Filter,
 ) -> Result<Vec<ReportEntry>, TrackFsError> {
-    let mut tx = pool.begin().await.map_err(internal)?;
-    let reports = named(&mut tx, area_id).await?;
-    let mut tags = store::tags(&mut tx, area_id).await.map_err(internal)?;
-    tx.commit().await.map_err(internal)?;
-
-    let mut matched: Vec<(Named, Vec<String>)> = reports
+    let mut matched: Vec<Named> = named(pool, area_id)
+        .await?
         .into_iter()
-        .map(|report| {
-            let report_tags = tags.remove(&report.row.track_id).unwrap_or_default();
-            (report, report_tags)
-        })
-        .filter(|(report, report_tags)| {
+        .filter(|report| {
             filter
                 .name
                 .as_deref()
@@ -133,7 +122,7 @@ pub async fn list(
                 && filter
                     .tag
                     .as_deref()
-                    .is_none_or(|tag| report_tags.iter().any(|t| t == tag))
+                    .is_none_or(|tag| report.row.tags.iter().any(|t| t == tag))
         })
         .collect();
     if matched.len() > MAX_REPORTS_PER_LISTING {
@@ -150,7 +139,7 @@ pub async fn list(
             )
         }));
     }
-    matched.sort_by(|(a, _), (b, _)| {
+    matched.sort_by(|a, b| {
         b.row
             .updated_at
             .cmp(&a.row.updated_at)
@@ -158,19 +147,21 @@ pub async fn list(
     });
     matched
         .into_iter()
-        .map(|(report, tags)| {
+        .map(|report| {
             Ok(ReportEntry {
                 path: format!("{REPORTS_DIR}/{}", report.file),
                 updated_at: rfc3339_local(report.row.updated_at)?,
                 title: report.row.title,
                 track_id: report.row.track_id,
-                tags,
+                tags: report.row.tags,
             })
         })
         .collect()
 }
 
-/// The latest body of the report `file` names in `area_id`, resolved and read in one transaction.
+/// The latest body of the report `file` names in `area_id`: resolved against the area's listing,
+/// then the body read in one statement that re-checks the track and the area. A rename after the
+/// resolution still reads the resolved report's latest body; a report that left the area is not found.
 pub async fn read(
     pool: &SqlitePool,
     area_id: &str,
@@ -178,8 +169,12 @@ pub async fn read(
 ) -> Result<TrackFsContent, TrackFsError> {
     let path = format!("{REPORTS_DIR}/{file}");
     let parsed = name::parse(file).map_err(TrackFsError::PathNotAvailable)?;
-    let mut tx = pool.begin().await.map_err(internal)?;
-    let reports = named(&mut tx, area_id).await?;
+    let not_found = || {
+        TrackFsError::PathNotAvailable(format!(
+            "no report at `{path}` in this area; `neige ls {REPORTS_DIR}/` lists the current names"
+        ))
+    };
+    let reports = named(pool, area_id).await?;
     let mut candidates: Vec<Named> = reports
         .into_iter()
         .filter(|report| {
@@ -191,11 +186,7 @@ pub async fn read(
         })
         .collect();
     let report = match candidates.len() {
-        0 => {
-            return Err(TrackFsError::PathNotAvailable(format!(
-                "no report at `{path}` in this area; `neige ls {REPORTS_DIR}/` lists the current names"
-            )));
-        }
+        0 => return Err(not_found()),
         1 => candidates.remove(0),
         _ => {
             let paths: Vec<String> = candidates
@@ -209,11 +200,10 @@ pub async fn read(
             )));
         }
     };
-    let payload = store::payload(&mut tx, area_id, &report.row)
+    let payload = store::payload(pool, area_id, &report.row)
         .await
         .map_err(internal)?
-        .ok_or_else(|| TrackFsError::Internal(format!("{path}: report vanished mid-read")))?;
-    tx.commit().await.map_err(internal)?;
+        .ok_or_else(not_found)?;
     let payload = serde_json::from_str(&payload).map_err(|e| {
         TrackFsError::Internal(format!(
             "track_report: malformed payload on card {}: {e}",
