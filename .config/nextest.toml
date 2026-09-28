@@ -66,11 +66,22 @@ path = "junit.xml"
 # exclusive; the package is small and reliability matters more than those few
 # seconds.
 proc-supervisor = { max-threads = 1 }
+# The trybuild tests each compile a cold downstream crate graph in trybuild's one shared target
+# dir, and two at once contend for it. The `count:k/6` partition can put them in the same shard:
+# #1830 S1 moved `a_bound_directory_cannot_be_handed_to_a_deletion` next to
+# `append_seam_is_not_reachable_from_a_downstream_crate`, and shard 1 timed out at 600s twice,
+# while apart they pass (SLOW >120s / >240s and >120s). Run them one at a time.
+trybuild = { max-threads = 1 }
 
 [[profile.ci.overrides]]
 filter = 'package(calm-proc-supervisor) | test(/^(in_process_renderer_e2e|reconcile_supervisor_on_boot)::/)'
 test-group = 'proc-supervisor'
 threads-required = 4
+
+[[profile.ci.overrides]]
+# Every `trybuild::TestCases` test (see the `trybuild` group above).
+filter = 'test(/^(append_seam_trybuild::append_seam_is_not_reachable_from_a_downstream_crate|planner_attachments_bound_dir_seam::a_bound_directory_cannot_be_handed_to_a_deletion|templates_privacy::a_downstream_crate_cannot_forge_a_template_or_a_roster)$/)'
+test-group = 'trybuild'
 
 [[profile.ci.overrides]]
 # This O(N²) file-backed SQLite replay went from 44s to 250s when it shared a
