@@ -33,7 +33,7 @@ function area(overrides: Partial<Area> = {}): Area {
 
 function track(overrides: Partial<Track> = {}): Track {
   return {
-    id: 'w1', areaId: 'c1', title: 'Open track', sort: 1, lifecycle: 'working', cwd: '/tmp',
+    id: 'w1', areaId: 'c1', title: 'Open track', sort: 1, lifecycle: 'working', cwd: '/tmp', agentCwd: '/tmp',
     archivedAt: null, pinnedAt: null, terminalAt: null, createdAt: NOW - 3_600_000, updatedAt: NOW,
     ...NEUTRAL_ACTIVITY,
     ...overrides,

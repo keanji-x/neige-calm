@@ -92,7 +92,7 @@ it('keeps the clickable Area quieter and uses the same cadence as its Track rows
     ...area, id: 'a2', name: 'Next', sort: 2,
   };
   const tracks: Track[] = ['First', 'Second'].map((title, index) => ({
-    id: `t${index}`, areaId: area.id, title, sort: index, lifecycle: 'draft', cwd: '/tmp',
+    id: `t${index}`, areaId: area.id, title, sort: index, lifecycle: 'draft', cwd: '/tmp', agentCwd: '/tmp',
     archivedAt: null, pinnedAt: null, terminalAt: null, createdAt: 1, updatedAt: 1,
     ...NEUTRAL_ACTIVITY,
   }));

@@ -2298,7 +2298,7 @@ function TrackRouteBody({
             key={requestedFilePath}
             path={requestedFilePath}
             files={reportFiles}
-            fileRoot={track.cwd}
+            fileRoot={track.agentCwd}
             wide={gridItems.length === 0}
             onClose={closeBoard}
             onFileOpened={(path) => { rememberReportFile({ path }); }}
@@ -2342,7 +2342,7 @@ function TrackRouteBody({
         onOpenLink={openReportLink}
         onOpenFileLink={openReportFile}
         onOpenSourceLink={openReportSource}
-        fileRoot={track.cwd}
+        fileRoot={track.agentCwd}
         arrivalAnchorId={arrivalAnchorId}
         empty={<ReportEmpty
           lead="This track has not taken shape yet."

@@ -20,7 +20,7 @@ const AREAS: readonly Area[] = Object.freeze(Array.from({ length: 40 }, (_, inde
 })));
 
 const LAST_TRACK: Track = Object.freeze({
-  id: 't39', areaId: 'a39', title: 'Deep track', sort: 1, lifecycle: 'draft' as const, cwd: '/tmp',
+  id: 't39', areaId: 'a39', title: 'Deep track', sort: 1, lifecycle: 'draft' as const, cwd: '/tmp', agentCwd: '/tmp',
   archivedAt: null, pinnedAt: null, terminalAt: null, createdAt: 0, updatedAt: 0,
   ...NEUTRAL_ACTIVITY,
 });

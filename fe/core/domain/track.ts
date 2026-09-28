@@ -28,6 +28,8 @@ export const trackWireSchema = z.object({
   sort: z.number(),
   lifecycle: trackLifecycleSchema.default('draft'),
   cwd: z.string().default(''),
+  /** Only the kernel-made track worktree (#1830) is read; absent for a track without one. */
+  workspace: z.object({ worktree: z.string().optional() }).optional(),
   archived_at: z.number().nullable().default(null),
   pinned_at: z.number().nullable().default(null),
   terminal_at: z.number().nullable().default(null),
@@ -69,7 +71,10 @@ export type Track = Readonly<{
   title: string;
   sort: number;
   lifecycle: TrackLifecycle;
+  /** The user's checkout (`workspace.path`). */
   cwd: string;
+  /** Where the track's agents run and write: the track worktree when there is one, else `cwd`. */
+  agentCwd: string;
   archivedAt: number | null;
   pinnedAt: number | null;
   terminalAt: number | null;
@@ -85,6 +90,7 @@ export function toTrack(wire: TrackWire, activity: TrackActivity = NEUTRAL_ACTIV
     sort: wire.sort,
     lifecycle: wire.lifecycle,
     cwd: wire.cwd,
+    agentCwd: wire.workspace?.worktree ?? wire.cwd,
     archivedAt: wire.archived_at,
     pinnedAt: wire.pinned_at,
     terminalAt: wire.terminal_at,

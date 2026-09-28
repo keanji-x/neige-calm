@@ -19,7 +19,7 @@ const baseWire = {
 
 function track(overrides: Partial<Track>): Track {
   return {
-    id: 'w', areaId: 'c', title: 't', sort: 1, lifecycle: 'draft', cwd: '/tmp',
+    id: 'w', areaId: 'c', title: 't', sort: 1, lifecycle: 'draft', cwd: '/tmp', agentCwd: '/tmp',
     archivedAt: null, pinnedAt: null, terminalAt: null, createdAt: 0, updatedAt: 0,
     ...NEUTRAL_ACTIVITY,
     ...overrides,
@@ -53,8 +53,22 @@ describe('track wire decode', () => {
 
   it('maps the wire row onto the camelCase domain shape', () => {
     expect(toTrack(trackWireSchema.parse({ ...baseWire, pinned_at: 42 }))).toEqual(track({
-      id: 'w1', areaId: 'c1', title: 'Ship it', cwd: '', pinnedAt: 42, createdAt: 1_000, updatedAt: 1_000,
+      id: 'w1', areaId: 'c1', title: 'Ship it', cwd: '', agentCwd: '', pinnedAt: 42, createdAt: 1_000,
+      updatedAt: 1_000,
     }));
+  });
+
+  it('roots the agent at the track worktree when the kernel made one (#1830), else at the checkout', () => {
+    const worktree = '/repo/.claude/worktrees/track-w1';
+    const attached = toTrack(trackWireSchema.parse({
+      ...baseWire, cwd: '/repo', workspace: { kind: 'attached', path: '/repo', frozen_at: 1, worktree },
+    }));
+    expect(attached.cwd).toBe('/repo');
+    expect(attached.agentCwd).toBe(worktree);
+    const managed = toTrack(trackWireSchema.parse({
+      ...baseWire, cwd: '/w', workspace: { kind: 'managed', path: '/w', frozen_at: null },
+    }));
+    expect(managed.agentCwd).toBe('/w');
   });
 
   it('percent-encodes the area id into the list path', () => {
