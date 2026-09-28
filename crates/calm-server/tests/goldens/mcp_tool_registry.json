@@ -169,7 +169,7 @@
   },
   {
     "name": "calm.plan.list",
-    "description_sha256": "e3b305a1f8ff8bb5e4a41a08eafddaa1b0e781aad1064dce18884cea9328cfdf",
+    "description_sha256": "47e0064f408fde56782fb01dcb6a40e3a98e781126c141143a295aecfbc3edec",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1289,7 +1289,7 @@
   },
   {
     "name": "calm.task.delivery",
-    "description_sha256": "410848170018d5301715fb9814e30618a0264014d084a7c84598ea13a61b7409",
+    "description_sha256": "1f01055c0df1688f57cb5f3ac37ae796eb05a797db716aac685463c88dc6325d",
     "input_schema": {
       "properties": {
         "action": {

@@ -338,6 +338,13 @@ The lease term of D5 has no must-red test (holding a kill needs a missing hook);
   field (the column stays unread). The ready set uses `track_idle`, and `BudgetQueued` becomes
   `TrackBusy{message}` (OpenAPI, `wire.ts`, FE gates, a browser check). `tree_task_budget` is
   untouched. About 350 production lines (grep estimate).
+- **Delete the spawn-time `worktree.provisioned` write** and its bookkeeping: nothing is provisioned
+  any more (`codex_adapter/mod.rs:858`, `:1582-1650`; `claude_adapter/workspace.rs:30-60`).
+- **Delete `ensure_workspace_worktree_root_excluded` in managed materialize**
+  (`workspace_materialize.rs:345`): a managed directory holds no worktrees.
+- **Delete `plan.list` `worktree.removed` / `retained.removed`** and
+  `worktree_removed_after_last_provision_sql` (`facts.rs:131-150`): only pre-S2 per-card worktrees
+  were ever removed.
 
 ## 10. As built (S2)
 
@@ -363,6 +370,8 @@ Where the code differs from §2–§6, one line each, with why:
 - §6: T1–T5 are in `track_worker_cwd.rs`, T6–T11 and the cancel test in `track_worker_cwd_ends.rs`
   (≤ 800 lines each); the reaper `failed` commit is asserted in `reaper/tests.rs`.
 - §5: `track_write_point_registry` is triggered: three test fixtures write `tracks.workspace_*`.
+- `worktree.branch` in `calm.plan.list` is given only for a lease at the track's `agent_cwd()` (or
+  from a `worktree.committed` event); a pre-S2 per-card lease ran on a branch its row does not record.
 - The migration is `0122`, not `0121`: main took `0121_activity_dismissals.sql` (#1829 S3) first.
 - KNOWN GAP: the kernel's upstream fetch receipt is now taken only when a track worktree is made,
   and a receipt does not age, so `candidate.upstream` can lag a later user fetch until a restart.

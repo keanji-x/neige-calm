@@ -811,7 +811,8 @@ pub(super) fn ordinary_codex_declaration(key: &str) -> Value {
 }
 
 /// Claims and prepares the current attempt of `key` with a held workspace lease, then hits the
-/// scheduler's liveness timeout; the lease path must have the production shape or `retained` reads as a lease with no branch to name.
+/// scheduler's liveness timeout. The lease is a per-card one from before #1830 S2, so `retained`
+/// names no branch until a `worktree.committed` event does.
 async fn time_out_prepared_ordinary_worker(
     boot: &Boot,
     key: &str,
@@ -996,9 +997,9 @@ async fn task_recovery_timed_out_ordinary_codex_worker_is_guided_to_a_new_task()
         "{guidance}"
     );
     assert_eq!(guidance["retained"]["workspace_path"], lease_path);
-    assert_eq!(
-        guidance["retained"]["branch"], "main",
-        "no commit recorded: the branch is the track's worker branch (no track worktree: main)"
+    assert!(
+        guidance["retained"].get("branch").is_none(),
+        "no commit recorded on a per-card lease from before S2: no branch to name: {guidance}"
     );
     assert!(
         guidance["retained"].get("last_commit").is_none(),
@@ -1108,12 +1109,7 @@ async fn task_recovery_guidance_retained_follows_worktree_removal_and_reprovisio
             .unwrap();
         listed_entry(&list, "b")["recovery"]["guidance"]["retained"].clone()
     };
-    // No track worktree on this fixture track: its worker branch is `main` (#1830 S2 D4).
-    let slice_branch = "main".to_string();
-    assert_eq!(
-        retained().await,
-        json!({"workspace_path": lease_path, "branch": slice_branch})
-    );
+    assert_eq!(retained().await, json!({"workspace_path": lease_path}));
 
     // Removed with no provision recorded: nothing on disk is advertised.
     append_worktree_event(
@@ -1137,10 +1133,7 @@ async fn task_recovery_guidance_retained_follows_worktree_removal_and_reprovisio
         },
     )
     .await;
-    assert_eq!(
-        retained().await,
-        json!({"workspace_path": lease_path, "branch": slice_branch})
-    );
+    assert_eq!(retained().await, json!({"workspace_path": lease_path}));
 
     // A kernel-recorded commit, then removal again: the object survives.
     append_worktree_event(

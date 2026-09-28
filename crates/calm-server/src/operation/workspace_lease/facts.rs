@@ -15,7 +15,8 @@ pub(crate) struct WorkerWorktreeFacts {
     /// `held` | `releasing` | `released` — the lease row's own column.
     pub state: String,
     /// The branch: from the latest `worktree.committed` event when there is one, otherwise the
-    /// track's worker branch (#1830 S2 D4). Omitted once the kernel has removed the worktree.
+    /// track's worker branch (#1830 S2 D4) when the lease is at the track's checkout. Omitted
+    /// otherwise (a pre-S2 per-card lease) and once the kernel has removed the worktree.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
     /// `commit_sha` of the latest `worktree.committed` event scoped to the worker card.
@@ -107,13 +108,23 @@ pub(crate) async fn worker_worktree_facts_tx(
         }));
     }
     let branch = match payload_string("branch") {
-        Some(branch) => branch,
-        None => worker_branch_tx(tx, &lease.track_id).await?,
+        Some(branch) => Some(branch),
+        None => {
+            // #1830 S2 D4: the track's worker branch names only a lease at the track's current
+            // checkout; a per-card lease from before S2 ran on a branch its row does not record.
+            let track_id = crate::ids::TrackId::from(lease.track_id.clone());
+            let track = crate::track_lifecycle::track_get_tx(tx, &track_id).await?;
+            if track.workspace.agent_cwd() == lease.path {
+                Some(worker_branch_tx(tx, &lease.track_id).await?)
+            } else {
+                None
+            }
+        }
     };
     Ok(Some(WorkerWorktreeFacts {
         path: Some(lease.path),
         state: lease.state,
-        branch: Some(branch),
+        branch,
         last_commit,
         base_sha,
         removed: false,

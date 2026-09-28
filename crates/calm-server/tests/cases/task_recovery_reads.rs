@@ -484,10 +484,10 @@ async fn task_recovery_list_carries_the_worker_worktree_facts() {
         json!({
             "path": lease_path.to_string_lossy(),
             "state": "held",
-            "branch": worker_branch(&pool, &track).await,
             "removed": false,
         }),
-        "lease without a commit: the track's worker branch, no last_commit: {entry}"
+        "a per-card lease from before S2 names no branch (its row does not record one), no \
+         last_commit: {entry}"
     );
 
     // The kernel's auto commit lands a `worktree.committed` event scoped to the worker card.
@@ -588,7 +588,6 @@ async fn task_recovery_list_names_the_worktree_base_sha_from_the_lease_row() {
         json!({
             "path": lease_path.to_string_lossy(),
             "state": "held",
-            "branch": worker_branch(&pool, &track).await,
             "base_sha": base_sha,
             "removed": false,
         }),
@@ -670,7 +669,8 @@ async fn task_recovery_list_worktree_facts_tell_a_removed_worktree_from_a_retain
         .join(&track)
         .join(&card);
     let lease_path_json = json!(lease_path.to_string_lossy());
-    let naming_branch = worker_branch(&pool, &track).await;
+    // The per-card branch a pre-S2 kernel commit named.
+    let naming_branch = format!("neige/{track}/{card}");
 
     // Lease 1: acquired, then released through the flip-only production path.
     calm_server::test_seams::acquire_workspace_lease_for_test(
@@ -699,10 +699,9 @@ async fn task_recovery_list_worktree_facts_tell_a_removed_worktree_from_a_retain
         json!({
             "path": lease_path_json,
             "state": "released",
-            "branch": naming_branch,
             "removed": false,
         }),
-        "released + retained: path and branch stay, removed:false: {entry}"
+        "released + retained: the path stays, removed:false: {entry}"
     );
 
     // Lease 2 on the same card and path. `acquire` stamps `created_at_ms` with the wall clock and
@@ -820,18 +819,4 @@ async fn task_recovery_list_worktree_facts_tell_a_removed_worktree_from_a_retain
         }),
         "provisioned after removed: path and branch are back: {entry}"
     );
-}
-
-/// The track's worker branch (#1830 S2 D4): `neige/track-<id>` with a track worktree, else `main`.
-async fn worker_branch(pool: &sqlx::SqlitePool, track: &str) -> String {
-    let worktree: Option<String> =
-        sqlx::query_scalar("SELECT workspace_worktree_path FROM tracks WHERE id = ?1")
-            .bind(track)
-            .fetch_one(pool)
-            .await
-            .unwrap();
-    match worktree {
-        Some(_) => format!("neige/track-{track}"),
-        None => "main".to_string(),
-    }
 }
