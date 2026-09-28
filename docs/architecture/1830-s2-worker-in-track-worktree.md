@@ -338,3 +338,30 @@ The lease term of D5 has no must-red test (holding a kill needs a missing hook);
   field (the column stays unread). The ready set uses `track_idle`, and `BudgetQueued` becomes
   `TrackBusy{message}` (OpenAPI, `wire.ts`, FE gates, a browser check). `tree_task_budget` is
   untouched. About 350 production lines (grep estimate).
+
+## 10. As built (S2)
+
+Where the code differs from §2–§6, one line each, with why:
+
+- D1 is two calls, `prepare_worker_lease_tx(tx, track, workspace_root)` then
+  `acquire_workspace_lease_tx(tx, card, track, owner, &plan)`: the card row is made between them;
+  the clean check and the supersede run in the first, before any INSERT.
+- D7 report: the release runs for every admitted report, as the old second-tx release did; a report
+  whose task row is gone releases with no row (no attempt resolves).
+- D7 `CommitAsTaskEnded` (the reaper's race-lost and no-attempt arms, the cleanup after a kill, a
+  timeout flip that marked no session) errs on a non-terminal status and leaves the lease held.
+- `mark_running_timeout_cleanup_tx` returns its release events; `calm.plan.cancel` and
+  `calm.task.replace`'s stop add them to their own event batch.
+- D5 retry also refuses a row settled before 0121 (no `outcome`): D8's message needs it.
+- Spawn still records `worktree.provisioned` once (now "checkout verified"); nothing writes
+  `worktree.removed` any more, and `calm.plan.list` still reads old ones.
+- §6: the worker is played by the test (it writes files and reports through the `calm.task.*`
+  tools on the fake Codex daemon); there is no fixture worker binary that writes files.
+- §6: tracks get their worktree from the production `ensure_track_worktree`
+  (`test_seams::attach_track_worktree_for_test`, the create route's post-commit step), not the
+  HTTP route; T1's `git.commit` is `git add -A` + commit in the worktree.
+- §6: T1–T5 are in `track_worker_cwd.rs`, T6–T11 and the cancel test in `track_worker_cwd_ends.rs`
+  (≤ 800 lines each); the reaper `failed` commit is asserted in `reaper/tests.rs`.
+- §5: `track_write_point_registry` is triggered: three test fixtures write `tracks.workspace_*`.
+- KNOWN GAP: the kernel's upstream fetch receipt is now taken only when a track worktree is made,
+  and a receipt does not age, so `candidate.upstream` can lag a later user fetch until a restart.
