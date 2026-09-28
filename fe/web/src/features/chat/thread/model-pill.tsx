@@ -9,7 +9,7 @@ import { HStack } from '@astryxdesign/core/HStack';
 import { Icon as AstryxIcon } from '@astryxdesign/core/Icon';
 import { Text } from '@astryxdesign/core/Text';
 import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
-import { Fragment, useRef, type KeyboardEvent } from 'react';
+import { Fragment, useRef, type KeyboardEvent, type ReactNode } from 'react';
 
 import type { AgentProvider } from '../../../../../core/api/generated/wire.ts';
 import {
@@ -235,7 +235,10 @@ function GroupChoices({ group, selection, onChange }: Readonly<{
       </div>
     )}
     <Choice
-      label={defaultName === null ? FOLLOW_DEFAULT_LABEL : `${FOLLOW_DEFAULT_LABEL} (${defaultName})`}
+      /* A Claude default is described by the CLI's own entry: "Default", and the model it resolves to beside it. */
+      label={defaultName === null ? FOLLOW_DEFAULT_LABEL
+        : group.catalog?.default_source === 'claude_cli' ? <ResolvedLabel name={FOLLOW_DEFAULT_LABEL} resolved={defaultName} />
+          : `${FOLLOW_DEFAULT_LABEL} (${defaultName})`}
       isSelected={selection !== null && selection.model === null}
       isDisabled={blocked !== null}
       onSelect={() => onChange({ model: null, reasoning_effort: null })}
@@ -243,9 +246,9 @@ function GroupChoices({ group, selection, onChange }: Readonly<{
     {models.map((model) => (
       <Choice
         key={model.id}
-        label={model.display_name}
         /* What the entry runs, where its provider says (a Claude entry's resolved model, #1822). */
-        description={model.resolved_model ?? undefined}
+        label={model.resolved_model === null ? model.display_name
+          : <ResolvedLabel name={model.display_name} resolved={model.resolved_model} />}
         isSelected={selection !== null && selection.model === model.model}
         isDisabled={blocked !== null}
         /* Switching model drops the effort: one chosen for the previous model may not exist on this one. */
@@ -325,10 +328,23 @@ function EffortChoices({ efforts, value, defaultName, onChange }: Readonly<{
   </>;
 }
 
+/**
+ * One line (owner layout, 2026-09-28): the entry's name, and the model it resolves to small and quiet at the
+ * right, which gives way with an ellipsis first when the menu runs out of room.
+ */
+function ResolvedLabel({ name, resolved }: Readonly<{ name: string; resolved: string }>) {
+  return (
+    <span className={styles.resolvedRow}>
+      <span className={styles.resolvedName}>{name}</span>
+      <span className={styles.resolvedId} title={resolved}>{resolved}</span>
+    </span>
+  );
+}
+
 function Choice({
   label, description, isSelected, isDisabled = false, onSelect,
 }: Readonly<{
-  label: string;
+  label: ReactNode;
   description?: string;
   isSelected: boolean;
   isDisabled?: boolean;

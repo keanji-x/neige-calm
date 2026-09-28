@@ -377,8 +377,8 @@ impl ClaudePlannerSession {
             .map(|active| active.turn_id.clone())
     }
 
-    /// See the module docs for the submission contract. `selection` is the card's choice, read
-    /// and judged against the CLI's model list at issue.
+    /// See the module docs for the submission contract. `selection` is the card's stored choice,
+    /// read at issue and passed as it is; the CLI judges the model (#1822 6′).
     pub async fn turn_start(
         &self,
         thread: &str,

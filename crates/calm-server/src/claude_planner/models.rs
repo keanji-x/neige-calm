@@ -66,8 +66,9 @@ impl ClaudeCatalog {
 }
 
 /// What a Claude Planner card's payload says its next turn runs, read at issue time: a type check
-/// of the stored keys only (#1822 6′). The catalog judged the selection when it was written; at
-/// issue the CLI is the judge of the model, and refuses one it cannot run with its own words. Each
+/// of the stored keys only (#1822 6′). The write advised the selection against the catalog (an
+/// unlisted model is stored, flagged `unknown_model`); at issue the CLI is the judge of the model,
+/// and refuses one it cannot run with its own words. Each
 /// turn is a fresh process, so `null` is simply the CLI default: no `*_ever_set` resolution is
 /// needed. `Err((log, reader))` for a payload that cannot be read; the turn is not sent.
 pub fn turn_selection(payload: &Value) -> Result<TurnModelSelection, (String, String)> {

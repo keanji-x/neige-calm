@@ -97,8 +97,9 @@ async fn the_chosen_model_and_effort_reach_each_next_turn() {
 
 /// A PUT is advised like Codex's (6′): a value the list does not carry (the pre-#1822 alias `opus`)
 /// is stored and reported `unknown_model`; an effort the entry does not declare is dropped, since a
-/// Claude entry declares no default effort, and reported `effort_adjusted`; a null model's effort
-/// is judged on the CLI's `default` entry.
+/// Claude entry declares no default effort, and reported `effort_adjusted`, as is any effort sent
+/// with an unlisted value (the CLI would ignore it); a null model's effort is judged on the CLI's
+/// `default` entry.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_put_stores_an_unlisted_value_as_unknown_and_drops_an_undeclared_effort() {
     let root = Root::new("exit");
@@ -109,6 +110,12 @@ async fn a_put_stores_an_unlisted_value_as_unknown_and_drops_an_undeclared_effor
             json!({"model": "opus", "reasoning_effort": null}),
             None,
             false,
+            true,
+        ),
+        (
+            json!({"model": "opus", "reasoning_effort": "high"}),
+            None,
+            true,
             true,
         ),
         (
@@ -156,8 +163,9 @@ async fn a_put_stores_an_unlisted_value_as_unknown_and_drops_an_undeclared_effor
     }
 }
 
-/// Create uses the same advice and, as for Codex, refuses an effort the entry does not declare
-/// rather than adjusting it; a value the list does not carry is minted, for the CLI to judge.
+/// Create uses the same advice and, as for Codex, refuses an effort the advice would move rather
+/// than adjusting it (with an unlisted value, any effort); a value the list does not carry is
+/// minted without one, for the CLI to judge.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn create_refuses_an_undeclared_effort_and_mints_an_unlisted_value() {
     let root = Root::new("exit");
@@ -170,6 +178,10 @@ async fn create_refuses_an_undeclared_effort_and_mints_an_unlisted_value() {
         (
             json!({"reasoning_effort": "ultra"}),
             "reasoning_effort `ultra` is unsupported for the default model",
+        ),
+        (
+            json!({"model": "opus", "reasoning_effort": "high"}),
+            "reasoning_effort `high` is unsupported for model `opus`; the catalog does not list it",
         ),
     ] {
         let area = stack.area().await;

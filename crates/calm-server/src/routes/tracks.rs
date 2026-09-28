@@ -887,10 +887,11 @@ pub(crate) async fn create_track(
             || "the default model".to_string(),
             |m| format!("model `{m}`"),
         );
-        let default = adjustment.to.map_or_else(
-            || "it declares no default effort".to_string(),
-            |d| format!("its current catalog default is `{d}`"),
-        );
+        let default = match adjustment.to {
+            Some(d) => format!("its current catalog default is `{d}`"),
+            None if advice.unknown_model => "the catalog does not list it".to_string(),
+            None => "it declares no default effort".to_string(),
+        };
         return Err(CalmError::BadRequest(format!(
             "track create: reasoning_effort `{effort}` is unsupported for {named}; {default}. \
              Refresh the model list and choose a supported effort."

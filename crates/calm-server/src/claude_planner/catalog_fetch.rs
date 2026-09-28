@@ -2,7 +2,9 @@
 //! `<claude_binary> -p`, stdin is closed, and the CLI answers with a `control_response` whose
 //! `response.models` is its own `/model` list, then exits. No user message is sent, so no model is
 //! called. Only `models` is decoded: every other key of the answer (the account among them) is
-//! skipped by the decoder, and no answer text reaches a reason, a log line or the cache.
+//! skipped by the decoder. A refusal quotes at most a value from inside the `models` list (a
+//! repeated `value` or effort level), never anything outside it, so never the account; nothing
+//! outside the list reaches a reason, a log line or the cache.
 
 use std::ffi::OsString;
 use std::path::Path;
@@ -129,7 +131,7 @@ struct Entry {
 }
 
 /// The entries of the one answer to [`REQUEST_ID`] in the CLI's stream-json `stdout`. `Err` is
-/// neige's own words: no answer text is quoted.
+/// neige's own words, quoting at most a value from inside the `models` list.
 fn parse(stdout: &[u8]) -> Result<Vec<ClaudeModel>, String> {
     let text = std::str::from_utf8(stdout).map_err(|_| "its output is not UTF-8".to_string())?;
     let mut answer = None;

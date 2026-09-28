@@ -103,6 +103,139 @@ async fn the_first_read_and_a_recheck_fetch_the_list_and_the_ttl_recheck_does_no
     assert_eq!(values(&claude_models(&stack).await), ["haiku"]);
 }
 
+/// The `initialize` exchange runs with exactly the readiness allowlist `auth status` runs with:
+/// the same keys, the Planner's own config dir and readiness marker, and nothing of this process's
+/// own environment, no MCP token and no Anthropic credential.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_list_is_asked_with_the_readiness_allowlist_only() {
+    let root = root_with_catalog("ok");
+    let stack = Stack::boot(&root).await;
+    assert_eq!(claude_entry(&stack, "").await["status"], "ready");
+    let keys = |file: &str| -> std::collections::BTreeSet<String> {
+        root.read_fake(file)
+            .unwrap_or_else(|| panic!("the fake recorded {file}"))
+            .lines()
+            .filter_map(|line| line.split_once('=').map(|(key, _)| key.to_string()))
+            .collect()
+    };
+    let init = keys("init-env");
+    assert_eq!(
+        init,
+        keys("auth-env"),
+        "the two readiness commands share one allowlist"
+    );
+    let env = root.read_fake("init-env").expect("init-env");
+    let config_dir = root.path().join("claude-config");
+    assert!(
+        env.lines()
+            .any(|line| line == format!("CLAUDE_CONFIG_DIR={}", config_dir.display())),
+        "{env}"
+    );
+    let marker = format!(
+        "{}={}",
+        calm_server::claude_planner::stop::MARKER_KEY,
+        root.instance().marker("readiness")
+    );
+    assert!(env.lines().any(|line| line == marker), "{env}");
+    for key in &init {
+        assert!(
+            !key.starts_with("ANTHROPIC_") && key != "NEIGE_MCP_TOKEN",
+            "{key} reached the list's environment"
+        );
+    }
+    // Nothing of this test process's environment rides along unless the allowlist names it.
+    for (key, _) in std::env::vars_os() {
+        let key = key.to_string_lossy().into_owned();
+        if key.starts_with("NEXTEST") || key.starts_with("CARGO") || key.starts_with("RUST_") {
+            assert!(
+                !init.contains(&key),
+                "{key} leaked from the parent environment"
+            );
+        }
+    }
+}
+
+/// A Recheck is answered only by a check that fetched the list. A Cached reader that starts a TTL
+/// re-check (which keeps the list) after the Recheck was asked must not answer it: constructed by
+/// holding a slow TTL re-check at `auth status` while an aging, a Cached reader and a Recheck
+/// reader queue behind it in that order.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_recheck_is_never_answered_by_a_ttl_recheck_that_kept_the_list() {
+    let root = root_with_catalog("ok");
+    let stack = Stack::boot(&root).await;
+    assert_eq!(claude_models(&stack).await["source"], "live");
+    assert_eq!(count(&root, "init-calls"), 1);
+
+    std::fs::write(root.fake_dir().join("auth"), "hold").expect("hold auth");
+    stack
+        .state
+        .age_provider_availability_past_ttl_for_test()
+        .await;
+    let slow = tokio::spawn(providers_via(stack.app.clone(), ""));
+    let entered = root.fake_dir().join("auth-entered");
+    for _ in 0..400 {
+        if entered.exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(
+        entered.exists(),
+        "the slow TTL re-check reached auth status"
+    );
+    // Queued behind the slow check, in order: the aging, the Cached reader, the Recheck reader.
+    let state = stack.state.clone();
+    let aging =
+        tokio::spawn(async move { state.age_provider_availability_past_ttl_for_test().await });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let cached = tokio::spawn(providers_via(stack.app.clone(), ""));
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let recheck = tokio::spawn(providers_via(stack.app.clone(), "?refresh=true"));
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    std::fs::write(root.fake_dir().join("catalog"), "restricted").expect("restrict");
+    std::fs::write(root.fake_dir().join("release-auth"), "").expect("release");
+
+    for task in [slow, cached, recheck] {
+        assert_eq!(task.await.expect("reader")["status"], "ready");
+    }
+    aging.await.expect("aging");
+    assert_eq!(
+        count(&root, "auth-calls"),
+        4,
+        "the first read, the slow and the Cached TTL re-checks, and the recheck"
+    );
+    assert_eq!(
+        count(&root, "init-calls"),
+        2,
+        "the recheck fetched the list"
+    );
+    assert_eq!(values(&claude_models(&stack).await), ["haiku"]);
+}
+
+async fn providers_via(app: axum::Router, query: &str) -> Value {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let response = app
+        .oneshot(
+            axum::http::Request::builder()
+                .uri(format!("/api/agent-providers{query}"))
+                .header("x-calm-actor", "user")
+                .body(axum::body::Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).expect("json");
+    body.as_array()
+        .expect("providers")
+        .iter()
+        .find(|entry| entry["provider"] == "claude")
+        .expect("a claude entry")
+        .clone()
+}
+
 /// The boot check fetches the list, and the reads after it are answered from it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_boot_check_fetches_the_list() {

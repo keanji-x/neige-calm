@@ -4,7 +4,7 @@
 //! both providers (#1822 6′): only the catalog's source differs, Codex's `model/list` asked now or
 //! the Claude CLI's list the availability check cached. A Claude write needs Claude ready (400
 //! with the reason otherwise); a Claude entry declares no default effort, so an unsupported one
-//! is dropped.
+//! is dropped, and so is any effort sent with a model the Claude list does not carry.
 
 use axum::extract::{Path, State};
 use axum::{Json, http::StatusCode};
@@ -126,8 +126,9 @@ pub(crate) async fn set_planner_model(
         reasoning_effort,
     } = body;
     let advice = if claude {
-        // #1822 6′: a Claude write needs Claude ready, as its create does (#1817), so its effort is
-        // always judged; Codex is not asked.
+        // #1822 6′: a Claude write needs Claude ready, as its create does (#1817), so the list is
+        // in hand: an effort is judged against the chosen entry, and dropped for a model the list
+        // does not carry (the CLI would ignore it). Codex is not asked.
         let catalog = s
             .provider_availability
             .claude(crate::agent_providers::Freshness::Cached, &s.claude_planner)
@@ -239,7 +240,7 @@ pub(crate) async fn set_planner_model(
 pub(super) struct CatalogAdvice {
     /// `Some` when the requested effort is not one the chosen entry supports.
     pub(super) adjustment: Option<EffortAdjustment>,
-    unknown_model: bool,
+    pub(super) unknown_model: bool,
 }
 
 /// Where an unsupported effort is moved: the entry's own default, `None` for a provider that
@@ -304,7 +305,17 @@ pub(super) async fn catalog_advice(
             let entries: Vec<AdviceEntry<'_>> = catalog.models.iter().map(claude_entry).collect();
             // A `null` model runs the CLI's `default` entry, so its effort is judged there.
             let default = claude_entry(&catalog.default);
-            advise(&entries, Some(&default), model, reasoning_effort)
+            let advice = advise(&entries, Some(&default), model, reasoning_effort);
+            // The CLI does not judge an effort, and a model the list does not carry has no entry
+            // to judge it against: the effort is dropped. (Codex keeps it: codex judges it.)
+            if advice.unknown_model && reasoning_effort.is_some() {
+                CatalogAdvice {
+                    adjustment: Some(EffortAdjustment { to: None }),
+                    unknown_model: true,
+                }
+            } else {
+                advice
+            }
         }
     }
 }

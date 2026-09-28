@@ -419,7 +419,7 @@ describe('ModelPill', () => {
         .toEqual(['Default (gpt-5-codex)Selected', 'GPT-5']);
       const claude = within(menu).getByRole('group', { name: 'Claude' });
       expect(within(claude).getAllByRole('menuitem').map((item) => item.textContent))
-        .toEqual(['Default (claude-opus-5-5[1m])', ...RESOLVED_ROWS]);
+        .toEqual(['Defaultclaude-opus-5-5[1m]', ...RESOLVED_ROWS]);
     });
 
     it('hands back the Claude value and the provider with a Claude pick, and codex with a Codex one', () => {
@@ -481,6 +481,22 @@ describe('ModelPill', () => {
       expect(onChange).toHaveBeenLastCalledWith({ model: null, reasoning_effort: 'medium' }, 'claude');
     });
 
+    it('lays each Claude row out as its name and, beside it, the model it resolves to; Codex rows stay as they were', () => {
+      render(<ModelPill groups={both()} provider="codex" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
+      const menu = openMenu(/^Model:/);
+      const claude = within(menu).getByRole('group', { name: 'Claude' });
+      const fable = within(claude).getByRole('menuitem', { name: /^Fable/ });
+      expect(within(fable).getByText('Fable', { exact: true })).toBeTruthy();
+      expect(within(fable).getByTitle('claude-fable-5-1').textContent).toBe('claude-fable-5-1');
+      const claudeDefault = within(claude).getByRole('menuitem', { name: /^Default/ });
+      expect(within(claudeDefault).getByText('Default', { exact: true })).toBeTruthy();
+      expect(within(claudeDefault).getByTitle('claude-opus-5-5[1m]')).toBeTruthy();
+      const codex = within(menu).getByRole('group', { name: 'Codex' });
+      expect(within(codex).getAllByRole('menuitem').map((item) => item.textContent))
+        .toEqual(['Default (gpt-5-codex)Selected', 'GPT-5']);
+      expect(within(codex).queryAllByTitle(/./)).toEqual([]);
+    });
+
     it('names a Claude default no listed entry runs by the model it resolves to', () => {
       render(<ModelPill groups={[{ provider: 'claude', availability: null, catalog: claudeCatalog({
         default: { model: 'claude-opus-6', reasoning_effort: null, supported_reasoning_efforts: CLAUDE_LEVELS },
@@ -494,7 +510,7 @@ describe('ModelPill', () => {
       expect(trigger(/^Model:/).textContent).toBe('Haiku');
       const menu = openMenu(/^Model:/);
       expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent))
-        .toEqual(['Default (claude-opus-5-5[1m])', ...RESOLVED_ROWS.slice(0, 3), `${RESOLVED_ROWS[3]}Selected`]);
+        .toEqual(['Defaultclaude-opus-5-5[1m]', ...RESOLVED_ROWS.slice(0, 3), `${RESOLVED_ROWS[3]}Selected`]);
       expect(within(menu).queryByRole('group')).toBeNull();
       expect(within(menu).queryByRole('note')).toBeNull();
     });

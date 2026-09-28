@@ -508,26 +508,31 @@ and exits. No user message is sent, so no model is called. Each entry has `value
 - **Fetch (`claude_planner/catalog_fetch.rs`).** Step 4 of the #1817 Claude check, after `auth status`:
   the same bounded `readiness_command` runner (20 s, 64 KiB stdout cap, killed and reaped), the same
   allowlisted environment and `config_dir`, and the turn's own `--setting-sources project` and `--settings`
-  (so a settings-level model restriction is reflected), plus `--strict-mcp-config`,
+  (so a model restriction in `--settings` or managed settings is reflected), plus `--strict-mcp-config`,
   `--disable-slash-commands` and `--no-session-persistence`, run in the private `claude-planner/tmp`
-  directory. The parse is strict: exactly one answer to neige's request id, `success`, a `models` list with
+  directory. The list is global, one per server: it runs in no track workspace, so a workspace's
+  project-level `.claude/settings.json` is not reflected in it (a turn, which runs in the workspace, may
+  still be refused by one). The parse is strict: exactly one answer to neige's request id, `success`, a `models` list with
   exactly one `default` entry, at least one other, no value twice, non-empty `value` / `resolvedModel` /
   `displayName` and no empty or repeated level. Anything else makes the check `unavailable` with neige's
-  own reason; no answer text is quoted. Only `models` is decoded: `account` and every other key are skipped
-  by the decoder and never logged, cached or returned.
+  own reason, which quotes at most a value from inside the `models` list (a repeated `value` or level). Only
+  `models` is decoded: `account` and every other key are skipped by the decoder and never quoted, logged,
+  cached or returned.
 - **Lifetime (`claude_planner/availability.rs`).** The list lives in the Claude slot of the #1817 cache
   (`ProviderAvailabilityCache`), and only a `ready` check carries one. It is fetched when none is cached (the boot
   check, the first read, or any check after one that was not ready) and on an explicit recheck
   (`?refresh=true`, Settings › Planners Recheck). The 30 s TTL re-check of version and login keeps it: the
   binary is pinned, so the list changes only with the account or its entitlement, and a person then presses
-  Recheck (which also refreshes the FE's catalogs).
+  Recheck (which also refreshes the FE's catalogs). A recheck is answered by a check that began after it
+  only if that check ran every step: a TTL re-check that kept the list cannot answer it, so a Recheck queued
+  behind one runs its own and fetches.
 - **GET `/api/models`** for a Claude card (or `?provider=claude`) answers the cached list with
   `source:"live"` and its `fetched_at_ms`. Each entry's `model` (and `id`) is the CLI `value`, sent verbatim
   as `--model`; `resolved_model` is its `resolvedModel` (`null` for Codex); its effort options are the
   declared levels with a `null` description; `default_reasoning_effort` is `null` (the CLI declares none).
   The `default` entry is not a row and never a stored selection: it is the `null` selection, reported as
   `default` (`model` = what it resolves to, `supported_reasoning_efforts` = its levels) with
-  `default_source:"claude_cli"`, so the picker's Default row names it ("Default (claude-opus-5-5[1m])").
+  `default_source:"claude_cli"`, so the picker's Default row names it.
   While Claude is not ready: `source:"unavailable"`, no list.
 - **Judging (6′, owner amendment 2026-09-27: one selection policy for Codex and Claude).** Measured with
   the pinned 2.1.280: `--model <unlisted>` fails the turn (`result.is_error`, "There's an issue with the
@@ -537,12 +542,16 @@ and exits. No user message is sent, so no model is called. Each entry has `value
     (`routes/planner_model.rs::catalog_advice`); only the catalog's source differs (Codex `model/list`,
     Claude the cached list). An unlisted model is stored with `unknown_model: true`; an undeclared effort
     moves to the entry's `default_reasoning_effort`, which for a Claude entry is `null`, i.e. it is dropped
-    (`effort_adjusted: true`); a `null` model's effort is judged on the CLI `default` entry's levels. Create
-    keeps its rule for both: an effort the advice would move is 400, no track minted.
+    (`effort_adjusted: true`); a `null` model's effort is judged on the CLI `default` entry's levels. For
+    Claude only, a model the list does not carry also has its effort dropped (stored `null`,
+    `effort_adjusted: true`): the CLI does not judge an effort and there is no entry to judge it against.
+    Codex keeps the requested effort with an unknown model (codex judges it). Create keeps its rule for
+    both: an effort the advice would move is 400, no track minted.
   - *Claude writes need Claude ready*: create (#1817) and PUT answer 400 with the provider's unavailable
     reason (``… `planner_provider` `claude` is unavailable: <reason>``), so a Claude write always has the
-    list and its effort is always judged. Codex keeps its #293 outage tolerance (unreachable catalog ⇒
-    stored unjudged).
+    list: an effort is judged against the chosen entry, or dropped with an unlisted model, and never
+    stored for the CLI to ignore. Codex keeps its #293 outage tolerance (unreachable catalog ⇒ stored
+    unjudged).
   - *Issue*: neither provider consults a catalog. A Claude turn type-checks the stored selection
     (`models::turn_selection`; an unreadable payload is still "needs a choice") and passes it on; a model
     the CLI rejects fails the turn in the CLI's words (`driver::decide`), the shape of Codex's `rejected`.
@@ -551,8 +560,10 @@ and exits. No user message is sent, so no model is called. Each entry has `value
   `*_ever_set` resolution (each turn is a fresh process). A value spawns `--model=<value>`, an effort
   `--effort=<level>` (one token each, so a value cannot be read as a flag); `null` passes neither. A PUT
   between turns applies from the next turn.
-- **FE.** On the new-track page one grouped picker offers a Codex group and a Claude group (Default naming
-  its resolved model, then the list, each row with its resolved model beneath); the pick decides
+- **FE.** On the new-track page one grouped picker offers a Codex group and a Claude group (owner layout,
+  2026-09-28: one line per row, the CLI `display_name` on the left and the `resolved_model` id small and grey
+  on the right, truncated with an ellipsis when space runs out; the Default row reads "Default" and its
+  resolved id); the pick decides
   `planner_provider` and `model`, and a model's effort control offers exactly its levels. Following the
   default, the trigger names the listed entry that runs the same model ("Opus (1M context)"), else the
   resolved id. Inside a track the picker lists only the track's provider group.

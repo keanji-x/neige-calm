@@ -112,8 +112,17 @@ pub struct Stamped<T> {
     pub checked_at_ms: i64,
 }
 
+/// What one check produced, as its slot keeps it.
+pub struct CheckRun<T> {
+    pub outcome: T,
+    /// Whether the check ran every step a recheck asks for. `false` only for a Claude TTL
+    /// re-check that kept the cached model list (#1822): it cannot answer a recheck.
+    pub answers_recheck: bool,
+}
+
 struct Entry<T> {
     started: Instant,
+    answers_recheck: bool,
     stamped: Stamped<T>,
 }
 
@@ -143,13 +152,15 @@ impl<T: Clone> Slot<T> {
     pub async fn get<F, Fut>(&self, freshness: Freshness, check: F) -> Stamped<T>
     where
         F: FnOnce(Option<T>) -> Fut,
-        Fut: std::future::Future<Output = T>,
+        Fut: std::future::Future<Output = CheckRun<T>>,
     {
         let requested = Instant::now();
         let mut slot = self.entry.lock().await;
         if let Some(entry) = slot.as_ref() {
-            // A check that began after this request answers it, even a recheck.
-            let began_after_request = entry.started >= requested;
+            // A check that began after this request answers it; a recheck, only if that check
+            // ran every step a recheck asks for.
+            let began_after_request = entry.started >= requested
+                && (freshness == Freshness::Cached || entry.answers_recheck);
             let fresh = freshness == Freshness::Cached && entry.started.elapsed() < TTL;
             if began_after_request || fresh {
                 return entry.stamped.clone();
@@ -158,12 +169,14 @@ impl<T: Clone> Slot<T> {
         let started = Instant::now();
         let checked_at_ms = crate::model::now_ms();
         let previous = slot.as_ref().map(|entry| entry.stamped.outcome.clone());
+        let run = check(previous).await;
         let stamped = Stamped {
-            outcome: check(previous).await,
+            outcome: run.outcome,
             checked_at_ms,
         };
         *slot = Some(Entry {
             started,
+            answers_recheck: run.answers_recheck,
             stamped: stamped.clone(),
         });
         stamped
@@ -203,7 +216,13 @@ impl ProviderAvailabilityCache {
             AgentProvider::Codex => {
                 let stamped = self
                     .codex
-                    .get(freshness, |_previous| check_codex(codex))
+                    .get(freshness, |_previous| async {
+                        // Every Codex check runs every step.
+                        CheckRun {
+                            outcome: check_codex(codex).await,
+                            answers_recheck: true,
+                        }
+                    })
                     .await;
                 Checked {
                     provider: AgentProvider::Codex,

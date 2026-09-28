@@ -74,6 +74,38 @@
     color: var(--warn-text);
   }
 
+  /* A Claude row (#1822, owner layout 2026-09-28): the name at the left, the
+     model it resolves to small and quiet at the right. The name keeps its
+     width; the id gives way, with an ellipsis. */
+  .resolvedRow {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-3);
+    min-inline-size: 0;
+  }
+
+  .resolvedName {
+    flex: none;
+  }
+
+  /* 10rem holds every id the pinned CLI reports (`claude-haiku-4-5-20251001`
+     is the longest) at `--text-xs`, and caps what a longer one asks of the
+     menu's width, which is sized to its content: without the cap, one long id
+     widened the menu past a 390px viewport. The auto margin puts every id at
+     the row's right edge, whatever the width of the name before it. */
+  .resolvedId {
+    flex: 0 1 auto;
+    min-inline-size: 0;
+    max-inline-size: 10rem;
+    margin-inline-start: auto;
+    overflow: hidden;
+    color: var(--text-3);
+    font-size: var(--text-xs);
+    text-align: end;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   /* A standing explanation, not a menu row: it must not look pressable. The
      type is `Text type="supporting"`; what is left here is the box. */
   .note {

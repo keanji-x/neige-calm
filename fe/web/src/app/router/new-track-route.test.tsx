@@ -479,7 +479,7 @@ describe('New track model selection', () => {
     await userEvent.keyboard('{ArrowDown}');
     const menu = await screen.findByRole('menu');
     expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent))
-      .toEqual(['Default (claude-opus-5-5[1m])Selected', 'Opus (1M context)claude-opus-5-5[1m]', 'Fableclaude-fable-5-1',
+      .toEqual(['Defaultclaude-opus-5-5[1m]Selected', 'Opus (1M context)claude-opus-5-5[1m]', 'Fableclaude-fable-5-1',
         'Sonnetclaude-sonnet-5', 'Haikuclaude-haiku-4-5-20251001']);
     expect(within(menu).queryByRole('group')).toBeNull();
     await userEvent.click(within(menu).getByRole('menuitem', { name: /^Haiku/ }));
