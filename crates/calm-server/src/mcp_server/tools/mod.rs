@@ -9,6 +9,7 @@ pub(crate) mod lifecycle_args;
 pub mod plan;
 pub mod preview;
 pub mod report_links;
+pub mod report_tag;
 pub mod review;
 pub mod source;
 pub mod task_delivery;
@@ -35,6 +36,7 @@ pub fn register_default_tools(registry: &mut ToolRegistry) {
     task_repair::register_into(registry);
     task_replace::register_into(registry);
     report_links::register_into(registry);
+    report_tag::register_into(registry);
     review::register_into(registry);
     source::register_into(registry);
     track_rename::register_into(registry);

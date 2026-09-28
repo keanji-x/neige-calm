@@ -105,6 +105,48 @@ fn cat_at_maps_commit_and_path() {
 }
 
 #[test]
+fn tag_maps_path_and_repeated_add_and_remove_in_order() {
+    let parsed = parse_args(&["tag", "report.md"]).expect("parse");
+    assert_eq!(parsed.tool, "calm.report.tag");
+    assert_eq!(parsed.render, Render::Tags);
+    assert_eq!(parsed.args, json!({ "path": "report.md" }));
+    assert_eq!(
+        tool_args(&[
+            "tag",
+            "report.md",
+            "--add",
+            "认证",
+            "--remove",
+            "排障",
+            "--add",
+            "架构"
+        ]),
+        json!({ "path": "report.md", "add": ["认证", "架构"], "remove": ["排障"] })
+    );
+    // Values reach the tool unchecked: the path and tag rules belong to `calm.report.tag`.
+    assert_eq!(
+        tool_args(&["tag", "track.json", "--add", " a,b "]),
+        json!({ "path": "track.json", "add": [" a,b "] })
+    );
+    assert_eq!(
+        refusal(&["tag"]),
+        "tag requires a path argument (report.md)"
+    );
+    assert_eq!(
+        refusal(&["tag", "report.md", "other.md"]),
+        "tag accepts exactly one path"
+    );
+    assert_eq!(
+        refusal(&["tag", "report.md", "--add"]),
+        "tag requires a value after --add"
+    );
+    assert_eq!(
+        refusal(&["tag", "report.md", "--track-id", "t"]),
+        "unknown option `--track-id`"
+    );
+}
+
+#[test]
 fn log_maps_path_limit_and_include_empty() {
     let parsed =
         parse_args(&["log", "report.md", "--limit", "7", "--include-empty"]).expect("parse");

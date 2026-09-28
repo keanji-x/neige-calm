@@ -395,3 +395,76 @@ async fn help_and_unknown_commands_are_served_by_the_kernel() {
         "{stderr}"
     );
 }
+
+/// Give the boot track the report card every production track is created with.
+async fn add_report_card(boot: &CardBoot) {
+    boot.repo
+        .card_create(calm_server::model::NewCard {
+            track_id: boot.track_id.clone(),
+            title: None,
+            kind: "track-report".into(),
+            sort: Some(-1.0),
+            payload: serde_json::to_value(calm_server::track_report::TrackReportPayload::initial())
+                .unwrap(),
+        })
+        .await
+        .unwrap();
+}
+
+/// #1838: `neige tag report.md` end to end. The Planner changes tags; only `report.md` takes them.
+#[tokio::test]
+async fn cli_tag_round_trips_the_planners_report_tags() {
+    let boot = boot_with_role(CardRole::Planner).await;
+    add_report_card(&boot).await;
+    let steps: [(&[&str], &str); 5] = [
+        (&["tag", "report.md"], "\n"),
+        (
+            &["tag", "report.md", "--add", "认证", "--add", "架构"],
+            "认证 架构\n",
+        ),
+        (
+            &["tag", "report.md", "--add", "排障", "--add", "认证"],
+            "认证 架构 排障\n",
+        ),
+        (&["tag", "report.md", "--remove", "排障"], "认证 架构\n"),
+        (&["tag", "report.md"], "认证 架构\n"),
+    ];
+    for (argv, want) in steps {
+        let (stdout, stderr, exit) = cli(&boot, argv).await;
+        assert_eq!(
+            (exit, stderr.as_str(), stdout.as_str()),
+            (0, "", want),
+            "{argv:?}"
+        );
+    }
+    let (stdout, _, exit) = cli(&boot, &["--json", "tag", "report.md"]).await;
+    assert_eq!(
+        (exit, stdout),
+        (0, "{\"tags\":[\"认证\",\"架构\"]}\n".to_string())
+    );
+    assert_same_refusal(
+        &boot,
+        &["tag", "track.json", "--add", "x"],
+        "calm.report.tag",
+        json!({ "path": "track.json", "add": ["x"] }),
+    )
+    .await;
+}
+
+/// #1838: a Worker lists its track's report tags but cannot change them.
+#[tokio::test]
+async fn cli_tag_lists_for_a_worker_and_refuses_its_changes() {
+    let boot = boot_with_role(CardRole::Worker).await;
+    add_report_card(&boot).await;
+    let (stdout, stderr, exit) = cli(&boot, &["tag", "report.md"]).await;
+    assert_eq!((exit, stderr.as_str(), stdout.as_str()), (0, "", "\n"));
+    assert_same_refusal(
+        &boot,
+        &["tag", "report.md", "--add", "认证"],
+        "calm.report.tag",
+        json!({ "path": "report.md", "add": ["认证"] }),
+    )
+    .await;
+    let (stdout, _, exit) = cli(&boot, &["tag", "report.md"]).await;
+    assert_eq!((exit, stdout.as_str()), (0, "\n"));
+}

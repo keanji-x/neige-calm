@@ -1,5 +1,6 @@
 //! Captured sources follow their track: a fork copies every `report_sources` row
 //! into the child, and deleting a track cascades its rows and empties its slot in the transient ring.
+//! Report tags (#1838) follow the same fork and delete rules.
 
 #![cfg(unix)]
 
@@ -313,4 +314,35 @@ async fn deleting_a_track_empties_its_slot_in_the_transient_ring() {
         1,
         "another track's entries are untouched"
     );
+}
+
+async fn tags_of(boot: &Boot, track_id: &str) -> Vec<String> {
+    calm_server::report_tags::store::list(&boot.repo.sqlite_pool().unwrap(), track_id)
+        .await
+        .unwrap()
+}
+
+/// #1838: report tags follow the track like sources: a fork copies them in order, a delete cascades.
+#[tokio::test]
+async fn fork_copies_report_tags_in_order_and_delete_cascades_them() {
+    let boot = boot().await;
+    let parent = create_track(&boot, "tag-parent", None).await;
+    let track = parent.clone();
+    calm_server::db::write_in_tx_typed(boot.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            let add = ["排障", "认证"].map(String::from);
+            calm_server::report_tags::store::apply_tx(tx, &track, &add, &[]).await
+        })
+    })
+    .await
+    .expect("tag parent");
+    let child = create_track(&boot, "tag-child", Some(&parent)).await;
+    assert_eq!(tags_of(&boot, &child).await, ["排障", "认证"]);
+    let untagged = create_track(&boot, "tag-none", None).await;
+    assert!(tags_of(&boot, &untagged).await.is_empty());
+
+    let (status, body) = request(&boot, "DELETE", &format!("/api/tracks/{parent}"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    assert!(tags_of(&boot, &parent).await.is_empty(), "FK cascade");
+    assert_eq!(tags_of(&boot, &child).await, ["排障", "认证"]);
 }

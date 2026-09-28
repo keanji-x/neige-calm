@@ -5,7 +5,7 @@ use serde_json::{Map, Value};
 
 use super::help;
 use super::render::Render;
-use crate::mcp_server::tools::{admin, emit, track_file, track_history, track_state};
+use crate::mcp_server::tools::{admin, emit, report_tag, track_file, track_history, track_state};
 use crate::track_vcs::DEFAULT_TRACK_HISTORY_PRUNE_KEEP;
 
 pub(crate) struct Command {
@@ -139,6 +139,21 @@ pub(crate) const COMMANDS: &[Command] = &[
         ],
         confirm: None,
         render: Render::Log,
+    },
+    Command {
+        name: "tag",
+        tool: report_tag::TOOL_REPORT_TAG,
+        positionals: &[pos(
+            "path",
+            Some("tag requires a path argument (report.md)"),
+        )],
+        too_many: Some("tag accepts exactly one path"),
+        options: &[
+            opt("--add", "add", OptValue::TextList, false),
+            opt("--remove", "remove", OptValue::TextList, false),
+        ],
+        confirm: None,
+        render: Render::Tags,
     },
     Command {
         name: "task-completed",

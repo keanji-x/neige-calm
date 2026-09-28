@@ -18,6 +18,8 @@ pub enum Render {
     State,
     Diff,
     Log,
+    /// `tag`: the current tags space-joined on one line.
+    Tags,
     /// Maintenance and task reports: the result as compact JSON.
     Raw,
 }
@@ -43,6 +45,8 @@ pub fn render(
         Render::Diff => diff(tool, value),
         Render::Log if json => Ok(compact(value)),
         Render::Log => log(tool, value),
+        Render::Tags if json => Ok(compact(value)),
+        Render::Tags => tags(tool, value),
         Render::Raw => Ok(compact(value)),
     }
 }
@@ -446,6 +450,27 @@ fn log(tool: &str, value: &Value) -> Result<String, RenderError> {
     Ok(out)
 }
 
+/// An empty line for an untagged report; a tag never holds whitespace, so the join is unambiguous.
+fn tags(tool: &str, value: &Value) -> Result<String, RenderError> {
+    let missing = || {
+        shape(
+            format!("{tool} value missing string array tags"),
+            tool,
+            "value",
+            value,
+        )
+    };
+    let tags = value
+        .get("tags")
+        .and_then(Value::as_array)
+        .ok_or_else(missing)?;
+    let tags: Vec<&str> = tags
+        .iter()
+        .map(|tag| tag.as_str().ok_or_else(missing))
+        .collect::<Result<_, _>>()?;
+    Ok(format!("{}\n", tags.join(" ")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -502,6 +527,31 @@ mod tests {
         );
         let value = json!({ "commits": [{ "hash": "abc", "event_id": 1, "message": "m" }] });
         assert!(render(Render::Log, "calm.track.log", false, &value).is_err());
+    }
+
+    #[test]
+    fn tags_print_space_joined_and_require_a_string_array() {
+        let tool = "calm.report.tag";
+        let value = json!({ "tags": ["认证", "架构", "排障"] });
+        assert_eq!(
+            render(Render::Tags, tool, false, &value).unwrap(),
+            "认证 架构 排障\n"
+        );
+        assert_eq!(
+            render(Render::Tags, tool, true, &value).unwrap(),
+            format!("{value}\n")
+        );
+        assert_eq!(
+            render(Render::Tags, tool, false, &json!({ "tags": [] })).unwrap(),
+            "\n"
+        );
+        for bad in [json!({}), json!({ "tags": [1] }), json!({ "tags": "a" })] {
+            let err = render(Render::Tags, tool, false, &bad).unwrap_err();
+            assert_eq!(
+                err.message,
+                "calm.report.tag value missing string array tags"
+            );
+        }
     }
 
     #[test]

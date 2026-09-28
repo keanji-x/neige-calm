@@ -919,6 +919,40 @@
     ]
   },
   {
+    "name": "calm.report.tag",
+    "description_sha256": "4150ff72f6dbdd2a7933b3244251b1ba38e89771ae65259598ce848dc7025c54",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "add": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "path": {
+          "type": "string"
+        },
+        "remove": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": []
+  },
+  {
     "name": "calm.report.write",
     "description_sha256": "834be3c5e02f2f57fe47755ab9b2c5c8e07815bd9ecb876dbe64db205f394d46",
     "input_schema": {

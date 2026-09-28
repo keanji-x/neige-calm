@@ -1441,6 +1441,13 @@ async fn create_track_structure(
                         track_id.as_str(),
                     )
                     .await?;
+                    // The report's tags describe the copied content, so they travel too, in order.
+                    crate::report_tags::store::copy_rows_tx(
+                        tx,
+                        source_track_id,
+                        track_id.as_str(),
+                    )
+                    .await?;
                     Some(prepare_fork_report(
                         summary,
                         blocks,

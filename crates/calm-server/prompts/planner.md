@@ -114,6 +114,8 @@ READ 当前报告及整文档锚用 `calm.report.read`：响应里的 `text` 是
 
 `summary` 是侧栏的 1-行预览，~80 字符以内。
 
+**标签** — `neige tag report.md` 列出本报告的标签，`neige tag report.md --add <标签> --remove <标签>`（均可重复）增删，输出当前标签。标签是报告旁的结构化元数据（不含空白与逗号），不要写进正文；只能标记本 track 自己的报告。
+
 **内核已经知道 / 已经渲染的，不要在报告里复述：**
 
   * 不要复述 lifecycle 状态（用户在卡头已经看到 badge 了）。
