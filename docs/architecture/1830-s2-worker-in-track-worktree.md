@@ -69,7 +69,8 @@ Verified at 2bd0ce8eb (S1 head) by reading the code, or by the query or command 
   in-tree workers, meaning codex/claude tasks that are neither `isolated_codex::selected` nor on
   the child-track route. It holds when, apart from `except_attempt`:
   - no in-tree worker task is `dispatched`/`running`/`verifying`;
-  - no lease is `held`/`releasing`;
+  - no lease is `held`/`releasing`, except one whose owner op is `stuck` (owner decision; D6
+    then judges what a stuck worker left);
   - no delivery is unsettled.
 
   Each term covers something the others miss:
@@ -116,8 +117,14 @@ Verified at 2bd0ce8eb (S1 head) by reading the code, or by the query or command 
     terminal `tasks.status` (`failed` / `canceled`). The terminal flip does not release, because
     the worker may still write. Until its marker clears, the cleanup is retried every tick. A
     failed Codex interrupt now fails the cleanup (`driver.rs:233-266` returns Err instead of
-    logging), so the marker stays and the next tick retries. Nothing bounds those retries (see
-    §7). `mark_running_timeout_cleanup_tx` itself releases in the caller's tx when it marks 0
+    logging), so the marker stays and the next tick retries. The retry is bounded: a JSON-RPC
+    refusal (`CalmError::CodexRefused`) is told apart from a transport failure
+    (`CalmError::CodexAppServer`) at `codex_appserver.rs:1016-1029`, but the daemon's
+    unknown-thread text is not pinned anywhere. So on `CodexRefused` the cleanup asks the
+    existing authoritative `read_liveness_facts` (`shared_codex_appserver.rs:4571`): a thread
+    that is `NotLoaded` (as after a daemon restart) or whose last turn ended counts as stopped
+    (Ok). Only a transport failure, or a thread still active, returns Err.
+    `mark_running_timeout_cleanup_tx` itself releases in the caller's tx when it marks 0
     sessions: no live worker is left to kill (a Claude PTY that died same-boot is `exited`,
     `attach_reader.rs:141-160`). That covers its three callers: the liveness flip, the running
     cancel, and `task_replace/admission.rs:265-285` `stop_tx` until S2b.
@@ -132,6 +139,11 @@ Verified at 2bd0ce8eb (S1 head) by reading the code, or by the query or command 
     which wakes the Planner), and writes `outcome = 'interrupted'`, so `settle_tx` never sees a
     running task. It is the one releaser for a Stuck owner (§3) and for a rebooted `exited`
     session.
+  - **Supersede:** `prepare_worker_lease_tx`, after D6 passes and before its INSERT, releases
+    any `held` lease at the same path whose owner op is `stuck`, with no delivery row (the tree
+    was just proven clean, and a row submitted now would commit the new worker's files). That
+    keeps G3's index, `UNIQUE(path) WHERE state IN ('held','releasing')`, satisfied without a
+    migration; a partial index cannot see the owner op's phase.
   - **Track/area delete:** no delivery row.
 
   The dispatcher pokes the scheduler on `workspace.released` so the new row is submitted (G11).
@@ -174,7 +186,7 @@ Verified at 2bd0ce8eb (S1 head) by reading the code, or by the query or command 
 | worker dies unreported | reaper fail tx | already | same tx (`failed`) |
 | liveness timeout, running cancel | flip + cleanup marker | sweep kills it | cleanup after kill (`failed` / `canceled`) |
 | spawn fails before the launch may have started | compensation, then `fail_spawn` | never ran | compensation step (`spawn-failed`) |
-| spawn fails after the launch may have started (the ordinary post-start failure) | `require_cleanup_safe` rejects every step (`worker_cleanup.rs:113-166`); the op goes Stuck (`driver.rs:720-727`); `fail_spawn` | unknown | only boot reclaim at the next machine boot (§7) |
+| spawn fails after the launch may have started (the ordinary post-start failure) | `require_cleanup_safe` rejects every step (`worker_cleanup.rs:113-166`); the op goes Stuck (`driver.rs:720-727`); `fail_spawn` | unknown | ignored by D5; superseded by the next prepare (no row), or boot reclaim |
 | machine reboot mid-run | boot reclaim tx | already | same tx (`interrupted`) |
 | session already `exited` at the timeout or cancel | flip tx | already | same tx, inside `mark_running_timeout_cleanup_tx` |
 | dirty tree or no worktree at prepare | `fail_spawn` | never ran | no lease, no row |
@@ -256,6 +268,7 @@ files and reports through MCP. Tracks are minted by the real create route.
 | T8 `an_exited_worker_is_released_by_its_timeout_flip`: fixture `kernel_lease` + `running_task`; the session set `exited` and `running_deadline_ms` set in the past by SQL (`planner_preserving_recovery.rs:313`, `git_delivery.rs:4111` patterns); one reconcile sweep. The task is `failed`, the lease `released`, and the delivery row has `outcome = 'failed'` | D7, `mark_running_timeout_cleanup_tx` | M11: that function does not release when it marks 0 |
 | T9 `a_lease_from_an_older_boot_fails_its_attempt_and_is_released`: fixture `kernel_lease` + `running_task`, lease `boot_id` set to `stale-boot` by SQL, then `fx.reboot()`. The lease is `released`, the task `failed` with the dead-worker detail, and the delivery row has `outcome = 'interrupted'` | D7 boot reclaim | M12: boot reclaim does not fail the task |
 | T10 `a_failed_codex_interrupt_keeps_the_lease_until_it_succeeds`: a running fixture codex worker is canceled with `calm.plan.cancel`, and `fail_turn_interrupt_for_test(true)` (`shared_codex_appserver.rs:3780`) makes its interrupt fail. After a sweep the lease is still `held` and the marker kept; after `(false)` and the next sweep it is `released` with `outcome = 'canceled'` | D7 interrupt | M13: `driver.rs:233-266` logs and returns Ok again |
+| T11 `a_stuck_owner_lease_does_not_block_the_next_claim` (attached): a's real worker op is set `stuck` and a `failed` by SQL (the `UPDATE operations SET phase=` pattern of `candidate_verification.rs:503`), with its lease still `held` and a clean tree. b is claimed and runs in the worktree; a's lease is `released` with no delivery row, and b's lease is `held` | D5 stuck exception, D7 supersede | M14: the lease term counts stuck owners (b stays `pending`); M15: prepare skips the supersede (b's INSERT hits G3's index, `spawn-failed`) |
 
 Ordinary tests, all on attached tracks:
 - `calm.plan.cancel` of a running task commits `canceled` after the kill.
@@ -267,10 +280,10 @@ lease. Predicted red sets:
 - M1 → T1 and the `showUntrackedFiles` unit test.
 - M2 → T2.
 - M3 → T2 only (the cancel and reaper tests write their outcome at another call site).
-- M4 → T1–T3, T4b, T7, T10, and the cancel and reaper tests (all attached). Not T4, T8, T9: they
+- M4 → T1–T3, T4b, T7, T10, T11, and the cancel and reaper tests (all attached). Not T4, T8, T9: they
   use fixture rows, not `prepare_worker_lease_tx`.
 - M5 → T4 (T7's b holds a real lease, so the lease term still refuses).
-- M6 → T4b; M7 → T5; M8 → T6; M9 and M10 → T7; M11 → T8; M12 → T9; M13 → T10.
+- M6 → T4b; M7 → T5; M8 → T6; M9 and M10 → T7; M11 → T8; M12 → T9; M13 → T10; M14 and M15 → T11.
 
 The lease term of D5 has no must-red test (holding a kill needs a missing hook); G3 backs it up.
 
@@ -284,12 +297,7 @@ The lease term of D5 has no must-red test (holding a kill needs a missing hook);
   A successful Codex interrupt is also only a request (`codex_adapter/mod.rs:1075`), and card
   delete interrupts best-effort before it releases (`routes/cards.rs:1549`, `:1576`): same class.
 - A delivery that never settles (for example, the kernel cannot spawn git) holds the track.
-- A post-start spawn failure (Stuck op, §3) or a Codex interrupt that keeps failing holds the
-  track until the next machine boot. No Planner, user or plugin action releases it: REST card
-  delete, track delete and area delete run `terminal_disposal::require_safe`, which refuses the
-  op's unresolved launch (`terminal_disposal.rs:28-100`; `routes/cards.rs:1539`,
-  `routes/tracks.rs:2865`, `routes/areas.rs:389`), and plugins may delete only their own
-  `plugin:<id>:` cards (`plugin_host/perms.rs:27-35`). For the owner.
+- A stuck worker that is in fact alive may overlap the next attempt (same class as the late write).
 - A terminal task that writes into the track's checkout leaves files, which the next clean check
   refuses; the Planner cleans them.
 - A managed track re-pointed to attached before its first lease has no worktree and is refused.
