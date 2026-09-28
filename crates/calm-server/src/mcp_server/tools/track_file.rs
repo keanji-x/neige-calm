@@ -1,5 +1,7 @@
 //! Read-only MCP file views (`calm.track.ls`, `calm.track.cat`) rooted at the track bound to the caller's MCP connection.
+//! A path under `area/` is the Planner's `area/reports/` view instead (#1838, [`super::area_reports`]).
 
+use crate::area_reports;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
@@ -76,6 +78,9 @@ async fn track_ls(
 ) -> Result<Value, RpcError> {
     require_role_any(&identity, &[CardRole::Planner, CardRole::Worker])?;
     let path = parse_path_arg(&args, false)?;
+    if let Some(area_path) = area_reports::classify(&path) {
+        return super::area_reports::ls(&ctx, &identity, area_path).await;
+    }
     let (_, track) = resolve_track_for_identity(&ctx, &identity).await?;
     let view = TrackFsView::new(ctx.repo.as_ref(), &ctx.write);
     let entries = view
@@ -93,6 +98,9 @@ async fn track_cat(
 ) -> Result<Value, RpcError> {
     require_role_any(&identity, &[CardRole::Planner, CardRole::Worker])?;
     let path = parse_path_arg(&args, true)?;
+    if let Some(area_path) = area_reports::classify(&path) {
+        return super::area_reports::cat(&ctx, &identity, area_path).await;
+    }
     let (_, track) = resolve_track_for_identity(&ctx, &identity).await?;
     // `plan/<key>/gate.log` is enabled only here (MCP carries a card identity); the gate-logs dir is the configured one, never recomputed from env.
     let view = TrackFsView::new(ctx.repo.as_ref(), &ctx.write)
@@ -153,7 +161,7 @@ pub(crate) async fn resolve_track_for_identity(
     Ok((card, track))
 }
 
-fn track_fs_error_to_rpc(err: TrackFsError) -> RpcError {
+pub(crate) fn track_fs_error_to_rpc(err: TrackFsError) -> RpcError {
     match err {
         TrackFsError::PathNotAvailable(message) => RpcError::invalid_params(message),
         TrackFsError::Forbidden(message) => RpcError::custom(-32403, message),

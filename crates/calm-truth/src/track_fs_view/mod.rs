@@ -144,8 +144,8 @@ impl<'a> TrackFsView<'a> {
             }
             "track.json" => content_json(track),
             "report.md" => {
-                let payload = self.load_report_for_track(track).await?;
-                Ok(content_markdown(payload.body))
+                let card = self.report_card_for_track(track).await?;
+                report_markdown(card.id.as_str(), card.payload)
             }
             "cards/index.json" => {
                 let cards = self.cards_for_track(track).await?;
@@ -338,16 +338,13 @@ impl<'a> TrackFsView<'a> {
         Ok(runs)
     }
 
-    async fn load_report_for_track(
-        &self,
-        track: &Track,
-    ) -> Result<TrackReportPayload, TrackFsError> {
+    async fn report_card_for_track(&self, track: &Track) -> Result<Card, TrackFsError> {
         let cards = self
             .repo
             .cards_by_track(track.id.as_str())
             .await
             .map_err(|e| TrackFsError::Internal(format!("track_report: cards_by_track: {e}")))?;
-        let report_card = cards
+        cards
             .into_iter()
             .find(|c| c.kind == "track-report")
             .ok_or_else(|| {
@@ -355,13 +352,7 @@ impl<'a> TrackFsView<'a> {
                     "track_report: track {} has no track-report card (invariant violation)",
                     track.id.as_str()
                 ))
-            })?;
-        serde_json::from_value(report_card.payload.clone()).map_err(|e| {
-            TrackFsError::Internal(format!(
-                "track_report: malformed payload on card {}: {e}",
-                report_card.id.as_str()
-            ))
-        })
+            })
     }
 
     fn card_meta(&self, card: &Card) -> TrackFsCardMeta {
@@ -1399,6 +1390,17 @@ pub(crate) fn index_markdown(track: &Track, card_count: usize) -> String {
         track.title,
         card_count
     )
+}
+
+/// A `report.md` view: the Markdown body of a track-report card's payload, nothing else. Shared
+/// with the Planner's `area/reports/<name>.md` so both paths print a report identically.
+pub fn report_markdown(card_id: &str, payload: Value) -> Result<TrackFsContent, TrackFsError> {
+    let payload: TrackReportPayload = serde_json::from_value(payload).map_err(|e| {
+        TrackFsError::Internal(format!(
+            "track_report: malformed payload on card {card_id}: {e}"
+        ))
+    })?;
+    Ok(content_markdown(payload.body))
 }
 
 pub(crate) fn content_markdown(content: String) -> TrackFsContent {

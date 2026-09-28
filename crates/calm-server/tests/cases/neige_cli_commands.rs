@@ -14,6 +14,11 @@ use support::mcp::{
 };
 use support::track_vcs_seed::seed_linear_commits;
 
+const LS: Render = Render::Ls {
+    long: false,
+    reports: false,
+};
+
 async fn cli(boot: &CardBoot, argv: &[&str]) -> (String, String, i64) {
     cli_output(&neige_cli_via_socket(&boot.socket_path, &boot.raw_token, argv).await)
 }
@@ -50,12 +55,12 @@ async fn cli_output_equals_direct_tool_call() {
 
     // (argv without --json, tool, direct args, render)
     let cases: Vec<(Vec<&str>, &str, Value, Render)> = vec![
-        (vec!["ls"], "calm.track.ls", json!({}), Render::Ls),
+        (vec!["ls"], "calm.track.ls", json!({}), LS),
         (
             vec!["ls", "cards"],
             "calm.track.ls",
             json!({ "path": "cards" }),
-            Render::Ls,
+            LS,
         ),
         (vec!["state"], "calm.track.state", json!({}), Render::State),
         (
@@ -100,7 +105,7 @@ async fn cli_output_equals_direct_tool_call() {
             let (stdout, stderr, exit) = cli(&boot, &full).await;
             assert_eq!((exit, stderr.as_str()), (0, ""), "{full:?}");
             let want = match (json_flag, how) {
-                (true, Render::Ls | Render::State | Render::Diff | Render::Log) => {
+                (true, Render::Ls { .. } | Render::State | Render::Diff | Render::Log) => {
                     format!("{value}\n")
                 }
                 _ => render(how, tool, json_flag, &value).expect("direct result renders"),

@@ -846,6 +846,32 @@
     ]
   },
   {
+    "name": "calm.report.find",
+    "description_sha256": "719b7b9150fbb836d94edc905b4425a5540a67e1a038335a943909de33aaa6f0",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "tag": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "visible_to_roles": []
+  },
+  {
     "name": "calm.report.links.backlinks",
     "description_sha256": "5aaedb2840e6243b99cf07946f7bafc46fa01306a58323d55aed93c97ec75147",
     "input_schema": {
@@ -2193,7 +2219,7 @@
   },
   {
     "name": "calm.track.cat",
-    "description_sha256": "8fbbe5f47287feb1ecd7f17318839ff6424202fe16735b4c88dbf0e049c2aeef",
+    "description_sha256": "095afc4efe18aa69813ab37ccb9a371db94d953afa0f578abb1f828238c6e4ea",
     "input_schema": {
       "properties": {
         "path": {
@@ -2285,7 +2311,7 @@
   },
   {
     "name": "calm.track.ls",
-    "description_sha256": "0889945b6f2407d44b6544ee7efdfdc3d90586a9388d24f84d1aa7c39e8c8bde",
+    "description_sha256": "477897b19098ff445326d7c76199275e683a5524aabc39d022a269f9d347b10b",
     "input_schema": {
       "properties": {
         "path": {

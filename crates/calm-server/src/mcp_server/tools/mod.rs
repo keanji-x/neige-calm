@@ -4,6 +4,7 @@
 use crate::mcp_server::registry::ToolRegistry;
 
 pub mod admin;
+pub mod area_reports;
 pub mod emit;
 pub(crate) mod lifecycle_args;
 pub mod plan;
@@ -37,6 +38,7 @@ pub fn register_default_tools(registry: &mut ToolRegistry) {
     task_replace::register_into(registry);
     report_links::register_into(registry);
     report_tag::register_into(registry);
+    area_reports::register_into(registry);
     review::register_into(registry);
     source::register_into(registry);
     track_rename::register_into(registry);

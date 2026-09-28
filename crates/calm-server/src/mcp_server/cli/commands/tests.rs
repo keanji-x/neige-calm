@@ -29,6 +29,66 @@ fn ls_without_a_path_sends_no_path() {
     assert_eq!(refusal(&["ls", "a", "b"]), "ls accepts at most one path");
 }
 
+/// #1838: `-l` shapes only the text and never reaches the tool; `area/reports/` selects the report table.
+#[test]
+fn ls_long_is_a_view_flag_and_area_reports_selects_the_report_listing() {
+    for (argv, long, reports) in [
+        (&["ls"][..], false, false),
+        (&["ls", "-l"][..], true, false),
+        (&["ls", "-l", "area/reports/"][..], true, true),
+        (&["ls", "/area/reports", "-l"][..], true, true),
+        (&["ls", "area/reports"][..], false, true),
+        (&["ls", "-l", "area/"][..], true, false),
+        (&["ls", "area/reports/x.md"][..], false, false),
+    ] {
+        let parsed = parse_args(argv).expect("parse");
+        assert_eq!(parsed.render, Render::Ls { long, reports }, "{argv:?}");
+        assert!(parsed.args.get("long").is_none(), "{argv:?}");
+    }
+    assert_eq!(
+        tool_args(&["ls", "-l", "runs/"]),
+        json!({ "path": "runs/" })
+    );
+    assert_eq!(refusal(&["ls", "-a"]), "unknown option `-a`");
+}
+
+#[test]
+fn find_maps_path_name_and_tag_each_at_most_once() {
+    let parsed =
+        parse_args(&["find", "area/reports/", "-name", "*认证*", "-tag", "认证"]).expect("parse");
+    assert_eq!(parsed.tool, "calm.report.find");
+    assert_eq!(parsed.render, Render::Find);
+    assert_eq!(
+        parsed.args,
+        json!({ "path": "area/reports/", "name": "*认证*", "tag": "认证" })
+    );
+    assert_eq!(
+        tool_args(&["find", "-tag", "-x", "area/reports"]),
+        json!({ "path": "area/reports", "tag": "-x" }),
+        "an option value is taken verbatim, even one starting with `-`"
+    );
+    assert_eq!(
+        refusal(&["find"]),
+        "find requires a path argument (area/reports/)"
+    );
+    assert_eq!(
+        refusal(&["find", "area/reports/", "-tag", "a", "-tag", "b"]),
+        "find accepts -tag once"
+    );
+    assert_eq!(
+        refusal(&["find", "area/reports/", "-name", "a", "-name", "b"]),
+        "find accepts -name once"
+    );
+    assert_eq!(
+        refusal(&["find", "area/reports/", "-type", "f"]),
+        "unknown option `-type`"
+    );
+    assert_eq!(
+        refusal(&["find", "a", "b"]),
+        "find accepts exactly one path"
+    );
+}
+
 #[test]
 fn state_takes_no_arguments() {
     assert_eq!(tool_args(&["state"]), json!({}));
@@ -294,7 +354,8 @@ fn json_flag_is_accepted_before_and_after_the_command() {
 }
 
 /// H5: every argv slot names a property of its tool's input schema, and a slot the CLI requires is one
-/// the schema requires. `--json`, `--force` and `-h/--help` carry no tool argument and are not slots.
+/// the schema requires. `--json`, `--force`, `-h/--help` and view flags (`ls -l`) carry no tool
+/// argument and are not slots.
 #[test]
 fn every_cli_option_maps_to_a_tool_schema_property() {
     let descriptors = build_default_registry().descriptors();
@@ -312,7 +373,13 @@ fn every_cli_option_maps_to_a_tool_schema_property() {
             .positionals
             .iter()
             .map(|p| (p.key, p.missing.is_some()))
-            .chain(command.options.iter().map(|o| (o.key, o.required)));
+            .chain(
+                command
+                    .options
+                    .iter()
+                    .filter(|o| !matches!(o.value, OptValue::View))
+                    .map(|o| (o.key, o.required)),
+            );
         for (key, cli_required) in slots {
             assert!(
                 schema["properties"].get(key).is_some(),

@@ -5,7 +5,12 @@ use serde_json::{Map, Value};
 
 use super::help;
 use super::render::Render;
-use crate::mcp_server::tools::{admin, emit, report_tag, track_file, track_history, track_state};
+use crate::area_reports::{self, AreaPath};
+use crate::mcp_server::tools::{
+    admin, area_reports as area_reports_tool, emit, report_tag, track_file, track_history,
+    track_state,
+};
+use crate::track_fs_view::normalize_path;
 use crate::track_vcs::DEFAULT_TRACK_HISTORY_PRUNE_KEEP;
 
 pub(crate) struct Command {
@@ -43,6 +48,8 @@ pub(crate) enum OptValue {
     JsonOrText,
     /// Repeatable; collected into an array.
     TextList,
+    /// Present means `true`; shapes only the kernel's text output and never reaches the tool.
+    View,
 }
 
 /// A destructive command runs only with `flag`, or with the `unless` tool key set.
@@ -73,9 +80,12 @@ pub(crate) const COMMANDS: &[Command] = &[
         tool: track_file::TOOL_TRACK_LS,
         positionals: &[pos("path", None)],
         too_many: Some("ls accepts at most one path"),
-        options: &[],
+        options: &[opt("-l", "long", OptValue::View, false)],
         confirm: None,
-        render: Render::Ls,
+        render: Render::Ls {
+            long: false,
+            reports: false,
+        },
     },
     Command {
         name: "cat",
@@ -85,6 +95,21 @@ pub(crate) const COMMANDS: &[Command] = &[
         options: &[],
         confirm: None,
         render: Render::Content,
+    },
+    Command {
+        name: "find",
+        tool: area_reports_tool::TOOL_REPORT_FIND,
+        positionals: &[pos(
+            "path",
+            Some("find requires a path argument (area/reports/)"),
+        )],
+        too_many: Some("find accepts exactly one path"),
+        options: &[
+            opt("-name", "name", OptValue::Text, false),
+            opt("-tag", "tag", OptValue::Text, false),
+        ],
+        confirm: None,
+        render: Render::Find,
     },
     Command {
         name: "state",
@@ -258,6 +283,7 @@ pub(crate) fn parse(argv: &[String]) -> Result<Parsed, Usage> {
     let mut args = Map::new();
     let mut positionals = Vec::new();
     let mut forced = false;
+    let mut views: Vec<&'static str> = Vec::new();
     while let Some(arg) = iter.next() {
         if arg == "--json" {
             json = true;
@@ -278,11 +304,15 @@ pub(crate) fn parse(argv: &[String]) -> Result<Parsed, Usage> {
             args.insert(opt.key.into(), Value::Bool(true));
             continue;
         }
+        if let OptValue::View = opt.value {
+            views.push(opt.key);
+            continue;
+        }
         let Some(raw) = iter.next() else {
             return Err(fail(format!("{cmd} requires a value after {arg}"), json));
         };
         let value = match opt.value {
-            OptValue::Flag => unreachable!("flags take no value"),
+            OptValue::Flag | OptValue::View => unreachable!("flags take no value"),
             OptValue::Text => Value::String(raw.clone()),
             OptValue::Integer { .. } => raw
                 .parse::<u64>()
@@ -357,11 +387,26 @@ pub(crate) fn parse(argv: &[String]) -> Result<Parsed, Usage> {
         }
     }
 
+    let render = match command.render {
+        Render::Ls { .. } => Render::Ls {
+            long: views.contains(&"long"),
+            reports: args
+                .get("path")
+                .and_then(Value::as_str)
+                .is_some_and(|path| {
+                    matches!(
+                        area_reports::classify(&normalize_path(path)),
+                        Some(Ok(AreaPath::Reports))
+                    )
+                }),
+        },
+        other => other,
+    };
     Ok(Parsed {
         tool: command.tool,
         args: Value::Object(args),
         json,
-        render: command.render,
+        render,
     })
 }
 

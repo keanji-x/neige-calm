@@ -5,6 +5,8 @@ mod market_plugin_process;
 #[path = "cases/market_series_process.rs"]
 mod market_series_process;
 
+#[path = "cases/mcp_area_reports.rs"]
+mod mcp_area_reports;
 #[path = "cases/mcp_assistant_report_channel.rs"]
 mod mcp_assistant_report_channel;
 #[path = "cases/mcp_plugin_tools.rs"]

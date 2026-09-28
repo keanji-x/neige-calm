@@ -9,10 +9,18 @@ use serde_json::{Value, json};
 use crate::model::TaskStatus;
 use crate::track_vcs::DiffStatus;
 
+mod listing;
+
 /// How one command prints its tool result.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Render {
-    Ls,
+    /// `ls`: `long` is `-l`; `reports` when the path is the `area/reports/` directory (#1838).
+    Ls {
+        long: bool,
+        reports: bool,
+    },
+    /// `find`: one `area/reports/` path per line.
+    Find,
     /// `cat` and `cat-at`: the view content; `--json` changes only the error format.
     Content,
     State,
@@ -38,7 +46,8 @@ pub fn render(
     value: &Value,
 ) -> Result<String, RenderError> {
     match render {
-        Render::Ls => ls(tool, json, value),
+        Render::Ls { long, reports } => listing::ls(tool, json, long, reports, value),
+        Render::Find => listing::find(tool, json, value),
         Render::Content => content(tool, value),
         Render::State => state(tool, json, value),
         Render::Diff if json => Ok(compact(value)),
@@ -76,28 +85,6 @@ fn required_str<'a>(
             value,
         )
     })
-}
-
-fn ls(tool: &str, json: bool, value: &Value) -> Result<String, RenderError> {
-    let entries = value.as_array().ok_or_else(|| {
-        shape(
-            format!("{tool} returned non-array structuredContent"),
-            tool,
-            "value",
-            value,
-        )
-    })?;
-    if json {
-        return Ok(compact(value));
-    }
-    let mut out = String::new();
-    for entry in entries {
-        let name = required_str(entry, "name", tool, "entry")?;
-        let kind = required_str(entry, "kind", tool, "entry")?;
-        let prefix = if kind == "dir" { 'd' } else { '-' };
-        out.push_str(&format!("{prefix} {name}\n"));
-    }
-    Ok(out)
 }
 
 /// `content_type` is optional: without one, or with JSON that does not parse, the content prints as is.
@@ -482,27 +469,6 @@ fn tags(tool: &str, value: &Value) -> Result<String, RenderError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn ls_entry_without_kind_is_a_render_error() {
-        let ok = render(
-            Render::Ls,
-            "calm.track.ls",
-            false,
-            &json!([
-                { "name": "cards/", "kind": "dir" }, { "name": "track.json", "kind": "file" }
-            ]),
-        );
-        assert_eq!(ok.unwrap(), "d cards/\n- track.json\n");
-        let err = render(
-            Render::Ls,
-            "calm.track.ls",
-            false,
-            &json!([{ "name": "x" }]),
-        )
-        .unwrap_err();
-        assert_eq!(err.message, "calm.track.ls entry missing string kind");
-    }
 
     #[test]
     fn diff_unknown_or_missing_status_is_a_render_error() {
