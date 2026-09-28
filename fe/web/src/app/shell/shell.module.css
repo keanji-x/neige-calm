@@ -180,6 +180,11 @@
        in both themes, which is the unit the ladder is defined in. */
     background: var(--surface-rail);
     overflow: auto;
+
+    /* `.userRow` is pinned over the bottom of this scrollport, so a row
+       scrolled into view (the current track, a restored or tabbed-to focus)
+       has to stop above it rather than behind it. */
+    scroll-padding-block-end: calc(var(--space-4) + var(--control-h) + var(--space-7));
   }
 
   /* The existing compact breakpoint is also the mobile presentation boundary:
@@ -627,17 +632,19 @@
    * underneath it instead of pushing the account menu out of view. `auto`
    * still parks it at the bottom when the list is short.
    *
-   * Sticky pins to the padding box, i.e. over the rail's bottom padding, so
-   * the row takes that padding over (negative margin + own padding) and keeps
-   * the avatar where it sat before. The rail fill hides rows scrolling behind
-   * it. The z-index makes this row a stacking context that also holds
+   * Sticky insets are resolved against the scrollport minus the rail's own
+   * padding, so `0` would park the row one rail padding above the bottom edge
+   * with rows showing through beneath it. The row instead takes that padding
+   * over: a negative inset and margin of the same size, and its own padding
+   * in their place, so its fill reaches the edge and the avatar stays where it
+   * sat before. The rail fill hides rows scrolling behind it. The z-index makes this row a stacking context that also holds
    * `.menu`, which overhangs `.main` (always so in the collapsed 44px strip),
    * so it is the menu's own `--z-overlay`: the menu keeps the rank it had
    * before, and the row still clears the `--z-raised` area action buttons.
    */
   .userRow {
     position: sticky;
-    inset-block-end: 0;
+    inset-block-end: calc(-1 * var(--space-7));
     z-index: var(--z-overlay);
     margin-block: auto calc(-1 * var(--space-7));
     display: flex;
