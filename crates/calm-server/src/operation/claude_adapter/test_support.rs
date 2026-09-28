@@ -6,6 +6,8 @@ pub(super) struct ClaudeWorkerHarness {
     pub(super) track_id: String,
     pub(super) events: EventBus,
     pub(super) workspace: tempfile::TempDir,
+    /// The track worktree (#1830 S2): where every worker of this track runs.
+    pub(super) worktree: std::path::PathBuf,
 }
 
 pub(super) async fn claude_worker_harness() -> ClaudeWorkerHarness {
@@ -88,6 +90,12 @@ pub(super) async fn claude_worker_harness() -> ClaudeWorkerHarness {
     )
     .await
     .unwrap();
+    let worktree = crate::test_support::attach_track_worktree(
+        repo.pool(),
+        track.id.as_str(),
+        workspace.path(),
+    )
+    .await;
     let route_repo: Arc<dyn crate::db::RouteRepo> = repo.clone();
     ClaudeWorkerHarness {
         adapter: ClaudeWorkerAdapter::new(
@@ -102,6 +110,7 @@ pub(super) async fn claude_worker_harness() -> ClaudeWorkerHarness {
         track_id: track.id.to_string(),
         events: EventBus::new(),
         workspace,
+        worktree,
     }
 }
 

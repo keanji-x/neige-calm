@@ -5,10 +5,11 @@ mod worker_report;
 use crate::db::{RouteRepo, write_with_actor_events_typed};
 use crate::error::CalmError;
 use crate::event::{EditAuthor, Event, EventBus, EventScope};
+use crate::git_candidate::delivery::AttemptOutcome;
 use crate::ids::{ActorId, AreaId, CardId, TrackId};
 use crate::mcp_server::registry::{AppContext, ToolCallIdentity};
 use crate::model::{Card, CardRole, Track, TrackLifecycle};
-use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
+use crate::operation::workspace_lease::{ReleaseDelivery, release_workspace_lease_for_card_tx};
 use crate::recorder_shadow::{
     RecorderShadowDecisionKind, RecorderShadowDivergence, RecorderShadowProbe, emit_divergence,
 };
@@ -96,10 +97,6 @@ impl CardDecisionSink {
             area: track.area_id.clone(),
         };
         let track_id = track.id.clone();
-        let release_workspace = matches!(
-            event,
-            Event::TaskCompleted { .. } | Event::TaskFailed { .. }
-        );
         let worker_card_id_for_tx = card_id_str.clone();
 
         let write_result = write_with_actor_events_typed::<(), _>(
@@ -137,6 +134,7 @@ impl CardDecisionSink {
                     };
                     // The `Working → Reviewing` auto-promotion is SUPPRESSED for a gated task's success report: the self-report is a claim, not evidence; the gate-result tx promotes instead.
                     let mut suppress_promotion = false;
+                    let mut released = Vec::new();
                     if let Some((task_id, failure_reason)) = flip {
                         let success = failure_reason.is_none();
                         // Unstamped-row ownership proof: the REPORTING card must be the card the task's worker-spawn operation created. The card payload's `idempotency_key` is NOT proof — payloads are patchable via `PATCH /api/cards/{id}`.
@@ -201,22 +199,22 @@ impl CardDecisionSink {
                                 "task {task_id}: admitted report did not advance the task"
                             )));
                         }
-                        // The kernel git delivery hand-off (#1727 S4 D2): the first delivery row lands in this
-                        // transaction when the card's active lease is a kernel-delivery lease; a REPEATED report
-                        // never reaches here, so a second `task.complete` never writes a second row.
-                        if success && rows == 1 {
-                            crate::git_candidate::delivery::insert_initial_delivery_if_kernel_tx(
-                                tx,
-                                track_id.as_str(),
-                                &worker_card_id,
-                                &task_id,
-                                now,
-                            )
-                            .await?;
-                        }
+                        // #1830 S2 D7: the lease is released in this transaction, and the first delivery row
+                        // (commit the track's checkout as this attempt ended) lands with it when the card's
+                        // lease is a kernel-delivery lease. A REPEATED report never reaches here, so a second
+                        // report never writes a second row; a crash can no longer leave the lease `held`.
+                        let delivery = if success {
+                            ReleaseDelivery::Commit(AttemptOutcome::Completed)
+                        } else {
+                            ReleaseDelivery::Commit(AttemptOutcome::Failed)
+                        };
+                        released =
+                            release_workspace_lease_for_card_tx(tx, &worker_card_id, delivery)
+                                .await?;
                     }
 
                     let mut events = vec![(actor, scope, event)];
+                    events.extend(released);
                     if !suppress_promotion
                         && let Some(auto_events) = auto_transition_if_current_in_tx(
                             tx,
@@ -243,16 +241,6 @@ impl CardDecisionSink {
             Ok(_) => {}
             Err(CalmError::Conflict(reason)) if reason == worker_report::REPEATED => {}
             Err(error) => return Err(error),
-        }
-
-        if release_workspace {
-            // Normal worker reports release only the lease row: the delivery (or the
-            // legacy auto-commit) and a gate still read the worker worktree and slice
-            // branch. The scheduler's reconcile sweep removes a clean checkout (never the
-            // branch) once the attempt is finished and its delivery settled
-            // (`workspace_lease/reclaim.rs`, #1815).
-            release_workspace_lease_for_card_repo(self.repo.as_ref(), &self.events, &card_id_str)
-                .await?;
         }
 
         Ok(())
@@ -700,10 +688,7 @@ mod tests {
         SqlxRepo, begin_immediate_tx, session_insert_tx, session_mark_track_root_tx,
     };
     use crate::model::{CardRole, NewArea, NewCard, NewTrack, TrackPatch};
-    use crate::operation::workspace_lease::{
-        WorktreeBase, acquire_workspace_lease_tx, base::resolve_lease_base,
-        prepare_workspace_lease_target_tx, provision_workspace_worktree,
-    };
+    use crate::operation::workspace_lease::{acquire_workspace_lease_tx, prepare_worker_lease_tx};
     use crate::recorder_shadow::divergence_count_for_test;
     use crate::track_area_cache::TrackAreaCache;
     use calm_types::worker::{
@@ -871,33 +856,35 @@ mod tests {
         .await
         .expect("seed worker session");
 
+        let worktree = crate::test_support::attach_track_worktree(
+            repo.pool(),
+            track.id.as_str(),
+            repo_root.path(),
+        )
+        .await;
         let mut tx = begin_immediate_tx(repo.pool()).await.expect("begin tx");
-        let target = prepare_workspace_lease_target_tx(
+        let plan = prepare_worker_lease_tx(
             &mut tx,
             track.id.as_str(),
-            worker_card.id.as_str(),
             &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
         )
         .await
-        .expect("prepare lease target");
-        let base = resolve_lease_base(&target).expect("resolve lease base");
+        .expect("prepare the worker lease");
         let (lease, _event) = acquire_workspace_lease_tx(
             &mut tx,
             worker_card.id.as_str(),
             track.id.as_str(),
             "op-worker-report-preserve",
-            &target,
-            &base,
+            &plan,
         )
         .await
         .expect("acquire lease");
         tx.commit().await.expect("commit lease");
-        provision_workspace_worktree(&target, &WorktreeBase::from_lease_base(&base))
-            .expect("provision worktree");
-        std::fs::write(target.path.join("worker-output.txt"), "worker commit\n")
+        assert_eq!(plan.path, worktree);
+        std::fs::write(plan.path.join("worker-output.txt"), "worker commit\n")
             .expect("write worker output");
-        run_git(&target.path, ["add", "worker-output.txt"]);
-        run_git(&target.path, ["commit", "-m", "worker output"]);
+        run_git(&plan.path, ["add", "worker-output.txt"]);
+        run_git(&plan.path, ["commit", "-m", "worker output"]);
 
         let card_role_cache = CardRoleCache::new();
         card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, track.id.clone());
@@ -942,12 +929,12 @@ mod tests {
                 .expect("lease state");
         assert_eq!(state, "released");
         assert!(
-            target.path.is_dir(),
-            "DecisionSink task completion preserves worker worktree"
+            plan.path.is_dir(),
+            "DecisionSink task completion preserves the track worktree"
         );
         assert!(
-            git_ref_exists(repo_root.path(), &format!("refs/heads/{}", target.branch)),
-            "DecisionSink task completion preserves slice branch"
+            git_ref_exists(repo_root.path(), &format!("refs/heads/{}", plan.branch)),
+            "DecisionSink task completion preserves the track branch"
         );
         let removed_events: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'worktree.removed'")

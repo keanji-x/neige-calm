@@ -90,16 +90,12 @@ mod git_delivery;
 mod lease_git_env;
 #[path = "cases/task_replace.rs"]
 mod task_replace;
-#[path = "cases/task_replace_carry.rs"]
-mod task_replace_carry;
 #[path = "cases/task_replace_refusals.rs"]
 mod task_replace_refusals;
-#[path = "cases/worktree_reclaim.rs"]
-mod worktree_reclaim;
-#[path = "cases/worktree_reclaim_guards.rs"]
-mod worktree_reclaim_guards;
-#[path = "cases/worktree_reclaim_kept.rs"]
-mod worktree_reclaim_kept;
+#[path = "cases/track_worker_cwd.rs"]
+mod track_worker_cwd;
+#[path = "cases/track_worker_cwd_ends.rs"]
+mod track_worker_cwd_ends;
 
 #[path = "cases/mcp_task_dispatch.rs"]
 mod mcp_task_dispatch;

@@ -1,7 +1,8 @@
 use super::*;
 use crate::db::sqlite::begin_immediate_tx;
 use crate::event::EventBus;
-use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
+use crate::git_candidate::delivery::AttemptOutcome;
+use crate::operation::workspace_lease::{ReleaseDelivery, release_workspace_lease_for_card_repo};
 use crate::operation::{OperationCompletionBus, OperationKey, OperationRepo, SqlxOperationRepo};
 use crate::state::DaemonClient;
 use crate::terminal_renderer::TerminalRendererRegistry;
@@ -16,6 +17,8 @@ struct WorkerLeaseHarness {
     track_id: String,
     events: EventBus,
     repo_root: tempfile::TempDir,
+    /// The track worktree (#1830 S2): where every worker of this track runs.
+    worktree: std::path::PathBuf,
 }
 
 async fn worker_lease_harness() -> WorkerLeaseHarness {
@@ -52,6 +55,12 @@ async fn worker_lease_harness() -> WorkerLeaseHarness {
     )
     .await
     .unwrap();
+    let worktree = crate::test_support::attach_track_worktree(
+        repo.pool(),
+        track.id.as_str(),
+        repo_root.path(),
+    )
+    .await;
     let route_repo: Arc<dyn crate::db::RouteRepo> = repo.clone();
     let full_repo: Arc<dyn crate::db::Repo> = repo.clone();
     WorkerLeaseHarness {
@@ -68,6 +77,7 @@ async fn worker_lease_harness() -> WorkerLeaseHarness {
         track_id: track.id.to_string(),
         events: EventBus::new(),
         repo_root,
+        worktree,
     }
 }
 
@@ -297,16 +307,14 @@ async fn codex_worker_prepare_acquires_held_workspace_lease_cwd() {
     let lease_id = output.output_string("lease_id", "test").unwrap();
     let cwd = output.output_string("cwd", "test").unwrap();
 
-    let cwd_path = std::path::Path::new(&cwd);
-    assert!(cwd_path.is_absolute());
-    assert!(cwd_path.starts_with(harness.repo_root.path()));
-    assert!(
-        cwd_path.parent().unwrap().is_dir(),
-        "leased cwd parent exists"
+    assert_eq!(
+        std::path::Path::new(&cwd),
+        harness.worktree,
+        "the worker runs in the track worktree (#1830 S2)"
     );
-    assert!(
-        !cwd_path.exists(),
-        "leased cwd leaf is left for git worktree add"
+    assert_eq!(
+        output.output_string("branch", "test").unwrap(),
+        format!("neige/track-{}", harness.track_id)
     );
     let row = sqlx::query(
         "SELECT state, path, card_id, track_id FROM workspace_leases WHERE lease_id = ?1",
@@ -323,44 +331,19 @@ async fn codex_worker_prepare_acquires_held_workspace_lease_cwd() {
     assert!(matches!(events[0].event, Event::WorkspaceLeased { .. }));
 
     assert!(
-        release_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &card_id)
-            .await
-            .unwrap()
+        release_workspace_lease_for_card_repo(
+            harness.repo.as_ref(),
+            &harness.events,
+            &card_id,
+            ReleaseDelivery::Commit(AttemptOutcome::Completed),
+        )
+        .await
+        .unwrap()
     );
     assert!(
-        !std::path::Path::new(&cwd).exists(),
-        "lease acquisition leaves cwd leaf absent until provisioning"
+        std::path::Path::new(&cwd).join("README.md").is_file(),
+        "releasing a lease leaves the track's checkout in place"
     );
-}
-
-#[tokio::test]
-async fn codex_worker_budget_parallelism_gets_disjoint_lease_paths() {
-    let harness = worker_lease_harness().await;
-    let (first, _) = prepare_worker(&harness, "a").await;
-    let (second, _) = prepare_worker(&harness, "b").await;
-    let first_card = first.output_string("card_id", "test").unwrap();
-    let second_card = second.output_string("card_id", "test").unwrap();
-    let first_cwd = first.output_string("cwd", "test").unwrap();
-    let second_cwd = second.output_string("cwd", "test").unwrap();
-
-    assert_ne!(first_card, second_card);
-    assert_ne!(first_cwd, second_cwd);
-    assert!(std::path::Path::new(&first_cwd).is_absolute());
-    assert!(std::path::Path::new(&second_cwd).is_absolute());
-
-    let held: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM workspace_leases WHERE state = 'held'")
-            .fetch_one(harness.repo.pool())
-            .await
-            .unwrap();
-    assert_eq!(held, 2);
-
-    release_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &first_card)
-        .await
-        .unwrap();
-    release_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &second_card)
-        .await
-        .unwrap();
 }
 
 #[tokio::test]
@@ -371,9 +354,14 @@ async fn workspace_lease_release_flips_row_and_persists_event() {
     let lease_id = output.output_string("lease_id", "test").unwrap();
 
     assert!(
-        release_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &card_id)
-            .await
-            .unwrap()
+        release_workspace_lease_for_card_repo(
+            harness.repo.as_ref(),
+            &harness.events,
+            &card_id,
+            ReleaseDelivery::Commit(AttemptOutcome::Completed),
+        )
+        .await
+        .unwrap()
     );
     let state: String =
         sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?1")
@@ -396,15 +384,20 @@ async fn workspace_lease_release_flips_row_and_persists_event() {
     assert_eq!(removed_events, 0);
 
     assert!(
-        !release_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &card_id)
-            .await
-            .unwrap(),
+        !release_workspace_lease_for_card_repo(
+            harness.repo.as_ref(),
+            &harness.events,
+            &card_id,
+            ReleaseDelivery::Commit(AttemptOutcome::Completed),
+        )
+        .await
+        .unwrap(),
         "release is idempotent after the row is released"
     );
 }
 
 #[tokio::test]
-async fn codex_worker_compensation_removes_workspace_before_row_release() {
+async fn codex_worker_compensation_releases_the_lease_last() {
     let harness = worker_lease_harness().await;
     let (output, _) = prepare_worker(&harness, "a").await;
     let op = worker_op("op-a", Value::Null);
@@ -414,9 +407,10 @@ async fn codex_worker_compensation_removes_workspace_before_row_release() {
         .await
         .unwrap();
 
-    assert_eq!(state.steps[0].op, "remove_workspace_artifact");
+    // After the worker rows are gone (#1830 S2 D7); nothing on disk is removed.
+    assert_eq!(state.steps.len(), 2);
+    assert_eq!(state.steps[0].op, "cleanup_codex_worker");
     assert_eq!(state.steps[1].op, "release_workspace_lease");
-    assert_eq!(state.steps[2].op, "cleanup_codex_worker");
     let lease_id = output.output_string("lease_id", "test").unwrap();
     assert_eq!(
         state.steps[1].arg_string("lease_id", "test").unwrap(),
@@ -498,27 +492,17 @@ async fn task_key_for_card_title_swallows_a_failing_select() {
     tx.rollback().await.unwrap();
 }
 
-/// The production provisioning entry
-/// (`provision_codex_worker_workspace`, reached from `app_server_interact`)
-/// reads the frozen `tx_output` and provisions at the base the prepare tx
-/// recorded, not at the HEAD the attached repository has moved on to. The op
-/// is carried to `app_server_interact` with the repo's own transitions
-/// (`set_phase`, re-claim), so the checkpoint the entry writes lands.
+/// D3 — the spawn only verifies: the codex spawn entry (`verify_codex_worker_workspace`, carried
+/// to `app_server_interact` with the repo's own transitions so its checkpoint lands) refuses a
+/// checkout whose HEAD moved after the prepare tx recorded its base, naming both commits.
 #[tokio::test]
-async fn codex_spawn_provisions_at_frozen_base_not_moving_head() {
+async fn codex_spawn_refuses_a_checkout_that_moved_after_prepare() {
     let harness = worker_lease_harness().await;
     let (mut output, _, op) = prepare_worker_and_op(&harness, "pinned", "pinned").await;
     let card_id = output.output_string("card_id", "test").unwrap();
     let cwd = output.output_string("cwd", "test").unwrap();
     let recorded_base = output.output_string("base_sha", "test").unwrap();
-
-    // The repository moves on between prepare and spawn.
-    run_git(
-        harness.repo_root.path(),
-        ["commit", "--allow-empty", "-m", "moved after prepare"],
-    );
-    let moved_head = git_head(harness.repo_root.path());
-    assert_ne!(moved_head, recorded_base, "test setup moved HEAD");
+    assert_eq!(git_head(Path::new(&cwd)), recorded_base);
 
     let op_repo = Arc::new(SqlxOperationRepo::new(harness.repo.pool().clone()));
     let kind = harness
@@ -546,7 +530,7 @@ async fn codex_spawn_provisions_at_frozen_base_not_moving_head() {
         harness.events.clone(),
         OperationCompletionBus::new(),
     );
-    provision_codex_worker_workspace(
+    verify_codex_worker_workspace(
         &ctx,
         &harness.adapter.card_role_cache,
         &harness.adapter.track_area_cache,
@@ -554,22 +538,38 @@ async fn codex_spawn_provisions_at_frozen_base_not_moving_head() {
         &mut output,
     )
     .await
-    .expect("spawn provisions the prepared lease");
+    .expect("the unmoved checkout verifies");
 
-    assert_eq!(
-        git_head(Path::new(&cwd)),
-        recorded_base,
-        "the worktree starts at the frozen base"
+    // The checkout moves on; a second spawn attempt is refused.
+    run_git(
+        Path::new(&cwd),
+        ["commit", "--allow-empty", "-m", "moved after prepare"],
     );
-    assert_ne!(
-        git_head(Path::new(&cwd)),
-        moved_head,
-        "not at the HEAD that moved after prepare"
+    let moved_head = git_head(Path::new(&cwd));
+    assert_ne!(moved_head, recorded_base, "test setup moved HEAD");
+    let err = verify_codex_worker_workspace(
+        &ctx,
+        &harness.adapter.card_role_cache,
+        &harness.adapter.track_area_cache,
+        &op,
+        &mut output,
+    )
+    .await
+    .expect_err("a moved checkout fails the spawn");
+    let message = err.to_string();
+    assert!(
+        message.contains(&recorded_base) && message.contains(&moved_head),
+        "{message}"
     );
 
-    release_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &card_id)
-        .await
-        .unwrap();
+    release_workspace_lease_for_card_repo(
+        harness.repo.as_ref(),
+        &harness.events,
+        &card_id,
+        ReleaseDelivery::Commit(AttemptOutcome::Completed),
+    )
+    .await
+    .unwrap();
 }
 
 fn git_head(dir: &Path) -> String {
@@ -626,9 +626,6 @@ mod recovery_tests;
 
 #[cfg(test)]
 mod viewer_cleanup_tests;
-
-#[cfg(test)]
-mod upstream_tests;
 
 /// #1727 S4 slice 2 — the lease the codex worker's `prepare_tx` takes is a kernel-delivery
 /// lease (`delivery_policy = 'kernel'`, written in the same INSERT as its base); the

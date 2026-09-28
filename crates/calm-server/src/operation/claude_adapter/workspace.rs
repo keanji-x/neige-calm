@@ -1,40 +1,15 @@
-//! Provision before launching Claude, using the same Git isolation as Codex.
+//! Verify the worker's checkout before launching Claude (#1830 S2 D3): the track's checkout its
+//! prepare froze, still at that base on that branch. Nothing is created.
 use super::*;
-use crate::operation::workspace_lease::{
-    WorkspaceLeaseTarget, WorktreeBase, provision_workspace_worktree,
-};
+use crate::operation::workspace_lease::worker::verify_worker_checkout;
 
-pub(super) async fn provision(
+pub(super) async fn verify(
     adapter: &ClaudeWorkerAdapter,
     ctx: &SpawnCtx,
     output: &TxOutput,
 ) -> Result<()> {
-    let repo_root = output.output_optional_string("repo_root", "claude-worker")?;
-    let branch = output.output_optional_string("slice_branch", "claude-worker")?;
-    let (repo_root, branch) = match (repo_root, branch) {
-        (Some(root), Some(branch)) => (root, branch),
-        // Frozen pre-upgrade operations own plain directories. Recovery must
-        // preserve their recorded cwd, not invent a new execution workspace.
-        (None, None) => return Ok(()),
-        _ => {
-            return Err(CalmError::Internal(
-                "incomplete Claude worktree target".into(),
-            ));
-        }
-    };
+    verify_worker_checkout(output, "claude-worker")?;
     let path = output.output_string("cwd", "claude-worker")?;
-    // Pinned to the frozen `base_sha` / `canonical_path`; an op frozen before
-    // the base was recorded has neither and provisions unpinned, as it always
-    // did (design D12 (d)).
-    let base = WorktreeBase::from_tx_output(output, "claude-worker")?;
-    provision_workspace_worktree(
-        &WorkspaceLeaseTarget {
-            repo_root: PathBuf::from(repo_root),
-            path: PathBuf::from(&path),
-            branch,
-        },
-        &base,
-    )?;
     let card_id = output.output_string("card_id", "claude-worker")?;
     let track_id = output.output_string("track_id", "claude-worker")?;
     let scope = card_scope(
@@ -55,8 +30,8 @@ pub(super) async fn provision(
         &write,
         move |tx| {
             Box::pin(async move {
-                // Retries may provision the same worktree more than once. The
-                // ready event, unlike the filesystem check, is committed once.
+                // Retries may verify the same checkout more than once. The
+                // ready event, unlike the check, is committed once.
                 let recorded: bool = sqlx::query_scalar(
                     "SELECT EXISTS(SELECT 1 FROM events WHERE kind = 'worktree.provisioned' \
                  AND json_extract(payload, '$.card_id') = ?1)",

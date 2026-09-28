@@ -19,12 +19,12 @@ use super::abandonment::{
 };
 use super::candidate::{CandidateRow, candidate_for_attempt_tx, from_operation_result};
 use super::delivery::{
-    DeliveryRow, DeliverySettled, FAILURE_EVIDENCE_MAX_LINE_BYTES, FAILURE_EVIDENCE_MAX_LINES,
-    candidate_ref_name, classify_failure, delivery_argv, delivery_by_id_tx,
-    delivery_by_request_key_tx, delivery_latest_for_attempt_tx, delivery_message,
-    forge_payload_for, insert_initial_delivery_tx, insert_retry_delivery_tx, lease_for_delivery_tx,
-    settle_candidate_tx, settle_failed_tx, unsettled_deliveries_for_track_tx,
-    worktree_committed_delivery_fields,
+    AttemptOutcome, DeliveryRow, DeliverySettled, FAILURE_EVIDENCE_MAX_LINE_BYTES,
+    FAILURE_EVIDENCE_MAX_LINES, candidate_ref_name, classify_failure, delivery_argv,
+    delivery_by_id_tx, delivery_by_request_key_tx, delivery_latest_for_attempt_tx,
+    delivery_message, forge_payload_for, insert_initial_delivery_tx, insert_retry_delivery_tx,
+    lease_for_delivery_tx, settle_candidate_tx, settle_failed_tx,
+    unsettled_deliveries_for_track_tx, worktree_committed_delivery_fields,
 };
 use super::verification::{VerificationState, VerificationView};
 use super::view::{
@@ -37,9 +37,9 @@ use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
 use crate::model::{Task, TaskKind, TaskStatus};
 use crate::operation::forge_action_adapter::ForgeActionResultFile;
 use crate::operation::workspace_lease::facts::WorkerWorktreeFacts;
+use crate::operation::workspace_lease::track_worktree::track_branch_for;
 use crate::operation::workspace_lease::{
-    DeliveryPolicy, LeaseBase, WorkspaceLease, WorkspaceLeaseTarget, acquire_workspace_lease_tx,
-    base, workspace_lease_path_for, workspace_slice_branch_for,
+    DeliveryPolicy, LeaseBase, WorkerLeasePlan, WorkspaceLease, acquire_workspace_lease_tx, base,
 };
 use crate::workspace_materialize::neige_git_command;
 
@@ -99,7 +99,7 @@ struct ScriptRepo {
     /// The directory the fixture treats as the Track cwd (the main repository, or a linked
     /// worktree of it for the linked-worktree fixture).
     track_root: PathBuf,
-    /// The lease worktree, `<track_root>/.claude/worktrees/<TRACK>/<CARD>`.
+    /// The worker's checkout, the track worktree `<track_root>/.claude/worktrees/track-<TRACK>`.
     lease: PathBuf,
     canonical_path: PathBuf,
     common_dir: PathBuf,
@@ -150,8 +150,9 @@ impl ScriptRepo {
 
     fn with_track_root(tmp: tempfile::TempDir, track_root: PathBuf) -> Self {
         let base_sha = git(&track_root, &["rev-parse", "HEAD"]);
-        let branch = workspace_slice_branch_for(TRACK, CARD).unwrap();
-        let lease = workspace_lease_path_for(&canonical(&track_root), TRACK, CARD).unwrap();
+        // The worker's checkout is the track worktree (#1830 S2).
+        let branch = track_branch_for(TRACK).unwrap();
+        let lease = crate::db::sqlite::track_worktree_path_for(&canonical(&track_root), TRACK);
         std::fs::create_dir_all(lease.parent().unwrap()).unwrap();
         git(
             &track_root,
@@ -165,7 +166,7 @@ impl ScriptRepo {
                 "HEAD",
             ],
         );
-        let canonical_path = canonical(lease.parent().unwrap()).join(CARD);
+        let canonical_path = canonical(&lease);
         let common_dir = canonical(&PathBuf::from(git(
             &lease,
             &["rev-parse", "--path-format=absolute", "--git-common-dir"],
@@ -187,7 +188,7 @@ impl ScriptRepo {
 
     fn argv(&self) -> Vec<String> {
         delivery_argv(
-            &delivery_message(TRACK, CARD, DELIVERY),
+            &delivery_message(&delivery_row(None), AttemptOutcome::Completed),
             &self.branch,
             &self.ref_name,
             &self.base_sha,
@@ -952,7 +953,7 @@ fn delivery_script_no_change_after_commit_reset() {
         delivery_policy: Some(DeliveryPolicy::Kernel),
     };
     let delivery = delivery_row(None);
-    let payload = forge_payload_for(&delivery, &lease).unwrap();
+    let payload = forge_payload_for(&delivery, &lease, &repo.branch).unwrap();
     assert_eq!(payload.argv, repo.argv(), "the production argv");
 
     repo.worker_edit("worker.txt", "worker output\n");
@@ -1128,8 +1129,8 @@ fn delivery_argv_joins_provenance_and_delivery_scripts() {
         ]
     );
     assert_eq!(
-        delivery_message("t", "c", "d"),
-        "neige: worker c @ track t (delivery d)"
+        delivery_message(&delivery_row(None), AttemptOutcome::Failed),
+        format!("neige: attempt attempt-1 failed (delivery {DELIVERY})")
     );
     assert_eq!(
         candidate_ref_name("t", "c", "d"),
@@ -1218,25 +1219,29 @@ async fn kernel_lease(
     track_id: &str,
     card_id: &str,
 ) -> WorkspaceLease {
-    let target = WorkspaceLeaseTarget {
-        repo_root: repo_root.to_path_buf(),
-        path: workspace_lease_path_for(repo_root, track_id, card_id).unwrap(),
-        branch: workspace_slice_branch_for(track_id, card_id).unwrap(),
-    };
-    let parent = target.path.parent().unwrap();
-    std::fs::create_dir_all(parent).unwrap();
-    let lease_base = LeaseBase {
-        base_sha: "b".repeat(40),
-        base_source: base::BaseSource::Head,
-        base_attempt_id: None,
-        canonical_path: base::lease_canonical_path(parent, card_id).unwrap(),
-        git_common_dir: repo_root.join(".git"),
+    // One directory per card: these tables' tests hold several leases of one track at once,
+    // which the one-active-lease-per-path index would refuse at a shared checkout.
+    let path = repo_root
+        .join(".claude/worktrees")
+        .join(track_id)
+        .join(card_id);
+    std::fs::create_dir_all(&path).unwrap();
+    let plan = WorkerLeasePlan {
+        base: LeaseBase {
+            base_sha: "b".repeat(40),
+            base_source: base::BaseSource::Commit,
+            base_attempt_id: None,
+            canonical_path: canonical(&path),
+            git_common_dir: repo_root.join(".git"),
+        },
+        path,
+        branch: track_branch_for(track_id).unwrap(),
+        superseded: Vec::new(),
     };
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
-    let (lease, _event) =
-        acquire_workspace_lease_tx(&mut tx, card_id, track_id, "op-test", &target, &lease_base)
-            .await
-            .unwrap();
+    let (lease, _event) = acquire_workspace_lease_tx(&mut tx, card_id, track_id, "op-test", &plan)
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
     lease
 }
@@ -1253,10 +1258,9 @@ impl DbFixture {
         let mut tx = begin_immediate_tx(self.repo.pool()).await.unwrap();
         let row = insert_initial_delivery_tx(
             &mut tx,
-            &self.track_id,
-            &self.card_id,
             attempt,
             &self.lease,
+            AttemptOutcome::Completed,
             1_000,
         )
         .await
@@ -1274,7 +1278,7 @@ impl DbFixture {
             lease_id: delivery.lease_id.clone(),
             repo_root: "/repo".into(),
             git_common_dir: "/repo/.git".into(),
-            branch: workspace_slice_branch_for(&self.track_id, &self.card_id).unwrap(),
+            branch: track_branch_for(&self.track_id).unwrap(),
             base_sha: "b".repeat(40),
             commit_sha: commit_sha.into(),
             base_is_ancestor: true,
@@ -2211,15 +2215,9 @@ async fn initial_delivery_row_and_readers() {
     .await
     .unwrap();
     assert_eq!(plain.delivery_policy, None);
-    let refused = insert_initial_delivery_tx(
-        &mut tx,
-        &fx.track_id,
-        &plain_card,
-        "attempt-plain",
-        &plain,
-        1,
-    )
-    .await;
+    let refused =
+        insert_initial_delivery_tx(&mut tx, "attempt-plain", &plain, AttemptOutcome::Failed, 1)
+            .await;
     assert!(refused.is_err(), "{refused:?}");
     tx.rollback().await.unwrap();
 }
@@ -2231,18 +2229,18 @@ async fn initial_delivery_row_and_readers() {
 async fn delivery_payload_semantic_hash_is_stable() {
     let fx = db_fixture().await;
     let row = fx.insert_delivery("attempt-1").await;
-    let first = forge_payload_for(&row, &fx.lease).unwrap();
-    let second = forge_payload_for(&row, &fx.lease).unwrap();
+    let branch = track_branch_for(&fx.track_id).unwrap();
+    let first = forge_payload_for(&row, &fx.lease, &branch).unwrap();
+    let second = forge_payload_for(&row, &fx.lease, &branch).unwrap();
     let hash = crate::mcp_server::transport::semantic_payload_hash;
     assert_eq!(hash(&first).unwrap(), hash(&second).unwrap());
     assert_eq!(first.idem_key, format!("git.commit:d:{}", row.delivery_id));
     let base = fx.lease.base.as_ref().unwrap();
-    let branch = workspace_slice_branch_for(&fx.track_id, &fx.card_id).unwrap();
     let ref_name = candidate_ref_name(&fx.track_id, &fx.card_id, &row.delivery_id);
     assert_eq!(
         first.argv,
         delivery_argv(
-            &delivery_message(&fx.track_id, &fx.card_id, &row.delivery_id),
+            &delivery_message(&row, AttemptOutcome::Completed),
             &branch,
             &ref_name,
             &base.base_sha,
@@ -2273,8 +2271,7 @@ async fn delivery_payload_semantic_hash_is_stable() {
             base.base_sha.as_str(),
         ]
     );
-    // The four-field extraction table, read off the payload's Debug shape (the legacy two-field
-    // table is pinned by `worker_success_commit_payload_uses_shared_git_scripts_as_drift_lock`).
+    // The four-field extraction table, read off the payload's Debug shape.
     let shape = format!("{first:?}");
     assert!(
         shape.contains("event_kind: \"worktree.committed\""),
@@ -2293,13 +2290,17 @@ async fn delivery_payload_semantic_hash_is_stable() {
     }
     assert!(!first.parked);
 
-    // A lease without the kernel policy or without a base is refused, never a payload.
+    // A lease without the kernel policy or without a base, or a row without an outcome (settled
+    // before migration 0121), is refused, never a payload.
     let mut legacy_lease = fx.lease.clone();
     legacy_lease.delivery_policy = None;
-    assert!(forge_payload_for(&row, &legacy_lease).is_err());
+    assert!(forge_payload_for(&row, &legacy_lease, &branch).is_err());
     let mut baseless = fx.lease.clone();
     baseless.base = None;
-    assert!(forge_payload_for(&row, &baseless).is_err());
+    assert!(forge_payload_for(&row, &baseless, &branch).is_err());
+    let mut outcomeless = row.clone();
+    outcomeless.outcome = None;
+    assert!(forge_payload_for(&outcomeless, &fx.lease, &branch).is_err());
 }
 
 /// The candidate row is a copy of the result event and the lease; an event naming another
@@ -2310,14 +2311,14 @@ fn candidate_from_operation_result_copies_event_and_lease() {
         lease_id: "lease-1".into(),
         card_id: CARD.into(),
         track_id: TRACK.into(),
-        path: "/repo/.claude/worktrees/trk/crd".into(),
+        path: "/repo/.claude/worktrees/track-trk".into(),
         state: "released".into(),
         boot_id: None,
         base: Some(LeaseBase {
             base_sha: "b".repeat(40),
-            base_source: base::BaseSource::Head,
+            base_source: base::BaseSource::Commit,
             base_attempt_id: None,
-            canonical_path: PathBuf::from("/real/repo/.claude/worktrees/trk/crd"),
+            canonical_path: PathBuf::from("/real/repo/.claude/worktrees/track-trk"),
             git_common_dir: PathBuf::from("/real/repo/.git"),
         }),
         delivery_policy: Some(DeliveryPolicy::Kernel),
@@ -2325,7 +2326,7 @@ fn candidate_from_operation_result_copies_event_and_lease() {
     let delivery = delivery_row(None);
     let event = json!({
         "track_id": TRACK, "card_id": CARD, "commit_sha": "c".repeat(40),
-        "branch": "neige/trk/crd", "delivery_id": DELIVERY, "base_is_ancestor": false,
+        "branch": "neige/track-trk", "delivery_id": DELIVERY, "base_is_ancestor": false,
     });
     let candidate = from_operation_result(&delivery, &lease, &event, 5).unwrap();
     assert_eq!(
@@ -2336,9 +2337,9 @@ fn candidate_from_operation_result_copies_event_and_lease() {
             producer_attempt_id: "attempt-1".into(),
             card_id: CARD.into(),
             lease_id: "lease-1".into(),
-            repo_root: "/repo".into(),
+            repo_root: "/repo/.claude/worktrees/track-trk".into(),
             git_common_dir: "/real/repo/.git".into(),
-            branch: "neige/trk/crd".into(),
+            branch: "neige/track-trk".into(),
             base_sha: "b".repeat(40),
             commit_sha: "c".repeat(40),
             base_is_ancestor: false,
@@ -2352,23 +2353,6 @@ fn candidate_from_operation_result_copies_event_and_lease() {
     let mut missing = event.clone();
     missing.as_object_mut().unwrap().remove("base_is_ancestor");
     assert!(from_operation_result(&delivery, &lease, &missing, 5).is_err());
-}
-
-#[test]
-fn repo_root_is_the_inverse_of_lease_path() {
-    use super::candidate::repo_root_from_lease_path;
-    for root in ["/repo", "/mnt/data/x y/repo", "/"] {
-        let path = workspace_lease_path_for(Path::new(root), TRACK, CARD).unwrap();
-        assert_eq!(
-            repo_root_from_lease_path(path.to_str().unwrap(), TRACK, CARD).unwrap(),
-            root
-        );
-    }
-    let path = workspace_lease_path_for(Path::new("/repo"), TRACK, CARD).unwrap();
-    assert!(repo_root_from_lease_path(path.to_str().unwrap(), "other", CARD).is_err());
-    assert!(repo_root_from_lease_path(path.to_str().unwrap(), TRACK, "other").is_err());
-    assert!(repo_root_from_lease_path("/repo/elsewhere", TRACK, CARD).is_err());
-    assert!(repo_root_from_lease_path("relative/.claude/worktrees/trk/crd", TRACK, CARD).is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -2502,13 +2486,13 @@ fn classify_failure_maps_every_code() {
     // tail of the line, which is exactly what a 200-byte cap cut off.
     let repo_root = "/mnt/data2/kenji/neige-calm/.claude/worktrees/wt-primary-checkout";
     let lease_path =
-        workspace_lease_path_for(Path::new(repo_root), &"t".repeat(32), &"c".repeat(32)).unwrap();
+        crate::db::sqlite::track_worktree_path_for(Path::new(repo_root), &"t".repeat(32));
     let production_line = format!(
         "provenance realpath={} common_dir={repo_root}/.git registered=0",
         lease_path.display()
     );
     assert!(
-        (250..=320).contains(&production_line.len()),
+        (220..=320).contains(&production_line.len()),
         "{} bytes: the measured production range",
         production_line.len()
     );
@@ -2544,6 +2528,7 @@ fn delivery_row(settlement: Option<DeliverySettled>) -> DeliveryRow {
         predecessor_delivery_id: None,
         request_idempotency_key: None,
         reason: None,
+        outcome: Some(AttemptOutcome::Completed),
         created_at_ms: 1,
         settlement,
     }

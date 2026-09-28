@@ -30,7 +30,7 @@ use crate::git_candidate::delivery::{
 use crate::model::{Task, TaskKind};
 use crate::operation::forge_action_adapter::forge_base_env;
 use crate::operation::gate_process::{kill, wait_marked_group_stopped};
-use crate::operation::workspace_lease::facts::{LeaseStates, latest_workspace_lease_for_card_tx};
+use crate::operation::workspace_lease::facts::latest_workspace_lease_for_card_tx;
 use crate::operation::workspace_lease::{DeliveryPolicy, WorkspaceLease};
 use crate::operation::{OperationOutcome, SpawnArtifacts, Tx, TxOutput};
 use crate::plugin_host::child_process::{BoundedRunError, run_bounded};
@@ -207,9 +207,7 @@ pub(crate) async fn verify_target_identity(tx: &mut Tx<'_>, task: &Task) -> Resu
     let delivery = delivery_latest_for_attempt_tx(tx, &task.id).await?;
     let lease = match (&delivery, task.worker_card_id.as_deref()) {
         (Some(delivery), _) => Some(lease_for_delivery_tx(tx, delivery).await?),
-        (None, Some(card_id)) => {
-            latest_workspace_lease_for_card_tx(tx, card_id, LeaseStates::Any).await?
-        }
+        (None, Some(card_id)) => latest_workspace_lease_for_card_tx(tx, card_id).await?,
         (None, None) => None,
     };
     let Some(lease) = lease else {

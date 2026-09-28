@@ -187,7 +187,8 @@ fn dispatcher_filter_matches_push_kinds() {
         lease_id: "lease-1".into(),
         path: "/tmp/workspace".into(),
     })));
-    assert!(!filter.matches(&env(Event::WorkspaceReleased {
+    // #1830 S2: a release may write the attempt's first delivery row; the scheduler submits it.
+    assert!(filter.matches(&env(Event::WorkspaceReleased {
         track_id: track.clone(),
         card_id: CardId::from("worker"),
         lease_id: "lease-1".into(),
@@ -3052,7 +3053,7 @@ async fn settled_event_maps_to_observation_with_turn_text() {
     let text = observation.to_turn_text();
     assert!(
         text.starts_with(&format!(
-            "Task deliver delivered candidate delivery-1 ({}, base {}). Accept with calm.task.verdict;",
+            "Task deliver delivered candidate delivery-1 ({}, base {}). Accept with calm.task.verdict when the task completed;",
             "c".repeat(40),
             "b".repeat(40)
         )),

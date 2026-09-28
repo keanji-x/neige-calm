@@ -17,6 +17,7 @@ use crate::db::sqlite::{
 use crate::db::{write_in_tx_typed, write_with_events_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
+use crate::git_candidate::delivery::AttemptOutcome;
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::mcp_server::McpServer;
 use crate::mcp_server::wiring::{card_mcp_env, mint_and_persist_card_token};
@@ -24,8 +25,8 @@ use crate::model::{Card, CardRole, new_id};
 use crate::operation::codex_adapter::render_task_worker_prompt;
 use crate::operation::worker_cleanup::{compensate_worker_rows, worker_spawn_failure_preserved};
 use crate::operation::workspace_lease::{
-    acquire_workspace_lease_tx, prepare_workspace_lease_target_tx, release_workspace_lease_by_id,
-    remove_workspace_artifact_for_lease_by_id, upstream_fetch::refresh_track_upstream,
+    ReleaseDelivery, acquire_workspace_lease_tx, prepare_worker_lease_tx,
+    release::release_workspace_lease_by_id,
 };
 use crate::routes::cards::card_scope;
 use crate::routes::claude_cards::{
@@ -751,17 +752,6 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         Ok(())
     }
 
-    /// The lease base is the attached repository's upstream when it has one
-    /// (#1777): fetch it now, outside every transaction, so `prepare_tx`
-    /// reads it with a local `rev-parse`.
-    async fn before_insert(&self, input: &Value) {
-        let Ok(payload) = serde_json::from_value::<ClaudeWorkerOperationPayload>(input.clone())
-        else {
-            return;
-        };
-        refresh_track_upstream(self.repo.as_ref(), &payload.track_id).await;
-    }
-
     async fn prepare_tx<'tx>(
         &self,
         tx: &mut Tx<'tx>,
@@ -776,38 +766,22 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         let runtime_id = new_id();
         let claude_session_id = uuid::Uuid::new_v4().to_string();
         let track_id = TrackId::from(payload.track_id.clone());
-        let lease_target = prepare_workspace_lease_target_tx(
-            tx,
-            track_id.as_str(),
-            &card_id,
-            &self.workspace_root,
-        )
-        .await?;
-        // The base is decided here, in the prepare tx, and frozen below; the
-        // spawn pins the worktree to it (design D4).
-        let (lease_base, carry_notice) = super::workspace_lease::carry::resolve_task_lease_base_tx(
-            tx,
-            &lease_target,
-            &payload.idempotency_key,
-        )
-        .await?;
-        let cwd = lease_target.path_string();
+        // The worker runs in the track's checkout (#1830 S2), decided and checked clean here and
+        // frozen below; the spawn only verifies it.
+        let plan = prepare_worker_lease_tx(tx, track_id.as_str(), &self.workspace_root).await?;
+        let cwd = plan.path.to_string_lossy().to_string();
         let settings_path = self
             .codex
             .claude_settings_dir
             .join(&card_id)
             .join("settings.json");
         let settings_dir = settings_path_parent(&settings_path)?;
-        let mut rendered_prompt = render_task_worker_prompt(
+        let rendered_prompt = render_task_worker_prompt(
             &payload.idempotency_key,
             &payload.goal,
             &payload.context,
             payload.acceptance_criteria.as_deref(),
         );
-        if let Some(notice) = &carry_notice {
-            rendered_prompt.push_str("\n\n");
-            rendered_prompt.push_str(&notice.render());
-        }
         let command_line = build_claude_worker_command_line(
             &self.codex.claude_bin,
             &settings_path,
@@ -844,15 +818,8 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         )
         .await?;
 
-        let (lease, lease_event) = acquire_workspace_lease_tx(
-            tx,
-            &card_id,
-            card.track_id.as_str(),
-            &op.id,
-            &lease_target,
-            &lease_base,
-        )
-        .await?;
+        let (lease, lease_event) =
+            acquire_workspace_lease_tx(tx, &card_id, card.track_id.as_str(), &op.id, &plan).await?;
 
         if let Some(existing_map) = card.payload.as_object() {
             let mut merged = existing_map.clone();
@@ -902,14 +869,14 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             "command_line": command_line,
             "cwd": cwd,
             "lease_id": lease.lease_id,
-            "repo_root": lease_target.repo_root,
-            "slice_branch": lease_target.branch,
-            "base_sha": lease_base.base_sha,
-            "canonical_path": lease_base.canonical_path,
+            "branch": plan.branch,
+            "base_sha": plan.base.base_sha,
+            "canonical_path": plan.base.canonical_path,
             "env": env,
             "prompt": rendered_prompt,
             "scope": scope,
         });
+        output.post_commit_events.extend(plan.superseded);
         output.post_commit_events.push(lease_event);
         Ok(output)
     }
@@ -1041,7 +1008,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         if let Some(hook) = &self.preparation_hook {
             hook().await;
         }
-        workspace::provision(self, ctx, output).await?;
+        workspace::verify(self, ctx, output).await?;
 
         let raw_token = mint_claude_worker_mcp_token(ctx, &card_id, &runtime_id).await?;
         let env_map = env.as_object_mut().ok_or_else(|| {
@@ -1179,34 +1146,34 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         output: &TxOutput,
         _op: &Operation,
     ) -> Result<CompensationStateVersioned> {
-        let mut steps = Vec::new();
-        if let Some(lease_id) = output.output_optional_string("lease_id", "claude worker")? {
-            steps.push(CompensationStep::new(
-                "remove_workspace_artifact",
-                json!({ "lease_id": lease_id.clone() }),
-            ));
-            steps.push(CompensationStep::new(
-                "release_workspace_lease",
-                json!({ "lease_id": lease_id }),
-            ));
-        }
+        let lease_id = output.output_optional_string("lease_id", "claude worker")?;
         let card_id = output.output_string("card_id", "claude worker")?;
         let terminal_id = output.output_string("terminal_id", "claude worker")?;
         let settings_path = output.output_string("settings_path", "claude worker")?;
         let settings_dir = settings_path_parent(Path::new(&settings_path))?
             .to_string_lossy()
             .to_string();
-        steps.push(CompensationStep::new(
-            "cleanup_claude_worker",
-            json!({
-                "card_id": card_id,
-                "terminal_id": terminal_id,
-            }),
-        ));
-        steps.push(CompensationStep::new(
-            "delete_claude_settings_dir",
-            json!({ "settings_dir": settings_dir }),
-        ));
+        let mut steps = vec![
+            CompensationStep::new(
+                "cleanup_claude_worker",
+                json!({
+                    "card_id": card_id,
+                    "terminal_id": terminal_id,
+                }),
+            ),
+            CompensationStep::new(
+                "delete_claude_settings_dir",
+                json!({ "settings_dir": settings_dir }),
+            ),
+        ];
+        // Last, after the worker rows are gone (#1830 S2 D7): its `spawn-failed` delivery
+        // commits whatever the attempt left in the track's checkout.
+        if let Some(lease_id) = lease_id {
+            steps.push(CompensationStep::new(
+                "release_workspace_lease",
+                json!({ "lease_id": lease_id }),
+            ));
+        }
         Ok(CompensationStateVersioned {
             version: 1,
             from_phase,
@@ -1227,16 +1194,16 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         }
         super::worker_cleanup::require_cleanup_safe(ctx, op, output, false).await?;
         match step.op.as_str() {
-            "remove_workspace_artifact" => {
-                let lease_id = step_arg_string(step, "lease_id")?;
-                let pool = ctx.operation_repo.sqlite_pool();
-                remove_workspace_artifact_for_lease_by_id(&pool, &ctx.events, &lease_id).await?;
-                Ok(())
-            }
             "release_workspace_lease" => {
                 let lease_id = step_arg_string(step, "lease_id")?;
                 let pool = ctx.operation_repo.sqlite_pool();
-                release_workspace_lease_by_id(&pool, &ctx.events, &lease_id).await?;
+                release_workspace_lease_by_id(
+                    &pool,
+                    &ctx.events,
+                    &lease_id,
+                    ReleaseDelivery::Commit(AttemptOutcome::SpawnFailed),
+                )
+                .await?;
                 Ok(())
             }
             "cleanup_claude_worker" => {

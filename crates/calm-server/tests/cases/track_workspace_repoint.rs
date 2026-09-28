@@ -1308,14 +1308,10 @@ async fn the_first_workspace_lease_freezes_the_workspace() {
     .unwrap();
 
     let mut tx = b.repo.pool().begin().await.unwrap();
-    let target = calm_server::test_seams::prepare_workspace_lease_target_for_test(
-        &mut tx,
-        &track,
-        &card,
-        &b.workspace_root,
-    )
-    .await
-    .unwrap();
+    let target =
+        calm_server::test_seams::prepare_worker_lease_for_test(&mut tx, &track, &b.workspace_root)
+            .await
+            .unwrap();
     tx.commit().await.unwrap();
     assert!(target.join(".git").is_dir());
 
@@ -1379,14 +1375,10 @@ async fn a_workspace_lease_never_freezes_the_launchpad() {
     );
 
     let mut tx = b.repo.pool().begin().await.unwrap();
-    let target = calm_server::test_seams::prepare_workspace_lease_target_for_test(
-        &mut tx,
-        &track,
-        &planner_card,
-        &b.workspace_root,
-    )
-    .await
-    .unwrap();
+    let target =
+        calm_server::test_seams::prepare_worker_lease_for_test(&mut tx, &track, &b.workspace_root)
+            .await
+            .unwrap();
     tx.commit().await.unwrap();
     calm_server::test_seams::acquire_workspace_lease_for_test(
         b.repo.pool(),

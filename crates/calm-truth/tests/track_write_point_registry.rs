@@ -95,8 +95,32 @@ const EXPECTED_OTHER_WRITES: &[(&str, &str, &str)] = &[
         "update tracks set workspace_path = ?1 where id = ?2",
         "#1727 S4 — points `boot()`'s track (attached, frozen at creation, \
          path empty) at a real git repository so the kernel git delivery runs \
-         against a worker worktree of it. Same reason as the \
+         against its track worktree (#1830 S2). Same reason as the \
          `no_double_spawn.rs` entry: the production writer refuses a frozen row.",
+    ),
+    (
+        "crates/calm-server/src/test_seams.rs",
+        "update tracks set workspace_worktree_path = ?1 where id = ?2",
+        "#1830 S2 — `attach_track_worktree_for_test`: gives a fixture track \
+         (attached, made by `Repo::track_create`, so without a worktree) the \
+         value the create transaction writes for a new attached track, then \
+         runs the production `ensure_track_worktree`. fixtures-only; the \
+         production writer refuses a frozen row.",
+    ),
+    (
+        "crates/calm-server/tests/cases/track_worker_cwd.rs",
+        "update tracks set workspace_worktree_path = null where id = ?1",
+        "#1830 S2 T5 — turns the fixture's attached track into the pre-#1830 \
+         shape (attached, no track worktree, as the 9 tracks on 4140 are) to \
+         pin that its workers are refused.",
+    ),
+    (
+        "crates/calm-server/tests/cases/track_worker_cwd_ends.rs",
+        "update tracks set workspace_kind = 'managed', workspace_path = ?1, workspace_worktree_path = null where id = ?2",
+        "#1830 S2 T6 — re-points the fixture's track to a managed directory \
+         under the fixture's workspace root, a state the latch forbids a route \
+         to produce, so the managed worker path runs in the same world as the \
+         attached cases.",
     ),
     (
         "crates/calm-truth/src/db/sqlite/track_workspace_migration_tests.rs",

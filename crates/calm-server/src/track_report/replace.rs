@@ -6,6 +6,8 @@
 use super::{ReportDoc, ReportDocOp};
 use crate::db::sqlite::{BlockVerdict, task_attempt_current_tx, task_get_tx};
 use crate::error::{CalmError, Result};
+use crate::event::{Event, EventScope};
+use crate::ids::ActorId;
 use crate::model::{Card, TaskStatus, now_ms};
 use crate::operation::Tx;
 use crate::task_replace::ReplaceArgs;
@@ -20,9 +22,16 @@ pub(crate) struct Staged {
     prior_status: TaskStatus,
     stop: Stop,
     carry: CarrySource,
+    /// Lease events of the stopped predecessor (`admission::stop_tx`).
+    released: Vec<(ActorId, EventScope, Event)>,
 }
 
 impl Staged {
+    /// The stopped predecessor's lease events, for the report transaction's event batch.
+    pub(super) fn take_released(&mut self) -> Vec<(ActorId, EventScope, Event)> {
+        std::mem::take(&mut self.released)
+    }
+
     /// The predecessor joins the `plan.updated` keys when this replacement canceled it.
     pub(super) fn add_stopped_key(&self, changed_keys: &mut Vec<String>) {
         if self.stop == Stop::CanceledNow {
@@ -60,7 +69,7 @@ pub(super) async fn stage_tx(
         .blocks_snapshot()
         .map_err(|e| CalmError::Internal(e.to_string()))?;
     let admitted = admission::admit_tx(tx, track_id, &blocks, args).await?;
-    let (prior_status, stop) = admission::stop_tx(tx, &admitted).await?;
+    let (prior_status, stop, released) = admission::stop_tx(tx, &admitted).await?;
     let carry = admission::carry_source_tx(tx, &admitted.predecessor, args.carry).await?;
     let op = ReportDocOp::UpsertBlock {
         id: None,
@@ -85,6 +94,7 @@ pub(super) async fn stage_tx(
             prior_status,
             stop,
             carry,
+            released,
         },
     ))
 }

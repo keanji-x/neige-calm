@@ -263,6 +263,14 @@ pub async fn boot_forge_e2e_fixture(
         })
         .await
         .expect("create track");
+    // A codex worker runs in the track worktree (#1830 S2), as a track created by the route has.
+    calm_server::test_seams::attach_track_worktree_for_test(
+        sqlx_repo.pool(),
+        track.id.as_str(),
+        &track_cwd,
+    )
+    .await
+    .expect("make the track worktree");
     if !fixture.require_task_gates {
         sqlx::query("UPDATE tracks SET require_task_gates = 0 WHERE id = ?1")
             .bind(track.id.as_str())
@@ -686,7 +694,7 @@ pub async fn assert_worker_commit_landed(
     assert_eq!(row.payload["commit_sha"], head);
     assert_eq!(
         row.payload["branch"],
-        format!("neige/{}/{}", fx.track_id.as_str(), worker_card_id)
+        format!("neige/track-{}", fx.track_id.as_str())
     );
 
     let marker_at_head = git_stdout(worker_cwd, ["show", "HEAD:FORGE_E2E.md"]);

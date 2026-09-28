@@ -129,6 +129,13 @@ pub(super) fn ref_target(common_dir: &Path, ref_name: &str) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// What the Planner does with an attempt's left-over changes before the next worker (#1830 S2 D6:
+/// a worker starts only on a clean tree): back to HEAD, untracked files removed.
+pub(super) fn undo_worker_changes(checkout: &Path) {
+    git(checkout, &["reset", "-q", "--hard", "HEAD"]);
+    git(checkout, &["clean", "-fdq"]);
+}
+
 pub(super) fn write_executable(path: &Path, body: &str) {
     std::fs::write(path, body).unwrap();
     let mut permissions = std::fs::metadata(path).unwrap().permissions();
@@ -150,6 +157,8 @@ pub(super) struct Fx {
     pub(super) poke_target: Arc<std::sync::RwLock<Arc<Scheduler>>>,
     /// The Track workspace (the main repository, or a linked worktree of it).
     pub(super) track_root: PathBuf,
+    /// The track worktree on `neige/track-<id>` (#1830 S2): where every worker runs.
+    pub(super) worktree: PathBuf,
     pub(super) workspace_root: PathBuf,
     pub(super) _tmp: tempfile::TempDir,
 }
@@ -209,6 +218,18 @@ pub(super) async fn fixture_on_with_adapters(
     track_root: impl FnOnce(&Path) -> PathBuf,
     extra: impl FnOnce(&Boot) -> Vec<Arc<dyn ProviderAdapter>>,
 ) -> Fx {
+    fixture_on_with_runtime(boot, track_root, None, |boot, _| extra(boot)).await
+}
+
+/// [`fixture_on_with_adapters`] whose runtime also reaches a shared Codex daemon (the one a
+/// worker adapter in `extra` spawns on, so the kernel's interrupt of a timed-out or canceled
+/// worker reaches it too); `extra` also sees the managed workspace root.
+pub(super) async fn fixture_on_with_runtime(
+    boot: Boot,
+    track_root: impl FnOnce(&Path) -> PathBuf,
+    shared_codex: Option<Arc<SharedCodexAppServer>>,
+    extra: impl FnOnce(&Boot, &Path) -> Vec<Arc<dyn ProviderAdapter>>,
+) -> Fx {
     let tmp = tempfile::Builder::new()
         .prefix("neige-git-delivery-")
         .tempdir()
@@ -223,6 +244,7 @@ pub(super) async fn fixture_on_with_adapters(
         .execute(&pool)
         .await
         .unwrap();
+    let worktree = attach_track_worktree(&pool, boot.track_id.as_str(), &track_root).await;
 
     let events = boot.ctx.events.clone();
     let operation_repo = Arc::new(SqlxOperationRepo::new(pool.clone()));
@@ -230,7 +252,7 @@ pub(super) async fn fixture_on_with_adapters(
     let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
     let completion = OperationCompletionBus::new();
     let daemon = Arc::new(DaemonClient::new_stub());
-    let spawn_ctx = SpawnCtx::new(
+    let mut spawn_ctx = SpawnCtx::new(
         route_repo,
         operation_repo.clone(),
         daemon.clone(),
@@ -238,12 +260,15 @@ pub(super) async fn fixture_on_with_adapters(
         events.clone(),
         completion.clone(),
     );
+    if let Some(shared) = shared_codex {
+        spawn_ctx = spawn_ctx.with_shared_codex_appserver(shared);
+    }
     let gate_logs_dir = boot.ctx.gate_logs_dir.clone();
     let mut adapters = vec![
         Arc::new(ForgeActionAdapter::new()) as Arc<dyn ProviderAdapter>,
         Arc::new(TaskVerifyAdapter::new(gate_logs_dir.clone())) as Arc<dyn ProviderAdapter>,
     ];
-    adapters.extend(extra(&boot));
+    adapters.extend(extra(&boot, &workspace_root));
     let runtime = Arc::new(OperationRuntime::new_unchecked(
         operation_repo,
         adapters,
@@ -270,9 +295,22 @@ pub(super) async fn fixture_on_with_adapters(
         harness,
         poke_target,
         track_root,
+        worktree,
         workspace_root,
         _tmp: tmp,
     }
+}
+
+/// Give the attached Track its track worktree as the create route does (#1830 S1, through the
+/// production `ensure_track_worktree`). Returns it.
+pub(super) async fn attach_track_worktree(
+    pool: &sqlx::SqlitePool,
+    track_id: &str,
+    checkout: &Path,
+) -> PathBuf {
+    calm_server::test_seams::attach_track_worktree_for_test(pool, track_id, checkout)
+        .await
+        .unwrap()
 }
 
 /// The tool-side scheduler triggers, forwarded to whichever scheduler `poke_target` names now.
@@ -450,17 +488,28 @@ impl Fx {
         .unwrap();
     }
 
-    /// The production lease sequence for `card`: prepare from the Track workspace, resolve the
-    /// lease base (the upstream when the repo has one, else HEAD), the kernel-policy row, the
-    /// worktree pinned to the base.
+    /// The production lease sequence for `card` (#1830 S2): prepare the track worktree (refused
+    /// when dirty), its HEAD as the base, the kernel-policy row. One held lease per checkout.
     pub(super) async fn kernel_lease(&self, card: &str) -> KernelWorkspaceLease {
         take_kernel_workspace_lease_for_test(&self.pool(), self.track(), card, &self.workspace_root)
             .await
             .unwrap()
     }
 
-    pub(super) fn slice_branch(&self, card: &str) -> String {
-        format!("neige/{}/{card}", self.track())
+    /// Flip the card's held lease to `released` by hand, writing nothing else: a fixture that
+    /// stages several attempts at once needs it, as the track's checkout takes one held lease at a
+    /// time (#1830 S2).
+    pub(super) async fn release_lease_by_hand(&self, card: &str) {
+        sqlx::query("UPDATE workspace_leases SET state = 'released' WHERE card_id = ?1")
+            .bind(card)
+            .execute(&self.pool())
+            .await
+            .unwrap();
+    }
+
+    /// The track's worker branch (#1830 S2 D4).
+    pub(super) fn worker_branch(&self) -> String {
+        format!("neige/track-{}", self.track())
     }
 
     pub(super) async fn complete(&self, worker: &ToolCallIdentity, task_id: &str) {
@@ -1335,7 +1384,7 @@ async fn claude_worker_completion_yields_kernel_candidate() {
     assert_eq!(committed[0]["delivery_id"], row.delivery_id);
     assert_eq!(committed[0]["base_is_ancestor"], true);
     assert_eq!(committed[0]["commit_sha"], commit_sha);
-    assert_eq!(committed[0]["branch"], fx.slice_branch(&worker.card_id));
+    assert_eq!(committed[0]["branch"], fx.worker_branch());
 
     // One candidate row; the ref in the lease's common dir points at its commit.
     let candidate = fx.candidate_row(&task.id).await.expect("candidate row");
@@ -2077,9 +2126,12 @@ async fn delivery_refuses_switched_branch_as_provenance_mismatch() {
             "{name}: no ref"
         );
         assert!(fx.candidate_row(&task.id).await.is_none(), "{name}");
+        // The Planner puts the checkout back for the next worker (#1830 S2 D6).
+        std::fs::remove_file(lease.path.join("worker.txt")).unwrap();
+        git(&lease.path, &["checkout", "-q", &fx.worker_branch()]);
     }
 
-    // The positive case: the slice branch delivers.
+    // The positive case: the track branch delivers.
     let worker = fx.new_worker("on-branch", AgentProvider::Codex).await;
     let lease = fx.kernel_lease(&worker.card_id).await;
     let task = fx
@@ -2131,7 +2183,7 @@ async fn delivery_refuses_in_progress_merge() {
         let task = fx
             .running_task(name, "codex", &worker.card_id, json!({}))
             .await;
-        let slice = fx.slice_branch(&worker.card_id);
+        let slice = fx.worker_branch();
         // `other`: one commit off the base; the slice branch: one commit of its own.
         git(&lease.path, &["checkout", "-q", "-b", "other"]);
         if conflicting {
@@ -2725,7 +2777,7 @@ async fn settlement_wake_is_replay_stable() {
 }
 
 // ---------------------------------------------------------------------------
-// A26: a slice 1 lease (base recorded, no delivery policy) stays on today's path.
+// A26: a slice 1 lease (base recorded, no delivery policy) gets no delivery.
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2764,44 +2816,14 @@ async fn slice1_lease_completing_after_slice2_stays_legacy() {
             0,
             "{name}: no delivery row"
         );
-        let legacy_key = format!(
-            "dev.neige.git-forge:{}:{}:git.commit:auto",
-            fx.track(),
-            worker.card_id
+        // The legacy `git.commit:auto` is gone (#1830 S2 D12): nothing commits a legacy lease.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(fx.forge_op_count().await, 0, "{name}: nothing commits it");
+        assert_eq!(
+            git(&lease.path, &["rev-parse", "HEAD"]),
+            lease.base_sha,
+            "{name}"
         );
-        match provider {
-            AgentProvider::Codex => {
-                let op = tokio::time::timeout(WAIT, async {
-                    loop {
-                        if let Some(op) = fx.forge_op(&legacy_key).await {
-                            break op;
-                        }
-                        tokio::time::sleep(Duration::from_millis(20)).await;
-                    }
-                })
-                .await
-                .expect("Codex still auto-commits");
-                fx.runtime.wait(&op.id).await.unwrap();
-                let committed = fx.worktree_committed_events(&worker.card_id).await;
-                assert_eq!(committed.len(), 1, "{name}");
-                assert!(
-                    committed[0].get("delivery_id").is_none(),
-                    "{name}: {committed:?}"
-                );
-            }
-            _ => {
-                tokio::time::sleep(Duration::from_millis(300)).await;
-                assert!(
-                    fx.forge_op(&legacy_key).await.is_none(),
-                    "{name}: Claude does not commit"
-                );
-                assert_eq!(
-                    git(&lease.path, &["rev-parse", "HEAD"]),
-                    lease.base_sha,
-                    "{name}"
-                );
-            }
-        }
         assert!(fx.candidate_row(&task.id).await.is_none());
         let entry = fx.plan_entry(name).await;
         assert_eq!(entry["candidate"]["binding"], "unbound", "{name}: {entry}");
@@ -2816,6 +2838,8 @@ async fn slice1_lease_completing_after_slice2_stays_legacy() {
             "{name}: {summary}"
         );
         assert_eq!(summary["candidate"]["reason"], "legacy_lease");
+        // The next worker needs a clean tree (#1830 S2 D6).
+        std::fs::remove_file(lease.path.join("worker.txt")).unwrap();
     }
     // `task.completed` is pushed as today for both.
     let pending = wait_observations(&planner, 2).await;
@@ -2895,6 +2919,7 @@ async fn candidate_view_is_total_over_task_status() {
     fx.kernel_lease(&running.card_id).await;
     fx.running_task("running", "codex", &running.card_id, json!({}))
         .await;
+    fx.release_lease_by_hand(&running.card_id).await;
 
     // `pending`, never claimed (its dependency keeps it out of the ready set).
     declare(
@@ -2916,6 +2941,7 @@ async fn candidate_view_is_total_over_task_status() {
         .execute(&fx.pool())
         .await
         .unwrap();
+    fx.release_lease_by_hand(&spawn_failed.card_id).await;
 
     // `failed/worker-timeout`, gated.
     let timed_out = fx.new_worker("timed-out", AgentProvider::Codex).await;
@@ -2934,6 +2960,7 @@ async fn candidate_view_is_total_over_task_status() {
         .execute(&fx.pool())
         .await
         .unwrap();
+    fx.release_lease_by_hand(&timed_out.card_id).await;
 
     // `done` whose delivery row was deleted.
     let done = fx.new_worker("done", AgentProvider::Codex).await;
@@ -3456,6 +3483,7 @@ async fn no_delivery_row_refusals_name_the_reason() {
             task.id
         ),
     );
+    fx.release_lease_by_hand(&legacy.card_id).await;
 
     // A kernel lease whose worker is still running: no report yet.
     let worker = fx.codex_worker();
@@ -4236,6 +4264,7 @@ async fn track_and_area_delete_after_abandonment() {
         fx.assert_no_gate_op(&task.id).await;
         // A second worker delivers a candidate on the same Track: its ref must go with the Track.
         remove_pre_commit(&lease);
+        undo_worker_changes(&lease.path);
         let other = fx.new_worker("delivers", AgentProvider::Codex).await;
         let other_lease = fx.kernel_lease(&other.card_id).await;
         let other_task = fx
@@ -4349,7 +4378,7 @@ async fn retry_after_merge_abort_succeeds() {
     let task = fx
         .running_task("merge-abort", "codex", &worker.card_id, json!({}))
         .await;
-    let slice = fx.slice_branch(&worker.card_id);
+    let slice = fx.worker_branch();
     git(&lease.path, &["checkout", "-q", "-b", "other"]);
     commit_file(&lease.path, "README.md", "other\n", "other");
     git(&lease.path, &["checkout", "-q", &slice]);

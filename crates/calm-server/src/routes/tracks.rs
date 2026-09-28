@@ -23,7 +23,7 @@ use crate::model::{
 use crate::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
 use crate::operation::workspace_lease::{
     WorkspaceTrackSweep, release_workspace_leases_for_track_tx,
-    sweep_workspace_worktrees_for_tracks_repo, track_has_active_forge_action,
+    sweep_workspace_worktrees_for_tracks, track_has_active_forge_action,
 };
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::plugin_host::manifest::Manifest;
@@ -3077,8 +3077,7 @@ impl RecycledTrackDeletion {
         // This sweep is post-commit. A failure here must not restore the
         // workspace: the track row is already gone and the trash path is now
         // authoritative.
-        sweep_workspace_worktrees_for_tracks_repo(route.repo.as_ref(), &route.events, sweeps)
-            .await?;
+        sweep_workspace_worktrees_for_tracks(sweeps);
         Ok(())
     }
 }

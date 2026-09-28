@@ -12,48 +12,48 @@ pub fn crash_point(point: &str) {
     }
 }
 
-/// Reach the production worker-lease preparation from an integration test.
+/// Reach the production worker-lease preparation (#1830 S2: the track's checkout, materialized
+/// for a managed track, checked clean) from an integration test. Returns the worker's directory.
 #[cfg(feature = "fixtures")]
-pub async fn prepare_workspace_lease_target_for_test(
+pub async fn prepare_worker_lease_for_test(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     track_id: &str,
-    card_id: &str,
     workspace_root: &std::path::Path,
 ) -> crate::error::Result<std::path::PathBuf> {
-    crate::operation::workspace_lease::prepare_workspace_lease_target_tx(
-        tx,
-        track_id,
-        card_id,
-        workspace_root,
-    )
-    .await
-    .map(|target| target.repo_root)
+    crate::operation::workspace_lease::prepare_worker_lease_tx(tx, track_id, workspace_root)
+        .await
+        .map(|plan| plan.path)
 }
 
-/// Take a whole first-worker workspace lease: prepare → resolve the lease base → commit →
-/// provision pinned to that base, in that order. Returns the provisioned worktree path.
-#[cfg(feature = "fixtures")]
-pub async fn provision_workspace_lease_for_test(
+/// Give an attached track its #1830 track worktree the way the create route does: the path
+/// `track_worktree_path_for(checkout, id)` on the row (the create transaction's write), then the
+/// production `ensure_track_worktree` (the route's post-commit step: fetch the upstream, start
+/// `neige/track-<id>` where the checkout's HEAD / upstream says, exclude `.claude/worktrees/`).
+/// Returns the worktree path.
+#[cfg(any(test, feature = "fixtures"))]
+pub async fn attach_track_worktree_for_test(
     pool: &sqlx::SqlitePool,
     track_id: &str,
-    card_id: &str,
-    workspace_root: &std::path::Path,
+    checkout: &std::path::Path,
 ) -> crate::error::Result<std::path::PathBuf> {
+    let path = crate::db::sqlite::track_worktree_path_for(checkout, track_id);
+    let path_str = path.to_str().ok_or_else(|| {
+        crate::error::CalmError::Internal(format!("{} is not UTF-8", path.display()))
+    })?;
     let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
-    let target = crate::operation::workspace_lease::prepare_workspace_lease_target_tx(
+    sqlx::query("UPDATE tracks SET workspace_worktree_path = ?1 WHERE id = ?2")
+        .bind(path_str)
+        .bind(track_id)
+        .execute(&mut *tx)
+        .await?;
+    let track = crate::track_lifecycle::track_get_tx(
         &mut tx,
-        track_id,
-        card_id,
-        workspace_root,
+        &crate::ids::TrackId::from(track_id.to_string()),
     )
     .await?;
-    let base = crate::operation::workspace_lease::base::resolve_lease_base(&target)?;
     tx.commit().await?;
-    crate::operation::workspace_lease::provision_workspace_worktree(
-        &target,
-        &crate::operation::workspace_lease::WorktreeBase::from_lease_base(&base),
-    )?;
-    Ok(target.path)
+    crate::operation::workspace_lease::track_worktree::ensure_track_worktree(&track).await?;
+    Ok(path)
 }
 
 /// Reach the production workspace-lease acquisition from an integration test.
@@ -78,90 +78,58 @@ pub async fn acquire_workspace_lease_for_test(
     Ok(())
 }
 
-/// Take a lease that RECORDS ITS BASE
-/// through the production `acquire_workspace_lease_tx` (the five base
-/// columns in the one INSERT), the sibling of `acquire_workspace_lease_for_test`
-/// whose plain lease writes the legacy all-NULL tuple. `plan.list.worktree.base_sha`
-/// and `recovery.guidance.retained.base_sha` are read from that row, so a
-/// fixture that only ever takes plain leases can never see either key.
-///
-/// The lease path is production's `<repo_root>/.claude/worktrees/<track>/<card>`
-/// (returned); `canonical_path` is resolved through the parent the way the
-/// prepare tx resolves it; `git_common_dir` is `<repo_root>/.git` as given —
-/// the fixture's repository root need not be a git repository, the columns
-/// only have to be the shape the CHECK accepts. `fixtures`-only.
+/// Take a lease that RECORDS ITS BASE through the production `acquire_workspace_lease_tx` (the
+/// five base columns in the one INSERT) at `path`, the sibling of
+/// `acquire_workspace_lease_for_test` whose plain lease writes the legacy all-NULL tuple.
+/// `plan.list.worktree.base_sha` and `recovery.guidance.retained.base_sha` are read from that
+/// row. `canonical_path` is `path` as given and `git_common_dir` is `<path>/.git`: the directory
+/// need not be a git repository, the columns only have to be the shape the CHECK accepts.
+/// `fixtures`-only.
 #[cfg(feature = "fixtures")]
 pub async fn acquire_based_workspace_lease_for_test(
     pool: &sqlx::SqlitePool,
     card_id: &str,
     track_id: &str,
     lease_owner: &str,
-    repo_root: &std::path::Path,
+    path: &std::path::Path,
     base_sha: &str,
-) -> crate::error::Result<std::path::PathBuf> {
+) -> crate::error::Result<()> {
     use crate::operation::workspace_lease::{
-        LeaseBase, WorkspaceLeaseTarget, acquire_workspace_lease_tx, base,
-        workspace_lease_path_for, workspace_slice_branch_for,
+        LeaseBase, WorkerLeasePlan, acquire_workspace_lease_tx, base,
     };
-    let target = WorkspaceLeaseTarget {
-        repo_root: repo_root.to_path_buf(),
-        path: workspace_lease_path_for(repo_root, track_id, card_id)?,
-        branch: workspace_slice_branch_for(track_id, card_id)?,
-    };
-    let parent = target.path.parent().ok_or_else(|| {
-        crate::error::CalmError::Internal(format!(
-            "workspace lease path {} has no parent",
-            target.path.display()
-        ))
-    })?;
-    std::fs::create_dir_all(parent).map_err(|e| {
-        crate::error::CalmError::Internal(format!(
-            "create workspace lease parent directory {}: {e}",
-            parent.display()
-        ))
-    })?;
-    let lease_base = LeaseBase {
-        base_sha: base_sha.to_string(),
-        base_source: base::BaseSource::Head,
-        base_attempt_id: None,
-        canonical_path: base::lease_canonical_path(parent, card_id)?,
-        git_common_dir: repo_root.join(".git"),
+    let plan = WorkerLeasePlan {
+        path: path.to_path_buf(),
+        branch: "main".into(),
+        base: LeaseBase {
+            base_sha: base_sha.to_string(),
+            base_source: base::BaseSource::Commit,
+            base_attempt_id: None,
+            canonical_path: path.to_path_buf(),
+            git_common_dir: path.join(".git"),
+        },
+        superseded: Vec::new(),
     };
     let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
-    acquire_workspace_lease_tx(
-        &mut tx,
-        card_id,
-        track_id,
-        lease_owner,
-        &target,
-        &lease_base,
-    )
-    .await?;
+    acquire_workspace_lease_tx(&mut tx, card_id, track_id, lease_owner, &plan).await?;
     tx.commit().await?;
-    Ok(target.path)
+    Ok(())
 }
 
-/// Release a card's active workspace lease through the production "flip the row only" path
-/// (checkout left on disk).
+/// Release a card's active workspace lease through the production release (#1830 S2 D7), with
+/// the attempt committed as its terminal `tasks.status` says.
 #[cfg(feature = "fixtures")]
 pub async fn release_workspace_lease_for_card_for_test(
     repo: &dyn crate::db::RepoEventWrite,
     events: &crate::event::EventBus,
     card_id: &str,
 ) -> crate::error::Result<bool> {
-    crate::operation::workspace_lease::release_workspace_lease_for_card_repo(repo, events, card_id)
-        .await
-}
-
-/// Release a lease through the production "remove the worktree" path; on a non-git lease root
-/// this removes the directory.
-#[cfg(feature = "fixtures")]
-pub async fn release_workspace_lease_by_id_for_test(
-    pool: &sqlx::SqlitePool,
-    events: &crate::event::EventBus,
-    lease_id: &str,
-) -> crate::error::Result<bool> {
-    crate::operation::workspace_lease::release_workspace_lease_by_id(pool, events, lease_id).await
+    crate::operation::workspace_lease::release_workspace_lease_for_card_repo(
+        repo,
+        events,
+        card_id,
+        crate::operation::workspace_lease::ReleaseDelivery::CommitAsTaskEnded,
+    )
+    .await
 }
 
 /// Build git commands in a test exactly the way the server does: a bare `git` is redirected by
@@ -173,54 +141,23 @@ pub fn neige_git_command_for_test() -> std::process::Command {
 }
 
 /// What [`take_kernel_workspace_lease_for_test`] returns: the lease row's identity and the
-/// three base facts the delivery reads from it.
+/// base facts the delivery reads from it.
 #[cfg(feature = "fixtures")]
 #[derive(Clone, Debug)]
 pub struct KernelWorkspaceLease {
     pub lease_id: String,
+    /// The track's checkout (`agent_cwd()`), where the worker runs.
     pub path: std::path::PathBuf,
-    pub repo_root: std::path::PathBuf,
+    pub branch: String,
     pub base_sha: String,
     pub git_common_dir: std::path::PathBuf,
 }
 
-/// [`take_kernel_workspace_lease_for_test`] for one attempt, through the production base
-/// resolution every worker prepare runs: a `calm.task.replace` successor's lease starts from the
-/// kernel carry commit its receipt calls for (#1785 S2).
-#[cfg(feature = "fixtures")]
-pub async fn take_kernel_workspace_lease_for_attempt_for_test(
-    pool: &sqlx::SqlitePool,
-    track_id: &str,
-    card_id: &str,
-    workspace_root: &std::path::Path,
-    attempt_id: &str,
-) -> crate::error::Result<KernelWorkspaceLease> {
-    use crate::operation::workspace_lease::{
-        WorktreeBase, acquire_workspace_lease_tx, carry::resolve_task_lease_base_tx,
-        prepare_workspace_lease_target_tx, provision_workspace_worktree,
-    };
-    let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
-    let target =
-        prepare_workspace_lease_target_tx(&mut tx, track_id, card_id, workspace_root).await?;
-    let (base, _notice) = resolve_task_lease_base_tx(&mut tx, &target, attempt_id).await?;
-    let (lease, _event) =
-        acquire_workspace_lease_tx(&mut tx, card_id, track_id, "op-test", &target, &base).await?;
-    tx.commit().await?;
-    provision_workspace_worktree(&target, &WorktreeBase::from_lease_base(&base))?;
-    Ok(KernelWorkspaceLease {
-        lease_id: lease.lease_id,
-        path: target.path,
-        repo_root: target.repo_root,
-        base_sha: base.base_sha,
-        git_common_dir: base.git_common_dir,
-    })
-}
-
-/// The whole first-worker lease sequence the worker op's `prepare_tx` + spawn run, in
-/// production order and through the production functions: prepare the target from the Track's
-/// workspace, resolve the lease base, INSERT the lease row (`delivery_policy = 'kernel'`, the
-/// five base columns) in one immediate transaction, then provision the worktree pinned to that
-/// base. The one seam an integration test needs to stand where a Codex/Claude worker would.
+/// The lease sequence the worker op's `prepare_tx` runs, in production order and through the
+/// production functions (#1830 S2): prepare the track's checkout (materialize a managed one,
+/// refuse a dirty tree), then INSERT the lease row (`delivery_policy = 'kernel'`, its HEAD as the
+/// base) in one immediate transaction. The one seam an integration test needs to stand where a
+/// Codex/Claude worker would.
 #[cfg(feature = "fixtures")]
 pub async fn take_kernel_workspace_lease_for_test(
     pool: &sqlx::SqlitePool,
@@ -228,23 +165,17 @@ pub async fn take_kernel_workspace_lease_for_test(
     card_id: &str,
     workspace_root: &std::path::Path,
 ) -> crate::error::Result<KernelWorkspaceLease> {
-    use crate::operation::workspace_lease::{
-        WorktreeBase, acquire_workspace_lease_tx, base::resolve_lease_base,
-        prepare_workspace_lease_target_tx, provision_workspace_worktree,
-    };
+    use crate::operation::workspace_lease::{acquire_workspace_lease_tx, prepare_worker_lease_tx};
     let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
-    let target =
-        prepare_workspace_lease_target_tx(&mut tx, track_id, card_id, workspace_root).await?;
-    let base = resolve_lease_base(&target)?;
+    let plan = prepare_worker_lease_tx(&mut tx, track_id, workspace_root).await?;
     let (lease, _event) =
-        acquire_workspace_lease_tx(&mut tx, card_id, track_id, "op-test", &target, &base).await?;
+        acquire_workspace_lease_tx(&mut tx, card_id, track_id, "op-test", &plan).await?;
     tx.commit().await?;
-    provision_workspace_worktree(&target, &WorktreeBase::from_lease_base(&base))?;
     Ok(KernelWorkspaceLease {
         lease_id: lease.lease_id,
-        path: target.path,
-        repo_root: target.repo_root,
-        base_sha: base.base_sha,
-        git_common_dir: base.git_common_dir,
+        path: plan.path,
+        branch: plan.branch,
+        base_sha: plan.base.base_sha,
+        git_common_dir: plan.base.git_common_dir,
     })
 }

@@ -13,7 +13,7 @@ use crate::ids::ActorId;
 use crate::model::{Area, AreaKind, AreaPatch, NewArea, Track};
 use crate::operation::workspace_lease::{
     any_track_has_active_forge_action, release_workspace_leases_for_track_tx,
-    sweep_workspace_worktrees_for_tracks_repo,
+    sweep_workspace_worktrees_for_tracks,
 };
 use crate::routes::cards::quiesce_shared_card_active_turn;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
@@ -645,8 +645,7 @@ impl RecycledAreaDeletion {
             &area_id,
             &mut self.recycle_report,
         );
-        sweep_workspace_worktrees_for_tracks_repo(route.repo.as_ref(), &route.events, sweeps)
-            .await?;
+        sweep_workspace_worktrees_for_tracks(sweeps);
         Ok(())
     }
 }

@@ -1,11 +1,10 @@
 //! `task_replacements` (migration 0116): one immutable row per accepted replacement. The replay
-//! response and the successor's carry plan are rebuilt from its columns plus the immutable
-//! `task_candidates` row it names; nothing is re-read from the task rows.
+//! response is rebuilt from its columns plus the immutable `task_candidates` row it names;
+//! nothing is re-read from the task rows.
 
 use serde_json::{Value, json};
 use sqlx::Row;
 
-use crate::db::sqlite::task_get_tx;
 use crate::error::{CalmError, Result};
 use crate::model::TaskStatus;
 use crate::operation::Tx;
@@ -267,38 +266,5 @@ pub(crate) async fn response_tx(
             "attempt_id": format!("{}:{}", receipt.track_id, receipt.successor_key),
         },
         "carry": carry,
-    }))
-}
-
-/// What a successor attempt's lease prepare carries: the candidate commit its receipt names.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct CarryPlan {
-    pub receipt_id: String,
-    pub source_attempt_id: String,
-    pub candidate_sha: String,
-    pub created_at_ms: i64,
-}
-
-/// The carry plan of the attempt being prepared: its key's receipt, when that receipt names a
-/// source. `None` for every attempt that is not a replacement successor, and for `carry.none`.
-pub(crate) async fn carry_plan_tx(tx: &mut Tx<'_>, attempt_id: &str) -> Result<Option<CarryPlan>> {
-    let Some(task) = task_get_tx(tx, attempt_id).await? else {
-        return Ok(None);
-    };
-    let Some(receipt) = by_successor_tx(tx, &task.track_id, &task.key).await? else {
-        return Ok(None);
-    };
-    let CarrySource::From {
-        source_attempt_id,
-        source_candidate_id,
-    } = receipt.carry
-    else {
-        return Ok(None);
-    };
-    Ok(Some(CarryPlan {
-        candidate_sha: candidate_commit_tx(tx, &source_candidate_id).await?,
-        receipt_id: receipt.receipt_id,
-        source_attempt_id,
-        created_at_ms: receipt.created_at_ms,
     }))
 }

@@ -18,9 +18,10 @@ use crate::db::sqlite::{
 };
 use crate::db::{RepoRead, RouteRepo, write_with_actor_events_typed, write_with_event_typed};
 use crate::event::{Event, EventBus, EventScope};
+use crate::git_candidate::delivery::AttemptOutcome;
 use crate::ids::{ActorId, CardId};
 use crate::model::{CardPatch, CardRole, NewCard, NewOverlay, new_id};
-use crate::operation::workspace_lease::release_workspace_lease_for_card_tx;
+use crate::operation::workspace_lease::{ReleaseDelivery, release_workspace_lease_for_card_tx};
 use crate::session_projection_lookup::project_runtime_into_card_payload;
 use crate::state::WriteContext;
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
@@ -534,7 +535,12 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
                         Err(e) => return Err(e),
                     }
                 }
-                let mut events = release_workspace_lease_for_card_tx(tx, &card_id).await?;
+                let mut events = release_workspace_lease_for_card_tx(
+                    tx,
+                    &card_id,
+                    ReleaseDelivery::Commit(AttemptOutcome::Interrupted),
+                )
+                .await?;
                 card_delete_tx(tx, &card_id, write_for_tx.role_cache()).await?;
                 events.push((
                     actor,

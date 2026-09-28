@@ -6,7 +6,6 @@ mod file_delivery;
 mod git_delivery;
 mod running_worker;
 mod worker_failure;
-mod worktree_reclaim;
 use running_worker::RunningWorkerFailure;
 pub(crate) use running_worker::WorkerCleanupReason;
 pub use running_worker::{
@@ -45,7 +44,11 @@ use crate::operation::task_verify_adapter::{
     gate_attempt_key,
 };
 use crate::operation::terminal_adapter::TerminalWorkerOperationPayload;
-use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
+use crate::operation::workspace_lease::worker::is_in_tree_worker;
+use crate::operation::workspace_lease::{
+    ReleaseDelivery, release_workspace_lease_for_card_repo, release_workspace_lease_for_card_tx,
+    track_idle_tx,
+};
 use crate::operation::{OperationKey, OperationOutcome, OperationRuntime, Tx};
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::state::WriteContext;
@@ -82,14 +85,24 @@ fn fence_revision_matches(current: Option<Option<i64>>, frozen: u64) -> bool {
         == Some(frozen)
 }
 
-/// Mark the card's live worker session for the sweep's reap (`sweep_timeout_worker_cleanups`).
+/// What [`mark_running_timeout_cleanup_tx`] did: the sessions it marked for the sweep's reap, and
+/// the lease events of a release it made when it marked none.
+pub(crate) struct TimeoutCleanupMark {
+    pub(crate) marked: u64,
+    pub(crate) released: Vec<(ActorId, EventScope, Event)>,
+}
+
+/// Mark the card's live worker session for the sweep's reap (`sweep_timeout_worker_cleanups`),
+/// after the caller flipped the task terminal in `tx`. When no live session is left to mark (a
+/// Claude PTY that died is `exited`), no worker is left to kill: the lease is released here, in
+/// the caller's transaction, and the attempt committed as its terminal status says (#1830 S2 D7).
 pub(crate) async fn mark_running_timeout_cleanup_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     card_id: &str,
     task_id: &str,
     now: i64,
     reason: WorkerCleanupReason,
-) -> Result<u64> {
+) -> Result<TimeoutCleanupMark> {
     let marker = serde_json::to_string(&json!({
         "task_id": task_id,
         "requested_at_ms": now,
@@ -112,7 +125,15 @@ pub(crate) async fn mark_running_timeout_cleanup_tx(
     .execute(&mut **tx)
     .await?
     .rows_affected();
-    Ok(rows)
+    let released = if rows == 0 {
+        release_workspace_lease_for_card_tx(tx, card_id, ReleaseDelivery::CommitAsTaskEnded).await?
+    } else {
+        Vec::new()
+    };
+    Ok(TimeoutCleanupMark {
+        marked: rows,
+        released,
+    })
 }
 
 /// Schedule only while the track is in an active lifecycle; in-flight tasks are unaffected.
@@ -506,11 +527,6 @@ pub struct Scheduler {
     track_dirty: DashMap<TrackId, Arc<AtomicBool>>,
     /// Per-task single-flight for submit/wait drives (live + sweep).
     inflight: Arc<DashMap<String, ()>>,
-    /// Held by the one running released-worktree reclaim (`worktree_reclaim.rs`).
-    worktree_reclaim: Arc<tokio::sync::Mutex<()>>,
-    /// Leases the reclaim refused (work in the checkout, a moved path, …), left out of later
-    /// passes for this process's lifetime; a restart looks at them again.
-    worktree_reclaim_refused: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     /// Boot-order gate for the backstop sweeps: the reconcile tick may fire before boot
     /// recovery, so `sweep_all` no-ops until `sweep_boot` completes.
     boot_sweep_done: AtomicBool,
@@ -646,8 +662,6 @@ impl Scheduler {
             track_locks: DashMap::new(),
             track_dirty: DashMap::new(),
             inflight: Arc::new(DashMap::new()),
-            worktree_reclaim: Arc::new(tokio::sync::Mutex::new(())),
-            worktree_reclaim_refused: Arc::default(),
             boot_sweep_done: AtomicBool::new(false),
             context_sweep_boot_done: AtomicBool::new(false),
             context_metrics: Arc::new(ContextMetrics::default()),
@@ -1306,6 +1320,13 @@ impl Scheduler {
                         if in_flight + active_candidates > budget {
                             return Err(race_lost_err());
                         }
+                        // #1830 S2 D5: a codex/claude worker runs in the track's checkout, so on top
+                        // of the budget it needs the track idle apart from itself.
+                        if is_in_tree_worker(&frozen)?
+                            && !track_idle_tx(tx, track_id.as_str(), &task_id).await?
+                        {
+                            return Err(race_lost_err());
+                        }
                         let mut events = vec![
                             (
                                 ActorId::KernelDispatcher,
@@ -1898,8 +1919,6 @@ impl Scheduler {
         }
         // Unsettled git deliveries are the authoritative discovery, whatever the task status (F6.4).
         pending_tracks.extend(self.unsettled_git_delivery_tracks().await);
-        // Before this pass dispatches anything: a delivery it resubmits is still unsettled here.
-        self.start_worktree_reclaim().await;
         let tasks = match self.repo.tasks_nonterminal().await {
             Ok(tasks) => tasks,
             Err(e) => {
@@ -2070,10 +2089,13 @@ impl Scheduler {
                 );
                 continue;
             }
+            // #1830 S2 D7: the worker is stopped, so its attempt is committed now, as its
+            // terminal `tasks.status` says (`failed` for a timeout, `canceled` for a cancel).
             if let Err(e) = release_workspace_lease_for_card_repo(
                 self.repo.as_ref(),
                 &self.events,
                 &cleanup.card_id,
+                ReleaseDelivery::CommitAsTaskEnded,
             )
             .await
             {

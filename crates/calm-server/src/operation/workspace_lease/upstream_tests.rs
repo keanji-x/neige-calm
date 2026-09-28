@@ -1,9 +1,7 @@
 //! The local half of an upstream lease base (#1777): which upstream commit is
 //! known, and where a lease starts by HEAD's relation to it.
 //!
-//! The fixtures here are shared with the fetch tests
-//! (`upstream_fetch_tests`) and the worker adapters' tests, which drive the
-//! same repositories through `before_insert` and `prepare_tx`.
+//! The fixtures here are shared with the fetch tests (`upstream_fetch_tests`).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

@@ -4,7 +4,7 @@
 # `{code}` is substituted with the exit code. The settlement copies the sentence (plus the script's stdout
 # evidence lines for 10/12/15) into `task_git_deliveries.failure_reason`; the Planner reads it from the row.
 10	The lease directory is not the registered lease worktree: its realpath or its git common dir differs from what the lease row recorded (observation line below).
-11	HEAD is not on the slice branch (the worker switched branches or detached HEAD); nothing was staged or committed.
+11	HEAD is not on the track branch (the checkout was switched to another branch or detached); nothing was staged or committed.
 12	The worktree resolves to the lease path and repository but git does not list it as a registered worktree (observation line below); nothing was staged or committed.
 13	The lease base commit could not be read in this repository, or the ancestry observation (merge-base) failed; no candidate ref was pinned (a commit the script may have made before that observation stays on the branch tip).
 14	A git observation (worktree provenance, branch or index) failed before the script could decide anything; nothing was staged, committed or pinned.

@@ -15,7 +15,8 @@ use crate::db::sqlite::{
     task_cancel_running_tx, task_get_tx,
 };
 use crate::error::{CalmError, Result};
-use crate::ids::TrackId;
+use crate::event::{Event, EventScope};
+use crate::ids::{ActorId, TrackId};
 use crate::model::{Task, TaskStatus, now_ms};
 use crate::operation::Tx;
 use crate::scheduler::{WorkerCleanupReason, mark_running_timeout_cleanup_tx};
@@ -251,13 +252,19 @@ fn successor_payload(predecessor: &Value, key: &str, args: &ReplaceArgs) -> Resu
 /// Step 3: stop the predecessor. A `running` one is canceled with the Planner cancel's CAS and its
 /// worker marked for the reap; a `pending` one is canceled; a terminal one is left alone. A CAS
 /// that moves nothing refuses the whole request with the row's current status.
-pub(crate) async fn stop_tx(tx: &mut Tx<'_>, admitted: &Admitted) -> Result<(TaskStatus, Stop)> {
+/// The third value is the lease events of a running predecessor whose lease was released here
+/// because no live session was left to mark (#1830 S2 D7).
+pub(crate) async fn stop_tx(
+    tx: &mut Tx<'_>,
+    admitted: &Admitted,
+) -> Result<(TaskStatus, Stop, Vec<(ActorId, EventScope, Event)>)> {
     let predecessor = &admitted.predecessor;
     let detail = status_detail_with_reason(SUPERSEDED, &admitted.successor_key);
     let now = now_ms();
+    let mut released = Vec::new();
     let rows = match predecessor.status {
         TaskStatus::Done | TaskStatus::Failed | TaskStatus::Canceled => {
-            return Ok((predecessor.status, Stop::AlreadyTerminal));
+            return Ok((predecessor.status, Stop::AlreadyTerminal, Vec::new()));
         }
         TaskStatus::Pending => {
             task_cancel_pending_with_detail_tx(tx, &predecessor.id, &detail, now).await?
@@ -267,22 +274,23 @@ pub(crate) async fn stop_tx(tx: &mut Tx<'_>, admitted: &Admitted) -> Result<(Tas
                 CalmError::Internal("admitted running predecessor has no worker card".into())
             })?;
             let rows = task_cancel_running_tx(tx, &predecessor.id, card_id, &detail, now).await?;
-            if rows != 0
-                && mark_running_timeout_cleanup_tx(
+            if rows != 0 {
+                let mark = mark_running_timeout_cleanup_tx(
                     tx,
                     card_id,
                     &predecessor.id,
                     now,
                     WorkerCleanupReason::Superseded,
                 )
-                .await?
-                    == 0
-            {
-                tracing::warn!(
-                    task_id = %predecessor.id,
-                    card_id,
-                    "task_replace: no live worker session to mark; the superseded worker is not reaped"
-                );
+                .await?;
+                if mark.marked == 0 {
+                    tracing::warn!(
+                        task_id = %predecessor.id,
+                        card_id,
+                        "task_replace: no live worker session to mark; the superseded worker is not reaped"
+                    );
+                }
+                released = mark.released;
             }
             rows
         }
@@ -298,7 +306,7 @@ pub(crate) async fn stop_tx(tx: &mut Tx<'_>, admitted: &Admitted) -> Result<(Tas
             .map_or(predecessor.status, |row| row.status);
         return Err(Refusal::PredecessorChanged.refuse(&status_str(status)));
     }
-    Ok((predecessor.status, Stop::CanceledNow))
+    Ok((predecessor.status, Stop::CanceledNow, released))
 }
 
 /// Step 4: the candidate the successor carries — the predecessor's own settled candidate whatever

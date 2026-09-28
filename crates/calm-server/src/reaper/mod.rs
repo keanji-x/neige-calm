@@ -11,10 +11,13 @@ use crate::db::sqlite::{TaskReporter, status_detail_with_reason, task_fail_from_
 use crate::db::write_with_actor_events_typed;
 use crate::error::Result;
 use crate::event::{Event, EventBus, EventScope};
+use crate::git_candidate::delivery::AttemptOutcome;
 use crate::ids::ActorId;
 use crate::model::TrackLifecycle;
 use crate::model::now_ms;
-use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
+use crate::operation::workspace_lease::{
+    ReleaseDelivery, release_workspace_lease_for_card_repo, release_workspace_lease_for_card_tx,
+};
 use crate::provider_registry::WorkerProviderRegistry;
 use crate::scheduler::{is_race_lost, race_lost_err};
 use crate::state::WriteContext;
@@ -499,7 +502,9 @@ pub(crate) async fn converge_dead_worker(
     let track_id = track.id.clone();
     // The kernel `TaskFailed` carries the provider's interpreted reason rather than the raw `-1` probe sentinel.
     let reason = reason.to_string();
+    let card_id = session.card_id.clone();
     let result = write_with_actor_events_typed::<(), _>(repo, None, events, write, move |tx| {
+        let card_id = card_id.clone();
         Box::pin(async move {
             // The `spawn-failed` classifier is knowingly wrong here (a reaped worker died at RUNTIME); correcting the vocabulary has its own consumers (`is_deferred_self_report`). The reason tail at least stops the row from lying silently.
             let rows = task_fail_from_worker_tx(
@@ -524,6 +529,18 @@ pub(crate) async fn converge_dead_worker(
                     agent_message: None,
                 },
             )];
+            // #1830 S2 D7: the dead worker's lease is released, and its attempt committed as
+            // `failed`, in this fail transaction.
+            if let Some(card_id) = card_id.as_ref() {
+                events.extend(
+                    release_workspace_lease_for_card_tx(
+                        tx,
+                        card_id.as_str(),
+                        ReleaseDelivery::Commit(AttemptOutcome::Failed),
+                    )
+                    .await?,
+                );
+            }
             if let Some(auto_events) = auto_transition_if_current_in_tx(
                 tx,
                 &track_id,
@@ -545,10 +562,7 @@ pub(crate) async fn converge_dead_worker(
     })
     .await;
     match result {
-        Ok(_) => {
-            release_reaped_worker_workspace_lease(repo, events, session).await?;
-            Ok(())
-        }
+        Ok(_) => Ok(()),
         Err(e) if is_race_lost(&e) => {
             release_reaped_worker_workspace_lease(repo, events, session).await?;
             Ok(())
@@ -563,7 +577,13 @@ async fn release_reaped_worker_workspace_lease(
     session: &WorkerSession,
 ) -> Result<()> {
     if let Some(card_id) = session.card_id.as_ref() {
-        release_workspace_lease_for_card_repo(repo, events, card_id.as_str()).await?;
+        release_workspace_lease_for_card_repo(
+            repo,
+            events,
+            card_id.as_str(),
+            ReleaseDelivery::CommitAsTaskEnded,
+        )
+        .await?;
     }
     Ok(())
 }

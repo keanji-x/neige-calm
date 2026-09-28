@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,15 +16,15 @@ use crate::db::sqlite::{
 use crate::db::{write_in_tx_typed, write_with_events_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
+use crate::git_candidate::delivery::AttemptOutcome;
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::mcp_server::McpServer;
 use crate::mcp_server::wiring::{card_mcp_env, mint_and_persist_card_token};
 use crate::model::{Card, CardRole, new_id, now_ms};
 use crate::operation::worker_cleanup::{WorkerCleanupOutcome, compensate_worker_rows};
 use crate::operation::workspace_lease::{
-    WorkspaceLeaseTarget, WorktreeBase, acquire_workspace_lease_tx,
-    prepare_workspace_lease_target_tx, provision_workspace_worktree, release_workspace_lease_by_id,
-    remove_workspace_artifact_for_lease_by_id, upstream_fetch::refresh_track_upstream,
+    ReleaseDelivery, acquire_workspace_lease_tx, prepare_worker_lease_tx,
+    release::release_workspace_lease_by_id, worker::verify_worker_checkout,
 };
 use crate::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
 use crate::planner_model::TurnModelSelection;
@@ -760,17 +759,6 @@ impl ProviderAdapter for CodexWorkerAdapter {
         Ok(())
     }
 
-    /// The lease base is the attached repository's upstream when it has one
-    /// (#1777): fetch it now, outside every transaction, so `prepare_tx`
-    /// reads it with a local `rev-parse`.
-    async fn before_insert(&self, input: &Value) {
-        let Ok(payload) = serde_json::from_value::<CodexWorkerOperationPayload>(input.clone())
-        else {
-            return;
-        };
-        refresh_track_upstream(self.repo.as_ref(), &payload.track_id).await;
-    }
-
     async fn prepare_tx<'tx>(
         &self,
         tx: &mut Tx<'tx>,
@@ -784,34 +772,17 @@ impl ProviderAdapter for CodexWorkerAdapter {
         let card_id = new_id();
         let runtime_id = new_id();
         let track_id = TrackId::from(payload.track_id.clone());
-        // `payload.cwd` is forward-compatible only; the isolated lease path is authoritative for codex-worker execution.
-        let lease_target = prepare_workspace_lease_target_tx(
-            tx,
-            track_id.as_str(),
-            &card_id,
-            &self.workspace_root,
-        )
-        .await?;
-        // The base is decided here, in the prepare tx, and frozen below; the
-        // spawn pins the worktree to it (design D4).
-        let (lease_base, carry_notice) = super::workspace_lease::carry::resolve_task_lease_base_tx(
-            tx,
-            &lease_target,
-            &payload.idempotency_key,
-        )
-        .await?;
-        let cwd = lease_target.path_string();
+        // `payload.cwd` is forward-compatible only: the worker runs in the track's checkout
+        // (#1830 S2), decided and checked clean here and frozen below; the spawn only verifies it.
+        let plan = prepare_worker_lease_tx(tx, track_id.as_str(), &self.workspace_root).await?;
+        let cwd = plan.path.to_string_lossy().to_string();
         let env = build_codex_env(self.repo.as_ref(), self.codex.as_ref(), &card_id).await?;
-        let mut rendered_prompt = render_task_worker_prompt(
+        let rendered_prompt = render_task_worker_prompt(
             &payload.idempotency_key,
             &payload.goal,
             &payload.context,
             payload.acceptance_criteria.as_deref(),
         );
-        if let Some(notice) = &carry_notice {
-            rendered_prompt.push_str("\n\n");
-            rendered_prompt.push_str(&notice.render());
-        }
         let scope = card_scope(
             self.repo.as_ref(),
             CardId::from(card_id.clone()),
@@ -839,15 +810,8 @@ impl ProviderAdapter for CodexWorkerAdapter {
         )
         .await?;
 
-        let (lease, lease_event) = acquire_workspace_lease_tx(
-            tx,
-            &card_id,
-            card.track_id.as_str(),
-            &op.id,
-            &lease_target,
-            &lease_base,
-        )
-        .await?;
+        let (lease, lease_event) =
+            acquire_workspace_lease_tx(tx, &card_id, card.track_id.as_str(), &op.id, &plan).await?;
 
         if let Some(existing_map) = card.payload.as_object() {
             let mut merged = existing_map.clone();
@@ -888,10 +852,9 @@ impl ProviderAdapter for CodexWorkerAdapter {
             "terminal_id": term.id,
             "cwd": cwd,
             "lease_id": lease.lease_id,
-            "repo_root": lease_target.repo_root_string(),
-            "slice_branch": lease_target.branch,
-            "base_sha": lease_base.base_sha,
-            "canonical_path": lease_base.canonical_path,
+            "branch": plan.branch,
+            "base_sha": plan.base.base_sha,
+            "canonical_path": plan.base.canonical_path,
             "worktree_provisioned_event_persisted": false,
             "terminal_launch": super::terminal_launch::fresh_state(),
             "runtime_started_event_persisted": false,
@@ -899,6 +862,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
             "prompt": rendered_prompt,
             "scope": scope,
         });
+        output.post_commit_events.extend(plan.superseded);
         output.post_commit_events.push(lease_event);
         Ok(output)
     }
@@ -911,7 +875,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
     ) -> Result<AppServerInteractOutcome> {
         let payload: CodexWorkerOperationPayload = serde_json::from_value(op.payload.clone())?;
         super::admit_task_side_effect(ctx.repo.as_ref(), &payload.idempotency_key).await?;
-        provision_codex_worker_workspace(
+        verify_codex_worker_workspace(
             ctx,
             &self.card_role_cache,
             &self.track_area_cache,
@@ -1029,24 +993,21 @@ impl ProviderAdapter for CodexWorkerAdapter {
         output: &TxOutput,
         _op: &Operation,
     ) -> Result<CompensationStateVersioned> {
-        let mut steps = Vec::new();
-        if let Some(lease_id) = output.output_optional_string("lease_id", "codex")? {
-            steps.push(CompensationStep::new(
-                "remove_workspace_artifact",
-                json!({ "lease_id": lease_id.clone() }),
-            ));
-            steps.push(CompensationStep::new(
-                "release_workspace_lease",
-                json!({ "lease_id": lease_id }),
-            ));
-        }
-        steps.push(CompensationStep::new(
+        // The lease is released last, after the worker rows are gone (#1830 S2 D7): its
+        // `spawn-failed` delivery commits whatever the attempt left in the track's checkout.
+        let mut steps = vec![CompensationStep::new(
             "cleanup_codex_worker",
             json!({
                 "card_id": output.output_string("card_id", "codex")?,
                 "terminal_id": output.output_string("terminal_id", "codex")?,
             }),
-        ));
+        )];
+        if let Some(lease_id) = output.output_optional_string("lease_id", "codex")? {
+            steps.push(CompensationStep::new(
+                "release_workspace_lease",
+                json!({ "lease_id": lease_id }),
+            ));
+        }
         Ok(CompensationStateVersioned {
             version: 1,
             from_phase,
@@ -1081,16 +1042,16 @@ impl ProviderAdapter for CodexWorkerAdapter {
             }
         }
         super::worker_cleanup::require_cleanup_safe(ctx, op, output, business_may_be_live).await?;
-        if step.op == "remove_workspace_artifact" {
-            let lease_id = step.arg_string("lease_id", "codex")?;
-            let pool = ctx.operation_repo.sqlite_pool();
-            remove_workspace_artifact_for_lease_by_id(&pool, &ctx.events, &lease_id).await?;
-            return Ok(());
-        }
         if step.op == "release_workspace_lease" {
             let lease_id = step.arg_string("lease_id", "codex")?;
             let pool = ctx.operation_repo.sqlite_pool();
-            release_workspace_lease_by_id(&pool, &ctx.events, &lease_id).await?;
+            release_workspace_lease_by_id(
+                &pool,
+                &ctx.events,
+                &lease_id,
+                ReleaseDelivery::Commit(AttemptOutcome::SpawnFailed),
+            )
+            .await?;
             return Ok(());
         }
         if step.op != "cleanup_codex_worker" {
@@ -1603,7 +1564,7 @@ async fn build_codex_env(
     Ok(Value::Object(env_map))
 }
 
-async fn provision_codex_worker_workspace(
+async fn verify_codex_worker_workspace(
     ctx: &SpawnCtx,
     card_role_cache: &CardRoleCache,
     track_area_cache: &TrackAreaCache,
@@ -1614,26 +1575,7 @@ async fn provision_codex_worker_workspace(
     let track_id = output.output_string("track_id", "codex-worker")?;
     let runtime_id = output.output_string("runtime_id", "codex-worker")?;
     let cwd = output.output_string("cwd", "codex-worker")?;
-    let repo_root = output.output_optional_string("repo_root", "codex-worker")?;
-    let branch = output.output_optional_string("slice_branch", "codex-worker")?;
-    let Some((repo_root, branch)) = repo_root.zip(branch) else {
-        tracing::info!(
-            operation_id = %op.id,
-            card_id = %card_id,
-            track_id = %track_id,
-            "codex-worker legacy tx_output has no worktree target; skipping workspace provisioning"
-        );
-        return Ok(());
-    };
-    let target = WorkspaceLeaseTarget {
-        repo_root: PathBuf::from(repo_root),
-        path: PathBuf::from(cwd.clone()),
-        branch,
-    };
-    // Pinned to the frozen `base_sha` / `canonical_path`; an op frozen before
-    // the base was recorded has neither and provisions unpinned (D12 (d)).
-    let base = WorktreeBase::from_tx_output(output, "codex-worker")?;
-    provision_workspace_worktree(&target, &base)?;
+    verify_worker_checkout(output, "codex-worker")?;
 
     let provisioned_persisted = output
         .data

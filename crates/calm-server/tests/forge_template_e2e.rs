@@ -1466,13 +1466,13 @@ async fn fu4_teardown_releases_after_merge_close_and_fences_in_flight_forge_op()
     assert!(
         !git_ref_exists(
             &fx.track_cwd,
-            &format!("refs/heads/neige/{}/{}", fx.track_id, fx.worker_card_id),
+            &format!("refs/heads/neige/track-{}", fx.track_id),
         ),
-        "track teardown must remove the released worker branch"
+        "track teardown must remove the track branch"
     );
     assert!(
         !fx.lease_abs.exists(),
-        "track teardown must remove the released worker checkout"
+        "track teardown must remove the track worktree the worker ran in"
     );
 
     let release_count = event_rows(&fx.repo, "workspace.released").await.len();
@@ -1562,12 +1562,15 @@ async fn boot_fixture() -> Fixture {
 
     let caller =
         create_worker_caller(&sqlx_repo, &card_role_cache, track.id.clone(), &track_cwd).await;
-    provision_worker_worktree(
+    // The worker's checkout is the track worktree (#1830 S2), made as the create route makes it.
+    calm_server::test_seams::attach_track_worktree_for_test(
+        sqlx_repo.pool(),
+        track.id.as_str(),
         &track_cwd,
-        &caller.track_id,
-        &caller.card_id,
-        &caller.lease_abs,
-    );
+    )
+    .await
+    .expect("make the track worktree");
+    configure_repo_identity(&caller.lease_abs);
 
     let plugin_host = boot_plugin_host(
         repo.clone(),
@@ -1683,11 +1686,7 @@ async fn create_worker_caller(
 ) -> Caller {
     let card_id = calm_server::model::new_id();
     let runtime_id = calm_server::model::new_id();
-    let lease_abs = track_cwd
-        .join(".claude")
-        .join("worktrees")
-        .join(track_id.as_str())
-        .join(&card_id);
+    let lease_abs = calm_server::db::sqlite::track_worktree_path_for(track_cwd, track_id.as_str());
     let lease_path = lease_abs.display().to_string();
 
     let mut tx = sqlx_repo.pool().begin().await.expect("begin card tx");
@@ -2832,46 +2831,6 @@ fn manifest_path() -> PathBuf {
 fn read_manifest() -> Manifest {
     let raw = std::fs::read_to_string(manifest_path()).expect("read git-forge manifest");
     Manifest::parse(&raw).expect("git-forge manifest parses")
-}
-
-fn provision_worker_worktree(repo: &Path, track_id: &str, card_id: &str, target: &Path) {
-    ensure_worktree_root_excluded(repo);
-    let parent = target.parent().expect("worker worktree target parent");
-    std::fs::create_dir_all(parent).expect("create worker worktree parent");
-    let branch = format!("neige/{track_id}/{card_id}");
-    run_git(
-        repo,
-        ["worktree", "add", "-b", branch.as_str(), path_str(target)],
-    );
-    configure_repo_identity(target);
-}
-
-fn ensure_worktree_root_excluded(repo: &Path) {
-    use std::io::Write as _;
-
-    const WORKTREE_EXCLUDE: &str = ".claude/worktrees/";
-    let exclude = run_git_capture(repo, ["rev-parse", "--git-path", "info/exclude"]);
-    let exclude = repo.join(exclude);
-    let existing = std::fs::read_to_string(&exclude).unwrap_or_default();
-    if existing.lines().any(|line| line.trim() == WORKTREE_EXCLUDE) {
-        return;
-    }
-    if let Some(parent) = exclude.parent() {
-        std::fs::create_dir_all(parent).expect("create git exclude parent");
-    }
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&exclude)
-        .expect("open git exclude");
-    if !existing.is_empty() && !existing.ends_with('\n') {
-        writeln!(file).expect("separate git exclude entries");
-    }
-    writeln!(file, "{WORKTREE_EXCLUDE}").expect("write worktree exclude");
-}
-
-fn path_str(path: &Path) -> &str {
-    path.to_str().expect("test paths are utf-8")
 }
 
 fn shim_state_dir(repo: &Path) -> PathBuf {

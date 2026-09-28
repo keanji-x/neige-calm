@@ -25,7 +25,7 @@ use crate::operation::forge_action_adapter::{
     FORGE_ACTION_KIND, ForgeActionPayload, ForgeActionResultFile, read_result_file,
 };
 use crate::operation::task_verify_adapter::target::{VerifyIdentity, verify_target_identity};
-use crate::operation::workspace_lease::WorkspaceLease;
+use crate::operation::workspace_lease::{WorkspaceLease, worker_branch_tx};
 
 /// What one settlement transaction writes: the candidate row, or the three failure facts.
 enum Settlement {
@@ -223,20 +223,33 @@ impl Scheduler {
         let op_id = match delivery.operation_id {
             Some(op_id) => op_id,
             None => {
-                let lease = self.lease_for(&delivery.row).await?;
-                submit_delivery(&runtime, &self.gate_logs_dir, &delivery.row, &lease)
-                    .await?
-                    .op_id
+                let (lease, branch) = self.lease_and_branch_for(&delivery.row).await?;
+                submit_delivery(
+                    &runtime,
+                    &self.gate_logs_dir,
+                    &delivery.row,
+                    &lease,
+                    &branch,
+                )
+                .await?
+                .op_id
             }
         };
         runtime.wait(&op_id).await?;
         self.settle_git_delivery(&delivery.row.delivery_id).await
     }
 
-    async fn lease_for(&self, delivery: &DeliveryRow) -> Result<WorkspaceLease> {
+    async fn lease_and_branch_for(
+        &self,
+        delivery: &DeliveryRow,
+    ) -> Result<(WorkspaceLease, String)> {
         let delivery = delivery.clone();
         write_in_tx_typed(self.repo.as_ref(), move |tx| {
-            Box::pin(async move { lease_for_delivery_tx(tx, &delivery).await })
+            Box::pin(async move {
+                let lease = lease_for_delivery_tx(tx, &delivery).await?;
+                let branch = worker_branch_tx(tx, &delivery.track_id).await?;
+                Ok((lease, branch))
+            })
         })
         .await
     }

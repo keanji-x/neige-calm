@@ -138,9 +138,6 @@ impl OperationRuntime {
             return Err(idempotency_payload_conflict(key.idempotency_key.as_deref()));
         }
         adapter.validate(&payload).await?;
-        // Before the row exists and outside every transaction (#1777: the
-        // worker adapters' upstream fetch must never run in `prepare_tx`).
-        adapter.before_insert(&payload).await;
         let op_id = self.repo.insert_operation(kind, key, payload).await?;
         self.drive().await?;
         Ok(op_id)
@@ -232,37 +229,19 @@ impl OperationRuntime {
             return Ok(());
         };
         let cached_turn = shared_codex_appserver.active_turn_id_for_thread(&thread_id);
-        if let Err(e) = shared_codex_appserver
+        // A failed interrupt fails the cleanup (#1830 S2 D7): the marker stays, the lease stays
+        // held, and the next tick retries — unless the worker is proven stopped anyway.
+        let interrupted = shared_codex_appserver
             .interrupt_active_turn(&thread_id)
-            .await
-        {
-            let turn_id = cached_turn
-                .as_deref()
-                .or(persisted_turn.as_deref())
-                .unwrap_or("");
-            tracing::warn!(
-                runtime_id = %runtime.id,
-                card_id = %card_id,
-                thread_id = %thread_id,
-                turn_id = %turn_id,
-                error = %e,
-                "timed-out codex worker turn interrupt failed"
-            );
-        }
+            .await;
+        codex_interrupt_settled(shared_codex_appserver, &thread_id, interrupted).await?;
         if cached_turn.is_none()
             && let Some(persisted_turn) = persisted_turn.as_deref()
-            && let Err(e) = shared_codex_appserver
-                .turn_interrupt(&thread_id, persisted_turn)
-                .await
         {
-            tracing::warn!(
-                runtime_id = %runtime.id,
-                card_id = %card_id,
-                thread_id = %thread_id,
-                turn_id = persisted_turn,
-                error = %e,
-                "timed-out codex worker persisted-turn interrupt failed"
-            );
+            let interrupted = shared_codex_appserver
+                .turn_interrupt(&thread_id, persisted_turn)
+                .await;
+            codex_interrupt_settled(shared_codex_appserver, &thread_id, interrupted).await?;
         }
         Ok(())
     }
@@ -1255,4 +1234,40 @@ fn client_failure_parts(error: &CalmError) -> Option<(String, &'static str)> {
         CalmError::Unauthorized => Some(("unauthorized".into(), "unauthorized")),
         _ => None,
     }
+}
+
+/// Whether a Codex interrupt of a timed-out or canceled worker leaves it stopped (#1830 S2 D7).
+/// A daemon that is not Running counts as stopped ("daemon down — brain gone, no turn can run").
+/// A JSON-RPC refusal is told apart from a transport failure, and the daemon's own facts decide
+/// it: a thread that is `NotLoaded` (as after a daemon restart) or whose last turn ended counts as
+/// stopped. Only a transport failure while the daemon is Running, or a thread still active, is an
+/// `Err`, so the cleanup retries until the daemon answers or goes down.
+async fn codex_interrupt_settled(
+    shared: &crate::shared_codex_appserver::SharedCodexAppServer,
+    thread_id: &str,
+    interrupted: Result<()>,
+) -> Result<()> {
+    use calm_provider::provider::{CodexDaemonProbe, ThreadStatusLite, TurnStatusLite};
+    let Err(error) = interrupted else {
+        return Ok(());
+    };
+    if !shared.is_running_per_readiness() {
+        return Ok(());
+    }
+    if matches!(error, CalmError::CodexRefused(_))
+        && let Some(facts) = CodexDaemonProbe::read_liveness_facts(shared, thread_id).await
+        && (facts.status == ThreadStatusLite::NotLoaded
+            || facts.last_turn.is_some_and(|turn| {
+                matches!(
+                    turn.status,
+                    TurnStatusLite::Completed
+                        | TurnStatusLite::Interrupted
+                        | TurnStatusLite::Failed
+                )
+            }))
+    {
+        return Ok(());
+    }
+    tracing::warn!(thread_id, %error, "codex worker interrupt failed; its cleanup retries");
+    Err(error)
 }

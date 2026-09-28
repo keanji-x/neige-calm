@@ -8,6 +8,7 @@ use crate::db::{RepoRead, RouteRepo};
 use crate::db::{write_with_actor_events_typed, write_with_event_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope, RatifyDecision};
+use crate::git_candidate::delivery::AttemptOutcome;
 use crate::harness::{HarnessPhaseTag, QueueEntry, TokenUsage, is_harness_snapshot_value};
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::{
@@ -18,7 +19,7 @@ use crate::operation::planner_harness_shutdown_adapter::PlannerHarnessShutdownOp
 use crate::operation::planner_harness_start_adapter::{
     HarnessProfile, PlannerHarnessStartOperationPayload,
 };
-use crate::operation::workspace_lease::release_workspace_lease_for_card_tx;
+use crate::operation::workspace_lease::{ReleaseDelivery, release_workspace_lease_for_card_tx};
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::per_card_lock::{PerCardLockGuard, lock_card};
 use crate::plugin_host::callbacks::extract_card_creation_from_tool_call_result;
@@ -1573,7 +1574,14 @@ pub(crate) async fn delete_card(
                         Err(e) => return Err(e),
                     }
                 }
-                let mut events = release_workspace_lease_for_card_tx(tx, card_id.as_ref()).await?;
+                // #1830 S2 D7: after the best-effort interrupt above, the attempt is committed as
+                // `interrupted` in this delete transaction.
+                let mut events = release_workspace_lease_for_card_tx(
+                    tx,
+                    card_id.as_ref(),
+                    ReleaseDelivery::Commit(AttemptOutcome::Interrupted),
+                )
+                .await?;
                 card_delete_tx(tx, card_id.as_ref(), write_for_tx.role_cache()).await?;
                 events.push((
                     delete_actor,

@@ -2,10 +2,8 @@
 //! `<repo_root>/.claude/worktrees/track-<id>` on branch `neige/track-<id>`, where the track's
 //! conversation agents run. The create route writes its path in the create transaction
 //! (`TrackWorkspacePlan::AttachedWithTrackWorktree`) and [`ensure_track_worktree`] makes it after
-//! the commit; track and area delete remove it ([`remove_track_worktree`]).
-//!
-//! Not `provision_workspace_worktree`: that is lease-shaped (HEAD must equal a recorded base,
-//! stale-directory cleanup requires a lease path).
+//! the commit; track and area delete remove it ([`remove_track_worktree`]). Since #1830 S2 the
+//! track's codex and claude workers run in it too (`super::worker`).
 
 use std::path::{Path, PathBuf};
 
@@ -22,7 +20,7 @@ use super::{
 };
 
 /// `neige/track-<track_id>`: a 32-hex track id is never `track-…`, so it cannot collide with a
-/// lease's `neige/<track>/<card>`.
+/// pre-#1830-S2 per-card branch `neige/<track>/<card>` still in a repository.
 pub(crate) fn track_branch_for(track_id: &str) -> Result<String> {
     validate_path_segment("track_id", track_id)?;
     Ok(format!("neige/track-{track_id}"))
@@ -58,8 +56,9 @@ pub(crate) fn track_worktree_target(
 
 /// Make the track's worktree if it has one and it is not there yet. The upstream is refreshed
 /// first (bounded, fail-soft), then the git work runs on a blocking thread: a registered
-/// directory is done, an existing branch is checked out again, else a new branch starts where a
-/// worker lease would (`choose_lease_start`); git refuses whatever else is at the path. A diverged checkout is refused
+/// directory is done, an existing branch is checked out again, else a new branch starts by the
+/// checkout's relation to its upstream (`choose_lease_start`); git refuses whatever else is at
+/// the path. A diverged checkout is refused
 /// (`attached-repo-diverged`) and a repository without a commit fails.
 pub(crate) async fn ensure_track_worktree(track: &Track) -> Result<()> {
     let Some(worktree) = track.workspace.worktree.as_deref() else {
@@ -108,8 +107,7 @@ fn ensure_track_worktree_blocking(target: &WorkspaceLeaseTarget) -> Result<()> {
     Ok(())
 }
 
-/// Where a new track branch starts: the worker lease rule (behind → upstream, ahead → HEAD,
-/// diverged → refused).
+/// Where a new track branch starts: behind → upstream, ahead → HEAD, diverged → refused.
 fn track_worktree_base(repo_root: &Path) -> Result<String> {
     match choose_lease_start(repo_root)? {
         LeaseStart::Head { sha } | LeaseStart::Upstream { sha } => Ok(sha),
@@ -125,7 +123,7 @@ fn track_worktree_base(repo_root: &Path) -> Result<String> {
     }
 }
 
-/// Discard the track worktree and its branch (a dirty worktree too, as lease worktrees are).
+/// Discard the track worktree and its branch, a dirty worktree too.
 /// Never fails the caller: the area delete sweeps every track with `?`, so an error here would
 /// abort the other tracks' sweeps.
 pub(crate) fn remove_track_worktree(track_id: &str, worktree: &str) {

@@ -26,12 +26,8 @@ use crate::mcp_server::transport::{
 };
 use crate::model::new_id;
 use crate::operation::forge_action_adapter::{FORGE_ACTION_KIND, ForgeActionResultFile, ProbeSpec};
-use crate::operation::workspace_lease::facts::{
-    LeaseStates, latest_workspace_lease_for_card_tx, workspace_lease_by_id_tx,
-};
-use crate::operation::workspace_lease::{
-    DeliveryPolicy, WorkspaceLease, workspace_slice_branch_for,
-};
+use crate::operation::workspace_lease::facts::workspace_lease_by_id_tx;
+use crate::operation::workspace_lease::{DeliveryPolicy, WorkspaceLease, worker_branch_tx};
 use crate::operation::{OperationRuntime, Tx};
 
 /// Fixed sentences for a failed delivery, keyed by the script's exit code or the kernel's
@@ -41,8 +37,8 @@ const FAILURE_SENTENCES: &str = include_str!("../../prompts/delivery/git-deliver
 /// Evidence copied from `<result_path>.stdout` into `failure_reason` is cut to this many lines...
 pub(crate) const FAILURE_EVIDENCE_MAX_LINES: usize = 8;
 /// ...of at most this many bytes each. A production-shaped provenance observation line
-/// (`provenance realpath=<…/.claude/worktrees/<t>/<c>> common_dir=<…> registered=0`) measures
-/// 250–320 bytes; the cap must keep its `common_dir=` / `registered=` facts, which are what the
+/// (`provenance realpath=<…/.claude/worktrees/track-<t>> common_dir=<…> registered=0`) measures
+/// 220–320 bytes; the cap must keep its `common_dir=` / `registered=` facts, which are what the
 /// 10 / 12 sentences point the reader at.
 pub(crate) const FAILURE_EVIDENCE_MAX_LINE_BYTES: usize = 1024;
 
@@ -69,6 +65,47 @@ pub(crate) enum DeliverySettled {
     },
 }
 
+/// `task_git_deliveries.outcome` (#1830 S2): how the attempt the row commits ended. The release
+/// that ends the attempt writes it on the first row; a retry row copies its predecessor's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AttemptOutcome {
+    /// `calm.task.complete`.
+    Completed,
+    /// `calm.task.fail`, a dead worker, or a liveness timeout.
+    Failed,
+    /// `calm.plan.cancel` (or a replace) of a running worker.
+    Canceled,
+    /// The spawn failed before the launch may have started (compensation).
+    SpawnFailed,
+    /// The worker was lost: a machine reboot, or its card was deleted.
+    Interrupted,
+}
+
+impl AttemptOutcome {
+    pub(crate) fn as_column(self) -> &'static str {
+        match self {
+            AttemptOutcome::Completed => "completed",
+            AttemptOutcome::Failed => "failed",
+            AttemptOutcome::Canceled => "canceled",
+            AttemptOutcome::SpawnFailed => "spawn-failed",
+            AttemptOutcome::Interrupted => "interrupted",
+        }
+    }
+
+    fn from_column(value: &str) -> Result<Self> {
+        match value {
+            "completed" => Ok(AttemptOutcome::Completed),
+            "failed" => Ok(AttemptOutcome::Failed),
+            "canceled" => Ok(AttemptOutcome::Canceled),
+            "spawn-failed" => Ok(AttemptOutcome::SpawnFailed),
+            "interrupted" => Ok(AttemptOutcome::Interrupted),
+            other => Err(CalmError::Internal(format!(
+                "task_git_deliveries.outcome {other:?} is not an attempt outcome"
+            ))),
+        }
+    }
+}
+
 /// One `task_git_deliveries` row, every column.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DeliveryRow {
@@ -83,6 +120,8 @@ pub(crate) struct DeliveryRow {
     pub predecessor_delivery_id: Option<String>,
     pub request_idempotency_key: Option<String>,
     pub reason: Option<String>,
+    /// `None` only on a row settled before migration 0121; every row S2 writes has one.
+    pub outcome: Option<AttemptOutcome>,
     pub created_at_ms: i64,
     /// `None` while unsettled.
     pub settlement: Option<DeliverySettled>,
@@ -99,8 +138,8 @@ pub(crate) struct UnsettledDelivery {
 
 const DELIVERY_COLUMNS: &str = "d.delivery_id, d.track_id, d.producer_attempt_id, d.card_id, \
      d.lease_id, d.ordinal, d.operation_key, d.forge_idempotency_key, d.predecessor_delivery_id, \
-     d.request_idempotency_key, d.reason, d.created_at_ms, d.settlement, d.settled_event_id, \
-     d.failure_code, d.failure_reason, d.retry_allowed, d.wake_reason";
+     d.request_idempotency_key, d.reason, d.outcome, d.created_at_ms, d.settlement, \
+     d.settled_event_id, d.failure_code, d.failure_reason, d.retry_allowed, d.wake_reason";
 
 /// The forge `idem_key` of one delivery; the full idempotency key is
 /// `<plugin>:<track>:<card>:<this>` (`submit_forge_action_with_key`).
@@ -113,9 +152,15 @@ pub(crate) fn candidate_ref_name(track_id: &str, card_id: &str, delivery_id: &st
     format!("refs/neige/candidates/{track_id}/{card_id}/{delivery_id}")
 }
 
-/// The commit message the delivery script uses when it has to commit; human-readable only.
-pub(crate) fn delivery_message(track_id: &str, card_id: &str, delivery_id: &str) -> String {
-    format!("neige: worker {card_id} @ track {track_id} (delivery {delivery_id})")
+/// The commit message the delivery script uses when it has to commit (D8); human-readable only.
+/// Built from the row alone, so every builder of one row produces the same text.
+pub(crate) fn delivery_message(delivery: &DeliveryRow, outcome: AttemptOutcome) -> String {
+    format!(
+        "neige: attempt {} {} (delivery {})",
+        delivery.producer_attempt_id,
+        outcome.as_column(),
+        delivery.delivery_id
+    )
 }
 
 /// The argv of one delivery: the provenance function and the delivery script joined into one
@@ -160,11 +205,13 @@ pub(super) fn worktree_committed_delivery_fields() -> ForgeEventSpec {
     }
 }
 
-/// The forge payload that runs one delivery. `Err` when the lease is not a kernel-delivery
-/// lease with a recorded base — unreachable by construction (the row is only inserted for one).
+/// The forge payload that runs one delivery on `branch` (the track's worker branch, D4). `Err`
+/// when the lease is not a kernel-delivery lease with a recorded base, or the row has no outcome
+/// — unreachable by construction (the row is only inserted for one, with one).
 pub(crate) fn forge_payload_for(
     delivery: &DeliveryRow,
     lease: &WorkspaceLease,
+    branch: &str,
 ) -> Result<PluginForgePayload> {
     if lease.delivery_policy != Some(DeliveryPolicy::Kernel) {
         return Err(CalmError::Internal(format!(
@@ -178,16 +225,21 @@ pub(crate) fn forge_payload_for(
             delivery.delivery_id, lease.lease_id
         )));
     };
+    let Some(outcome) = delivery.outcome else {
+        return Err(CalmError::Internal(format!(
+            "delivery {} has no outcome",
+            delivery.delivery_id
+        )));
+    };
     let canonical_path = utf8(&base.canonical_path, "canonical_path")?;
     let git_common_dir = utf8(&base.git_common_dir, "git_common_dir")?;
-    let branch = workspace_slice_branch_for(&delivery.track_id, &delivery.card_id)?;
     let ref_name = candidate_ref_name(&delivery.track_id, &delivery.card_id, &delivery.delivery_id);
-    let message = delivery_message(&delivery.track_id, &delivery.card_id, &delivery.delivery_id);
+    let message = delivery_message(delivery, outcome);
     Ok(worker_delivery_payload(
         delivery_idem_key(&delivery.delivery_id),
         delivery_argv(
             &message,
-            &branch,
+            branch,
             &ref_name,
             &base.base_sha,
             canonical_path,
@@ -207,7 +259,7 @@ pub(crate) fn forge_payload_for(
                 "-c".into(),
                 GIT_DELIVERY_OUTPUT_PROBE_SCRIPT.into(),
                 "sh".into(),
-                branch,
+                branch.to_string(),
                 ref_name,
                 base.base_sha.clone(),
             ]),
@@ -225,15 +277,16 @@ fn utf8<'a>(path: &'a std::path::Path, what: &str) -> Result<&'a str> {
 }
 
 /// Insert the first delivery row of one attempt (`ordinal = 1`, fresh `delivery_id` and
-/// `operation_key`). The lease must be a kernel-delivery lease: the row exists only for one.
+/// `operation_key`) with how the attempt ended. The lease must be a kernel-delivery lease: the
+/// row exists only for one. Only the release that ends the attempt calls this (#1830 S2 D7).
 pub(crate) async fn insert_initial_delivery_tx(
     tx: &mut Tx<'_>,
-    track_id: &str,
-    card_id: &str,
     producer_attempt_id: &str,
     lease: &WorkspaceLease,
+    outcome: AttemptOutcome,
     now_ms: i64,
 ) -> Result<DeliveryRow> {
+    let (track_id, card_id) = (lease.track_id.as_str(), lease.card_id.as_str());
     if lease.delivery_policy != Some(DeliveryPolicy::Kernel) {
         return Err(CalmError::Internal(format!(
             "attempt {producer_attempt_id}: lease {} delivery_policy is not kernel",
@@ -256,14 +309,15 @@ pub(crate) async fn insert_initial_delivery_tx(
         predecessor_delivery_id: None,
         request_idempotency_key: None,
         reason: None,
+        outcome: Some(outcome),
         created_at_ms: now_ms,
         settlement: None,
     };
     sqlx::query(
         "INSERT INTO task_git_deliveries (delivery_id, track_id, producer_attempt_id, card_id, \
          lease_id, ordinal, operation_key, forge_idempotency_key, predecessor_delivery_id, \
-         request_idempotency_key, reason, created_at_ms) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, NULL, NULL, ?9)",
+         request_idempotency_key, reason, outcome, created_at_ms) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, NULL, NULL, ?9, ?10)",
     )
     .bind(&row.delivery_id)
     .bind(&row.track_id)
@@ -273,6 +327,7 @@ pub(crate) async fn insert_initial_delivery_tx(
     .bind(row.ordinal)
     .bind(&row.operation_key)
     .bind(&row.forge_idempotency_key)
+    .bind(outcome.as_column())
     .bind(row.created_at_ms)
     .execute(&mut **tx)
     .await?;
@@ -281,8 +336,8 @@ pub(crate) async fn insert_initial_delivery_tx(
 
 /// Insert the retry row of one attempt (`calm.task.delivery{action:"retry"}`, slice 3): the
 /// predecessor's `ordinal + 1`, `predecessor_delivery_id` naming it, the request key and reason
-/// the Planner sent (the replay key). Fresh `delivery_id` and `operation_key`; same lease and
-/// card as the predecessor. The caller has admitted the retry (predecessor failed, retryable,
+/// the Planner sent (the replay key). Fresh `delivery_id` and `operation_key`; same lease, card
+/// and `outcome` as the predecessor. The caller has admitted the retry (predecessor failed, retryable,
 /// workspace present) in the same transaction.
 pub(crate) async fn insert_retry_delivery_tx(
     tx: &mut Tx<'_>,
@@ -309,14 +364,15 @@ pub(crate) async fn insert_retry_delivery_tx(
         predecessor_delivery_id: Some(predecessor.delivery_id.clone()),
         request_idempotency_key: Some(request_idempotency_key.to_string()),
         reason: reason.map(str::to_string),
+        outcome: predecessor.outcome,
         created_at_ms: now_ms,
         settlement: None,
     };
     sqlx::query(
         "INSERT INTO task_git_deliveries (delivery_id, track_id, producer_attempt_id, card_id, \
          lease_id, ordinal, operation_key, forge_idempotency_key, predecessor_delivery_id, \
-         request_idempotency_key, reason, created_at_ms) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+         request_idempotency_key, reason, outcome, created_at_ms) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
     )
     .bind(&row.delivery_id)
     .bind(&row.track_id)
@@ -329,37 +385,11 @@ pub(crate) async fn insert_retry_delivery_tx(
     .bind(&row.predecessor_delivery_id)
     .bind(&row.request_idempotency_key)
     .bind(&row.reason)
+    .bind(row.outcome.map(AttemptOutcome::as_column))
     .bind(row.created_at_ms)
     .execute(&mut **tx)
     .await?;
     Ok(row)
-}
-
-/// The report transaction's hook (D2 "persistent hand-off"): a successful report of an attached
-/// attempt whose card holds an active kernel-delivery lease inserts the first delivery row in the
-/// same transaction as the task flip. Isolated attempts and legacy leases (`delivery_policy`
-/// NULL — a slice 1 lease, a plain directory op) insert nothing and keep today's path. `None`
-/// when no row was inserted.
-pub(crate) async fn insert_initial_delivery_if_kernel_tx(
-    tx: &mut Tx<'_>,
-    track_id: &str,
-    card_id: &str,
-    producer_attempt_id: &str,
-    now_ms: i64,
-) -> Result<Option<DeliveryRow>> {
-    if crate::isolated_codex::lookup::is_isolated_task_tx(tx, producer_attempt_id).await? {
-        return Ok(None);
-    }
-    let Some(lease) = latest_workspace_lease_for_card_tx(tx, card_id, LeaseStates::Active).await?
-    else {
-        return Ok(None);
-    };
-    if lease.delivery_policy != Some(DeliveryPolicy::Kernel) {
-        return Ok(None);
-    }
-    insert_initial_delivery_tx(tx, track_id, card_id, producer_attempt_id, &lease, now_ms)
-        .await
-        .map(Some)
 }
 
 /// Whether `attempt_id` has a delivery row — the pairing rule of `is_deferred_self_report`
@@ -385,8 +415,9 @@ pub(crate) async fn submit_delivery(
     gate_logs_dir: &Path,
     delivery: &DeliveryRow,
     lease: &WorkspaceLease,
+    branch: &str,
 ) -> Result<ForgeActionSubmission> {
-    let payload = forge_payload_for(delivery, lease)?;
+    let payload = forge_payload_for(delivery, lease, branch)?;
     submit_forge_action_with_key(
         runtime,
         gate_logs_dir,
@@ -403,8 +434,7 @@ pub(crate) async fn submit_delivery(
 }
 
 /// After the report transaction: read the attempt's delivery row back and submit it. `Ok(false)`
-/// when the attempt has no row (a failed first report, or no kernel-delivery lease) — the caller
-/// runs the legacy auto-commit; `Ok(true)` when the row was submitted.
+/// when the attempt has no row (no kernel-delivery lease); `Ok(true)` when the row was submitted.
 pub(crate) async fn submit_reported_delivery(
     ctx: &Arc<AppContext>,
     attempt_id: &str,
@@ -416,18 +446,19 @@ pub(crate) async fn submit_reported_delivery(
                 return Ok(None);
             };
             let lease = lease_for_delivery_tx(tx, &delivery).await?;
-            Ok(Some((delivery, lease)))
+            let branch = worker_branch_tx(tx, &delivery.track_id).await?;
+            Ok(Some((delivery, lease, branch)))
         })
     })
     .await
     .map_err(|error| error.to_string())?;
-    let Some((delivery, lease)) = found else {
+    let Some((delivery, lease, branch)) = found else {
         return Ok(false);
     };
     let Some(runtime) = ctx.operation_runtime.get().cloned() else {
         return Err("operation runtime not bound".into());
     };
-    submit_delivery(&runtime, &ctx.gate_logs_dir, &delivery, &lease)
+    submit_delivery(&runtime, &ctx.gate_logs_dir, &delivery, &lease, &branch)
         .await
         .map_err(|error| error.to_string())?;
     Ok(true)
@@ -679,6 +710,11 @@ fn row_to_delivery(row: sqlx::sqlite::SqliteRow) -> Result<DeliveryRow> {
         predecessor_delivery_id: row.try_get("predecessor_delivery_id")?,
         request_idempotency_key: row.try_get("request_idempotency_key")?,
         reason: row.try_get("reason")?,
+        outcome: row
+            .try_get::<Option<String>, _>("outcome")?
+            .as_deref()
+            .map(AttemptOutcome::from_column)
+            .transpose()?,
         created_at_ms: row.try_get("created_at_ms")?,
         settlement,
     })

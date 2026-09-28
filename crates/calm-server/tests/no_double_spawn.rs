@@ -2867,6 +2867,14 @@ async fn init_git_repo_for_track(boot: &Boot, name: &str) -> PathBuf {
     .execute(boot.repo.pool())
     .await
     .unwrap();
+    // A codex worker runs in the track worktree (#1830 S2).
+    calm_server::test_seams::attach_track_worktree_for_test(
+        boot.repo.pool(),
+        &boot.track_id,
+        &repo_path,
+    )
+    .await
+    .unwrap();
     repo_path
 }
 

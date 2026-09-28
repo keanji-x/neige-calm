@@ -106,9 +106,6 @@ fn theme() -> Value {
     json!({"fg": [255, 255, 255], "bg": [0, 0, 0]})
 }
 
-/// Any valid path segment does: the lease target is derived from `<track_id>/<card_id>` and no card row is read.
-const CARD_ID: &str = "card0000000000000000000000000001";
-
 fn head_resolves(path: &std::path::Path) -> bool {
     Command::new("git")
         .arg("-C")
@@ -119,40 +116,40 @@ fn head_resolves(path: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Drives the real first-worker provisioning; do not weaken this back to `.git` + `HEAD` predicates.
+/// Drives the real first-worker preparation (#1830 S2: a managed track's worker runs in its
+/// directory, on `main`, from a clean tree); do not weaken this back to `.git` + `HEAD` predicates.
 async fn assert_workspace_is_usable_by_the_first_worker(b: &Boot, track_id: &str) {
     let (_, path, _) = workspace_row(&b.repo, track_id).await;
     let path = PathBuf::from(path);
     assert!(path.join(".git").is_dir(), "no repository at {path:?}");
     assert!(
         head_resolves(&path),
-        "no init commit — `git worktree add` fails with `not a valid object \
-         name: 'HEAD'` and the first codex worker never starts"
+        "no init commit — the worker has no base to record and never starts"
     );
 
-    let worktree = calm_server::test_seams::provision_workspace_lease_for_test(
-        b.repo.pool(),
+    let mut tx = b.repo.pool().begin().await.unwrap();
+    let checkout = calm_server::test_seams::prepare_worker_lease_for_test(
+        &mut tx,
         track_id,
-        CARD_ID,
         &b.workspace_root,
     )
     .await
     .unwrap_or_else(|e| {
         panic!(
             "the materialized workspace at {path:?} is not usable by the first \
-             worker: taking a lease and provisioning its worktree failed with \
-             {e}. A track in this state serves nothing but `spawn-failed` — \
-             bug #1147."
+                     worker: preparing its lease failed with {e}. A track in this state \
+                     serves nothing but `spawn-failed` — bug #1147."
         )
     });
-    assert!(
-        worktree.is_dir(),
-        "provisioning reported success but there is no worktree at {worktree:?}"
+    tx.commit().await.unwrap();
+    assert_eq!(
+        checkout, path,
+        "a managed track's worker runs in its directory"
     );
     let branch = String::from_utf8(
         Command::new("git")
             .arg("-C")
-            .arg(&worktree)
+            .arg(&checkout)
             .args(["rev-parse", "--abbrev-ref", "HEAD"])
             .output()
             .unwrap()
@@ -161,9 +158,8 @@ async fn assert_workspace_is_usable_by_the_first_worker(b: &Boot, track_id: &str
     .unwrap();
     assert_eq!(
         branch.trim(),
-        format!("neige/{track_id}/{CARD_ID}"),
-        "the worker's worktree must be checked out on its own slice branch; a \
-         worktree sharing the workspace's branch is a different bug"
+        "main",
+        "the spawn verifies a managed checkout is on `main`"
     );
 }
 
@@ -358,73 +354,6 @@ async fn materialize_failure_fails_the_create() {
     assert_eq!(status, StatusCode::CREATED, "body={body}");
 }
 
-/// Construction: `git branch -m neige` leaves `.git` and `HEAD` intact, but `refs/heads/neige` as a file blocks `git worktree add -b neige/<track>/<card>`.
-#[tokio::test]
-async fn a_materialized_workspace_can_pass_the_git_and_head_checks_and_still_fail_the_first_worker()
-{
-    let b = boot().await;
-    let (status, body) = post(
-        b.app.clone(),
-        "/api/tracks",
-        json!({"planner_provider": "codex", "area_id": b.area_id, "title": "escape", "theme": theme()}),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "body={body}");
-    let track: Value = serde_json::from_str(&body).unwrap();
-    let track_id = track["id"].as_str().unwrap().to_string();
-    let (_, path, _) = workspace_row(&b.repo, &track_id).await;
-    let path = PathBuf::from(path);
-
-    let renamed = Command::new("git")
-        .arg("-C")
-        .arg(&path)
-        .args(["branch", "-m", "neige"])
-        .output()
-        .unwrap();
-    assert!(
-        renamed.status.success(),
-        "git branch -m neige: {}",
-        String::from_utf8_lossy(&renamed.stderr)
-    );
-
-    // Half 1: the old bar sees nothing.
-    assert!(
-        path.join(".git").is_dir(),
-        "the construction was supposed to leave the repository in place"
-    );
-    assert!(
-        head_resolves(&path),
-        "the construction was supposed to leave HEAD resolvable — if this fails \
-         the case no longer demonstrates that `.git` + HEAD is a weak bar"
-    );
-
-    // Half 2: the production first-worker path fails.
-    let err = calm_server::test_seams::provision_workspace_lease_for_test(
-        b.repo.pool(),
-        &track_id,
-        CARD_ID,
-        &b.workspace_root,
-    )
-    .await
-    .expect_err(
-        "a workspace whose only branch is `neige` must not provision a \
-         `neige/<track>/<card>` worktree — if this now succeeds, git changed \
-         its ref-namespace rules and this case's premise is stale",
-    );
-    let msg = err.to_string();
-    // Matched on the ref names, not on git's prose: the wording of the conflict
-    // is localized (`LANG`/`LC_ALL` reach the child), the two ref paths are not.
-    assert!(
-        msg.contains("git worktree add") && msg.contains("refs/heads/neige'"),
-        "the failure must be the `refs/heads/neige` file/directory conflict, \
-         not some other error that would make this case pass vacuously: {msg}"
-    );
-    assert!(
-        msg.contains(&format!("refs/heads/neige/{track_id}/{CARD_ID}")),
-        "the blocked ref must be this worker's slice branch: {msg}"
-    );
-}
-
 #[tokio::test]
 async fn an_unmaterialized_managed_track_heals_when_a_worker_takes_its_lease() {
     let b = boot().await;
@@ -445,10 +374,9 @@ async fn an_unmaterialized_managed_track_heals_when_a_worker_takes_its_lease() {
 
     // The production lease path a codex worker takes.
     let mut tx = b.repo.pool().begin().await.unwrap();
-    let repo_root = calm_server::test_seams::prepare_workspace_lease_target_for_test(
+    let checkout = calm_server::test_seams::prepare_worker_lease_for_test(
         &mut tx,
         &track_id,
-        CARD_ID,
         &b.workspace_root,
     )
     .await
@@ -458,7 +386,7 @@ async fn an_unmaterialized_managed_track_heals_when_a_worker_takes_its_lease() {
     );
     tx.commit().await.unwrap();
 
-    assert_eq!(repo_root, std::fs::canonicalize(&path).unwrap());
+    assert_eq!(checkout, std::path::Path::new(&path));
     // `prepare_…` is idempotent, so re-running it inside the bar is the same repair a second worker would drive.
     assert_workspace_is_usable_by_the_first_worker(&b, &track_id).await;
 }
@@ -535,63 +463,7 @@ async fn attaching_a_repo_that_already_has_a_neige_branch_is_refused() {
          it: {body}"
     );
     assert!(
-        body.contains("neige/<track>/<card>"),
+        body.contains("neige/track-<id>"),
         "the refusal must say what the ref collides with: {body}"
-    );
-}
-
-/// Admission is a point-in-time answer; nothing stops the user creating the branch after attaching.
-/// Constructed on a pre-#1830 attached row (no track worktree, as `Repo::track_create` writes it): a
-/// track created since then holds `refs/heads/neige/track-<id>` for its life, and git refuses
-/// `refs/heads/neige` beside it, so the collision can only reach a track without one.
-#[tokio::test]
-async fn a_neige_branch_created_after_attach_still_blocks_the_first_worker() {
-    let b = boot().await;
-    let tmp = TempDir::new().unwrap();
-    let user_repo = tmp.path().join("users-own-repo");
-    init_user_repo(&user_repo);
-
-    let track = b
-        .repo
-        .track_create(calm_server::model::NewTrack {
-            template_input: None,
-            area_id: b.area_id.clone().into(),
-            title: "attached-clean".into(),
-            sort: None,
-            cwd: user_repo.to_string_lossy().into_owned(),
-            template_id: None,
-            plugin_scope: None,
-            attach_folder: false,
-            theme: calm_server::routes::theme::RequestTheme::default_dark(),
-        })
-        .await
-        .expect("a pre-#1830 attached track");
-    assert_eq!(track.workspace.worktree, None, "premise: no track worktree");
-    let track_id = track.id.to_string();
-
-    // The construction, after admission has already answered.
-    run_git(&user_repo, &["branch", "neige"]);
-
-    let err = calm_server::test_seams::provision_workspace_lease_for_test(
-        b.repo.pool(),
-        &track_id,
-        CARD_ID,
-        &b.workspace_root,
-    )
-    .await
-    .expect_err(
-        "an attached repository whose refs include `refs/heads/neige` must not \
-         provision a `neige/<track>/<card>` worktree — if this now succeeds, \
-         git changed its ref-namespace rules and #1387's premise is stale",
-    );
-    let msg = err.to_string();
-    assert!(
-        msg.contains("git worktree add") && msg.contains("refs/heads/neige'"),
-        "the failure must be the `refs/heads/neige` file/directory conflict, \
-         not some other error that would make this case pass vacuously: {msg}"
-    );
-    assert!(
-        msg.contains(&format!("refs/heads/neige/{track_id}/{CARD_ID}")),
-        "the blocked ref must be this worker's slice branch: {msg}"
     );
 }

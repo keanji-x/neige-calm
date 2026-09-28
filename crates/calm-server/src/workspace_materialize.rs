@@ -168,11 +168,11 @@ pub fn validate_attached_workspace(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The ref every worker's slice branch lives under; a test ties it to `workspace_slice_branch_for`.
+/// The ref every track branch lives under; a test ties it to `track_branch_for`.
 const SLICE_BRANCH_NAMESPACE_REF: &str = "refs/heads/neige";
 
 /// Refuse a repository that already holds `refs/heads/neige`: git cannot hold that file and
-/// `refs/heads/neige/<track>/<card>` at once, so the first worker would die in `git worktree add`.
+/// `refs/heads/neige/track-<id>` at once, so the track worktree could never be made.
 /// Only the exact ref is checked; a `show-ref` exit other than 0/1 is refused (fail closed).
 fn ensure_slice_branch_namespace_is_free(path: &Path) -> Result<()> {
     let output = neige_git_command()
@@ -196,18 +196,17 @@ fn ensure_slice_branch_namespace_is_free(path: &Path) -> Result<()> {
         Some(0) => Err(CalmError::BadRequest(format!(
             "attached workspace: `{}` has a branch named `neige`, and \
              `{SLICE_BRANCH_NAMESPACE_REF}` collides with the branch namespace \
-             every worker gets its own slice branch under \
-             (`neige/<track>/<card>`). Git cannot hold both, so the first \
-             worker on this track would die in `git worktree add`. Rename or \
-             delete that branch (`git branch -m neige <another-name>`), then \
-             attach again.",
+             every track gets its own branch under (`neige/track-<id>`). Git \
+             cannot hold both, so this track's worktree could not be made. \
+             Rename or delete that branch (`git branch -m neige \
+             <another-name>`), then attach again.",
             path.display()
         ))),
         // Fail closed: the question was not answered.
         other => Err(CalmError::BadRequest(format!(
             "attached workspace: cannot tell whether `{}` already holds \
              `{SLICE_BRANCH_NAMESPACE_REF}` (git show-ref exited with {}); \
-             refusing rather than letting the first worker find out. git said: \
+             refusing rather than letting the track worktree find out. git said: \
              {}",
             path.display(),
             other

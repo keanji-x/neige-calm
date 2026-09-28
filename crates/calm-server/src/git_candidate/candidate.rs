@@ -2,7 +2,7 @@
 //! (`candidate_id = delivery_id`, at most one per attempt).
 //!
 //! Every column is a byte copy of the operation result (`commit_sha`, `branch`, `delivery_id`,
-//! `base_is_ancestor`) or of the lease row (`base_sha`, `git_common_dir`, `repo_root`); nothing
+//! `base_is_ancestor`) or of the lease row (`base_sha`, `git_common_dir`, `repo_root` = `path`); nothing
 //! is derived from events. `branch` is the script's one observation at its start and is for
 //! humans only; downstream readers use `commit_sha` / `ref_name` (G20).
 
@@ -25,9 +25,8 @@ pub(crate) struct CandidateRow {
     pub producer_attempt_id: String,
     pub card_id: String,
     pub lease_id: String,
-    /// The repository root the lease worktree hangs under, for humans reading the row; the
-    /// inverse of `workspace_lease_path_for` on the lease's `path` (never re-derived from the
-    /// Track cwd, which may have moved). Not an input to any downstream reader.
+    /// The checkout the candidate was made in (the lease's `path`, #1830 S2 D4), for humans
+    /// reading the row. Not an input to any downstream reader.
     pub repo_root: String,
     pub git_common_dir: String,
     pub branch: String,
@@ -41,25 +40,6 @@ pub(crate) struct CandidateRow {
 const CANDIDATE_COLUMNS: &str = "candidate_id, track_id, producer_attempt_id, card_id, lease_id, \
      repo_root, git_common_dir, branch, base_sha, commit_sha, base_is_ancestor, ref_name, \
      created_at_ms";
-
-/// The repository root a lease `path` hangs under: `path` minus its trailing
-/// `.claude/worktrees/<track>/<card>` — the inverse of `workspace_lease_path_for`. `Err` when the
-/// path does not end in exactly that (it is not a lease path this kernel produced).
-pub(crate) fn repo_root_from_lease_path(
-    path: &str,
-    track_id: &str,
-    card_id: &str,
-) -> Result<String> {
-    let suffix = format!("/.claude/worktrees/{track_id}/{card_id}");
-    match path.strip_suffix(&suffix) {
-        // `workspace_lease_path_for("/", ..)` is `/.claude/...`: the root is `/` itself.
-        Some("") => Ok("/".to_string()),
-        Some(root) if root.starts_with('/') => Ok(root.to_string()),
-        _ => Err(CalmError::Internal(format!(
-            "workspace lease path {path:?} does not end in {suffix:?}"
-        ))),
-    }
-}
 
 /// The candidate one settled delivery pins, from the forge action's result event (the
 /// `worktree.committed` payload built from the script's JSON line) and the lease row. `Err` when
@@ -119,7 +99,7 @@ pub(crate) fn from_operation_result(
         producer_attempt_id: delivery.producer_attempt_id.clone(),
         card_id: delivery.card_id.clone(),
         lease_id: delivery.lease_id.clone(),
-        repo_root: repo_root_from_lease_path(&lease.path, &delivery.track_id, &delivery.card_id)?,
+        repo_root: lease.path.clone(),
         git_common_dir: git_common_dir.to_string(),
         branch,
         base_sha: base.base_sha.clone(),

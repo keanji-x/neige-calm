@@ -12,7 +12,7 @@ use crate::error::Result;
 use crate::model::Task;
 use crate::operation::Tx;
 use crate::operation::workspace_lease::base::BaseSource;
-use crate::operation::workspace_lease::facts::{LeaseStates, latest_workspace_lease_for_card_tx};
+use crate::operation::workspace_lease::facts::latest_workspace_lease_for_card_tx;
 use crate::workspace_materialize::neige_git_command;
 
 /// The in-transaction half of `candidate.carry`.
@@ -28,7 +28,7 @@ pub(crate) async fn carry_view_tx(tx: &mut Tx<'_>, task: &Task) -> Result<Option
     let Some(card_id) = task.worker_card_id.as_deref() else {
         return Ok(None);
     };
-    let Some(base) = latest_workspace_lease_for_card_tx(tx, card_id, LeaseStates::Any)
+    let Some(base) = latest_workspace_lease_for_card_tx(tx, card_id)
         .await?
         .and_then(|lease| lease.base)
         .filter(|base| base.base_source == BaseSource::Attempt)

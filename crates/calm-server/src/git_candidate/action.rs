@@ -10,9 +10,10 @@
 //! an abandon's five keys from the abandonment row), a different fingerprint is a `Conflict`;
 //! (2) admission — the attempt is current in this Track, the expected delivery is the attempt's
 //! latest, its effective state (`view::delivery_state`, fed the candidate row so a candidate is
-//! never overlooked) is `failed`; (3) `retry` reads `retry_allowed` from the row (never the
-//! result file, never an event), requires the lease directory, inserts the `ordinal + 1` row and
-//! submits it after the commit; (4) `abandon` flips a gated `verifying` row through its own
+//! never overlooked) is `failed`; (3) `retry` requires the track idle apart from this attempt and
+//! its lease to be the track's latest (#1830 S2 D5: it commits the track's checkout), reads
+//! `retry_allowed` from the row (never the result file, never an event), requires the lease
+//! directory, inserts the `ordinal + 1` row and submits it after the commit; (4) `abandon` flips a gated `verifying` row through its own
 //! guarded UPDATE (`task_abandon_delivery_tx`: 1 row → `failed` + one `task.failed` from
 //! `KernelDispatcher` + the Track's `working → reviewing` auto-transition that every other
 //! terminal flip makes, 0 rows → `already_terminal`), leaves an ungated `done` row alone
@@ -49,8 +50,8 @@ use crate::ids::{ActorId, TrackId};
 use crate::mcp_server::registry::{AppContext, ToolCallIdentity};
 use crate::model::{Task, TaskStatus, TrackLifecycle, now_ms};
 use crate::operation::Tx;
-use crate::operation::workspace_lease::WorkspaceLease;
-use crate::operation::workspace_lease::facts::{LeaseStates, latest_workspace_lease_for_card_tx};
+use crate::operation::workspace_lease::facts::latest_workspace_lease_for_card_tx;
+use crate::operation::workspace_lease::{WorkspaceLease, track_idle_tx, worker_branch_tx};
 use crate::track_lifecycle::auto_transition_if_current_in_tx;
 
 /// The two actions.
@@ -108,7 +109,8 @@ pub(crate) struct DeliveryActionReceipt {
 /// append order.
 enum AfterCommit {
     Nothing,
-    Submit(Box<(DeliveryRow, WorkspaceLease)>),
+    /// The retry row, its lease and the track's worker branch.
+    Submit(Box<(DeliveryRow, WorkspaceLease, String)>),
     Broadcast(Vec<BroadcastEnvelope>),
 }
 
@@ -150,13 +152,13 @@ pub(crate) async fn apply_delivery_action(
     match after {
         AfterCommit::Nothing => {}
         AfterCommit::Submit(boxed) => {
-            let (row, lease) = *boxed;
+            let (row, lease, branch) = *boxed;
             // Same contract as `calm.task.complete`: the row is durable, the sweep re-submits
             // under the same key if this submission does not land.
             match ctx.operation_runtime.get().cloned() {
                 Some(runtime) => {
                     if let Err(error) =
-                        submit_delivery(&runtime, &ctx.gate_logs_dir, &row, &lease).await
+                        submit_delivery(&runtime, &ctx.gate_logs_dir, &row, &lease, &branch).await
                     {
                         tracing::warn!(
                             delivery_id = %row.delivery_id,
@@ -272,7 +274,7 @@ async fn apply_in_tx(
     let failure = admit_failed(&latest, state)?;
 
     match args.action {
-        DeliveryAction::Retry => retry(tx, &latest, &failure, &args).await,
+        DeliveryAction::Retry => retry(tx, track_id, &latest, &failure, &args).await,
         DeliveryAction::Abandon => abandon(tx, track_id, scope, &task, &latest, &args).await,
     }
 }
@@ -284,7 +286,7 @@ async fn apply_in_tx(
 async fn no_delivery_refusal(tx: &mut Tx<'_>, task: &Task) -> Result<CalmError> {
     let attempt_id = task.id.as_str();
     let lease = match task.worker_card_id.as_deref() {
-        Some(card_id) => latest_workspace_lease_for_card_tx(tx, card_id, LeaseStates::Any).await?,
+        Some(card_id) => latest_workspace_lease_for_card_tx(tx, card_id).await?,
         None => None,
     };
     if let Some(lease) = lease
@@ -344,10 +346,17 @@ fn admit_failed(latest: &DeliveryRow, state: DeliveryState) -> Result<DeliveryFa
 
 async fn retry(
     tx: &mut Tx<'_>,
+    track_id: &str,
     latest: &DeliveryRow,
     failure: &DeliveryFailure,
     args: &DeliveryActionArgs,
 ) -> Result<(DeliveryActionReceipt, AfterCommit)> {
+    // #1830 S2 D5: the delivery commits the track's checkout, so nothing else may be using it.
+    if !track_idle_tx(tx, track_id, &latest.producer_attempt_id).await? {
+        return Err(refused(
+            "refused: the track is running another attempt; wait for it, then retry".into(),
+        ));
+    }
     if !failure.retry_allowed {
         return Err(refused(format!(
             "refused: delivery {} is not retryable ({}); abandon it with action:\"abandon\" or \
@@ -357,6 +366,19 @@ async fn retry(
         )));
     }
     let lease = lease_for_delivery_tx(tx, latest).await?;
+    // After a later attempt ran in this checkout, `git add -A` would stage nothing and the ref
+    // would pin that attempt's HEAD as this one's candidate.
+    if latest_track_lease_id_tx(tx, track_id).await?.as_deref() != Some(lease.lease_id.as_str()) {
+        return Err(refused(
+            "refused: a later attempt ran in this checkout; declare a new task".into(),
+        ));
+    }
+    if latest.outcome.is_none() {
+        return Err(refused(format!(
+            "refused: delivery {} predates per-track checkouts; declare a new task",
+            latest.delivery_id
+        )));
+    }
     if !Path::new(&lease.path).is_dir() {
         return Err(refused(format!(
             "refused: delivery {} cannot be retried, workspace {} is missing; abandon it with \
@@ -373,7 +395,19 @@ async fn retry(
     )
     .await?;
     let receipt = retry_receipt(&row);
-    Ok((receipt, AfterCommit::Submit(Box::new((row, lease)))))
+    let branch = worker_branch_tx(tx, track_id).await?;
+    Ok((receipt, AfterCommit::Submit(Box::new((row, lease, branch)))))
+}
+
+/// The track's latest lease row, in any state.
+async fn latest_track_lease_id_tx(tx: &mut Tx<'_>, track_id: &str) -> Result<Option<String>> {
+    Ok(sqlx::query_scalar(
+        "SELECT lease_id FROM workspace_leases WHERE track_id = ?1 \
+         ORDER BY created_at_ms DESC, lease_id DESC LIMIT 1",
+    )
+    .bind(track_id)
+    .fetch_optional(&mut **tx)
+    .await?)
 }
 
 async fn abandon(

@@ -301,3 +301,15 @@ pub(crate) async fn insert_task_tx(tx: &mut Transaction<'_, Sqlite>, task: &Task
     .await?;
     Ok(())
 }
+
+/// Give an attached track its #1830 track worktree, as the create route does (the production
+/// `ensure_track_worktree`). Returns it.
+pub(crate) async fn attach_track_worktree(
+    pool: &sqlx::SqlitePool,
+    track_id: &str,
+    checkout: &std::path::Path,
+) -> std::path::PathBuf {
+    crate::test_seams::attach_track_worktree_for_test(pool, track_id, checkout)
+        .await
+        .expect("make the track worktree")
+}

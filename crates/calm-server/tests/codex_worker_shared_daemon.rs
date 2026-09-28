@@ -145,6 +145,14 @@ async fn boot(start_shared: bool) -> Boot {
         })
         .await
         .unwrap();
+    // The worker runs in the track worktree (#1830 S2).
+    calm_server::test_seams::attach_track_worktree_for_test(
+        sqlx_repo.pool(),
+        track.id.as_str(),
+        &repo_root,
+    )
+    .await
+    .unwrap();
     let planner_card = repo
         .card_create(NewCard {
             track_id: track.id.clone(),
@@ -540,84 +548,6 @@ async fn seed_dispatched_task(repo: &SqlxRepo, track_id: &TrackId, task_id: &str
     .unwrap();
 }
 
-async fn prepared_worker_operation(
-    state: &AppState,
-    repo: &Arc<SqlxRepo>,
-    track_id: &TrackId,
-    idempotency_key: &str,
-    goal: &str,
-) -> (Operation, TxOutput) {
-    seed_dispatched_task(repo, track_id, idempotency_key, "codex").await;
-    let payload = serde_json::to_value(CodexWorkerOperationPayload {
-        actor: ActorId::KernelDispatcher,
-        track_id: track_id.to_string(),
-        idempotency_key: idempotency_key.to_string(),
-        goal: goal.to_string(),
-        cwd: None,
-        context: json!({"from": "manual-worker-recovery"}),
-        acceptance_criteria: None,
-    })
-    .unwrap();
-    let op = Operation {
-        id: new_id(),
-        operation_key: new_id(),
-        kind: "codex-worker".into(),
-        idempotency_key: Some(idempotency_key.to_string()),
-        payload_hash: format!("payload-{idempotency_key}"),
-        target_type: "track".into(),
-        target_id: Some(track_id.to_string()),
-        target: json!({ "type": "track", "id": track_id }),
-        payload: payload.clone(),
-        tx_output: None,
-        phase: Phase::Pending,
-        phase_detail: None,
-        attempt: 0,
-        last_error: None,
-        compensation_state: None,
-        lease_owner: None,
-        lease_until_ms: None,
-        spawn_artifacts: None,
-        parked_at_ms: None,
-        parked_deadline_ms: None,
-    };
-    insert_pending_operation_row(repo, &op).await;
-    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
-    let adapter = CodexWorkerAdapter::new(
-        route_repo,
-        state.codex.clone(),
-        state.shared_codex_appserver.clone(),
-        None,
-        state.card_role_cache.clone(),
-        state.track_area_cache.clone(),
-        std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
-    );
-    let mut tx = repo.pool().begin().await.unwrap();
-    let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
-    tx.commit().await.unwrap();
-    (op, output)
-}
-
-async fn persist_tx_committed_operation(repo: &SqlxRepo, op_id: &str, output: &TxOutput) {
-    sqlx::query(
-        r#"UPDATE operations
-              SET tx_output_json = ?2,
-                  phase = 'tx_committed',
-                  phase_detail_json = NULL,
-                  completed_at_ms = NULL,
-                  lease_owner = NULL,
-                  lease_until_ms = NULL,
-                  last_error = NULL,
-                  updated_at_ms = ?3
-            WHERE id = ?1"#,
-    )
-    .bind(op_id)
-    .bind(serde_json::to_string(output).unwrap())
-    .bind(now_ms())
-    .execute(repo.pool())
-    .await
-    .unwrap();
-}
-
 async fn assert_card_session_mcp_hash_parity(repo: &SqlxRepo, card_id: &str, runtime_id: &str) {
     let (card_hash, session_hash): (String, Option<String>) = sqlx::query_as(
         r#"SELECT c.hashed_token, ws.mcp_token_hash
@@ -665,6 +595,14 @@ async fn app_state_with_fake_worker_daemon() -> (AppState, Arc<SqlxRepo>, TrackI
         })
         .await
         .unwrap();
+    // The worker runs in the track worktree (#1830 S2).
+    calm_server::test_seams::attach_track_worktree_for_test(
+        repo.pool(),
+        track.id.as_str(),
+        &repo_root,
+    )
+    .await
+    .unwrap();
     let events = EventBus::new();
     let cache = CardRoleCache::new();
     repo.seed_card_role_cache(&cache).await.unwrap();
@@ -725,7 +663,7 @@ fn codex_worker_key(idempotency_key: &str) -> OperationKey {
 }
 
 #[tokio::test]
-async fn worker_operation_provisions_real_worktree_before_session_started_and_recovers_once() {
+async fn worker_operation_verifies_the_track_worktree_before_session_started_and_recovers_once() {
     let _guard = ENV_LOCK.lock().await;
     let (state, repo, track_id, _tmp) = app_state_with_fake_worker_daemon().await;
     let idem = "worker-real-worktree";
@@ -739,7 +677,7 @@ async fn worker_operation_provisions_real_worktree_before_session_started_and_re
                 actor: ActorId::KernelDispatcher,
                 track_id: track_id.to_string(),
                 idempotency_key: idem.to_string(),
-                goal: "prove real git worktree provisioning".into(),
+                goal: "prove the worker runs in the track worktree".into(),
                 cwd: None,
                 context: json!({"from": "row-8-proof"}),
                 acceptance_criteria: None,
@@ -758,20 +696,31 @@ async fn worker_operation_provisions_real_worktree_before_session_started_and_re
     let card_id = output.data["card_id"].as_str().unwrap().to_string();
     let terminal_id = output.data["terminal_id"].as_str().unwrap().to_string();
     let cwd = output.data["cwd"].as_str().unwrap().to_string();
-    let repo_root = PathBuf::from(output.data["repo_root"].as_str().unwrap());
-    let branch = output.data["slice_branch"].as_str().unwrap().to_string();
+    let branch = output.data["branch"].as_str().unwrap().to_string();
     let worktree = PathBuf::from(&cwd);
-    assert!(worktree.is_absolute());
-    assert!(worktree.starts_with(repo_root.join(".claude/worktrees")));
-    assert!(worktree.is_dir(), "provisioned worktree dir exists");
+    let repo_root = worktree
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
     assert_eq!(
-        git_stdout(&repo_root, ["status", "--short", "--untracked-files=all"]),
+        worktree,
+        repo_root
+            .join(".claude/worktrees")
+            .join(format!("track-{track_id}")),
+        "the worker runs in the track worktree"
+    );
+    assert_eq!(branch, format!("neige/track-{track_id}"));
+    assert_eq!(
+        git_stdout(repo_root, ["status", "--short", "--untracked-files=all"]),
         "",
-        "provisioning must not dirty the base track repo"
+        "the worker leaves the user's checkout alone"
     );
     assert!(
-        git_ref_exists(&repo_root, &format!("refs/heads/{branch}")),
-        "slice branch exists"
+        git_ref_exists(repo_root, &format!("refs/heads/{branch}")),
+        "the track branch exists"
     );
 
     let lease: (String, String, String, String) = sqlx::query_as(
@@ -843,117 +792,6 @@ async fn worker_operation_provisions_real_worktree_before_session_started_and_re
         event_count(&repo, "worker_session.started").await,
         session_started_before,
         "re-driving app_server_interact must not duplicate worker_session.started"
-    );
-}
-
-#[tokio::test]
-async fn worker_operation_recovers_legacy_tx_output_without_worktree_fields() {
-    let _guard = ENV_LOCK.lock().await;
-    let (state, repo, track_id, tmp) = app_state_with_fake_worker_daemon().await;
-    let idem = "worker-legacy-no-worktree-fields";
-    let (op, mut output) =
-        prepared_worker_operation(&state, &repo, &track_id, idem, "recover legacy worker").await;
-    let card_id = output.data["card_id"].as_str().unwrap().to_string();
-    let terminal_id = output.data["terminal_id"].as_str().unwrap().to_string();
-    let runtime_id = output.data["runtime_id"].as_str().unwrap().to_string();
-    let lease_id = output.data["lease_id"].as_str().unwrap().to_string();
-    let legacy_dir = tmp.path().join("legacy-shared-lease");
-    std::fs::create_dir_all(&legacy_dir).unwrap();
-    let legacy_cwd = legacy_dir.to_string_lossy().to_string();
-
-    let data = output.data.as_object_mut().unwrap();
-    data.insert("cwd".into(), Value::String(legacy_cwd.clone()));
-    data.remove("repo_root");
-    data.remove("slice_branch");
-    data.remove("worktree_provisioned_event_persisted");
-    data.remove("runtime_started_event_persisted");
-    sqlx::query("UPDATE workspace_leases SET path = ?1 WHERE lease_id = ?2")
-        .bind(&legacy_cwd)
-        .bind(&lease_id)
-        .execute(repo.pool())
-        .await
-        .unwrap();
-    sqlx::query("UPDATE terminals SET cwd = ?1 WHERE id = ?2")
-        .bind(&legacy_cwd)
-        .bind(&terminal_id)
-        .execute(repo.pool())
-        .await
-        .unwrap();
-    persist_tx_committed_operation(&repo, &op.id, &output).await;
-
-    state.operation_runtime.drive().await.unwrap();
-    assert!(matches!(
-        state.operation_runtime.wait(&op.id).await.unwrap().outcome,
-        OperationOutcome::Succeeded { .. }
-    ));
-
-    assert_eq!(
-        event_count(&repo, "worktree.provisioned").await,
-        0,
-        "legacy recovery must not provision or emit a worktree event"
-    );
-    assert!(
-        repo.card_get(&card_id).await.unwrap().is_some(),
-        "legacy worker card is preserved"
-    );
-    assert!(
-        repo.terminal_get(&terminal_id).await.unwrap().is_some(),
-        "legacy worker terminal is preserved"
-    );
-    let lease: (String, String) =
-        sqlx::query_as("SELECT state, path FROM workspace_leases WHERE lease_id = ?1")
-            .bind(&lease_id)
-            .fetch_one(repo.pool())
-            .await
-            .unwrap();
-    assert_eq!(lease.0, "held");
-    assert_eq!(lease.1, legacy_cwd);
-    assert!(legacy_dir.is_dir(), "legacy lease directory is preserved");
-    let runtime = repo
-        .session_projection_by_id(&runtime_id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        runtime.thread_id.is_some(),
-        "legacy worker spawned a thread"
-    );
-    assert!(
-        runtime.active_turn_id.is_some(),
-        "legacy worker started its initial turn"
-    );
-}
-
-#[tokio::test]
-async fn worker_operation_provisions_when_slice_branch_already_exists() {
-    let _guard = ENV_LOCK.lock().await;
-    let (state, repo, track_id, _tmp) = app_state_with_fake_worker_daemon().await;
-    let idem = "worker-branch-already-exists";
-    let (op, output) = prepared_worker_operation(
-        &state,
-        &repo,
-        &track_id,
-        idem,
-        "reuse existing slice branch",
-    )
-    .await;
-    let repo_root = PathBuf::from(output.data["repo_root"].as_str().unwrap());
-    let branch = output.data["slice_branch"].as_str().unwrap().to_string();
-    let cwd = output.data["cwd"].as_str().unwrap().to_string();
-    run_git(&repo_root, ["branch", branch.as_str()]);
-    persist_tx_committed_operation(&repo, &op.id, &output).await;
-
-    state.operation_runtime.drive().await.unwrap();
-    assert!(matches!(
-        state.operation_runtime.wait(&op.id).await.unwrap().outcome,
-        OperationOutcome::Succeeded { .. }
-    ));
-
-    assert!(PathBuf::from(&cwd).is_dir(), "worktree path is provisioned");
-    assert_eq!(event_count(&repo, "worktree.provisioned").await, 1);
-    assert!(
-        git_ref_exists(&repo_root, &format!("refs/heads/{branch}")),
-        "pre-existing slice branch remains registered"
     );
 }
 
@@ -1259,16 +1097,16 @@ async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
         )
         .await
         .unwrap();
-    assert_eq!(compensation.steps.len(), 3);
-    assert_eq!(compensation.steps[0].op, "remove_workspace_artifact");
+    // The lease is released last, after the worker rows are gone (#1830 S2 D7).
+    assert_eq!(compensation.steps.len(), 2);
+    assert_eq!(compensation.steps[0].op, "cleanup_codex_worker");
     assert_eq!(compensation.steps[1].op, "release_workspace_lease");
-    assert_eq!(compensation.steps[2].op, "cleanup_codex_worker");
     assert_eq!(
-        compensation.steps[2].args["card_id"].as_str(),
+        compensation.steps[0].args["card_id"].as_str(),
         Some(card_id.as_str())
     );
     assert_eq!(
-        compensation.steps[2].args["terminal_id"].as_str(),
+        compensation.steps[0].args["terminal_id"].as_str(),
         Some(terminal_id.as_str())
     );
 

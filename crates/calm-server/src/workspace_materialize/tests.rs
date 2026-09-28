@@ -1,13 +1,13 @@
-//! In-crate because these drive the `pub(crate)` lease provisioner against a real materialized workspace.
+//! In-crate because these drive the `pub(crate)` worker checkout reader against a real materialized
+//! workspace: since #1830 S2 a managed track's worker runs in the directory itself, on `main`.
 
 use std::path::Path;
 use std::process::Command;
 use std::sync::{Mutex, MutexGuard};
 
 use super::{InitCommit, materialize_managed_workspace, materialize_managed_workspace_inner};
-use crate::operation::workspace_lease::{
-    WorkspaceLeaseTarget, WorktreeBase, base::resolve_lease_base, provision_workspace_worktree,
-};
+use crate::operation::workspace_lease::base::verify_worktree_base;
+use crate::operation::workspace_lease::worker::{MANAGED_WORKSPACE_BRANCH, directory_base};
 
 /// The git environment is process-global, so every git-spawning test holds this lock for its whole body
 /// (a helper-scoped guard was flaky under plain `cargo test`; nextest's per-process isolation would hide it).
@@ -91,20 +91,6 @@ fn head_resolves(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// `(major, minor)` of the `git` on PATH; parsed, because the error text differs by repo shape and locale.
-fn git_version() -> (u32, u32) {
-    let out = Command::new("git").arg("--version").output().unwrap();
-    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    let nums = text
-        .split_whitespace()
-        .find(|t| t.chars().next().is_some_and(|c| c.is_ascii_digit()))
-        .unwrap_or_else(|| panic!("cannot parse `git --version` output: {text}"));
-    let mut parts = nums.split('.');
-    let major = parts.next().unwrap().parse().unwrap();
-    let minor = parts.next().unwrap_or("0").parse().unwrap();
-    (major, minor)
-}
-
 fn count_all_commits(path: &Path) -> u32 {
     let out = Command::new("git")
         .arg("-C")
@@ -116,27 +102,33 @@ fn count_all_commits(path: &Path) -> u32 {
     String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
 }
 
-fn lease_target(repo_root: &Path) -> WorkspaceLeaseTarget {
-    let track_id = "track0000000000000000000000000001";
-    let card_id = "card0000000000000000000000000001";
-    WorkspaceLeaseTarget {
-        repo_root: repo_root.to_path_buf(),
-        path: repo_root
-            .join(".claude")
-            .join("worktrees")
-            .join(track_id)
-            .join(card_id),
-        branch: format!("neige/{track_id}/{card_id}"),
-    }
-}
-
-/// The base production pins a fresh lease to: the repository's HEAD now (no upstream here).
-fn head_base(target: &WorkspaceLeaseTarget) -> WorktreeBase {
-    WorktreeBase::from_lease_base(&resolve_lease_base(target).expect("resolve lease base"))
+/// What a worker's prepare and spawn need of a managed directory (#1830 S2): a HEAD to record, on
+/// `main`, and a clean tree (a dirty one refuses the worker).
+fn assert_worker_checkout_ready(repo_root: &Path) {
+    let base = directory_base(repo_root).expect("a worker base: HEAD, realpath, common dir");
+    verify_worktree_base(
+        repo_root,
+        MANAGED_WORKSPACE_BRANCH,
+        &base.base_sha,
+        &base.canonical_path,
+    )
+    .expect("the checkout is on main at its HEAD");
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["status", "--porcelain", "--untracked-files=normal"])
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&status.stdout),
+        "",
+        "a materialized workspace is clean, so its first worker is not refused"
+    );
 }
 
 #[test]
-fn materialized_workspace_hosts_a_worker_worktree() {
+fn materialized_workspace_hosts_a_worker() {
     let _env = GitEnv::c_locale();
     let tmp = tempfile::TempDir::new().unwrap();
     let (root, repo_root) = sandbox(&tmp);
@@ -150,14 +142,7 @@ fn materialized_workspace_hosts_a_worker_worktree() {
          empty init commit is that baseline"
     );
 
-    let target = lease_target(&repo_root);
-    provision_workspace_worktree(&target, &head_base(&target))
-        .expect("worktree add on a materialized workspace");
-    assert!(
-        target.path.is_dir(),
-        "lease worktree directory {} is missing",
-        target.path.display()
-    );
+    assert_worker_checkout_ready(&repo_root);
 }
 
 /// Version-independent on purpose: only the missing baseline commit is asserted, not that `worktree add` fails.
@@ -183,56 +168,7 @@ fn without_the_init_commit_there_is_no_baseline_commit() {
     materialize(&root, &repo_root).unwrap();
     assert!(head_resolves(&repo_root));
     assert_eq!(count_all_commits(&repo_root), 1);
-    let target = lease_target(&repo_root);
-    provision_workspace_worktree(&target, &head_base(&target))
-        .expect("worktree add after the commit is restored");
-}
-
-/// Git >= 2.42.0 infers `--orphan` for `worktree add` on an unborn HEAD and succeeds silently; older git fails.
-/// The version is parsed, not string-matched.
-#[test]
-fn worktree_add_without_a_baseline_commit_is_version_dependent() {
-    let _env = GitEnv::c_locale();
-    let tmp = tempfile::TempDir::new().unwrap();
-    let (root, repo_root) = sandbox(&tmp);
-    materialize_managed_workspace_inner(&root, &repo_root, TRACK, InitCommit::Skip).unwrap();
-    assert_eq!(count_all_commits(&repo_root), 0);
-
-    let version = git_version();
-    let target = lease_target(&repo_root);
-    // Unborn HEAD: there is no commit to pin to, which is the point of this
-    // test; the unpinned recovery shape is the only one that can be asked.
-    let result = provision_workspace_worktree(&target, &WorktreeBase::LegacyUnpinned);
-
-    if version < (2, 42) {
-        let error = result.expect_err(&format!(
-            "git {}.{} predates 2.42.0, where `worktree add` on an unborn HEAD \
-             fails outright",
-            version.0, version.1
-        ));
-        assert!(
-            error.to_string().contains("not a valid object name"),
-            "git {}.{}: expected the unborn-HEAD failure, got: {error}",
-            version.0,
-            version.1
-        );
-    } else {
-        result.unwrap_or_else(|error| {
-            panic!(
-                "git {}.{} is >= 2.42.0, where `worktree add` DWIMs `--orphan` \
-                 on an unborn HEAD and succeeds; got: {error}",
-                version.0, version.1
-            )
-        });
-        assert_eq!(
-            count_all_commits(&repo_root),
-            0,
-            "git {}.{}: the inferred `--orphan` worktree must still create no \
-             commit — that is exactly why the baseline has to come from step 3",
-            version.0,
-            version.1
-        );
-    }
+    assert_worker_checkout_ready(&repo_root);
 }
 
 #[test]
@@ -719,9 +655,7 @@ fn materialize_survives_hostile_git_environment_variables() {
     // Restore the environment before verifying, so the repository is judged by a clean `git`.
     drop(env);
     assert!(head_resolves(&repo_root));
-    let target = lease_target(&repo_root);
-    provision_workspace_worktree(&target, &head_base(&target))
-        .expect("worktree add on the isolated workspace");
+    assert_worker_checkout_ready(&repo_root);
 }
 
 #[test]
@@ -1309,18 +1243,17 @@ fn git_in(dir: &Path, args: &[&str]) {
 }
 
 #[test]
-fn attached_admission_names_the_ref_the_slice_branch_lives_under() {
-    let branch = crate::operation::workspace_lease::workspace_slice_branch_for(
+fn attached_admission_names_the_ref_the_track_branch_lives_under() {
+    let branch = crate::operation::workspace_lease::track_worktree::track_branch_for(
         "track0000000000000000000000000001",
-        "card0000000000000000000000000001",
     )
     .unwrap();
-    let slice_ref = format!("refs/heads/{branch}");
+    let track_ref = format!("refs/heads/{branch}");
     assert!(
-        slice_ref.starts_with(&format!("{}/", super::SLICE_BRANCH_NAMESPACE_REF)),
-        "the admission check guards `{}`, but a worker's slice branch resolves \
-         to `{slice_ref}` — the check is watching a ref the slice branch does \
-         not live under, so it can never prevent the conflict it exists for",
+        track_ref.starts_with(&format!("{}/", super::SLICE_BRANCH_NAMESPACE_REF)),
+        "the admission check guards `{}`, but a track branch resolves to \
+         `{track_ref}` — the check is watching a ref the track branch does not \
+         live under, so it can never prevent the conflict it exists for",
         super::SLICE_BRANCH_NAMESPACE_REF
     );
 }
@@ -1346,7 +1279,7 @@ fn attaching_a_repo_holding_refs_heads_neige_is_refused_by_name() {
         "the refusal must name the offending ref: {msg}"
     );
     assert!(
-        msg.contains("neige/<track>/<card>"),
+        msg.contains("neige/track-<id>"),
         "the refusal must name what the ref collides with: {msg}"
     );
 }

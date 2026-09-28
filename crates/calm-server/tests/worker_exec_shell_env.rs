@@ -111,6 +111,14 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
+    // The worker runs in the track worktree (#1830 S2).
+    calm_server::test_seams::attach_track_worktree_for_test(
+        &repo.sqlite_pool().unwrap(),
+        track.id.as_str(),
+        &repo_root,
+    )
+    .await
+    .unwrap();
     let planner_card = repo
         .card_create(NewCard {
             track_id: track.id.clone(),

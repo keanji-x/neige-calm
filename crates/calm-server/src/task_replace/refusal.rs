@@ -26,15 +26,11 @@ pub(crate) enum Refusal {
     RecoveryReplaced,
     /// Kernel-side: a successor's dispatch found its task edited off the replaceable route.
     RouteChanged,
-    /// Kernel-side: the carry merge conflicts with the base it is merged onto.
-    CarryConflict,
-    /// Kernel-side: the carry commit could not be computed.
-    CarryInfra,
 }
 
 impl Refusal {
     #[cfg(test)]
-    const ALL: [Self; 19] = [
+    const ALL: [Self; 17] = [
         Self::StaleAttempt,
         Self::PredecessorDispatching,
         Self::PredecessorVerifying,
@@ -52,8 +48,6 @@ impl Refusal {
         Self::SuccessorUnschedulable,
         Self::RecoveryReplaced,
         Self::RouteChanged,
-        Self::CarryConflict,
-        Self::CarryInfra,
     ];
 
     pub(crate) const fn key(self) -> &'static str {
@@ -75,8 +69,6 @@ impl Refusal {
             Self::SuccessorUnschedulable => "successor_unschedulable",
             Self::RecoveryReplaced => "recovery-replaced",
             Self::RouteChanged => "replace-route-changed",
-            Self::CarryConflict => "carry-conflict",
-            Self::CarryInfra => "carry-infra",
         }
     }
 

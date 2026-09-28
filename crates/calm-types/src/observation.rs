@@ -362,7 +362,7 @@ impl Observation {
                 };
                 format!(
                     "Task {key} delivered candidate {candidate_id} ({commit_sha}, base {base_sha}{no_change}). \
-                     Accept with calm.task.verdict; read the worker output at runs/{attempt_id}.md."
+                     Accept with calm.task.verdict when the task completed; read the worker output at runs/{attempt_id}.md."
                 )
             }
             Observation::TaskGitDeliverySettled {

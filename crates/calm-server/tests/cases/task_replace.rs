@@ -14,9 +14,6 @@ use calm_server::mcp_server::registry::ToolCallIdentity;
 use calm_server::model::{Task, TaskStatus};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::session_projection_repo::AgentProvider;
-use calm_server::test_seams::{
-    KernelWorkspaceLease, take_kernel_workspace_lease_for_attempt_for_test,
-};
 use calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR;
 use serde_json::{Value, json};
 
@@ -87,26 +84,6 @@ pub(super) fn assert_refusal(result: &Result<Value, RpcError>, code: &str) {
     assert!(error.message.starts_with(code), "{code}: {}", error.message);
 }
 
-/// A reporting worker whose lease went through the production base resolution for `attempt`
-/// (the carry branch for a replacement successor).
-pub(super) async fn attempt_lease(
-    fx: &Fx,
-    name: &str,
-    attempt: &str,
-) -> (ToolCallIdentity, KernelWorkspaceLease) {
-    let worker = fx.new_worker(name, AgentProvider::Codex).await;
-    let lease = take_kernel_workspace_lease_for_attempt_for_test(
-        &fx.pool(),
-        fx.track(),
-        &worker.card_id,
-        &fx.workspace_root,
-        attempt,
-    )
-    .await
-    .unwrap();
-    (worker, lease)
-}
-
 pub(super) fn write_files(root: &Path, files: &[(&str, &str)]) {
     for (file, content) in files {
         std::fs::write(root.join(file), content).unwrap();
@@ -142,19 +119,6 @@ pub(super) async fn produced(
     write_files(&lease.path, files);
     let candidate = report_and_settle(fx, &worker, &task.id).await;
     (current(&fx.boot, key).await, candidate)
-}
-
-/// A replacement successor run as a worker would run it: its carry lease, `files`, a report.
-pub(super) async fn produce_successor(
-    fx: &Fx,
-    successor: &Task,
-    files: &[(&str, &str)],
-) -> (KernelWorkspaceLease, CandidateRowView) {
-    let (worker, lease) = attempt_lease(fx, &successor.key.replace('.', "-"), &successor.id).await;
-    fx.claim_running(&successor.id, &worker.card_id).await;
-    write_files(&lease.path, files);
-    let candidate = report_and_settle(fx, &worker, &successor.id).await;
-    (lease, candidate)
 }
 
 /// A declared task claimed `running` on its own worker card with a live session.

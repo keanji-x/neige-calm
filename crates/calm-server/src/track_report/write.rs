@@ -632,8 +632,9 @@ async fn persist(
                     receipt.reviewer.block_id = outcome.as_ref().ok_or_else(||CalmError::Internal("repair review block outcome missing".into()))?.id.clone();
                     crate::file_delivery::repair::insert_tx(tx, receipt).await?;
                     Some(super::repair::snapshot_tx(tx, receipt, *task_budget_default).await?)
-                } else if let Some(staged) = replace_staged {
+                } else if let Some(mut staged) = replace_staged {
                     staged.add_stopped_key(&mut task_projection.changed_keys);
+                    events.extend(staged.take_released());
                     Some(super::replace::finish_tx(tx, track_id.as_str(), staged, &task_projection.diagnostics).await?)
                 } else { None };
                 //    Then two events on the same card scope: `CardUpdated` first, so a subscriber sees the

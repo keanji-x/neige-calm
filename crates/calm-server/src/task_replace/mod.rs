@@ -91,24 +91,6 @@ impl ReplaceArgs {
     }
 }
 
-/// A carry that failed while the successor's lease was prepared.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CarryFailure {
-    /// The candidate conflicts with the base (`refused: carry-conflict: <paths>`).
-    Conflict,
-    /// The carry commit could not be computed (`carry-infra: <why>`).
-    Infra,
-}
-
-/// `<key>: <facts>. <sentence>` — the spawn-failure reason `spawn-failed: …` carries.
-pub(crate) fn carry_failure(failure: CarryFailure, facts: &str) -> String {
-    let refusal = match failure {
-        CarryFailure::Conflict => refusal::Refusal::CarryConflict,
-        CarryFailure::Infra => refusal::Refusal::CarryInfra,
-    };
-    format!("{}: {facts}. {}", refusal.key(), refusal.sentence())
-}
-
 /// A request key reused for a different request.
 pub(crate) fn idempotency_conflict() -> CalmError {
     refusal::Refusal::IdempotencyConflict.refuse("")

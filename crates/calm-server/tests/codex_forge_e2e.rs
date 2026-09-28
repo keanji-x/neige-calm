@@ -129,7 +129,7 @@ async fn real_codex_worker_opens_pr_after_committing_on_leased_worktree() {
     assert_eq!(s5.scope_card.as_deref(), Some(worker_card_id.as_str()));
     assert_eq!(
         s5.payload["branch"],
-        format!("neige/{}/{}", fx.track_id.as_str(), worker_card_id)
+        format!("neige/track-{}", fx.track_id.as_str())
     );
     let head = git_stdout(&worker_cwd, ["rev-parse", "HEAD"]);
     assert!(

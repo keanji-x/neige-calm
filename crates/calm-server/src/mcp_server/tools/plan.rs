@@ -538,10 +538,10 @@ where
                         ));
                     }
                 };
-                let rows = if in_flight {
+                let (rows, released) = if in_flight {
                     cancel_running::cancel_running_in_tx(tx, &current, &key).await?
                 } else {
-                    task_cancel_tx(tx, &task_id, now_ms()).await?
+                    (task_cancel_tx(tx, &task_id, now_ms()).await?, Vec::new())
                 };
                 if rows == 0 {
                     // Disambiguate the 0-row flip: a concurrent `canceled` is the idempotent path (no `plan.updated`); anything else is a real concurrent state change.
@@ -556,7 +556,7 @@ where
                     }
                 }
 
-                let mut events = Vec::new();
+                let mut events = released;
                 if let Some(auto_events) = auto_promote_draft_in_tx(tx, &track_id_typed).await? {
                     events.extend(
                         auto_events

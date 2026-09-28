@@ -16,7 +16,7 @@ use crate::model::{Task, TaskKind, TaskStatus};
 use crate::operation::Tx;
 use crate::operation::task_verify_adapter::{TASK_VERIFY_KIND, TaskGateResult, gate_attempt_key};
 use crate::operation::workspace_lease::facts::{
-    LeaseStates, WorkerWorktreeFacts, latest_workspace_lease_for_card_tx,
+    WorkerWorktreeFacts, latest_workspace_lease_for_card_tx,
 };
 use crate::operation::workspace_lease::{DeliveryPolicy, WorkspaceLease};
 
@@ -363,7 +363,7 @@ pub(crate) async fn candidate_view_tx(
     facts: Option<&WorkerWorktreeFacts>,
 ) -> Result<CandidateBinding> {
     let lease = match task.worker_card_id.as_deref() {
-        Some(card_id) => latest_workspace_lease_for_card_tx(tx, card_id, LeaseStates::Any).await?,
+        Some(card_id) => latest_workspace_lease_for_card_tx(tx, card_id).await?,
         None => None,
     };
     let bound = match lease.as_ref() {

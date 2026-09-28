@@ -2,9 +2,7 @@
 
 use serde::Serialize;
 
-use super::{
-    Tx, WORKSPACE_LEASE_COLUMNS, row_to_workspace_lease, workspace_lease_target_from_lease,
-};
+use super::{Tx, WORKSPACE_LEASE_COLUMNS, row_to_workspace_lease, worker_branch_tx};
 use crate::error::Result;
 
 /// What `calm.plan.list` shows as `worktree` for the current attempt.
@@ -16,24 +14,17 @@ pub(crate) struct WorkerWorktreeFacts {
     pub path: Option<String>,
     /// `held` | `releasing` | `released` — the lease row's own column.
     pub state: String,
-    /// The slice branch: from the latest `worktree.committed` event when there is one,
-    /// otherwise the lease's own naming. Omitted once the kernel has removed the worktree.
+    /// The branch: from the latest `worktree.committed` event when there is one, otherwise the
+    /// track's worker branch (#1830 S2 D4). Omitted once the kernel has removed the worktree.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
     /// `commit_sha` of the latest `worktree.committed` event scoped to the worker card.
     /// A FAILED auto-commit changes nothing here (the previous sha, or the absence, stays).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_commit: Option<String>,
-    /// The commit the worktree started from: the lease
-    /// row's `base_sha`, decided when the attempt was prepared
-    /// (`base_source`): the last known upstream of the attached repository's
-    /// HEAD branch when HEAD is at or behind it (`upstream`); HEAD when HEAD
-    /// is ahead of it, when a shallow history leaves the relation unknown, or
-    /// when the branch has no upstream (`head`). A failed attempt has one
-    /// too — it never delivers, so this is the fact that can be given where
-    /// `last_commit` cannot. Absent for
-    /// a lease taken before the kernel recorded it. Survives removal like
-    /// `last_commit` (the commit object is not the worktree's).
+    /// The commit the attempt started from: the lease row's `base_sha`, the track checkout's HEAD
+    /// when the attempt was prepared (#1830 S2). Absent for a lease taken before the kernel
+    /// recorded it. Survives removal like `last_commit` (the commit object is not the worktree's).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_sha: Option<String>,
     /// `true` when the kernel removed the worktree after its last provisioning, whatever the lease `state`.
@@ -56,29 +47,16 @@ pub(crate) async fn workspace_lease_by_id_tx(
     row.map(row_to_workspace_lease).transpose()
 }
 
-/// Which lease rows of a card a reader wants.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LeaseStates {
-    /// `held` or `releasing` — the lease a report transaction sees (the release runs after it).
-    Active,
-    /// Any state — the read surface after the worker released it.
-    Any,
-}
-
-/// The latest `workspace_leases` row of `card_id` among `states`, the row `worker_worktree_facts_tx`
-/// derives its facts from. `None` when the card holds no such lease.
+/// The latest `workspace_leases` row of `card_id`, in any state (the read surface after the
+/// worker released it), the row `worker_worktree_facts_tx` derives its facts from. `None` when the
+/// card never held a lease.
 pub(crate) async fn latest_workspace_lease_for_card_tx(
     tx: &mut Tx<'_>,
     card_id: &str,
-    states: LeaseStates,
 ) -> Result<Option<super::WorkspaceLease>> {
-    let state_filter = match states {
-        LeaseStates::Active => " AND state IN ('held','releasing')",
-        LeaseStates::Any => "",
-    };
     let sql = format!(
         "SELECT {WORKSPACE_LEASE_COLUMNS} FROM workspace_leases \
-         WHERE card_id = ?1{state_filter} ORDER BY created_at_ms DESC, lease_id DESC LIMIT 1"
+         WHERE card_id = ?1 ORDER BY created_at_ms DESC, lease_id DESC LIMIT 1"
     );
     let row = sqlx::query(&sql)
         .bind(card_id)
@@ -93,9 +71,7 @@ pub(crate) async fn worker_worktree_facts_tx(
     tx: &mut Tx<'_>,
     worker_card_id: &str,
 ) -> Result<Option<WorkerWorktreeFacts>> {
-    let Some(lease) =
-        latest_workspace_lease_for_card_tx(tx, worker_card_id, LeaseStates::Any).await?
-    else {
+    let Some(lease) = latest_workspace_lease_for_card_tx(tx, worker_card_id).await? else {
         return Ok(None);
     };
     let committed: Option<String> = sqlx::query_scalar(
@@ -131,13 +107,13 @@ pub(crate) async fn worker_worktree_facts_tx(
         }));
     }
     let branch = match payload_string("branch") {
-        Some(branch) => Some(branch),
-        None => workspace_lease_target_from_lease(&lease)?.map(|target| target.branch),
+        Some(branch) => branch,
+        None => worker_branch_tx(tx, &lease.track_id).await?,
     };
     Ok(Some(WorkerWorktreeFacts {
         path: Some(lease.path),
         state: lease.state,
-        branch,
+        branch: Some(branch),
         last_commit,
         base_sha,
         removed: false,
@@ -146,9 +122,9 @@ pub(crate) async fn worker_worktree_facts_tx(
 
 /// The one rule for "the kernel removed this card's worktree": a `worktree.removed` event newer
 /// than the card's latest `worktree.provisioned` (any `worktree.removed` when it was never
-/// provisioned). An SQL condition over the card-id expression `card` (a bind or a column), shared
-/// by this read and the released-worktree reclaim (`reclaim.rs`).
-pub(super) fn worktree_removed_after_last_provision_sql(card: &str) -> String {
+/// provisioned). Only per-card worktrees from before #1830 S2 were ever removed. An SQL condition
+/// over the card-id expression `card` (a bind or a column).
+fn worktree_removed_after_last_provision_sql(card: &str) -> String {
     format!(
         "EXISTS (SELECT 1 FROM events removed \
          WHERE removed.scope_card = {card} AND removed.kind = 'worktree.removed' \

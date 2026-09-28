@@ -261,33 +261,36 @@ async fn acquire_test_workspace_lease(
     track_id: &TrackId,
     lease_owner: &str,
 ) -> (String, String) {
+    // The worker lease is the track worktree (#1830 S2): give the attached track one first.
+    let checkout: String = sqlx::query_scalar("SELECT workspace_path FROM tracks WHERE id = ?1")
+        .bind(track_id.as_str())
+        .fetch_one(repo.pool())
+        .await
+        .expect("track checkout");
+    crate::test_support::attach_track_worktree(
+        repo.pool(),
+        track_id.as_str(),
+        Path::new(&checkout),
+    )
+    .await;
     let mut tx = begin_immediate_tx(repo.pool()).await.expect("begin tx");
-    let target = crate::operation::workspace_lease::prepare_workspace_lease_target_tx(
+    let plan = crate::operation::workspace_lease::prepare_worker_lease_tx(
         &mut tx,
         track_id.as_str(),
-        card_id,
         &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     )
     .await
-    .expect("prepare workspace lease target");
-    let base = crate::operation::workspace_lease::base::resolve_lease_base(&target)
-        .expect("resolve workspace lease base");
+    .expect("prepare the worker lease");
     let (lease, _event) = crate::operation::workspace_lease::acquire_workspace_lease_tx(
         &mut tx,
         card_id,
         track_id.as_str(),
         lease_owner,
-        &target,
-        &base,
+        &plan,
     )
     .await
     .expect("acquire workspace lease");
     tx.commit().await.expect("commit lease");
-    crate::operation::workspace_lease::provision_workspace_worktree(
-        &target,
-        &crate::operation::workspace_lease::WorktreeBase::from_lease_base(&base),
-    )
-    .expect("provision test workspace lease worktree");
     (lease.lease_id, lease.path)
 }
 
@@ -1308,9 +1311,18 @@ async fn sweep_resumable_codex_dead_worker_releases_same_boot_workspace_lease() 
             ["rev-parse", "--abbrev-ref", "HEAD"]
         )
         .trim(),
-        format!("neige/{}/{}", track_id.as_str(), card.id.as_str()),
-        "reaper release preserves the slice branch"
+        format!("neige/track-{}", track_id.as_str()),
+        "reaper release preserves the track branch"
     );
+    // #1830 S2 D7: the reaper's fail transaction commits the attempt as `failed`.
+    let outcome: String = sqlx::query_scalar(
+        "SELECT outcome FROM task_git_deliveries WHERE producer_attempt_id = ?1",
+    )
+    .bind(&task.id)
+    .fetch_one(repo.pool())
+    .await
+    .expect("the dead attempt's delivery row");
+    assert_eq!(outcome, "failed");
     let released_events: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'workspace.released'")
             .fetch_one(repo.pool())
@@ -1369,8 +1381,8 @@ async fn converge_dead_worker_without_spawn_op_releases_workspace_lease() {
             ["rev-parse", "--abbrev-ref", "HEAD"]
         )
         .trim(),
-        format!("neige/{}/{}", track_id.as_str(), card.id.as_str()),
-        "spawn_op_id guard release preserves the slice branch"
+        format!("neige/track-{}", track_id.as_str()),
+        "spawn_op_id guard release preserves the track branch"
     );
     let released_events: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'workspace.released'")

@@ -589,6 +589,7 @@ async fn gate_prepare_refuses_unsettled_delivery() {
     let row = settle_by_hand(&fx, &task.id).await;
     assert_eq!(row.settlement.as_deref(), Some("failed"));
     remove_pre_commit(&lease);
+    undo_worker_changes(&lease.path);
     let gate_failed = assert_refused_without_candidate(&fx, &task, "failed").await;
     assert_eq!(
         gate_failed.target,
@@ -960,7 +961,20 @@ async fn gate_refuses_symlinked_external_clone_as_provenance_mismatch() {
         lease.git_common_dir.to_str().unwrap()
     );
 
-    // Positive: an untouched lease worktree passes prepare.
+    // Positive: an untouched lease worktree passes prepare. The track's workers share one
+    // checkout (#1830 S2), so the track worktree is put back first.
+    std::fs::remove_dir_all(&lease.path).unwrap();
+    git(&fx.track_root, &["worktree", "prune"]);
+    git(
+        &fx.track_root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            lease.path.to_str().unwrap(),
+            &fx.worker_branch(),
+        ],
+    );
     let (_, task, _, candidate) = settled_gated_task(&fx, "intact", gated("true")).await;
     fx.scheduler()
         .drive_gate_for_test(task.clone())
@@ -1072,6 +1086,8 @@ async fn gate_catches_untracked_under_suppressing_config() {
         "",
         "the default status hides it"
     );
+    // The gate's file stays; the next worker needs a clean tree (#1830 S2 D6).
+    std::fs::remove_file(lease.path.join("extra.txt")).unwrap();
 
     // Positive: without the config the same step is caught the same way.
     let worker = fx.new_worker("plain", AgentProvider::Codex).await;
@@ -1933,6 +1949,7 @@ async fn plan_list_reads_gate_verification() {
     fx.complete(&worker, &task.id).await;
     settle_by_hand(&fx, &task.id).await;
     remove_pre_commit(&lease);
+    undo_worker_changes(&lease.path);
     submit_gate_bypassing_admission(&fx, &task).await;
     let v = verification(&fx.plan_entry("v-infra").await);
     assert_eq!(v["state"], "infra", "{v}");
@@ -1971,6 +1988,8 @@ async fn plan_list_reads_gate_verification() {
         .await;
     let v = verification(&fx.plan_entry("v-not-started").await);
     assert_eq!(v, json!({"state": "not_started", "gate_attempt": 0}), "{v}");
+    // One held lease per checkout (#1830 S2): the running worker's lease is let go by hand.
+    fx.release_lease_by_hand(&worker.card_id).await;
     let worker = fx.new_worker("v-ungated-w", AgentProvider::Codex).await;
     fx.kernel_lease(&worker.card_id).await;
     fx.running_task("v-ungated", "codex", &worker.card_id, json!({}))
@@ -1989,6 +2008,7 @@ async fn plan_list_reads_gate_verification() {
     // not_admitted (pending delivery, no gate Operation). Last: the blocking hook lives in the
     // repository's common dir and would hold every later delivery too.
     let flag = fx.track_root.parent().unwrap().join("commit-may-proceed");
+    fx.release_lease_by_hand(&worker.card_id).await;
     let worker = fx.new_worker("v-pending-w", AgentProvider::Codex).await;
     let lease = fx.kernel_lease(&worker.card_id).await;
     install_pre_commit(&lease, &hook_waiting_for(&flag, 0));

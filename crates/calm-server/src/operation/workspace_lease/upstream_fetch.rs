@@ -2,10 +2,9 @@
 //! half.
 //!
 //! [`refresh_upstream`] runs a bounded `git fetch` of HEAD's one upstream into
-//! the kernel-owned ref [`Upstream::kernel_ref`], on the worker-op submit path
-//! before the op row is inserted
-//! ([`crate::operation::ProviderAdapter::before_insert`]) — never inside a
-//! transaction; the prepare transaction then reads it locally
+//! the kernel-owned ref [`Upstream::kernel_ref`] before a track worktree's
+//! branch is started (`super::track_worktree::ensure_track_worktree`, #1830) —
+//! never inside a transaction; the start is then chosen locally
 //! ([`super::upstream::choose_lease_start`]).
 //!
 //! - It writes no ref of the user's: no `refs/remotes/*` (`--refmap=` turns off
@@ -51,10 +50,7 @@
 //! ref lock is an ordinary failed fetch.
 //!
 //! **A success receipt does not age.** It stays authoritative until the next
-//! fetch of its key records another outcome: a prepare re-driven without a
-//! fresh `before_insert` (the driver's short-circuit of an existing op, or
-//! recovery of a pending one) still trusts the last receipt, however old. A
-//! restart clears every receipt.
+//! fetch of its key records another outcome. A restart clears every receipt.
 //!
 //! Any failure is a `warn!` and leaves the lease to the last known upstream.
 
@@ -65,7 +61,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use super::upstream::{Upstream, git_output, head_upstream};
-use crate::model::TrackWorkspaceKind;
 use crate::plugin_host::child_process::{
     ChildFinishError, SpawnTimedOut, finish_within, read_capped, set_process_group_leader,
     spawn_within,
@@ -191,12 +186,6 @@ impl FetchProvenance {
         }
     }
 
-    /// Whether the most recent kernel fetch of `key` succeeded.
-    #[cfg(test)]
-    pub(crate) fn last_fetch_succeeded(&self, key: &FetchKey) -> bool {
-        self.success_receipt(key).is_some()
-    }
-
     fn flight(&self, key: &FetchKey) -> (Arc<tokio::sync::Mutex<()>>, u64) {
         let mut entries = self.entries();
         let entry = entries.entry(key.clone()).or_default();
@@ -216,15 +205,6 @@ impl FetchProvenance {
         let entry = entries.entry(key.clone()).or_default();
         entry.last = Some(last);
         entry.generation += 1;
-    }
-
-    /// Test-only: callers currently registered on `key` (running its fetch or
-    /// waiting for it).
-    #[cfg(test)]
-    pub(crate) fn registered_callers(&self, key: &FetchKey) -> usize {
-        self.entries()
-            .get(key)
-            .map_or(0, |entry| Arc::strong_count(&entry.flight) - 1)
     }
 
     /// Test-only: record a success receipt directly, as a fetch would.
@@ -587,41 +567,4 @@ async fn fetch_into(
         ));
     }
     Ok(())
-}
-
-/// The submit-path half for a worker op: resolve the Track's repository and
-/// refresh its upstream, outside every transaction. A managed workspace has
-/// no upstream of the user's to follow and is skipped; any failure to find
-/// the repository is logged and left to the prepare transaction, which
-/// reports it properly.
-pub(crate) async fn refresh_track_upstream(repo: &dyn crate::db::RouteRepo, track_id: &str) {
-    let track = match repo.track_get(track_id).await {
-        Ok(Some(track)) => track,
-        Ok(None) => return,
-        Err(error) => {
-            tracing::warn!(track_id, %error, "upstream refresh could not read the track");
-            return;
-        }
-    };
-    if track.workspace.kind != TrackWorkspaceKind::Attached {
-        return;
-    }
-    let owned_track_id = track_id.to_string();
-    let cwd = track.workspace.path.clone();
-    let repo_root = match tokio::task::spawn_blocking(move || {
-        super::git_repo_root_for_track_cwd(&owned_track_id, &cwd)
-    })
-    .await
-    {
-        Ok(Ok(repo_root)) => repo_root,
-        Ok(Err(error)) => {
-            tracing::warn!(track_id, %error, "upstream refresh could not resolve the repository");
-            return;
-        }
-        Err(error) => {
-            tracing::warn!(track_id, %error, "upstream refresh repository task failed");
-            return;
-        }
-    };
-    refresh_upstream(&repo_root).await;
 }

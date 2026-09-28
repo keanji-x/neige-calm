@@ -1,7 +1,8 @@
 use super::*;
 use crate::db::sqlite::begin_immediate_tx;
 use crate::event::EventBus;
-use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
+use crate::git_candidate::delivery::AttemptOutcome;
+use crate::operation::workspace_lease::{ReleaseDelivery, release_workspace_lease_for_card_repo};
 use crate::operation::{OperationCompletionBus, OperationKey, OperationRepo, SqlxOperationRepo};
 use crate::state::DaemonClient;
 use crate::terminal_renderer::TerminalRendererRegistry;
@@ -51,16 +52,8 @@ async fn claude_worker_prepare_acquires_held_workspace_lease_and_spawn_op() {
     assert_eq!(track_cwd, harness.workspace.path().to_str().unwrap());
     assert_eq!(
         Path::new(&cwd),
-        harness
-            .workspace
-            .path()
-            .join(".claude/worktrees")
-            .join(&harness.track_id)
-            .join(&card_id)
-    );
-    assert!(
-        !Path::new(&cwd).exists(),
-        "prepare must not present an empty directory as a checkout"
+        harness.worktree,
+        "the worker runs in the track worktree (#1830 S2)"
     );
     let lease = sqlx::query(
         "SELECT state, path, card_id, track_id FROM workspace_leases WHERE lease_id = ?1",
@@ -101,13 +94,18 @@ async fn claude_worker_prepare_acquires_held_workspace_lease_and_spawn_op() {
     );
 
     assert!(
-        release_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &card_id)
-            .await
-            .unwrap()
+        release_workspace_lease_for_card_repo(
+            harness.repo.as_ref(),
+            &harness.events,
+            &card_id,
+            ReleaseDelivery::Commit(AttemptOutcome::Completed),
+        )
+        .await
+        .unwrap()
     );
     assert!(
-        !Path::new(&cwd).exists(),
-        "releasing a prepared lease does not create a checkout"
+        Path::new(&cwd).join("worker-source").is_file(),
+        "releasing a lease leaves the track's checkout in place"
     );
 }
 
@@ -123,9 +121,14 @@ async fn claude_worker_env_disables_claude_auto_memory() {
         "{}",
         output.data["env"]
     );
-    release_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &card_id)
-        .await
-        .unwrap();
+    release_workspace_lease_for_card_repo(
+        harness.repo.as_ref(),
+        &harness.events,
+        &card_id,
+        ReleaseDelivery::Commit(AttemptOutcome::Completed),
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -153,9 +156,14 @@ async fn claude_worker_prepare_stores_idempotency_key_in_card_payload() {
         output.data.get("prompt").and_then(Value::as_str)
     );
 
-    release_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &card_id)
-        .await
-        .unwrap();
+    release_workspace_lease_for_card_repo(
+        harness.repo.as_ref(),
+        &harness.events,
+        &card_id,
+        ReleaseDelivery::Commit(AttemptOutcome::Completed),
+    )
+    .await
+    .unwrap();
 }
 
 #[cfg(feature = "fixtures")]
@@ -179,7 +187,7 @@ async fn claude_worker_spawn_env_carries_raw_card_token_and_socket() {
             assert_eq!(
                 std::fs::read_to_string(Path::new(&cwd).join("worker-source")).unwrap(),
                 "tracked source",
-                "Claude must start in a provisioned checkout containing Track source"
+                "Claude must start in the track's checkout containing Track source"
             );
             *captured_env.lock().await = Some(env);
             Ok(SpawnHandle::NoOp)
@@ -212,13 +220,16 @@ async fn claude_worker_spawn_env_carries_raw_card_token_and_socket() {
         .await
         .expect("spawn side effect");
 
-    workspace::provision(&adapter, &ctx, &output).await.unwrap();
+    workspace::verify(&adapter, &ctx, &output).await.unwrap();
     let ready_events: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'worktree.provisioned'")
             .fetch_one(harness.repo.pool())
             .await
             .unwrap();
-    assert_eq!(ready_events, 1, "provisioning recovery is idempotent");
+    assert_eq!(
+        ready_events, 1,
+        "a re-verified checkout records its ready event once"
+    );
     let env = captured_env
         .lock()
         .await
@@ -248,39 +259,14 @@ async fn claude_worker_spawn_env_carries_raw_card_token_and_socket() {
     assert_eq!(card_hash, token_hash);
     assert_eq!(session_hash.as_deref(), Some(card_hash.as_str()));
 
-    release_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &card_id)
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
-async fn claude_worker_budget_parallelism_gets_disjoint_lease_paths() {
-    let harness = claude_worker_harness().await;
-    let (first, _, _) = prepare_claude_worker(&harness, "a").await;
-    let (second, _, _) = prepare_claude_worker(&harness, "b").await;
-    let first_card = first.output_string("card_id", "test").unwrap();
-    let second_card = second.output_string("card_id", "test").unwrap();
-    let first_cwd = first.output_string("cwd", "test").unwrap();
-    let second_cwd = second.output_string("cwd", "test").unwrap();
-
-    assert_ne!(first_card, second_card);
-    assert_ne!(first_cwd, second_cwd);
-    assert!(Path::new(&first_cwd).starts_with(harness.workspace.path().join(".claude/worktrees")));
-    assert!(Path::new(&second_cwd).starts_with(harness.workspace.path().join(".claude/worktrees")));
-
-    let held: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM workspace_leases WHERE state = 'held'")
-            .fetch_one(harness.repo.pool())
-            .await
-            .unwrap();
-    assert_eq!(held, 2);
-
-    release_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &first_card)
-        .await
-        .unwrap();
-    release_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &second_card)
-        .await
-        .unwrap();
+    release_workspace_lease_for_card_repo(
+        harness.repo.as_ref(),
+        &harness.events,
+        &card_id,
+        ReleaseDelivery::Commit(AttemptOutcome::Completed),
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -308,7 +294,7 @@ async fn claude_worker_compensation_cleans_rows_lease_and_settings_dir() {
         harness.events.clone(),
         OperationCompletionBus::new(),
     );
-    workspace::provision(&harness.adapter, &ctx, &output)
+    workspace::verify(&harness.adapter, &ctx, &output)
         .await
         .unwrap();
     assert!(Path::new(&cwd).join("worker-source").is_file());
@@ -342,20 +328,21 @@ async fn claude_worker_compensation_cleans_rows_lease_and_settings_dir() {
         .await
         .unwrap();
 
-    assert_eq!(state.steps[0].op, "remove_workspace_artifact");
-    assert_eq!(state.steps[1].op, "release_workspace_lease");
-    assert_eq!(state.steps[2].op, "cleanup_claude_worker");
-    assert_eq!(state.steps[3].op, "delete_claude_settings_dir");
+    // The lease is released last, after the worker rows are gone (#1830 S2 D7).
+    assert_eq!(state.steps.len(), 3);
+    assert_eq!(state.steps[0].op, "cleanup_claude_worker");
+    assert_eq!(state.steps[1].op, "delete_claude_settings_dir");
+    assert_eq!(state.steps[2].op, "release_workspace_lease");
     assert_eq!(
-        state.steps[1].arg_string("lease_id", "test").unwrap(),
+        state.steps[2].arg_string("lease_id", "test").unwrap(),
         lease_id
     );
     assert_eq!(
-        state.steps[2].arg_string("card_id", "test").unwrap(),
+        state.steps[0].arg_string("card_id", "test").unwrap(),
         card_id
     );
     assert_eq!(
-        state.steps[2].arg_string("terminal_id", "test").unwrap(),
+        state.steps[0].arg_string("terminal_id", "test").unwrap(),
         terminal_id
     );
 
@@ -398,117 +385,30 @@ async fn claude_worker_compensation_cleans_rows_lease_and_settings_dir() {
             .unwrap();
     assert_eq!(lease_state, "released");
     assert!(
-        !std::path::Path::new(&cwd).exists(),
-        "compensation removes the just-created workspace artifact"
+        std::path::Path::new(&cwd).join("worker-source").is_file(),
+        "compensation only flips the lease row; the track's checkout stays"
     );
     let removed_events: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'worktree.removed'")
             .fetch_one(harness.repo.pool())
             .await
             .unwrap();
-    assert_eq!(removed_events, 1);
+    assert_eq!(removed_events, 0);
     assert!(!settings_dir.exists());
 }
 
-/// A worker op frozen before the base was recorded recovers unpinned.
-/// Its `tx_output` has `repo_root` / `slice_branch` / `cwd` but no `base_sha`
-/// or `canonical_path` (design D12 (d)): provisioning must succeed and take
-/// today's shape — the repository's HEAD at spawn time, no check against a
-/// base it never recorded — rather than refuse the recovery.
+/// D3 — the spawn only verifies: a checkout whose HEAD moved after the prepare tx recorded its
+/// base fails the spawn, naming both commits; nothing is created or moved.
 #[tokio::test]
-async fn pre_slice1_frozen_worker_op_provisions_unpinned() {
-    let harness = claude_worker_harness().await;
-    let (prepared, _, _) = prepare_claude_worker(&harness, "frozen").await;
-    let card_id = prepared.output_string("card_id", "test").unwrap();
-    let cwd = prepared.output_string("cwd", "test").unwrap();
-    let recorded_base = prepared.output_string("base_sha", "test").unwrap();
-    assert!(
-        prepared.output_string("canonical_path", "test").is_ok(),
-        "a lease prepared by this slice freezes canonical_path"
-    );
-
-    // The frozen shape from before slice 1: strip what the slice added.
-    let mut frozen = prepared.clone();
-    let data = frozen.data.as_object_mut().unwrap();
-    data.remove("base_sha");
-    data.remove("canonical_path");
-    assert!(
-        frozen
-            .output_optional_string("base_sha", "test")
-            .unwrap()
-            .is_none()
-    );
-    assert_eq!(
-        frozen.output_string("repo_root", "test").unwrap(),
-        prepared.output_string("repo_root", "test").unwrap()
-    );
-
-    // The repository moves on between the (old) prepare and this recovery.
-    assert!(
-        std::process::Command::new("git")
-            .args([
-                "-c",
-                "user.name=Test",
-                "-c",
-                "user.email=test@example.invalid",
-                "commit",
-                "--allow-empty",
-                "-qm",
-                "moved after the frozen prepare",
-            ])
-            .current_dir(harness.workspace.path())
-            .status()
-            .unwrap()
-            .success()
-    );
-    let moved_head = git_head(harness.workspace.path());
-    assert_ne!(moved_head, recorded_base, "test setup moved HEAD");
-
-    let route_repo: Arc<dyn crate::db::RouteRepo> = harness.repo.clone();
-    let op_repo: Arc<dyn OperationRepo> =
-        Arc::new(SqlxOperationRepo::new(harness.repo.pool().clone()));
-    let ctx = SpawnCtx::new(
-        route_repo,
-        op_repo,
-        Arc::new(DaemonClient::new_stub()),
-        TerminalRendererRegistry::new(),
-        harness.events.clone(),
-        OperationCompletionBus::new(),
-    );
-    workspace::provision(&harness.adapter, &ctx, &frozen)
-        .await
-        .expect("a pre-slice-1 frozen op provisions without a base");
-
-    assert!(Path::new(&cwd).join("worker-source").is_file());
-    assert_eq!(
-        git_head(Path::new(&cwd)),
-        moved_head,
-        "unpinned: the worktree follows the HEAD at spawn time, as before slice 1"
-    );
-    let provisioned_events: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'worktree.provisioned'")
-            .fetch_one(harness.repo.pool())
-            .await
-            .unwrap();
-    assert_eq!(provisioned_events, 1);
-
-    release_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &card_id)
-        .await
-        .unwrap();
-}
-
-/// The production spawn path (`workspace::provision`, which reads the frozen
-/// `tx_output`) provisions at the base the prepare tx
-/// recorded, not at the HEAD the attached repository has moved on to.
-#[tokio::test]
-async fn claude_spawn_provisions_at_frozen_base_not_moving_head() {
+async fn claude_spawn_refuses_a_checkout_that_moved_after_prepare() {
     let harness = claude_worker_harness().await;
     let (prepared, _, _) = prepare_claude_worker(&harness, "pinned").await;
     let card_id = prepared.output_string("card_id", "test").unwrap();
     let cwd = prepared.output_string("cwd", "test").unwrap();
     let recorded_base = prepared.output_string("base_sha", "test").unwrap();
+    assert_eq!(git_head(Path::new(&cwd)), recorded_base);
 
-    // The repository moves on between prepare and spawn.
+    // The checkout moves on between prepare and spawn.
     assert!(
         std::process::Command::new("git")
             .args([
@@ -521,12 +421,12 @@ async fn claude_spawn_provisions_at_frozen_base_not_moving_head() {
                 "-qm",
                 "moved after prepare",
             ])
-            .current_dir(harness.workspace.path())
+            .current_dir(&cwd)
             .status()
             .unwrap()
             .success()
     );
-    let moved_head = git_head(harness.workspace.path());
+    let moved_head = git_head(Path::new(&cwd));
     assert_ne!(moved_head, recorded_base, "test setup moved HEAD");
 
     let route_repo: Arc<dyn crate::db::RouteRepo> = harness.repo.clone();
@@ -540,24 +440,24 @@ async fn claude_spawn_provisions_at_frozen_base_not_moving_head() {
         harness.events.clone(),
         OperationCompletionBus::new(),
     );
-    workspace::provision(&harness.adapter, &ctx, &prepared)
+    let err = workspace::verify(&harness.adapter, &ctx, &prepared)
         .await
-        .expect("spawn provisions the prepared lease");
-
-    assert_eq!(
-        git_head(Path::new(&cwd)),
-        recorded_base,
-        "the worktree starts at the frozen base"
+        .expect_err("a moved checkout fails the spawn");
+    let message = err.to_string();
+    assert!(
+        message.contains(&recorded_base) && message.contains(&moved_head),
+        "{message}"
     );
-    assert_ne!(
-        git_head(Path::new(&cwd)),
-        moved_head,
-        "not at the HEAD that moved after prepare"
-    );
+    assert_eq!(git_head(Path::new(&cwd)), moved_head, "nothing was reset");
 
-    release_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &card_id)
-        .await
-        .unwrap();
+    release_workspace_lease_for_card_repo(
+        harness.repo.as_ref(),
+        &harness.events,
+        &card_id,
+        ReleaseDelivery::Commit(AttemptOutcome::Completed),
+    )
+    .await
+    .unwrap();
 }
 
 fn git_head(dir: &Path) -> String {
@@ -818,9 +718,14 @@ async fn claude_worker_prompt_includes_completion_task_id() {
     let harness = claude_worker_harness().await;
     let (output, _, _) = prepare_claude_worker(&harness, "identity").await;
     let card_id = output.output_string("card_id", "test").unwrap();
-    release_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &card_id)
-        .await
-        .unwrap();
+    release_workspace_lease_for_card_repo(
+        harness.repo.as_ref(),
+        &harness.events,
+        &card_id,
+        ReleaseDelivery::Commit(AttemptOutcome::Completed),
+    )
+    .await
+    .unwrap();
     assert!(
         output
             .output_string("prompt", "test")
@@ -835,9 +740,6 @@ mod recovery_tests;
 
 #[cfg(test)]
 mod launch_cleanup_tests;
-
-#[cfg(test)]
-mod upstream_tests;
 
 /// #1727 S4 slice 2 — the lease the claude worker's `prepare_tx` takes is a kernel-delivery
 /// lease (`delivery_policy = 'kernel'`, written in the same INSERT as its base); the

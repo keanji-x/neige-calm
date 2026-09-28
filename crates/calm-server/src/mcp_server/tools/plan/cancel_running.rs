@@ -4,6 +4,8 @@
 
 use crate::db::sqlite::{task_cancel_running_tx, task_get_tx};
 use crate::error::CalmError;
+use crate::event::{Event, EventScope};
+use crate::ids::ActorId;
 use crate::model::{Task, TaskStatus, now_ms};
 use crate::operation::Tx;
 use crate::scheduler::{
@@ -97,13 +99,14 @@ fn refused_for(key: &str, current: &Task, running_refusal: Refusal) -> CalmError
 
 /// Cancel the current execution `current` (read in this tx) if it is a running Track worker the
 /// sweep can reap: CAS `running → canceled` pinned to its card, plus the card's cleanup marker.
-/// Returns rows moved; `0` means a concurrent cancel already canceled it (the caller's idempotent
-/// path). Any other state the CAS did not move is refused with its current status.
+/// Returns rows moved — `0` means a concurrent cancel already canceled it (the caller's idempotent
+/// path) — and the lease events when no live session was left to mark and the lease was released
+/// here. Any other state the CAS did not move is refused with its current status.
 pub(super) async fn cancel_running_in_tx(
     tx: &mut Tx<'_>,
     current: &Task,
     key: &str,
-) -> Result<u64, CalmError> {
+) -> Result<(u64, Vec<(ActorId, EventScope, Event)>), CalmError> {
     if !task_has_running_liveness_deadline(current) {
         return Err(refused_for(key, current, Refusal::Route));
     }
@@ -120,11 +123,11 @@ pub(super) async fn cancel_running_in_tx(
             .await?
             .map_or(current.status, |row| row.status);
         if status == TaskStatus::Canceled {
-            return Ok(0);
+            return Ok((0, Vec::new()));
         }
         return Err(refused(key, status, Refusal::for_status(status)));
     }
-    let marked = mark_running_timeout_cleanup_tx(
+    let mark = mark_running_timeout_cleanup_tx(
         tx,
         card_id,
         &current.id,
@@ -132,14 +135,14 @@ pub(super) async fn cancel_running_in_tx(
         WorkerCleanupReason::PlannerCanceled,
     )
     .await?;
-    if marked == 0 {
+    if mark.marked == 0 {
         tracing::warn!(
             task_id = %current.id,
             card_id,
             "plan_cancel: no live worker session to mark; the canceled worker is not reaped"
         );
     }
-    Ok(rows)
+    Ok((rows, mark.released))
 }
 
 #[cfg(test)]

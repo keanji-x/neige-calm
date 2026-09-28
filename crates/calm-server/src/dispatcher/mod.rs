@@ -87,6 +87,7 @@ pub(crate) const SCHEDULER_TRIGGER_KINDS: &[&str] = &[
     "track.updated",
     "track.deleted",
     "area.deleted",
+    "workspace.released",
 ];
 
 /// The one kind list the dispatcher's `SubscribeFilter` is built from.
@@ -1046,6 +1047,11 @@ impl Inner {
             Event::TrackUpdated(payload) => {
                 self.scheduler.poke(payload.id.clone());
             }
+            // #1830 S2 D7: a release may have written the attempt's first delivery row; the pass
+            // submits it (`resume_git_deliveries`) and, once it settles, claims the next task.
+            Event::WorkspaceReleased { track_id, .. } => {
+                self.scheduler.poke(track_id.clone());
+            }
             Event::TrackReportEdited {
                 author, track_id, ..
             } => {
@@ -1153,7 +1159,6 @@ impl Inner {
             | Event::ProposalSubmitted { .. }
             | Event::ProposalResolved { .. }
             | Event::WorkspaceLeased { .. }
-            | Event::WorkspaceReleased { .. }
             | Event::WorktreeProvisioned { .. }
             | Event::WorktreeCommitted { .. }
             | Event::ReviewRound { .. }

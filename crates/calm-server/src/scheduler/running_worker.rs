@@ -372,8 +372,9 @@ impl Scheduler {
                     if rows == 0 {
                         return Err(race_lost_err());
                     }
+                    let mut released = Vec::new();
                     if let Some(card_id) = timeout_cleanup_card_id.as_deref() {
-                        let marked = super::mark_running_timeout_cleanup_tx(
+                        let mark = super::mark_running_timeout_cleanup_tx(
                             tx,
                             card_id,
                             &task_id,
@@ -381,13 +382,14 @@ impl Scheduler {
                             cleanup_reason,
                         )
                         .await?;
-                        if marked == 0 {
+                        if mark.marked == 0 {
                             tracing::warn!(
                                 task_id = %task_id,
                                 card_id,
                                 "scheduler sweep: no live worker session to mark; the failed worker is not reaped"
                             );
                         }
+                        released = mark.released;
                     }
                     let mut events = vec![(
                         ActorId::KernelDispatcher,
@@ -399,6 +401,7 @@ impl Scheduler {
                             agent_message: None,
                         },
                     )];
+                    events.extend(released);
                     if let Some(auto_events) = auto_transition_if_current_in_tx(
                         tx,
                         &track_id,
