@@ -123,7 +123,12 @@ Verified at 2bd0ce8eb (S1 head) by reading the code, or by the query or command 
     unknown-thread text is not pinned anywhere. So on `CodexRefused` the cleanup asks the
     existing authoritative `read_liveness_facts` (`shared_codex_appserver.rs:4571`): a thread
     that is `NotLoaded` (as after a daemon restart) or whose last turn ended counts as stopped
-    (Ok). Only a transport failure, or a thread still active, returns Err.
+    (Ok). A daemon that is not Running (`!is_running_per_readiness()`,
+    `shared_codex_appserver.rs:1734`) also counts as stopped, by the codebase's own death rule
+    ("daemon down — brain gone, no turn can run", `calm-provider/src/provider/codex.rs:139-141`).
+    Only a transport failure while the daemon is Running, or a thread still active, returns Err.
+    Each Err therefore needs a live daemon that cannot answer, so the loop ends when the daemon
+    either answers or goes down.
     `mark_running_timeout_cleanup_tx` itself releases in the caller's tx when it marks 0
     sessions: no live worker is left to kill (a Claude PTY that died same-boot is `exited`,
     `attach_reader.rs:141-160`). That covers its three callers: the liveness flip, the running
@@ -267,7 +272,7 @@ files and reports through MCP. Tracks are minted by the real create route.
 | T7 `delivery_retry_is_refused_once_the_track_moved_on`: a's delivery settled `failed` (the `git_delivery.rs` observation-failure setup); the test then removes a's untracked `worker.txt` (`git_delivery.rs:2365`) so D6 admits b. b runs as a real worker holding a real lease: the retry is refused with "running another attempt". After b settles, it is refused with "a later attempt ran in this checkout", and a's candidate ref does not exist | D5 retry | M9: retry skips `track_idle_tx` (the first refusal names the later attempt instead); M10: retry skips the latest-lease check |
 | T8 `an_exited_worker_is_released_by_its_timeout_flip`: fixture `kernel_lease` + `running_task`; the session set `exited` and `running_deadline_ms` set in the past by SQL (`planner_preserving_recovery.rs:313`, `git_delivery.rs:4111` patterns); one reconcile sweep. The task is `failed`, the lease `released`, and the delivery row has `outcome = 'failed'` | D7, `mark_running_timeout_cleanup_tx` | M11: that function does not release when it marks 0 |
 | T9 `a_lease_from_an_older_boot_fails_its_attempt_and_is_released`: fixture `kernel_lease` + `running_task`, lease `boot_id` set to `stale-boot` by SQL, then `fx.reboot()`. The lease is `released`, the task `failed` with the dead-worker detail, and the delivery row has `outcome = 'interrupted'` | D7 boot reclaim | M12: boot reclaim does not fail the task |
-| T10 `a_failed_codex_interrupt_keeps_the_lease_until_it_succeeds`: a running fixture codex worker is canceled with `calm.plan.cancel`, and `fail_turn_interrupt_for_test(true)` (`shared_codex_appserver.rs:3780`) makes its interrupt fail. After a sweep the lease is still `held` and the marker kept; after `(false)` and the next sweep it is `released` with `outcome = 'canceled'` | D7 interrupt | M13: `driver.rs:233-266` logs and returns Ok again |
+| T10 `a_failed_codex_interrupt_keeps_the_lease_until_it_succeeds`: a running fixture codex worker is canceled with `calm.plan.cancel`, and `fail_turn_interrupt_for_test(true)` (`shared_codex_appserver.rs:3780`) makes its interrupt fail. After a sweep the lease is still `held` and the marker kept; after `(false)` and the next sweep it is `released` with `outcome = 'canceled'`. It cannot reach the daemon-down arm: the fixture's `is_running_per_readiness` always returns true while a fake is installed (`shared_codex_appserver.rs:1735-1737`), so that arm is untested | D7 interrupt | M13: `driver.rs:233-266` logs and returns Ok again |
 | T11 `a_stuck_owner_lease_does_not_block_the_next_claim` (attached): a's real worker op is set `stuck` and a `failed` by SQL (the `UPDATE operations SET phase=` pattern of `candidate_verification.rs:503`), with its lease still `held` and a clean tree. b is claimed and runs in the worktree; a's lease is `released` with no delivery row, and b's lease is `held` | D5 stuck exception, D7 supersede | M14: the lease term counts stuck owners (b stays `pending`); M15: prepare skips the supersede (b's INSERT hits G3's index, `spawn-failed`) |
 
 Ordinary tests, all on attached tracks:
