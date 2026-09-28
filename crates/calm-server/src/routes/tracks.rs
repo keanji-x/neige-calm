@@ -804,7 +804,7 @@ pub(crate) async fn create_track(
     Json(mut request): Json<CreateTrackRequest>,
 ) -> Result<Response> {
     // #1817: a Claude create's availability (the cached check, at most `TTL` old, or a new check
-    // of up to ~40 s) is read before the area lock below, which it must not hold; it and the
+    // of up to ~28 s) is read before the area lock below, which it must not hold; it and the
     // model list it caches (#1822) gate only a new mint, after the replay arms.
     let claude_availability = if request.planner_provider == AgentProvider::Claude {
         Some(
