@@ -20,7 +20,8 @@ S2 deletes the per-card lease worktree path (`.claude/worktrees/<track>/<card>`,
 `neige/<track>/<card>`, worker upstream bases, provisioning, lease removal, the #1815 reclaim),
 the carry resolution and the legacy `git.commit:auto`. Attached tracks without a worktree are
 refused at worker start. S2b (§9), which also lands before deploy, deletes `calm.task.replace`
-and the budget knob. Isolated (`calm.task.dispatch`) and `terminal` tasks do not change.
+and the budget knob. Isolated (`calm.task.dispatch`) and `terminal` tasks keep their own
+workspaces and their claims are not fenced (D5).
 
 ## 1. Facts
 
@@ -68,9 +69,10 @@ Verified at 2bd0ce8eb (S1 head) by reading the code, or by the query or command 
   (`delivery.rs:183`) and the `facts.rs:135` fallback.
   `candidate.repo_root` is the lease path, meaning the checkout the candidate was made in. It is
   for humans only (G9), so there is no inverse parse.
-- **D5 One track-idle predicate,** `track_idle_tx(tx, track_id, except_attempt)`. It holds when,
-  apart from `except_attempt`:
-  - no task is `dispatched`/`running`/`verifying`;
+- **D5 One track-idle predicate,** `track_idle_tx(tx, track_id, except_attempt)`. It counts only
+  in-tree workers, meaning codex/claude tasks that are neither `isolated_codex::selected` nor on
+  the child-track route. It holds when, apart from `except_attempt`:
+  - no in-tree worker task is `dispatched`/`running`/`verifying`;
   - no lease is `held`/`releasing`;
   - no delivery is unsettled.
 
@@ -80,9 +82,14 @@ Verified at 2bd0ce8eb (S1 head) by reading the code, or by the query or command 
   - delivery: a commit not yet landed.
 
   It is used in two places, with G3's unique index as the backstop:
-  - the claim tx, on top of the budget, which stays until S2b (`except` = the claimed row);
+  - the claim tx of an in-tree worker only, on top of the budget, which stays until S2b
+    (`except` = the claimed row);
   - delivery retry admission (G12), with `except` = the retried attempt. Otherwise the retry
-    refuses: "refused: the track is running another attempt; wait for it, then retry".
+    refuses: "refused: the track is running another attempt; wait for it, then retry". Retry
+    also requires the attempt's lease to be the track's latest lease row. After a later attempt
+    has run, `git add -A` would stage nothing and `update-ref` would pin its HEAD as this
+    attempt's candidate (`action.rs:358-374`), so it refuses: "refused: a later attempt ran in
+    this checkout; declare a new task".
 - **D6 Clean-tree check** in `prepare_worker_lease_tx`, before the lease INSERT, so a refusal
   writes no row and nothing commits the Planner's files.
   - It runs `git -c core.fsmonitor=false status --porcelain -z --untracked-files=normal` through
@@ -112,9 +119,12 @@ Verified at 2bd0ce8eb (S1 head) by reading the code, or by the query or command 
   - **Timeout / `calm.plan.cancel` of a running task:** at the cleanup after the kill, with the
     terminal `tasks.status` (`failed` / `canceled`). The terminal flip does not release, because
     the worker may still write. Until its marker clears, the cleanup is retried every tick.
-  - **Compensation:** the `release_workspace_lease` step, with `spawn-failed`.
+  - **Compensation:** the `release_workspace_lease` step becomes the last step, after
+    `cleanup_codex_worker` (`codex_adapter/mod.rs:1033-1047`), with `spawn-failed`.
   - **Card delete:** its delete tx, with `interrupted`.
-  - **Boot reclaim** (a lease from an older boot): with `interrupted`.
+  - **Boot reclaim is deleted** (smaller than failing the task there). A lease from an older
+    boot belongs to a running task, which its liveness timeout ends through the cleanup arm, or
+    to a recoverable op, whose compensation releases it.
   - **Track/area delete:** no delivery row.
 
   The dispatcher pokes the scheduler on `workspace.released` so the new row is submitted (G11).
@@ -139,16 +149,13 @@ Verified at 2bd0ce8eb (S1 head) by reading the code, or by the query or command 
     --porcelain` empty; ignored files do not count): commit with `git.commit` or undo first. A
     `track-worktree-dirty` failure lists the files; clean them, then recover or re-declare.
     `track-without-worktree` means create a new track."
-  - `:77`: "After every attempt, completed, failed or stopped, the kernel commits…"
-  - `:72`: "…its gate runs in the track's checkout…"
-  - `head-*.md:6`: "the platform commits after you report".
-  - The replace bullet (`:76`) changes in S2b.
-- **D14 Deferred S1 §8 items:**
-  - The terminal default cwd and the Claude-restart fallback stay on `workspace.path`. Moving
-    them would add an uncommitted writer to the worker tree.
-  - The gate fallback stays.
-  - Children of managed parents work; children of attached parents are refused (D1).
-  - The Planner needs no writable gitdir (G16).
+  - `:77` "After every attempt, completed, failed or stopped, the kernel commits…"; `:72` "…its
+    gate runs in the track's checkout…"; `head-*.md:6` "the platform commits after you report".
+    The replace bullet (`:76`) changes in S2b.
+- **D14 Deferred S1 §8 items:** the terminal default cwd, the Claude-restart fallback and the
+  gate fallback stay (moving the terminal would add an uncommitted writer to the worker tree).
+  Children of managed parents work and children of attached parents are refused (D1). The
+  Planner needs no writable gitdir (G16).
 - **D15 Sandboxes do not change** (G17). The gain is 1 worktree and 1 branch per attached track
   and none per attempt, which is what #1815's E2BIG counts.
 
@@ -160,7 +167,7 @@ Verified at 2bd0ce8eb (S1 head) by reading the code, or by the query or command 
 | worker dies unreported | reaper fail tx | already | same tx (`failed`) |
 | liveness timeout, running cancel | flip + cleanup marker | sweep kills it | cleanup after kill (`failed` / `canceled`) |
 | spawn fails after prepare | compensation, then `fail_spawn` | never ran, or killed | compensation step (`spawn-failed`) |
-| machine reboot mid-run | stays running until the timeout | already | boot reclaim (`interrupted`) |
+| machine reboot mid-run | liveness timeout flip | already | cleanup after the timeout (`failed`) |
 | dirty tree or no worktree at prepare | `fail_spawn` | never ran | no lease, no row |
 
 The only end without a commit is a delivery that runs and fails (a merge in progress, a switched
@@ -180,7 +187,11 @@ Additions (about 300 production lines, one migration):
 - Adapters (`codex_adapter/mod.rs`, `claude_adapter/{mod,workspace}.rs`): call
   `prepare_worker_lease_tx`, verify only at spawn, and drop the carry notice.
 - Release call sites (D7): `decision_sink.rs`, `reaper/mod.rs`, `scheduler/mod.rs` cleanup, the
-  adapters' compensation, `routes/cards.rs:1576`, `plugin_host/callbacks.rs:537`, boot reclaim.
+  adapters' compensation (release moved last), `routes/cards.rs:1576`, `plugin_host/callbacks.rs:537`.
+- Compensation has no card→attempt stamp: its release takes the attempt from the op's
+  `idempotency_key` (the lease's `lease_owner` op).
+- The per-card and upstream deletions spare what S1's `track_worktree.rs` uses:
+  `WorkspaceLeaseTarget`, `choose_lease_start`, `diverged_refusal`, `refresh_upstream`.
 - Fence call sites: the `scheduler/mod.rs` claim tx and `git_candidate/action.rs` retry (D5).
   `dispatcher/mod.rs` gets the `workspace.released` poke.
 - `delivery.rs`: the branch and message (D4, D8). `candidate.rs`: `repo_root`. `facts.rs:135`.
@@ -188,14 +199,14 @@ Additions (about 300 production lines, one migration):
   completed". `workspace_materialize.rs:171-215`: reword the refusal message (the
   `refs/heads/neige` check stays).
 
-Deletions: about 2,150 production lines and 4,400 test lines.
+Deletions: about 2,200 production lines and 4,400 test lines.
 
 | What | Prod lines |
 |---|---|
 | Per-card path in `workspace_lease/mod.rs`: target, `release_by_id`/`remove_artifact`, provisioning and stale-dir cleanup, KeepWork/`RemovalOutcome`/`*_for_lease*`, the per-card sweep (entries, slice branches, `worktree.removed` events), path parsing, `workspace_lease_path_for`/`workspace_slice_branch_for` | ~750 |
 | `base.rs`: `resolve_lease_base`, the provision, sweep and removal identity checks, `WorktreeBase::LegacyUnpinned`. The symlink and foreign-registration helpers stay for G15 | ~230 |
 | #1815 reclaim: `workspace_lease/reclaim.rs`, `scheduler/worktree_reclaim.rs` | 588 |
-| Worker upstream fetch: `refresh_track_upstream`, the `before_insert` hook and its driver call. Pre-slice recovery arms in both adapters (0 in-flight ops) | ~110 |
+| Worker upstream fetch: `refresh_track_upstream`, the `before_insert` hook and its driver call. Boot reclaim (`workspace_lease/mod.rs:401-450`, `driver.rs:372`). Pre-slice recovery arms in both adapters (0 in-flight ops) | ~160 |
 | Carry: `carry.rs` less `run_git` (`resolve_task_lease_base_tx`, merge-tree, `CarryNotice`), `carry_plan_tx`, `prompts/worker/carry-notice.md`, the carry test seam `test_seams.rs:188-205` | ~300 |
 | Legacy `git.commit:auto`: `emit.rs:170-306`, `:326-344` | ~160 |
 
@@ -230,10 +241,10 @@ files and reports through MCP. Tracks are minted by the real create route.
 | T2 `a_failed_attempt_is_committed_and_the_next_task_continues_from_it` (attached): the worker writes `a.txt` and calls `calm.task.fail`. `neige/track-<id>` gains a commit whose message names the attempt and `failed`, the delivery row's `outcome` is `failed`, the candidate ref points at it, and the tree is clean. A task declared after that settlement has `base_sha` equal to that commit and reads `a.txt` | D7, D8 | M2: the report tx inserts no row on failure; M3: the report tx writes `outcome = 'completed'` for every report |
 | T3 `an_attached_track_registers_one_worktree_and_one_branch`: two successful tasks, the second declared after the first settles. Both worker cwds are the track worktree. `git worktree list` and `refs/heads/neige/*` each grow by exactly 1 from before the create, and `.claude/worktrees/<track>/` does not exist | D1, D2 (acceptance) | M4: `prepare_worker_lease_tx` uses `workspace.path` for attached tracks |
 | T4 `a_track_runs_one_worker_at_a_time`: `tracks.task_budget = 4` (as on 4140). Task a is made running through the `git_delivery.rs` fixture's `running_task`, and independent task b is ready. A scheduler pass leaves b `pending` | D5 status term | M5: the status term is dropped |
-| T4b `the_next_task_waits_for_the_previous_commit` (budget 4): a writes a file and reports. A `pre-commit` hook in the repository blocks until a release file exists, which holds the real delivery unsettled. A pass leaves b `pending`. After the file is created, the delivery settles and b is claimed with base = a's commit | D5 delivery term | M6: the delivery term is dropped |
+| T4b `the_next_task_waits_for_the_previous_commit` (budget 4): a is ungated (so it ends `done`, not `verifying`), writes a file and reports. A `pre-commit` hook in the repository blocks until a release file exists, which holds the real delivery unsettled. A pass leaves b `pending`. After the file is created, the delivery settles and b is claimed with base = a's commit | D5 delivery term | M6: the delivery term is dropped |
 | T5 `a_worktree_less_attached_track_refuses_workers`: a fixture `AttachedFromCwd` row (no worktree, as on 4140) gives `spawn-failed: refused: track-without-worktree`; the checkout's `status` and HEAD are unchanged | D1 | M7: the attached arm falls back to `workspace.path` |
 | T6 `a_managed_track_worker_commits_on_main_in_its_directory`: the worker cwd is `workspace.path`; a candidate commit lands on `main`; no worktree is registered | D1, D4 | M8: the branch rule gives every track `neige/track-<id>` |
-| T7 `delivery_retry_waits_while_another_attempt_runs`: a's delivery settled `failed` (the `git_delivery.rs` observation-failure setup), b is running, and a retry is refused. After b ends, the retry is admitted | D5 retry | M9: retry skips `track_idle_tx` |
+| T7 `delivery_retry_is_refused_once_the_track_moved_on`: a's delivery settled `failed` (the `git_delivery.rs` observation-failure setup). b runs as a real worker holding a real lease, and a retry is refused (idle). After b settles, the retry is still refused (not the latest lease) and a's candidate ref does not exist | D5 retry | M9: retry skips `track_idle_tx`; M10: retry skips the latest-lease check |
 
 Ordinary tests, all on attached tracks:
 - `calm.plan.cancel` of a running task commits `canceled` after the kill.
@@ -245,12 +256,10 @@ lease. Predicted red sets:
 - M1 → T1 and the `showUntrackedFiles` unit test.
 - M2 → T2.
 - M3 → T2 only (the cancel and reaper tests write their outcome at another call site).
-- M4 → T1–T4b, T7, and the cancel and reaper tests (all attached).
-- M5 → T4.
-- M6 → T4b.
-- M7 → T5.
-- M8 → T6.
-- M9 → T7.
+- M4 → T1–T3, T4b, T7, and the cancel and reaper tests (all attached). Not T4: `running_task`
+  flips SQL status and takes no lease.
+- M5 → T4 (T7's b holds a real lease, so the lease term still refuses).
+- M6 → T4b; M7 → T5; M8 → T6; M9 and M10 → T7.
 
 The lease term of D5 has no must-red test (holding a kill needs a missing hook); G3 backs it up.
 
@@ -262,6 +271,8 @@ The lease term of D5 has no must-red test (holding a kill needs a missing hook);
 - A failed attempt wakes the Planner twice: `task.failed`, then its candidate settlement.
 - A reported worker's late write can land after the kernel commit and overlap the next attempt.
 - A delivery that never settles (for example, the kernel cannot spawn git) holds the track.
+- A terminal task that writes into the track's checkout leaves files, which the next clean check
+  refuses; the Planner cleans them.
 - A managed track re-pointed to attached before its first lease has no worktree and is refused.
 - A hand-removed track worktree fails D6 (`track-worktree-unavailable`); delete the track.
 - Until S2b, the budget still admits several ready tasks into the claim, where D5 turns them
