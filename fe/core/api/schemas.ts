@@ -97,6 +97,8 @@ const trackObjectSchema = z.object({
       kind: z.enum(['managed', 'attached']),
       path: z.string(),
       frozen_at: z.number().nullable(),
+      /** The kernel-made git worktree the track's agents run in (#1830); absent when there is none. */
+      worktree: z.string().optional(),
     })
     .default({ kind: 'attached', path: '', frozen_at: null }),
   /** Stored on the tree root only: a child track shows `null` here even when its root carries one. */

@@ -917,6 +917,15 @@ describe('entity sub-schemas', () => {
     });
     // No `live.workspace.path === live.cwd` assertion: zod has no cross-field constraint,
     // so it would be true no matter what the schema said.
+    // #1830: an attached track's worktree rides along; serde omits it when there is none.
+    const worktree = '/repo/.claude/worktrees/track-w1';
+    expect(
+      trackSchema.parse({
+        ...base,
+        workspace: { kind: 'attached', path: '/repo', frozen_at: 1, worktree },
+      }).workspace.worktree,
+    ).toBe(worktree);
+    expect(live.workspace).not.toHaveProperty('worktree');
   });
 
   it('trackSchema rejects a present-but-incomplete `workspace` (#1147 S1)', () => {
