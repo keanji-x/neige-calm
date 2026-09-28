@@ -1,6 +1,5 @@
 //! #1785 S2: `calm.task.replace` — admission (design §4.7, one test per row), the stop, the
 //! appended successor block, the receipt's replay and rollback, and the §4.6 wake guarantee.
-//! The carry itself (lease prepare, git) is in `task_replace_carry.rs`.
 use std::path::Path;
 use std::time::Duration;
 
