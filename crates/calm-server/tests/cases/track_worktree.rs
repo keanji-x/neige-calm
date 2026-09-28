@@ -420,28 +420,43 @@ async fn a_genuine_retry_reuses_the_registered_track_worktree() {
 }
 
 /// A checkout with unpushed commits whose upstream moved on is refused like a worker lease
-/// (`attached-repo-diverged`); the row stays, no worktree or branch is made.
+/// (`attached-repo-diverged`); the row stays, no worktree or branch is made. Once the user has
+/// reconciled the checkout, a retry under the same key makes it (the documented recovery).
 #[tokio::test]
 async fn a_diverged_checkout_fails_the_create_and_makes_no_worktree() {
     let b = boot().await;
     let up = upstream(b.tmp.path());
-    up.advance_origin("upstream.txt");
+    let origin_tip = up.advance_origin("upstream.txt");
     std::fs::write(up.clone.join("mine.txt"), "mine\n").unwrap();
     run_git(&up.clone, ["add", "-A"]);
     run_git(&up.clone, ["commit", "-q", "-m", "unpushed work"]);
 
-    let (status, body) = b.create_at(&up.clone, None, None).await;
+    let (status, body) = b.create_at(&up.clone, Some("idem-diverged"), None).await;
     assert!(!status.is_success(), "{status} {body}");
     assert!(
         body.to_string().contains("attached-repo-diverged"),
         "{body}"
     );
     let track_id = b.only_track_id().await;
-    assert!(!expected_worktree(&up.clone, &track_id).exists());
+    let worktree = expected_worktree(&up.clone, &track_id);
+    assert!(!worktree.exists());
     assert!(!git_ref_exists(
         &up.clone,
         &format!("refs/heads/neige/track-{track_id}")
     ));
+
+    run_git(&up.clone, ["fetch", "-q", "origin"]);
+    run_git(&up.clone, ["rebase", "-q", "origin/main"]);
+    let (status, body) = b.create_at(&up.clone, Some("idem-diverged"), None).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["id"], json!(track_id), "the same track");
+    assert!(worktree.is_dir(), "the retry made the worktree");
+    assert_eq!(
+        head(&worktree),
+        head(&up.clone),
+        "ahead of the upstream: HEAD"
+    );
+    assert_ne!(head(&worktree), origin_tip);
     b.shutdown_harnesses().await;
 }
 
