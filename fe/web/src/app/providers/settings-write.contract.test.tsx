@@ -9,8 +9,8 @@ import { afterEach, expect, it, vi } from 'vitest';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { HTTP_PROXY_KEY, TASK_BUDGET_DEFAULT_KEY } from '../../../../core/domain/settings.ts';
-import { GeneralPane } from '../../features/settings/public.tsx';
+import { HTTP_PROXY_KEY } from '../../../../core/domain/settings.ts';
+import { NetworkPane } from '../../features/settings/public.tsx';
 import { settingsQueryOptions, useSettingsMutation } from './queries.ts';
 
 afterEach(() => { cleanup(); onlineManager.setOnline(true); vi.useRealTimers(); });
@@ -19,50 +19,50 @@ const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 function SettingsProbe({ transport }: { transport: ApiTransportPort }) {
   const onSave = useSettingsMutation(transport, unauthorized);
   const query = useQuery(settingsQueryOptions(transport, unauthorized));
-  return <GeneralPane settings={query.data?.settings} loadError={null} onSave={async (patch) => { await onSave(patch); }}
-    onRetryLoad={() => { void query.refetch(); }} savedNoticeMs={60_000} />;
+  return <NetworkPane settings={query.data?.settings} loadError={null} onSave={async (patch) => { await onSave(patch); }}
+    onRetryLoad={() => { void query.refetch(); }} onOpenMobile={() => undefined} savedNoticeMs={60_000} />;
 }
 
 it('rejects an offline Settings write without replaying it over a newer client value', async () => {
-  let serverValue = '1';
+  let serverValue = 'http://one';
   const writes: string[] = [];
   const transport: ApiTransportPort = { send: (request) => {
     if (request.method === 'PUT') {
       const body = request.body as { settings: Record<string, string> };
-      serverValue = body.settings[TASK_BUDGET_DEFAULT_KEY];
+      serverValue = body.settings[HTTP_PROXY_KEY];
       writes.push(serverValue);
     }
-    return Promise.resolve({ status: 200, statusText: 'OK', body: { settings: { [TASK_BUDGET_DEFAULT_KEY]: serverValue } } });
+    return Promise.resolve({ status: 200, statusText: 'OK', body: { settings: { [HTTP_PROXY_KEY]: serverValue } } });
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><SettingsProbe transport={transport} /></QueryClientProvider>);
-  const field = await screen.findByLabelText('Task concurrency');
+  const field = await screen.findByLabelText('HTTP proxy');
   act(() => onlineManager.setOnline(false));
-  await userEvent.clear(field); await userEvent.type(field, '2'); await userEvent.tab();
+  await userEvent.clear(field); await userEvent.type(field, 'http://two'); await userEvent.tab();
   await screen.findByText(/offline.*Reconnect/i);
-  serverValue = '3'; // A second independent client committed this while this tab was offline.
+  serverValue = 'http://three'; // A second independent client committed this while this tab was offline.
   await act(async () => { onlineManager.setOnline(true); await client.resumePausedMutations(); });
-  expect(serverValue).toBe('3');
+  expect(serverValue).toBe('http://three');
   expect(writes).toEqual([]);
-  expect(screen.getByLabelText<HTMLInputElement>('Task concurrency').value).toBe('2');
+  expect(screen.getByLabelText<HTMLInputElement>('HTTP proxy').value).toBe('http://two');
 });
 
 it('refreshes an open settings pane after another client writes and removes its obsolete Saved notice', async () => {
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
-  let serverValue = '1';
+  let serverValue = 'http://one';
   const transport: ApiTransportPort = { send: (request) => {
-    if (request.method === 'PUT') serverValue = (request.body as { settings: Record<string, string> }).settings[TASK_BUDGET_DEFAULT_KEY];
-    return Promise.resolve({ status: 200, statusText: 'OK', body: { settings: { [TASK_BUDGET_DEFAULT_KEY]: serverValue } } });
+    if (request.method === 'PUT') serverValue = (request.body as { settings: Record<string, string> }).settings[HTTP_PROXY_KEY];
+    return Promise.resolve({ status: 200, statusText: 'OK', body: { settings: { [HTTP_PROXY_KEY]: serverValue } } });
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><SettingsProbe transport={transport} /></QueryClientProvider>);
-  const field = await screen.findByLabelText('Task concurrency');
-  await userEvent.clear(field); await userEvent.type(field, '3'); await userEvent.tab();
+  const field = await screen.findByLabelText('HTTP proxy');
+  await userEvent.clear(field); await userEvent.type(field, 'http://three'); await userEvent.tab();
   await waitFor(() => expect(within(field.closest('li')!).getByRole('status').textContent).toBe('Saved.'));
-  serverValue = '2';
+  serverValue = 'http://two';
   await act(async () => { await vi.advanceTimersByTimeAsync(16_000); });
   vi.useRealTimers();
-  await waitFor(() => expect(screen.getByLabelText<HTMLInputElement>('Task concurrency').value).toBe('2'));
+  await waitFor(() => expect(screen.getByLabelText<HTMLInputElement>('HTTP proxy').value).toBe('http://two'));
   expect(field.closest('li')?.textContent).not.toContain('Saved.');
 });
 

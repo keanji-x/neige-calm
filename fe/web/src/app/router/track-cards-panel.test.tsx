@@ -440,8 +440,8 @@ describe('track route TASKS panel', () => {
       {
         blockId: 'b-codex', key: 'codex-adapter', schedulable: true, status: 'pending', diagnostics: [],
         pendingReason: {
-          kind: 'budgetQueued', occupiedTaskBudget: 1, effectiveTaskBudget: 1,
-          message: 'Queued 1/1',
+          kind: 'trackBusy',
+          message: 'Track busy',
         },
       },
       {
@@ -456,7 +456,7 @@ describe('track route TASKS panel', () => {
     const list = within(await tasks());
     for (const [key, message] of [
       ['has-adapter', 'Waiting for `foundation`'],
-      ['codex-adapter', 'Queued 1/1'],
+      ['codex-adapter', 'Track busy'],
       ['no-adapter', 'Not admitted · planner ceiling'],
     ] as const) {
       const row = list.getByRole('button', { name: new RegExp(`^${key}`) });

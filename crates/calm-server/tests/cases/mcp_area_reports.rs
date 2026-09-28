@@ -157,7 +157,6 @@ async fn boot(specs: &[(usize, &str)]) -> Boot {
         Arc::new(tokio::sync::OnceCell::new()),
         Arc::new(tokio::sync::OnceCell::new()),
         std::env::temp_dir().join("neige-area-reports-gate-logs"),
-        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
     );
     let mut registry = ToolRegistry::new();
     calm_server::mcp_server::tools::register_default_tools(&mut registry);

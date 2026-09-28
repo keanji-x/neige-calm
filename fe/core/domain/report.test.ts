@@ -797,10 +797,8 @@ describe('trackTaskVerdictsOperation', () => {
 
   it('reads the server-owned pending diagnosis without re-deriving it', () => {
     const reason = {
-      kind: 'budgetQueued' as const,
-      message: 'Queued 1/1 — wait for a slot or raise task_budget',
-      occupiedTaskBudget: 1,
-      effectiveTaskBudget: 1,
+      kind: 'trackBusy' as const,
+      message: "Waiting for the track's checkout: another task is using it",
     };
     expect(trackTaskVerdictsOperation('w1').responseSchema.parse({
       taskDiagnostics: [{

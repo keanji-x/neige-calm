@@ -161,13 +161,9 @@ pub(crate) async fn report_read(
     // The response body comes from ONE fresh row snapshot so `summary`/`text`/`blocks` can never tear against each other.
     let resolve_modes = parse_resolve_arg(&args, "calm.report.read")?;
     let (track, _, report_card, _) = resolve_report_for_caller(&ctx, &identity).await?;
-    let snapshot = load_report_read_snapshot(
-        ctx.repo.as_ref(),
-        report_card.id.as_str(),
-        ctx.task_budget_default,
-    )
-    .await
-    .map_err(|e| RpcError::internal(format!("track_report: {e}")))?;
+    let snapshot = load_report_read_snapshot(ctx.repo.as_ref(), report_card.id.as_str())
+        .await
+        .map_err(|e| RpcError::internal(format!("track_report: {e}")))?;
     // The index is always present; it is what a `docRev` / `if_rev` retry needs.
     let text = match &select {
         ReadSelect::Index => None,
@@ -401,13 +397,9 @@ async fn report_edit(
 
     let (track, _, report_card, current) = resolve_report_for_caller(&ctx, &identity).await?;
     // Match exactly the projection served by read; never construct the replacement from the obsolete body cache. The write still checks CAS in-tx.
-    let snapshot = load_report_read_snapshot(
-        ctx.repo.as_ref(),
-        report_card.id.as_str(),
-        ctx.task_budget_default,
-    )
-    .await
-    .map_err(|e| RpcError::internal(format!("track_report: {e}")))?;
+    let snapshot = load_report_read_snapshot(ctx.repo.as_ref(), report_card.id.as_str())
+        .await
+        .map_err(|e| RpcError::internal(format!("track_report: {e}")))?;
     if snapshot.doc_rev != if_doc_rev {
         return Err(
             crate::mcp_server::tools::track_report_blocks::rev_conflict_error(format!(

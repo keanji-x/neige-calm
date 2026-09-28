@@ -41,14 +41,11 @@ pub async fn task_recovery_view(
     track_id: &str,
     key: &str,
     actor: ActorId,
-    task_budget_default: i64,
 ) -> Result<TaskRecoveryView> {
     let track_id = TrackId::from(track_id);
     let key = key.to_string();
     write_in_tx_typed(repo, move |tx| {
-        Box::pin(async move {
-            task_recovery_view_tx(tx, &track_id, &key, &actor, task_budget_default).await
-        })
+        Box::pin(async move { task_recovery_view_tx(tx, &track_id, &key, &actor).await })
     })
     .await
 }
@@ -58,9 +55,8 @@ pub(crate) async fn task_recovery_view_tx(
     track_id: &TrackId,
     key: &str,
     actor: &ActorId,
-    task_budget_default: i64,
 ) -> Result<TaskRecoveryView> {
-    task_recovery_view_with_refusal_tx(tx, track_id, key, actor, task_budget_default)
+    task_recovery_view_with_refusal_tx(tx, track_id, key, actor)
         .await
         .map(|(view, _)| view)
 }
@@ -80,7 +76,6 @@ pub(crate) async fn task_recovery_view_with_refusal_tx(
     track_id: &TrackId,
     key: &str,
     actor: &ActorId,
-    task_budget_default: i64,
 ) -> Result<(TaskRecoveryView, Option<RefusedRecovery>)> {
     let track = crate::track_lifecycle::track_get_tx(tx, track_id).await?;
     let event = Event::PlanUpdated {
@@ -222,14 +217,8 @@ pub(crate) async fn task_recovery_view_with_refusal_tx(
             reason: "Only a failed current execution can be recovered.".into(),
         },
     };
-    let blocking_reason = current_blocking_reason_tx(
-        tx,
-        &track,
-        current,
-        current_task.as_ref(),
-        task_budget_default,
-    )
-    .await?;
+    let blocking_reason =
+        current_blocking_reason_tx(tx, &track, current, current_task.as_ref()).await?;
     let mut current = task_attempt_view(current, current_task.as_ref())?;
     current.blocking_reason = blocking_reason;
     let mut attempts = Vec::with_capacity(allocations.len());
@@ -262,7 +251,6 @@ pub(crate) async fn current_blocking_reason_tx(
     track: &crate::model::Track,
     allocation: &TaskAttemptAllocation,
     task: Option<&Task>,
-    task_budget_default: i64,
 ) -> Result<Option<String>> {
     if task.is_some_and(|task| task.status != TaskStatus::Pending) {
         return Ok(None);
@@ -300,21 +288,11 @@ pub(crate) async fn current_blocking_reason_tx(
             "Task declaration is not ready; authorize it before execution".into(),
         ));
     }
-    let configured_default: Option<String> =
-        sqlx::query_scalar("SELECT value FROM settings WHERE key=?1")
-            .bind(crate::routes::settings::TASK_BUDGET_DEFAULT_KEY)
-            .fetch_optional(&mut **tx)
-            .await?;
-    let task_budget_default = crate::routes::settings::effective_task_budget_default(
-        configured_default.as_deref(),
-        task_budget_default,
-    );
-    let verdicts = crate::db::sqlite::evaluate_schedulability_with_task_budget_default(
+    let verdicts = crate::db::sqlite::evaluate_schedulability_with_pending_reasons(
         tx,
         track.id.as_str(),
         &declarations,
         &diagnostics,
-        task_budget_default,
     )
     .await?;
     let verdicts: Vec<_> = verdicts
@@ -325,7 +303,7 @@ pub(crate) async fn current_blocking_reason_tx(
         if let Some(reason) = &verdict.pending_reason {
             let message = match reason {
                 crate::db::sqlite::TaskPendingReason::DependencyBlocked { message, .. }
-                | crate::db::sqlite::TaskPendingReason::BudgetQueued { message, .. }
+                | crate::db::sqlite::TaskPendingReason::TrackBusy { message }
                 | crate::db::sqlite::TaskPendingReason::NotAdmitted { message, .. } => message,
             };
             return Ok(Some(message.clone()));

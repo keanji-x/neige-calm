@@ -804,12 +804,6 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
     component: renderNothing,
   });
 
-  const generalRoute = createRoute({
-    getParentRoute: () => rootRoute,
-    path: '/settings/general',
-    component: renderNothing,
-  });
-
   const networkRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/settings/network',
@@ -842,7 +836,7 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
 
   return rootRoute.addChildren([
     indexRoute, newTrackRoute, trackRoute, recipesRoute, settingsRoute,
-    generalRoute, networkRoute, pluginsRoute, plannersRoute, appearanceRoute, aboutRoute,
+    networkRoute, pluginsRoute, plannersRoute, appearanceRoute, aboutRoute,
   ]);
 }
 

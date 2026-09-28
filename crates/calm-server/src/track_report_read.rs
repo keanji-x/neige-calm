@@ -26,20 +26,14 @@ pub struct ReportDocSnapshot {
 }
 
 /// Load the read snapshot for the report card: [`load_report_doc_snapshot`]
-/// plus the task diagnostics evaluated against the effective task budget.
+/// plus the task diagnostics.
 pub async fn load_report_read_snapshot(
     repo: &dyn RouteRepo,
     report_card_id: &str,
-    task_budget_default: i64,
 ) -> Result<ReportReadSnapshot, CalmError> {
-    // Diagnostics must explain the same effective budget the scheduler uses, including a Settings change after boot.
-    let task_budget_default = crate::routes::settings::load_settings(repo)
-        .await?
-        .task_budget_default
-        .unwrap_or(task_budget_default);
     let (card_track_id, doc) = load_report_doc_snapshot_with_track(repo, report_card_id).await?;
     let task_diagnostics = repo
-        .task_diagnostics(card_track_id.as_str(), &doc.blocks, task_budget_default)
+        .task_diagnostics(card_track_id.as_str(), &doc.blocks)
         .await?;
     Ok(ReportReadSnapshot {
         updated_at: doc.updated_at,
@@ -221,10 +215,7 @@ mod tests {
 
     async fn assert_first_write_preserves_read_ids(legacy_crdt: bool) {
         let (repo, track, card) = fixture(legacy_crdt).await;
-        let before =
-            load_report_read_snapshot(&repo, "report", crate::scheduler::DEFAULT_TRACK_TASK_BUDGET)
-                .await
-                .unwrap();
+        let before = load_report_read_snapshot(&repo, "report").await.unwrap();
         let before_ids: Vec<_> = before.blocks.iter().map(|block| block.id.clone()).collect();
         let current: TrackReportPayload = serde_json::from_value(card.payload.clone()).unwrap();
         let next = TrackReportPayload::new(current.summary.clone(), current.body.clone());
@@ -255,10 +246,7 @@ mod tests {
             .into_iter()
             .map(|block| block.id)
             .collect();
-        let after =
-            load_report_read_snapshot(&repo, "report", crate::scheduler::DEFAULT_TRACK_TASK_BUDGET)
-                .await
-                .unwrap();
+        let after = load_report_read_snapshot(&repo, "report").await.unwrap();
         let after_ids: Vec<_> = after.blocks.into_iter().map(|block| block.id).collect();
         assert_eq!(before_ids, persisted_ids);
         assert_eq!(persisted_ids, after_ids);
@@ -300,10 +288,7 @@ mod tests {
             .await
             .unwrap();
 
-        let snapshot =
-            load_report_read_snapshot(&repo, "report", crate::scheduler::DEFAULT_TRACK_TASK_BUDGET)
-                .await
-                .unwrap();
+        let snapshot = load_report_read_snapshot(&repo, "report").await.unwrap();
         assert_eq!(snapshot.schema_version, 4);
         assert_eq!(
             snapshot.doc_rev, 0,

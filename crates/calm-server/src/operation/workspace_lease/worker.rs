@@ -5,7 +5,8 @@
 //!   track's in its managed directory on `main`; an attached track without a worktree is refused.
 //! - D2: the lease row records that directory, its HEAD as the base (`BaseSource::Commit`), its
 //!   realpath and its common dir.
-//! - D5: [`track_idle_tx`], the one predicate that says no other attempt is using the checkout.
+//! - D5: `calm_truth`'s `track_idle`, the one predicate that says no other attempt is using the
+//!   checkout.
 //! - D6: a dirty tree refuses the worker before any row is written.
 
 use std::path::{Path, PathBuf};
@@ -19,10 +20,9 @@ use super::{
     WORKSPACE_LEASE_COLUMNS, append_workspace_events_tx, release_workspace_lease_tx,
     row_to_workspace_lease, track_worktree::track_branch_for, validate_path_segment,
 };
-use crate::db::sqlite::tasks_by_track_tx;
 use crate::error::{CalmError, Result};
 use crate::event::BroadcastEnvelope;
-use crate::model::{Task, TaskKind, TaskStatus, TrackWorkspaceKind};
+use crate::model::TrackWorkspaceKind;
 use crate::operation::{PhaseTag, Tx, TxOutput};
 use crate::plugin_host::child_process::{BoundedRunError, run_bounded};
 use crate::workspace_materialize::isolated_git_command;
@@ -265,59 +265,4 @@ async fn supersede_stuck_leases_tx(tx: &mut Tx<'_>, path: &Path) -> Result<Vec<B
         events.extend(release_workspace_lease_tx(tx, &lease).await?);
     }
     append_workspace_events_tx(tx, events).await
-}
-
-/// A codex or claude task that runs in the track's checkout: not isolated
-/// (`calm.task.dispatch`) and not on the child-track route.
-pub(crate) fn is_in_tree_worker(task: &Task) -> Result<bool> {
-    Ok(matches!(task.kind, TaskKind::Codex | TaskKind::Claude)
-        && task.spawn != calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE
-        && !crate::isolated_codex::selected(task)?)
-}
-
-/// D5: no attempt other than `except_attempt` is using the track's checkout. Three terms, each
-/// covering what the others miss: no in-tree worker task is `dispatched`/`running`/`verifying`
-/// (a gate reading the tree after the release; a claim before its lease exists); no lease is
-/// `held`/`releasing` unless its owner op is `stuck` (a canceled worker not yet killed); no
-/// delivery is unsettled (a commit not yet landed).
-pub(crate) async fn track_idle_tx(
-    tx: &mut Tx<'_>,
-    track_id: &str,
-    except_attempt: &str,
-) -> Result<bool> {
-    for task in tasks_by_track_tx(tx, track_id).await? {
-        if task.id != except_attempt
-            && matches!(
-                task.status,
-                TaskStatus::Dispatched | TaskStatus::Running | TaskStatus::Verifying
-            )
-            && is_in_tree_worker(&task)?
-        {
-            return Ok(false);
-        }
-    }
-    let lease_held: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM workspace_leases wl \
-         LEFT JOIN operations o ON o.id = wl.lease_owner \
-         WHERE wl.track_id = ?1 AND wl.state IN ('held','releasing') \
-         AND o.idempotency_key IS NOT ?2 \
-         AND o.phase IS NOT ?3)",
-    )
-    .bind(track_id)
-    .bind(except_attempt)
-    .bind(PhaseTag::Stuck.as_str())
-    .fetch_one(&mut **tx)
-    .await?;
-    if lease_held {
-        return Ok(false);
-    }
-    let delivery_unsettled: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM task_git_deliveries \
-         WHERE track_id = ?1 AND settlement IS NULL AND producer_attempt_id <> ?2)",
-    )
-    .bind(track_id)
-    .bind(except_attempt)
-    .fetch_one(&mut **tx)
-    .await?;
-    Ok(!delivery_unsettled)
 }

@@ -327,17 +327,7 @@ pub(super) async fn snapshot_tx(
     track: &TrackId,
     receipt: &DispatchReceipt,
     args: &DispatchArgs,
-    task_budget_default: i64,
 ) -> Result<Value> {
-    let configured_default: Option<String> =
-        sqlx::query_scalar("SELECT value FROM settings WHERE key=?1")
-            .bind(crate::routes::settings::TASK_BUDGET_DEFAULT_KEY)
-            .fetch_optional(&mut **tx)
-            .await?;
-    let task_budget_default = crate::routes::settings::effective_task_budget_default(
-        configured_default.as_deref(),
-        task_budget_default,
-    );
     let (_, blocks) = super::report_blocks_snapshot_tx(tx, track.as_str()).await?;
     let (declarations, local) = report_blocks::tasks::project_task_declarations(&blocks);
     // Compare only the existing execution-root contract fields. Readiness,
@@ -372,12 +362,11 @@ pub(super) async fn snapshot_tx(
         }
         _ => "unavailable",
     };
-    let verdicts = crate::db::sqlite::evaluate_schedulability_with_task_budget_default(
+    let verdicts = crate::db::sqlite::evaluate_schedulability_with_pending_reasons(
         tx,
         track.as_str(),
         &declarations,
         &local,
-        task_budget_default,
     )
     .await?;
     let declaration_present = declarations
@@ -404,7 +393,6 @@ pub(super) async fn snapshot_tx(
                 &track_state,
                 allocation,
                 task.as_ref(),
-                task_budget_default,
             )
             .await?
         }

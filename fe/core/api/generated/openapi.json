@@ -4022,16 +4022,6 @@
               }
             }
           },
-          "400": {
-            "description": "Invalid first-class setting",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
           "500": {
             "description": "Internal error",
             "content": {
@@ -10991,29 +10981,20 @@
           },
           {
             "type": "object",
+            "description": "A codex or claude task waiting for the track's checkout (#1830 S2 D5).",
             "required": [
               "message",
-              "occupiedTaskBudget",
-              "effectiveTaskBudget",
               "kind"
             ],
             "properties": {
-              "effectiveTaskBudget": {
-                "type": "integer",
-                "format": "int64"
-              },
               "kind": {
                 "type": "string",
                 "enum": [
-                  "budgetQueued"
+                  "trackBusy"
                 ]
               },
               "message": {
                 "type": "string"
-              },
-              "occupiedTaskBudget": {
-                "type": "integer",
-                "format": "int64"
               }
             }
           },
@@ -12068,14 +12049,6 @@
               "null"
             ],
             "format": "double"
-          },
-          "task_budget": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "description": "Per-track scheduler budget; `Some(None)` clears back to the kernel default."
           },
           "title": {
             "type": [

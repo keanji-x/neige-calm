@@ -8,6 +8,7 @@ use calm_types::report_blocks::tasks::{
     opt_json_eq, task_diagnostic_action, unknown_deps,
 };
 use calm_types::report_links::{format_track_destination, parse_destination, scan_links};
+use calm_types::task_execution::runs_in_track_checkout;
 use serde::{Deserialize, Serialize};
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 use utoipa::ToSchema;
@@ -123,13 +124,8 @@ pub enum TaskPendingReason {
         message: String,
         dependencies: Vec<String>,
     },
-    BudgetQueued {
-        message: String,
-        #[schema(rename = "occupiedTaskBudget")]
-        occupied_task_budget: i64,
-        #[schema(rename = "effectiveTaskBudget")]
-        effective_task_budget: i64,
-    },
+    /// A codex or claude task waiting for the track's checkout (#1830 S2 D5).
+    TrackBusy { message: String },
     NotAdmitted {
         message: String,
         #[schema(rename = "diagnosticCodes")]
@@ -374,12 +370,12 @@ fn task_verdict_row_state<'a>(
     }
 }
 
-/// All inputs come from `track_projection_state`'s one statement; the only
-/// outside value is the server-resolved environment default.
+/// Every input but `track_idle` comes from `track_projection_state`'s one statement; the idle
+/// read is its own statement because a pending reason is presentation, never a projection input.
 fn attach_task_pending_reasons(
     state: &TrackProjectionState,
     declarations: &[TaskDeclaration],
-    task_budget_default: i64,
+    track_idle: bool,
     verdicts: &mut [BlockVerdict],
 ) {
     let by_key: BTreeMap<_, _> = state
@@ -393,12 +389,6 @@ fn attach_task_pending_reasons(
         .filter(|row| row.status == "done")
         .map(|row| row.key.as_str())
         .collect();
-    let occupied = state
-        .task_read_state
-        .iter()
-        .filter(|row| matches!(row.status.as_str(), "dispatched" | "running" | "verifying"))
-        .count() as i64;
-    let effective_budget = state.task_budget.unwrap_or(task_budget_default).max(0);
 
     for (index, verdict) in verdicts.iter_mut().enumerate() {
         match task_verdict_row_state(verdict, &by_key) {
@@ -444,11 +434,18 @@ fn attach_task_pending_reasons(
                         message,
                         dependencies,
                     });
-                } else if occupied >= effective_budget {
-                    verdict.pending_reason = Some(TaskPendingReason::BudgetQueued {
-                        message: format!("Queued {occupied}/{effective_budget}"),
-                        occupied_task_budget: occupied,
-                        effective_task_budget: effective_budget,
+                } else if !track_idle
+                    && declarations.get(index).is_some_and(|declaration| {
+                        runs_in_track_checkout(
+                            &declaration.kind,
+                            &declaration.spawn,
+                            &declaration.context,
+                        )
+                    })
+                {
+                    verdict.pending_reason = Some(TaskPendingReason::TrackBusy {
+                        message: "Waiting for the track's checkout: another task is using it"
+                            .into(),
                     });
                 }
                 continue;
@@ -676,7 +673,6 @@ struct TrackProjectionState {
     source_area: String,
     inflight: Vec<InflightTaskRow>,
     task_read_state: Vec<TaskReadState>,
-    task_budget: Option<i64>,
     frozen: Vec<FrozenDeclarationRow>,
     reference_targets: BTreeMap<String, ReferenceTargetRow>,
     recovery_constraints: Vec<super::task_recovery_projection::RecoveryProjection>,
@@ -690,7 +686,6 @@ struct TrackProjectionStateRow {
     area_id: String,
     inflight_json: String,
     task_read_state_json: String,
-    task_budget: Option<i64>,
     frozen_json: String,
     reference_targets_json: String,
     recovery_constraints_json: String,
@@ -718,7 +713,6 @@ async fn track_projection_state(
                  FROM json_each(?2)
            )
            SELECT w.automation_policy, w.planner_task_ceiling, w.require_task_gates, w.area_id,
-                  w.task_budget,
                   (SELECT json_group_array(json_object('key',a.key,'origin',json(a.origin_json)))
                      FROM current_task_attempt_allocations a WHERE a.track_id=w.id
                        AND json_extract(a.origin_json,'$.kind')='recovery') AS recovery_constraints_json,
@@ -808,7 +802,6 @@ async fn track_projection_state(
         source_area: row.area_id,
         inflight: serde_json::from_str(&row.inflight_json)?,
         task_read_state: serde_json::from_str(&row.task_read_state_json)?,
-        task_budget: row.task_budget,
         frozen: serde_json::from_str(&row.frozen_json)?,
         reference_targets,
         recovery_constraints: serde_json::from_str(&row.recovery_constraints_json)?,
@@ -845,21 +838,19 @@ pub async fn evaluate_schedulability(
         tree.term,
         TaskReadOptions {
             include_state: include_read_state,
-            task_budget_default: None,
+            pending_reasons: false,
         },
     )
     .await
 }
 
-/// Read-side form: `task_budget_default` is the server-resolved
-/// `NEIGE_TRACK_TASK_BUDGET`. Write paths call the sibling because pending
+/// Read-side form, with pending reasons. Write paths call the sibling because pending
 /// reasons are presentation metadata, never projection inputs.
-pub async fn evaluate_schedulability_with_task_budget_default(
+pub async fn evaluate_schedulability_with_pending_reasons(
     conn: &mut SqliteConnection,
     track_id: &str,
     declarations: &[TaskDeclaration],
     block_local_diags: &[Vec<Diagnostic>],
-    task_budget_default: i64,
 ) -> Result<Vec<BlockVerdict>> {
     let tree = super::track_tree::track_tree_term(&mut *conn, track_id).await?;
     evaluate_schedulability_with_tree_term(
@@ -870,7 +861,7 @@ pub async fn evaluate_schedulability_with_task_budget_default(
         tree.term,
         TaskReadOptions {
             include_state: true,
-            task_budget_default: Some(task_budget_default),
+            pending_reasons: true,
         },
     )
     .await
@@ -879,7 +870,7 @@ pub async fn evaluate_schedulability_with_task_budget_default(
 #[derive(Clone, Copy)]
 struct TaskReadOptions {
     include_state: bool,
-    task_budget_default: Option<i64>,
+    pending_reasons: bool,
 }
 
 async fn evaluate_schedulability_with_tree_term(
@@ -922,7 +913,7 @@ pub(super) async fn evaluate_schedulability_after_snapshot_for_test(
         tree.term,
         TaskReadOptions {
             include_state: include_read_state,
-            task_budget_default: None,
+            pending_reasons: false,
         },
         after_snapshot,
     )
@@ -1417,8 +1408,9 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
             declarations,
             &mut verdicts,
         );
-        if let Some(task_budget_default) = read.task_budget_default {
-            attach_task_pending_reasons(&state, declarations, task_budget_default, &mut verdicts);
+        if read.pending_reasons {
+            let track_idle = super::track_idle::track_idle(&mut *conn, track_id, "").await?;
+            attach_task_pending_reasons(&state, declarations, track_idle, &mut verdicts);
         }
     }
     Ok(verdicts)
@@ -1450,7 +1442,7 @@ pub async fn project_tasks_tx(
         tree.term,
         TaskReadOptions {
             include_state: false,
-            task_budget_default: None,
+            pending_reasons: false,
         },
     )
     .await?;
@@ -1474,7 +1466,7 @@ pub async fn project_tasks_with_tree_term_tx(
         tree_term,
         TaskReadOptions {
             include_state: false,
-            task_budget_default: None,
+            pending_reasons: false,
         },
     )
     .await?;
@@ -2162,12 +2154,11 @@ mod tests {
         );
 
         let mut conn = repo.pool.acquire().await.unwrap();
-        let verdicts = evaluate_schedulability_with_task_budget_default(
+        let verdicts = evaluate_schedulability_with_pending_reasons(
             &mut conn,
             &track,
             &declarations,
             &block_local_diags,
-            1,
         )
         .await
         .unwrap();

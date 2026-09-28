@@ -215,7 +215,7 @@ const pendingReason: PanelRow = {
   activity: null,
   actions: [{
     kind: 'reveal-block', blockId: 'block-10', label: null,
-    hint: 'Queued 1/1', description: 'pending — Queued 1/1',
+    hint: 'Track busy', description: 'pending — Track busy',
   }],
 };
 
@@ -363,12 +363,12 @@ describe('what the painted Tasks module does at PanelRow’s boundaries', () => 
     expect(status.textContent).toBe('pending');
     expect(status.hasAttribute('title')).toBe(false);
     expect(Array.from(row.querySelectorAll('[title]'))).toEqual([]);
-    expect(row.getAttribute('title')).toBe('Queued 1/1');
+    expect(row.getAttribute('title')).toBe('Track busy');
     expect(Array.from(container.querySelectorAll('[title]'))).toEqual([row]);
     const control = row.querySelector('button')!;
     const described = control.getAttribute('aria-describedby')!;
     expect(container.ownerDocument.getElementById(described)?.textContent)
-      .toBe('pending — Queued 1/1');
+      .toBe('pending — Track busy');
   });
 
   it('describes a statusless not-admitted row without showing the reason in its body', () => {

@@ -325,7 +325,6 @@ impl SeriesFixture {
         calm_server::track_report_read::load_report_read_snapshot(
             self.boot.repo.as_ref(),
             self.boot.report_card_id.as_str(),
-            calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
         )
         .await
         .expect("snapshot")

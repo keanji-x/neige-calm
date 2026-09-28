@@ -304,11 +304,7 @@ async fn a_recipe_that_carried_refs_instantiates_with_no_reference() {
     let blocks = payload.blocks.as_deref().expect("report blocks");
     let verdicts = boot
         .repo
-        .task_diagnostics(
-            &track_id,
-            blocks,
-            calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
-        )
+        .task_diagnostics(&track_id, blocks)
         .await
         .expect("task_diagnostics");
     let blocking: Vec<_> = verdicts

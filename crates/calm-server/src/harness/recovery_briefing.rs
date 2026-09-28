@@ -113,9 +113,9 @@ pub(super) async fn input_segments(
             } else if let Some(reason) = stop_reason {
                 TaskRecoveryCapability { allowed: false, code: "stop_unconfirmed".into(), reason }
             } else {
-                crate::task_recovery::task_recovery_view_tx(
-                    tx, &track_id, &task.key, &actor, crate::scheduler::DEFAULT_TRACK_TASK_BUDGET,
-                ).await?.recovery
+                crate::task_recovery::task_recovery_view_tx(tx, &track_id, &task.key, &actor)
+                    .await?
+                    .recovery
             };
             let action = crate::semantic_recovery::Action {
                 key: task.key.clone(), expected_attempt_id: task_id.clone(), event_id,

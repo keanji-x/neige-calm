@@ -728,7 +728,6 @@ async fn boot_fixture_with_role(mode: StubMode, role: CardRole) -> Fixture {
         plugin_host_cell,
         operation_runtime_cell,
         gate_logs_dir.clone(),
-        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
     )
     .await
     .expect("spawn McpServer");

@@ -537,19 +537,19 @@ impl RepoRead for SqlxRepo {
         &self,
         track_id: &str,
         blocks: &[calm_types::track_report::ReportBlock],
-        task_budget_default: i64,
     ) -> Result<Vec<super::BlockVerdict>> {
-        // One autocommit statement supplies a point-in-time fact set; Rust owns the
-        // verdict predicate the write path runs inside its IMMEDIATE transaction.
+        // One autocommit statement supplies a point-in-time fact set; Rust owns the verdict
+        // predicate the write path runs inside its IMMEDIATE transaction. The pending reasons'
+        // track-idle read is a second statement: a claim landing between the two can show a
+        // just-claimed task as waiting until the next read.
         let mut conn = self.pool.acquire().await?;
         let (declarations, local) =
             calm_types::report_blocks::tasks::project_task_declarations(blocks);
-        let diagnostics = super::task_projection::evaluate_schedulability_with_task_budget_default(
+        let diagnostics = super::task_projection::evaluate_schedulability_with_pending_reasons(
             &mut conn,
             track_id,
             &declarations,
             &local,
-            task_budget_default,
         )
         .await?;
         Ok(diagnostics)

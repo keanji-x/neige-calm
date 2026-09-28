@@ -320,16 +320,16 @@ describe('Track mobile presentation', () => {
     const navigation = await page.getByRole('dialog', { name: 'Tracks and settings' }).findElement();
     expect(navigation.scrollWidth).toBeLessThanOrEqual(320);
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
-    await page.getByRole('button', { name: 'General', exact: true }).click();
-    await page.getByRole('heading', { name: 'General', exact: true }).findElement();
-    expect(router.state.location.pathname).toBe('/settings/general');
+    await page.getByRole('button', { name: 'Network', exact: true }).click();
+    await page.getByRole('heading', { name: 'Network', exact: true }).findElement();
+    expect(router.state.location.pathname).toBe('/settings/network');
     expect(page.getByRole('navigation', { name: 'Settings sections' }).query()).toBeNull();
-    const generalInput = await page.getByRole('spinbutton', { name: 'Task concurrency' }).findElement();
-    const field = generalInput.closest('li')!;
+    const networkInput = await page.getByRole('textbox', { name: 'HTTP proxy', exact: true }).findElement();
+    const field = networkInput.closest('li')!;
     const fieldBox = field.getBoundingClientRect();
     expect(fieldBox.width).toBeLessThanOrEqual(320);
-    expect(generalInput.getBoundingClientRect().left).toBeGreaterThanOrEqual(fieldBox.left);
-    expect(generalInput.getBoundingClientRect().right).toBeLessThanOrEqual(fieldBox.right);
+    expect(networkInput.getBoundingClientRect().left).toBeGreaterThanOrEqual(fieldBox.left);
+    expect(networkInput.getBoundingClientRect().right).toBeLessThanOrEqual(fieldBox.right);
     await page.getByRole('button', { name: 'Back to Settings' }).click();
     const about = await page.getByRole('button', { name: 'About', exact: true }).findElement();
     const aboutBox = about.getBoundingClientRect();
@@ -385,8 +385,8 @@ describe('Track mobile presentation', () => {
     await page.getByRole('heading', { name: 'Settings', exact: true }).findElement();
     await page.viewport(1400, 900);
     await page.getByRole('dialog', { name: 'Settings' }).findElement();
-    await page.getByRole('button', { name: 'Network', exact: true }).click();
-    await page.getByRole('heading', { name: 'Network', exact: true }).findElement();
+    await page.getByRole('button', { name: 'About', exact: true }).click();
+    await page.getByRole('heading', { name: 'About', exact: true }).findElement();
     await page.getByRole('button', { name: 'Appearance', exact: true }).click();
     await page.getByRole('heading', { name: 'Appearance', exact: true }).findElement();
     expect(router.history.location.state.__TSR_index).toBe(3);
@@ -403,16 +403,16 @@ describe('Track mobile presentation', () => {
     await page.viewport(390, 844);
     setup('/settings');
     await page.getByRole('heading', { name: 'Settings', exact: true }).findElement();
-    const general = await page.getByRole('button', { name: 'General', exact: true }).findElement();
     const network = await page.getByRole('button', { name: 'Network', exact: true }).findElement();
-    expect(network.getBoundingClientRect().top).toBeGreaterThanOrEqual(general.getBoundingClientRect().bottom);
-    expect(page.getByRole('spinbutton', { name: 'Task concurrency' }).query()).toBeNull();
-    expect(page.getByRole('heading', { name: 'General', exact: true }).query()).toBeNull();
+    const appearance = await page.getByRole('button', { name: 'Appearance', exact: true }).findElement();
+    expect(appearance.getBoundingClientRect().top).toBeGreaterThanOrEqual(network.getBoundingClientRect().bottom);
+    expect(page.getByRole('textbox', { name: 'HTTP proxy', exact: true }).query()).toBeNull();
+    expect(page.getByRole('heading', { name: 'Network', exact: true }).query()).toBeNull();
     await page.screenshot({ path: '../../../../test-results/mobile-settings-index.png' });
   });
 
   it.each([
-    { label: 'General', path: '/settings/general' },
+    { label: 'Network', path: '/settings/network' },
     { label: 'Appearance', path: '/settings/appearance' },
     { label: 'Plugins', path: '/settings/plugins' },
   ] as const)('opens the $label category from the index and returns through browser Back', async ({ label, path }) => {
@@ -424,16 +424,16 @@ describe('Track mobile presentation', () => {
     expect(page.getByRole('heading', { name: label, exact: true }).all()).toHaveLength(1);
     expect(page.getByRole('navigation', { name: 'Settings categories' }).query()).toBeNull();
     expect(page.getByRole('navigation', { name: 'Settings sections' }).query()).toBeNull();
-    if (label === 'General') await page.getByRole('spinbutton', { name: 'Task concurrency' }).findElement();
+    if (label === 'Network') await page.getByRole('textbox', { name: 'HTTP proxy', exact: true }).findElement();
     if (label === 'Plugins') await page.getByRole('button', { name: /^Add a plugin/ }).findElement();
-    if (label === 'General') await page.screenshot({ path: '../../../../test-results/mobile-settings-general-page.png' });
+    if (label === 'Network') await page.screenshot({ path: '../../../../test-results/mobile-settings-network-page.png' });
     router.history.back();
     await expect.poll(() => router.state.location.pathname).toBe('/settings');
     await page.getByRole('navigation', { name: 'Settings categories' }).findElement();
     expect(router.history.location.state.__TSR_index).toBe(0);
   });
 
-  it.each(['general', 'appearance', 'plugins'] as const)('returns a cold %s detail link safely to the index', async (section) => {
+  it.each(['network', 'appearance', 'plugins'] as const)('returns a cold %s detail link safely to the index', async (section) => {
     await page.viewport(390, 844);
     const router = setup(`/settings/${section}`);
     await page.getByRole('button', { name: 'Back to Settings' }).click();

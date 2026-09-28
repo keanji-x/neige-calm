@@ -59,7 +59,6 @@ pub(super) async fn world() -> World {
         Arc::new(tokio::sync::OnceCell::new()),
         Arc::new(tokio::sync::OnceCell::new()),
         boot.ctx.gate_logs_dir.clone(),
-        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
     )
     .await
     .expect("spawn McpServer");
@@ -372,13 +371,12 @@ async fn an_attached_track_registers_one_worktree_and_one_branch() {
     );
 }
 
-/// T4 (D5 status term) — budget 4, as on 4140: while `a` runs, an independent ready `b` is not
-/// claimed.
+/// T4 (D5 status term): while `a` runs, an independent ready `b` is not claimed, and the report
+/// read says why (`trackBusy`, #1830 S2b).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_track_runs_one_worker_at_a_time() {
     let w = world().await;
     let fx = &w.fx;
-    set_budget(fx, 4).await;
     let worker = fx.new_worker("a", AgentProvider::Codex).await;
     fx.running_task("a", "codex", &worker.card_id, json!({}))
         .await;
@@ -387,25 +385,33 @@ async fn a_track_runs_one_worker_at_a_time() {
         .schedule_track(fx.boot.track_id.clone())
         .await;
     assert_eq!(current(&fx.boot, "b").await.status, TaskStatus::Pending);
+    let read = calm_server::track_report_read::load_report_read_snapshot(
+        fx.boot.repo.as_ref(),
+        fx.boot.report_card_id.as_str(),
+    )
+    .await
+    .unwrap();
+    let reason = read
+        .task_diagnostics
+        .iter()
+        .find(|verdict| verdict.key == "b")
+        .and_then(|verdict| verdict.pending_reason.clone());
+    assert!(
+        matches!(
+            reason,
+            Some(calm_server::db::sqlite::TaskPendingReason::TrackBusy { .. })
+        ),
+        "{reason:?}"
+    );
 }
 
-pub(super) async fn set_budget(fx: &Fx, budget: i64) {
-    sqlx::query("UPDATE tracks SET task_budget = ?1 WHERE id = ?2")
-        .bind(budget)
-        .bind(fx.track())
-        .execute(&fx.pool())
-        .await
-        .unwrap();
-}
-
-/// T4b (D5 delivery term) — budget 4: `a` (ungated, so `done`) reports, and a `pre-commit` hook
+/// T4b (D5 delivery term): `a` (ungated, so `done`) reports, and a `pre-commit` hook
 /// holds its real delivery unsettled; `b` stays `pending`. Once the hook lets go, the delivery
 /// settles and `b` is claimed on `a`'s commit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_next_task_waits_for_the_previous_commit() {
     let w = world().await;
     let fx = &w.fx;
-    set_budget(fx, 4).await;
     let release = fx.track_root.parent().unwrap().join("release-commit");
     let hook = fx.track_root.join(".git/hooks/pre-commit");
     crate::git_delivery::write_executable(

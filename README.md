@@ -43,7 +43,7 @@ A Track can finish once, like fixing an issue, or remain useful across repeated 
 - **Durable Reports** — block documents with stable IDs and revisions, supporting prose, tasks, tables, candlestick charts, sandboxed app views, and links that open workspace files in the Track.
 - **Isolated workspaces** — attach an existing directory or let the kernel provision a managed workspace for a Track.
 - **Governed execution** — kernel-enforced role, scope, lifecycle, review, and gate boundaries around agent writes and side effects.
-- **Desktop supervision** — task counts and status details, a Notification Center that opens the conversation or worker needing attention, and separate worker and verification directories on cards. Settings lets you change the default task concurrency per Track.
+- **Desktop supervision** — task counts and status details, a Notification Center that opens the conversation or worker needing attention, and separate worker and verification directories on cards.
 - **Today** — a cross-Track view with waiting/running state and a daily progress report maintained through its own conversation.
 - **Extensible tools** — add remote MCP servers or server-local plugin directories from Settings, then enable, configure, restart, or remove them. Plugins can contribute tools, templates, connectors, overlays, and sandboxed UI resources.
 - **Track Recipes** — create, edit, and delete reusable Markdown plans, then select one when creating a Track. Built-in templates remain read-only.

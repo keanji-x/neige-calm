@@ -34,7 +34,7 @@ test('the application routes are reachable through the real kernel', async ({ pa
     /* Anchored on the composer because the new-track page has no `data-nc-page-title`. */
     { path: `/next/area/${area.id}/new`, anchor: page.getByLabel('What this track should do') },
     { path: `/next/track/${track.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: track.title }) },
-    { path: '/next/settings', anchor: page.getByRole('spinbutton', { name: 'Task concurrency' }) },
+    { path: '/next/settings', anchor: page.getByRole('textbox', { name: 'HTTP proxy' }) },
     { path: '/next/settings/network', anchor: page.getByRole('textbox', { name: 'HTTP proxy' }) },
     { path: '/next/settings/appearance', anchor: page.getByRole('combobox', { name: 'Theme' }) },
   ];

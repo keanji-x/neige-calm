@@ -13,10 +13,10 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::dispatcher::Dispatcher;
 use calm_server::error::{CalmError, Result as CalmResult};
-use calm_server::event::{Event, EventBus, EventScope, SubscribeFilter, SubscribeScope};
+use calm_server::event::{Event, EventBus, SubscribeFilter, SubscribeScope};
 use calm_server::ids::{ActorId, AreaId, TrackId};
 use calm_server::model::{
-    CardRole, NewArea, NewCard, NewTerminal, NewTrack, Task, TaskKind, TaskStatus, TrackLifecycle,
+    NewArea, NewCard, NewTerminal, NewTrack, Task, TaskKind, TaskStatus, TrackLifecycle,
     TrackPatch, new_id, now_ms,
 };
 use calm_server::operation::{
@@ -112,13 +112,6 @@ fn codex_req(idem: &str, goal: &str) -> Event {
         context: serde_json::Value::Null,
         acceptance_criteria: None,
         agent_message: None,
-    }
-}
-
-fn track_scope(track: &TrackId, area: &AreaId) -> EventScope {
-    EventScope::Track {
-        track: track.clone(),
-        area: area.clone(),
     }
 }
 
@@ -571,12 +564,6 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
 
 const CARD_SPAWN_ADAPTER_PHASES: &[PhaseTag] = &[];
 
-/// Successful worker-spawn stub: `prepare_tx` returns a card-shaped result (the scheduler reads `result["id"]`) and the spawn is a no-op.
-struct CardSpawnAdapter {
-    kind: &'static str,
-    card_id: String,
-}
-
 struct CountingSpawnAdapter {
     spawned: Arc<AtomicUsize>,
 }
@@ -651,234 +638,4 @@ impl ProviderAdapter for CountingSpawnAdapter {
             "counting spawn fixture unexpected compensate_step".into(),
         ))
     }
-}
-
-#[async_trait]
-impl ProviderAdapter for CardSpawnAdapter {
-    fn kind(&self) -> &'static str {
-        self.kind
-    }
-
-    fn phases(&self) -> &'static [PhaseTag] {
-        CARD_SPAWN_ADAPTER_PHASES
-    }
-
-    async fn validate(&self, _input: &Value) -> CalmResult<()> {
-        Ok(())
-    }
-
-    async fn prepare_tx<'tx>(
-        &self,
-        _tx: &mut Tx<'tx>,
-        _input: &Value,
-        _op: &Operation,
-    ) -> CalmResult<TxOutput> {
-        Ok(TxOutput::new(
-            "card",
-            Some(self.card_id.clone()),
-            serde_json::json!({ "id": self.card_id }),
-        ))
-    }
-
-    async fn app_server_interact(
-        &self,
-        _output: &mut TxOutput,
-        _op: &Operation,
-        _ctx: &SpawnCtx,
-    ) -> CalmResult<AppServerInteractOutcome> {
-        Ok(AppServerInteractOutcome::NotApplicable)
-    }
-
-    async fn spawn_side_effect(
-        &self,
-        _output: &TxOutput,
-        _op: &Operation,
-        _ctx: &SpawnCtx,
-    ) -> CalmResult<SpawnOutcome> {
-        Ok(SpawnOutcome::Ready(SpawnHandle::NoOp))
-    }
-
-    async fn plan_compensation(
-        &self,
-        _from_phase: PhaseTag,
-        _reason: &str,
-        _output: &TxOutput,
-        _op: &Operation,
-    ) -> CalmResult<CompensationStateVersioned> {
-        Err(CalmError::Internal(
-            "card-spawn test fixture unexpected plan_compensation".into(),
-        ))
-    }
-
-    async fn compensate_step(
-        &self,
-        _step: &calm_server::operation::CompensationStep,
-        _output: &TxOutput,
-        _op: &Operation,
-        _ctx: &SpawnCtx,
-    ) -> CalmResult<()> {
-        Err(CalmError::Internal(
-            "card-spawn test fixture unexpected compensate_step".into(),
-        ))
-    }
-}
-
-/// The budget-raise PATCH emits ONLY `track.updated`, so the dispatcher must treat it as a scheduler poke rather than wait for the 300s reconcile tick.
-#[tokio::test]
-async fn track_updated_budget_raise_pokes_scheduler() {
-    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
-    let (repo, events, cache, wcc, track_id, area_id) = boot().await;
-    repo.track_update(
-        track_id.as_str(),
-        TrackPatch {
-            lifecycle: Some(TrackLifecycle::Working),
-            task_budget: Some(Some(0)),
-            ..Default::default()
-        },
-    )
-    .await
-    .expect("hold track at budget 0");
-    let worker_card = repo
-        .card_create(NewCard {
-            track_id: track_id.clone(),
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: Value::Null,
-        })
-        .await
-        .expect("worker card for the spawn stub");
-    cache.insert(worker_card.id.clone(), CardRole::Worker, track_id.clone());
-
-    let task_id = format!("{}:budget-held", track_id.as_str());
-    let now = now_ms();
-    let task = calm_server::model::Task {
-        id: task_id.clone(),
-        track_id: track_id.as_str().to_string(),
-        key: "budget-held".into(),
-        kind: calm_server::model::TaskKind::Codex,
-        goal: "do budget-held".into(),
-        context_json: "null".into(),
-        acceptance_criteria: None,
-        cwd: None,
-        depends_on_json: "[]".into(),
-        priority: 0,
-        gate_json: None,
-        status: calm_server::model::TaskStatus::Pending,
-        status_detail: None,
-        worker_card_id: None,
-        gate_result_json: None,
-        gate_attempt: 0,
-        gate_pid: None,
-        gate_pid_starttime: None,
-        gate_pid_boot_id: None,
-        running_deadline_ms: None,
-        context_stale_at_ms: None,
-        declared_by: "spec".into(),
-        spawn: "in-wave".into(),
-        created_at_ms: now,
-        updated_at_ms: now,
-        finished_at_ms: None,
-    };
-    crate::support::task::project_task(&repo.sqlite_pool().unwrap(), &task)
-        .await
-        .expect("project pending task block");
-
-    let operation_repo = Arc::new(SqlxOperationRepo::new(
-        repo.sqlite_pool()
-            .expect("dispatcher test uses sqlite repo"),
-    ));
-    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
-    let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
-    let completion = OperationCompletionBus::new();
-    let spawn_ctx = SpawnCtx::new(
-        route_repo,
-        operation_repo.clone(),
-        stub_daemon(),
-        terminal_renderer,
-        events.clone(),
-        completion.clone(),
-    );
-    let operation_runtime = Arc::new(OperationRuntime::new_unchecked(
-        operation_repo,
-        vec![Arc::new(CardSpawnAdapter {
-            kind: "codex-worker",
-            card_id: worker_card.id.to_string(),
-        })],
-        events.clone(),
-        completion,
-        spawn_ctx,
-    ));
-    let _dispatcher = Dispatcher::spawn_with_operation_runtime(
-        repo.clone(),
-        events.clone(),
-        calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
-        stub_codex(),
-        stub_daemon(),
-        None,
-        stub_shared(&repo),
-        operation_runtime,
-        4,
-    );
-
-    // A track.updated while the budget is still 0 pokes the scheduler, but the budget gate holds the task.
-    let track = repo.track_get(track_id.as_str()).await.unwrap().unwrap();
-    repo.log_pure_event(
-        ActorId::User,
-        track_scope(&track_id, &area_id),
-        None,
-        &events,
-        &cache,
-        &wcc,
-        Event::TrackUpdated(calm_server::event::TrackUpdatedPayload::new(track, None)),
-    )
-    .await
-    .unwrap();
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(
-        repo.task_get(&task_id).await.unwrap().unwrap().status,
-        calm_server::model::TaskStatus::Pending,
-        "budget 0 must keep holding the task"
-    );
-
-    // The budget-raise PATCH shape: row update + ONLY a track.updated event.
-    repo.track_update(
-        track_id.as_str(),
-        TrackPatch {
-            task_budget: Some(Some(1)),
-            ..Default::default()
-        },
-    )
-    .await
-    .expect("raise budget");
-    let track = repo.track_get(track_id.as_str()).await.unwrap().unwrap();
-    repo.log_pure_event(
-        ActorId::User,
-        track_scope(&track_id, &area_id),
-        None,
-        &events,
-        &cache,
-        &wcc,
-        Event::TrackUpdated(calm_server::event::TrackUpdatedPayload::new(track, None)),
-    )
-    .await
-    .unwrap();
-
-    let status = wait_for(Duration::from_secs(5), || {
-        let repo = repo.clone();
-        let task_id = task_id.clone();
-        async move {
-            let row = repo.task_get(&task_id).await.unwrap()?;
-            (row.status != calm_server::model::TaskStatus::Pending).then_some(row.status)
-        }
-    })
-    .await
-    .expect("track.updated must poke the scheduler — task stayed pending until the tick");
-    assert!(
-        matches!(
-            status,
-            calm_server::model::TaskStatus::Dispatched | calm_server::model::TaskStatus::Running
-        ),
-        "raised budget must dispatch the held task; got {status:?}"
-    );
 }

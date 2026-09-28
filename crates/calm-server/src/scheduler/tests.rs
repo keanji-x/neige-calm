@@ -80,7 +80,7 @@ fn ready_set_requires_all_deps_done() {
         task("c", TaskStatus::Pending, &["a", "b"], 0),
         task("d", TaskStatus::Pending, &["ghost"], 0),
     ];
-    let ready = compute_ready(&tasks, 10);
+    let ready = compute_ready(&tasks, true).unwrap();
     assert_eq!(keys(&ready), vec!["b"], "only b has all deps done");
 }
 
@@ -93,58 +93,54 @@ fn canceled_and_failed_deps_never_satisfy() {
         task("c", TaskStatus::Pending, &["a"], 0),
         task("d", TaskStatus::Pending, &["b"], 0),
     ];
-    assert!(compute_ready(&tasks, 10).is_empty());
+    assert!(compute_ready(&tasks, true).unwrap().is_empty());
 }
 
+/// #1830 S2 D5: a codex/claude task in the track's checkout is ready only while the track is
+/// idle, and only the first of them; terminal, isolated and child-track tasks are not held.
 #[test]
-fn budget_counts_dispatched_running_and_verifying() {
-    // `verifying` occupies budget deliberately.
+fn only_the_first_in_tree_task_is_ready_and_only_while_the_track_is_idle() {
+    let mut terminal = task("c-terminal", TaskStatus::Pending, &[], 0);
+    terminal.kind = TaskKind::Terminal;
+    let mut isolated = task("d-isolated", TaskStatus::Pending, &[], 0);
+    isolated.context_json =
+        r#"{"neige_execution":{"version":"isolated-codex-v1","workspace":"empty"}}"#.into();
+    let mut child = task("e-child", TaskStatus::Pending, &[], 0);
+    child.spawn = "sub-wave".into();
+    let mut claude = task("b-claude", TaskStatus::Pending, &[], 0);
+    claude.kind = TaskKind::Claude;
     let tasks = vec![
-        task("a", TaskStatus::Dispatched, &[], 0),
-        task("b", TaskStatus::Running, &[], 0),
-        task("c", TaskStatus::Verifying, &[], 0),
-        task("d", TaskStatus::Pending, &[], 0),
-        task("e", TaskStatus::Pending, &[], 0),
+        task("a-codex", TaskStatus::Pending, &[], 0),
+        claude,
+        terminal,
+        isolated,
+        child,
     ];
-    assert!(
-        compute_ready(&tasks, 3).is_empty(),
-        "3 in flight fill budget 3"
-    );
-    let ready = compute_ready(&tasks, 4);
     assert_eq!(
-        keys(&ready),
-        vec!["d", "e"],
-        "positive capacity returns every candidate; the pass consumes one successful claim"
+        keys(&compute_ready(&tasks, true).unwrap()),
+        vec!["a-codex", "c-terminal", "d-isolated", "e-child"],
+        "an idle track admits one in-tree task, in scheduler order"
     );
-    let ready = compute_ready(&tasks, 5);
-    assert_eq!(keys(&ready), vec!["d", "e"]);
+    assert_eq!(
+        keys(&compute_ready(&tasks, false).unwrap()),
+        vec!["c-terminal", "d-isolated", "e-child"],
+        "a busy track admits no in-tree task"
+    );
 }
 
 #[test]
-fn ready_set_preserves_scheduler_order_without_preconsuming_capacity() {
+fn ready_set_preserves_scheduler_order() {
     // Input order is the repo's; compute_ready must not reorder.
-    let mut high = task("zz-high", TaskStatus::Pending, &[], 9);
+    let terminal = |key: &str, priority: i64| {
+        let mut task = task(key, TaskStatus::Pending, &[], priority);
+        task.kind = TaskKind::Terminal;
+        task
+    };
+    let mut high = terminal("zz-high", 9);
     high.created_at_ms = 5;
-    let tasks = vec![
-        high,
-        task("aa-low", TaskStatus::Pending, &[], 0),
-        task("bb-low", TaskStatus::Pending, &[], 0),
-    ];
-    let ready = compute_ready(&tasks, 2);
+    let tasks = vec![high, terminal("aa-low", 0), terminal("bb-low", 0)];
+    let ready = compute_ready(&tasks, true).unwrap();
     assert_eq!(keys(&ready), vec!["zz-high", "aa-low", "bb-low"]);
-}
-
-#[test]
-fn zero_or_negative_capacity_dispatches_nothing() {
-    let tasks = vec![
-        task("a", TaskStatus::Running, &[], 0),
-        task("b", TaskStatus::Pending, &[], 0),
-    ];
-    assert!(compute_ready(&tasks, 0).is_empty());
-    assert!(
-        compute_ready(&tasks, 1).is_empty(),
-        "running fills budget 1"
-    );
 }
 
 #[test]
@@ -165,37 +161,6 @@ fn lifecycle_gating_matches_design_table() {
         TrackLifecycle::Failed,
     ] {
         assert!(!lifecycle_allows_scheduling(held), "{held:?}");
-    }
-}
-
-#[test]
-fn budget_from_env_fallback_paths() {
-    let saved = std::env::var("NEIGE_TRACK_TASK_BUDGET").ok();
-    fn set(v: &str) {
-        // SAFETY: single-threaded test; no concurrent env reader.
-        unsafe { std::env::set_var("NEIGE_TRACK_TASK_BUDGET", v) };
-    }
-    fn remove() {
-        // SAFETY: see `set`.
-        unsafe { std::env::remove_var("NEIGE_TRACK_TASK_BUDGET") };
-    }
-
-    remove();
-    assert_eq!(Scheduler::budget_from_env(1), 1, "unset → default 1");
-    set("");
-    assert_eq!(Scheduler::budget_from_env(1), 1, "empty → default");
-    set("nope");
-    assert_eq!(Scheduler::budget_from_env(1), 1, "garbage → default");
-    set("0");
-    assert_eq!(Scheduler::budget_from_env(1), 1, "zero → default");
-    set("-2");
-    assert_eq!(Scheduler::budget_from_env(1), 1, "negative → default");
-    set("3");
-    assert_eq!(Scheduler::budget_from_env(1), 3, "valid → override");
-
-    match saved {
-        Some(v) => set(&v),
-        None => remove(),
     }
 }
 
@@ -428,19 +393,6 @@ fn task_kind_str_includes_claude() {
     assert_eq!(task_kind_str(TaskKind::Codex), "codex");
     assert_eq!(task_kind_str(TaskKind::Claude), "claude");
     assert_eq!(task_kind_str(TaskKind::Terminal), "terminal");
-}
-
-#[test]
-fn budget_greater_than_one_relies_on_claim_time_workspace_leases() {
-    let tasks = vec![
-        task("a", TaskStatus::Pending, &[], 0),
-        task("b", TaskStatus::Pending, &[], 0),
-    ];
-    let ready = compute_ready(&tasks, 2);
-    assert_eq!(keys(&ready), vec!["a", "b"]);
-    // There is intentionally no cwd/resource collision check here:
-    // Codex claims acquire `.claude/worktrees/<track>/<card>` leases,
-    // and card ids make those paths structurally disjoint.
 }
 
 #[test]

@@ -191,7 +191,6 @@ pub(super) async fn fixture_with_plugin(scenario: &str, manifest: Option<Value>)
         plugins,
         Arc::new(tokio::sync::OnceCell::new()),
         root.path().join("gates"),
-        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
     )
     .await
     .unwrap();

@@ -19,7 +19,7 @@ pub fn register_into(registry: &mut ToolRegistry) {
         let args: RepairArgs = serde_json::from_value(args).map_err(|e|RpcError::invalid_params(e.to_string()))?;
         args.validate().map_err(map_error)?;
         let (track, _, card, payload) = super::track_report::resolve_report_for_caller(&ctx, &identity).await?;
-        let result = CardDecisionSink::from_app_context(&ctx).commit_task_repair(&identity, track, card, payload, args, ctx.task_budget_default).await.map_err(map_error)?;
+        let result = CardDecisionSink::from_app_context(&ctx).commit_task_repair(&identity, track, card, payload, args).await.map_err(map_error)?;
         Ok(crate::mcp_server::result::ToolResult::structured(result))
     })));
 }

@@ -1289,7 +1289,7 @@
   },
   {
     "name": "calm.task.delivery",
-    "description_sha256": "1f01055c0df1688f57cb5f3ac37ae796eb05a797db716aac685463c88dc6325d",
+    "description_sha256": "e6e3aa49987a92188586fa30785ebb688f675c1f6c74efe6b07e1f6b3a784b53",
     "input_schema": {
       "properties": {
         "action": {
@@ -1335,7 +1335,7 @@
   },
   {
     "name": "calm.task.dispatch",
-    "description_sha256": "dea6e5fa779709c7113c2141f0fa501050089b47a700c8c1ad329e723140f0d8",
+    "description_sha256": "8f1a9048ad05b6ffb5a4cbeeba547a587814f753a13893afa2be4b4c82294862",
     "input_schema": {
       "additionalProperties": false,
       "oneOf": [
@@ -1474,7 +1474,7 @@
   },
   {
     "name": "calm.task.repair",
-    "description_sha256": "336f78258ee28b3d38a869bc29f0a264b5f10ea66cb70747949a8aefd5721b17",
+    "description_sha256": "d113ffc8efd33424599d51f700215c339c6a363ac440ac3dc3f9d838a050a145",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

@@ -62,8 +62,9 @@ function renderApp(initialEntry: string) {
 
 describe('settingsSectionForPath', () => {
   it('maps every settings path to a pane and nothing else to one', () => {
-    expect(settingsSectionForPath('/settings')).toBe('general');
-    expect(settingsSectionForPath('/settings/general')).toBe('general');
+    expect(settingsSectionForPath('/settings')).toBe('network');
+    // General left with the task-concurrency control (#1830 S2b).
+    expect(settingsSectionForPath('/settings/general')).toBeNull();
     expect(settingsSectionForPath('/settings/network')).toBe('network');
     expect(settingsSectionForPath('/settings/appearance')).toBe('appearance');
     expect(settingsSectionForPath('/settings/plugins')).toBe('plugins');

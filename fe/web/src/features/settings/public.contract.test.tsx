@@ -78,8 +78,8 @@ describe('INV-A11Y-061 navigation shape', () => {
     );
     const nav = screen.getByRole('navigation', { name: 'Settings sections' });
     expect([...nav.querySelectorAll('button')].map((node) => node.textContent))
-      .toEqual(['General', 'Network', 'Appearance', 'Plugins', 'Planners', 'About']);
-    expect(screen.getByRole('button', { name: 'General' }).getAttribute('aria-current')).toBeNull();
+      .toEqual(['Network', 'Appearance', 'Plugins', 'Planners', 'About']);
+    expect(screen.getByRole('button', { name: 'Appearance' }).getAttribute('aria-current')).toBeNull();
     expect(screen.getByRole('button', { name: 'Network' }).getAttribute('aria-current')).toBe('page');
     expect(screen.getByRole('button', { name: 'Plugins' }).getAttribute('aria-current')).toBeNull();
 

@@ -191,7 +191,6 @@ pub trait RepoRead: Send + Sync + 'static {
         &self,
         track_id: &str,
         blocks: &[calm_types::track_report::ReportBlock],
-        task_budget_default: i64,
     ) -> Result<Vec<crate::db::sqlite::BlockVerdict>>;
     async fn card_role_get(&self, id: &str) -> Result<Option<CardRole>>;
     /// Page **every** `harness_items` row for a card, whatever its `method`. The transcript feed must NOT use it.

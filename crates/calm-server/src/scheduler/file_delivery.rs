@@ -1,4 +1,4 @@
-//! Publication waits never occupy the Track scheduling lock or worker budget.
+//! Publication waits never occupy the Track scheduling lock.
 use super::*;
 use crate::db::write_in_tx_typed;
 use calm_types::task_execution::FileDelivery;
@@ -113,19 +113,14 @@ impl Scheduler {
             return Ok(());
         }
         let publication_id = publication.to_owned();
-        let fallback = self.budget_default;
         let global_limit = self.candidate_verification_limit as i64;
         let operation_key = write_in_tx_typed(self.repo.as_ref(),move |tx| Box::pin(async move {
             let candidate = crate::file_delivery::candidate::load_tx(tx,&publication_id).await?;
             if let Some(key) = sqlx::query_scalar::<_,String>("SELECT operation_key FROM task_candidate_verification_allocations WHERE publication_operation_id=?1").bind(&publication_id).fetch_optional(&mut **tx).await? { return Ok(Some(key)); }
             crate::file_delivery::candidate::authorize_tx(tx,&candidate).await?;
-            let (_,budget) = track_lifecycle_and_budget_tx(tx,&candidate.source.track_id).await?.ok_or_else(|| CalmError::Conflict("candidate track missing".into()))?;
-            let configured: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key=?1").bind(crate::routes::settings::TASK_BUDGET_DEFAULT_KEY).fetch_optional(&mut **tx).await?;
-            let budget = budget.unwrap_or(crate::routes::settings::effective_task_budget_default(configured.as_deref(),fallback)).max(0);
-            let tasks = tasks_by_track_tx(tx,&candidate.source.track_id).await?;
-            let active = crate::file_delivery::candidate_verify::active_tx(tx,&candidate.source.track_id).await?;
+            track_lifecycle_tx(tx,&candidate.source.track_id).await?.ok_or_else(|| CalmError::Conflict("candidate track missing".into()))?;
             let global: i64 = sqlx::query_scalar("SELECT count(*) FROM task_candidate_verification_allocations a LEFT JOIN operations o ON o.operation_key=a.operation_key AND o.kind='candidate-verify' WHERE o.id IS NULL OR o.phase NOT IN ('succeeded','failed')").fetch_one(&mut **tx).await?;
-            if track_capacity(&tasks,budget) as i64 <= active || global >= global_limit { return Ok(None); }
+            if global >= global_limit { return Ok(None); }
             let key = new_id();
             sqlx::query("INSERT INTO task_candidate_verification_allocations(publication_operation_id,track_id,operation_key) VALUES(?1,?2,?3)").bind(&publication_id).bind(&candidate.source.track_id).bind(&key).execute(&mut **tx).await?;
             Ok(Some(key))

@@ -23,26 +23,15 @@ pub(super) fn prepare(doc: &ReportDoc, derived: &Derived) -> Result<ReportDocOp>
         position: None,
     })
 }
-pub(super) async fn snapshot_tx(
-    tx: &mut Tx<'_>,
-    receipt: &Receipt,
-    fallback: i64,
-) -> Result<Value> {
+pub(super) async fn snapshot_tx(tx: &mut Tx<'_>, receipt: &Receipt) -> Result<Value> {
     let (_, blocks) = super::report_blocks_snapshot_tx(tx, &receipt.track_id).await?;
     let (declarations, diagnostics) =
         calm_types::report_blocks::tasks::project_task_declarations(&blocks);
-    let configured: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key=?1")
-        .bind(crate::routes::settings::TASK_BUDGET_DEFAULT_KEY)
-        .fetch_optional(&mut **tx)
-        .await?;
-    let budget =
-        crate::routes::settings::effective_task_budget_default(configured.as_deref(), fallback);
-    let verdicts = crate::db::sqlite::evaluate_schedulability_with_task_budget_default(
+    let verdicts = crate::db::sqlite::evaluate_schedulability_with_pending_reasons(
         tx,
         &receipt.track_id,
         &declarations,
         &diagnostics,
-        budget,
     )
     .await?;
     let track = crate::track_lifecycle::track_get_tx(tx, &receipt.track_id.clone().into()).await?;
@@ -64,8 +53,7 @@ pub(super) async fn snapshot_tx(
             None
         };
         let blocking = if let Some(a) = &allocation {
-            crate::task_recovery::current_blocking_reason_tx(tx, &track, a, task.as_ref(), budget)
-                .await?
+            crate::task_recovery::current_blocking_reason_tx(tx, &track, a, task.as_ref()).await?
         } else {
             None
         };

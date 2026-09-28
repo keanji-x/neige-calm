@@ -5,7 +5,6 @@ import { MobileListGroup } from '../../ui/mobile-list/public.tsx';
 import styles from './settings.module.css';
 
 export const SETTINGS_SECTIONS = Object.freeze([
-  Object.freeze({ id: 'general', label: 'General', icon: 'menu' }),
   Object.freeze({ id: 'network', label: 'Network', icon: 'externalLink' }),
   Object.freeze({ id: 'appearance', label: 'Appearance', icon: 'viewColumns' }),
   Object.freeze({ id: 'plugins', label: 'Plugins', icon: 'wrench' }),

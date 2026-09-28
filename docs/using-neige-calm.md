@@ -37,18 +37,16 @@ in the Report; use its task-kind button to reveal the worker card when one exist
 The Notification Center identifies which Planner,
 Assistant, or Worker needs attention and opens its conversation or card.
 
-**Settings → General → Task concurrency** sets the default number of concurrently
-admitted tasks per Track. Commit the positive integer by pressing Enter or
-leaving the field. The deployment fallback is one; a Track-specific budget and
-server capacity limits still apply. Raising the default can release pending
-work; lowering it does not interrupt already running tasks.
+Codex and Claude tasks of a Track run one at a time in the Track's checkout; a
+task waiting for it shows *Waiting for the track's checkout*. Isolated and
+terminal tasks are not held.
 
 Worker cards and verification terminals display their directories separately.
 A gate uses its explicit directory override when supplied, otherwise the bound
 worker execution's persisted directory before task/Track defaults. A missing
 bound workspace fails verification instead of silently checking another tree.
-New Claude worker operations provision Git worktrees; recovery of older frozen
-operations keeps their recorded directory.
+Codex and Claude workers run in the Track's own checkout; recovery of older
+frozen operations keeps their recorded directory.
 
 ## Recover a failed task
 

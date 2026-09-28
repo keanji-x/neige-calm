@@ -427,10 +427,8 @@ const taskPendingReasonSchema = z.discriminatedUnion('kind', [
     dependencies: z.array(z.string()),
   }),
   z.object({
-    kind: z.literal('budgetQueued'),
+    kind: z.literal('trackBusy'),
     message: z.string().min(1),
-    occupiedTaskBudget: z.number().int().nonnegative(),
-    effectiveTaskBudget: z.number().int().nonnegative(),
   }),
   z.object({
     kind: z.literal('notAdmitted'),

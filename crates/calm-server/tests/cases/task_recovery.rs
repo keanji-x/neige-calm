@@ -173,7 +173,7 @@ async fn task_recovery_preserves_sibling_history_and_dependency_keys() {
         .tasks_by_track(boot.track_id.as_str())
         .await
         .unwrap();
-    let ready = calm_server::scheduler::compute_ready(&plan, 1);
+    let ready = calm_server::scheduler::compute_ready(&plan, true).unwrap();
     assert_eq!(
         ready
             .iter()
@@ -480,7 +480,6 @@ async fn task_recovery_pending_rebuild_keeps_identity_and_changed_contract_canno
         boot.track_id.as_str(),
         "b",
         calm_server::ids::ActorId::User,
-        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
     )
     .await
     .unwrap();
@@ -626,7 +625,6 @@ async fn task_recovery_blocked_track_resumes_in_same_transaction() {
         boot.track_id.as_str(),
         "b",
         planner_identity(&boot).to_actor_id(),
-        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
     )
     .await
     .unwrap();
@@ -767,7 +765,6 @@ async fn task_recovery_terminal_leader_exit_never_proves_descendant_write_stop()
             boot.track_id.as_str(),
             &b.key,
             calm_server::ids::ActorId::User,
-            calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
         )
         .await
         .unwrap();
@@ -969,7 +966,6 @@ async fn task_recovery_timed_out_ordinary_codex_worker_is_guided_to_a_new_task()
         &track_id,
         "b",
         calm_server::ids::ActorId::User,
-        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
     )
     .await
     .unwrap();
@@ -1089,7 +1085,6 @@ async fn task_recovery_guidance_does_not_advertise_a_user_recovery_the_predecess
         boot.track_id.as_str(),
         "b",
         calm_server::ids::ActorId::User,
-        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
     )
     .await
     .unwrap();

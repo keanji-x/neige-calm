@@ -1282,60 +1282,25 @@ async fn track_patch_same_state_lifecycle_with_title_still_writes_title() {
     );
 }
 
-async fn track_policy_columns(repo: &Arc<dyn Repo>, track_id: &str) -> (Option<i64>, i64) {
+async fn track_require_task_gates(repo: &Arc<dyn Repo>, track_id: &str) -> i64 {
     let pool = repo.sqlite_pool().expect("sqlite pool");
-    let (budget, require_gates): (Option<i64>, i64) =
-        sqlx::query_as("SELECT task_budget, require_task_gates FROM tracks WHERE id = ?1")
-            .bind(track_id)
-            .fetch_one(&pool)
-            .await
-            .expect("read track policy columns");
-    (budget, require_gates)
+    sqlx::query_scalar("SELECT require_task_gates FROM tracks WHERE id = ?1")
+        .bind(track_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read track policy column")
 }
 
 #[tokio::test]
-async fn track_patch_task_budget_and_require_task_gates_persist() {
+async fn track_patch_require_task_gates_persists() {
     let (state, track_id, repo) = boot_with_repo().await;
 
     let resp = patch_track(
         app(state.clone()),
         &track_id,
-        json!({"task_budget": 3, "require_task_gates": false}),
+        json!({"require_task_gates": false}),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
-
-    let (budget, require_gates) = track_policy_columns(&repo, &track_id).await;
-    assert_eq!(budget, Some(3));
-    assert_eq!(require_gates, 0);
-
-    let resp = patch_track(app(state.clone()), &track_id, json!({"task_budget": null})).await;
-    assert_eq!(resp.status(), StatusCode::OK);
-    let (budget, require_gates) = track_policy_columns(&repo, &track_id).await;
-    assert_eq!(budget, None);
-    assert_eq!(require_gates, 0, "untouched by the budget-only patch");
-}
-
-#[tokio::test]
-async fn track_patch_negative_task_budget_rejected_with_400() {
-    let (state, track_id, repo) = boot_with_repo().await;
-
-    let resp = patch_track(app(state.clone()), &track_id, json!({"task_budget": -1})).await;
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = body_to_json(resp).await;
-    assert_eq!(body["code"], "bad_request");
-    assert!(
-        body["error"]
-            .as_str()
-            .unwrap()
-            .contains("task_budget must be >= 0"),
-        "error message should explain the bound: {body:?}"
-    );
-
-    let (budget, require_gates) = track_policy_columns(&repo, &track_id).await;
-    assert_eq!(budget, None);
-    assert_eq!(
-        require_gates, 1,
-        "post-migration default untouched by the rejected patch"
-    );
+    assert_eq!(track_require_task_gates(&repo, &track_id).await, 0);
 }

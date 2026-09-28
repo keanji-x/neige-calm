@@ -101,7 +101,6 @@ pub(crate) async fn relevant(
                 &track_id,
                 &task.key,
                 &ActorId::User,
-                crate::scheduler::DEFAULT_TRACK_TASK_BUDGET,
             )
             .await?;
             Ok(view.recovery.allowed)

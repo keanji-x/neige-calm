@@ -16,11 +16,11 @@ it('groups settings categories in one borderless rounded list with no row divide
   expect(getComputedStyle(group).borderTopWidth).toBe('0px');
   expect(getComputedStyle(group).padding).toBe('4px');
   const rows = [...navigation.querySelectorAll('li')];
-  expect(rows).toHaveLength(6);
+  expect(rows).toHaveLength(5);
   for (const row of rows) {
     expect(getComputedStyle(row).borderBottomWidth).toBe('0px');
     expect(getComputedStyle(row).borderRadius).toBe('12px');
   }
-  await page.getByRole('button', { name: 'General', exact: true }).click();
-  expect(onSelect).toHaveBeenCalledExactlyOnceWith('general');
+  await page.getByRole('button', { name: 'Network', exact: true }).click();
+  expect(onSelect).toHaveBeenCalledExactlyOnceWith('network');
 });

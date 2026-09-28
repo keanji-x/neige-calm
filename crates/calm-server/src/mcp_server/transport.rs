@@ -89,7 +89,6 @@ impl McpServer {
         plugin_host: Arc<tokio::sync::OnceCell<Arc<crate::plugin_host::PluginHost>>>,
         operation_runtime: Arc<tokio::sync::OnceCell<Arc<OperationRuntime>>>,
         gate_logs_dir: PathBuf,
-        task_budget_default: i64,
     ) -> anyhow::Result<Arc<Self>> {
         let ctx = AppContext::new(
             repo,
@@ -99,7 +98,6 @@ impl McpServer {
             plugin_host,
             operation_runtime,
             gate_logs_dir,
-            task_budget_default,
         );
         Self::spawn_with_context(ctx, socket_path, shim_bin, registry).await
     }

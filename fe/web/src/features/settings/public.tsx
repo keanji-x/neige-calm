@@ -3,7 +3,6 @@
 
 import { Heading as AstryxHeading } from '@astryxdesign/core/Heading';
 import { List as AstryxList, ListItem as AstryxListItem } from '@astryxdesign/core/List';
-import { NumberInput as AstryxNumberInput } from '@astryxdesign/core/NumberInput';
 import { Selector as AstryxSelector } from '@astryxdesign/core/Selector';
 import { SideNav as AstryxSideNav, SideNavItem as AstryxSideNavItem } from '@astryxdesign/core/SideNav';
 import { Text as AstryxText } from '@astryxdesign/core/Text';
@@ -12,8 +11,7 @@ import { VisuallyHidden as AstryxVisuallyHidden } from '@astryxdesign/core/Visua
 import { useEffect, useRef, type ReactNode } from 'react';
 
 import {
-  HTTPS_PROXY_KEY, HTTP_PROXY_KEY, TASK_BUDGET_DEFAULT_KEY, taskBudgetDefaultFrom,
-  type SettingsPatch,
+  HTTPS_PROXY_KEY, HTTP_PROXY_KEY, type SettingsPatch,
 } from '../../../../core/domain/settings.ts';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
@@ -118,156 +116,6 @@ const SAVED_NOTICE_MS = 4000;
 
 /** Every right-hand control is this wide, so the pane has one trailing edge. Exported for the plugin configuration pane. */
 export const CONTROL_WIDTH = 260;
-
-export type GeneralPaneProps = Readonly<{
-  /** `undefined` means "still loading" — never render a guessed control. */
-  settings: Readonly<Record<string, string>> | undefined;
-  loadError: string | null;
-  onSave: (patch: SettingsPatch) => void | Promise<void>;
-  onRetryLoad: () => void;
-  savedNoticeMs?: number;
-}>;
-
-type GeneralRowStatus =
-  | Readonly<{ phase: 'idle' }>
-  | Readonly<{ phase: 'saving'; value: number }>
-  | Readonly<{ phase: 'saved'; at: number; value: number }>
-  | Readonly<{ phase: 'failed'; message: string; value: number }>;
-
-const GENERAL_IDLE: GeneralRowStatus = Object.freeze({ phase: 'idle' });
-
-export function GeneralPane({
-  settings, loadError, onSave, onRetryLoad, savedNoticeMs = SAVED_NOTICE_MS,
-}: GeneralPaneProps) {
-  const loaded = settings !== undefined;
-  const incoming = taskBudgetDefaultFrom(settings ?? {});
-  const [seed, setSeed] = useState<number | null>(null);
-  const [draft, setDraft] = useState(incoming);
-  const draftRef = useRef(draft);
-  draftRef.current = draft;
-  const sent = useRef<number | null>(null);
-  const sequence = useRef(0);
-  const [status, setStatus] = useState<GeneralRowStatus>(GENERAL_IDLE);
-  const [changedElsewhere, setChangedElsewhere] = useState<number | null>(null);
-  const statusRef = useRef(status);
-  statusRef.current = status;
-
-  if (loaded && seed !== incoming) {
-    const previous = seed;
-    setSeed(incoming);
-    if (statusRef.current.phase !== 'saving') sent.current = null;
-    if (statusRef.current.phase === 'saved' && statusRef.current.value !== incoming) setStatus(GENERAL_IDLE);
-    if (previous !== null && draft !== previous && draft !== incoming
-      && statusRef.current.phase !== 'saving'
-      && (statusRef.current.phase === 'idle' || statusRef.current.value !== incoming)) {
-      setChangedElsewhere(incoming);
-    } else if (draft === previous || draft === incoming) setChangedElsewhere(null);
-    setDraft((current) => (previous === null || current === previous ? incoming : current));
-  }
-
-  const base = seed ?? incoming;
-  const commit = (value: number) => {
-    if (!Number.isSafeInteger(value) || value < 1) return;
-    if (value === (sent.current ?? base)) return;
-    sent.current = value;
-    setChangedElsewhere(null);
-    const ticket = (sequence.current += 1);
-    const settle = (next: GeneralRowStatus) => {
-      if (sequence.current !== ticket) return;
-      if (next.phase === 'failed') sent.current = null;
-      setStatus(next);
-    };
-    setStatus({ phase: 'saving', value });
-    void Promise.resolve(onSave({ [TASK_BUDGET_DEFAULT_KEY]: String(value) }))
-      .then(() => settle({ phase: 'saved', at: Date.now(), value }))
-      .catch((error: unknown) => settle({
-        phase: 'failed',
-        message: error instanceof Error ? error.message : 'Save failed.',
-        value,
-      }));
-  };
-
-  const pending = useRef({ draft, base, onSave });
-  pending.current = { draft, base, onSave };
-  useEffect(() => () => {
-    const { draft: last, base: seeded, onSave: save } = pending.current;
-    if (last === (sent.current ?? seeded)) return;
-    const verdict = statusRef.current;
-    if (verdict.phase === 'failed' && verdict.value === last) return;
-    void Promise.resolve(save({ [TASK_BUDGET_DEFAULT_KEY]: String(last) })).catch(() => {
-      // The next visit re-reads the authoritative value.
-    });
-  }, []);
-
-  const savedAt = status.phase === 'saved' ? status.at : null;
-  useEffect(() => {
-    if (savedAt === null) return;
-    const id = setTimeout(() => setStatus((current) => (
-      current.phase === 'saved' && current.at === savedAt ? GENERAL_IDLE : current
-    )), savedNoticeMs);
-    return () => clearTimeout(id);
-  }, [savedAt, savedNoticeMs]);
-
-  const inputStatus = changedElsewhere !== null && draft !== changedElsewhere
-    ? { type: 'warning' as const, message: `Changed elsewhere to ${changedElsewhere}. Your edit is not saved.` }
-    : status.phase !== 'idle' && status.value === draft
-    ? status.phase === 'failed'
-      ? { type: 'error' as const, message: status.message }
-      : status.phase === 'saved'
-        ? { type: 'success' as const }
-        : undefined
-    : undefined;
-
-  return (
-    <SettingsPane
-      category="general"
-      title="General"
-      lede="Workspace-wide defaults for task scheduling. Changes apply to work that has not started yet."
-    >
-      {loadError !== null && <ErrorBox message={loadError} onRetry={onRetryLoad} />}
-      {!loaded && loadError === null && <AstryxText as="p" color="secondary">Loading settings…</AstryxText>}
-      {loaded && (
-        <SettingsList>
-          <SettingRow
-            title="Task concurrency"
-            description="Per-track default; server and track-specific limits still apply."
-            control={(
-              <>
-                <AstryxVisuallyHidden role="status">
-                  {inputStatus?.type === 'success' ? 'Saved.' : ''}
-                </AstryxVisuallyHidden>
-                <AstryxNumberInput
-                  label="Task concurrency"
-                  isLabelHidden
-                  value={draft}
-                  min={1}
-                  max={Number.MAX_SAFE_INTEGER}
-                  step={1}
-                  isIntegerOnly
-                  units="tasks"
-                  status={inputStatus}
-                  onChange={(value) => {
-                    draftRef.current = value;
-                    setDraft(value);
-                    setStatus((current) => (
-                      current.phase === 'idle' || current.phase === 'saving' || current.value === value
-                        ? current
-                        : GENERAL_IDLE
-                    ));
-                  }}
-                  onBlur={() => commit(draftRef.current)}
-                  onEnter={() => commit(draftRef.current)}
-                  width={CONTROL_WIDTH}
-                  data-nc-state={status.phase === 'saving' ? 'busy' : undefined}
-                />
-              </>
-            )}
-          />
-        </SettingsList>
-      )}
-    </SettingsPane>
-  );
-}
 
 export type NetworkPaneProps = Readonly<{
   onOpenMobile: () => void;

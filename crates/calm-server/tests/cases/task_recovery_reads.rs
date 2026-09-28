@@ -170,7 +170,6 @@ async fn task_recovery_list_keeps_absent_projection_with_ready_blocker() {
             boot.track_id.as_str(),
             "b",
             ActorId::User,
-            calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
         )
         .await
         .unwrap(),
@@ -209,7 +208,6 @@ async fn task_recovery_history_retains_current_dependency_blocker() {
             boot.track_id.as_str(),
             "c",
             ActorId::User,
-            calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
         )
         .await
         .unwrap(),
@@ -285,7 +283,6 @@ async fn task_recovery_deleted_frozen_reference_denies_only_affected_capability(
         boot.track_id.as_str(),
         "b",
         ActorId::User,
-        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
     )
     .await
     .expect("missing frozen input is a task capability, not a missing requested task");
@@ -305,7 +302,6 @@ async fn task_recovery_deleted_frozen_reference_denies_only_affected_capability(
         boot.track_id.as_str(),
         "absent",
         ActorId::User,
-        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
     )
     .await
     .unwrap_err();
@@ -377,30 +373,25 @@ async fn task_recovery_plan_inventory_pages_all_current_allocations() {
     );
 }
 
+/// #1830 S2 D5: a codex task waiting for another one in the track's checkout reads `trackBusy`,
+/// the same sentence on the report read and on the recovery view; a terminal task is not held.
 #[tokio::test]
-async fn task_recovery_blocker_uses_live_configured_budget_like_report_read() {
+async fn task_recovery_blocker_names_a_busy_track_like_report_read() {
     let boot = boot().await;
-    declare(&boot, declaration("a", &[])).await;
-    declare(&boot, declaration("b", &[])).await;
+    declare(&boot, ordinary_codex_declaration("a")).await;
+    declare(&boot, ordinary_codex_declaration("b")).await;
+    declare(&boot, declaration("c", &[])).await;
     let pool = boot.repo.sqlite_pool().unwrap();
     sqlx::query("UPDATE tasks SET status='running' WHERE track_id=?1 AND key='a'")
         .bind(boot.track_id.as_str())
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query(
-        "INSERT INTO settings(key,value,updated_at) VALUES(?1,'1',1) ON CONFLICT(key) DO UPDATE SET value='1',updated_at=excluded.updated_at",
-    )
-    .bind(calm_server::routes::settings::TASK_BUDGET_DEFAULT_KEY)
-    .execute(&pool)
-    .await
-    .unwrap();
     let view = task_recovery_view(
         boot.repo.as_ref(),
         boot.track_id.as_str(),
         "b",
         ActorId::User,
-        6,
     )
     .await
     .unwrap();
@@ -412,17 +403,25 @@ async fn task_recovery_blocker_uses_live_configured_budget_like_report_read() {
     )
     .await
     .unwrap();
-    let reason = report["taskDiagnostics"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|entry| entry["key"] == "b")
-        .unwrap()["pendingReason"]["message"]
-        .clone();
-    assert_eq!(reason, "Queued 1/1");
+    let pending_reason = |key: &str| {
+        report["taskDiagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["key"] == key)
+            .unwrap()["pendingReason"]
+            .clone()
+    };
+    let reason = pending_reason("b");
+    assert_eq!(reason["kind"], "trackBusy", "{reason}");
+    assert_eq!(
+        reason["message"],
+        "Waiting for the track's checkout: another task is using it"
+    );
+    assert!(pending_reason("c").is_null(), "a terminal task is not held");
     assert_eq!(
         serde_json::to_value(view).unwrap()["current"]["blocking_reason"],
-        reason
+        reason["message"]
     );
 }
 
@@ -619,4 +618,3 @@ async fn task_recovery_list_names_the_worktree_base_sha_from_the_lease_row() {
         );
     }
 }
-

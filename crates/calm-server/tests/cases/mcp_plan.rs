@@ -158,7 +158,6 @@ async fn boot() -> Boot {
         write: calm_server::state::WriteContext::new(card_role_cache, track_area_cache),
         daemon_token_hash: None,
         gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
-        task_budget_default: calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
         plugin_host: Arc::new(tokio::sync::OnceCell::new()),
         operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
         scheduler_poke: Arc::new(tokio::sync::OnceCell::new()),
@@ -350,7 +349,7 @@ async fn all_persistent_rows(boot: &Boot) -> BTreeMap<String, Vec<String>> {
 }
 
 #[tokio::test]
-async fn migration_0041_new_track_defaults_gates_on_and_budget_null() {
+async fn migration_0041_new_track_defaults_gates_on() {
     let boot = boot().await;
     // The boot track opts out; assert the DB DEFAULT on a FRESH track instead.
     let fresh = boot
@@ -369,30 +368,25 @@ async fn migration_0041_new_track_defaults_gates_on_and_budget_null() {
         .await
         .expect("fresh track");
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
-    let (require_gates, budget): (i64, Option<i64>) =
-        sqlx::query_as("SELECT require_task_gates, task_budget FROM tracks WHERE id = ?1")
+    let require_gates: i64 =
+        sqlx::query_scalar("SELECT require_task_gates FROM tracks WHERE id = ?1")
             .bind(fresh.id.as_str())
             .fetch_one(&pool)
             .await
-            .expect("read track policy columns");
+            .expect("read track policy column");
     assert_eq!(
         require_gates, 1,
         "post-migration tracks default require_task_gates = 1 via the DB DEFAULT"
     );
-    assert_eq!(
-        budget, None,
-        "task_budget defaults to NULL (kernel default)"
-    );
 }
 
 #[tokio::test]
-async fn track_patch_persists_task_budget_and_require_task_gates() {
+async fn track_patch_persists_require_task_gates() {
     let boot = boot().await;
     boot.repo
         .track_update(
             boot.track_id.as_str(),
             TrackPatch {
-                task_budget: Some(Some(3)),
                 require_task_gates: Some(false),
                 ..Default::default()
             },
@@ -401,35 +395,13 @@ async fn track_patch_persists_task_budget_and_require_task_gates() {
         .expect("patch persists");
 
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
-    let (require_gates, budget): (i64, Option<i64>) =
-        sqlx::query_as("SELECT require_task_gates, task_budget FROM tracks WHERE id = ?1")
+    let require_gates: i64 =
+        sqlx::query_scalar("SELECT require_task_gates FROM tracks WHERE id = ?1")
             .bind(boot.track_id.as_str())
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(budget, Some(3));
     assert_eq!(require_gates, 0);
-
-    // `Some(None)` clears the budget back to the kernel default; an
-    // omitted field leaves the other column alone.
-    boot.repo
-        .track_update(
-            boot.track_id.as_str(),
-            TrackPatch {
-                task_budget: Some(None),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-    let (require_gates, budget): (i64, Option<i64>) =
-        sqlx::query_as("SELECT require_task_gates, task_budget FROM tracks WHERE id = ?1")
-            .bind(boot.track_id.as_str())
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(budget, None);
-    assert_eq!(require_gates, 0, "untouched by the second patch");
 }
 
 #[tokio::test]

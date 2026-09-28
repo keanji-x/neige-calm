@@ -662,7 +662,6 @@ async fn plan_list(
     let args = list::Args::parse(&args)?;
     let (_card, track) = resolve_track_for_identity(&ctx, &identity).await?;
     let actor = identity.to_actor_id();
-    let task_budget_default = ctx.task_budget_default;
     let summary = args.summary;
     let tx_track = track.clone();
     let entries = crate::db::write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
@@ -689,7 +688,6 @@ async fn plan_list(
                         &track.id,
                         &allocation.key,
                         &actor,
-                        task_budget_default,
                     )
                     .await?;
                     let mut entry = if args.summary {

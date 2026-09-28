@@ -263,7 +263,6 @@ done
             card.track_id.as_str(),
             &task.key,
             ActorId::User,
-            calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
         )
         .await
         .unwrap()

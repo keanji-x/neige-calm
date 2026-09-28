@@ -75,7 +75,6 @@ async fn boot() -> (Boot, TrackId, TrackId) {
         Arc::new(tokio::sync::OnceCell::new()),
         Arc::new(tokio::sync::OnceCell::new()),
         std::env::temp_dir().join("calm-rest-track-previews-gate-logs"),
-        1,
     )
     .with_preview(registry.clone());
     let state = AppState::from_parts(

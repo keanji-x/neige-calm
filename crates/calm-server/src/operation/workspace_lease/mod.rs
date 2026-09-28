@@ -36,9 +36,7 @@ pub(crate) use release::{
     ReleaseDelivery, reclaim_dead_workspace_leases_on_boot, release_workspace_lease_for_card_repo,
     release_workspace_lease_for_card_tx,
 };
-pub(crate) use worker::{
-    WorkerLeasePlan, prepare_worker_lease_tx, track_idle_tx, worker_branch_tx,
-};
+pub(crate) use worker::{WorkerLeasePlan, prepare_worker_lease_tx, worker_branch_tx};
 
 /// The one SELECT list every reader of a lease row uses
 /// (`row_to_workspace_lease` takes columns by name at run time, so a column

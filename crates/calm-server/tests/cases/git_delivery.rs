@@ -345,7 +345,6 @@ pub(super) fn spawn_dispatcher(
         SharedCodexAppServer::new_stub(boot.repo.clone()),
         runtime.clone(),
         4,
-        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
         boot.ctx.gate_logs_dir.clone(),
     )
 }

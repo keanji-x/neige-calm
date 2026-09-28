@@ -193,7 +193,6 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus) {
         write,
         daemon_token_hash: None,
         gate_logs_dir: dir.path().join("gates"),
-        task_budget_default: crate::scheduler::DEFAULT_TRACK_TASK_BUDGET,
         plugin_host: Arc::new(tokio::sync::OnceCell::new()),
         operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
         scheduler_poke: Arc::new(tokio::sync::OnceCell::new()),

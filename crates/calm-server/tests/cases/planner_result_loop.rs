@@ -63,14 +63,13 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
         completion,
         spawn,
     ));
-    let scheduler = Scheduler::new_with_task_budget_default(
+    let scheduler = Scheduler::new(
         boot.repo.clone(),
         events,
         boot.ctx.write.clone(),
         Arc::downgrade(&runtime),
         Arc::new(tokio::sync::Semaphore::new(1)),
         boot.ctx.gate_logs_dir.clone(),
-        1,
         calm_server::scheduler::WorkerIdleWake::new(
             calm_server::shared_codex_appserver::SharedCodexAppServer::new_stub(boot.repo.clone()),
             calm_server::scheduler::WORKER_IDLE_TURN_GRACE,

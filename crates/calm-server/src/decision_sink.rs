@@ -392,7 +392,6 @@ impl CardDecisionSink {
         payload: TrackReportPayload,
         args: crate::track_report::dispatch::DispatchArgs,
         plugin_tools: crate::track_report::dispatch::PluginToolAdmission,
-        task_budget_default: i64,
     ) -> Result<serde_json::Value, CalmError> {
         let recorder_shadow: Arc<dyn RecorderShadowProbe> =
             Arc::new(CardDecisionSinkRecorderShadowProbe {
@@ -407,7 +406,6 @@ impl CardDecisionSink {
             ReportEditTarget::for_resolved_parts(track, card, payload)?,
             args,
             plugin_tools,
-            task_budget_default,
             recorder_shadow,
         )
         .await
@@ -421,7 +419,6 @@ impl CardDecisionSink {
         card: Card,
         payload: TrackReportPayload,
         args: crate::file_delivery::repair::RepairArgs,
-        task_budget_default: i64,
     ) -> Result<serde_json::Value, CalmError> {
         let recorder_shadow: Arc<dyn RecorderShadowProbe> =
             Arc::new(CardDecisionSinkRecorderShadowProbe {
@@ -435,7 +432,6 @@ impl CardDecisionSink {
             identity.clone(),
             ReportEditTarget::for_resolved_parts(track, card, payload)?,
             args,
-            task_budget_default,
             recorder_shadow,
         )
         .await

@@ -117,7 +117,6 @@ async fn native_report(
         write: calm_server::state::WriteContext::new(roles, areas),
         daemon_token_hash: None,
         gate_logs_dir: "/tmp/unused-report-test".into(),
-        task_budget_default: calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
         plugin_host: Arc::new(tokio::sync::OnceCell::new()),
         operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
         scheduler_poke: Arc::new(tokio::sync::OnceCell::new()),

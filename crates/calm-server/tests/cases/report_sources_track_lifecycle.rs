@@ -79,7 +79,6 @@ async fn boot() -> Boot {
         plugin_host_cell,
         Arc::new(tokio::sync::OnceCell::new()),
         tmp.path().join("gate-logs"),
-        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
     );
     let state = AppState::from_parts(
         repo.clone(),

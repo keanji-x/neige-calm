@@ -56,6 +56,7 @@ mod track;
 mod track_claude_permissions;
 #[cfg(test)]
 mod track_claude_permissions_tests;
+mod track_idle;
 mod track_recipe;
 mod track_tree;
 mod track_workspace;
@@ -115,13 +116,12 @@ pub(crate) use session_row::{derive_session_identity, worker_session_from_row};
 pub use task::{
     SuccessReportFlip, TASK_STATUS_DETAIL_DELIVERY_ABANDONED, TaskReporter,
     require_track_exists_tx, status_detail_class, status_detail_with_reason,
-    task_abandon_delivery_tx, task_apply_gate_result_tx,
-    task_cancel_running_tx, task_cancel_tx, task_claim_pending_tx, task_complete_from_worker_tx,
-    task_fail_from_worker_tx, task_gate_attempt_bump_tx, task_get_tx, task_mark_running_tx,
-    task_mark_sub_track_running_tx, task_report_success_from_worker_tx,
-    task_stamp_missing_running_deadline_tx, task_start_verifying_from_worker_tx,
-    task_update_pending_tx, tasks_by_track_tx, track_lifecycle_and_budget_tx,
-    track_require_task_gates_tx, worker_op_targets_card_tx,
+    task_abandon_delivery_tx, task_apply_gate_result_tx, task_cancel_running_tx, task_cancel_tx,
+    task_claim_pending_tx, task_complete_from_worker_tx, task_fail_from_worker_tx,
+    task_gate_attempt_bump_tx, task_get_tx, task_mark_running_tx, task_mark_sub_track_running_tx,
+    task_report_success_from_worker_tx, task_stamp_missing_running_deadline_tx,
+    task_start_verifying_from_worker_tx, task_update_pending_tx, tasks_by_track_tx,
+    track_lifecycle_tx, track_require_task_gates_tx, worker_op_targets_card_tx,
 };
 pub use task_attempt::{
     task_attempt_current_by_track_pool, task_attempt_current_by_track_tx,
@@ -131,7 +131,7 @@ pub use task_attempt::{
 };
 pub use task_projection::{
     BlockVerdict, PROJECTION_DRIFT_TASK_FIELDS, TaskPendingReason, TaskProjectionOutcome,
-    WithdrawalEdge, evaluate_schedulability, evaluate_schedulability_with_task_budget_default,
+    WithdrawalEdge, evaluate_schedulability, evaluate_schedulability_with_pending_reasons,
     mark_context_material_tx, project_tasks_tx, project_tasks_with_tree_term_tx,
     task_delete_pending_tx,
 };
@@ -145,6 +145,7 @@ pub use track::{
     track_update_tx, track_worktree_path_for,
 };
 pub use track_claude_permissions::track_claude_permissions_ceiling_read;
+pub use track_idle::track_idle;
 pub use track_recipe::track_recipe_get_tx;
 pub use track_tree::{
     DEFAULT_TREE_TASK_BUDGET, MAX_TRACK_TREE_DEPTH, MAX_TREE_TASK_BUDGET, TRACK_BOUNDED_PATH_SQL,

@@ -117,9 +117,6 @@ pub struct TrackPatch {
     /// Request a lifecycle transition; validated through `crate::track_lifecycle`
     /// inside the write transaction.
     pub lifecycle: Option<TrackLifecycle>,
-    /// Per-track scheduler budget; `Some(None)` clears back to the kernel default.
-    #[serde(default, deserialize_with = "deserialize_double_option")]
-    pub task_budget: Option<Option<i64>>,
     /// Maximum admitted planner-declared task inventory. A present null resets to
     /// the kernel default.
     #[serde(default, deserialize_with = "deserialize_double_option")]
@@ -380,6 +377,21 @@ impl Task {
     /// means tampering — surface as empty rather than panicking.
     pub fn depends_on(&self) -> Vec<String> {
         serde_json::from_str(&self.depends_on_json).unwrap_or_default()
+    }
+
+    /// #1830 S2 D5: [`calm_types::task_execution::runs_in_track_checkout`] on this row.
+    pub fn runs_in_track_checkout(&self) -> serde_json::Result<bool> {
+        let kind = match self.kind {
+            TaskKind::Codex => "codex",
+            TaskKind::Claude => "claude",
+            TaskKind::Terminal => "terminal",
+        };
+        let context: serde_json::Value = serde_json::from_str(&self.context_json)?;
+        Ok(calm_types::task_execution::runs_in_track_checkout(
+            kind,
+            &self.spawn,
+            &context,
+        ))
     }
 }
 

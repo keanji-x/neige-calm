@@ -40,8 +40,8 @@ describe('filePathFromSearchString', () => {
 });
 
 describe('pathFor', () => {
-  it('gives the mobile General category a dedicated URL', () => {
-    expect(pathFor({ name: 'settings-general' })).toBe('/settings/general');
+  it('gives the mobile Network category a dedicated URL', () => {
+    expect(pathFor({ name: 'settings-network' })).toBe('/settings/network');
     expect(pathFor({ name: 'settings' })).toBe('/settings');
   });
   it('does not embed the card query in the path', () => {

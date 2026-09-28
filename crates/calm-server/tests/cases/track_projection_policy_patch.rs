@@ -735,13 +735,10 @@ async fn requiring_gates_reprojects_pending_ungated_tasks_before_scheduler_wakeu
             .fetch_one(&repo.sqlite_pool().unwrap())
             .await
             .unwrap();
-    let snapshot = calm_server::track_report_read::load_report_read_snapshot(
-        repo.as_ref(),
-        &report_id,
-        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
-    )
-    .await
-    .unwrap();
+    let snapshot =
+        calm_server::track_report_read::load_report_read_snapshot(repo.as_ref(), &report_id)
+            .await
+            .unwrap();
     assert!(snapshot.task_diagnostics.iter().any(|verdict| {
         verdict.key == "needs-gate"
             && matches!(

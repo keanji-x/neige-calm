@@ -89,9 +89,6 @@ pub struct RouteState {
     /// Root for server-managed track workspaces (`<root>/<area_id>/<track_id>`).
     /// Resolved once at boot; never read from env at request time.
     pub workspace_root: PathBuf,
-    /// Server-resolved default used by both scheduler admission and report
-    /// diagnostics. Read once at boot; request handlers never consult env.
-    pub task_budget_default: i64,
     pub events: EventBus,
     pub plugin: Arc<PluginHost>,
     pub db_instance_id: Arc<String>,
@@ -169,7 +166,6 @@ pub struct BootState {
     pub workspace_root: PathBuf,
     /// Owns the auto-allocated workspace root of a test/replay state; `None` in production.
     pub workspace_root_guard: Option<Arc<tempfile::TempDir>>,
-    pub task_budget_default: i64,
     pub events: EventBus,
     pub daemon: Arc<DaemonClient>,
     pub terminal_renderer: Arc<TerminalRendererRegistry>,
@@ -206,7 +202,6 @@ impl BootState {
             terminal_renderer: self.terminal_renderer.clone(),
             repo: route_repo.clone(),
             workspace_root: self.workspace_root.clone(),
-            task_budget_default: self.task_budget_default,
             events: self.events.clone(),
             plugin: self.plugin.clone(),
             db_instance_id: self.db_instance_id.clone(),
@@ -804,9 +799,6 @@ impl AppState {
         ));
         let card_kind_registry = Arc::new(CardKindRegistry::builtins());
         let write = WriteContext::new(card_role_cache.clone(), track_area_cache.clone());
-        let task_budget_default = crate::scheduler::Scheduler::budget_from_env(
-            crate::scheduler::DEFAULT_TRACK_TASK_BUDGET,
-        );
         // The operation-runtime cell is left empty on purpose: the runtime built below is
         // replaced by the fixture builders, so a value set here could go stale.
         let plugin_host_cell = Arc::new(tokio::sync::OnceCell::new());
@@ -819,7 +811,6 @@ impl AppState {
             plugin_host_cell,
             Arc::new(tokio::sync::OnceCell::new()),
             TaskVerifyAdapter::default_gate_logs_dir(),
-            task_budget_default,
         );
         let dispatcher = Arc::new(
             Dispatcher::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
@@ -834,7 +825,6 @@ impl AppState {
                 shared_codex_appserver.clone(),
                 operation_runtime.clone(),
                 Dispatcher::permits_from_env(8),
-                task_budget_default,
                 TaskVerifyAdapter::default_gate_logs_dir(),
             ),
         );
@@ -848,7 +838,6 @@ impl AppState {
             repo,
             workspace_root: workspace_root_sandbox.path().to_path_buf(),
             workspace_root_guard: Some(workspace_root_sandbox),
-            task_budget_default,
             events,
             daemon,
             terminal_renderer,
@@ -1021,7 +1010,6 @@ impl AppState {
                     self.shared_codex_appserver.clone(),
                     runtime,
                     self.dispatcher.permits(),
-                    self.route.task_budget_default,
                     self.route.mcp_context.gate_logs_dir.clone(),
                 ),
             );
@@ -1116,9 +1104,6 @@ impl AppState {
         }
 
         let events = EventBus::new();
-        let task_budget_default = crate::scheduler::Scheduler::budget_from_env(
-            crate::scheduler::DEFAULT_TRACK_TASK_BUDGET,
-        );
 
         // Seed after migrations and before any background task is spawned, so every task
         // sees the same cache state the first REST write will.
@@ -1182,7 +1167,6 @@ impl AppState {
             plugin_host_cell.clone(),
             operation_runtime_cell.clone(),
             gate_logs_dir.clone(),
-            task_budget_default,
         )
         .with_preview(preview);
         // #1791 §5.1 item 1: every Claude Planner credential is revoked and every Claude Planner
@@ -1323,7 +1307,6 @@ impl AppState {
                 shared_codex_appserver.clone(),
                 operation_runtime.clone(),
                 crate::dispatcher::Dispatcher::permits_from_env(8),
-                task_budget_default,
                 gate_logs_dir.clone(),
             ),
         );
@@ -1381,7 +1364,6 @@ impl AppState {
             workspace_root,
             // Production: the root is the user's real directory, never swept.
             workspace_root_guard: None,
-            task_budget_default,
             events,
             daemon,
             terminal_renderer,

@@ -162,9 +162,9 @@ line, watch the named test go red) before landing.
 Settings remains one shell-owned route surface. On a phone `/settings` is a
 vertical category index built from Astryx List rows; the pane stays hidden from
 paint and the accessibility tree. Each category has its own URL, including
-`/settings/general`, and shows just its content beneath one page header. The
+`/settings/network`, and shows just its content beneath one page header. The
 header's Back returns to the index; the index's Back returns to the workspace.
-Desktop `/settings` still opens General beside the existing SideNav.
+Desktop `/settings` opens Network beside the existing SideNav.
 
 The shell records the workspace and index history entries it actually observed.
 Category selection pushes one detail entry; Back pops to the observed index,

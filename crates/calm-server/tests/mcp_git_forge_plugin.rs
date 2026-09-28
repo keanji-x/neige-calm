@@ -316,7 +316,6 @@ async fn boot_fixture() -> Fixture {
         plugin_host_cell,
         operation_runtime_cell,
         tmp.path().join("gate-logs"),
-        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
     )
     .await
     .expect("spawn McpServer");

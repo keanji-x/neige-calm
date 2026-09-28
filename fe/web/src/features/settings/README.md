@@ -23,9 +23,8 @@ contract. Mobile control rows remain stacked and readable at narrow widths.
 **One nav entry per group. One pane per entry. One row shape.**
 
 A settings group that wants a heading is a nav entry — not a block stacked on a
-pane. General therefore holds workspace-wide defaults, while Network,
-Appearance and About remain their own entries instead of becoming headed blocks
-inside it.
+pane. Network, Appearance and About are their own entries instead of becoming
+headed blocks inside one another.
 
 A row is:
 
@@ -76,7 +75,7 @@ cannot grow — a fourth theme would have to change the control.
 Astryx's built-in registry only. That set has 26 semantic names and none of them
 is "network" or "appearance", so each nav entry takes the nearest available
 sense and says so where it is chosen (`externalLink` for traffic leaving the
-machine, `menu` for General's short list, `viewColumns` for how the app is
+machine, `viewColumns` for how the app is
 painted, `wrench` for tooling, `checkDouble` for the checks run per Planner
 provider, `info` for read-only facts). The app deliberately does not draw one-off
 glyphs for this.
@@ -85,8 +84,7 @@ glyphs for this.
 
 | Route | Section | Component |
 | --- | --- | --- |
-| `/settings` | General | `GeneralPane` (`public.tsx`) |
-| `/settings/network` | Network | `NetworkPane` (`public.tsx`) |
+| `/settings`, `/settings/network` | Network | `NetworkPane` (`public.tsx`) |
 | `/settings/appearance` | Appearance | `AppearancePane` (`public.tsx`) |
 | `/settings/plugins` | Plugins | `PluginsPane` (`plugins.tsx`) |
 | `/settings/plugins` (2nd level) | one plugin's configuration | `PluginConfigPane` (`plugin-config.tsx`) |

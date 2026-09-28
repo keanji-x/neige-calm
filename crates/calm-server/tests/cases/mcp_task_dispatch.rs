@@ -71,10 +71,9 @@ pub(super) async fn counts(b: &Boot) -> (i64, i64, i64) {
     sqlx::query_as("SELECT (SELECT count(*) FROM planner_dispatch_receipts),(SELECT count(*) FROM events),(SELECT count(*) FROM task_attempt_allocations)")
         .fetch_one(&b.repo.sqlite_pool().unwrap()).await.unwrap()
 }
-pub(super) async fn policy(b: &Boot, policy: &str, budget: i64) {
-    sqlx::query("UPDATE tracks SET automation_policy=?1,task_budget=?2 WHERE id=?3")
+pub(super) async fn policy(b: &Boot, policy: &str) {
+    sqlx::query("UPDATE tracks SET automation_policy=?1 WHERE id=?2")
         .bind(policy)
-        .bind(budget)
         .bind(b.track_id.as_str())
         .execute(&b.repo.sqlite_pool().unwrap())
         .await
@@ -99,7 +98,7 @@ async fn track_state_lists_a_dispatched_task_as_pending_without_a_worker() {
 #[tokio::test]
 async fn dispatch_creates_planner_declaration_and_replays_exact_contract_without_writes() {
     let b = boot().await;
-    policy(&b, "auto-declare", 3).await;
+    policy(&b, "auto-declare").await;
     call_tool(&b, "calm.report.blocks.upsert", planner_identity(&b),
         json!({"kind":"prose","markdown":"# Existing notes\nPreserve this unrelated report block.","if_doc_rev":0})).await.unwrap();
     let before = payload(&b).await;
@@ -287,15 +286,14 @@ async fn dispatch_auth_checks_current_persisted_identity_before_create_and_repla
 }
 
 #[tokio::test]
-async fn dispatch_pending_snapshot_respects_release_budget_and_lifecycle() {
-    for (policy_name, budget, lifecycle) in [
-        ("declare-and-wait", 3, "planning"),
-        ("auto-declare", 0, "planning"),
-        ("auto-declare", 3, "blocked"),
-        ("auto-declare", 3, "done"),
+async fn dispatch_pending_snapshot_respects_release_and_lifecycle() {
+    for (policy_name, lifecycle) in [
+        ("declare-and-wait", "planning"),
+        ("auto-declare", "blocked"),
+        ("auto-declare", "done"),
     ] {
         let b = boot().await;
-        policy(&b, policy_name, budget).await;
+        policy(&b, policy_name).await;
         sqlx::query("UPDATE tracks SET lifecycle=?1 WHERE id=?2")
             .bind(lifecycle)
             .bind(b.track_id.as_str())
@@ -333,7 +331,7 @@ async fn dispatch_pending_snapshot_respects_release_budget_and_lifecycle() {
 #[tokio::test]
 async fn dispatch_replay_after_declaration_edit_or_removal_preserves_original_identity() {
     let b = boot().await;
-    policy(&b, "declare-and-wait", 0).await;
+    policy(&b, "declare-and-wait").await;
     let original = dispatch(&b, args()).await.unwrap();
     let p = payload(&b).await;
     let block = p
@@ -406,7 +404,7 @@ async fn dispatch_receipt_failure_rolls_back_report_projection_and_events() {
 #[tokio::test]
 async fn dispatch_replay_after_recovery_keeps_creation_identity_and_reports_current_allocation() {
     let b = boot().await;
-    policy(&b, "auto-declare", 3).await;
+    policy(&b, "auto-declare").await;
     let original = dispatch(&b, args()).await.unwrap();
     let key = original["receipt"]["task_key"].as_str().unwrap();
     let task = crate::task_recovery::current(&b, key).await;
@@ -506,7 +504,7 @@ async fn dispatch_promotes_only_new_draft_declarations_and_replay_has_no_lifecyc
 #[tokio::test]
 async fn dispatch_response_states_the_fixed_executor_environment_up_front() {
     let b = boot().await;
-    policy(&b, "auto-declare", 3).await;
+    policy(&b, "auto-declare").await;
     let first = dispatch(&b, args()).await.unwrap();
     let environment = &first["current"]["executor_environment"];
     assert_eq!(environment["executor"], "codex");
@@ -534,7 +532,7 @@ async fn dispatch_response_states_the_fixed_executor_environment_up_front() {
 #[tokio::test]
 async fn recover_response_restates_identical_environment_with_new_workspace() {
     let b = boot().await;
-    policy(&b, "auto-declare", 3).await;
+    policy(&b, "auto-declare").await;
     let original = dispatch(&b, args()).await.unwrap();
     let key = original["receipt"]["task_key"].as_str().unwrap();
     let task = crate::task_recovery::current(&b, key).await;

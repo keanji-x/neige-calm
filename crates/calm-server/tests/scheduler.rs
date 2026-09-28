@@ -205,7 +205,6 @@ async fn boot() -> Boot {
         write: write.clone(),
         daemon_token_hash: None,
         gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
-        task_budget_default: calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
         plugin_host: Arc::new(tokio::sync::OnceCell::new()),
         operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
         scheduler_poke: Arc::new(tokio::sync::OnceCell::new()),
@@ -1423,10 +1422,10 @@ async fn live_dispatch_claude_does_not_reconcile_recorded_pty_exit() {
     assert!(event_rows(&boot, "task.failed").await.is_empty());
 }
 
-/// Terminal tasks: a codex/claude task runs one at a time whatever the budget (#1830 S2 D5), so the
-/// budget is observed on tasks that do not run in the track's checkout.
+/// #1830 S2 D5: only codex/claude tasks in the track's checkout run one at a time; terminal tasks
+/// are not held by a running one.
 #[tokio::test]
-async fn budget_holds_second_task_until_first_done() {
+async fn terminal_tasks_run_side_by_side() {
     let boot = boot().await;
     set_lifecycle(&boot, TrackLifecycle::Working).await;
     seed_projected_task(
@@ -1446,62 +1445,6 @@ async fn budget_holds_second_task_until_first_done() {
             card_id: boot.worker_card_id.as_str().to_string(),
         })],
     );
-
-    // Kernel default budget is 1 (no env override in CI): only `a` runs.
-    assert_eq!(scheduler.budget_default(), 1);
-    scheduler.schedule_track(boot.track_id.clone()).await;
-    assert_eq!(task_row(&boot, "a").await.status, TaskStatus::Running);
-    assert_eq!(task_row(&boot, "b").await.status, TaskStatus::Pending);
-
-    scheduler.schedule_track(boot.track_id.clone()).await;
-    assert_eq!(task_row(&boot, "b").await.status, TaskStatus::Pending);
-
-    // Per-track override: budget 2 admits `b` (a is running, 2-1 = 1 slot).
-    boot.repo
-        .track_update(
-            boot.track_id.as_str(),
-            TrackPatch {
-                task_budget: Some(Some(2)),
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("set track budget");
-    scheduler.schedule_track(boot.track_id.clone()).await;
-    assert_eq!(task_row(&boot, "b").await.status, TaskStatus::Running);
-}
-
-/// Terminal tasks, for the reason [`budget_holds_second_task_until_first_done`] gives.
-#[tokio::test]
-async fn settings_budget_default_changed_after_construction_controls_the_next_pass() {
-    let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
-    seed_projected_task(
-        &boot,
-        plan_task(&boot.track_id, "a", TaskKind::Terminal, &[]),
-    )
-    .await;
-    seed_projected_task(
-        &boot,
-        plan_task(&boot.track_id, "b", TaskKind::Terminal, &[]),
-    )
-    .await;
-    let (_runtime, scheduler) = build_scheduler(
-        &boot,
-        vec![Arc::new(CardSpawnAdapter {
-            kind: "terminal-worker",
-            card_id: boot.worker_card_id.as_str().to_string(),
-        })],
-    );
-    assert_eq!(scheduler.effective_budget_default().await.unwrap(), 1);
-
-    // This lands after the scheduler was built: the setting is live state,
-    // not a boot-only copy of the deployment environment.
-    boot.repo
-        .settings_upsert("task_budget_default", "2")
-        .await
-        .unwrap();
-    assert_eq!(scheduler.effective_budget_default().await.unwrap(), 2);
 
     scheduler.schedule_track(boot.track_id.clone()).await;
     assert_eq!(task_row(&boot, "a").await.status, TaskStatus::Running);
@@ -2650,7 +2593,7 @@ async fn sweep_resubmits_dispatched_task_with_missing_operation() {
 }
 
 #[tokio::test]
-async fn stale_dispatched_worker_without_operation_fails_without_spawn_or_budget_pin() {
+async fn stale_dispatched_worker_without_operation_fails_without_spawn_or_track_pin() {
     let boot = boot().await;
     set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut task = plan_task(&boot.track_id, "stale-orphan", TaskKind::Terminal, &[]);
@@ -2668,7 +2611,11 @@ async fn stale_dispatched_worker_without_operation_fails_without_spawn_or_budget
 
     assert_eq!(spawned.load(Ordering::SeqCst), 0, "no worker was started");
     let row = task_row(&boot, "stale-orphan").await;
-    assert_eq!(row.status, TaskStatus::Failed, "budget is no longer pinned");
+    assert_eq!(
+        row.status,
+        TaskStatus::Failed,
+        "the track is no longer held"
+    );
     let op = runtime
         .find_by_kind_and_idempotency("terminal-worker", &task_id)
         .await
@@ -3816,11 +3763,6 @@ async fn depth_two_deleted_reference_is_counted_does_not_block_and_recovers_next
     .execute(&pool)
     .await
     .unwrap();
-    sqlx::query("UPDATE tracks SET task_budget = 1 WHERE id = ?1")
-        .bind(boot.track_id.as_str())
-        .execute(&pool)
-        .await
-        .unwrap();
     let (_runtime, scheduler) = build_scheduler(
         &boot,
         vec![Arc::new(CardSpawnAdapter {
@@ -3838,7 +3780,7 @@ async fn depth_two_deleted_reference_is_counted_does_not_block_and_recovers_next
     assert_ne!(
         healthy.status,
         TaskStatus::Pending,
-        "the same pass must continue until one claim consumes capacity"
+        "the same pass continues past a claim that fails"
     );
     assert_eq!(
         scheduler.context_resolve_failure_count("referenced_block_absent"),
@@ -6107,11 +6049,6 @@ async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("UPDATE tracks SET task_budget = 65 WHERE id = ?1")
-        .bind(boot.track_id.as_str())
-        .execute(&pool)
-        .await
-        .unwrap();
     let (_runtime, scheduler) = build_scheduler(
         &boot,
         vec![Arc::new(CardSpawnAdapter {
@@ -6150,11 +6087,6 @@ async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
     report.doc_rev += 1;
     sqlx::query("UPDATE cards SET payload = ?1 WHERE id = 'context-report'")
         .bind(serde_json::to_string(&report).unwrap())
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query("UPDATE tracks SET task_budget = 66 WHERE id = ?1")
-        .bind(boot.track_id.as_str())
         .execute(&pool)
         .await
         .unwrap();
@@ -6884,8 +6816,10 @@ async fn claim_aborts_when_dep_added_pre_claim() {
     assert_eq!(operation_count(&boot, "codex-worker").await, 0);
 }
 
+/// #1830 S2 D5: the claim tx re-checks that the track is idle; a codex task that started in the
+/// track's checkout after the pass computed its ready set turns the claim back.
 #[tokio::test]
-async fn claim_aborts_when_budget_shrunk_pre_claim() {
+async fn claim_aborts_when_the_track_turns_busy_pre_claim() {
     let boot = boot().await;
     set_lifecycle(&boot, TrackLifecycle::Working).await;
     seed_task(
@@ -6914,71 +6848,9 @@ async fn claim_aborts_when_budget_shrunk_pre_claim() {
     });
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
-    boot.repo
-        .track_update(
-            boot.track_id.as_str(),
-            TrackPatch {
-                task_budget: Some(Some(0)),
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("shrink budget");
-
-    drop(permit);
-    handle.await.expect("schedule_track task");
-
-    assert_eq!(
-        task_row(&boot, "held").await.status,
-        TaskStatus::Pending,
-        "in-tx budget revalidation must abort the claim"
-    );
-    assert!(event_rows(&boot, "task.dispatched").await.is_empty());
-    assert_eq!(operation_count(&boot, "codex-worker").await, 0);
-}
-
-#[tokio::test]
-async fn claim_aborts_when_settings_budget_is_lowered_pre_claim() {
-    let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut occupying = plan_task(&boot.track_id, "occupying", TaskKind::Codex, &[]);
     occupying.status = TaskStatus::Running;
     seed_task(&boot, occupying).await;
-    seed_task(
-        &boot,
-        plan_task(&boot.track_id, "held", TaskKind::Codex, &[]),
-    )
-    .await;
-    boot.repo
-        .settings_upsert("task_budget_default", "2")
-        .await
-        .expect("start with one free settings-budget slot");
-
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
-    let permit = Arc::clone(&semaphore)
-        .acquire_owned()
-        .await
-        .expect("test holds the only permit");
-    let (_runtime, scheduler) = build_scheduler_with_semaphore(
-        &boot,
-        vec![Arc::new(CardSpawnAdapter {
-            kind: "codex-worker",
-            card_id: boot.worker_card_id.as_str().to_string(),
-        })],
-        semaphore,
-    );
-    let handle = tokio::spawn({
-        let scheduler = Arc::clone(&scheduler);
-        let track_id = boot.track_id.clone();
-        async move { scheduler.schedule_track(track_id).await }
-    });
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-
-    // The pass saw budget 2 before waiting for the permit; lowering the live setting to 1 must make the claim tx roll the flip back.
-    boot.repo
-        .settings_upsert("task_budget_default", "1")
-        .await
-        .expect("lower live settings budget");
 
     drop(permit);
     handle.await.expect("schedule_track task");
@@ -6986,7 +6858,7 @@ async fn claim_aborts_when_settings_budget_is_lowered_pre_claim() {
     assert_eq!(
         task_row(&boot, "held").await.status,
         TaskStatus::Pending,
-        "in-tx settings-budget revalidation must abort the claim"
+        "in-tx track-idle revalidation must abort the claim"
     );
     assert!(event_rows(&boot, "task.dispatched").await.is_empty());
     assert_eq!(operation_count(&boot, "codex-worker").await, 0);
@@ -7379,7 +7251,7 @@ async fn legacy_report_with_pending_task_row_is_rejected() {
 }
 
 #[tokio::test]
-async fn foreign_idempotency_conflict_fails_task_and_frees_budget() {
+async fn foreign_idempotency_conflict_fails_task_and_frees_the_track() {
     let boot = boot().await;
     set_lifecycle(&boot, TrackLifecycle::Working).await;
     let legacy = plan_task(&boot.track_id, "legacy", TaskKind::Codex, &[]);
@@ -7438,13 +7310,13 @@ async fn foreign_idempotency_conflict_fails_task_and_frees_budget() {
     );
     assert_eq!(operation_count(&boot, "codex-worker").await, 1);
 
-    // Budget freed (kernel default 1): the second pending task now
-    // dispatches instead of the track stalling behind the dead row.
+    // The track is idle again: the second pending task dispatches on the next pass instead of the
+    // track stalling behind the dead row (one in-tree task per pass, #1830 S2 D5).
     scheduler.schedule_track(boot.track_id.clone()).await;
     assert_eq!(
         task_row(&boot, "next").await.status,
         TaskStatus::Running,
-        "freed budget admits the next pending task"
+        "a freed track admits the next pending task"
     );
     assert_eq!(operation_count(&boot, "codex-worker").await, 2);
 }

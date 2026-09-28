@@ -2,6 +2,15 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// #1830 S2 D5: whether a task runs in its track's checkout — a codex or claude task that is
+/// neither isolated (a `neige_execution` selection in its context) nor on the child-track route.
+/// Such tasks share the checkout, so they run one at a time.
+pub fn runs_in_track_checkout(kind: &str, spawn: &str, context: &Value) -> bool {
+    matches!(kind, "codex" | "claude")
+        && spawn != crate::task_recovery::TASK_CHILD_TRACK_ROUTE
+        && context.get("neige_execution").is_none()
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IsolatedCodexVersion {
     #[serde(rename = "isolated-codex-v1")]

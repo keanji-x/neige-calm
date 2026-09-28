@@ -279,16 +279,14 @@ describe('deriveTrackPageView tasks', () => {
     const [row] = tasksModule([task({
       status: 'pending',
       pendingReason: {
-        kind: 'budgetQueued',
-        message: 'Queued 1/1',
-        occupiedTaskBudget: 1,
-        effectiveTaskBudget: 1,
+        kind: 'trackBusy',
+        message: 'Track busy',
       },
     })]).rows;
     expect(row.badges).toEqual([]);
-    expect(row.status).toEqual({ token: 'pending', phrase: 'pending — Queued 1/1' });
-    expect(row.actions[0]?.hint).toBe('Queued 1/1');
-    expect(row.actions[0]?.description).toBe('pending — Queued 1/1');
+    expect(row.status).toEqual({ token: 'pending', phrase: 'pending — Track busy' });
+    expect(row.actions[0]?.hint).toBe('Track busy');
+    expect(row.actions[0]?.description).toBe('pending — Track busy');
   });
 
   /* `deriveReportTasks` never emits a row with both, so the load-bearing property here is the negative one:

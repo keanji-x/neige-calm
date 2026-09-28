@@ -174,9 +174,6 @@ pub struct AppContext {
     /// The CONFIGURED gate-logs dir, so the `plan/<key>/gate.log` view reads the same directory
     /// the gate runner writes.
     pub gate_logs_dir: std::path::PathBuf,
-    /// Same boot-resolved value used by scheduler admission. Report reads use
-    /// it to explain effective budgets without consulting process-global env.
-    pub task_budget_default: i64,
     /// Late-bound: MCP server boot happens before plugin host construction.
     pub plugin_host: Arc<tokio::sync::OnceCell<Arc<crate::plugin_host::PluginHost>>>,
     /// Late-bound: MCP boot precedes runtime construction.
@@ -211,7 +208,6 @@ impl AppContext {
         plugin_host: Arc<tokio::sync::OnceCell<Arc<crate::plugin_host::PluginHost>>>,
         operation_runtime: Arc<tokio::sync::OnceCell<Arc<crate::operation::OperationRuntime>>>,
         gate_logs_dir: std::path::PathBuf,
-        task_budget_default: i64,
     ) -> Arc<Self> {
         let sqlite_pool = repo.sqlite_pool();
         let track_vcs = sqlite_pool.clone().map(SqlxTrackVcsRepo::shared);
@@ -227,7 +223,6 @@ impl AppContext {
             write,
             daemon_token_hash,
             gate_logs_dir,
-            task_budget_default,
             plugin_host,
             operation_runtime,
             scheduler_poke: Arc::new(tokio::sync::OnceCell::new()),
@@ -533,7 +528,6 @@ mod tests {
             write: WriteContext::new(CardRoleCache::new(), TrackAreaCache::new()),
             daemon_token_hash: None,
             gate_logs_dir: std::env::temp_dir().join("neige-registry-test-gate-logs"),
-            task_budget_default: crate::scheduler::DEFAULT_TRACK_TASK_BUDGET,
             plugin_host: Arc::new(tokio::sync::OnceCell::new()),
             operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
             scheduler_poke: Arc::new(tokio::sync::OnceCell::new()),

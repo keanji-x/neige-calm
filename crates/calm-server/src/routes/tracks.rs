@@ -2535,7 +2535,6 @@ pub(crate) async fn update_track(
             archived_at,
             pinned_at,
             lifecycle,
-            task_budget,
             require_task_gates,
             planner_task_ceiling,
             automation_policy,
@@ -2547,7 +2546,6 @@ pub(crate) async fn update_track(
             || archived_at.is_some()
             || pinned_at.is_some()
             || lifecycle.is_some()
-            || task_budget.is_some()
             || require_task_gates.is_some()
             || planner_task_ceiling.is_some()
             || automation_policy.is_some()
@@ -2611,14 +2609,6 @@ pub(crate) async fn update_track(
         None
     };
 
-    // `Some(None)` clears back to the kernel default; 0 is a legal "hold new dispatches" budget.
-    if let Some(Some(budget)) = p.task_budget
-        && budget < 0
-    {
-        return Err(CalmError::BadRequest(format!(
-            "task_budget must be >= 0 (got {budget}); pass null to reset to the kernel default"
-        )));
-    }
     if let Some(Some(ceiling)) = p.planner_task_ceiling
         && ceiling < 0
     {
@@ -2648,7 +2638,6 @@ pub(crate) async fn update_track(
         || p.sort.is_some()
         || p.archived_at.is_some()
         || p.pinned_at.is_some()
-        || p.task_budget.is_some()
         || p.require_task_gates.is_some()
         || p.planner_task_ceiling.is_some()
         || p.automation_policy.is_some()
@@ -3337,8 +3326,7 @@ pub(crate) async fn get_track_backlinks(
     State(s): State<RouteState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let page =
-        report_backlinks::backlinks_for_track(s.repo.as_ref(), &id, s.task_budget_default).await?;
+    let page = report_backlinks::backlinks_for_track(s.repo.as_ref(), &id).await?;
     Ok(Json(TrackBacklinksResponse::from(page)))
 }
 
@@ -3388,12 +3376,7 @@ pub(crate) async fn get_track_report(
     Path(id): Path<String>,
 ) -> Result<Response> {
     let (_, report_card, _) = resolve_report_for_track(s.repo.as_ref(), &id).await?;
-    let snapshot = load_report_read_snapshot(
-        s.repo.as_ref(),
-        report_card.id.as_str(),
-        s.task_budget_default,
-    )
-    .await?;
+    let snapshot = load_report_read_snapshot(s.repo.as_ref(), report_card.id.as_str()).await?;
     Ok((
         StatusCode::OK,
         Json(TrackReportReadResponse {

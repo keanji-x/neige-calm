@@ -66,12 +66,11 @@ describe.each([390, 1280])('Settings resizing from %ipx', (initialWidth) => {
 it.each([
   { section: 'network', label: 'HTTP proxy', key: 'http_proxy', value: 'http://draft-proxy:3128' },
   { section: 'network', label: 'HTTPS proxy', key: 'https_proxy', value: 'http://draft-secure-proxy:3128' },
-  { section: 'general', label: 'Task concurrency', key: 'task_budget_default', value: '7' },
 ] as const)('preserves an unfinished $label across Settings resize until a real blur', async ({ section, label, key, value }) => {
   await page.viewport(initialWidth, 844);
   const writes: ApiRequest[] = [];
   setup(`/settings/${section}`, AREA.name, (request) => { if (request.method !== 'GET') writes.push(request); });
-  const field = page.getByRole(section === 'general' ? 'spinbutton' : 'textbox', { name: label, exact: true });
+  const field = page.getByRole('textbox', { name: label, exact: true });
   await field.fill(value);
   const input = await field.findElement() as HTMLInputElement;
   if (input.selectionStart !== null) input.setSelectionRange(2, 5);

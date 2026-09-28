@@ -154,7 +154,7 @@
   statement: >
     `track.updated` / `track.lifecycle_changed` 都必须失效所属 area 的 track 列表、该 track
     的 detail、该 track 的 track-files 与全局 `['tracks-range']`；只有 `track.updated`
-    额外广播失效 `['track-report']`，因为它承载 task budget / admission policy 变化。
+    额外广播失效 `['track-report']`，因为它承载 admission policy 变化。
   why: >
     track 的四个可见投影分别由这四个 key 驱动（侧栏列表 / 详情页 / 报告文件树 / 日历区间视图），
     少一个就出现某一处静默陈旧。lifecycle 事件本身不证明 task policy 改变；把 report

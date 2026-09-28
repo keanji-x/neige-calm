@@ -17,7 +17,7 @@ use crate::operation::Tx;
 /// What `calm.task.delivery{abandon}` did to the tasks row in its own transaction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AbandonTaskOutcome {
-    /// A gated `verifying` row was flipped to `failed/delivery-abandoned` (budget released) and
+    /// A gated `verifying` row was flipped to `failed/delivery-abandoned` (the track freed) and
     /// one `task.failed` appended.
     Failed,
     /// An ungated row (`done` since its report) was left alone; nothing else changed.

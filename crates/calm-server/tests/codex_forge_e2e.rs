@@ -1743,18 +1743,6 @@ async fn real_planner_drives_issue_to_close_capstone() {
         }
     };
 
-    // Dispatcher permits 4 so reviewer pairs run in parallel; the scheduler also enforces the per-track task budget (default 1), so raise it to match.
-    fx.repo_dyn
-        .track_update(
-            fx.track_id.as_str(),
-            TrackPatch {
-                task_budget: Some(Some(4)),
-                ..TrackPatch::default()
-            },
-        )
-        .await
-        .expect("raise track task budget for parallel reviewer pairs");
-
     let dispatcher = spawn_dispatcher_with_harness(&fx);
 
     let repo_gitdir = fx.track_cwd.join(".git").display().to_string();

@@ -142,19 +142,17 @@ pub async fn task_cancel_running_tx(
 }
 
 /// The claim tx re-checks schedulability against this, not the pre-claim
-/// snapshot. `None` = track row gone; inner `None` = NULL `task_budget`.
-pub async fn track_lifecycle_and_budget_tx(
+/// snapshot. `None` = track row gone.
+pub async fn track_lifecycle_tx(
     tx: &mut Transaction<'_, Sqlite>,
     track_id: &str,
-) -> Result<Option<(TrackLifecycle, Option<i64>)>> {
-    let row: Option<(String, Option<i64>)> =
-        sqlx::query_as("SELECT lifecycle, task_budget FROM tracks WHERE id = ?1")
-            .bind(track_id)
-            .fetch_optional(&mut **tx)
-            .await?;
-    row.map(|(lifecycle, budget)| {
+) -> Result<Option<TrackLifecycle>> {
+    let row: Option<(String,)> = sqlx::query_as("SELECT lifecycle FROM tracks WHERE id = ?1")
+        .bind(track_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    row.map(|(lifecycle,)| {
         TrackLifecycle::try_from(lifecycle)
-            .map(|lifecycle| (lifecycle, budget))
             .map_err(|e| CalmError::Internal(format!("tracks.lifecycle decode: {e}")))
     })
     .transpose()

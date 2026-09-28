@@ -84,7 +84,6 @@ pub(crate) const PLANNER_CATCH_UP_KINDS: &[&str] = &[
 pub(crate) const SCHEDULER_TRIGGER_KINDS: &[&str] = &[
     "plan.updated",
     "track.lifecycle_changed",
-    "track.updated",
     "track.deleted",
     "area.deleted",
     "workspace.released",
@@ -678,7 +677,6 @@ impl Dispatcher {
             shared_codex_appserver,
             operation_runtime,
             permits,
-            Scheduler::budget_from_env(crate::scheduler::DEFAULT_TRACK_TASK_BUDGET),
             crate::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir(),
         )
     }
@@ -708,7 +706,6 @@ impl Dispatcher {
             shared_codex_appserver,
             operation_runtime,
             permits,
-            Scheduler::budget_from_env(crate::scheduler::DEFAULT_TRACK_TASK_BUDGET),
             crate::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir(),
         )
     }
@@ -754,7 +751,6 @@ impl Dispatcher {
             shared_codex_appserver,
             operation_runtime,
             permits,
-            Scheduler::budget_from_env(crate::scheduler::DEFAULT_TRACK_TASK_BUDGET),
             crate::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir(),
         )
     }
@@ -772,7 +768,6 @@ impl Dispatcher {
         shared_codex_appserver: Arc<SharedCodexAppServer>,
         operation_runtime: Arc<OperationRuntime>,
         permits: usize,
-        task_budget_default: i64,
         gate_logs_dir: PathBuf,
     ) -> Self {
         let permits = if permits == 0 {
@@ -781,14 +776,13 @@ impl Dispatcher {
             permits
         };
         let semaphore = Arc::new(Semaphore::new(permits));
-        let scheduler = Scheduler::new_with_task_budget_default(
+        let scheduler = Scheduler::new(
             repo.clone(),
             events.clone(),
             write.clone(),
             Arc::downgrade(&operation_runtime),
             Arc::clone(&semaphore),
             gate_logs_dir,
-            task_budget_default,
             crate::scheduler::WorkerIdleWake::new(
                 shared_codex_appserver.clone(),
                 crate::scheduler::WORKER_IDLE_TURN_GRACE,
@@ -1030,7 +1024,7 @@ impl Inner {
                         );
                     }
                 }
-                // A task terminal event may free budget / satisfy deps; poke the scheduler AFTER the push branch.
+                // A task terminal event may free the track / satisfy deps; poke the scheduler AFTER the push branch.
                 if let Some(track_id) = envelope.scope.track_id().cloned() {
                     self.scheduler.poke(track_id);
                 }
@@ -1041,11 +1035,6 @@ impl Inner {
             Event::TrackLifecycleChanged { id, .. } => {
                 self.scheduler.reconcile_child_track(id.clone());
                 self.scheduler.poke(id.clone());
-            }
-            // `PATCH /api/tracks` emits only `track.updated` when it changes `task_budget`; without
-            // this arm a raised budget would strand pending tasks until the reconcile tick.
-            Event::TrackUpdated(payload) => {
-                self.scheduler.poke(payload.id.clone());
             }
             // #1830 S2 D7: a release may have written the attempt's first delivery row; the pass
             // submits it (`resume_git_deliveries`) and, once it settles, claims the next task.
@@ -1131,6 +1120,7 @@ impl Inner {
                 }
             }
             Event::AreaUpdated(_)
+            | Event::TrackUpdated(_)
             | Event::CardAdded(_)
             | Event::CardUpdated(_)
             | Event::CardDeleted { .. }

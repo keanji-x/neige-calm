@@ -51,7 +51,7 @@ use crate::mcp_server::registry::{AppContext, ToolCallIdentity};
 use crate::model::{Task, TaskStatus, TrackLifecycle, now_ms};
 use crate::operation::Tx;
 use crate::operation::workspace_lease::facts::latest_workspace_lease_for_card_tx;
-use crate::operation::workspace_lease::{WorkspaceLease, track_idle_tx, worker_branch_tx};
+use crate::operation::workspace_lease::{WorkspaceLease, worker_branch_tx};
 use crate::track_lifecycle::auto_transition_if_current_in_tx;
 
 /// The two actions.
@@ -352,7 +352,7 @@ async fn retry(
     args: &DeliveryActionArgs,
 ) -> Result<(DeliveryActionReceipt, AfterCommit)> {
     // #1830 S2 D5: the delivery commits the track's checkout, so nothing else may be using it.
-    if !track_idle_tx(tx, track_id, &latest.producer_attempt_id).await? {
+    if !crate::db::sqlite::track_idle(tx, track_id, &latest.producer_attempt_id).await? {
         return Err(refused(
             "refused: the track is running another attempt; wait for it, then retry".into(),
         ));

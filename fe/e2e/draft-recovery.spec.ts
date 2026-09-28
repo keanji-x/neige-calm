@@ -99,27 +99,28 @@ test('does not replay an offline settings edit over another client and refreshes
   const otherContext = await browser.newContext({ baseURL });
   const other = await otherContext.newPage();
   try {
-    await request.put('/api/settings', { data: { settings: { task_budget_default: '1' } } });
+    const proxy = (n: number) => `http://fe-e2e-draft-${n}.invalid:3128`;
+    await request.put('/api/settings', { data: { settings: { http_proxy: proxy(1) } } });
     await page.goto('/next/settings');
     await other.goto('/next/settings');
-    const mine = page.getByLabel('Task concurrency');
-    await expect(mine).toHaveValue('1');
+    const mine = page.getByLabel('HTTP proxy', { exact: true });
+    await expect(mine).toHaveValue(proxy(1));
     await context.setOffline(true);
-    await mine.fill('2'); await mine.press('Tab');
+    await mine.fill(proxy(2)); await mine.press('Tab');
     await expect(page.getByText(/offline.*Reconnect/i)).toBeVisible();
-    const theirs = other.getByLabel('Task concurrency');
-    await theirs.fill('3'); await theirs.press('Tab');
-    await expect.poll(async () => (await (await request.get('/api/settings')).json() as { settings: Record<string, string> }).settings.task_budget_default).toBe('3');
+    const theirs = other.getByLabel('HTTP proxy', { exact: true });
+    await theirs.fill(proxy(3)); await theirs.press('Tab');
+    await expect.poll(async () => (await (await request.get('/api/settings')).json() as { settings: Record<string, string> }).settings.http_proxy).toBe(proxy(3));
     await context.setOffline(false);
-    await expect(page.getByText('Changed elsewhere to 3. Your edit is not saved.')).toBeVisible();
-    await expect(mine).toHaveValue('2');
-    expect((await (await request.get('/api/settings')).json() as { settings: Record<string, string> }).settings.task_budget_default).toBe('3');
-    await request.put('/api/settings', { data: { settings: { task_budget_default: '4' } } });
-    await expect(theirs).toHaveValue('4', { timeout: 20_000 });
+    await expect(page.getByText('Changed elsewhere. Your edit is not saved.')).toBeVisible();
+    await expect(mine).toHaveValue(proxy(2));
+    expect((await (await request.get('/api/settings')).json() as { settings: Record<string, string> }).settings.http_proxy).toBe(proxy(3));
+    await request.put('/api/settings', { data: { settings: { http_proxy: proxy(4) } } });
+    await expect(theirs).toHaveValue(proxy(4), { timeout: 20_000 });
   } finally {
     await context.setOffline(false);
     await otherContext.close();
     await page.close();
-    await request.put('/api/settings', { data: { settings: { task_budget_default: original.settings.task_budget_default ?? null } } });
+    await request.put('/api/settings', { data: { settings: { http_proxy: original.settings.http_proxy ?? null } } });
   }
 });

@@ -192,7 +192,6 @@ impl Harness {
             Arc::new(tokio::sync::OnceCell::new()),
             operations,
             root.path().join("gates"),
-            100,
         )
         .await
         .unwrap();

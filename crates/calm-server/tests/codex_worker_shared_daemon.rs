@@ -235,7 +235,6 @@ async fn boot(start_shared: bool) -> Boot {
         Arc::new(tokio::sync::OnceCell::new()),
         Arc::new(tokio::sync::OnceCell::new()),
         tmp.path().join("gate-logs"),
-        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
     )
     .await
     .expect("spawn McpServer");
@@ -251,7 +250,6 @@ async fn boot(start_shared: bool) -> Boot {
         write: WriteContext::new(cache.clone(), wcc.clone()),
         daemon_token_hash: None,
         gate_logs_dir: tmp.path().join("gate-logs"),
-        task_budget_default: calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
         plugin_host: Arc::new(tokio::sync::OnceCell::new()),
         operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
         scheduler_poke: Arc::new(tokio::sync::OnceCell::new()),
@@ -637,7 +635,6 @@ async fn app_state_with_fake_worker_daemon() -> (AppState, Arc<SqlxRepo>, TrackI
         Arc::new(tokio::sync::OnceCell::new()),
         Arc::new(tokio::sync::OnceCell::new()),
         tmp.path().join("worker-recovery-gate-logs"),
-        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
     )
     .await
     .expect("spawn worker recovery McpServer");

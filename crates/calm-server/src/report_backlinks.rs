@@ -178,16 +178,14 @@ fn quote_for_link(plain: &str, link: &calm_types::report_links::ScannedLink) -> 
 pub async fn backlinks_for_track(
     repo: &dyn RouteRepo,
     track_id: &str,
-    task_budget_default: i64,
 ) -> Result<BacklinkPage, CalmError> {
-    backlinks_for_track_with_byte_cap(repo, track_id, MAX_BACKLINK_BYTES, task_budget_default).await
+    backlinks_for_track_with_byte_cap(repo, track_id, MAX_BACKLINK_BYTES).await
 }
 
 async fn backlinks_for_track_with_byte_cap(
     repo: &dyn RouteRepo,
     track_id: &str,
     max_bytes: usize,
-    task_budget_default: i64,
 ) -> Result<BacklinkPage, CalmError> {
     let target_track = repo
         .track_get(track_id)
@@ -206,8 +204,7 @@ async fn backlinks_for_track_with_byte_cap(
             ))
         })?;
     let target_card_id = target_card.id.clone();
-    let target_snapshot =
-        load_report_read_snapshot(repo, target_card.id.as_str(), task_budget_default).await?;
+    let target_snapshot = load_report_read_snapshot(repo, target_card.id.as_str()).await?;
     let target_block_ids: HashSet<&str> = target_snapshot
         .blocks
         .iter()
@@ -237,9 +234,7 @@ async fn backlinks_for_track_with_byte_cap(
                 card.track_id
             ))
         })?;
-        let snapshot = match load_report_read_snapshot(repo, card.id.as_str(), task_budget_default)
-            .await
-        {
+        let snapshot = match load_report_read_snapshot(repo, card.id.as_str()).await {
             Ok(snapshot) => snapshot,
             Err(error) if card.id != target_card_id => {
                 tracing::warn!(card_id = %card.id, %error, "skipping unreadable backlink source report");
@@ -313,8 +308,6 @@ mod tests {
     use crate::track_area_cache::TrackAreaCache;
     use crate::track_report::{ReportBlock, TrackReportPayload, persist_report};
     use serde_json::json;
-
-    const TEST_TASK_BUDGET_DEFAULT: i64 = crate::scheduler::DEFAULT_TRACK_TASK_BUDGET;
 
     async fn area(repo: &SqlxRepo, name: &str) -> crate::model::Area {
         repo.area_create(NewArea {
@@ -507,13 +500,9 @@ mod tests {
         )
         .await;
 
-        let found = backlinks_for_track(
-            &repo as &dyn RouteRepo,
-            target.id.as_str(),
-            TEST_TASK_BUDGET_DEFAULT,
-        )
-        .await
-        .unwrap();
+        let found = backlinks_for_track(&repo as &dyn RouteRepo, target.id.as_str())
+            .await
+            .unwrap();
         assert_eq!(found.backlinks.len(), 1);
         assert_eq!(found.backlinks[0].src_track_id, source.id.as_str());
         assert_eq!(found.backlinks[0].src_track_title, "Source");
@@ -544,13 +533,12 @@ mod tests {
             .into_iter()
             .find(|card| card.kind == "track-report")
             .unwrap();
-        let target_block_id =
-            load_report_read_snapshot(&repo, target_card.id.as_str(), TEST_TASK_BUDGET_DEFAULT)
-                .await
-                .unwrap()
-                .blocks[0]
-                .id
-                .clone();
+        let target_block_id = load_report_read_snapshot(&repo, target_card.id.as_str())
+            .await
+            .unwrap()
+            .blocks[0]
+            .id
+            .clone();
         let task = json!({
             "key": "linked", "kind": "codex",
             "goal": format!("Read [target](neige://wave/{}#{target_block_id})", target.id),
@@ -559,13 +547,9 @@ mod tests {
         let fence = calm_types::report_blocks::render_data_block("task", &task).unwrap();
         report_as(&repo, source.id.as_str(), v1(fence), EditAuthor::Planner).await;
 
-        let found = backlinks_for_track(
-            &repo as &dyn RouteRepo,
-            target.id.as_str(),
-            TEST_TASK_BUDGET_DEFAULT,
-        )
-        .await
-        .unwrap();
+        let found = backlinks_for_track(&repo as &dyn RouteRepo, target.id.as_str())
+            .await
+            .unwrap();
         assert_eq!(found.backlinks.len(), 1);
         assert_eq!(found.backlinks[0].label, "target");
         assert_eq!(
@@ -592,13 +576,9 @@ mod tests {
         )
         .await;
 
-        let found = backlinks_for_track(
-            &repo as &dyn RouteRepo,
-            target.id.as_str(),
-            TEST_TASK_BUDGET_DEFAULT,
-        )
-        .await
-        .unwrap();
+        let found = backlinks_for_track(&repo as &dyn RouteRepo, target.id.as_str())
+            .await
+            .unwrap();
         assert!(found.backlinks.is_empty(), "{:?}", found.backlinks);
         let mut scanned = Vec::new();
         assert!(calm_types::report_links::visit_links(
@@ -629,13 +609,9 @@ mod tests {
         )
         .await;
 
-        let found = backlinks_for_track(
-            &repo as &dyn RouteRepo,
-            target.id.as_str(),
-            TEST_TASK_BUDGET_DEFAULT,
-        )
-        .await
-        .unwrap();
+        let found = backlinks_for_track(&repo as &dyn RouteRepo, target.id.as_str())
+            .await
+            .unwrap();
         assert!(found.backlinks.is_empty());
     }
 
@@ -653,13 +629,9 @@ mod tests {
         )
         .await;
 
-        let found = backlinks_for_track(
-            &repo as &dyn RouteRepo,
-            target.id.as_str(),
-            TEST_TASK_BUDGET_DEFAULT,
-        )
-        .await
-        .unwrap();
+        let found = backlinks_for_track(&repo as &dyn RouteRepo, target.id.as_str())
+            .await
+            .unwrap();
         assert_eq!(found.backlinks.len(), 1);
         assert_eq!(found.backlinks[0].dst_block_id, None);
     }
@@ -687,13 +659,9 @@ mod tests {
         .await
         .unwrap();
 
-        let found = backlinks_for_track(
-            &repo as &dyn RouteRepo,
-            target.id.as_str(),
-            TEST_TASK_BUDGET_DEFAULT,
-        )
-        .await
-        .unwrap();
+        let found = backlinks_for_track(&repo as &dyn RouteRepo, target.id.as_str())
+            .await
+            .unwrap();
         assert_eq!(found.backlinks.len(), 1);
         assert!(found.backlinks[0].src_block_id.starts_with("b_"));
     }
@@ -715,13 +683,9 @@ mod tests {
         )
         .await;
 
-        let found = backlinks_for_track(
-            &repo as &dyn RouteRepo,
-            target.id.as_str(),
-            TEST_TASK_BUDGET_DEFAULT,
-        )
-        .await
-        .unwrap();
+        let found = backlinks_for_track(&repo as &dyn RouteRepo, target.id.as_str())
+            .await
+            .unwrap();
         assert!(found.backlinks.is_empty());
     }
 
@@ -749,7 +713,7 @@ mod tests {
         .await
         .unwrap();
 
-        let found = backlinks_for_track(&repo, target.id.as_str(), TEST_TASK_BUDGET_DEFAULT)
+        let found = backlinks_for_track(&repo, target.id.as_str())
             .await
             .unwrap();
         assert_eq!(found.backlinks.len(), 1);
@@ -774,7 +738,7 @@ mod tests {
         .await
         .unwrap();
 
-        let error = backlinks_for_track(&repo, target.id.as_str(), TEST_TASK_BUDGET_DEFAULT)
+        let error = backlinks_for_track(&repo, target.id.as_str())
             .await
             .expect_err("all unreadable sources must fail");
         assert!(
@@ -799,7 +763,7 @@ mod tests {
             .join("\n");
         report(&repo, source.id.as_str(), v1(body)).await;
 
-        let found = backlinks_for_track(&repo, target.id.as_str(), TEST_TASK_BUDGET_DEFAULT)
+        let found = backlinks_for_track(&repo, target.id.as_str())
             .await
             .unwrap();
         assert!(found.truncated);
@@ -837,7 +801,7 @@ mod tests {
             .join("\n");
         report(&repo, source.id.as_str(), v1(body)).await;
 
-        let found = backlinks_for_track(&repo, target.id.as_str(), TEST_TASK_BUDGET_DEFAULT)
+        let found = backlinks_for_track(&repo, target.id.as_str())
             .await
             .unwrap();
         let rest_bytes = serde_json::to_vec(&crate::routes::tracks::TrackBacklinksResponse::from(
@@ -942,14 +906,9 @@ mod tests {
             .join("\n");
         report(&repo, source.id.as_str(), v1(body)).await;
 
-        let found = backlinks_for_track_with_byte_cap(
-            &repo,
-            target.id.as_str(),
-            usize::MAX,
-            TEST_TASK_BUDGET_DEFAULT,
-        )
-        .await
-        .unwrap();
+        let found = backlinks_for_track_with_byte_cap(&repo, target.id.as_str(), usize::MAX)
+            .await
+            .unwrap();
         assert_eq!(found.backlinks.len(), MAX_BACKLINK_ENTRIES);
         assert!(found.truncated);
     }

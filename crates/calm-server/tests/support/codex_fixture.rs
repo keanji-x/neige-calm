@@ -366,7 +366,6 @@ pub async fn boot_forge_e2e_fixture(
         plugin_host_cell.clone(),
         operation_runtime_cell.clone(),
         tmp.path().join("gate-logs"),
-        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
     )
     .await
     .expect("spawn McpServer");
@@ -477,7 +476,6 @@ pub async fn boot_forge_e2e_fixture(
         write: write.clone(),
         daemon_token_hash: Some(daemon_token_hash),
         gate_logs_dir: tmp.path().join("gate-logs"),
-        task_budget_default: calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
         plugin_host: plugin_host_cell,
         operation_runtime: operation_runtime_cell,
         scheduler_poke: Arc::new(tokio::sync::OnceCell::new()),
@@ -558,7 +556,6 @@ pub fn spawn_dispatcher_with_harness(fx: &Fixture) -> Dispatcher {
         fx.shared.clone(),
         fx.runtime.clone(),
         4,
-        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
         std::env::temp_dir().join("neige-test-gate-logs"),
     )
 }

@@ -1,8 +1,8 @@
 //! `/api/settings` — app-global key/value settings. `null` and `""` both delete a key;
 //! empty rows are never stored.
 
-use crate::error::{CalmError, ErrorBody, Result};
-use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
+use crate::error::{ErrorBody, Result};
+use crate::state::{AppState, CodexShellState, RouteState};
 use axum::{Json, Router, extract::State, routing::get};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -10,31 +10,6 @@ use utoipa::ToSchema;
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/api/settings", get(get_settings).put(put_settings))
-}
-
-/// Persisted override for the default number of concurrently admitted tasks
-/// per track. A nullable `tracks.task_budget` remains the per-track override.
-pub const TASK_BUDGET_DEFAULT_KEY: &str = "task_budget_default";
-
-fn parse_task_budget_default(value: &str) -> Option<i64> {
-    value.trim().parse::<i64>().ok().filter(|value| *value > 0)
-}
-
-/// A malformed row (manual DB edit or older binary) fails closed to the boot-resolved default.
-pub(crate) fn effective_task_budget_default(value: Option<&str>, fallback: i64) -> i64 {
-    value
-        .and_then(parse_task_budget_default)
-        .unwrap_or(fallback)
-}
-
-fn settings_bag(rows: Vec<(String, String)>, task_budget_fallback: i64) -> SettingsBag {
-    let mut settings: BTreeMap<_, _> = rows.into_iter().collect();
-    let effective = effective_task_budget_default(
-        settings.get(TASK_BUDGET_DEFAULT_KEY).map(String::as_str),
-        task_budget_fallback,
-    );
-    settings.insert(TASK_BUDGET_DEFAULT_KEY.into(), effective.to_string());
-    SettingsBag { settings }
 }
 
 /// Wire-shape: a flat string map of key -> value; `BTreeMap` for deterministic ordering.
@@ -61,7 +36,9 @@ pub struct SettingsPutBody {
 )]
 pub(crate) async fn get_settings(State(s): State<RouteState>) -> Result<Json<SettingsBag>> {
     let rows = s.repo.settings_get_all().await?;
-    Ok(Json(settings_bag(rows, s.task_budget_default)))
+    Ok(Json(SettingsBag {
+        settings: rows.into_iter().collect(),
+    }))
 }
 
 #[utoipa::path(
@@ -71,29 +48,16 @@ pub(crate) async fn get_settings(State(s): State<RouteState>) -> Result<Json<Set
     request_body = SettingsPutBody,
     responses(
         (status = 200, description = "Settings replaced; returns the resulting bag", body = SettingsBag),
-        (status = 400, description = "Invalid first-class setting", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
 pub(crate) async fn put_settings(
     State(s): State<RouteState>,
     State(cs): State<CodexShellState>,
-    State(worker): State<WorkerState>,
     Json(p): Json<SettingsPutBody>,
 ) -> Result<Json<SettingsBag>> {
-    // Validate every typed key before writing the first row, so an earlier unrelated key
-    // cannot land before a later typed value returns 400.
-    if let Some(Some(value)) = p.settings.get(TASK_BUDGET_DEFAULT_KEY)
-        && !value.is_empty()
-        && parse_task_budget_default(value).is_none()
-    {
-        return Err(CalmError::BadRequest(format!(
-            "{TASK_BUDGET_DEFAULT_KEY} must be a positive integer (got {value:?})"
-        )));
-    }
     let before = load_settings(s.repo.as_ref()).await?;
     let mut proxy_changed = false;
-    let mut task_budget_changed = false;
     for (key, maybe_val) in p.settings.iter() {
         // Skip empty keys silently rather than persisting them.
         if key.is_empty() {
@@ -112,15 +76,6 @@ pub(crate) async fn put_settings(
                     proxy_changed = true;
                 }
             }
-            TASK_BUDGET_DEFAULT_KEY => {
-                let next = maybe_val
-                    .as_deref()
-                    .filter(|value| !value.is_empty())
-                    .and_then(parse_task_budget_default);
-                if before.task_budget_default != next {
-                    task_budget_changed = true;
-                }
-            }
             _ => {}
         }
         match maybe_val.as_deref() {
@@ -135,14 +90,10 @@ pub(crate) async fn put_settings(
     if proxy_changed {
         cs.shared_codex_appserver.mark_needs_respawn();
     }
-    if task_budget_changed {
-        // Raising the default can release already-pending work without another domain event
-        // to poke the scheduler. Lowering is harmless: the sweep never cancels in-flight work.
-        let scheduler = worker.dispatcher.scheduler();
-        tokio::spawn(async move { scheduler.sweep_all().await });
-    }
     let rows = s.repo.settings_get_all().await?;
-    Ok(Json(settings_bag(rows, s.task_budget_default)))
+    Ok(Json(SettingsBag {
+        settings: rows.into_iter().collect(),
+    }))
 }
 
 /// Snapshot of the first-class settings the kernel consumes; unknown keys are ignored here.
@@ -150,7 +101,6 @@ pub(crate) async fn put_settings(
 pub struct Settings {
     pub http_proxy: Option<String>,
     pub https_proxy: Option<String>,
-    pub task_budget_default: Option<i64>,
 }
 
 impl Settings {
@@ -164,7 +114,6 @@ impl Settings {
             match k.as_str() {
                 "http_proxy" | "HTTP_PROXY" => out.http_proxy = Some(v),
                 "https_proxy" | "HTTPS_PROXY" => out.https_proxy = Some(v),
-                TASK_BUDGET_DEFAULT_KEY => out.task_budget_default = parse_task_budget_default(&v),
                 _ => {}
             }
         }

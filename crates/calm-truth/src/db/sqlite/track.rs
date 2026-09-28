@@ -329,13 +329,6 @@ pub async fn track_update_tx(
 
     // These columns deliberately do NOT live on the `Track` struct; targeted
     // single-column writes are the whole PATCH surface.
-    if let Some(budget) = p.task_budget {
-        sqlx::query("UPDATE tracks SET task_budget = ?1 WHERE id = ?2")
-            .bind(budget)
-            .bind(w.id.as_str())
-            .execute(&mut **tx)
-            .await?;
-    }
     if let Some(require_gates) = p.require_task_gates {
         sqlx::query("UPDATE tracks SET require_task_gates = ?1 WHERE id = ?2")
             .bind(require_gates)

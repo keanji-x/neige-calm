@@ -2,7 +2,6 @@ import { expect, test, type APIRequestContext, type Page } from '@playwright/tes
 
 const createdAreaIds: string[] = [];
 let originalHttpProxy: string | null = null;
-let originalTaskBudgetDefault = '1';
 
 function captureBrowserErrors(page: Page): string[] {
   const errors: string[] = [];
@@ -21,32 +20,15 @@ test.beforeEach(async ({ request }) => {
   createdAreaIds.length = 0;
   const settings = await readSettings(request);
   originalHttpProxy = settings.http_proxy ?? null;
-  originalTaskBudgetDefault = settings.task_budget_default ?? '1';
 });
 test.afterEach(async ({ request }) => {
-  await request.put('/api/settings', { data: { settings: {
-    http_proxy: originalHttpProxy,
-    task_budget_default: originalTaskBudgetDefault,
-  } } });
+  await request.put('/api/settings', { data: { settings: { http_proxy: originalHttpProxy } } });
   for (const id of createdAreaIds) await request.delete(`/api/areas/${id}`);
   createdAreaIds.length = 0;
 });
 
-test('persists general, network and appearance settings across reloads', async ({ page, request }) => {
+test('persists network and appearance settings across reloads', async ({ page, request }) => {
   const errors = captureBrowserErrors(page);
-  const concurrency = originalTaskBudgetDefault === '2' ? '3' : '2';
-  await page.goto('/next/settings');
-  await page.getByRole('spinbutton', { name: 'Task concurrency' }).fill(concurrency);
-  await page.getByRole('spinbutton', { name: 'Task concurrency' }).blur();
-  const concurrencyRow = page.getByRole('listitem').filter({
-    has: page.getByRole('spinbutton', { name: 'Task concurrency' }),
-  });
-  await expect(concurrencyRow.getByRole('status')).toContainText('Saved.');
-  expect((await readSettings(request)).task_budget_default).toBe(concurrency);
-
-  await page.reload();
-  await expect(page.getByRole('spinbutton', { name: 'Task concurrency' })).toHaveValue(concurrency);
-
   const proxy = `http://fe-e2e-${Date.now()}.invalid:3128`;
   await page.goto('/next/settings/network');
   await page.getByLabel('HTTP proxy').fill(proxy);

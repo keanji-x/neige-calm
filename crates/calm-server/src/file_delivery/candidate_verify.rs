@@ -78,10 +78,6 @@ impl Frozen {
         }
     }
 }
-pub(crate) async fn active_tx(tx: &mut Tx<'_>, track: &str) -> Result<i64> {
-    Ok(sqlx::query_scalar("SELECT count(*) FROM task_candidate_verification_allocations a LEFT JOIN operations o ON o.operation_key=a.operation_key AND o.kind='candidate-verify' WHERE a.track_id=?1 AND (o.id IS NULL OR o.phase NOT IN ('succeeded','failed'))")
-        .bind(track).fetch_one(&mut **tx).await?)
-}
 pub(crate) async fn authorize_tx(tx: &mut Tx<'_>, op: &Operation, frozen: &Frozen) -> Result<()> {
     let payload: Payload = serde_json::from_value(op.payload.clone())?;
     if op.kind != KIND

@@ -13,7 +13,7 @@ import { PluginAddPane } from '../../features/settings/plugin-add.tsx';
 import { PlannersPane } from '../../features/settings/planners.tsx';
 import { PluginsPane } from '../../features/settings/plugins.tsx';
 import {
-  AboutPane, AppearancePane, GeneralPane, NetworkPane, SettingsSurface,
+  AboutPane, AppearancePane, NetworkPane, SettingsSurface,
   type ThemeMode as SettingsThemeMode,
 } from '../../features/settings/public.tsx';
 import { SETTINGS_SECTIONS, settingsSectionLabel, type SettingsSection } from '../../features/settings/navigation.tsx';
@@ -33,13 +33,13 @@ import { MobileAccessHost } from './mobile-access-host.tsx';
 
 /** Which pane the path asks for, or `null` when the reader is not in Settings. */
 export function settingsSectionForPath(path: string): SettingsSection | null {
-  if (path === '/settings') return 'general';
+  if (path === '/settings') return 'network';
   return SETTINGS_SECTIONS.find((entry) => path === `/settings/${entry.id}`)?.id ?? null;
 }
 
-/** Desktop General keeps the historical root; every mobile category has a URL. */
+/** Desktop Network keeps the historical root; every mobile category has a URL. */
 function targetForSection(section: SettingsSection, compact: boolean): NavTarget {
-  return { name: section === 'general' && !compact ? 'settings' : `settings-${section}` };
+  return { name: section === 'network' && !compact ? 'settings' : `settings-${section}` };
 }
 
 export type SettingsOverlayProps = Readonly<{
@@ -143,26 +143,12 @@ function SectionPane({ section, transport, unauthorized }: SettingsOverlayProps 
   section: SettingsSection;
 }) {
   switch (section) {
-    case 'general': return <GeneralPaneHost transport={transport} unauthorized={unauthorized} />;
     case 'appearance': return <AppearancePaneHost />;
     case 'plugins': return <PluginsPaneHost transport={transport} unauthorized={unauthorized} />;
     case 'planners': return <PlannersPaneHost transport={transport} unauthorized={unauthorized} />;
     case 'about': return <AboutPane />;
     case 'network': return <NetworkPaneHost transport={transport} unauthorized={unauthorized} />;
   }
-}
-
-function GeneralPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
-  const save = useSettingsMutation(transport, unauthorized);
-  const settings = useQuery(settingsQueryOptions(transport, unauthorized));
-  return (
-    <GeneralPane
-      settings={settings.data?.settings}
-      loadError={settings.error instanceof Error ? settings.error.message : null}
-      onRetryLoad={() => { void settings.refetch(); }}
-      onSave={(patch) => save(patch).then(() => undefined)}
-    />
-  );
 }
 
 /** Settings › Planners: the shared availability answer the new-track picker also reads, and its Recheck. */

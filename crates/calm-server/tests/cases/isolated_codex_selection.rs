@@ -140,7 +140,6 @@ async fn isolated_codex_disabled_backend_keeps_safe_preparation_recovery() {
         boot.track_id.as_str(),
         &task.key,
         calm_server::ids::ActorId::User,
-        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
     )
     .await
     .unwrap();

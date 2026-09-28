@@ -192,49 +192,9 @@ async fn candidate_verification_named_failure_preserves_snapshot_and_blocks_cons
     );
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn candidate_verification_capacity_waits_without_claiming_consumer_or_inventing_success() {
+async fn candidate_verification_admits_the_consumer_and_its_replay_is_quiet() {
     let (fx, task, _, publication) = source(CHECK).await;
-    sqlx::query("UPDATE tracks SET task_budget=0 WHERE id=?1")
-        .bind(&task.track_id)
-        .execute(&fx.boot.repo.sqlite_pool().unwrap())
-        .await
-        .unwrap();
     declare(&fx.boot, consumer()).await;
-    schedule(&fx).await;
-    assert_eq!(
-        current(&fx.boot, "consume").await.status,
-        TaskStatus::Pending
-    );
-    assert!(
-        fx.state
-            .operation_runtime
-            .find_by_kind_and_idempotency("candidate-verify", &format!("candidate:{publication}"))
-            .await
-            .unwrap()
-            .is_none()
-    );
-    // Fix the production ordering: settlement is committed while capacity is zero.
-    // Merely calling schedule does not await its fire-and-forget publication driver.
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let recorded: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM events WHERE kind='task.file_publication_settled' AND json_extract(payload,'$.operation_id')=?1)")
-                .bind(&publication).fetch_one(&fx.boot.repo.sqlite_pool().unwrap()).await.unwrap();
-            if recorded && !fx.state.dispatcher.scheduler().file_source_inflight_for_test(&task.id) { break; }
-            if !recorded { schedule(&fx).await; }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    }).await.expect("publication settlement must be recorded at zero capacity");
-    let reserved: i64 = sqlx::query_scalar("SELECT count(*) FROM task_candidate_verification_allocations WHERE publication_operation_id=?1")
-        .bind(&publication).fetch_one(&fx.boot.repo.sqlite_pool().unwrap()).await.unwrap();
-    assert_eq!(
-        reserved, 0,
-        "zero capacity cannot reserve verification either"
-    );
-    sqlx::query("UPDATE tracks SET task_budget=1 WHERE id=?1")
-        .bind(&task.track_id)
-        .execute(&fx.boot.repo.sqlite_pool().unwrap())
-        .await
-        .unwrap();
     let admission = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             schedule(&fx).await;
@@ -259,12 +219,11 @@ async fn candidate_verification_capacity_waits_without_claiming_consumer_or_inve
         let rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as("SELECT a.operation_key,o.id,o.phase FROM task_candidate_verification_allocations a LEFT JOIN operations o ON o.operation_key=a.operation_key WHERE a.publication_operation_id=?1")
             .bind(&publication).fetch_all(&fx.boot.repo.sqlite_pool().unwrap()).await.unwrap();
         let pool = fx.boot.repo.sqlite_pool().unwrap();
-        let budget: (String, Option<i64>) =
-            sqlx::query_as("SELECT lifecycle,task_budget FROM tracks WHERE id=?1")
-                .bind(&task.track_id)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let lifecycle: String = sqlx::query_scalar("SELECT lifecycle FROM tracks WHERE id=?1")
+            .bind(&task.track_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         let source: (String, Option<String>, Option<i64>) = sqlx::query_as(
             "SELECT status,status_detail,context_stale_at_ms FROM tasks WHERE id=?1",
         )
@@ -280,7 +239,7 @@ async fn candidate_verification_capacity_waits_without_claiming_consumer_or_inve
                 .unwrap();
         let settlements: i64 = sqlx::query_scalar("SELECT count(*) FROM events WHERE kind='task.file_publication_settled' AND json_extract(payload,'$.operation_id')=?1").bind(&publication).fetch_one(&pool).await.unwrap();
         panic!(
-            "budget increase did not admit verification after scheduler ticks: {error}; allocation/operation state: {rows:?}; track={budget:?}; source={source:?}; publication={publication_state}; publication settlements={settlements}; source driver inflight={}",
+            "verification was not admitted after scheduler ticks: {error}; allocation/operation state: {rows:?}; track={lifecycle}; source={source:?}; publication={publication_state}; publication settlements={settlements}; source driver inflight={}",
             fx.state
                 .dispatcher
                 .scheduler()
@@ -591,43 +550,6 @@ async fn candidate_verification_settlement_replays_exact_identity_once() {
     };
     assert_ne!(operation_id, publication);
     assert_eq!(operation_id, verification(&fx, &publication).await.id);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn candidate_verification_active_reservation_blocks_independent_worker_until_completion() {
-    use std::sync::Arc;
-    let (fx, _, _, publication) = source(CHECK).await;
-    let entered = Arc::new(tokio::sync::Notify::new());
-    let resume = Arc::new(tokio::sync::Notify::new());
-    let signal = entered.clone();
-    let wait = resume.clone();
-    let _hook = calm_server::file_delivery::install_candidate_release_hook(
-        &publication,
-        Arc::new(move |_| {
-            let signal = signal.clone();
-            let wait = wait.clone();
-            Box::pin(async move {
-                signal.notify_one();
-                wait.notified().await;
-            })
-        }),
-    );
-    schedule(&fx).await;
-    tokio::time::timeout(Duration::from_secs(10), entered.notified())
-        .await
-        .unwrap();
-    declare(&fx.boot,json!({"key":"independent","kind":"codex","goal":"Independent bounded task","declared_by":calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR,"ready":true,"no_gate_reason":"No file delivery","context":{"neige_execution":{"version":"isolated-codex-v1","workspace":"empty"}}})).await;
-    schedule(&fx).await;
-    assert_eq!(
-        current(&fx.boot, "independent").await.status,
-        TaskStatus::Pending
-    );
-    resume.notify_one();
-    assert_eq!(verified(&fx, &publication).await["verdict"]["passed"], true);
-    schedule(&fx).await;
-    let worker = current(&fx.boot, "independent").await;
-    assert_eq!(worker.status, TaskStatus::Running);
-    settle(&fx, &worker, true).await;
 }
 
 #[path = "candidate_verification_review.rs"]

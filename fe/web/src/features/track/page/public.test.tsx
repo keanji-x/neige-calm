@@ -424,8 +424,8 @@ describe('TrackPage task inventory', () => {
     const queued: ReportTaskRow = {
       ...running('beta', 'pending', null),
       pendingReason: {
-        kind: 'budgetQueued', occupiedTaskBudget: 1, effectiveTaskBudget: 1,
-        message: 'Queued 1/1',
+        kind: 'trackBusy',
+        message: 'Track busy',
       },
     };
     const { container } = renderPage({
@@ -435,7 +435,7 @@ describe('TrackPage task inventory', () => {
     expect(inventory).not.toBeNull();
     expect([...inventory!.querySelectorAll('[data-nc-task-status-text]')].map((node) => node.textContent))
       .toEqual(['running', 'pending']);
-    expect(inventory!.querySelector('[data-nc-task-status-text=""][title="pending — Queued 1/1"]')).not.toBeNull();
+    expect(inventory!.querySelector('[data-nc-task-status-text=""][title="pending — Track busy"]')).not.toBeNull();
     expect(container.querySelector('[data-nc-module="tasks"] h2')?.parentElement?.textContent).toContain('2');
     expect(screen.queryAllByRole('img', { name: /^Status: / })).toEqual([]);
   });

@@ -145,12 +145,10 @@ enum PersistPurpose {
         identity: crate::mcp_server::registry::ToolCallIdentity,
         args: super::dispatch::DispatchArgs,
         plugin_tools: super::dispatch::PluginToolAdmission,
-        task_budget_default: i64,
     },
     Repair {
         identity: crate::mcp_server::registry::ToolCallIdentity,
         args: crate::file_delivery::repair::RepairArgs,
-        task_budget_default: i64,
     },
     UserStart {
         key: String,
@@ -203,7 +201,6 @@ pub(crate) async fn planner_dispatch(
     target: ReportEditTarget,
     args: super::dispatch::DispatchArgs,
     plugin_tools: super::dispatch::PluginToolAdmission,
-    task_budget_default: i64,
     recorder_shadow: Arc<dyn RecorderShadowProbe>,
 ) -> Result<serde_json::Value, CalmError> {
     let (_, response) = persist(
@@ -217,7 +214,6 @@ pub(crate) async fn planner_dispatch(
             identity,
             args: args.normalize()?,
             plugin_tools,
-            task_budget_default,
         },
         None,
         None,
@@ -237,7 +233,6 @@ pub(crate) async fn planner_repair(
     identity: crate::mcp_server::registry::ToolCallIdentity,
     target: ReportEditTarget,
     args: crate::file_delivery::repair::RepairArgs,
-    task_budget_default: i64,
     recorder_shadow: Arc<dyn RecorderShadowProbe>,
 ) -> Result<serde_json::Value, CalmError> {
     let (_, response) = persist(
@@ -247,11 +242,7 @@ pub(crate) async fn planner_repair(
         identity.to_actor_id(),
         EditAuthor::Planner,
         target,
-        PersistPurpose::Repair {
-            identity,
-            args,
-            task_budget_default,
-        },
+        PersistPurpose::Repair { identity, args },
         None,
         None,
         false,
@@ -438,22 +429,22 @@ async fn persist(
                         .record(tx, RecorderShadowDecisionKind::ReportWrite)
                         .await?;
                 }
-                if let PersistPurpose::Dispatch { args, task_budget_default, .. } = &purpose
+                if let PersistPurpose::Dispatch { args, .. } = &purpose
                     && let Some(receipt) = super::dispatch::lookup_tx(tx, &track_id, args).await?
                 {
-                    let response = super::dispatch::snapshot_tx(tx, &track_id, &receipt, args, *task_budget_default).await?;
+                    let response = super::dispatch::snapshot_tx(tx, &track_id, &receipt, args).await?;
                     let card = sqlx::query_as::<_, crate::db::rows::CardRow>(
                         "SELECT id,track_id,kind,sort,payload,title,deletable,created_at,updated_at FROM cards WHERE id=?1"
                     ).bind(&id).fetch_one(&mut **tx).await?;
                     *replay_out.lock().map_err(|_| CalmError::Internal("dispatch replay lock poisoned".into()))? = Some((Card::from(card), response));
                     return Err(CalmError::Conflict(DISPATCH_REPLAY.into()));
                 }
-                if let PersistPurpose::Repair { args, task_budget_default, .. } = &purpose {
+                if let PersistPurpose::Repair { args, .. } = &purpose {
                     args.validate()?;
                     if let Some(receipt) = crate::file_delivery::repair::lookup_tx(tx, track_id.as_str(), &args.producer).await? {
                         if receipt.args != *args { return Err(CalmError::Conflict("repair source already has a different reason".into())); }
                         crate::file_delivery::repair::validate_lineage_tx(tx, &receipt).await?;
-                        let response = super::repair::snapshot_tx(tx, &receipt, *task_budget_default).await?;
+                        let response = super::repair::snapshot_tx(tx, &receipt).await?;
                         let card = sqlx::query_as::<_, crate::db::rows::CardRow>(
                             "SELECT id,track_id,kind,sort,payload,title,deletable,created_at,updated_at FROM cards WHERE id=?1"
                         ).bind(&id).fetch_one(&mut **tx).await?;
@@ -572,7 +563,7 @@ async fn persist(
                     &block_diagnostics,
                 )
                 .await?;
-                let dispatch_response = if let PersistPurpose::Dispatch { args, task_budget_default, .. } = &purpose {
+                let dispatch_response = if let PersistPurpose::Dispatch { args, .. } = &purpose {
                     let block = outcome.as_ref().ok_or_else(|| CalmError::Internal("dispatch block outcome missing".into()))?;
                     let receipt = super::dispatch::DispatchReceipt {
                         name: args.name().to_owned(), task_key: dispatch_key,
@@ -580,12 +571,12 @@ async fn persist(
                         created_at_ms: crate::model::now_ms(),
                     };
                     super::dispatch::insert_tx(tx, &track_id, args, &receipt).await?;
-                    Some(super::dispatch::snapshot_tx(tx, &track_id, &receipt, args, *task_budget_default).await?)
-                } else if let PersistPurpose::Repair { task_budget_default, .. } = &purpose {
+                    Some(super::dispatch::snapshot_tx(tx, &track_id, &receipt, args).await?)
+                } else if let PersistPurpose::Repair { .. } = &purpose {
                     let receipt = repair_receipt.as_mut().ok_or_else(||CalmError::Internal("repair receipt missing".into()))?;
                     receipt.reviewer.block_id = outcome.as_ref().ok_or_else(||CalmError::Internal("repair review block outcome missing".into()))?.id.clone();
                     crate::file_delivery::repair::insert_tx(tx, receipt).await?;
-                    Some(super::repair::snapshot_tx(tx, receipt, *task_budget_default).await?)
+                    Some(super::repair::snapshot_tx(tx, receipt).await?)
                 } else { None };
                 //    Then two events on the same card scope: `CardUpdated` first, so a subscriber sees the
                 //    generic "row changed" signal before the structured edit-log entry.
