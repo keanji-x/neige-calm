@@ -245,6 +245,6 @@ ensure runs against the `.git`-less directory and fails non-2xx, not `idempotenc
   terminal, gate and FE file defaults and child tracks move to the worktree, and whether the
   Planner needs a writable gitdir to commit from its shell (Codex `workspace-write` makes the
   linked worktree's gitdir read-only; Claude's sandbox is not resolvable from code; until then,
-  `git.commit`).
+  `git.commit`). Design: [`1830-s2-worker-in-track-worktree.md`](1830-s2-worker-in-track-worktree.md).
 - **S3:** push equal to the candidate, `gh.pr.create`, and reclaim of the worktree and branch
   after merge or on reaching a terminal state (#1815 pattern).
