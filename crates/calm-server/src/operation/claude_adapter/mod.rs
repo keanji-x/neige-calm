@@ -1,4 +1,3 @@
-mod workspace;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -26,7 +25,7 @@ use crate::operation::codex_adapter::render_task_worker_prompt;
 use crate::operation::worker_cleanup::{compensate_worker_rows, worker_spawn_failure_preserved};
 use crate::operation::workspace_lease::{
     ReleaseDelivery, acquire_workspace_lease_tx, prepare_worker_lease_tx,
-    release::release_workspace_lease_by_id,
+    release::release_workspace_lease_by_id, worker::verify_worker_checkout,
 };
 use crate::routes::cards::card_scope;
 use crate::routes::claude_cards::{
@@ -1008,7 +1007,9 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         if let Some(hook) = &self.preparation_hook {
             hook().await;
         }
-        workspace::verify(self, ctx, output).await?;
+        // #1830 S2 D3: the track's checkout its prepare froze, still at that base on that
+        // branch. Nothing is created.
+        verify_worker_checkout(output, "claude-worker")?;
 
         let raw_token = mint_claude_worker_mcp_token(ctx, &card_id, &runtime_id).await?;
         let env_map = env.as_object_mut().ok_or_else(|| {

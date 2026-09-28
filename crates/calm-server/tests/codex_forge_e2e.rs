@@ -2166,7 +2166,6 @@ async fn capstone_oracle(
             RequiredEvent::any("plan.updated"),
             RequiredEvent::new("task.dispatched", |r| r.payload["kind"] == json!("codex")),
             RequiredEvent::any("workspace.leased"),
-            RequiredEvent::any("worktree.provisioned"),
             RequiredEvent::any("worker_session.started"),
             RequiredEvent::any("task.completed"),
             RequiredEvent::any("worktree.committed"),
@@ -2225,10 +2224,6 @@ async fn capstone_oracle(
         ],
     )
     .await;
-    // Ordering 3 (kernel-forced, HARD, per card): worktree.provisioned
-    // precedes worker_session.started for every card that has both.
-    assert_provisioned_before_worker_session_started_per_card(fx).await;
-
     // Fence 6: subject-keyed cap enforcement. 6a (merge keyed by FULL subject) is replaced by the in-line latest-fence assert because a round may legally omit pr_number.
     assert_subject_keyed_cap_enforcement(&fx.repo, fx.track_id.as_str()).await;
     if subject.pr_number.is_some() {
@@ -2371,42 +2366,6 @@ async fn capstone_oracle(
     assert!(
         !fx.used_injected_plan(),
         "RealPlannerTurn must not use injected plan path"
-    );
-}
-
-/// For every card with BOTH events, the first `worktree.provisioned` precedes the first `worker_session.started` (the planner card has no worktree — vacuously skipped).
-async fn assert_provisioned_before_worker_session_started_per_card(fx: &Fixture) {
-    let provisioned = event_rows(&fx.repo, "worktree.provisioned").await;
-    let started = event_rows(&fx.repo, "worker_session.started").await;
-    let mut checked = 0usize;
-    for p in &provisioned {
-        let card_id = p.payload["card_id"]
-            .as_str()
-            .unwrap_or_else(|| panic!("worktree.provisioned missing card_id: {}", p.payload));
-        let first_provisioned = provisioned
-            .iter()
-            .filter(|r| r.payload["card_id"] == json!(card_id))
-            .map(|r| r.id)
-            .min()
-            .expect("at least this row");
-        if let Some(first_started) = started
-            .iter()
-            .filter(|r| r.payload["card_id"] == json!(card_id))
-            .map(|r| r.id)
-            .min()
-        {
-            assert!(
-                first_provisioned < first_started,
-                "card {card_id}: worktree.provisioned (id {first_provisioned}) must precede \
-                 worker_session.started (id {first_started})"
-            );
-            checked += 1;
-        }
-    }
-    assert!(
-        checked > 0,
-        "ordering-3 check matched no card with both worktree.provisioned and \
-         worker_session.started"
     );
 }
 

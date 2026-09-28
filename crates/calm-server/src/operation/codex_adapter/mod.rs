@@ -855,7 +855,6 @@ impl ProviderAdapter for CodexWorkerAdapter {
             "branch": plan.branch,
             "base_sha": plan.base.base_sha,
             "canonical_path": plan.base.canonical_path,
-            "worktree_provisioned_event_persisted": false,
             "terminal_launch": super::terminal_launch::fresh_state(),
             "runtime_started_event_persisted": false,
             "env": env,
@@ -1574,35 +1573,24 @@ async fn verify_codex_worker_workspace(
     let card_id = output.output_string("card_id", "codex-worker")?;
     let track_id = output.output_string("track_id", "codex-worker")?;
     let runtime_id = output.output_string("runtime_id", "codex-worker")?;
-    let cwd = output.output_string("cwd", "codex-worker")?;
     verify_worker_checkout(output, "codex-worker")?;
 
-    let provisioned_persisted = output
-        .data
-        .get("worktree_provisioned_event_persisted")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
     let runtime_started_persisted = output
         .data
         .get("runtime_started_event_persisted")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    if provisioned_persisted && runtime_started_persisted {
+    if runtime_started_persisted {
         return Ok(());
     }
 
     let scope = card_scope(
         ctx.repo.as_ref(),
         CardId::from(card_id.clone()),
-        TrackId::from(track_id.clone()),
+        TrackId::from(track_id),
     )
     .await?;
     let mut checkpoint_output = output.clone();
-    checkpoint_output.set_output_data(
-        "worktree_provisioned_event_persisted",
-        json!(true),
-        "codex-worker",
-    )?;
     checkpoint_output.set_output_data(
         "runtime_started_event_persisted",
         json!(true),
@@ -1610,9 +1598,7 @@ async fn verify_codex_worker_workspace(
     )?;
 
     let card_id_for_tx = card_id.clone();
-    let track_id_for_tx = track_id.clone();
     let runtime_id_for_tx = runtime_id.clone();
-    let cwd_for_tx = cwd.clone();
     let op_for_tx = op.clone();
     let output_for_tx = checkpoint_output.clone();
     let write = WriteContext::new(card_role_cache.clone(), track_area_cache.clone());
@@ -1633,29 +1619,16 @@ async fn verify_codex_worker_workspace(
                     &output_for_tx,
                 )
                 .await?;
-                let mut events = Vec::new();
-                if !provisioned_persisted {
-                    events.push((
-                        scope.clone(),
-                        Event::WorktreeProvisioned {
-                            track_id: TrackId::from(track_id_for_tx.clone()),
-                            card_id: CardId::from(card_id_for_tx.clone()),
-                            path: cwd_for_tx.clone(),
-                        },
-                    ));
-                }
-                if !runtime_started_persisted {
-                    events.push((
-                        scope,
-                        Event::WorkerSessionStarted {
-                            worker_session_id: runtime_id_for_tx,
-                            card_id: card_id_for_tx,
-                            kind: WorkerSessionKind::CodexCard,
-                            agent_provider: Some(AgentProvider::Codex),
-                            status: WorkerSessionState::Starting,
-                        },
-                    ));
-                }
+                let events = vec![(
+                    scope,
+                    Event::WorkerSessionStarted {
+                        worker_session_id: runtime_id_for_tx,
+                        card_id: card_id_for_tx,
+                        kind: WorkerSessionKind::CodexCard,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Starting,
+                    },
+                )];
                 Ok(((), events))
             })
         },

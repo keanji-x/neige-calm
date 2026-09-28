@@ -220,16 +220,6 @@ async fn claude_worker_spawn_env_carries_raw_card_token_and_socket() {
         .await
         .expect("spawn side effect");
 
-    workspace::verify(&adapter, &ctx, &output).await.unwrap();
-    let ready_events: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'worktree.provisioned'")
-            .fetch_one(harness.repo.pool())
-            .await
-            .unwrap();
-    assert_eq!(
-        ready_events, 1,
-        "a re-verified checkout records its ready event once"
-    );
     let env = captured_env
         .lock()
         .await
@@ -294,9 +284,7 @@ async fn claude_worker_compensation_cleans_rows_lease_and_settings_dir() {
         harness.events.clone(),
         OperationCompletionBus::new(),
     );
-    workspace::verify(&harness.adapter, &ctx, &output)
-        .await
-        .unwrap();
+    verify_worker_checkout(&output, "claude-worker").unwrap();
     assert!(Path::new(&cwd).join("worker-source").is_file());
     let raw_token = mint_claude_worker_mcp_token(&ctx, &card_id, &runtime_id)
         .await
@@ -429,19 +417,7 @@ async fn claude_spawn_refuses_a_checkout_that_moved_after_prepare() {
     let moved_head = git_head(Path::new(&cwd));
     assert_ne!(moved_head, recorded_base, "test setup moved HEAD");
 
-    let route_repo: Arc<dyn crate::db::RouteRepo> = harness.repo.clone();
-    let op_repo: Arc<dyn OperationRepo> =
-        Arc::new(SqlxOperationRepo::new(harness.repo.pool().clone()));
-    let ctx = SpawnCtx::new(
-        route_repo,
-        op_repo,
-        Arc::new(DaemonClient::new_stub()),
-        TerminalRendererRegistry::new(),
-        harness.events.clone(),
-        OperationCompletionBus::new(),
-    );
-    let err = workspace::verify(&harness.adapter, &ctx, &prepared)
-        .await
+    let err = verify_worker_checkout(&prepared, "claude-worker")
         .expect_err("a moved checkout fails the spawn");
     let message = err.to_string();
     assert!(
