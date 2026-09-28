@@ -301,6 +301,43 @@ pub enum TaskStatus {
 }
 
 impl TaskStatus {
+    /// Every variant in lifecycle order: `index_in_all` matches exhaustively and the const assertion
+    /// below pins each variant's slot, so a new variant fails to compile until it is listed here.
+    pub const ALL: [Self; 7] = [
+        Self::Pending,
+        Self::Dispatched,
+        Self::Running,
+        Self::Verifying,
+        Self::Done,
+        Self::Failed,
+        Self::Canceled,
+    ];
+
+    const fn index_in_all(self) -> usize {
+        match self {
+            Self::Pending => 0,
+            Self::Dispatched => 1,
+            Self::Running => 2,
+            Self::Verifying => 3,
+            Self::Done => 4,
+            Self::Failed => 5,
+            Self::Canceled => 6,
+        }
+    }
+
+    /// The serde spelling (`rename_all = "lowercase"`).
+    pub fn wire_label(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Dispatched => "dispatched",
+            Self::Running => "running",
+            Self::Verifying => "verifying",
+            Self::Done => "done",
+            Self::Failed => "failed",
+            Self::Canceled => "canceled",
+        }
+    }
+
     /// Terminal executions never transition again; failed-work recovery allocates
     /// a new execution ID under the same Track + key.
     pub fn is_terminal(self) -> bool {
@@ -308,6 +345,25 @@ impl TaskStatus {
             self,
             TaskStatus::Done | TaskStatus::Failed | TaskStatus::Canceled
         )
+    }
+}
+
+const _: () = {
+    let mut index = 0;
+    while index < TaskStatus::ALL.len() {
+        assert!(TaskStatus::ALL[index].index_in_all() == index);
+        index += 1;
+    }
+};
+
+#[cfg(test)]
+#[test]
+fn task_status_wire_label_is_the_serde_spelling() {
+    for status in TaskStatus::ALL {
+        assert_eq!(
+            serde_json::to_value(status).unwrap(),
+            serde_json::Value::from(status.wire_label())
+        );
     }
 }
 

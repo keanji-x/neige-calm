@@ -30,7 +30,7 @@ use serde::Serialize;
 
 use super::abandonment::{
     AbandonTaskOutcome, AbandonmentRow, abandonment_by_request_key_tx, abandonment_for_delivery_tx,
-    insert_abandonment_tx, task_status_wire,
+    insert_abandonment_tx,
 };
 use super::candidate::candidate_for_attempt_tx;
 use super::delivery::{
@@ -474,7 +474,7 @@ fn abandon_receipt(row: &AbandonmentRow, delivery: &DeliveryRow) -> DeliveryActi
         ordinal: delivery.ordinal,
         action: DeliveryAction::Abandon.wire_str(),
         task_outcome: Some(row.task_outcome.wire_str()),
-        task_status: Some(task_status_wire(row.task_status)),
+        task_status: Some(row.task_status.wire_label()),
     }
 }
 

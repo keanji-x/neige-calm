@@ -1,8 +1,11 @@
 //! Text and `--json` rendering of one tool's `structuredContent`, moved from the former fat client
 //! (#1801). A missing required field is a render error, never a substituted default.
 
+use std::borrow::Cow;
+
 use serde_json::{Value, json};
 
+use crate::model::TaskStatus;
 use crate::track_vcs::DiffStatus;
 
 /// How one command prints its tool result.
@@ -116,17 +119,6 @@ fn content(tool: &str, value: &Value) -> Result<String, RenderError> {
 /// The label column of the `state` text; every fact line starts with one of these.
 const STATE_LABEL_WIDTH: usize = "lifecycle".len();
 
-/// Task statuses in their lifecycle order; the `tasks` line counts them in this order.
-const TASK_STATUS_ORDER: [&str; 7] = [
-    "pending",
-    "dispatched",
-    "running",
-    "verifying",
-    "done",
-    "failed",
-    "canceled",
-];
-
 /// One fact per line, each fact once: an agent greps `^lifecycle` and gets exactly this track's.
 fn state(tool: &str, json: bool, value: &Value) -> Result<String, RenderError> {
     if !value.is_object() {
@@ -181,7 +173,9 @@ fn state(tool: &str, json: bool, value: &Value) -> Result<String, RenderError> {
     };
 
     let mut out = String::new();
+    // Every fact line is written here, escaped, so no free-text value can forge a second line.
     let mut fact = |label: &str, text: &str| {
+        let text = escape_control(text);
         out.push_str(&format!("{label:<STATE_LABEL_WIDTH$}  {text}\n"));
     };
     fact("track", track_id);
@@ -198,7 +192,7 @@ fn state(tool: &str, json: bool, value: &Value) -> Result<String, RenderError> {
 
 struct StateTask<'a> {
     key: &'a str,
-    status: &'a str,
+    status: TaskStatus,
     worker_card_id: Option<&'a str>,
 }
 
@@ -216,15 +210,18 @@ fn state_tasks<'a>(tool: &str, tasks: &'a [Value]) -> Result<Vec<StateTask<'a>>,
     tasks
         .iter()
         .map(|task| {
-            let status = required_str(task, "status", tool, "task")?;
-            if !TASK_STATUS_ORDER.contains(&status) {
-                return Err(shape(
-                    format!("{tool} task has unknown status {status:?}"),
-                    tool,
-                    "task",
-                    task,
-                ));
-            }
+            let label = required_str(task, "status", tool, "task")?;
+            let status = TaskStatus::ALL
+                .into_iter()
+                .find(|status| status.wire_label() == label)
+                .ok_or_else(|| {
+                    shape(
+                        format!("{tool} task has unknown status {label:?}"),
+                        tool,
+                        "task",
+                        task,
+                    )
+                })?;
             Ok(StateTask {
                 key: required_str(task, "key", tool, "task")?,
                 status,
@@ -277,39 +274,60 @@ fn tasks_summary(tasks: &[StateTask<'_>]) -> String {
     if tasks.is_empty() {
         return "none".to_string();
     }
-    let counts: Vec<String> = TASK_STATUS_ORDER
-        .iter()
-        .filter_map(|&status| {
+    let counts: Vec<String> = TaskStatus::ALL
+        .into_iter()
+        .filter_map(|status| {
             let count = tasks.iter().filter(|task| task.status == status).count();
-            (count > 0).then(|| format!("{count} {status}"))
+            (count > 0).then(|| format!("{count} {}", status.wire_label()))
         })
         .collect();
     format!("{}: {}", tasks.len(), counts.join(", "))
 }
 
-/// `id  role  kind  status[  task <key>]`, columns padded to the widest value.
+/// `id  role  kind  status[  task <key>]`, columns (escaped first) padded to the widest value.
 fn card_lines(cards: &[StateCard<'_>]) -> Vec<String> {
-    let width = |column: fn(&StateCard<'_>) -> usize| cards.iter().map(column).max().unwrap_or(0);
-    let (id_w, role_w, kind_w, status_w) = (
-        width(|card| card.id.len()),
-        width(|card| card.role.len()),
-        width(|card| card.kind.len()),
-        width(|card| card.status.len()),
-    );
+    let rows: Vec<[Cow<'_, str>; 4]> = cards
+        .iter()
+        .map(|card| [card.id, card.role, card.kind, card.status].map(escape_control))
+        .collect();
+    let width = |column: usize| {
+        rows.iter()
+            .map(|row| row[column].chars().count())
+            .max()
+            .unwrap_or(0)
+    };
+    let (id_w, role_w, kind_w, status_w) = (width(0), width(1), width(2), width(3));
     cards
         .iter()
-        .map(|card| {
-            let mut line = format!(
-                "{:<id_w$}  {:<role_w$}  {:<kind_w$}  {}",
-                card.id, card.role, card.kind, card.status
-            );
+        .zip(&rows)
+        .map(|(card, [id, role, kind, status])| {
+            let mut line = format!("{id:<id_w$}  {role:<role_w$}  {kind:<kind_w$}  {status}");
             if !card.tasks.is_empty() {
-                let pad = status_w - card.status.len();
+                let pad = status_w - status.chars().count();
                 line.push_str(&format!("{:pad$}  task {}", "", card.tasks.join(", ")));
             }
             line
         })
         .collect()
+}
+
+/// Control characters as escapes (`\n`, `\r`, `\t`, else `\u{..}`); ordinary text, including
+/// non-ASCII, is unchanged. The output holds no control character, so escaping twice is a no-op.
+fn escape_control(text: &str) -> Cow<'_, str> {
+    if !text.chars().any(char::is_control) {
+        return Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len() + 8);
+    for c in text.chars() {
+        match c {
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{{{:x}}}", u32::from(c))),
+            c => out.push(c),
+        }
+    }
+    Cow::Owned(out)
 }
 
 fn required_object<'a>(
@@ -622,6 +640,46 @@ mod tests {
         assert_eq!(
             lines_starting(&text, "report"),
             vec!["report     none (no report card)"]
+        );
+    }
+
+    #[test]
+    fn state_text_escapes_control_characters_so_a_title_cannot_forge_a_line() {
+        let mut value = working_track_state();
+        value["track"]["title"] = json!("Example\nlifecycle  done\r\t\u{7}");
+        value["cards"][2]["kind"] = json!("cl\naude");
+        let text = render(Render::State, "calm.track.state", false, &value).unwrap();
+        assert_eq!(
+            lines_starting(&text, "title"),
+            vec!["title      Example\\nlifecycle  done\\r\\t\\u{7}"]
+        );
+        assert_eq!(
+            lines_starting(&text, "lifecycle"),
+            vec!["lifecycle  working"]
+        );
+        assert_eq!(
+            text,
+            "track      trk_2\n\
+             title      Example\\nlifecycle  done\\r\\t\\u{7}\n\
+             lifecycle  working\n\
+             you        crd_planner planner\n\
+             report     has content: calm.report.read before editing\n\
+             tasks      4: 2 pending, 1 running, 1 done\n\
+             cards      crd_planner  planner     codex         idle\n\
+             \x20          crd_report   reportcard  track-report  -\n\
+             \x20          crd_worker   worker      cl\\naude      exited  task fix-login\n"
+        );
+        assert!(
+            !text.trim_end_matches('\n').contains(['\r', '\t', '\u{7}']),
+            "{text}"
+        );
+        assert!(text.contains("  cl\\naude  "), "{text}");
+
+        value["track"]["title"] = json!("修复 登录 跳转 — café");
+        let text = render(Render::State, "calm.track.state", false, &value).unwrap();
+        assert_eq!(
+            lines_starting(&text, "title"),
+            vec!["title      修复 登录 跳转 — café"]
         );
     }
 

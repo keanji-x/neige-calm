@@ -67,7 +67,7 @@ impl AbandonmentRow {
         AbandonmentFacts {
             reason: self.reason.clone(),
             task_outcome: self.task_outcome.wire_str().to_string(),
-            task_status: task_status_wire(self.task_status).to_string(),
+            task_status: self.task_status.wire_label().to_string(),
         }
     }
 }
@@ -130,19 +130,6 @@ pub(crate) async fn abandonment_by_request_key_tx(
         .fetch_optional(&mut **tx)
         .await?;
     row.map(row_to_abandonment).transpose()
-}
-
-/// The serde spelling of a task status (`TaskStatus` is `rename_all = "lowercase"`).
-pub(crate) fn task_status_wire(status: TaskStatus) -> &'static str {
-    match status {
-        TaskStatus::Pending => "pending",
-        TaskStatus::Dispatched => "dispatched",
-        TaskStatus::Running => "running",
-        TaskStatus::Verifying => "verifying",
-        TaskStatus::Done => "done",
-        TaskStatus::Failed => "failed",
-        TaskStatus::Canceled => "canceled",
-    }
 }
 
 fn row_to_abandonment(row: sqlx::sqlite::SqliteRow) -> Result<AbandonmentRow> {

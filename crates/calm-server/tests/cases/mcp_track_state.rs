@@ -798,7 +798,8 @@ async fn task_verdict_lifecycle_illegal_rolls_back_verdict_and_events() {
     assert!(
         err.message.ends_with(
             "track lifecycle: planning → done is not allowed; \
-             from planning the planner may write: dispatching, reviewing, failed"
+             from planning the planner may write: dispatching, reviewing, failed \
+             (the kernel advances dispatching itself when it claims a task)"
         ),
         "{err:?}"
     );

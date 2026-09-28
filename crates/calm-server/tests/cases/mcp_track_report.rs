@@ -870,7 +870,8 @@ fn assert_planning_to_done_refusal(message: &str) {
     assert!(
         message.ends_with(
             "forbidden: track lifecycle: planning → done is not allowed; \
-             from planning the planner may write: dispatching, reviewing, failed"
+             from planning the planner may write: dispatching, reviewing, failed \
+             (the kernel advances dispatching itself when it claims a task)"
         ),
         "{message}"
     );
