@@ -203,12 +203,15 @@ and starts there (the Replay arm does not ensure at all);
 fixtures fake shared daemon now records each `config/read` cwd).
 
 Each mutation changes one production line. Predicted red sets, over `track_suite`,
-`planner_harness_suite` (`claude_planner_wiring`) and `mcp_git_forge_plugin`:
+`planner_harness_suite` (`claude_planner_wiring`), `mcp_git_forge_plugin` and
+`domain_api_suite` (`track_workspace_recycle`):
 M1 → T1, T1b, T3, T4, T5 (each first asserts that the worktree exists), the diverged and the
 commit-less tests (no ensure, so 201) and the genuine-retry test (its premise is that the failed
 attempt made the worktree); M3 → T1, T1b (both are behind the origin) and the diverged test
 (HEAD is taken, so 201); the commit-less test stays red under M3 as without it
-(`resolve_head_base` fails on an unborn HEAD too); every other mutation → only its own test.
+(`resolve_head_base` fails on an unborn HEAD too); M5 → T4 and
+`deleting_a_area_recycles_its_managed_workspaces_and_spares_attached_ones` (it asserts that area
+delete removed the worktree); every other mutation → only its own test.
 Existing expectations: `a_replay_survives_the_attached_directory_being_deleted`
 (`track_create_first_message.rs:1810`) stays 201 (Replay skips the ensure); the former
 `a_retry_after_a_failure_survives_the_attached_directory_ceasing_to_validate` (`:1867`) is now
