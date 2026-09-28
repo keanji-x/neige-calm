@@ -542,6 +542,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "trybuild",
+ "unicode-width 0.2.2",
  "ureq",
  "url",
  "utoipa",

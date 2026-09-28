@@ -205,6 +205,8 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 hex = "0.4"
+# `neige ls -l` pads columns by terminal display width (CJK is 2 columns); already in the lockfile.
+unicode-width = "0.2.2"
 
 # Slice H — per-plugin auth tokens. `rand` for OsRng, `sha2` for SHA-256
 # (full-entropy tokens don't need bcrypt/argon2 — see design doc §6.1),

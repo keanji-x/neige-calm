@@ -187,7 +187,7 @@ async fn planner_browses_searches_and_reads_area_reports_through_neige() {
     );
     assert_eq!(
         ok(&boot, &["ls", "-l", "area/reports/"]).await,
-        "UPDATED_AT        TAGS   NAME\n\
+        "UPDATED_AT        TAGS       NAME\n\
          2026-09-28 14:30  认证,架构  认证 方案.md\n\
          2026-09-28 10:15  认证,排障  登录 排查.md\n"
     );

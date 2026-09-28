@@ -5,6 +5,7 @@
 
 use chrono::{DateTime, Local, TimeZone};
 use serde_json::Value;
+use unicode_width::UnicodeWidthStr;
 
 use super::{RenderError, compact, required_str, shape};
 use crate::area_reports::REPORTS_DIR;
@@ -146,20 +147,27 @@ fn report_table(tool: &str, entries: &[Value]) -> Result<String, RenderError> {
     }
     let tags_width = rows
         .iter()
-        .map(|row| row[1].chars().count())
+        .map(|row| row[1].width())
         .chain(["TAGS".len()])
         .max()
         .expect("the header is a row");
     let mut out = format!(
-        "{:<TIME_WIDTH$}  {:<tags_width$}  NAME\n",
-        "UPDATED_AT", "TAGS"
+        "{}  {}  NAME\n",
+        pad("UPDATED_AT", TIME_WIDTH),
+        pad("TAGS", tags_width)
     );
     for [time, tags, name] in rows {
-        out.push_str(&format!(
-            "{time:<TIME_WIDTH$}  {tags:<tags_width$}  {name}\n"
-        ));
+        let (time, tags) = (pad(&time, TIME_WIDTH), pad(&tags, tags_width));
+        out.push_str(&format!("{time}  {tags}  {name}\n"));
     }
     Ok(out)
+}
+
+/// `text` padded with spaces to `width` terminal columns (a CJK character takes 2), so the next
+/// column starts at the same column on every row.
+fn pad(text: &str, width: usize) -> String {
+    let fill = width.saturating_sub(text.width());
+    format!("{text}{:fill$}", "")
 }
 
 #[cfg(test)]
@@ -221,6 +229,46 @@ mod tests {
         ])
     }
 
+    /// Mixed CJK/ASCII tags: every row's NAME starts at the header's NAME display column.
+    #[test]
+    fn long_report_table_aligns_the_name_column_by_display_width() {
+        use unicode_width::UnicodeWidthStr;
+        let at = local(1_790_000_000_000).to_rfc3339_opts(chrono::SecondsFormat::Millis, false);
+        let entry = |name: &str, tags: Value| {
+            json!({ "path": format!("area/reports/{name}"), "title": name, "trackId": "t",
+                    "tags": tags, "updatedAt": at })
+        };
+        let table = ls(
+            true,
+            true,
+            &json!([
+                entry("认证 方案.md", json!(["认证", "架构"])),
+                entry("login.md", json!(["auth", "x"])),
+                entry("登录 排查~abcdef12.md", json!(["排障"])),
+                entry("none.md", json!([])),
+            ]),
+        );
+        let columns: Vec<usize> = table
+            .lines()
+            .zip([
+                "NAME",
+                "认证 方案.md",
+                "login.md",
+                "登录 排查~abcdef12.md",
+                "none.md",
+            ])
+            .map(|(line, name)| {
+                let prefix = line.strip_suffix(name).unwrap_or_else(|| panic!("{table}"));
+                prefix.width()
+            })
+            .collect();
+        assert_eq!(columns.len(), 5, "{table}");
+        assert!(
+            columns.iter().all(|c| *c == columns[0]),
+            "{columns:?}\n{table}"
+        );
+    }
+
     #[test]
     fn report_listings_print_names_a_table_or_paths() {
         assert_eq!(
@@ -231,7 +279,7 @@ mod tests {
         assert_eq!(
             ls(true, true, &reports()),
             format!(
-                "UPDATED_AT        TAGS   NAME\n{}  认证,架构  认证 方案.md\n{}  —      x%2Fy~abcdef12.md\n",
+                "UPDATED_AT        TAGS       NAME\n{}  认证,架构  认证 方案.md\n{}  —          x%2Fy~abcdef12.md\n",
                 time(1_790_000_000_000),
                 time(1_789_000_000_000)
             )
