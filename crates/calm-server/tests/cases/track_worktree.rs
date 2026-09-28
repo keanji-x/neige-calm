@@ -16,6 +16,7 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
 use calm_server::model::NewArea;
+use calm_server::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
@@ -191,9 +192,9 @@ impl Boot {
         .await
         .unwrap();
         rows.into_iter()
-            .filter_map(|row| serde_json::from_str::<Value>(&row).ok())
-            .filter(|payload| payload["wave_id"].as_str() == Some(track_id))
-            .map(|payload| payload["cwd"].as_str().unwrap_or_default().to_string())
+            .map(|row| serde_json::from_str::<PlannerHarnessStartOperationPayload>(&row).unwrap())
+            .filter(|payload| payload.track_id == track_id)
+            .map(|payload| payload.cwd)
             .collect()
     }
 

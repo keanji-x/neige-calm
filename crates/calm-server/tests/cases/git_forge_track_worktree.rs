@@ -82,14 +82,14 @@ async fn planner_caller(fx: &Fixture, track_id: &str) -> (String, String) {
             .await
             .expect("the track's planner card");
     let thread_id = format!("thread-{card_id}");
-    let runtime_id = seed_runtime_thread(&fx.repo, &card_id, &thread_id).await;
+    let worker_session_id = seed_runtime_thread(&fx.repo, &card_id, &thread_id).await;
     let token = calm_server::mcp_server::auth::CardMcpToken::generate();
     let token_hash = calm_server::mcp_server::auth::hash_token(token.as_str());
     let mut tx = fx.repo.pool().begin().await.expect("begin token tx");
     card_mcp_token_set_tx(&mut tx, &card_id, &token_hash)
         .await
         .expect("mint card MCP token");
-    session_mcp_token_set_tx(&mut tx, &runtime_id, &token_hash)
+    session_mcp_token_set_tx(&mut tx, &worker_session_id, &token_hash)
         .await
         .expect("mint session MCP token");
     tx.commit().await.expect("commit token tx");
