@@ -132,7 +132,9 @@ readers (`planner_attachments/mod.rs:53-60`, `workspace_recycle.rs:19-24`), repl
 - `calm-truth/migrations/0119_track_worktree.sql` (number assigned last):
   `ALTER TABLE tracks ADD COLUMN workspace_worktree_path TEXT NULL;`.
 - `calm-types/src/model.rs`: `TrackWorkspace.worktree`, `agent_cwd()`. Regenerate the OpenAPI and
-  `fe/core/api/generated/wire.ts` output. Then fix every `TrackWorkspace { … }` literal (about 15 in
+  `fe/core/api/generated/wire.ts` output; `fe/core/api/schemas.ts` decodes the optional field
+  (the zod ↔ ts-rs conformance test requires it). The create route's 409 description names the
+  `attached-repo-diverged` refusal and its recovery (reconcile, retry under the same key). Then fix every `TrackWorkspace { … }` literal (about 15 in
   non-test code) as the compiler reports them.
 - `calm-truth/src/db/rows.rs`: `TRACK_SELECT_COLUMNS` and `_W` (in lockstep), `TrackRow`, `From`.
 - `calm-truth/src/db/sqlite/track_workspace.rs`: the whole-value writer and
