@@ -17,8 +17,8 @@ use crate::workspace_materialize::isolated_git_command;
 use super::upstream::{LeaseStart, choose_lease_start, diverged_refusal};
 use super::{
     GitWorktreeRegistration, WorkspaceLeaseTarget, ensure_workspace_worktree_root_excluded,
-    git_failed, git_ref_exists, git_worktree_registration,
-    prune_stale_workspace_worktree_registration, remove_workspace_worktree, validate_path_segment,
+    git_failed, git_ref_exists, git_worktree_registration, remove_workspace_worktree,
+    validate_path_segment,
 };
 
 /// `neige/track-<track_id>`: a 32-hex track id is never `track-…`, so it cannot collide with a
@@ -59,7 +59,7 @@ pub(crate) fn track_worktree_target(
 /// Make the track's worktree if it has one and it is not there yet. The upstream is refreshed
 /// first (bounded, fail-soft), then the git work runs on a blocking thread: a registered
 /// directory is done, an existing branch is checked out again, else a new branch starts where a
-/// worker lease would (`choose_lease_start`). A diverged checkout is refused
+/// worker lease would (`choose_lease_start`); git refuses whatever else is at the path. A diverged checkout is refused
 /// (`attached-repo-diverged`) and a repository without a commit fails.
 pub(crate) async fn ensure_track_worktree(track: &Track) -> Result<()> {
     let Some(worktree) = track.workspace.worktree.as_deref() else {
@@ -74,22 +74,12 @@ pub(crate) async fn ensure_track_worktree(track: &Track) -> Result<()> {
 
 fn ensure_track_worktree_blocking(target: &WorkspaceLeaseTarget) -> Result<()> {
     ensure_workspace_worktree_root_excluded(&target.repo_root)?;
-    match git_worktree_registration(target)? {
-        GitWorktreeRegistration::Present if target.path.is_dir() => return Ok(()),
-        GitWorktreeRegistration::Present | GitWorktreeRegistration::Prunable => {
-            prune_stale_workspace_worktree_registration(target)?;
-        }
-        GitWorktreeRegistration::Foreign {
-            registered_as,
-            branch,
-        } => {
-            return Err(super::base::foreign_registration_refusal(
-                target,
-                &registered_as,
-                branch.as_deref(),
-            ));
-        }
-        GitWorktreeRegistration::Absent => {}
+    // Registered and on disk: done. Anything else (a hand-removed directory, another
+    // registration at the path) is left to `git worktree add` to refuse.
+    if git_worktree_registration(target)? == GitWorktreeRegistration::Present
+        && target.path.is_dir()
+    {
+        return Ok(());
     }
     // Isolated: the checkout runs the repository's own code (hooks, filters, fsmonitor).
     let mut command = isolated_git_command();

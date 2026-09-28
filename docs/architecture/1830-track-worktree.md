@@ -114,6 +114,7 @@ Verified at c7c7f82ae by reading the code, or by the command shown.
 | Codex `config/read` cwd | `harness/run_loop.rs:2678` | `agent_cwd()` |
 | Model defaults for a card ("the same value planner-harness-start puts on its payload") | `routes/models.rs:273-296` | `agent_cwd()` |
 | Planner forge cwd (Planner arm only) | `mcp_server/transport.rs:974-981` | `agent_cwd()`, so a Planner `git.commit` lands on the track branch, not the user's checkout |
+| Track file reads (Report file links, the track panel): `readfile`, `readfile-raw` | `routes/fs.rs:294`, `:329` | `agent_cwd()`: their relative paths are the Planner's |
 | Teardown sweep | `workspace_lease/mod.rs:586-610` | also reads the new column (D7) |
 
 Unchanged (`workspace.path`): launchpad and today summary (`routes/today.rs:524-530`,
@@ -123,7 +124,7 @@ Unchanged (`workspace.path`): launchpad and today summary (`routes/today.rs:524-
 (`workspace_lease/mod.rs:141-157`, so workers never nest in the track worktree), worker upstream
 refresh (`upstream_fetch.rs:597-627`), worker success commit (`emit.rs:196`), candidate staleness
 (`plan.rs:781-785`), gate fallback (`task_verify_adapter/mod.rs:441-487`), terminal default cwd
-(`terminal_adapter.rs:225-240`), FE file reads (`routes/fs.rs:294`, `:329`), managed-only
+(`terminal_adapter.rs:225-240`), managed-only
 readers (`planner_attachments/mod.rs:53-60`, `workspace_recycle.rs:19-24`), replace routing
 (kind only), freeze points (`workspace_lease/mod.rs:252`, `card.rs:566`, `track.rs:299`).
 
@@ -145,8 +146,9 @@ readers (`planner_attachments/mod.rs:53-60`, `workspace_recycle.rs:19-24`), repl
 - `calm-server/src/operation/workspace_lease/track_worktree.rs` (new, about 160 lines):
   `track_branch_for`, `track_worktree_target` (the stored path back to {repo_root, path,
   branch}, shape-checked), `ensure_track_worktree` (async fetch, then the git work in
-  `spawn_blocking`) and `remove_track_worktree` (D7). It reuses `git_worktree_registration`,
-  `prune_stale_workspace_worktree_registration`, `git_ref_exists`,
+  `spawn_blocking`; registered and present is done, anything else is left to `git worktree
+  add` to refuse) and `remove_track_worktree` (D7). It reuses `git_worktree_registration`,
+  `git_ref_exists`,
   `ensure_workspace_worktree_root_excluded`, `remove_workspace_worktree` and
   `isolated_git_command`, but not `provision_workspace_worktree` (F9).
 - `routes/tracks.rs`: `repo_root` before the tx, the plan variant, ensure after
@@ -187,14 +189,15 @@ socket and git-forge plugin, the track minted by the real create route over the 
 
 | Test | Pins | Mutation that must turn it red |
 |---|---|---|
-| T1 `attached_create_makes_the_track_worktree_at_the_upstream` (clone one commit behind origin): row `worktree == <clone>/.claude/worktrees/track-<id>`; worktree HEAD == origin tip on `neige/track-<id>`; the clone's HEAD and `status --porcelain` unchanged; `planner-harness-start` payload `cwd` == worktree | D5 (c), D3, `routes/tracks.rs:1654` | M1 drop the ensure call after commit; M2 payload `cwd: track.workspace.path`; M3 base = `resolve_head_base` instead of `choose_lease_start` |
+| T1 `attached_create_makes_the_track_worktree_at_the_upstream` (clone one commit behind origin): row `worktree == <clone>/.claude/worktrees/track-<id>`; worktree HEAD == origin tip on `neige/track-<id>`; the clone's HEAD and `status --porcelain` unchanged; `planner-harness-start` payload `cwd` == worktree; a file only in the worktree reads through `/api/tracks/{id}/workspace/readfile` | D5 (c), D3, `routes/tracks.rs:1654`, `routes/fs.rs:294` | M1 drop the ensure call after commit; M2 payload `cwd: track.workspace.path`; M3 base = `resolve_head_base` instead of `choose_lease_start`; M8 `readfile` resolves against `workspace.path` (`readfile-raw` shares the fix, no second test) |
 | T1b `a_first_message_create_starts_the_planner_in_the_track_worktree` (clone one commit behind): worktree HEAD == origin tip; payload `cwd` == worktree | `routes/tracks/create.rs:495` | M1, M3; M7 `create.rs:495` passes `workspace.path` |
 | T3 `claude_planner_turn_runs_in_the_track_worktree` (`claude_planner_wiring.rs` stack, attached `cwd`; the fake also records `pwd`): the fake's cwd == worktree and argv has `Edit(/<worktree>/**)` | `claude_planner/wiring.rs:69` | M1; M4 wiring passes `workspace.path` |
 | T4 `track_delete_removes_the_track_worktree_and_branch` (with an untracked file in it): directory gone, not in `worktree list`, ref gone, the clone untouched | D7 | M1; M5 drop the removal in `sweep_workspace_worktrees_for_track_repo` |
 | T5 `planner_git_commit_lands_on_the_track_branch`: a Planner `git.commit` forge action moves `neige/track-<id>`, and the clone's HEAD is unchanged | `transport.rs:981` | M1; M6 Planner arm returns `workspace.path` |
 
-Ordinary (not mutation-verified) tests: `agent_cwd()` for `None` / `Some`, and a worktree-less
-workspace serializes without the field (`calm-types`);
+Ordinary (not mutation-verified) tests: `agent_cwd()` for `None` / `Some` (`calm-types`; that
+a worktree-less workspace omits the field is pinned by the event goldens and the FE contract
+test);
 `a_genuine_retry_reuses_the_registered_track_worktree` — the GenuineRetry `#N` path after a
 harness-start failure finds the directory the failed attempt made already registered, keeps it
 and starts there (the Replay arm does not ensure at all);
@@ -223,7 +226,8 @@ ensure runs against the `.git`-less directory and fails non-2xx, not `idempotenc
 ## 7. KNOWN GAPS (after S3)
 
 - A worktree removed by hand makes the Planner's spawn fail; nothing re-ensures it at planner
-  start. Delete the track.
+  start, and a retry's ensure leaves the stale registration to `git worktree add`, which
+  refuses. Delete the track.
 - A track delete racing the ensure after commit can leak one worktree (the window managed
   materialization already has).
 - An attached `cwd` below the repository toplevel runs the Planner at the worktree root (every

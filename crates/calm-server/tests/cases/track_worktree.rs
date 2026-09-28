@@ -300,6 +300,21 @@ async fn attached_create_makes_the_track_worktree_at_the_upstream() {
         vec![worktree.to_string_lossy().into_owned()],
         "the Planner starts in the track worktree"
     );
+
+    // A file the Planner writes exists only in the worktree; the track's file reads resolve there.
+    std::fs::write(worktree.join("planner-note.md"), "from the planner\n").unwrap();
+    let (status, body) = b
+        .send(
+            Request::builder()
+                .uri(format!(
+                    "/api/tracks/{track_id}/workspace/readfile?path=planner-note.md"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["text"], "from the planner\n");
     b.shutdown_harnesses().await;
 }
 

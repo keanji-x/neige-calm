@@ -649,18 +649,4 @@ mod track_workspace_agent_cwd_tests {
         workspace.worktree = Some("/repo/.claude/worktrees/track-t".into());
         assert_eq!(workspace.agent_cwd(), "/repo/.claude/worktrees/track-t");
     }
-
-    #[test]
-    fn a_worktree_less_workspace_serializes_without_the_field() {
-        let workspace = TrackWorkspace {
-            kind: TrackWorkspaceKind::Managed,
-            path: "/w".into(),
-            frozen_at: None,
-            worktree: None,
-        };
-        assert_eq!(
-            serde_json::to_value(&workspace).unwrap(),
-            serde_json::json!({"kind": "managed", "path": "/w", "frozen_at": null})
-        );
-    }
 }

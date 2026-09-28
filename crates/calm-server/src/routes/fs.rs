@@ -291,7 +291,7 @@ pub(crate) async fn read_track_workspace_file(
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("track {track_id}")))?;
     let opened = open_workspace_regular_file(
-        Path::new(&track.workspace.path),
+        Path::new(track.workspace.agent_cwd()),
         &q.path,
         WorkspaceSymlinks::FollowedInsideRoot,
     )
@@ -326,7 +326,7 @@ pub(crate) async fn read_track_workspace_file_raw(
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("track {track_id}")))?;
     let opened = open_workspace_regular_file(
-        Path::new(&track.workspace.path),
+        Path::new(track.workspace.agent_cwd()),
         &q.path,
         WorkspaceSymlinks::FollowedInsideRoot,
     )
