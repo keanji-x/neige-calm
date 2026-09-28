@@ -234,6 +234,22 @@ pub fn attached_repo_fixture(name: &str) -> String {
         let _ = std::fs::remove_dir_all(&staging);
         std::fs::create_dir_all(&staging).unwrap_or_else(|e| panic!("create {staging:?}: {e}"));
         run_git(&staging, ["init", "-b", "main"]);
+        // A commit: an attached create makes the track worktree from HEAD (#1830).
+        run_git(
+            &staging,
+            [
+                "-c",
+                "user.name=fixture",
+                "-c",
+                "user.email=fixture@example.test",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "--no-verify",
+                "-m",
+                "fixture",
+            ],
+        );
         // Losing this rename is expected for every process but the first; the error is kept because it is
         // the most informative fact when the assertion below fires.
         let renamed = std::fs::rename(staging.join(".git"), path.join(".git"));

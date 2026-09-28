@@ -798,6 +798,8 @@ pub struct FakeSharedCodexAppServer {
     /// Answer `config/read` the way codex does when it sees the request and
     /// refuses it — an answer, not an outage. The two take opposite paths.
     reject_config_read: AtomicBool,
+    /// The `cwd` of every `config/read` this fake was asked, in order.
+    config_read_cwds: std::sync::Mutex<Vec<Option<String>>>,
     /// Answer `model/list` the way codex does when it refuses the request.
     reject_model_list: AtomicBool,
     /// The `account/read` answer; logged in (an account present) unless a test says otherwise.
@@ -841,6 +843,7 @@ impl FakeSharedCodexAppServer {
             reject_turn_start: AtomicBool::new(false),
             config_read: std::sync::Mutex::new(None),
             reject_config_read: AtomicBool::new(false),
+            config_read_cwds: std::sync::Mutex::new(Vec::new()),
             reject_model_list: AtomicBool::new(false),
             account_read: std::sync::Mutex::new(AccountRead::for_test(true, true)),
             fail_turn_interrupt: AtomicBool::new(false),
@@ -1505,6 +1508,10 @@ impl SharedCodexAppServer {
     ) -> Result<CodexConfig> {
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
+            fake.config_read_cwds
+                .lock()
+                .expect("fake shared codex config-read cwds mutex poisoned")
+                .push(cwd.map(str::to_string));
             if fake.reject_config_read.load(Ordering::SeqCst) {
                 return Err(CalmError::CodexRefused(
                     "config/read failed: no such workspace (code -32602)".into(),
@@ -3691,6 +3698,20 @@ impl SharedCodexAppServer {
                 .lock()
                 .expect("fake shared codex config-read mutex poisoned") = Some(config);
         }
+    }
+
+    /// The `cwd` of every `config/read` the fixtures fake was asked, in order.
+    #[cfg(feature = "fixtures")]
+    pub fn config_read_cwds_for_test(&self) -> Vec<Option<String>> {
+        self.fake
+            .as_ref()
+            .map(|fake| {
+                fake.config_read_cwds
+                    .lock()
+                    .expect("fake shared codex config-read cwds mutex poisoned")
+                    .clone()
+            })
+            .unwrap_or_default()
     }
 
     /// What the fixtures fake answers `account/read` with from now on.

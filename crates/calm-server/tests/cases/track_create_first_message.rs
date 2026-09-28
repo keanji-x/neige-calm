@@ -1841,9 +1841,12 @@ async fn a_replay_survives_the_attached_directory_being_deleted() {
 }
 
 /// Constructed with a `.git` removal rather than a whole-directory delete so the retry has a real directory
-/// to run in (`PATCH` refuses to repoint an *attached* workspace).
+/// to run in (`PATCH` refuses to repoint an *attached* workspace). The create-path check still does not run
+/// (the retry mints nothing), but a genuine retry re-ensures the track worktree (#1830), and a directory
+/// that is no longer a repository fails that with its own error — never `idempotency_key_exhausted`, which
+/// would make the FE rotate the key and mint a second track.
 #[tokio::test]
-async fn a_retry_after_a_failure_survives_the_attached_directory_ceasing_to_validate() {
+async fn a_retry_after_a_failure_fails_once_the_attached_directory_is_no_repository() {
     let b = boot().await;
     let attached = user_repo(&b.tmp.path().join("my-project"));
     b.state
@@ -1872,7 +1875,7 @@ async fn a_retry_after_a_failure_survives_the_attached_directory_ceasing_to_vali
     let (_, path) = b.workspace_row(&track_id).await;
     assert_eq!(PathBuf::from(&path), attached);
 
-    // The disturbance: the directory stops satisfying the create-path check while remaining usable.
+    // The disturbance: the directory stops being a repository while remaining a directory.
     std::fs::remove_dir_all(attached.join(".git")).unwrap();
 
     let (retry, retry_body) = b
@@ -1882,28 +1885,22 @@ async fn a_retry_after_a_failure_survives_the_attached_directory_ceasing_to_vali
             &attached,
         )
         .await;
-    assert_eq!(
-        retry,
-        StatusCode::CREATED,
-        "the retry mints nothing either, so the create path's disk check must not stand between \
-         it and the workspace the track has now: body={retry_body}"
+    assert!(
+        !retry.is_success(),
+        "the retry's track worktree ensure cannot succeed without the repository: \
+         status={retry} body={retry_body}"
     );
-    assert_eq!(b.track_count().await, 1, "the retry reuses the track");
-    let cwds = b.first_message_payload_cwds("second time lucky").await;
-    assert_eq!(
-        cwds.len(),
-        2,
-        "one payload per attempt — the failed one and the retry: {cwds:?}"
+    assert_ne!(
+        retry_body["code"], "idempotency_key_exhausted",
+        "the key is not poisoned: body={retry_body}"
     );
+    assert_eq!(b.track_count().await, 1, "the retry mints nothing");
     assert_eq!(
-        PathBuf::from(&cwds[1]),
-        attached,
-        "and the retry really executes, in the workspace the track has now"
-    );
-    assert_eq!(
-        b.copies_in_harness("second time lucky", 1).await,
+        b.first_message_payload_cwds("second time lucky")
+            .await
+            .len(),
         1,
-        "the retry delivers the message the failed attempt never did, exactly once"
+        "and submits nothing"
     );
     b.shutdown_harnesses().await;
 }

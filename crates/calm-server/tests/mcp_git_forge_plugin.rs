@@ -2,6 +2,9 @@
 
 mod support;
 
+#[path = "cases/git_forge_track_worktree.rs"]
+mod git_forge_track_worktree;
+
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -53,6 +56,10 @@ struct Fixture {
     card_id: String,
     track_id: String,
     lease_abs: PathBuf,
+    events: EventBus,
+    card_role_cache: CardRoleCache,
+    track_area_cache: calm_server::track_area_cache::TrackAreaCache,
+    area_id: String,
     _runtime: Arc<OperationRuntime>,
     _lease_tmp: TempDir,
     _tmp: TempDir,
@@ -300,8 +307,8 @@ async fn boot_fixture() -> Fixture {
     assert!(operation_runtime_cell.set(runtime.clone()).is_ok());
     let server = McpServer::spawn(
         repo,
-        events,
-        calm_server::state::WriteContext::new(card_role_cache, track_area_cache),
+        events.clone(),
+        calm_server::state::WriteContext::new(card_role_cache.clone(), track_area_cache.clone()),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         build_default_registry(),
@@ -324,6 +331,10 @@ async fn boot_fixture() -> Fixture {
         card_id: caller.card_id,
         track_id: caller.track_id,
         lease_abs: caller.lease_abs,
+        events,
+        card_role_cache,
+        track_area_cache,
+        area_id: area.id.to_string(),
         _runtime: runtime,
         _lease_tmp: caller._lease_tmp,
         _tmp: tmp,
@@ -544,9 +555,20 @@ async fn assert_tools_are_discoverable(fx: &Fixture) {
 }
 
 async fn call_tool(fx: &Fixture, id: i64, name: &str, args: Value) -> Value {
+    call_tool_as(fx, &fx.raw_token, &fx.thread_id, id, name, args).await
+}
+
+async fn call_tool_as(
+    fx: &Fixture,
+    raw_token: &str,
+    thread_id: &str,
+    id: i64,
+    name: &str,
+    args: Value,
+) -> Value {
     let (mut rd, mut wr) = connect(&fx.socket_path).await;
-    handshake(&mut rd, &mut wr, &fx.raw_token).await;
-    send_frame(&mut wr, tools_call_frame(id, name, &fx.thread_id, args)).await;
+    handshake(&mut rd, &mut wr, raw_token).await;
+    send_frame(&mut wr, tools_call_frame(id, name, thread_id, args)).await;
     recv_frame(&mut rd).await
 }
 

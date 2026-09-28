@@ -242,3 +242,58 @@ async fn without_the_flag_create_is_refused_and_a_recovered_harness_refuses() {
     assert!(root.read_fake("spawns").is_none(), "nothing was spawned");
     assert!(stack.outcomes(&card_id).await.is_empty());
 }
+
+/// #1830 T3: on an attached track the Claude Planner's turn runs in the track worktree, and its
+/// Edit/Write rules are confined to it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn claude_planner_turn_runs_in_the_track_worktree() {
+    let root = Root::new("exit");
+    let checkout = root.path().join("checkout");
+    std::fs::create_dir_all(&checkout).expect("checkout");
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &[
+            "-c",
+            "user.name=fixture",
+            "-c",
+            "user.email=fixture@example.test",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ][..],
+    ] {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&checkout)
+            .args(args)
+            .status()
+            .expect("git");
+        assert!(status.success(), "git {args:?}");
+    }
+    let checkout = checkout.canonicalize().expect("canonical checkout");
+    let stack = Stack::boot(&root).await;
+    let (track_id, card_id) = stack
+        .create_claude_track_with(json!({"cwd": checkout, "attach_folder": true}))
+        .await;
+    let worktree = checkout
+        .join(".claude/worktrees")
+        .join(format!("track-{track_id}"));
+    assert!(worktree.is_dir(), "premise: the track worktree exists");
+
+    let (outcome, _) = stack.run_turn(&root, &card_id, "exit", "hello").await;
+    assert_eq!(outcome["status"], "completed", "{outcome}");
+    assert_eq!(
+        root.read_fake("pwd").expect("pwd").trim(),
+        worktree.to_str().expect("utf-8"),
+        "the turn runs in the track worktree"
+    );
+    let argv = root.read_fake("argv").expect("argv");
+    let rule = format!("Edit(/{}/**)", worktree.display());
+    assert!(
+        argv.lines().any(|arg| arg.split(' ').any(|r| r == rule)),
+        "Edit is confined to the worktree ({rule}): {argv}"
+    );
+    stack.shutdown().await;
+}

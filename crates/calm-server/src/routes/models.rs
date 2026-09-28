@@ -338,7 +338,7 @@ async fn resolve_card_workspace(s: &RouteState, card_id: &str) -> Result<Resolve
             CalmError::NotFound(format!("track {} for card {card_id}", card.track_id))
         })?;
     Ok(ResolvedCard {
-        workspace: track.workspace.path,
+        workspace: track.workspace.agent_cwd().to_string(),
         claude_planner,
     })
 }

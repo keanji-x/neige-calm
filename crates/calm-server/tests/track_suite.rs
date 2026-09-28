@@ -42,3 +42,5 @@ mod track_templates_read;
 mod track_templates_site_dir;
 #[path = "cases/track_vcs.rs"]
 mod track_vcs;
+#[path = "cases/track_worktree.rs"]
+mod track_worktree;

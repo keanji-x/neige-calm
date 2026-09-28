@@ -5,7 +5,7 @@
 #   in:  scenario, version (optional; default 2.1.280), result_line (optional),
 #        auth (optional; the `auth status --json` answer, default logged-in),
 #        catalog (optional; the `initialize` answer, default ok)
-#   out: spawns, pid, argv, env, stdin, instructions, orphan, emitted, mcp_reply,
+#   out: spawns, pid, argv, env, pwd, stdin, instructions, orphan, emitted, mcp_reply,
 #        auth-pid, auth-env, auth-calls, init-calls, init-pid, init-argv, init-env, init-cwd,
 #        init-stdin
 # Needs on PATH: bash, jq, setsid, sleep, seq, touch, yes; `flood` (F_SETPIPE_SZ) and `mcp` (a unix
@@ -95,6 +95,7 @@ echo "$$" >> "$D/spawns"
 echo "$$" > "$D/pid"
 printf '%s\n' "$@" > "$D/argv"
 env > "$D/env"
+pwd > "$D/pwd"
 SID=""
 PF=""
 MODEL=""

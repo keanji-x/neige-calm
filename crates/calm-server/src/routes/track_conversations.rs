@@ -185,7 +185,7 @@ pub(crate) async fn create_track_conversation_inner(
         planner_card_id: derived.card_id.clone().into(),
         report_card_id: None,
         sort: None,
-        cwd: track.workspace.path.clone(),
+        cwd: track.workspace.agent_cwd().to_string(),
         // No goal: a seeded `Observation::TrackGoal` would make the assistant open by talking
         // about the track title before the user has said anything.
         goal: None,

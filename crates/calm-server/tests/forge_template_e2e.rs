@@ -2963,6 +2963,22 @@ fn setup_forge_env() -> ForgeTestEnv {
 fn track_cwd_tempdir(prefix: &str) -> std::io::Result<TempDir> {
     let dir = short_tempdir(prefix)?;
     run_git(dir.path(), ["init", "-b", "main"]);
+    // A commit: an attached create makes the track worktree from HEAD (#1830).
+    run_git(
+        dir.path(),
+        [
+            "-c",
+            "user.name=fixture",
+            "-c",
+            "user.email=fixture@example.test",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "--no-verify",
+            "-m",
+            "fixture",
+        ],
+    );
     Ok(dir)
 }
 

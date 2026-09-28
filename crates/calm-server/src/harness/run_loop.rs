@@ -2676,7 +2676,7 @@ async fn installation_cwd(inner: &Arc<Inner>) -> std::result::Result<String, Iss
     // Deterministic card-read-then-track-read window. No-op in production.
     wait_at_planner_harness_cwd_race_hook(inner.worker_session_id.as_str()).await;
     match inner.repo.track_get(inner.track_id.as_str()).await {
-        Ok(Some(track)) => Ok(track.workspace.path),
+        Ok(Some(track)) => Ok(track.workspace.agent_cwd().to_string()),
         // "There is no workspace" and "we could not read the workspace" are different facts, and
         // neither means "read the global layers instead". `Ok(None)` IS reachable: a
         // `track_delete_tx` can commit between the card read and this one.

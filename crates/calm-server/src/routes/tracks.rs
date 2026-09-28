@@ -967,7 +967,19 @@ pub(crate) async fn create_track(
 
     let init = source.init;
 
-    let workspace_root = s.workspace_root.clone();
+    // Omitted `cwd` is the managed-default branch (server picks the directory); an explicit
+    // `cwd` is the attached branch, which gets a track worktree under its repository root
+    // (#1830), resolved here because the create transaction runs no git.
+    let workspace_plan = if cwd_omitted {
+        TrackWorkspacePlan::ManagedUnder(s.workspace_root.clone())
+    } else {
+        TrackWorkspacePlan::AttachedWithTrackWorktree(
+            crate::operation::workspace_lease::git_repo_root_for_track_cwd(
+                "(new)",
+                &normalized_cwd,
+            )?,
+        )
+    };
     let options = CreateTrackOptions {
         planner_provider,
         model,
@@ -976,13 +988,7 @@ pub(crate) async fn create_track(
         body_area_id,
         normalized_cwd,
         init,
-        // Omitted `cwd` is the managed-default branch (server picks the directory); an
-        // explicit `cwd` is the attached branch.
-        workspace_plan: if cwd_omitted {
-            TrackWorkspacePlan::ManagedUnder(workspace_root)
-        } else {
-            TrackWorkspacePlan::AttachedFromCwd
-        },
+        workspace_plan,
         // Conditioned on the plan: `Mint` sets it later inside `create_track_with_first_message`;
         // `Legacy` has nothing to bind.
         idempotency_claim: message_less.as_ref().map(create::MessageLessPlan::claim),
@@ -1631,6 +1637,18 @@ async fn create_track_structure(
         );
         error
     })?;
+    // The attached twin of the managed materialization above, with the same contract.
+    crate::operation::workspace_lease::track_worktree::ensure_track_worktree(&track)
+        .await
+        .map_err(|error| {
+            tracing::error!(
+                track_id = %track.id,
+                worktree = ?track.workspace.worktree,
+                error = %error,
+                "track create: the track worktree could not be made"
+            );
+            error
+        })?;
 
     Ok((track, created, planner_card_id, report_card_id))
 }
@@ -1651,7 +1669,7 @@ async fn start_planner_harness(
         planner_card_id: CardId::from(planner_card_id.clone()),
         report_card_id: Some(report_card_id),
         sort: None,
-        cwd: track.workspace.path.clone(),
+        cwd: track.workspace.agent_cwd().to_string(),
         goal: None,
         reset_harness_items: false,
         force_new_thread: false,

@@ -492,7 +492,7 @@ pub(super) async fn create_track_with_first_message(
     });
     let (track, _created, planner_card_id, report_card_id) =
         create_track_structure(s.clone(), actor.clone(), p, options).await?;
-    let cwd = track.workspace.path.clone();
+    let cwd = track.workspace.agent_cwd().to_string();
     start_planner_harness_with_first_message(
         &s,
         &actor,
@@ -510,8 +510,10 @@ pub(super) async fn create_track_with_first_message(
 }
 
 /// Adopt the track a previous attempt under this `Idempotency-Key` minted, and repair
-/// its workspace — the half both resuming arms share.
-async fn adopt_prior_track(s: &RouteState, track_id: &str) -> Result<Track> {
+/// its workspace — the half both resuming arms share. `ensure_worktree` re-runs the track
+/// worktree ensure for an arm that submits the world as it is now; a replay passes `false`,
+/// because its recorded payload proves the mint's ensure succeeded.
+async fn adopt_prior_track(s: &RouteState, track_id: &str, ensure_worktree: bool) -> Result<Track> {
     // Direct replay materialization bypasses OperationRuntime, so take the same per-track
     // fence as lazy harness recovery; released before the operation is submitted to keep
     // the operation-drive → track-delete lock order.
@@ -550,6 +552,12 @@ async fn adopt_prior_track(s: &RouteState, track_id: &str) -> Result<Track> {
             track.id
         ))
     })?;
+    // Inside the same fence as the materialization above. Its own error, never the
+    // `idempotency_key_exhausted` mapping: that makes the FE rotate the key and mint a second
+    // track, while a diverged checkout or a missing commit is the user's to fix.
+    if ensure_worktree {
+        crate::operation::workspace_lease::track_worktree::ensure_track_worktree(&track).await?;
+    }
     drop(track_delete_guard);
     Ok(track)
 }
@@ -562,15 +570,20 @@ pub(super) async fn resume_prior_attempt(
     resume: ResumeFirstMessage,
 ) -> Result<Response> {
     let ResumeFirstMessage { plan, prior } = resume;
-    let track = adopt_prior_track(&s, &prior.track_id).await?;
+    let track = adopt_prior_track(
+        &s,
+        &prior.track_id,
+        matches!(prior.arm, PriorArm::GenuineRetry),
+    )
+    .await?;
     // The one place the two arms diverge: a replay owes the caller the selected
     // operation's payload byte for byte, a genuine retry owes it the world as it is now.
     let cwd = match prior.arm {
         PriorArm::Replay => prior
             .cwd
             .clone()
-            .unwrap_or_else(|| track.workspace.path.clone()),
-        PriorArm::GenuineRetry => track.workspace.path.clone(),
+            .unwrap_or_else(|| track.workspace.agent_cwd().to_string()),
+        PriorArm::GenuineRetry => track.workspace.agent_cwd().to_string(),
     };
     start_planner_harness_with_first_message(
         &s,
@@ -603,7 +616,7 @@ pub(super) async fn resume_message_less(
         report_card_id,
         _same_key_claim,
     } = resume;
-    let track = adopt_prior_track(&s, &track_id).await?;
+    let track = adopt_prior_track(&s, &track_id, true).await?;
     super::start_planner_harness(&s, &actor, &track, planner_card_id, report_card_id).await?;
     Ok((StatusCode::CREATED, Json(track)).into_response())
 }

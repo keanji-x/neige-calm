@@ -23,6 +23,7 @@ pub(crate) mod base;
 pub(crate) mod carry;
 pub(crate) mod facts;
 pub(crate) mod reclaim;
+pub(crate) mod track_worktree;
 pub(crate) mod upstream;
 pub(crate) mod upstream_fetch;
 #[cfg(test)]
@@ -568,6 +569,8 @@ pub(crate) struct WorkspaceTrackSweep {
     track_id: String,
     area_id: String,
     cwd: String,
+    /// `tracks.workspace_worktree_path` (#1830): removed with the track, whatever its leases.
+    track_worktree: Option<String>,
     leases: Vec<WorkspaceLease>,
 }
 
@@ -583,10 +586,12 @@ async fn workspace_track_sweep_for_track_tx(
         );
         return None;
     }
-    let row = match sqlx::query("SELECT workspace_path, area_id FROM tracks WHERE id = ?1")
-        .bind(track_id)
-        .fetch_optional(&mut **tx)
-        .await
+    let row = match sqlx::query(
+        "SELECT workspace_path, area_id, workspace_worktree_path FROM tracks WHERE id = ?1",
+    )
+    .bind(track_id)
+    .fetch_optional(&mut **tx)
+    .await
     {
         Ok(Some(row)) => row,
         Ok(None) => return None,
@@ -621,6 +626,17 @@ async fn workspace_track_sweep_for_track_tx(
             return None;
         }
     };
+    let track_worktree: Option<String> = match row.try_get("workspace_worktree_path") {
+        Ok(track_worktree) => track_worktree,
+        Err(error) => {
+            tracing::warn!(
+                track_id,
+                error = %error,
+                "workspace track teardown could not read workspace_worktree_path for the sweep"
+            );
+            None
+        }
+    };
     let sql = format!(
         "SELECT {WORKSPACE_LEASE_COLUMNS} FROM workspace_leases \
          WHERE track_id = ?1 ORDER BY created_at_ms ASC, lease_id ASC"
@@ -653,6 +669,7 @@ async fn workspace_track_sweep_for_track_tx(
         track_id: track_id.to_string(),
         area_id,
         cwd,
+        track_worktree,
         leases,
     })
 }
@@ -668,6 +685,11 @@ pub(crate) async fn sweep_workspace_worktrees_for_track_repo(
     events: &EventBus,
     sweep: WorkspaceTrackSweep,
 ) -> Result<usize> {
+    // Before every early return below: the track worktree is not a lease worktree, and its
+    // removal depends on no lease row.
+    if let Some(track_worktree) = &sweep.track_worktree {
+        track_worktree::remove_track_worktree(&sweep.track_id, track_worktree);
+    }
     let repo_roots = repo_roots_for_track_sweep(&sweep);
     if repo_roots.is_empty() {
         return Ok(0);

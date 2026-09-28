@@ -1412,7 +1412,7 @@ async fn reset_planner_harness_card(
         planner_card_id: card.id.clone(),
         report_card_id: None,
         sort: None,
-        cwd: track.workspace.path.clone(),
+        cwd: track.workspace.agent_cwd().to_string(),
         goal: None,
         reset_harness_items: true,
         force_new_thread: true,

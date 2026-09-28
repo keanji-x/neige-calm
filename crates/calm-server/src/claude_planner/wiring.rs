@@ -66,7 +66,7 @@ impl ClaudePlannerWiring {
             worker_session_id: row.worker_session_id.to_string(),
             card_id: row.card_id.to_string(),
             track_id: row.track_id.to_string(),
-            cwd: track.workspace.path.clone().into(),
+            cwd: track.workspace.agent_cwd().into(),
             instructions,
             calm_tools: self.host.calm_tools.clone(),
             proxy,

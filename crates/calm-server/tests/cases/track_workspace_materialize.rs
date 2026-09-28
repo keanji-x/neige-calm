@@ -541,6 +541,9 @@ async fn attaching_a_repo_that_already_has_a_neige_branch_is_refused() {
 }
 
 /// Admission is a point-in-time answer; nothing stops the user creating the branch after attaching.
+/// Constructed on a pre-#1830 attached row (no track worktree, as `Repo::track_create` writes it): a
+/// track created since then holds `refs/heads/neige/track-<id>` for its life, and git refuses
+/// `refs/heads/neige` beside it, so the collision can only reach a track without one.
 #[tokio::test]
 async fn a_neige_branch_created_after_attach_still_blocks_the_first_worker() {
     let b = boot().await;
@@ -548,27 +551,23 @@ async fn a_neige_branch_created_after_attach_still_blocks_the_first_worker() {
     let user_repo = tmp.path().join("users-own-repo");
     init_user_repo(&user_repo);
 
-    let (status, body) = post(
-        b.app.clone(),
-        "/api/tracks",
-        json!({
-            "planner_provider": "codex",
-            "area_id": b.area_id,
-            "title": "attached-clean",
-            "cwd": user_repo.to_string_lossy(),
-            "attach_folder": true,
-            "theme": theme(),
-        }),
-    )
-    .await;
-    assert_eq!(
-        status,
-        StatusCode::CREATED,
-        "a repository with no `neige` branch must still be attachable — if \
-         this is a 400 the admission check rejects the ordinary case; body={body}"
-    );
-    let track: Value = serde_json::from_str(&body).unwrap();
-    let track_id = track["id"].as_str().unwrap().to_string();
+    let track = b
+        .repo
+        .track_create(calm_server::model::NewTrack {
+            template_input: None,
+            area_id: b.area_id.clone().into(),
+            title: "attached-clean".into(),
+            sort: None,
+            cwd: user_repo.to_string_lossy().into_owned(),
+            template_id: None,
+            plugin_scope: None,
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .expect("a pre-#1830 attached track");
+    assert_eq!(track.workspace.worktree, None, "premise: no track worktree");
+    let track_id = track.id.to_string();
 
     // The construction, after admission has already answered.
     run_git(&user_repo, &["branch", "neige"]);

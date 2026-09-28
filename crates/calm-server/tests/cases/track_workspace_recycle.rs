@@ -336,6 +336,34 @@ fn diff(
     out
 }
 
+/// #1830: the track worktree and its branch are the kernel's own, made by the create and removed by
+/// the delete (the change this leaves out of `changes`), as are the empty parents git drops with them
+/// and the `packed-refs` git writes on `branch -D`. Anything else is a change to the user's work.
+fn outside_track_worktree(changes: Vec<String>, track_id: &str) -> Vec<String> {
+    let owned = [
+        format!(".claude/worktrees/track-{track_id}"),
+        format!(".git/worktrees/track-{track_id}"),
+        format!(".git/refs/heads/neige/track-{track_id}"),
+        format!(".git/logs/refs/heads/neige/track-{track_id}"),
+    ];
+    let emptied = [
+        ".git/worktrees",
+        ".git/refs/heads/neige",
+        ".git/logs/refs/heads/neige",
+    ];
+    changes
+        .into_iter()
+        .filter(|change| match change.split_once(": ") {
+            Some(("removed", path)) => {
+                !(emptied.contains(&path)
+                    || owned.iter().any(|root| Path::new(path).starts_with(root)))
+            }
+            Some(("added", ".git/packed-refs")) => false,
+            _ => true,
+        })
+        .collect()
+}
+
 fn head(path: &Path) -> Option<String> {
     let output = Command::new("git")
         .arg("-C")
@@ -417,7 +445,7 @@ async fn deleting_an_attached_track_leaves_the_users_repository_byte_for_byte() 
     let (status, body) = delete_track(&b, &track_id).await;
     assert_eq!(status, StatusCode::NO_CONTENT, "body={body}");
 
-    let changes = diff(&before, &fingerprint(&repo));
+    let changes = outside_track_worktree(diff(&before, &fingerprint(&repo)), &track_id);
     assert!(
         changes.is_empty(),
         "the user's repository changed: {changes:?}"
@@ -1506,10 +1534,17 @@ async fn deleting_a_area_recycles_its_managed_workspaces_and_spares_attached_one
         trash_entry_for(&b.workspace_root, &attached_id).is_none(),
         "the attached track's directory was recycled"
     );
-    let changes = diff(&repo_before, &fingerprint(&repo));
+    let changes = outside_track_worktree(diff(&repo_before, &fingerprint(&repo)), &attached_id);
     assert!(
         changes.is_empty(),
         "the user's repository changed: {changes:?}"
+    );
+    assert!(
+        !repo
+            .join(".claude/worktrees")
+            .join(format!("track-{attached_id}"))
+            .exists(),
+        "area delete removes the attached track's worktree"
     );
     assert!(
         !b.workspace_root.join(&area_id).exists(),

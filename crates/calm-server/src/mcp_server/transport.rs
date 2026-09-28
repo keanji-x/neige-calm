@@ -971,7 +971,8 @@ async fn resolve_forge_cwd(
             "forge action track belongs to a different area",
         ));
     }
-    let track_cwd = PathBuf::from(&track.workspace.path);
+    // The Planner's own cwd (#1830): with a track worktree, its commit lands on the track branch.
+    let track_cwd = PathBuf::from(track.workspace.agent_cwd());
     if !track_cwd.is_absolute() {
         return Err(RpcError::invalid_params(
             "forge action requires an absolute track cwd",
