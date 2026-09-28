@@ -13,10 +13,7 @@ use crate::mcp_server::registry::{
 use crate::mcp_server::tools::lifecycle_args::{
     lifecycle_schema, message_schema, parse_write_args,
 };
-use crate::mcp_server::tools::plan::TOOL_PLAN_CANCEL;
-use crate::mcp_server::tools::track_report::{TOOL_REPORT_EDIT, TOOL_REPORT_WRITE};
-use crate::model::{Card, CardRole, Track, TrackLifecycle};
-use crate::track_lifecycle::planner_allowed_targets;
+use crate::model::{Card, CardRole, Track};
 use crate::track_report::TrackReportPayload;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -67,7 +64,7 @@ async fn track_state(
     _args: Value,
 ) -> Result<Value, RpcError> {
     require_role_any(&identity, &[CardRole::Planner, CardRole::Worker])?;
-    let (_, track) = resolve_track_for_identity(&ctx, &identity).await?;
+    let (caller, track) = resolve_track_for_identity(&ctx, &identity).await?;
     let mut cards = ctx
         .repo
         .cards_by_track(track.id.as_str())
@@ -97,61 +94,30 @@ async fn track_state(
         })
         .collect();
 
-    let tasks_declared = ctx
+    // `tasks_by_track` reads the `current_tasks` view: one row per key, its current execution only,
+    // the same notion of current as `calm.plan.list`.
+    let tasks: Vec<Value> = ctx
         .repo
         .tasks_by_track(track.id.as_str())
         .await
         .map_err(|e| RpcError::internal(format!("track_state: tasks_by_track: {e}")))?
-        .len();
-    let next = planner_next_steps(track.lifecycle, tasks_declared);
+        .into_iter()
+        .map(|task| {
+            json!({
+                "key": task.key,
+                "status": task.status,
+                "worker_card_id": task.worker_card_id,
+            })
+        })
+        .collect();
 
     Ok(json!({
         "track": track,
+        "caller_card_id": caller.id,
         "cards": cards_json,
         "report_startup_read_required": report_startup_read_required(&cards),
-        "tasks_declared": tasks_declared,
-        "next": next,
+        "tasks": tasks,
     }))
-}
-
-/// `calm.task.verdict` and `calm.plan.cancel` need a declared task to act on, so a track with no tasks lists only the report tools.
-fn planner_next_steps(current: TrackLifecycle, tasks_declared: usize) -> Vec<Value> {
-    let mut via = vec![TOOL_REPORT_WRITE, TOOL_REPORT_EDIT];
-    if tasks_declared > 0 {
-        via.push(TOOL_TASK_VERDICT);
-        via.push(TOOL_PLAN_CANCEL);
-    }
-    planner_allowed_targets(current)
-        .into_iter()
-        .map(|target| {
-            json!({
-                "lifecycle": target,
-                "via": via,
-                "note": planner_next_note(current, target),
-            })
-        })
-        .collect()
-}
-
-fn planner_next_note(current: TrackLifecycle, target: TrackLifecycle) -> &'static str {
-    use TrackLifecycle as L;
-    match (current, target) {
-        (L::Draft, L::Planning) => {
-            "start planning (the kernel also does this on your first report write)"
-        }
-        (L::Planning, L::Reviewing) => {
-            "deliverable ready for judgement (also the self-executed path when nothing was dispatched)"
-        }
-        (_, L::Reviewing) => "deliverable ready for judgement",
-        (_, L::Dispatching) => "tasks declared; the kernel advances this itself when it claims one",
-        (L::Blocked, L::Working) | (L::Reviewing, L::Working) => "resume: more work is needed",
-        (_, L::Working) => "work underway; the kernel advances this itself when it claims a task",
-        (_, L::Blocked) => "waiting on the user",
-        (_, L::Done) => "conclude the track",
-        (_, L::Failed) => "give up: the track cannot be completed",
-        (_, L::Canceled) => "cancel (user-only)",
-        (_, L::Draft) | (_, L::Planning) => "return to planning",
-    }
 }
 
 /// False only for an unwritten report (the header placeholder, or the frozen pre-header body byte for byte) or when the track has no report card.

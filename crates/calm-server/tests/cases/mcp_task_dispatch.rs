@@ -82,28 +82,18 @@ pub(super) async fn policy(b: &Boot, policy: &str, budget: i64) {
 }
 
 #[tokio::test]
-async fn track_state_next_lists_verdict_and_cancel_once_a_task_is_declared() {
+async fn track_state_lists_a_dispatched_task_as_pending_without_a_worker() {
     use calm_server::mcp_server::tools::track_state::TOOL_TRACK_STATE;
     let b = boot().await;
-    dispatch(&b, args()).await.unwrap();
+    let receipt = dispatch(&b, args()).await.unwrap()["receipt"].clone();
     let state = call_tool(&b, TOOL_TRACK_STATE, planner_identity(&b), json!({}))
         .await
         .unwrap();
-    assert_eq!(state["tasks_declared"], json!(1), "{state:?}");
-    let next = state["next"].as_array().unwrap();
-    assert!(!next.is_empty(), "{state:?}");
-    for entry in next {
-        assert_eq!(
-            entry["via"],
-            json!([
-                "calm.report.write",
-                "calm.report.edit",
-                "calm.task.verdict",
-                "calm.plan.cancel"
-            ]),
-            "{entry:?}"
-        );
-    }
+    assert_eq!(
+        state["tasks"],
+        json!([{ "key": receipt["task_key"], "status": "pending", "worker_card_id": null }]),
+        "{state:?}"
+    );
 }
 
 #[tokio::test]

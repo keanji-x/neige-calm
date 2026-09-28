@@ -7,7 +7,7 @@ use sqlx::{Sqlite, Transaction};
 
 // Source definitions live in calm-types; do NOT re-declare them here.
 pub use calm_types::track_lifecycle::{
-    ActorKind, TransitionError, actor_is_planner_author, actor_kind, planner_allowed_targets,
+    ActorKind, TransitionError, actor_is_planner_author, actor_kind, allowed_targets,
     user_can_resume, validate_transition,
 };
 
@@ -38,7 +38,7 @@ pub async fn apply_requested_transition_in_tx(
 ) -> Result<Option<Vec<Event>>, CalmError> {
     let current = track_get_tx(tx, track_id).await?;
     validate_transition(current.lifecycle, to, actor)
-        .map_err(|e| CalmError::Forbidden(format!("track lifecycle: {e}")))?;
+        .map_err(|e| CalmError::Forbidden(e.to_string()))?;
     if current.lifecycle == to {
         return Ok(None);
     }
@@ -78,12 +78,14 @@ pub async fn validate_transition_snapshot_in_tx(
     let current = track_get_tx(tx, track_id).await?;
     if current.lifecycle != expected_from {
         return Err(CalmError::Conflict(format!(
-            "track {} lifecycle changed from {expected_from:?} to {:?}; retry",
-            track_id, current.lifecycle
+            "track {} lifecycle changed from {} to {}; retry",
+            track_id,
+            expected_from.as_db_str(),
+            current.lifecycle.as_db_str()
         )));
     }
     validate_transition(current.lifecycle, to, actor)
-        .map_err(|e| CalmError::Forbidden(format!("track lifecycle: {e}")))
+        .map_err(|e| CalmError::Forbidden(e.to_string()))
 }
 
 /// Auto-transition a track when it is exactly in `from`: only the first serialized tx sees the
@@ -101,7 +103,7 @@ pub async fn auto_transition_if_current_in_tx(
         return Ok(None);
     }
     validate_transition(current.lifecycle, to, actor)
-        .map_err(|e| CalmError::Forbidden(format!("track lifecycle: {e}")))?;
+        .map_err(|e| CalmError::Forbidden(e.to_string()))?;
     if current.lifecycle == to {
         return Ok(None);
     }

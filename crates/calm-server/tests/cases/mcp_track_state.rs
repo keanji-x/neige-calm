@@ -18,6 +18,8 @@ use calm_server::model::{
 };
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::session_projection_repo::AgentProvider;
+use calm_types::event::TaskContextRef;
+use calm_types::task_recovery::{TASK_IN_TRACK_ROUTE, TaskAttemptOrigin, TaskRecoveryConstraint};
 use calm_types::worker::{
     LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId,
     WorkerSessionState,
@@ -307,73 +309,82 @@ async fn get_track_state_returns_track_and_cards_for_planner() {
     );
 }
 
-#[tokio::test]
-async fn track_state_next_from_planning_without_tasks_offers_reviewing_via_report_tools() {
-    let boot = boot().await;
-    set_track_lifecycle(&boot, TrackLifecycle::Planning).await;
-    let out = call_tool(&boot, TOOL_TRACK_STATE, planner_identity(&boot), json!({}))
-        .await
-        .expect("planner can read track state");
+async fn insert_task(boot: &Boot, id: &str, key: &str, status: &str, worker: Option<&str>) {
+    sqlx::query(concat!(
+        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,",
+        "created_at_ms,updated_at_ms) VALUES(?1,?2,?3,'codex','goal','{}',?4,?5,1,1)"
+    ))
+    .bind(id)
+    .bind(boot.track_id.as_str())
+    .bind(key)
+    .bind(status)
+    .bind(worker)
+    .execute(&boot.repo.sqlite_pool().unwrap())
+    .await
+    .expect("insert task");
+}
 
-    assert_eq!(
-        out.get("tasks_declared").and_then(Value::as_u64),
-        Some(0),
-        "boot fixture declares no plan tasks: {out:?}"
-    );
-    let next = out
-        .get("next")
-        .and_then(Value::as_array)
-        .expect("response carries `next`");
-    let mut targets: Vec<&str> = next
-        .iter()
-        .map(|n| n["lifecycle"].as_str().expect("lifecycle is a string"))
-        .collect();
-    targets.sort_unstable();
-    assert_eq!(targets, vec!["dispatching", "failed", "reviewing"]);
-
-    let reviewing = next
-        .iter()
-        .find(|n| n["lifecycle"] == "reviewing")
-        .expect("planning offers reviewing");
-    assert_eq!(
-        reviewing["via"],
-        json!(["calm.report.write", "calm.report.edit"]),
-        "without a declared task neither verdict nor cancel can carry the write"
-    );
-    assert!(
-        reviewing["note"]
-            .as_str()
-            .is_some_and(|n| n.contains("self-executed")),
-        "reviewing note names the self-executed path: {reviewing:?}"
-    );
-    assert!(
-        !next.iter().any(|n| n["lifecycle"] == "done"),
-        "done is not legal straight from planning: {next:?}"
-    );
+fn recovery_origin(boot: &Boot, previous_attempt_id: &str) -> TaskAttemptOrigin {
+    TaskAttemptOrigin::Recovery {
+        previous_attempt_id: previous_attempt_id.into(),
+        idempotency_key: "recover-fix-login".into(),
+        request_fingerprint: "fixture".into(),
+        reason: "fixture recovery".into(),
+        actor: ActorId::User,
+        constraint: TaskRecoveryConstraint::V1 {
+            refs: vec![TaskContextRef {
+                track_id: boot.track_id.clone(),
+                block_id: "blk-fix-login".into(),
+                rev: 1,
+                hash: "fixture".into(),
+                is_root: true,
+            }],
+            spawn: TASK_IN_TRACK_ROUTE.into(),
+            declared_by: "user".into(),
+        },
+    }
 }
 
 #[tokio::test]
-async fn track_state_next_from_reviewing_offers_done_and_from_done_is_empty() {
+async fn track_state_names_the_caller_and_lists_only_current_task_executions() {
     let boot = boot().await;
-    set_track_lifecycle(&boot, TrackLifecycle::Reviewing).await;
-    let out = call_tool(&boot, TOOL_TRACK_STATE, planner_identity(&boot), json!({}))
-        .await
-        .expect("planner can read track state");
-    let next = out["next"].as_array().expect("`next` is an array");
-    let mut targets: Vec<&str> = next
-        .iter()
-        .map(|n| n["lifecycle"].as_str().unwrap())
-        .collect();
-    targets.sort_unstable();
-    assert_eq!(targets, vec!["done", "failed", "working"]);
-    let done = next.iter().find(|n| n["lifecycle"] == "done").unwrap();
-    assert_eq!(done["note"], json!("conclude the track"));
+    let worker = boot.worker_card_id.as_str();
+    // `fix-login` failed once and was recovered: generation 2 supersedes generation 1.
+    insert_task(&boot, "fix-login-1", "fix-login", "failed", Some(worker)).await;
+    sqlx::query(concat!(
+        "INSERT INTO task_attempt_allocations(attempt_id,track_id,key,generation,origin_json,",
+        "created_at_ms) VALUES('fix-login-2',?1,'fix-login',2,?2,2)"
+    ))
+    .bind(boot.track_id.as_str())
+    .bind(serde_json::to_string(&recovery_origin(&boot, "fix-login-1")).unwrap())
+    .execute(&boot.repo.sqlite_pool().unwrap())
+    .await
+    .expect("allocate recovery execution");
+    insert_task(&boot, "fix-login-2", "fix-login", "running", Some(worker)).await;
+    insert_task(&boot, "docs-1", "docs", "pending", None).await;
 
-    set_track_lifecycle(&boot, TrackLifecycle::Done).await;
     let out = call_tool(&boot, TOOL_TRACK_STATE, planner_identity(&boot), json!({}))
         .await
         .expect("planner can read track state");
-    assert_eq!(out["next"], json!([]), "terminal state has no planner edge");
+    assert_eq!(out["caller_card_id"], json!(boot.planner_card_id.as_str()));
+    let mut tasks = out["tasks"].as_array().expect("tasks is an array").clone();
+    tasks.sort_by_key(|task| task["key"].as_str().unwrap().to_string());
+    assert_eq!(
+        tasks,
+        vec![
+            json!({"key": "docs", "status": "pending", "worker_card_id": null}),
+            json!({"key": "fix-login", "status": "running", "worker_card_id": worker}),
+        ],
+        "one entry per key, its current execution only: {out}"
+    );
+    for gone in ["next", "tasks_declared"] {
+        assert!(out.get(gone).is_none(), "`{gone}` left the snapshot: {out}");
+    }
+
+    let out = call_tool(&boot, TOOL_TRACK_STATE, worker_identity(&boot), json!({}))
+        .await
+        .expect("worker can read track state");
+    assert_eq!(out["caller_card_id"], json!(worker));
 }
 
 #[tokio::test]
@@ -784,6 +795,13 @@ async fn task_verdict_lifecycle_illegal_rolls_back_verdict_and_events() {
     .await
     .expect_err("planning -> done is illegal");
     assert_eq!(err.code, -32403);
+    assert!(
+        err.message.ends_with(
+            "track lifecycle: planning → done is not allowed; \
+             from planning the planner may write: dispatching, reviewing, failed"
+        ),
+        "{err:?}"
+    );
 
     let track = boot
         .repo

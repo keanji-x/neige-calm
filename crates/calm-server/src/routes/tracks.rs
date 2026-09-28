@@ -2578,7 +2578,7 @@ pub(crate) async fn update_track(
     let mut p = p;
     let lifecycle_change = if let Some(to) = p.lifecycle {
         validate_transition(existing.lifecycle, to, &actor_id)
-            .map_err(|e| CalmError::Forbidden(format!("track lifecycle: {e}")))?;
+            .map_err(|e| CalmError::Forbidden(e.to_string()))?;
         if existing.lifecycle == to {
             // Idempotent no-op for lifecycle; drop it from the patch
             // so the row write below is a true no-op when no other

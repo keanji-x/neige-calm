@@ -306,7 +306,7 @@ async fn dev_force_track_lifecycle(
             StatusCode::FORBIDDEN,
             axum::Json(serde_json::json!({
                 "ok": false,
-                "error": format!("validate_transition: {e}"),
+                "error": e.to_string(),
                 "from": from,
                 "to": to,
             })),

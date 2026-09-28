@@ -129,6 +129,56 @@ async fn cli_output_equals_direct_tool_call() {
     );
 }
 
+#[tokio::test]
+async fn cli_state_text_is_one_fact_per_line() {
+    let boot = boot_with_role(CardRole::Planner).await;
+    sqlx::query(concat!(
+        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,",
+        "created_at_ms,updated_at_ms) VALUES('fix-login-1',?1,'fix-login','codex','g','{}','running',?2,1,1)"
+    ))
+    .bind(boot.track_id.as_str())
+    .bind(&boot.other_card_id)
+    .execute(&boot.repo.sqlite_pool().unwrap())
+    .await
+    .unwrap();
+
+    let (text, stderr, exit) = cli(&boot, &["state"]).await;
+    assert_eq!((exit, stderr.as_str()), (0, ""), "{text}");
+    let fact = |label: &str| -> Vec<&str> {
+        text.lines()
+            .filter(|line| line.split_whitespace().next() == Some(label))
+            .collect()
+    };
+    assert_eq!(
+        fact("track"),
+        vec![format!("track      {}", boot.track_id.as_str())]
+    );
+    assert_eq!(fact("title"), vec!["title      mcp-test"]);
+    assert_eq!(
+        text.lines().filter(|l| l.contains("lifecycle")).count(),
+        1,
+        "{text}"
+    );
+    assert_eq!(fact("lifecycle"), vec!["lifecycle  draft"]);
+    assert_eq!(
+        fact("you"),
+        vec![format!("you        {} planner", boot.card_id)]
+    );
+    assert_eq!(fact("report"), vec!["report     none (no report card)"]);
+    assert_eq!(fact("tasks"), vec!["tasks      1: 1 running"]);
+    assert_eq!(fact("cards").len(), 1, "{text}");
+    let worker: Vec<&str> = text
+        .lines()
+        .filter(|l| l.contains(&boot.other_card_id))
+        .collect();
+    assert_eq!(worker.len(), 1, "{text}");
+    assert!(
+        worker[0].contains(" worker ") && worker[0].ends_with("  task fix-login"),
+        "{text}"
+    );
+    assert!(!text.contains('{'), "text, not JSON: {text}");
+}
+
 /// `tool` refused `argv` exactly as it refuses the direct call on the same token, in both error formats.
 async fn assert_same_refusal(boot: &CardBoot, argv: &[&str], tool: &str, args: Value) {
     let resp = direct(boot, tool, args).await;

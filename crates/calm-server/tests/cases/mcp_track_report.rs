@@ -865,6 +865,22 @@ async fn write_lifecycle_legal_emits_track_updated_and_report_events() {
     assert_eq!(track.lifecycle, TrackLifecycle::Dispatching);
 }
 
+/// The refusal names the edge and the planner's legal targets in wire names, with one prefix.
+fn assert_planning_to_done_refusal(message: &str) {
+    assert!(
+        message.ends_with(
+            "forbidden: track lifecycle: planning → done is not allowed; \
+             from planning the planner may write: dispatching, reviewing, failed"
+        ),
+        "{message}"
+    );
+    assert!(
+        !message.contains("Planning"),
+        "Debug name leaked: {message}"
+    );
+    assert_eq!(message.matches("track lifecycle:").count(), 1, "{message}");
+}
+
 #[tokio::test]
 async fn write_lifecycle_illegal_rolls_back_report_and_events() {
     let boot = boot().await;
@@ -896,6 +912,7 @@ async fn write_lifecycle_illegal_rolls_back_report_and_events() {
     .await
     .expect_err("planning -> done is illegal");
     assert_eq!(err.code, -32403);
+    assert_planning_to_done_refusal(&err.message);
 
     let after_track = boot
         .repo
@@ -1493,6 +1510,7 @@ async fn edit_lifecycle_illegal_rolls_back_report_and_events() {
     .await
     .expect_err("planning -> done is illegal");
     assert_eq!(err.code, -32403);
+    assert_planning_to_done_refusal(&err.message);
 
     let after_track = boot
         .repo
@@ -1565,13 +1583,10 @@ async fn edit_lifecycle_planning_to_reviewing_then_done_concludes_self_executed_
     let state = call_tool(&boot, TOOL_TRACK_STATE, planner_identity(&boot), json!({}))
         .await
         .expect("state read");
-    let next = state["next"].as_array().expect("`next` present");
+    assert_eq!(state["track"]["lifecycle"], json!("reviewing"), "{state}");
     assert!(
-        next.iter().any(|n| n["lifecycle"] == "done"
-            && n["via"]
-                .as_array()
-                .is_some_and(|v| v.contains(&json!("calm.report.edit")))),
-        "after the first hop `next` offers done via report.edit: {next:?}"
+        state.get("next").is_none(),
+        "legal targets live in the refusal: {state}"
     );
 
     call_tool(
