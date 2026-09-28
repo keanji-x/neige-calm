@@ -59,7 +59,9 @@ Verified at c7c7f82ae by reading the code, or by the command shown.
   path (`<track>/<card>`) and no lease sweep reads it (F15). `refs/heads/neige/track-<id>` cannot
   collide with `refs/heads/neige/<id>/<card>` (a 32-hex id is never `track-…`), so S2 can put
   workers on this branch while old slice branches still exist. Already covered by the
-  `.claude/worktrees/` exclude (`workspace_lease/mod.rs:1454`).
+  `.claude/worktrees/` exclude (`workspace_lease/mod.rs:1454`). The path is derived once,
+  `track_worktree_path_for` in `calm-truth/src/db/sqlite/track.rs`, because the create
+  transaction (which mints the id) needs it; the server reuses it.
 - **D4 Which tracks:** every track the create route mints on the attached branch
   (`cwd` given). This covers any template and investigation tracks. Not managed, child,
   launchpad or area-chat tracks, and not a managed→attached re-point. *Why:* one rule. The cost
@@ -69,15 +71,18 @@ Verified at c7c7f82ae by reading the code, or by the command shown.
 - **D5 When:** (a) In the create tx, the new plan variant
   `TrackWorkspacePlan::AttachedWithTrackWorktree(repo_root)` writes the path through the existing
   single writer (`repo_root` from `git_repo_root_for_track_cwd`, run before the tx). (b) After
-  commit, where managed workspaces materialize (F5), `ensure_track_worktree` does it all:
+  commit, where managed workspaces materialize (F5, `create_track_structure`, shared by the
+  message-less and first-message mints), `ensure_track_worktree` does it all:
   `refresh_upstream(repo_root)` (bounded, fail-soft), then in `spawn_blocking` a registered
   directory is Ok, an existing branch is added without `-b`, else `choose_lease_start` picks the
   base and `git worktree add -b <branch> <path> <base>` runs. `Diverged` (`diverged_refusal`) or
   an unborn HEAD fails the create non-2xx and leaves the row, exactly like a managed
   materialization failure (F5). Resume arms (F6): `PriorArm::Replay` skips the ensure (its
   recorded payload proves the mint's ensure succeeded); GenuineRetry and message-less resume run
-  it in `resume_prior_attempt` / `resume_message_less` and surface its own error, never the
-  `idempotency_key_exhausted` mapping, which would make the FE mint a second track.
+  it through `adopt_prior_track(.., ensure_worktree: bool)` (Replay passes `false`), after the
+  managed re-materialization and while the track delete guard is still held, as that
+  materialization is. It surfaces its own error, never the `idempotency_key_exhausted`
+  mapping, which would make the FE mint a second track.
   *Why:* one function, one place, the contract F5 already has.
 - **D6** A dirty user checkout is irrelevant: `worktree add` checks out a commit, not the
   user's working tree.
@@ -133,13 +138,15 @@ readers (`planner_attachments/mod.rs:53-60`, `workspace_recycle.rs:19-24`), repl
 - `calm-truth/src/db/sqlite/track_workspace.rs`: the whole-value writer and
   `track_workspace_read_tx` carry the fourth column.
 - `calm-truth/src/db/sqlite/track.rs`: the variant `AttachedWithTrackWorktree(PathBuf)` derives
-  the path from the minted id. `AttachedFromCwd` (fixtures, `Repo::track_create`) stays
-  worktree-less.
-- `calm-server/src/operation/workspace_lease/track_worktree.rs` (new, about 120 lines):
-  `track_worktree_path_for`, `track_branch_for` and `ensure_track_worktree` (async fetch, then
-  the git work in `spawn_blocking`). It reuses `git_worktree_registration`,
-  `git_ref_exists`, `ensure_workspace_worktree_root_excluded` and `isolated_git_command`, but
-  not `provision_workspace_worktree` (F9).
+  the path from the minted id with `track_worktree_path_for` (D3). `AttachedFromCwd` (fixtures,
+  `Repo::track_create`) stays worktree-less.
+- `calm-server/src/operation/workspace_lease/track_worktree.rs` (new, about 160 lines):
+  `track_branch_for`, `track_worktree_target` (the stored path back to {repo_root, path,
+  branch}, shape-checked), `ensure_track_worktree` (async fetch, then the git work in
+  `spawn_blocking`) and `remove_track_worktree` (D7). It reuses `git_worktree_registration`,
+  `prune_stale_workspace_worktree_registration`, `git_ref_exists`,
+  `ensure_workspace_worktree_root_excluded`, `remove_workspace_worktree` and
+  `isolated_git_command`, but not `provision_workspace_worktree` (F9).
 - `routes/tracks.rs`: `repo_root` before the tx, the plan variant, ensure after
   `materialize_workspace`, and the Planner-start `agent_cwd()`. `routes/tracks/create.rs`:
   `:495`, `:572-573`, and the ensure on GenuineRetry and message-less resume (D5).
@@ -149,7 +156,14 @@ readers (`planner_attachments/mod.rs:53-60`, `workspace_recycle.rs:19-24`), repl
   `sweep_workspace_worktrees_for_track_repo`.
 - Test fixtures that attach a commit-less `git init` repository (F22) get an initial commit.
   The `first_message_payload_cwds` users at `track_create_first_message.rs:1424`, `:1476` are
-  managed→attached re-points (no worktree) and stay unchanged.
+  managed→attached re-points (no worktree) and stay unchanged. In practice that is
+  `support::git_helpers::attached_repo_fixture`; `area_defaults.rs` (F22) attaches no track.
+- Existing tests whose premise #1830 changes: the #1147 recycle fingerprints
+  (`track_workspace_recycle.rs`) leave out the kernel-owned worktree, branch and the
+  `packed-refs` git writes on `branch -D`; `a_neige_branch_created_after_attach_still_blocks_the_first_worker`
+  is built on a pre-#1830 row, because a track's own `neige/track-<id>` makes git refuse
+  `refs/heads/neige`; the `tracks` column snapshot in `track_projection_policy_patch.rs` lists
+  the new column.
 
 ## 5. Gates that constrain the shape
 
@@ -157,32 +171,49 @@ readers (`planner_attachments/mod.rs:53-60`, `workspace_recycle.rs:19-24`), repl
   `workspace_worktree_path` to `WORKSPACE_COLUMNS` and update the pinned whole-value writer
   text. There must still be no second writer.
 - `crates/calm-server/tests/cases/head_schema_fixture.rs:58-62`: list `0119` (a new, byte-frozen file).
+- `crates/calm-server/tests/cases/track_projection_policy_patch.rs`: the `tracks` column snapshot.
 - `TRACK_SELECT_COLUMNS` / `_W` lockstep (`rows.rs:63-75`); regenerated OpenAPI and `wire.ts`.
 - `scripts/local-ratchet-gates.sh` (terminology and prose ratchets; this doc is in scope).
 - Not triggered: `gate-sync-event-version-lockstep.sh`, `scripts/ci/ratchets/*`.
 
 ## 6. Tests
 
-New cases in `tests/cases/track_worktree.rs`: real routes, real git (bare origin plus a clone).
+New cases in `tests/cases/track_worktree.rs` (in `track_suite`): real routes, real git (bare
+origin plus a clone). T3 is in `claude_planner_wiring.rs` (`planner_harness_suite`); T5 is
+`tests/cases/git_forge_track_worktree.rs`, a module of `mcp_git_forge_plugin.rs` (the real MCP
+socket and git-forge plugin, the track minted by the real create route over the same caches).
 
 | Test | Pins | Mutation that must turn it red |
 |---|---|---|
 | T1 `attached_create_makes_the_track_worktree_at_the_upstream` (clone one commit behind origin): row `worktree == <clone>/.claude/worktrees/track-<id>`; worktree HEAD == origin tip on `neige/track-<id>`; the clone's HEAD and `status --porcelain` unchanged; `planner-harness-start` payload `cwd` == worktree | D5 (c), D3, `routes/tracks.rs:1654` | M1 drop the ensure call after commit; M2 payload `cwd: track.workspace.path`; M3 base = `resolve_head_base` instead of `choose_lease_start` |
-| T1b the same with a `first_message`: payload `cwd` == worktree | `routes/tracks/create.rs:495` | M7 `create.rs:495` passes `workspace.path` |
-| T3 `claude_planner_turn_runs_in_the_track_worktree` (`claude_planner_wiring.rs` stack, attached `cwd`; the fake also records `pwd`): the fake's cwd == worktree and argv has `Edit(/<worktree>/**)` | `claude_planner/wiring.rs:69` | M4 wiring passes `workspace.path` |
-| T4 `track_delete_removes_the_track_worktree_and_branch` (with an untracked file in it): directory gone, not in `worktree list`, ref gone, the clone untouched | D7 | M5 drop the removal in `sweep_workspace_worktrees_for_track_repo` |
-| T5 `planner_git_commit_lands_on_the_track_branch`: a Planner `git.commit` forge action moves `neige/track-<id>`, and the clone's HEAD is unchanged | `transport.rs:981` | M6 Planner arm returns `workspace.path` |
+| T1b `a_first_message_create_starts_the_planner_in_the_track_worktree` (clone one commit behind): worktree HEAD == origin tip; payload `cwd` == worktree | `routes/tracks/create.rs:495` | M1, M3; M7 `create.rs:495` passes `workspace.path` |
+| T3 `claude_planner_turn_runs_in_the_track_worktree` (`claude_planner_wiring.rs` stack, attached `cwd`; the fake also records `pwd`): the fake's cwd == worktree and argv has `Edit(/<worktree>/**)` | `claude_planner/wiring.rs:69` | M1; M4 wiring passes `workspace.path` |
+| T4 `track_delete_removes_the_track_worktree_and_branch` (with an untracked file in it): directory gone, not in `worktree list`, ref gone, the clone untouched | D7 | M1; M5 drop the removal in `sweep_workspace_worktrees_for_track_repo` |
+| T5 `planner_git_commit_lands_on_the_track_branch`: a Planner `git.commit` forge action moves `neige/track-<id>`, and the clone's HEAD is unchanged | `transport.rs:981` | M1; M6 Planner arm returns `workspace.path` |
 
-Ordinary (not mutation-verified) tests: `agent_cwd()` for `None` / `Some`; the replay ensure is
-idempotent; a diverged or commit-less repository fails the create non-2xx and leaves no
-worktree; `installation_cwd` uses the worktree.
-Each mutation changes one production line. Predicted red sets: M1 → T1, T1b, T3, T4, T5 (each
-first asserts that the worktree exists) and the diverged/commit-less ordinary test (no ensure, so
-201); every other mutation → only its own test. Existing expectations:
-`a_replay_survives_the_attached_directory_being_deleted` (`track_create_first_message.rs:1810`)
-stays 201 (Replay skips the ensure);
-`a_retry_after_a_failure_survives_the_attached_directory_ceasing_to_validate` (`:1867`) becomes
-non-2xx: the GenuineRetry ensure runs against the `.git`-less repository.
+Ordinary (not mutation-verified) tests: `agent_cwd()` for `None` / `Some`, and a worktree-less
+workspace serializes without the field (`calm-types`);
+`a_genuine_retry_reuses_the_registered_track_worktree` — the GenuineRetry `#N` path after a
+harness-start failure finds the directory the failed attempt made already registered, keeps it
+and starts there (the Replay arm does not ensure at all);
+`a_diverged_checkout_fails_the_create_and_makes_no_worktree` (non-2xx,
+`attached-repo-diverged`, row left, no worktree or branch);
+`a_commit_less_repository_fails_the_create_and_makes_no_worktree`;
+`the_codex_config_read_names_the_track_worktree` — `installation_cwd` uses the worktree (the
+fixtures fake shared daemon now records each `config/read` cwd).
+
+Each mutation changes one production line. Predicted red sets, over `track_suite`,
+`planner_harness_suite` (`claude_planner_wiring`) and `mcp_git_forge_plugin`:
+M1 → T1, T1b, T3, T4, T5 (each first asserts that the worktree exists), the diverged and the
+commit-less tests (no ensure, so 201) and the genuine-retry test (its premise is that the failed
+attempt made the worktree); M3 → T1, T1b (both are behind the origin) and the diverged test
+(HEAD is taken, so 201); the commit-less test stays red under M3 as without it
+(`resolve_head_base` fails on an unborn HEAD too); every other mutation → only its own test.
+Existing expectations: `a_replay_survives_the_attached_directory_being_deleted`
+(`track_create_first_message.rs:1810`) stays 201 (Replay skips the ensure); the former
+`a_retry_after_a_failure_survives_the_attached_directory_ceasing_to_validate` (`:1867`) is now
+`a_retry_after_a_failure_fails_once_the_attached_directory_is_no_repository`: the GenuineRetry
+ensure runs against the `.git`-less directory and fails non-2xx, not `idempotency_key_exhausted`.
 
 ## 7. KNOWN GAPS (after S3)
 
