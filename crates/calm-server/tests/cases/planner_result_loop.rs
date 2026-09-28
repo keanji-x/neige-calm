@@ -145,13 +145,7 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
     );
 
     let prompt = render_planner_developer_instructions_for_test(boot.track_id.as_str(), None, None);
-    let advertised = prompt
-        .split_once("never assume relative files are shared. Read")
-        .expect("gate guidance includes the Planner read route")
-        .1
-        .split('`')
-        .nth(1)
-        .unwrap();
+    let advertised = read_route(&prompt).split('`').nth(1).unwrap();
     let path = advertised
         .replace("<key>", &a.key)
         .replace("<attempt_id>", &a.id);
@@ -183,10 +177,7 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
     let gate = gate_events[0].event.payload_value();
     assert_eq!(gate["task_id"], a.id);
     assert_eq!(gate["passed"], true);
-    let gate_path = prompt
-        .split_once("never assume relative files are shared. Read")
-        .unwrap()
-        .1
+    let gate_path = read_route(&prompt)
         .split('`')
         .nth(3)
         .unwrap()
@@ -306,4 +297,13 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
         std::fs::read_to_string(dir.path().join("config.json")).unwrap(),
         source
     );
+}
+
+/// The Planner's advertised read route, from just after the `Read` that opens it
+/// (`` `runs/<attempt_id>.json` and the exact `runs/<attempt_id>/gates/<N>.log` ``).
+fn read_route(prompt: &str) -> &str {
+    let start = prompt
+        .find("Read `runs/")
+        .expect("gate guidance includes the Planner read route");
+    &prompt[start + "Read".len()..]
 }
