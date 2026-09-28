@@ -185,7 +185,7 @@ fn state(tool: &str, json: bool, value: &Value) -> Result<String, RenderError> {
     fact("you", &format!("{} {}", you.id, you.role));
     fact("report", report);
     fact("tasks", &tasks_summary(&tasks));
-    for (index, line) in card_lines(&cards).iter().enumerate() {
+    for (index, line) in card_lines(&cards, caller).iter().enumerate() {
         fact(if index == 0 { "cards" } else { "" }, line);
     }
     Ok(out)
@@ -284,11 +284,19 @@ fn tasks_summary(tasks: &[StateTask<'_>]) -> String {
     format!("{}: {}", tasks.len(), counts.join(", "))
 }
 
-/// `id  role  kind  status[  task <key>]`, columns (escaped first) padded to the widest value.
-fn card_lines(cards: &[StateCard<'_>]) -> Vec<String> {
+/// `id  role  kind  status[  task <key>]`, columns (escaped first) padded to the widest value; the
+/// caller's own row shows `(you)` for its status, which is always mid-turn.
+fn card_lines(cards: &[StateCard<'_>], caller: &str) -> Vec<String> {
     let rows: Vec<[Cow<'_, str>; 4]> = cards
         .iter()
-        .map(|card| [card.id, card.role, card.kind, card.status].map(escape_control))
+        .map(|card| {
+            let status = if card.id == caller {
+                "(you)"
+            } else {
+                card.status
+            };
+            [card.id, card.role, card.kind, status].map(escape_control)
+        })
         .collect();
     let width = |column: usize| {
         rows.iter()
@@ -594,7 +602,7 @@ mod tests {
              you        crd_planner planner\n\
              report     empty skeleton\n\
              tasks      none\n\
-             cards      crd_planner  planner     codex         running\n\
+             cards      crd_planner  planner     codex         (you)\n\
              \x20          crd_report   reportcard  track-report  -\n"
         );
         assert_eq!(text.lines().filter(|l| l.contains("lifecycle")).count(), 1);
@@ -618,7 +626,7 @@ mod tests {
              you        crd_planner planner\n\
              report     has content: calm.report.read before editing\n\
              tasks      4: 2 pending, 1 running, 1 done\n\
-             cards      crd_planner  planner     codex         idle\n\
+             cards      crd_planner  planner     codex         (you)\n\
              \x20          crd_report   reportcard  track-report  -\n\
              \x20          crd_worker   worker      claude        exited  task fix-login\n"
         );
@@ -630,6 +638,27 @@ mod tests {
         let worker: Vec<&str> = text.lines().filter(|l| l.contains("crd_worker")).collect();
         assert_eq!(worker.len(), 1);
         assert!(worker[0].ends_with("task fix-login"), "{worker:?}");
+    }
+
+    #[test]
+    fn state_text_shows_a_worker_caller_as_you_and_keeps_its_task() {
+        let mut value = working_track_state();
+        value["caller_card_id"] = json!("crd_worker");
+        let text = render(Render::State, "calm.track.state", false, &value).unwrap();
+        assert_eq!(
+            lines_starting(&text, "you "),
+            vec!["you        crd_worker worker"]
+        );
+        assert_eq!(
+            text.lines()
+                .skip_while(|l| !l.starts_with("cards"))
+                .collect::<Vec<_>>(),
+            vec![
+                "cards      crd_planner  planner     codex         idle",
+                "           crd_report   reportcard  track-report  -",
+                "           crd_worker   worker      claude        (you)  task fix-login",
+            ]
+        );
     }
 
     #[test]
@@ -665,7 +694,7 @@ mod tests {
              you        crd_planner planner\n\
              report     has content: calm.report.read before editing\n\
              tasks      4: 2 pending, 1 running, 1 done\n\
-             cards      crd_planner  planner     codex         idle\n\
+             cards      crd_planner  planner     codex         (you)\n\
              \x20          crd_report   reportcard  track-report  -\n\
              \x20          crd_worker   worker      cl\\naude      exited  task fix-login\n"
         );

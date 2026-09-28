@@ -167,6 +167,15 @@ async fn cli_state_text_is_one_fact_per_line() {
     assert_eq!(fact("report"), vec!["report     none (no report card)"]);
     assert_eq!(fact("tasks"), vec!["tasks      1: 1 running"]);
     assert_eq!(fact("cards").len(), 1, "{text}");
+    let own: Vec<&str> = text
+        .lines()
+        .filter(|l| l.contains(&boot.card_id) && !l.starts_with("you"))
+        .collect();
+    assert_eq!(own.len(), 1, "{text}");
+    assert!(
+        own[0].contains(" planner ") && own[0].ends_with("  (you)"),
+        "{text}"
+    );
     let worker: Vec<&str> = text
         .lines()
         .filter(|l| l.contains(&boot.other_card_id))

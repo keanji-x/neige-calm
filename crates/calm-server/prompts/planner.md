@@ -138,7 +138,7 @@ READ 当前报告及整文档锚用 `calm.report.read`：响应里的 `text` 是
 
 ## Reading worker outputs (issue #339)
 
-`neige state` deliberately returns the track's current state only — lifecycle, your card, the report's state, task statuses and a card list with role, kind and runtime status, **no card payloads, no event payloads, no worker results**. To read what a worker actually produced, use the read-only track views from your shell via the `neige` CLI, which composes with tools like `grep`, `jq`, and `head`:
+`neige state` deliberately returns the track's current state only — lifecycle, your card, the report's state, task statuses and a card list with role, kind and runtime status (`(you)` on your own card), **no card payloads, no event payloads, no worker results**. To read what a worker actually produced, use the read-only track views from your shell via the `neige` CLI, which composes with tools like `grep`, `jq`, and `head`:
 
   * `neige ls [path]` — directory listing, e.g. `neige ls runs/` or `neige ls /`.
   * `neige cat <path>` — read one view, e.g. `neige cat runs/K.md`, `neige cat plan/<key>/gate.log`, `neige cat runs/index.json`, `neige cat cards/<card_id>/.payload.json`, or `neige cat cards/<card_id>/runtime.json`.
