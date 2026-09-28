@@ -1,12 +1,12 @@
-//! The single writer of a track's workspace (kind, path and freeze stamp are
-//! one decision, always written together) and the one-way freeze latch.
+//! The single writer of a track's workspace (kind, path, freeze stamp and track
+//! worktree are one decision, always written together) and the one-way freeze latch.
 
 use sqlx::{Sqlite, Transaction};
 
 use crate::error::{CalmError, Result};
 use crate::model::{TrackWorkspace, TrackWorkspaceKind};
 
-/// Write a track's workspace — kind, path and freeze stamp — in one statement.
+/// Write a track's workspace — kind, path, freeze stamp and track worktree — in one statement.
 /// The freeze latch is enforced here, at the bottom of every workspace write.
 /// A frozen row is `Conflict`, told apart from `NotFound` by a second read.
 pub async fn track_workspace_write_tx(
@@ -16,12 +16,14 @@ pub async fn track_workspace_write_tx(
 ) -> Result<()> {
     let res = sqlx::query(
         r#"UPDATE tracks
-           SET workspace_path = ?1, workspace_kind = ?2, workspace_frozen_at = ?3
-           WHERE id = ?4 AND workspace_frozen_at IS NULL"#,
+           SET workspace_path = ?1, workspace_kind = ?2, workspace_frozen_at = ?3,
+               workspace_worktree_path = ?4
+           WHERE id = ?5 AND workspace_frozen_at IS NULL"#,
     )
     .bind(&workspace.path)
     .bind(workspace.kind.as_db_str())
     .bind(workspace.frozen_at)
+    .bind(workspace.worktree.as_deref())
     .bind(track_id)
     .execute(&mut **tx)
     .await?;
@@ -52,18 +54,20 @@ pub async fn track_workspace_read_tx(
     tx: &mut Transaction<'_, Sqlite>,
     track_id: &str,
 ) -> Result<TrackWorkspace> {
-    let row: Option<(String, String, Option<i64>)> = sqlx::query_as(
-        "SELECT workspace_kind, workspace_path, workspace_frozen_at FROM tracks WHERE id = ?1",
+    let row: Option<(String, String, Option<i64>, Option<String>)> = sqlx::query_as(
+        "SELECT workspace_kind, workspace_path, workspace_frozen_at, workspace_worktree_path \
+         FROM tracks WHERE id = ?1",
     )
     .bind(track_id)
     .fetch_optional(&mut **tx)
     .await?;
-    let (kind, path, frozen_at) =
+    let (kind, path, frozen_at, worktree) =
         row.ok_or_else(|| CalmError::NotFound(format!("track {track_id}")))?;
     Ok(TrackWorkspace {
         kind: TrackWorkspaceKind::try_from(kind).map_err(CalmError::Internal)?,
         path,
         frozen_at,
+        worktree,
     })
 }
 

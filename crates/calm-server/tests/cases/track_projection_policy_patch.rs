@@ -181,6 +181,7 @@ const TRACK_PERSISTENT_COLUMNS: &[&str] = &[
     "recipe_id",
     "recipe_revision",
     "claude_permissions_policy",
+    "workspace_worktree_path",
 ];
 
 type PersistedTrackEvent = (

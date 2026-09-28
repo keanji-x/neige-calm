@@ -9,7 +9,12 @@ use std::path::{Path, PathBuf};
 use proc_macro2::{TokenStream, TokenTree};
 
 /// Columns owned by `tracks` alone, so no table-name reasoning is needed.
-const WORKSPACE_COLUMNS: [&str; 3] = ["workspace_kind", "workspace_path", "workspace_frozen_at"];
+const WORKSPACE_COLUMNS: [&str; 4] = [
+    "workspace_kind",
+    "workspace_path",
+    "workspace_frozen_at",
+    "workspace_worktree_path",
+];
 
 /// SQL write keywords, matched on word boundaries so `updated_at` is not a write; `update`/`insert`
 /// are bare so SQLite's conflict-clause variants (`UPDATE OR REPLACE`) are covered.
@@ -20,10 +25,11 @@ const WRITE_KEYWORDS: [&str; 4] = ["insert", "update", "delete", "replace"];
 const WRITER_FILE: &str = "crates/calm-truth/src/db/sqlite/track_workspace.rs";
 const WRITER_STATEMENTS: &[(&str, &str)] = &[
     (
-        "update tracks set workspace_path = ?1, workspace_kind = ?2, workspace_frozen_at = ?3 where id = ?4 and workspace_frozen_at is null",
+        "update tracks set workspace_path = ?1, workspace_kind = ?2, workspace_frozen_at = ?3, workspace_worktree_path = ?4 where id = ?5 and workspace_frozen_at is null",
         "The whole-value writer. The trailing predicate is the freeze latch \
          (#1147 S3): once a track has a stamp, neither kind nor path may change \
-         again.",
+         again. #1830 S1: the track worktree is written by the same statement, \
+         so it is set only at creation (a re-point writes `None`).",
     ),
     (
         "update tracks set workspace_frozen_at = ?1 where id = ?2 and workspace_frozen_at is null and (select c.kind from areas as c where c.id = tracks.area_id) <> 'system'",

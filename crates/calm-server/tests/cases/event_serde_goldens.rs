@@ -183,6 +183,7 @@ golden_test!(
                 kind: TrackWorkspaceKind::Managed,
                 path: "/tmp/golden-track".into(),
                 frozen_at: Some(444),
+                worktree: None,
             },
             // Populated only here; the other three `track.updated` goldens pin these as `null`.
             recipe_id: Some("recipe-01".into()),

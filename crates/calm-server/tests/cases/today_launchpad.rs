@@ -960,6 +960,7 @@ async fn shared_managed_path_is_reported_as_a_violation() {
             kind: calm_server::model::TrackWorkspaceKind::Managed,
             path: first_path.clone(),
             frozen_at: None,
+            worktree: None,
         },
     )
     .await

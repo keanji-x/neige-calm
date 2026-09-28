@@ -2248,6 +2248,7 @@ async fn repoint_track_workspace(
         // Frozen, one-way: `attached → *` is not a legal transition, and an unfrozen attached
         // row is exactly what a PATCH that forgot to check `kind` would relocate.
         frozen_at: Some(crate::model::now_ms()),
+        worktree: None,
     };
     let scope = EventScope::Track {
         track: track.id.clone(),

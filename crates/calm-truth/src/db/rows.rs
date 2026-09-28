@@ -65,14 +65,15 @@ impl From<AreaFolderRow> for AreaFolder {
 /// binds columns by name at **runtime**, so a stale hand-copied list compiles fine and blows up in production.
 pub const TRACK_SELECT_COLUMNS: &str = "id, area_id, title, sort, archived_at, pinned_at, lifecycle, template_id, \
      plugin_scope, purpose, template_input, terminal_at, recipe_id, recipe_revision, \
-     workspace_kind, workspace_path, workspace_frozen_at, created_at, updated_at, \
-     claude_permissions_policy";
+     workspace_kind, workspace_path, workspace_frozen_at, workspace_worktree_path, created_at, \
+     updated_at, claude_permissions_policy";
 
 /// [`TRACK_SELECT_COLUMNS`] with every column qualified by the `w` table alias; the two lists must stay in lockstep.
 pub const TRACK_SELECT_COLUMNS_W: &str = "w.id, w.area_id, w.title, w.sort, w.archived_at, w.pinned_at, w.lifecycle, \
      w.template_id, w.plugin_scope, w.purpose, w.template_input, w.terminal_at, \
      w.recipe_id, w.recipe_revision, w.workspace_kind, w.workspace_path, \
-     w.workspace_frozen_at, w.created_at, w.updated_at, w.claude_permissions_policy";
+     w.workspace_frozen_at, w.workspace_worktree_path, w.created_at, w.updated_at, \
+     w.claude_permissions_policy";
 
 /// Row mirror of [`Track`].
 #[derive(Debug, sqlx::FromRow)]
@@ -98,11 +99,12 @@ pub struct TrackRow {
     /// creation source. `recipe_id` is a record of origin, not a live reference — the recipe may since be edited or deleted.
     pub recipe_id: Option<String>,
     pub recipe_revision: Option<i64>,
-    /// The three columns behind [`TrackWorkspace`]; `workspace_path` is the only stored copy of the path.
+    /// The four columns behind [`TrackWorkspace`]; `workspace_path` is the only stored copy of the path.
     #[sqlx(try_from = "String")]
     pub workspace_kind: TrackWorkspaceKind,
     pub workspace_path: String,
     pub workspace_frozen_at: Option<i64>,
+    pub workspace_worktree_path: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
     /// The tree root's Claude Code permission policy as stored (a child row is NULL); a value the scope derive cannot
@@ -134,6 +136,7 @@ impl From<TrackRow> for Track {
                 kind: r.workspace_kind,
                 path: r.workspace_path,
                 frozen_at: r.workspace_frozen_at,
+                worktree: r.workspace_worktree_path,
             },
             claude_permissions_policy: r.claude_permissions_policy,
             created_at: r.created_at,

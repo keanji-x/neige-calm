@@ -1764,6 +1764,7 @@ mod tests {
                 kind: crate::model::TrackWorkspaceKind::Attached,
                 path: "/".into(),
                 frozen_at: Some(0),
+                worktree: None,
             },
         )
         .await

@@ -191,6 +191,7 @@ async fn workspace_writer_sets_kind_path_and_stamp_together() {
             kind: TrackWorkspaceKind::Managed,
             path: "/srv/neige-workspaces/area-1/w".into(),
             frozen_at: None,
+            worktree: None,
         },
     )
     .await;
@@ -217,6 +218,7 @@ async fn workspace_writer_sets_kind_path_and_stamp_together() {
             kind: TrackWorkspaceKind::Managed,
             path: "/srv/neige-workspaces/area-1/w".into(),
             frozen_at: None,
+            worktree: None,
         },
     )
     .await

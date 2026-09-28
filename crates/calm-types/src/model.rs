@@ -274,6 +274,20 @@ pub struct TrackWorkspace {
     /// One-shot, monotonic. `Some` ⇒ neither `path` nor `kind` may change again. The system-area
     /// launchpad stays unfrozen because it is repointed.
     pub frozen_at: Option<i64>,
+    /// The kernel-made git worktree (`<repo_root>/.claude/worktrees/track-<id>`, branch
+    /// `neige/track-<id>`) an attached track's conversation agents run in. `None` for managed,
+    /// child and pre-#1830 attached tracks, which run in `path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub worktree: Option<String>,
+}
+
+impl TrackWorkspace {
+    /// The cwd of every conversation agent on the track (Planner, assistant, plain chat):
+    /// the track worktree when there is one, else `path`.
+    pub fn agent_cwd(&self) -> &str {
+        self.worktree.as_deref().unwrap_or(&self.path)
+    }
 }
 
 impl Default for TrackWorkspace {
@@ -282,6 +296,7 @@ impl Default for TrackWorkspace {
             kind: TrackWorkspaceKind::Attached,
             path: String::new(),
             frozen_at: None,
+            worktree: None,
         }
     }
 }
@@ -615,5 +630,37 @@ mod track_lifecycle_db_str_tests {
             assert_eq!(back, state);
         }
         assert!(TrackLifecycle::try_from("bogus".to_string()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod track_workspace_agent_cwd_tests {
+    use super::*;
+
+    #[test]
+    fn agent_cwd_is_the_path_without_a_worktree_and_the_worktree_with_one() {
+        let mut workspace = TrackWorkspace {
+            kind: TrackWorkspaceKind::Attached,
+            path: "/repo".into(),
+            frozen_at: Some(1),
+            worktree: None,
+        };
+        assert_eq!(workspace.agent_cwd(), "/repo");
+        workspace.worktree = Some("/repo/.claude/worktrees/track-t".into());
+        assert_eq!(workspace.agent_cwd(), "/repo/.claude/worktrees/track-t");
+    }
+
+    #[test]
+    fn a_worktree_less_workspace_serializes_without_the_field() {
+        let workspace = TrackWorkspace {
+            kind: TrackWorkspaceKind::Managed,
+            path: "/w".into(),
+            frozen_at: None,
+            worktree: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&workspace).unwrap(),
+            serde_json::json!({"kind": "managed", "path": "/w", "frozen_at": null})
+        );
     }
 }

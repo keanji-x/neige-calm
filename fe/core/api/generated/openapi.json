@@ -12385,6 +12385,13 @@
           "path": {
             "type": "string",
             "description": "Absolute path."
+          },
+          "worktree": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The kernel-made git worktree (`<repo_root>/.claude/worktrees/track-<id>`, branch\n`neige/track-<id>`) an attached track's conversation agents run in. `None` for managed,\nchild and pre-#1830 attached tracks, which run in `path`."
           }
         }
       },

@@ -19,8 +19,13 @@ use crate::db::rows::TRACK_SELECT_COLUMNS;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TrackWorkspacePlan {
     /// Use `NewTrack.cwd` verbatim, `kind = Attached`, frozen at creation
-    /// (`attached → *` is not a legal transition).
+    /// (`attached → *` is not a legal transition). No track worktree: fixtures and
+    /// `Repo::track_create`.
     AttachedFromCwd,
+    /// [`Self::AttachedFromCwd`] plus the track worktree under this repository root
+    /// ([`track_worktree_path_for`]); the create route's attached branch (#1830). The route
+    /// makes the worktree after the transaction commits.
+    AttachedWithTrackWorktree(std::path::PathBuf),
     /// Derive `<root>/<area_id>/<track_id>`, `kind = Managed`, **not** frozen: a
     /// default, re-assignable until work happens. `NewTrack.cwd` is ignored.
     ManagedUnder(std::path::PathBuf),
@@ -32,6 +37,15 @@ pub enum TrackWorkspacePlan {
     /// `kind = managed` directories only, so an attached path is never created,
     /// moved or deleted by the server however many rows point at it.
     InheritAttachedFrozen(AttachedInheritedPath),
+}
+
+/// `<repo_root>/.claude/worktrees/track-<track_id>`: one segment below `worktrees/`, so it never
+/// parses as a lease path (`<track>/<card>`) and no lease sweep enumerates it.
+pub fn track_worktree_path_for(repo_root: &std::path::Path, track_id: &str) -> std::path::PathBuf {
+    repo_root
+        .join(".claude")
+        .join("worktrees")
+        .join(format!("track-{track_id}"))
 }
 
 /// A path that may be inherited as an `attached` workspace, **proven to be
@@ -138,6 +152,17 @@ pub async fn track_create_tx(
             kind: TrackWorkspaceKind::Attached,
             path: p.cwd.clone(),
             frozen_at: Some(now),
+            worktree: None,
+        },
+        TrackWorkspacePlan::AttachedWithTrackWorktree(repo_root) => TrackWorkspace {
+            kind: TrackWorkspaceKind::Attached,
+            path: p.cwd.clone(),
+            frozen_at: Some(now),
+            worktree: Some(
+                track_worktree_path_for(repo_root, &id)
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
         },
         TrackWorkspacePlan::ManagedUnder(root) => TrackWorkspace {
             kind: TrackWorkspaceKind::Managed,
@@ -147,6 +172,7 @@ pub async fn track_create_tx(
                 .to_string_lossy()
                 .into_owned(),
             frozen_at: None,
+            worktree: None,
         },
         TrackWorkspacePlan::ManagedFrozenUnder(root) => TrackWorkspace {
             kind: TrackWorkspaceKind::Managed,
@@ -156,11 +182,13 @@ pub async fn track_create_tx(
                 .to_string_lossy()
                 .into_owned(),
             frozen_at: Some(now),
+            worktree: None,
         },
         TrackWorkspacePlan::InheritAttachedFrozen(path) => TrackWorkspace {
             kind: TrackWorkspaceKind::Attached,
             path: path.as_str().to_string(),
             frozen_at: Some(now),
+            worktree: None,
         },
     };
     track_workspace_write_tx(tx, &id, &workspace).await?;

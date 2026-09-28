@@ -234,6 +234,7 @@ impl ProviderAdapter for ChildTrackAdapter {
             path: parent_workspace_path,
             // Not read by `child_workspace_plan`; the child's own stamp is set by the plan, not copied.
             frozen_at: None,
+            worktree: None,
         };
         let plan = child_workspace_plan(&parent_workspace, &self.workspace_root)?;
         let planner_provider = parent_planner_provider_tx(tx, &payload.parent_track_id).await?;
@@ -1000,6 +1001,7 @@ mod tests {
                 kind: TrackWorkspaceKind::Attached,
                 path: inside.to_string_lossy().into_owned(),
                 frozen_at: None,
+                worktree: None,
             },
             root.path(),
         )
@@ -1018,6 +1020,7 @@ mod tests {
                     kind: TrackWorkspaceKind::Attached,
                     path: outside.path().to_string_lossy().into_owned(),
                     frozen_at: None,
+                    worktree: None,
                 },
                 root.path(),
             )
@@ -1030,6 +1033,7 @@ mod tests {
                     kind: TrackWorkspaceKind::Managed,
                     path: inside.to_string_lossy().into_owned(),
                     frozen_at: None,
+                    worktree: None,
                 },
                 root.path(),
             )

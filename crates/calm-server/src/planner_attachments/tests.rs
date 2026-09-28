@@ -31,6 +31,7 @@ fn managed(path: &std::path::Path) -> TrackWorkspace {
         kind: TrackWorkspaceKind::Managed,
         path: path.to_string_lossy().to_string(),
         frozen_at: None,
+        worktree: None,
     }
 }
 
@@ -39,6 +40,7 @@ fn attached(path: &std::path::Path) -> TrackWorkspace {
         kind: TrackWorkspaceKind::Attached,
         path: path.to_string_lossy().to_string(),
         frozen_at: None,
+        worktree: None,
     }
 }
 
@@ -708,6 +710,7 @@ fn attachment_root_faults_name_no_host_path() {
         kind: TrackWorkspaceKind::Managed,
         path: "relative/workspace".into(),
         frozen_at: None,
+        worktree: None,
     };
     for (what, workspace) in [
         ("a relative managed path", relative),

@@ -235,6 +235,7 @@ fn launchpad_workspace(workspace_root: &Path, area_id: &str, track_id: &str) -> 
         .into_owned(),
         // Never `Some(..)`: a stamp here would break monotonicity on re-adoption.
         frozen_at: None,
+        worktree: None,
     }
 }
 

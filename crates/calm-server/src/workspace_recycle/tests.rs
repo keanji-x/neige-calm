@@ -58,6 +58,7 @@ impl Fixture {
             kind,
             path: path.to_string_lossy().into_owned(),
             frozen_at: Some(1),
+            worktree: None,
         }
     }
 

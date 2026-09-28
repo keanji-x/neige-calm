@@ -670,7 +670,13 @@ path: string,
  * One-shot, monotonic. `Some` ⇒ neither `path` nor `kind` may change again. The system-area
  * launchpad stays unfrozen because it is repointed.
  */
-frozen_at: number | null, };
+frozen_at: number | null, 
+/**
+ * The kernel-made git worktree (`<repo_root>/.claude/worktrees/track-<id>`, branch
+ * `neige/track-<id>`) an attached track's conversation agents run in. `None` for managed,
+ * child and pre-#1830 attached tracks, which run in `path`.
+ */
+worktree?: string, };
 
 /**
  * Ownership must be explicit because only managed workspaces may be recycled.
