@@ -269,7 +269,7 @@ fn materialize_is_idempotent() {
 }
 
 #[test]
-fn materialize_excludes_worktrees_via_git_info_exclude_not_gitignore() {
+fn materialize_excludes_neige_via_git_info_exclude_not_gitignore() {
     let _env = GitEnv::c_locale();
     let tmp = tempfile::TempDir::new().unwrap();
     let (root, repo_root) = sandbox(&tmp);
@@ -280,8 +280,8 @@ fn materialize_excludes_worktrees_via_git_info_exclude_not_gitignore() {
     assert!(
         exclude
             .lines()
-            .any(|line| line.trim() == ".claude/worktrees/"),
-        "exclude file does not carry the worktree root: {exclude}"
+            .any(|line| line.trim() == crate::planner_attachments::NEIGE_GIT_EXCLUDE_ENTRY),
+        "exclude file does not carry `.neige/`: {exclude}"
     );
     assert!(
         !repo_root.join(".gitignore").exists(),

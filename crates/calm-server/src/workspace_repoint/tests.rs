@@ -10,7 +10,6 @@ use crate::workspace_materialize::materialize_managed_workspace;
 struct Fixture {
     root: tempfile::TempDir,
     workspace: PathBuf,
-    track_id: String,
 }
 
 fn materialized() -> Fixture {
@@ -18,11 +17,7 @@ fn materialized() -> Fixture {
     let track_id = format!("w{}", uuid::Uuid::new_v4().simple());
     let workspace = root.path().join("area-1").join(&track_id);
     materialize_managed_workspace(root.path(), &workspace, &track_id).unwrap();
-    Fixture {
-        root,
-        workspace,
-        track_id,
-    }
+    Fixture { root, workspace }
 }
 
 fn git(at: &Path, args: &[&str]) {
@@ -72,18 +67,13 @@ fn a_plain_untracked_file_is_dirty() {
     drop(fx.root);
 }
 
-/// Only `--ignored` catches this: `.claude/worktrees/` is in `.git/info/exclude`.
+/// Only `--ignored` catches this: `.neige/` is in `.git/info/exclude`.
 #[test]
-fn excluded_worker_output_is_dirty() {
+fn excluded_output_is_dirty() {
     let fx = materialized();
-    let lease = fx
-        .workspace
-        .join(".claude")
-        .join("worktrees")
-        .join(&fx.track_id)
-        .join("card-1");
-    std::fs::create_dir_all(&lease).unwrap();
-    std::fs::write(lease.join("out.txt"), b"worker output\n").unwrap();
+    let excluded = fx.workspace.join(".neige").join("attachments");
+    std::fs::create_dir_all(&excluded).unwrap();
+    std::fs::write(excluded.join("out.txt"), b"server output\n").unwrap();
 
     let plain = Command::new("git")
         .arg("-C")
@@ -94,7 +84,7 @@ fn excluded_worker_output_is_dirty() {
     assert!(
         String::from_utf8_lossy(&plain.stdout).trim().is_empty(),
         "premise broken: `git status --porcelain` already sees the excluded \
-         worker output, so `--ignored` would not be load bearing"
+         output, so `--ignored` would not be load bearing"
     );
 
     let verdict = workspace_pristine(&fx.workspace);

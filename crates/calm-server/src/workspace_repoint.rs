@@ -1,5 +1,5 @@
 //! Is this managed workspace still untouched (and therefore movable)? Three git commands: `status --porcelain
-//! --ignored` empty (`--ignored` because worker output is excluded), `rev-list --count --all == 1` (stashes and
+//! --ignored` empty (`--ignored` because `.neige/` is excluded), `rev-list --count --all == 1` (stashes and
 //! slice-branch commits count), `worktree list` has one line (a live worktree's absolute pointers would dangle
 //! after a rename). Any command that fails or cannot be parsed is `Dirty`: "cannot tell" is never "clean".
 

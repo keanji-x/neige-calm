@@ -588,12 +588,6 @@ async fn launchpad_workspace_is_materialized() {
         "the launchpad workspace has no init commit; `git worktree add` fails \
          and every Today codex task stays `spawn-failed`"
     );
-    let exclude = std::fs::read_to_string(path.join(".git/info/exclude")).unwrap();
-    assert!(
-        exclude
-            .lines()
-            .any(|line| line.trim() == ".claude/worktrees/")
-    );
     assert!(!path.join(".gitignore").exists());
 
     // `ensure` is idempotent, and so is materialize.

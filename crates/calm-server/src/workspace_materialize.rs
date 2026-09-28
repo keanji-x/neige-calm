@@ -8,9 +8,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::error::{CalmError, Result};
 use crate::model::{TrackWorkspace, TrackWorkspaceKind};
-use crate::operation::workspace_lease::{
-    ensure_git_exclude_entry, ensure_workspace_worktree_root_excluded,
-};
+use crate::operation::workspace_lease::ensure_git_exclude_entry;
 
 /// Explicit so the init commit does not inherit the host account's identity.
 const INIT_COMMIT_AUTHOR_NAME: &str = "neige";
@@ -342,7 +340,6 @@ fn materialize_managed_workspace_inner(
         )?;
     }
 
-    ensure_workspace_worktree_root_excluded(path)?;
     // `.neige/` is the server's own subtree inside the work tree; excluded so a worker's `git add -A` never sees it.
     ensure_git_exclude_entry(path, crate::planner_attachments::NEIGE_GIT_EXCLUDE_ENTRY)?;
 

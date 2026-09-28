@@ -200,9 +200,6 @@ async fn title_only_create_allocates_and_materializes_a_managed_workspace() {
     );
 
     let path = PathBuf::from(path);
-    // Read before the bar below provisions a worktree into `.claude/worktrees/`.
-    let exclude = std::fs::read_to_string(path.join(".git/info/exclude")).unwrap();
-    assert!(exclude.lines().any(|l| l.trim() == ".claude/worktrees/"));
     assert!(!path.join(".gitignore").exists());
 
     assert_workspace_is_usable_by_the_first_worker(&b, track_id).await;

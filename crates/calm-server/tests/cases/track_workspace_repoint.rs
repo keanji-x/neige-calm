@@ -639,28 +639,24 @@ async fn a_plain_file_in_the_workspace_refuses_the_change() {
     );
 }
 
-/// `.claude/worktrees/` is excluded by `.git/info/exclude`, so only the `--ignored` clause sees it.
+/// `.neige/` is excluded by `.git/info/exclude`, so only the `--ignored` clause sees it.
 #[tokio::test]
-async fn excluded_worker_output_refuses_the_change() {
+async fn excluded_output_refuses_the_change() {
     let b = boot().await;
     let area = create_area(&b, "c").await;
     let (track, path) = managed_track(&b, &area, "w").await;
-    let lease = path
-        .join(".claude")
-        .join("worktrees")
-        .join(&track)
-        .join("c1");
-    std::fs::create_dir_all(&lease).unwrap();
-    std::fs::write(lease.join("report.md"), b"worker output\n").unwrap();
+    let excluded = path.join(".neige").join("attachments");
+    std::fs::create_dir_all(&excluded).unwrap();
+    std::fs::write(excluded.join("report.md"), b"server output\n").unwrap();
 
     let (status, body) = repoint(&b, &track).await;
     assert_eq!(
         status,
         StatusCode::CONFLICT,
-        "ignored worker output must block the change; body={body}"
+        "ignored output must block the change; body={body}"
     );
     assert!(trash_entries(&b.workspace_root).is_empty());
-    assert!(lease.join("report.md").exists());
+    assert!(excluded.join("report.md").exists());
 }
 
 /// A commit on a slice branch leaves the working tree clean; only the
