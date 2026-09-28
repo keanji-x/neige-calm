@@ -59,15 +59,8 @@ fn retained_from_facts(facts: WorkerWorktreeFacts) -> Value {
         branch,
         last_commit,
         base_sha,
-        removed,
     } = facts;
-    let mut retained = json!({});
-    if removed {
-        retained["removed"] = json!(true);
-    }
-    if let Some(path) = path {
-        retained["workspace_path"] = json!(path);
-    }
+    let mut retained = json!({ "workspace_path": path });
     if let Some(branch) = branch {
         retained["branch"] = json!(branch);
     }

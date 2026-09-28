@@ -8,15 +8,13 @@ use crate::error::Result;
 /// What `calm.plan.list` shows as `worktree` for the current attempt.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct WorkerWorktreeFacts {
-    /// The lease's worktree path, whatever the lease's `state`; omitted once
-    /// the kernel has removed the worktree (`removed: true`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
+    /// The lease's worktree path, whatever the lease's `state`.
+    pub path: String,
     /// `held` | `releasing` | `released` — the lease row's own column.
     pub state: String,
     /// The branch: from the latest `worktree.committed` event when there is one, otherwise the
     /// track's worker branch (#1830 S2 D4) when the lease is at the track's checkout. Omitted
-    /// otherwise (a pre-S2 per-card lease) and once the kernel has removed the worktree.
+    /// otherwise (a pre-S2 per-card lease).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
     /// `commit_sha` of the latest `worktree.committed` event scoped to the worker card.
@@ -25,11 +23,9 @@ pub(crate) struct WorkerWorktreeFacts {
     pub last_commit: Option<String>,
     /// The commit the attempt started from: the lease row's `base_sha`, the track checkout's HEAD
     /// when the attempt was prepared (#1830 S2). Absent for a lease taken before the kernel
-    /// recorded it. Survives removal like `last_commit` (the commit object is not the worktree's).
+    /// recorded it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_sha: Option<String>,
-    /// `true` when the kernel removed the worktree after its last provisioning, whatever the lease `state`.
-    pub removed: bool,
 }
 
 /// The `workspace_leases` row `lease_id` names, in whatever state it is: the
@@ -67,7 +63,7 @@ pub(crate) async fn latest_workspace_lease_for_card_tx(
 }
 
 /// The latest `workspace_leases` row for `worker_card_id` (any state) joined with the latest
-/// `worktree.committed` event and the removed/provisioned ordering. `None` when the card never held a lease.
+/// `worktree.committed` event. `None` when the card never held a lease.
 pub(crate) async fn worker_worktree_facts_tx(
     tx: &mut Tx<'_>,
     worker_card_id: &str,
@@ -96,17 +92,6 @@ pub(crate) async fn worker_worktree_facts_tx(
     };
     let last_commit = payload_string("commit_sha");
     let base_sha = lease.base.as_ref().map(|base| base.base_sha.clone());
-    let removed = worktree_removed_after_last_provision_tx(tx, worker_card_id).await?;
-    if removed {
-        return Ok(Some(WorkerWorktreeFacts {
-            path: None,
-            state: lease.state,
-            branch: None,
-            last_commit,
-            base_sha,
-            removed: true,
-        }));
-    }
     let branch = match payload_string("branch") {
         Some(branch) => Some(branch),
         None => {
@@ -122,36 +107,10 @@ pub(crate) async fn worker_worktree_facts_tx(
         }
     };
     Ok(Some(WorkerWorktreeFacts {
-        path: Some(lease.path),
+        path: lease.path,
         state: lease.state,
         branch,
         last_commit,
         base_sha,
-        removed: false,
     }))
-}
-
-/// The one rule for "the kernel removed this card's worktree": a `worktree.removed` event newer
-/// than the card's latest `worktree.provisioned` (any `worktree.removed` when it was never
-/// provisioned). Only per-card worktrees from before #1830 S2 were ever removed. An SQL condition
-/// over the card-id expression `card` (a bind or a column).
-fn worktree_removed_after_last_provision_sql(card: &str) -> String {
-    format!(
-        "EXISTS (SELECT 1 FROM events removed \
-         WHERE removed.scope_card = {card} AND removed.kind = 'worktree.removed' \
-         AND removed.id > COALESCE((SELECT MAX(provisioned.id) FROM events provisioned \
-         WHERE provisioned.scope_card = {card} AND provisioned.kind = 'worktree.provisioned'), 0))"
-    )
-}
-
-async fn worktree_removed_after_last_provision_tx(
-    tx: &mut Tx<'_>,
-    worker_card_id: &str,
-) -> Result<bool> {
-    let sql = format!("SELECT {}", worktree_removed_after_last_provision_sql("?1"));
-    let removed = sqlx::query_scalar(&sql)
-        .bind(worker_card_id)
-        .fetch_one(&mut **tx)
-        .await?;
-    Ok(removed)
 }

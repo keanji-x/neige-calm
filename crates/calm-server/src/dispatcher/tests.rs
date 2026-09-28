@@ -3210,42 +3210,6 @@ async fn settled_event_maps_to_observation_with_turn_text() {
     );
     assert!(!text.to_ascii_lowercase().contains("retry"), "{text}");
 
-    // Once the worktree is removed the sentence drops the retained clause.
-    let removed = crate::event::EventScope::Card {
-        card: CardId::from("worker"),
-        track: track.clone(),
-        area: AreaId::from("c"),
-    };
-    crate::db::write_in_tx_typed(&repo, move |tx| {
-        Box::pin(async move {
-            crate::db::sqlite::append_decision_event_in_tx(
-                tx,
-                &ActorId::KernelDispatcher,
-                &removed,
-                None,
-                &Event::WorktreeRemoved {
-                    track_id: TrackId::from("w"),
-                    card_id: CardId::from("worker"),
-                    path: "/gone".into(),
-                },
-            )
-            .await?;
-            Ok(())
-        })
-    })
-    .await
-    .unwrap();
-    let text = resolve_harness_observation(&repo, &track, &failed)
-        .await
-        .unwrap()
-        .unwrap()
-        .to_turn_text();
-    assert!(!text.contains("Files retained at"), "{text}");
-    assert!(
-        text.contains("index.lock exists.\nRead the worker output at runs/"),
-        "{text}"
-    );
-
     // No tasks row → no observation (the same outcome as the other row-backed settlements).
     let orphan = git_delivery_settled_event("no-such-attempt", DeliveryWakeReason::Failed);
     assert!(

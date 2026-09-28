@@ -223,12 +223,10 @@ pub(crate) enum UnboundReason {
 /// The `workspace` facts shown beside a binding: the worktree-facts subset the read surface shows.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct CandidateWorkspace {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
+    pub path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
     pub lease_state: String,
-    pub removed: bool,
 }
 
 impl CandidateWorkspace {
@@ -237,7 +235,6 @@ impl CandidateWorkspace {
             path: facts.path.clone(),
             branch: facts.branch.clone(),
             lease_state: facts.state.clone(),
-            removed: facts.removed,
         }
     }
 }

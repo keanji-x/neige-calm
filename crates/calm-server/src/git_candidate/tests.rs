@@ -2865,12 +2865,11 @@ fn lease(delivery_policy: Option<DeliveryPolicy>) -> WorkspaceLease {
 
 fn facts() -> WorkerWorktreeFacts {
     WorkerWorktreeFacts {
-        path: Some("/repo/.claude/worktrees/trk/crd".into()),
+        path: "/repo/.claude/worktrees/trk/crd".into(),
         state: "held".into(),
         branch: Some("neige/trk/crd".into()),
         last_commit: None,
         base_sha: Some("b".repeat(40)),
-        removed: false,
     }
 }
 
@@ -2894,10 +2893,9 @@ fn candidate_binding_covers_every_row() {
     let isolated =
         json!({"neige_execution": {"version": "isolated-codex-v1", "workspace": "empty"}});
     let workspace = CandidateWorkspace {
-        path: Some("/repo/.claude/worktrees/trk/crd".into()),
+        path: "/repo/.claude/worktrees/trk/crd".into(),
         branch: Some("neige/trk/crd".into()),
         lease_state: "held".into(),
-        removed: false,
     };
     let bound = candidate_binding(
         &task(TaskKind::Codex, TASK_IN_TRACK_ROUTE, isolated),
@@ -2993,7 +2991,7 @@ fn candidate_binding_covers_every_row() {
         json!({
             "binding": "unbound", "reason": "legacy_lease",
             "workspace": {"path": "/repo/.claude/worktrees/trk/crd", "branch": "neige/trk/crd",
-                          "lease_state": "held", "removed": false}
+                          "lease_state": "held"}
         })
     );
     let bound = candidate_binding(

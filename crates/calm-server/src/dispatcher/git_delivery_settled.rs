@@ -61,7 +61,7 @@ pub(crate) async fn observation(
                         worker_card_id,
                     )
                     .await?
-                    .and_then(|facts| facts.path)
+                    .map(|facts| facts.path)
                 }
                 None => None,
             };
