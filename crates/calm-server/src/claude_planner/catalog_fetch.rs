@@ -15,8 +15,9 @@ use serde::Deserialize;
 use super::models::{ClaudeCatalog, ClaudeModel};
 use super::readiness_command;
 
-/// How long the exchange may take; the pinned CLI answers in about 4 s.
-pub const CATALOG_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long the exchange may take; the pinned CLI answers in 2.6–2.8 s. With `--version` and
+/// `auth status` (10 s each) the whole check stays under the web client's 30 s request budget.
+pub const CATALOG_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// The `request_id` of the one control request, echoed by its answer.
 const REQUEST_ID: &str = "neige-model-catalog";

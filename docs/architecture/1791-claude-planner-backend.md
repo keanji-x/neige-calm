@@ -506,7 +506,8 @@ and exits. No user message is sent, so no model is called. Each entry has `value
 `default` (→ `claude-opus-5-5[1m]`), `opus[1m]`, `claude-fable-5-1[1m]`, `sonnet` and `haiku` (no levels).
 
 - **Fetch (`claude_planner/catalog_fetch.rs`).** Step 4 of the #1817 Claude check, after `auth status`:
-  the same bounded `readiness_command` runner (20 s, 64 KiB stdout cap, killed and reaped), the same
+  the same bounded `readiness_command` runner (8 s, 64 KiB stdout cap, killed and reaped; measured 2.6–2.8 s,
+  so version 10 s + auth 10 s + 8 s stays under the web client's 30 s request budget), the same
   allowlisted environment and `config_dir`, and the turn's own `--setting-sources project` and `--settings`
   (so a model restriction in `--settings` or managed settings is reflected), plus `--strict-mcp-config`,
   `--disable-slash-commands` and `--no-session-persistence`, run in the private `claude-planner/tmp`
@@ -523,9 +524,7 @@ and exits. No user message is sent, so no model is called. Each entry has `value
   check, the first read, or any check after one that was not ready) and on an explicit recheck
   (`?refresh=true`, Settings › Planners Recheck). The 30 s TTL re-check of version and login keeps it: the
   binary is pinned, so the list changes only with the account or its entitlement, and a person then presses
-  Recheck (which also refreshes the FE's catalogs). A recheck is answered by a check that began after it
-  only if that check ran every step: a TTL re-check that kept the list cannot answer it, so a Recheck queued
-  behind one runs its own and fetches.
+  Recheck (which also refreshes the FE's catalogs).
 - **GET `/api/models`** for a Claude card (or `?provider=claude`) answers the cached list with
   `source:"live"` and its `fetched_at_ms`. Each entry's `model` (and `id`) is the CLI `value`, sent verbatim
   as `--model`; `resolved_model` is its `resolvedModel` (`null` for Codex); its effort options are the
@@ -567,6 +566,12 @@ and exits. No user message is sent, so no model is called. Each entry has `value
   `planner_provider` and `model`, and a model's effort control offers exactly its levels. Following the
   default, the trigger names the listed entry that runs the same model ("Opus (1M context)"), else the
   resolved id. Inside a track the picker lists only the track's provider group.
+- **KNOWN GAPS (#1822).**
+  - A Recheck that queues behind a slow TTL re-check can be answered by it without a re-fetch; pressing
+    Recheck again fetches.
+  - An empty, control-character or `"default"` Claude model is not refused at write: it is API-only, the
+    picker never sends one, and the CLI fails such a turn loudly (an empty `--model=`: "API Error: 400 model:
+    String should have at least 1 character").
 - **Compatibility.** No Claude Planner card in the 4140 DB stores a model (checked 2026-09-27: every stored
   `model` is a `gpt-6-*` slug), so a stored `opus` / `sonnet` / `haiku` needs no migration; the CLI would
   judge one at its next turn. #1810 bumped `REST_API_VERSION` 10 → 11 and

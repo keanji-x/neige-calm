@@ -14,7 +14,7 @@
         "tags": [
           "agent_providers"
         ],
-        "summary": "Whether each Planner provider can run right now. `ready` passed every check; `unavailable`\nnames the first failed check and its fix in `reason`; `not_configured` is a provider this\nserver was not started with (Claude without `--claude-planner-config`). Codex: the shared\napp-server runs and `account/read` says it is logged in. Claude: the pinned binary answers\n`--version` with the pinned version, `auth status --json` says `loggedIn`, and the CLI lists\nits models (`initialize`, #1822). Answers are cached per provider for 30 s; the Claude model\nlist is kept across that re-check and fetched again only by `refresh=true`. A failed check is\nan answer, never an error.",
+        "summary": "Whether each Planner provider can run right now. `ready` passed every check; `unavailable`\nnames the first failed check and its fix in `reason`; `not_configured` is a provider this\nserver was not started with (Claude without `--claude-planner-config`). Codex: the shared\napp-server runs and `account/read` says it is logged in. Claude: the pinned binary answers\n`--version` with the pinned version, `auth status --json` says `loggedIn`, and the CLI lists\nits models (`initialize`, #1822). Answers are cached per provider for 30 s; the 30 s re-check\nkeeps the Claude model list, which `refresh=true` or a check after a failed one fetches again.\nA failed check is an answer, never an error.",
         "operationId": "list_agent_providers",
         "parameters": [
           {

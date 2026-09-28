@@ -14,7 +14,7 @@ use std::sync::Arc;
 use super::catalog_fetch::{CATALOG_TIMEOUT, fetch};
 use super::config::{CONFIG_FLAG, ClaudePlannerHost};
 use super::models::ClaudeCatalog;
-use crate::agent_providers::{CheckRun, Checked, Freshness, Stamped, Verdict};
+use crate::agent_providers::{Checked, Freshness, Stamped, Verdict};
 use crate::session_projection_repo::AgentProvider;
 
 /// One Claude check's outcome. Only a ready Claude has a catalog, and a ready one always has one.
@@ -53,25 +53,12 @@ impl Stamped<ClaudeReadiness> {
 }
 
 /// One Claude check, given the previous outcome of its cache slot; `freshness` is why it runs
-/// (`Cached`: the TTL expired). See the module docs for when it re-fetches the model list. Only a
-/// TTL re-check that kept the cached list cannot answer a recheck.
+/// (`Cached`: the TTL expired). See the module docs for when it re-fetches the model list.
 pub(crate) async fn check(
     host: &ClaudePlannerHost,
     previous: Option<ClaudeReadiness>,
     freshness: Freshness,
-) -> CheckRun<ClaudeReadiness> {
-    let reusable = match (freshness, previous) {
-        (Freshness::Cached, Some(ClaudeReadiness::Ready(catalog))) => Some(catalog),
-        _ => None,
-    };
-    let answers_recheck = reusable.is_none();
-    CheckRun {
-        outcome: run(host, reusable).await,
-        answers_recheck,
-    }
-}
-
-async fn run(host: &ClaudePlannerHost, reusable: Option<Arc<ClaudeCatalog>>) -> ClaudeReadiness {
+) -> ClaudeReadiness {
     let Ok(config) = host.configured() else {
         return ClaudeReadiness::NotConfigured(format!(
             "calm-server was started without {CONFIG_FLAG}; restart it with \
@@ -109,7 +96,9 @@ async fn run(host: &ClaudePlannerHost, reusable: Option<Arc<ClaudeCatalog>>) -> 
         Err(reason) => return ClaudeReadiness::Unavailable(reason),
     }
     // The TTL re-check keeps the list a ready check cached; a recheck, or no list, fetches it.
-    if let Some(catalog) = reusable {
+    if freshness == Freshness::Cached
+        && let Some(ClaudeReadiness::Ready(catalog)) = previous
+    {
         return ClaudeReadiness::Ready(catalog);
     }
     match fetch(

@@ -69,7 +69,7 @@ function claudeCatalog(overrides: Partial<ModelCatalog> = {}): ModelCatalog {
 
 const CLAUDE_UNAVAILABLE = 'Claude cannot run on this server right now';
 
-/* Each Claude row names its entry and, beneath, the model it runs (#1822). */
+/* Each Claude row names its entry and, beside it, the model it runs (#1822). */
 const RESOLVED_ROWS = ['Opus (1M context)claude-opus-5-5[1m]', 'Fableclaude-fable-5-1', 'Sonnetclaude-sonnet-5',
   'Haikuclaude-haiku-4-5-20251001'];
 
