@@ -129,7 +129,7 @@ readers (`planner_attachments/mod.rs:53-60`, `workspace_recycle.rs:19-24`), repl
 
 ## 4. S1 change list
 
-- `calm-truth/migrations/0119_track_worktree.sql` (number assigned last):
+- `calm-truth/migrations/0120_track_worktree.sql` (number assigned last):
   `ALTER TABLE tracks ADD COLUMN workspace_worktree_path TEXT NULL;`.
 - `calm-types/src/model.rs`: `TrackWorkspace.worktree`, `agent_cwd()`. Regenerate the OpenAPI and
   `fe/core/api/generated/wire.ts` output; `fe/core/api/schemas.ts` decodes the optional field
@@ -172,7 +172,7 @@ readers (`planner_attachments/mod.rs:53-60`, `workspace_recycle.rs:19-24`), repl
 - `crates/calm-truth/tests/track_write_point_registry.rs:12`, `:20-35`: add
   `workspace_worktree_path` to `WORKSPACE_COLUMNS` and update the pinned whole-value writer
   text. There must still be no second writer.
-- `crates/calm-server/tests/cases/head_schema_fixture.rs:58-62`: list `0119` (a new, byte-frozen file).
+- `crates/calm-server/tests/cases/head_schema_fixture.rs:58-62`: list `0120` (a new, byte-frozen file; `0119` is #1838's `report_tags` on main).
 - `crates/calm-server/tests/cases/track_projection_policy_patch.rs`: the `tracks` column snapshot.
 - `TRACK_SELECT_COLUMNS` / `_W` lockstep (`rows.rs:63-75`); regenerated OpenAPI and `wire.ts`.
 - `scripts/local-ratchet-gates.sh` (terminology and prose ratchets; this doc is in scope).
