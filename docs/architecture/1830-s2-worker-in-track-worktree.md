@@ -96,8 +96,13 @@ Verified at 2bd0ce8eb (S1 head) by reading the code, or by the query or command 
 - **D7 The release happens inside the transaction that ends the attempt, and freezes the
   outcome there.** `release_workspace_lease_for_card_tx(tx, card, outcome)` becomes the one
   release. It releases a held lease and, when the attempt has no delivery row, inserts the first
-  one with `reason = <outcome>`. This fills the ordinal-1 `reason`, which today is always NULL
-  (G5). Callers:
+  one with its own column `outcome` set (the migration `0121_task_git_delivery_outcome.sql`):
+  `ALTER TABLE task_git_deliveries ADD COLUMN outcome TEXT NULL CHECK (outcome IS NULL OR outcome IN
+  ('completed','failed','canceled','spawn-failed','interrupted'))`, plus a `BEFORE UPDATE OF
+  outcome` trigger that aborts, because the 0113 immutability trigger lists its columns by name.
+  The column is nullable only because the 45 settled rows on 4140 predate it. Every row S2 writes
+  carries a value: a retry row copies its predecessor's. `reason` keeps its single meaning, the
+  Planner's retry reason. Callers:
   - **Report** (`calm.task.complete` / `fail`): inside the report tx (`decision_sink.rs`) with
     `completed` / `failed`. This replaces the second-tx release (G8), whose crash window would
     leave a `held` lease that D5 then blocks on forever. The success row keeps being written
@@ -113,9 +118,9 @@ Verified at 2bd0ce8eb (S1 head) by reading the code, or by the query or command 
   - **Track/area delete:** no delivery row.
 
   The dispatcher pokes the scheduler on `workspace.released` so the new row is submitted (G11).
-- **D8 Commit message:** `neige: attempt <attempt_id> <outcome> (delivery <id>)`. The outcome
-  comes from the attempt's ordinal-1 row, read where the lease is read. A retry row keeps the
-  Planner's own reason and reuses that outcome.
+- **D8 Commit message:** `neige: attempt <attempt_id> <outcome> (delivery <id>)`, where the
+  outcome is the row's own `outcome` column (D7). The payload builder reads nothing else, so
+  every builder of one row produces the same text.
 - **D9 No lease-driven removal remains.** Compensation and every release only flip the row, so
   the compensation `rm` hazard goes away with the path. S1 teardown keeps the Discard
   `remove_workspace_worktree` and its safety checks (G15). Only the lease- and reclaim-specific
@@ -165,8 +170,10 @@ Planner's `git.commit`.
 
 ## 4. S2 change list
 
-Additions (about 280 production lines):
+Additions (about 300 production lines, one migration):
 
+- `calm-truth/migrations/0121_task_git_delivery_outcome.sql` (D7; the number after S1's 0120 is
+  assigned last), `DeliveryRow.outcome`, `DELIVERY_COLUMNS`, both INSERTs.
 - `workspace_lease/mod.rs`: `prepare_worker_lease_tx` (D1, D2, D6); `track_idle_tx` (D5); the
   outcome parameter and delivery insert in `release_workspace_lease_for_card_tx` (D7); the
   branch rule (D4); `run_git`.
@@ -207,7 +214,8 @@ Rewritten, not deleted: the lease helpers in `test_seams.rs` and the `kernel_lea
   (`REGEN_PLANNER_PROMPT_GOLDEN=1`), and `worker_prompt_{cli,mcp}.txt:6`.
 - `dispatcher/tests.rs`: the observation text.
 - `scripts/gate-prose-ratchet.sh`: update the baseline if the counts move.
-- Not triggered: migrations (`head_schema_fixture`, `track_write_point_registry`), OpenAPI,
+- `tests/cases/head_schema_fixture.rs:58-62`: list `0121` (a new, byte-frozen file).
+- Not triggered: `track_write_point_registry`, OpenAPI,
   `docs/oracle/*.yaml`, trybuild, and the FE.
 
 ## 6. Tests
@@ -219,7 +227,7 @@ files and reports through MCP. Tracks are minted by the real create route.
 | Test | Pins | Mutation that must turn it red |
 |---|---|---|
 | T1 `a_dirty_worktree_refuses_the_worker_and_lists_the_files` (attached): a tracked edit, an untracked file and an ignored file. Result: `spawn-failed: refused: track-worktree-dirty`, naming the first two and not the ignored one, and no lease or card row. After the Planner's `git.commit`, a re-declared task runs on that commit | D6 | M1: the check reports clean. Red first: today the worker gets a fresh per-card worktree |
-| T2 `a_failed_attempt_is_committed_and_the_next_task_continues_from_it` (attached): the worker writes `a.txt` and calls `calm.task.fail`. `neige/track-<id>` gains a commit whose message names the attempt and `failed`, the candidate ref points at it, and the tree is clean. A task declared after that settlement has `base_sha` equal to that commit and reads `a.txt` | D7, D8 | M2: the report tx passes no outcome (no row); M3: the message outcome is fixed to `completed` |
+| T2 `a_failed_attempt_is_committed_and_the_next_task_continues_from_it` (attached): the worker writes `a.txt` and calls `calm.task.fail`. `neige/track-<id>` gains a commit whose message names the attempt and `failed`, the delivery row's `outcome` is `failed`, the candidate ref points at it, and the tree is clean. A task declared after that settlement has `base_sha` equal to that commit and reads `a.txt` | D7, D8 | M2: the report tx inserts no row on failure; M3: the report tx writes `outcome = 'completed'` for every report |
 | T3 `an_attached_track_registers_one_worktree_and_one_branch`: two successful tasks, the second declared after the first settles. Both worker cwds are the track worktree. `git worktree list` and `refs/heads/neige/*` each grow by exactly 1 from before the create, and `.claude/worktrees/<track>/` does not exist | D1, D2 (acceptance) | M4: `prepare_worker_lease_tx` uses `workspace.path` for attached tracks |
 | T4 `a_track_runs_one_worker_at_a_time`: `tracks.task_budget = 4` (as on 4140). Task a is made running through the `git_delivery.rs` fixture's `running_task`, and independent task b is ready. A scheduler pass leaves b `pending` | D5 status term | M5: the status term is dropped |
 | T4b `the_next_task_waits_for_the_previous_commit` (budget 4): a writes a file and reports. A `pre-commit` hook in the repository blocks until a release file exists, which holds the real delivery unsettled. A pass leaves b `pending`. After the file is created, the delivery settles and b is claimed with base = a's commit | D5 delivery term | M6: the delivery term is dropped |
@@ -236,7 +244,7 @@ Each mutation changes one production line. Every leasing test asserts its lease 
 lease. Predicted red sets:
 - M1 → T1 and the `showUntrackedFiles` unit test.
 - M2 → T2.
-- M3 → T2, the cancel test and the reaper test.
+- M3 → T2 only (the cancel and reaper tests write their outcome at another call site).
 - M4 → T1–T4b, T7, and the cancel and reaper tests (all attached).
 - M5 → T4.
 - M6 → T4b.
