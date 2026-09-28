@@ -81,22 +81,18 @@ pub enum TransitionError {
     },
 }
 
-/// `from planning the planner may write: dispatching, reviewing, failed`; with no legal target,
-/// `from done the planner cannot change the lifecycle; the user can resume it` (the suffix only when
-/// the actor is not the user and [`user_can_resume`] holds).
+/// `from planning the planner may write: dispatching, reviewing, failed`, or with no legal target
+/// `from done the planner cannot change the lifecycle`.
 fn legal_targets_clause(from: TrackLifecycle, kind: ActorKind) -> String {
     let targets: Vec<&str> = allowed_targets(from, kind)
         .into_iter()
         .map(TrackLifecycle::as_db_str)
         .collect();
-    let resumable = kind != ActorKind::User && user_can_resume(from);
     let (from, actor) = (from.as_db_str(), kind.label());
-    if !targets.is_empty() {
-        format!("from {from} the {actor} may write: {}", targets.join(", "))
-    } else if resumable {
-        format!("from {from} the {actor} cannot change the lifecycle; the user can resume it")
-    } else {
+    if targets.is_empty() {
         format!("from {from} the {actor} cannot change the lifecycle")
+    } else {
+        format!("from {from} the {actor} may write: {}", targets.join(", "))
     }
 }
 
@@ -495,7 +491,7 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "track lifecycle: done → reviewing is not allowed; \
-             from done the planner cannot change the lifecycle; the user can resume it"
+             from done the planner cannot change the lifecycle"
         );
     }
 
