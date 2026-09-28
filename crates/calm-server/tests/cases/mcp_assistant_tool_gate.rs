@@ -53,6 +53,8 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     // Track filesystem + history drill-ins (Planner|Worker, never Assistant).
     "calm.track.ls",
     "calm.track.cat",
+    // `neige tag report.md` (Planner lists and changes, Worker lists; never Assistant).
+    "calm.report.tag",
     "calm.track.diff",
     "calm.track.cat_at",
     "calm.track.log",
