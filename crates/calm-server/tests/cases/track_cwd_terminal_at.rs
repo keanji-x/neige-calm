@@ -507,10 +507,9 @@ async fn post_api_tracks_rejects_cwd_owned_by_another_area() {
 #[tokio::test]
 async fn post_api_tracks_explicitly_reuses_cwd_owned_by_another_area_without_rebinding() {
     let boot = boot().await;
-    let other_claim = std::env::current_dir()
-        .expect("current test checkout")
-        .to_string_lossy()
-        .into_owned();
+    // A fixture repository, never the test checkout: this create mints, and an attached mint
+    // makes a track worktree and branch in the repository it attaches (#1830).
+    let other_claim = attached_repo_fixture("cross-area-reuse");
     let cwd = other_claim.clone();
     let claim = boot
         .repo
