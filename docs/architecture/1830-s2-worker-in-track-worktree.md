@@ -84,9 +84,9 @@ Verified at 2bd0ce8eb (S1 head) by reading the code, or by the query or command 
   It is used in two places, with G3's unique index as the backstop:
   - the claim tx of an in-tree worker only, on top of the budget, which stays until S2b
     (`except` = the claimed row);
-  - delivery retry admission (G12), with `except` = the retried attempt. Otherwise the retry
-    refuses: "refused: the track is running another attempt; wait for it, then retry". Retry
-    also requires the attempt's lease to be the track's latest lease row. After a later attempt
+  - delivery retry admission (G12), with `except` = the retried attempt, checked first. Otherwise
+    the retry refuses: "refused: the track is running another attempt; wait for it, then retry".
+    Second, retry requires the attempt's lease to be the track's latest lease row. After a later attempt
     has run, `git add -A` would stage nothing and `update-ref` would pin its HEAD as this
     attempt's candidate (`action.rs:358-374`), so it refuses: "refused: a later attempt ran in
     this checkout; declare a new task".
@@ -118,13 +118,19 @@ Verified at 2bd0ce8eb (S1 head) by reading the code, or by the query or command 
     outcome read from the now-terminal `tasks.status`.
   - **Timeout / `calm.plan.cancel` of a running task:** at the cleanup after the kill, with the
     terminal `tasks.status` (`failed` / `canceled`). The terminal flip does not release, because
-    the worker may still write. Until its marker clears, the cleanup is retried every tick.
-  - **Compensation:** the `release_workspace_lease` step becomes the last step, after
-    `cleanup_codex_worker` (`codex_adapter/mod.rs:1033-1047`), with `spawn-failed`.
+    the worker may still write. Until its marker clears, the cleanup is retried every tick. When
+    the marker write (`mark_running_timeout_cleanup_tx`, shared by the liveness flip and the
+    running cancel) marks 0 sessions, no live worker is left to kill (a Claude PTY that died
+    same-boot is `exited`, `attach_reader.rs:141-160`), so that flip tx releases at once.
+  - **Compensation:** in both adapters the `release_workspace_lease` step becomes the last step,
+    after `cleanup_codex_worker` / `cleanup_claude_worker` (`codex_adapter/mod.rs:1033-1047`,
+    `claude_adapter/mod.rs:1183-1209`), with `spawn-failed`.
   - **Card delete:** its delete tx, with `interrupted`.
-  - **Boot reclaim is deleted** (smaller than failing the task there). A lease from an older
-    boot belongs to a running task, which its liveness timeout ends through the cleanup arm, or
-    to a recoverable op, whose compensation releases it.
+  - **Boot reclaim** (kept, `workspace_lease/mod.rs:401-437`, called at `driver.rs:372`): a
+    lease from an older boot whose owner op is not recoverable. Its tx also fails the owner
+    attempt (CAS `dispatched|running`) with the reaper's dead-worker detail (`reaper/mod.rs:504`,
+    which wakes the Planner), and writes `outcome = 'interrupted'`, so `settle_tx` never sees a
+    running task. It is the one releaser for a Stuck owner and for a rebooted `exited` session.
   - **Track/area delete:** no delivery row.
 
   The dispatcher pokes the scheduler on `workspace.released` so the new row is submitted (G11).
@@ -167,7 +173,8 @@ Verified at 2bd0ce8eb (S1 head) by reading the code, or by the query or command 
 | worker dies unreported | reaper fail tx | already | same tx (`failed`) |
 | liveness timeout, running cancel | flip + cleanup marker | sweep kills it | cleanup after kill (`failed` / `canceled`) |
 | spawn fails after prepare | compensation, then `fail_spawn` | never ran, or killed | compensation step (`spawn-failed`) |
-| machine reboot mid-run | liveness timeout flip | already | cleanup after the timeout (`failed`) |
+| machine reboot mid-run | boot reclaim tx | already | same tx (`interrupted`) |
+| session already `exited` at the timeout or cancel | flip tx | already | same tx (terminal status) |
 | dirty tree or no worktree at prepare | `fail_spawn` | never ran | no lease, no row |
 
 The only end without a commit is a delivery that runs and fails (a merge in progress, a switched
@@ -177,7 +184,7 @@ Planner's `git.commit`.
 
 ## 4. S2 change list
 
-Additions (about 300 production lines, one migration):
+Additions (about 330 production lines, one migration):
 
 - `calm-truth/migrations/0121_task_git_delivery_outcome.sql` (D7; the number after S1's 0120 is
   assigned last), `DeliveryRow.outcome`, `DELIVERY_COLUMNS`, both INSERTs.
@@ -187,9 +194,11 @@ Additions (about 300 production lines, one migration):
 - Adapters (`codex_adapter/mod.rs`, `claude_adapter/{mod,workspace}.rs`): call
   `prepare_worker_lease_tx`, verify only at spawn, and drop the carry notice.
 - Release call sites (D7): `decision_sink.rs`, `reaper/mod.rs`, `scheduler/mod.rs` cleanup, the
-  adapters' compensation (release moved last), `routes/cards.rs:1576`, `plugin_host/callbacks.rs:537`.
-- Compensation has no card→attempt stamp: its release takes the attempt from the op's
-  `idempotency_key` (the lease's `lease_owner` op).
+  adapters' compensation (release moved last), `routes/cards.rs:1576`, `plugin_host/callbacks.rs:537`,
+  the 0-marked branch (liveness and running cancel), boot reclaim (fails the task too).
+- The release resolves the attempt as the lease owner op's `idempotency_key`, else the task whose
+  `worker_card_id` is the lease card (the rule `reclaim.rs:108-118` uses today); compensation
+  has no card stamp, so it relies on the first.
 - The per-card and upstream deletions spare what S1's `track_worktree.rs` uses:
   `WorkspaceLeaseTarget`, `choose_lease_start`, `diverged_refusal`, `refresh_upstream`.
 - Fence call sites: the `scheduler/mod.rs` claim tx and `git_candidate/action.rs` retry (D5).
@@ -199,14 +208,14 @@ Additions (about 300 production lines, one migration):
   completed". `workspace_materialize.rs:171-215`: reword the refusal message (the
   `refs/heads/neige` check stays).
 
-Deletions: about 2,200 production lines and 4,400 test lines.
+Deletions: about 2,150 production lines and 4,400 test lines.
 
 | What | Prod lines |
 |---|---|
 | Per-card path in `workspace_lease/mod.rs`: target, `release_by_id`/`remove_artifact`, provisioning and stale-dir cleanup, KeepWork/`RemovalOutcome`/`*_for_lease*`, the per-card sweep (entries, slice branches, `worktree.removed` events), path parsing, `workspace_lease_path_for`/`workspace_slice_branch_for` | ~750 |
 | `base.rs`: `resolve_lease_base`, the provision, sweep and removal identity checks, `WorktreeBase::LegacyUnpinned`. The symlink and foreign-registration helpers stay for G15 | ~230 |
 | #1815 reclaim: `workspace_lease/reclaim.rs`, `scheduler/worktree_reclaim.rs` | 588 |
-| Worker upstream fetch: `refresh_track_upstream`, the `before_insert` hook and its driver call. Boot reclaim (`workspace_lease/mod.rs:401-450`, `driver.rs:372`). Pre-slice recovery arms in both adapters (0 in-flight ops) | ~160 |
+| Worker upstream fetch: `refresh_track_upstream`, the `before_insert` hook and its driver call. Pre-slice recovery arms in both adapters (0 in-flight ops) | ~110 |
 | Carry: `carry.rs` less `run_git` (`resolve_task_lease_base_tx`, merge-tree, `CarryNotice`), `carry_plan_tx`, `prompts/worker/carry-notice.md`, the carry test seam `test_seams.rs:188-205` | ~300 |
 | Legacy `git.commit:auto`: `emit.rs:170-306`, `:326-344` | ~160 |
 
@@ -244,7 +253,9 @@ files and reports through MCP. Tracks are minted by the real create route.
 | T4b `the_next_task_waits_for_the_previous_commit` (budget 4): a is ungated (so it ends `done`, not `verifying`), writes a file and reports. A `pre-commit` hook in the repository blocks until a release file exists, which holds the real delivery unsettled. A pass leaves b `pending`. After the file is created, the delivery settles and b is claimed with base = a's commit | D5 delivery term | M6: the delivery term is dropped |
 | T5 `a_worktree_less_attached_track_refuses_workers`: a fixture `AttachedFromCwd` row (no worktree, as on 4140) gives `spawn-failed: refused: track-without-worktree`; the checkout's `status` and HEAD are unchanged | D1 | M7: the attached arm falls back to `workspace.path` |
 | T6 `a_managed_track_worker_commits_on_main_in_its_directory`: the worker cwd is `workspace.path`; a candidate commit lands on `main`; no worktree is registered | D1, D4 | M8: the branch rule gives every track `neige/track-<id>` |
-| T7 `delivery_retry_is_refused_once_the_track_moved_on`: a's delivery settled `failed` (the `git_delivery.rs` observation-failure setup). b runs as a real worker holding a real lease, and a retry is refused (idle). After b settles, the retry is still refused (not the latest lease) and a's candidate ref does not exist | D5 retry | M9: retry skips `track_idle_tx`; M10: retry skips the latest-lease check |
+| T7 `delivery_retry_is_refused_once_the_track_moved_on`: a's delivery settled `failed` (the `git_delivery.rs` observation-failure setup); the test then removes a's untracked `worker.txt` (`git_delivery.rs:2365`) so D6 admits b. b runs as a real worker holding a real lease: the retry is refused with "running another attempt". After b settles, it is refused with "a later attempt ran in this checkout", and a's candidate ref does not exist | D5 retry | M9: retry skips `track_idle_tx` (the first refusal names the later attempt instead); M10: retry skips the latest-lease check |
+| T8 `an_exited_worker_is_released_by_its_timeout_flip`: fixture `kernel_lease` + `running_task`; the session set `exited` and `running_deadline_ms` set in the past by SQL (`planner_preserving_recovery.rs:313`, `git_delivery.rs:4111` patterns); one reconcile sweep. The task is `failed`, the lease `released`, and the delivery row has `outcome = 'failed'` | D7 0-marked arm | M11: the 0-marked branch does not release |
+| T9 `a_lease_from_an_older_boot_fails_its_attempt_and_is_released`: fixture `kernel_lease` + `running_task`, lease `boot_id` set to `stale-boot` by SQL, then `fx.reboot()`. The lease is `released`, the task `failed` with the dead-worker detail, and the delivery row has `outcome = 'interrupted'` | D7 boot reclaim | M12: boot reclaim does not fail the task |
 
 Ordinary tests, all on attached tracks:
 - `calm.plan.cancel` of a running task commits `canceled` after the kill.
@@ -256,10 +267,10 @@ lease. Predicted red sets:
 - M1 → T1 and the `showUntrackedFiles` unit test.
 - M2 → T2.
 - M3 → T2 only (the cancel and reaper tests write their outcome at another call site).
-- M4 → T1–T3, T4b, T7, and the cancel and reaper tests (all attached). Not T4: `running_task`
-  flips SQL status and takes no lease.
+- M4 → T1–T3, T4b, T7, and the cancel and reaper tests (all attached). Not T4, T8 or T9: they
+  use fixture rows, not `prepare_worker_lease_tx`.
 - M5 → T4 (T7's b holds a real lease, so the lease term still refuses).
-- M6 → T4b; M7 → T5; M8 → T6; M9 and M10 → T7.
+- M6 → T4b; M7 → T5; M8 → T6; M9 and M10 → T7; M11 → T8; M12 → T9.
 
 The lease term of D5 has no must-red test (holding a kill needs a missing hook); G3 backs it up.
 
@@ -271,6 +282,8 @@ The lease term of D5 has no must-red test (holding a kill needs a missing hook);
 - A failed attempt wakes the Planner twice: `task.failed`, then its candidate settlement.
 - A reported worker's late write can land after the kernel commit and overlap the next attempt.
 - A delivery that never settles (for example, the kernel cannot spawn git) holds the track.
+- A Stuck owner's lease from the same boot holds the track until the next reboot or a card
+  delete (`routes/cards.rs:1576`).
 - A terminal task that writes into the track's checkout leaves files, which the next clean check
   refuses; the Planner cleans them.
 - A managed track re-pointed to attached before its first lease has no worktree and is refused.
@@ -293,22 +306,16 @@ The lease term of D5 has no must-red test (holding a kill needs a missing hook);
 
 ## 9. S2b (follows S2, before deploy)
 
-- **Delete `calm.task.replace`:** a successor already starts from the previous commit, so a
-  cancel plus a new task does the same job. Delete:
-  - `src/task_replace/` (1,093), `track_report/replace.rs`, `PersistPurpose::Replace` /
-    `planner_replace`, `tools/task_replace.rs`;
-  - the replace routing (`scheduler/mod.rs:1375-1392`), `candidate.carry`
-    (`plan.rs:749-797`) and the recovery `Replaced` refusal;
-  - `WorkerCleanupReason::Superseded` and `task_cancel_pending_with_detail_tx`;
-  - 2 prompt files, and the `planner.md:76` bullet ("For another round, declare a new task…").
-
-  The `task_replacements` table stays unread (no migration); `BaseSource::Attempt` decodes one
-  lease row. Gates: `report_write_boundary.sh:26`, the MCP tool registry golden, the tool-name
-  lists, `gate_binding.rs:718` and `target.rs:586-590`. About 1,500 production and 1,100 test
-  lines.
-- **Delete the budget knob:** D5 is the whole rule. Delete `DEFAULT_TRACK_TASK_BUDGET`, the env
-  var, the `task_budget_default` setting (route, AppContext threading, FE control) and the
-  `task_budget` PATCH field; the column stays unread. The ready set uses `track_idle`.
-  `BudgetQueued{occupied,effective}` becomes `TrackBusy{message}`, which needs OpenAPI,
-  `wire.ts`, the FE gates and a browser check. `tree_task_budget` is untouched. About 350
-  production lines (grep estimate).
+- **Delete `calm.task.replace`** (a cancel plus a new task now does its job): `src/task_replace/`,
+  `track_report/replace.rs`, `PersistPurpose::Replace`/`planner_replace`, `tools/task_replace.rs`,
+  the replace routing (`scheduler/mod.rs:1375-1392`), `candidate.carry` (`plan.rs:749-797`), the
+  recovery `Replaced` refusal, `WorkerCleanupReason::Superseded`,
+  `task_cancel_pending_with_detail_tx`, 2 prompt files and the `planner.md:76` bullet. The
+  `task_replacements` table stays unread (no migration). Gates: `report_write_boundary.sh:26`,
+  the MCP tool registry golden, the tool-name lists, `gate_binding.rs:718`, `target.rs:586-590`.
+  About 1,500 production and 1,100 test lines.
+- **Delete the budget knob** (D5 is the whole rule): `DEFAULT_TRACK_TASK_BUDGET`, the env var,
+  the `task_budget_default` setting (route, threading, FE control) and the `task_budget` PATCH
+  field (the column stays unread). The ready set uses `track_idle`, and `BudgetQueued` becomes
+  `TrackBusy{message}` (OpenAPI, `wire.ts`, FE gates, a browser check). `tree_task_budget` is
+  untouched. About 350 production lines (grep estimate).
