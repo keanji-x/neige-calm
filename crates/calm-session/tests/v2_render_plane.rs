@@ -140,3 +140,23 @@ fn render_plane_build_snapshot_with_scrollback_lines() {
         "Scrollback::Lines should populate scrollback field"
     );
 }
+
+#[test]
+fn keyboard_mode_keeps_live_bytes_and_clean_reconnect_snapshot() {
+    let mut plane = RenderPlane::new(20, 2, 4096, 10);
+    let input = b"\x1b[>4;2mhistory\r\nvisible\r\ntail";
+    let effects = plane.on_pty_chunk(input.to_vec());
+    assert!(
+        effects.iter().any(|effect| matches!(effect,
+            Effect::Broadcast(DaemonMsg::RenderPatch(p)) if p.data == input
+        )),
+        "keyboard controls must still reach the browser"
+    );
+    let snapshot = plane.build_snapshot(20, 2, ScrollbackLimit::All);
+    let mut plain = RenderPlane::new(20, 2, 4096, 10);
+    plain.on_pty_chunk(b"history\r\nvisible\r\ntail".to_vec());
+    let expected = plain.build_snapshot(20, 2, ScrollbackLimit::All);
+    assert!(expected.scrollback.is_some());
+    assert_eq!(snapshot.data, expected.data);
+    assert_eq!(snapshot.scrollback, expected.scrollback);
+}

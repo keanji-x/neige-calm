@@ -213,3 +213,46 @@ fn ed_clears_screen() {
         "ED 2 should have wiped 'junk', snapshot: {s:?}"
     );
 }
+
+#[test]
+fn private_csi_does_not_change_text_style_or_grid() {
+    // These have ordinary CSI final bytes but belong to different namespaces.
+    for sequence in [
+        &b"\x1b[>4;2m"[..],
+        b"\x1b[>4m",
+        b"\x1b[>0m",
+        b"\x1b[>31m",
+        b"\x1b[=4m",
+        b"\x1b[4 m",
+        b"\x1b[>2J",
+        b"\x1b[>1;1H",
+        b"\x1b[2 A",
+        b"\x1b[2 S",
+    ] {
+        for split in 0..=sequence.len() {
+            let mut expected = TerminalModel::new(20, 3, 10);
+            expected.feed(b"\x1b[1;31mseed\x1b[2;5H");
+            let mut actual = TerminalModel::new(20, 3, 10);
+            actual.feed(b"\x1b[1;31mseed\x1b[2;5H");
+            let rev = actual.rev();
+            actual.feed(&sequence[..split]);
+            actual.feed(&sequence[split..]);
+            assert_eq!(actual.rev(), rev, "sequence {sequence:?}, split {split}");
+            expected.feed(b"text");
+            actual.feed(b"text");
+            assert_eq!(
+                actual.snapshot_vt(20, 3),
+                expected.snapshot_vt(20, 3),
+                "sequence {sequence:?}, split {split}"
+            );
+        }
+    }
+}
+
+#[test]
+fn private_csi_preserves_real_underline_and_its_reset() {
+    let mut model = TerminalModel::new(20, 1, 0);
+    model.feed(b"\x1b[4mA\x1b[>4;2mB\x1b[24mC");
+    let snapshot = String::from_utf8(model.snapshot_vt(20, 1)).unwrap();
+    assert!(snapshot.contains("\x1b[0;4mAB\x1b[0mC"), "{snapshot:?}");
+}

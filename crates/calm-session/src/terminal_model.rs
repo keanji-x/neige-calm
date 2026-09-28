@@ -372,6 +372,13 @@ impl<H: TerminalHandler + ?Sized> Perform for VteProcessor<'_, H> {
             return;
         }
 
+        // Private prefixes and intermediates select different CSI commands, even when
+        // the final byte matches an ordinary command. In particular, >4;2m configures
+        // keyboard input; interpreting it as SGR would enable underline and dim.
+        if !intermediates.is_empty() {
+            return;
+        }
+
         match action {
             'A' => self.handler.cursor_up(Self::first_param_or(params, 1)),
             'B' | 'e' => self.handler.cursor_down(Self::first_param_or(params, 1)),
