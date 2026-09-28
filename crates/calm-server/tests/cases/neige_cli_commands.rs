@@ -164,9 +164,9 @@ async fn cli_state_text_is_one_fact_per_line() {
         fact("you"),
         vec![format!("you        {} planner", boot.card_id)]
     );
-    assert_eq!(fact("report"), vec!["report     none (no report card)"]);
-    assert_eq!(fact("tasks"), vec!["tasks      1: 1 running"]);
-    assert_eq!(fact("cards").len(), 1, "{text}");
+    assert_eq!(fact("report"), vec!["report     none"]);
+    assert!(fact("tasks").is_empty(), "{text}");
+    assert_eq!(fact("live").len(), 1, "{text}");
     let own: Vec<&str> = text
         .lines()
         .filter(|l| l.contains(&boot.card_id) && !l.starts_with("you"))
@@ -186,6 +186,23 @@ async fn cli_state_text_is_one_fact_per_line() {
         "{text}"
     );
     assert!(!text.contains('{'), "text, not JSON: {text}");
+
+    sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE card_id = ?1")
+        .bind(&boot.other_card_id)
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    let (text, _, exit) = cli(&boot, &["state"]).await;
+    assert_eq!(exit, 0, "{text}");
+    let live: Vec<&str> = text
+        .lines()
+        .skip_while(|l| !l.starts_with("live"))
+        .collect();
+    assert_eq!(live.len(), 1, "an exited worker is not live: {text}");
+    assert!(
+        live[0].contains(&boot.card_id) && live[0].ends_with("  (you)"),
+        "{text}"
+    );
 }
 
 /// `tool` refused `argv` exactly as it refuses the direct call on the same token, in both error formats.

@@ -63,7 +63,7 @@ const COMMANDS: &[CommandHelp] = &[
     ),
     command_help!(
         "state",
-        "Show the track's current state: lifecycle, your card, report, tasks and cards",
+        "Show the track's current state: lifecycle, your card, report and live cards",
         "Usage: neige state [--json]",
         "",
         "Options:",

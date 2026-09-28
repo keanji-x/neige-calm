@@ -2,11 +2,10 @@
 //! (#1801). A missing required field is a render error, never a substituted default.
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 
-use crate::model::TaskStatus;
+use crate::session_projection_repo::WorkerSessionState;
 use crate::track_vcs::DiffStatus;
 
 /// How one command prints its tool result.
@@ -165,9 +164,9 @@ fn state(tool: &str, json: bool, value: &Value) -> Result<String, RenderError> {
         )
     })?;
     let report = if !cards.iter().any(|card| card.kind == "track-report") {
-        "none (no report card)"
+        "none"
     } else if read_required {
-        "has content: calm.report.read before editing"
+        "has content"
     } else {
         "empty skeleton"
     };
@@ -188,17 +187,27 @@ fn state(tool: &str, json: bool, value: &Value) -> Result<String, RenderError> {
     fact("lifecycle", lifecycle);
     fact("you", &format!("{} {}", you.id, you.role));
     fact("report", report);
-    fact("tasks", &tasks_summary(&tasks));
-    for (index, line) in card_lines(&cards, caller).iter().enumerate() {
-        fact(if index == 0 { "cards" } else { "" }, line);
+    let live: Vec<&StateCard<'_>> = cards.iter().filter(|card| card.live).collect();
+    for (index, line) in card_lines(&live, caller).iter().enumerate() {
+        fact(if index == 0 { "live" } else { "" }, line);
     }
     Ok(out)
 }
 
-struct StateTask<'a> {
-    key: &'a str,
-    status: TaskStatus,
-    worker_card_id: Option<&'a str>,
+/// `(key, worker_card_id)` of each current task; only the `task <key>` suffix reads tasks.
+fn state_tasks<'a>(
+    tool: &str,
+    tasks: &'a [Value],
+) -> Result<Vec<(&'a str, Option<&'a str>)>, RenderError> {
+    tasks
+        .iter()
+        .map(|task| {
+            Ok((
+                required_str(task, "key", tool, "task")?,
+                nullable_str(task, "worker_card_id", tool, "task")?,
+            ))
+        })
+        .collect()
 }
 
 struct StateCard<'a> {
@@ -207,46 +216,35 @@ struct StateCard<'a> {
     kind: &'a str,
     /// The runtime status, `-` without a runtime row.
     status: &'a str,
+    /// The runtime is an active worker session.
+    live: bool,
     /// Keys of the tasks whose worker is this card.
     tasks: Vec<&'a str>,
-}
-
-fn state_tasks<'a>(tool: &str, tasks: &'a [Value]) -> Result<Vec<StateTask<'a>>, RenderError> {
-    tasks
-        .iter()
-        .map(|task| {
-            let label = required_str(task, "status", tool, "task")?;
-            let status =
-                serde_json::from_value::<TaskStatus>(Value::from(label)).map_err(|_| {
-                    shape(
-                        format!("{tool} task has unknown status {label:?}"),
-                        tool,
-                        "task",
-                        task,
-                    )
-                })?;
-            Ok(StateTask {
-                key: required_str(task, "key", tool, "task")?,
-                status,
-                worker_card_id: nullable_str(task, "worker_card_id", tool, "task")?,
-            })
-        })
-        .collect()
 }
 
 fn state_cards<'a>(
     tool: &str,
     cards: &'a [Value],
-    tasks: &[StateTask<'a>],
+    tasks: &[(&'a str, Option<&'a str>)],
 ) -> Result<Vec<StateCard<'a>>, RenderError> {
     cards
         .iter()
         .map(|card| {
             let id = required_str(card, "id", tool, "card")?;
-            let status = match card.get("runtime") {
-                Some(Value::Null) => "-",
+            let (status, live) = match card.get("runtime") {
+                Some(Value::Null) => ("-", false),
                 Some(runtime @ Value::Object(_)) => {
-                    required_str(runtime, "status", tool, "runtime")?
+                    let status = required_str(runtime, "status", tool, "runtime")?;
+                    let state = serde_json::from_value::<WorkerSessionState>(Value::from(status))
+                        .map_err(|_| {
+                        shape(
+                            format!("{tool} runtime has unknown status {status:?}"),
+                            tool,
+                            "runtime",
+                            runtime,
+                        )
+                    })?;
+                    (status, state.is_active_authority())
                 }
                 _ => {
                     return Err(shape(
@@ -262,35 +260,20 @@ fn state_cards<'a>(
                 role: required_str(card, "role", tool, "card")?,
                 kind: required_str(card, "kind", tool, "card")?,
                 status,
+                live,
                 tasks: tasks
                     .iter()
-                    .filter(|task| task.worker_card_id == Some(id))
-                    .map(|task| task.key)
+                    .filter(|(_, worker)| *worker == Some(id))
+                    .map(|(key, _)| *key)
                     .collect(),
             })
         })
         .collect()
 }
 
-/// `3: 2 pending, 1 running`, or `none`.
-fn tasks_summary(tasks: &[StateTask<'_>]) -> String {
-    if tasks.is_empty() {
-        return "none".to_string();
-    }
-    let mut by_status = BTreeMap::<TaskStatus, usize>::new();
-    for task in tasks {
-        *by_status.entry(task.status).or_default() += 1;
-    }
-    let counts: Vec<String> = by_status
-        .into_iter()
-        .map(|(status, count)| format!("{count} {}", status.wire_label()))
-        .collect();
-    format!("{}: {}", tasks.len(), counts.join(", "))
-}
-
 /// `id  role  kind  status[  task <key>]`, columns (escaped first) padded to the widest value; the
 /// caller's own row shows `(you)` for its status, which is always mid-turn.
-fn card_lines(cards: &[StateCard<'_>], caller: &str) -> Vec<String> {
+fn card_lines(cards: &[&StateCard<'_>], caller: &str) -> Vec<String> {
     let rows: Vec<[Cow<'_, str>; 4]> = cards
         .iter()
         .map(|card| {
@@ -601,7 +584,7 @@ mod tests {
         })
     }
 
-    /// A working track with tasks in mixed statuses and a worker card bound to one of them.
+    /// A working track: a running worker bound to one task, an exited worker bound to another.
     fn working_track_state() -> Value {
         json!({
             "track": {
@@ -617,14 +600,16 @@ mod tests {
                   "created_at": 1, "updated_at": 1, "runtime": null },
                 { "id": "crd_worker", "kind": "claude", "role": "worker", "sort": 3.0,
                   "created_at": 1, "updated_at": 1,
-                  "runtime": { "worker_session_id": "ws_2", "kind": "claude", "status": "exited" } }
+                  "runtime": { "worker_session_id": "ws_2", "kind": "claude", "status": "running" } },
+                { "id": "crd_old", "kind": "codex", "role": "worker", "sort": 4.0,
+                  "created_at": 1, "updated_at": 1,
+                  "runtime": { "worker_session_id": "ws_3", "kind": "codex", "status": "exited" } }
             ],
             "report_startup_read_required": true,
             "tasks": [
                 { "key": "fix-login", "status": "running", "worker_card_id": "crd_worker" },
                 { "key": "add-test", "status": "pending", "worker_card_id": null },
-                { "key": "docs", "status": "pending", "worker_card_id": null },
-                { "key": "old", "status": "done", "worker_card_id": null }
+                { "key": "old", "status": "failed", "worker_card_id": "crd_old" }
             ]
         })
     }
@@ -651,16 +636,14 @@ mod tests {
              lifecycle  draft\n\
              you        crd_planner planner\n\
              report     empty skeleton\n\
-             tasks      none\n\
-             cards      crd_planner  planner     codex         (you)\n\
-             \x20          crd_report   reportcard  track-report  -\n"
+             live       crd_planner  planner  codex  (you)\n"
         );
         assert_eq!(text.lines().filter(|l| l.contains("lifecycle")).count(), 1);
         assert_eq!(text.lines().filter(|l| l.contains("draft")).count(), 1);
     }
 
     #[test]
-    fn state_text_of_a_working_track_counts_tasks_and_binds_the_worker() {
+    fn state_text_lists_only_live_cards_and_no_task_counts() {
         let text = render(
             Render::State,
             "calm.track.state",
@@ -674,20 +657,15 @@ mod tests {
              title      Fix login redirect\n\
              lifecycle  working\n\
              you        crd_planner planner\n\
-             report     has content: calm.report.read before editing\n\
-             tasks      4: 2 pending, 1 running, 1 done\n\
-             cards      crd_planner  planner     codex         (you)\n\
-             \x20          crd_report   reportcard  track-report  -\n\
-             \x20          crd_worker   worker      claude        exited  task fix-login\n"
+             report     has content\n\
+             live       crd_planner  planner  codex   (you)\n\
+             \x20          crd_worker   worker   claude  running  task fix-login\n"
         );
         assert_eq!(text.lines().filter(|l| l.contains("lifecycle")).count(), 1);
-        assert_eq!(
-            lines_starting(&text, "you "),
-            vec!["you        crd_planner planner"]
-        );
-        let worker: Vec<&str> = text.lines().filter(|l| l.contains("crd_worker")).collect();
-        assert_eq!(worker.len(), 1);
-        assert!(worker[0].ends_with("task fix-login"), "{worker:?}");
+        assert!(lines_starting(&text, "tasks").is_empty(), "{text}");
+        for absent in ["crd_report", "crd_old", "exited", "old"] {
+            assert!(!text.contains(absent), "{absent}: {text}");
+        }
     }
 
     #[test]
@@ -701,25 +679,28 @@ mod tests {
         );
         assert_eq!(
             text.lines()
-                .skip_while(|l| !l.starts_with("cards"))
+                .skip_while(|l| !l.starts_with("live"))
                 .collect::<Vec<_>>(),
             vec![
-                "cards      crd_planner  planner     codex         idle",
-                "           crd_report   reportcard  track-report  -",
-                "           crd_worker   worker      claude        (you)  task fix-login",
+                "live       crd_planner  planner  codex   idle",
+                "           crd_worker   worker   claude  (you)  task fix-login",
             ]
         );
     }
 
     #[test]
-    fn state_text_without_a_report_card_says_none() {
+    fn state_text_report_line_is_the_state_only() {
+        let report = |value: &Value| {
+            let text = render(Render::State, "calm.track.state", false, value).unwrap();
+            lines_starting(&text, "report").join("\n")
+        };
         let mut value = draft_track_state();
+        assert_eq!(report(&value), "report     empty skeleton");
+        value["report_startup_read_required"] = json!(true);
+        assert_eq!(report(&value), "report     has content");
         value["cards"].as_array_mut().unwrap().pop();
-        let text = render(Render::State, "calm.track.state", false, &value).unwrap();
-        assert_eq!(
-            lines_starting(&text, "report"),
-            vec!["report     none (no report card)"]
-        );
+        value["report_startup_read_required"] = json!(false);
+        assert_eq!(report(&value), "report     none");
     }
 
     #[test]
@@ -742,11 +723,9 @@ mod tests {
              title      Example\\nlifecycle  done\\r\\t\\u{7}\n\
              lifecycle  working\n\
              you        crd_planner planner\n\
-             report     has content: calm.report.read before editing\n\
-             tasks      4: 2 pending, 1 running, 1 done\n\
-             cards      crd_planner  planner     codex         (you)\n\
-             \x20          crd_report   reportcard  track-report  -\n\
-             \x20          crd_worker   worker      cl\\naude      exited  task fix-login\n"
+             report     has content\n\
+             live       crd_planner  planner  codex     (you)\n\
+             \x20          crd_worker   worker   cl\\naude  running  task fix-login\n"
         );
         assert!(
             !text.trim_end_matches('\n').contains(['\r', '\t', '\u{7}']),
@@ -774,7 +753,7 @@ mod tests {
     #[test]
     fn state_shape_errors_name_the_missing_fact() {
         type Mutation = fn(&mut Value);
-        let cases: [(&str, Mutation); 5] = [
+        let cases: [(&str, Mutation); 6] = [
             (
                 "calm.track.state value missing string caller_card_id",
                 |v| {
@@ -794,6 +773,10 @@ mod tests {
                 },
             ),
             (
+                "calm.track.state runtime has unknown status \"exploded\"",
+                |v| v["cards"][2]["runtime"]["status"] = json!("exploded"),
+            ),
+            (
                 "calm.track.state caller card crd_gone is not among the track's cards",
                 |v| v["caller_card_id"] = json!("crd_gone"),
             ),
@@ -804,12 +787,5 @@ mod tests {
             let err = render(Render::State, "calm.track.state", false, &value).unwrap_err();
             assert_eq!(err.message, message);
         }
-        let mut value = working_track_state();
-        value["tasks"][0]["status"] = json!("exploded");
-        let err = render(Render::State, "calm.track.state", false, &value).unwrap_err();
-        assert_eq!(
-            err.message,
-            "calm.track.state task has unknown status \"exploded\""
-        );
     }
 }

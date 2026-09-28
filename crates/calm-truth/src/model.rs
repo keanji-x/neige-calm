@@ -287,10 +287,7 @@ pub enum TaskKind {
     Terminal,
 }
 
-/// Declaration order is the lifecycle order; `Ord` follows it.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, sqlx::Type, ToSchema,
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ToSchema)]
 #[sqlx(rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
 pub enum TaskStatus {
