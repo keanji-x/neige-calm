@@ -637,7 +637,8 @@
    * with rows showing through beneath it. The row instead takes that padding
    * over: a negative inset and margin of the same size, and its own padding
    * in their place, so its fill reaches the edge and the avatar stays where it
-   * sat before. The rail fill hides rows scrolling behind it. The z-index makes this row a stacking context that also holds
+   * sat before. The rail fill hides rows scrolling behind it. The z-index
+   * makes this row a stacking context that also holds
    * `.menu`, which overhangs `.main` (always so in the collapsed 44px strip),
    * so it is the menu's own `--z-overlay`: the menu keeps the rank it had
    * before, and the row still clears the `--z-raised` area action buttons.

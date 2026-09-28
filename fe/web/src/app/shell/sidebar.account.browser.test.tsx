@@ -7,6 +7,7 @@ import { NEUTRAL_ACTIVITY, type Track } from '../../../../core/domain/track.ts';
 import '../../styles/entry.css';
 import { useState } from '../../ui/state/public.ts';
 import { ThemeProvider } from '../theme/public.tsx';
+import styles from './shell.module.css';
 import { Sidebar } from './sidebar.tsx';
 
 afterEach(() => { cleanup(); delete document.documentElement.dataset.theme; });
@@ -31,7 +32,13 @@ function Rail({ theme, collapsed: initiallyCollapsed, mainLayer, currentPath }: 
   const tracks = [LAST_TRACK];
   return (
     <ThemeProvider storage={{ getItem: () => theme, setItem: () => undefined }}>
-      <div style={{ display: 'flex', flexDirection: 'column', blockSize: '100dvh' }}>
+      {/* The production shell grid, so the rail has its real width in both
+          modes and `.main` its real column beside it. The block size stands in
+          for the app's `#root` height chain. */}
+      <div
+        className={`${styles.shell} ${collapsed ? styles.shellCollapsed : styles.shellExpanded}`}
+        style={{ blockSize: '100dvh' }}
+      >
         <Sidebar
           areas={AREAS}
           tracksByArea={new Map(AREAS.map((area) => [area.id, tracks.filter((track) => track.areaId === area.id)]))}
@@ -51,12 +58,12 @@ function Rail({ theme, collapsed: initiallyCollapsed, mainLayer, currentPath }: 
           onToggleCollapsed={() => setCollapsed((value) => !value)}
           userLabel="Kenji Xie"
         />
+        {/* Stands in for `.main`'s content: its column, at the highest rank
+            that content uses in place (the sticky headers at `--z-sticky`). */}
+        {mainLayer
+          ? <div data-testid="main-layer" style={{ position: 'relative', zIndex: 'var(--z-sticky)' }} />
+          : <div />}
       </div>
-      {/* Stands in for `.main`: a later sibling carrying the highest rank its
-          content uses in place (the sticky headers at `--z-sticky`). */}
-      {mainLayer && (
-        <div data-testid="main-layer" style={{ position: 'fixed', inset: 0, zIndex: 'var(--z-sticky)' }} />
-      )}
     </ThemeProvider>
   );
 }
@@ -79,6 +86,14 @@ function railParts() {
 async function scrollRail(rail: HTMLElement, top: number) {
   rail.scrollTop = top;
   await new Promise(requestAnimationFrame);
+}
+
+/** The whole element sits above the pinned account row, not partly behind it. */
+function expectAboveAccountRow(element: HTMLElement) {
+  const { userRow } = railParts();
+  const name = element.getAttribute('aria-label') ?? element.textContent;
+  expect(element.getBoundingClientRect().bottom, `${name} reaches under the account row`)
+    .toBeLessThanOrEqual(userRow.getBoundingClientRect().top + 1);
 }
 
 /** The element's centre is the topmost thing there: nothing covers it. */
@@ -134,7 +149,9 @@ it('covers the area rows scrolling underneath the account row, action buttons in
 });
 
 it.each([false, true])('opens the account menu clear of the avatar and above the main region (collapsed: %s)', async (collapsed) => {
-  const { avatar } = await renderRail({ collapsed, mainLayer: true });
+  const { rail, avatar } = await renderRail({ collapsed, mainLayer: true });
+  const main = document.querySelector<HTMLElement>('[data-testid="main-layer"]')!;
+  expect(main.getBoundingClientRect().left).toBeCloseTo(rail.getBoundingClientRect().right, 0);
 
   await userEvent.click(avatar);
   const items = page.getByRole('menuitem').elements() as HTMLElement[];
@@ -144,12 +161,14 @@ it.each([false, true])('opens the account menu clear of the avatar and above the
   // Within a pixel of snapping; an avatar pushed up under the menu overlaps by a whole rail padding.
   expect(menu.getBoundingClientRect().bottom).toBeLessThanOrEqual(avatar.getBoundingClientRect().top + 1);
   expectUncovered(avatar);
+  const railRight = rail.getBoundingClientRect().right;
   for (const item of items) {
     expectUncovered(item);
-    // In the 44px strip the item reaches past the rail, over `.main`.
-    if (collapsed) {
-      const box = item.getBoundingClientRect();
-      expect(box.right).toBeGreaterThan(44);
+    const box = item.getBoundingClientRect();
+    // The narrow strip is narrower than the menu: the item reaches over `.main`,
+    // and that overhang is neither clipped by the rail nor covered by `.main`.
+    if (collapsed) expect(box.right).toBeGreaterThan(railRight + 8);
+    if (box.right > railRight + 8) {
       expect(item.contains(document.elementFromPoint(box.right - 4, box.top + box.height / 2))).toBe(true);
     }
   }
@@ -160,6 +179,7 @@ it('reveals the current track above the account row, not behind it', async () =>
   const current = document.querySelector<HTMLElement>('[aria-current="page"]')!;
   expect(current.textContent).toContain(LAST_TRACK.title);
   expectUncovered(current);
+  expectAboveAccountRow(current);
 });
 
 it('keeps every control reached by Tab clear of the account row', async () => {
@@ -170,7 +190,7 @@ it('keeps every control reached by Tab clear of the account row', async () => {
     await userEvent.tab();
     await new Promise(requestAnimationFrame);
     const focused = document.activeElement as HTMLElement;
-    if (focused !== avatar) { expectUncovered(focused); checked += 1; }
+    if (focused !== avatar) { expectUncovered(focused); expectAboveAccountRow(focused); checked += 1; }
   }
   expect(document.activeElement).toBe(avatar);
   expect(checked).toBeGreaterThan(AREAS.length);
@@ -183,6 +203,7 @@ it('restores focus from a collapsed-strip initial onto a disclosure the account 
   const focused = document.activeElement as HTMLElement;
   expect(focused.getAttribute('aria-label') ?? '').toContain(AREAS.at(-1)!.name);
   expectUncovered(focused);
+  expectAboveAccountRow(focused);
 });
 
 it.each(['light', 'dark'] as const)('paints the avatar with the card fill, not the rail fill (%s)', async (theme) => {
