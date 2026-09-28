@@ -81,33 +81,18 @@ pub enum TransitionError {
     },
 }
 
-/// `from planning the planner may write: dispatching, reviewing, failed (…)`, or `… may write nothing`.
-/// For the planner, a listed stage the kernel drives on claim carries that note, so the refusal
-/// does not invite the stage writes the planner prompt tells it to leave to the kernel.
+/// `from planning the planner may write: dispatching, reviewing, failed`, or `… may write nothing`.
 fn legal_targets_clause(from: TrackLifecycle, kind: ActorKind) -> String {
-    let targets = allowed_targets(from, kind);
-    let from_name = from.as_db_str();
-    let actor = kind.label();
-    if targets.is_empty() {
-        return format!("from {from_name} the {actor} may write nothing");
-    }
-    let names: Vec<&str> = targets.iter().map(|t| t.as_db_str()).collect();
-    let mut clause = format!(
-        "from {from_name} the {actor} may write: {}",
-        names.join(", ")
-    );
-    let kernel_driven: Vec<&str> = targets
-        .iter()
-        .filter(|t| matches!(t, TrackLifecycle::Dispatching | TrackLifecycle::Working))
-        .map(|t| t.as_db_str())
+    let targets: Vec<&str> = allowed_targets(from, kind)
+        .into_iter()
+        .map(TrackLifecycle::as_db_str)
         .collect();
-    if kind == ActorKind::PlannerAgent && !kernel_driven.is_empty() {
-        clause.push_str(&format!(
-            " (the kernel advances {} itself when it claims a task)",
-            kernel_driven.join(" and ")
-        ));
+    let (from, actor) = (from.as_db_str(), kind.label());
+    if targets.is_empty() {
+        format!("from {from} the {actor} may write nothing")
+    } else {
+        format!("from {from} the {actor} may write: {}", targets.join(", "))
     }
-    clause
 }
 
 /// Whether the user may apply the product's one `Resume work` action from this lifecycle.
@@ -491,8 +476,14 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "track lifecycle: planning → done is not allowed; \
-             from planning the planner may write: dispatching, reviewing, failed \
-             (the kernel advances dispatching itself when it claims a task)"
+             from planning the planner may write: dispatching, reviewing, failed"
+        );
+        let err = validate_transition(TrackLifecycle::Blocked, TrackLifecycle::Done, &planner())
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "track lifecycle: blocked → done is not allowed; \
+             from blocked the planner may write: working"
         );
         let err = validate_transition(TrackLifecycle::Done, TrackLifecycle::Reviewing, &planner())
             .unwrap_err();
@@ -514,20 +505,7 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "track lifecycle: planning → canceled is not allowed for the planner; \
-             from planning the planner may write: dispatching, reviewing, failed \
-             (the kernel advances dispatching itself when it claims a task)"
-        );
-        let err = validate_transition(
-            TrackLifecycle::Reviewing,
-            TrackLifecycle::Canceled,
-            &planner(),
-        )
-        .unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "track lifecycle: reviewing → canceled is not allowed for the planner; \
-             from reviewing the planner may write: working, done, failed \
-             (the kernel advances working itself when it claims a task)"
+             from planning the planner may write: dispatching, reviewing, failed"
         );
         let err = validate_transition(TrackLifecycle::Reviewing, TrackLifecycle::Done, &user())
             .unwrap_err();

@@ -2,6 +2,7 @@
 //! (#1801). A missing required field is a render error, never a substituted default.
 
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 
@@ -211,10 +212,8 @@ fn state_tasks<'a>(tool: &str, tasks: &'a [Value]) -> Result<Vec<StateTask<'a>>,
         .iter()
         .map(|task| {
             let label = required_str(task, "status", tool, "task")?;
-            let status = TaskStatus::ALL
-                .into_iter()
-                .find(|status| status.wire_label() == label)
-                .ok_or_else(|| {
+            let status =
+                serde_json::from_value::<TaskStatus>(Value::from(label)).map_err(|_| {
                     shape(
                         format!("{tool} task has unknown status {label:?}"),
                         tool,
@@ -274,12 +273,13 @@ fn tasks_summary(tasks: &[StateTask<'_>]) -> String {
     if tasks.is_empty() {
         return "none".to_string();
     }
-    let counts: Vec<String> = TaskStatus::ALL
+    let mut by_status = BTreeMap::<TaskStatus, usize>::new();
+    for task in tasks {
+        *by_status.entry(task.status).or_default() += 1;
+    }
+    let counts: Vec<String> = by_status
         .into_iter()
-        .filter_map(|status| {
-            let count = tasks.iter().filter(|task| task.status == status).count();
-            (count > 0).then(|| format!("{count} {}", status.wire_label()))
-        })
+        .map(|(status, count)| format!("{count} {}", status.wire_label()))
         .collect();
     format!("{}: {}", tasks.len(), counts.join(", "))
 }
