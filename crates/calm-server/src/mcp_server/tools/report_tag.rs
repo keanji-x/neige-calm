@@ -24,7 +24,7 @@ pub const TOOL_REPORT_TAG: &str = "calm.report.tag";
 /// The only taggable path: the caller's own report.
 const REPORT_PATH: &str = "report.md";
 const KEYS: &[&str] = &["path", "add", "remove"];
-/// Rolls back a call that changed no row; no row writer's conflict message equals it.
+/// Rolls back a call that left the tag list unchanged; no row writer's conflict message equals it.
 const NO_CHANGE: &str = "calm.report.tag: no tag changed";
 
 pub fn register_into(registry: &mut ToolRegistry) {
@@ -120,8 +120,8 @@ async fn report_tag(
     let actor = identity.to_actor_id();
     let area_id = track.area_id.clone();
     let track_ref = track.id.clone();
-    // The write path refuses an empty event batch, so a call that changes no row carries its
-    // tags out through `unchanged` and rolls back an empty transaction.
+    // The write path refuses an empty event batch, so a call that leaves the tags unchanged
+    // carries them out through `unchanged` and rolls its transaction back.
     let unchanged = Arc::new(Mutex::new(None));
     let unchanged_in = unchanged.clone();
     let result = write_with_actor_events_typed(

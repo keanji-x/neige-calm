@@ -27,7 +27,7 @@ where
 #[derive(Debug)]
 pub struct Applied {
     pub tags: Vec<String>,
-    /// The report card after its `updated_at` bump; `None` when the call changed no row.
+    /// The report card after its `updated_at` bump; `None` when the tag list ends as it began.
     pub touched_report: Option<Card>,
 }
 
@@ -50,9 +50,9 @@ pub async fn apply_tx(
             "track {track_id} has no report card to tag"
         )));
     };
-    let mut changed = false;
+    let before = list(&mut **tx, track_id).await?;
     for tag in add {
-        let inserted = sqlx::query(concat!(
+        sqlx::query(concat!(
             "INSERT INTO report_tags (track_id, tag, ordinal) ",
             "SELECT ?1, ?2, COALESCE(MAX(ordinal), 0) + 1 FROM report_tags WHERE track_id = ?1 ",
             "ON CONFLICT (track_id, tag) DO NOTHING"
@@ -61,15 +61,13 @@ pub async fn apply_tx(
         .bind(tag)
         .execute(&mut **tx)
         .await?;
-        changed |= inserted.rows_affected() > 0;
     }
     for tag in remove {
-        let deleted = sqlx::query("DELETE FROM report_tags WHERE track_id = ?1 AND tag = ?2")
+        sqlx::query("DELETE FROM report_tags WHERE track_id = ?1 AND tag = ?2")
             .bind(track_id)
             .bind(tag)
             .execute(&mut **tx)
             .await?;
-        changed |= deleted.rows_affected() > 0;
     }
     let tags = list(&mut **tx, track_id).await?;
     if tags.len() > MAX_TAGS_PER_REPORT {
@@ -78,7 +76,7 @@ pub async fn apply_tx(
             tags.len()
         )));
     }
-    let touched_report = if changed {
+    let touched_report = if tags != before {
         Some(card_update_tx(tx, &report_card_id, CardPatch::default()).await?)
     } else {
         None

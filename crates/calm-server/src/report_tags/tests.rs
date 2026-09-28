@@ -140,6 +140,29 @@ async fn a_change_bumps_the_report_updated_at_and_a_no_op_does_not() {
     );
 }
 
+/// Adding and removing the same absent tag in one call nets no change: no bump, no touched report.
+#[tokio::test]
+async fn adding_and_removing_the_same_absent_tag_is_a_no_op() {
+    let (repo, track) = fixture().await;
+    apply(&repo, &track, &["kept"], &[]).await.unwrap();
+    sqlx::query("UPDATE cards SET updated_at = 1 WHERE track_id = ?1")
+        .bind(&track)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    let applied = apply(&repo, &track, &["x"], &["x"]).await.unwrap();
+    assert_eq!(applied.tags, tags(&["kept"]));
+    assert!(
+        applied.touched_report.is_none(),
+        "net no-op touches nothing"
+    );
+    assert_eq!(
+        report_updated_at(&repo, &track).await,
+        1,
+        "net no-op keeps the time"
+    );
+}
+
 #[tokio::test]
 async fn tracks_do_not_share_tags_and_deleting_a_track_cascades_its_rows() {
     let (repo, track) = fixture().await;
