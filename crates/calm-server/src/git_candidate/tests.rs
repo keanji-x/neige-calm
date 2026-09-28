@@ -2291,7 +2291,7 @@ async fn delivery_payload_semantic_hash_is_stable() {
     assert!(!first.parked);
 
     // A lease without the kernel policy or without a base, or a row without an outcome (settled
-    // before migration 0121), is refused, never a payload.
+    // before migration 0122), is refused, never a payload.
     let mut legacy_lease = fx.lease.clone();
     legacy_lease.delivery_policy = None;
     assert!(forge_payload_for(&row, &legacy_lease, &branch).is_err());

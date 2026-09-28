@@ -100,7 +100,7 @@ Verified at 2bd0ce8eb (S1 head) by reading the code, or by the query or command 
 - **D7 The release happens inside the transaction that ends the attempt, and freezes the
   outcome there.** `release_workspace_lease_for_card_tx(tx, card, outcome)` becomes the one
   release. It releases a held lease and, when the attempt has no delivery row, inserts the first
-  one with its own column `outcome` set (the migration `0121_task_git_delivery_outcome.sql`):
+  one with its own column `outcome` set (the migration `0122_task_git_delivery_outcome.sql`):
   `ALTER TABLE task_git_deliveries ADD COLUMN outcome TEXT NULL CHECK (outcome IS NULL OR outcome IN
   ('completed','failed','canceled','spawn-failed','interrupted'))`, plus a `BEFORE UPDATE OF
   outcome` trigger that aborts, because the 0113 immutability trigger lists its columns by name.
@@ -204,7 +204,7 @@ retry` (D5-fenced) or the Planner's `git.commit`.
 
 Additions (about 330 production lines, one migration):
 
-- `calm-truth/migrations/0121_task_git_delivery_outcome.sql` (D7; the number after S1's 0120 is
+- `calm-truth/migrations/0122_task_git_delivery_outcome.sql` (D7; the number after S1's 0120 is
   assigned last), `DeliveryRow.outcome`, `DELIVERY_COLUMNS`, both INSERTs.
 - `workspace_lease/mod.rs`: `prepare_worker_lease_tx` (D1, D2, D6); `track_idle_tx` (D5); the
   outcome parameter and delivery insert in `release_workspace_lease_for_card_tx` (D7); the
@@ -251,7 +251,7 @@ Rewritten, not deleted: the lease helpers in `test_seams.rs` and the `kernel_lea
 
 - Goldens `issue_development_planner_prompt.txt:72,73,77` (`REGEN_PLANNER_PROMPT_GOLDEN=1`) and
   `worker_prompt_{cli,mcp}.txt:6`; `dispatcher/tests.rs` (observation text);
-  `head_schema_fixture.rs:58-62` lists `0121`; the prose-ratchet baseline if its counts move.
+  `head_schema_fixture.rs:58-62` lists `0122`; the prose-ratchet baseline if its counts move.
 - Not triggered: `track_write_point_registry`, OpenAPI, `docs/oracle/*.yaml`, trybuild, the FE.
 
 ## 6. Tests
@@ -352,7 +352,7 @@ Where the code differs from §2–§6, one line each, with why:
   timeout flip that marked no session) errs on a non-terminal status and leaves the lease held.
 - `mark_running_timeout_cleanup_tx` returns its release events; `calm.plan.cancel` and
   `calm.task.replace`'s stop add them to their own event batch.
-- D5 retry also refuses a row settled before 0121 (no `outcome`): D8's message needs it.
+- D5 retry also refuses a row settled before 0122 (no `outcome`): D8's message needs it.
 - Spawn still records `worktree.provisioned` once (now "checkout verified"); nothing writes
   `worktree.removed` any more, and `calm.plan.list` still reads old ones.
 - §6: the worker is played by the test (it writes files and reports through the `calm.task.*`
@@ -363,5 +363,6 @@ Where the code differs from §2–§6, one line each, with why:
 - §6: T1–T5 are in `track_worker_cwd.rs`, T6–T11 and the cancel test in `track_worker_cwd_ends.rs`
   (≤ 800 lines each); the reaper `failed` commit is asserted in `reaper/tests.rs`.
 - §5: `track_write_point_registry` is triggered: three test fixtures write `tracks.workspace_*`.
+- The migration is `0122`, not `0121`: main took `0121_activity_dismissals.sql` (#1829 S3) first.
 - KNOWN GAP: the kernel's upstream fetch receipt is now taken only when a track worktree is made,
   and a receipt does not age, so `candidate.upstream` can lag a later user fetch until a restart.

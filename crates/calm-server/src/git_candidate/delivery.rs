@@ -120,7 +120,7 @@ pub(crate) struct DeliveryRow {
     pub predecessor_delivery_id: Option<String>,
     pub request_idempotency_key: Option<String>,
     pub reason: Option<String>,
-    /// `None` only on a row settled before migration 0121; every row S2 writes has one.
+    /// `None` only on a row settled before migration 0122; every row S2 writes has one.
     pub outcome: Option<AttemptOutcome>,
     pub created_at_ms: i64,
     /// `None` while unsettled.
