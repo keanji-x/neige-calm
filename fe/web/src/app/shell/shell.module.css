@@ -669,6 +669,14 @@
        the rail and the avatar barely separated from it. `--surface-card` is
        the far end of the surface ladder from `--surface-rail` in both themes. */
     background: var(--surface-card);
+
+    /* The avatar sits inside the pinned row, i.e. inside the rail's own
+       `scroll-padding-block-end`, only `--space-7` off the bottom. Focusing it
+       (Tab, or the menu handing focus back) would otherwise scroll the Areas
+       list to clear that padding while the avatar itself never moves. This
+       margin takes back the rest of the padding, so where it is pinned already
+       counts as in view. */
+    scroll-margin-block-end: calc(-1 * (var(--space-4) + var(--control-h)));
     font-size: var(--text-xs);
     font-weight: var(--weight-medium);
     line-height: var(--leading-none);

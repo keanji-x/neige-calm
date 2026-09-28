@@ -25,11 +25,14 @@ const LAST_TRACK: Track = Object.freeze({
   ...NEUTRAL_ACTIVITY,
 });
 
-type RailOptions = { theme?: 'light' | 'dark'; collapsed?: boolean; mainLayer?: boolean; currentPath?: string };
+type RailOptions = {
+  theme?: 'light' | 'dark'; collapsed?: boolean; mainLayer?: boolean; currentPath?: string; areaCount?: number;
+};
 
-function Rail({ theme, collapsed: initiallyCollapsed, mainLayer, currentPath }: Required<RailOptions>) {
+function Rail({ theme, collapsed: initiallyCollapsed, mainLayer, currentPath, areaCount }: Required<RailOptions>) {
   const [collapsed, setCollapsed] = useState(initiallyCollapsed);
-  const tracks = [LAST_TRACK];
+  const areas = AREAS.slice(0, areaCount);
+  const tracks = areas.some((area) => area.id === LAST_TRACK.areaId) ? [LAST_TRACK] : [];
   return (
     <ThemeProvider storage={{ getItem: () => theme, setItem: () => undefined }}>
       {/* The production shell grid, so the rail has its real width in both
@@ -40,8 +43,8 @@ function Rail({ theme, collapsed: initiallyCollapsed, mainLayer, currentPath }: 
         style={{ blockSize: '100dvh' }}
       >
         <Sidebar
-          areas={AREAS}
-          tracksByArea={new Map(AREAS.map((area) => [area.id, tracks.filter((track) => track.areaId === area.id)]))}
+          areas={areas}
+          tracksByArea={new Map(areas.map((area) => [area.id, tracks.filter((track) => track.areaId === area.id)]))}
           tracks={tracks}
           currentPath={currentPath}
           onGo={vi.fn()}
@@ -68,9 +71,11 @@ function Rail({ theme, collapsed: initiallyCollapsed, mainLayer, currentPath }: 
   );
 }
 
-async function renderRail({ theme = 'light', collapsed = false, mainLayer = false, currentPath = '/' }: RailOptions = {}) {
+async function renderRail({
+  theme = 'light', collapsed = false, mainLayer = false, currentPath = '/', areaCount = AREAS.length,
+}: RailOptions = {}) {
   await page.viewport(1400, VIEWPORT_H);
-  render(<Rail theme={theme} collapsed={collapsed} mainLayer={mainLayer} currentPath={currentPath} />);
+  render(<Rail theme={theme} collapsed={collapsed} mainLayer={mainLayer} currentPath={currentPath} areaCount={areaCount} />);
   await new Promise(requestAnimationFrame);
   return railParts();
 }
@@ -172,6 +177,32 @@ it.each([false, true])('opens the account menu clear of the avatar and above the
       expect(item.contains(document.elementFromPoint(box.right - 4, box.top + box.height / 2))).toBe(true);
     }
   }
+});
+
+it('leaves the Areas list where it is when focus lands on the pinned avatar', async () => {
+  const { rail, avatar } = await renderRail();
+  const middle = Math.round((rail.scrollHeight - rail.clientHeight) / 2);
+
+  await scrollRail(rail, middle);
+  avatar.focus();
+  await new Promise(requestAnimationFrame);
+  expect(rail.scrollTop).toBe(middle);
+
+  // Opening the menu from the keyboard and closing it hands focus back.
+  await userEvent.keyboard('{Enter}');
+  expect(page.getByRole('menuitem').elements()).toHaveLength(3);
+  await userEvent.keyboard('{Escape}');
+  await new Promise(requestAnimationFrame);
+  expect(document.activeElement).toBe(avatar);
+  expect(rail.scrollTop).toBe(middle);
+});
+
+it('parks the account row at the bottom when the Areas list is short', async () => {
+  const { rail, avatar } = await renderRail({ areaCount: 2 });
+  expect(rail.scrollHeight).toBe(rail.clientHeight);
+  const railPadding = parseFloat(getComputedStyle(rail).paddingBlockEnd);
+  expect(Math.abs(rail.getBoundingClientRect().bottom - avatar.getBoundingClientRect().bottom - railPadding))
+    .toBeLessThanOrEqual(1);
 });
 
 it('reveals the current track above the account row, not behind it', async () => {
