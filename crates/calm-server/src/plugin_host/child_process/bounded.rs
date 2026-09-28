@@ -1,7 +1,7 @@
 //! One bounded run of a short local command under an absolute deadline: its own process group
 //! (so the group sweep on timeout reaches anything it forked), output drained under a cap, then
 //! the leader reaped and the group swept. Callers build the command (argv, cwd, environment) and
-//! word the failures; the verification gate's sampling commands and the task-replace carry use it.
+//! word the failures; the verification gate's sampling commands use it.
 
 use std::process::Stdio;
 

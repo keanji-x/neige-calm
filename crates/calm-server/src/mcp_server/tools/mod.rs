@@ -16,7 +16,6 @@ pub mod source;
 pub mod task_delivery;
 pub mod task_dispatch;
 pub mod task_repair;
-pub mod task_replace;
 pub mod terminal;
 pub mod track_file;
 pub mod track_history;
@@ -35,7 +34,6 @@ pub fn register_default_tools(registry: &mut ToolRegistry) {
     task_dispatch::register_into(registry);
     task_delivery::register_into(registry);
     task_repair::register_into(registry);
-    task_replace::register_into(registry);
     report_links::register_into(registry);
     report_tag::register_into(registry);
     area_reports::register_into(registry);

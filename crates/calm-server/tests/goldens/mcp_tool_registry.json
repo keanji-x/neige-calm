@@ -169,7 +169,7 @@
   },
   {
     "name": "calm.plan.list",
-    "description_sha256": "d318ed0e66acc5136a3cc4747823ab1df914687927d8fbf77e308eafb63a201c",
+    "description_sha256": "7b742bd8d5bab2adc249711cd75f8b8d463e78788cec19e34b7a186ca4c29934",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1490,68 +1490,6 @@
       "required": [
         "producer",
         "reason"
-      ],
-      "type": "object"
-    },
-    "annotations": {
-      "destructiveHint": false,
-      "openWorldHint": false,
-      "readOnlyHint": false
-    },
-    "visible_to_roles": [
-      "planner"
-    ]
-  },
-  {
-    "name": "calm.task.replace",
-    "description_sha256": "4b80a5a644103b0dfe84851fd2604bff8a7c7e8a82a00e825a659d13536d9c05",
-    "input_schema": {
-      "additionalProperties": false,
-      "properties": {
-        "acceptance": {
-          "minLength": 1,
-          "type": "string"
-        },
-        "carry": {
-          "enum": [
-            "candidate",
-            "none"
-          ],
-          "type": "string"
-        },
-        "context": {
-          "type": "object"
-        },
-        "expected_attempt_id": {
-          "minLength": 1,
-          "type": "string"
-        },
-        "goal": {
-          "minLength": 1,
-          "type": "string"
-        },
-        "idempotency_key": {
-          "maxLength": 200,
-          "minLength": 1,
-          "type": "string"
-        },
-        "key": {
-          "minLength": 1,
-          "type": "string"
-        },
-        "reason": {
-          "maxLength": 4096,
-          "minLength": 1,
-          "type": "string"
-        }
-      },
-      "required": [
-        "key",
-        "expected_attempt_id",
-        "idempotency_key",
-        "reason",
-        "goal",
-        "acceptance"
       ],
       "type": "object"
     },

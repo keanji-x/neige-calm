@@ -716,7 +716,7 @@ async fn frozen_gate_cwd_on_agent_task_is_refused_in_prepare() {
             .is_none()
     );
     assert!(
-        gate.log_tail.contains("calm.task.replace"),
+        gate.log_tail.contains("declare a new task with that gate"),
         "{}",
         gate.log_tail
     );

@@ -73,7 +73,7 @@ pub(crate) enum AttemptOutcome {
     Completed,
     /// `calm.task.fail`, a dead worker, or a liveness timeout.
     Failed,
-    /// `calm.plan.cancel` (or a replace) of a running worker.
+    /// `calm.plan.cancel` of a running worker.
     Canceled,
     /// The spawn failed before the launch may have started (compensation).
     SpawnFailed,

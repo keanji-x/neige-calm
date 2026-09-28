@@ -27,8 +27,6 @@ pub(crate) enum RecoveryRefusalCode {
     ContractChanged,
     /// An accepted recovery lost its allocation or predecessor row.
     RecoveryLineageMissing,
-    /// `calm.task.replace` superseded the attempt; its successor carries the work.
-    Replaced,
 }
 
 impl RecoveryRefusalCode {
@@ -44,7 +42,6 @@ impl RecoveryRefusalCode {
             Self::MissingFrozenContract => "missing_frozen_contract",
             Self::ContractChanged => "contract_changed",
             Self::RecoveryLineageMissing => "recovery_lineage_missing",
-            Self::Replaced => "replaced",
         }
     }
 }
@@ -65,8 +62,6 @@ pub(crate) enum RefusalSite {
     PlannerOutsideAutoDeclare,
     /// The bounded Planner retry for this key was consumed.
     PlannerRetryLimit,
-    /// `calm.task.replace` already superseded this attempt.
-    PredecessorReplaced,
     /// The frozen constraint fails `validate` for this Track.
     ConstraintShapeInvalid,
     /// The frozen file-delivery input contract cannot be honoured.
@@ -149,7 +144,6 @@ impl RefusalSite {
         Self::ChildTaskRoute,
         Self::PlannerOutsideAutoDeclare,
         Self::PlannerRetryLimit,
-        Self::PredecessorReplaced,
         Self::ConstraintShapeInvalid,
         Self::FileDeliveryInputUnhonoured,
         Self::FrozenContextTruncated,
