@@ -551,6 +551,7 @@ pub mod events_prune;
 pub mod kernel_bin_path;
 pub use calm_types::ids;
 pub mod mcp_server;
+pub mod mentions;
 pub mod model;
 pub mod openapi;
 pub mod operation;

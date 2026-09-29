@@ -49,6 +49,19 @@ export type ArtifactRef = string;
  */
 export type AttachmentId = string;
 
+/**
+ * One block of a report of the area; `insert` is ``@`area/reports/<name>.md#<block_id>` ``.
+ */
+export type BlockMention = { 
+/**
+ * The block's heading as `calm.area.outline` lists it, or the block id when that is empty.
+ */
+label: string, block_id: string, 
+/**
+ * The title of the track whose report holds the block.
+ */
+track_title: string, track_id: TrackId, insert: string, };
+
 export type Card = { id: CardId, track_id: TrackId, 
 /**
  * `"terminal"` for built-in PTY cards, `"ui://<plugin>/<view>"` for plugin-provided cards.
@@ -293,6 +306,11 @@ export type HarnessQueueChange = "edited" | "deleted" | "steered" | "restored" |
 export type McpCheckResult = { tools: Array<string>, };
 
 /**
+ * The candidates for one query, best first within each group.
+ */
+export type MentionCandidates = { tags: Array<TagMention>, tracks: Array<TrackMention>, blocks: Array<BlockMention>, };
+
+/**
  * Which D3.0 check failed. `reasons` empty means the sample matched the candidate.
  */
 export type MismatchReason = "provenance" | "head" | "dirty";
@@ -411,6 +429,19 @@ export type SourceProvenance = "full_text" | "summary" | "web_page" | "manual";
  * One anchor of a source: `text` is a byte-exact substring of the body (`body[start..end]`, UTF-8 byte offsets).
  */
 export type SourceQuote = { id: string, text: string, start: number, end: number, };
+
+/**
+ * A report tag of the area; `insert` is ``@`tag:<tag>` ``.
+ */
+export type TagMention = { 
+/**
+ * The tag.
+ */
+label: string, 
+/**
+ * How many of the area's reports carry the tag.
+ */
+track_count: number, insert: string, };
 
 export type TailnetLogin = { loginUrl: string, displayForSeconds: number, };
 
@@ -551,6 +582,15 @@ export type TrackId = string;
  * on `archived_at`, orthogonal to execution semantics.
  */
 export type TrackLifecycle = "draft" | "planning" | "dispatching" | "working" | "blocked" | "reviewing" | "done" | "canceled" | "failed";
+
+/**
+ * A report of the area; `insert` is ``@`area/reports/<name>.md` ``, the path `neige cat` reads.
+ */
+export type TrackMention = { 
+/**
+ * The track title.
+ */
+label: string, track_id: TrackId, insert: string, };
 
 /**
  * A user-defined starting point for a new track: a saved report whose `title` doubles as the

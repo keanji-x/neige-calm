@@ -215,7 +215,8 @@ pub(crate) fn unknown_section(
     RpcError::invalid_params(crate::report_sections::section_error_message(blocks, error))
 }
 
-fn block_heading(block: &calm_types::track_report::ReportBlock) -> String {
+/// A block's one-line heading as the outline lists it; also the chat `@` mention label (#1881).
+pub(crate) fn block_heading(block: &calm_types::track_report::ReportBlock) -> String {
     if block.kind != calm_types::report_blocks::KIND_PROSE {
         if block.kind == calm_types::report_blocks::KIND_TASK {
             let field = if block.payload.get("kind").and_then(Value::as_str) == Some("terminal") {

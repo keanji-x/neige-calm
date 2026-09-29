@@ -59,6 +59,7 @@ pub fn protected_router() -> Router<AppState> {
     Router::new()
         .merge(areas::router())
         .merge(area_folders::router())
+        .merge(crate::mentions::router())
         .merge(tracks::router())
         .merge(activity_dismissals::router())
         .merge(track_conversations::router())
