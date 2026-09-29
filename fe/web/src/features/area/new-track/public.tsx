@@ -2,10 +2,10 @@
 // plus local form state; the caller owns `POST /api/tracks`, `submitting`, `error` and
 // the template list, and puts the sentence on the create as `first_message`, verbatim.
 
-import { useEffect, useRef, useId, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useId, type ReactNode } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
-import { ChatComposer, ChatComposerInput } from '@astryxdesign/core/Chat';
+import { ChatComposer, ChatComposerInput, type ChatComposerTrigger } from '@astryxdesign/core/Chat';
 import { CheckboxInput } from '@astryxdesign/core/CheckboxInput';
 import { Icon } from '@astryxdesign/core/Icon';
 import { TextInput } from '@astryxdesign/core/TextInput';
@@ -54,6 +54,8 @@ export type NewTrackDraft = Readonly<{
 export type NewTrackFormProps = Readonly<{
   /** App-composed model controls beside the send button. */
   modelControls?: ReactNode;
+  /** The `@` menu over this Area's reports, composed by the app: the sentence is the new track's Planner's first message. Kept stable by the caller. */
+  mentionTrigger?: ChatComposerTrigger;
   submitting: boolean;
   error: string | null;
   /** In-memory route draft, including unfinished template input. */
@@ -125,7 +127,7 @@ function needsInput(template: TrackTemplate | undefined): boolean {
 export function NewTrackForm({
   modelControls, submitting, error, templates, templatesLoaded, templatesError = null,
   initialTemplateId, initialCwd, recipes = [], onManageRecipes, listDirectory, onSubmit,
-  errorAction, initialDraft, onDraftChange, submitBlocked = false, locked = false,
+  errorAction, initialDraft, onDraftChange, submitBlocked = false, locked = false, mentionTrigger,
 }: NewTrackFormProps) {
   const fieldId = useId();
   // Creation preferences are a route-opening snapshot: Area events may update this
@@ -141,6 +143,8 @@ export function NewTrackForm({
   const [cwd, setCwd] = useState(initialDraft?.cwd ?? initialCwd ?? '');
   const [browsing, setBrowsing] = useState(false);
   const composerHostRef = useRef<HTMLDivElement | null>(null);
+  /* One array per trigger: `useTriggerMenu` drops an open menu when the list changes identity. */
+  const triggers = useMemo(() => mentionTrigger === undefined ? undefined : [mentionTrigger], [mentionTrigger]);
   const folderId = `${fieldId}-folder`;
   const triggerId = `${fieldId}-start-from-trigger`;
 
@@ -269,6 +273,8 @@ export function NewTrackForm({
             const target = event.target as HTMLElement | null;
             const field = target?.closest?.('[contenteditable="true"]') ?? null;
             if (field === null) return;
+            /* An open `@` menu owns Enter: Astryx picks the highlighted row. The combobox says so through `aria-expanded`. */
+            if (field.getAttribute('aria-expanded') === 'true') return;
             if (target !== field) {
               /* A control inside the editable: Enter belongs to it, so this neither submits
                                nor `preventDefault`s, but it must stop propagation or the editable
@@ -290,7 +296,9 @@ export function NewTrackForm({
             isDisabled={submitting}
             onSubmit={submit}
             status={status}
-            input={<ChatComposerInput className={styles.input} label={TASK_LABEL} placeholder={TASK_PLACEHOLDER} isDisabled={submitting || locked} />}
+            input={<ChatComposerInput className={styles.input} label={TASK_LABEL} placeholder={TASK_PLACEHOLDER} isDisabled={submitting || locked}
+              /* The `@` source delays its own requests; Astryx's delay would let its per-keystroke probe search fire. */
+              {...(triggers === undefined ? {} : { triggers, debounceMs: 0 })} />}
             footerActions={<ComposerPreferences browsing={browsing}
               startingPoint={{ templates, templatesLoaded, recipes, value: effectiveSelection,
                 onChange: setSelected, onManageRecipes, placement: 'above', triggerId,
@@ -323,7 +331,8 @@ export function NewTrackForm({
             endContent={shownErrorAction === undefined
               ? submitBlocked && message !== ''
                 ? <Button label="Select draft" variant="ghost" onClick={() => {
-                  const field = composerHostRef.current?.querySelector<HTMLElement>('[role="textbox"]');
+                  /* The field itself, not its role: the `@` menu makes it a combobox. */
+                  const field = composerHostRef.current?.querySelector<HTMLElement>('[contenteditable]');
                   if (field === null || field === undefined) return;
                   field.focus();
                   const range = document.createRange();

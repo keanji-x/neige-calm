@@ -308,7 +308,8 @@ describe('creating a track from a recipe', () => {
     const { sent } = atNewTrack({
       templates: [{ id: 'small-change', title: 'Small change', tasks: [] }],
     });
-    const composer = await screen.findByRole('textbox', { name: 'What this track should do' });
+    /* `combobox`: the route attaches the `@` menu, and a field with a trigger takes that role. */
+    const composer = await screen.findByRole('combobox', { name: 'What this track should do' });
     await user.click(composer);
     await user.keyboard('Ship it');
     await user.click(await screen.findByRole('button', { name: /^Template: / }));
