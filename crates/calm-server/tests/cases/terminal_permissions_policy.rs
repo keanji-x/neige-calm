@@ -172,7 +172,7 @@ async fn assert_effective(h: &Harness, opened: &Opened, expected: &Value, source
             .unwrap()
             .keys()
             .collect::<Vec<_>>(),
-        vec!["hooks", "permissions"]
+        vec!["attribution", "hooks", "permissions"]
     );
     let card = h
         .state
