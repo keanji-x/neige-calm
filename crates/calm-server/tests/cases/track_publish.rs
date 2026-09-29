@@ -407,6 +407,24 @@ async fn a_failed_publish_is_retried_under_a_new_key() {
     assert_eq!(publish_op_count(fx).await, 2);
 }
 
+/// #1873 item 3: `url` is the PR's web page as gh reports it, not the remote the push went to.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_publish_result_url_is_the_pr_url() {
+    let _env = publish_env(None).await;
+    let w = world().await;
+    let fx = &w.fx;
+    done_candidate(fx, "a").await;
+
+    let result = publish(fx, "url").await.unwrap();
+
+    let pr_number = shim_pr(fx)["number"].clone();
+    assert_eq!(result["pr_number"], pr_number);
+    assert_eq!(
+        result["url"],
+        json!(format!("https://github.invalid/shim/pull/{pr_number}"))
+    );
+}
+
 /// D2 — the push goes to the upstream's fetch URL, not to a `pushurl` the remote also has.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_push_goes_to_the_upstream_url_not_the_pushurl() {
@@ -430,9 +448,8 @@ async fn the_push_goes_to_the_upstream_url_not_the_pushurl() {
         ],
     );
 
-    let result = publish(fx, "pushurl").await.unwrap();
+    publish(fx, "pushurl").await.unwrap();
 
-    assert_eq!(result["url"], json!(origin(fx).to_str().unwrap()));
     assert_eq!(remote_branch(fx).as_deref(), Some(c.as_str()));
     let refs = git_output(&elsewhere, &["for-each-ref"]);
     assert!(refs.status.success() && refs.stdout.is_empty(), "{refs:?}");

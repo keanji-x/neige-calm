@@ -250,6 +250,8 @@ fn publish_payload(
             fields: [
                 ("pr_number".to_string(), json_field("/number")),
                 ("head_sha".to_string(), json_field("/headRefOid")),
+                // The PR's web URL; `forge.pr.opened` drops it, the tool result returns it.
+                ("url".to_string(), json_field("/url")),
             ]
             .into_iter()
             .collect(),
@@ -328,7 +330,7 @@ async fn track_publish(
         "head_sha": event["head_sha"],
         "branch": dest.branch,
         "base": dest.base,
-        "url": dest.url,
+        "url": event["url"],
     }))
 }
 

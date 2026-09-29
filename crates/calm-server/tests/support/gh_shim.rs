@@ -261,6 +261,9 @@ case "$area:$verb" in
       number,headRefOid)
         printf '{"number":%s,"headRefOid":"%s"}\n' "$number" "$head_sha"
         ;;
+      number,headRefOid,url)
+        printf '{"number":%s,"headRefOid":"%s","url":"https://github.invalid/shim/pull/%s"}\n' "$number" "$head_sha" "$number"
+        ;;
       headRefOid,state)
         if [ "$merged" = "true" ]; then
           printf '{"headRefOid":"%s","state":"MERGED"}\n' "$head_sha"
