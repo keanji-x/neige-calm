@@ -79,6 +79,16 @@ async fn load_report_doc_snapshot_with_track(
     Ok((card.track_id, doc))
 }
 
+/// The blocks of a report row with no CRDT yet, derived from its `body` with the ids the first seed
+/// assigns (`reassign_ids` over the same body with the same hints; any stored `blocks` are ignored),
+/// legacy terminal tasks normalized. Shared by [`report_doc_snapshot`] and the `@` mention outline.
+pub(crate) fn legacy_row_blocks(body: &str) -> Vec<ReportBlock> {
+    normalize_legacy_terminal_task_blocks(&calm_types::report_blocks::reassign_ids(
+        &[],
+        &calm_types::report_blocks::split_body(body),
+    ))
+}
+
 /// The document snapshot of one report card row (`payload` and `body_crdt` read together), shared by
 /// [`load_report_doc_snapshot`] and the `area/reports/` block read so their block ids cannot drift.
 pub(crate) fn report_doc_snapshot(
@@ -92,9 +102,6 @@ pub(crate) fn report_doc_snapshot(
             "track_report: malformed payload on card {report_card_id}: {e}"
         ))
     })?;
-    let derive = |body: &str| {
-        calm_types::report_blocks::reassign_ids(&[], &calm_types::report_blocks::split_body(body))
-    };
     let flatten = |blocks: &[ReportBlock]| {
         let mut body = String::new();
         for block in blocks {
@@ -105,9 +112,8 @@ pub(crate) fn report_doc_snapshot(
         }
         body
     };
-    // Pure legacy row (no CRDT yet): the seed will run `reassign_ids` over the same body with the same hints.
     let Some(bytes) = body_crdt else {
-        let blocks = normalize_legacy_terminal_task_blocks(&derive(&payload.body));
+        let blocks = legacy_row_blocks(&payload.body);
         let body = flatten(&blocks);
         return Ok(ReportDocSnapshot {
             updated_at,

@@ -52,9 +52,8 @@ pub(crate) async fn report_blocks_snapshot(
     report_blocks_snapshot_from_row(track_id, report)
 }
 
-/// Shared by the transactional and the autocommit readers above, and by the `area/reports/` outline
-/// (`area_reports::outlines`), so they cannot drift.
-pub(crate) fn report_blocks_snapshot_from_row(
+/// Shared by the transactional and the autocommit readers above so the two cannot drift.
+fn report_blocks_snapshot_from_row(
     track_id: &str,
     report: Option<(String, bool)>,
 ) -> crate::error::Result<(String, Vec<ReportBlock>)> {
