@@ -100,6 +100,8 @@ The guards key on `child.closed_at IS NOT NULL` with the same quiescence subquer
   - Area-chat tracks refuse a change to `closed`.
   - `can_resume` becomes `can_reopen` = closed ∧ ¬area-chat ∧ ¬referenced child.
   - "Resume work" becomes **Reopen**. **Close** is a new track action in PR-2.
+    The track detail carries `can_close` = open ∧ ¬area-chat beside `can_reopen`, derived in the
+    same read, so the page offers Close only where the PATCH accepts it (PR-2).
 - **Planner.** New tool `calm.track.close {message}` (Planner-only) emits `track.updated` with
   `agent_message`. Closing a closed track is a no-op that returns the current `closed_at`.
   - `lifecycle` leaves the schema of every tool in F17.
@@ -360,6 +362,13 @@ in `track_update_tx`, and the predicted red set is that test.
 The `isolated_codex` first-start refusal is not a separate NEW test: the first-start check
 (`validate_isolated_start_tx`) reads the same `Track::is_open` as the user start, and its fixture
 needs a running isolated executor. `user_start_refuses_on_a_closed_track` pins the shared predicate.
+
+Measured on PR-2 (`npm test` + `test:browser`, then the touched files re-run in isolation under the
+mutation, with clean runs before and after): row 7 reddened exactly its two predicted tests and row 8
+exactly its one. The full four-project run under each mutation also reddened 1 (row 7) and 3 (row 8)
+timing-bound tests elsewhere (thread hover delay, mobile push, Tab order, recipe editor load); none
+renders a closed track, and each was green under the same mutation in isolation.
+The rows stay hand-run evidence: no fe gate requires a manifest entry for them, so PR-2 adds none.
 
 ## 7. Slices
 
