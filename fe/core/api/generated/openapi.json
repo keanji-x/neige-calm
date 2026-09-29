@@ -436,6 +436,81 @@
         }
       }
     },
+    "/api/areas/{area_id}/mentions": {
+      "get": {
+        "tags": [
+          "areas"
+        ],
+        "operationId": "list_mentions",
+        "parameters": [
+          {
+            "name": "area_id",
+            "in": "path",
+            "description": "Area id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "The text typed after `@`; empty asks for recommendations.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "track",
+            "in": "query",
+            "description": "The track the message is written in: its blocks rank first. A track outside the area lifts nothing.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The area's tags, reports and report blocks matching `q`, best first, at most 8 per group",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MentionCandidates"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing `q` (plain-text query rejection)"
+          },
+          "404": {
+            "description": "Area not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/areas/{area_id}/tracks": {
       "get": {
         "tags": [
@@ -7473,6 +7548,36 @@
           }
         }
       },
+      "BlockMention": {
+        "type": "object",
+        "description": "One block of a report of the area; `insert` is ``@`area/reports/<name>.md#<block_id>` ``.",
+        "required": [
+          "label",
+          "block_id",
+          "track_title",
+          "track_id",
+          "insert"
+        ],
+        "properties": {
+          "block_id": {
+            "type": "string"
+          },
+          "insert": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string",
+            "description": "The block's heading as `calm.area.outline` lists it, or the block id when that is empty."
+          },
+          "track_id": {
+            "$ref": "#/components/schemas/TrackId"
+          },
+          "track_title": {
+            "type": "string",
+            "description": "The title of the track whose report holds the block."
+          }
+        }
+      },
       "BlockVerdict": {
         "type": "object",
         "required": [
@@ -8926,6 +9031,35 @@
             "type": "array",
             "items": {
               "type": "string"
+            }
+          }
+        }
+      },
+      "MentionCandidates": {
+        "type": "object",
+        "description": "The candidates for one query, best first within each group.",
+        "required": [
+          "tags",
+          "tracks",
+          "blocks"
+        ],
+        "properties": {
+          "blocks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BlockMention"
+            }
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TagMention"
+            }
+          },
+          "tracks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TrackMention"
             }
           }
         }
@@ -10732,6 +10866,30 @@
         },
         "additionalProperties": false
       },
+      "TagMention": {
+        "type": "object",
+        "description": "A report tag of the area; `insert` is ``@`tag:<tag>` ``.",
+        "required": [
+          "label",
+          "track_count",
+          "insert"
+        ],
+        "properties": {
+          "insert": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string",
+            "description": "The tag."
+          },
+          "track_count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many of the area's reports carry the tag.",
+            "minimum": 0
+          }
+        }
+      },
       "TailnetLogin": {
         "type": "object",
         "required": [
@@ -11964,6 +12122,10 @@
           }
         }
       },
+      "TrackId": {
+        "type": "string",
+        "description": "Track identifier."
+      },
       "TrackLifecycle": {
         "type": "string",
         "description": "Track lifecycle state machine. `archived` is intentionally NOT a lifecycle state: archival lives\non `archived_at`, orthogonal to execution semantics.",
@@ -11978,6 +12140,27 @@
           "canceled",
           "failed"
         ]
+      },
+      "TrackMention": {
+        "type": "object",
+        "description": "A report of the area; `insert` is ``@`area/reports/<name>.md` ``, the path `neige cat` reads.",
+        "required": [
+          "label",
+          "track_id",
+          "insert"
+        ],
+        "properties": {
+          "insert": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string",
+            "description": "The track title."
+          },
+          "track_id": {
+            "$ref": "#/components/schemas/TrackId"
+          }
+        }
       },
       "TrackPatch": {
         "type": "object",

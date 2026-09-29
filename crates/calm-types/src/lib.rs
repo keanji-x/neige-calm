@@ -13,6 +13,7 @@ pub mod git_candidate;
 pub mod harness;
 pub mod ids;
 pub mod mcp_connector;
+pub mod mentions;
 pub mod mobile_access;
 pub mod model;
 pub mod observation;

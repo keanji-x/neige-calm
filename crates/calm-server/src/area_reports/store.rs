@@ -16,28 +16,76 @@ pub(super) struct Row {
     pub tags: Vec<String>,
 }
 
+/// The report rows of one area in one statement, ordered by track id: track id, card id, title, the
+/// card's `updated_at` and its tags as a JSON array, then the columns `$extra` appends.
+macro_rules! area_rows_sql {
+    ($extra:literal) => {
+        concat!(
+            "SELECT t.id, c.id, t.title, c.updated_at, ",
+            "(SELECT json_group_array(rt.tag ORDER BY rt.ordinal ASC, rt.tag ASC) ",
+            "FROM report_tags rt WHERE rt.track_id = t.id)",
+            $extra,
+            " FROM tracks t JOIN cards c ON c.track_id = t.id AND c.kind = 'track-report' ",
+            "WHERE t.area_id = ?1 ORDER BY t.id ASC"
+        )
+    };
+}
+
+fn row(
+    track_id: String,
+    card_id: String,
+    title: String,
+    updated_at: i64,
+    tags: &str,
+) -> Result<Row, sqlx::Error> {
+    Ok(Row {
+        tags: serde_json::from_str(tags).map_err(|e| sqlx::Error::Decode(Box::new(e)))?,
+        track_id,
+        card_id,
+        title,
+        updated_at,
+    })
+}
+
 /// Every track of `area_id` with a report card and its tags, ordered by track id, in one statement.
 pub(super) async fn rows(pool: &SqlitePool, area_id: &str) -> Result<Vec<Row>, sqlx::Error> {
-    let rows: Vec<(String, String, String, i64, String)> = sqlx::query_as(concat!(
-        "SELECT t.id, c.id, t.title, c.updated_at, ",
-        "(SELECT json_group_array(rt.tag ORDER BY rt.ordinal ASC, rt.tag ASC) ",
-        "FROM report_tags rt WHERE rt.track_id = t.id) ",
-        "FROM tracks t JOIN cards c ON c.track_id = t.id AND c.kind = 'track-report' ",
-        "WHERE t.area_id = ?1 ORDER BY t.id ASC"
-    ))
-    .bind(area_id)
-    .fetch_all(pool)
-    .await?;
+    let rows: Vec<(String, String, String, i64, String)> = sqlx::query_as(area_rows_sql!(""))
+        .bind(area_id)
+        .fetch_all(pool)
+        .await?;
     rows.into_iter()
         .map(|(track_id, card_id, title, updated_at, tags)| {
-            Ok(Row {
-                tags: serde_json::from_str(&tags).map_err(|e| sqlx::Error::Decode(Box::new(e)))?,
-                track_id,
-                card_id,
-                title,
-                updated_at,
-            })
+            row(track_id, card_id, title, updated_at, &tags)
         })
+        .collect()
+}
+
+/// A report card's stored payload JSON and whether it has a CRDT: what
+/// `track_report::report_blocks_snapshot_from_row` projects blocks from without loading Automerge.
+pub(super) struct Projection {
+    pub payload: String,
+    pub has_crdt: bool,
+}
+
+/// [`rows`] plus each report's [`Projection`], in the same one statement.
+pub(super) async fn rows_with_projection(
+    pool: &SqlitePool,
+    area_id: &str,
+) -> Result<Vec<(Row, Projection)>, sqlx::Error> {
+    let rows: Vec<(String, String, String, i64, String, String, bool)> =
+        sqlx::query_as(area_rows_sql!(", json(c.payload), c.body_crdt IS NOT NULL"))
+            .bind(area_id)
+            .fetch_all(pool)
+            .await?;
+    rows.into_iter()
+        .map(
+            |(track_id, card_id, title, updated_at, tags, payload, has_crdt)| {
+                Ok((
+                    row(track_id, card_id, title, updated_at, &tags)?,
+                    Projection { payload, has_crdt },
+                ))
+            },
+        )
         .collect()
 }
 

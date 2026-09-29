@@ -3,7 +3,8 @@
 //! for all three. The area is always the caller's own; a path resolves only against that area's
 //! listing, so no name, ID suffix, duplicate title, rename or traversal reaches another area. A read
 //! returns a report's body or its blocks (#1874), tags and the report card's `updated_at` — never
-//! another track's card payload, runs or workspace. The name codec lives in [`name`].
+//! another track's card payload, runs or workspace. The name codec lives in [`name`]. [`outlines`]
+//! serves the same listing, with blocks, to the chat `@` mention search (#1881).
 
 pub mod glob;
 pub mod name;
@@ -17,7 +18,7 @@ use serde::Serialize;
 use sqlx::SqlitePool;
 
 use crate::track_fs_view::{TrackFsContent, TrackFsError, report_markdown};
-use crate::track_report::ReportBlock;
+use crate::track_report::{ReportBlock, report_blocks_snapshot_from_row};
 use crate::track_report_read::report_doc_snapshot;
 
 /// The directory every report path starts with.
@@ -92,18 +93,68 @@ struct Named {
     file: String,
 }
 
-async fn named(pool: &SqlitePool, area_id: &str) -> Result<Vec<Named>, TrackFsError> {
-    let rows = store::rows(pool, area_id).await.map_err(internal)?;
+/// The listed file name of each of `rows`, which must be every report of the area.
+fn file_names(rows: &[&store::Row]) -> Vec<String> {
     let pairs: Vec<(&str, &str)> = rows
         .iter()
         .map(|row| (row.title.as_str(), row.track_id.as_str()))
         .collect();
-    let files = name::file_names(&pairs);
+    name::file_names(&pairs)
+}
+
+async fn named(pool: &SqlitePool, area_id: &str) -> Result<Vec<Named>, TrackFsError> {
+    let rows = store::rows(pool, area_id).await.map_err(internal)?;
+    let files = file_names(&rows.iter().collect::<Vec<_>>());
     Ok(rows
         .into_iter()
         .zip(files)
         .map(|(row, file)| Named { row, file })
         .collect())
+}
+
+/// One report of the area with its block projection: the `@` mention candidates (#1881).
+#[derive(Debug)]
+pub struct ReportOutline {
+    /// `area/reports/<name>.md`, exactly as `ls` lists it.
+    pub path: String,
+    pub title: String,
+    pub track_id: String,
+    /// In insertion order.
+    pub tags: Vec<String>,
+    /// The report card's update time (ms).
+    pub updated_at: i64,
+    /// The stored block projection, in document order — the blocks `calm.area.outline` indexes.
+    pub blocks: Vec<ReportBlock>,
+}
+
+/// Every report of `area_id` with its path, tags and blocks, ordered by track id, from one
+/// statement. Blocks come from the stored projection; no report CRDT is loaded (#1859).
+pub async fn outlines(
+    pool: &SqlitePool,
+    area_id: &str,
+) -> Result<Vec<ReportOutline>, TrackFsError> {
+    let rows = store::rows_with_projection(pool, area_id)
+        .await
+        .map_err(internal)?;
+    let files = file_names(&rows.iter().map(|(row, _)| row).collect::<Vec<_>>());
+    rows.into_iter()
+        .zip(files)
+        .map(|((row, projection), file)| {
+            let (_, blocks) = report_blocks_snapshot_from_row(
+                &row.track_id,
+                Some((projection.payload, projection.has_crdt)),
+            )
+            .map_err(|e| TrackFsError::Internal(e.to_string()))?;
+            Ok(ReportOutline {
+                path: format!("{REPORTS_DIR}/{file}"),
+                title: row.title,
+                track_id: row.track_id,
+                tags: row.tags,
+                updated_at: row.updated_at,
+                blocks,
+            })
+        })
+        .collect()
 }
 
 /// The reports of `area_id` that pass `filter`, newest report update first (then by name).
