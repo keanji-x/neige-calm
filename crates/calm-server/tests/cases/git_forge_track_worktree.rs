@@ -161,6 +161,78 @@ async fn planner_git_commit_lands_on_the_track_branch() {
         .expect("stop git-forge plugin");
 }
 
+/// The attached track of the #1830 S3 token tests: the checkout, its track worktree and branch.
+struct TokenTrack {
+    checkout: PathBuf,
+    worktree: PathBuf,
+    branch: String,
+    track_id: String,
+}
+
+async fn token_track(fx: &Fixture) -> TokenTrack {
+    let origin = fx._tmp.path().join("origin.git");
+    init_bare_origin(&origin, &fx._tmp.path().join("seed"));
+    let checkout = fx._tmp.path().join("checkout");
+    clone_for_track(&origin, &checkout);
+    let checkout = checkout.canonicalize().expect("canonical checkout");
+    let track_id = create_attached_track(fx, &checkout).await;
+    TokenTrack {
+        worktree: checkout
+            .join(".claude/worktrees")
+            .join(format!("track-{track_id}")),
+        branch: format!("neige/track-{track_id}"),
+        checkout,
+        track_id,
+    }
+}
+
+fn write_script(path: &Path, body: &str) {
+    std::fs::write(path, body).expect("write script");
+    let mut permissions = std::fs::metadata(path).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+    std::fs::set_permissions(path, permissions).expect("chmod script");
+}
+
+/// A script that appends `${GH_TOKEN-unset}` to `out` and fails.
+fn token_recorder(out: &Path) -> String {
+    format!(
+        "#!/bin/sh\nprintf '%s\\n' \"${{GH_TOKEN-unset}}\" >> '{}'\nexit 1\n",
+        out.display()
+    )
+}
+
+/// The Planner's `git.commit` of `plan.md` through the socket; the op must fail or succeed as
+/// `is_error` says, and the file `seen` must hold only `unset` lines, at least one.
+async fn commit_and_check_tokens(
+    fx: &Fixture,
+    track: &TokenTrack,
+    idem: &str,
+    is_error: bool,
+    seen: &Path,
+) -> Value {
+    let (raw_token, thread_id) = planner_caller(fx, &track.track_id).await;
+    let response = call_tool_as(
+        fx,
+        &raw_token,
+        &thread_id,
+        21,
+        COMMIT_TOOL,
+        json!({ "message": "planner note", "idem": idem, "branch": track.branch }),
+    )
+    .await;
+    assert_eq!(response["result"]["isError"], is_error, "{response:#?}");
+    let seen = std::fs::read_to_string(seen).expect("the repository's code ran");
+    assert!(
+        !seen.is_empty() && seen.lines().all(|line| line == "unset"),
+        "{seen}"
+    );
+    fx.plugin_host
+        .stop(PLUGIN_ID)
+        .await
+        .expect("stop git-forge plugin");
+    response
+}
+
 /// #1830 S3 C3 (D4) — the kernel holds `GH_TOKEN`; a `pre-commit` hook fails the Planner's
 /// `git.commit`, so its probe runs `git status`, which runs the repository's `core.fsmonitor`.
 /// Neither the action nor the probe shows that code the token.
@@ -175,65 +247,93 @@ async fn planner_git_commit_and_its_probe_never_show_repository_code_a_github_to
     let _results = EnvGuard::set("NEIGE_FORGE_RESULTS_DIR", results_dir.path());
     let _token = EnvGuard::set("GH_TOKEN", "sentinel");
     let fx = boot_fixture().await;
-
-    let origin = fx._tmp.path().join("origin.git");
-    init_bare_origin(&origin, &fx._tmp.path().join("seed"));
-    let checkout = fx._tmp.path().join("checkout");
-    clone_for_track(&origin, &checkout);
-    let checkout = checkout.canonicalize().expect("canonical checkout");
-    let track_id = create_attached_track(&fx, &checkout).await;
-    let worktree = checkout
-        .join(".claude/worktrees")
-        .join(format!("track-{track_id}"));
-    let branch = format!("neige/track-{track_id}");
+    let track = token_track(&fx).await;
     let seen = fx._tmp.path().join("fsmonitor-token");
-    let hooks = checkout.join(".git/hooks");
     let fsmonitor = fx._tmp.path().join("fsmonitor.sh");
-    for (path, body) in [
-        (hooks.join("pre-commit"), "#!/bin/sh\nexit 1\n".to_string()),
-        (
-            fsmonitor.clone(),
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"${{GH_TOKEN-unset}}\" >> '{}'\nexit 1\n",
-                seen.display()
-            ),
-        ),
-    ] {
-        std::fs::write(&path, body).expect("write hook");
-        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
-        std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
-        std::fs::set_permissions(&path, permissions).expect("chmod hook");
-    }
+    write_script(
+        &track.checkout.join(".git/hooks/pre-commit"),
+        "#!/bin/sh\nexit 1\n",
+    );
+    write_script(&fsmonitor, &token_recorder(&seen));
     git_stdout(
-        &checkout,
+        &track.checkout,
         ["config", "core.fsmonitor", fsmonitor.to_str().unwrap()],
     );
-    std::fs::write(worktree.join("plan.md"), "the planner's note\n").expect("write note");
+    std::fs::write(track.worktree.join("plan.md"), "the planner's note\n").expect("write note");
 
-    let (raw_token, thread_id) = planner_caller(&fx, &track_id).await;
-    let response = call_tool_as(
-        &fx,
-        &raw_token,
-        &thread_id,
-        21,
-        COMMIT_TOOL,
-        json!({ "message": "planner note", "idem": "c3", "branch": branch }),
-    )
-    .await;
+    let response = commit_and_check_tokens(&fx, &track, "c3", true, &seen).await;
 
     // The hook refused the commit and the probe, which is what settles it, found the tree dirty.
-    assert_eq!(response["result"]["isError"], true, "{response:#?}");
     let error = response["result"]["structuredContent"]["last_error"]
         .as_str()
         .unwrap_or_default();
     assert!(error.contains("probe reports not landed"), "{response:#?}");
-    let seen = std::fs::read_to_string(&seen).expect("the fsmonitor ran");
-    assert!(
-        !seen.is_empty() && seen.lines().all(|line| line == "unset"),
-        "{seen}"
+}
+
+/// #1830 S3 C4 (D4) — a `pre-commit` hook stashes the change and fails the Planner's
+/// `git.commit`: the probe finds a clean tree (landed), so the output probe runs `git log` on a
+/// signed HEAD under `log.showSignature`, which runs the repository's `gpg.program`. It never
+/// sees the kernel's `GH_TOKEN`.
+#[tokio::test]
+async fn planner_git_commit_output_probe_never_shows_gpg_a_github_token() {
+    let _env_lock = FORGE_ENV_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let results_dir = short_tempdir("gfg").expect("forge results tempdir");
+    let _trusted = EnvGuard::set("NEIGE_TRUSTED_FORGE_PLUGINS", PLUGIN_ID);
+    let _results = EnvGuard::set("NEIGE_FORGE_RESULTS_DIR", results_dir.path());
+    let _token = EnvGuard::set("GH_TOKEN", "sentinel");
+    let fx = boot_fixture().await;
+    let track = token_track(&fx).await;
+    // A signed HEAD on the track branch: the same commit with a `gpgsig` header (same tree, so
+    // the worktree stays clean).
+    let head = git_stdout(&track.worktree, ["cat-file", "commit", "HEAD"]);
+    let (headers, message) = head.split_once("\n\n").expect("commit headers");
+    let signed = format!(
+        "{headers}\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n iQEzBAABCAAdFiEE\n -----END PGP SIGNATURE-----\n\n{message}\n"
     );
-    fx.plugin_host
-        .stop(PLUGIN_ID)
-        .await
-        .expect("stop git-forge plugin");
+    let object = fx._tmp.path().join("signed-commit");
+    std::fs::write(&object, signed).expect("write signed commit");
+    let signed = git_stdout(
+        &track.worktree,
+        [
+            "hash-object",
+            "-t",
+            "commit",
+            "-w",
+            object.to_str().unwrap(),
+        ],
+    );
+    git_stdout(
+        &track.worktree,
+        [
+            "update-ref",
+            &format!("refs/heads/{}", track.branch),
+            &signed,
+        ],
+    );
+    let seen = fx._tmp.path().join("gpg-token");
+    let gpg = fx._tmp.path().join("gpg.sh");
+    write_script(&gpg, &token_recorder(&seen));
+    write_script(
+        &track.checkout.join(".git/hooks/pre-commit"),
+        "#!/bin/sh\ngit stash -q -u\nexit 1\n",
+    );
+    std::fs::write(track.worktree.join("plan.md"), "the planner's note\n").expect("write note");
+    for (key, value) in [
+        ("log.showSignature", "true"),
+        ("gpg.program", gpg.to_str().unwrap()),
+    ] {
+        git_stdout(&track.checkout, ["config", key, value]);
+    }
+
+    let response = commit_and_check_tokens(&fx, &track, "c4", false, &seen).await;
+
+    // Settled by the probes: the output probe's JSON names the signed HEAD.
+    assert_eq!(
+        response["result"]["structuredContent"]["result"]["event"]["commit_sha"],
+        json!(signed),
+        "{response:#?}"
+    );
 }

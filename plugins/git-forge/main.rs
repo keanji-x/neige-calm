@@ -177,7 +177,7 @@ fn lower_git_commit(args: &Value) -> Result<Value, String> {
     let mut output_probe_argv = vec![
         "sh".into(),
         "-c".into(),
-        GIT_COMMIT_OUTPUT_PROBE_SCRIPT.into(),
+        git_commit_output_probe_script(),
         "sh".into(),
     ];
     if let Some(branch) = branch {
@@ -227,6 +227,11 @@ fn git_commit_script() -> String {
 /// Its probe's: `git status` runs the repository's fsmonitor and filters, so it gets the split too.
 fn git_commit_probe_script() -> String {
     format!("{FORGE_SHELL_PRELUDE}\n{GIT_COMMIT_PROBE_SCRIPT}")
+}
+
+/// Its output probe's: `git log` can run the repository's `gpg.program`, so it gets the split too.
+fn git_commit_output_probe_script() -> String {
+    format!("{FORGE_SHELL_PRELUDE}\n{GIT_COMMIT_OUTPUT_PROBE_SCRIPT}")
 }
 
 fn lower_gh_pr_create(args: &Value) -> Result<Value, String> {
@@ -716,7 +721,7 @@ mod tests {
     fn lowers_git_commit() {
         let expected_probe_script = format!("{FORGE_SHELL_PRELUDE}\n{GIT_COMMIT_PROBE_SCRIPT}");
         let expected_commit_script = format!("{FORGE_SHELL_PRELUDE}\n{GIT_COMMIT_SCRIPT}");
-        let expected_output_probe_script = GIT_COMMIT_OUTPUT_PROBE_SCRIPT;
+        let expected_output_probe_script = git_commit_output_probe_script();
         let payload = lower(
             "git.commit",
             &json!({
@@ -801,7 +806,7 @@ mod tests {
         );
         assert_eq!(
             payload["probe"]["output_probe_argv"],
-            json!(["sh", "-c", GIT_COMMIT_OUTPUT_PROBE_SCRIPT, "sh"])
+            json!(["sh", "-c", git_commit_output_probe_script(), "sh"])
         );
         assert_eq!(payload["event_spec"]["event_kind"], "worktree.committed");
     }
@@ -828,7 +833,7 @@ mod tests {
         );
         assert_eq!(
             payload["probe"]["output_probe_argv"][2],
-            GIT_COMMIT_OUTPUT_PROBE_SCRIPT
+            format!("{FORGE_SHELL_PRELUDE}\n{GIT_COMMIT_OUTPUT_PROBE_SCRIPT}")
         );
     }
 
@@ -847,7 +852,7 @@ mod tests {
 
         let branch = "feature/quote\"and\nline\twith\rreturn";
         let output = std::process::Command::new("sh")
-            .args(["-c", GIT_COMMIT_OUTPUT_PROBE_SCRIPT, "sh", branch])
+            .args(["-c", &git_commit_output_probe_script(), "sh", branch])
             .current_dir(temp_dir.path())
             .output()
             .expect("run output probe");

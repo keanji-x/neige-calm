@@ -73,12 +73,13 @@ Verified at c3886d776 by reading the code, or by the query or command shown (414
   in `GIT_COMMIT_SCRIPT` (the Planner commit), in `GIT_DELIVERY_SCRIPT` (the delivery commit), in
   the publish action script, and in the plugin's `git.worktree.add` (now `sh -c "<prelude>;
   neige_git worktree add …"`) becomes `neige_git`; every `gh` in the publish script becomes
-  `neige_gh`. The plugin's `git.commit` probe gets the prelude too and calls `neige_git`: its
-  `git status` runs the repository's `core.fsmonitor` and clean filters (review round 1; 4140 has
-  no git-forge, so no persisted `git.commit` op carries the old probe, H3).
-  `GIT_LEASE_PROVENANCE_SCRIPT` (only `rev-parse` and `worktree list`, and reused by the sampler,
-  H7), `GIT_COMMIT_OUTPUT_PROBE_SCRIPT`, `GIT_DELIVERY_PROBE_SCRIPT` and
-  `GIT_DELIVERY_OUTPUT_PROBE_SCRIPT` run no repository code and stay byte-identical. Git keeps HOME, the proxies and SSH_AUTH_SOCK (an
+  `neige_gh`. Every script of the plugin's `git.commit` kind gets the prelude too and calls
+  `neige_git`: the probe's `git status` runs `core.fsmonitor` and clean filters, the output
+  probe's `git log` runs `gpg.program` under `log.showSignature` (review rounds 1 and 2; 4140 has
+  no git-forge, so no persisted `git.commit` op carries the old probes, H3).
+  `GIT_LEASE_PROVENANCE_SCRIPT` (reused by the sampler, H7), `GIT_DELIVERY_PROBE_SCRIPT` and
+  `GIT_DELIVERY_OUTPUT_PROBE_SCRIPT` run only `rev-parse`, `merge-base --is-ancestor` and
+  `worktree list`, which run no repository code, and stay byte-identical. Git keeps HOME, the proxies and SSH_AUTH_SOCK (an
   ssh push needs them); a GitHub https push authenticates through the user's global helper and
   gh's `hosts.yml`, as on 4140 (H15). So whatever the repository selects (hooks, fsmonitor,
   filters, credential helpers, `core.sshCommand`) runs without a GitHub token, and gh runs from `/`,
@@ -158,6 +159,7 @@ No real repository and no network. New file `tests/cases/track_publish.rs` in `m
 | C1 `publish_git_never_sees_a_github_token`: `GH_TOKEN=sentinel` in the kernel env, and a `pre-push` hook writes `${GH_TOKEN-unset}` to a file. After P1's flow the file says `unset`, and the shim log shows gh got the token | D4 | M4: `neige_git` drops `-u GH_TOKEN` |
 | C2 `a_delivery_commit_hook_never_sees_a_github_token`: the same, with a `pre-commit` hook, through a real delivery | D4 | M5: the delivery script's commit line calls `git`, not `neige_git` |
 | C3 `planner_git_commit_and_its_probe_never_show_repository_code_a_github_token` (mcp_git_forge_plugin): a failing `pre-commit` hook makes the Planner's `git.commit` fail, so its probe runs `git status`; a `core.fsmonitor` script appends `${GH_TOKEN-unset}`, and every line says `unset` | D4 | M6: the commit probe's `status` calls `git`, not `neige_git` |
+| C4 `planner_git_commit_output_probe_never_shows_gpg_a_github_token` (mcp_git_forge_plugin): a `pre-commit` hook stashes the change and fails, so the probe finds a clean tree (landed) and the output probe runs `git log` on a signed HEAD under `log.showSignature`; a `gpg.program` script appends `${GH_TOKEN-unset}`, and every line says `unset` | D4 | M7: the output probe's `log` calls `git`, not `neige_git` |
 
 Ordinary tests: managed-track and no-upstream refusals; a second candidate is pushed
 fast-forward and reuses the PR; a non-fast-forward push fails with git's message; a failed publish
@@ -170,9 +172,10 @@ Predicted red sets over `track_publish` and the plugin's unit tests:
 | M1 | P1, C1, fast-forward reuse, non-fast-forward message, retry under a new key, pushurl. Without the push the remote branch never reaches the candidate, so the shim's live `headRefOid` (read from the remote's `refs/heads/<branch>`) is missing or stale, the exit-21 check fails the publish, and each test's pushed-branch or PR-head assertion fails; C1's pre-push hook never runs |
 | M2 | P2 |
 | M3 | P3 |
-| M4 | C1, C2, C3 (they share the prelude) |
+| M4 | C1, C2, C3, C4 (they share the prelude) |
 | M5 | C2 |
 | M6 | C3 |
+| M7 | C4 |
 
 ## 6. KNOWN GAPS
 

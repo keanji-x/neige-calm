@@ -8,9 +8,12 @@
 /// git script that runs repository-selected code (hooks, fsmonitor, filters, credential helpers,
 /// `core.sshCommand`) or the network: git runs without a GitHub token (it keeps HOME, the
 /// proxies and the ssh agent a push may need), and gh runs from `/`, outside any repository,
-/// without the ssh keys. Prepended by the argv builders of the scripts that call them: the
-/// actions, and the probes that run repository code (`git status` runs `core.fsmonitor` and
-/// clean filters). The delivery probes and the provenance function run neither and stay bare.
+/// without the ssh keys. Prepended by the argv builders of the scripts that call them: every
+/// script of the plugin's `git.commit` (action, probe and output probe: `status` runs
+/// `core.fsmonitor` and clean filters, `log` runs `gpg.program` under `log.showSignature`), the
+/// delivery action and the publish scripts. The delivery probes and the provenance function run
+/// only `rev-parse`, `merge-base --is-ancestor` and `worktree list`, which run no repository
+/// code, and stay bare.
 pub const FORGE_SHELL_PRELUDE: &str = "neige_git() { env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN git \"$@\"; }\n\
     neige_gh() { (cd / && env -u SSH_AUTH_SOCK -u GIT_SSH_COMMAND gh \"$@\"); }";
 
@@ -22,7 +25,9 @@ pub const GIT_COMMIT_PROBE_SCRIPT: &str = "neige_git rev-parse --verify HEAD >/d
 /// `$1 message, $2 branch?`; runs after [`FORGE_SHELL_PRELUDE`].
 pub const GIT_COMMIT_SCRIPT: &str = r#"branch=${2:-$(neige_git rev-parse --abbrev-ref HEAD)} || exit 1; neige_git add -A || exit 1; if neige_git diff --cached --quiet; then :; else neige_git commit -m "$1" || exit 1; fi; json_escape() { awk 'BEGIN { s = ARGV[1]; ARGV[1] = ""; gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s); gsub(/\n/, "\\n", s); gsub(/\t/, "\\t", s); gsub(/\r/, "\\r", s); printf "%s", s }' "$1"; }; commit=$(neige_git log -1 --format=%H) || exit 1; branch_json=$(json_escape "$branch") || exit 1; printf '{"commit":"%s","branch":"%s"}\n' "$commit" "$branch_json""#;
 
-pub const GIT_COMMIT_OUTPUT_PROBE_SCRIPT: &str = r#"branch=${1:-$(git rev-parse --abbrev-ref HEAD)} || exit 1; json_escape() { awk 'BEGIN { s = ARGV[1]; ARGV[1] = ""; gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s); gsub(/\n/, "\\n", s); gsub(/\t/, "\\t", s); gsub(/\r/, "\\r", s); printf "%s", s }' "$1"; }; commit=$(git log -1 --format=%H) || exit 1; branch_json=$(json_escape "$branch") || exit 1; printf '{"commit":"%s","branch":"%s"}\n' "$commit" "$branch_json""#;
+/// The Planner commit's output probe; runs after [`FORGE_SHELL_PRELUDE`] (its `log` can run
+/// `gpg.program`).
+pub const GIT_COMMIT_OUTPUT_PROBE_SCRIPT: &str = r#"branch=${1:-$(neige_git rev-parse --abbrev-ref HEAD)} || exit 1; json_escape() { awk 'BEGIN { s = ARGV[1]; ARGV[1] = ""; gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s); gsub(/\n/, "\\n", s); gsub(/\t/, "\\t", s); gsub(/\r/, "\\r", s); printf "%s", s }' "$1"; }; commit=$(neige_git log -1 --format=%H) || exit 1; branch_json=$(json_escape "$branch") || exit 1; printf '{"commit":"%s","branch":"%s"}\n' "$commit" "$branch_json""#;
 
 /// Defines `neige_lease_provenance <canonical_path> <git_common_dir>` (#1727 S4 D2 / D3.0): the one
 /// text that checks a lease worktree's identity. Every git observation is status-checked before its
