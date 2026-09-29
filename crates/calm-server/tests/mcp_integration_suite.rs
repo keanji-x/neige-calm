@@ -88,6 +88,8 @@ mod gate_binding;
 mod git_delivery;
 #[path = "cases/lease_git_env.rs"]
 mod lease_git_env;
+#[path = "cases/track_publish.rs"]
+mod track_publish;
 #[path = "cases/track_worker_cwd.rs"]
 mod track_worker_cwd;
 #[path = "cases/track_worker_cwd_ends.rs"]

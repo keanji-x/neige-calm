@@ -7,7 +7,7 @@ import type {
 import type { ApiFailure, ApiOperation } from '../api/types.js';
 import {
   PLAN_LIST_TOOL, REPORT_DELETE_TOOL, REPORT_MOVE_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS,
-  TASK_VERDICT_TOOL, TRACK_RENAME_TOOL, TRACK_TOOL_PREFIX, USER_NOTIFY_TOOL,
+  TASK_VERDICT_TOOL, TRACK_PUBLISH_TOOL, TRACK_RENAME_TOOL, TRACK_TOOL_PREFIX, USER_NOTIFY_TOOL,
 } from '../keys/mcp-tools.js';
 import { sha256Hex } from './sha256.js';
 
@@ -990,9 +990,12 @@ function toolShape(tool: string): ActivityShape {
   if (tool === PLAN_LIST_TOOL) {
     return { running: 'Reading plan', done: 'Read plan', target: null };
   }
-  // The one `calm.track.*` tool that changes the track; it must be tested before the prefix fallback below.
+  // The `calm.track.*` tools that change the track; they must be tested before the prefix fallback below.
   if (tool === TRACK_RENAME_TOOL) {
     return { running: 'Naming the track', done: 'Named the track', target: null };
+  }
+  if (tool === TRACK_PUBLISH_TOOL) {
+    return { running: 'Publishing the track', done: 'Published the track', target: null };
   }
   // `cat`, `ls`, `state`, `log`, `diff` are looks; any new `calm.track.*` WRITE needs its own branch ahead of this one.
   if (tool.startsWith(TRACK_TOOL_PREFIX)) {

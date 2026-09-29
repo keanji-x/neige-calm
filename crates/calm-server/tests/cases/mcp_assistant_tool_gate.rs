@@ -41,6 +41,8 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     "calm.task.delivery",
     // Naming the track is a planner judgement.
     "calm.track.rename",
+    // Publishing the track's verified commit is a Planner action.
+    "calm.track.publish",
     // Speaking from a background sync turn is a planner action.
     "calm.user.notify",
     // Preview gateway registration is a Planner action.

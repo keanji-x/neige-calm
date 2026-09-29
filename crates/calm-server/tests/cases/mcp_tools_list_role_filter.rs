@@ -40,6 +40,7 @@ fn expected_planner_toolset() -> Vec<&'static str> {
         "calm.terminal.observe",
         "calm.terminal.open",
         "calm.terminal.resolve",
+        "calm.track.publish",
         "calm.track.rename",
         "calm.user.notify",
     ]

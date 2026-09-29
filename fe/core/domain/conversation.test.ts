@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import type { HarnessItem, HarnessPhaseTag } from '../api/generated/wire.js';
 import {
-  PLAN_LIST_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS, TASK_VERDICT_TOOL, TRACK_RENAME_TOOL,
-  TRACK_TOOL_PREFIX,
+  PLAN_LIST_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS, TASK_VERDICT_TOOL, TRACK_PUBLISH_TOOL,
+  TRACK_RENAME_TOOL, TRACK_TOOL_PREFIX,
 } from '../keys/mcp-tools.js';
 
 import {
@@ -618,6 +618,20 @@ describe('harnessItemToActivity', () => {
     for (const activity of [started, done]) {
       expect(activity?.verb).not.toMatch(/read/i);
     }
+  });
+
+  it('renders the track publish as a write, not as a look at the track', () => {
+    expect(TRACK_PUBLISH_TOOL.startsWith(TRACK_TOOL_PREFIX)).toBe(true);
+    const started = harnessItemToActivity(row({
+      item_type: 'mcpToolCall', method: 'item/started',
+      params: JSON.stringify({ item: { tool: TRACK_PUBLISH_TOOL } }),
+    }));
+    const done = harnessItemToActivity(row({
+      item_type: 'mcpToolCall',
+      params: JSON.stringify({ item: { tool: TRACK_PUBLISH_TOOL, status: 'completed' } }),
+    }));
+    expect(started).toMatchObject({ verb: 'Publishing the track', target: null, state: 'running' });
+    expect(done).toMatchObject({ verb: 'Published the track', target: null, state: 'done' });
   });
 
   it('still reads the other `calm.track.*` tools as looks', () => {

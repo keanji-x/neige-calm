@@ -66,7 +66,7 @@ there. If already working, move working->blocked via calm.ratify.request with
 
 Working method
 
-Understand the source issue and propose an appropriate design. Review the design through two independent channels before implementation: channel a checks correctness, channel b checks failure paths. Implement and commit in a worktree, run verification, open a PR and converge both PR reviews through those same two perspectives before any merge. After an authorized merge, close the source issue. Create concrete tasks when delegation is needed; these are working requirements, not a fixed task list.
+Understand the source issue and propose an appropriate design. Review the design through two independent channels before implementation: channel a checks correctness, channel b checks failure paths. Implement and commit in a worktree, run verification, open a PR with calm.track.publish and converge both PR reviews through those same two perspectives before any merge. After an authorized merge, close the source issue. Create concrete tasks when delegation is needed; these are working requirements, not a fixed task list.
 
 Review convergence
 

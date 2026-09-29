@@ -44,6 +44,9 @@ pub const GH_SHIM: &str = r#"#!/bin/sh
 # State is derived only from --repo so the kernel's env-cleared subprocess can
 # replay probes without test-only variables. The merge command is idempotent:
 # repeated merges for the same PR return the original recorded merge oid.
+# An open PR's headRefOid is read live from the --repo branch, as GitHub does;
+# a merged PR keeps the head it was merged at. Every invocation with --repo
+# appends one line to <state>/gh.log: whether GH_TOKEN was set, then the argv.
 
 get_arg() {
   wanted=$1
@@ -129,10 +132,20 @@ find_pr_by_head() {
   return 1
 }
 
+live_head_sha() {
+  lh_dir=$1
+  lh_repo=$2
+  if [ "$(cat "$lh_dir/merged")" = "true" ]; then
+    cat "$lh_dir/headRefOid"
+  else
+    git --git-dir "$lh_repo" rev-parse --verify -q "refs/heads/$(cat "$lh_dir/head")" || true
+  fi
+}
+
 print_pr_json() {
   pr_dir=$1
   number=$(cat "$pr_dir/number")
-  head_sha=$(cat "$pr_dir/headRefOid")
+  head_sha=$(live_head_sha "$pr_dir" "$2")
   printf '{"number":%s,"headRefOid":"%s"}\n' "$number" "$head_sha"
 }
 
@@ -144,6 +157,12 @@ print_pr_json() {
 area=$1
 verb=$2
 shift 2
+
+if log_repo=$(get_arg --repo "$@"); then
+  log_state=$(ensure_state "$log_repo")
+  if [ -n "${GH_TOKEN+set}" ]; then log_token=GH_TOKEN=set; else log_token=GH_TOKEN=unset; fi
+  printf '%s %s %s %s\n' "$log_token" "$area" "$verb" "$*" >> "$log_state/gh.log"
+fi
 
 case "$area:$verb" in
   pr:list)
@@ -179,7 +198,7 @@ case "$area:$verb" in
     base=$(get_arg --base "$@") || exit 2
     state=$(ensure_state "$repo")
     if pr_dir=$(find_pr_by_head "$head" "$state"); then
-      print_pr_json "$pr_dir"
+      print_pr_json "$pr_dir" "$repo"
       exit 0
     fi
     next_file="$state/next_pr"
@@ -198,7 +217,7 @@ case "$area:$verb" in
     printf '%s\n' "$base" > "$pr_dir/base"
     printf '%s\n' "$head_sha" > "$pr_dir/headRefOid"
     printf 'false\n' > "$pr_dir/merged"
-    print_pr_json "$pr_dir"
+    print_pr_json "$pr_dir" "$repo"
     ;;
   pr:diff)
     [ "$#" -ge 1 ] || exit 2
@@ -229,7 +248,7 @@ case "$area:$verb" in
     state=$(ensure_state "$repo")
     pr_dir=$(find_pr "$selector" "$state") || exit 1
     number=$(cat "$pr_dir/number")
-    head_sha=$(cat "$pr_dir/headRefOid")
+    head_sha=$(live_head_sha "$pr_dir" "$repo")
     merged=$(cat "$pr_dir/merged")
     case "$json_fields" in
       state)
@@ -241,6 +260,13 @@ case "$area:$verb" in
         ;;
       number,headRefOid)
         printf '{"number":%s,"headRefOid":"%s"}\n' "$number" "$head_sha"
+        ;;
+      headRefOid,state)
+        if [ "$merged" = "true" ]; then
+          printf '{"headRefOid":"%s","state":"MERGED"}\n' "$head_sha"
+        else
+          printf '{"headRefOid":"%s","state":"OPEN"}\n' "$head_sha"
+        fi
         ;;
       headRefOid,mergeCommit)
         if [ "$merged" = "true" ]; then
@@ -266,7 +292,7 @@ case "$area:$verb" in
     expected_head=$(get_arg --match-head-commit "$@" || true)
     state=$(ensure_state "$repo")
     pr_dir=$(find_pr "$selector" "$state") || exit 1
-    head_sha=$(cat "$pr_dir/headRefOid")
+    head_sha=$(live_head_sha "$pr_dir" "$repo")
     if [ -n "$expected_head" ] && [ "$expected_head" != "$head_sha" ]; then
       echo "head commit did not match" >&2
       exit 1
@@ -276,6 +302,7 @@ case "$area:$verb" in
     else
       number=$(cat "$pr_dir/number")
       merge_sha=$(printf '%s' "merge:$number:$head_sha" | git hash-object --stdin)
+      printf '%s\n' "$head_sha" > "$pr_dir/headRefOid"
       printf '%s\n' "$merge_sha" > "$pr_dir/merge_sha"
       printf 'true\n' > "$pr_dir/merged"
       inc_counter "$state/pr_merge_count"

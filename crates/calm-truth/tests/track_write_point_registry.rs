@@ -115,6 +115,12 @@ const EXPECTED_OTHER_WRITES: &[(&str, &str, &str)] = &[
          pin that its workers are refused.",
     ),
     (
+        "crates/calm-server/tests/cases/track_publish.rs",
+        "update tracks set workspace_worktree_path = null where id = ?1",
+        "#1830 S3 D7 — the pre-#1830 attached shape (no track worktree), to \
+         pin that `calm.track.publish` refuses it before any operation.",
+    ),
+    (
         "crates/calm-server/tests/cases/track_worker_cwd_ends.rs",
         "update tracks set workspace_kind = 'managed', workspace_path = ?1, workspace_worktree_path = null where id = ?2",
         "#1830 S2 T6 — re-points the fixture's track to a managed directory \
