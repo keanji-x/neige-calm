@@ -4,7 +4,7 @@ import {
   activeTracksOn, createCardOperation, createCodexCardOperation, createTerminalCardOperation,
   createTrackOperation, deleteCardOperation, hasFailed, isBlankForKernel, isClosed,
   isWorking, needsUserAttention, toTrack, trackActivityFrom,
-  sortAreaTracksByRecent, trackRecentAt, limitAreaTracks, AREA_TRACK_LIMIT,
+  sortAreaTracksByRecent, trackRecentAt, limitAreaTracks, railAreaTracks, AREA_TRACK_LIMIT,
   trackActivityState, trackDetailSchema, updateTrackOperation,
   NEUTRAL_ACTIVITY, UNTITLED_TRACK_LABEL, trackDisplayTitle, trackWireSchema, tracksInAreaOperation,
   trackCreateKeyAction, userVisibleTracks, liveTableOverlayPayload, plannerProviderOf,
@@ -161,10 +161,13 @@ describe('open and closed', () => {
     expect(isClosed(track({ closedAt: 5 }))).toBe(true);
   });
 
-  it('requires the server-derived Reopen capability on track detail', () => {
+  it('requires the server-derived Reopen and Close capabilities on track detail', () => {
     const detail = { track: { ...baseWire }, cards: [], overlays: [] };
     expect(trackDetailSchema.safeParse(detail).success).toBe(false);
-    expect(trackDetailSchema.parse({ ...detail, can_reopen: true }).can_reopen).toBe(true);
+    expect(trackDetailSchema.safeParse({ ...detail, can_reopen: true }).success).toBe(false);
+    expect(trackDetailSchema.safeParse({ ...detail, can_close: true }).success).toBe(false);
+    expect(trackDetailSchema.parse({ ...detail, can_reopen: true, can_close: false }))
+      .toMatchObject({ can_reopen: true, can_close: false });
   });
 
   it('builds the reopen PATCH without a parallel endpoint', () => {
@@ -380,6 +383,35 @@ describe('limitAreaTracks', () => {
     expect(source).toEqual(before);
     expect(limited.rows).not.toBe(source);
     expect(limited.rows[0]).toBe(source[0]);
+  });
+});
+
+describe('railAreaTracks', () => {
+  // t1 open; t2 closed and unread; t3 closed and open in the view; t4 closed, read and elsewhere.
+  const source = [
+    track({ id: 't1' }),
+    track({ id: 't2', closedAt: 5 }),
+    track({ id: 't3', closedAt: 5 }),
+    track({ id: 't4', closedAt: 5 }),
+  ];
+  const unread = (row: Track) => row.id === 't2';
+  const shown = (rows: readonly Track[]) => rows.map((row) => row.id);
+
+  it('railAreaTracks keeps open, unread and active tracks', () => {
+    expect(shown(railAreaTracks(source, 't3', unread, false))).toEqual(['t1', 't2', 't3']);
+    expect(shown(railAreaTracks(source, null, unread, false))).toEqual(['t1', 't2']);
+    expect(shown(railAreaTracks(source, null, () => false, false))).toEqual(['t1']);
+  });
+
+  it('keeps every track, in order, when the Area shows closed ones', () => {
+    expect(shown(railAreaTracks(source, null, () => false, true))).toEqual(['t1', 't2', 't3', 't4']);
+  });
+
+  it('leaves its input untouched', () => {
+    const before = [...source];
+    const rows = railAreaTracks(source, null, () => false, true);
+    expect(source).toEqual(before);
+    expect(rows).not.toBe(source);
   });
 });
 

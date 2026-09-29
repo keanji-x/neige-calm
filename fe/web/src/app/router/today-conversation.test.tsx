@@ -72,7 +72,7 @@ function renderApp({
       if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok(userWorkspace ? [TRACK] : []));
       if (request.path === '/api/overlays?entity_kind=track') return Promise.resolve(ok(overlays()));
       if (request.path === '/api/tracks/w1') {
-        return Promise.resolve(ok({ track: TRACK, can_reopen: false, cards: [], overlays: [] }));
+        return Promise.resolve(ok({ track: TRACK, can_reopen: false, can_close: true, cards: [], overlays: [] }));
       }
       if (request.path === LAUNCHPAD_CONVERSATIONS) {
         return launchpadConversations?.() ?? Promise.resolve(ok(launchpadRows()));

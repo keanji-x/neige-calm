@@ -32,7 +32,7 @@ function setup() {
     if (request.path === '/api/areas/area/tracks') body = tracks;
     if (request.path === '/api/settings') body = {};
     for (const track of tracks) {
-      if (request.path === `/api/tracks/${track.id}`) body = { track, can_reopen: false, cards: cardsFor(track.id), overlays: [] };
+      if (request.path === `/api/tracks/${track.id}`) body = { track, can_reopen: false, can_close: true, cards: cardsFor(track.id), overlays: [] };
       if (request.path === `/api/tracks/${track.id}/report`) body = { taskDiagnostics: [] };
     }
     return { status: 200, statusText: 'OK', body };

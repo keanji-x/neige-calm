@@ -54,7 +54,7 @@ function setup(mode: 'success' | 'lost' | 'conflict' | 'blocked' | 'awaiting' | 
     requests.push(request);
     if (request.path === '/api/areas') return ok([area]);
     if (request.path === '/api/areas/c1/tracks') return ok([track]);
-    if (request.path === '/api/tracks/w1') return ok({ track, can_reopen: false, cards: [card, worker, { ...worker, id: 'new-worker', title: 'Current worker' }], overlays: [] });
+    if (request.path === '/api/tracks/w1') return ok({ track, can_reopen: false, can_close: true, cards: [card, worker, { ...worker, id: 'new-worker', title: 'Current worker' }], overlays: [] });
     if (request.path === '/api/tracks/w1/report' && initiallyEmpty) return ok({ taskDiagnostics: [
       { blockId: 'b-task', key: taskKey, schedulable: false, status: null, statusDetail: null, workerCardId: null, diagnostics: [] },
     ] });

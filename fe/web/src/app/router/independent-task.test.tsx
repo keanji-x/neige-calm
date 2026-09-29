@@ -65,14 +65,14 @@ function setup(mode: 'success' | 'lost' | 'lost-committed' | 'lost-hidden' | 'co
       return ok({ taskKey: body.key, blockId: 'created-task', docRev: 13 });
     }
     if (request.path === '/api/tracks/w2') return ok({ track: { ...track, id: 'w2', title: 'Other Track' },
-      can_reopen: false, cards: [{ ...reportCard, id: 'report2', track_id: 'w2', payload: { ...reportCard.payload, blocks: [] } }], overlays: [] });
+      can_reopen: false, can_close: true, cards: [{ ...reportCard, id: 'report2', track_id: 'w2', payload: { ...reportCard.payload, blocks: [] } }], overlays: [] });
     if (request.path === '/api/tracks/w2/report') return ok({ taskDiagnostics: [] });
     if (request.path === '/api/areas') return ok([area]);
     if (request.path === '/api/areas/c1/tracks') return ok([track]);
     if (request.path === '/api/tracks/w1') {
       const hide = mode === 'lost-hidden' && writes > 0 && ++reconciliationReads < 3;
       const visible = hide ? { ...reportCard, payload: { ...reportCard.payload, blocks: reportCard.payload.blocks.slice(0, 1) } } : reportCard;
-      return ok({ track, can_reopen: false, cards: [visible], overlays: [] });
+      return ok({ track, can_reopen: false, can_close: true, cards: [visible], overlays: [] });
     }
     if (request.path === '/api/tracks/w1/report') return ok({ taskDiagnostics: submitted === null ? [] : [
       { blockId: 'created-task', key: submitted.key, schedulable: true, status, statusDetail: null, workerCardId: null, diagnostics: [] },

@@ -70,7 +70,7 @@ type Case = Readonly<{
 function renderToday({ resolve, body, detail = 'seeded', reset }: Case) {
   const requests: ApiRequest[] = [];
   const detailOk = () => ok({
-    track: launchpadTrack, can_reopen: false, cards: [reportCard(body)], overlays: [],
+    track: launchpadTrack, can_reopen: false, can_close: true, cards: [reportCard(body)], overlays: [],
   });
   const transport: ApiTransportPort = {
     send: (request) => {
@@ -91,7 +91,7 @@ function renderToday({ resolve, body, detail = 'seeded', reset }: Case) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   if (detail === 'seeded') {
     client.setQueryData(['track', 'lp'], {
-      track: launchpadTrack, can_reopen: false, cards: [reportCard(body)], overlays: [],
+      track: launchpadTrack, can_reopen: false, can_close: true, cards: [reportCard(body)], overlays: [],
     });
   }
   const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
@@ -208,7 +208,7 @@ describe('INV-TODAYDOC-002 the three document states are three answers', () => {
       resolve: resolved(true), body: INITIAL_BODY,
       detail: ok({
         track: launchpadTrack,
-        can_reopen: false,
+        can_reopen: false, can_close: true,
         cards: [{ ...reportCard(INITIAL_BODY), payload: { schemaVersion: 'not-a-number' } }],
         overlays: [],
       }),
@@ -282,7 +282,7 @@ describe('#1343 the document’s Reset control', () => {
         if (request.path === '/api/tracks/lp') {
           return Promise.resolve(ok({
             track: launchpadTrack,
-            can_reopen: false,
+            can_reopen: false, can_close: true,
             cards: [reportCard(hasContent ? '# 概要\n\n今天合了两个 PR。\n' : INITIAL_BODY)],
             overlays: [],
           }));
@@ -348,7 +348,7 @@ describe('#1253 §6 the report-edit refresh chain', () => {
         if (request.path === '/api/tracks/lp') {
           return Promise.resolve(ok({
             track: launchpadTrack,
-            can_reopen: false,
+            can_reopen: false, can_close: true,
             cards: [reportCard(hasContent ? '# 概要\n\n今天合了两个 PR。\n' : INITIAL_BODY)],
             overlays: [],
           }));
@@ -379,7 +379,7 @@ describe('#1253 §6 the report-edit refresh chain', () => {
         if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([track]));
         if (request.path === '/api/tracks/lp') {
           return Promise.resolve(ok({
-            track: launchpadTrack, can_reopen: false, cards: [reportCard(body)], overlays: [],
+            track: launchpadTrack, can_reopen: false, can_close: true, cards: [reportCard(body)], overlays: [],
           }));
         }
         return Promise.resolve(ok([]));

@@ -127,9 +127,12 @@ export type TrackPageProps = Readonly<{
   mobileHeaderActionsHost?: HTMLElement | null;
   mobileHeaderTitleHost?: HTMLElement | null;
   mobileTitleReadView?: EditableTitleProps['readView'];
+  /** The server's capabilities; at most one is true, so the menu offers Close or Reopen, never both. */
   canReopenTrack: boolean;
+  canCloseTrack: boolean;
   onRenameTrack: (title: string) => void | Promise<void>;
   onReopenTrack: () => void | Promise<void>;
+  onCloseTrack: () => void | Promise<void>;
   onDeleteTrack: (signal: AbortSignal) => void | Promise<void>;
 }>;
 
@@ -150,7 +153,7 @@ export function TrackPage({
   cardsAction, onCreateTask, recentFiles, onOpenCard, onDeleteCard, onOpenTask, onOpenOutline, board, onCloseBoard,
   panel = null, onOpenPanel, onClosePanel,
   mobileBackLabel = 'Pages', onMobileBack, mobileHeaderActionsHost = null, mobileHeaderTitleHost = null, mobileTitleReadView,
-  canReopenTrack, onRenameTrack, onReopenTrack, onDeleteTrack,
+  canReopenTrack, canCloseTrack, onRenameTrack, onReopenTrack, onCloseTrack, onDeleteTrack,
 }: TrackPageProps) {
   const compactViewport = useCompactViewport();
   const headerActionsHost = compactViewport ? mobileHeaderActionsHost : null;
@@ -191,24 +194,26 @@ export function TrackPage({
   }, [mobileHeaderTitleHost, titleContainer, titleInHeader]);
 
   const deletion = useDeleteConfirm((_id, signal) => onDeleteTrack(signal));
-  const reopenFeedback = useOperationFeedback();
+  const closedFeedback = useOperationFeedback();
   const dismissFeedback = useOperationFeedback();
-  const [reopenPending, setReopenPending] = useState(false);
+  const [closedPending, setClosedPending] = useState(false);
   const notificationSignature = inputNotifications.map(({ key }) => key).join('|');
   const [noticeExpanded, setNoticeExpanded] = useState(inputNotifications.length > 0 && !conversationOpen);
   const [notificationAnnouncement, setNotificationAnnouncement] = useState('');
-  const reopenPendingRef = useRef(false);
+  const offeredClosedAction = canReopenTrack ? 'reopen' : (canCloseTrack ? 'close' : null);
+  const closedPendingRef = useRef<'close' | 'reopen' | null>(null);
   const previousNotificationSignatureRef = useRef('');
   const previousNotificationCountRef = useRef(0);
   const previousConversationOpenRef = useRef(conversationOpen);
   useEffect(() => {
-    // The PATCH promise settles before its invalidation refetch. Keep Reopen
-    // fenced after a successful response until the authoritative capability
-    // disappears; otherwise the stale closed detail can launch a second PATCH.
-    if (canReopenTrack || !reopenPendingRef.current) return;
-    reopenPendingRef.current = false;
-    setReopenPending(false);
-  }, [canReopenTrack]);
+    // The PATCH promise settles before its invalidation refetch. Keep Close and
+    // Reopen fenced after a successful response until the authoritative
+    // capability that offered it disappears; otherwise the stale detail can
+    // launch a second PATCH.
+    if (closedPendingRef.current === null || closedPendingRef.current === offeredClosedAction) return;
+    closedPendingRef.current = null;
+    setClosedPending(false);
+  }, [offeredClosedAction]);
   useEffect(() => {
     if (notificationSignature === previousNotificationSignatureRef.current) return;
     const count = inputNotifications.length;
@@ -227,31 +232,34 @@ export function TrackPage({
   const mobilePanelOpen = panel !== null;
   const noticePanelOpen = noticeExpanded;
   const mobilePanelKind: MobilePanelKind = panel ?? 'cards';
-  const reopenTrack = async (): Promise<boolean> => {
-    if (!canReopenTrack || reopenPendingRef.current) return false;
-    reopenPendingRef.current = true;
-    setReopenPending(true);
-    const reopened = await reopenFeedback.run(
-      Promise.resolve().then(() => onReopenTrack()),
-      'Could not reopen this track.',
+  const setTrackClosed = async (action: 'close' | 'reopen'): Promise<boolean> => {
+    if (offeredClosedAction !== action || closedPendingRef.current !== null) return false;
+    closedPendingRef.current = action;
+    setClosedPending(true);
+    const done = await closedFeedback.run(
+      Promise.resolve().then(() => (action === 'close' ? onCloseTrack() : onReopenTrack())),
+      `Could not ${action} this track.`,
     );
-    if (!reopened) {
-      reopenPendingRef.current = false;
-      setReopenPending(false);
+    if (!done) {
+      closedPendingRef.current = null;
+      setClosedPending(false);
     }
-    return reopened;
+    return done;
   };
   const taskUnavailable = independentTaskUnavailableReason(track.closedAt);
   const trackWorkActions = [
     ...(onCreateTask === undefined ? [] : [{ label: 'Run independent task', isDisabled: taskUnavailable !== null, onClick: onCreateTask }]),
-    ...(canReopenTrack ? [
-      { label: 'Reopen', isDisabled: reopenPending, onClick: reopenTrack },
+    ...(offeredClosedAction === 'reopen' ? [
+      { label: 'Reopen', isDisabled: closedPending, onClick: () => setTrackClosed('reopen') },
+    ] : []),
+    ...(offeredClosedAction === 'close' ? [
+      { label: 'Close', isDisabled: closedPending, onClick: () => setTrackClosed('close') },
     ] : []),
   ];
   const deleteTrackAction = { label: 'Delete track', onClick: () => deletion.request(track.id) };
   const trackMutationActions = [
     ...trackWorkActions,
-    ...(canReopenTrack ? [{ type: 'divider' as const }] : []),
+    ...(offeredClosedAction !== null ? [{ type: 'divider' as const }] : []),
     deleteTrackAction,
   ];
   /* The desktop panel goes through `core/view`: one derivation, one traversal, one painter. This file may not spell a projection marker; `desktop-projection.test.tsx` scans for that. */
@@ -635,7 +643,7 @@ export function TrackPage({
         onCancel={deletion.cancel}
       />
       <OperationFeedback feedback={deletion.feedback} />
-      <OperationFeedback feedback={reopenFeedback} />
+      <OperationFeedback feedback={closedFeedback} />
       <OperationFeedback feedback={dismissFeedback} />
     </section>
   );

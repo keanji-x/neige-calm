@@ -52,7 +52,7 @@ function setup(path: string) {
       if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([TRACK]));
       if (request.path === '/api/areas/c2/tracks') return Promise.resolve(ok([]));
       if (request.path === '/api/tracks/w1') return Promise.resolve(ok({
-        track: TRACK, can_reopen: false, cards: [CARD, REPORT_CARD], overlays: [],
+        track: TRACK, can_reopen: false, can_close: true, cards: [CARD, REPORT_CARD], overlays: [],
       }));
       if (request.path === '/api/tracks/w1/report') return Promise.resolve(ok({ taskDiagnostics: [] }));
       return Promise.resolve(ok([]));

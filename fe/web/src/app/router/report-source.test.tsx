@@ -56,7 +56,7 @@ function setup(reply?: Reply) {
     if (request.path === '/api/areas') return ok([AREA]);
     if (request.path === '/api/areas/c1/tracks') return ok([TRACK]);
     if (request.path === '/api/overlays?entity_kind=track') return ok([]);
-    if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, cards: [PLANNER_CARD, REPORT_CARD], overlays: [] });
+    if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_close: true, cards: [PLANNER_CARD, REPORT_CARD], overlays: [] });
     if (request.path === '/api/tracks/w1/report') return ok({ taskDiagnostics: [] });
     if (request.path === '/api/tracks/w1/sources/src_2c9e0a1b') return ok(SOURCE_ROW);
     if (request.path.startsWith('/api/tracks/w1/sources/')) {

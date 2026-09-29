@@ -245,6 +245,21 @@ export function sortAreaTracksByRecent(tracks: readonly Track[]): Track[] {
   });
 }
 
+/**
+ * The desktop rail's Area rows before the limit: an open track, a closed one that is unread or
+ * open in the view, and every track when the Area shows closed ones. Order is kept. It runs
+ * before `limitAreaTracks`, so `Show N more` never counts a hidden closed track.
+ */
+export function railAreaTracks(
+  sorted: readonly Track[],
+  activeTrackId: string | null,
+  isUnread: (track: Track) => boolean,
+  showClosed: boolean,
+): Track[] {
+  if (showClosed) return [...sorted];
+  return sorted.filter((track) => !isClosed(track) || isUnread(track) || track.id === activeTrackId);
+}
+
 /** How many of an expanded Area's most recent Tracks the desktop rail shows before `Show N more`. */
 export const AREA_TRACK_LIMIT = 5;
 
@@ -282,6 +297,7 @@ export type CardWire = z.infer<typeof cardWireSchema>;
 export const trackDetailSchema = z.object({
   track: trackWireSchema,
   can_reopen: z.boolean(),
+  can_close: z.boolean(),
   cards: z.array(cardWireSchema),
   overlays: z.array(overlayWireSchema),
 });

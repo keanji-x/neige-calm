@@ -6,7 +6,9 @@ import { useCollapsible } from '@astryxdesign/core/Collapsible';
 import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
 
 import type { Area } from '../../../../core/domain/area.ts';
-import { AREA_TRACK_LIMIT, limitAreaTracks, type Track } from '../../../../core/domain/track.ts';
+import {
+  AREA_TRACK_LIMIT, limitAreaTracks, railAreaTracks, type Track,
+} from '../../../../core/domain/track.ts';
 import { TrackRow } from '../../features/track/row/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
 import { useState } from '../../ui/state/public.ts';
@@ -31,16 +33,20 @@ export type RowProps = Readonly<{
  * The list shows the Area's most recent Tracks plus the open one; `Show N more`
  * reveals the rest. The choice lives in this component's memory, so it survives
  * collapsing the Area (which keeps the group mounted) and resets on reload.
+ * Closed Tracks are left out first, unless unread or open, or the Area's
+ * persisted `Show closed` is on.
  */
 export function AreaGroup({
-  area, areaTracks, activeTrackId, expanded, onToggle, disclosureRef, onEdit, onRequestDelete, onNewTrack,
-  onGo, nowMs, onSetPinned, onDelete, isUnread,
+  area, areaTracks, activeTrackId, expanded, onToggle, showClosed, onSetShowClosed, disclosureRef, onEdit,
+  onRequestDelete, onNewTrack, onGo, nowMs, onSetPinned, onDelete, isUnread,
 }: RowProps & {
   area: Area;
   areaTracks: readonly Track[];
   activeTrackId: string | null;
   expanded: boolean;
   onToggle: (expanded: boolean) => void;
+  showClosed: boolean;
+  onSetShowClosed: (showClosed: boolean) => void;
   disclosureRef: (element: HTMLButtonElement | null) => void;
   onEdit: () => void;
   onRequestDelete: (areaId: string) => void;
@@ -52,8 +58,9 @@ export function AreaGroup({
   const [showAll, setShowAll] = useState(false);
   const toggleRef = useRef<HTMLButtonElement | null>(null);
   const pendingRevealRef = useRef(false);
-  const limited = limitAreaTracks(areaTracks, AREA_TRACK_LIMIT, activeTrackId);
-  const rows = showAll ? areaTracks : limited.rows;
+  const railTracks = railAreaTracks(areaTracks, activeTrackId, isUnread, showClosed);
+  const limited = limitAreaTracks(railTracks, AREA_TRACK_LIMIT, activeTrackId);
+  const rows = showAll ? railTracks : limited.rows;
 
   /* `Show less` removes the rows above the focused toggle, which can leave it
        outside the rail's scrollport. Only that click asks for the reveal. */
@@ -93,6 +100,10 @@ export function AreaGroup({
             }}
           >
             <DropdownMenuItem label="Edit area" onClick={onEdit} />
+            <DropdownMenuItem
+              label={showClosed ? 'Hide closed' : 'Show closed'}
+              onClick={() => onSetShowClosed(!showClosed)}
+            />
             <DropdownMenuItem label="Delete area" onClick={() => onRequestDelete(area.id)} />
           </DropdownMenu>
         </span>
@@ -109,7 +120,7 @@ export function AreaGroup({
           <Icon name="plus" size="sm" />
         </button>
       </div>
-      {disclosure.isOpen && areaTracks.length > 0 && (
+      {disclosure.isOpen && railTracks.length > 0 && (
         <div className={styles.trackList}>
           {rows.map((track) => (
             <TrackRow

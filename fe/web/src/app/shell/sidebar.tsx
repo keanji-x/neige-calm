@@ -239,6 +239,8 @@ export function Sidebar({
                     activeTrackId={activeTrackId}
                     expanded={preferences.areaExpanded(area.id)}
                     onToggle={(nextExpanded) => preferences.setAreaExpanded(area.id, nextExpanded)}
+                    showClosed={preferences.areaShowsClosed(area.id)}
+                    onSetShowClosed={(next) => preferences.setAreaShowsClosed(area.id, next)}
                     disclosureRef={(element) => {
                       if (element === null) areaDisclosureRefs.current.delete(area.id);
                       else areaDisclosureRefs.current.set(area.id, element);

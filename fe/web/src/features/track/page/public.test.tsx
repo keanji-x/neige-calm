@@ -92,6 +92,51 @@ describe('TrackPage header', () => {
     expect(repeatedAction.getAttribute('aria-disabled')).toBe('true');
   });
 
+  it('closes an open track from the desktop Track actions menu, and offers no Reopen', async () => {
+    const onCloseTrack = vi.fn();
+    renderPage({ canCloseTrack: true, onCloseTrack });
+    await openDesktopTrackActions();
+    expect(screen.queryByRole('menuitem', { name: /Reopen/ })).toBeNull();
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Close' }));
+    expect(onCloseTrack).toHaveBeenCalledOnce();
+  });
+
+  it('offers no Close where the server withholds it', async () => {
+    renderPage({ canCloseTrack: false });
+    await openDesktopTrackActions();
+    expect(screen.queryByRole('menuitem', { name: 'Close' })).toBeNull();
+    expect(screen.getByRole('menuitem', { name: 'Delete track' })).toBeTruthy();
+  });
+
+  it('deduplicates Close while the first request is pending', async () => {
+    let finishClose!: () => void;
+    const pendingClose = new Promise<void>((resolve) => { finishClose = resolve; });
+    const onCloseTrack = vi.fn(() => pendingClose);
+    renderPage({ canCloseTrack: true, onCloseTrack });
+
+    await userEvent.click(screen.getByRole('button', { name: /^Track actions for / }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Close' }));
+    const desktopMenu = screen.getByRole('menu', { name: /^Track actions for /, hidden: true });
+    const repeatedAction = within(desktopMenu).getByRole('menuitem', { name: 'Close', hidden: true });
+    expect(repeatedAction.getAttribute('aria-disabled')).toBe('true');
+    repeatedAction.click();
+    expect(onCloseTrack).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      finishClose();
+      await pendingClose;
+    });
+    expect(repeatedAction.getAttribute('aria-disabled')).toBe('true');
+  });
+
+  it('keeps Close reachable from compact Track actions', async () => {
+    const onCloseTrack = vi.fn();
+    renderPage({ canCloseTrack: true, onCloseTrack });
+    await userEvent.click(screen.getByRole('button', { name: 'Track actions' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Close' }));
+    expect(onCloseTrack).toHaveBeenCalledOnce();
+  });
+
   it('keeps Reopen reachable from compact Track actions', async () => {
     const onReopenTrack = vi.fn();
     renderPage({ track: track({ closedAt: 5 }), canReopenTrack: true, onReopenTrack });
@@ -234,8 +279,10 @@ describe('TrackPage header', () => {
             openableCards={new Set()}
             inputNotifications={notifications}
             canReopenTrack={false}
+            canCloseTrack={false}
             onRenameTrack={vi.fn()}
             onReopenTrack={vi.fn()}
+            onCloseTrack={vi.fn()}
             onDeleteTrack={vi.fn()}
           />
         </>
@@ -666,7 +713,7 @@ describe('TrackPage card inventory', () => {
     const props = {
       mobilePanelObscured: false,
       track: track(), cards: [card({ id: 'k1', title: 'Build log' })], tasks: [], openableCards: new Set(['k1']),
-      canReopenTrack: false, onRenameTrack: vi.fn(), onReopenTrack: vi.fn(), onDeleteTrack: vi.fn(),
+      canReopenTrack: false, canCloseTrack: false, onRenameTrack: vi.fn(), onReopenTrack: vi.fn(), onCloseTrack: vi.fn(), onDeleteTrack: vi.fn(),
     };
     const { container, rerender } = render(<TrackPage {...props} panel="cards" />);
     expect(container.querySelector('[data-nc-mobile-page]')?.getAttribute('data-nc-mobile-page')).toBe('open');
@@ -718,8 +765,10 @@ describe('TrackPage card inventory', () => {
       tasks={[]}
       openableCards={new Set(['k1'])}
       canReopenTrack={false}
+      canCloseTrack={false}
       onRenameTrack={vi.fn()}
       onReopenTrack={vi.fn()}
+      onCloseTrack={vi.fn()}
       onDeleteTrack={vi.fn()}
     />);
     expect(container.textContent).toContain('notes');

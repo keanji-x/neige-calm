@@ -227,26 +227,28 @@ describe('the track closed status in the page header', () => {
     );
   });
 
-  it('keeps keyboard focus on Track actions after Reopen removes the action', async () => {
-    function ReopenHarness() {
-      const [reopened, setReopened] = useState(false);
-      return (
-        <TrackPage
-          mobilePanelObscured={false}
-          track={track({ closedAt: reopened ? null : 5 })}
-          cards={[]}
-          tasks={[]}
-          openableCards={new Set()}
-          canReopenTrack={!reopened}
-          onRenameTrack={vi.fn()}
-          onReopenTrack={() => { setReopened(true); }}
-          onDeleteTrack={vi.fn()}
-        />
-      );
-    }
+  /* The server offers one of Close and Reopen; the harness flips `closedAt` and both capabilities together. */
+  function ClosedStateHarness({ initiallyClosed }: { initiallyClosed: boolean }) {
+    const [closed, setClosed] = useState(initiallyClosed);
+    return (
+      <TrackPage
+        mobilePanelObscured={false}
+        track={track({ closedAt: closed ? 5 : null })}
+        cards={[]}
+        tasks={[]}
+        openableCards={new Set()}
+        canReopenTrack={closed}
+        canCloseTrack={!closed}
+        onRenameTrack={vi.fn()}
+        onReopenTrack={() => { setClosed(false); }}
+        onCloseTrack={() => { setClosed(true); }}
+        onDeleteTrack={vi.fn()}
+      />
+    );
+  }
 
-    await browserPage.viewport(1200, 800);
-    render(<ReopenHarness />);
+  /** Opens Track actions from the keyboard and activates its first item, which is the Close or Reopen action. */
+  async function activateFirstTrackAction(): Promise<HTMLButtonElement> {
     const actions = document.querySelector<HTMLButtonElement>('[aria-label^="Track actions for "]')!;
     actions.focus();
     await userEvent.keyboard('{Enter}');
@@ -255,12 +257,26 @@ describe('the track closed status in the page header', () => {
 
     await userEvent.keyboard('{Enter}');
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    const currentActions = document.querySelector<HTMLButtonElement>(
-      '[aria-label^="Track actions for "]',
-    )!;
+    return document.querySelector<HTMLButtonElement>('[aria-label^="Track actions for "]')!;
+  }
+
+  it('keeps keyboard focus on Track actions after Reopen removes the action', async () => {
+    await browserPage.viewport(1200, 800);
+    render(<ClosedStateHarness initiallyClosed />);
+    const currentActions = await activateFirstTrackAction();
     expect(document.activeElement).toBe(currentActions);
     expect(currentActions.matches(':focus-visible')).toBe(true);
     expect(document.querySelector('[aria-label="Track closed"]')).toBeNull();
+  });
+
+  it('keeps keyboard focus on Track actions after Close removes the action', async () => {
+    await browserPage.viewport(1200, 800);
+    render(<ClosedStateHarness initiallyClosed={false} />);
+    expect(document.querySelector('[aria-label="Track closed"]')).toBeNull();
+    const currentActions = await activateFirstTrackAction();
+    expect(document.activeElement).toBe(currentActions);
+    expect(currentActions.matches(':focus-visible')).toBe(true);
+    expect(document.querySelector('[aria-label="Track closed"]')).not.toBeNull();
   });
 
   it('light-dismisses Track actions on an outside click', async () => {

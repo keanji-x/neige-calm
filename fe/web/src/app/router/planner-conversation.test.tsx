@@ -71,10 +71,10 @@ function setup(reply?: Reply) {
       if (request.path === '/api/areas/c1/tracks') return ok([TRACK, TRACK_B]);
       if (request.path === '/api/overlays?entity_kind=track') return ok([]);
       if (request.path === '/api/tracks/w1') return ok({
-        track: TRACK, can_reopen: false, cards: [CARD], overlays: [],
+        track: TRACK, can_reopen: false, can_close: true, cards: [CARD], overlays: [],
       });
       if (request.path === '/api/tracks/w2') return ok({
-        track: TRACK_B, can_reopen: false, cards: [CARD_B], overlays: [],
+        track: TRACK_B, can_reopen: false, can_close: true, cards: [CARD_B], overlays: [],
       });
       if (request.path.includes('/harness/items')) return ok([]);
       if (request.path.endsWith('/planner/run')) return ok(PLANNER_RUN_IDLE);
@@ -293,12 +293,12 @@ describe('planner conversation regressions', () => {
     await screen.findByRole('button', { name: 'Conversation Planner chat, 3 turns' });
 
     client.setQueryData(queryKeys.trackDetail(TRACK.id), {
-      track: TRACK, can_reopen: false, cards: [CARD_SAME_TRACK], overlays: [],
+      track: TRACK, can_reopen: false, can_close: true, cards: [CARD_SAME_TRACK], overlays: [],
     });
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Other chat' }));
     await screen.findByRole('button', { name: 'Conversation Other chat, 3 turns' });
     client.setQueryData(queryKeys.trackDetail(TRACK.id), {
-      track: TRACK, can_reopen: false, cards: [CARD], overlays: [],
+      track: TRACK, can_reopen: false, can_close: true, cards: [CARD], overlays: [],
     });
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Planner chat' }));
     await screen.findByRole('button', { name: 'Conversation Planner chat, 3 turns' });
@@ -1009,7 +1009,7 @@ describe('planner conversation regressions', () => {
         /* The wedged case also carries the kernel's stale `working` verdict: the drawer's
                    own wedge must outrank it. */
         : policy === 'stalled' && request.path === '/api/tracks/w1'
-          ? ok({ track: TRACK, can_reopen: false, cards: [CARD],
+          ? ok({ track: TRACK, can_reopen: false, can_close: true, cards: [CARD],
               overlays: [trackActivityOverlay([{ card_id: CARD.id, state: 'working' }])] })
           : undefined);
       await openConversation();

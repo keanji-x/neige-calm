@@ -18,6 +18,7 @@ describe('browser display preferences', () => {
     first.setAreaExpanded('work', false);
     first.setAreaExpanded('home', true);
     first.setRailCollapsed(true);
+    first.setAreaShowsClosed('work', true);
     const restored = createUiPreferences(storage);
     expect(restored.conversation('a:/')).toBe('chat-a');
     expect(restored.conversation('b')).toBe('chat-b');
@@ -25,6 +26,8 @@ describe('browser display preferences', () => {
     expect(restored.areaExpanded('work')).toBe(false);
     expect(restored.areaExpanded('home')).toBe(true);
     expect(restored.railCollapsed()).toBe(true);
+    expect(restored.areaShowsClosed('work')).toBe(true);
+    expect(restored.areaShowsClosed('home')).toBe(false);
     restored.setConversation('a:/', null);
     const closed = createUiPreferences(storage);
     expect(closed.conversation('a:/')).toBeNull();
@@ -35,6 +38,7 @@ describe('browser display preferences', () => {
     const preferences = createUiPreferences({ getItem: () => value, setItem: () => {} });
     expect(preferences.conversation('track')).toBeNull();
     expect(preferences.areaExpanded('area')).toBe(true);
+    expect(preferences.areaShowsClosed('area')).toBe(false);
     expect(preferences.railCollapsed()).toBeNull();
   });
 

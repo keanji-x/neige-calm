@@ -43,8 +43,8 @@ function setup(path: string, areaName = AREA.name, onRequest: (request: ApiReque
     if (request.path === '/api/areas') return ok([...(options.longLists ? Array.from({ length: 18 }, (_, index) => ({ ...AREA, id: `extra${index}`, name: `Area ${index}`, sort: index - 18 })) : []), { ...AREA, name: areaName }, { ...AREA, id: 'c2', name: 'Frontend' }]);
     if (request.path === '/api/areas/c1/tracks') return ok([...(track.area_id === 'c1' ? [track] : []), { ...track, area_id: 'c1', id: 'w2', title: 'Another track' }, ...(options.longLists ? Array.from({ length: 25 }, (_, index) => ({ ...track, id: `long${index}`, title: `Long track ${index}` })) : [])]);
     if (request.path === '/api/areas/c2/tracks') return ok([{ ...track, area_id: 'c2', id: 'w3', title: 'Frontend track' }]);
-    if (request.path === '/api/tracks/w1') return ok({ track, cards: [report, planner, { ...planner, id: 'terminal', title: 'Terminal', kind: 'terminal', payload: {} }], overlays: [], can_reopen: false });
-    if (request.path === '/api/tracks/w2') return ok({ track: { ...track, id: 'w2', title: 'Another track' }, cards: [], overlays: [], can_reopen: false });
+    if (request.path === '/api/tracks/w1') return ok({ track, cards: [report, planner, { ...planner, id: 'terminal', title: 'Terminal', kind: 'terminal', payload: {} }], overlays: [], can_reopen: false, can_close: true });
+    if (request.path === '/api/tracks/w2') return ok({ track: { ...track, id: 'w2', title: 'Another track' }, cards: [], overlays: [], can_reopen: false, can_close: true });
     if (request.path === '/api/tracks/w1/report') return ok({ taskDiagnostics: [] });
     if (request.path.endsWith('/sources/src_2c9e0a1b')) return ok(source);
     if (request.path.endsWith('/planner/run')) return ok({ card_id: 'planner', worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, blocked_reason: null });

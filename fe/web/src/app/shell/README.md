@@ -110,6 +110,11 @@ real shell composition, Area routing, modal focus boundaries and panel history.
   no `aria-expanded` because its text already flips. Focus stays on it, and
   `Show less` scrolls it into view. The choice is component memory: collapsing
   the Area keeps it; collapsing the rail or reloading resets it.
+- Before that limit, the desktop Area leaves out closed Tracks (`railAreaTracks`),
+  except one that is unread or open in the view, so `Show N more` never counts a
+  hidden closed Track. The Area actions menu's `Show closed` / `Hide closed` item
+  lists every Track again. Waiting on you, Pinned and the phone Area page still
+  list closed Tracks.
 - **Intentionally not done:** no skip-to-main link (INV-A11Y-058). The rail is
   short and this has never been raised as a pain point; re-evaluate if a second
   long section lands. "There is no skip link" is a decision, not a defect.
@@ -117,7 +122,8 @@ real shell composition, Area routing, modal focus boundaries and panel history.
 
 ## Persistence
 
-Area disclosure and the manual sidebar width choice are browser-local display
+Area disclosure, each Area's `Show closed` choice (`area-closed:<id>`, off by
+default) and the manual sidebar width choice are browser-local display
 preferences, injected through `app/providers/ui-preferences.tsx`. Explicit
 collapse survives Track navigation and refresh. Activating an Area initial
 still expands that Area and restores focus to its disclosure. With unavailable

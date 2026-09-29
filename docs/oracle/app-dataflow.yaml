@@ -651,23 +651,23 @@
     #1722：rail 里「股票持仓表」`data-nc-activity=working` 而其 planner 已 idle 三天——FE 用 `isRunning(lifecycle)`
     当「在动」、用 lifecycle ∨ `anyCardNeedsInput` 当「等你」，与内核从持久行算出的结论不一致；判定收敛到内核一处
     （`track_activity.rs`），FE 只解码 overlay。第二套推导必然再度分叉。
-  source: fe/core/domain/activity.ts:19-89; fe/core/domain/track.ts:145-190,506-526;
-    fe/web/src/app/router/public.tsx:1866-1878,2373-2378; fe/web/src/features/track/page/public.tsx:7,46-69,91-94,558-608,639;
-    fe/web/src/app/providers/queries.ts:904-909,943-950;
+  source: fe/core/domain/activity.ts:19-89; fe/core/domain/track.ts:145-190,522-542;
+    fe/web/src/app/router/public.tsx:1867-1879,2376-2382; fe/web/src/features/track/page/public.tsx:7,46-69,91-94,566-616,647;
+    fe/web/src/app/providers/queries.ts:905-910,944-951;
     fe/web/src/features/today/public.tsx:137-138,256-257;
     fe/web/src/app/providers/ui-preferences.tsx:69-105; fe/web/src/ui/activity-indicator/activity-indicator.module.css:7-8;
     fe/web/src/features/chat/list/public.tsx:32-88; fe/core/view/track-page.ts:14-18,59-61,69-70,90,107,119;
     fe/web/src/systems/cards/builtins/terminal-card.tsx:12-87;
     fe/web/src/app/shell/mobile-tracks.tsx:73-89; fe/web/src/app/shell/public.tsx:353
-  authoritative_test: fe/core/domain/activity.test.ts:10-40; fe/core/domain/track.test.ts:183-219,222-284;
+  authoritative_test: fe/core/domain/activity.test.ts:10-40; fe/core/domain/track.test.ts:186-222,225-287;
     fe/web/src/app/router/track-conversation.test.tsx:295-389; fe/web/src/features/today/public.test.tsx:46-65;
     fe/web/src/app/router/today-activity.test.tsx:82-88;
-    fe/web/src/features/track/row/public.test.tsx:124-175; fe/web/src/app/providers/ui-preferences.test.tsx:112-157;
+    fe/web/src/features/track/row/public.test.tsx:124-175; fe/web/src/app/providers/ui-preferences.test.tsx:116-161;
     fe/web/src/app/shell/mobile-tracks.test.tsx:95-146; fe/web/src/app/shell/responsive.contract.test.tsx:104-123;
     fe/web/src/ui/activity-indicator/activity-indicator.browser.test.tsx:56-77;
     fe/web/src/features/chat/list/public.test.tsx:32-88; fe/web/src/app/router/track-conversation.test.tsx:1910-1995;
     fe/web/src/app/router/today-conversation.test.tsx:188-211; fe/web/src/features/chat/thread/public.test.tsx:537-602;
-    fe/web/src/features/track/page/public.test.tsx:135-225,302-372;
+    fe/web/src/features/track/page/public.test.tsx:180-270,349-419;
     fe/web/src/features/track/page/header-status.browser.test.tsx:82-193; fe/web/src/features/track/page/mobile-projection.test.tsx:255-283;
     fe/core/view/track-page.test.ts:239-266; fe/web/src/app/router/track-cards-panel.test.tsx:391-416;
     fe/web/src/systems/cards/builtins/terminal-lifecycle.test.tsx:95-111;

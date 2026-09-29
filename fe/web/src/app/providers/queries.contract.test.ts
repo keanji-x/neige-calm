@@ -577,7 +577,7 @@ describe('track detail mutation cache writes', () => {
     deletable: true, created_at: 1, updated_at: 2,
   });
   const detail = {
-    track: { ...baseTrackWire }, can_reopen: false,
+    track: { ...baseTrackWire }, can_reopen: false, can_close: true,
     cards: [cardWire('card-a'), cardWire('card-b')], overlays: [],
   };
 
@@ -659,12 +659,29 @@ describe('track detail mutation cache writes', () => {
       ...detail,
       track: { ...baseTrackWire, closed_at: 2 },
       can_reopen: true,
+      can_close: false,
     });
 
     await act(() => result.current.patch('w1', 'c1', { closed: false }));
 
     expect(client.getQueryData<TrackDetailWire>(queryKeys.trackDetail('w1')))
-      .toMatchObject({ track: reopened, can_reopen: false });
+      .toMatchObject({ track: reopened, can_reopen: false, can_close: false });
+  });
+
+  it('writes an acknowledged close patch through before the detail refetch', async () => {
+    const closed = { ...baseTrackWire, closed_at: 3, updated_at: 3 };
+    const transport: ApiTransportPort = {
+      send: (request) => (request.method === 'PATCH'
+        ? Promise.resolve(ok(closed))
+        : new Promise<ApiTransportResponse>(() => undefined)),
+    };
+    const { client, result } = mounted(transport);
+    client.setQueryData(queryKeys.trackDetail('w1'), detail);
+
+    await act(() => result.current.patch('w1', 'c1', { closed: true }));
+
+    expect(client.getQueryData<TrackDetailWire>(queryKeys.trackDetail('w1')))
+      .toMatchObject({ track: closed, can_reopen: false, can_close: false });
   });
 });
 

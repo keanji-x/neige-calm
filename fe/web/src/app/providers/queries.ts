@@ -827,13 +827,14 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
       runOperation(transport, updateTrackOperation(trackId, body), unauthorized),
     onSuccess: (track, variables) => {
       // Write the committed row through before the best-effort invalidation so a failed detail GET cannot
-      // leave the acknowledged transition rendered as stale. An open row is never reopenable.
+      // leave the acknowledged transition rendered as stale. An open row is never reopenable and a
+      // closed one never closable; the other capability waits for the refetch.
       client.setQueryData(queryKeys.trackDetail(variables.trackId), (previous: TrackDetailWire | undefined) => {
         if (previous === undefined) return previous;
         return {
           ...previous,
           track,
-          ...(track.closed_at === null ? { can_reopen: false } : {}),
+          ...(track.closed_at === null ? { can_reopen: false } : { can_close: false }),
         };
       });
       // Prefer the area the server just reported: a patch can move the track.

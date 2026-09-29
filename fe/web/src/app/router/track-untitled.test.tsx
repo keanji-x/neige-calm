@@ -82,7 +82,7 @@ function setup(options: Options = {}) {
           return Promise.resolve({ status: 500, statusText: 'Server Error', body: {} });
         }
         return Promise.resolve(ok({
-          track: detail.track, can_reopen: false, cards: detail.cards, overlays: [],
+          track: detail.track, can_reopen: false, can_close: true, cards: detail.cards, overlays: [],
         }));
       }
       if (request.path.endsWith('/planner/run')) {

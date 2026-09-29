@@ -116,6 +116,11 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
       return typeof value === 'boolean' ? value : true;
     },
     setAreaExpanded: (id: string, value: boolean) => write(`area:${id}`, value, true),
+    /** The Area's rail shows its closed tracks too; off by default. */
+    areaShowsClosed(id: string): boolean {
+      return read(`area-closed:${id}`) === true;
+    },
+    setAreaShowsClosed: (id: string, value: boolean) => write(`area-closed:${id}`, value, true),
     conversation(id: string): string | null {
       const value = read(`conversation:${id}`);
       return typeof value === 'string' ? value : null;

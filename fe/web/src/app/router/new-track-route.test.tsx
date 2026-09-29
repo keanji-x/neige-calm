@@ -215,7 +215,7 @@ function harness(options: {
           statusText: 'OK',
           body: {
             track: { ...TRACK_ROW },
-            can_reopen: false,
+            can_reopen: false, can_close: true,
             cards: [{
               id: 'card-planner', track_id: 'w-new', kind: 'codex', title: 'Planner',
               payload: { planner_harness: true, planner_provider: options.plannerProvider ?? 'codex' },

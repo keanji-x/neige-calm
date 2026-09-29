@@ -35,8 +35,14 @@ type View = Readonly<{
   collapsed?: boolean;
 }>;
 
-function renderRail(initial: View) {
+/** A read-receipt scope entered at 1, so a Track whose `activityAt` is later reads as unread. */
+function scopedPreferences() {
   const preferences = createUiPreferences();
+  preferences.setReadScope('db-1', 1);
+  return preferences;
+}
+
+function renderRail(initial: View, preferences = scopedPreferences()) {
   const build = (view: View) => {
     const areas = view.areas ?? [area()];
     const byArea = view.byArea ?? new Map();
@@ -64,7 +70,7 @@ function renderRail(initial: View) {
     );
   };
   const result = render(build(initial));
-  return { update: (view: View) => result.rerender(build(view)) };
+  return { preferences, update: (view: View) => result.rerender(build(view)) };
 }
 
 function work(count: number): ReadonlyMap<string, readonly Track[]> {
@@ -206,5 +212,78 @@ describe('Area track limit', () => {
         Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', originalScrollIntoView);
       }
     }
+  });
+});
+
+/** T1…Tn with the listed 1-based positions closed (and read); `unread` positions get activity after the receipt scope. */
+function closedAt(count: number, closed: readonly number[], unread: readonly number[] = []): ReadonlyMap<string, readonly Track[]> {
+  return new Map([['c1', tracks(count).map((track, index) => ({
+    ...track,
+    closedAt: closed.includes(index + 1) ? 10 : null,
+    activityAt: unread.includes(index + 1) ? 50 : null,
+  }))]]);
+}
+
+/* Opened from the keyboard: astryx swallows a trigger click that lands right after its menu hid. */
+async function chooseAreaAction(name: string) {
+  screen.getByRole('button', { name: 'Area actions for Work' }).focus();
+  await userEvent.keyboard('{Enter}');
+  await userEvent.click(screen.getByRole('menuitem', { name }));
+}
+
+describe('Closed tracks in the rail', () => {
+  it('hides a closed track that is read and not open', () => {
+    renderRail({ byArea: closedAt(3, [2]) });
+    expect(shownTitles()).toEqual(['T1', 'T3']);
+  });
+
+  it('shows a closed unread track', () => {
+    renderRail({ byArea: closedAt(3, [2, 3], [2]) });
+    expect(shownTitles()).toEqual(['T1', 'T2']);
+  });
+
+  it('shows the closed track open in the view', () => {
+    renderRail({ byArea: closedAt(3, [2, 3]), currentPath: '/track/c1-3' });
+    expect(shownTitles()).toEqual(['T1', 'T3']);
+    expect(screen.getByRole('button', { name: /^Track T3/ }).getAttribute('aria-current')).toBe('page');
+  });
+
+  it('Show N more never counts a hidden closed track', async () => {
+    renderRail({ byArea: closedAt(8, [2, 8]) });
+    expect(shownTitles()).toEqual(['T1', 'T3', 'T4', 'T5', 'T6']);
+    const button = screen.getByRole('button', { name: 'Show 1 more in Work' });
+    await userEvent.click(button);
+    expect(shownTitles()).toEqual(['T1', 'T3', 'T4', 'T5', 'T6', 'T7']);
+  });
+
+  it('Show closed brings every closed track back, Hide closed hides them again, and the choice persists', async () => {
+    const { preferences } = renderRail({ byArea: closedAt(3, [2]) });
+    await chooseAreaAction('Show closed');
+    expect(shownTitles()).toEqual(['T1', 'T2', 'T3']);
+    expect(preferences.areaShowsClosed('c1')).toBe(true);
+
+    await chooseAreaAction('Hide closed');
+    expect(shownTitles()).toEqual(['T1', 'T3']);
+    expect(preferences.areaShowsClosed('c1')).toBe(false);
+  });
+
+  it('keeps the choice per Area', () => {
+    const preferences = scopedPreferences();
+    preferences.setAreaShowsClosed('c2', true);
+    const reading = area({ id: 'c2', name: 'Reading', sort: 2 });
+    const closedRow = (areaId: string, prefix: string) => tracks(2, areaId, prefix)
+      .map((track, index) => ({ ...track, closedAt: index === 1 ? 10 : null }));
+    renderRail({
+      areas: [area(), reading],
+      byArea: new Map([['c1', closedRow('c1', 'W')], ['c2', closedRow('c2', 'R')]]),
+    }, preferences);
+    expect(shownTitles()).toEqual(['W1', 'R1', 'R2']);
+  });
+
+  it('keeps the Area row when every track in it is hidden', () => {
+    renderRail({ byArea: closedAt(2, [1, 2]) });
+    expect(shownTitles()).toEqual([]);
+    expect(screen.getByRole('button', { name: 'Collapse area Work' })).toBeTruthy();
+    expect(toggle()).toBeNull();
   });
 });

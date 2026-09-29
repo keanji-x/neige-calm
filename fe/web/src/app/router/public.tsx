@@ -1850,6 +1850,7 @@ function TrackRoute({ transport, unauthorized, cardRuntime, recentFiles }: {
       unauthorized={unauthorized}
       track={track}
       canReopenTrack={detail.data.can_reopen}
+      canCloseTrack={detail.data.can_close}
       cards={detail.data.cards}
       overlays={detail.data.overlays}
       cardRuntime={cardRuntime}
@@ -1872,12 +1873,13 @@ function trackNotifications(items: TrackActivity['attentionItems']): readonly Tr
 }
 
 function TrackRouteBody({
-  transport, unauthorized, track, canReopenTrack, cards, overlays, cardRuntime, recentFiles,
+  transport, unauthorized, track, canReopenTrack, canCloseTrack, cards, overlays, cardRuntime, recentFiles,
 }: {
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
   track: Track;
   canReopenTrack: boolean;
+  canCloseTrack: boolean;
   cards: TrackDetailWire['cards'];
   overlays: TrackDetailWire['overlays'];
   cardRuntime: CardRuntime;
@@ -2260,6 +2262,7 @@ function TrackRouteBody({
         onSelectTrack={(trackId) => go({ name: 'track', trackId, from: 'area' })} />}
       track={track}
       canReopenTrack={canReopenTrack}
+      canCloseTrack={canCloseTrack}
       cards={panelCards}
       /* Derived from the report's own blocks, so the panel and the document
          cannot disagree about what tasks exist. */
@@ -2372,6 +2375,7 @@ function TrackRouteBody({
       onDismiss={(key) => trackMutations.dismissActivityItem(track.id, key)}
       onRenameTrack={(title) => trackMutations.patch(track.id, track.areaId, { title }).then(() => undefined)}
       onReopenTrack={() => trackMutations.patch(track.id, track.areaId, { closed: false }).then(() => undefined)}
+      onCloseTrack={() => trackMutations.patch(track.id, track.areaId, { closed: true }).then(() => undefined)}
       onDeleteTrack={(signal) => trackMutations.remove(track.id, track.areaId, signal).then(() => {
         if (signal.aborted) return;
         go({ name: 'today' });

@@ -44,7 +44,7 @@ it('runs one immutable intent through the real goal dialog, navigation and repor
     if (request.path === '/api/settings') return { status: 200, statusText: 'OK', body: {} };
     if (request.path === '/api/tracks/w1/report') return { status: 200, statusText: 'OK', body: { taskDiagnostics: [] } };
     if (request.path === '/api/tracks/w1') return { status: 200, statusText: 'OK', body: JSON.parse(JSON.stringify({
-      track, can_reopen: false, cards: [card], overlays: [],
+      track, can_reopen: false, can_close: true, cards: [card], overlays: [],
     })) };
     if (request.path.endsWith('/attempts')) {
       const attempt = { attempt_id: 'exact-attempt', generation: 1, status: result === null ? 'running' : 'done',

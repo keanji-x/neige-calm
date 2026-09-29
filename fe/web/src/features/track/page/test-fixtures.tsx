@@ -61,8 +61,10 @@ export function renderPage(overrides: Partial<TrackPageProps> = {}): RenderResul
     tasks,
     openableCards: openableCardsOf(cards, tasks),
     canReopenTrack: false,
+    canCloseTrack: false,
     onRenameTrack: vi.fn(),
     onReopenTrack: vi.fn(),
+    onCloseTrack: vi.fn(),
     onDeleteTrack: vi.fn(),
     ...overrides,
   };

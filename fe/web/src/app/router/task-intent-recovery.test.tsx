@@ -30,7 +30,7 @@ async function setup(kind: 'independent' | 'recovery') {
     if (request.path.endsWith('/attempts')) return Promise.resolve(ok({ key: 'b', current: old, attempts: [old],
       recovery: { allowed: true, code: 'available', reason: 'Retry this task.' } }));
     return Promise.resolve(ok({ track: { id: 'w1', area_id: 'a', title: 'Track', sort: 1, cwd: '/tmp',
-      pinned_at: null, closed_at: null, created_at: 1, updated_at: 1 }, can_reopen: false, cards: [card], overlays: [] }));
+      pinned_at: null, closed_at: null, created_at: 1, updated_at: 1 }, can_reopen: false, can_close: true, cards: [card], overlays: [] }));
   } }, access).business;
   const unauthorized = createUnauthorizedChannel({ enqueue: task => task() });
   const identity = vi.fn(() => Promise.resolve({ userId: 'owner', displayName: 'Owner', role: 'owner' as const, sessionId: 'old-session' }));
