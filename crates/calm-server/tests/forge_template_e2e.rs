@@ -604,13 +604,36 @@ async fn git_forge_happy_path_persists_ordered_template_events() {
         artifact.contains("diff --git") && artifact.contains("feature.txt"),
         "diff artifact must contain the shim patch body: {artifact}"
     );
-
-    let checks = run_pr_checks(&fx, 14, &repo_arg, pr_number).await;
+    // #1873 item 5: the read waits and returns its result instead of parking.
+    let diff_result = &diff_resp["result"]["structuredContent"];
+    assert_eq!(diff_result["parked"], false, "{diff_resp}");
     assert_eq!(
-        event_rows(&fx.repo, "forge.pr.checks").await.len(),
+        diff_result["result"]["event"]["artifact_path"],
+        json!(artifact_path),
+        "{diff_resp}"
+    );
+
+    let checks_resp = call_tool(
+        &fx,
+        14,
+        PR_CHECKS_TOOL,
+        json!({ "repo": repo_arg, "pr": pr_number }),
+    )
+    .await;
+    assert_tool_succeeded(&checks_resp, "gh.pr.checks");
+    let checks_result = &checks_resp["result"]["structuredContent"];
+    assert_eq!(checks_result["parked"], false, "{checks_resp}");
+    assert_eq!(
+        checks_result["result"]["event"]["conclusion"], "success",
+        "{checks_resp}"
+    );
+    let checks_rows = event_rows(&fx.repo, "forge.pr.checks").await;
+    assert_eq!(
+        checks_rows.len(),
         1,
         "gh.pr.checks must persist exactly one forge.pr.checks event"
     );
+    let checks = checks_rows[0].clone();
     assert_track_event(&checks, &fx.track_id);
     assert_eq!(checks.payload["pr_number"], pr_number);
     assert_eq!(checks.payload["conclusion"], "success");
@@ -1400,7 +1423,7 @@ async fn fu4_teardown_releases_after_merge_close_and_fences_in_flight_forge_op()
     let block = ShimBlock::new(&state, "pr_merge");
 
     // The later `NO_CONTENT` teardown assertion depends on *every* forge op of
-    // this track being terminal, so the parked checks op must be awaited here.
+    // this track being terminal, so the checks op must be awaited here.
     run_pr_checks(&fx, 74, &pr.repo_arg, pr.pr_number).await;
     let merge_resp = call_tool(
         &fx,
@@ -2429,8 +2452,8 @@ async fn drive_pr_to_diff(
     }
 }
 
-/// Run `gh.pr.checks` and block until its forge op has actually landed: the tool returns `{op_id, parked: true}`
-/// before the op is terminal, and an un-awaited checks op keeps the track-global teardown fence armed.
+/// Run `gh.pr.checks` and return its event row. The tool waits for the op to land, and an
+/// un-awaited checks op would keep the track-global teardown fence armed.
 async fn run_pr_checks(fx: &Fixture, id: i64, repo_arg: &str, pr_number: u64) -> EventRow {
     let checks_resp = call_tool(
         fx,

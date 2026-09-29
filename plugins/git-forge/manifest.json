@@ -128,7 +128,7 @@
     },
     {
       "name": "gh.pr.diff",
-      "description": "Lower GitHub pull request diff reads into a forge action",
+      "description": "Read a GitHub pull request diff. The call waits and returns result.event.artifact_path, the file holding the full patch",
       "kind": "forge-action",
       "input_schema": {
         "type": "object",
@@ -159,7 +159,7 @@
     },
     {
       "name": "gh.pr.checks",
-      "description": "Lower GitHub pull request check reads into a forge action",
+      "description": "Read a GitHub pull request's check conclusion. The call waits and returns result.event.conclusion. Pass a new attempt on each re-read: the same repo, pr and attempt return the first read's result",
       "kind": "forge-action",
       "input_schema": {
         "type": "object",

@@ -383,7 +383,7 @@ fn lower_gh_pr_diff(args: &Value) -> Result<Value, String> {
             "head_sha": head_sha
         }),
         None,
-        true,
+        false,
     )
 }
 
@@ -434,7 +434,7 @@ fn lower_gh_pr_checks(args: &Value) -> Result<Value, String> {
             ],
             "output_probe_argv": argv
         })),
-        true,
+        false,
     )
 }
 
@@ -1056,7 +1056,7 @@ mod tests {
                     "head_sha": "head456"
                 },
                 "probe": null,
-                "parked": true
+                "parked": false
             })
         );
         assert_no_reserved_context(&payload, &["track_id", "artifact_path"]);
@@ -1130,7 +1130,7 @@ mod tests {
                         jq
                     ]
                 },
-                "parked": true
+                "parked": false
             })
         };
         assert_eq!(payload, expected_payload("gh.pr.checks:owner/repo:42"));
