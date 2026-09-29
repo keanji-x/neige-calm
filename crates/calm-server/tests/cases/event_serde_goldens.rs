@@ -917,6 +917,17 @@ golden_test!(
     Event::RatifyResolved {
         track_id: TrackId::from("track-01"),
         decision: RatifyDecision::Grant,
+        message: None,
+    }
+);
+
+golden_test!(
+    ratify_resolved_with_message,
+    "ratify.resolved.message.json",
+    Event::RatifyResolved {
+        track_id: TrackId::from("track-01"),
+        decision: RatifyDecision::Deny,
+        message: Some("Hold: CI is red.\nRe-run the checks first.".into()),
     }
 );
 
@@ -1314,7 +1325,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 82,
+        files, 83,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {

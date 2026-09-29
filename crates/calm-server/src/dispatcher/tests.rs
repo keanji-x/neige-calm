@@ -259,6 +259,7 @@ fn dispatcher_filter_matches_push_kinds() {
     assert!(filter.matches(&env(Event::RatifyResolved {
         track_id: track.clone(),
         decision: RatifyDecision::Grant,
+        message: None,
     })));
     assert!(!filter.matches(&env(Event::ForgePrDiffRead {
         track_id: track.clone(),
@@ -1313,6 +1314,7 @@ fn event_warrants_planner_push_covers_push_allowlist() {
         Event::RatifyResolved {
             track_id: track.clone(),
             decision: RatifyDecision::Grant,
+            message: None,
         },
         Event::ForgeScanCompleted {
             track_id: track.clone(),
@@ -1690,12 +1692,14 @@ fn harness_observation_from_event_mapping_pin() {
             &Event::RatifyResolved {
                 track_id: TrackId::from("payload-track-ignored"),
                 decision: RatifyDecision::Deny,
+                message: None,
             },
             Some("impl-parser")
         ),
         Some(HarnessObservation::RatifyResolved {
             track_id: track.clone(),
             decision: RatifyDecision::Deny,
+            message: None,
         })
     );
     assert_eq!(
@@ -1886,6 +1890,30 @@ fn harness_observation_from_event_mapping_pin() {
         ),
         None
     );
+}
+
+/// #1873 item 1: the user's ratify text reaches the Planner's wake verbatim, for either decision.
+#[test]
+fn ratify_resolved_wake_carries_the_user_message_verbatim() {
+    let track = TrackId::from("track-1873");
+    let message = "Merge it, then close #1870.\nSquash subject: keep the PR title.";
+    for decision in [RatifyDecision::Grant, RatifyDecision::Deny] {
+        let observation = harness_observation_from_event(
+            &track,
+            &Event::RatifyResolved {
+                track_id: track.clone(),
+                decision,
+                message: Some(message.into()),
+            },
+            None,
+        )
+        .expect("ratify.resolved wakes the planner");
+        let text = observation.to_turn_text();
+        assert!(
+            text.ends_with(&format!("The user's message, verbatim:\n{message}")),
+            "{text}"
+        );
+    }
 }
 
 /// `expect_push` and `expect_observation` are separate fields because the invariant is
@@ -2261,6 +2289,7 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
             Event::RatifyResolved {
                 track_id: track.clone(),
                 decision: RatifyDecision::Grant,
+                message: None,
             },
             ActorId::KernelDispatcher,
             true,

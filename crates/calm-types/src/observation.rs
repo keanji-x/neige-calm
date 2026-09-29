@@ -159,6 +159,8 @@ pub enum Observation {
     RatifyResolved {
         track_id: TrackId,
         decision: RatifyDecision,
+        #[serde(default)]
+        message: Option<String>,
     },
 }
 
@@ -471,14 +473,20 @@ impl Observation {
             Observation::RatifyRequested { reason, .. } => {
                 format!("Ratification was requested: {reason}. Re-read the track state.")
             }
-            Observation::RatifyResolved { decision, .. } => {
+            Observation::RatifyResolved {
+                decision, message, ..
+            } => {
                 let decision = match decision {
                     RatifyDecision::Grant => "grant",
                     RatifyDecision::Deny => "deny",
                 };
-                format!(
+                let mut text = format!(
                     "Ratification was resolved with decision={decision}. Re-read the track state."
-                )
+                );
+                if let Some(message) = message {
+                    text.push_str(&format!("\nThe user's message, verbatim:\n{message}"));
+                }
+                text
             }
         }
     }
@@ -1155,9 +1163,11 @@ mod tests {
         let resolved = Observation::RatifyResolved {
             track_id: TrackId::from("track-1"),
             decision: RatifyDecision::Grant,
+            message: None,
         };
         assert!(resolved.is_hard_fire());
         assert!(resolved.to_turn_text().contains("decision=grant"));
+        assert!(!resolved.to_turn_text().contains("verbatim"));
     }
     #[test]
     fn task_recovery_gate_text_pins_execution_and_gate_number() {

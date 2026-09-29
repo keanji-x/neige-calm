@@ -2997,6 +2997,7 @@ async fn inject_ratify_resolved_grant(h: &PlannerHarness, fx: &Fixture) {
         Observation::RatifyResolved {
             track_id: fx.track_id.clone(),
             decision: calm_server::event::RatifyDecision::Grant,
+            message: None,
         },
         None,
     )

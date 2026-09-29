@@ -1630,9 +1630,12 @@ pub(crate) fn harness_observation_from_event(
             track_id: track_id.clone(),
             reason: reason.clone(),
         }),
-        Event::RatifyResolved { decision, .. } => Some(HarnessObservation::RatifyResolved {
+        Event::RatifyResolved {
+            decision, message, ..
+        } => Some(HarnessObservation::RatifyResolved {
             track_id: track_id.clone(),
             decision: *decision,
+            message: message.clone(),
         }),
         Event::ForgeScanCompleted {
             overlapping_prs, ..

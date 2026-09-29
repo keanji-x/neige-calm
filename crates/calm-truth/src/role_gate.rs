@@ -1239,6 +1239,7 @@ mod tests {
         Event::RatifyResolved {
             track_id: TrackId::from("w"),
             decision: crate::event::RatifyDecision::Grant,
+            message: None,
         }
     }
 

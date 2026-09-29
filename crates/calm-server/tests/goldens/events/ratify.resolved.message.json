@@ -1,0 +1,11 @@
+{
+  "description": "ratify.resolved carries the user's text with the decision verbatim (trimmed) when one was sent",
+  "wire": {
+    "ev": "ratify.resolved",
+    "data": {
+      "track_id": "track-01",
+      "decision": "deny",
+      "message": "Hold: CI is red.\nRe-run the checks first."
+    }
+  }
+}

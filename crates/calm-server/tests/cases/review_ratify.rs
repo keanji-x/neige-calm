@@ -679,9 +679,17 @@ async fn ratify_request_rejects_duplicate_pending_request_without_second_event()
 }
 
 async fn post_ratify(boot: &Boot, decision: &str) -> (StatusCode, Value) {
+    post_ratify_with_message(boot, decision, &format!("human says {decision}")).await
+}
+
+async fn post_ratify_with_message(
+    boot: &Boot,
+    decision: &str,
+    message: &str,
+) -> (StatusCode, Value) {
     let body = serde_json::to_vec(&json!({
         "decision": decision,
-        "message": format!("human says {decision}")
+        "message": message
     }))
     .unwrap();
     let resp = boot
@@ -862,6 +870,34 @@ async fn ratify_route_grant_emits_resolved_and_flips_blocked_to_working() {
         ),
         "{events:?}",
     );
+}
+
+/// #1873 item 1: the user's text rides on `ratify.resolved` for either decision, trimmed; a
+/// whitespace-only text is no message.
+#[tokio::test]
+async fn ratify_grant_and_deny_carry_the_message_on_resolved() {
+    for (decision, sent, stored) in [
+        (
+            "grant",
+            "  Merge it, then close #1870.\nKeep the PR title.\n",
+            Some("Merge it, then close #1870.\nKeep the PR title."),
+        ),
+        ("deny", "Hold: CI is red.", Some("Hold: CI is red.")),
+        ("grant", " \n\t ", None),
+    ] {
+        let boot = boot().await;
+        request_ratification(&boot, "merge_hold: pr #1871")
+            .await
+            .expect("ratify request");
+        let (status, body) = post_ratify_with_message(&boot, decision, sent).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        let events = events_for_track(&boot, &["ratify.resolved"]).await;
+        let [Event::RatifyResolved { message, .. }] = events.as_slice() else {
+            panic!("one ratify.resolved expected: {events:?}");
+        };
+        assert_eq!(message.as_deref(), stored, "{decision} {sent:?}");
+    }
 }
 
 // A per-subject cap raise is accepted only immediately after genuine exhaustion, only when backed by a

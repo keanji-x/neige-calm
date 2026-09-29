@@ -999,6 +999,12 @@ pub(crate) async fn ratify_card(
     let track_id = track.id.clone();
     let card_id = card.id.clone();
     let decision = body.decision;
+    let resolved_message = body
+        .message
+        .as_deref()
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .map(str::to_string);
     let message = body.message.unwrap_or_default();
 
     write_with_actor_events_typed::<(), _>(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
@@ -1006,6 +1012,7 @@ pub(crate) async fn ratify_card(
         let scope = scope.clone();
         let track_id = track_id.clone();
         let message = message.clone();
+        let resolved_message = resolved_message.clone();
         Box::pin(async move {
             if !ratify_request_pending_tx(tx, &track_id).await? {
                 return Err(CalmError::Conflict(
@@ -1036,6 +1043,7 @@ pub(crate) async fn ratify_card(
                 Event::RatifyResolved {
                     track_id,
                     decision: decision.into(),
+                    message: resolved_message,
                 },
             ));
             Ok(((), events))

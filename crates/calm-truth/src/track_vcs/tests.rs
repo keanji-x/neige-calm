@@ -337,6 +337,7 @@ async fn review_ratify_only_batch_does_not_advance_head() {
         Event::RatifyResolved {
             track_id: track.id.clone(),
             decision: RatifyDecision::Grant,
+            message: None,
         },
     ];
     let mut tx = begin_immediate_tx(repo.pool())

@@ -682,6 +682,7 @@ export const ratifyResolvedSchema = z.object({
   data: z.object({
     track_id: z.string(),
     decision: ratifyDecisionSchema,
+    message: z.string().optional(),
   }),
 });
 

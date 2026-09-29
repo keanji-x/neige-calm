@@ -673,6 +673,10 @@ pub enum Event {
     RatifyResolved {
         track_id: TrackId,
         decision: RatifyDecision,
+        /// The user's text with the decision, trimmed; absent when they sent none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        message: Option<String>,
     },
 
     /// A plugin submitted a report-edit proposal. Append-only record: the full op list + anchors ride
@@ -1625,6 +1629,7 @@ mod scope_tests {
         let ratify_resolved = Event::RatifyResolved {
             track_id: TrackId::from("track-1"),
             decision: RatifyDecision::Grant,
+            message: None,
         };
         assert_eq!(ratify_resolved.kind_tag(), "ratify.resolved");
 
@@ -2675,6 +2680,7 @@ mod scope_tests {
             Event::RatifyResolved {
                 track_id: TrackId::from("track-1"),
                 decision: RatifyDecision::Grant,
+                message: None,
             },
             Event::ProposalSubmitted {
                 track_id: TrackId::from("track-1"),
