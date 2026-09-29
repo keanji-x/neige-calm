@@ -231,14 +231,14 @@ async fn open_writes_hook_settings_injects_env_and_replays_idempotently() {
         "exactly the seven issue events"
     );
     assert!(settings.get("mcpServers").is_none());
-    // No scope declared: the hooks-only file, no `permissions` key; no `claude_permissions` anywhere.
+    // No scope declared: the base file, no `permissions` key; no `claude_permissions` anywhere.
     assert!(
         settings.get("permissions").is_none(),
         "no scope, no permissions block: {settings}"
     );
     assert_eq!(
         settings.as_object().unwrap().keys().collect::<Vec<_>>(),
-        vec!["hooks"]
+        vec!["attribution", "hooks"]
     );
     assert!(opened.get("claude_permissions").is_none(), "{opened}");
     assert!(
@@ -1294,7 +1294,7 @@ async fn open_with_scope_writes_permissions_stamps_the_card_and_echoes_the_block
     assert_eq!(settings["permissions"], expected, "{text}");
     assert_eq!(
         settings.as_object().unwrap().keys().collect::<Vec<_>>(),
-        vec!["hooks", "permissions"]
+        vec!["attribution", "hooks", "permissions"]
     );
     assert_eq!(
         settings["hooks"]

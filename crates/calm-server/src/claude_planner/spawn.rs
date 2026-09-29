@@ -18,8 +18,10 @@ use crate::shared_codex_appserver::SPAWN_ENV_PASSTHROUGH;
 const TOOLS: &str = "Bash,Read,Edit,Write,ToolSearch,WebFetch,WebSearch";
 
 /// Owner decision (§9.6): the sandbox is always on and fails closed; the network is unrestricted.
+/// Claude's commit and PR attribution is hidden (#1873).
 pub(crate) fn settings_json() -> String {
     json!({
+        "attribution": { "commit": "", "pr": "" },
         "permissions": { "allow": ["WebFetch(domain:*)"] },
         "sandbox": {
             "enabled": true,

@@ -314,7 +314,8 @@ pub(crate) fn build_claude_settings_json(hook_command: &str) -> String {
     build_claude_settings_json_for(hook_command, CLAUDE_WORKER_HOOKS.iter().copied())
 }
 
-/// Hooks-only settings JSON registering exactly `hooks`.
+/// Settings JSON registering exactly `hooks`, with Claude's commit and PR attribution hidden
+/// (the owner's rule: no Co-Authored-By trailer).
 pub(crate) fn build_claude_settings_json_for(
     hook_command: &str,
     hooks_to_register: impl IntoIterator<Item = ClaudeWorkerHook>,
@@ -329,7 +330,10 @@ pub(crate) fn build_claude_settings_json_for(
         };
         hooks.insert(h.event_name.to_string(), json!([group]));
     }
-    let value = json!({ "hooks": serde_json::Value::Object(hooks) });
+    let value = json!({
+        "hooks": serde_json::Value::Object(hooks),
+        "attribution": { "commit": "", "pr": "" },
+    });
     serde_json::to_string_pretty(&value).expect("claude settings serializes")
 }
 
@@ -391,13 +395,21 @@ mod tests {
     }
 
     #[test]
-    fn worker_settings_json_is_hooks_only_without_mcp_servers() {
+    fn worker_settings_json_has_no_mcp_servers() {
         let s = build_claude_worker_settings_json("bridge --provider claude");
         let v: serde_json::Value = serde_json::from_str(&s).unwrap();
         assert!(v.get("hooks").is_some());
         assert!(v.get("mcpServers").is_none());
         assert!(v.get("mcp_servers").is_none());
         assert_eq!(s, build_claude_settings_json("bridge --provider claude"));
+    }
+
+    /// #1873 item 2: every kernel-written Claude settings file hides the attribution.
+    #[test]
+    fn claude_settings_hide_attribution() {
+        let v: serde_json::Value =
+            serde_json::from_str(&build_claude_settings_json("bridge --provider claude")).unwrap();
+        assert_eq!(v["attribution"], json!({ "commit": "", "pr": "" }));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Hook signals for Planner-opened terminals: a hooks-only Claude settings file under the
+//! Hook signals for Planner-opened terminals: a kernel-written Claude settings file under the
 //! server-owned `<data_dir>/terminal-hooks/` directory, and the env the bridge needs.
 //! Hook payloads are application data: forgeable by any local process, never authority.
 use crate::routes::claude_cards::{
@@ -107,20 +107,18 @@ impl TerminalHookSettings {
         Value::Object(merged)
     }
 
-    /// The settings file for `card_id`: the hooks-only file, plus Claude Code's `permissions`
-    /// block when the open declared a scope (`None` keeps the file byte-identical).
+    /// The settings file for `card_id`: the shared hooks-and-attribution base, plus Claude Code's
+    /// `permissions` block when the open declared a scope (`None` keeps the base byte-identical).
     pub fn settings_json(
         &self,
         card_id: &str,
         permissions: Option<&EffectiveClaudePermissions>,
     ) -> String {
-        let hooks_only =
-            build_claude_settings_json_for(&self.hook_command(card_id), terminal_hooks());
+        let base = build_claude_settings_json_for(&self.hook_command(card_id), terminal_hooks());
         let Some(permissions) = permissions else {
-            return hooks_only;
+            return base;
         };
-        let mut settings: Value =
-            serde_json::from_str(&hooks_only).expect("claude settings parse back");
+        let mut settings: Value = serde_json::from_str(&base).expect("claude settings parse back");
         settings["permissions"] =
             serde_json::to_value(permissions).expect("claude permissions serialize");
         serde_json::to_string_pretty(&settings).expect("claude settings serializes")
@@ -305,7 +303,7 @@ mod tests {
 
     /// No scope: no `permissions` key, not even a null one, and no reordering.
     #[test]
-    fn settings_json_without_a_scope_is_the_hooks_only_file() {
+    fn settings_json_without_a_scope_is_the_base_file() {
         let settings = settings();
         let text = settings.settings_json("card-1", None);
         assert_eq!(
@@ -316,7 +314,7 @@ mod tests {
         assert!(json.get("permissions").is_none(), "{text}");
         assert_eq!(
             json.as_object().unwrap().keys().collect::<Vec<_>>(),
-            vec!["hooks"]
+            vec!["attribution", "hooks"]
         );
     }
 
@@ -333,11 +331,10 @@ mod tests {
         assert_eq!(json["permissions"], serde_json::to_value(&block).unwrap());
         assert_eq!(
             json.as_object().unwrap().keys().collect::<Vec<_>>(),
-            vec!["hooks", "permissions"]
+            vec!["attribution", "hooks", "permissions"]
         );
-        let hooks_only: Value =
-            serde_json::from_str(&settings.settings_json("card-1", None)).unwrap();
-        assert_eq!(json["hooks"], hooks_only["hooks"]);
+        let base: Value = serde_json::from_str(&settings.settings_json("card-1", None)).unwrap();
+        assert_eq!(json["hooks"], base["hooks"]);
         assert_eq!(
             json["hooks"].as_object().unwrap().len(),
             TERMINAL_HOOK_EVENTS.len()

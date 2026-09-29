@@ -133,6 +133,7 @@ fn the_sandbox_settings_are_exactly_the_owner_decision() {
     assert_eq!(
         settings,
         json!({
+            "attribution": { "commit": "", "pr": "" },
             "permissions": { "allow": ["WebFetch(domain:*)"] },
             "sandbox": {
                 "enabled": true,
