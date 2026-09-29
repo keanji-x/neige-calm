@@ -11719,10 +11719,15 @@
         "required": [
           "track",
           "can_reopen",
+          "can_close",
           "cards",
           "overlays"
         ],
         "properties": {
+          "can_close": {
+            "type": "boolean",
+            "description": "Open and not an Area chat: the same authority fence the close write applies."
+          },
           "can_reopen": {
             "type": "boolean",
             "description": "Closed, not an Area chat, and not a child a task references, resolved together so\nclients never advertise a Reopen the write must reject."

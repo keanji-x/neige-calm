@@ -396,6 +396,8 @@ pub struct TrackDetail {
     /// Closed, not an Area chat, and not a child a task references, resolved together so
     /// clients never advertise a Reopen the write must reject.
     pub can_reopen: bool,
+    /// Open and not an Area chat: the same authority fence the close write applies.
+    pub can_close: bool,
     pub cards: Vec<Card>,
     pub overlays: Vec<Overlay>,
 }

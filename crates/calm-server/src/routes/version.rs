@@ -23,7 +23,8 @@ use utoipa::ToSchema;
 ///
 /// #1876 bumps `"14"` -> `"15"` and `WEB_COMPAT_VERSION` 33 -> 34: a track is open or closed. The
 /// `Track` row carries `closed_at` instead of `lifecycle`, `terminal_at` and `archived_at`,
-/// `PATCH /api/tracks/{id}` takes `closed`, and the track detail's `can_resume` is `can_reopen`.
+/// `PATCH /api/tracks/{id}` takes `closed`, and the track detail's `can_resume` is `can_reopen`,
+/// with `can_close` beside it.
 pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 
 /// Monotonically increasing frontend compatibility floor. Must equal `WEB_COMPAT_VERSION`

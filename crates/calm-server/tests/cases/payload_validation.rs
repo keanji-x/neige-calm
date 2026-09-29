@@ -970,16 +970,22 @@ async fn track_detail_exposes_reopen_only_for_a_reopenable_closed_track() {
     let (state, track_id, repo) = boot_with_repo().await;
     let response = get_track_detail(app(state.clone()), &track_id).await;
     assert_eq!(response.status(), StatusCode::OK);
+    let body = body_to_json(response).await;
     assert_eq!(
-        body_to_json(response).await["can_reopen"],
-        false,
+        body["can_reopen"], false,
         "an open track has nothing to reopen"
     );
+    assert_eq!(body["can_close"], true, "an open track can be closed");
 
     close_track(&repo, &track_id).await;
     let response = get_track_detail(app(state.clone()), &track_id).await;
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(body_to_json(response).await["can_reopen"], true);
+    let body = body_to_json(response).await;
+    assert_eq!(body["can_reopen"], true);
+    assert_eq!(
+        body["can_close"], false,
+        "a closed track has nothing to close"
+    );
 
     let child = state.repo.track_get(&track_id).await.unwrap().unwrap();
     let parent = repo
@@ -1024,6 +1030,27 @@ async fn track_detail_exposes_reopen_only_for_a_reopenable_closed_track() {
         false,
         "a closed child a task references cannot be reopened"
     );
+}
+
+#[tokio::test]
+async fn track_detail_withholds_close_from_area_chat_tracks() {
+    let (state, track_id, repo) = boot_with_repo().await;
+    sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1")
+        .bind(&track_id)
+        .execute(&repo.sqlite_pool().expect("sqlite-backed fixture"))
+        .await
+        .expect("mark retired area-chat track");
+
+    let response = get_track_detail(app(state.clone()), &track_id).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        body_to_json(response).await["can_close"],
+        false,
+        "the capability must include the route's area-chat authority fence"
+    );
+
+    let response = patch_track(app(state), &track_id, json!({"closed": true})).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

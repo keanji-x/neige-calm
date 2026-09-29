@@ -287,12 +287,13 @@ impl RepoRead for SqlxRepo {
         });
 
         // A closed child has already resolved its parent task, so it cannot be reopened.
-        let can_reopen = row.track.closed_at.is_some()
-            && row.track.purpose.as_deref() != Some(calm_types::model::AREA_CHAT_PURPOSE)
-            && !row.referenced_as_child;
+        let area_chat = row.track.purpose.as_deref() == Some(calm_types::model::AREA_CHAT_PURPOSE);
+        let can_reopen = row.track.closed_at.is_some() && !area_chat && !row.referenced_as_child;
+        let can_close = row.track.closed_at.is_none() && !area_chat;
         Ok(Some(TrackDetail {
             track: Track::from(row.track),
             can_reopen,
+            can_close,
             cards,
             overlays,
         }))
