@@ -324,7 +324,7 @@ async fn a_second_candidate_is_pushed_and_reuses_the_pr() {
 }
 
 /// A remote branch that is not an ancestor of the candidate is never overwritten: the push is
-/// rejected and the publish fails.
+/// rejected, the publish fails, and no gh runs after it (no PR is opened on the foreign head).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_non_fast_forward_publish_fails_and_leaves_the_remote() {
     let _env = publish_env(None).await;
@@ -351,6 +351,7 @@ async fn a_non_fast_forward_publish_fails_and_leaves_the_remote() {
     assert!(error.message.starts_with("publish-failed: "), "{error:?}");
     assert_eq!(remote_branch(fx).as_deref(), Some(diverged.as_str()));
     assert!(pr_opened_heads(fx).await.is_empty());
+    assert_eq!(gh_log(fx), "", "no gh invocation");
 }
 
 /// A failed publish spends its key (the same key answers the same failure); a new key runs again.
