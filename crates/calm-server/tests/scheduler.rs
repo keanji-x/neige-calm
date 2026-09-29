@@ -3699,6 +3699,104 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
     }
 }
 
+/// Deletes the report's third block (`b_dead`), the depth-two target of the head task's context.
+async fn delete_depth_two_target(pool: &sqlx::SqlitePool, track_id: &str) {
+    sqlx::query(
+        "UPDATE cards SET payload=json_remove(json_set(payload,'$.docRev',json_extract(payload,'$.docRev')+1),'$.blocks[2]') WHERE track_id=?1 AND kind='track-report'",
+    )
+    .bind(track_id)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// #1830 S2b: a codex task whose claim keeps failing (a deleted depth-two reference) must not hold
+/// the track's checkout from the next codex task.
+#[tokio::test]
+async fn a_codex_task_stuck_at_claim_does_not_block_the_next_codex_task() {
+    use calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR;
+    use calm_types::report_links::format_track_destination;
+    let boot = boot().await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    insert_report_payload(
+        &boot,
+        "blocked-codex-head-report",
+        serde_json::to_value(TrackReportPayload {
+            schema_version: TrackReportPayload::SCHEMA_VERSION,
+            doc_rev: 1,
+            summary: String::new(),
+            body: String::new(),
+            blocks: Some(vec![
+                ReportBlock {
+                    id: "b_head_1".into(),
+                    kind: "task".into(),
+                    rev: 1,
+                    payload: json!({
+                        "key": "blocked-head", "kind": "codex", "goal": "do blocked-head",
+                        "declared_by": PLANNER_DECLARATION_AUTHOR, "ready": true,
+                        "refs": [format_track_destination(boot.track_id.as_str(), Some("b_cafe"))]
+                    }),
+                },
+                ReportBlock {
+                    id: "b_cafe".into(),
+                    kind: "prose".into(),
+                    rev: 1,
+                    payload: json!({"markdown": format!(
+                        "[leaf]({})",
+                        format_track_destination(boot.track_id.as_str(), Some("b_dead"))
+                    )}),
+                },
+                ReportBlock {
+                    id: "b_dead".into(),
+                    kind: "prose".into(),
+                    rev: 1,
+                    payload: json!({"markdown": "present before projection edit"}),
+                },
+                ReportBlock {
+                    id: "b_tail".into(),
+                    kind: "task".into(),
+                    rev: 1,
+                    payload: json!({
+                        "key": "healthy-tail", "kind": "codex", "goal": "do healthy-tail",
+                        "declared_by": PLANNER_DECLARATION_AUTHOR, "ready": true
+                    }),
+                },
+            ]),
+        })
+        .unwrap(),
+    )
+    .await;
+    let mut blocked = plan_task(&boot.track_id, "blocked-head", TaskKind::Codex, &[]);
+    blocked.priority = 10;
+    let blocked_id = blocked.id.clone();
+    seed_task(&boot, blocked).await;
+    let healthy = plan_task(&boot.track_id, "healthy-tail", TaskKind::Codex, &[]);
+    let healthy_id = healthy.id.clone();
+    seed_task(&boot, healthy).await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    delete_depth_two_target(&pool, boot.track_id.as_str()).await;
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "codex-worker",
+            card_id: boot.worker_card_id.to_string(),
+        })],
+    );
+
+    for _ in 0..2 {
+        scheduler.schedule_track(boot.track_id.clone()).await;
+    }
+
+    let blocked = boot.repo.task_get(&blocked_id).await.unwrap().unwrap();
+    let healthy = boot.repo.task_get(&healthy_id).await.unwrap().unwrap();
+    assert_eq!(blocked.status, TaskStatus::Pending);
+    assert_ne!(
+        healthy.status,
+        TaskStatus::Pending,
+        "a codex claim that fails must not hold the checkout from the next codex task"
+    );
+}
+
 #[tokio::test]
 async fn depth_two_deleted_reference_is_counted_does_not_block_and_recovers_next_claim() {
     let boot = boot().await;
@@ -3756,13 +3854,7 @@ async fn depth_two_deleted_reference_is_counted_does_not_block_and_recovers_next
     let healthy_id = healthy.id.clone();
     seed_task(&boot, healthy).await;
     let pool = boot.repo.sqlite_pool().unwrap();
-    sqlx::query(
-        "UPDATE cards SET payload=json_remove(json_set(payload,'$.docRev',json_extract(payload,'$.docRev')+1),'$.blocks[2]') WHERE track_id=?1 AND kind='track-report'",
-    )
-    .bind(boot.track_id.as_str())
-    .execute(&pool)
-    .await
-    .unwrap();
+    delete_depth_two_target(&pool, boot.track_id.as_str()).await;
     let (_runtime, scheduler) = build_scheduler(
         &boot,
         vec![Arc::new(CardSpawnAdapter {
@@ -7308,11 +7400,9 @@ async fn foreign_idempotency_conflict_fails_task_and_frees_the_track() {
         reason.contains("already used with different payload"),
         "reason carries the conflict, got {reason:?}"
     );
-    assert_eq!(operation_count(&boot, "codex-worker").await, 1);
 
-    // The track is idle again: the second pending task dispatches on the next pass instead of the
-    // track stalling behind the dead row (one in-tree task per pass, #1830 S2 D5).
-    scheduler.schedule_track(boot.track_id.clone()).await;
+    // The track is idle again: the second pending task dispatches in the same pass instead of the
+    // track stalling behind the dead row (#1830 S2 D5).
     assert_eq!(
         task_row(&boot, "next").await.status,
         TaskStatus::Running,

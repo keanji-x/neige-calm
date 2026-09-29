@@ -387,8 +387,9 @@ Where the code differs from §9, one line each, with why:
 - D5 moved down so one rule serves the ready set, the claim, delivery retry and the `trackBusy`
   reason: `calm_types::task_execution::runs_in_track_checkout` and `calm_truth`'s `track_idle`.
   `is_in_tree_worker` and the server-side `track_idle_tx` are gone.
-- The ready set admits at most one in-tree task per pass, and only while the track is idle; the
-  claim tx still rechecks. Terminal, isolated and child-track tasks are not held.
+- The ready set offers in-tree tasks only while the track is idle; the claim tx's recheck lets one
+  win per pass, and a claim that fails (say, a deleted context reference) does not hold the others.
+  Terminal, isolated and child-track tasks are not held.
 - `trackBusy` is read in its own statement after the projection's one-statement snapshot (a pending
   reason is presentation). On the autocommit report read, a claim landing between the two can show
   a just-claimed task as waiting until the next read (the repo allows no deferred transaction).

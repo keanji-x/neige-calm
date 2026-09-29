@@ -2651,8 +2651,6 @@ pub(crate) async fn update_track(
     // same txn; both land or neither does.
     let area_id_for_event = existing.area_id.clone();
     let track_id_for_event = existing.id.clone();
-    // Every admission policy rebuilds its affected projection before the scheduler sees
-    // TrackUpdated, so no pending row admitted by the old policy can race a later claim.
     let projection_policy_changed = p.planner_task_ceiling.is_some()
         || p.automation_policy.is_some()
         || p.require_task_gates.is_some()

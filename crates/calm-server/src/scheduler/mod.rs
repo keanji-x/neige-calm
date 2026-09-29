@@ -143,15 +143,15 @@ pub fn lifecycle_allows_scheduling(lifecycle: TrackLifecycle) -> bool {
 
 /// Ready-set computation over one track's plan rows (already in scheduler order): pending rows
 /// whose deps are all `done`. A codex or claude task that runs in the track's checkout is ready
-/// only while the track is idle ([`crate::db::sqlite::track_idle`]), and only the first of them
-/// (#1830 S2 D5); isolated, terminal and child-track tasks are not held.
+/// only while the track is idle ([`crate::db::sqlite::track_idle`], #1830 S2 D5); the claim tx
+/// rechecks it, so one claim wins per pass and a claim that fails does not hold the others.
+/// Isolated, terminal and child-track tasks are not held.
 pub fn compute_ready(tasks: &[Task], track_idle: bool) -> Result<Vec<Task>> {
     let done_keys: BTreeSet<&str> = tasks
         .iter()
         .filter(|t| t.status == TaskStatus::Done)
         .map(|t| t.key.as_str())
         .collect();
-    let mut checkout_free = track_idle;
     let mut ready = Vec::new();
     for task in tasks.iter().filter(|t| t.status == TaskStatus::Pending) {
         if !task
@@ -161,11 +161,8 @@ pub fn compute_ready(tasks: &[Task], track_idle: bool) -> Result<Vec<Task>> {
         {
             continue;
         }
-        if task.runs_in_track_checkout()? {
-            if !checkout_free {
-                continue;
-            }
-            checkout_free = false;
+        if !track_idle && task.runs_in_track_checkout()? {
+            continue;
         }
         ready.push(task.clone());
     }

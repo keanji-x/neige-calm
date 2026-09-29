@@ -97,9 +97,10 @@ fn canceled_and_failed_deps_never_satisfy() {
 }
 
 /// #1830 S2 D5: a codex/claude task in the track's checkout is ready only while the track is
-/// idle, and only the first of them; terminal, isolated and child-track tasks are not held.
+/// idle (the claim tx then lets one of them win); terminal, isolated and child-track tasks are
+/// not held.
 #[test]
-fn only_the_first_in_tree_task_is_ready_and_only_while_the_track_is_idle() {
+fn in_tree_tasks_are_ready_only_while_the_track_is_idle() {
     let mut terminal = task("c-terminal", TaskStatus::Pending, &[], 0);
     terminal.kind = TaskKind::Terminal;
     let mut isolated = task("d-isolated", TaskStatus::Pending, &[], 0);
@@ -118,8 +119,8 @@ fn only_the_first_in_tree_task_is_ready_and_only_while_the_track_is_idle() {
     ];
     assert_eq!(
         keys(&compute_ready(&tasks, true).unwrap()),
-        vec!["a-codex", "c-terminal", "d-isolated", "e-child"],
-        "an idle track admits one in-tree task, in scheduler order"
+        vec!["a-codex", "b-claude", "c-terminal", "d-isolated", "e-child"],
+        "an idle track offers every in-tree task, in scheduler order"
     );
     assert_eq!(
         keys(&compute_ready(&tasks, false).unwrap()),
