@@ -102,7 +102,7 @@ aliases:
   "track/scroll": "features/track/scroll"
   "track/view-mode": "features/track/view-mode"
   "track/lifecycle": "features/track/lifecycle"
-  "shared/lifecycle-badge": "features/track/lifecycle-badge"
+  "shared/lifecycle-badge": "features/track/closed-badge"
   "shared/track-row": "features/track/row"
   "web/components/track-row": "features/track/row"
   "track/create": "features/track/create"

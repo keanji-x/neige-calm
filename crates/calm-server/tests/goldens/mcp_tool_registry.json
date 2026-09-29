@@ -35,7 +35,7 @@
   },
   {
     "name": "calm.area.outline",
-    "description_sha256": "6d47d2fdb71bcf4b33c91e08634e9903e437c7c85a97d6762b4a93330b2f3c83",
+    "description_sha256": "28e25307362db34dddf1ee7c800d64f29a6dbb02bdeece561871cabcdb471ef3",
     "input_schema": {
       "additionalProperties": false,
       "properties": {},
@@ -83,23 +83,8 @@
           ],
           "type": "string"
         },
-        "lifecycle": {
-          "description": "Optional track lifecycle transition. Use planning after understanding the goal, dispatching when requesting workers, working when work is underway, blocked when user input is needed, reviewing when validating worker results, done after acceptance, or failed when completion is impossible. Omit to leave lifecycle unchanged.",
-          "enum": [
-            "draft",
-            "planning",
-            "dispatching",
-            "working",
-            "blocked",
-            "reviewing",
-            "done",
-            "canceled",
-            "failed"
-          ],
-          "type": "string"
-        },
         "message": {
-          "description": "Required human-readable rationale for this write. The kernel persists it on the emitted event as agent_message and on TrackUpdated.agent_message when a lifecycle transition is requested.",
+          "description": "Required human-readable rationale for this write. The kernel persists it on the emitted event as agent_message.",
           "minLength": 1,
           "type": "string"
         }
@@ -124,30 +109,15 @@
   },
   {
     "name": "calm.plan.cancel",
-    "description_sha256": "e07e0329db9ea357e16fdcbc4da04f4c7529fcedb8b26c2409558338167fe08d",
+    "description_sha256": "7bebe1f80f2b59e33086caba64e7ab71f06cf31c7d983dc18d84e9ceed09a80b",
     "input_schema": {
       "properties": {
         "key": {
           "minLength": 1,
           "type": "string"
         },
-        "lifecycle": {
-          "description": "Optional track lifecycle transition. Use planning after understanding the goal, dispatching when requesting workers, working when work is underway, blocked when user input is needed, reviewing when validating worker results, done after acceptance, or failed when completion is impossible. Omit to leave lifecycle unchanged.",
-          "enum": [
-            "draft",
-            "planning",
-            "dispatching",
-            "working",
-            "blocked",
-            "reviewing",
-            "done",
-            "canceled",
-            "failed"
-          ],
-          "type": "string"
-        },
         "message": {
-          "description": "Required human-readable rationale for this write. The kernel persists it on the emitted event as agent_message and on TrackUpdated.agent_message when a lifecycle transition is requested.",
+          "description": "Required human-readable rationale for this write. The kernel persists it on the emitted event as agent_message.",
           "minLength": 1,
           "type": "string"
         }
@@ -242,23 +212,8 @@
     "description_sha256": "02dadd421a85de6a7fd914239d605723e8ca02ee363538d1139c541325293c55",
     "input_schema": {
       "properties": {
-        "lifecycle": {
-          "description": "Optional track lifecycle transition. Use planning after understanding the goal, dispatching when requesting workers, working when work is underway, blocked when user input is needed, reviewing when validating worker results, done after acceptance, or failed when completion is impossible. Omit to leave lifecycle unchanged.",
-          "enum": [
-            "draft",
-            "planning",
-            "dispatching",
-            "working",
-            "blocked",
-            "reviewing",
-            "done",
-            "canceled",
-            "failed"
-          ],
-          "type": "string"
-        },
         "message": {
-          "description": "Required human-readable rationale for this write. The kernel persists it on the emitted event as agent_message and on TrackUpdated.agent_message when a lifecycle transition is requested.",
+          "description": "Required human-readable rationale for this write. The kernel persists it on the emitted event as agent_message.",
           "minLength": 1,
           "type": "string"
         },
@@ -493,7 +448,7 @@
   },
   {
     "name": "calm.ratify.request",
-    "description_sha256": "0b22e0fe18a1c52f1032962a6f536b4c62cbcadccee8a20cfba97da41c0630ed",
+    "description_sha256": "6adcae81595eea2e9a027704a77c2cf532b74f989865682be689836bd5a2b823",
     "input_schema": {
       "properties": {
         "reason": {
@@ -517,7 +472,7 @@
   },
   {
     "name": "calm.report.blocks.delete",
-    "description_sha256": "f556a5410ab5de9f3fd8d3ef9a631fafe5c57ae3fe6ddbf71b00946908d1661b",
+    "description_sha256": "00fe27caf945d42eafe89dbc909fa73b5df59f5b38f89f711ecff5637909a085",
     "input_schema": {
       "properties": {
         "id": {
@@ -562,7 +517,7 @@
   },
   {
     "name": "calm.report.blocks.move",
-    "description_sha256": "20ca6260ce8a4ef1e8787f15e0c336df0fc2b92a3ad6d5850332c7dae9c94c93",
+    "description_sha256": "75674f594e531067e780f19f6fa8e75dea4a01b86e30b1c979a6f813211e35fe",
     "input_schema": {
       "properties": {
         "id": {
@@ -597,7 +552,7 @@
   },
   {
     "name": "calm.report.blocks.upsert",
-    "description_sha256": "0c78be4d1aa9ccee767c305050176d88da899f6274aebe0dca69452b0d294f2f",
+    "description_sha256": "3b423485fe15967b2387e1125027e3f5f479902cfaa7bcca78281a3b0f8f5abc",
     "input_schema": {
       "properties": {
         "id": {
@@ -627,27 +582,12 @@
           ],
           "type": "string"
         },
-        "lifecycle": {
-          "description": "Optional track lifecycle transition. Use planning after understanding the goal, dispatching when requesting workers, working when work is underway, blocked when user input is needed, reviewing when validating worker results, done after acceptance, or failed when completion is impossible. Omit to leave lifecycle unchanged. Accepted from the Planner role only; an assistant passing it is refused (-32403) and nothing is written.",
-          "enum": [
-            "draft",
-            "planning",
-            "dispatching",
-            "working",
-            "blocked",
-            "reviewing",
-            "done",
-            "canceled",
-            "failed"
-          ],
-          "type": "string"
-        },
         "markdown": {
           "description": "Prose content (kind=prose only).",
           "type": "string"
         },
         "message": {
-          "description": "Optional human-readable rationale for this write, persisted as agent_message on the emitted event (and on TrackUpdated.agent_message when a lifecycle transition is requested).",
+          "description": "Optional human-readable rationale for this write, persisted as agent_message on the emitted event.",
           "minLength": 1,
           "type": "string"
         },
@@ -678,7 +618,7 @@
   },
   {
     "name": "calm.report.commit",
-    "description_sha256": "60edcd41e13afd7cb78a74af8bb7ccef8c3724b7522c2a1e3b064595ce54d947",
+    "description_sha256": "cf379c033ab5bddec56dfa134162a6740a2e06408bf7c7857e43499d55cdbb86",
     "input_schema": {
       "properties": {
         "if_doc_rev": {
@@ -686,23 +626,8 @@
           "minimum": 0,
           "type": "integer"
         },
-        "lifecycle": {
-          "description": "Optional track lifecycle transition. Use planning after understanding the goal, dispatching when requesting workers, working when work is underway, blocked when user input is needed, reviewing when validating worker results, done after acceptance, or failed when completion is impossible. Omit to leave lifecycle unchanged.",
-          "enum": [
-            "draft",
-            "planning",
-            "dispatching",
-            "working",
-            "blocked",
-            "reviewing",
-            "done",
-            "canceled",
-            "failed"
-          ],
-          "type": "string"
-        },
         "message": {
-          "description": "Required human-readable rationale for this write. The kernel persists it on the emitted event as agent_message and on TrackUpdated.agent_message when a lifecycle transition is requested.",
+          "description": "Required human-readable rationale for this write. The kernel persists it on the emitted event as agent_message.",
           "minLength": 1,
           "type": "string"
         },
@@ -942,7 +867,7 @@
   },
   {
     "name": "calm.report.write_markdown",
-    "description_sha256": "5bc044cb01b128506806110c54814c15561a64c37161d98a7d2c2f08c166c0f0",
+    "description_sha256": "2e68cf116afa1d653b102379c256ed37a5d3de2b2c9c6175441970fc8e3f480e",
     "input_schema": {
       "properties": {
         "body": {
@@ -954,23 +879,8 @@
           "minimum": 0,
           "type": "integer"
         },
-        "lifecycle": {
-          "description": "Optional track lifecycle transition. Use planning after understanding the goal, dispatching when requesting workers, working when work is underway, blocked when user input is needed, reviewing when validating worker results, done after acceptance, or failed when completion is impossible. Omit to leave lifecycle unchanged. Accepted from the Planner role only; an assistant passing it is refused (-32403) and nothing is written.",
-          "enum": [
-            "draft",
-            "planning",
-            "dispatching",
-            "working",
-            "blocked",
-            "reviewing",
-            "done",
-            "canceled",
-            "failed"
-          ],
-          "type": "string"
-        },
         "message": {
-          "description": "Optional human-readable rationale for this write, persisted as agent_message on the emitted event (and on TrackUpdated.agent_message when a lifecycle transition is requested).",
+          "description": "Optional human-readable rationale for this write, persisted as agent_message on the emitted event.",
           "minLength": 1,
           "type": "string"
         },
@@ -1198,7 +1108,7 @@
   },
   {
     "name": "calm.task.delivery",
-    "description_sha256": "e6e3aa49987a92188586fa30785ebb688f675c1f6c74efe6b07e1f6b3a784b53",
+    "description_sha256": "a1c916e0dea768299f88955c95521f273721f8c03ac9bf465a14039ae98912de",
     "input_schema": {
       "properties": {
         "action": {
@@ -1244,7 +1154,7 @@
   },
   {
     "name": "calm.task.dispatch",
-    "description_sha256": "8f1a9048ad05b6ffb5a4cbeeba547a587814f753a13893afa2be4b4c82294862",
+    "description_sha256": "5d0c13305ef1e586698f48c2768a54020cf021b2968f4efb8814b7c410e591f1",
     "input_schema": {
       "additionalProperties": false,
       "oneOf": [
@@ -1383,7 +1293,7 @@
   },
   {
     "name": "calm.task.repair",
-    "description_sha256": "d113ffc8efd33424599d51f700215c339c6a363ac440ac3dc3f9d838a050a145",
+    "description_sha256": "655fb3579df6aa7a458f73810f9319c4679ed70c0197668f1b6a986fb6a161fd",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1413,30 +1323,15 @@
   },
   {
     "name": "calm.task.verdict",
-    "description_sha256": "dc353550fb12c0f94c1689f8cbf370749d94fbc33574474e55b38d42943de95c",
+    "description_sha256": "71592531717420e77b2007f46ed9d5f7d73bb4a754466d4d26b644b775e9bfd2",
     "input_schema": {
       "properties": {
         "idempotency_key": {
           "minLength": 1,
           "type": "string"
         },
-        "lifecycle": {
-          "description": "Optional track lifecycle transition. Use planning after understanding the goal, dispatching when requesting workers, working when work is underway, blocked when user input is needed, reviewing when validating worker results, done after acceptance, or failed when completion is impossible. Omit to leave lifecycle unchanged.",
-          "enum": [
-            "draft",
-            "planning",
-            "dispatching",
-            "working",
-            "blocked",
-            "reviewing",
-            "done",
-            "canceled",
-            "failed"
-          ],
-          "type": "string"
-        },
         "message": {
-          "description": "Required human-readable rationale for this write. The kernel persists it on the emitted event as agent_message and on TrackUpdated.agent_message when a lifecycle transition is requested.",
+          "description": "Required human-readable rationale for this write. The kernel persists it on the emitted event as agent_message.",
           "minLength": 1,
           "type": "string"
         },
@@ -2123,6 +2018,31 @@
     "visible_to_roles": []
   },
   {
+    "name": "calm.track.close",
+    "description_sha256": "cf63398f80052026aefc9bc8248fb953e4ba0b6212e66e7ae86c7a985095714c",
+    "input_schema": {
+      "properties": {
+        "message": {
+          "description": "Required human-readable rationale for this write. The kernel persists it on the emitted event as agent_message.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
     "name": "calm.track.diff",
     "description_sha256": "d48847a7cd155b6e8597b8752c3ffe7bd0a9e9869ef3d9fb1750cc22d0ac478a",
     "input_schema": {
@@ -2252,7 +2172,7 @@
   },
   {
     "name": "calm.track.state",
-    "description_sha256": "7a372c17f7fc7af045f11791bebe01e1d113f7baf063d5a0906017c19d7aa81d",
+    "description_sha256": "53848ea141b7f8bff2e6942890af21315276409e8de46cd1f6dd07c06eff06a5",
     "input_schema": {
       "properties": {},
       "type": "object"
@@ -2273,7 +2193,7 @@
   },
   {
     "name": "calm.user.notify",
-    "description_sha256": "e329dc052761f9fd0394e9e9d32458bb4dbce4ae7d74f996eb06023d02147e35",
+    "description_sha256": "3d93d7f95a9e8c7fa0f5769a15fd8827636d6102749bd1b7090ac2ab91d2f5e5",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

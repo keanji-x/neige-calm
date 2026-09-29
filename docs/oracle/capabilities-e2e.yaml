@@ -19,7 +19,7 @@
     main.rs:185-192 是生产 router 的全部 merge 面（其中没有 dev_routes）。#1148 第三轮：再补
     112-115 —— `--serve`/`--assert` 二选一的前置门控（缺任一即 exit 2），是「只有 replay --serve
     这条路径能走到挂载点」的入口证据，此前未登记。
-  source: crates/calm-server/src/bin/replay.rs:76-79,94-106,159-169,187-194
+  source: crates/calm-server/src/bin/replay.rs:72-75,90-102,155-164,183-189
     crates/calm-server/src/main.rs:158-165
   authoritative_test: NONE
   owner_slice: none/e2e/infra

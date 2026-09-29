@@ -1,9 +1,9 @@
 [
   {
-    "description": "the track root session (a Planner card of this track) may record a track lifecycle transition — under #1189 the grant comes from the card, not from root-ness",
+    "description": "the track root session (a Planner card of this track) may record a track close — under #1189 the grant comes from the card, not from root-ness",
     "principal": { "session_id": "$ROOT_SESSION", "track_id": "$HOME_TRACK", "area_id": "$HOME_AREA" },
     "actor": { "kind": "AiPlanner", "id": "$PLANNER_CARD" },
-    "event": { "ev": "track.lifecycle_changed", "data": { "id": "$HOME_TRACK", "area_id": "$HOME_AREA", "from": "planning", "to": "dispatching", "agent_message": "root lifecycle" } },
+    "event": { "ev": "track.updated", "data": { "id": "$HOME_TRACK", "area_id": "$HOME_AREA", "title": "frozen-vector track", "sort": 1.0, "pinned_at": null, "closed_at": 1, "cwd": "", "created_at": 0, "updated_at": 0, "agent_message": "root close" } },
     "scope": { "kind": "Track", "id": { "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "recorder_gate": true,
     "expected": { "decision": "allow", "recorder": "allow", "role": "allow" }
