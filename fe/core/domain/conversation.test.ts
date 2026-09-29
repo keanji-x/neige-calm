@@ -603,35 +603,24 @@ describe('harnessItemToActivity', () => {
     }))?.verb).toBe(done);
   });
 
-  it('renders the track rename as a write, not as a look at the track', () => {
-    expect(TRACK_RENAME_TOOL.startsWith(TRACK_TOOL_PREFIX)).toBe(true);
+  it.each([
+    [TRACK_RENAME_TOOL, 'Naming the track', 'Named the track'],
+    [TRACK_PUBLISH_TOOL, 'Publishing the track', 'Published the track'],
+  ])('renders %s as a write, not as a look at the track', (tool, running, finished) => {
+    expect(tool.startsWith(TRACK_TOOL_PREFIX)).toBe(true);
     const started = harnessItemToActivity(row({
       item_type: 'mcpToolCall', method: 'item/started',
-      params: JSON.stringify({ item: { tool: TRACK_RENAME_TOOL } }),
+      params: JSON.stringify({ item: { tool } }),
     }));
     const done = harnessItemToActivity(row({
       item_type: 'mcpToolCall',
-      params: JSON.stringify({ item: { tool: TRACK_RENAME_TOOL, status: 'completed' } }),
+      params: JSON.stringify({ item: { tool, status: 'completed' } }),
     }));
-    expect(started).toMatchObject({ verb: 'Naming the track', target: null, state: 'running' });
-    expect(done).toMatchObject({ verb: 'Named the track', target: null, state: 'done' });
+    expect(started).toMatchObject({ verb: running, target: null, state: 'running' });
+    expect(done).toMatchObject({ verb: finished, target: null, state: 'done' });
     for (const activity of [started, done]) {
       expect(activity?.verb).not.toMatch(/read/i);
     }
-  });
-
-  it('renders the track publish as a write, not as a look at the track', () => {
-    expect(TRACK_PUBLISH_TOOL.startsWith(TRACK_TOOL_PREFIX)).toBe(true);
-    const started = harnessItemToActivity(row({
-      item_type: 'mcpToolCall', method: 'item/started',
-      params: JSON.stringify({ item: { tool: TRACK_PUBLISH_TOOL } }),
-    }));
-    const done = harnessItemToActivity(row({
-      item_type: 'mcpToolCall',
-      params: JSON.stringify({ item: { tool: TRACK_PUBLISH_TOOL, status: 'completed' } }),
-    }));
-    expect(started).toMatchObject({ verb: 'Publishing the track', target: null, state: 'running' });
-    expect(done).toMatchObject({ verb: 'Published the track', target: null, state: 'done' });
   });
 
   it('still reads the other `calm.track.*` tools as looks', () => {
