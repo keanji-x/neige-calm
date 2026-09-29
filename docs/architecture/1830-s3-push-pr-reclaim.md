@@ -135,7 +135,7 @@ Verified at c3886d776 by reading the code, or by the query or command shown (414
   `pr create` read `headRefOid` live (`git --git-dir "$repo" rev-parse refs/heads/$head`), and a
   merged PR keeps its stored value; an argv log per invocation, and whether `GH_TOKEN` was set.
   Then `scripts/local-ratchet-gates.sh`.
-- Not triggered: migrations, `track_write_point_registry`, OpenAPI, `wire.ts`,
+- Not triggered: migrations, OpenAPI, `wire.ts`,
   `scripts/ci/ratchets/*`, the event-version lockstep.
 - S2b edits `planner.md:76` in parallel, so rebase after it and regenerate the golden.
 
@@ -183,3 +183,19 @@ Predicted red sets over `track_publish` and the plugin's unit tests:
 - A Planner can still push or open a PR by hand (a terminal, or the plugin's `gh.pr.create`,
   whose removal is the follow-up).
 - The plugin's other `gh.*` lowerings still run `gh` in the track worktree with the full forge env.
+
+## 7. Implementation notes (where the code differs from the text above)
+
+- D5 "fails with git's message": the forge adapter sends the action's stderr to `/dev/null` and a
+  failed action is settled by its probe, so a rejected push reaches the Planner as `-32409
+  publish-failed: operation <id>: forge action process dead and probe reports not landed …`.
+  Surfacing stderr would change the adapter for every forge action; the test pins the failure
+  and the untouched remote instead.
+- D3 is one SQL read of the track's candidates joined with their attempt's status; the tip is
+  matched against them in Rust (`check_tip`), so M2 mutates that comparison, not the SQL.
+- D6: the probe's gh read is `pr view --json headRefOid,state`, distinct from the output probe,
+  so P1 can prove from the shim log that no probe ran.
+- §4 shim: `pr merge` also reads an open PR's head live and records it as the merged head, so
+  view, create and merge agree.
+- §4: `track_write_point_registry` is triggered after all: the D7 refusal test nulls
+  `workspace_worktree_path`, as S2's T5 does, so it is listed with a reason.
