@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use calm_types::forge_git::{
-    GIT_DELIVERY_OUTPUT_PROBE_SCRIPT, GIT_DELIVERY_PROBE_SCRIPT, GIT_DELIVERY_SCRIPT,
-    GIT_LEASE_PROVENANCE_SCRIPT,
+    FORGE_SHELL_PRELUDE, GIT_DELIVERY_OUTPUT_PROBE_SCRIPT, GIT_DELIVERY_PROBE_SCRIPT,
+    GIT_DELIVERY_SCRIPT, GIT_LEASE_PROVENANCE_SCRIPT,
 };
 use calm_types::git_candidate::{DeliveryFailureCode, DeliveryWakeReason};
 use calm_types::task_recovery::{TASK_CHILD_TRACK_ROUTE, TASK_IN_TRACK_ROUTE};
@@ -1108,8 +1108,8 @@ fn delivery_probe_scripts_read_ref_not_head() {
     assert_eq!(stdout(&probe), stdout(&delivered));
 }
 
-/// The argv the payload runs is the two texts joined by one newline, followed by the six
-/// positional parameters in the script's order.
+/// The argv the payload runs is the credential split, the provenance function and the delivery
+/// script joined by newlines, followed by the six positional parameters in the script's order.
 #[test]
 fn delivery_argv_joins_provenance_and_delivery_scripts() {
     let argv = delivery_argv("m", "b", "r", "s", "cp", "gcd");
@@ -1118,7 +1118,7 @@ fn delivery_argv_joins_provenance_and_delivery_scripts() {
         vec![
             "sh".to_string(),
             "-c".into(),
-            format!("{GIT_LEASE_PROVENANCE_SCRIPT}\n{GIT_DELIVERY_SCRIPT}"),
+            format!("{FORGE_SHELL_PRELUDE}\n{GIT_LEASE_PROVENANCE_SCRIPT}\n{GIT_DELIVERY_SCRIPT}"),
             "sh".into(),
             "m".into(),
             "b".into(),

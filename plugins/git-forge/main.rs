@@ -3,7 +3,7 @@ use std::io::{BufRead, BufWriter, Write};
 
 use calm_types::event::{FieldSource, ForgeEventSpec};
 use calm_types::forge_git::{
-    GIT_COMMIT_OUTPUT_PROBE_SCRIPT, GIT_COMMIT_PROBE_SCRIPT, GIT_COMMIT_SCRIPT,
+    FORGE_SHELL_PRELUDE, GIT_COMMIT_OUTPUT_PROBE_SCRIPT, GIT_COMMIT_PROBE_SCRIPT, GIT_COMMIT_SCRIPT,
 };
 use serde_json::{Value, json};
 
@@ -138,10 +138,12 @@ fn lower(tool: &str, args: &Value) -> Result<Value, String> {
 fn lower_git_worktree_add(args: &Value) -> Result<Value, String> {
     let target = required_string(args, "target")?;
     let branch = optional_string(args, "branch")?;
+    // `git worktree add` checks out, so it runs the repository's hooks and filters (#1830 S3 D4).
     let mut argv = vec![
-        "git".to_string(),
-        "worktree".to_string(),
-        "add".to_string(),
+        "sh".to_string(),
+        "-c".to_string(),
+        format!("{FORGE_SHELL_PRELUDE}\nneige_git worktree add \"$@\""),
+        "sh".to_string(),
         target.clone(),
     ];
     if let Some(branch) = branch {
@@ -165,7 +167,7 @@ fn lower_git_commit(args: &Value) -> Result<Value, String> {
     let mut argv = vec![
         "sh".into(),
         "-c".into(),
-        GIT_COMMIT_SCRIPT.into(),
+        git_commit_script(),
         "sh".into(),
         message,
     ];
@@ -215,6 +217,11 @@ fn lower_git_commit(args: &Value) -> Result<Value, String> {
         })),
         false,
     )
+}
+
+/// The Planner commit's `sh -c` text: the credential split, then the shared script.
+fn git_commit_script() -> String {
+    format!("{FORGE_SHELL_PRELUDE}\n{GIT_COMMIT_SCRIPT}")
 }
 
 fn lower_gh_pr_create(args: &Value) -> Result<Value, String> {
@@ -677,7 +684,15 @@ mod tests {
         assert_eq!(
             payload,
             json!({
-                "argv": ["git", "worktree", "add", "/tmp/wt", "-b", "wt-x"],
+                "argv": [
+                    "sh",
+                    "-c",
+                    format!("{FORGE_SHELL_PRELUDE}\nneige_git worktree add \"$@\""),
+                    "sh",
+                    "/tmp/wt",
+                    "-b",
+                    "wt-x"
+                ],
                 "idem_key": "git.worktree.add:/tmp/wt",
                 "event_spec": {
                     "event_kind": "worktree.provisioned",
@@ -695,7 +710,7 @@ mod tests {
     #[test]
     fn lowers_git_commit() {
         let expected_probe_script = GIT_COMMIT_PROBE_SCRIPT;
-        let expected_commit_script = GIT_COMMIT_SCRIPT;
+        let expected_commit_script = format!("{FORGE_SHELL_PRELUDE}\n{GIT_COMMIT_SCRIPT}");
         let expected_output_probe_script = GIT_COMMIT_OUTPUT_PROBE_SCRIPT;
         let payload = lower(
             "git.commit",
@@ -747,8 +762,8 @@ mod tests {
         );
         assert_no_reserved_context(&payload, &["track_id", "card_id"]);
         assert_supported_event_kind(&payload);
-        assert!(expected_commit_script.contains("git add -A || exit 1"));
-        assert!(expected_commit_script.contains("git commit -m \"$1\" || exit 1"));
+        assert!(expected_commit_script.contains("neige_git add -A || exit 1"));
+        assert!(expected_commit_script.contains("neige_git commit -m \"$1\" || exit 1"));
         assert!(!expected_commit_script.contains("|| true"));
         let rendered = serde_json::to_string(&payload).expect("payload json");
         for needle in ["worktree.committed", "neige: worker "] {
@@ -774,7 +789,7 @@ mod tests {
             json!([
                 "sh",
                 "-c",
-                GIT_COMMIT_SCRIPT,
+                format!("{FORGE_SHELL_PRELUDE}\n{GIT_COMMIT_SCRIPT}"),
                 "sh",
                 "neige: worker card-1 @ track track-1"
             ])
@@ -798,7 +813,10 @@ mod tests {
         )
         .expect("lower commit");
 
-        assert_eq!(payload["argv"][2], GIT_COMMIT_SCRIPT);
+        assert_eq!(
+            payload["argv"][2],
+            format!("{FORGE_SHELL_PRELUDE}\n{GIT_COMMIT_SCRIPT}")
+        );
         assert_eq!(payload["probe"]["probe_argv"][2], GIT_COMMIT_PROBE_SCRIPT);
         assert_eq!(
             payload["probe"]["output_probe_argv"][2],

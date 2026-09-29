@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 
 use calm_types::forge_git::{
-    GIT_DELIVERY_OUTPUT_PROBE_SCRIPT, GIT_DELIVERY_PROBE_SCRIPT, GIT_DELIVERY_SCRIPT,
-    GIT_LEASE_PROVENANCE_SCRIPT,
+    FORGE_SHELL_PRELUDE, GIT_DELIVERY_OUTPUT_PROBE_SCRIPT, GIT_DELIVERY_PROBE_SCRIPT,
+    GIT_DELIVERY_SCRIPT, GIT_LEASE_PROVENANCE_SCRIPT,
 };
 use calm_types::git_candidate::{DeliveryFailureCode, DeliveryWakeReason};
 use sqlx::Row;
@@ -163,8 +163,9 @@ pub(crate) fn delivery_message(delivery: &DeliveryRow, outcome: AttemptOutcome) 
     )
 }
 
-/// The argv of one delivery: the provenance function and the delivery script joined into one
-/// `sh -c` text, followed by the six positional parameters the script reads.
+/// The argv of one delivery: the credential split (#1830 S3 D4), the provenance function and the
+/// delivery script joined into one `sh -c` text, followed by the six positional parameters the
+/// script reads. The probes stay bare: they only read, and they are in the payload hash.
 pub(crate) fn delivery_argv(
     message: &str,
     branch: &str,
@@ -176,7 +177,7 @@ pub(crate) fn delivery_argv(
     vec![
         "sh".into(),
         "-c".into(),
-        format!("{GIT_LEASE_PROVENANCE_SCRIPT}\n{GIT_DELIVERY_SCRIPT}"),
+        format!("{FORGE_SHELL_PRELUDE}\n{GIT_LEASE_PROVENANCE_SCRIPT}\n{GIT_DELIVERY_SCRIPT}"),
         "sh".into(),
         message.into(),
         branch.into(),
