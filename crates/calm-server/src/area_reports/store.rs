@@ -60,8 +60,8 @@ pub(super) async fn rows(pool: &SqlitePool, area_id: &str) -> Result<Vec<Row>, s
         .collect()
 }
 
-/// A report card's stored payload JSON and whether it has a CRDT: what
-/// `track_report::report_blocks_snapshot_from_row` projects blocks from without loading Automerge.
+/// A report card's stored payload JSON and whether it has a CRDT: enough to read its blocks without
+/// loading Automerge (see `outlines`).
 pub(super) struct Projection {
     pub payload: String,
     pub has_crdt: bool,

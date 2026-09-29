@@ -638,3 +638,118 @@ fn an_insert_is_one_code_span_whatever_backticks_the_text_holds() {
         assert_eq!(code_text(&super::mention_insert(text)), text, "{text:?}");
     }
 }
+
+/// Block ids of `body`'s `blocks` group, in order.
+fn block_ids(body: &Value) -> Vec<String> {
+    body["blocks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|block| block["block_id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+async fn read_block_ids(fx: &Fixture, area: &AreaId, file: &str) -> Vec<String> {
+    area_reports::read_blocks(fx.repo.pool(), area.as_str(), file)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|block| block.id)
+        .collect()
+}
+
+async fn set_payload(fx: &Fixture, track_id: &str, payload: &str) {
+    sqlx::query("UPDATE cards SET payload = ?1 WHERE track_id = ?2 AND kind = 'track-report'")
+        .bind(payload)
+        .bind(track_id)
+        .execute(fx.repo.pool())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_row_without_a_crdt_mentions_the_block_ids_neige_cat_reads() {
+    let fx = boot().await;
+    let [a, _] = fx.areas.clone();
+    let body = "# Goal\n\nalpha\n\n```neige-block task\n\
+                {\"key\":\"t1\",\"kind\":\"terminal\",\"goal\":\"printf ok\"}\n```\n";
+    let track = report(&fx, &a, "legacy", body, false, &[], 10).await;
+    // Stored block hints with other ids: a row with no CRDT reads as its body, ignoring them.
+    let hints: Vec<Value> = crate::track_report_read::legacy_row_blocks(body)
+        .into_iter()
+        .enumerate()
+        .map(|(i, block)| {
+            json!({ "id": format!("b_hint{i}"), "kind": block.kind, "rev": block.rev, "payload": block.payload })
+        })
+        .collect();
+    set_payload(
+        &fx,
+        &track,
+        &json!({ "schemaVersion": 4, "summary": "", "body": body, "blocks": hints }).to_string(),
+    )
+    .await;
+
+    let got = mentions(&fx, &a, "", Some(&track)).await;
+    let ids = block_ids(&got);
+    assert_eq!(ids, read_block_ids(&fx, &a, "legacy.md").await, "{got}");
+    assert!(ids.iter().all(|id| !id.starts_with("b_hint")), "{ids:?}");
+    assert!(
+        labels(&got, "blocks").contains(&"task: command=printf ok".to_string()),
+        "the legacy terminal task reads normalized: {got}"
+    );
+    assert_eq!(assert_inserts_resolve(&fx, &a, &got).await, 1 + 2);
+}
+
+#[tokio::test]
+async fn a_crdt_row_mentions_its_stored_projection_without_loading_the_crdt() {
+    let fx = boot().await;
+    let [a, _] = fx.areas.clone();
+    let track = report(&fx, &a, "projected", TWO_BLOCKS, true, &[], 10).await;
+    let before = mentions(&fx, &a, "", Some(&track)).await;
+    assert_eq!(
+        block_ids(&before),
+        read_block_ids(&fx, &a, "projected.md").await
+    );
+    assert_eq!(assert_inserts_resolve(&fx, &a, &before).await, 1 + 2);
+
+    // A blob no loader could open: the mention read never touches it.
+    sqlx::query("UPDATE cards SET body_crdt = x'00' WHERE track_id = ?1 AND kind = 'track-report'")
+        .bind(&track)
+        .execute(fx.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(mentions(&fx, &a, "", Some(&track)).await, before);
+}
+
+#[tokio::test]
+async fn a_crdt_row_without_a_projection_lists_its_report_without_blocks() {
+    let fx = boot().await;
+    let [a, _] = fx.areas.clone();
+    let bare = report(&fx, &a, "bare", TWO_BLOCKS, true, &["kept"], 10).await;
+    let other = report(&fx, &a, "other", TWO_BLOCKS, true, &[], 20).await;
+    sqlx::query(
+        "UPDATE cards SET payload = json_remove(payload, '$.blocks') \
+         WHERE track_id = ?1 AND kind = 'track-report'",
+    )
+    .bind(&bare)
+    .execute(fx.repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        read_block_ids(&fx, &a, "bare.md").await.len(),
+        2,
+        "cat still reads it"
+    );
+
+    let got = mentions(&fx, &a, "", Some(&bare)).await;
+    assert_eq!(labels(&got, "tracks"), ["other", "bare"]);
+    assert_eq!(labels(&got, "tags"), ["kept"]);
+    assert!(block_ids(&got).is_empty(), "{got}");
+    let searched = mentions(&fx, &a, "goal", Some(&other)).await;
+    assert_eq!(
+        block_ids(&searched),
+        read_block_ids(&fx, &a, "other.md").await[..1]
+    );
+    assert_eq!(assert_inserts_resolve(&fx, &a, &got).await, 1 + 2);
+    assert_eq!(assert_inserts_resolve(&fx, &a, &searched).await, 1);
+}

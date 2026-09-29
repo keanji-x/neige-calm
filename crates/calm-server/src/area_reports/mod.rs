@@ -13,13 +13,14 @@ mod store;
 #[cfg(test)]
 mod tests;
 
+use calm_types::report_blocks::tasks::normalize_legacy_terminal_task_blocks;
 use chrono::{Local, SecondsFormat, TimeZone};
 use serde::Serialize;
 use sqlx::SqlitePool;
 
 use crate::track_fs_view::{TrackFsContent, TrackFsError, report_markdown};
-use crate::track_report::{ReportBlock, report_blocks_snapshot_from_row};
-use crate::track_report_read::report_doc_snapshot;
+use crate::track_report::{ReportBlock, TrackReportPayload};
+use crate::track_report_read::{legacy_row_blocks, report_doc_snapshot};
 
 /// The directory every report path starts with.
 pub const REPORTS_DIR: &str = "area/reports";
@@ -123,12 +124,15 @@ pub struct ReportOutline {
     pub tags: Vec<String>,
     /// The report card's update time (ms).
     pub updated_at: i64,
-    /// The stored block projection, in document order — the blocks `calm.area.outline` indexes.
+    /// In document order, with the ids [`read_blocks`] accepts; see [`outlines`].
     pub blocks: Vec<ReportBlock>,
 }
 
 /// Every report of `area_id` with its path, tags and blocks, ordered by track id, from one
-/// statement. Blocks come from the stored projection; no report CRDT is loaded (#1859).
+/// statement. Blocks carry the ids [`read_blocks`] accepts, without loading any report CRDT (#1859):
+/// a row with no CRDT derives them from its body exactly as `report_doc_snapshot` does; a CRDT row
+/// returns its stored projection, normalized as that function's cached branch does. A CRDT row
+/// without a stored projection (the writer always stores one) lists with no blocks.
 pub async fn outlines(
     pool: &SqlitePool,
     area_id: &str,
@@ -140,11 +144,18 @@ pub async fn outlines(
     rows.into_iter()
         .zip(files)
         .map(|((row, projection), file)| {
-            let (_, blocks) = report_blocks_snapshot_from_row(
-                &row.track_id,
-                Some((projection.payload, projection.has_crdt)),
-            )
-            .map_err(|e| TrackFsError::Internal(e.to_string()))?;
+            let payload: TrackReportPayload =
+                serde_json::from_str(&projection.payload).map_err(|e| {
+                    TrackFsError::Internal(format!(
+                        "track_report: malformed payload on card {}: {e}",
+                        row.card_id
+                    ))
+                })?;
+            let blocks = match (projection.has_crdt, payload.blocks) {
+                (false, _) => legacy_row_blocks(&payload.body),
+                (true, Some(blocks)) => normalize_legacy_terminal_task_blocks(&blocks),
+                (true, None) => Vec::new(),
+            };
             Ok(ReportOutline {
                 path: format!("{REPORTS_DIR}/{file}"),
                 title: row.title,
