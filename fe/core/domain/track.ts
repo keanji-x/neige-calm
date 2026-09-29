@@ -256,6 +256,26 @@ export function sortAreaTracksByRecent(tracks: readonly Track[]): Track[] {
   });
 }
 
+/** How many of an expanded Area's most recent Tracks the desktop rail shows before `Show N more`. */
+export const AREA_TRACK_LIMIT = 5;
+
+export type LimitedAreaTracks = Readonly<{ rows: readonly Track[]; hiddenCount: number }>;
+
+/**
+ * The collapsed projection of an Area's already-sorted, already-visible Tracks:
+ * the first `limit`, plus the open Track at its own position when it sorts past
+ * them, so the current row never disappears. `hiddenCount` is what the rows
+ * leave out, so it never counts the open Track. The input is not modified.
+ */
+export function limitAreaTracks(
+  sorted: readonly Track[],
+  limit: number,
+  activeTrackId: string | null,
+): LimitedAreaTracks {
+  const rows = sorted.filter((track, index) => index < limit || track.id === activeTrackId);
+  return { rows, hiddenCount: sorted.length - rows.length };
+}
+
 export const cardWireSchema = z.object({
   id: z.string(),
   track_id: z.string(),

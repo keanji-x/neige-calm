@@ -16,7 +16,9 @@ signs out itself. `nowMs` exists so a test can pin the `pinned_at` stamp.
 
 `shell.module.css`, `@layer features` — app composition sits at the same cascade
 position as the features it wraps (see the comment in
-`tools/styles/repository-check.mjs`). Desktop Area colour arrives as inline `style`
+`tools/styles/repository-check.mjs`). The desktop Area group (`area-group.tsx`) reuses
+that rail geometry and keeps only its own `Show N more` control in
+`area-group.module.css`. Desktop Area colour arrives as inline `style`
 because it is per-row data. Phone Area rows use a monochrome folder icon;
 Track rows and Track-switcher choices use the matching file icon. The running pulse is a token-timed animation
 (`--motion-pulse`) with a `prefers-reduced-motion` opt-out.
@@ -101,6 +103,13 @@ real shell composition, Area routing, modal focus boundaries and panel history.
 - The Area actions menu is permanently visible with every pointer type.
   Activating an Area initial in the collapsed rail focuses and scrolls to the
   disclosure revealed by expansion.
+- An expanded desktop Area lists its five most recent Tracks plus the open one,
+  which keeps its sorted position. When more are left out, one button in a fixed
+  slot after the rows reads `Show N more` / `Show less`; its name adds the Area
+  (`Show N more in <area>`) so several of them stay distinguishable, and it has
+  no `aria-expanded` because its text already flips. Focus stays on it, and
+  `Show less` scrolls it into view. The choice is component memory: collapsing
+  the Area keeps it; collapsing the rail or reloading resets it.
 - **Intentionally not done:** no skip-to-main link (INV-A11Y-058). The rail is
   short and this has never been raised as a pain point; re-evaluate if a second
   long section lands. "There is no skip link" is a decision, not a defect.

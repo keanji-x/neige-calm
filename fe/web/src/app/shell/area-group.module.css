@@ -1,0 +1,37 @@
+/*
+ * The Area group's own controls. Everything else in the group is rail geometry
+ * shared with the rest of the shell, in `shell.module.css`.
+ */
+@layer features {
+  /*
+   * `Show N more` / `Show less` sits in the Track list's column: the rail
+   * Track row's height and its leading gutter (4 + 20 + 4), so the text starts
+   * where every Track title starts. Muted, like the other in-list action, because
+   * it is not a Track.
+   */
+  .showMore {
+    display: flex;
+    align-items: center;
+    inline-size: 100%;
+    min-block-size: var(--row-h);
+    padding-block: 0;
+    padding-inline: calc(var(--space-2) * 2 + var(--control-h-sm)) var(--space-3);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-base);
+    line-height: var(--leading-tight);
+    color: var(--text-3);
+    text-align: start;
+    cursor: pointer;
+  }
+
+  .showMore:hover,
+  .showMore:focus-visible {
+    color: var(--text);
+    background: var(--overlay-hover);
+  }
+
+  /* Inset, because the list runs the full width of a rail that clips. */
+  .showMore:focus-visible {
+    outline-offset: -2px;
+  }
+}

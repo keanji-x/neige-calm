@@ -4,7 +4,7 @@ import {
   activeTracksOn, createCardOperation, createCodexCardOperation, createTerminalCardOperation,
   createTrackOperation, deleteCardOperation, hasFailed, isBlankForKernel, isRunning, isWaitingForUser,
   isWorking, lifecycleLabel, lifecycleRank, needsUserAttention, toTrack, trackActivityFrom,
-  sortAreaTracksByRecent, trackRecentAt,
+  sortAreaTracksByRecent, trackRecentAt, limitAreaTracks, AREA_TRACK_LIMIT,
   trackActivityState, trackDetailSchema, updateTrackOperation,
   NEUTRAL_ACTIVITY, UNTITLED_TRACK_LABEL, trackDisplayTitle, trackLifecycleSchema, trackWireSchema, tracksInAreaOperation,
   trackCreateKeyAction, userVisibleTracks, liveTableOverlayPayload, plannerProviderOf,
@@ -351,6 +351,62 @@ describe('Area recent-activity order', () => {
     expect(sorted.map((row) => row.id)).toEqual(['recent', 'old']);
     expect(source).toEqual([old, recent]);
     expect(sorted[0]).toBe(recent);
+  });
+});
+
+describe('limitAreaTracks', () => {
+  const ids = (count: number) => Array.from({ length: count }, (_, index) => track({ id: `t${index + 1}` }));
+  const shown = (rows: readonly Track[]) => rows.map((row) => row.id);
+
+  it('keeps the first five in order and counts the rest as hidden', () => {
+    expect(AREA_TRACK_LIMIT).toBe(5);
+    const limited = limitAreaTracks(ids(7), AREA_TRACK_LIMIT, null);
+    expect(shown(limited.rows)).toEqual(['t1', 't2', 't3', 't4', 't5']);
+    expect(limited.hiddenCount).toBe(2);
+  });
+
+  it('hides nothing at or under the limit', () => {
+    for (const count of [0, 1, 5]) {
+      const limited = limitAreaTracks(ids(count), AREA_TRACK_LIMIT, null);
+      expect(shown(limited.rows), `${count}`).toEqual(shown(ids(count)));
+      expect(limited.hiddenCount, `${count}`).toBe(0);
+    }
+  });
+
+  it('does not repeat an open Track that is already among the first five', () => {
+    const limited = limitAreaTracks(ids(7), AREA_TRACK_LIMIT, 't3');
+    expect(shown(limited.rows)).toEqual(['t1', 't2', 't3', 't4', 't5']);
+    expect(limited.hiddenCount).toBe(2);
+  });
+
+  it('keeps an open sixth Track, leaving nothing hidden', () => {
+    const limited = limitAreaTracks(ids(6), AREA_TRACK_LIMIT, 't6');
+    expect(shown(limited.rows)).toEqual(['t1', 't2', 't3', 't4', 't5', 't6']);
+    expect(limited.hiddenCount).toBe(0);
+  });
+
+  it('keeps an open seventh Track at its own position, last, without counting it as hidden', () => {
+    const limited = limitAreaTracks(ids(8), AREA_TRACK_LIMIT, 't7');
+    expect(shown(limited.rows)).toEqual(['t1', 't2', 't3', 't4', 't5', 't7']);
+    expect(limited.hiddenCount).toBe(2);
+    const seven = limitAreaTracks(ids(7), AREA_TRACK_LIMIT, 't7');
+    expect(shown(seven.rows)).toEqual(['t1', 't2', 't3', 't4', 't5', 't7']);
+    expect(seven.hiddenCount).toBe(1);
+  });
+
+  it('ignores an open Track that is not in this Area', () => {
+    const limited = limitAreaTracks(ids(7), AREA_TRACK_LIMIT, 'elsewhere');
+    expect(shown(limited.rows)).toEqual(['t1', 't2', 't3', 't4', 't5']);
+    expect(limited.hiddenCount).toBe(2);
+  });
+
+  it('leaves its input untouched', () => {
+    const source = ids(7);
+    const before = [...source];
+    const limited = limitAreaTracks(source, AREA_TRACK_LIMIT, 't7');
+    expect(source).toEqual(before);
+    expect(limited.rows).not.toBe(source);
+    expect(limited.rows[0]).toBe(source[0]);
   });
 });
 

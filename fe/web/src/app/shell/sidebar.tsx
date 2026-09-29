@@ -2,8 +2,6 @@
 
 import { ListText } from '../../ui/list-typography/public.tsx';
 import { useEffect, useRef } from 'react';
-import { useCollapsible } from '@astryxdesign/core/Collapsible';
-import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
 
 import { areaOf, visibleAreas, type Area } from '../../../../core/domain/area.ts';
 import { hasFailed, needsUserAttention, userVisibleTracks, visibleTracks, type Track } from '../../../../core/domain/track.ts';
@@ -20,6 +18,7 @@ import { useUiPreferences } from '../providers/ui-preferences.tsx';
 import { TypedDeleteBody, useTypedConfirm } from '../../ui/typed-confirm/public.tsx';
 import type { NavTarget } from '../router/navigation.ts';
 import { routeParamFromPath } from '../router/navigation.ts';
+import { AreaGroup, type RowProps } from './area-group.tsx';
 import styles from './shell.module.css';
 
 export type SidebarProps = Readonly<{
@@ -117,7 +116,6 @@ export function Sidebar({
   }, [collapsed]);
 
   const rowProps = {
-    currentPath,
     // The receipt compares the overlay's completion high-water mark, not `updatedAt`
     // (which moves on every rename and pin); `null` is never unread.
     isUnread: (track: Track) => preferences.isUnread('track', track.id, track.activityAt ?? 0),
@@ -238,6 +236,7 @@ export function Sidebar({
                     key={area.id}
                     area={area}
                     areaTracks={visibleTracks(tracksByArea.get(area.id) ?? [])}
+                    activeTrackId={activeTrackId}
                     expanded={preferences.areaExpanded(area.id)}
                     onToggle={(nextExpanded) => preferences.setAreaExpanded(area.id, nextExpanded)}
                     disclosureRef={(element) => {
@@ -316,15 +315,6 @@ export function Sidebar({
   );
 }
 
-type RowProps = Readonly<{
-  isUnread: (track: Track) => boolean;
-  currentPath: string;
-  onGo: (target: NavTarget) => void;
-  nowMs?: number;
-  onSetPinned: (trackId: string, pinned: boolean) => void;
-  onDelete: (trackId: string) => void;
-}>;
-
 /** The two shortcut sections: a section with no rows does not render at all, and their rows are never marked current. */
 function TrackSection({ title, tracks, areas, onGo, nowMs, onSetPinned, onDelete, isUnread }: RowProps & {
   title: string;
@@ -350,95 +340,6 @@ function TrackSection({ title, tracks, areas, onGo, nowMs, onSetPinned, onDelete
           />
         ))}
       </div>
-    </div>
-  );
-}
-
-/**
- * Navigation is `<button>` + `onGo`, never `<a href>`, the `+` included: this rail
- * does not mix the two activation models. The Area row is a disclosure, not
- * navigation. `+` and the actions menu are both permanently visible and never
- * share a slot.
- */
-function AreaGroup({
-  area, areaTracks, expanded, onToggle, disclosureRef, onEdit, onRequestDelete, onNewTrack,
-  currentPath, onGo, nowMs, onSetPinned, onDelete, isUnread,
-}: RowProps & {
-  area: Area;
-  areaTracks: readonly Track[];
-  expanded: boolean;
-  onToggle: (expanded: boolean) => void;
-  disclosureRef: (element: HTMLButtonElement | null) => void;
-  onEdit: () => void;
-  onRequestDelete: (areaId: string) => void;
-  onNewTrack: (areaId: string) => void;
-}) {
-  const disclosure = useCollapsible({
-    isCollapsible: { isOpen: expanded, onOpenChange: onToggle },
-  });
-  return (
-    <div className={styles.areaGroup}>
-      <div className={styles.areaRowWrap}>
-        <button
-          ref={disclosureRef}
-          type="button"
-          data-nc-role="row"
-          className={styles.areaRow}
-          aria-expanded={disclosure.isOpen}
-          aria-label={`${disclosure.isOpen ? 'Collapse' : 'Expand'} area ${area.name}`}
-          onClick={disclosure.toggle}
-        >
-          <span className={`${styles.chevron} ${disclosure.isOpen ? styles.chevronOpen : ''}`} aria-hidden="true">
-            <Icon name="chevron-right" />
-          </span>
-          <ListText tone="group" className={styles.areaName} title={area.name}>{area.name}</ListText>
-        </button>
-        <span className={styles.areaActions}>
-          <DropdownMenu
-            placement="below"
-            button={{
-              label: `Area actions for ${area.name}`,
-              icon: <Icon name="more" size="sm" />,
-              isIconOnly: true,
-              variant: 'ghost',
-              size: 'sm',
-              className: styles.areaActionsButton,
-            }}
-          >
-            <DropdownMenuItem label="Edit area" onClick={onEdit} />
-            <DropdownMenuItem label="Delete area" onClick={() => onRequestDelete(area.id)} />
-          </DropdownMenu>
-        </span>
-        {/* The accessible name names the area: N controls all called "New track" is a
-                    list a screen-reader user cannot choose from. `title` is the sighted hover label. */}
-        <button
-          type="button"
-          data-nc-role="icon"
-          className={styles.areaNew}
-          aria-label={`New track in ${area.name}`}
-          title="New track"
-          onClick={() => onNewTrack(area.id)}
-        >
-          <Icon name="plus" size="sm" />
-        </button>
-      </div>
-      {disclosure.isOpen && areaTracks.length > 0 && (
-        <div className={styles.trackList}>
-          {areaTracks.map((track) => (
-            <TrackRow
-              key={track.id}
-              track={track}
-            unread={isUnread(track)}
-              variant="rail"
-              nowMs={nowMs}
-              active={routeParamFromPath(currentPath, '/track/') === track.id}
-              onOpen={(trackId) => onGo({ name: 'track', trackId })}
-              onSetPinned={onSetPinned}
-              onDelete={onDelete}
-            />
-          ))}
-        </div>
-      )}
     </div>
   );
 }
