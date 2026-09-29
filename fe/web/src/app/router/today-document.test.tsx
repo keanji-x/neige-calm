@@ -27,8 +27,8 @@ const refuse = (status: number, code: string, message: string): ApiTransportResp
 
 const areas = [{ id: 'c1', name: 'One', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 }];
 const track = {
-  id: 'w1', area_id: 'c1', title: 'Reliable', sort: 1, lifecycle: 'working', cwd: '/tmp',
-  archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 1,
+  id: 'w1', area_id: 'c1', title: 'Reliable', sort: 1, cwd: '/tmp',
+  pinned_at: null, closed_at: null, created_at: 1, updated_at: 1,
 };
 const launchpadTrack = { ...track, id: 'lp', title: 'Today' };
 
@@ -70,7 +70,7 @@ type Case = Readonly<{
 function renderToday({ resolve, body, detail = 'seeded', reset }: Case) {
   const requests: ApiRequest[] = [];
   const detailOk = () => ok({
-    track: launchpadTrack, can_resume: false, cards: [reportCard(body)], overlays: [],
+    track: launchpadTrack, can_reopen: false, cards: [reportCard(body)], overlays: [],
   });
   const transport: ApiTransportPort = {
     send: (request) => {
@@ -91,7 +91,7 @@ function renderToday({ resolve, body, detail = 'seeded', reset }: Case) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   if (detail === 'seeded') {
     client.setQueryData(['track', 'lp'], {
-      track: launchpadTrack, can_resume: false, cards: [reportCard(body)], overlays: [],
+      track: launchpadTrack, can_reopen: false, cards: [reportCard(body)], overlays: [],
     });
   }
   const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
@@ -208,7 +208,7 @@ describe('INV-TODAYDOC-002 the three document states are three answers', () => {
       resolve: resolved(true), body: INITIAL_BODY,
       detail: ok({
         track: launchpadTrack,
-        can_resume: false,
+        can_reopen: false,
         cards: [{ ...reportCard(INITIAL_BODY), payload: { schemaVersion: 'not-a-number' } }],
         overlays: [],
       }),
@@ -282,7 +282,7 @@ describe('#1343 the document’s Reset control', () => {
         if (request.path === '/api/tracks/lp') {
           return Promise.resolve(ok({
             track: launchpadTrack,
-            can_resume: false,
+            can_reopen: false,
             cards: [reportCard(hasContent ? '# 概要\n\n今天合了两个 PR。\n' : INITIAL_BODY)],
             overlays: [],
           }));
@@ -348,7 +348,7 @@ describe('#1253 §6 the report-edit refresh chain', () => {
         if (request.path === '/api/tracks/lp') {
           return Promise.resolve(ok({
             track: launchpadTrack,
-            can_resume: false,
+            can_reopen: false,
             cards: [reportCard(hasContent ? '# 概要\n\n今天合了两个 PR。\n' : INITIAL_BODY)],
             overlays: [],
           }));
@@ -379,7 +379,7 @@ describe('#1253 §6 the report-edit refresh chain', () => {
         if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([track]));
         if (request.path === '/api/tracks/lp') {
           return Promise.resolve(ok({
-            track: launchpadTrack, can_resume: false, cards: [reportCard(body)], overlays: [],
+            track: launchpadTrack, can_reopen: false, cards: [reportCard(body)], overlays: [],
           }));
         }
         return Promise.resolve(ok([]));

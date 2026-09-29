@@ -25,8 +25,8 @@ function area(overrides: Partial<Area> = {}): Area {
 
 function track(overrides: Partial<Track> = {}): Track {
   return {
-    id: 'w1', areaId: 'c1', title: 'Task', sort: 1, lifecycle: 'draft', cwd: '/tmp', agentCwd: '/tmp',
-    archivedAt: null, pinnedAt: null, terminalAt: null, createdAt: 0, updatedAt: 0,
+    id: 'w1', areaId: 'c1', title: 'Task', sort: 1, cwd: '/tmp', agentCwd: '/tmp',
+    pinnedAt: null, closedAt: null, createdAt: 0, updatedAt: 0,
     ...NEUTRAL_ACTIVITY,
     ...overrides,
   };
@@ -59,7 +59,7 @@ function renderSidebar(props: Partial<Parameters<typeof Sidebar>[0]> = {}) {
 }
 
 describe('INV-SIDEBAR-007 three sections, and pinning is not relocation', () => {
-  const pinnedAndBlocked = track({ id: 'both', title: 'Both', lifecycle: 'blocked', attention: 'input', pinnedAt: 10 });
+  const pinnedAndBlocked = track({ id: 'both', title: 'Both', attention: 'input', pinnedAt: 10 });
 
   it('renders Waiting on you, then Pinned, then Areas', () => {
     renderSidebar({ tracks: [pinnedAndBlocked] });
@@ -188,7 +188,7 @@ describe('active row', () => {
   /* "Waiting on you" and "Pinned" are shortcuts into the tree; a location is shown
    * where the thing lives. */
   it('marks the open track once, in its area, not in the shortcut sections', () => {
-    const open = track({ id: 'w9', title: 'Row', lifecycle: 'blocked', attention: 'input', pinnedAt: 10 });
+    const open = track({ id: 'w9', title: 'Row', attention: 'input', pinnedAt: 10 });
     renderSidebar({ tracks: [open], currentPath: '/track/w9' });
     const rows = screen.getAllByRole('button', { name: /^Track Row/ });
     expect(rows).toHaveLength(3);

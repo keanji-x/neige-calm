@@ -43,9 +43,9 @@ const LISTING = {
 
 /* The kernel returns an empty title; the planner agent names the track later through `calm.track.rename`. */
 const TRACK_ROW = {
-  id: 'w-new', area_id: 'c1', title: '', sort: 0, archived_at: null, pinned_at: null,
-  lifecycle: 'draft', cwd: '/srv/managed', template_id: null, plugin_scope: null,
-  purpose: null, template_input: null, terminal_at: null, created_at: 1, updated_at: 1,
+  id: 'w-new', area_id: 'c1', title: '', sort: 0, pinned_at: null,
+  cwd: '/srv/managed', template_id: null, plugin_scope: null,
+  purpose: null, template_input: null, closed_at: null, created_at: 1, updated_at: 1,
 };
 
 /** The 409 `POST /api/tracks` answers a folder clash with — no `error` key. */
@@ -215,7 +215,7 @@ function harness(options: {
           statusText: 'OK',
           body: {
             track: { ...TRACK_ROW },
-            can_resume: false,
+            can_reopen: false,
             cards: [{
               id: 'card-planner', track_id: 'w-new', kind: 'codex', title: 'Planner',
               payload: { planner_harness: true, planner_provider: options.plannerProvider ?? 'codex' },

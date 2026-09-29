@@ -35,8 +35,8 @@ function setup(mode: 'success' | 'lost' | 'conflict' | 'blocked' | 'awaiting' | 
   let initiallyEmpty = mode === 'empty';
   let writes = 0;
   const area = { id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
-  const track = { id: 'w1', area_id: 'c1', title: 'Continuing work', sort: 1, lifecycle: 'working', cwd: '/tmp',
-    archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2 };
+  const track = { id: 'w1', area_id: 'c1', title: 'Continuing work', sort: 1, cwd: '/tmp',
+    pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
   const card = { id: 'report', track_id: 'w1', title: null, kind: 'track-report', sort: 1, deletable: false,
     created_at: 1, updated_at: 2, payload: { schemaVersion: 3, docRev: 1, summary: '', body: '', blocks: [
       { id: 'b-task', rev: 1, kind: 'task', payload: {
@@ -54,7 +54,7 @@ function setup(mode: 'success' | 'lost' | 'conflict' | 'blocked' | 'awaiting' | 
     requests.push(request);
     if (request.path === '/api/areas') return ok([area]);
     if (request.path === '/api/areas/c1/tracks') return ok([track]);
-    if (request.path === '/api/tracks/w1') return ok({ track, can_resume: false, cards: [card, worker, { ...worker, id: 'new-worker', title: 'Current worker' }], overlays: [] });
+    if (request.path === '/api/tracks/w1') return ok({ track, can_reopen: false, cards: [card, worker, { ...worker, id: 'new-worker', title: 'Current worker' }], overlays: [] });
     if (request.path === '/api/tracks/w1/report' && initiallyEmpty) return ok({ taskDiagnostics: [
       { blockId: 'b-task', key: taskKey, schedulable: false, status: null, statusDetail: null, workerCardId: null, diagnostics: [] },
     ] });

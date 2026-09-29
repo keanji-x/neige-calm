@@ -26,8 +26,8 @@ function area(overrides: Partial<Area> = {}): Area {
 
 function track(overrides: Partial<Track> = {}): Track {
   return {
-    id: 'w1', areaId: 'c1', title: 'Task', sort: 1, lifecycle: 'draft', cwd: '/tmp', agentCwd: '/tmp',
-    archivedAt: null, pinnedAt: null, terminalAt: null, createdAt: 0, updatedAt: 0,
+    id: 'w1', areaId: 'c1', title: 'Task', sort: 1, cwd: '/tmp', agentCwd: '/tmp',
+    pinnedAt: null, closedAt: null, createdAt: 0, updatedAt: 0,
     ...NEUTRAL_ACTIVITY,
     ...overrides,
   };
@@ -130,17 +130,11 @@ describe('area disclosure', () => {
 });
 
 describe('area row', () => {
-  it('excludes archived tracks from shortcuts and area groups', () => {
-    const archived = track({ title: 'Filed away', lifecycle: 'blocked', archivedAt: 10, pinnedAt: 9 });
-    renderSidebar({ tracks: [archived], tracksByArea: new Map([['c1', [archived]]]) });
-    expect(screen.queryByRole('button', { name: /Filed away/ })).toBeNull();
-  });
-
   it('carries the name and nothing else — no count, no identity dot', () => {
     const tracks = [
-      track({ id: 'a', lifecycle: 'blocked' }),
-      track({ id: 'b', lifecycle: 'draft' }),
-      track({ id: 'c', lifecycle: 'draft' }),
+      track({ id: 'a' }),
+      track({ id: 'b', closedAt: 5 }),
+      track({ id: 'c' }),
     ];
     renderSidebar({ tracks, tracksByArea: new Map([['c1', tracks]]) });
     const name = screen.getByTitle('Work');
@@ -444,12 +438,12 @@ describe('collapse toggle', () => {
 
   it('shows the waiting count as the strip\'s only figure, with no dot beside it', () => {
     const { update } = renderSidebar({
-      // The count is the kernel's verdict (input or failed), not the lifecycle phase:
-      // a `blocked` track the kernel has said nothing about is not waiting on anyone.
+      // The count is the kernel's verdict (input or failed), not the open/closed state:
+      // a closed track the kernel has said nothing about is not waiting on anyone.
       tracks: [
-        track({ id: 'a', lifecycle: 'blocked' }),
-        track({ id: 'b', lifecycle: 'draft', attention: 'input' }),
-        track({ id: 'c', lifecycle: 'done', attention: 'failed' }),
+        track({ id: 'a', closedAt: 5 }),
+        track({ id: 'b', attention: 'input' }),
+        track({ id: 'c', closedAt: 5, attention: 'failed' }),
       ],
     });
     update({ collapsed: true });

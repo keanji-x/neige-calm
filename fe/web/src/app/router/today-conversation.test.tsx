@@ -18,8 +18,8 @@ const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 
 
 const AREA = { id: 'c1', name: 'One', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const TRACK = {
-  id: 'w1', area_id: 'c1', title: 'Other track', sort: 1, lifecycle: 'working', cwd: '/tmp',
-  archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 1,
+  id: 'w1', area_id: 'c1', title: 'Other track', sort: 1, cwd: '/tmp',
+  pinned_at: null, closed_at: null, created_at: 1, updated_at: 1,
 };
 /* The launchpad track is `lp` throughout, deliberately absent from the workspace
    lists above: it lives in the system area, which `GET /api/areas` filters out. */
@@ -72,7 +72,7 @@ function renderApp({
       if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok(userWorkspace ? [TRACK] : []));
       if (request.path === '/api/overlays?entity_kind=track') return Promise.resolve(ok(overlays()));
       if (request.path === '/api/tracks/w1') {
-        return Promise.resolve(ok({ track: TRACK, can_resume: false, cards: [], overlays: [] }));
+        return Promise.resolve(ok({ track: TRACK, can_reopen: false, cards: [], overlays: [] }));
       }
       if (request.path === LAUNCHPAD_CONVERSATIONS) {
         return launchpadConversations?.() ?? Promise.resolve(ok(launchpadRows()));

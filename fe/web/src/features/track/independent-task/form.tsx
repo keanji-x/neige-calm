@@ -1,16 +1,15 @@
 import { useId } from 'react';
-import type { TrackLifecycle } from '../../../../../core/domain/track.ts';
 import { independentTaskUnavailableReason, type IndependentTaskIntent } from '../../../../../core/domain/independent-task.ts';
 import { Dialog } from '../../../ui/dialog/public.tsx';
 import styles from './form.module.css';
 
 /** One goal field. Request lifetime and transport are owned by app/core. */
-export function IndependentTaskForm({ open, intent, lifecycle, revisionAvailable, onClose, onGoal, onSubmit, onCheck }: {
-  lifecycle: TrackLifecycle; open: boolean; intent: IndependentTaskIntent; revisionAvailable: boolean;
+export function IndependentTaskForm({ open, intent, closedAt, revisionAvailable, onClose, onGoal, onSubmit, onCheck }: {
+  closedAt: number | null; open: boolean; intent: IndependentTaskIntent; revisionAvailable: boolean;
   onClose: () => void; onGoal: (goal: string) => void; onSubmit: () => void; onCheck: () => void;
 }) {
   const goalId = useId();
-  const unavailable = independentTaskUnavailableReason(lifecycle);
+  const unavailable = independentTaskUnavailableReason(closedAt);
   const busy = intent.phase === 'sending';
   const uncertain = intent.phase === 'uncertain';
   const accepted = intent.phase === 'accepted';
@@ -18,7 +17,6 @@ export function IndependentTaskForm({ open, intent, lifecycle, revisionAvailable
   return <Dialog open={open} onClose={onClose} title="Start independent task">
     <form className={styles.form} onSubmit={(event) => { event.preventDefault(); onSubmit(); }}>
       <p>Codex will work on your goal in a new, empty workspace.</p>
-      {lifecycle === 'draft' && <p>Starting this task also starts the Track. Other ready tasks in this Track may run.</p>}
       {unavailable !== null && <p role="alert">{unavailable}</p>}
       <label htmlFor={goalId}>Goal</label>
       <textarea id={goalId} className={styles.goal} rows={5} value={goal}

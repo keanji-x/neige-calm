@@ -128,8 +128,8 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
     assert_eq!(
         v["apiVersion"].as_str().unwrap(),
-        "14",
-        "#1829: POST /api/tracks/{{id}}/activity/dismissals is new; an older kernel answers it 404"
+        "15",
+        "#1876: a track is open or closed; an older kernel sends `lifecycle` and no `closed_at`"
     );
     assert_eq!(
         v["syncEventVersion"].as_u64().unwrap(),
@@ -142,12 +142,12 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         v["webCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 33);
+    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 34);
     assert_eq!(
         v["minWebCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 33);
+    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 34);
     assert_eq!(
         v["supervisorControlVersion"].as_u64().unwrap(),
         SUPERVISOR_CONTROL_VERSION as u64,
@@ -228,8 +228,8 @@ async fn web_compat_floor_is_above_the_previous_bundle() {
 }
 
 #[tokio::test]
-async fn web_compat_floor_excludes_track_detail_without_resume_capability() {
-    const LAST_TRACK_DETAIL_WITHOUT_CAN_RESUME: u64 = 21;
+async fn web_compat_floor_excludes_bundles_before_open_and_closed_tracks() {
+    const LAST_TRACK_WITH_LIFECYCLE: u64 = 33;
 
     let state = fresh_state().await;
     let app = axum::Router::new()
@@ -253,8 +253,8 @@ async fn web_compat_floor_excludes_track_detail_without_resume_capability() {
         .as_u64()
         .expect("minWebCompatVersion is a number");
     assert!(
-        floor > LAST_TRACK_DETAIL_WITHOUT_CAN_RESUME,
-        "minWebCompatVersion must exclude bundles without can_resume, got {floor}"
+        floor > LAST_TRACK_WITH_LIFECYCLE,
+        "minWebCompatVersion must exclude bundles that read `lifecycle`, got {floor}"
     );
 }
 

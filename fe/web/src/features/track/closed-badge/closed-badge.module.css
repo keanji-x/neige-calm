@@ -1,0 +1,16 @@
+@layer features {
+  /* Closed is plain metadata: neutral, never a warn or error family. */
+  .host {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    block-size: var(--row-h-sm);
+    color: var(--text-3);
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-none);
+    letter-spacing: var(--tracking-normal);
+    white-space: nowrap;
+  }
+}

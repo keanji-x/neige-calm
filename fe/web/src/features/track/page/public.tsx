@@ -33,7 +33,7 @@ import { relativeTime } from '../row/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
 import type { RowModuleView, TrackPageView } from '../../../../../core/view/panel.ts';
-import { TrackLifecycleBadge } from '../lifecycle-badge/public.tsx';
+import { TrackClosedBadge } from '../closed-badge/public.tsx';
 import { makeDesktopPainter, paintDesktopPanel } from './desktop-painter.tsx';
 import { makeMobilePainter, paintMobileModule } from './mobile-painter.tsx';
 import { MobileTitleReadView } from './mobile-title-read-view.tsx';
@@ -127,9 +127,9 @@ export type TrackPageProps = Readonly<{
   mobileHeaderActionsHost?: HTMLElement | null;
   mobileHeaderTitleHost?: HTMLElement | null;
   mobileTitleReadView?: EditableTitleProps['readView'];
-  canResumeTrack: boolean;
+  canReopenTrack: boolean;
   onRenameTrack: (title: string) => void | Promise<void>;
-  onResumeTrack: () => void | Promise<void>;
+  onReopenTrack: () => void | Promise<void>;
   onDeleteTrack: (signal: AbortSignal) => void | Promise<void>;
 }>;
 
@@ -150,7 +150,7 @@ export function TrackPage({
   cardsAction, onCreateTask, recentFiles, onOpenCard, onDeleteCard, onOpenTask, onOpenOutline, board, onCloseBoard,
   panel = null, onOpenPanel, onClosePanel,
   mobileBackLabel = 'Pages', onMobileBack, mobileHeaderActionsHost = null, mobileHeaderTitleHost = null, mobileTitleReadView,
-  canResumeTrack, onRenameTrack, onResumeTrack, onDeleteTrack,
+  canReopenTrack, onRenameTrack, onReopenTrack, onDeleteTrack,
 }: TrackPageProps) {
   const compactViewport = useCompactViewport();
   const headerActionsHost = compactViewport ? mobileHeaderActionsHost : null;
@@ -191,24 +191,24 @@ export function TrackPage({
   }, [mobileHeaderTitleHost, titleContainer, titleInHeader]);
 
   const deletion = useDeleteConfirm((_id, signal) => onDeleteTrack(signal));
-  const resumeFeedback = useOperationFeedback();
+  const reopenFeedback = useOperationFeedback();
   const dismissFeedback = useOperationFeedback();
-  const [resumePending, setResumePending] = useState(false);
+  const [reopenPending, setReopenPending] = useState(false);
   const notificationSignature = inputNotifications.map(({ key }) => key).join('|');
   const [noticeExpanded, setNoticeExpanded] = useState(inputNotifications.length > 0 && !conversationOpen);
   const [notificationAnnouncement, setNotificationAnnouncement] = useState('');
-  const resumePendingRef = useRef(false);
+  const reopenPendingRef = useRef(false);
   const previousNotificationSignatureRef = useRef('');
   const previousNotificationCountRef = useRef(0);
   const previousConversationOpenRef = useRef(conversationOpen);
   useEffect(() => {
-    // The PATCH promise settles before its invalidation refetch. Keep Resume
+    // The PATCH promise settles before its invalidation refetch. Keep Reopen
     // fenced after a successful response until the authoritative capability
-    // disappears; otherwise the stale Done detail can launch a second PATCH.
-    if (canResumeTrack || !resumePendingRef.current) return;
-    resumePendingRef.current = false;
-    setResumePending(false);
-  }, [canResumeTrack]);
+    // disappears; otherwise the stale closed detail can launch a second PATCH.
+    if (canReopenTrack || !reopenPendingRef.current) return;
+    reopenPendingRef.current = false;
+    setReopenPending(false);
+  }, [canReopenTrack]);
   useEffect(() => {
     if (notificationSignature === previousNotificationSignatureRef.current) return;
     const count = inputNotifications.length;
@@ -227,31 +227,31 @@ export function TrackPage({
   const mobilePanelOpen = panel !== null;
   const noticePanelOpen = noticeExpanded;
   const mobilePanelKind: MobilePanelKind = panel ?? 'cards';
-  const resumeWork = async (): Promise<boolean> => {
-    if (!canResumeTrack || resumePendingRef.current) return false;
-    resumePendingRef.current = true;
-    setResumePending(true);
-    const resumed = await resumeFeedback.run(
-      Promise.resolve().then(() => onResumeTrack()),
-      'Could not resume this track.',
+  const reopenTrack = async (): Promise<boolean> => {
+    if (!canReopenTrack || reopenPendingRef.current) return false;
+    reopenPendingRef.current = true;
+    setReopenPending(true);
+    const reopened = await reopenFeedback.run(
+      Promise.resolve().then(() => onReopenTrack()),
+      'Could not reopen this track.',
     );
-    if (!resumed) {
-      resumePendingRef.current = false;
-      setResumePending(false);
+    if (!reopened) {
+      reopenPendingRef.current = false;
+      setReopenPending(false);
     }
-    return resumed;
+    return reopened;
   };
-  const taskUnavailable = independentTaskUnavailableReason(track.lifecycle);
+  const taskUnavailable = independentTaskUnavailableReason(track.closedAt);
   const trackWorkActions = [
     ...(onCreateTask === undefined ? [] : [{ label: 'Run independent task', isDisabled: taskUnavailable !== null, onClick: onCreateTask }]),
-    ...(canResumeTrack ? [
-      { label: 'Resume work', isDisabled: resumePending, onClick: resumeWork },
+    ...(canReopenTrack ? [
+      { label: 'Reopen', isDisabled: reopenPending, onClick: reopenTrack },
     ] : []),
   ];
   const deleteTrackAction = { label: 'Delete track', onClick: () => deletion.request(track.id) };
   const trackMutationActions = [
     ...trackWorkActions,
-    ...(canResumeTrack ? [{ type: 'divider' as const }] : []),
+    ...(canReopenTrack ? [{ type: 'divider' as const }] : []),
     deleteTrackAction,
   ];
   /* The desktop panel goes through `core/view`: one derivation, one traversal, one painter. This file may not spell a projection marker; `desktop-projection.test.tsx` scans for that. */
@@ -402,7 +402,7 @@ export function TrackPage({
             controls={controls} host={mobileTitleReadHost} view={mobileTitleReadView} register={registerMobileTitleEdit} /> : undefined} /></h1>
         <div className={styles.mobileTitleReadHost} hidden={!titleInHeader}
           ref={(node) => { if (node !== null && mobileTitleReadHost.parentNode !== node) node.appendChild(mobileTitleReadHost); }} />
-        {!titleInHeader && <TrackLifecycleBadge lifecycle={track.lifecycle} />}
+        {!titleInHeader && <TrackClosedBadge closedAt={track.closedAt} />}
         {/* The same indicator the rail paints. `unread` is `false` by construction: the page is the reader, and its receipt clears the moment it is visible. The mobile page head carries no indicator. */}
         {!titleInHeader && <ActivityIndicator state={trackActivityState(track, false)} />}
       </div>, titleContainer)}
@@ -410,7 +410,7 @@ export function TrackPage({
       {titleInHeader && !boardOpen ? null : <div className={styles.mobileTrackHeader}>
         <MobileHeader
           title={trackDisplayTitle(track.title)}
-          meta={<TrackLifecycleBadge lifecycle={track.lifecycle} />}
+          meta={<TrackClosedBadge closedAt={track.closedAt} />}
           level={1}
           backLabel={boardOpen ? 'Report' : mobileBackLabel}
           onBack={boardOpen ? onCloseBoard : onMobileBack}
@@ -635,7 +635,7 @@ export function TrackPage({
         onCancel={deletion.cancel}
       />
       <OperationFeedback feedback={deletion.feedback} />
-      <OperationFeedback feedback={resumeFeedback} />
+      <OperationFeedback feedback={reopenFeedback} />
       <OperationFeedback feedback={dismissFeedback} />
     </section>
   );

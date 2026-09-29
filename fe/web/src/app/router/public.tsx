@@ -1849,7 +1849,7 @@ function TrackRoute({ transport, unauthorized, cardRuntime, recentFiles }: {
       transport={transport}
       unauthorized={unauthorized}
       track={track}
-      canResumeTrack={detail.data.can_resume}
+      canReopenTrack={detail.data.can_reopen}
       cards={detail.data.cards}
       overlays={detail.data.overlays}
       cardRuntime={cardRuntime}
@@ -1872,12 +1872,12 @@ function trackNotifications(items: TrackActivity['attentionItems']): readonly Tr
 }
 
 function TrackRouteBody({
-  transport, unauthorized, track, canResumeTrack, cards, overlays, cardRuntime, recentFiles,
+  transport, unauthorized, track, canReopenTrack, cards, overlays, cardRuntime, recentFiles,
 }: {
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
   track: Track;
-  canResumeTrack: boolean;
+  canReopenTrack: boolean;
   cards: TrackDetailWire['cards'];
   overlays: TrackDetailWire['overlays'];
   cardRuntime: CardRuntime;
@@ -2244,7 +2244,7 @@ function TrackRouteBody({
   };
 
   const taskFiles = useTaskArtifactFiles({ trackId: track.id, transport, unauthorized });
-  const independentTask = useIndependentTaskLaunch({ trackId: track.id, cards, lifecycle: track.lifecycle, transport, unauthorized, onCreated: openReportAnchor });
+  const independentTask = useIndependentTaskLaunch({ trackId: track.id, cards, closedAt: track.closedAt, transport, unauthorized, onCreated: openReportAnchor });
 
   return (
     <>
@@ -2259,7 +2259,7 @@ function TrackRouteBody({
         track={track} {...mobileTrackChoices(track.areaId)} controls={controls}
         onSelectTrack={(trackId) => go({ name: 'track', trackId, from: 'area' })} />}
       track={track}
-      canResumeTrack={canResumeTrack}
+      canReopenTrack={canReopenTrack}
       cards={panelCards}
       /* Derived from the report's own blocks, so the panel and the document
          cannot disagree about what tasks exist. */
@@ -2371,7 +2371,7 @@ function TrackRouteBody({
       }}
       onDismiss={(key) => trackMutations.dismissActivityItem(track.id, key)}
       onRenameTrack={(title) => trackMutations.patch(track.id, track.areaId, { title }).then(() => undefined)}
-      onResumeTrack={() => trackMutations.patch(track.id, track.areaId, { lifecycle: 'working' }).then(() => undefined)}
+      onReopenTrack={() => trackMutations.patch(track.id, track.areaId, { closed: false }).then(() => undefined)}
       onDeleteTrack={(signal) => trackMutations.remove(track.id, track.areaId, signal).then(() => {
         if (signal.aborted) return;
         go({ name: 'today' });

@@ -15,8 +15,8 @@ afterEach(() => {
 });
 
 const track: Track = {
-  id: 'w1', areaId: 'c1', title: 'Alpha', sort: 1, lifecycle: 'working', cwd: '/tmp/alpha', agentCwd: '/tmp/alpha',
-  archivedAt: null, pinnedAt: null, terminalAt: null, createdAt: 0, updatedAt: 0,
+  id: 'w1', areaId: 'c1', title: 'Alpha', sort: 1, cwd: '/tmp/alpha', agentCwd: '/tmp/alpha',
+  pinnedAt: null, closedAt: null, createdAt: 0, updatedAt: 0,
   ...NEUTRAL_ACTIVITY,
 };
 
@@ -45,9 +45,9 @@ describe('a withdrawn declaration on the mobile Tasks page', () => {
         openableCards={new Set()}
         panel="tasks"
         onOpenTask={vi.fn()}
-        canResumeTrack={false}
+        canReopenTrack={false}
         onRenameTrack={vi.fn()}
-        onResumeTrack={vi.fn()}
+        onReopenTrack={vi.fn()}
         onDeleteTrack={vi.fn()}
       />,
     );

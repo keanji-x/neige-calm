@@ -4,7 +4,7 @@ import { ListText } from '../../ui/list-typography/public.tsx';
 import { useEffect, useRef } from 'react';
 
 import { areaOf, visibleAreas, type Area } from '../../../../core/domain/area.ts';
-import { hasFailed, needsUserAttention, userVisibleTracks, visibleTracks, type Track } from '../../../../core/domain/track.ts';
+import { hasFailed, needsUserAttention, userVisibleTracks, type Track } from '../../../../core/domain/track.ts';
 import { TrackRow } from '../../features/track/row/public.tsx';
 import { deleteAreaCopy, DELETE_TRACK_COPY } from '../../ui/confirm-dialog/copy.ts';
 import { ConfirmDialog } from '../../ui/dialog/public.tsx';
@@ -235,7 +235,7 @@ export function Sidebar({
                   <AreaGroup
                     key={area.id}
                     area={area}
-                    areaTracks={visibleTracks(tracksByArea.get(area.id) ?? [])}
+                    areaTracks={tracksByArea.get(area.id) ?? []}
                     activeTrackId={activeTrackId}
                     expanded={preferences.areaExpanded(area.id)}
                     onToggle={(nextExpanded) => preferences.setAreaExpanded(area.id, nextExpanded)}

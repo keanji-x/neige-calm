@@ -57,8 +57,8 @@ execution actions appear in the preceding group. A feature-owned read-view
 adapter registers the original EditableTitle's begin-edit action and clears it
 when the read view leaves; the item is omitted while that editor is already
 open. The menu closes before focusing the input, and the title itself keeps
-its selection action. Desktop keeps its original rename control and lifecycle
-badge; phone lifecycle information remains on the Track rows.
+its selection action. Desktop keeps its original rename control and closed
+badge; on the phone the Track rows say Closed.
 
 TrackPage owns a stable title container and preserves the editor, draft,
 selection and focus across viewport changes. Only synchronous relocation blur

@@ -14,7 +14,7 @@ import { sourceResolutionOf } from './report-source.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 
 const AREA = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
-const TRACK = { id: 'w1', area_id: 'c1', title: 'Rates', sort: 1, lifecycle: 'working', cwd: '/tmp', archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2 };
+const TRACK = { id: 'w1', area_id: 'c1', title: 'Rates', sort: 1, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
 const PLANNER_CARD = { id: 'card-1', track_id: 'w1', kind: 'codex', title: 'Planner chat', sort: 1, payload: { planner_harness: true }, deletable: true, created_at: 1, updated_at: 2 };
 const REPORT_CARD = {
   id: 'report', track_id: 'w1', title: null, kind: 'track-report', sort: 2, deletable: false, created_at: 1, updated_at: 2,
@@ -56,7 +56,7 @@ function setup(reply?: Reply) {
     if (request.path === '/api/areas') return ok([AREA]);
     if (request.path === '/api/areas/c1/tracks') return ok([TRACK]);
     if (request.path === '/api/overlays?entity_kind=track') return ok([]);
-    if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_resume: false, cards: [PLANNER_CARD, REPORT_CARD], overlays: [] });
+    if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, cards: [PLANNER_CARD, REPORT_CARD], overlays: [] });
     if (request.path === '/api/tracks/w1/report') return ok({ taskDiagnostics: [] });
     if (request.path === '/api/tracks/w1/sources/src_2c9e0a1b') return ok(SOURCE_ROW);
     if (request.path.startsWith('/api/tracks/w1/sources/')) {

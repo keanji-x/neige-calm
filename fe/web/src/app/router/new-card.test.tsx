@@ -16,8 +16,8 @@ import { bootTestCardRuntime } from './test-card-runtime.ts';
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 const AREA = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const TRACK = {
-  id: 'w1', area_id: 'c1', title: 'Test track', sort: 1, lifecycle: 'working', cwd: '/tmp',
-  archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2,
+  id: 'w1', area_id: 'c1', title: 'Test track', sort: 1, cwd: '/tmp',
+  pinned_at: null, closed_at: null, created_at: 1, updated_at: 2,
 };
 
 function ok(body: unknown): ApiTransportResponse {
@@ -35,7 +35,7 @@ function setup({ createFails = false, deferCreate = false } = {}) {
       if (request.path === '/api/areas') return Promise.resolve(ok([AREA]));
       if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([TRACK]));
       if (request.path === '/api/tracks/w1') {
-        return Promise.resolve(ok({ track: TRACK, can_resume: false, cards: [...cards], overlays: [] }));
+        return Promise.resolve(ok({ track: TRACK, can_reopen: false, cards: [...cards], overlays: [] }));
       }
       if (request.path === '/api/tracks/w1/report') return Promise.resolve(ok({ taskDiagnostics: [] }));
       if (request.path.startsWith('/api/fs/listdir')) {

@@ -15,8 +15,8 @@ afterEach(cleanup);
 
 it('runs one immutable intent through the real goal dialog, navigation and report at desktop and phone widths', async () => {
   const requests: ApiRequest[] = [];
-  const track = { id: 'w1', area_id: 'c1', title: 'Independent work', sort: 1, lifecycle: 'draft', cwd: '/tmp',
-    archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2 };
+  const track = { id: 'w1', area_id: 'c1', title: 'Independent work', sort: 1, cwd: '/tmp',
+    pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
   const card = { id: 'report', track_id: 'w1', title: null, kind: 'track-report', sort: 1, deletable: false,
     created_at: 1, updated_at: 2, payload: { schemaVersion: 3, docRev: 12, summary: '', body: '', blocks: [] as unknown[] } };
   let requestBody: IndependentTaskRequest | null = null;
@@ -36,7 +36,6 @@ it('runs one immutable intent through the real goal dialog, navigation and repor
       card.payload.blocks = [{ id: 'created-task', rev: 1, kind: 'task', payload: {
         key: requestBody.key, declared_by: 'user', kind: 'codex', ready: true, goal: requestBody.goal,
       } }];
-      track.lifecycle = 'working';
       return { status: 200, statusText: 'OK', body: { taskKey: requestBody.key, blockId: 'created-task', docRev: 13 } };
     }
     const area = { id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
@@ -45,7 +44,7 @@ it('runs one immutable intent through the real goal dialog, navigation and repor
     if (request.path === '/api/settings') return { status: 200, statusText: 'OK', body: {} };
     if (request.path === '/api/tracks/w1/report') return { status: 200, statusText: 'OK', body: { taskDiagnostics: [] } };
     if (request.path === '/api/tracks/w1') return { status: 200, statusText: 'OK', body: JSON.parse(JSON.stringify({
-      track, can_resume: false, cards: [card], overlays: [],
+      track, can_reopen: false, cards: [card], overlays: [],
     })) };
     if (request.path.endsWith('/attempts')) {
       const attempt = { attempt_id: 'exact-attempt', generation: 1, status: result === null ? 'running' : 'done',
@@ -66,7 +65,6 @@ it('runs one immutable intent through the real goal dialog, navigation and repor
   await page.getByRole('button', { name: 'Track actions for Independent work' }).click();
   await expect.element(page.getByRole('button', { name: 'Run independent task', exact: true })).not.toBeInTheDocument();
   await page.getByRole('menuitem', { name: 'Run independent task', exact: true }).click();
-  await expect.element(page.getByText('Starting this task also starts the Track. Other ready tasks in this Track may run.')).toBeVisible();
   await page.getByRole('textbox', { name: 'Goal' }).fill('Explain the moon.');
   await page.getByRole('button', { name: 'Start task', exact: true }).dblClick();
   expect(postCount).toBe(1);

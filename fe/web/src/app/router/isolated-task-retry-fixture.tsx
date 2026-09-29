@@ -39,8 +39,8 @@ export function createIsolatedRetryFixture() {
   let currentReport: AcceptedTaskReport = { attemptId: queued.attempt_id, report: null };
   const requests: ApiRequest[] = [];
   const area = { id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
-  const track = { id: 'w1', area_id: 'c1', title: 'Retry the independent calculation', sort: 1, lifecycle: 'working', cwd: '/tmp',
-    archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2 };
+  const track = { id: 'w1', area_id: 'c1', title: 'Retry the independent calculation', sort: 1, cwd: '/tmp',
+    pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
   const declaration = { id: 'retry-task', rev: 1, kind: 'task', payload: {
     key: taskKey, kind: 'codex', declared_by: 'user', ready: true, goal,
     context: { neige_execution: { version: 'isolated-codex-v1', workspace: 'empty' } },
@@ -58,7 +58,7 @@ export function createIsolatedRetryFixture() {
     if (request.method !== 'GET') throw new Error(`Unexpected write: ${request.method} ${request.path}`);
     if (request.path === '/api/areas') return Promise.resolve(ok([area]));
     if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([track]));
-    if (request.path === '/api/tracks/w1') return Promise.resolve(ok({ track, can_resume: false, cards: [reportCard], overlays: [] }));
+    if (request.path === '/api/tracks/w1') return Promise.resolve(ok({ track, can_reopen: false, cards: [reportCard], overlays: [] }));
     if (request.path === '/api/tracks/w1/report') return Promise.resolve(ok({ ...reportCard.payload, taskDiagnostics: [
       { blockId: declaration.id, key: taskKey, schedulable: true, status: history.current!.status,
         statusDetail: history.current!.status_detail, workerCardId: null, diagnostics: [] },

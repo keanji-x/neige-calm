@@ -23,12 +23,12 @@ const settlePaint = () => new Promise<void>((resolve) => requestAnimationFrame((
 const AREA = { id: 'c1', name: 'Product', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const OTHER_AREA = { id: 'c2', name: 'Frontend', color: '#8B7FE8', sort: 2, kind: 'user', created_at: 1, updated_at: 1 };
 const TRACK = {
-  id: 'w1', area_id: 'c1', title: 'Responsive mobile UI', sort: 1, lifecycle: 'working', cwd: '/tmp',
-  archived_at: null, pinned_at: 30, terminal_at: null, created_at: 1, updated_at: 2,
+  id: 'w1', area_id: 'c1', title: 'Responsive mobile UI', sort: 1, cwd: '/tmp',
+  pinned_at: 30, closed_at: null, created_at: 1, updated_at: 2,
 };
 const OTHER_TRACK = {
-  id: 'w2', area_id: 'c1', title: 'Remote access', sort: 2, lifecycle: 'draft', cwd: '/tmp',
-  archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2,
+  id: 'w2', area_id: 'c1', title: 'Remote access', sort: 2, cwd: '/tmp',
+  pinned_at: null, closed_at: null, created_at: 1, updated_at: 2,
 };
 
 /* The document the phone is meant to read. Prose carries the headings the
@@ -86,7 +86,7 @@ function setup(path: string, areaName = AREA.name, onRequest: (request: ApiReque
       if (request.path === '/api/areas/c2/tracks') return Promise.resolve(ok([]));
       if (request.path === '/api/tracks/w1') {
         return Promise.resolve(ok({
-          track: TRACK, can_resume: false,
+          track: TRACK, can_reopen: false,
           cards: [REPORT_CARD, TERMINAL_CARD, REVIEW_CARD], overlays: [],
         }));
       }
@@ -142,7 +142,6 @@ describe('Track mobile presentation', () => {
     expect(getComputedStyle(panel).visibility).toBe('hidden');
     expect(openerElement.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
     expect(openerElement.closest('[data-nc-workspace-header]')).not.toBeNull();
-    expect(page.getByRole('status', { name: 'Track lifecycle: Working', exact: true }).query()).toBeNull();
     expect(document.querySelector('nav[aria-label="Primary"]')).toBeNull();
     const header = document.querySelector<HTMLElement>('[data-nc-workspace-header]')!;
     const selector = await page.getByRole('button', { name: /^Switch track,/ }).findElement();

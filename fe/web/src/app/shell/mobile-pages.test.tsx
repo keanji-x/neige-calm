@@ -14,8 +14,8 @@ const area: Area = {
   defaultTemplateId: null, defaultCwd: null, createdAt: 0, updatedAt: 0,
 };
 const track = (overrides: Partial<Track>): Track => ({
-  id: 'w1', areaId: 'c1', title: 'Recent report', sort: 1, lifecycle: 'working', cwd: '/tmp', agentCwd: '/tmp',
-  archivedAt: null, pinnedAt: null, terminalAt: null, createdAt: 0, updatedAt: 10,
+  id: 'w1', areaId: 'c1', title: 'Recent report', sort: 1, cwd: '/tmp', agentCwd: '/tmp',
+  pinnedAt: null, closedAt: null, createdAt: 0, updatedAt: 10,
   ...NEUTRAL_ACTIVITY,
   ...overrides,
 });

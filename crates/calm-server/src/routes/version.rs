@@ -20,12 +20,16 @@ use utoipa::ToSchema;
 /// `turn_error_text`. A bundle of this revision must not be paired with an older kernel, which
 /// answers Dismiss 404 and sends rows without the field. Older bundles call neither and ignore the
 /// extra field, so `WEB_COMPAT_VERSION` does not move.
+///
+/// #1876 bumps `"14"` -> `"15"` and `WEB_COMPAT_VERSION` 33 -> 34: a track is open or closed. The
+/// `Track` row carries `closed_at` instead of `lifecycle`, `terminal_at` and `archived_at`,
+/// `PATCH /api/tracks/{id}` takes `closed`, and the track detail's `can_resume` is `can_reopen`.
 pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 
 /// Monotonically increasing frontend compatibility floor. Must equal `WEB_COMPAT_VERSION`
 /// in both bundles (`web/src/api/version.ts`, `fe/web/src/app/providers/public.tsx`);
 /// only a textual CI gate relates the three.
-pub const WEB_COMPAT_VERSION: u32 = 33;
+pub const WEB_COMPAT_VERSION: u32 = 34;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]

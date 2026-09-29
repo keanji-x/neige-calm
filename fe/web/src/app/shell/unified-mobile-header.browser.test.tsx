@@ -18,8 +18,8 @@ afterEach(cleanup);
 const AREA = { id: 'c1', name: 'Product', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
 function setup(path: string, areaName = AREA.name, onRequest: (request: ApiRequest) => void = () => undefined, title = 'Responsive mobile UI', options: Readonly<{ trackAreaId?: string; failTracks?: boolean; failAreas?: boolean; longLists?: boolean }> = {}) {
-  const track = { id: 'w1', area_id: options.trackAreaId ?? 'c1', title, sort: 1, lifecycle: 'working', cwd: '/tmp',
-    archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2 };
+  const track = { id: 'w1', area_id: options.trackAreaId ?? 'c1', title, sort: 1, cwd: '/tmp',
+    pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
   const report = { id: 'report', track_id: 'w1', title: 'Report', kind: 'track-report', sort: 0,
     deletable: false, created_at: 1, updated_at: 1, payload: { schemaVersion: 3, docRev: 1, summary: '', body: '',
       blocks: [{ id: 'prose', kind: 'prose', rev: 1, payload: { markdown: '## Findings\n\n[Source detail](neige://source/src_2c9e0a1b)' } }] } };
@@ -43,8 +43,8 @@ function setup(path: string, areaName = AREA.name, onRequest: (request: ApiReque
     if (request.path === '/api/areas') return ok([...(options.longLists ? Array.from({ length: 18 }, (_, index) => ({ ...AREA, id: `extra${index}`, name: `Area ${index}`, sort: index - 18 })) : []), { ...AREA, name: areaName }, { ...AREA, id: 'c2', name: 'Frontend' }]);
     if (request.path === '/api/areas/c1/tracks') return ok([...(track.area_id === 'c1' ? [track] : []), { ...track, area_id: 'c1', id: 'w2', title: 'Another track' }, ...(options.longLists ? Array.from({ length: 25 }, (_, index) => ({ ...track, id: `long${index}`, title: `Long track ${index}` })) : [])]);
     if (request.path === '/api/areas/c2/tracks') return ok([{ ...track, area_id: 'c2', id: 'w3', title: 'Frontend track' }]);
-    if (request.path === '/api/tracks/w1') return ok({ track, cards: [report, planner, { ...planner, id: 'terminal', title: 'Terminal', kind: 'terminal', payload: {} }], overlays: [], can_resume: false });
-    if (request.path === '/api/tracks/w2') return ok({ track: { ...track, id: 'w2', title: 'Another track' }, cards: [], overlays: [], can_resume: false });
+    if (request.path === '/api/tracks/w1') return ok({ track, cards: [report, planner, { ...planner, id: 'terminal', title: 'Terminal', kind: 'terminal', payload: {} }], overlays: [], can_reopen: false });
+    if (request.path === '/api/tracks/w2') return ok({ track: { ...track, id: 'w2', title: 'Another track' }, cards: [], overlays: [], can_reopen: false });
     if (request.path === '/api/tracks/w1/report') return ok({ taskDiagnostics: [] });
     if (request.path.endsWith('/sources/src_2c9e0a1b')) return ok(source);
     if (request.path.endsWith('/planner/run')) return ok({ card_id: 'planner', worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, blocked_reason: null });

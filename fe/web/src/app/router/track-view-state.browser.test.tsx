@@ -15,7 +15,7 @@ afterEach(() => { cleanup(); document.getElementById('root')?.remove(); });
 
 function setup() {
   const tracks = ['a', 'b'].map((id) => ({ id, area_id: 'area', title: `Track ${id}`, sort: 1,
-    lifecycle: 'working', cwd: '/tmp', archived_at: null, pinned_at: null, terminal_at: null,
+    cwd: '/tmp', pinned_at: null, closed_at: null,
     created_at: 1, updated_at: 2 }));
   const cardsFor = (id: string) => [{ id: `report-${id}`, track_id: id, title: null, kind: 'track-report',
     sort: 0, deletable: false, created_at: 1, updated_at: 2,
@@ -32,7 +32,7 @@ function setup() {
     if (request.path === '/api/areas/area/tracks') body = tracks;
     if (request.path === '/api/settings') body = {};
     for (const track of tracks) {
-      if (request.path === `/api/tracks/${track.id}`) body = { track, can_resume: false, cards: cardsFor(track.id), overlays: [] };
+      if (request.path === `/api/tracks/${track.id}`) body = { track, can_reopen: false, cards: cardsFor(track.id), overlays: [] };
       if (request.path === `/api/tracks/${track.id}/report`) body = { taskDiagnostics: [] };
     }
     return { status: 200, statusText: 'OK', body };
@@ -71,13 +71,13 @@ it('resumes independent report and grid positions through real sidebar navigatio
   reportPage().scrollTop = 700;
   await settle();
   expect(reportPage().scrollTop).toBe(700);
-  await page.getByRole('button', { name: /^Track Track b,/ }).click();
+  await page.getByRole('button', { name: /^Track Track b\b/ }).click();
   await expect.element(page.getByRole('button', { name: 'Rename track', exact: true })).toBeVisible();
   await settle();
   expect(reportPage().scrollTop).toBe(0);
   reportPage().scrollTop = 350;
   await settle();
-  await page.getByRole('button', { name: /^Track Track a,/ }).click();
+  await page.getByRole('button', { name: /^Track Track a\b/ }).click();
   await settle();
   expect(reportPage().scrollTop).toBe(700);
 
@@ -86,16 +86,16 @@ it('resumes independent report and grid positions through real sidebar navigatio
   expect(board().scrollHeight).toBeGreaterThan(board().clientHeight);
   board().scrollTop = 240;
   await settle();
-  await page.getByRole('button', { name: /^Track Track b,/ }).click();
+  await page.getByRole('button', { name: /^Track Track b\b/ }).click();
   await settle();
   expect(reportPage().scrollTop).toBe(350);
-  await page.getByRole('button', { name: /^Track Track a,/ }).click();
+  await page.getByRole('button', { name: /^Track Track a\b/ }).click();
   await settle();
   expect(router.state.location.search).toMatchObject({ card: 'a-card-7' });
   expect(board().scrollTop).toBe(240);
   expect(reportPage().scrollTop).toBe(700);
 
-  await page.getByRole('button', { name: /^Track Track b,/ }).click();
+  await page.getByRole('button', { name: /^Track Track b\b/ }).click();
   await settle();
   await act(() => router.navigate({ to: '/track/a', search: { card: 'a-card-7' } }));
   await settle();

@@ -13,8 +13,8 @@ const area: Area = {
   defaultTemplateId: null, defaultCwd: null, createdAt: 0, updatedAt: 0,
 };
 const track: Track = {
-  id: 'w1', areaId: 'c1', title: 'Responsive mobile UI', sort: 1, lifecycle: 'working', cwd: '/tmp', agentCwd: '/tmp',
-  archivedAt: null, pinnedAt: null, terminalAt: null, createdAt: 0, updatedAt: 0, ...NEUTRAL_ACTIVITY,
+  id: 'w1', areaId: 'c1', title: 'Responsive mobile UI', sort: 1, cwd: '/tmp', agentCwd: '/tmp',
+  pinnedAt: null, closedAt: null, createdAt: 0, updatedAt: 0, ...NEUTRAL_ACTIVITY,
 };
 
 describe('MobileTracks', () => {
@@ -91,8 +91,8 @@ describe('MobileTracks', () => {
     expect(onRetryRead).toHaveBeenCalledOnce();
   });
 
-  // The fixtures disagree with the lifecycle in both directions, so a row that fell back to `isRunning(lifecycle)` reddens here.
-  it('track rows carry the activity indicator and name bit from the overlay, never the lifecycle', () => {
+  // The fixtures disagree with the open/closed state in both directions, so a row that read activity from it reddens here.
+  it('track rows carry the activity indicator and name bit from the overlay, never the open/closed state', () => {
     const marker = () => screen.getByRole('button', { name: /^Responsive mobile UI/ })
       .querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity') ?? null;
     const name = () => screen.getByRole('button', { name: /^Responsive mobile UI/ }).getAttribute('aria-label');
@@ -106,12 +106,12 @@ describe('MobileTracks', () => {
         onBack={vi.fn()} onNewTrack={vi.fn()} onOpenSettings={vi.fn()} onCreateArea={vi.fn()} onSelectArea={vi.fn()} onEditArea={vi.fn()} onOpenTrack={vi.fn()}
         isUnread={isUnread} readError={null} readLoading={false} onRetryRead={vi.fn()} />
     );
-    const view = render(mount({ lifecycle: 'planning', working: false }));
+    const view = render(mount({ working: false }));
     expect(marker()).toBeNull();
     expect(name()).toBe('Responsive mobile UI');
     expect(description()).toBeNull();
 
-    view.rerender(mount({ lifecycle: 'done', working: true }));
+    view.rerender(mount({ closedAt: 5, working: true }));
     expect(marker()).toBe('working');
     expect(name()).toBe('Responsive mobile UI, working');
     expect(description()).toBeNull();
@@ -136,12 +136,16 @@ describe('MobileTracks', () => {
     expect(name()).toBe('Responsive mobile UI, working');
     expect(description()).toBeNull();
 
-    // A running phase with an idle planner shows nothing at all.
-    view.rerender(mount({ lifecycle: 'working', working: false }));
+    // An open track with an idle planner shows nothing at all, and no Closed meta.
+    view.rerender(mount({ working: false }));
     expect(marker()).toBeNull();
     expect(name()).toBe('Responsive mobile UI');
     expect(description()).toBeNull();
-    // The lifecycle phrase is still there, as the phase it is, not as activity.
-    expect(screen.getByRole('button', { name: 'Responsive mobile UI' }).textContent).toContain('Working');
+    expect(screen.getByRole('button', { name: 'Responsive mobile UI' }).textContent).not.toContain('Closed');
+
+    // A closed track says so in its meta, as a fact, not as activity.
+    view.rerender(mount({ closedAt: 5, working: false }));
+    expect(marker()).toBeNull();
+    expect(screen.getByRole('button', { name: 'Responsive mobile UI' }).textContent).toContain('Closed');
   });
 });

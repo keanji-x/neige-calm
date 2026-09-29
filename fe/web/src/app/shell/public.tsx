@@ -8,7 +8,7 @@ import { createContext, useContext, useEffect, useRef } from 'react';
 import { useUiPreferences } from '../providers/ui-preferences.tsx';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { visibleTracks, type Track } from '../../../../core/domain/track.ts';
+import type { Track } from '../../../../core/domain/track.ts';
 import { visibleAreas } from '../../../../core/domain/area.ts';
 import type { Area, NewAreaBody } from '../../../../core/domain/area.ts';
 import {
@@ -400,7 +400,7 @@ export function AppShell({
             <MobileHeaderActionsContext.Provider value={narrowRail ? mobileHeaderActionsHost : null}>
               <MobileHeaderTitleContext.Provider value={narrowRail ? mobileHeaderTitleHost : null}>
                 <MobileTrackChoicesContext.Provider value={(areaId) => ({
-                  tracks: areas.some((area) => area.id === areaId) ? visibleTracks(workspace.tracksByArea.get(areaId) ?? []) : [],
+                  tracks: areas.some((area) => area.id === areaId) ? workspace.tracksByArea.get(areaId) ?? [] : [],
                   loading: workspace.areasLoading || workspace.tracksLoadingByArea.get(areaId) === true,
                   error: workspace.areasError?.message ?? workspace.trackErrorsByArea.get(areaId)?.message ?? null,
                   onRetry: retryRead,

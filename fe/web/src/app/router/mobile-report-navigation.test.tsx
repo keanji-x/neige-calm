@@ -17,8 +17,8 @@ const AREA = { id: 'c1', name: 'Product', color: '#5B8DEF', sort: 1, kind: 'user
 /* A second empty Area makes the centered selector’s destination observable. */
 const OTHER_AREA = { id: 'c2', name: 'Second', color: '#8B7FE8', sort: 2, kind: 'user', created_at: 1, updated_at: 1 };
 const TRACK = {
-  id: 'w1', area_id: 'c1', title: 'Responsive mobile UI', sort: 1, lifecycle: 'working', cwd: '/tmp',
-  archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2,
+  id: 'w1', area_id: 'c1', title: 'Responsive mobile UI', sort: 1, cwd: '/tmp',
+  pinned_at: null, closed_at: null, created_at: 1, updated_at: 2,
 };
 const CARD = {
   id: 'card-term', track_id: 'w1', kind: 'terminal', title: 'Build log', sort: 1,
@@ -52,7 +52,7 @@ function setup(path: string) {
       if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([TRACK]));
       if (request.path === '/api/areas/c2/tracks') return Promise.resolve(ok([]));
       if (request.path === '/api/tracks/w1') return Promise.resolve(ok({
-        track: TRACK, can_resume: false, cards: [CARD, REPORT_CARD], overlays: [],
+        track: TRACK, can_reopen: false, cards: [CARD, REPORT_CARD], overlays: [],
       }));
       if (request.path === '/api/tracks/w1/report') return Promise.resolve(ok({ taskDiagnostics: [] }));
       return Promise.resolve(ok([]));

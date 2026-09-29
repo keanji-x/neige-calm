@@ -40,8 +40,8 @@ const systemArea = { id: 'sys', name: 'system', color: '#000', sort: 0, kind: 's
 const userArea = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 2, kind: 'user', created_at: 1, updated_at: 1 };
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 const baseTrackWire = {
-  id: 'w1', area_id: 'c1', title: 'Ship it', sort: 1, lifecycle: 'working', cwd: '/tmp',
-  archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2,
+  id: 'w1', area_id: 'c1', title: 'Ship it', sort: 1, cwd: '/tmp',
+  pinned_at: null, closed_at: null, created_at: 1, updated_at: 2,
 };
 
 afterEach(() => { cleanup(); onlineManager.setOnline(true); });
@@ -148,8 +148,8 @@ describe('failure channel', () => {
   });
 
   it('keeps neutral tracks readable while exporting an overlay failure', async () => {
-    const track = { id: 'w1', area_id: 'c1', title: 'Task', sort: 1, lifecycle: 'working', cwd: '/tmp',
-      archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 1 };
+    const track = { id: 'w1', area_id: 'c1', title: 'Task', sort: 1, cwd: '/tmp',
+      pinned_at: null, closed_at: null, created_at: 1, updated_at: 1 };
     const { transport } = recordingTransport((request) => {
       if (request.path === '/api/areas') return ok([userArea]);
       if (request.path === '/api/areas/c1/tracks') return ok([track]);
@@ -577,7 +577,7 @@ describe('track detail mutation cache writes', () => {
     deletable: true, created_at: 1, updated_at: 2,
   });
   const detail = {
-    track: { ...baseTrackWire }, can_resume: false,
+    track: { ...baseTrackWire }, can_reopen: false,
     cards: [cardWire('card-a'), cardWire('card-b')], overlays: [],
   };
 
@@ -647,24 +647,24 @@ describe('track detail mutation cache writes', () => {
       .toEqual(['card-a', 'card-b']);
   });
 
-  it('writes an acknowledged Working patch through before the detail refetch', async () => {
-    const working = { ...baseTrackWire, lifecycle: 'working', terminal_at: null, updated_at: 3 };
+  it('writes an acknowledged reopen patch through before the detail refetch', async () => {
+    const reopened = { ...baseTrackWire, closed_at: null, updated_at: 3 };
     const transport: ApiTransportPort = {
       send: (request) => (request.method === 'PATCH'
-        ? Promise.resolve(ok(working))
+        ? Promise.resolve(ok(reopened))
         : new Promise<ApiTransportResponse>(() => undefined)),
     };
     const { client, result } = mounted(transport);
     client.setQueryData(queryKeys.trackDetail('w1'), {
       ...detail,
-      track: { ...baseTrackWire, lifecycle: 'done', terminal_at: 2 },
-      can_resume: true,
+      track: { ...baseTrackWire, closed_at: 2 },
+      can_reopen: true,
     });
 
-    await act(() => result.current.patch('w1', 'c1', { lifecycle: 'working' }));
+    await act(() => result.current.patch('w1', 'c1', { closed: false }));
 
     expect(client.getQueryData<TrackDetailWire>(queryKeys.trackDetail('w1')))
-      .toMatchObject({ track: working, can_resume: false });
+      .toMatchObject({ track: reopened, can_reopen: false });
   });
 });
 
