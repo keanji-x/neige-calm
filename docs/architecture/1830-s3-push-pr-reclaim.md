@@ -29,7 +29,7 @@ Verified at c3886d776 by reading the code, or by the query or command shown (414
 | H4 | Every forge child (action and probe) gets `env_clear` plus PATH, HOME, LANG, LC_ALL, TERM, the configured proxies and GH_TOKEN, GITHUB_TOKEN, GH_ENTERPRISE_TOKEN, GITHUB_ENTERPRISE_TOKEN, SSH_AUTH_SOCK, GIT_SSH_COMMAND, GH_HOST, NO_PROXY | `forge_action_adapter/mod.rs:53-67`, `:360-375`, `:1025` | read |
 | H5 | Git runs repository-selected code with its own env: hooks, fsmonitor, filters, `credential.helper`, `core.sshCommand`. The kernel's boundary for such runs is an allowlist env with no credential variable (HOME kept) | `workspace_materialize.rs:64-86` | read |
 | H6 | Since S2, the delivery script's `git add -A` and `git commit` run in the tree the worker wrote, under H4's env. The Planner's `git.commit` does the same in the same tree | `calm-types/src/forge_git.rs:10`, `:65-66`; `transport.rs:958-982` | read |
-| H7 | The semantic payload hash excludes `argv`, so changing a script does not conflict with stored ops | `transport.rs:789-797` | read |
+| H7 | The semantic payload hash covers `probe` but not `argv`: changing an action script is safe, but a changed probe makes a persisted op resubmitted after deploy hit `idempotency_payload_conflict`. The task-verify sampler reuses `GIT_LEASE_PROVENANCE_SCRIPT` on its own | `transport.rs:788-797`; `task_verify_adapter/target.rs:382` | read |
 | H8 | The adapter parses the whole of stdout as one JSON value for the event fields. `gh pr create` has no `--json` and prints a URL | `forge_action_adapter/mod.rs:462-476`; `gh pr create --help` (2.74.2) | read + command |
 | H9 | A keyed operation row is permanent: a resubmit with the same key returns the old op, even a failed one | `operation/driver.rs:129-139` | read |
 | H10 | `parked` decides only whether the MCP call waits. Forge event kinds are all success events, so a parked failure wakes no one | `transport.rs:919-936`; `dispatcher/mod.rs:71-75` | read |
@@ -41,6 +41,7 @@ Verified at c3886d776 by reading the code, or by the query or command shown (414
 | H16 | A managed directory is `git init` on `main` with no remote | `workspace_materialize.rs:305-340` | read |
 | H17 | The FE labels every `calm.track.*` tool except `rename` as a read ("Reading the track") | `fe/core/domain/conversation.ts:994-1000` | read |
 | H18 | The test `gh` shim treats `--repo` as a bare git dir. `pr create` returns an existing PR by head, and a new PR's `headRefOid` is the remote's branch tip | `tests/support/gh_shim.rs:103-205` | read |
+| H19 | A forge child gets proxies only from settings. 4140 has none, and this host reaches github.com directly (`git ls-remote https://github.com/keanji-x/neige-calm.git` with every proxy variable unset returned HEAD) | `terminal_adapter.rs:972-980` | read + command |
 
 ## 2. Decisions
 
@@ -68,18 +69,22 @@ Verified at c3886d776 by reading the code, or by the query or command shown (414
   - `neige_git() { env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN git "$@"; }`
   - `neige_gh() { (cd / && env -u SSH_AUTH_SOCK -u GIT_SSH_COMMAND gh "$@"); }`
 
-  Every `git` in `GIT_COMMIT_SCRIPT` and its two probes, `GIT_LEASE_PROVENANCE_SCRIPT`,
-  `GIT_DELIVERY_SCRIPT` and its output probe, the publish scripts, and the plugin's
-  `git.worktree.add` (now `sh -c "<prelude>; neige_git worktree add …"`) becomes `neige_git`; every
-  `gh` in the publish scripts becomes `neige_gh`. Git keeps HOME, the proxies and SSH_AUTH_SOCK (an
+  The prelude goes only where a script runs hooks, filters, helpers or the network: every `git`
+  in `GIT_COMMIT_SCRIPT` (the Planner commit), in `GIT_DELIVERY_SCRIPT` (the delivery commit), in
+  the publish action script, and in the plugin's `git.worktree.add` (now `sh -c "<prelude>;
+  neige_git worktree add …"`) becomes `neige_git`; every `gh` in the publish script becomes
+  `neige_gh`. `GIT_LEASE_PROVENANCE_SCRIPT` (only `rev-parse` and `worktree list`, and reused by the
+  sampler, H7) and every existing probe (`GIT_COMMIT_PROBE_SCRIPT`, `…_OUTPUT_PROBE_SCRIPT`,
+  `GIT_DELIVERY_PROBE_SCRIPT`, `GIT_DELIVERY_OUTPUT_PROBE_SCRIPT`, which only read) stay
+  byte-identical. Git keeps HOME, the proxies and SSH_AUTH_SOCK (an
   ssh push needs them); a GitHub https push authenticates through the user's global helper and
   gh's `hosts.yml`, as on 4140 (H15). So whatever the repository selects (hooks, fsmonitor,
   filters, credential helpers, `core.sshCommand`) runs without a GitHub token, and gh runs from `/`,
   outside any repository, without the ssh keys.
 
   *Why env and not `-c` overrides:* one rule covers every helper class. Hooks keep working (S2's
-  T4b holds a delivery with a pre-commit hook). It matches the materialize boundary (H5). No stored
-  op conflicts (H7).
+  T4b holds a delivery with a pre-commit hook). It matches the materialize boundary (H5). Only
+  `argv` changes and no probe does, so no persisted op conflicts (H7).
 - **D5 The publish script.** `GIT_TRACK_PUBLISH_SCRIPT` takes `$1 sha $2 branch $3 url $4 base
   $5 title $6 body`:
   - `neige_git push --porcelain "$3" "$1:refs/heads/$2" >&2`. The refspec sends only that commit
@@ -108,10 +113,10 @@ Verified at c3886d776 by reading the code, or by the query or command shown (414
 
 ## 3. Change list (about 250 production lines, no migration)
 
-- `calm-types/src/forge_git.rs`: `FORGE_SHELL_PRELUDE`, prepended to every script (D4), and
+- `calm-types/src/forge_git.rs`: `FORGE_SHELL_PRELUDE`, prepended to the action scripts D4 names, and
   `GIT_TRACK_PUBLISH_SCRIPT` with its probe and output probe (D5, D6).
 - The prelude is carried by the plugin's `git.commit` and `git.worktree.add` lowerings
-  (`plugins/git-forge/main.rs`) and by `delivery_argv` and its probes (`git_candidate/delivery.rs`).
+  (`plugins/git-forge/main.rs`) and by `delivery_argv` (not its probes) (`git_candidate/delivery.rs`).
 - `mcp_server/tools/track_publish.rs` (new, about 180 lines): descriptor, role check, the D2, D3
   and D7 refusals, payload and submission. `prompts/tools/calm.track.publish.md`. Registered in
   `tools/mod.rs`.
@@ -122,10 +127,14 @@ Verified at c3886d776 by reading the code, or by the query or command shown (414
 - `tests/goldens/mcp_tool_registry.json`, `mcp_tools_list_role_filter.rs:38-44`,
   `mcp_assistant_tool_gate.rs:26-83`, `issue_development_planner_prompt.txt`
   (`REGEN_PLANNER_PROMPT_GOLDEN=1`), and the plugin's argv tests (`lowers_git_commit`,
-  `lowers_git_worktree_add`, `git_commit_lowering_uses_shared_scripts_as_drift_lock`).
+  `lowers_git_worktree_add`, `git_commit_lowering_uses_shared_scripts_as_drift_lock`), and
+  `delivery_argv_joins_provenance_and_delivery_scripts` (`git_candidate/tests.rs:1113`), whose
+  argv gains the prelude.
 - FE: the `conversation.test.ts` label; `(cd fe && npm ci && npm run lint && npm run build && npm test)`.
-- `tests/support/gh_shim.rs`: `pr view --json state` by head, an argv log per invocation, and
-  whether `GH_TOKEN` was set. Then `scripts/local-ratchet-gates.sh`.
+- `tests/support/gh_shim.rs`: `pr view --json state` by head; for an open PR, `pr view` and
+  `pr create` read `headRefOid` live (`git --git-dir "$repo" rev-parse refs/heads/$head`), and a
+  merged PR keeps its stored value; an argv log per invocation, and whether `GH_TOKEN` was set.
+  Then `scripts/local-ratchet-gates.sh`.
 - Not triggered: migrations, `track_write_point_registry`, OpenAPI, `wire.ts`,
   `scripts/ci/ratchets/*`, the event-version lockstep.
 - S2b edits `planner.md:76` in parallel, so rebase after it and regenerate the golden.
@@ -154,7 +163,7 @@ Predicted red sets over `track_publish` and the plugin's unit tests:
 
 | Mutation | Red |
 |---|---|
-| M1 | P1, C1, fast-forward reuse, non-fast-forward message, retry under a new key, pushurl (each asserts a pushed branch or a PR whose `headRefOid` is the remote tip, H18) |
+| M1 | P1, C1, fast-forward reuse, non-fast-forward message, retry under a new key, pushurl. Without the push the remote branch never reaches the candidate, so the shim's live `headRefOid` (read from the remote's `refs/heads/<branch>`) is missing or stale, the exit-21 check fails the publish, and each test's pushed-branch or PR-head assertion fails; C1's pre-push hook never runs |
 | M2 | P2 |
 | M3 | P3 |
 | M4 | C1, C2 (they share the prelude) |
@@ -169,6 +178,8 @@ Predicted red sets over `track_publish` and the plugin's unit tests:
 - An operator whose `git push` authenticates only through a GH_* variable gets an inline push
   failure. A rewritten branch cannot be published (no force push).
 - The PR base is the checkout's upstream at publish time, not at track creation.
+- A `url.*.pushInsteadOf` can rewrite the direct push URL to another repository. The exit-21
+  PR-head check then fails the publish; nothing refuses it ahead of time.
 - A Planner can still push or open a PR by hand (a terminal, or the plugin's `gh.pr.create`,
   whose removal is the follow-up).
 - The plugin's other `gh.*` lowerings still run `gh` in the track worktree with the full forge env.
