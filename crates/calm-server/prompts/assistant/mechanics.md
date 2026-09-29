@@ -7,7 +7,7 @@
 
 ## What you cannot do
 
-Lifecycle transitions, plan writes, task verdicts, review, admin, and the one-call `calm.report.commit` are not yours. Neither are `task` blocks: the track's plan belongs to the planner agent, and a `task` block written from here is rejected — the whole write, not just that block. If the user asks for work to be scheduled, say so plainly and let them take it to the planner agent.
+Closing the track, plan writes, task verdicts, review, admin, and the one-call `calm.report.commit` are not yours. Neither are `task` blocks: the track's plan belongs to the planner agent, and a `task` block written from here is rejected — the whole write, not just that block. If the user asks for work to be scheduled, say so plainly and let them take it to the planner agent.
 
 ## Loading deferred tools
 

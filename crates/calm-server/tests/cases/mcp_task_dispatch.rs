@@ -286,16 +286,12 @@ async fn dispatch_auth_checks_current_persisted_identity_before_create_and_repla
 }
 
 #[tokio::test]
-async fn dispatch_pending_snapshot_respects_release_and_lifecycle() {
-    for (policy_name, lifecycle) in [
-        ("declare-and-wait", "planning"),
-        ("auto-declare", "blocked"),
-        ("auto-declare", "done"),
-    ] {
+async fn dispatch_pending_snapshot_respects_release_and_closed() {
+    for (policy_name, closed) in [("declare-and-wait", false), ("auto-declare", true)] {
         let b = boot().await;
         policy(&b, policy_name).await;
-        sqlx::query("UPDATE tracks SET lifecycle=?1 WHERE id=?2")
-            .bind(lifecycle)
+        sqlx::query("UPDATE tracks SET closed_at=?1 WHERE id=?2")
+            .bind(closed.then_some(1_i64))
             .bind(b.track_id.as_str())
             .execute(&b.repo.sqlite_pool().unwrap())
             .await
@@ -316,7 +312,7 @@ async fn dispatch_pending_snapshot_respects_release_and_lifecycle() {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(serde_json::to_value(stored.lifecycle).unwrap(), lifecycle);
+        assert_eq!(stored.closed_at.is_some(), closed);
         let block = payload(&b)
             .await
             .blocks
@@ -480,24 +476,12 @@ async fn dispatch_receipt_developer_reset_follows_track_lifetime() {
 }
 
 #[tokio::test]
-async fn dispatch_promotes_only_new_draft_declarations_and_replay_has_no_lifecycle_effect() {
+async fn dispatch_replay_returns_the_receipt_and_writes_nothing() {
     let b = boot().await;
-    sqlx::query("UPDATE tracks SET lifecycle='draft' WHERE id=?1")
-        .bind(b.track_id.as_str())
-        .execute(&b.repo.sqlite_pool().unwrap())
-        .await
-        .unwrap();
     let original = dispatch(&b, args()).await.unwrap();
-    assert_eq!(original["current"]["track"]["lifecycle"], "planning");
-    sqlx::query("UPDATE tracks SET lifecycle='draft' WHERE id=?1")
-        .bind(b.track_id.as_str())
-        .execute(&b.repo.sqlite_pool().unwrap())
-        .await
-        .unwrap();
     let saved = counts(&b).await;
     let replay = dispatch(&b, args()).await.unwrap();
     assert_eq!(replay["receipt"], original["receipt"]);
-    assert_eq!(replay["current"]["track"]["lifecycle"], "draft");
     assert_eq!(counts(&b).await, saved);
 }
 

@@ -57,10 +57,8 @@ Check the repository
 Repo cross-check: before any repository write, compare input.repo
 against `git remote get-url origin` run in the track cwd (owner/name after stripping the
 host and a trailing .git). On mismatch do NOT proceed or declare execution tasks.
-Record both observed repositories in 待你定 and ask the user to correct or confirm
-the repository. In draft or planning, stop after reporting the mismatch: no
-ratification is needed to ask this question, and calm.ratify.request is unavailable
-there. If already working, move working->blocked via calm.ratify.request with
+Record both observed repositories in 待你定, ask the user to correct or confirm
+the repository with calm.ratify.request and
 `reason:"repo_mismatch: input.repo=<owner/name>, cwd.origin=<owner/name>"`
 (that exact prefix, then both observed values), and wait for the human decision.
 
@@ -100,12 +98,10 @@ When the review limit is reached
 
 If n == cap and the round is non-approving, do not merge.
 
-- Either GIVE-UP by recording the terminal rationale in the report with
-  calm.report.commit and lifecycle failed for reviewing->failed; OR ASK-HUMAN by first
-  moving reviewing->working with the normal lifecycle arg, then call calm.ratify.request
-  with `reason:"cap_exhausted"` for working->blocked.
-- On ratify.resolved grant the track is already back in working; resume
-  working->reviewing and continue reviewing the exhausted subject with cap = previous
+- Either GIVE-UP by recording the rationale in the report, then close the track with
+  calm.track.close and that rationale; OR ASK-HUMAN with calm.ratify.request and
+  `reason:"cap_exhausted"`.
+- On ratify.resolved grant, continue reviewing the exhausted subject with cap = previous
   cap + 2 on its next round.
 - The kernel accepts this raise at most once per subject per grant; a grant may
   authorize this for each subject that was already cap-exhausted when it was issued.
@@ -149,14 +145,11 @@ Merge policy
 - merge_policy: `auto-merge` allows gh.pr.merge as soon as merge fence F4 is satisfied.
 - `hold-for-ratify` — also the semantics whenever merge_policy is absent — additionally
   requires a granted ratify BEFORE gh.pr.merge.
-- Drive everything up to converged reviews + green checks, then move reviewing->working
-  with the normal lifecycle arg (calm.ratify.request 400s outside working), and call
-  calm.ratify.request with `reason:"merge_hold: pr #<n> converged at <head_sha>"` for
-  working->blocked.
-- On ratify.resolved grant the track is already back in working: the grant authorizes
-  merging that already-converged head — no fresh review round is required for the hold
-  itself; resume working->reviewing and call gh.pr.merge per fence F4 (expected_head_sha
-  = the converged round's head_sha).
+- Drive everything up to converged reviews + green checks, then call
+  calm.ratify.request with `reason:"merge_hold: pr #<n> converged at <head_sha>"`.
+- On ratify.resolved grant the grant authorizes merging that already-converged head — no
+  fresh review round is required for the hold itself; call gh.pr.merge per fence F4
+  (expected_head_sha = the converged round's head_sha).
 -->
 
 # 概要

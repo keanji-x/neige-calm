@@ -8,9 +8,11 @@ use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolHandler, ToolHandlerFuture, ToolRegistry, require_role,
     require_role_any,
 };
-use crate::mcp_server::tools::lifecycle_args::{parse_optional_write_args, parse_write_args};
 use crate::mcp_server::tools::track_report::{resolve_report_for_caller, updated_report_doc_rev};
-use crate::model::{CardRole, TrackLifecycle};
+use crate::mcp_server::tools::write_args::{
+    parse_optional_write_args, parse_write_args, refuse_lifecycle_key,
+};
+use crate::model::CardRole;
 use crate::report_read_ledger::LastRead;
 use crate::track_report::{BatchBlockOp, DocAnchor, MAX_BATCH_OPS, ReportDocOp};
 use calm_types::report_blocks;
@@ -105,8 +107,7 @@ async fn blocks_upsert(
     let if_rev = optional_u32(obj, "if_rev", tool)?;
     let position = optional_index(obj, "position", tool)?;
     let if_doc_rev = optional_u64(obj, "if_doc_rev", tool)?;
-    let carried = parse_optional_write_args(&args, tool)?;
-    planner_only_lifecycle(&identity, carried.lifecycle, tool)?;
+    let message = parse_optional_write_args(&args, tool)?;
     if id.is_some() {
         if if_doc_rev.is_some() {
             return Err(RpcError::invalid_params(format!(
@@ -150,8 +151,7 @@ async fn blocks_upsert(
             if_doc_rev,
             position,
         },
-        carried.message,
-        carried.lifecycle,
+        message,
     )
     .await?;
     let ReportOpCommit {
@@ -201,7 +201,6 @@ async fn blocks_move(
             if_doc_rev,
         },
         None,
-        None,
     )
     .await?;
     let block = block
@@ -237,7 +236,6 @@ async fn blocks_delete(
         tool,
         ReportDocOp::DeleteBlock { id, if_rev },
         None,
-        None,
     )
     .await?;
     let doc_rev = updated_report_doc_rev(&card, tool)?;
@@ -259,8 +257,7 @@ async fn write_markdown(
             "{tool}: `if_doc_rev` is required (use 0 for a new document)"
         ))
     })?;
-    let carried = parse_optional_write_args(&args, tool)?;
-    planner_only_lifecycle(&identity, carried.lifecycle, tool)?;
+    let message = parse_optional_write_args(&args, tool)?;
 
     let (track, _, report_card, current) = resolve_report_for_caller(&ctx, &identity).await?;
     // Omitted summary = keep the existing one, resolved by the persist layer INSIDE the transaction; resolving from `current` here would let a concurrent summary write be silently reverted.
@@ -270,15 +267,7 @@ async fn write_markdown(
         if_doc_rev,
     };
     let ReportOpCommit { card, warnings, .. } = match CardDecisionSink::from_app_context(&ctx)
-        .commit_report_op(
-            &identity,
-            track,
-            report_card,
-            current,
-            op,
-            carried.message,
-            carried.lifecycle,
-        )
+        .commit_report_op(&identity, track, report_card, current, op, message)
         .await
     {
         Ok(out) => out,
@@ -299,7 +288,7 @@ async fn commit(
     require_role(&identity, CardRole::Planner)?;
     let tool = TOOL_REPORT_COMMIT;
     let obj = require_object(&args, tool)?;
-    let write_args = parse_write_args(&args, tool)?;
+    let message = parse_write_args(&args, tool)?;
     let if_doc_rev = optional_u64(obj, "if_doc_rev", tool)?;
     let summary = optional_string(obj, "summary", tool)?;
     let raw_ops = match obj.get("ops") {
@@ -317,13 +306,11 @@ async fn commit(
             raw_ops.len()
         )));
     }
-    if raw_ops.is_empty() && summary.is_none() && write_args.lifecycle.is_none() {
+    if raw_ops.is_empty() && summary.is_none() {
         return Err(RpcError::invalid_params(format!(
-            "{tool}: nothing to commit — pass at least one of `ops`, `summary`, `lifecycle`"
+            "{tool}: nothing to commit — pass at least one of `ops`, `summary`"
         )));
     }
-    // The response reports the lifecycle transition this commit APPLIED, not the one it requested (a same-state request is a no-op).
-    // Known gap: a transition another actor lands between this snapshot and the persist transaction is indistinguishable from ours.
     let (track, _, report_card, current) = resolve_report_for_caller(&ctx, &identity).await?;
     let last_read = ctx
         .read_ledger
@@ -345,8 +332,6 @@ async fn commit(
         ) => DocAnchor::LastRead(*read),
         (None, _) => DocAnchor::Unread,
     };
-    let track_id = track.id.clone();
-    let lifecycle_before = track.lifecycle;
     let report_card_id = report_card.id.clone();
     let ReportOpCommit {
         card,
@@ -365,8 +350,7 @@ async fn commit(
                 summary,
                 ops,
             },
-            Some(write_args.message),
-            write_args.lifecycle,
+            Some(message),
         )
         .await
         .map_err(|e| map_commit_err(tool, e))?;
@@ -396,34 +380,10 @@ async fn commit(
             })
         })
         .collect::<Vec<_>>();
-    let lifecycle = match write_args.lifecycle {
-        Some(_) => {
-            let lifecycle_after = ctx
-                .repo
-                .track_get(track_id.as_str())
-                .await
-                .map_err(|e| RpcError::internal(format!("{tool}: track re-read: {e}")))?
-                .ok_or_else(|| {
-                    RpcError::internal(format!(
-                        "{tool}: track {} vanished after commit",
-                        track_id.as_str()
-                    ))
-                })?
-                .lifecycle;
-            if lifecycle_after == lifecycle_before {
-                Value::Null
-            } else {
-                serde_json::to_value(lifecycle_after)
-                    .map_err(|e| RpcError::internal(format!("{tool}: serialize lifecycle: {e}")))?
-            }
-        }
-        None => Value::Null,
-    };
     Ok(json!({
         "updated_at": card.updated_at,
         "docRev": doc_rev,
         "blocks": blocks,
-        "lifecycle": lifecycle,
         "warnings": warnings,
     }))
 }
@@ -563,61 +523,31 @@ fn resolve_upsert_content(
     Ok((kind, content))
 }
 
-/// Callers have already applied [`planner_only_lifecycle`] (or are planner-only).
 async fn commit_block_op(
     ctx: &Arc<AppContext>,
     identity: &ToolCallIdentity,
     tool: &str,
     op: ReportDocOp,
     agent_message: Option<String>,
-    lifecycle: Option<TrackLifecycle>,
 ) -> Result<ReportOpCommit, RpcError> {
     let (track, _, report_card, current) = resolve_report_for_caller(ctx, identity).await?;
     CardDecisionSink::from_app_context(ctx)
-        .commit_report_op(
-            identity,
-            track,
-            report_card,
-            current,
-            op,
-            agent_message,
-            lifecycle,
-        )
+        .commit_report_op(identity, track, report_card, current, op, agent_message)
         .await
         .map_err(|e| map_commit_err(tool, e))
 }
 
-/// `lifecycle` is the planner's field: an assistant that passes it is refused `-32403` before the report is even resolved.
-fn planner_only_lifecycle(
-    identity: &ToolCallIdentity,
-    lifecycle: Option<TrackLifecycle>,
-    tool: &str,
-) -> Result<(), RpcError> {
-    if lifecycle.is_some() && identity.role != CardRole::Planner {
-        return Err(RpcError::custom(
-            -32403,
-            format!(
-                "{tool}: forbidden: `lifecycle` is accepted from the Planner role only; \
-                 role {:?} must omit it",
-                identity.role
-            ),
-        ));
-    }
-    Ok(())
-}
-
-/// `move` / `delete` carry no `message` and no `lifecycle`; silently dropping either would let a planner believe a rationale was persisted or a track advanced.
+/// `move` / `delete` carry no `message`; silently dropping it would let a planner believe a rationale was persisted.
 fn reject_stray_write_args(
     obj: &serde_json::Map<String, Value>,
     tool: &str,
 ) -> Result<(), RpcError> {
-    for key in ["message", "lifecycle"] {
-        if obj.contains_key(key) {
-            return Err(RpcError::invalid_params(format!(
-                "{tool}: `{key}` is not accepted here; use `calm.report.commit` to carry \
-                 a message or a lifecycle transition alongside block ops"
-            )));
-        }
+    refuse_lifecycle_key(obj, tool)?;
+    if obj.contains_key("message") {
+        return Err(RpcError::invalid_params(format!(
+            "{tool}: `message` is not accepted here; use `calm.report.commit` to carry \
+             a message alongside block ops"
+        )));
     }
     Ok(())
 }

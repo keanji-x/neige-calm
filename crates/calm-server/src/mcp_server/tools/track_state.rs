@@ -1,29 +1,30 @@
-//! Track-state tools: `calm.track.state` (Planner or Worker snapshot read, no event emission) and
-//! `calm.task.verdict` (Planner-only accept/reject, lowered to `TaskCompleted` / `TaskFailed`, scoped to the caller's track).
+//! Track-state tools: `calm.track.state` (Planner or Worker snapshot read, no event emission),
+//! `calm.task.verdict` (Planner-only accept/reject, lowered to `TaskCompleted` / `TaskFailed`, scoped to the caller's track)
+//! and `calm.track.close` (Planner-only close of the caller's track).
 
 use crate::decision_sink::CardDecisionSink;
 use crate::error::CalmError;
-use crate::event::Event;
+use crate::event::{Event, EventScope};
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     read_only_annotations, register_deprecated_alias, require_role, require_role_any,
     role_gated_write_annotations,
 };
-use crate::mcp_server::tools::lifecycle_args::{
-    lifecycle_schema, message_schema, parse_write_args,
-};
-use crate::model::{Card, CardRole, Track};
+use crate::mcp_server::tools::write_args::{message_schema, parse_write_args};
+use crate::model::{Card, CardRole, Track, TrackPatch};
 use crate::track_report::TrackReportPayload;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
 pub const TOOL_TRACK_STATE: &str = "calm.track.state";
 pub const TOOL_TASK_VERDICT: &str = "calm.task.verdict";
+pub const TOOL_TRACK_CLOSE: &str = "calm.track.close";
 
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(track_state_descriptor(), wrap(track_state));
     registry.register(task_verdict_descriptor(), wrap(task_verdict));
+    registry.register(track_close_descriptor(), wrap(track_close));
     register_deprecated_alias(registry, "calm.get_track_state", TOOL_TRACK_STATE);
     register_deprecated_alias(registry, "calm.update_task_meta", TOOL_TASK_VERDICT);
 }
@@ -143,8 +144,7 @@ fn task_verdict_descriptor() -> ToolDescriptor {
                 "idempotency_key": { "type": "string", "minLength": 1 },
                 "status": { "type": "string", "enum": ["accepted", "rejected"] },
                 "reason": { "type": "string" },
-                "message": message_schema(),
-                "lifecycle": lifecycle_schema()
+                "message": message_schema()
             }
         }),
         annotations: Some(role_gated_write_annotations()),
@@ -158,7 +158,7 @@ async fn task_verdict(
     args: Value,
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Planner)?;
-    let write_args = parse_write_args(&args, "task_verdict")?;
+    let message = parse_write_args(&args, "task_verdict")?;
 
     let idempotency_key = args
         .get("idempotency_key")
@@ -186,14 +186,14 @@ async fn task_verdict(
                 "reason": reason.unwrap_or_default(),
             }),
             artifacts: vec![],
-            agent_message: Some(write_args.message.clone()),
+            agent_message: Some(message.clone()),
         },
         "rejected" => Event::TaskFailed {
             idempotency_key,
             // An empty reason is a valid value; the verdict is not second-guessed.
             reason: reason.unwrap_or_default(),
             details: None,
-            agent_message: Some(write_args.message.clone()),
+            agent_message: Some(message.clone()),
         },
         other => {
             return Err(RpcError::invalid_params(format!(
@@ -204,7 +204,7 @@ async fn task_verdict(
 
     let kind_tag = event.kind_tag();
     let res = CardDecisionSink::from_app_context(&ctx)
-        .commit_planner_verdict(&identity, write_args.message, write_args.lifecycle, event)
+        .commit_planner_verdict(&identity, event)
         .await;
 
     match res {
@@ -215,6 +215,75 @@ async fn task_verdict(
         )),
         Err(e) => Err(RpcError::internal(format!("emit {kind_tag}: {e}"))),
     }
+}
+
+fn track_close_descriptor() -> ToolDescriptor {
+    ToolDescriptor {
+        name: TOOL_TRACK_CLOSE.into(),
+        description: include_str!("../../../prompts/tools/calm.track.close.md")
+            .trim_end()
+            .to_string(),
+        input_schema: json!({
+            "type": "object",
+            "required": ["message"],
+            "properties": {
+                "message": message_schema()
+            }
+        }),
+        annotations: Some(role_gated_write_annotations()),
+        visible_to_roles: &[CardRole::Planner],
+    }
+}
+
+/// Closes the caller's track; closing a closed track is a no-op that returns its `closed_at`.
+async fn track_close(
+    ctx: Arc<AppContext>,
+    identity: ToolCallIdentity,
+    args: Value,
+) -> Result<Value, RpcError> {
+    require_role(&identity, CardRole::Planner)?;
+    let message = parse_write_args(&args, TOOL_TRACK_CLOSE)?;
+    let (_, track) = resolve_track_for_identity(&ctx, &identity).await?;
+    if let Some(closed_at) = track.closed_at {
+        return Ok(json!({ "closed_at": closed_at }));
+    }
+    let scope = EventScope::Track {
+        track: track.id.clone(),
+        area: track.area_id.clone(),
+    };
+    let (closed, _) = crate::db::write_with_events_typed(
+        ctx.repo.as_ref(),
+        identity.to_actor_id(),
+        None,
+        &ctx.events,
+        &ctx.write,
+        move |tx| {
+            Box::pin(async move {
+                let closed = crate::db::sqlite::track_update_tx(
+                    tx,
+                    track.id.as_str(),
+                    TrackPatch {
+                        closed: Some(true),
+                        ..TrackPatch::default()
+                    },
+                )
+                .await?;
+                let event = Event::TrackUpdated(crate::event::TrackUpdatedPayload::new(
+                    closed.clone(),
+                    Some(message),
+                ));
+                Ok((closed, vec![(scope, event)]))
+            })
+        },
+    )
+    .await
+    .map_err(|e| match e {
+        CalmError::Forbidden(msg) => {
+            RpcError::custom(-32403, format!("{TOOL_TRACK_CLOSE}: forbidden: {msg}"))
+        }
+        e => RpcError::internal(format!("{TOOL_TRACK_CLOSE}: {e}")),
+    })?;
+    Ok(json!({ "closed_at": closed.closed_at }))
 }
 
 /// A missing thread-mapped card while its daemon is active is a delete-while-active race, surfaced as `InternalError`.

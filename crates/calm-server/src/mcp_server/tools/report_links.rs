@@ -109,7 +109,7 @@ async fn area_outline(
         tracks.push(json!({
             "id": track.id,
             "title": track.title,
-            "lifecycle": track.lifecycle,
+            "closed_at": track.closed_at,
             "blocks": blocks,
         }));
     }

@@ -1,5 +1,5 @@
 //! Review/ratify workflow tools: `calm.review.round` (strictly monotonic round number per subject)
-//! and `calm.ratify.request` (records the request and parks the track in `blocked` in one tx).
+//! and `calm.ratify.request` (records the request on an open track; the ask stays open until the user answers).
 
 use crate::db::write_with_actor_events_typed;
 use crate::error::CalmError;
@@ -10,9 +10,8 @@ use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     require_role, role_gated_write_annotations,
 };
-use crate::model::{CardRole, Track, TrackLifecycle};
+use crate::model::{CardRole, Track};
 use crate::ratify_state::ratify_request_pending_tx;
-use crate::track_lifecycle::apply_requested_transition_in_tx;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sqlx::{Sqlite, Transaction};
@@ -245,37 +244,25 @@ async fn ratify_request(
                 let track_id = track_id.clone();
                 let reason = reason.clone();
                 Box::pin(async move {
-                    let mut events = Vec::new();
-                    let lifecycle = track_lifecycle_in_tx(tx, &track_id).await?;
-                    let pending = ratify_request_pending_tx(tx, &track_id).await?;
-                    if lifecycle != TrackLifecycle::Working || pending {
+                    if !crate::db::sqlite::track_get_tx(tx, &track_id)
+                        .await?
+                        .is_open()
+                    {
                         return Err(CalmError::BadRequest(
-                            "ratify_request: track is not in `working` or a ratify request is already pending"
+                            "ratify_request: the track is closed; only the user reopens it".into(),
+                        ));
+                    }
+                    if ratify_request_pending_tx(tx, &track_id).await? {
+                        return Err(CalmError::BadRequest(
+                            "ratify_request: a ratify request is already pending; wait for the \
+                             user's grant or deny"
                                 .into(),
                         ));
                     }
-
-                    let lifecycle_events = apply_requested_transition_in_tx(
-                        tx,
-                        &track_id,
-                        TrackLifecycle::Blocked,
-                        &actor,
-                        reason.clone(),
-                    )
-                    .await?
-                    .ok_or_else(|| {
-                        CalmError::BadRequest(
-                            "ratify_request: track is not in `working` or a ratify request is already pending"
-                                .into(),
-                        )
-                    })?;
-                    events.extend(
-                        lifecycle_events
-                            .into_iter()
-                            .map(|event| (actor.clone(), scope.clone(), event)),
-                    );
-                    events.push((actor, scope, Event::RatifyRequested { track_id, reason }));
-                    Ok(((), events))
+                    Ok((
+                        (),
+                        vec![(actor, scope, Event::RatifyRequested { track_id, reason })],
+                    ))
                 })
             }
         })
@@ -557,19 +544,6 @@ fn review_round_for_subject(event: Event, subject: &ReviewSubject) -> Option<Eve
         } if event_subject == subject => Some(event),
         _ => None,
     }
-}
-
-async fn track_lifecycle_in_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    track_id: &TrackId,
-) -> Result<TrackLifecycle, CalmError> {
-    let lifecycle = sqlx::query_scalar::<_, String>("SELECT lifecycle FROM tracks WHERE id = ?1")
-        .bind(track_id.as_str())
-        .fetch_optional(&mut **tx)
-        .await?
-        .ok_or_else(|| CalmError::NotFound(format!("track {}", track_id.as_str())))?;
-    TrackLifecycle::try_from(lifecycle)
-        .map_err(|e| CalmError::Internal(format!("tracks.lifecycle decode: {e}")))
 }
 
 async fn resolve_track_for_identity(

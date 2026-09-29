@@ -24,7 +24,7 @@ const ASSISTANT_ALLOWED_TOOLS: &[&str] = &[
 
 /// Denied tools whose handler a **Planner** token gets past; also the control list below.
 const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
-    // Report write channel — carries lifecycle, hence planner-only.
+    // Report write channel — planner-only.
     "calm.report.commit",
     // Cross-track / cross-area report discovery reads.
     "calm.area.outline",
@@ -41,6 +41,8 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     "calm.track.rename",
     // Publishing the track's verified commit is a Planner action.
     "calm.track.publish",
+    // Closing the track is a Planner action; only the user reopens.
+    "calm.track.close",
     // Speaking from a background sync turn is a planner action.
     "calm.user.notify",
     // Preview gateway registration is a Planner action.
@@ -359,8 +361,6 @@ async fn seed_track_report_card(boot: &support::mcp::CardBoot) -> String {
             calm_server::track_report::TrackReportPayload::new(summary, &body),
             doc_rev,
             None,
-            None,
-            false,
         )
         .await
         .expect("persist seeded report body");

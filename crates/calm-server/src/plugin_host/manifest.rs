@@ -1842,20 +1842,18 @@ mod tests {
     }
 
     #[test]
-    fn shipped_git_forge_give_up_uses_retained_lifecycle_tool() {
+    fn shipped_git_forge_give_up_uses_the_track_close_tool() {
         Manifest::parse(include_str!("../../../../plugins/git-forge/manifest.json"))
             .expect("shipped git-forge manifest");
         let descriptor = crate::mcp_server::build_default_registry()
             .descriptors()
             .into_iter()
-            .find(|descriptor| descriptor.name == "calm.report.commit")
-            .expect("retained GIVE-UP tool descriptor");
+            .find(|descriptor| descriptor.name == "calm.track.close")
+            .expect("GIVE-UP tool descriptor");
         assert!(
-            descriptor.input_schema["properties"]
-                .get("lifecycle")
-                .is_some(),
-            "GIVE-UP tool must carry lifecycle: {}",
-            descriptor.input_schema
+            descriptor.visible_to_roles == [crate::model::CardRole::Planner],
+            "only the Planner closes a track: {:?}",
+            descriptor.visible_to_roles
         );
 
         let template = TemplateDescriptor {

@@ -211,6 +211,15 @@ pub(crate) const COMMANDS: &[Command] = &[
         render: Render::Raw,
     },
     Command {
+        name: "track-close",
+        tool: track_state::TOOL_TRACK_CLOSE,
+        positionals: &[],
+        too_many: None,
+        options: &[opt("--message", "message", OptValue::Text, true)],
+        confirm: None,
+        render: Render::Raw,
+    },
+    Command {
         name: "track-gc",
         tool: admin::TOOL_ADMIN_TRACK_GC,
         positionals: &[],

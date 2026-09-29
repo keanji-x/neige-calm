@@ -5,18 +5,14 @@ use crate::db::sqlite::{task_cancel_tx, task_get_tx};
 use crate::db::write_with_actor_events_typed;
 use crate::error::CalmError;
 use crate::event::{Event, EventScope};
-use crate::ids::ActorId;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     read_only_annotations, require_role, role_gated_write_annotations,
 };
-use crate::mcp_server::tools::lifecycle_args::{
-    lifecycle_schema, message_schema, parse_write_args,
-};
+use crate::mcp_server::tools::write_args::{message_schema, parse_write_args};
 use crate::model::TaskKind;
 use crate::model::{CardRole, Task, TaskStatus, Track, now_ms};
-use crate::track_lifecycle::{apply_requested_transition_in_tx, auto_promote_draft_in_tx};
 use calm_types::report_blocks::tasks::GATE_TIMEOUT_MAX_SECS;
 pub use calm_types::report_blocks::tasks::{
     GateInput, GateStepInput, key_is_valid, validate_gate_shape,
@@ -180,7 +176,7 @@ fn normalize_task_input(input: PlanTaskInput) -> Result<NormalizedTask, String> 
                 return Err(format!(
                     "task {key}: `no_gate_reason` requires `context` to be an object \
                      (or omitted) so the reason can be recorded; got {}",
-                    crate::mcp_server::tools::lifecycle_args::shape_of(&other)
+                    crate::mcp_server::tools::write_args::shape_of(&other)
                 ));
             }
         }
@@ -393,8 +389,7 @@ fn plan_upsert_descriptor() -> ToolDescriptor {
                         }
                     }
                 },
-                "message": message_schema(),
-                "lifecycle": lifecycle_schema()
+                "message": message_schema()
             }
         }),
         annotations: Some(role_gated_write_annotations()),
@@ -429,8 +424,7 @@ fn plan_cancel_descriptor() -> ToolDescriptor {
             "required": ["key", "message"],
             "properties": {
                 "key": { "type": "string", "minLength": 1 },
-                "message": message_schema(),
-                "lifecycle": lifecycle_schema()
+                "message": message_schema()
             }
         }),
         annotations: Some(role_gated_write_annotations()),
@@ -457,7 +451,7 @@ where
     Fut: std::future::Future<Output = ()>,
 {
     require_role(&identity, CardRole::Planner)?;
-    let write_args = parse_write_args(&args, "plan_cancel")?;
+    let message = parse_write_args(&args, "plan_cancel")?;
 
     let key = args
         .get("key")
@@ -478,19 +472,14 @@ where
 
     let task_id = task.id.clone();
 
-    // A `lifecycle` equal to the track's current state is the same-state idempotency shortcut: it would apply nothing.
-    let lifecycle_is_noop = write_args
-        .lifecycle
-        .is_none_or(|target| target == track.lifecycle);
-
     // Past `pending`, the row's in-tx state decides: a running Track worker is canceled and
     // reaped, anything else is refused with its current status.
     let in_flight = match task.status {
-        // Already-canceled is idempotent success: no write, no event (a retry must not re-trigger the scheduler). A real lifecycle request still falls through into the tx.
-        TaskStatus::Canceled if lifecycle_is_noop => {
+        // Already-canceled is idempotent success: no write, no event (a retry must not re-trigger the scheduler).
+        TaskStatus::Canceled => {
             return Ok(json!({ "ok": true }));
         }
-        TaskStatus::Canceled | TaskStatus::Pending => false,
+        TaskStatus::Pending => false,
         TaskStatus::Dispatched | TaskStatus::Running | TaskStatus::Verifying => true,
         TaskStatus::Done | TaskStatus::Failed => {
             return Err(RpcError::invalid_params(format!(
@@ -509,8 +498,6 @@ where
         area: track.area_id.clone(),
     };
     let track_id_typed = track.id.clone();
-    let message = write_args.message.clone();
-    let lifecycle = write_args.lifecycle;
     let key_for_tx = key.clone();
 
     let result = write_with_actor_events_typed::<(), _>(
@@ -557,29 +544,6 @@ where
                 }
 
                 let mut events = released;
-                if let Some(auto_events) = auto_promote_draft_in_tx(tx, &track_id_typed).await? {
-                    events.extend(
-                        auto_events
-                            .into_iter()
-                            .map(|event| (ActorId::Kernel, scope.clone(), event)),
-                    );
-                }
-                if let Some(target) = lifecycle
-                    && let Some(lifecycle_events) = apply_requested_transition_in_tx(
-                        tx,
-                        &track_id_typed,
-                        target,
-                        &actor,
-                        message.clone(),
-                    )
-                    .await?
-                {
-                    events.extend(
-                        lifecycle_events
-                            .into_iter()
-                            .map(|event| (actor.clone(), scope.clone(), event)),
-                    );
-                }
                 // Idempotent re-cancel changed nothing — suppress `plan.updated` so a retry can't re-trigger the scheduler.
                 if rows > 0 {
                     events.push((
@@ -592,9 +556,9 @@ where
                         },
                     ));
                 }
-                // An empty batch means a concurrent cancel already did this request's work and any
-                // lifecycle target is already current; `write_with_actor_events` rejects empty
-                // batches, so roll back through the sentinel and answer the idempotent success.
+                // An empty batch means a concurrent cancel already did this request's work;
+                // `write_with_actor_events` rejects empty batches, so roll back through the
+                // sentinel and answer the idempotent success.
                 if events.is_empty() {
                     return Err(CalmError::Conflict(CANCEL_ALREADY_APPLIED.into()));
                 }

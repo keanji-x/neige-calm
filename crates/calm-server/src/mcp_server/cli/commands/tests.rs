@@ -377,6 +377,14 @@ fn task_failed_requires_reason() {
 }
 
 #[test]
+fn track_close_maps_the_message_onto_calm_track_close() {
+    let parsed = parse_args(&["track-close", "--message", "goal met"]).expect("parse");
+    assert_eq!(parsed.tool, "calm.track.close");
+    assert_eq!(parsed.args, json!({ "message": "goal met" }));
+    assert_eq!(refusal(&["track-close"]), "track-close requires --message");
+}
+
+#[test]
 fn json_flag_is_accepted_before_and_after_the_command() {
     for args in [
         &["--json", "state"][..],

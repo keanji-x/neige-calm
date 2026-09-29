@@ -13,7 +13,6 @@ use calm_server::mcp_server::tools::track_report_blocks::{
     TOOL_REPORT_BLOCKS_DELETE, TOOL_REPORT_BLOCKS_KINDS, TOOL_REPORT_BLOCKS_MOVE,
     TOOL_REPORT_BLOCKS_UPSERT, TOOL_REPORT_WRITE_MARKDOWN,
 };
-use calm_server::model::{TrackLifecycle, TrackPatch};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_types::report_blocks::{KIND_TASK, marker_line, render_fence};
 use serde_json::{Value, json};
@@ -39,28 +38,6 @@ async fn body_text(boot: &Boot) -> String {
         .and_then(Value::as_str)
         .expect("read returns text")
         .to_string()
-}
-
-async fn lifecycle(boot: &Boot) -> TrackLifecycle {
-    boot.repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .expect("track row")
-        .lifecycle
-}
-
-async fn set_lifecycle(boot: &Boot, to: TrackLifecycle) {
-    boot.repo
-        .track_update(
-            boot.track_id.as_str(),
-            TrackPatch {
-                lifecycle: Some(to),
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("set fixture lifecycle");
 }
 
 /// The `author` of every `track.report_edited` in the persisted log, oldest first — attribution
@@ -166,8 +143,6 @@ async fn seed_prose_and_two_tasks(boot: &Boot) -> (String, String) {
         next,
         doc_rev(boot).await,
         None,
-        None,
-        false,
     )
     .await
     .expect("user declares its own task");
@@ -327,47 +302,6 @@ async fn an_assistant_block_write_is_persisted_as_edit_author_assistant() {
          would make the assistant's edit indistinguishable from the planner's \
          in the log, the goldens, and the planner-wake decision"
     );
-}
-
-#[tokio::test]
-async fn an_assistant_block_write_does_not_promote_a_draft_track() {
-    let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Draft).await;
-
-    call_tool(
-        &boot,
-        TOOL_REPORT_BLOCKS_UPSERT,
-        assistant_identity(&boot),
-        json!({ "kind": "prose", "markdown": "# Assistant\n\nnotes\n", "if_doc_rev": doc_rev(&boot).await }),
-    )
-    .await
-    .expect("the write itself must succeed — P1 suppresses the promotion, not the write");
-
-    assert_eq!(
-        lifecycle(&boot).await,
-        TrackLifecycle::Draft,
-        "an assistant must not walk the track out of Draft; auto-promote is \
-         one of the two implicit routes from the block channel into the \
-         state machine (§3.2a)"
-    );
-}
-
-/// Control: auto-promote is suppressed *for the assistant*, not removed.
-#[tokio::test]
-async fn a_planner_block_write_still_promotes_a_draft_track() {
-    let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Draft).await;
-
-    call_tool(
-        &boot,
-        TOOL_REPORT_BLOCKS_UPSERT,
-        planner_identity(&boot),
-        json!({ "kind": "prose", "markdown": "# Planner\n\nnotes\n", "if_doc_rev": doc_rev(&boot).await }),
-    )
-    .await
-    .expect("planner block write succeeds");
-
-    assert_eq!(lifecycle(&boot).await, TrackLifecycle::Planning);
 }
 
 /// Keeps the rule from being written as "the write must not contain task blocks".

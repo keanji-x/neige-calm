@@ -12,7 +12,6 @@ use calm_server::mcp_server::tools::track_report_blocks::{
     RPC_REV_CONFLICT, TOOL_REPORT_BLOCKS_DELETE, TOOL_REPORT_BLOCKS_KINDS, TOOL_REPORT_BLOCKS_MOVE,
     TOOL_REPORT_BLOCKS_UPSERT, TOOL_REPORT_COMMIT, TOOL_REPORT_WRITE_MARKDOWN,
 };
-use calm_server::model::TrackLifecycle;
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::track_report::TrackReportPayload;
 use serde_json::{Value, json};
@@ -1788,15 +1787,6 @@ mod boundaries;
 #[path = "report_block_upgrade.rs"]
 mod upgrade;
 
-async fn track_lifecycle(boot: &Boot) -> TrackLifecycle {
-    boot.repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .expect("track row")
-        .lifecycle
-}
-
 /// Drain everything the bus delivers within a short quiet window so a test can assert an exact event count.
 async fn drain_events(
     rx: &mut tokio::sync::broadcast::Receiver<calm_server::event::BroadcastEnvelope>,
@@ -1817,14 +1807,13 @@ fn commit_args(if_doc_rev: u64, ops: Value) -> Value {
 }
 
 #[tokio::test]
-async fn commit_three_ops_summary_and_lifecycle_land_atomically_with_one_doc_rev_bump() {
+async fn commit_three_ops_and_summary_land_atomically_with_one_doc_rev_bump() {
     let boot = boot().await;
     let index = seed_two_blocks(&boot).await; // docRev 1, A@1, B@1
     let (a_id, a_rev) = index[0].clone();
     let (b_id, b_rev) = index[1].clone();
     let before = current_payload(&boot).await;
     assert_eq!(before.doc_rev, 1);
-    assert_eq!(track_lifecycle(&boot).await, TrackLifecycle::Planning);
     let mut rx = boot.ctx.events.subscribe();
 
     let out = call_tool(
@@ -1833,9 +1822,8 @@ async fn commit_three_ops_summary_and_lifecycle_land_atomically_with_one_doc_rev
         planner_identity(&boot),
         json!({
             "if_doc_rev": 1,
-            "message": "三个块 + summary + lifecycle 一次提交",
+            "message": "三个块 + summary 一次提交",
             "summary": "新摘要",
-            "lifecycle": "dispatching",
             "ops": [
                 { "op": "upsert", "id": a_id, "if_rev": a_rev, "kind": "prose", "markdown": "# A\n\nalpha v2\n" },
                 { "op": "delete", "id": b_id, "if_rev": b_rev },
@@ -1851,7 +1839,6 @@ async fn commit_three_ops_summary_and_lifecycle_land_atomically_with_one_doc_rev
         Some(2),
         "one bump for three ops: {out}"
     );
-    assert_eq!(out["lifecycle"], json!("dispatching"));
     let blocks = out["blocks"].as_array().expect("blocks index");
     assert_eq!(blocks.len(), 2, "{out}");
     assert_eq!(blocks[0]["kind"], "prose");
@@ -1874,30 +1861,19 @@ async fn commit_three_ops_summary_and_lifecycle_land_atomically_with_one_doc_rev
     assert_eq!(after.body, "# C\n\ngamma\n# A\n\nalpha v2\n");
     let read = read(&boot, json!({})).await;
     assert_eq!(index_of(&read).len(), 2);
-    assert_eq!(track_lifecycle(&boot).await, TrackLifecycle::Dispatching);
 
     let envs = drain_events(&mut rx).await;
     let kinds: Vec<&str> = envs
         .iter()
         .map(|e| match &e.event {
-            Event::TrackLifecycleChanged { .. } => "lifecycle_changed",
             Event::TrackUpdated(_) => "track_updated",
             Event::CardUpdated(_) => "card_updated",
             Event::TrackReportEdited { .. } => "report_edited",
             _ => "other",
         })
         .collect();
-    assert_eq!(
-        kinds,
-        vec![
-            "lifecycle_changed",
-            "track_updated",
-            "card_updated",
-            "report_edited"
-        ],
-        "got {envs:?}"
-    );
-    match &envs[3].event {
+    assert_eq!(kinds, vec!["card_updated", "report_edited"], "got {envs:?}");
+    match &envs[1].event {
         Event::TrackReportEdited {
             agent_message,
             summary_before,
@@ -1905,31 +1881,12 @@ async fn commit_three_ops_summary_and_lifecycle_land_atomically_with_one_doc_rev
             body_after,
             ..
         } => {
-            assert_eq!(
-                agent_message.as_deref(),
-                Some("三个块 + summary + lifecycle 一次提交")
-            );
+            assert_eq!(agent_message.as_deref(), Some("三个块 + summary 一次提交"));
             assert_eq!(summary_before, "seeded");
             assert_eq!(summary_after, "新摘要");
             assert_eq!(body_after, "# C\n\ngamma\n# A\n\nalpha v2\n");
         }
         other => panic!("expected TrackReportEdited, got {other:?}"),
-    }
-    match &envs[0].event {
-        Event::TrackLifecycleChanged {
-            from,
-            to,
-            agent_message,
-            ..
-        } => {
-            assert_eq!(*from, TrackLifecycle::Planning);
-            assert_eq!(*to, TrackLifecycle::Dispatching);
-            assert_eq!(
-                agent_message.as_deref(),
-                Some("三个块 + summary + lifecycle 一次提交")
-            );
-        }
-        other => panic!("expected TrackLifecycleChanged, got {other:?}"),
     }
 }
 
@@ -2012,12 +1969,11 @@ async fn commit_stale_block_rev_in_second_op_rolls_back_the_first_op() {
 }
 
 #[tokio::test]
-async fn commit_illegal_lifecycle_returns_32403_and_persists_no_content() {
+async fn commit_with_a_lifecycle_key_returns_32602_and_persists_no_content() {
     let boot = boot().await;
     let index = seed_two_blocks(&boot).await;
     let (a_id, a_rev) = index[0].clone();
     let before = current_payload(&boot).await;
-    assert_eq!(track_lifecycle(&boot).await, TrackLifecycle::Planning);
     let mut rx = boot.ctx.events.subscribe();
 
     let err = call_tool(
@@ -2026,7 +1982,7 @@ async fn commit_illegal_lifecycle_returns_32403_and_persists_no_content() {
         planner_identity(&boot),
         json!({
             "if_doc_rev": 1,
-            "message": "planning -> done is illegal",
+            "message": "lifecycle is removed",
             "summary": "must not land",
             "lifecycle": "done",
             "ops": [
@@ -2035,14 +1991,14 @@ async fn commit_illegal_lifecycle_returns_32403_and_persists_no_content() {
         }),
     )
     .await
-    .expect_err("illegal edge");
-    assert_eq!(err.code, -32403, "{err:?}");
+    .expect_err("a lifecycle key is refused");
+    assert_eq!(err.code, -32602, "{err:?}");
+    assert!(err.message.contains("`lifecycle` is removed"), "{err:?}");
 
     let after = current_payload(&boot).await;
     assert_eq!(after.doc_rev, before.doc_rev);
     assert_eq!(after.body, before.body);
     assert_eq!(after.summary, before.summary);
-    assert_eq!(track_lifecycle(&boot).await, TrackLifecycle::Planning);
     assert!(drain_events(&mut rx).await.is_empty(), "nothing emitted");
 }
 
@@ -2062,7 +2018,6 @@ async fn commit_summary_only_with_empty_ops_bumps_doc_rev_and_keeps_blocks() {
     .await
     .expect("summary-only commit");
     assert_eq!(out["docRev"].as_u64(), Some(2));
-    assert_eq!(out["lifecycle"], Value::Null);
     let blocks = out["blocks"].as_array().unwrap();
     assert_eq!(
         blocks
@@ -2193,7 +2148,7 @@ async fn commit_rejects_empty_commits_and_malformed_ops_before_touching_the_doc(
 }
 
 #[tokio::test]
-async fn commit_is_planner_only_and_assistant_cannot_pass_lifecycle_on_block_tools() {
+async fn commit_is_planner_only_and_block_tools_refuse_a_lifecycle_key() {
     let boot = boot().await;
     seed_two_blocks(&boot).await;
     let before = current_payload(&boot).await;
@@ -2215,7 +2170,7 @@ async fn commit_is_planner_only_and_assistant_cannot_pass_lifecycle_on_block_too
         assert!(err.message.contains("requires role=Planner"), "{err:?}");
     }
 
-    // The block tools stay open to the assistant; the `lifecycle` field does not.
+    // The block tools stay open to the assistant; a `lifecycle` key is refused for every role.
     let err = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
@@ -2226,23 +2181,22 @@ async fn commit_is_planner_only_and_assistant_cannot_pass_lifecycle_on_block_too
         }),
     )
     .await
-    .expect_err("assistant may not pass lifecycle");
-    assert_eq!(err.code, -32403, "{err:?}");
-    assert!(err.message.contains("Planner role only"), "{err:?}");
+    .expect_err("a lifecycle key is refused");
+    assert_eq!(err.code, -32602, "{err:?}");
+    assert!(err.message.contains("`lifecycle` is removed"), "{err:?}");
     let err = call_tool(
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
-        assistant_identity(&boot),
+        planner_identity(&boot),
         json!({ "body": "# 助手\n\n重写\n", "if_doc_rev": 1, "lifecycle": "dispatching" }),
     )
     .await
-    .expect_err("assistant may not pass lifecycle");
-    assert_eq!(err.code, -32403, "{err:?}");
+    .expect_err("a lifecycle key is refused");
+    assert_eq!(err.code, -32602, "{err:?}");
 
     let after = current_payload(&boot).await;
     assert_eq!(after.doc_rev, before.doc_rev);
     assert_eq!(after.body, before.body);
-    assert_eq!(track_lifecycle(&boot).await, TrackLifecycle::Planning);
     assert!(drain_events(&mut rx).await.is_empty(), "nothing emitted");
 
     let out = call_tool(
@@ -2265,7 +2219,7 @@ async fn commit_is_planner_only_and_assistant_cannot_pass_lifecycle_on_block_too
 }
 
 #[tokio::test]
-async fn upsert_and_write_markdown_carry_message_and_lifecycle_for_the_planner() {
+async fn upsert_and_write_markdown_carry_message_for_the_planner() {
     let boot = boot().await;
     let index = seed_two_blocks(&boot).await;
     let (a_id, a_rev) = index[0].clone();
@@ -2277,25 +2231,17 @@ async fn upsert_and_write_markdown_carry_message_and_lifecycle_for_the_planner()
         planner_identity(&boot),
         json!({
             "id": a_id, "if_rev": a_rev, "kind": "prose", "markdown": "# A\n\nalpha v2\n",
-            "message": "upsert 推进 dispatching", "lifecycle": "dispatching"
+            "message": "upsert 带说明"
         }),
     )
     .await
-    .expect("planner upsert with lifecycle");
+    .expect("planner upsert with message");
     assert_eq!(out["rev"].as_u64(), Some(a_rev + 1));
-    assert_eq!(track_lifecycle(&boot).await, TrackLifecycle::Dispatching);
     let envs = drain_events(&mut rx).await;
-    assert_eq!(envs.len(), 4, "{envs:?}");
-    assert!(matches!(
-        envs[0].event,
-        Event::TrackLifecycleChanged {
-            to: TrackLifecycle::Dispatching,
-            ..
-        }
-    ));
-    match &envs[3].event {
+    assert_eq!(envs.len(), 2, "{envs:?}");
+    match &envs[1].event {
         Event::TrackReportEdited { agent_message, .. } => {
-            assert_eq!(agent_message.as_deref(), Some("upsert 推进 dispatching"));
+            assert_eq!(agent_message.as_deref(), Some("upsert 带说明"));
         }
         other => panic!("expected TrackReportEdited, got {other:?}"),
     }
@@ -2306,43 +2252,20 @@ async fn upsert_and_write_markdown_carry_message_and_lifecycle_for_the_planner()
         planner_identity(&boot),
         json!({
             "body": "# A\n\nalpha v3\n\n# B\n\nbeta\n", "if_doc_rev": 2,
-            "message": "write_markdown 推进 working", "lifecycle": "working"
+            "message": "write_markdown 带说明"
         }),
     )
     .await
-    .expect("planner write_markdown with lifecycle");
+    .expect("planner write_markdown with message");
     assert_eq!(out["docRev"].as_u64(), Some(3));
-    assert_eq!(track_lifecycle(&boot).await, TrackLifecycle::Working);
     let envs = drain_events(&mut rx).await;
-    assert_eq!(envs.len(), 4, "{envs:?}");
-    match &envs[3].event {
+    assert_eq!(envs.len(), 2, "{envs:?}");
+    match &envs[1].event {
         Event::TrackReportEdited { agent_message, .. } => {
-            assert_eq!(
-                agent_message.as_deref(),
-                Some("write_markdown 推进 working")
-            );
+            assert_eq!(agent_message.as_deref(), Some("write_markdown 带说明"));
         }
         other => panic!("expected TrackReportEdited, got {other:?}"),
     }
-
-    let before = current_payload(&boot).await;
-    let err = call_tool(
-        &boot,
-        TOOL_REPORT_BLOCKS_UPSERT,
-        planner_identity(&boot),
-        json!({
-            "kind": "prose", "markdown": "# X\n\nno\n", "if_doc_rev": 3,
-            "message": "working -> draft is illegal", "lifecycle": "draft"
-        }),
-    )
-    .await
-    .expect_err("illegal edge");
-    assert_eq!(err.code, -32403, "{err:?}");
-    let after = current_payload(&boot).await;
-    assert_eq!(after.doc_rev, before.doc_rev);
-    assert_eq!(after.body, before.body);
-    assert_eq!(track_lifecycle(&boot).await, TrackLifecycle::Working);
-    assert!(drain_events(&mut rx).await.is_empty());
 
     let err = call_tool(
         &boot,
@@ -2516,57 +2439,6 @@ async fn commit_rejects_duplicate_block_ids_before_touching_the_doc() {
 }
 
 #[tokio::test]
-async fn commit_same_state_lifecycle_reports_null_bumps_doc_rev_and_emits_no_lifecycle_events() {
-    let boot = boot().await;
-    seed_two_blocks(&boot).await;
-    let before = current_payload(&boot).await;
-    assert_eq!(before.doc_rev, 1);
-    assert_eq!(track_lifecycle(&boot).await, TrackLifecycle::Planning);
-    let mut rx = boot.ctx.events.subscribe();
-
-    // Lifecycle-only commit asking for the state the track is already in: no transition applies, but the doc still moves.
-    let out = call_tool(
-        &boot,
-        TOOL_REPORT_COMMIT,
-        planner_identity(&boot),
-        json!({ "if_doc_rev": 1, "message": "still planning", "lifecycle": "planning" }),
-    )
-    .await
-    .expect("same-state lifecycle commit");
-    assert_eq!(out["lifecycle"], Value::Null, "{out}");
-    assert_eq!(out["docRev"].as_u64(), Some(2), "{out}");
-    assert_eq!(track_lifecycle(&boot).await, TrackLifecycle::Planning);
-    let after = current_payload(&boot).await;
-    assert_eq!(after.doc_rev, 2);
-    assert_eq!(after.body, before.body);
-    assert_eq!(after.summary, before.summary);
-
-    let envs = drain_events(&mut rx).await;
-    let kinds: Vec<&str> = envs
-        .iter()
-        .map(|e| match &e.event {
-            Event::TrackLifecycleChanged { .. } => "lifecycle_changed",
-            Event::TrackUpdated(_) => "track_updated",
-            Event::CardUpdated(_) => "card_updated",
-            Event::TrackReportEdited { .. } => "report_edited",
-            _ => "other",
-        })
-        .collect();
-    assert_eq!(kinds, vec!["card_updated", "report_edited"], "got {envs:?}");
-
-    let out = call_tool(
-        &boot,
-        TOOL_REPORT_COMMIT,
-        planner_identity(&boot),
-        json!({ "if_doc_rev": 2, "message": "now dispatching", "lifecycle": "dispatching" }),
-    )
-    .await
-    .expect("real transition");
-    assert_eq!(out["lifecycle"], json!("dispatching"), "{out}");
-    assert_eq!(track_lifecycle(&boot).await, TrackLifecycle::Dispatching);
-}
-
-#[tokio::test]
 async fn move_and_delete_refuse_message_and_lifecycle_with_32602() {
     let boot = boot().await;
     let index = seed_two_blocks(&boot).await;
@@ -2602,13 +2474,14 @@ async fn move_and_delete_refuse_message_and_lifecycle_with_32602() {
             .err()
             .unwrap_or_else(|| panic!("{tool} with `{key}` must be refused"));
         assert_eq!(err.code, -32602, "{tool} `{key}`: {err:?}");
+        let expected = if key == "lifecycle" {
+            "`lifecycle` is removed: close with calm.track.close"
+        } else {
+            "`message` is not accepted here; use `calm.report.commit`"
+        };
         assert!(
-            err.message.contains(tool) && err.message.contains(&format!("`{key}` is not accepted")),
-            "{tool} `{key}`: names the tool and the key: {err:?}"
-        );
-        assert!(
-            err.message.contains("calm.report.commit"),
-            "{tool} `{key}`: points at the carrier: {err:?}"
+            err.message.contains(tool) && err.message.contains(expected),
+            "{tool} `{key}`: names the tool and the way out: {err:?}"
         );
     }
 
@@ -2620,7 +2493,6 @@ async fn move_and_delete_refuse_message_and_lifecycle_with_32602() {
         index,
         "order untouched"
     );
-    assert_eq!(track_lifecycle(&boot).await, TrackLifecycle::Planning);
     assert!(drain_events(&mut rx).await.is_empty(), "nothing emitted");
 }
 

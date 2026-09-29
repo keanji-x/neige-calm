@@ -13,9 +13,7 @@ use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::track_state::{TOOL_TASK_VERDICT, TOOL_TRACK_STATE};
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
-use calm_server::model::{
-    CardRole, CardRuntimeView, NewArea, NewCard, NewTrack, TrackLifecycle, TrackPatch,
-};
+use calm_server::model::{CardRole, CardRuntimeView, NewArea, NewCard, NewTrack};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::session_projection_repo::AgentProvider;
 use calm_types::event::TaskContextRef;
@@ -241,19 +239,6 @@ fn worker_identity(boot: &Boot) -> ToolCallIdentity {
     }
 }
 
-async fn set_track_lifecycle(boot: &Boot, lifecycle: TrackLifecycle) {
-    boot.repo
-        .track_update(
-            boot.track_id.as_str(),
-            TrackPatch {
-                lifecycle: Some(lifecycle),
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("set test track lifecycle");
-}
-
 #[tokio::test]
 async fn get_track_state_returns_track_and_cards_for_planner() {
     let boot = boot().await;
@@ -421,30 +406,6 @@ async fn task_verdict_accepted_emits_task_completed() {
     .expect("planner accept verdict ok");
     assert_eq!(out.get("ok").and_then(Value::as_bool), Some(true));
 
-    let auto_changed = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-        .await
-        .expect("bus delivers auto lifecycle")
-        .expect("bus open");
-    assert!(matches!(auto_changed.actor, ActorId::Kernel));
-    assert!(matches!(
-        auto_changed.event,
-        Event::TrackLifecycleChanged {
-            from: TrackLifecycle::Draft,
-            to: TrackLifecycle::Planning,
-            agent_message: Some(ref message),
-            ..
-        } if message == "[auto] first planner write"
-    ));
-    let auto_updated = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-        .await
-        .expect("bus delivers auto update")
-        .expect("bus open");
-    assert!(matches!(auto_updated.actor, ActorId::Kernel));
-    assert!(matches!(
-        auto_updated.event,
-        Event::TrackUpdated(ref payload)
-            if payload.agent_message.as_deref() == Some("[auto] first planner write")
-    ));
     let envelope = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
         .await
         .expect("bus delivers")
@@ -472,7 +433,6 @@ async fn task_verdict_accepted_emits_task_completed() {
 #[tokio::test]
 async fn legacy_alias_update_task_meta_still_dispatches_via_warn() {
     let boot = boot().await;
-    set_track_lifecycle(&boot, TrackLifecycle::Planning).await;
     let mut rx = boot.ctx.events.subscribe();
 
     let out = call_tool(
@@ -530,30 +490,6 @@ async fn task_verdict_rejected_emits_task_failed() {
     .expect("planner reject verdict ok");
     assert_eq!(out.get("ok").and_then(Value::as_bool), Some(true));
 
-    let auto_changed = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-        .await
-        .expect("bus delivers auto lifecycle")
-        .expect("bus open");
-    assert!(matches!(auto_changed.actor, ActorId::Kernel));
-    assert!(matches!(
-        auto_changed.event,
-        Event::TrackLifecycleChanged {
-            from: TrackLifecycle::Draft,
-            to: TrackLifecycle::Planning,
-            agent_message: Some(ref message),
-            ..
-        } if message == "[auto] first planner write"
-    ));
-    let auto_updated = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-        .await
-        .expect("bus delivers auto update")
-        .expect("bus open");
-    assert!(matches!(auto_updated.actor, ActorId::Kernel));
-    assert!(matches!(
-        auto_updated.event,
-        Event::TrackUpdated(ref payload)
-            if payload.agent_message.as_deref() == Some("[auto] first planner write")
-    ));
     let envelope = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
         .await
         .expect("bus delivers")
@@ -649,9 +585,8 @@ async fn task_verdict_requires_non_empty_message() {
 }
 
 #[tokio::test]
-async fn task_verdict_without_lifecycle_keeps_track_state_and_records_message() {
+async fn task_verdict_records_message_and_leaves_the_track_open() {
     let boot = boot().await;
-    set_track_lifecycle(&boot, TrackLifecycle::Planning).await;
     let mut rx = boot.ctx.events.subscribe();
 
     call_tool(
@@ -689,95 +624,14 @@ async fn task_verdict_without_lifecycle_keeps_track_state_and_records_message() 
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(track.lifecycle, TrackLifecycle::Planning);
+    assert!(track.is_open());
     let no_more = tokio::time::timeout(std::time::Duration::from_millis(150), rx.recv()).await;
-    assert!(no_more.is_err(), "unexpected lifecycle event: {no_more:?}");
+    assert!(no_more.is_err(), "unexpected event: {no_more:?}");
 }
 
 #[tokio::test]
-async fn task_verdict_lifecycle_legal_emits_track_updated_and_verdict() {
+async fn task_verdict_with_a_lifecycle_key_is_refused_and_writes_nothing() {
     let boot = boot().await;
-    set_track_lifecycle(&boot, TrackLifecycle::Planning).await;
-    let mut rx = boot.ctx.events.subscribe();
-
-    call_tool(
-        &boot,
-        TOOL_TASK_VERDICT,
-        planner_identity(&boot),
-        json!({
-            "idempotency_key": "verdict-legal-lifecycle",
-            "status": "accepted",
-            "reason": "ok",
-            "message": "accept and dispatch",
-            "lifecycle": "dispatching"
-        }),
-    )
-    .await
-    .expect("verdict with lifecycle succeeds");
-
-    let changed_env = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-        .await
-        .expect("bus delivers lifecycle")
-        .expect("bus open");
-    match changed_env.event {
-        Event::TrackLifecycleChanged {
-            id,
-            area_id,
-            from,
-            to,
-            agent_message,
-        } => {
-            assert_eq!(id, boot.track_id);
-            assert_eq!(area_id, boot.area_id);
-            assert_eq!(from, TrackLifecycle::Planning);
-            assert_eq!(to, TrackLifecycle::Dispatching);
-            assert_eq!(agent_message.as_deref(), Some("accept and dispatch"));
-        }
-        other => panic!("expected TrackLifecycleChanged first, got {other:?}"),
-    }
-    let updated_env = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-        .await
-        .expect("bus delivers track update")
-        .expect("bus open");
-    match updated_env.event {
-        Event::TrackUpdated(payload) => {
-            assert_eq!(payload.id, boot.track_id);
-            assert_eq!(payload.lifecycle, TrackLifecycle::Dispatching);
-            assert_eq!(
-                payload.agent_message.as_deref(),
-                Some("accept and dispatch")
-            );
-        }
-        other => panic!("expected TrackUpdated second, got {other:?}"),
-    }
-    let verdict_env = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-        .await
-        .expect("bus delivers verdict")
-        .expect("bus open");
-    match verdict_env.event {
-        Event::TaskCompleted {
-            idempotency_key,
-            agent_message,
-            ..
-        } => {
-            assert_eq!(idempotency_key, "verdict-legal-lifecycle");
-            assert_eq!(agent_message.as_deref(), Some("accept and dispatch"));
-        }
-        other => panic!("expected TaskCompleted third, got {other:?}"),
-    }
-    let track = boot
-        .repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(track.lifecycle, TrackLifecycle::Dispatching);
-}
-
-#[tokio::test]
-async fn task_verdict_lifecycle_illegal_rolls_back_verdict_and_events() {
-    let boot = boot().await;
-    set_track_lifecycle(&boot, TrackLifecycle::Planning).await;
     let mut rx = boot.ctx.events.subscribe();
 
     let err = call_tool(
@@ -793,13 +647,14 @@ async fn task_verdict_lifecycle_illegal_rolls_back_verdict_and_events() {
         }),
     )
     .await
-    .expect_err("planning -> done is illegal");
-    assert_eq!(err.code, -32403);
+    .expect_err("a lifecycle key is refused");
+    assert_eq!(
+        err.code,
+        calm_server::plugin_host::mcp::RpcError::INVALID_PARAMS
+    );
     assert!(
-        err.message.ends_with(
-            "track lifecycle: planning → done is not allowed; \
-             from planning the planner may write: dispatching, reviewing, failed"
-        ),
+        err.message
+            .contains("`lifecycle` is removed: close with calm.track.close"),
         "{err:?}"
     );
 
@@ -809,11 +664,11 @@ async fn task_verdict_lifecycle_illegal_rolls_back_verdict_and_events() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(track.lifecycle, TrackLifecycle::Planning);
+    assert!(track.is_open());
     let no_event = tokio::time::timeout(std::time::Duration::from_millis(150), rx.recv()).await;
     assert!(
         no_event.is_err(),
-        "illegal transition emitted event: {no_event:?}"
+        "a refused verdict emitted an event: {no_event:?}"
     );
 
     let events = boot.repo.events_since(0, 100).await.unwrap();
@@ -827,7 +682,7 @@ async fn task_verdict_lifecycle_illegal_rolls_back_verdict_and_events() {
 }
 
 #[tokio::test]
-async fn new_track_defaults_to_draft_lifecycle() {
+async fn new_track_is_open() {
     let boot = boot().await;
     let track = boot
         .repo
@@ -835,9 +690,8 @@ async fn new_track_defaults_to_draft_lifecycle() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(
-        track.lifecycle,
-        calm_server::model::TrackLifecycle::Draft,
-        "freshly minted track starts in Draft"
-    );
+    assert!(track.is_open(), "a freshly minted track is open");
 }
+
+#[path = "track_close.rs"]
+mod track_close;

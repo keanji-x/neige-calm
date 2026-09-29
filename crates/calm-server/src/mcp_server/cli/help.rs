@@ -107,7 +107,7 @@ const COMMANDS: &[CommandHelp] = &[
     ),
     command_help!(
         "state",
-        "Show the track's current state: lifecycle, your card, report and live cards",
+        "Show the track's current state: closed_at, your card, report and live cards",
         "Usage: neige state [--json]",
         "",
         "Options:",
@@ -197,6 +197,16 @@ const COMMANDS: &[CommandHelp] = &[
         "      --reason <text>          Failure reason",
         "      --json                   Emit errors as JSON",
         "  -h, --help                   Print help",
+    ),
+    command_help!(
+        "track-close",
+        "Close this track (Planner)",
+        "Usage: neige track-close --message <text> [--json]",
+        "",
+        "Options:",
+        "      --message <text>  Why the track is closed",
+        "      --json            Emit errors as JSON",
+        "  -h, --help            Print help",
     ),
     command_help!(
         "track-gc",

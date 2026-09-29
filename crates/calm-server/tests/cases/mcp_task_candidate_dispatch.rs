@@ -144,8 +144,7 @@ async fn dispatch_legacy_empty_json_payload_and_reply_remain_compatible() {
             "declaration_withdrawn",
             "diagnostics",
             "executor_environment",
-            "task",
-            "track"
+            "task"
         ]
     );
     let stored: String = sqlx::query_scalar("SELECT contract_json FROM planner_dispatch_receipts")

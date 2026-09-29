@@ -5,53 +5,16 @@
 
 use calm_server::event::{Event, EventScope};
 use calm_server::ids::ActorId;
-use calm_server::model::{CardRole, Track, TrackLifecycle, TrackPatch};
+use calm_server::model::CardRole;
 use serde_json::json;
 use tokio::time::timeout;
 
 use crate::support;
 
 use support::mcp::{
-    CardBoot, TEST_BUDGET, boot_with_role, cli_output, connect, handshake, neige_cli_via_socket,
-    recv_frame, send_frame, tools_call_frame, wait_for_kind,
+    CardBoot, boot_with_role, cli_output, connect, handshake, neige_cli_via_socket, recv_frame,
+    send_frame, tools_call_frame, wait_for_kind,
 };
-
-async fn boot_track(b: &CardBoot) -> Track {
-    let card = b
-        .repo
-        .card_get(b.card_id.as_str())
-        .await
-        .expect("card lookup")
-        .expect("boot card exists");
-    b.repo
-        .track_get(card.track_id.as_str())
-        .await
-        .expect("track lookup")
-        .expect("boot track exists")
-}
-
-async fn set_boot_track_lifecycle(b: &CardBoot, lifecycle: TrackLifecycle) -> Track {
-    let track = boot_track(b).await;
-    b.repo
-        .track_update(
-            track.id.as_str(),
-            TrackPatch {
-                lifecycle: Some(lifecycle),
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("set test track lifecycle")
-}
-
-async fn recv_bus(
-    rx: &mut tokio::sync::broadcast::Receiver<calm_server::event::BroadcastEnvelope>,
-) -> calm_server::event::BroadcastEnvelope {
-    timeout(TEST_BUDGET, rx.recv())
-        .await
-        .expect("bus envelope within budget")
-        .expect("bus open")
-}
 
 fn retired_dispatch_payload() -> serde_json::Value {
     json!({
@@ -353,79 +316,6 @@ async fn legacy_alias_task_completed_still_dispatches_via_warn() {
         } => assert_eq!(idempotency_key, "tc-legacy"),
         other => panic!("expected TaskCompleted; got {other:?}"),
     }
-    let _ = (&b.server, &b.repo);
-}
-
-#[tokio::test]
-async fn task_completed_from_working_auto_promotes_track_to_reviewing() {
-    let b = boot_with_role(CardRole::Worker).await;
-    let track = set_boot_track_lifecycle(&b, TrackLifecycle::Working).await;
-    let mut rx = b.events.subscribe();
-    let (mut rd, mut wr) = connect(&b.socket_path).await;
-    handshake(&mut rd, &mut wr, &b.raw_token).await;
-
-    send_frame(
-        &mut wr,
-        tools_call_frame(
-            22,
-            "calm.task.complete",
-            &b.thread_id,
-            json!({"idempotency_key": "tc-auto-review", "result": {"ok": true}}),
-        ),
-    )
-    .await;
-    let resp = recv_frame(&mut rd).await;
-    assert!(resp.get("error").is_none(), "tool errored: {resp:#?}");
-
-    let task_env = recv_bus(&mut rx).await;
-    match &task_env.actor {
-        ActorId::AiCodexSession(session_id) => {
-            assert_eq!(session_id.as_str(), b.session_id.as_str())
-        }
-        other => panic!("expected worker actor first; got {other:?}"),
-    }
-    assert!(matches!(
-        task_env.event,
-        Event::TaskCompleted {
-            ref idempotency_key,
-            ..
-        } if idempotency_key == "tc-auto-review"
-    ));
-
-    let auto_changed = recv_bus(&mut rx).await;
-    assert!(matches!(auto_changed.actor, ActorId::Kernel));
-    match &auto_changed.event {
-        Event::TrackLifecycleChanged {
-            id,
-            area_id,
-            from,
-            to,
-            agent_message,
-        } => {
-            assert_eq!(id, &track.id);
-            assert_eq!(area_id, &track.area_id);
-            assert_eq!(*from, TrackLifecycle::Working);
-            assert_eq!(*to, TrackLifecycle::Reviewing);
-            assert_eq!(agent_message.as_deref(), Some("[auto] first task report"));
-        }
-        other => panic!("expected auto TrackLifecycleChanged after task report, got {other:?}"),
-    }
-
-    let auto_updated = recv_bus(&mut rx).await;
-    assert!(matches!(auto_updated.actor, ActorId::Kernel));
-    match &auto_updated.event {
-        Event::TrackUpdated(payload) => {
-            assert_eq!(payload.id, track.id);
-            assert_eq!(payload.lifecycle, TrackLifecycle::Reviewing);
-            assert_eq!(
-                payload.agent_message.as_deref(),
-                Some("[auto] first task report")
-            );
-        }
-        other => panic!("expected auto TrackUpdated after lifecycle change, got {other:?}"),
-    }
-    let post = b.repo.track_get(track.id.as_str()).await.unwrap().unwrap();
-    assert_eq!(post.lifecycle, TrackLifecycle::Reviewing);
     let _ = (&b.server, &b.repo);
 }
 

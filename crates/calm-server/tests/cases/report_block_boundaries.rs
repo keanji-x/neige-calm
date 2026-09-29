@@ -48,7 +48,6 @@ async fn local_prose_edit_preserves_task_after_unterminated_block_upserts() {
         TOOL_REPORT_COMMIT,
         planner_identity(&boot),
         json!({"if_doc_rev": snapshot["docRev"], "message": "local prose update",
-            "lifecycle": "dispatching",
             "ops": [{"op": "upsert", "id": second.id, "if_rev": second.rev, "kind": "prose",
                 "markdown": "# Second\nrevised decision"}]}),
     )

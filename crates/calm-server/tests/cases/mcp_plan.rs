@@ -15,9 +15,7 @@ use calm_server::mcp_server::tools::plan::{
 };
 use calm_server::mcp_server::tools::track_report_blocks::TOOL_REPORT_BLOCKS_UPSERT;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
-use calm_server::model::{
-    CardRole, NewArea, NewCard, NewTrack, TaskStatus, TrackLifecycle, TrackPatch, now_ms,
-};
+use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, TaskStatus, TrackPatch, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
@@ -249,19 +247,6 @@ fn worker_identity(boot: &Boot) -> ToolCallIdentity {
     }
 }
 
-async fn set_track_lifecycle(boot: &Boot, lifecycle: TrackLifecycle) {
-    boot.repo
-        .track_update(
-            boot.track_id.as_str(),
-            TrackPatch {
-                lifecycle: Some(lifecycle),
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("set test track lifecycle");
-}
-
 /// Direct SQL escape hatch for states the tool surface cannot produce.
 async fn exec_sql(boot: &Boot, sql: &str) {
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
@@ -446,7 +431,6 @@ async fn plan_upsert_shim_returns_migration_and_writes_nothing() {
 #[tokio::test]
 async fn cancel_pending_task_flips_row_and_emits_plan_updated() {
     let boot = boot().await;
-    set_track_lifecycle(&boot, TrackLifecycle::Planning).await;
     write_task_block(&boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
 
     let mut rx = boot.ctx.events.subscribe();
@@ -493,110 +477,33 @@ async fn cancel_pending_task_flips_row_and_emits_plan_updated() {
     assert!(no_event.is_err(), "idempotent cancel emitted: {no_event:?}");
 }
 
-/// An already-`canceled` task + a `lifecycle` arg must not short-circuit before the lifecycle
-/// applies; the guarded UPDATE flips 0 rows and the in-tx re-read classifies it as idempotent.
+/// `lifecycle` is removed; the shared write parser refuses it before anything is written.
 #[tokio::test]
-async fn cancel_already_canceled_with_lifecycle_applies_lifecycle_without_plan_updated() {
+async fn cancel_with_a_lifecycle_key_is_refused_and_writes_nothing() {
     let boot = boot().await;
-    set_track_lifecycle(&boot, TrackLifecycle::Planning).await;
     write_task_block(&boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
-    call_tool(
-        &boot,
-        TOOL_PLAN_CANCEL,
-        planner_identity(&boot),
-        json!({ "key": "a", "message": "obsolete" }),
-    )
-    .await
-    .expect("first cancel ok");
-
     let mut rx = boot.ctx.events.subscribe();
-    let out = call_tool(
+    let err = call_tool(
         &boot,
         TOOL_PLAN_CANCEL,
         planner_identity(&boot),
-        json!({ "key": "a", "message": "plan empty, moving on", "lifecycle": "dispatching" }),
+        json!({ "key": "a", "message": "plan empty, moving on", "lifecycle": "done" }),
     )
     .await
-    .expect("idempotent cancel with lifecycle ok");
-    assert_eq!(out["ok"], true);
-
-    // Row untouched, lifecycle applied.
+    .expect_err("a lifecycle key is refused");
+    assert!(
+        err.message
+            .contains("`lifecycle` is removed: close with calm.track.close"),
+        "{err:?}"
+    );
     let row = boot
         .repo
         .task_get(&format!("{}:a", boot.track_id.as_str()))
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(serde_json::to_value(row.status).unwrap(), json!("canceled"));
-    let track = boot
-        .repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(track.lifecycle, TrackLifecycle::Dispatching);
-
-    // `plan.updated` is suppressed: a retry must not re-trigger the scheduler.
-    let events = drain_events(&mut rx).await;
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, Event::TrackLifecycleChanged { .. })),
-        "lifecycle event missing: {events:?}"
-    );
-    assert!(
-        !events
-            .iter()
-            .any(|e| matches!(e, Event::PlanUpdated { .. })),
-        "idempotent cancel emitted plan.updated: {events:?}"
-    );
-}
-
-/// A same-state lifecycle on a re-cancel would otherwise produce an empty event batch, which
-/// `write_with_actor_events` rejects as an internal error.
-#[tokio::test]
-async fn cancel_already_canceled_with_same_state_lifecycle_is_idempotent_success() {
-    let boot = boot().await;
-    set_track_lifecycle(&boot, TrackLifecycle::Planning).await;
-    write_task_block(&boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
-    let args =
-        json!({ "key": "a", "message": "plan empty, moving on", "lifecycle": "dispatching" });
-    call_tool(
-        &boot,
-        TOOL_PLAN_CANCEL,
-        planner_identity(&boot),
-        args.clone(),
-    )
-    .await
-    .expect("first cancel with lifecycle ok");
-
-    // Retry the exact same call.
-    let mut rx = boot.ctx.events.subscribe();
-    let out = call_tool(&boot, TOOL_PLAN_CANCEL, planner_identity(&boot), args)
-        .await
-        .expect("idempotent re-cancel with same-state lifecycle must succeed");
-    assert_eq!(out["ok"], true);
-
-    let row = boot
-        .repo
-        .task_get(&format!("{}:a", boot.track_id.as_str()))
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(serde_json::to_value(row.status).unwrap(), json!("canceled"));
-    let track = boot
-        .repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(track.lifecycle, TrackLifecycle::Dispatching);
-
-    let events = drain_events(&mut rx).await;
-    assert!(
-        events.is_empty(),
-        "idempotent re-cancel must emit nothing: {events:?}"
-    );
+    assert_eq!(serde_json::to_value(row.status).unwrap(), json!("pending"));
+    assert!(drain_events(&mut rx).await.is_empty());
 }
 
 /// Every in-flight refusal is a `-32409` naming the current status, leaves the row and emits nothing.
@@ -636,7 +543,6 @@ async fn assert_cancel_refused(boot: &Boot, status: &str, expect: &str) {
 }
 
 async fn declare_bound_task(boot: &Boot, status: &str) {
-    set_track_lifecycle(boot, TrackLifecycle::Planning).await;
     write_task_block(boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
     exec_sql(
         boot,
@@ -711,7 +617,6 @@ async fn concurrent_second_cancel_of_a_running_task_is_idempotent() {
 #[tokio::test]
 async fn concurrent_second_cancel_of_a_pending_task_is_idempotent() {
     let boot = boot().await;
-    set_track_lifecycle(&boot, TrackLifecycle::Planning).await;
     write_task_block(&boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
     let handler = boot.registry.lookup(TOOL_PLAN_CANCEL).expect("cancel tool");
     let (ctx, identity) = (boot.ctx.clone(), planner_identity(&boot));
@@ -803,7 +708,6 @@ async fn cancel_running_task_without_worker_card_refused() {
 #[tokio::test]
 async fn cancel_rechecks_pending_inside_transaction_after_concurrent_state_advance() {
     let boot = boot().await;
-    set_track_lifecycle(&boot, TrackLifecycle::Planning).await;
     write_task_block(
         &boot,
         json!({ "key": "race", "kind": "codex", "goal": "g" }),
@@ -817,7 +721,7 @@ async fn cancel_rechecks_pending_inside_transaction_after_concurrent_state_advan
     let err = plan_cancel_after_pre_read_for_test(
         boot.ctx.clone(),
         planner_identity(&boot),
-        json!({"key": "race", "message": "too late", "lifecycle": "dispatching"}),
+        json!({"key": "race", "message": "too late"}),
         move || async move {
             sqlx::query("UPDATE tasks SET status='running' WHERE id=?1")
                 .bind(task_id_for_hook)
@@ -837,15 +741,6 @@ async fn cancel_rechecks_pending_inside_transaction_after_concurrent_state_advan
     let row = boot.repo.task_get(&task_id).await.unwrap().unwrap();
     assert_eq!(row.status, TaskStatus::Running);
     assert!(row.finished_at_ms.is_none());
-    assert_eq!(
-        boot.repo
-            .track_get(boot.track_id.as_str())
-            .await
-            .unwrap()
-            .unwrap()
-            .lifecycle,
-        TrackLifecycle::Planning
-    );
     assert!(
         drain_events(&mut rx).await.is_empty(),
         "rejected race must emit no event"
@@ -855,7 +750,6 @@ async fn cancel_rechecks_pending_inside_transaction_after_concurrent_state_advan
 #[tokio::test]
 async fn cancel_terminal_or_unknown_task_rejected() {
     let boot = boot().await;
-    set_track_lifecycle(&boot, TrackLifecycle::Planning).await;
     write_task_block(&boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
     exec_sql(&boot, "UPDATE tasks SET status = 'done' WHERE key = 'a'").await;
 
@@ -890,7 +784,6 @@ async fn cancel_terminal_or_unknown_task_rejected() {
 #[tokio::test]
 async fn track_delete_removes_plan_rows() {
     let boot = boot().await;
-    set_track_lifecycle(&boot, TrackLifecycle::Planning).await;
     write_task_block(&boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
     write_task_block(
         &boot,
@@ -913,7 +806,6 @@ async fn track_delete_removes_plan_rows() {
 #[tokio::test]
 async fn area_delete_removes_plan_rows() {
     let boot = boot().await;
-    set_track_lifecycle(&boot, TrackLifecycle::Planning).await;
     write_task_block(&boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
     assert_eq!(task_row_count(&boot).await, 1);
 
@@ -931,7 +823,6 @@ async fn area_delete_removes_plan_rows() {
 #[tokio::test]
 async fn list_returns_plan_shape_without_gate_commands() {
     let boot = boot().await;
-    set_track_lifecycle(&boot, TrackLifecycle::Planning).await;
     write_task_block(
         &boot,
         json!({ "key": "a", "kind": "codex", "goal": "g",
