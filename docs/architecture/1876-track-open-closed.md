@@ -97,7 +97,7 @@ The guards key on `child.closed_at IS NOT NULL` with the same quiescence subquer
 
 - **User.** `TrackPatch` drops `lifecycle` and `archived_at` and gains `closed: bool`; the server
   stamps the time.
-  - Area-chat tracks refuse `closed`, as `lifecycle` is refused today.
+  - Area-chat tracks refuse a change to `closed`.
   - `can_resume` becomes `can_reopen` = closed ∧ ¬area-chat ∧ ¬referenced child.
   - "Resume work" becomes **Reopen**. **Close** is a new track action in PR-2.
 - **Planner.** New tool `calm.track.close {message}` (Planner-only) emits `track.updated` with
@@ -391,6 +391,8 @@ Merge order: #1873, then #1876 PR-1, then PR-2. #1873 has no migration, so the n
 
 ## 9. KNOWN GAPS
 
+- A REST close racing another close can persist a second `track.updated`; `closed_at` keeps the
+  first stamp (the same-state check reads outside the tx).
 - A child closed as a failure counts as success; the parent verdict is the check.
 - A root whose Planner never starts stays open with no item. It was `failed` before (F14).
 - The mobile Area page and Today do not hide closed tracks. Only the desktop rail does (PR-2).

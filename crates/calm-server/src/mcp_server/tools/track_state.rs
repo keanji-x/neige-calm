@@ -247,7 +247,7 @@ async fn track_close(
     let (_, track) = resolve_track_for_identity(&ctx, &identity).await?;
     let recorder = CardDecisionSinkRecorderShadowProbe::for_identity(&identity, track.id.clone());
     // A close that finds the track already closed writes nothing: the batch may not be empty, so
-    // the closure leaves the stamp here and ends the transaction as a lost race.
+    // the closure leaves the stamp here and rolls the transaction back with any error.
     let already_closed = Arc::new(std::sync::OnceLock::<i64>::new());
     let already_closed_in_tx = Arc::clone(&already_closed);
     let scope = EventScope::Track {
@@ -270,7 +270,7 @@ async fn track_close(
                 let current = crate::db::sqlite::track_get_tx(tx, &track.id).await?;
                 if let Some(closed_at) = current.closed_at {
                     let _ = already_closed_in_tx.set(closed_at);
-                    return Err(crate::scheduler::race_lost_err());
+                    return Err(CalmError::Conflict("track already closed".into()));
                 }
                 let closed = crate::db::sqlite::track_update_tx(
                     tx,
@@ -295,9 +295,7 @@ async fn track_close(
     .await;
     let closed = match written {
         Ok((closed_at, _)) => closed_at,
-        Err(e) if crate::scheduler::is_race_lost(&e) => *already_closed.get().ok_or_else(|| {
-            RpcError::internal(format!("{TOOL_TRACK_CLOSE}: no-op close lost its stamp"))
-        })?,
+        Err(_) if let Some(closed_at) = already_closed.get() => *closed_at,
         Err(CalmError::Forbidden(msg)) => {
             return Err(RpcError::custom(
                 -32403,
