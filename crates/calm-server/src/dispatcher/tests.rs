@@ -295,29 +295,21 @@ fn dispatcher_filter_matches_push_kinds() {
         changed_keys: vec!["impl-parser".into()],
         agent_message: None,
     })));
-    assert!(filter.matches(&env(Event::TrackLifecycleChanged {
-        id: track.clone(),
-        area_id: area.clone(),
-        from: crate::model::TrackLifecycle::Draft,
-        to: crate::model::TrackLifecycle::Planning,
-        agent_message: None,
-    })));
-    assert!(!filter.matches(&env(Event::TrackUpdated(
+    // A close or reopen arrives as `track.updated`; it pokes the scheduler and concludes a child's parent task.
+    assert!(filter.matches(&env(Event::TrackUpdated(
         crate::event::TrackUpdatedPayload::new(
             crate::model::Track {
                 id: track.clone(),
                 area_id: area.clone(),
                 title: "w".into(),
                 sort: 0.0,
-                archived_at: None,
                 pinned_at: None,
-                lifecycle: crate::model::TrackLifecycle::Working,
+                closed_at: None,
                 cwd_wire_alias: String::new(),
                 template_id: None,
                 plugin_scope: None,
                 purpose: None,
                 template_input: None,
-                terminal_at: None,
                 recipe_id: None,
                 recipe_revision: None,
                 claude_permissions_policy: None,
@@ -2460,15 +2452,13 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
                     area_id: area.clone(),
                     title: "w".into(),
                     sort: 0.0,
-                    archived_at: None,
                     pinned_at: None,
-                    lifecycle: crate::model::TrackLifecycle::Working,
+                    closed_at: None,
                     cwd_wire_alias: String::new(),
                     template_id: None,
                     plugin_scope: None,
                     purpose: None,
                     template_input: None,
-                    terminal_at: None,
                     recipe_id: None,
                     recipe_revision: None,
                     claude_permissions_policy: None,
@@ -2515,18 +2505,6 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
                 proposal_id: "pp-1".into(),
                 plugin_id: "dev.neige.invest".into(),
                 decision: calm_types::proposal::ProposalDecision::Accepted,
-            },
-            ActorId::User,
-            false,
-            false,
-        ),
-        row(
-            Event::TrackLifecycleChanged {
-                id: track.clone(),
-                area_id: area.clone(),
-                from: crate::model::TrackLifecycle::Draft,
-                to: crate::model::TrackLifecycle::Planning,
-                agent_message: None,
             },
             ActorId::User,
             false,
@@ -4031,8 +4009,6 @@ mod report_edit_block_refs {
             TrackReportPayload::new("s".to_string(), body.to_string()),
             if_doc_rev,
             None,
-            None,
-            false,
         )
         .await
         .unwrap();
@@ -4098,5 +4074,117 @@ mod report_edit_block_refs {
         let (doc_rev_after, blocks_after) = resolve(&fx, &second).await;
         assert!(doc_rev_after.is_some(), "the newest edit still aligns");
         assert_eq!(blocks_after.map(|refs| refs.len()), Some(2));
+    }
+}
+
+/// A close arrives as `track.updated` with `closed_at`; the dispatcher concludes the task that
+/// spawned the closed track at once, without waiting for the periodic sweep.
+#[tokio::test]
+async fn track_updated_with_closed_at_reconciles_the_child() {
+    use crate::db::prelude::*;
+    use crate::db::sqlite::SqlxRepo;
+    use crate::model::{NewArea, NewTrack, TrackPatch};
+    use crate::routes::theme::RequestTheme;
+    use crate::state::{CodexClient, DaemonClient, WriteContext};
+    use crate::track_area_cache::TrackAreaCache;
+
+    let sqlx_repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let repo: Arc<dyn Repo> = sqlx_repo.clone();
+    let area = repo
+        .area_create(NewArea {
+            name: "close".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let new_track = |title: &str| NewTrack {
+        template_input: None,
+        area_id: area.id.clone(),
+        title: title.into(),
+        sort: None,
+        cwd: String::new(),
+        template_id: None,
+        plugin_scope: None,
+        attach_folder: false,
+        theme: RequestTheme::default_dark(),
+    };
+    let parent = repo.track_create(new_track("parent")).await.unwrap();
+    let child = repo.track_create(new_track("child")).await.unwrap();
+    let task_id = format!("{}:spawn-child", parent.id);
+    sqlx::query(
+        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,declared_by,spawn,\
+         child_track_id,created_at_ms,updated_at_ms) \
+         VALUES(?1,?2,'spawn-child','codex','g','{}','running','spec','sub-wave',?3,1,1)",
+    )
+    .bind(&task_id)
+    .bind(parent.id.as_str())
+    .bind(child.id.as_str())
+    .execute(sqlx_repo.pool())
+    .await
+    .unwrap();
+
+    let events = EventBus::new();
+    let track_area_cache = TrackAreaCache::new();
+    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
+    let write = WriteContext::new(CardRoleCache::new(), track_area_cache);
+    let workspace = tempfile::tempdir().unwrap();
+    let _dispatcher = Dispatcher::spawn(
+        repo.clone(),
+        events.clone(),
+        write.clone(),
+        Arc::new(CodexClient::new_stub()),
+        Arc::new(DaemonClient {
+            data_dir: workspace.path().join("daemon"),
+            proc_supervisor_sock: None,
+        }),
+        None,
+        crate::shared_codex_appserver::SharedCodexAppServer::new_stub(repo.clone()),
+        workspace.path().to_path_buf(),
+        4,
+    );
+
+    let scope = EventScope::Track {
+        track: child.id.clone(),
+        area: child.area_id.clone(),
+    };
+    let child_id = child.id.clone();
+    crate::db::write_with_events_typed(
+        repo.as_ref(),
+        ActorId::User,
+        None,
+        &events,
+        &write,
+        move |tx| {
+            Box::pin(async move {
+                let closed = crate::db::sqlite::track_update_tx(
+                    tx,
+                    child_id.as_str(),
+                    TrackPatch {
+                        closed: Some(true),
+                        ..TrackPatch::default()
+                    },
+                )
+                .await?;
+                let event =
+                    Event::TrackUpdated(crate::event::TrackUpdatedPayload::new(closed, None));
+                Ok(((), vec![(scope, event)]))
+            })
+        },
+    )
+    .await
+    .unwrap();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let status = repo.task_get(&task_id).await.unwrap().unwrap().status;
+        if status == crate::model::TaskStatus::Done {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "closing the child must conclude its parent task; still {status:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 }

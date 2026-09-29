@@ -444,7 +444,7 @@ async fn candidate_verification_canceled_unsubmitted_reservation_replays_without
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("UPDATE tracks SET lifecycle='canceled' WHERE id=?1")
+    sqlx::query("UPDATE tracks SET closed_at=1 WHERE id=?1")
         .bind(&task.track_id)
         .execute(&pool)
         .await

@@ -321,7 +321,7 @@ async fn recovery_refuses_every_retired_or_untrusted_carrier() {
             handle_state_json=json_set(handle_state_json,'$.last_thread_id','different-thread') WHERE id=?",
         "UPDATE worker_sessions SET \
             thread_id=NULL,handle_state_json=json_remove(handle_state_json,'$.last_thread_id') WHERE id=?",
-        "UPDATE tracks SET lifecycle='done' WHERE id=(SELECT track_id FROM worker_sessions WHERE id=?)",
+        "UPDATE tracks SET closed_at=1 WHERE id=(SELECT track_id FROM worker_sessions WHERE id=?)",
         "UPDATE cards SET session_id=NULL WHERE session_id=?",
     ] {
         let boot = boot_fake_running().await;

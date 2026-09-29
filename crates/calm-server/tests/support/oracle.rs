@@ -62,7 +62,6 @@ pub async fn assert_subject_keyed_cap_enforcement(repo: &SqlxRepo, track_id: &st
     let rounds = event_rows(repo, "review.round").await;
     let merges = event_rows(repo, "forge.pr.merged").await;
     let issue_closed = event_rows(repo, "forge.issue.closed").await;
-    let lifecycle = event_rows(repo, "track.lifecycle_changed").await;
     let ratify_resolved = event_rows(repo, "ratify.resolved").await;
 
     let mut max_round_by_subject: HashMap<SubjectKey, EventRow> = HashMap::new();
@@ -129,14 +128,6 @@ pub async fn assert_subject_keyed_cap_enforcement(repo: &SqlxRepo, track_id: &st
         assert!(
             !issue_closed.iter().any(|row| row.id > max_round.id),
             "unconverged max-n subject {key:?} must not close an issue later"
-        );
-        assert!(
-            !lifecycle.iter().any(|row| {
-                row.id > max_round.id
-                    && row.scope_track.as_deref() == Some(track_id)
-                    && row.payload["to"] == "done"
-            }),
-            "unconverged max-n subject {key:?} must not reach done later"
         );
     }
 }

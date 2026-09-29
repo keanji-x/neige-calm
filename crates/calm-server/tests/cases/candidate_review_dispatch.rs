@@ -15,18 +15,8 @@ async fn dispatch_candidate_waits_for_acceptance_then_prepares_exact_files_and_d
     .await;
     bind_planner(&fx.boot, &planner_identity(&fx.boot).session_id, false).await;
     report_review(&fx, true).await;
-    // Reviewing is already schedulable: dispatch/verdict need no report edit.
-    sqlx::query("UPDATE tracks SET lifecycle='reviewing' WHERE id=?1")
-        .bind(fx.boot.track_id.as_str())
-        .execute(&fx.boot.repo.sqlite_pool().unwrap())
-        .await
-        .unwrap();
+    // An open track schedules: dispatch/verdict need no report edit.
     let first = dispatch(&fx.boot, candidate_args()).await.unwrap();
-    assert_eq!(first["current"]["track"]["lifecycle"], "reviewing");
-    assert_eq!(
-        first["current"]["track"]["lifecycle_allows_scheduling"],
-        true
-    );
     let key = first["receipt"]["task_key"].as_str().unwrap();
     let report = payload(&fx.boot).await;
     schedule(&fx).await;
@@ -121,8 +111,10 @@ async fn dispatch_candidate_waits_for_acceptance_then_prepares_exact_files_and_d
         );
     }
     assert!(replay["current"].get("file_delivery").is_none());
-    // The scheduler, not a Planner report edit, advances lifecycle on actual start.
-    assert_eq!(replay["current"]["track"]["lifecycle"], "working");
+    assert!(
+        replay["current"].get("track").is_none(),
+        "the dispatch response echoes no track row"
+    );
     settle(&fx, &consume, true).await;
 }
 

@@ -902,14 +902,14 @@ async fn a_repointed_workspace_and_a_different_actor_reuse_the_one_summary_conve
     assert_eq!(enqueued, 4);
 }
 
-/// Drives two production write paths and reads the answer out of the endpoint's own gate; the launchpad's
+/// Drives a production write path and reads the answer out of the endpoint's own gate; the launchpad's
 /// own report edits are in the system area and must never be what keeps the window non-empty.
 #[tokio::test]
-async fn a_real_report_edit_and_a_real_lifecycle_change_are_both_counted_as_activity() {
+async fn a_real_report_edit_is_counted_as_activity() {
     let b = boot().await;
     let track_id = b.user_track("real").await;
 
-    // Nothing yet — so the two writes below are the only reason the gate opens.
+    // Nothing yet — so the write below is the only reason the gate opens.
     let (status, _) = b.summary(None).await;
     assert_eq!(status, StatusCode::CONFLICT);
 
@@ -919,29 +919,6 @@ async fn a_real_report_edit_and_a_real_lifecycle_change_are_both_counted_as_acti
         status,
         StatusCode::OK,
         "a real `track.report_edited` must count as activity: {body}"
-    );
-
-    // A fresh database for the lifecycle half, so the report edit above cannot
-    // be what opens the gate.
-    let b = boot().await;
-    let track_id = b.user_track("real").await;
-    let (status, _) = b.summary(None).await;
-    assert_eq!(status, StatusCode::CONFLICT);
-
-    let (status, patched) = b
-        .request(
-            "PATCH",
-            &format!("/api/tracks/{track_id}"),
-            None,
-            Some(json!({"lifecycle": "planning"})),
-        )
-        .await;
-    assert_eq!(status, StatusCode::OK, "body={patched}");
-    let (status, body) = b.summary(None).await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "a real `track.lifecycle_changed` must count as activity: {body}"
     );
 }
 

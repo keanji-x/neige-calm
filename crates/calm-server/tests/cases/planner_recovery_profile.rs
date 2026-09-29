@@ -91,7 +91,7 @@ async fn cold_assistant_recovery_preserves_its_mcp_profile() {
 async fn ineligible_failed_sessions_do_not_advertise_send_to_resume() {
     for change in [
         "UPDATE worker_sessions SET queue_harvested_at_ms=1 WHERE id=?",
-        "UPDATE tracks SET lifecycle='done' WHERE id=(SELECT track_id FROM worker_sessions WHERE id=?)",
+        "UPDATE tracks SET closed_at=1 WHERE id=(SELECT track_id FROM worker_sessions WHERE id=?)",
         "UPDATE worker_sessions SET handle_state_json=json_set(handle_state_json,'$.last_thread_id','other-thread') WHERE id=?",
     ] {
         let boot = boot_fake_running().await;

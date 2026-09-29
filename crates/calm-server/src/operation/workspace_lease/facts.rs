@@ -98,7 +98,7 @@ pub(crate) async fn worker_worktree_facts_tx(
             // #1830 S2 D4: the track's worker branch names only a lease at the track's current
             // checkout; a per-card lease from before S2 ran on a branch its row does not record.
             let track_id = crate::ids::TrackId::from(lease.track_id.clone());
-            let track = crate::track_lifecycle::track_get_tx(tx, &track_id).await?;
+            let track = crate::db::sqlite::track_get_tx(tx, &track_id).await?;
             if track.workspace.agent_cwd() == lease.path {
                 Some(worker_branch_tx(tx, &lease.track_id).await?)
             } else {

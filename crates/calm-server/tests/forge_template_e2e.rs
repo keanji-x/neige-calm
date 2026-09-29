@@ -29,9 +29,7 @@ use calm_server::mcp_server::tools::review::{TOOL_RATIFY_REQUEST, TOOL_REVIEW_RO
 use calm_server::mcp_server::{
     AppContext, McpServer, ToolCallIdentity, ToolRegistry, build_default_registry,
 };
-use calm_server::model::{
-    CardRole, NewArea, NewCard, NewPlugin, NewTrack, TrackLifecycle, new_id, now_ms,
-};
+use calm_server::model::{CardRole, NewArea, NewCard, NewPlugin, NewTrack, new_id, now_ms};
 use calm_server::operation::forge_action_adapter::{
     FORGE_ACTION_KIND, ForgeActionAdapter, ForgeActionPayload, ProbeSpec,
 };
@@ -674,13 +672,7 @@ async fn git_forge_happy_path_persists_ordered_template_events() {
     assert_track_event(&issue_closed, &fx.track_id);
     assert_eq!(issue_closed.payload["issue_number"], 810);
 
-    transition_track_to_done(&fx).await;
-    let done = wait_for_event_matching(&fx.repo, "track.lifecycle_changed", |row| {
-        row.scope_track.as_deref() == Some(&fx.track_id) && row.payload["to"] == "done"
-    })
-    .await;
-    assert_eq!(done.payload["from"], "reviewing");
-    assert_eq!(done.payload["to"], "done");
+    let done = close_track(&fx, "e2e done").await;
 
     assert!(opened.id < diff.id, "PR opened must precede diff read");
     assert!(
@@ -693,7 +685,7 @@ async fn git_forge_happy_path_persists_ordered_template_events() {
     );
     assert!(
         issue_closed.id < done.id,
-        "issue close must precede done lifecycle transition"
+        "issue close must precede the close of the track"
     );
 
     fx.plugin_host
@@ -1096,11 +1088,7 @@ async fn dual_review_converges_then_merges() {
 
     let merged = merge_reviewed_pr(&fx, 44, &pr, "760").await;
     let issue_closed = close_issue(&fx, 46, &pr.repo_arg, 760).await;
-    transition_track_to_done(&fx).await;
-    let done = wait_for_event_matching(&fx.repo, "track.lifecycle_changed", |row| {
-        row.scope_track.as_deref() == Some(&fx.track_id) && row.payload["to"] == "done"
-    })
-    .await;
+    let done = close_track(&fx, "e2e done").await;
 
     assert!(
         design_round.id < impl_dispatch.id,
@@ -1127,7 +1115,7 @@ async fn dual_review_converges_then_merges() {
 }
 
 #[tokio::test]
-async fn cap_exhausted_give_up_fails_terminal() {
+async fn cap_exhausted_give_up_closes_the_track() {
     let _env_lock = FORGE_ENV_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
@@ -1151,24 +1139,8 @@ async fn cap_exhausted_give_up_fails_terminal() {
     )
     .await;
 
-    transition_track_along(
-        &fx,
-        &[
-            TrackLifecycle::Planning,
-            TrackLifecycle::Dispatching,
-            TrackLifecycle::Working,
-            TrackLifecycle::Reviewing,
-            TrackLifecycle::Failed,
-        ],
-        "scripted give-up after cap exhaustion",
-    )
-    .await;
-    let failed = wait_for_event_matching(&fx.repo, "track.lifecycle_changed", |row| {
-        row.scope_track.as_deref() == Some(&fx.track_id) && row.payload["to"] == "failed"
-    })
-    .await;
-    assert_eq!(failed.payload["from"], "reviewing");
-    assert!(cap_round.id < failed.id);
+    let closed = close_track(&fx, "scripted give-up after cap exhaustion").await;
+    assert!(cap_round.id < closed.id);
     assert!(
         event_rows(&fx.repo, "forge.pr.merged")
             .await
@@ -1203,58 +1175,13 @@ async fn cap_exhausted_ask_human_pauses_then_resumes() {
         "Review ask-human E2E",
     )
     .await;
-    transition_track_along(
-        &fx,
-        &[
-            TrackLifecycle::Planning,
-            TrackLifecycle::Dispatching,
-            TrackLifecycle::Working,
-            TrackLifecycle::Reviewing,
-        ],
-        "ready for capped review",
-    )
-    .await;
     let cap_round = emit_review_round(
         &fx,
         &ReviewRoundInput::impl_round("760", pr.pr_number, &pr.head_sha, 1, 1, false),
     )
     .await;
-    transition_track_along(
-        &fx,
-        &[TrackLifecycle::Working],
-        "ask human after capped review",
-    )
-    .await;
     let request = request_ratification(&fx, "cap_exhausted").await;
-
-    let lifecycle = event_rows(&fx.repo, "track.lifecycle_changed").await;
-    let reviewing_to_working = lifecycle
-        .iter()
-        .find(|row| {
-            row.id > cap_round.id
-                && row.scope_track.as_deref() == Some(&fx.track_id)
-                && row.payload["from"] == "reviewing"
-                && row.payload["to"] == "working"
-        })
-        .expect("reviewing->working edge before ratify");
-    let working_to_blocked = lifecycle
-        .iter()
-        .find(|row| {
-            row.id > reviewing_to_working.id
-                && row.scope_track.as_deref() == Some(&fx.track_id)
-                && row.payload["from"] == "working"
-                && row.payload["to"] == "blocked"
-        })
-        .expect("working->blocked edge from ratify request");
-    assert!(working_to_blocked.id < request.id);
-    assert!(
-        lifecycle.iter().all(|row| {
-            !(row.scope_track.as_deref() == Some(&fx.track_id)
-                && row.payload["from"] == "reviewing"
-                && row.payload["to"] == "blocked")
-        }),
-        "ASK-HUMAN must not use a direct reviewing->blocked edge"
-    );
+    assert!(cap_round.id < request.id);
     assert!(
         event_rows(&fx.repo, "forge.pr.merged").await.is_empty(),
         "merge must be absent while latest subject round is unconverged before grant"
@@ -1267,21 +1194,8 @@ async fn cap_exhausted_ask_human_pauses_then_resumes() {
         row.scope_track.as_deref() == Some(&fx.track_id) && row.payload["decision"] == "grant"
     })
     .await;
-    let unblocked = wait_for_event_matching(&fx.repo, "track.lifecycle_changed", |row| {
-        row.id > request.id
-            && row.scope_track.as_deref() == Some(&fx.track_id)
-            && row.payload["from"] == "blocked"
-            && row.payload["to"] == "working"
-    })
-    .await;
-    assert!(unblocked.id < resolved.id);
+    assert!(request.id < resolved.id);
 
-    transition_track_along(
-        &fx,
-        &[TrackLifecycle::Reviewing],
-        "resume review after grant",
-    )
-    .await;
     // Post-grant extension round: the kernel accepts exactly previous cap + 2 (cap 1 -> 3).
     let converged = emit_review_round(
         &fx,
@@ -1290,12 +1204,7 @@ async fn cap_exhausted_ask_human_pauses_then_resumes() {
     .await;
     let merged = merge_reviewed_pr(&fx, 64, &pr, "760").await;
     close_issue(&fx, 66, &pr.repo_arg, 762).await;
-    transition_track_along(
-        &fx,
-        &[TrackLifecycle::Done],
-        "done after ratified convergence",
-    )
-    .await;
+    close_track(&fx, "done after ratified convergence").await;
 
     assert!(resolved.id < converged.id);
     assert!(converged.id < merged.id);
@@ -1317,16 +1226,6 @@ async fn review_round_does_not_recover_into_pending_queue_but_ratify_events_do()
     let _env = setup_forge_env();
 
     let fx = boot_fixture().await;
-    transition_track_along(
-        &fx,
-        &[
-            TrackLifecycle::Planning,
-            TrackLifecycle::Dispatching,
-            TrackLifecycle::Working,
-        ],
-        "recovery ratify setup",
-    )
-    .await;
     let input = ReviewRoundInput::impl_round("760", 760, "head-sha-recovery", 1, 1, false);
     emit_review_round(&fx, &input).await;
     request_ratification(&fx, "cap_exhausted").await;
@@ -2249,14 +2148,14 @@ async fn delete_track(fx: &Fixture) -> StatusCode {
         .status()
 }
 
-async fn transition_track_along(fx: &Fixture, targets: &[TrackLifecycle], message: &str) {
+/// The Planner closes the track (as `calm.track.close` does); returns the `track.updated` row.
+async fn close_track(fx: &Fixture, message: &str) -> EventRow {
     let track_id = TrackId::from(fx.track_id.clone());
     let scope = EventScope::Track {
         track: track_id.clone(),
         area: AreaId::from(fx.area_id.clone()),
     };
     let actor = ActorId::AiPlanner(CardId::from(fx.planner_card_id.clone()));
-    let targets = targets.to_vec();
     let message = message.to_string();
     write_with_actor_events_typed::<(), _>(
         fx.repo.as_ref(),
@@ -2267,35 +2166,31 @@ async fn transition_track_along(fx: &Fixture, targets: &[TrackLifecycle], messag
             let track_id = track_id.clone();
             let scope = scope.clone();
             let actor = actor.clone();
-            let targets = targets.clone();
             let message = message.clone();
             Box::pin(async move {
-                let mut events = Vec::new();
-                for target in targets {
-                    let lifecycle_events =
-                        calm_server::track_lifecycle::apply_requested_transition_in_tx(
-                            tx,
-                            &track_id,
-                            target,
-                            &actor,
-                            message.clone(),
-                        )
-                        .await?
-                        .unwrap_or_else(|| {
-                            panic!("expected lifecycle transition to {target:?} to persist")
-                        });
-                    events.extend(
-                        lifecycle_events
-                            .into_iter()
-                            .map(|event| (actor.clone(), scope.clone(), event)),
-                    );
-                }
-                Ok(((), events))
+                let closed = calm_server::db::sqlite::track_update_tx(
+                    tx,
+                    track_id.as_str(),
+                    calm_server::model::TrackPatch {
+                        closed: Some(true),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+                let event = Event::TrackUpdated(calm_server::event::TrackUpdatedPayload::new(
+                    closed,
+                    Some(message),
+                ));
+                Ok(((), vec![(actor, scope, event)]))
             })
         },
     )
     .await
-    .expect("transition track lifecycle");
+    .expect("close the track");
+    wait_for_event_matching(&fx.repo, "track.updated", |row| {
+        row.scope_track.as_deref() == Some(&fx.track_id) && !row.payload["closed_at"].is_null()
+    })
+    .await
 }
 
 async fn emit_scripted_impl_dispatch(fx: &Fixture, slice_id: &str) -> EventRow {
@@ -2794,56 +2689,6 @@ fn assert_track_event(row: &EventRow, track_id: &str) {
     assert_eq!(row.scope_track.as_deref(), Some(track_id));
     assert!(row.scope_card.is_none());
     assert_eq!(row.payload["track_id"], track_id);
-}
-
-async fn transition_track_to_done(fx: &Fixture) {
-    let track_id = TrackId::from(fx.track_id.clone());
-    let scope = EventScope::Track {
-        track: track_id.clone(),
-        area: AreaId::from(fx.area_id.clone()),
-    };
-    let actor = ActorId::Kernel;
-    write_with_actor_events_typed::<(), _>(
-        fx.repo.as_ref(),
-        None,
-        &fx.events,
-        &fx.write,
-        move |tx| {
-            let track_id = track_id.clone();
-            let scope = scope.clone();
-            let actor = actor.clone();
-            Box::pin(async move {
-                let mut events = Vec::new();
-                for (target, message) in [
-                    (TrackLifecycle::Planning, "e2e planning"),
-                    (TrackLifecycle::Dispatching, "e2e dispatching"),
-                    (TrackLifecycle::Working, "e2e working"),
-                    (TrackLifecycle::Reviewing, "e2e reviewing"),
-                    (TrackLifecycle::Done, "e2e done"),
-                ] {
-                    if let Some(lifecycle_events) =
-                        calm_server::track_lifecycle::apply_requested_transition_in_tx(
-                            tx,
-                            &track_id,
-                            target,
-                            &actor,
-                            message.to_string(),
-                        )
-                        .await?
-                    {
-                        events.extend(
-                            lifecycle_events
-                                .into_iter()
-                                .map(|event| (actor.clone(), scope.clone(), event)),
-                        );
-                    }
-                }
-                Ok(((), events))
-            })
-        },
-    )
-    .await
-    .expect("transition track to done");
 }
 
 fn manifest_path() -> PathBuf {

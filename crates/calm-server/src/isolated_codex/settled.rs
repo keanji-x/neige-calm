@@ -32,7 +32,7 @@ pub(super) async fn record_tx(tx: &mut Tx<'_>, op: &Operation) -> Result<Vec<Bro
     if exists {
         return Ok(Vec::new());
     }
-    let track = crate::track_lifecycle::track_get_tx(tx, &task.track_id.clone().into()).await?;
+    let track = crate::db::sqlite::track_get_tx(tx, &task.track_id.clone().into()).await?;
     let actor = ActorId::KernelDispatcher;
     let scope = EventScope::Track {
         track: track.id,

@@ -11,10 +11,8 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::ActorId;
-use calm_server::model::{
-    NewArea, NewCard, NewTrack, Overlay, Task, TaskKind, TaskStatus, TrackLifecycle,
-};
-use calm_server::model::{TrackPatch, new_id, now_ms};
+use calm_server::model::{NewArea, NewCard, NewTrack, Overlay, Task, TaskKind, TaskStatus};
+use calm_server::model::{new_id, now_ms};
 use calm_server::replay::{self, Fixture};
 use calm_server::routes;
 use calm_server::session_projection_repo::{
@@ -264,15 +262,6 @@ async fn replay_router_terminal_card_create_persists_without_supervisor() {
     state
         .track_area_cache
         .insert(track.id.clone(), area.id.clone());
-    repo.track_update(
-        track.id.as_str(),
-        TrackPatch {
-            lifecycle: Some(TrackLifecycle::Dispatching),
-            ..Default::default()
-        },
-    )
-    .await
-    .expect("open scheduler lifecycle");
     let track_id = track.id.to_string();
 
     let worker_key = "replay-terminal-worker-hook";

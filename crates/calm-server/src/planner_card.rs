@@ -18,7 +18,7 @@ pub(crate) const WORKER_CODEX_SYSTEM_PROMPT: &str = concat!(
 );
 
 /// The track assistant's system prompt: ordinary head, the mechanics shared by both assistant identities, and the ordinary tail.
-/// Deliberately not a trimmed planner prompt: every lifecycle/plan tool rejects `CardRole::Assistant` at the handler. Pinned by `tests/goldens/assistant_prompt.txt`.
+/// Deliberately not a trimmed planner prompt: every close/plan tool rejects `CardRole::Assistant` at the handler. Pinned by `tests/goldens/assistant_prompt.txt`.
 pub(crate) const ASSISTANT_SYSTEM_PROMPT_TEMPLATE: &str = concat!(
     include_str!("../prompts/assistant/ordinary-head.md"),
     include_str!("../prompts/assistant/mechanics.md"),

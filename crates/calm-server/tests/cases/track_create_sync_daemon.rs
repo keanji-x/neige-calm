@@ -347,10 +347,9 @@ async fn post_api_tracks_persists_track_cwd_and_attach_folder() {
     assert_eq!(folders[0].path, cwd);
 }
 
-/// After `POST /api/tracks` and walking the track to Done, the GET detail must surface `terminal_at = Some(_)`.
+/// After `POST /api/tracks` and a close, the GET detail must surface `closed_at = Some(_)`.
 #[tokio::test]
-async fn post_api_tracks_then_lifecycle_done_surfaces_terminal_at_in_get() {
-    use calm_server::model::TrackLifecycle;
+async fn post_api_tracks_then_close_surfaces_closed_at_in_get() {
     let boot = boot().await;
 
     let (status, body) = post(
@@ -373,28 +372,19 @@ async fn post_api_tracks_then_lifecycle_done_surfaces_terminal_at_in_get() {
         .expect("track id in response")
         .to_string();
 
-    // March the track through the happy path to Done via the repo (`track_update_tx`) so no PlannerAgent
-    // actor is needed at the route boundary.
-    for step in [
-        TrackLifecycle::Planning,
-        TrackLifecycle::Dispatching,
-        TrackLifecycle::Working,
-        TrackLifecycle::Reviewing,
-        TrackLifecycle::Done,
-    ] {
-        boot.repo
-            .track_update(
-                &track_id,
-                calm_server::model::TrackPatch {
-                    lifecycle: Some(step),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-    }
+    // Close through the repo (`track_update_tx`) so no actor is needed at the route boundary.
+    boot.repo
+        .track_update(
+            &track_id,
+            calm_server::model::TrackPatch {
+                closed: Some(true),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
 
-    // GET /api/tracks/:id must surface the terminal_at stamp.
+    // GET /api/tracks/:id must surface the closed_at stamp.
     let resp = boot
         .app
         .clone()
@@ -410,11 +400,11 @@ async fn post_api_tracks_then_lifecycle_done_surfaces_terminal_at_in_get() {
     assert_eq!(resp.status(), StatusCode::OK);
     let detail: Value =
         serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    let terminal_at = detail
-        .pointer("/track/terminal_at")
-        .expect("track/terminal_at in TrackDetail body");
+    let closed_at = detail
+        .pointer("/track/closed_at")
+        .expect("track/closed_at in TrackDetail body");
     assert!(
-        terminal_at.is_i64(),
-        "terminal_at must be a unix-ms integer after lifecycle → Done; got {terminal_at}",
+        closed_at.is_i64(),
+        "closed_at must be a unix-ms integer after a close; got {closed_at}",
     );
 }

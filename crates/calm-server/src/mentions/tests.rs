@@ -127,8 +127,6 @@ async fn report(
             TrackReportPayload::new(String::new(), body.to_string()),
             0,
             None,
-            None,
-            false,
         )
         .await
         .unwrap();

@@ -10,12 +10,9 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{BroadcastEnvelope, Event, EventBus, EventScope};
 use calm_server::ids::ActorId;
-use calm_server::model::{NewArea, NewCard, NewOverlay, NewTrack, TrackLifecycle, TrackPatch};
+use calm_server::model::{NewArea, NewCard, NewOverlay, NewTrack, TrackPatch};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
-use calm_server::routes::tracks::{
-    TrackLifecyclePatchRaceHook, install_track_lifecycle_patch_race_hook_for_test,
-};
 use calm_server::state::{AppState, DaemonClient};
 use calm_server::validation::SERVER_OWNED_CARD_PAYLOAD_KEYS;
 use http_body_util::BodyExt;
@@ -956,32 +953,33 @@ async fn track_detail_keeps_kernel_owned_supported_schema_version() {
     assert_eq!(overlays[0]["kind"], "eta");
 }
 
-#[tokio::test]
-async fn track_detail_exposes_resume_when_transition_is_structurally_allowed() {
-    let (state, track_id, repo) = boot_with_repo().await;
+async fn close_track(repo: &Arc<dyn Repo>, track_id: &str) -> calm_server::model::Track {
     repo.track_update(
-        &track_id,
+        track_id,
         TrackPatch {
-            lifecycle: Some(TrackLifecycle::Done),
+            closed: Some(true),
             ..TrackPatch::default()
         },
     )
     .await
-    .expect("seed root Done lifecycle");
+    .expect("close the track")
+}
 
+#[tokio::test]
+async fn track_detail_exposes_reopen_only_for_a_reopenable_closed_track() {
+    let (state, track_id, repo) = boot_with_repo().await;
     let response = get_track_detail(app(state.clone()), &track_id).await;
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(body_to_json(response).await["can_resume"], true);
+    assert_eq!(
+        body_to_json(response).await["can_reopen"],
+        false,
+        "an open track has nothing to reopen"
+    );
 
-    repo.track_update(
-        &track_id,
-        TrackPatch {
-            lifecycle: Some(TrackLifecycle::Reviewing),
-            ..TrackPatch::default()
-        },
-    )
-    .await
-    .expect("reopen root before attaching it to a parent task");
+    close_track(&repo, &track_id).await;
+    let response = get_track_detail(app(state.clone()), &track_id).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_to_json(response).await["can_reopen"], true);
 
     let child = state.repo.track_get(&track_id).await.unwrap().unwrap();
     let parent = repo
@@ -1009,7 +1007,7 @@ async fn track_detail_exposes_resume_when_transition_is_structurally_allowed() {
             id, track_id, key, kind, goal, context_json, status, child_track_id, \
             created_at_ms, updated_at_ms\
          ) VALUES(\
-            'parent:resume-capability', ?1, 'resume-capability', 'codex', 'g', '{}', \
+            'parent:reopen-capability', ?1, 'reopen-capability', 'codex', 'g', '{}', \
             'running', ?2, 1, 1\
          )",
     )
@@ -1019,41 +1017,19 @@ async fn track_detail_exposes_resume_when_transition_is_structurally_allowed() {
     .await
     .expect("bind child to parent task");
 
-    let response = get_track_detail(app(state.clone()), &track_id).await;
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        body_to_json(response).await["can_resume"],
-        true,
-        "a non-terminal child has no structural reopen restriction"
-    );
-
-    repo.track_update(
-        &track_id,
-        TrackPatch {
-            lifecycle: Some(TrackLifecycle::Done),
-            ..TrackPatch::default()
-        },
-    )
-    .await
-    .expect("finish child track");
-
     let response = get_track_detail(app(state), &track_id).await;
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(body_to_json(response).await["can_resume"], false);
+    assert_eq!(
+        body_to_json(response).await["can_reopen"],
+        false,
+        "a closed child a task references cannot be reopened"
+    );
 }
 
 #[tokio::test]
-async fn track_detail_withholds_resume_from_area_chat_tracks() {
+async fn track_detail_withholds_reopen_from_area_chat_tracks() {
     let (state, track_id, repo) = boot_with_repo().await;
-    repo.track_update(
-        &track_id,
-        TrackPatch {
-            lifecycle: Some(TrackLifecycle::Done),
-            ..TrackPatch::default()
-        },
-    )
-    .await
-    .expect("seed Done lifecycle");
+    close_track(&repo, &track_id).await;
     sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1")
         .bind(&track_id)
         .execute(&repo.sqlite_pool().expect("sqlite-backed fixture"))
@@ -1063,12 +1039,12 @@ async fn track_detail_withholds_resume_from_area_chat_tracks() {
     let response = get_track_detail(app(state.clone()), &track_id).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
-        body_to_json(response).await["can_resume"],
+        body_to_json(response).await["can_reopen"],
         false,
         "the capability must include the route's area-chat authority fence"
     );
 
-    let response = patch_track(app(state), &track_id, json!({"lifecycle": "working"})).await;
+    let response = patch_track(app(state), &track_id, json!({"closed": false})).await;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
@@ -1086,170 +1062,70 @@ async fn patch_track(app: axum::Router, track_id: &str, body: Value) -> axum::ht
 }
 
 #[tokio::test]
-async fn track_patch_same_state_lifecycle_is_idempotent_no_event() {
-    let (state, track_id) = boot().await;
+async fn track_patch_same_closed_state_is_idempotent_no_event() {
+    let (state, track_id, repo) = boot_with_repo().await;
+    let pre = close_track(&repo, &track_id).await;
 
     // Subscribe BEFORE the patch so we don't race the bus.
     let mut rx = state.events.subscribe();
-
-    let pre = state
-        .repo
-        .track_get(&track_id)
-        .await
-        .unwrap()
-        .expect("seeded track exists");
-    assert_eq!(
-        pre.lifecycle,
-        calm_server::model::TrackLifecycle::Draft,
-        "boot fixture lands in Draft",
-    );
-
-    // No `X-Calm-Actor` header → "user", an authorized actor for lifecycle.
-    let resp = patch_track(app(state.clone()), &track_id, json!({"lifecycle": "draft"})).await;
+    // No `X-Calm-Actor` header → "user", the actor that closes and reopens.
+    let resp = patch_track(app(state.clone()), &track_id, json!({"closed": true})).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_to_json(resp).await;
-    assert_eq!(body["lifecycle"], "draft");
+    assert_eq!(body["closed_at"], json!(pre.closed_at));
 
     let bus = tokio::time::timeout(std::time::Duration::from_millis(150), rx.recv()).await;
     assert!(
         bus.is_err(),
-        "no event should fire for same-state lifecycle PATCH (got {bus:?})",
+        "no event should fire for a same-state close (got {bus:?})",
     );
 
     let post = state.repo.track_get(&track_id).await.unwrap().unwrap();
-    assert_eq!(post.lifecycle, calm_server::model::TrackLifecycle::Draft);
+    assert_eq!(post.closed_at, pre.closed_at);
     assert_eq!(
         post.updated_at, pre.updated_at,
-        "updated_at must not advance on a lifecycle-only no-op",
+        "updated_at must not advance on a close-only no-op",
     );
 }
 
 #[tokio::test]
-async fn track_patch_user_resume_done_to_working_clears_terminal_at_and_emits() {
-    let (state, track_id, repo) = boot_with_repo().await;
-    let done = repo
-        .track_update(
-            &track_id,
-            TrackPatch {
-                lifecycle: Some(TrackLifecycle::Done),
-                ..TrackPatch::default()
-            },
-        )
-        .await
-        .expect("seed Done lifecycle");
-    assert!(
-        done.terminal_at.is_some(),
-        "Done fixture must carry terminal_at"
-    );
-
+async fn track_patch_user_close_and_reopen_stamp_and_clear_closed_at() {
+    let (state, track_id) = boot().await;
     let mut rx = state.events.subscribe();
-    let resp = patch_track(
-        app(state.clone()),
-        &track_id,
-        json!({ "lifecycle": "working" }),
-    )
-    .await;
+
+    let resp = patch_track(app(state.clone()), &track_id, json!({ "closed": true })).await;
     let status = resp.status();
     let body = body_to_json(resp).await;
-    assert_eq!(status, StatusCode::OK, "resume response: {body}");
-    assert_eq!(body["lifecycle"], "working");
-    assert_eq!(body["terminal_at"], Value::Null);
-
-    let lifecycle = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+    assert_eq!(status, StatusCode::OK, "close response: {body}");
+    assert!(body["closed_at"].is_i64(), "{body}");
+    let closed = tokio::time::timeout(Duration::from_secs(1), rx.recv())
         .await
-        .expect("lifecycle event arrives")
+        .expect("close event arrives")
         .expect("event bus remains open");
-    assert_eq!(lifecycle.actor, ActorId::User);
-    assert!(
-        matches!(
-            lifecycle.event,
-            Event::TrackLifecycleChanged {
-                from: TrackLifecycle::Done,
-                to: TrackLifecycle::Working,
-                ..
-            }
-        ),
-        "first event must be Done -> Working, got {:?}",
-        lifecycle.event,
-    );
+    assert_eq!(closed.actor, ActorId::User);
+    match closed.event {
+        Event::TrackUpdated(payload) => assert!(payload.closed_at.is_some()),
+        other => panic!("a close emits TrackUpdated, got {other:?}"),
+    }
 
-    let updated = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+    let resp = patch_track(app(state.clone()), &track_id, json!({ "closed": false })).await;
+    let status = resp.status();
+    let body = body_to_json(resp).await;
+    assert_eq!(status, StatusCode::OK, "reopen response: {body}");
+    assert_eq!(body["closed_at"], Value::Null);
+    let reopened = tokio::time::timeout(Duration::from_secs(1), rx.recv())
         .await
-        .expect("track update event arrives")
+        .expect("reopen event arrives")
         .expect("event bus remains open");
-    assert_eq!(updated.actor, ActorId::User);
-    match updated.event {
-        Event::TrackUpdated(payload) => {
-            assert_eq!(payload.lifecycle, TrackLifecycle::Working);
-            assert_eq!(payload.terminal_at, None);
-        }
-        other => panic!("second event must be TrackUpdated, got {other:?}"),
+    assert_eq!(reopened.actor, ActorId::User);
+    match reopened.event {
+        Event::TrackUpdated(payload) => assert_eq!(payload.closed_at, None),
+        other => panic!("a reopen emits TrackUpdated, got {other:?}"),
     }
 }
 
 #[tokio::test]
-async fn racing_rest_lifecycle_patch_rechecks_the_snapshot_before_writing_or_emitting() {
-    let (state, track_id, repo) = boot_with_repo().await;
-    repo.track_update(
-        &track_id,
-        TrackPatch {
-            lifecycle: Some(TrackLifecycle::Done),
-            ..TrackPatch::default()
-        },
-    )
-    .await
-    .expect("seed Done before the REST pre-read");
-
-    let entered = Arc::new(tokio::sync::Notify::new());
-    let release = Arc::new(tokio::sync::Notify::new());
-    install_track_lifecycle_patch_race_hook_for_test(
-        &track_id,
-        TrackLifecyclePatchRaceHook {
-            entered: entered.clone(),
-            release: release.clone(),
-        },
-    );
-    let request_track_id = track_id.clone();
-    let request_app = app(state.clone());
-    let request = tokio::spawn(async move {
-        patch_track(
-            request_app,
-            &request_track_id,
-            json!({"lifecycle": "working"}),
-        )
-        .await
-    });
-
-    tokio::time::timeout(Duration::from_secs(2), entered.notified())
-        .await
-        .expect("REST PATCH reaches the post-preflight race hook");
-    repo.track_update(
-        &track_id,
-        TrackPatch {
-            lifecycle: Some(TrackLifecycle::Planning),
-            ..TrackPatch::default()
-        },
-    )
-    .await
-    .expect("commit newer lifecycle before the route transaction");
-    release.notify_one();
-
-    let response = request.await.expect("REST PATCH task joins");
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    let body = body_to_json(response).await;
-    assert_eq!(body["code"], "conflict");
-
-    let current = state.repo.track_get(&track_id).await.unwrap().unwrap();
-    assert_eq!(current.lifecycle, TrackLifecycle::Planning);
-    let events = repo.events_since(0, i64::MAX).await.expect("event log");
-    assert!(
-        events.is_empty(),
-        "stale snapshot must emit nothing: {events:?}"
-    );
-}
-
-#[tokio::test]
-async fn track_patch_same_state_lifecycle_with_title_still_writes_title() {
+async fn track_patch_same_closed_state_with_title_still_writes_title() {
     use calm_server::event::Event;
     let (state, track_id) = boot().await;
     let mut rx = state.events.subscribe();
@@ -1257,13 +1133,13 @@ async fn track_patch_same_state_lifecycle_with_title_still_writes_title() {
     let resp = patch_track(
         app(state.clone()),
         &track_id,
-        json!({"lifecycle": "draft", "title": "renamed-via-rest"}),
+        json!({"closed": false, "title": "renamed-via-rest"}),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_to_json(resp).await;
     assert_eq!(body["title"], "renamed-via-rest");
-    assert_eq!(body["lifecycle"], "draft");
+    assert_eq!(body["closed_at"], Value::Null);
 
     let env = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
         .await
@@ -1278,7 +1154,7 @@ async fn track_patch_same_state_lifecycle_with_title_still_writes_title() {
     let bus = tokio::time::timeout(std::time::Duration::from_millis(150), rx.recv()).await;
     assert!(
         bus.is_err(),
-        "no TrackLifecycleChanged should be emitted for same-state lifecycle (got {bus:?})",
+        "a title patch emits exactly one TrackUpdated (got {bus:?})",
     );
 }
 

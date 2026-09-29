@@ -2,7 +2,6 @@
 use super::{ReportDoc, ReportDocOp, check_doc_rev};
 use crate::error::{CalmError, Result};
 use crate::ids::TrackId;
-use crate::model::TrackLifecycle;
 use calm_types::report_blocks;
 
 pub(super) async fn prepare_tx(
@@ -18,13 +17,10 @@ pub(super) async fn prepare_tx(
             "Enter a goal and a valid task key of at most 64 characters.".into(),
         ));
     }
-    let track = crate::track_lifecycle::track_get_tx(tx, track_id).await?;
-    if track.archived_at.is_some()
-        || (track.lifecycle != TrackLifecycle::Draft
-            && !crate::scheduler::lifecycle_allows_scheduling(track.lifecycle))
-    {
+    let track = crate::db::sqlite::track_get_tx(tx, track_id).await?;
+    if !track.is_open() {
         return Err(CalmError::Conflict(
-            "This Track cannot start a task. Reopen or resume the Track first.".into(),
+            "This Track is closed. Reopen it before starting another task.".into(),
         ));
     }
     check_doc_rev(doc, if_doc_rev).map_err(|error| match error {

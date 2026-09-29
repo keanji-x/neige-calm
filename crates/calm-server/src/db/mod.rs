@@ -23,7 +23,7 @@ pub mod prelude {
         ServerRepoSyncDomainRawExt, WorkspaceLease,
     };
     pub use crate::session_projection_repo::WorkerSessionProjectionRepo;
-    pub use calm_truth::session_repo::{CommitExitOutcome, DeadRootCandidate, SessionRepo};
+    pub use calm_truth::session_repo::{CommitExitOutcome, SessionRepo};
 }
 
 #[async_trait]
@@ -1065,6 +1065,17 @@ pub mod sqlite {
     use crate::ids::TrackId;
     use crate::model::{Card, CardRole, Terminal};
     use calm_truth::model::RequestTheme;
+
+    /// In-tx track row read for handlers that re-check the track inside their own write
+    /// transaction; a missing row is `NotFound`.
+    pub async fn track_get_tx(
+        tx: &mut Transaction<'_, Sqlite>,
+        track_id: &crate::ids::TrackId,
+    ) -> Result<crate::model::Track> {
+        calm_truth::db::sqlite::track_get_tx(tx, track_id)
+            .await
+            .map_err(Into::into)
+    }
 
     pub async fn require_track_exists_tx(
         tx: &mut Transaction<'_, Sqlite>,

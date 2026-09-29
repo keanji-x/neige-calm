@@ -31,7 +31,7 @@ use calm_server::harness::{
 };
 use calm_server::ids::ActorId;
 use calm_server::mcp_server::registry::ToolCallIdentity;
-use calm_server::model::{CardRole, NewCard, NewTrack, Task, TaskStatus, TrackLifecycle, now_ms};
+use calm_server::model::{CardRole, NewCard, NewTrack, Task, TaskStatus, now_ms};
 use calm_server::operation::forge_action_adapter::{FORGE_ACTION_KIND, ForgeActionAdapter};
 use calm_server::operation::task_verify_adapter::{TASK_VERIFY_KIND, TaskVerifyAdapter};
 use calm_server::operation::{
@@ -962,31 +962,6 @@ impl Fx {
             .fetch_one(&self.pool())
             .await
             .unwrap()
-    }
-
-    pub(super) async fn set_track_lifecycle(&self, lifecycle: TrackLifecycle) {
-        self.boot
-            .repo
-            .track_update(
-                self.track(),
-                calm_server::model::TrackPatch {
-                    lifecycle: Some(lifecycle),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(self.track_lifecycle().await, lifecycle);
-    }
-
-    pub(super) async fn track_lifecycle(&self) -> TrackLifecycle {
-        self.boot
-            .repo
-            .track_get(self.track())
-            .await
-            .unwrap()
-            .unwrap()
-            .lifecycle
     }
 
     /// A second Track in the same Area with its own Planner card: the caller identity of "another
@@ -3876,12 +3851,11 @@ async fn abandon_flips_verifying_row() {
 }
 
 // ---------------------------------------------------------------------------
-// Abandon promotes the Track like every other terminal flip: `working → reviewing` in the same
-// transaction, its events broadcast behind the `task.failed`; not for `done_unchanged`.
+// Abandon writes one `task.failed` and touches no track state.
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn abandon_promotes_working_track_to_reviewing() {
+async fn abandon_broadcasts_its_task_failed() {
     let fx = fixture().await;
     let flag = fx.track_root.parent().unwrap().join("gate-may-finish");
     let (_, task, _) = fx
@@ -3892,7 +3866,6 @@ async fn abandon_promotes_working_track_to_reviewing() {
         .await;
     fx.wait_settled(&task.id).await;
     let row = fx.delivery_row(&task.id).await.unwrap();
-    fx.set_track_lifecycle(TrackLifecycle::Working).await;
     let mut bus = fx.boot.ctx.events.subscribe();
 
     let receipt = fx
@@ -3900,39 +3873,23 @@ async fn abandon_promotes_working_track_to_reviewing() {
         .await
         .expect("admitted");
     assert_eq!(receipt["task_outcome"], "failed", "{receipt}");
-    assert_eq!(fx.track_lifecycle().await, TrackLifecycle::Reviewing);
 
-    // The three events of the one transaction, in append order, each broadcast with its id.
+    // The one event of the transaction, broadcast with its id; the track row is not touched.
     let persisted = fx
         .boot
         .repo
-        .events_for_track(
-            fx.track(),
-            &[TASK_FAILED_KIND, "track.lifecycle_changed", "track.updated"],
-            None,
-        )
+        .events_for_track(fx.track(), &[TASK_FAILED_KIND, "track.updated"], None)
         .await
         .unwrap();
     let kinds: Vec<&str> = persisted.iter().map(|row| row.event.kind_tag()).collect();
-    assert_eq!(
-        kinds,
-        vec![TASK_FAILED_KIND, "track.lifecycle_changed", "track.updated"],
-        "{persisted:?}"
-    );
-    assert!(
-        matches!(&persisted[1].event, Event::TrackLifecycleChanged { from: TrackLifecycle::Working, to: TrackLifecycle::Reviewing, agent_message: Some(message), .. } if message == "[auto] delivery abandoned"),
-        "{:?}",
-        persisted[1].event
-    );
+    assert_eq!(kinds, vec![TASK_FAILED_KIND], "{persisted:?}");
     let mut broadcast = Vec::new();
-    while broadcast.len() < 3 {
+    while broadcast.is_empty() {
         let envelope = tokio::time::timeout(WAIT, bus.recv())
             .await
-            .expect("the abandon's events are broadcast")
+            .expect("the abandon's event is broadcast")
             .unwrap();
-        if [TASK_FAILED_KIND, "track.lifecycle_changed", "track.updated"]
-            .contains(&envelope.event.kind_tag())
-        {
+        if [TASK_FAILED_KIND, "track.updated"].contains(&envelope.event.kind_tag()) {
             broadcast.push((envelope.id, envelope.event.kind_tag()));
         }
     }
@@ -3945,27 +3902,6 @@ async fn abandon_promotes_working_track_to_reviewing() {
         "broadcast in append order under the persisted ids"
     );
     fx.assert_no_gate_op(&task.id).await;
-
-    // `done_unchanged` (an ungated `done` row) is no terminal flip: the Track stays `working`.
-    let fx = fixture().await;
-    let (_, task, _) = fx.hook_failing_task("no-promote", json!({})).await;
-    fx.wait_settled(&task.id).await;
-    let row = fx.delivery_row(&task.id).await.unwrap();
-    fx.set_track_lifecycle(TrackLifecycle::Working).await;
-    let receipt = fx
-        .abandon(&task, &row.delivery_id, "req-a", None)
-        .await
-        .unwrap();
-    assert_eq!(receipt["task_outcome"], "done_unchanged", "{receipt}");
-    assert_eq!(fx.track_lifecycle().await, TrackLifecycle::Working);
-    assert!(
-        fx.boot
-            .repo
-            .events_for_track(fx.track(), &["track.lifecycle_changed"], None)
-            .await
-            .unwrap()
-            .is_empty()
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -4673,7 +4609,7 @@ async fn plan_list_reads_abandoned_delivery() {
 }
 
 // ---------------------------------------------------------------------------
-// G11: the Track lifecycle rule is `calm.task.verdict`'s — a Done Track admits both.
+// G11: the closed-Track rule is `calm.task.verdict`'s — a closed Track admits both.
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -4687,24 +4623,23 @@ async fn delivery_action_on_done_track_follows_verdict_rule() {
         .track_update(
             fx.track(),
             calm_server::model::TrackPatch {
-                lifecycle: Some(TrackLifecycle::Done),
+                closed: Some(true),
                 ..Default::default()
             },
         )
         .await
         .unwrap();
-    assert_eq!(
-        fx.boot
+    assert!(
+        !fx.boot
             .repo
             .track_get(fx.track())
             .await
             .unwrap()
             .unwrap()
-            .lifecycle,
-        TrackLifecycle::Done
+            .is_open()
     );
 
-    // The rule as verified: `calm.task.verdict` consults no lifecycle on a Done Track.
+    // The rule as verified: `calm.task.verdict` consults no open state on a closed Track.
     call_tool(
         &fx.boot,
         "calm.task.verdict",
@@ -4731,7 +4666,7 @@ async fn delivery_action_on_done_track_follows_verdict_rule() {
         .track_update(
             fx2.track(),
             calm_server::model::TrackPatch {
-                lifecycle: Some(TrackLifecycle::Done),
+                closed: Some(true),
                 ..Default::default()
             },
         )
@@ -4742,15 +4677,14 @@ async fn delivery_action_on_done_track_follows_verdict_rule() {
         .await
         .expect("abandon admitted on a Done Track");
     assert_eq!(receipt["task_outcome"], "done_unchanged", "{receipt}");
-    assert_eq!(
-        fx2.boot
+    assert!(
+        !fx2.boot
             .repo
             .track_get(fx2.track())
             .await
             .unwrap()
             .unwrap()
-            .lifecycle,
-        TrackLifecycle::Done,
-        "the action does not move the lifecycle"
+            .is_open(),
+        "the action does not reopen the track"
     );
 }

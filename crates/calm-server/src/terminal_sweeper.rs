@@ -1,5 +1,5 @@
 //! The terminal sweeper: one 30 s tick, three independent arms — the orphan arm reaps terminal rows whose card
-//! has no active worker session; the completed-track arm ends worker sessions still running on a completed or archived track;
+//! has no active worker session; the completed-track arm ends worker sessions still running on a closed track;
 //! the thread arm releases shared codex threads whose session ended (#1853).
 
 use std::time::Duration;
@@ -64,14 +64,13 @@ const ORPHAN_GRACE_SECONDS: i64 = 60;
 /// rather than block the sweep tick.
 const GRACEFUL_KILL_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The set the completed-track arm ends. `created_at_ms <=` keeps a session opened on an already-done
+/// The set the closed-track arm ends. `created_at_ms <=` keeps a session opened on an already-closed
 /// track out of the set; harness rows are outside structurally (never `running`, no `terminal_run_id`).
 pub const COMPLETED_TRACK_LIVE_SESSIONS_SQL: &str = "SELECT ws.id, ws.provider, ws.card_id, te.id AS terminal_id, ws.thread_id \
        FROM worker_sessions ws JOIN tracks t ON t.id = ws.track_id \
        JOIN terminals te ON te.id = ws.terminal_run_id AND te.exit_code IS NULL AND te.signal_killed = 0 \
       WHERE ws.state = 'running' \
-        AND ( (t.lifecycle = 'done' AND ws.created_at_ms <= t.terminal_at) \
-           OR (t.archived_at IS NOT NULL AND ws.created_at_ms <= t.archived_at) ) \
+        AND t.closed_at IS NOT NULL AND ws.created_at_ms <= t.closed_at \
         AND NOT EXISTS (SELECT 1 FROM current_tasks ct WHERE ct.track_id = t.id AND ct.worker_card_id = ws.card_id \
                           AND ct.status IN ('dispatched','running','verifying'))";
 

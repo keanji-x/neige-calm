@@ -27,7 +27,6 @@ use crate::model::{TaskStatus, now_ms};
 use crate::proc_identity::{
     read_boot_id, read_proc_start_time, signal_process_group, verify_owned_pid,
 };
-use crate::track_lifecycle::auto_transition_if_current_in_tx;
 
 use super::{
     CompensationStateVersioned, CompensationStep, Operation, OperationCompletionBus, OperationKey,
@@ -171,7 +170,7 @@ pub(crate) async fn apply_gate_result_with_guard_in_tx(
         track: rctx.track_id.clone(),
         area: rctx.area_id.clone(),
     };
-    let mut events = vec![Event::TaskGateResult {
+    let events = vec![Event::TaskGateResult {
         task_id: rctx.task_id.clone(),
         idempotency_key: rctx.task_id.clone(),
         passed: verdict.passed,
@@ -184,18 +183,6 @@ pub(crate) async fn apply_gate_result_with_guard_in_tx(
         status_detail: verdict.status_detail.clone(),
         target: Some(recorded.target.clone()),
     }];
-    if let Some(auto_events) = auto_transition_if_current_in_tx(
-        tx,
-        &rctx.track_id,
-        crate::model::TrackLifecycle::Working,
-        crate::model::TrackLifecycle::Reviewing,
-        &ActorId::KernelDispatcher,
-        Some("[auto] gate result recorded".to_string()),
-    )
-    .await?
-    {
-        events.extend(auto_events);
-    }
     let ids =
         append_decision_events_in_tx(tx, &ActorId::KernelDispatcher, &scope, None, &events).await?;
     Ok(ids

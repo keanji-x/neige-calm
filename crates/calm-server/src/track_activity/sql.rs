@@ -4,7 +4,7 @@
 
 use sqlx::{Row, SqlitePool};
 
-use super::notifications::{BlockedEdge, LastTurn, NotificationRows, NotifyRow};
+use super::notifications::{LastTurn, NotificationRows, NotifyRow, PendingRatify};
 use crate::error::Result;
 use crate::isolated_codex::lookup::isolated_card_exists_sql;
 
@@ -42,9 +42,8 @@ pub const N3_PLANNER_TRANSCRIPT_SQL: &str = "WITH h AS NOT MATERIALIZED ( \
 /// `tracks` row slice the fold needs.
 #[derive(Debug, Clone)]
 pub struct TrackRow {
-    pub lifecycle: String,
+    pub closed_at: Option<i64>,
     pub updated_at: i64,
-    pub archived_at: Option<i64>,
 }
 
 /// One `current_tasks` row — the W clause input.
@@ -87,7 +86,6 @@ pub struct SessionRow {
 pub struct Evidence {
     pub e1_harness_turn_completed: Option<i64>,
     pub e2_user_notify: Option<i64>,
-    pub e4_agent_lifecycle_edge: Option<i64>,
     pub e7_agent_report_edit: Option<i64>,
 }
 
@@ -96,7 +94,6 @@ impl Evidence {
         [
             self.e1_harness_turn_completed,
             self.e2_user_notify,
-            self.e4_agent_lifecycle_edge,
             self.e7_agent_report_edit,
         ]
         .into_iter()
@@ -105,23 +102,22 @@ impl Evidence {
     }
 }
 
-/// Tick enumeration: every unarchived track — no activity predicate, so a short task between two ticks on a quiet track is still found.
-pub(crate) async fn unarchived_track_ids(pool: &SqlitePool) -> Result<Vec<String>> {
-    let rows = sqlx::query("SELECT id FROM tracks WHERE archived_at IS NULL ORDER BY id")
+/// Tick enumeration: every track — no activity predicate, so a short task between two ticks on a quiet track is still found.
+pub(crate) async fn track_ids(pool: &SqlitePool) -> Result<Vec<String>> {
+    let rows = sqlx::query("SELECT id FROM tracks ORDER BY id")
         .fetch_all(pool)
         .await?;
     Ok(rows.iter().map(|r| r.get::<String, _>("id")).collect())
 }
 
 pub(crate) async fn track_row(pool: &SqlitePool, track_id: &str) -> Result<Option<TrackRow>> {
-    let row = sqlx::query("SELECT lifecycle, updated_at, archived_at FROM tracks WHERE id = ?1")
+    let row = sqlx::query("SELECT closed_at, updated_at FROM tracks WHERE id = ?1")
         .bind(track_id)
         .fetch_optional(pool)
         .await?;
     Ok(row.map(|r| TrackRow {
-        lifecycle: r.get("lifecycle"),
+        closed_at: r.get("closed_at"),
         updated_at: r.get("updated_at"),
-        archived_at: r.get("archived_at"),
     }))
 }
 
@@ -224,7 +220,7 @@ async fn max_ms(pool: &SqlitePool, sql: &str, track_id: &str) -> Result<Option<i
     Ok(row.try_get::<Option<i64>, _>(0)?)
 }
 
-/// E1, E4, E7 — three autocommit `MAX` statements; E2 is the caller's `MAX` over the N3 notify rows
+/// E1, E7 — two autocommit `MAX` statements; E2 is the caller's `MAX` over the N3 notify rows
 /// it already read. E3 is computed from the W rows by the caller; the interactive PTY card's last
 /// output is read from the renderer registry, not from a row.
 pub(crate) async fn evidence(
@@ -232,11 +228,6 @@ pub(crate) async fn evidence(
     track_id: &str,
     e2_user_notify: Option<i64>,
 ) -> Result<Evidence> {
-    // E4 — a lifecycle edge NOT driven by the user (`track.*` is never pruned;
-    // `events.actor` is the `ActorId` JSON).
-    let e4 = "SELECT MAX(at) FROM events \
-               WHERE scope_track = ?1 AND kind = 'track.lifecycle_changed' \
-                 AND json_extract(actor, '$.kind') <> 'User'";
     // E7 — a report rewrite by someone other than the user (`EditAuthor`
     // is bare-lowercase on the wire).
     let e7 = "SELECT MAX(at) FROM events \
@@ -245,38 +236,33 @@ pub(crate) async fn evidence(
     Ok(Evidence {
         e1_harness_turn_completed: max_ms(pool, E1_HARNESS_TURN_COMPLETED_SQL, track_id).await?,
         e2_user_notify,
-        e4_agent_lifecycle_edge: max_ms(pool, e4, track_id).await?,
         e7_agent_report_edit: max_ms(pool, e7, track_id).await?,
     })
 }
 
-/// N0–N4 — the rows of the two notification sources and the dismissed keys, six autocommit
+/// N0–N4 — the rows of the two notification sources and the dismissed keys, five autocommit
 /// statements. N0: the track's one Planner card (a unique index); without one there is no notify
 /// row, no last turn and no U.
 pub(crate) async fn notification_rows(
     pool: &SqlitePool,
     track_id: &str,
 ) -> Result<NotificationRows> {
-    // N1 — the newest edge into `blocked` (`events.id` is monotone, so it orders the edges).
-    let blocked_edge = sqlx::query(
-        "SELECT id, at, json_extract(payload, '$.agent_message') AS message FROM events \
-          WHERE scope_track = ?1 AND kind = 'track.lifecycle_changed' \
-            AND json_extract(payload, '$.to') = 'blocked' \
+    // N1 — the newest `ratify.*` event, kept only when it is a request (`events.id` is monotone,
+    // so a later resolution hides it).
+    let pending_ratify = sqlx::query(
+        "SELECT id, at, kind, json_extract(payload, '$.reason') AS reason FROM events \
+          WHERE scope_track = ?1 AND kind IN ('ratify.requested', 'ratify.resolved') \
           ORDER BY id DESC LIMIT 1",
     )
     .bind(track_id)
     .fetch_optional(pool)
     .await?
-    .map(|r| BlockedEdge {
+    .filter(|r| r.get::<&str, _>("kind") == "ratify.requested")
+    .map(|r| PendingRatify {
         event_id: r.get("id"),
         at_ms: r.get("at"),
-        message: r.get("message"),
+        reason: r.get("reason"),
     });
-    // N1b — L: the newest edge out of `blocked`, whoever wrote it.
-    let left_blocked = "SELECT MAX(at) FROM events \
-         WHERE scope_track = ?1 AND kind = 'track.lifecycle_changed' \
-           AND json_extract(payload, '$.from') = 'blocked'";
-    let left_blocked_at = max_ms(pool, left_blocked, track_id).await?;
     // N4 — the keys the user dismissed (primary key prefix).
     let dismissed =
         sqlx::query_scalar("SELECT item_key FROM activity_dismissals WHERE track_id = ?1")
@@ -293,8 +279,7 @@ pub(crate) async fn notification_rows(
             .await?;
     let Some(planner_card) = planner_card else {
         return Ok(NotificationRows {
-            blocked_edge,
-            left_blocked_at,
+            pending_ratify,
             dismissed,
             ..NotificationRows::default()
         });
@@ -330,8 +315,7 @@ pub(crate) async fn notification_rows(
         }
     }
     Ok(NotificationRows {
-        blocked_edge,
-        left_blocked_at,
+        pending_ratify,
         user_sent_at,
         notifies,
         last_turn,

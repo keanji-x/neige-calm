@@ -214,15 +214,6 @@ async fn exercise(history: History, disposal: Disposal) {
     let before = repo.track_get(&track_id).await.unwrap().unwrap();
     let workspace = PathBuf::from(&before.workspace.path);
     assert!(workspace.join(".git").is_dir());
-    repo.track_update(
-        &track_id,
-        crate::model::TrackPatch {
-            lifecycle: Some(crate::model::TrackLifecycle::Working),
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
     let (_, _, report) = crate::track_report::resolve_report_for_track(repo.as_ref(), &track_id)
         .await
         .unwrap();

@@ -2472,21 +2472,36 @@ async fn await_pid_gone(pid: i64) {
     }
 }
 
-/// `lifecycle → done` through `track_update_tx` (the same UPDATE stamps `terminal_at`). Returns `terminal_at`.
+/// A close through `track_update_tx` (the same UPDATE stamps `closed_at`). Returns `closed_at`.
 async fn complete_track(h: &Harness, track_id: &str) -> i64 {
-    use calm_server::model::{TrackLifecycle, TrackPatch};
+    use calm_server::model::TrackPatch;
     h.sql
         .track_update(
             track_id,
             TrackPatch {
-                lifecycle: Some(TrackLifecycle::Done),
+                closed: Some(true),
                 ..Default::default()
             },
         )
         .await
         .unwrap()
-        .terminal_at
-        .expect("done stamps terminal_at")
+        .closed_at
+        .expect("a close stamps closed_at")
+}
+
+/// A reopen through `track_update_tx`.
+async fn reopen_track(h: &Harness, track_id: &str) -> calm_server::model::Track {
+    use calm_server::model::TrackPatch;
+    h.sql
+        .track_update(
+            track_id,
+            TrackPatch {
+                closed: Some(false),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
 }
 
 /// The persisted worker-session and terminal rows the sweep may touch, plus
@@ -2577,10 +2592,10 @@ async fn make_codex_with_active_turn(h: &Harness, p: &PtySession) {
 async fn done_track_running_pty_session_is_torn_down() {
     let h = Harness::start().await;
     let p = open_sleeper(&h, "done-teardown").await;
-    let terminal_at = complete_track(&h, &h.track).await;
+    let closed_at = complete_track(&h, &h.track).await;
     assert!(
-        p.created_at_ms <= terminal_at,
-        "the session predates the completion: {} <= {terminal_at}",
+        p.created_at_ms <= closed_at,
+        "the session predates the close: {} <= {closed_at}",
         p.created_at_ms
     );
     assert_eq!(sweep_set(&h).await, vec![p.session.clone()]);
@@ -2607,18 +2622,18 @@ async fn done_track_running_pty_session_is_torn_down() {
     h.stop(&p.terminal).await;
 }
 
-/// `created_at_ms > terminal_at`: the user's own new work on a done track.
+/// `created_at_ms > closed_at`: the user's own new work on a closed track.
 #[tokio::test]
 async fn session_started_after_done_survives_sweep() {
     let h = Harness::start().await;
-    let terminal_at = complete_track(&h, &h.track).await;
+    let closed_at = complete_track(&h, &h.track).await;
     // The mint stamps `now_ms()`; a millisecond of slack keeps the
     // precondition below strict rather than equal.
     tokio::time::sleep(Duration::from_millis(5)).await;
     let p = open_sleeper(&h, "after-done").await;
     assert!(
-        p.created_at_ms > terminal_at,
-        "the session postdates the completion: {} > {terminal_at}",
+        p.created_at_ms > closed_at,
+        "the session postdates the close: {} > {closed_at}",
         p.created_at_ms
     );
     assert!(sweep_set(&h).await.is_empty(), "not in the set");
@@ -2793,50 +2808,13 @@ async fn harness_session_is_never_in_the_sweep_set() {
     let (state, completed_at, _) = session_row(&h, &planner_ws).await;
     assert_eq!(
         state, "idle",
-        "the planner can still be asked on a done track"
+        "the planner can still be asked on a closed track"
     );
     assert_eq!(completed_at, None);
     // The harness' own Planner card session (`starting`, PTY-backed) is
     // outside the set as well.
     let (state, _, _) = session_row(&h, &h.session_id).await;
     assert_eq!(state, "starting");
-}
-
-/// `archived_at IS NOT NULL` with `created_at_ms <= archived_at`, whatever the lifecycle says.
-#[tokio::test]
-async fn archived_track_session_is_torn_down() {
-    use calm_server::model::TrackPatch;
-    let h = Harness::start().await;
-    let p = open_sleeper(&h, "archived").await;
-    let track = h
-        .sql
-        .track_update(
-            &h.track,
-            TrackPatch {
-                archived_at: Some(Some(calm_server::model::now_ms())),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        track.lifecycle.as_db_str(),
-        "draft",
-        "archiving leaves the lifecycle"
-    );
-    assert!(p.created_at_ms <= track.archived_at.unwrap());
-    assert_eq!(sweep_set(&h).await, vec![p.session.clone()]);
-
-    calm_server::terminal_sweeper::sweep(&h.state)
-        .await
-        .unwrap();
-
-    let (state, _, _) = session_row(&h, &p.session).await;
-    assert_eq!(state, "exited");
-    assert_eq!(await_terminal_exit(&h, &p.terminal).await, (None, true));
-    await_pid_gone(p.pid).await;
-    assert!(h.state.terminal_renderer.get(&p.terminal).is_none());
-    h.stop(&p.terminal).await;
 }
 
 /// The terminal row is still inside the orphan arm's creation grace, so that arm is quiet too.
@@ -2872,10 +2850,9 @@ async fn sweep_is_idempotent() {
     h.stop(&p.terminal).await;
 }
 
-/// Reopening (`done → planning`) clears `terminal_at`; the claim re-runs the set predicate by id and leaves the row alone.
+/// A reopen clears `closed_at`; the claim re-runs the set predicate by id and leaves the row alone.
 #[tokio::test]
 async fn reopened_track_session_survives_a_stale_candidate() {
-    use calm_server::model::{TrackLifecycle, TrackPatch};
     use calm_server::terminal_sweeper::end_completed_track_session;
     let h = Harness::start().await;
     let p = open_sleeper(&h, "stale-candidate").await;
@@ -2886,18 +2863,8 @@ async fn reopened_track_session_survives_a_stale_candidate() {
     assert_eq!(stale.terminal_id, p.terminal);
 
     // Reopened before the candidate is acted on.
-    let reopened = h
-        .sql
-        .track_update(
-            &h.track,
-            TrackPatch {
-                lifecycle: Some(TrackLifecycle::Planning),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(reopened.terminal_at, None, "reopening clears terminal_at");
+    let reopened = reopen_track(&h, &h.track).await;
+    assert_eq!(reopened.closed_at, None, "reopening clears closed_at");
     assert!(sweep_set(&h).await.is_empty(), "no longer in the set");
 
     end_completed_track_session(&h.state, &stale).await.unwrap();
@@ -2915,7 +2882,6 @@ async fn reopened_track_session_survives_a_stale_candidate() {
 /// seam, not timing: `require_safe` is an IMMEDIATE transaction before the seam, so a reopen held open parks the sweeper there.
 #[tokio::test]
 async fn reopen_committed_during_the_claim_is_honoured() {
-    use calm_server::model::{TrackLifecycle, TrackPatch};
     use calm_server::terminal_sweeper::end_completed_track_session_before_write_for_test;
     let h = Harness::start_with_fake_codex().await;
     let p = open_sleeper(&h, "reopen-in-window").await;
@@ -2934,18 +2900,8 @@ async fn reopen_committed_during_the_claim_is_honoured() {
     end_completed_track_session_before_write_for_test(&h.state, &candidate, || async {
         // The guard has passed; the reopen commits now, before the
         // IMMEDIATE write begins.
-        let reopened = h
-            .sql
-            .track_update(
-                &h.track,
-                TrackPatch {
-                    lifecycle: Some(TrackLifecycle::Planning),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(reopened.terminal_at, None, "reopening clears terminal_at");
+        let reopened = reopen_track(&h, &h.track).await;
+        assert_eq!(reopened.closed_at, None, "reopening clears closed_at");
     })
     .await
     .unwrap();
@@ -2959,13 +2915,12 @@ async fn reopen_committed_during_the_claim_is_honoured() {
     assert_eq!(terminal_exit(&h, &p.terminal).await, (None, false));
     assert!(pid_alive(p.pid), "the process is still there");
     assert!(h.state.terminal_renderer.get(&p.terminal).is_some());
-    let terminal_at: Option<i64> =
-        sqlx::query_scalar("SELECT terminal_at FROM tracks WHERE id = ?1")
-            .bind(&h.track)
-            .fetch_one(h.sql.pool())
-            .await
-            .unwrap();
-    assert_eq!(terminal_at, None, "the track stays reopened");
+    let closed_at: Option<i64> = sqlx::query_scalar("SELECT closed_at FROM tracks WHERE id = ?1")
+        .bind(&h.track)
+        .fetch_one(h.sql.pool())
+        .await
+        .unwrap();
+    assert_eq!(closed_at, None, "the track stays reopened");
     assert_eq!(
         h.state.shared_codex_appserver.interrupted_turns_for_test(),
         interrupted_before,

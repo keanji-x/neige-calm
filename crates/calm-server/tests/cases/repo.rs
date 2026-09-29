@@ -198,45 +198,33 @@ async fn track_crud_round_trip() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
     let w = make_track(&repo, c.id.as_str(), "first").await;
-    assert!(w.archived_at.is_none());
-    assert_eq!(
-        w.lifecycle,
-        TrackLifecycle::Draft,
-        "new track defaults to Draft"
-    );
+    assert!(w.closed_at.is_none(), "a new track is open");
 
     let updated = repo
         .track_update(
             w.id.as_str(),
             TrackPatch {
                 title: Some("renamed".into()),
-                sort: None,
-                archived_at: Some(Some(42)),
-                pinned_at: None,
-                lifecycle: None,
+                pinned_at: Some(Some(42)),
                 ..TrackPatch::default()
             },
         )
         .await
         .unwrap();
     assert_eq!(updated.title, "renamed");
-    assert_eq!(updated.archived_at, Some(42));
+    assert_eq!(updated.pinned_at, Some(42));
 
     let cleared = repo
         .track_update(
             w.id.as_str(),
             TrackPatch {
-                title: None,
-                sort: None,
-                archived_at: Some(None),
-                pinned_at: None,
-                lifecycle: None,
+                pinned_at: Some(None),
                 ..TrackPatch::default()
             },
         )
         .await
         .unwrap();
-    assert_eq!(cleared.archived_at, None);
+    assert_eq!(cleared.pinned_at, None);
 
     let err = repo
         .track_create(NewTrack {
@@ -256,46 +244,39 @@ async fn track_crud_round_trip() {
 }
 
 #[tokio::test]
-async fn track_lifecycle_round_trips_through_patch() {
+async fn track_closed_round_trips_through_patch() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
-    let w = make_track(&repo, c.id.as_str(), "lifecycle-test").await;
-    assert_eq!(w.lifecycle, TrackLifecycle::Draft);
+    let w = make_track(&repo, c.id.as_str(), "closed-test").await;
 
-    let patched = repo
+    let closed = repo
         .track_update(
             w.id.as_str(),
             TrackPatch {
-                title: None,
-                sort: None,
-                archived_at: None,
-                pinned_at: None,
-                lifecycle: Some(TrackLifecycle::Planning),
+                closed: Some(true),
                 ..TrackPatch::default()
             },
         )
         .await
         .unwrap();
-    assert_eq!(patched.lifecycle, TrackLifecycle::Planning);
-
+    assert!(closed.closed_at.is_some());
     let re_read = repo.track_get(w.id.as_str()).await.unwrap().unwrap();
-    assert_eq!(re_read.lifecycle, TrackLifecycle::Planning);
+    assert_eq!(re_read.closed_at, closed.closed_at);
 
-    let no_change = repo
+    let renamed = repo
         .track_update(
             w.id.as_str(),
             TrackPatch {
                 title: Some("renamed-only".into()),
-                sort: None,
-                archived_at: None,
-                pinned_at: None,
-                lifecycle: None,
                 ..TrackPatch::default()
             },
         )
         .await
         .unwrap();
-    assert_eq!(no_change.lifecycle, TrackLifecycle::Planning);
+    assert_eq!(
+        renamed.closed_at, closed.closed_at,
+        "a patch that does not name `closed` leaves it alone"
+    );
 }
 
 #[tokio::test]

@@ -1235,60 +1235,6 @@ async fn an_explicit_terminal_cwd_is_kept_and_still_freezes() {
 }
 
 #[tokio::test]
-async fn leaving_draft_freezes_the_workspace_and_the_change_is_refused() {
-    let b = boot().await;
-    let area = create_area(&b, "c").await;
-    let (track, _) = managed_track(&b, &area, "w").await;
-    assert_eq!(workspace_row(&b, &track).await.2, None, "premise: unfrozen");
-
-    let (status, body) = request(
-        b.app.clone(),
-        "PATCH",
-        &format!("/api/tracks/{track}"),
-        Some(json!({"lifecycle": "planning"})),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "body={body}");
-
-    assert!(
-        workspace_row(&b, &track).await.2.is_some(),
-        "once a track is past Draft the scheduler, the forge and every worker \
-         treat the path as given, so it must be frozen"
-    );
-
-    let active_before: Vec<String> = sqlx::query_scalar(
-        "SELECT id FROM worker_sessions WHERE track_id=?1 \
-         AND state IN ('starting','running','idle','turn_pending') ORDER BY id",
-    )
-    .bind(&track)
-    .fetch_all(b.repo.pool())
-    .await
-    .unwrap();
-    assert!(
-        !active_before.is_empty(),
-        "premise: the track has a live planner harness"
-    );
-
-    let (status, body) = repoint(&b, &track).await;
-    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
-    assert!(trash_entries(&b.workspace_root).is_empty());
-
-    // `frozen_at` is checked in the fence transaction, before the supersede, so a track that was never going to move does not lose its agent.
-    let active_after: Vec<String> = sqlx::query_scalar(
-        "SELECT id FROM worker_sessions WHERE track_id=?1 \
-         AND state IN ('starting','running','idle','turn_pending') ORDER BY id",
-    )
-    .bind(&track)
-    .fetch_all(b.repo.pool())
-    .await
-    .unwrap();
-    assert_eq!(
-        active_after, active_before,
-        "a frozen track's re-point must be refused without disturbing its harness"
-    );
-}
-
-#[tokio::test]
 async fn the_first_workspace_lease_freezes_the_workspace() {
     let b = boot().await;
     let area = create_area(&b, "c").await;

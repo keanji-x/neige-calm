@@ -262,8 +262,6 @@ async fn task_recovery_deleted_frozen_reference_denies_only_affected_capability(
         TrackReportPayload::new("", "## Input\nFrozen input"),
         revision,
         None,
-        None,
-        false,
     )
     .await
     .unwrap();

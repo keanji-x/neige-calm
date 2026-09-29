@@ -6,8 +6,7 @@ use crate::db::sqlite::{
     SqlxRepo, append_decision_event_in_tx, card_create_with_id_tx, session_start_runtime_tx,
 };
 use crate::model::{
-    CardRole, HarnessInputSegment, NewArea, NewCard, NewTrack, TrackLifecycle, TrackPatch, new_id,
-    now_ms,
+    CardRole, HarnessInputSegment, NewArea, NewCard, NewTrack, TrackPatch, new_id, now_ms,
 };
 use crate::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
@@ -118,12 +117,12 @@ impl Fixture {
         }
     }
 
-    async fn lifecycle(&self, lifecycle: TrackLifecycle) {
+    async fn close(&self) {
         self.repo
             .track_update(
                 self.harness.inner.track_id.as_str(),
                 TrackPatch {
-                    lifecycle: Some(lifecycle),
+                    closed: Some(true),
                     ..Default::default()
                 },
             )
@@ -193,15 +192,14 @@ impl Fixture {
 }
 
 #[tokio::test]
-async fn queued_commit_before_done_is_consumed_without_a_turn_and_later_user_input_still_issues() {
+async fn queued_commit_before_close_is_consumed_without_a_turn_and_later_user_input_still_issues() {
     let fx = Fixture::new().await;
-    fx.lifecycle(TrackLifecycle::Working).await;
     let (event_id, commit) = fx.commit().await;
     fx.enqueue(vec![commit]).await;
     assert_eq!(fx.stored().await.pending_entries().len(), 1);
     // This is the observed failure: the event existed while work was active,
-    // but the next turn can be issued only after the Planner has marked Done.
-    fx.lifecycle(TrackLifecycle::Done).await;
+    // but the next turn can be issued only after the Planner has closed the track.
+    fx.close().await;
     fx.issue().await;
     assert_eq!(
         fx.harness.inner.backend.codex().turn_start_count_for_test(),
@@ -240,7 +238,7 @@ async fn queued_commit_before_done_is_consumed_without_a_turn_and_later_user_inp
 #[tokio::test]
 async fn committed_row_is_not_replayed_and_an_old_queued_commit_is_consumed_once() {
     let fx = Fixture::new().await;
-    fx.lifecycle(TrackLifecycle::Done).await;
+    fx.close().await;
     let (event_id, commit) = fx.commit().await;
     let mut snapshot = fx.stored().await;
     let watermark_before = snapshot.push_watermark;
@@ -313,7 +311,7 @@ async fn committed_row_is_not_replayed_and_an_old_queued_commit_is_consumed_once
 #[tokio::test]
 async fn completed_commit_filter_keeps_failure_and_user_entries_in_order() {
     let fx = Fixture::new().await;
-    fx.lifecycle(TrackLifecycle::Done).await;
+    fx.close().await;
     let (event_id, commit) = fx.commit().await;
     let failure = QueueEntry::system(
         Observation::TaskFailed {
@@ -346,37 +344,24 @@ async fn completed_commit_filter_keeps_failure_and_user_entries_in_order() {
 }
 
 #[tokio::test]
-async fn commit_notifications_still_issue_for_every_non_done_lifecycle() {
-    for lifecycle in [
-        TrackLifecycle::Draft,
-        TrackLifecycle::Planning,
-        TrackLifecycle::Dispatching,
-        TrackLifecycle::Working,
-        TrackLifecycle::Reviewing,
-        TrackLifecycle::Blocked,
-        TrackLifecycle::Canceled,
-        TrackLifecycle::Failed,
-    ] {
-        let fx = Fixture::new().await;
-        fx.lifecycle(lifecycle).await;
-        let (_, commit) = fx.commit().await;
-        let expected =
-            input_segments_for_entries(&fx.harness.inner.card_id, std::slice::from_ref(&commit));
-        fx.enqueue(vec![commit]).await;
-        fx.issue().await;
-        assert_eq!(
-            fx.harness.inner.backend.codex().turn_start_count_for_test(),
-            1,
-            "{lifecycle:?}"
-        );
-        assert_eq!(fx.projected_segments().await, expected, "{lifecycle:?}");
-    }
+async fn commit_notifications_still_issue_for_an_open_track() {
+    let fx = Fixture::new().await;
+    let (_, commit) = fx.commit().await;
+    let expected =
+        input_segments_for_entries(&fx.harness.inner.card_id, std::slice::from_ref(&commit));
+    fx.enqueue(vec![commit]).await;
+    fx.issue().await;
+    assert_eq!(
+        fx.harness.inner.backend.codex().turn_start_count_for_test(),
+        1
+    );
+    assert_eq!(fx.projected_segments().await, expected);
 }
 
 #[tokio::test]
 async fn completed_commit_consumption_restores_queue_and_debounce_on_persist_failure() {
     let fx = Fixture::new().await;
-    fx.lifecycle(TrackLifecycle::Done).await;
+    fx.close().await;
     let (_, commit) = fx.commit().await;
     fx.enqueue(vec![commit]).await;
     let before = fx.harness.snapshot().await;
@@ -421,7 +406,7 @@ async fn consuming_a_commit_does_not_bypass_remaining_soft_observation_debounce(
         .config;
     config.debounce_min_idle = Duration::from_secs(60);
     config.debounce_max_wait = Duration::from_secs(120);
-    fx.lifecycle(TrackLifecycle::Done).await;
+    fx.close().await;
     let (_, commit) = fx.commit().await;
     let leased = QueueEntry::system(
         Observation::WorkspaceLeased {

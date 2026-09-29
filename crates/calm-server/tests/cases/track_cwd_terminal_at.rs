@@ -1,5 +1,5 @@
-//! `Track.cwd`, `Track.terminal_at`, the `POST /api/tracks` cwd-claim handling, lifecycle terminal-stamp
-//! wiring and the calendar window query. Stub daemon: the app-server boot may 500 post-commit, so assertions target DB state and tolerate 201 or 500.
+//! `Track.cwd`, `Track.closed_at`, the `POST /api/tracks` cwd-claim handling, the close stamp
+//! and the calendar window query. Stub daemon: the app-server boot may 500 post-commit, so assertions target DB state and tolerate 201 or 500.
 
 #![cfg(unix)]
 
@@ -12,7 +12,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{AreaKind, NewArea, TrackLifecycle, TrackPatch, TrackWorkspaceKind};
+use calm_server::model::{AreaKind, NewArea, TrackPatch, TrackWorkspaceKind};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -207,8 +207,7 @@ async fn post_api_tracks_uses_existing_folder_claim() {
     let tracks = boot.repo.tracks_by_area(&boot.area_id).await.unwrap();
     assert_eq!(tracks.len(), 1, "exactly one track created");
     assert_eq!(tracks[0].workspace.path, cwd);
-    assert_eq!(tracks[0].terminal_at, None);
-    assert_eq!(tracks[0].lifecycle, TrackLifecycle::Draft);
+    assert_eq!(tracks[0].closed_at, None);
 
     // No extra folder row was minted.
     let folders = boot.repo.area_folders_by_area(&boot.area_id).await.unwrap();
@@ -1115,12 +1114,12 @@ async fn post_api_tracks_rejects_non_absolute_cwd() {
     );
 }
 
-/// Create a fresh track in `Draft` state via the repo, bypassing the route's cwd/folder dance.
+/// Create a fresh open track via the repo, bypassing the route's cwd/folder dance.
 async fn seed_track(repo: &Arc<dyn Repo>, area_id: &str) -> calm_server::model::Track {
     repo.track_create(calm_server::model::NewTrack {
         template_input: None,
         area_id: area_id.into(),
-        title: "lifecycle-test".into(),
+        title: "closed-at-test".into(),
         sort: None,
         cwd: String::new(),
         template_id: None,
@@ -1132,183 +1131,70 @@ async fn seed_track(repo: &Arc<dyn Repo>, area_id: &str) -> calm_server::model::
     .unwrap()
 }
 
-/// `terminal_at` lands as `Some(_)` exactly once, on the Done write.
-#[tokio::test]
-async fn lifecycle_to_done_stamps_terminal_at() {
-    let boot = boot().await;
-    let track = seed_track(&boot.repo, &boot.area_id).await;
-
-    // Each step uses the public `track_update`; the lifecycle validator runs at the route layer and is bypassed here.
-    for step in [
-        TrackLifecycle::Planning,
-        TrackLifecycle::Dispatching,
-        TrackLifecycle::Working,
-        TrackLifecycle::Reviewing,
-    ] {
-        let updated = boot
-            .repo
-            .track_update(
-                track.id.as_str(),
-                TrackPatch {
-                    lifecycle: Some(step),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            updated.terminal_at, None,
-            "terminal_at must stay None while lifecycle is non-terminal ({step:?}); \
-             updated row = {updated:?}",
-        );
-    }
-
-    let before_done_ms = calm_server::model::now_ms();
-    let done = boot
-        .repo
-        .track_update(
-            track.id.as_str(),
-            TrackPatch {
-                lifecycle: Some(TrackLifecycle::Done),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-    let after_done_ms = calm_server::model::now_ms();
-
-    let stamp = done
-        .terminal_at
-        .expect("terminal_at must be Some after lifecycle → Done");
-    assert!(
-        stamp >= before_done_ms && stamp <= after_done_ms,
-        "terminal_at must be a unix-ms within the call window \
-         (before={before_done_ms}, stamp={stamp}, after={after_done_ms})",
-    );
-    assert_eq!(done.lifecycle, TrackLifecycle::Done);
+async fn set_closed(
+    repo: &Arc<dyn Repo>,
+    track_id: &str,
+    closed: bool,
+) -> calm_server::model::Track {
+    repo.track_update(
+        track_id,
+        TrackPatch {
+            closed: Some(closed),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap()
 }
 
-/// User-driven reopen (`Done → Planning`) must clear `terminal_at`.
+/// `closed_at` lands as `Some(_)` on the close write, and closing a closed track keeps the stamp.
 #[tokio::test]
-async fn lifecycle_reopen_clears_terminal_at() {
+async fn closing_stamps_closed_at_once() {
     let boot = boot().await;
     let track = seed_track(&boot.repo, &boot.area_id).await;
+    assert_eq!(track.closed_at, None, "a new track is open");
 
-    // Force the track into Done first.
-    for step in [
-        TrackLifecycle::Planning,
-        TrackLifecycle::Dispatching,
-        TrackLifecycle::Working,
-        TrackLifecycle::Reviewing,
-        TrackLifecycle::Done,
-    ] {
-        boot.repo
-            .track_update(
-                track.id.as_str(),
-                TrackPatch {
-                    lifecycle: Some(step),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-    }
-    let done = boot
-        .repo
-        .track_get(track.id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
+    let before_ms = calm_server::model::now_ms();
+    let closed = set_closed(&boot.repo, track.id.as_str(), true).await;
+    let after_ms = calm_server::model::now_ms();
+    let stamp = closed
+        .closed_at
+        .expect("closed_at must be Some after a close");
     assert!(
-        done.terminal_at.is_some(),
-        "preconditon: terminal_at stamped"
+        stamp >= before_ms && stamp <= after_ms,
+        "closed_at must be a unix-ms within the call window \
+         (before={before_ms}, stamp={stamp}, after={after_ms})",
     );
-
-    // Reopen through the planning branch.
-    let reopened = boot
-        .repo
-        .track_update(
-            track.id.as_str(),
-            TrackPatch {
-                lifecycle: Some(TrackLifecycle::Planning),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(reopened.lifecycle, TrackLifecycle::Planning);
+    let again = set_closed(&boot.repo, track.id.as_str(), true).await;
     assert_eq!(
-        reopened.terminal_at, None,
-        "reopen must clear terminal_at; got {reopened:?}",
+        again.closed_at,
+        Some(stamp),
+        "closing a closed track keeps its stamp"
     );
 }
 
-/// Working → Blocked is non-terminal; terminal_at must not be stamped.
+/// A reopen clears `closed_at`.
 #[tokio::test]
-async fn lifecycle_working_to_blocked_leaves_terminal_at_unset() {
+async fn reopening_clears_closed_at() {
     let boot = boot().await;
     let track = seed_track(&boot.repo, &boot.area_id).await;
-
-    for step in [
-        TrackLifecycle::Planning,
-        TrackLifecycle::Dispatching,
-        TrackLifecycle::Working,
-        TrackLifecycle::Blocked,
-    ] {
-        let updated = boot
-            .repo
-            .track_update(
-                track.id.as_str(),
-                TrackPatch {
-                    lifecycle: Some(step),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(updated.terminal_at, None);
-    }
-}
-
-/// `track_update` lands `terminal_at = Some(_)` in the same write as the lifecycle column; the route and
-/// MCP layers both call into this primitive.
-#[tokio::test]
-async fn track_update_tx_stamps_terminal_at_inside_one_tx() {
-    let repo = Arc::new(
-        SqlxRepo::open("sqlite::memory:")
-            .await
-            .expect("open in-memory sqlite"),
-    );
-    let area = repo
-        .area_create(NewArea {
-            name: "tx-test".into(),
-            color: "#000".into(),
-            sort: None,
-        })
-        .await
-        .unwrap();
-    let track = seed_track(&(repo.clone() as Arc<dyn Repo>), area.id.as_str()).await;
-    let done = repo
-        .track_update(
-            track.id.as_str(),
-            TrackPatch {
-                lifecycle: Some(TrackLifecycle::Done),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
+    let closed = set_closed(&boot.repo, track.id.as_str(), true).await;
     assert!(
-        done.terminal_at.is_some(),
-        "track_update_tx must stamp terminal_at when lifecycle lands in a terminal state; \
-         got {done:?}"
+        closed.closed_at.is_some(),
+        "precondition: closed_at stamped"
+    );
+
+    let reopened = set_closed(&boot.repo, track.id.as_str(), false).await;
+    assert_eq!(
+        reopened.closed_at, None,
+        "reopen must clear closed_at; got {reopened:?}",
     );
 }
 
-/// Three tracks cover every branch of `created_at <= until AND (terminal_at IS NULL OR terminal_at >= since)`:
-/// A terminated before the window, B open across it, C created after it; `since=4, until=8` must include only B.
+/// Three tracks cover every branch of `created_at <= until AND (closed_at IS NULL OR closed_at >= since)`:
+/// A closed before the window, B open across it, C created after it; `since=4, until=8` must include only B.
 #[tokio::test]
-async fn list_tracks_window_filters_by_created_and_terminal_at() {
+async fn list_tracks_window_filters_by_created_and_closed_at() {
     let boot = boot().await;
     let a = seed_track(&boot.repo, &boot.area_id).await;
     let b = seed_track(&boot.repo, &boot.area_id).await;
@@ -1317,20 +1203,20 @@ async fn list_tracks_window_filters_by_created_and_terminal_at() {
     // Pin the timestamps via raw SQL: `track_create_tx` / `track_update_tx` always stamp `now_ms()`, which
     // would cluster all three within a millisecond.
     let pool = boot.sqlx_repo.pool();
-    sqlx::query("UPDATE tracks SET created_at = ?1, terminal_at = ?2 WHERE id = ?3")
+    sqlx::query("UPDATE tracks SET created_at = ?1, closed_at = ?2 WHERE id = ?3")
         .bind(1_i64)
         .bind(2_i64)
         .bind(a.id.as_str())
         .execute(pool)
         .await
         .unwrap();
-    sqlx::query("UPDATE tracks SET created_at = ?1, terminal_at = NULL WHERE id = ?2")
+    sqlx::query("UPDATE tracks SET created_at = ?1, closed_at = NULL WHERE id = ?2")
         .bind(5_i64)
         .bind(b.id.as_str())
         .execute(pool)
         .await
         .unwrap();
-    sqlx::query("UPDATE tracks SET created_at = ?1, terminal_at = ?2 WHERE id = ?3")
+    sqlx::query("UPDATE tracks SET created_at = ?1, closed_at = ?2 WHERE id = ?3")
         .bind(10_i64)
         .bind(12_i64)
         .bind(c.id.as_str())

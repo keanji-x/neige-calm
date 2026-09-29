@@ -20,8 +20,8 @@
 //! (`done_unchanged`), and writes the abandonment row with the observed status.
 //!
 //! Every refusal is a `Conflict` whose text starts with `refused:` and names the way out
-//! (5.1.11); the handler maps it to `-32409`. Track lifecycle: the same rule as
-//! `calm.task.verdict`, which admits a verdict on a Done Track (no lifecycle admission; G11), so
+//! (5.1.11); the handler maps it to `-32409`. A closed Track: the same rule as
+//! `calm.task.verdict`, which admits a verdict on a closed Track (no open admission; G11), so
 //! this action admits too.
 
 use std::path::Path;
@@ -46,13 +46,12 @@ use crate::db::sqlite::{
 use crate::db::write_in_tx_typed;
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventScope, SYNC_EVENT_VERSION};
-use crate::ids::{ActorId, TrackId};
+use crate::ids::ActorId;
 use crate::mcp_server::registry::{AppContext, ToolCallIdentity};
-use crate::model::{Task, TaskStatus, TrackLifecycle, now_ms};
+use crate::model::{Task, TaskStatus, now_ms};
 use crate::operation::Tx;
 use crate::operation::workspace_lease::facts::latest_workspace_lease_for_card_tx;
 use crate::operation::workspace_lease::{WorkspaceLease, worker_branch_tx};
-use crate::track_lifecycle::auto_transition_if_current_in_tx;
 
 /// The two actions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -430,27 +429,12 @@ async fn abandon(
                 _ => TASK_STATUS_DETAIL_DELIVERY_ABANDONED.to_string(),
             };
             let actor = ActorId::KernelDispatcher;
-            let mut events = vec![Event::TaskFailed {
+            let events = vec![Event::TaskFailed {
                 idempotency_key: task.id.clone(),
                 reason,
                 details: None,
                 agent_message: None,
             }];
-            // The terminal flip promotes the Track exactly as the gate verdict, the worker
-            // failure and the reaper do (`working → reviewing` when it is `working`), in this
-            // transaction; the pair rides behind the `task.failed`.
-            if let Some(auto_events) = auto_transition_if_current_in_tx(
-                tx,
-                &TrackId::from(track_id.to_string()),
-                TrackLifecycle::Working,
-                TrackLifecycle::Reviewing,
-                &actor,
-                Some("[auto] delivery abandoned".to_string()),
-            )
-            .await?
-            {
-                events.extend(auto_events);
-            }
             let ids = append_decision_events_in_tx(tx, &actor, scope, None, &events).await?;
             after = AfterCommit::Broadcast(
                 ids.into_iter()

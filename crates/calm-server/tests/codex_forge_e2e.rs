@@ -15,7 +15,6 @@ use calm_server::event::{ChannelVerdict, ChannelVerdictKind, Event, EventScope, 
 use calm_server::harness::{HarnessState, Observation, PlannerHarness};
 use calm_server::ids::{ActorId, TrackId};
 use calm_server::mcp_server::tools::track_file::TOOL_TRACK_CAT;
-use calm_server::model::{TrackLifecycle, TrackPatch};
 use calm_server::plugin_host::Manifest;
 use calm_server::state::AppState;
 use http_body_util::BodyExt;
@@ -225,26 +224,6 @@ async fn real_planner_agent_autonomously_plans_from_bound_template() {
     );
     assert_bound_issue_development_template_preconditions(&fx).await;
 
-    // Superset-tolerant: the real planner may emit further lifecycle transitions, so filter rather than count.
-    let lifecycle = lifecycle_changed_rows(&fx.repo).await;
-    let draft_to_planning: Vec<&(ActorId, Value)> = lifecycle
-        .iter()
-        .filter(|(_, payload)| {
-            payload["from"] == json!("draft") && payload["to"] == json!("planning")
-        })
-        .collect();
-    assert_eq!(
-        draft_to_planning.len(),
-        1,
-        "expected exactly one track.lifecycle_changed draft->planning, got {lifecycle:?}"
-    );
-    let (lifecycle_actor, lifecycle_payload) = draft_to_planning[0];
-    assert_eq!(
-        lifecycle_actor,
-        &ActorId::Kernel,
-        "draft->planning companion actor must be Kernel"
-    );
-    assert_eq!(lifecycle_payload["id"], json!(fx.track_id.as_str()));
     assert!(
         !fx.used_injected_plan(),
         "RealPlannerTurn must not use injected plan path"
@@ -383,18 +362,6 @@ async fn real_planner_gives_up_at_review_cap_from_descriptor() {
     // Settle the planning turn before seeding so the give-up is causally a response to the injected observations.
     wait_for_planner_turn_settled(&fx, &harness, planner_planning_budget()).await;
 
-    // Pre-position the track at `reviewing` via a raw TrackPatch; walking there by real turns is capstone scope.
-    fx.repo_dyn
-        .track_update(
-            fx.track_id.as_str(),
-            TrackPatch {
-                lifecycle: Some(TrackLifecycle::Reviewing),
-                ..TrackPatch::default()
-            },
-        )
-        .await
-        .expect("pre-position track lifecycle to reviewing");
-
     seed_design_channel_changes_requested(&fx, "review-design-a", "a").await;
     seed_design_channel_changes_requested(&fx, "review-design-b", "b").await;
     // Seed ONE prior round ALREADY AT the cap (n=8/cap=8): no further round is kernel-legal, so the agent must escalate directly (seeding n=7 deadlocks this dispatcher-less harness).
@@ -413,26 +380,16 @@ async fn real_planner_gives_up_at_review_cap_from_descriptor() {
     inject_task_changes_requested(&harness, &task_id(&fx, "review-design-b")).await;
     inject_design_review_round_observation(&harness, &fx, &slice_id, 8, 8, false).await;
 
-    // Oracle (a): the FSM's give-up edge; the *when* (escalate at the cap instead of ratifying) comes only from the descriptor.
-    let (edge_actor, edge) = wait_for_track_failed_edge(&fx, floor, review_budget()).await;
-    assert_eq!(
-        edge["from"],
-        json!("reviewing"),
-        "give-up edge must leave reviewing: {edge}"
-    );
-    assert_eq!(edge["id"], json!(fx.track_id.as_str()));
+    // Oracle (a): the Planner's close; the *when* (give up at the cap instead of ratifying) comes only from the descriptor.
+    let (_close_id, close_actor, close) = wait_for_track_closed(&fx, floor, review_budget()).await;
+    assert_eq!(close["id"], json!(fx.track_id.as_str()));
     assert!(
-        matches!(edge_actor, ActorId::AiPlannerSession(_)),
-        "give-up edge actor must be AiPlannerSession, got {edge_actor:?} for {edge}"
+        matches!(close_actor, ActorId::AiPlannerSession(_)),
+        "the give-up close actor must be AiPlannerSession, got {close_actor:?} for {close}"
     );
 
-    // Oracle (b): the tracks row landed on the terminal lifecycle.
-    let lifecycle: String = sqlx::query_scalar("SELECT lifecycle FROM tracks WHERE id = ?1")
-        .bind(fx.track_id.as_str())
-        .fetch_one(fx.repo.pool())
-        .await
-        .expect("select track lifecycle");
-    assert_eq!(lifecycle, "failed", "track row lifecycle must be failed");
+    // Oracle (b): the tracks row is closed.
+    assert!(track_is_closed(&fx).await, "the track row must be closed");
 
     // Oracle (c): branch purity — the steered run must neither merge nor ask for ratification.
     assert_eq!(event_payloads(&fx.repo, "forge.pr.merged").await.len(), 0);
@@ -511,18 +468,6 @@ async fn real_planner_requests_ratification_at_cap_and_resumes_on_grant() {
     // Settle the planning turn before seeding so the ASK-HUMAN sequence is causally a response to the injected observations.
     wait_for_planner_turn_settled(&fx, &harness, planner_planning_budget()).await;
 
-    // Pre-position the track at `reviewing` via a raw TrackPatch; walking there by real turns is capstone scope.
-    fx.repo_dyn
-        .track_update(
-            fx.track_id.as_str(),
-            TrackPatch {
-                lifecycle: Some(TrackLifecycle::Reviewing),
-                ..TrackPatch::default()
-            },
-        )
-        .await
-        .expect("pre-position track lifecycle to reviewing");
-
     seed_design_channel_changes_requested(&fx, "review-design-a", "a").await;
     seed_design_channel_changes_requested(&fx, "review-design-b", "b").await;
     // Seed ONE prior round ALREADY AT the cap (n=8/cap=8): no further round is kernel-legal, so the agent must escalate directly (seeding n=7 deadlocks this dispatcher-less harness).
@@ -541,21 +486,9 @@ async fn real_planner_requests_ratification_at_cap_and_resumes_on_grant() {
     inject_task_changes_requested(&harness, &task_id(&fx, "review-design-b")).await;
     inject_design_review_round_observation(&harness, &fx, &slice_id, 8, 8, false).await;
 
-    // Oracle phase 1 (a): the ordered ASK-HUMAN chain. `calm.ratify.request` demands lifecycle==Working and emits working->blocked + ratify.requested in ONE tx, so both must appear.
-    let (rw_id, rw_actor, rw_edge) =
-        wait_for_track_lifecycle_edge(&fx, floor, "reviewing", "working", ratify_budget()).await;
-    assert!(
-        matches!(rw_actor, ActorId::AiPlannerSession(_)),
-        "reviewing->working edge actor must be AiPlannerSession, got {rw_actor:?} for {rw_edge}"
-    );
-    let (wb_id, wb_actor, wb_edge) =
-        wait_for_track_lifecycle_edge(&fx, rw_id, "working", "blocked", ratify_budget()).await;
-    assert!(
-        matches!(wb_actor, ActorId::AiPlannerSession(_)),
-        "working->blocked edge actor must be AiPlannerSession, got {wb_actor:?} for {wb_edge}"
-    );
+    // Oracle phase 1 (a): the ASK-HUMAN request. `calm.ratify.request` needs an open track and flips nothing.
     // The request is structurally unforgeable: role_gate makes ratify.requested planner-session-only and this test never calls `calm.ratify.request`.
-    let (req_id, req_actor, req) = wait_for_ratify_requested(&fx, wb_id, ratify_budget()).await;
+    let (req_id, req_actor, req) = wait_for_ratify_requested(&fx, floor, ratify_budget()).await;
     assert!(
         matches!(req_actor, ActorId::AiPlannerSession(_)),
         "ratify.requested actor must be AiPlannerSession, got {req_actor:?} for {req}"
@@ -568,15 +501,14 @@ async fn real_planner_requests_ratification_at_cap_and_resumes_on_grant() {
     );
     assert_eq!(req["track_id"], json!(fx.track_id.as_str()));
 
-    // Oracle phase 1 (b): parked, not merged.
+    // Oracle phase 1 (b): waiting, not merged.
     assert_eq!(event_payloads(&fx.repo, "forge.pr.merged").await.len(), 0);
-    assert_eq!(
-        track_lifecycle_row(&fx).await,
-        "blocked",
-        "track row must be blocked while awaiting ratification"
+    assert!(
+        !track_is_closed(&fx).await,
+        "the track stays open while awaiting ratification"
     );
 
-    // Grant through the PRODUCTION HTTP route (in-process oneshot): a `log_pure_event` shortcut is User-only at the role gate and would have to hand-roll the tracks-row flip.
+    // Grant through the PRODUCTION HTTP route (in-process oneshot), as the user sends it.
     let app = fixture_router(&fx);
     let body = serde_json::to_vec(&json!({ "decision": "grant" })).expect("grant body");
     let resp = app
@@ -601,13 +533,7 @@ async fn real_planner_requests_ratification_at_cap_and_resumes_on_grant() {
     assert_eq!(status, StatusCode::OK, "grant must succeed: {grant_body}");
     assert_eq!(grant_body["decision"], json!("grant"), "{grant_body}");
 
-    // Same-tx grant effects: tracks row flipped + ratify.resolved{grant} by the
-    // human actor.
-    assert_eq!(
-        track_lifecycle_row(&fx).await,
-        "working",
-        "grant must flip the track row blocked->working"
-    );
+    // The grant's effect: ratify.resolved{grant} by the human actor.
     let resolved_rows: Vec<(i64, String, String)> = sqlx::query_as(
         "SELECT id, actor, payload FROM events WHERE kind = 'ratify.resolved' ORDER BY id ASC",
     )
@@ -636,39 +562,12 @@ async fn real_planner_requests_ratification_at_cap_and_resumes_on_grant() {
         resolved_id > req_id,
         "grant must follow the request: resolved={resolved_id}, requested={req_id}"
     );
-    // The grant's own blocked->working edge lands in the same tx, strictly
-    // between the request and the resolution row.
-    let grant_edges: Vec<(ActorId, Value)> =
-        lifecycle_changed_rows_between(&fx, req_id, resolved_id)
-            .await
-            .into_iter()
-            .filter(|(_, payload)| {
-                payload["from"] == json!("blocked")
-                    && payload["to"] == json!("working")
-                    && payload["id"] == json!(fx.track_id.as_str())
-            })
-            .collect();
-    assert_eq!(
-        grant_edges.len(),
-        1,
-        "grant must emit exactly one blocked->working edge in-tx: {grant_edges:?}"
-    );
-    assert_eq!(
-        grant_edges[0].0,
-        ActorId::User,
-        "grant blocked->working edge actor must be User: {grant_edges:?}"
-    );
 
     // Recovery wake: the same Observation the prod dispatcher would push for ratify.resolved.
     inject_ratify_resolved_grant(&harness, &fx).await;
-
-    // Oracle phase 2 — resumption: the real planner re-enters review (working->reviewing) after the grant.
-    let (_resume_id, resume_actor, resume_edge) =
-        wait_for_track_lifecycle_edge(&fx, resolved_id, "working", "reviewing", ratify_budget())
-            .await;
     assert!(
-        matches!(resume_actor, ActorId::AiPlannerSession(_)),
-        "post-grant working->reviewing edge actor must be AiPlannerSession, got {resume_actor:?} for {resume_edge}"
+        !track_is_closed(&fx).await,
+        "the grant leaves the track open for the resumed work"
     );
 
     // Post-grant convergence/merge is deliberately NOT asserted: this subject is design-phase with no PR, and no post-grant verdicts are injected.
@@ -737,18 +636,6 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
         .expect("live planner harness");
     // Settle the planning turn before setup/seeding so the merge+close is causally a response to the injected observations.
     wait_for_planner_turn_settled(&fx, &harness, planner_planning_budget()).await;
-
-    // Pre-position the track at `reviewing` via a raw TrackPatch.
-    fx.repo_dyn
-        .track_update(
-            fx.track_id.as_str(),
-            TrackPatch {
-                lifecycle: Some(TrackLifecycle::Reviewing),
-                ..TrackPatch::default()
-            },
-        )
-        .await
-        .expect("pre-position track lifecycle to reviewing");
 
     // Scripted REAL PR setup (setup, not the proof): raw git branch + push, then scripted `gh.pr.create` + `gh.pr.checks` through the daemon socket so genuine events back the injected observations.
     let branch = "neige-d2-impl-slice";
@@ -1060,18 +947,12 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
         "gh shim must record exactly one real issue close"
     );
 
-    // Oracle (f): purity — no ratification grant, the track must not have failed, the plan must be the planner's own.
+    // Oracle (f): purity — no ratification grant, the plan must be the planner's own.
     assert_eq!(
         event_payloads(&fx.repo, "ratify.requested").await.len(),
         0,
         "happy-path merge run must not request ratification"
     );
-    let lifecycle: String = sqlx::query_scalar("SELECT lifecycle FROM tracks WHERE id = ?1")
-        .bind(fx.track_id.as_str())
-        .fetch_one(fx.repo.pool())
-        .await
-        .expect("select track lifecycle");
-    assert_ne!(lifecycle, "failed", "track must not fail on the happy path");
     assert!(
         !fx.used_injected_plan(),
         "RealPlannerTurn must not use injected plan path"
@@ -1134,18 +1015,6 @@ async fn real_planner_extends_cap_after_grant_converges_and_merges() {
         .expect("live planner harness");
     // Settle the planning turn before setup/seeding.
     wait_for_planner_turn_settled(&fx, &harness, planner_planning_budget()).await;
-
-    // Pre-position the track at `reviewing`.
-    fx.repo_dyn
-        .track_update(
-            fx.track_id.as_str(),
-            TrackPatch {
-                lifecycle: Some(TrackLifecycle::Reviewing),
-                ..TrackPatch::default()
-            },
-        )
-        .await
-        .expect("pre-position track lifecycle to reviewing");
 
     // Scripted REAL PR setup (setup, not the proof).
     let branch = "neige-r7c-impl-slice";
@@ -1279,34 +1148,21 @@ async fn real_planner_extends_cap_after_grant_converges_and_merges() {
     )
     .await;
 
-    // Phase 1 (a) — the ordered ASK-HUMAN chain, waited from the pre-wake `floor`.
-    let (rw_id, rw_actor, rw_edge) =
-        wait_for_track_lifecycle_edge(&fx, floor, "reviewing", "working", ratify_budget()).await;
-    assert!(
-        matches!(rw_actor, ActorId::AiPlannerSession(_)),
-        "reviewing->working edge actor must be AiPlannerSession, got {rw_actor:?} for {rw_edge}"
-    );
-    let (wb_id, wb_actor, wb_edge) =
-        wait_for_track_lifecycle_edge(&fx, rw_id, "working", "blocked", ratify_budget()).await;
-    assert!(
-        matches!(wb_actor, ActorId::AiPlannerSession(_)),
-        "working->blocked edge actor must be AiPlannerSession, got {wb_actor:?} for {wb_edge}"
-    );
-    let (req_id, req_actor, req) = wait_for_ratify_requested(&fx, wb_id, ratify_budget()).await;
+    // Phase 1 (a) — the ASK-HUMAN request, waited from the pre-wake `floor`.
+    let (req_id, req_actor, req) = wait_for_ratify_requested(&fx, floor, ratify_budget()).await;
     assert!(
         matches!(req_actor, ActorId::AiPlannerSession(_)),
         "ratify.requested actor must be AiPlannerSession, got {req_actor:?} for {req}"
     );
 
-    // Phase 1 (c) — parked, not merged.
+    // Phase 1 (c) — waiting, not merged.
     assert_eq!(event_payloads(&fx.repo, "forge.pr.merged").await.len(), 0);
-    assert_eq!(
-        track_lifecycle_row(&fx).await,
-        "blocked",
-        "track row must be blocked while awaiting ratification"
+    assert!(
+        !track_is_closed(&fx).await,
+        "the track stays open while awaiting ratification"
     );
 
-    // Grant through the PRODUCTION HTTP route: blocked->working + ratify.resolved{grant}, both User.
+    // Grant through the PRODUCTION HTTP route: ratify.resolved{grant} by the User.
     let app = fixture_router(&fx);
     let body = serde_json::to_vec(&json!({ "decision": "grant" })).expect("grant body");
     let resp = app
@@ -1329,11 +1185,6 @@ async fn real_planner_extends_cap_after_grant_converges_and_merges() {
         .to_bytes();
     let grant_body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     assert_eq!(status, StatusCode::OK, "grant must succeed: {grant_body}");
-    assert_eq!(
-        track_lifecycle_row(&fx).await,
-        "working",
-        "grant must flip the track row blocked->working"
-    );
     let resolved_rows: Vec<(i64, String, String)> = sqlx::query_as(
         "SELECT id, actor, payload FROM events WHERE kind = 'ratify.resolved' ORDER BY id ASC",
     )
@@ -1357,26 +1208,7 @@ async fn real_planner_extends_cap_after_grant_converges_and_merges() {
         "ratify.resolved actor must be User: {resolved}"
     );
     assert_eq!(resolved["decision"], json!("grant"), "{resolved}");
-    let grant_edges: Vec<(ActorId, Value)> =
-        lifecycle_changed_rows_between(&fx, req_id, resolved_id)
-            .await
-            .into_iter()
-            .filter(|(_, payload)| {
-                payload["from"] == json!("blocked")
-                    && payload["to"] == json!("working")
-                    && payload["id"] == json!(fx.track_id.as_str())
-            })
-            .collect();
-    assert_eq!(
-        grant_edges.len(),
-        1,
-        "grant must emit exactly one blocked->working edge in-tx: {grant_edges:?}"
-    );
-    assert_eq!(
-        grant_edges[0].0,
-        ActorId::User,
-        "grant blocked->working edge actor must be User: {grant_edges:?}"
-    );
+    assert!(resolved_id > req_id, "grant must follow the request");
 
     // Recovery wake + post-grant APPROVED verdicts, injected BEFORE the planner's next round so that round is both the extension and the convergence.
     inject_ratify_resolved_grant(&harness, &fx).await;
@@ -1697,7 +1529,7 @@ async fn wait_for_impl_review_round_on_subject(
     }
 }
 
-// CAPSTONE: one REAL run of the full issue→PR→merge→close backbone with a LIVE dispatcher — zero injected observations, zero seeded rows, zero lifecycle pre-positioning; ANY `ratify.requested` fails the test.
+// CAPSTONE: one REAL run of the full issue→PR→merge→close backbone with a LIVE dispatcher — zero injected observations, zero seeded rows; ANY `ratify.requested` fails the test.
 // Real runs happen ONLY inside the isolation wrapper, never on the shared production box; without NEIGE_CODEX_BIN this self-skips.
 
 /// The capstone's source issue number. An environment fact for the gh shim
@@ -1953,19 +1785,19 @@ async fn real_planner_drives_issue_to_close_capstone() {
     .await;
     assert_eq!(closed_actor, ActorId::KernelDispatcher, "{closed}");
 
-    // S13 — the planner drives the track lifecycle to done.
-    let (_done_id, done_actor, done_edge) = wait_capstone_event(
+    // S13 — the planner closes the track.
+    let (_done_id, done_actor, done_close) = wait_capstone_event(
         &fx,
-        "track.lifecycle_changed",
+        "track.updated",
         merged_id,
         st(),
-        "planner transitions the track to done",
-        |p| p["to"] == json!("done") && p["id"] == json!(fx.track_id.as_str()),
+        "planner closes the track",
+        |p| !p["closed_at"].is_null() && p["id"] == json!(fx.track_id.as_str()),
     )
     .await;
     assert!(
         matches!(done_actor, ActorId::AiPlannerSession(_)),
-        "→done lifecycle edge actor must be AiPlannerSession, got {done_actor:?} for {done_edge}"
+        "the close actor must be AiPlannerSession, got {done_actor:?} for {done_close}"
     );
 
     // Post-run oracle.
@@ -2023,7 +1855,7 @@ fn capstone_goal(repo_gitdir: &str, issue_number: u64, base_sha: &str) -> String
     format!(
         "Drive the bound issue-development template END-TO-END for issue #{issue_number}: read \
          the issue, converge design review, implement, open a pull request, converge PR review, \
-         merge, close the issue, and move the track lifecycle to done.\n\
+         merge, close the issue, and close the track.\n\
          \n\
          Environment facts:\n\
          - The `repo` argument for EVERY gh.* forge tool call (gh.issue.view, gh.pr.create, \
@@ -2062,14 +1894,14 @@ fn capstone_goal(repo_gitdir: &str, issue_number: u64, base_sha: &str) -> String
          - merge goal: call gh.pr.merge with the embedded repo and pr, phase `impl`, the \
          reviewed slice_id, and expected_head_sha equal to the head sha of the converged impl \
          review round; then call gh.issue.close for issue #{issue_number} with the same repo.\n\
-         - After the merge task completes and the issue is closed, transition the track \
-         lifecycle to done.\n\
-         - If a review subject cannot converge at the review cap, give up and fail the track; \
-         do not request ratification."
+         - After the merge task completes and the issue is closed, close the track with \
+         calm.track.close.\n\
+         - If a review subject cannot converge at the review cap, give up and close the track \
+         with the reason; do not request ratification."
     )
 }
 
-/// Stage wait with the failure terminator folded in: `ratify.requested` at ANY point or a `failed` track fails fast with agent diagnostics.
+/// Stage wait with the failure terminator folded in: `ratify.requested` at ANY point, or a close before the awaited one, fails fast with agent diagnostics.
 async fn wait_capstone_event(
     fx: &Fixture,
     kind: &str,
@@ -2093,13 +1925,10 @@ async fn wait_capstone_event(
             )
             .await;
         }
-        if track_lifecycle_row(fx).await == "failed" {
+        if kind != "track.updated" && track_is_closed(fx).await {
             panic_with_agent_diag(
                 fx,
-                format!(
-                    "track lifecycle landed `failed` (planner gave up — terminal) while waiting \
-                     for {kind} ({describe})"
-                ),
+                format!("the track closed (planner gave up) while waiting for {kind} ({describe})"),
             )
             .await;
         }
@@ -2179,9 +2008,7 @@ async fn capstone_oracle(
             RequiredEvent::new("forge.issue.closed", |r| {
                 r.payload["issue_number"] == json!(CAPSTONE_ISSUE_NUMBER)
             }),
-            RequiredEvent::new("track.lifecycle_changed", |r| {
-                r.payload["to"] == json!("done")
-            }),
+            RequiredEvent::new("track.updated", |r| !r.payload["closed_at"].is_null()),
         ],
     )
     .await;
@@ -2340,16 +2167,15 @@ async fn capstone_oracle(
         "exactly one forge.issue.closed event"
     );
 
-    // Purity: never ratified, never failed, never the injected-plan path.
+    // Purity: never ratified, never the injected-plan path, and the track closed.
     assert_eq!(
         event_payloads(&fx.repo, "ratify.requested").await.len(),
         0,
         "steered GIVE-UP capstone must never request ratification"
     );
-    assert_eq!(
-        track_lifecycle_row(fx).await,
-        "done",
-        "capstone track row must land done"
+    assert!(
+        track_is_closed(fx).await,
+        "the capstone track row must be closed"
     );
     assert!(
         !fx.used_injected_plan(),
@@ -2819,28 +2645,27 @@ async fn seed_prior_design_review_round(fx: &Fixture, slice_id: &str, n: u32, ca
         .expect("log seeded prior review.round");
 }
 
-/// First post-floor `track.lifecycle_changed` landing on `failed` for the
-/// fixture track. Other lifecycle transitions are tolerated.
-async fn wait_for_track_failed_edge(
+/// First post-floor `track.updated` that closes the fixture track.
+async fn wait_for_track_closed(
     fx: &Fixture,
     floor: i64,
     budget: Duration,
-) -> (ActorId, Value) {
+) -> (i64, ActorId, Value) {
     let deadline = Instant::now() + budget;
     loop {
         let rows: Vec<(i64, String, String)> = sqlx::query_as(
             "SELECT id, actor, payload FROM events \
-             WHERE kind = 'track.lifecycle_changed' AND id > ?1 ORDER BY id ASC",
+             WHERE kind = 'track.updated' AND id > ?1 ORDER BY id ASC",
         )
         .bind(floor)
         .fetch_all(fx.repo.pool())
         .await
-        .unwrap_or_else(|e| panic!("track.lifecycle_changed rows after floor {floor}: {e}"));
-        let hit = rows.into_iter().find_map(|(_, actor, payload)| {
+        .unwrap_or_else(|e| panic!("track.updated rows after floor {floor}: {e}"));
+        let hit = rows.into_iter().find_map(|(id, actor, payload)| {
             let actor: ActorId = serde_json::from_str(&actor).expect("event actor json");
             let payload: Value = serde_json::from_str(&payload).expect("event payload json");
-            (payload["to"] == json!("failed") && payload["id"] == json!(fx.track_id.as_str()))
-                .then_some((actor, payload))
+            (!payload["closed_at"].is_null() && payload["id"] == json!(fx.track_id.as_str()))
+                .then_some((id, actor, payload))
         });
         if let Some(hit) = hit {
             return hit;
@@ -2848,86 +2673,12 @@ async fn wait_for_track_failed_edge(
         if Instant::now() >= deadline {
             panic_with_agent_diag(
                 fx,
-                format!(
-                    "timed out after {budget:?} waiting for track.lifecycle_changed to=failed \
-                     after event id {floor}"
-                ),
+                format!("timed out after {budget:?} waiting for the close after event id {floor}"),
             )
             .await;
         }
         sleep(Duration::from_millis(250)).await;
     }
-}
-
-/// First post-floor `track.lifecycle_changed` matching `from -> to` for the fixture track; returns the event id.
-async fn wait_for_track_lifecycle_edge(
-    fx: &Fixture,
-    floor: i64,
-    from: &str,
-    to: &str,
-    budget: Duration,
-) -> (i64, ActorId, Value) {
-    let deadline = Instant::now() + budget;
-    loop {
-        let hit = lifecycle_changed_rows_after(fx, floor)
-            .await
-            .into_iter()
-            .find(|(_, _, payload)| {
-                payload["from"] == json!(from)
-                    && payload["to"] == json!(to)
-                    && payload["id"] == json!(fx.track_id.as_str())
-            });
-        if let Some(hit) = hit {
-            return hit;
-        }
-        if Instant::now() >= deadline {
-            panic_with_agent_diag(
-                fx,
-                format!(
-                    "timed out after {budget:?} waiting for track.lifecycle_changed \
-                     {from}->{to} after event id {floor}"
-                ),
-            )
-            .await;
-        }
-        sleep(Duration::from_millis(250)).await;
-    }
-}
-
-async fn lifecycle_changed_rows_after(fx: &Fixture, floor: i64) -> Vec<(i64, ActorId, Value)> {
-    let rows: Vec<(i64, String, String)> = sqlx::query_as(
-        "SELECT id, actor, payload FROM events \
-         WHERE kind = 'track.lifecycle_changed' AND id > ?1 ORDER BY id ASC",
-    )
-    .bind(floor)
-    .fetch_all(fx.repo.pool())
-    .await
-    .unwrap_or_else(|e| panic!("track.lifecycle_changed rows after floor {floor}: {e}"));
-    rows.into_iter()
-        .map(|(id, actor, payload)| {
-            (
-                id,
-                serde_json::from_str(&actor).expect("event actor json"),
-                serde_json::from_str(&payload).expect("event payload json"),
-            )
-        })
-        .collect()
-}
-
-/// `track.lifecycle_changed` rows strictly inside the `(after, before)` event
-/// id window — used to pin the grant's same-tx blocked->working edge between
-/// the request and the resolution rows.
-async fn lifecycle_changed_rows_between(
-    fx: &Fixture,
-    after: i64,
-    before: i64,
-) -> Vec<(ActorId, Value)> {
-    lifecycle_changed_rows_after(fx, after)
-        .await
-        .into_iter()
-        .filter(|(id, _, _)| *id < before)
-        .map(|(_, actor, payload)| (actor, payload))
-        .collect()
 }
 
 /// First post-floor `ratify.requested`; role_gate makes it planner-session-only, so an observed row proves the real planner's own tool call.
@@ -2964,12 +2715,12 @@ async fn wait_for_ratify_requested(
     }
 }
 
-async fn track_lifecycle_row(fx: &Fixture) -> String {
-    sqlx::query_scalar("SELECT lifecycle FROM tracks WHERE id = ?1")
+async fn track_is_closed(fx: &Fixture) -> bool {
+    sqlx::query_scalar("SELECT closed_at IS NOT NULL FROM tracks WHERE id = ?1")
         .bind(fx.track_id.as_str())
         .fetch_one(fx.repo.pool())
         .await
-        .expect("select track lifecycle")
+        .expect("select track closed_at")
 }
 
 /// The production HTTP grant seam: the real `routes::router()` behind `actor_middleware` over the fixture's live parts, driven via `oneshot`.

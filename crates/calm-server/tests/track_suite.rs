@@ -19,8 +19,6 @@ mod track_create_with_theme;
 mod track_cwd_terminal_at;
 #[path = "cases/track_delete_forge_fence.rs"]
 mod track_delete_forge_fence;
-#[path = "cases/track_fsm_golden.rs"]
-mod track_fsm_golden;
 #[path = "cases/track_pin.rs"]
 mod track_pin;
 #[path = "cases/track_recipe_instantiate.rs"]

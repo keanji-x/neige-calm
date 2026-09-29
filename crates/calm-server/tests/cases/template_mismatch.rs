@@ -11,10 +11,7 @@ async fn a_fresh_template_can_report_repository_mismatch_without_tasks_or_ratifi
     }))).await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
     let track = created["id"].as_str().unwrap();
-    assert_eq!(
-        boot.repo.track_get(track).await.unwrap().unwrap().lifecycle,
-        calm_server::model::TrackLifecycle::Draft
-    );
+    assert!(boot.repo.track_get(track).await.unwrap().unwrap().is_open());
     let (ctx, registry, identity) = planner_tool_channel(&boot, track).await;
     let read = call_planner_tool(
         &ctx,
@@ -29,7 +26,7 @@ async fn a_fresh_template_can_report_repository_mismatch_without_tasks_or_ratifi
         read["text"]
             .as_str()
             .unwrap()
-            .contains("In draft or planning")
+            .contains("ask the user to correct or confirm")
     );
     let card = boot
         .repo
@@ -65,10 +62,7 @@ async fn a_fresh_template_can_report_repository_mismatch_without_tasks_or_ratifi
     .unwrap();
     assert_eq!(result["rev"], block.rev + 1);
     let track_row = boot.repo.track_get(track).await.unwrap().unwrap();
-    assert_eq!(
-        track_row.lifecycle,
-        calm_server::model::TrackLifecycle::Planning
-    );
+    assert!(track_row.is_open(), "a report edit leaves the track open");
     let card = boot
         .repo
         .cards_by_track(track)

@@ -1,7 +1,7 @@
 //! Real authenticated REST boundaries; provider execution is never started here.
 use super::*;
 use calm_server::isolated_codex::config::{Backend, IsolatedCodexConfig};
-use calm_server::model::{TaskStatus, TrackLifecycle};
+use calm_server::model::TaskStatus;
 
 fn fake_backend(root: &std::path::Path) -> Arc<Backend> {
     let config = root.join("provider.toml");
@@ -109,19 +109,18 @@ async fn start_is_user_only_and_unavailable_backend_authors_nothing() {
     assert!(!body.to_string().contains("--isolated-codex-config"));
     assert_eq!(count(&boot, "tasks").await, 0);
     assert_eq!(count(&boot, "events").await, 0);
-    assert_eq!(
+    assert!(
         boot.repo
             .track_get(boot.track_id.as_str())
             .await
             .unwrap()
             .unwrap()
-            .lifecycle,
-        TrackLifecycle::Draft
+            .is_open()
     );
 }
 
 #[tokio::test]
-async fn start_atomically_promotes_draft_and_duplicate_cas_cannot_add_execution() {
+async fn start_is_atomic_and_duplicate_cas_cannot_add_execution() {
     let boot = boot().await;
     let root = tempfile::tempdir().unwrap();
     let app = app(
@@ -156,14 +155,13 @@ async fn start_atomically_promotes_draft_and_duplicate_cas_cannot_add_execution(
     assert_eq!(receipt.1["taskKey"], "independent-nonce");
     assert_eq!(receipt.1["docRev"], 1);
     assert!(receipt.1["blockId"].as_str().unwrap().starts_with("b_"));
-    assert_eq!(
+    assert!(
         boot.repo
             .track_get(boot.track_id.as_str())
             .await
             .unwrap()
             .unwrap()
-            .lifecycle,
-        TrackLifecycle::Planning
+            .is_open()
     );
     let tasks = boot
         .repo
@@ -197,20 +195,6 @@ async fn start_atomically_promotes_draft_and_duplicate_cas_cannot_add_execution(
             .count(),
         1
     );
-    assert_eq!(
-        events
-            .iter()
-            .filter(|(_, _, _, e)| matches!(
-                e,
-                Event::TrackLifecycleChanged {
-                    from: TrackLifecycle::Draft,
-                    to: TrackLifecycle::Planning,
-                    ..
-                }
-            ))
-            .count(),
-        1
-    );
     let before = count(&boot, "events").await;
     for body in [
         intent("independent-nonce", 0),
@@ -234,7 +218,7 @@ async fn start_atomically_promotes_draft_and_duplicate_cas_cannot_add_execution(
 }
 
 #[tokio::test]
-async fn invalid_start_rolls_back_draft_and_ordinary_edit_does_not_start_track() {
+async fn invalid_start_writes_nothing_and_an_ordinary_edit_still_allows_a_start() {
     let boot = boot().await;
     let root = tempfile::tempdir().unwrap();
     let app = app(
@@ -259,14 +243,13 @@ async fn invalid_start_rolls_back_draft_and_ordinary_edit_does_not_start_track()
         StatusCode::CONFLICT
     );
     assert_eq!(count(&boot, "events").await, 0);
-    assert_eq!(
+    assert!(
         boot.repo
             .track_get(boot.track_id.as_str())
             .await
             .unwrap()
             .unwrap()
-            .lifecycle,
-        TrackLifecycle::Draft
+            .is_open()
     );
     let edit = format!("/api/tracks/{}/report/blocks", boot.track_id);
     let (status, body) = request(
@@ -278,14 +261,13 @@ async fn invalid_start_rolls_back_draft_and_ordinary_edit_does_not_start_track()
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(
+    assert!(
         boot.repo
             .track_get(boot.track_id.as_str())
             .await
             .unwrap()
             .unwrap()
-            .lifecycle,
-        TrackLifecycle::Draft
+            .is_open()
     );
     let (status, body) = request(
         &app,
@@ -299,7 +281,7 @@ async fn invalid_start_rolls_back_draft_and_ordinary_edit_does_not_start_track()
 }
 
 #[tokio::test]
-async fn unsupported_lifecycle_cannot_author_an_inert_task() {
+async fn user_start_refuses_on_a_closed_track() {
     let boot = boot().await;
     let root = tempfile::tempdir().unwrap();
     let app = app(
@@ -308,33 +290,20 @@ async fn unsupported_lifecycle_cannot_author_an_inert_task() {
     );
     let cookie = login(&app).await;
     let uri = format!("/api/tracks/{}/isolated-tasks", boot.track_id);
-    for state in ["blocked", "done", "canceled", "failed"] {
-        sqlx::query("UPDATE tracks SET lifecycle=?1 WHERE id=?2")
-            .bind(state)
-            .bind(boot.track_id.as_str())
-            .execute(boot.repo.pool())
-            .await
-            .unwrap();
-        let (status, body) = request(&app, &uri, &cookie, "user", Some(intent("a", 0))).await;
-        assert_eq!(status, StatusCode::CONFLICT, "{state} {body}");
-        assert_eq!(count(&boot, "tasks").await, 0);
-        assert_eq!(count(&boot, "events").await, 0);
-    }
-    sqlx::query("UPDATE tracks SET lifecycle='draft',archived_at=1 WHERE id=?1")
+    sqlx::query("UPDATE tracks SET closed_at=1 WHERE id=?1")
         .bind(boot.track_id.as_str())
         .execute(boot.repo.pool())
         .await
         .unwrap();
-    assert_eq!(
-        request(&app, &uri, &cookie, "user", Some(intent("a", 0)))
-            .await
-            .0,
-        StatusCode::CONFLICT
-    );
+    let (status, body) = request(&app, &uri, &cookie, "user", Some(intent("a", 0))).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.to_string().contains("This Track is closed"), "{body}");
+    assert_eq!(count(&boot, "tasks").await, 0);
+    assert_eq!(count(&boot, "events").await, 0);
 }
 
 #[tokio::test]
-async fn start_write_failure_rolls_back_promotion_task_projection_and_events() {
+async fn start_write_failure_rolls_back_task_projection_and_events() {
     let boot = boot().await;
     let root = tempfile::tempdir().unwrap();
     let app = app(
@@ -348,14 +317,13 @@ async fn start_write_failure_rolls_back_promotion_task_projection_and_events() {
     let uri = format!("/api/tracks/{}/isolated-tasks", boot.track_id);
     let (status, _) = request(&app, &uri, &cookie, "user", Some(intent("atomic", 0))).await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-    assert_eq!(
+    assert!(
         boot.repo
             .track_get(boot.track_id.as_str())
             .await
             .unwrap()
             .unwrap()
-            .lifecycle,
-        TrackLifecycle::Draft
+            .is_open()
     );
     for table in ["tasks", "task_attempt_allocations", "events"] {
         assert_eq!(count(&boot, table).await, 0, "{table} must roll back");
@@ -409,14 +377,13 @@ async fn start_rejects_unreleased_declaration_and_retired_allocation_keys() {
         );
     }
     assert_eq!(count(&boot, "events").await, before);
-    assert_eq!(
+    assert!(
         boot.repo
             .track_get(boot.track_id.as_str())
             .await
             .unwrap()
             .unwrap()
-            .lifecycle,
-        TrackLifecycle::Draft
+            .is_open()
     );
 }
 

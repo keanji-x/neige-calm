@@ -62,7 +62,7 @@ pub(crate) async fn task_recovery_view_tx(
 }
 
 /// A refused admission together with the Track row read under the transaction;
-/// guidance derives lifecycle wording from this Track, never from an earlier snapshot.
+/// guidance derives its closed wording from this Track, never from an earlier snapshot.
 #[derive(Clone, Debug)]
 pub(crate) struct RefusedRecovery {
     pub refusal: RecoveryRefusal,
@@ -77,7 +77,7 @@ pub(crate) async fn task_recovery_view_with_refusal_tx(
     key: &str,
     actor: &ActorId,
 ) -> Result<(TaskRecoveryView, Option<RefusedRecovery>)> {
-    let track = crate::track_lifecycle::track_get_tx(tx, track_id).await?;
+    let track = crate::db::sqlite::track_get_tx(tx, track_id).await?;
     let event = Event::PlanUpdated {
         track_id: track.id.clone(),
         changed_keys: vec![key.to_string()],
@@ -166,9 +166,7 @@ pub(crate) async fn task_recovery_view_with_refusal_tx(
     let mut refusal = None;
     let recovery = match &current_task {
         Some(task) if task.status == TaskStatus::Failed => {
-            match admission::admit_recovery_tx(tx, &track, task, current.generation, actor, true)
-                .await
-            {
+            match admission::admit_recovery_tx(tx, &track, task, current.generation, actor).await {
                 Ok(_) => TaskRecoveryCapability {
                     allowed: true,
                     code: "available".into(),
@@ -255,11 +253,8 @@ pub(crate) async fn current_blocking_reason_tx(
     if task.is_some_and(|task| task.status != TaskStatus::Pending) {
         return Ok(None);
     }
-    if !crate::scheduler::lifecycle_allows_scheduling(track.lifecycle) {
-        return Ok(Some(format!(
-            "Track is {:?}; resume its work before this task can start",
-            track.lifecycle
-        )));
+    if !track.is_open() {
+        return Ok(Some("track is closed; reopen it first".into()));
     }
     let Some((declarations, diagnostics)) =
         crate::track_report::task_projection_source_tx(tx, track.id.as_str()).await?

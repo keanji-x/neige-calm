@@ -158,11 +158,8 @@ const TRACK_PERSISTENT_COLUMNS: &[&str] = &[
     "area_id",
     "title",
     "sort",
-    "archived_at",
     "created_at",
     "updated_at",
-    "lifecycle",
-    "terminal_at",
     "pinned_at",
     "task_budget",
     "require_task_gates",
@@ -182,6 +179,7 @@ const TRACK_PERSISTENT_COLUMNS: &[&str] = &[
     "recipe_revision",
     "claude_permissions_policy",
     "workspace_worktree_path",
+    "closed_at",
 ];
 
 type PersistedTrackEvent = (
@@ -383,8 +381,6 @@ async fn write_report_block(
         next,
         if_doc_rev,
         None,
-        None,
-        false,
     )
     .await
     .expect("production report write commits task declaration");

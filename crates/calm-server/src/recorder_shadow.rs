@@ -9,14 +9,12 @@ static RECORDER_SHADOW_DIVERGENCES: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RecorderShadowDecisionKind {
-    TrackLifecycle,
     ReportWrite,
 }
 
 impl RecorderShadowDecisionKind {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            Self::TrackLifecycle => "track_lifecycle",
             Self::ReportWrite => "report_write",
         }
     }

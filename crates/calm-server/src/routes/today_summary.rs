@@ -394,7 +394,6 @@ mod tests {
     #[test]
     fn the_prompt_is_bounded_far_below_the_planner_input_ceiling() {
         let widest = summary_prompt(&WorkspaceActivityWindow {
-            track_lifecycle_changed: i64::MIN,
             track_report_edited: i64::MIN,
             task_completed: i64::MIN,
             task_failed: i64::MIN,

@@ -17,8 +17,7 @@ use crate::db::write_with_actor_events_typed;
 use crate::error::Result;
 use crate::event::{Event, EventScope};
 use crate::ids::ActorId;
-use crate::model::{Task, TaskKind, Track, TrackLifecycle, now_ms};
-use crate::track_lifecycle::auto_transition_if_current_in_tx;
+use crate::model::{Task, TaskKind, Track, now_ms};
 
 /// How long a codex worker's last turn must have been over, with the thread at rest (`idle` or
 /// `systemError`) and no turn active, before the sweep fails its task as `worker-turn-ended`.
@@ -146,20 +145,6 @@ impl RunningWorkerFailure {
                 end: TurnEnd::Failed,
                 ..
             } => "worker turn ended in an error without a task report",
-        }
-    }
-
-    const fn auto_message(&self) -> &'static str {
-        match self {
-            Self::LivenessTimeout => "[auto] worker liveness timeout",
-            Self::TurnEnded {
-                end: TurnEnd::Ended,
-                ..
-            } => "[auto] worker turn ended",
-            Self::TurnEnded {
-                end: TurnEnd::Failed,
-                ..
-            } => "[auto] worker turn ended in an error",
         }
     }
 
@@ -338,7 +323,6 @@ impl Scheduler {
         let track_id = track.id.clone();
         let detail = failure.detail();
         let reason = failure.reason().to_string();
-        let auto_message = failure.auto_message().to_string();
         let cleanup_reason = failure.cleanup_reason();
         let guard_card_id = failure.guard_card_id().map(str::to_string);
         let timeout_cleanup_card_id = timeout_cleanup_card_id.map(str::to_string);
@@ -399,22 +383,6 @@ impl Scheduler {
                         },
                     )];
                     events.extend(released);
-                    if let Some(auto_events) = auto_transition_if_current_in_tx(
-                        tx,
-                        &track_id,
-                        TrackLifecycle::Working,
-                        TrackLifecycle::Reviewing,
-                        &ActorId::KernelDispatcher,
-                        Some(auto_message),
-                    )
-                    .await?
-                    {
-                        events.extend(
-                            auto_events
-                                .into_iter()
-                                .map(|event| (ActorId::KernelDispatcher, scope.clone(), event)),
-                        );
-                    }
                     Ok(((), events))
                 })
             },

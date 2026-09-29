@@ -104,8 +104,8 @@ async fn scan_bundled_frontend_real_cookie_contract() {
         report["passed"],
         json!(["real-cookie-business", "stale-cookie-rejected"])
     );
-    assert_eq!(report["webCompatVersion"], 33);
-    assert_eq!(report["apiVersion"], "14");
+    assert_eq!(report["webCompatVersion"], 34);
+    assert_eq!(report["apiVersion"], "15");
     println!(
         "scan frontend/host contract artifacts: {}",
         artifacts.display()

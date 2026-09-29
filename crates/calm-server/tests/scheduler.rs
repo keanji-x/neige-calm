@@ -30,7 +30,7 @@ use calm_server::mcp_server::tools::track_state::TOOL_TASK_VERDICT;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{
     CardRole, NewArea, NewCard, NewTerminal, NewTrack, RequestTheme, Task, TaskKind, TaskStatus,
-    TrackLifecycle, TrackPatch, new_id, now_ms,
+    TrackPatch, new_id, now_ms,
 };
 use calm_server::operation::child_track_adapter::ChildTrackAdapter;
 use calm_server::operation::claude_adapter::ClaudeWorkerAdapter;
@@ -615,17 +615,17 @@ async fn seed_projected_task_for(
     .expect("restore projected task runtime state");
 }
 
-async fn set_lifecycle(boot: &Boot, lifecycle: TrackLifecycle) {
+async fn set_closed(boot: &Boot, closed: bool) {
     boot.repo
         .track_update(
             boot.track_id.as_str(),
             TrackPatch {
-                lifecycle: Some(lifecycle),
+                closed: Some(closed),
                 ..Default::default()
             },
         )
         .await
-        .expect("set track lifecycle");
+        .expect("close or reopen the track");
 }
 
 async fn task_row(boot: &Boot, key: &str) -> Task {
@@ -1070,16 +1070,12 @@ impl ProviderAdapter for BootstrapAdapter {
     }
     async fn prepare_tx<'tx>(
         &self,
-        tx: &mut Tx<'tx>,
+        _tx: &mut Tx<'tx>,
         input: &Value,
         _op: &Operation,
     ) -> CalmResult<TxOutput> {
         // `wave_id` is the frozen persisted spelling of this field.
         let track_id = input["wave_id"].as_str().unwrap();
-        sqlx::query("UPDATE tracks SET lifecycle='planning' WHERE id=?1 AND lifecycle='draft'")
-            .bind(track_id)
-            .execute(&mut **tx)
-            .await?;
         self.minted.fetch_add(1, Ordering::SeqCst);
         Ok(TxOutput::new(
             "track",
@@ -1311,7 +1307,6 @@ impl ProviderAdapter for FailingSpawnAdapter {
 #[tokio::test]
 async fn plan_to_done_end_to_end() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Dispatching).await;
     seed_projected_task(&boot, plan_task(&boot.track_id, "t1", TaskKind::Codex, &[])).await;
     seed_projected_task(
         &boot,
@@ -1348,14 +1343,6 @@ async fn plan_to_done_end_to_end() {
     assert_eq!(dispatched[0].1["idempotency_key"], json!(t1.id));
     assert_eq!(dispatched[0].1["kind"], json!("codex"));
 
-    let track = boot
-        .repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(track.lifecycle, TrackLifecycle::Working);
-
     call_tool(
         &boot,
         TOOL_TASK_COMPLETE,
@@ -1382,7 +1369,6 @@ async fn plan_to_done_end_to_end() {
 #[tokio::test]
 async fn live_dispatch_claude_does_not_reconcile_recorded_pty_exit() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     seed_projected_task(
         &boot,
         plan_task(&boot.track_id, "claude-live", TaskKind::Claude, &[]),
@@ -1428,7 +1414,6 @@ async fn live_dispatch_claude_does_not_reconcile_recorded_pty_exit() {
 #[tokio::test]
 async fn terminal_tasks_run_side_by_side() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     seed_projected_task(
         &boot,
         plan_task(&boot.track_id, "a", TaskKind::Terminal, &[]),
@@ -1452,10 +1437,11 @@ async fn terminal_tasks_run_side_by_side() {
     assert_eq!(task_row(&boot, "b").await.status, TaskStatus::Running);
 }
 
+/// The scheduling gate: a closed track claims nothing; the same task is claimed once it reopens.
 #[tokio::test]
-async fn draft_track_is_not_scheduled() {
+async fn closed_track_does_not_claim() {
     let boot = boot().await;
-    seed_task(&boot, plan_task(&boot.track_id, "a", TaskKind::Codex, &[])).await;
+    seed_projected_task(&boot, plan_task(&boot.track_id, "a", TaskKind::Codex, &[])).await;
     let (_runtime, scheduler) = build_scheduler(
         &boot,
         vec![Arc::new(CardSpawnAdapter {
@@ -1463,16 +1449,20 @@ async fn draft_track_is_not_scheduled() {
             card_id: boot.worker_card_id.as_str().to_string(),
         })],
     );
+    set_closed(&boot, true).await;
     scheduler.schedule_track(boot.track_id.clone()).await;
     assert_eq!(task_row(&boot, "a").await.status, TaskStatus::Pending);
     assert_eq!(operation_count(&boot, "codex-worker").await, 0);
     assert!(event_rows(&boot, "task.dispatched").await.is_empty());
+
+    set_closed(&boot, false).await;
+    scheduler.schedule_track(boot.track_id.clone()).await;
+    assert_eq!(task_row(&boot, "a").await.status, TaskStatus::Running);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn claim_race_two_schedulers_single_winner() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     seed_projected_task(
         &boot,
         plan_task(&boot.track_id, "race", TaskKind::Codex, &[]),
@@ -1534,7 +1524,6 @@ async fn claim_race_two_schedulers_single_winner() {
 #[tokio::test]
 async fn fast_worker_report_beats_running_stamp() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let task = plan_task(&boot.track_id, "fast", TaskKind::Terminal, &[]);
     let task_id = task.id.clone();
     seed_projected_task(&boot, task).await;
@@ -1576,7 +1565,6 @@ async fn fast_worker_report_beats_running_stamp() {
 #[tokio::test]
 async fn spawn_failure_marks_failed_and_emits_kernel_task_failed() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let task = plan_task(&boot.track_id, "doomed", TaskKind::Codex, &[]);
     let task_id = task.id.clone();
     seed_projected_task(&boot, task).await;
@@ -1613,14 +1601,6 @@ async fn spawn_failure_marks_failed_and_emits_kernel_task_failed() {
         reason.contains("forced spawn failure"),
         "reason should carry the operation error, got {reason:?}"
     );
-
-    let track = boot
-        .repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(track.lifecycle, TrackLifecycle::Reviewing);
 }
 
 /// Drives the REAL `CodexWorkerAdapter` against a pre-#1830 attached track (no track worktree):
@@ -1628,7 +1608,6 @@ async fn spawn_failure_marks_failed_and_emits_kernel_task_failed() {
 #[tokio::test]
 async fn spawn_failure_status_detail_carries_the_real_reason() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let non_git = tempfile::tempdir().expect("tempdir");
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
     // Written directly: the production writer refuses a frozen row and has no un-freeze path by design.
@@ -1705,7 +1684,6 @@ async fn spawn_failure_status_detail_carries_the_real_reason() {
 #[tokio::test]
 async fn worker_report_flips_row_inside_emit_tx() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut task = plan_task(&boot.track_id, "r", TaskKind::Codex, &[]);
     task.status = TaskStatus::Running;
     let task_id = task.id.clone();
@@ -1747,7 +1725,6 @@ async fn worker_report_flips_row_inside_emit_tx() {
 #[tokio::test]
 async fn claude_worker_op_target_proves_unstamped_ownership() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut task = plan_task(&boot.track_id, "claude-owned", TaskKind::Claude, &[]);
     task.status = TaskStatus::Dispatched;
     let task_id = task.id.clone();
@@ -1781,7 +1758,6 @@ async fn claude_worker_op_target_proves_unstamped_ownership() {
 #[tokio::test]
 async fn duplicate_report_is_idempotent() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut task = plan_task(&boot.track_id, "dup", TaskKind::Codex, &[]);
     task.status = TaskStatus::Running;
     let task_id = task.id.clone();
@@ -1831,11 +1807,10 @@ async fn duplicate_report_is_idempotent() {
 }
 
 #[tokio::test]
-async fn gated_success_report_flips_to_verifying_and_suppresses_promotion() {
+async fn gated_success_report_flips_to_verifying() {
     // A gated row's success report is a claim, not evidence: the emit tx hands the row to the gate runner
-    // (`running → verifying`) and the `Working → Reviewing` auto-promotion is suppressed.
+    // (`running → verifying`).
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut task = plan_task(&boot.track_id, "gated", TaskKind::Codex, &[]);
     task.status = TaskStatus::Running;
     task.gate_json = Some(json!({ "steps": [{ "name": "t", "cmd": "true" }] }).to_string());
@@ -1865,17 +1840,6 @@ async fn gated_success_report_flips_to_verifying_and_suppresses_promotion() {
         "gated success report flips running → verifying, never done"
     );
     assert_eq!(row.gate_attempt, 0, "no gate attempt prepared yet");
-    let track = boot
-        .repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        track.lifecycle,
-        TrackLifecycle::Working,
-        "Working → Reviewing promotion is suppressed for gated tasks (§3)"
-    );
 
     // A worker `task.fail` against the now-`verifying` row is moot — the verify pipeline owns it.
     call_tool(
@@ -1896,7 +1860,6 @@ async fn gated_success_report_flips_to_verifying_and_suppresses_promotion() {
 #[tokio::test]
 async fn planner_verdict_never_flips_rows() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Reviewing).await;
     let mut task = plan_task(&boot.track_id, "v", TaskKind::Codex, &[]);
     task.status = TaskStatus::Running;
     let task_id = task.id.clone();
@@ -1963,7 +1926,6 @@ async fn seed_terminal_worker(boot: &Boot, task_id: &str) -> (CardId, String) {
 #[tokio::test]
 async fn terminal_hook_completes_task_on_exit() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut task = plan_task(&boot.track_id, "term", TaskKind::Terminal, &[]);
     task.status = TaskStatus::Running;
     let task_id = task.id.clone();
@@ -2007,7 +1969,6 @@ async fn terminal_exit_beats_running_stamp() {
     // The exit lands while the row is still `dispatched`: the hook resolves the task from the card payload's
     // `idempotency_key` (`worker_card_id` is still NULL), and the late running stamp must then no-op.
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut task = plan_task(&boot.track_id, "fast-term", TaskKind::Terminal, &[]);
     task.status = TaskStatus::Dispatched;
     let task_id = task.id.clone();
@@ -2063,7 +2024,6 @@ async fn terminal_exit_beats_running_stamp() {
 #[tokio::test]
 async fn terminal_hook_nonzero_exit_fails_task() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut task = plan_task(&boot.track_id, "term-fail", TaskKind::Terminal, &[]);
     task.status = TaskStatus::Running;
     let task_id = task.id.clone();
@@ -2108,7 +2068,6 @@ async fn terminal_hook_nonzero_exit_fails_task() {
 async fn sweep_reconciles_running_terminal_with_recorded_exit() {
     // Downtime path: the exit landed while the kernel was down and the boot supervisor reconcile persisted `exit_code = -1`.
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut task = plan_task(&boot.track_id, "swept", TaskKind::Terminal, &[]);
     task.status = TaskStatus::Running;
     let task_id = task.id.clone();
@@ -2164,7 +2123,6 @@ async fn sweep_reconciles_running_terminal_with_recorded_exit() {
 #[tokio::test]
 async fn sweep_running_codex_past_liveness_deadline_fails_and_releases_lease_row() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let (card_id, runtime_id, _terminal_id) =
         seed_codex_worker_card_with_terminal(&boot, "expired").await;
     let (lease_id, _lease_dir) = seed_held_workspace_lease(&boot, &card_id, "expired").await;
@@ -2209,7 +2167,6 @@ async fn sweep_running_codex_past_liveness_deadline_fails_and_releases_lease_row
 #[tokio::test]
 async fn sweep_running_codex_past_liveness_deadline_interrupts_shared_turn() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let (card_id, runtime_id, _terminal_id) =
         seed_codex_worker_card_with_terminal(&boot, "expired-turn").await;
     let (lease_id, _lease_dir) = seed_held_workspace_lease(&boot, &card_id, "expired-turn").await;
@@ -2245,7 +2202,6 @@ async fn sweep_running_codex_past_liveness_deadline_interrupts_shared_turn() {
 #[tokio::test]
 async fn sweep_running_codex_timeout_cleanup_releases_row_without_touching_lease_path() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let (card_id, runtime_id, _terminal_id) =
         seed_codex_worker_card_with_terminal(&boot, "expired-retry").await;
     let (lease_id, _lease_dir) = seed_held_workspace_lease(&boot, &card_id, "expired-retry").await;
@@ -2316,7 +2272,6 @@ async fn sweep_running_codex_timeout_cleanup_releases_row_without_touching_lease
 #[tokio::test]
 async fn sweep_running_codex_timeout_cleanup_retry_treats_missing_terminal_as_reaped() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let (card_id, runtime_id, terminal_id) =
         seed_codex_worker_card_with_terminal(&boot, "expired-missing-terminal").await;
     let (lease_id, _lease_dir) =
@@ -2394,7 +2349,6 @@ async fn sweep_running_codex_timeout_cleanup_retry_treats_missing_terminal_as_re
 #[tokio::test]
 async fn sweep_running_codex_within_liveness_deadline_is_untouched() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let (card_id, runtime_id, _terminal_id) =
         seed_codex_worker_card_with_terminal(&boot, "fresh").await;
     let (lease_id, _lease_dir) = seed_held_workspace_lease(&boot, &card_id, "fresh").await;
@@ -2425,7 +2379,6 @@ async fn sweep_running_codex_within_liveness_deadline_is_untouched() {
 #[tokio::test]
 async fn sweep_running_terminal_past_liveness_deadline_is_not_timed_out() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut task = plan_task(&boot.track_id, "terminal-timeout", TaskKind::Terminal, &[]);
     task.status = TaskStatus::Running;
     task.running_deadline_ms = Some(now_ms() - 1);
@@ -2476,7 +2429,6 @@ async fn first_server_sweep_keeps_upgraded_inflight_empty_context_non_material()
 #[tokio::test]
 async fn sweep_stamps_null_running_codex_liveness_deadline_before_timing_out() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
 
     let mut running = plan_task(&boot.track_id, "upgrade-running", TaskKind::Codex, &[]);
     running.status = TaskStatus::Running;
@@ -2523,7 +2475,6 @@ async fn sweep_stamps_null_running_codex_liveness_deadline_before_timing_out() {
 #[tokio::test]
 async fn sweep_running_claude_ignores_recorded_pty_exit() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut task = plan_task(&boot.track_id, "claude-swept", TaskKind::Claude, &[]);
     task.status = TaskStatus::Running;
     let task_id = task.id.clone();
@@ -2557,7 +2508,6 @@ async fn sweep_running_claude_ignores_recorded_pty_exit() {
 #[tokio::test]
 async fn sweep_resubmits_dispatched_task_with_missing_operation() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut task = plan_task(&boot.track_id, "orphan", TaskKind::Codex, &[]);
     // Crash window: row claimed (`dispatched`) but the worker operation was never inserted.
     task.status = TaskStatus::Dispatched;
@@ -2596,7 +2546,6 @@ async fn sweep_resubmits_dispatched_task_with_missing_operation() {
 #[tokio::test]
 async fn stale_dispatched_worker_without_operation_fails_without_spawn_or_track_pin() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut task = plan_task(&boot.track_id, "stale-orphan", TaskKind::Terminal, &[]);
     task.status = TaskStatus::Dispatched;
     let task_id = task.id.clone();
@@ -2831,7 +2780,6 @@ async fn every_registered_task_adapter_refuses_material_context() {
 #[tokio::test]
 async fn stale_pending_worker_operation_is_rejected_during_boot_recovery() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut task = plan_task(&boot.track_id, "stale-pending", TaskKind::Terminal, &[]);
     task.status = TaskStatus::Dispatched;
     let task_id = task.id.clone();
@@ -2886,7 +2834,6 @@ async fn stale_pending_worker_operation_is_rejected_during_boot_recovery() {
 #[tokio::test]
 async fn stale_spawn_started_worker_is_recovered_without_rechecking_context() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut task = plan_task(&boot.track_id, "stale-started", TaskKind::Terminal, &[]);
     task.status = TaskStatus::Dispatched;
     let task_id = task.id.clone();
@@ -2959,7 +2906,6 @@ async fn stale_spawn_started_worker_is_recovered_without_rechecking_context() {
 #[tokio::test]
 async fn later_successful_context_sweep_opens_gate_and_redrives_dispatched_same_turn() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut pending = plan_task(&boot.track_id, "boot-pending-op", TaskKind::Terminal, &[]);
     pending.status = TaskStatus::Dispatched;
     seed_task(&boot, pending).await;
@@ -3042,7 +2988,6 @@ async fn later_successful_context_sweep_opens_gate_and_redrives_dispatched_same_
 async fn codex_task_pty_exit_does_not_complete_task() {
     // A codex PTY exiting says nothing about the task outcome — only `calm.task.complete` may finish it.
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut task = plan_task(&boot.track_id, "cx", TaskKind::Codex, &[]);
     task.status = TaskStatus::Running;
     let task_id = task.id.clone();
@@ -3069,7 +3014,6 @@ async fn codex_task_pty_exit_does_not_complete_task() {
 async fn claude_task_pty_exit_does_not_complete_task() {
     // Claude worker cards are PTY-backed like terminal tasks, but a PTY exit is not a task verdict.
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut task = plan_task(&boot.track_id, "claude-exit", TaskKind::Claude, &[]);
     task.status = TaskStatus::Running;
     let task_id = task.id.clone();
@@ -3098,7 +3042,6 @@ async fn claude_task_pty_exit_does_not_complete_task() {
 #[tokio::test]
 async fn claim_payload_frozen_against_pre_claim_revision() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut task = plan_task(&boot.track_id, "revise", TaskKind::Terminal, &[]);
     task.goal = "echo old".into();
     let task_id = task.id.clone();
@@ -3159,7 +3102,6 @@ async fn claim_payload_frozen_against_pre_claim_revision() {
 #[tokio::test]
 async fn block_task_production_claim_freezes_nonempty_root_context() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let key = "block-freeze";
     let task = plan_task(&boot.track_id, key, TaskKind::Terminal, &[]);
     let task_id = task.id.clone();
@@ -3253,7 +3195,6 @@ async fn block_task_production_claim_freezes_nonempty_root_context() {
 #[tokio::test]
 async fn claim_missing_task_root_fails_closed_without_dispatch() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     seed_task(
         &boot,
         plan_task(&boot.track_id, "missing-root", TaskKind::Terminal, &[]),
@@ -3414,7 +3355,6 @@ async fn missing_blocks_is_empty_and_unrelated_malformed_block_is_ignored() {
 
 async fn assert_claim_fence_race_lost(cross_track: bool) {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let key = if cross_track {
         "fence-cross"
     } else {
@@ -3566,7 +3506,8 @@ async fn claim_fence_rejects_cross_track_edit_after_resolution_without_side_effe
 async fn deterministic_root_location_failures_do_not_freeze_or_index() {
     for case in ["duplicate", "tombstoned", "absent", "invalid-root-ref"] {
         let boot = boot().await;
-        set_lifecycle(&boot, TrackLifecycle::Draft).await;
+        // A closed track holds the root task pending while its declaration breaks.
+        set_closed(&boot, true).await;
         let key = format!("root-{case}");
         let valid_root = json!({
             "key": key, "kind": "terminal", "command": "true",
@@ -3588,7 +3529,6 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
         let root_id = "b_1001";
         let initial = vec![(root_id, "task", valid_root.clone())];
         edit_report_blocks(&boot, &initial, 0).await;
-        set_lifecycle(&boot, TrackLifecycle::Draft).await;
         let task_id = format!("{}:{key}", boot.track_id);
         assert!(
             boot.repo.task_get(&task_id).await.unwrap().is_some(),
@@ -3672,7 +3612,6 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
         } else {
             edit_report_blocks(&boot, &broken, 1).await;
         }
-        set_lifecycle(&boot, TrackLifecycle::Working).await;
         scheduler.schedule_track(boot.track_id.clone()).await;
         assert!(event_rows(&boot, "task.context_frozen").await.is_empty());
         assert!(event_rows(&boot, "task.context_advanced").await.is_empty());
@@ -3718,7 +3657,6 @@ async fn a_codex_task_stuck_at_claim_does_not_block_the_next_codex_task() {
     use calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR;
     use calm_types::report_links::format_track_destination;
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     insert_report_payload(
         &boot,
         "blocked-codex-head-report",
@@ -3801,7 +3739,6 @@ async fn a_codex_task_stuck_at_claim_does_not_block_the_next_codex_task() {
 #[tokio::test]
 async fn depth_two_deleted_reference_is_counted_does_not_block_and_recovers_next_claim() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     insert_report_payload(
         &boot,
         "blocked-head-report",
@@ -3909,7 +3846,6 @@ async fn depth_two_deleted_reference_is_counted_does_not_block_and_recovers_next
         .resolve_task_closure(boot.track_id.as_str(), "blocked-head")
         .await
         .expect("the repaired depth-two closure resolves");
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     scheduler.schedule_track(boot.track_id.clone()).await;
     assert!(
         event_rows(&boot, "task.context_frozen")
@@ -3923,7 +3859,6 @@ async fn depth_two_deleted_reference_is_counted_does_not_block_and_recovers_next
 #[tokio::test]
 async fn production_claim_uses_narrow_root_hash_and_full_child_hash() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let key = "hash-shapes";
     let mut report = TrackReportPayload {
         schema_version: TrackReportPayload::SCHEMA_VERSION,
@@ -4008,7 +3943,6 @@ async fn production_claim_uses_narrow_root_hash_and_full_child_hash() {
 }
 
 async fn seed_frozen_context_fixture(boot: &Boot, key: &str) -> TaskContextMonitor {
-    set_lifecycle(boot, TrackLifecycle::Working).await;
     let report = TrackReportPayload {
         schema_version: TrackReportPayload::SCHEMA_VERSION,
         doc_rev: 3,
@@ -4062,7 +3996,6 @@ async fn seed_production_report_context_fixture(
     boot: &Boot,
     key: &str,
 ) -> (TaskContextMonitor, String, String) {
-    set_lifecycle(boot, TrackLifecycle::Working).await;
     let target_id = "b_2000";
     let task_payload = json!({
         "key": key,
@@ -4153,8 +4086,6 @@ async fn persist_context_report_body(boot: &Boot, body: String) {
         next,
         doc_rev,
         None,
-        None,
-        false,
     )
     .await
     .unwrap();
@@ -5638,7 +5569,6 @@ async fn successful_context_verification_resets_retry_streak() {
 
 async fn assert_deletion_event_runs_context_sweep(event: Event, deleted_track_id: &str, key: &str) {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let referenced = boot
         .repo
         .track_create(NewTrack {
@@ -6224,7 +6154,6 @@ async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
 #[tokio::test]
 async fn sibling_card_report_cannot_flip_other_tasks_row() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut task = plan_task(&boot.track_id, "owned", TaskKind::Codex, &[]);
     task.status = TaskStatus::Running;
     task.worker_card_id = Some(boot.worker_card_id.as_str().to_string());
@@ -6264,7 +6193,7 @@ async fn sibling_card_report_cannot_flip_other_tasks_row() {
         thread_id: "sibling-thread".into(),
     };
 
-    // Sibling completes "someone else's" task → the whole report is refused: error back, NO event, no lifecycle transition.
+    // Sibling completes "someone else's" task → the whole report is refused: error back, NO event.
     call_tool(
         &boot,
         TOOL_TASK_COMPLETE,
@@ -6299,17 +6228,6 @@ async fn sibling_card_report_cannot_flip_other_tasks_row() {
     .expect_err("sibling fail report must be rejected");
     assert_eq!(task_row(&boot, "owned").await.status, TaskStatus::Running);
     assert!(event_rows(&boot, "task.failed").await.is_empty());
-    let track = boot
-        .repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        track.lifecycle,
-        TrackLifecycle::Working,
-        "rejected reports must not run the Working → Reviewing transition"
-    );
 
     call_tool(
         &boot,
@@ -6324,17 +6242,17 @@ async fn sibling_card_report_cannot_flip_other_tasks_row() {
 }
 
 #[tokio::test]
-async fn claim_aborts_when_lifecycle_leaves_schedulable_set() {
+async fn claim_aborts_when_the_track_closes() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
-    seed_task(
+    // Projected, so the claim's context resolution succeeds and only the open re-check can stop it.
+    seed_projected_task(
         &boot,
         plan_task(&boot.track_id, "held", TaskKind::Codex, &[]),
     )
     .await;
 
-    // Park the pass between the (passing) pre-claim lifecycle read and
-    // the claim tx, then move the track out of the schedulable set.
+    // Park the pass between the (passing) pre-claim open read and
+    // the claim tx, then close the track.
     let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
     let permit = Arc::clone(&semaphore)
         .acquire_owned()
@@ -6355,14 +6273,14 @@ async fn claim_aborts_when_lifecycle_leaves_schedulable_set() {
     });
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
-    set_lifecycle(&boot, TrackLifecycle::Canceled).await;
+    set_closed(&boot, true).await;
     drop(permit);
     handle.await.expect("schedule_track task");
 
     assert_eq!(
         task_row(&boot, "held").await.status,
         TaskStatus::Pending,
-        "in-tx lifecycle guard must abort the claim (race-lost, silent)"
+        "the in-tx open guard must abort the claim (race-lost, silent)"
     );
     assert!(
         event_rows(&boot, "task.dispatched").await.is_empty(),
@@ -6372,8 +6290,8 @@ async fn claim_aborts_when_lifecycle_leaves_schedulable_set() {
 }
 
 #[tokio::test]
-async fn planning_track_promotes_to_working_on_claim() {
-    let boot = boot().await; // track is Draft (create default)
+async fn a_declared_task_is_claimed_and_plan_list_follows_its_attempt() {
+    let boot = boot().await;
     let (_runtime, scheduler) = build_scheduler(
         &boot,
         vec![Arc::new(CardSpawnAdapter {
@@ -6382,7 +6300,6 @@ async fn planning_track_promotes_to_working_on_claim() {
         })],
     );
 
-    // Writing a ready report task block without a lifecycle arg auto-promotes Draft to Planning.
     insert_report_payload(
         &boot,
         "report-planning-claim",
@@ -6402,17 +6319,6 @@ async fn planning_track_promotes_to_working_on_claim() {
         0,
     )
     .await;
-    let track = boot
-        .repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        track.lifecycle,
-        TrackLifecycle::Planning,
-        "task block write with no lifecycle arg leaves the track Planning"
-    );
 
     let pending = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
         .await
@@ -6421,8 +6327,8 @@ async fn planning_track_promotes_to_working_on_claim() {
     let attempt_id = pending["tasks"][0]["attempt_id"].clone();
     assert!(attempt_id.as_str().is_some_and(|id| !id.is_empty()));
 
-    // Observe the production claim before the provider can start. Track Working
-    // is already true here, but the Planner's attempt read must say Dispatched.
+    // Observe the production claim before the provider can start: the Planner's attempt
+    // read must say Dispatched.
     let claimed = Arc::new(tokio::sync::Notify::new());
     let resume = Arc::new(tokio::sync::Notify::new());
     scheduler.set_post_claim_drive_test_hook(PostClaimDriveTestHook {
@@ -6444,15 +6350,6 @@ async fn planning_track_promotes_to_working_on_claim() {
     assert_eq!(dispatched["tasks"][0]["status"], "dispatched");
     assert!(dispatched["tasks"][0]["worker_card_id"].is_null());
     assert_eq!(operation_count(&boot, "codex-worker").await, 0);
-    assert_eq!(
-        boot.repo
-            .track_get(boot.track_id.as_str())
-            .await
-            .unwrap()
-            .unwrap()
-            .lifecycle,
-        TrackLifecycle::Working,
-    );
     resume.notify_one();
     tokio::time::timeout(Duration::from_secs(5), scheduled)
         .await
@@ -6468,22 +6365,7 @@ async fn planning_track_promotes_to_working_on_claim() {
         boot.worker_card_id.as_str()
     );
     let row = task_row(&boot, "p1").await;
-    assert_eq!(
-        row.status,
-        TaskStatus::Running,
-        "Planning tracks schedule (§5.2)"
-    );
-    let track = boot
-        .repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        track.lifecycle,
-        TrackLifecycle::Working,
-        "claim tx chains Planning → Dispatching → Working"
-    );
+    assert_eq!(row.status, TaskStatus::Running, "open tracks schedule");
 
     call_tool(
         &boot,
@@ -6494,19 +6376,11 @@ async fn planning_track_promotes_to_working_on_claim() {
     .await
     .expect("worker report");
     assert_eq!(task_row(&boot, "p1").await.status, TaskStatus::Done);
-    let track = boot
-        .repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(track.lifecycle, TrackLifecycle::Reviewing);
 }
 
 #[tokio::test]
-async fn reviewing_track_promotes_back_to_working_on_dependent_claim() {
+async fn dependent_task_is_claimed_by_its_own_worker() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     seed_projected_task(&boot, plan_task(&boot.track_id, "t1", TaskKind::Codex, &[])).await;
     seed_projected_task(
         &boot,
@@ -6533,13 +6407,6 @@ async fn reviewing_track_promotes_back_to_working_on_dependent_claim() {
     )
     .await
     .expect("t1 complete");
-    let track = boot
-        .repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(track.lifecycle, TrackLifecycle::Reviewing);
 
     // Production gives every task its own card/session. Configure the next
     // stub runtime for a distinct worker rather than reusing t1's identity.
@@ -6578,21 +6445,9 @@ async fn reviewing_track_promotes_back_to_working_on_dependent_claim() {
         })],
     );
 
-    // The claim from a Reviewing track must promote it back to Working in the same tx.
     scheduler.schedule_track(boot.track_id.clone()).await;
     let t2 = task_row(&boot, "t2").await;
     assert_eq!(t2.status, TaskStatus::Running, "dependent task claimed");
-    let track = boot
-        .repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        track.lifecycle,
-        TrackLifecycle::Working,
-        "claim tx must ride the legal Reviewing → Working edge"
-    );
 
     assert_ne!(t1.worker_card_id, t2.worker_card_id);
     assert_eq!(t2.worker_card_id.as_deref(), Some(second_card.id.as_str()));
@@ -6606,19 +6461,11 @@ async fn reviewing_track_promotes_back_to_working_on_dependent_claim() {
     .await
     .expect("t2 complete");
     assert_eq!(task_row(&boot, "t2").await.status, TaskStatus::Done);
-    let track = boot
-        .repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(track.lifecycle, TrackLifecycle::Reviewing);
 }
 
 #[tokio::test]
 async fn boot_sweep_resolves_dispatched_terminal_with_recorded_exit_in_one_pass() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut task = plan_task(&boot.track_id, "crashed", TaskKind::Terminal, &[]);
     // Claimed before the crash; the PTY exited while the kernel was
     // down and the supervisor reconcile persisted the synthetic -1.
@@ -6659,7 +6506,6 @@ async fn boot_sweep_resolves_dispatched_terminal_with_recorded_exit_in_one_pass(
 #[tokio::test]
 async fn sweep_boot_dispatches_pending_without_blocking() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     seed_projected_task(&boot, plan_task(&boot.track_id, "bg", TaskKind::Codex, &[])).await;
     let (_runtime, scheduler) = build_scheduler(
         &boot,
@@ -6690,7 +6536,6 @@ async fn sweep_boot_dispatches_pending_without_blocking() {
 async fn sweep_marks_running_when_op_succeeded_before_crash() {
     // Crash window: the worker op ran to success but the kernel died before the running stamp — the sweep must stamp, not respawn.
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut task = plan_task(&boot.track_id, "stamped", TaskKind::Codex, &[]);
     task.status = TaskStatus::Dispatched;
     seed_task(&boot, task.clone()).await;
@@ -6748,7 +6593,6 @@ async fn sweep_marks_running_when_op_succeeded_before_crash() {
 async fn sweep_redrives_half_driven_operation() {
     // The op row exists but was never driven to a terminal phase; the sweep's `wait()` is the steady-state re-drive.
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut task = plan_task(&boot.track_id, "stalled", TaskKind::Codex, &[]);
     task.status = TaskStatus::Dispatched;
     seed_task(&boot, task.clone()).await;
@@ -6797,7 +6641,6 @@ async fn sweep_redrives_half_driven_operation() {
 async fn sweep_fails_task_when_preexisting_op_failed() {
     // The worker op already terminated `failed` — the sweep must mark the row failed('spawn-failed'), not leave it dispatched.
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut task = plan_task(&boot.track_id, "wedged", TaskKind::Codex, &[]);
     task.status = TaskStatus::Dispatched;
     seed_task(&boot, task.clone()).await;
@@ -6850,7 +6693,6 @@ async fn sweep_fails_task_when_preexisting_op_failed() {
 #[tokio::test]
 async fn claim_aborts_when_dep_added_pre_claim() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let task = plan_task(&boot.track_id, "revised", TaskKind::Codex, &[]);
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
@@ -6914,7 +6756,6 @@ async fn claim_aborts_when_dep_added_pre_claim() {
 #[tokio::test]
 async fn claim_aborts_when_the_track_turns_busy_pre_claim() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     seed_task(
         &boot,
         plan_task(&boot.track_id, "held", TaskKind::Codex, &[]),
@@ -6960,7 +6801,6 @@ async fn claim_aborts_when_the_track_turns_busy_pre_claim() {
 #[tokio::test]
 async fn unstamped_dispatched_row_rejects_sibling_report() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     // Claimed but the running stamp hasn't landed yet — the report-beats-stamp window.
     let mut task = plan_task(&boot.track_id, "unstamped", TaskKind::Codex, &[]);
     task.status = TaskStatus::Dispatched;
@@ -7029,17 +6869,6 @@ async fn unstamped_dispatched_row_rejects_sibling_report() {
         TaskStatus::Dispatched
     );
     assert!(event_rows(&boot, "task.failed").await.is_empty());
-    let track = boot
-        .repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        track.lifecycle,
-        TrackLifecycle::Working,
-        "rejected reports must not promote Working → Reviewing"
-    );
 
     // The card the task's worker op actually targets flips the unstamped row and stamps itself (the op target, not the payload, is the proof).
     bind_worker_card_payload(&boot, &task_id).await;
@@ -7069,7 +6898,6 @@ async fn unstamped_dispatched_row_rejects_sibling_report() {
 #[tokio::test]
 async fn forged_payload_sibling_report_rejected_without_op_target() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     // Dispatched + unstamped: the report-beats-running-stamp window.
     let mut task = plan_task(&boot.track_id, "forged", TaskKind::Codex, &[]);
     task.status = TaskStatus::Dispatched;
@@ -7144,17 +6972,6 @@ async fn forged_payload_sibling_report_rejected_without_op_target() {
         TaskStatus::Dispatched
     );
     assert!(event_rows(&boot, "task.failed").await.is_empty());
-    let track = boot
-        .repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        track.lifecycle,
-        TrackLifecycle::Working,
-        "rejected forged reports must not promote Working → Reviewing"
-    );
 
     call_tool(
         &boot,
@@ -7175,7 +6992,6 @@ async fn forged_payload_sibling_report_rejected_without_op_target() {
 #[tokio::test]
 async fn forged_payload_terminal_exit_rejected_without_op_target() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut task = plan_task(&boot.track_id, "forged-term", TaskKind::Terminal, &[]);
     task.status = TaskStatus::Running;
     let task_id = task.id.clone();
@@ -7212,7 +7028,6 @@ async fn forged_payload_terminal_exit_rejected_without_op_target() {
 #[tokio::test]
 async fn legacy_actor_op_does_not_prove_unstamped_ownership() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     // Dispatched + unstamped: the scheduler has not yet classified the payload conflict as spawn-failed.
     let mut task = plan_task(&boot.track_id, "legacy-owned", TaskKind::Codex, &[]);
     task.status = TaskStatus::Dispatched;
@@ -7261,23 +7076,11 @@ async fn legacy_actor_op_does_not_prove_unstamped_ownership() {
         TaskStatus::Dispatched
     );
     assert!(event_rows(&boot, "task.failed").await.is_empty());
-    let track = boot
-        .repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        track.lifecycle,
-        TrackLifecycle::Working,
-        "rejected reports must not promote Working → Reviewing"
-    );
 }
 
 #[tokio::test]
 async fn legacy_report_without_task_row_still_emits() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     // No tasks row exists for this key, and the boot worker card's
     // payload carries no binding — the legacy dispatch shape.
     call_tool(
@@ -7290,19 +7093,11 @@ async fn legacy_report_without_task_row_still_emits() {
     .expect("legacy report must keep succeeding");
     let completed = event_rows(&boot, "task.completed").await;
     assert_eq!(completed.len(), 1, "event persisted exactly as before");
-    let track = boot
-        .repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(track.lifecycle, TrackLifecycle::Reviewing);
 }
 
 #[tokio::test]
 async fn legacy_report_with_pending_task_row_is_rejected() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     // Pending plan row under the key; legacy-style worker — no
     // worker-spawn op target, no payload binding (owns_key = false).
     let task = plan_task(&boot.track_id, "pending-collide", TaskKind::Codex, &[]);
@@ -7346,7 +7141,6 @@ async fn legacy_report_with_pending_task_row_is_rejected() {
 #[tokio::test]
 async fn foreign_idempotency_conflict_fails_task_and_frees_the_track() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let legacy = plan_task(&boot.track_id, "legacy", TaskKind::Codex, &[]);
     let legacy_id = legacy.id.clone();
     seed_projected_task(&boot, legacy).await;
@@ -7415,7 +7209,6 @@ async fn foreign_idempotency_conflict_fails_task_and_frees_the_track() {
 #[tokio::test]
 async fn backstop_sweep_noops_until_boot_sweep_completes() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     // Claimed pre-crash; the worker op was never inserted — the row an early tick would re-drive against unrecovered op state.
     let mut task = plan_task(&boot.track_id, "early", TaskKind::Codex, &[]);
     task.status = TaskStatus::Dispatched;
@@ -7496,20 +7289,10 @@ async fn wait_for_terminal_row(boot: &Boot, key: &str, timeout_secs: u64) -> Tas
     }
 }
 
-async fn track_lifecycle(boot: &Boot) -> TrackLifecycle {
-    boot.repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .unwrap()
-        .lifecycle
-}
-
 #[tokio::test]
-async fn green_gate_flips_verifying_to_done_and_promotes() {
+async fn green_gate_flips_verifying_to_done() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let dir = unique_gate_dir("green");
     let gate = json!({
         "cwd": dir.to_str().unwrap(),
@@ -7560,7 +7343,6 @@ async fn green_gate_flips_verifying_to_done_and_promotes() {
     assert_eq!(data["passed"], true);
 
     // Exactly one promotion per gated task, in the gate-result tx.
-    assert_eq!(track_lifecycle(&boot).await, TrackLifecycle::Reviewing);
 
     let log = std::fs::read_to_string(dir.join(format!("{task_id}-g1.log"))).unwrap();
     assert!(log.contains("::gate-step hello"), "{log}");
@@ -7573,7 +7355,7 @@ async fn green_gate_flips_verifying_to_done_and_promotes() {
 async fn seed_child_parent(
     boot: &Boot,
     key: &str,
-    lifecycle: TrackLifecycle,
+    closed: bool,
     gate_json: Option<String>,
 ) -> (String, String) {
     let child = boot
@@ -7591,9 +7373,9 @@ async fn seed_child_parent(
         })
         .await
         .unwrap();
-    sqlx::query("UPDATE tracks SET parent_track_id=?1,lifecycle=?2 WHERE id=?3")
+    sqlx::query("UPDATE tracks SET parent_track_id=?1,closed_at=?2 WHERE id=?3")
         .bind(boot.track_id.as_str())
-        .bind(lifecycle.as_db_str())
+        .bind(closed.then(now_ms))
         .bind(child.id.as_str())
         .execute(&boot.repo.sqlite_pool().unwrap())
         .await
@@ -7627,7 +7409,7 @@ async fn acceptance_11_sub_track_parent_survives_two_timeout_sweeps_without_dead
     let boot = boot().await;
     let (_runtime, scheduler) =
         build_scheduler_with_timeouts(&boot, vec![], Duration::from_millis(1));
-    let (task_id, _) = seed_child_parent(&boot, "long-child", TrackLifecycle::Working, None).await;
+    let (task_id, _) = seed_child_parent(&boot, "long-child", false, None).await;
     for _ in 0..2 {
         tokio::time::sleep(Duration::from_millis(3)).await;
         scheduler.sweep_all().await;
@@ -7729,8 +7511,7 @@ async fn acceptance_13_done_quiescent_child_routes_parent_through_gate() {
         "steps":[{"name":"ok","cmd":"true"}]
     })
     .to_string();
-    let (task_id, child) =
-        seed_child_parent(&boot, "gated-child", TrackLifecycle::Done, Some(gate)).await;
+    let (task_id, child) = seed_child_parent(&boot, "gated-child", true, Some(gate)).await;
     scheduler
         .reconcile_child_track_for_test(&child)
         .await
@@ -7756,7 +7537,7 @@ async fn acceptance_13b_and_13c_inflight_child_blocks_then_eventually_closes_par
     let (task_id, child) = seed_child_parent(
         &boot,
         "interleaved-child",
-        TrackLifecycle::Done,
+        true,
         Some(gate_without_cwd.clone()),
     )
     .await;
@@ -7794,8 +7575,7 @@ async fn acceptance_13b_and_13c_inflight_child_blocks_then_eventually_closes_par
 async fn acceptance_13d_done_child_with_pending_block_fails_with_count() {
     let boot = boot().await;
     let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
-    let (task_id, child) =
-        seed_child_parent(&boot, "pending-child", TrackLifecycle::Done, None).await;
+    let (task_id, child) = seed_child_parent(&boot, "pending-child", true, None).await;
     seed_child_task(&boot, &child, "left", TaskStatus::Pending).await;
     scheduler
         .reconcile_child_track_for_test(&child)
@@ -7813,32 +7593,10 @@ async fn acceptance_13d_done_child_with_pending_block_fails_with_count() {
 }
 
 #[tokio::test]
-async fn acceptance_14_failed_canceled_and_deleted_child_have_distinct_parent_reasons() {
-    for (lifecycle, expected) in [
-        (TrackLifecycle::Failed, "child-track-failed"),
-        (TrackLifecycle::Canceled, "child-track-canceled"),
-    ] {
-        let boot = boot().await;
-        let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
-        let (task_id, child) = seed_child_parent(&boot, expected, lifecycle, None).await;
-        scheduler
-            .reconcile_child_track_for_test(&child)
-            .await
-            .unwrap();
-        assert_eq!(
-            boot.repo
-                .task_get(&task_id)
-                .await
-                .unwrap()
-                .unwrap()
-                .status_detail
-                .as_deref(),
-            Some(expected)
-        );
-    }
+async fn acceptance_14_deleted_child_fails_its_parent() {
     let boot = boot().await;
     let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
-    let (task_id, child) = seed_child_parent(&boot, "deleted", TrackLifecycle::Working, None).await;
+    let (task_id, child) = seed_child_parent(&boot, "deleted", false, None).await;
     sqlx::query("DELETE FROM tracks WHERE id=?1")
         .bind(&child)
         .execute(&boot.repo.sqlite_pool().unwrap())
@@ -7864,7 +7622,7 @@ async fn acceptance_14_failed_canceled_and_deleted_child_have_distinct_parent_re
 async fn acceptance_15_lost_event_sweep_closes_child_parent() {
     let boot = boot().await;
     let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
-    let (task_id, _) = seed_child_parent(&boot, "sweep", TrackLifecycle::Done, None).await;
+    let (task_id, _) = seed_child_parent(&boot, "sweep", true, None).await;
     scheduler.sweep_all().await;
     assert_eq!(
         boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
@@ -7876,9 +7634,8 @@ async fn acceptance_15_lost_event_sweep_closes_child_parent() {
 async fn acceptance_16_live_and_sweep_use_the_same_guarded_conclusion() {
     let boot = boot().await;
     let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
-    let (live_task, live_child) =
-        seed_child_parent(&boot, "live", TrackLifecycle::Failed, None).await;
-    let (sweep_task, _) = seed_child_parent(&boot, "sweep2", TrackLifecycle::Failed, None).await;
+    let (live_task, live_child) = seed_child_parent(&boot, "live", true, None).await;
+    let (sweep_task, _) = seed_child_parent(&boot, "sweep2", true, None).await;
     scheduler.reconcile_child_track(live_child.clone().into());
     for _ in 0..100 {
         if boot
@@ -7888,7 +7645,7 @@ async fn acceptance_16_live_and_sweep_use_the_same_guarded_conclusion() {
             .unwrap()
             .unwrap()
             .status
-            == TaskStatus::Failed
+            == TaskStatus::Done
         {
             break;
         }
@@ -7901,7 +7658,7 @@ async fn acceptance_16_live_and_sweep_use_the_same_guarded_conclusion() {
             .unwrap()
             .unwrap()
             .status,
-        TaskStatus::Failed,
+        TaskStatus::Done,
         "the live trigger must conclude before the sweep runs"
     );
     scheduler.sweep_all().await;
@@ -7914,20 +7671,21 @@ async fn acceptance_16_live_and_sweep_use_the_same_guarded_conclusion() {
 }
 
 #[tokio::test]
-async fn acceptance_18_success_flip_rechecks_done_after_its_snapshot() {
+async fn acceptance_18_success_flip_rechecks_closed_after_its_snapshot() {
     for mutation in ["delete", "reopen"] {
         let boot = boot().await;
-        let (task_id, child) = seed_child_parent(&boot, mutation, TrackLifecycle::Done, None).await;
+        let (task_id, child) = seed_child_parent(&boot, mutation, true, None).await;
         let pool = boot.repo.sqlite_pool().unwrap();
         let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
             .await
             .unwrap();
-        let observed: String = sqlx::query_scalar("SELECT lifecycle FROM tracks WHERE id=?1")
-            .bind(&child)
-            .fetch_one(&mut *tx)
-            .await
-            .unwrap();
-        assert_eq!(observed, "done", "fixture must first observe Done");
+        let observed: bool =
+            sqlx::query_scalar("SELECT closed_at IS NOT NULL FROM tracks WHERE id=?1")
+                .bind(&child)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+        assert!(observed, "fixture must first observe the close");
         if mutation == "delete" {
             sqlx::query("DELETE FROM tracks WHERE id=?1")
                 .bind(&child)
@@ -7935,7 +7693,7 @@ async fn acceptance_18_success_flip_rechecks_done_after_its_snapshot() {
                 .await
                 .unwrap();
         } else {
-            sqlx::query("UPDATE tracks SET lifecycle='planning' WHERE id=?1")
+            sqlx::query("UPDATE tracks SET closed_at=NULL WHERE id=?1")
                 .bind(&child)
                 .execute(&mut *tx)
                 .await
@@ -7958,8 +7716,7 @@ async fn acceptance_18_success_flip_rechecks_done_after_its_snapshot() {
 async fn acceptance_18_production_reconcile_keeps_the_child_guard_wired() {
     let boot = boot().await;
     let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
-    let (task_id, child) =
-        seed_child_parent(&boot, "production-guard", TrackLifecycle::Done, None).await;
+    let (task_id, child) = seed_child_parent(&boot, "production-guard", true, None).await;
 
     // Changes the child after its advisory snapshot but before the production flip. Today both happen in one
     // BEGIN IMMEDIATE tx; if a refactor splits them, the guard becomes the correctness boundary.
@@ -7972,26 +7729,27 @@ async fn acceptance_18_production_reconcile_keeps_the_child_guard_wired() {
     assert_eq!(
         boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
         TaskStatus::Running,
-        "the production guarded flip must reject the stale Done snapshot"
+        "the production guarded flip must reject the stale closed snapshot"
     );
 }
 
 #[tokio::test]
-async fn acceptance_18_incomplete_flip_rechecks_done_after_its_snapshot() {
+async fn acceptance_18_incomplete_flip_rechecks_closed_after_its_snapshot() {
     for mutation in ["delete", "reopen"] {
         let boot = boot().await;
-        let (task_id, child) = seed_child_parent(&boot, mutation, TrackLifecycle::Done, None).await;
+        let (task_id, child) = seed_child_parent(&boot, mutation, true, None).await;
         seed_child_task(&boot, &child, "left", TaskStatus::Pending).await;
         let pool = boot.repo.sqlite_pool().unwrap();
         let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
             .await
             .unwrap();
-        let observed: String = sqlx::query_scalar("SELECT lifecycle FROM tracks WHERE id=?1")
-            .bind(&child)
-            .fetch_one(&mut *tx)
-            .await
-            .unwrap();
-        assert_eq!(observed, "done", "fixture must first observe Done");
+        let observed: bool =
+            sqlx::query_scalar("SELECT closed_at IS NOT NULL FROM tracks WHERE id=?1")
+                .bind(&child)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+        assert!(observed, "fixture must first observe the close");
         if mutation == "delete" {
             sqlx::query("DELETE FROM tracks WHERE id=?1")
                 .bind(&child)
@@ -7999,7 +7757,7 @@ async fn acceptance_18_incomplete_flip_rechecks_done_after_its_snapshot() {
                 .await
                 .unwrap();
         } else {
-            sqlx::query("UPDATE tracks SET lifecycle='planning' WHERE id=?1")
+            sqlx::query("UPDATE tracks SET closed_at=NULL WHERE id=?1")
                 .bind(&child)
                 .execute(&mut *tx)
                 .await
@@ -8023,84 +7781,56 @@ async fn acceptance_18_incomplete_flip_rechecks_done_after_its_snapshot() {
 }
 
 #[tokio::test]
-async fn acceptance_18_terminal_flip_rechecks_all_three_outcomes_after_its_snapshot() {
-    for (label, seed_lifecycle, expected_lifecycle) in [
-        ("deleted", TrackLifecycle::Working, None),
-        (
-            "failed",
-            TrackLifecycle::Failed,
-            Some(TrackLifecycle::Failed),
-        ),
-        (
-            "canceled",
-            TrackLifecycle::Canceled,
-            Some(TrackLifecycle::Canceled),
-        ),
-    ] {
-        let boot = boot().await;
-        let (task_id, child) = seed_child_parent(&boot, label, seed_lifecycle, None).await;
-        let pool = boot.repo.sqlite_pool().unwrap();
-        if label == "deleted" {
-            sqlx::query("DELETE FROM tracks WHERE id=?1")
-                .bind(&child)
-                .execute(&pool)
-                .await
-                .unwrap();
-        }
-
-        let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
-            .await
-            .unwrap();
-        let observed: Option<String> =
-            sqlx::query_scalar("SELECT lifecycle FROM tracks WHERE id=?1")
-                .bind(&child)
-                .fetch_optional(&mut *tx)
-                .await
-                .unwrap();
-        assert_eq!(
-            observed.as_deref(),
-            expected_lifecycle.map(TrackLifecycle::as_db_str),
-            "fixture must first observe the selected {label} outcome"
-        );
-
-        if label == "deleted" {
-            sqlx::query(
-                // This clones a track row, so it must clone the whole workspace, not just its `cwd` projection.
-                "INSERT INTO tracks(id,area_id,title,sort,workspace_kind,workspace_path,workspace_frozen_at,created_at,updated_at) \
-                 SELECT ?1,area_id,'replacement child',sort+0.25,workspace_kind,workspace_path,workspace_frozen_at,?2,?2 \
-                   FROM tracks WHERE id=?3",
-            )
-            .bind(&child)
-            .bind(now_ms())
-            .bind(boot.track_id.as_str())
-            .execute(&mut *tx)
-            .await
-            .unwrap();
-        } else {
-            sqlx::query("UPDATE tracks SET lifecycle='planning' WHERE id=?1")
-                .bind(&child)
-                .execute(&mut *tx)
-                .await
-                .unwrap();
-        }
-
-        let changed = calm_server::scheduler::guarded_child_terminal_flip_for_test(
-            &mut tx,
-            &task_id,
-            boot.track_id.as_str(),
-            &child,
-            expected_lifecycle,
-        )
+async fn acceptance_18_deleted_flip_rechecks_the_deletion_after_its_snapshot() {
+    let boot = boot().await;
+    let (task_id, child) = seed_child_parent(&boot, "deleted", false, None).await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    sqlx::query("DELETE FROM tracks WHERE id=?1")
+        .bind(&child)
+        .execute(&pool)
         .await
         .unwrap();
-        tx.commit().await.unwrap();
-        assert_eq!(changed, 0, "{label} snapshot must lose after child flip");
-        assert_eq!(
-            boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
-            TaskStatus::Running,
-            "{label} snapshot must not close the parent"
-        );
-    }
+
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+        .await
+        .unwrap();
+    let observed: Option<String> = sqlx::query_scalar("SELECT id FROM tracks WHERE id=?1")
+        .bind(&child)
+        .fetch_optional(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(observed, None, "fixture must first observe the deletion");
+    sqlx::query(
+        // This clones a track row, so it must clone the whole workspace, not just its `cwd` projection.
+        "INSERT INTO tracks(id,area_id,title,sort,workspace_kind,workspace_path,workspace_frozen_at,created_at,updated_at) \
+         SELECT ?1,area_id,'replacement child',sort+0.25,workspace_kind,workspace_path,workspace_frozen_at,?2,?2 \
+           FROM tracks WHERE id=?3",
+    )
+    .bind(&child)
+    .bind(now_ms())
+    .bind(boot.track_id.as_str())
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+
+    let changed = calm_server::scheduler::guarded_child_deleted_flip_for_test(
+        &mut tx,
+        &task_id,
+        boot.track_id.as_str(),
+        &child,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        changed, 0,
+        "a deleted snapshot must lose after the child returns"
+    );
+    assert_eq!(
+        boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
+        TaskStatus::Running,
+        "a stale deleted snapshot must not close the parent"
+    );
 }
 
 /// Give this boot's track a REAL attached workspace directory; `boot()` mints its track with an empty `cwd`.
@@ -8127,7 +7857,6 @@ async fn attach_boot_track_to_a_real_directory(boot: &Boot) -> (tempfile::TempDi
 async fn child_bootstrap_key_follows_a_repointed_workspace_path() {
     let boot = boot().await;
     let (_attached_dir, attached_path) = attach_boot_track_to_a_real_directory(&boot).await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut task = plan_task(&boot.track_id, "repaired-bootstrap", TaskKind::Codex, &[]);
     task.spawn = "sub-wave".into();
     task.status = TaskStatus::Dispatched;
@@ -8234,7 +7963,6 @@ async fn child_bootstrap_key_follows_a_repointed_workspace_path() {
 async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_redrive() {
     let boot = boot().await;
     let (_attached_dir, attached_path) = attach_boot_track_to_a_real_directory(&boot).await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut task = plan_task(&boot.track_id, "bootstrap", TaskKind::Codex, &[]);
     task.spawn = "sub-wave".into();
     task.status = TaskStatus::Dispatched;
@@ -8309,12 +8037,12 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
         .fetch_one(&boot.repo.sqlite_pool().unwrap())
         .await
         .unwrap();
-    let child_lifecycle: String = sqlx::query_scalar("SELECT lifecycle FROM tracks WHERE id=?1")
+    let child_open: bool = sqlx::query_scalar("SELECT closed_at IS NULL FROM tracks WHERE id=?1")
         .bind(&child_id)
         .fetch_one(&boot.repo.sqlite_pool().unwrap())
         .await
         .unwrap();
-    assert_ne!(child_lifecycle, "draft");
+    assert!(child_open, "a bootstrapped child stays open");
     assert_eq!(minted.load(Ordering::SeqCst), 1);
 
     // Crash point 2: bootstrap committed and running was stamped, but the caller did not observe completion.
@@ -8356,7 +8084,6 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
 
     // Crash while bootstrap is blocked after its prepare transaction; recover with a new runtime.
     let crash_boot = self::boot().await;
-    set_lifecycle(&crash_boot, TrackLifecycle::Working).await;
     let mut crash_task = plan_task(
         &crash_boot.track_id,
         "bootstrap-crash",
@@ -8477,7 +8204,6 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
         ("bootstrap", "stuck", "child-track-bootstrap-stuck"),
     ] {
         let boot = boot().await;
-        set_lifecycle(&boot, TrackLifecycle::Working).await;
         let mut task = plan_task(
             &boot.track_id,
             &format!("{stage}-{phase}"),
@@ -8563,14 +8289,14 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
                     .fetch_one(&boot.repo.sqlite_pool().unwrap())
                     .await
                     .unwrap();
-            let child_lifecycle: String =
-                sqlx::query_scalar("SELECT lifecycle FROM tracks WHERE id=?1")
+            let child_closed: bool =
+                sqlx::query_scalar("SELECT closed_at IS NOT NULL FROM tracks WHERE id=?1")
                     .bind(&child_id)
                     .fetch_one(&boot.repo.sqlite_pool().unwrap())
                     .await
                     .unwrap();
-            assert_eq!(
-                child_lifecycle, "failed",
+            assert!(
+                child_closed,
                 "post-commit {phase} must close the durable child"
             );
             boot.repo.track_delete(&child_id).await.unwrap();
@@ -8599,7 +8325,6 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
 #[tokio::test]
 async fn acceptance_3b_claim_frozen_spawn_routes_recovery_without_report_reread() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut task = plan_task(&boot.track_id, "frozen-route", TaskKind::Codex, &[]);
     task.spawn = "sub-wave".into();
     let task_id = task.id.clone();
@@ -8657,7 +8382,6 @@ async fn acceptance_3b_claim_frozen_spawn_routes_recovery_without_report_reread(
 #[tokio::test]
 async fn acceptance_3a_claim_frozen_spawn_routes_live_after_post_claim_report_edit() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let report = TrackReportPayload {
         schema_version: TrackReportPayload::SCHEMA_VERSION,
         doc_rev: 1,
@@ -8721,7 +8445,6 @@ async fn acceptance_3a_claim_frozen_spawn_routes_live_after_post_claim_report_ed
 #[tokio::test]
 async fn acceptance_3c_claim_success_uses_transaction_reread_spawn() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let task = plan_task(&boot.track_id, "tx-reread", TaskKind::Codex, &[]);
     let task_id = task.id.clone();
     seed_projected_task(&boot, task).await;
@@ -8756,7 +8479,6 @@ async fn acceptance_3c_claim_success_uses_transaction_reread_spawn() {
 #[tokio::test]
 async fn acceptance_5b_stale_frozen_context_refuses_real_child_operation() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     insert_report_payload(
         &boot,
         "stale-child-report",
@@ -8871,7 +8593,6 @@ async fn acceptance_5b_stale_frozen_context_refuses_real_child_operation() {
 #[tokio::test]
 async fn acceptance_9_depth_exhaustion_fails_parent_without_in_track_fallback() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut task = plan_task(&boot.track_id, "depth-fail", TaskKind::Codex, &[]);
     task.spawn = "sub-wave".into();
     task.status = TaskStatus::Dispatched;
@@ -8913,7 +8634,6 @@ async fn acceptance_9_depth_exhaustion_fails_parent_without_in_track_fallback() 
 async fn red_gate_fails_with_failing_step_and_log_tail() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let dir = unique_gate_dir("red");
     let gate = json!({
         "cwd": dir.to_str().unwrap(),
@@ -8956,7 +8676,6 @@ async fn red_gate_fails_with_failing_step_and_log_tail() {
     assert_eq!(rows[0].1["passed"], false);
     assert_eq!(rows[0].1["failing_step"], "boom");
     // Promotion fires on ANY verdict — red included.
-    assert_eq!(track_lifecycle(&boot).await, TrackLifecycle::Reviewing);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -8964,7 +8683,6 @@ async fn red_gate_fails_with_failing_step_and_log_tail() {
 async fn gate_timeout_group_kills_and_fails_gate_timeout() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let dir = unique_gate_dir("timeout");
     let gate = json!({
         "cwd": dir.to_str().unwrap(),
@@ -9004,7 +8722,6 @@ async fn gate_timeout_group_kills_and_fails_gate_timeout() {
 async fn gate_timeout_survives_parked_probe_before_observer_commit() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let dir = unique_gate_dir("timeout-probe");
     let gate = json!({
         "cwd": dir.to_str().unwrap(),
@@ -9051,7 +8768,6 @@ async fn gate_timeout_survives_parked_probe_before_observer_commit() {
 async fn gate_spawn_kills_prior_recorded_group() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let dir = unique_gate_dir("killprior");
 
     // A live `setsid` group recorded on the tasks row — the stand-in
@@ -9108,7 +8824,6 @@ async fn gate_spawn_kills_prior_recorded_group() {
 async fn forged_exit_file_and_group_kill_cannot_flip_gate_green() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let dir = unique_gate_dir("forge");
     let task_id = format!("{}:forge", boot.track_id.as_str());
     let exit_path = dir.join(format!("{task_id}-g1.exit"));
@@ -9152,7 +8867,6 @@ async fn forged_exit_file_and_group_kill_cannot_flip_gate_green() {
 async fn step_exit_ends_step_and_still_writes_exit_file() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let dir = unique_gate_dir("stepexit");
     let gate = json!({
         "cwd": dir.to_str().unwrap(),
@@ -9191,7 +8905,6 @@ async fn gate_step_env_is_minimal_and_exit_path_scrubbed() {
         "test must run under cargo for the kernel-env sentinel"
     );
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let dir = unique_gate_dir("env");
     let gate = json!({
         "cwd": dir.to_str().unwrap(),
@@ -9221,12 +8934,12 @@ async fn gate_step_env_is_minimal_and_exit_path_scrubbed() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// Gates are in-flight machinery, not new claims: lifecycle gating scopes to claims only.
+/// Gates are in-flight machinery, not new claims: the open gate scopes to claims only.
 #[tokio::test]
-async fn blocked_track_still_drives_verifying_gate() {
+async fn closed_track_still_drives_verifying_gate() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Blocked).await;
+    set_closed(&boot, true).await;
     let dir = unique_gate_dir("blocked");
     let gate = json!({
         "cwd": dir.to_str().unwrap(),
@@ -9244,8 +8957,16 @@ async fn blocked_track_still_drives_verifying_gate() {
     scheduler.schedule_track(boot.track_id.clone()).await;
     let row = wait_for_terminal_row(&boot, "blocked", 30).await;
     assert_eq!(row.status, TaskStatus::Done, "{row:?}");
-    // A Blocked track stays Blocked; the user gets unblocked explicitly.
-    assert_eq!(track_lifecycle(&boot).await, TrackLifecycle::Blocked);
+    // The track stays closed; only the user reopens it.
+    assert!(
+        !boot
+            .repo
+            .track_get(boot.track_id.as_str())
+            .await
+            .unwrap()
+            .unwrap()
+            .is_open()
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -9254,7 +8975,6 @@ async fn blocked_track_still_drives_verifying_gate() {
 async fn pre_bump_prepare_failure_fails_row_instead_of_looping() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let dir = unique_gate_dir("prebump");
 
     let mut task = plan_task(&boot.track_id, "prebump", TaskKind::Codex, &[]);
@@ -9298,7 +9018,6 @@ async fn pre_bump_prepare_failure_fails_row_instead_of_looping() {
 async fn stale_gate_before_first_attempt_fails_without_running_shell() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let dir = unique_gate_dir("context-stale");
     let marker = dir.join("must-not-exist");
     let gate = json!({
@@ -9343,7 +9062,6 @@ async fn stale_gate_before_first_attempt_fails_without_running_shell() {
 async fn parked_gate_dead_at_boot_fails_op_and_row_reconciles_gate_infra() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let dir = unique_gate_dir("bootdead");
 
     // A `verifying` row whose attempt-1 op is parked with artifacts of a provably-dead process and NO exit file.
@@ -9515,7 +9233,6 @@ async fn seed_parked_gate_op(
 async fn boot_reattach_live_gate_lands_verdict_after_exit() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let dir = unique_gate_dir("reattach");
 
     let gate = json!({
@@ -9604,7 +9321,6 @@ async fn boot_reattach_live_gate_lands_verdict_after_exit() {
 async fn parked_gate_dead_with_exit_file_recovers_real_verdict() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let dir = unique_gate_dir("deadexit");
 
     let gate = json!({
@@ -9675,7 +9391,6 @@ async fn parked_gate_dead_with_exit_file_recovers_real_verdict() {
 async fn parked_gate_dead_pre_deadline_fails_gate_infra_promptly() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let dir = unique_gate_dir("predead");
 
     let gate = json!({
@@ -9740,7 +9455,6 @@ async fn parked_gate_dead_pre_deadline_fails_gate_infra_promptly() {
 async fn aborted_observer_leaves_gate_group_alive_and_reattach_lands_verdict() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let dir = unique_gate_dir("obsdrop");
 
     let mut task = gate_task(
@@ -9889,7 +9603,6 @@ async fn aborted_observer_leaves_gate_group_alive_and_reattach_lands_verdict() {
 #[tokio::test]
 async fn task_recovery_retries_real_operation_prepare_refusal_without_prior_spawn() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let task = plan_task(&boot.track_id, "prepare-refusal", TaskKind::Terminal, &[]);
     let previous_id = task.id.clone();
     seed_projected_task(&boot, task).await;
@@ -10008,7 +9721,6 @@ printf stopped > "$1/stopped"
     )
     .unwrap();
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut task = plan_task(&boot.track_id, "gate-descendant", TaskKind::Terminal, &[]);
     task.gate_json = Some(json!({"cwd":temp.path(), "steps":[{"name":"detached-writer", "cmd":"task_root=$(pwd -P); setsid /bin/sh ./writer.sh \"$task_root\" & while [ ! -s ./ready ]; do sleep 0.02; done; exit 7"}]}).to_string());
     let task_id = task.id.clone();
@@ -10092,7 +9804,6 @@ async fn task_recovery_continues_same_attempt_after_planner_session_replacement(
     };
     for remove_retired_mapping in [false, true] {
         let boot = boot().await;
-        set_lifecycle(&boot, TrackLifecycle::Working).await;
         let task = plan_task(&boot.track_id, "planner-handoff", TaskKind::Terminal, &[]);
         let previous_id = task.id.clone();
         seed_projected_task(&boot, task).await;

@@ -296,8 +296,6 @@ async fn stale_human_write_conflicts_after_planner_write_instead_of_winning() {
         TrackReportPayload::new("planner", "# Planner won\n"),
         0,
         None,
-        None,
-        false,
     )
     .await
     .unwrap();
@@ -485,8 +483,6 @@ async fn backlinks_returns_source_track_and_unknown_track_is_not_found() {
         TrackReportPayload::new("", format!("[Target](neige://wave/{})", target_track.id)),
         0,
         None,
-        None,
-        false,
     )
     .await
     .unwrap();

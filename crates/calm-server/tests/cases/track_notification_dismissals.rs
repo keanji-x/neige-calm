@@ -1,7 +1,8 @@
 //! #1829 S3 — Dismiss: `POST /api/tracks/{id}/activity/dismissals` stores an item key and the
 //! `kernel/track/activity` projector drops it. Rows 4b, 18, 20 and 21 of the design's producer ×
-//! state matrix (§7); every dismissal goes through the production route. Row 4b leaves `blocked`;
-//! rows 18, 20 and 21 enter it and never leave (see the fixture note in `track_notifications.rs`).
+//! state matrix (§7); every dismissal goes through the production route. Row 4b resolves its ratify
+//! request; rows 18, 20 and 21 request one and never resolve it (see the fixture note in
+//! `track_notifications.rs`).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -18,7 +19,7 @@ use tower::ServiceExt;
 
 use super::track_activity_fixture::{Fx, fx};
 use super::track_notifications::{
-    asks, block, codex_planner, planner_down, running_loop, turn, unblock,
+    asks, codex_planner, planner_down, request_ratify, resolve_ratify, running_loop, turn,
 };
 
 /// The production router over the fixture's repo, bus and caches; the routes wake `wake`.
@@ -78,11 +79,11 @@ async fn dismissals(f: &Fx) -> Vec<(String, i64)> {
 
 // Row 4b.
 #[tokio::test]
-async fn second_block_after_dismiss_relights() {
+async fn second_ratify_request_after_dismiss_relights() {
     let f = fx().await;
     let p = codex_planner(&f).await;
     let app = app(&f, ActivityWake::detached());
-    block(&f, &p, "First question?").await;
+    request_ratify(&f, &p, "First question?").await;
     let first = f.recompute(&p.track).await.items[0].key.clone();
     assert_eq!(
         dismiss(&app, &p.track, &first, "user").await,
@@ -90,10 +91,10 @@ async fn second_block_after_dismiss_relights() {
     );
     let a = f.recompute(&p.track).await;
     assert!(a.items.is_empty(), "the dismissed ask is gone: {a:?}");
-    unblock(&f, &p).await;
-    block(&f, &p, "Second question?").await;
+    resolve_ratify(&f, &p).await;
+    request_ratify(&f, &p, "Second question?").await;
     let a = f.recompute(&p.track).await;
-    assert_eq!(a.items.len(), 1, "a new blocked edge is a new key: {a:?}");
+    assert_eq!(a.items.len(), 1, "a new ratify request is a new key: {a:?}");
     assert_eq!(a.items[0].text, "Second question?");
     assert_ne!(a.items[0].key, first);
     assert_eq!(a.attention, Attention::Input);
@@ -105,7 +106,7 @@ async fn dismiss_hides_only_that_key() {
     let f = fx().await;
     let p = codex_planner(&f).await;
     let app = app(&f, ActivityWake::detached());
-    block(&f, &p, "Which region?").await;
+    request_ratify(&f, &p, "Which region?").await;
     turn(&f, &p, "turn-1", "failed", Some("403 Forbidden")).await;
     let a = f.recompute(&p.track).await;
     assert_eq!(a.items.len(), 2, "{a:?}");
@@ -126,7 +127,7 @@ async fn dismiss_hides_only_that_key() {
 async fn dismissal_wakes_the_projector() {
     let f = fx().await;
     let p = codex_planner(&f).await;
-    block(&f, &p, "Which region?").await;
+    request_ratify(&f, &p, "Which region?").await;
     let (loop_task, wake) = running_loop(&f, &p.track, |a| asks(a).len() == 1).await;
     let app = app(&f, wake);
     let key = f.stored(&p.track).await.unwrap().items[0].key.clone();
@@ -149,7 +150,7 @@ async fn dismiss_route_is_user_only() {
     let f = fx().await;
     let p = codex_planner(&f).await;
     let app = app(&f, ActivityWake::detached());
-    block(&f, &p, "Which region?").await;
+    request_ratify(&f, &p, "Which region?").await;
     let key = f.recompute(&p.track).await.items[0].key.clone();
     for actor in ["ai:codex", "ai:planner-1"] {
         assert_eq!(
@@ -170,12 +171,12 @@ async fn dismiss_route_rejects_a_bad_key() {
     let app = app(&f, ActivityWake::detached());
     for key in [
         "",
-        "ask:lifecycle:",
-        "ask:lifecycle:abc",
-        "ask:lifecycle:-1",
-        "ask:lifecycle:+1",
-        "ask:lifecycle:1 ",
-        "ask:blocked:1",
+        "ask:ratify:",
+        "ask:ratify:abc",
+        "ask:ratify:-1",
+        "ask:ratify:+1",
+        "ask:ratify:1 ",
+        "ask:lifecycle:1",
         "ask:1",
         "planner_down",
         "planner_down:99999999999999999999",

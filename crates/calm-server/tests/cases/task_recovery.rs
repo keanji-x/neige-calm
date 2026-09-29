@@ -407,32 +407,32 @@ async fn task_recovery_unknown_freeze_and_unsettled_operation_fail_closed() {
 }
 
 #[tokio::test]
-async fn task_recovery_terminal_track_and_declared_wait_never_grant_planner_retry() {
+async fn task_recovery_closed_track_and_declared_wait_never_grant_planner_retry() {
     let boot = boot().await;
     declare(&boot, declaration("b", &[])).await;
     let b = current(&boot, "b").await;
     finish(&boot, &b, false).await;
     let pool = boot.repo.sqlite_pool().unwrap();
-    for lifecycle in ["done", "canceled", "failed"] {
-        sqlx::query("UPDATE tracks SET lifecycle=?1 WHERE id=?2")
-            .bind(lifecycle)
-            .bind(boot.track_id.as_str())
-            .execute(&pool)
-            .await
-            .unwrap();
-        let error = call_tool(
-            &boot,
-            "calm.plan.recover",
-            planner_identity(&boot),
-            recovery_args(&b, lifecycle),
-        )
+    sqlx::query("UPDATE tracks SET closed_at=1 WHERE id=?1")
+        .bind(boot.track_id.as_str())
+        .execute(&pool)
         .await
-        .unwrap_err();
-        assert_eq!(error.code, -32409, "{lifecycle}: {error:?}");
-        assert!(error.message.contains("track is blocked or terminal"));
-    }
+        .unwrap();
+    let error = call_tool(
+        &boot,
+        "calm.plan.recover",
+        planner_identity(&boot),
+        recovery_args(&b, "closed"),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, -32409, "{error:?}");
+    assert!(
+        error.message.contains("track is closed; reopen it first"),
+        "{error:?}"
+    );
     sqlx::query(
-        "UPDATE tracks SET lifecycle='reviewing',automation_policy='declare-and-wait' WHERE id=?1",
+        "UPDATE tracks SET closed_at=NULL,automation_policy='declare-and-wait' WHERE id=?1",
     )
     .bind(boot.track_id.as_str())
     .execute(&pool)
@@ -606,48 +606,6 @@ async fn task_recovery_cancel_targets_current_attempt_and_old_receipt_replay_is_
         denied.code, -32403,
         "an old receipt never bypasses current authentication"
     );
-}
-
-#[tokio::test]
-async fn task_recovery_blocked_track_resumes_in_same_transaction() {
-    let boot = boot().await;
-    declare(&boot, declaration("b", &[])).await;
-    let b = current(&boot, "b").await;
-    finish(&boot, &b, false).await;
-    let pool = boot.repo.sqlite_pool().unwrap();
-    sqlx::query("UPDATE tracks SET lifecycle='blocked' WHERE id=?1")
-        .bind(boot.track_id.as_str())
-        .execute(&pool)
-        .await
-        .unwrap();
-    let view = calm_server::task_recovery::task_recovery_view(
-        boot.repo.as_ref(),
-        boot.track_id.as_str(),
-        "b",
-        planner_identity(&boot).to_actor_id(),
-    )
-    .await
-    .unwrap();
-    assert!(view.recovery.allowed, "{}", view.recovery.reason);
-    recover(&boot, &b, "resume-blocked").await;
-    assert_eq!(
-        boot.repo
-            .track_get(boot.track_id.as_str())
-            .await
-            .unwrap()
-            .unwrap()
-            .lifecycle,
-        calm_server::model::TrackLifecycle::Working
-    );
-    assert_eq!(current(&boot, "b").await.status, TaskStatus::Pending);
-    let count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM task_attempt_allocations WHERE track_id=?1 AND key='b'",
-    )
-    .bind(boot.track_id.as_str())
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(count, 2);
 }
 
 #[tokio::test]
@@ -1304,7 +1262,7 @@ async fn task_recovery_guidance_names_the_new_task_behind_a_track_that_does_not_
     let boot = boot().await;
     declare(&boot, ordinary_codex_declaration("b")).await;
     let (_failed, lease_path, _lease_dir) = time_out_prepared_ordinary_worker(&boot, "b").await;
-    sqlx::query("UPDATE tracks SET lifecycle='done' WHERE id=?1")
+    sqlx::query("UPDATE tracks SET closed_at=1 WHERE id=?1")
         .bind(boot.track_id.as_str())
         .execute(&boot.repo.sqlite_pool().unwrap())
         .await
@@ -1320,7 +1278,7 @@ async fn task_recovery_guidance_names_the_new_task_behind_a_track_that_does_not_
     let condition = guidance["blocking_condition"].as_str().unwrap();
     assert!(
         condition.starts_with(recovery["reason"].as_str().unwrap())
-            && condition.contains("(lifecycle done)")
+            && condition.contains("track is closed; reopen it first")
             && condition.contains(". Independently of who asks: an ordinary worker was prepared")
             && condition.contains("no stop proof"),
         "{condition}"

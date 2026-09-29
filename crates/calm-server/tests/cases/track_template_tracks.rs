@@ -356,8 +356,6 @@ async fn two_tracks_from_one_template_are_independent_and_identical() {
         TrackReportPayload::new(EDITED, edited_body.clone()),
         if_doc_rev,
         None,
-        None,
-        false,
     )
     .await
     .expect("edit the first track's report");
@@ -426,8 +424,6 @@ async fn two_tracks_from_one_template_are_independent_and_identical() {
         TrackReportPayload::new(EDITED, same_len_body.clone()),
         if_doc_rev,
         None,
-        None,
-        false,
     )
     .await
     .expect("same-length edit to the first track's report");
@@ -491,8 +487,6 @@ async fn two_tracks_from_one_template_are_independent_and_identical() {
         TrackReportPayload::new(EDITED, recipe_edited_body.clone()),
         if_doc_rev,
         None,
-        None,
-        false,
     )
     .await
     .expect("edit a template-minted prose block of the first track's report");
@@ -551,8 +545,6 @@ async fn two_tracks_from_one_template_are_independent_and_identical() {
         TrackReportPayload::new(EDITED, shortened_body.clone()),
         if_doc_rev,
         None,
-        None,
-        false,
     )
     .await
     .expect("delete a prose paragraph from the first track's report");
@@ -687,8 +679,6 @@ async fn a_template_and_an_explicit_fork_source_are_a_400() {
         ),
         if_doc_rev,
         None,
-        None,
-        false,
     )
     .await
     .expect("stamp custom source report");
@@ -842,8 +832,6 @@ async fn a_forged_template_key_cannot_influence_what_a_template_creates() {
         TrackReportPayload::new("forged template", "# Forged\n\nforged-user-area-plan\n"),
         if_doc_rev,
         None,
-        None,
-        false,
     )
     .await
     .expect("stamp forged report");

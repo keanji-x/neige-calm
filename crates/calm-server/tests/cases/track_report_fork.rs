@@ -263,8 +263,6 @@ async fn boot() -> Boot {
         TrackReportPayload::new("fork source summary", seed_fixture_body()),
         0,
         None,
-        None,
-        false,
     )
     .await
     .unwrap();

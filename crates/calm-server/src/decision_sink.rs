@@ -6,18 +6,15 @@ use crate::db::{RouteRepo, write_with_actor_events_typed};
 use crate::error::CalmError;
 use crate::event::{EditAuthor, Event, EventBus, EventScope};
 use crate::git_candidate::delivery::AttemptOutcome;
-use crate::ids::{ActorId, AreaId, CardId, TrackId};
+use crate::ids::{AreaId, CardId, TrackId};
 use crate::mcp_server::registry::{AppContext, ToolCallIdentity};
-use crate::model::{Card, CardRole, Track, TrackLifecycle};
+use crate::model::{Card, CardRole, Track};
 use crate::operation::workspace_lease::{ReleaseDelivery, release_workspace_lease_for_card_tx};
 use crate::recorder_shadow::{
     RecorderShadowDecisionKind, RecorderShadowDivergence, RecorderShadowProbe, emit_divergence,
 };
 use crate::report_sources::{self, SourceLinkWarning};
 use crate::state::WriteContext;
-use crate::track_lifecycle::{
-    apply_requested_transition_in_tx, auto_promote_draft_in_tx, auto_transition_if_current_in_tx,
-};
 use crate::track_report::{
     self, BlockOpOutcome, ReportBlock, ReportDocOp, ReportEditTarget, TrackReportPayload,
 };
@@ -95,10 +92,6 @@ impl CardDecisionSink {
             track: track.id.clone(),
             area: track.area_id.clone(),
         };
-        let track_scope = EventScope::Track {
-            track: track.id.clone(),
-            area: track.area_id.clone(),
-        };
         let track_id = track.id.clone();
         let worker_card_id_for_tx = card_id_str.clone();
 
@@ -111,7 +104,6 @@ impl CardDecisionSink {
                 let event = event.clone();
                 let actor = actor.clone();
                 let scope = scope.clone();
-                let track_scope = track_scope.clone();
                 let track_id = track_id.clone();
                 let worker_card_id = worker_card_id_for_tx.clone();
                 Box::pin(async move {
@@ -121,7 +113,7 @@ impl CardDecisionSink {
                         &event,
                     )
                     .await?;
-                    // Admission, task CAS, report event, and lifecycle promotion share one transaction; same-outcome repeats roll back as idempotent success.
+                    // Admission, task CAS and report event share one transaction; same-outcome repeats roll back as idempotent success.
                     let now = crate::model::now_ms();
                     // The failure branch keeps the worker's own `reason` beside the `worker-reported` classifier.
                     let flip = match &event {
@@ -135,8 +127,6 @@ impl CardDecisionSink {
                         } => Some((idempotency_key.clone(), Some(reason.clone()))),
                         _ => None,
                     };
-                    // The `Working → Reviewing` auto-promotion is SUPPRESSED for a gated task's success report: the self-report is a claim, not evidence; the gate-result tx promotes instead.
-                    let mut suppress_promotion = false;
                     let mut released = Vec::new();
                     if let Some((task_id, failure_reason)) = flip {
                         let success = failure_reason.is_none();
@@ -172,11 +162,8 @@ impl CardDecisionSink {
                             .await?
                             {
                                 crate::db::sqlite::SuccessReportFlip::Done => 1,
-                                crate::db::sqlite::SuccessReportFlip::Verifying => {
-                                    // Gated row handed to the gate runner — the gate-result tx promotes.
-                                    suppress_promotion = true;
-                                    1
-                                }
+                                // Gated row handed to the gate runner.
+                                crate::db::sqlite::SuccessReportFlip::Verifying => 1,
                                 crate::db::sqlite::SuccessReportFlip::None => 0,
                             }
                         } else {
@@ -218,23 +205,6 @@ impl CardDecisionSink {
 
                     let mut events = vec![(actor, scope, event)];
                     events.extend(released);
-                    if !suppress_promotion
-                        && let Some(auto_events) = auto_transition_if_current_in_tx(
-                            tx,
-                            &track_id,
-                            crate::model::TrackLifecycle::Working,
-                            crate::model::TrackLifecycle::Reviewing,
-                            &ActorId::Kernel,
-                            Some("[auto] first task report".to_string()),
-                        )
-                        .await?
-                    {
-                        events.extend(
-                            auto_events
-                                .into_iter()
-                                .map(|event| (ActorId::Kernel, track_scope.clone(), event)),
-                        );
-                    }
                     Ok(((), events))
                 })
             },
@@ -252,8 +222,6 @@ impl CardDecisionSink {
     pub async fn commit_planner_verdict(
         &self,
         identity: &ToolCallIdentity,
-        message: String,
-        lifecycle: Option<TrackLifecycle>,
         event: Event,
     ) -> Result<(), CalmError> {
         if identity.role != CardRole::Planner {
@@ -263,7 +231,6 @@ impl CardDecisionSink {
         }
         let actor = identity.to_actor_id();
         let card_id_str = identity.card_id.clone();
-        let principal = identity.to_principal();
         let card = self
             .repo
             .card_get(&card_id_str)
@@ -291,11 +258,6 @@ impl CardDecisionSink {
             area: track.area_id.clone(),
         };
         let track_id = track.id.clone();
-        let track_scope = scope.clone();
-        let recorder_shadow = Arc::new(CardDecisionSinkRecorderShadowProbe {
-            principal,
-            track_id: track_id.clone(),
-        });
 
         let committed = crate::db::write_in_tx_typed(self.repo.as_ref(), move |tx| {
             Box::pin(async move {
@@ -313,47 +275,7 @@ impl CardDecisionSink {
                         &event,
                     )
                     .await?;
-                let mut events = Vec::new();
-                if let Some(auto_events) = auto_promote_draft_in_tx(tx, &track_id).await? {
-                    events.extend(
-                        auto_events
-                            .into_iter()
-                            .map(|event| (ActorId::Kernel, track_scope.clone(), event)),
-                    );
-                }
-                if let Some(target) = lifecycle
-                    && let Some(lifecycle_events) = apply_requested_transition_in_tx(
-                        tx,
-                        &track_id,
-                        target,
-                        &actor,
-                        message.clone(),
-                    )
-                    .await?
-                {
-                    recorder_shadow
-                        .record(tx, RecorderShadowDecisionKind::TrackLifecycle)
-                        .await?;
-                    events.extend(
-                        lifecycle_events
-                            .into_iter()
-                            .map(|event| (actor.clone(), track_scope.clone(), event)),
-                    );
-                }
                 let mut committed = Vec::new();
-                for (actor, scope, event) in events {
-                    let id = crate::db::sqlite::append_decision_event_in_tx(
-                        tx, &actor, &scope, None, &event,
-                    )
-                    .await?;
-                    committed.push(crate::event::BroadcastEnvelope {
-                        id,
-                        event_version: crate::event::SYNC_EVENT_VERSION,
-                        actor,
-                        scope,
-                        event,
-                    });
-                }
                 if !repeated {
                     let id = crate::db::sqlite::append_decision_event_in_tx(
                         tx, &actor, &scope, None, &event,
@@ -441,7 +363,7 @@ impl CardDecisionSink {
     }
 
     /// The agent-MCP report write: the recorder shadow gate and the persist boundary, with an arbitrary [`ReportDocOp`] executed inside the transaction.
-    /// The single funnel every block-channel write passes through, so attribution and auto-promote are decided here, once, from `identity.role`: hard-coding `Planner` would attribute an assistant's edits to the planner and walk a Draft track out of Draft on its behalf.
+    /// The single funnel every block-channel write passes through, so attribution is decided here, once, from `identity.role`: hard-coding `Planner` would attribute an assistant's edits to the planner.
     #[allow(clippy::too_many_arguments)]
     pub async fn commit_report_op(
         &self,
@@ -451,7 +373,6 @@ impl CardDecisionSink {
         current_payload: TrackReportPayload,
         op: ReportDocOp,
         agent_message: Option<String>,
-        lifecycle: Option<TrackLifecycle>,
     ) -> Result<ReportOpCommit, CalmError> {
         let actor = identity.to_actor_id();
         let principal = identity.to_principal();
@@ -461,7 +382,7 @@ impl CardDecisionSink {
                 principal,
                 track_id: track.id.clone(),
             });
-        let (author, auto_promote_draft) = report_op_attribution(identity.role)?;
+        let author = report_op_attribution(identity.role)?;
         // The writer is private to its module; this is the one entry point that accepts a caller-decided attribution.
         let (card, trace) = track_report::write::agent_report_op(
             self.repo.as_ref(),
@@ -472,8 +393,6 @@ impl CardDecisionSink {
             ReportEditTarget::for_resolved_parts(track, report_card, current_payload)?,
             op,
             agent_message,
-            lifecycle,
-            auto_promote_draft,
             recorder_shadow,
         )
         .await?;
@@ -510,12 +429,12 @@ impl CardDecisionSink {
     }
 }
 
-/// The role → (attribution, auto-promote) decision for every write reaching [`CardDecisionSink::commit_report_op`].
+/// The role → attribution decision for every write reaching [`CardDecisionSink::commit_report_op`].
 /// Exhaustive on purpose: a future role must state its own verdict rather than inherit the planner's. `Worker` and `ReportCard` are refused outright rather than folded in with `Planner`.
-fn report_op_attribution(role: CardRole) -> Result<(EditAuthor, bool), CalmError> {
+fn report_op_attribution(role: CardRole) -> Result<EditAuthor, CalmError> {
     Ok(match role {
-        CardRole::Assistant => (EditAuthor::Assistant, false),
-        CardRole::Planner => (EditAuthor::Planner, true),
+        CardRole::Assistant => EditAuthor::Assistant,
+        CardRole::Planner => EditAuthor::Planner,
         role @ (CardRole::Worker | CardRole::ReportCard) => {
             return Err(CalmError::Forbidden(format!(
                 "card role {role:?} may not write the track report"
@@ -633,7 +552,7 @@ mod tests {
     use crate::db::sqlite::{
         SqlxRepo, begin_immediate_tx, session_insert_tx, session_mark_track_root_tx,
     };
-    use crate::model::{CardRole, NewArea, NewCard, NewTrack, TrackPatch};
+    use crate::model::{CardRole, NewArea, NewCard, NewTrack};
     use crate::operation::workspace_lease::{acquire_workspace_lease_tx, prepare_worker_lease_tx};
     use crate::recorder_shadow::divergence_count_for_test;
     use crate::track_area_cache::TrackAreaCache;
@@ -654,11 +573,11 @@ mod tests {
     fn report_op_attribution_refuses_worker_and_report_cards() {
         assert_eq!(
             report_op_attribution(CardRole::Planner).expect("planner writes its own report"),
-            (EditAuthor::Planner, true)
+            EditAuthor::Planner
         );
         assert_eq!(
             report_op_attribution(CardRole::Assistant).expect("assistant writes the report"),
-            (EditAuthor::Assistant, false)
+            EditAuthor::Assistant
         );
         for role in [CardRole::Worker, CardRole::ReportCard] {
             match report_op_attribution(role) {
@@ -1008,7 +927,6 @@ mod tests {
                     if_doc_rev: 0,
                 },
                 Some("non-root edit".into()),
-                None,
             )
             .await
             .expect_err("non-root report write must be forbidden");
@@ -1034,7 +952,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn root_report_write_with_lifecycle_succeeds_under_recorder_enforce() {
+    async fn root_report_write_succeeds_under_recorder_enforce() {
         let repo = Arc::new(
             SqlxRepo::open("sqlite::memory:")
                 .await
@@ -1062,16 +980,6 @@ mod tests {
             })
             .await
             .expect("create track");
-        let track = repo
-            .track_update(
-                track.id.as_str(),
-                TrackPatch {
-                    lifecycle: Some(TrackLifecycle::Planning),
-                    ..Default::default()
-                },
-            )
-            .await
-            .expect("set planning");
         let planner_card = repo
             .card_create(NewCard {
                 track_id: track.id.clone(),
@@ -1144,7 +1052,6 @@ mod tests {
                     if_doc_rev: 0,
                 },
                 Some("root edit".into()),
-                Some(TrackLifecycle::Dispatching),
             )
             .await
             .expect("root report write succeeds")
@@ -1153,20 +1060,7 @@ mod tests {
         let payload: TrackReportPayload =
             serde_json::from_value(updated.payload).expect("updated report payload");
         assert_eq!(payload.summary, "root summary");
-        let track_after = repo
-            .track_get(track.id.as_str())
-            .await
-            .expect("track after")
-            .expect("track row");
-        assert_eq!(track_after.lifecycle, TrackLifecycle::Dispatching);
         let events = repo.events_since(0, i64::MAX).await.expect("events");
-        assert!(events.iter().any(|(_, _, _, event)| matches!(
-            event,
-            Event::TrackLifecycleChanged {
-                to: TrackLifecycle::Dispatching,
-                ..
-            }
-        )));
         assert!(
             events
                 .iter()

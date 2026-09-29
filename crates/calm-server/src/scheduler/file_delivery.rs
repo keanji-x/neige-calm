@@ -118,7 +118,7 @@ impl Scheduler {
             let candidate = crate::file_delivery::candidate::load_tx(tx,&publication_id).await?;
             if let Some(key) = sqlx::query_scalar::<_,String>("SELECT operation_key FROM task_candidate_verification_allocations WHERE publication_operation_id=?1").bind(&publication_id).fetch_optional(&mut **tx).await? { return Ok(Some(key)); }
             crate::file_delivery::candidate::authorize_tx(tx,&candidate).await?;
-            track_lifecycle_tx(tx,&candidate.source.track_id).await?.ok_or_else(|| CalmError::Conflict("candidate track missing".into()))?;
+            crate::db::sqlite::track_find_tx(tx,&candidate.source.track_id).await?.ok_or_else(|| CalmError::Conflict("candidate track missing".into()))?;
             let global: i64 = sqlx::query_scalar("SELECT count(*) FROM task_candidate_verification_allocations a LEFT JOIN operations o ON o.operation_key=a.operation_key AND o.kind='candidate-verify' WHERE o.id IS NULL OR o.phase NOT IN ('succeeded','failed')").fetch_one(&mut **tx).await?;
             if global >= global_limit { return Ok(None); }
             let key = new_id();

@@ -26,7 +26,7 @@ use crate::git_candidate::delivery::{
     AttemptOutcome, delivery_latest_for_attempt_tx, insert_initial_delivery_tx,
 };
 use crate::ids::{ActorId, TrackId};
-use crate::model::{TaskStatus, TrackLifecycle, now_ms};
+use crate::model::{TaskStatus, now_ms};
 use crate::operation::Tx;
 use crate::proc_identity::read_boot_id;
 
@@ -284,37 +284,20 @@ async fn fail_lease_attempt_tx(
         return Ok(Vec::new());
     }
     let track_id = TrackId::from(lease.track_id.clone());
-    let track = crate::track_lifecycle::track_get_tx(tx, &track_id).await?;
+    let track = crate::db::sqlite::track_get_tx(tx, &track_id).await?;
     let scope = EventScope::Track {
         track: track.id,
         area: track.area_id,
     };
     let actor = ActorId::KernelDispatcher;
-    let mut events = vec![(
-        actor.clone(),
-        scope.clone(),
+    Ok(vec![(
+        actor,
+        scope,
         Event::TaskFailed {
             idempotency_key: attempt_id,
             reason: BOOT_RECLAIM_REASON.to_string(),
             details: None,
             agent_message: None,
         },
-    )];
-    if let Some(auto_events) = crate::track_lifecycle::auto_transition_if_current_in_tx(
-        tx,
-        &track_id,
-        TrackLifecycle::Working,
-        TrackLifecycle::Reviewing,
-        &actor,
-        Some("[auto] worker died without reporting".to_string()),
-    )
-    .await?
-    {
-        events.extend(
-            auto_events
-                .into_iter()
-                .map(|event| (actor.clone(), scope.clone(), event)),
-        );
-    }
-    Ok(events)
+    )])
 }

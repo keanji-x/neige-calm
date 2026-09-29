@@ -13,7 +13,7 @@ pub(crate) enum RecoveryRefusalCode {
     UserAuthorizationRequired,
     /// The bounded Planner retry for this key was consumed.
     RecoveryLimitReached,
-    /// The Track lifecycle does not schedule work.
+    /// The Track is closed, so it does not schedule work.
     TrackNotReady,
     /// Child-task routes are not recoverable.
     UnsupportedSpawn,
@@ -53,7 +53,7 @@ pub(crate) enum RefusalSite {
     ActorNotUserOrPlanner,
     /// The Planner session cannot be resolved to a role.
     PlannerSessionUnresolved,
-    /// The Track lifecycle does not schedule work.
+    /// The Track is closed, so it does not schedule work.
     TrackNotReady,
     /// Child-task routes are not recoverable.
     ChildTaskRoute,

@@ -144,25 +144,17 @@ fn ready_set_preserves_scheduler_order() {
     assert_eq!(keys(&ready), vec!["zz-high", "aa-low", "bb-low"]);
 }
 
+/// The scheduling gate: an open track schedules, a closed one does not.
 #[test]
-fn lifecycle_gating_matches_design_table() {
-    for allowed in [
-        TrackLifecycle::Planning,
-        TrackLifecycle::Dispatching,
-        TrackLifecycle::Working,
-        TrackLifecycle::Reviewing,
-    ] {
-        assert!(lifecycle_allows_scheduling(allowed), "{allowed:?}");
-    }
-    for held in [
-        TrackLifecycle::Draft,
-        TrackLifecycle::Blocked,
-        TrackLifecycle::Done,
-        TrackLifecycle::Canceled,
-        TrackLifecycle::Failed,
-    ] {
-        assert!(!lifecycle_allows_scheduling(held), "{held:?}");
-    }
+fn only_an_open_track_schedules() {
+    let mut track: Track = serde_json::from_value(json!({
+        "id": "t", "area_id": "a", "title": "t", "sort": 0.0,
+        "pinned_at": null, "closed_at": null, "created_at": 0, "updated_at": 0
+    }))
+    .unwrap();
+    assert!(track.is_open());
+    track.closed_at = Some(1);
+    assert!(!track.is_open(), "a closed track must not schedule");
 }
 
 #[test]
