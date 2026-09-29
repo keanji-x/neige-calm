@@ -1746,7 +1746,7 @@ mod tests {
         let track = "track-projection".to_string();
         sqlx::query("INSERT INTO areas(id,name,color,sort,kind,created_at,updated_at) VALUES('area-projection','c','#000',0,'user',0,0)")
             .execute(&repo.pool).await.unwrap();
-        sqlx::query("INSERT INTO tracks(id,area_id,title,sort,lifecycle,created_at,updated_at,planner_task_ceiling,require_task_gates) VALUES(?1,'area-projection','w',0,'draft',0,0,1,0)")
+        sqlx::query("INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at,planner_task_ceiling,require_task_gates) VALUES(?1,'area-projection','w',0,0,0,1,0)")
             .bind(&track).execute(&repo.pool).await.unwrap();
         let mut tx = repo.pool.begin().await.unwrap();
         crate::db::sqlite::track_workspace::track_workspace_write_tx(

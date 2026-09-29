@@ -852,7 +852,7 @@ mod tests {
             "attention": "input",
             "activity_at_ms": 1789460968837_i64,
             "items": [
-                { "source": "ask", "key": "ask:lifecycle:28475",
+                { "source": "ask", "key": "ask:ratify:28475",
                   "text": "Merge the PR?", "at_ms": 1789460968837_i64 },
                 { "source": "ask", "key": "ask:notify:22801",
                   "text": "Which branch?", "at_ms": 1789460968000_i64 },

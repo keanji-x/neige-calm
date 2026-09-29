@@ -349,7 +349,7 @@ async fn run_key_for_worker_card_in_index_tx(
 pub(super) fn paths_changed_by_event(event: &Event, track_id: &TrackId) -> PathDelta {
     let mut delta = PathDelta::default();
     match event {
-        Event::TrackUpdated(_) | Event::TrackLifecycleChanged { .. } => {
+        Event::TrackUpdated(_) => {
             delta.add("index.md");
             delta.add("track.json");
         }

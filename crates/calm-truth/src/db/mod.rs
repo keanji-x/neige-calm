@@ -40,7 +40,7 @@ pub type WriteWithEventsFn<'a> = Box<
         + 'a,
 >;
 
-/// Like [`WriteWithEventsFn`], but each event carries its own actor, for a kernel-auto lifecycle event committing atomically with the write that triggered it.
+/// Like [`WriteWithEventsFn`], but each event carries its own actor, for a kernel-auto event committing atomically with the write that triggered it.
 pub type WriteWithActorEventsFn<'a> = Box<
     dyn for<'tx> FnOnce(
             &'tx mut Transaction<'_, Sqlite>,
@@ -145,7 +145,7 @@ pub trait RepoRead: Send + Sync + 'static {
         id: &str,
     ) -> Result<Option<ClaudePermissionsScope>>;
     /// Calendar window query: every track whose lifespan overlaps `[since, until]` (inclusive):
-    /// `created_at <= until AND (terminal_at IS NULL OR terminal_at >= since)`; all filters optional. Sorted by `created_at ASC, id ASC`.
+    /// `created_at <= until AND (closed_at IS NULL OR closed_at >= since)`; all filters optional. Sorted by `created_at ASC, id ASC`.
     async fn tracks_window(
         &self,
         area_id: Option<&str>,
@@ -332,7 +332,7 @@ pub trait RepoEventWrite: RepoRead {
         f: WriteWithEventsFn<'_>,
     ) -> Result<Vec<i64>>;
 
-    /// Plural eventized write where each event carries its own actor, for atomic kernel-auto lifecycle hooks; role enforcement runs per tuple.
+    /// Plural eventized write where each event carries its own actor, for atomic kernel-auto hooks; role enforcement runs per tuple.
     async fn write_with_actor_events(
         &self,
         correlation: Option<&str>,

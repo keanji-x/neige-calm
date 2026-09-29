@@ -126,9 +126,9 @@ async fn seed_linear_commits(
         sqlx::query(
             r#"INSERT INTO track_vcs_commits (
                    hash, track_id, parent_hash, tree_hash, manifest_schema_version,
-                   author, message, lifecycle, event_id, created_at
+                   author, message, event_id, created_at
                )
-               VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, 'active', ?7, ?8)"#,
+               VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8)"#,
         )
         .bind(&commit_hash)
         .bind(track_id.as_str())
@@ -478,10 +478,9 @@ async fn default_log_finds_changes_beyond_one_thousand_empty_commits() {
         sqlx::query(
             r#"INSERT INTO track_vcs_commits (
                    hash, track_id, parent_hash, tree_hash, manifest_schema_version,
-                   author, message, lifecycle, event_id, created_at
+                   author, message, event_id, created_at
                )
-               VALUES (?1, ?2, ?3, ?4, ?5, NULL, 'harness.item.added',
-                       'active', ?6, ?7)"#,
+               VALUES (?1, ?2, ?3, ?4, ?5, NULL, 'harness.item.added', ?6, ?7)"#,
         )
         .bind(&hash)
         .bind(fixture.track_id.as_str())
@@ -794,10 +793,10 @@ async fn sweep_preserves_shared_blob_referenced_by_kept_tree() {
     sqlx::query(
         r#"INSERT INTO track_vcs_commits (
                hash, track_id, parent_hash, tree_hash, manifest_schema_version,
-               author, message, lifecycle, event_id, created_at
+               author, message, event_id, created_at
            )
-           VALUES (?1, ?2, NULL, ?3, ?4, NULL, 'old shared blob', 'active', 1, ?5),
-                  (?6, ?2, ?1, ?7, ?4, NULL, 'kept shared blob', 'active', 2, ?8)"#,
+           VALUES (?1, ?2, NULL, ?3, ?4, NULL, 'old shared blob', 1, ?5),
+                  (?6, ?2, ?1, ?7, ?4, NULL, 'kept shared blob', 2, ?8)"#,
     )
     .bind(&old_commit_hash)
     .bind(track_id.as_str())

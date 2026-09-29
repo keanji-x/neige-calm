@@ -505,7 +505,7 @@ fn enforce_card_self_scope(
 
 /// [`enforce_card_self_scope`] loosened by exactly one card: an `Assistant`
 /// may also write into its home track's report card scope. Every non-`Card`
-/// scope is refused, so an assistant can neither advance the lifecycle nor
+/// scope is refused, so an assistant can neither close the track nor
 /// dispatch a task.
 fn enforce_assistant_scope(
     card_id: &CardId,
@@ -612,7 +612,7 @@ fn is_own_worker_lifecycle_event(actor: &ActorId, event: &Event) -> bool {
 mod tests {
     use super::*;
     use crate::ids::{AreaId, TrackId};
-    use crate::model::{Area, AreaKind, Track, TrackLifecycle};
+    use crate::model::{Area, AreaKind, Track};
 
     fn track(id: &str, area: &str) -> Track {
         Track {
@@ -620,15 +620,13 @@ mod tests {
             area_id: AreaId::from(area),
             title: "t".into(),
             sort: 1.0,
-            archived_at: None,
             pinned_at: None,
-            lifecycle: TrackLifecycle::Draft,
+            closed_at: None,
             cwd_wire_alias: String::new(),
             template_id: None,
             plugin_scope: None,
             purpose: None,
             template_input: None,
-            terminal_at: None,
             recipe_id: None,
             recipe_revision: None,
             claude_permissions_policy: None,

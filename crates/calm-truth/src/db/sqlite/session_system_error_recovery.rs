@@ -48,7 +48,7 @@ async fn matches<'e>(
              AND ws.state = 'failed' AND ws.completed_at_ms IS NULL
              AND ws.queue_harvested_at_ms IS NULL AND ws.terminal_run_id IS NULL
              AND ws.active_turn_id IS NULL
-             AND t.lifecycle NOT IN ('done', 'canceled', 'failed')
+             AND t.closed_at IS NULL
              AND c.kind = 'codex'
              AND ((c.role = 'planner' AND ws.contract = 'planner' AND COALESCE(t.purpose, '') != 'area-chat')
                OR (c.role = 'assistant' AND ws.contract = 'executor' AND json_extract(c.payload, '$.harness_profile') = 'assistant')

@@ -3,7 +3,7 @@
 use crate::git_candidate::{DeliverySettlement, DeliveryWakeReason};
 use crate::harness::HarnessPhaseTag;
 use crate::ids::{ActorId, AreaId, CardId, TrackId};
-use crate::model::{Area, Card, Overlay, Track, TrackLifecycle};
+use crate::model::{Area, Card, Overlay, Track};
 use crate::proposal::{ProposalDecision, ProposalOp};
 use crate::verify_target::VerifyTarget;
 use serde::{Deserialize, Serialize};
@@ -302,18 +302,6 @@ pub enum Event {
     TrackUpdated(TrackUpdatedPayload),
     #[serde(rename = "track.deleted")]
     TrackDeleted { id: TrackId, area_id: AreaId },
-
-    /// Explicit Track lifecycle transition, emitted exactly once per validated `from → to` change.
-    #[serde(rename = "track.lifecycle_changed")]
-    TrackLifecycleChanged {
-        id: TrackId,
-        area_id: AreaId,
-        from: TrackLifecycle,
-        to: TrackLifecycle,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
-        agent_message: Option<String>,
-    },
 
     #[serde(rename = "card.added")]
     CardAdded(Card),
@@ -900,12 +888,6 @@ impl Event {
                 entity_kind: Some("track".into()),
                 entity_id: Some(id.to_string()),
             },
-            Event::TrackLifecycleChanged { id, .. } => EventMetadata {
-                kind_tag,
-                plugin_id: None,
-                entity_kind: Some("track".into()),
-                entity_id: Some(id.to_string()),
-            },
             Event::CardAdded(c) => EventMetadata {
                 kind_tag,
                 plugin_id: None,
@@ -1103,7 +1085,6 @@ impl Event {
             Event::AreaDeleted { .. } => "area.deleted",
             Event::TrackUpdated(_) => "track.updated",
             Event::TrackDeleted { .. } => "track.deleted",
-            Event::TrackLifecycleChanged { .. } => "track.lifecycle_changed",
             Event::CardAdded(_) => "card.added",
             Event::CardUpdated(_) => "card.updated",
             Event::CardDeleted { .. } => "card.deleted",
@@ -1189,12 +1170,6 @@ pub fn topics(ev: &Event) -> Vec<String> {
             "*".into(),
         ],
         Event::TrackDeleted { id, area_id } => vec![
-            format!("track:{}", id),
-            format!("area:{}", area_id),
-            "*".into(),
-        ],
-
-        Event::TrackLifecycleChanged { id, area_id, .. } => vec![
             format!("track:{}", id),
             format!("area:{}", area_id),
             "*".into(),
@@ -2513,13 +2488,6 @@ mod scope_tests {
                 id: TrackId::from("track-deleted"),
                 area_id: AreaId::from("area-1"),
             },
-            Event::TrackLifecycleChanged {
-                id: TrackId::from("track-lifecycle"),
-                area_id: AreaId::from("area-1"),
-                from: TrackLifecycle::Draft,
-                to: TrackLifecycle::Planning,
-                agent_message: None,
-            },
             Event::CardAdded(card_sample("card-added", "track-1")),
             Event::CardUpdated(card_sample("card-updated", "track-1")),
             Event::CardDeleted {
@@ -2772,15 +2740,13 @@ mod scope_tests {
             area_id: AreaId::from(area_id),
             title: "t".into(),
             sort: 1.0,
-            archived_at: None,
             pinned_at: None,
-            lifecycle: TrackLifecycle::Draft,
+            closed_at: None,
             cwd_wire_alias: String::new(),
             template_id: None,
             plugin_scope: None,
             purpose: None,
             template_input: None,
-            terminal_at: None,
             recipe_id: None,
             recipe_revision: None,
             claude_permissions_policy: None,

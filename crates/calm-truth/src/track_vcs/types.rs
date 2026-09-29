@@ -31,7 +31,6 @@ pub struct CommitRecord {
     pub parent_hash: Option<CommitHash>,
     pub tree_hash: ObjectHash,
     pub manifest_schema_version: i64,
-    pub lifecycle: String,
     pub event_id: Option<i64>,
     pub created_at: i64,
     pub message: Option<String>,
@@ -123,7 +122,6 @@ pub struct HistoricalBlob {
 pub struct CommitLogEntry {
     pub hash: CommitHash,
     pub parent_hash: Option<CommitHash>,
-    pub lifecycle: String,
     pub event_id: Option<i64>,
     pub created_at: i64,
     pub message: Option<String>,

@@ -1,6 +1,6 @@
 use super::{SqlxRepo, area_create_tx, area_delete_tx, track_create_tx, track_update_tx};
 use crate::db::RepoSyncDomainRaw;
-use crate::model::{NewArea, NewTrack, RequestTheme, TrackLifecycle, TrackPatch};
+use crate::model::{NewArea, NewTrack, RequestTheme, TrackPatch};
 
 async fn seed_area(repo: &SqlxRepo, suffix: &str) -> String {
     let mut tx = repo.pool().begin().await.unwrap();
@@ -149,12 +149,12 @@ async fn acceptance_21c_cross_area_edge_is_a_loud_delete_tripwire() {
 }
 
 #[tokio::test]
-async fn acceptance_17_raw_lifecycle_writer_refuses_reopen_of_referenced_child() {
+async fn acceptance_17_track_writer_refuses_reopen_of_referenced_child() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let area = seed_area(&repo, "c").await;
     let parent = seed_track(&repo, &area, "p").await;
     let child = seed_track(&repo, &area, "ch").await;
-    sqlx::query("UPDATE tracks SET parent_track_id=?1,lifecycle='done' WHERE id=?2")
+    sqlx::query("UPDATE tracks SET parent_track_id=?1,closed_at=1 WHERE id=?2")
         .bind(&parent)
         .bind(&child)
         .execute(repo.pool())
@@ -170,7 +170,7 @@ async fn acceptance_17_raw_lifecycle_writer_refuses_reopen_of_referenced_child()
         &mut tx,
         &child,
         TrackPatch {
-            lifecycle: Some(TrackLifecycle::Planning),
+            closed: Some(false),
             ..Default::default()
         },
     )

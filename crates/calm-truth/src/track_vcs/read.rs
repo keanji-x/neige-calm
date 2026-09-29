@@ -160,7 +160,6 @@ pub async fn log(
             out.push(CommitLogEntry {
                 hash: record.hash,
                 parent_hash: record.parent_hash,
-                lifecycle: record.lifecycle,
                 event_id: record.event_id,
                 created_at: record.created_at,
                 message: record.message,

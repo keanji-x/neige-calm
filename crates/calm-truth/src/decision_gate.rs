@@ -459,7 +459,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Area, AreaKind, Track, TrackLifecycle};
+    use crate::model::{Area, AreaKind, Track};
     use crate::worker::{
         LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSessionState,
     };
@@ -610,15 +610,13 @@ mod tests {
             area_id: AreaId::from(area),
             title: "t".into(),
             sort: 1.0,
-            archived_at: None,
             pinned_at: None,
-            lifecycle: TrackLifecycle::Draft,
+            closed_at: None,
             cwd_wire_alias: String::new(),
             template_id: None,
             plugin_scope: None,
             purpose: None,
             template_input: None,
-            terminal_at: None,
             recipe_id: None,
             recipe_revision: None,
             claude_permissions_policy: None,

@@ -4,7 +4,7 @@
 use crate::ids::{AreaId, CardId, TrackId};
 use crate::model::{
     Area, AreaFolder, AreaKind, Card, HarnessInputSegment, HarnessItem, Overlay, Track,
-    TrackLifecycle, TrackWorkspace, TrackWorkspaceKind,
+    TrackWorkspace, TrackWorkspaceKind,
 };
 use calm_types::claude_permissions::ClaudePermissionsScope;
 
@@ -63,14 +63,14 @@ impl From<AreaFolderRow> for AreaFolder {
 
 /// The `tracks` column list every `query_as::<_, TrackRow>` SELECT must use, in `TrackRow` field order. `query_as`
 /// binds columns by name at **runtime**, so a stale hand-copied list compiles fine and blows up in production.
-pub const TRACK_SELECT_COLUMNS: &str = "id, area_id, title, sort, archived_at, pinned_at, lifecycle, template_id, \
-     plugin_scope, purpose, template_input, terminal_at, recipe_id, recipe_revision, \
+pub const TRACK_SELECT_COLUMNS: &str = "id, area_id, title, sort, pinned_at, closed_at, template_id, \
+     plugin_scope, purpose, template_input, recipe_id, recipe_revision, \
      workspace_kind, workspace_path, workspace_frozen_at, workspace_worktree_path, created_at, \
      updated_at, claude_permissions_policy";
 
 /// [`TRACK_SELECT_COLUMNS`] with every column qualified by the `w` table alias; the two lists must stay in lockstep.
-pub const TRACK_SELECT_COLUMNS_W: &str = "w.id, w.area_id, w.title, w.sort, w.archived_at, w.pinned_at, w.lifecycle, \
-     w.template_id, w.plugin_scope, w.purpose, w.template_input, w.terminal_at, \
+pub const TRACK_SELECT_COLUMNS_W: &str = "w.id, w.area_id, w.title, w.sort, w.pinned_at, w.closed_at, \
+     w.template_id, w.plugin_scope, w.purpose, w.template_input, \
      w.recipe_id, w.recipe_revision, w.workspace_kind, w.workspace_path, \
      w.workspace_frozen_at, w.workspace_worktree_path, w.created_at, w.updated_at, \
      w.claude_permissions_policy";
@@ -84,17 +84,14 @@ pub struct TrackRow {
     pub area_id: AreaId,
     pub title: String,
     pub sort: f64,
-    pub archived_at: Option<i64>,
     pub pinned_at: Option<i64>,
-    #[sqlx(try_from = "String")]
-    pub lifecycle: TrackLifecycle,
+    pub closed_at: Option<i64>,
     pub template_id: Option<String>,
     pub plugin_scope: Option<String>,
     pub purpose: Option<String>,
     /// Nullable JSON TEXT column; `nullable` so a NULL lands as `None` instead of a decode error.
     #[sqlx(json(nullable))]
     pub template_input: Option<serde_json::Value>,
-    pub terminal_at: Option<i64>,
     /// The user recipe this track was instantiated from and its revision at that moment; both NULL for every other
     /// creation source. `recipe_id` is a record of origin, not a live reference — the recipe may since be edited or deleted.
     pub recipe_id: Option<String>,
@@ -120,16 +117,14 @@ impl From<TrackRow> for Track {
             area_id: r.area_id,
             title: r.title,
             sort: r.sort,
-            archived_at: r.archived_at,
             pinned_at: r.pinned_at,
-            lifecycle: r.lifecycle,
+            closed_at: r.closed_at,
             // The one place the wire alias is computed.
             cwd_wire_alias: r.workspace_path.clone(),
             template_id: r.template_id,
             plugin_scope: r.plugin_scope,
             purpose: r.purpose,
             template_input: r.template_input,
-            terminal_at: r.terminal_at,
             recipe_id: r.recipe_id,
             recipe_revision: r.recipe_revision,
             workspace: TrackWorkspace {

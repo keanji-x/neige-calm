@@ -152,83 +152,6 @@ pub struct AreaResolve {
     pub folder_path: String,
 }
 
-/// Track lifecycle state machine. `archived` is intentionally NOT a lifecycle state: archival lives
-/// on `archived_at`, orthogonal to execution semantics.
-#[derive(
-    Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema, TS,
-)]
-#[serde(rename_all = "lowercase")]
-#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
-pub enum TrackLifecycle {
-    /// New track; user is editing goal/context and hasn't handed off to the Planner Agent yet.
-    #[default]
-    Draft,
-    /// Planner Agent is reading the goal + code context and producing a plan.
-    Planning,
-    /// Planner Agent has emitted one or more dispatch requests and the
-    /// Dispatcher is spawning worker cards.
-    Dispatching,
-    /// At least one worker card is executing; the track has not reached
-    /// review.
-    Working,
-    /// Track needs human input, or a worker failed in a way the Planner
-    /// Agent cannot recover from autonomously.
-    Blocked,
-    /// Workers have produced results; Planner Agent or the user is
-    /// validating them.
-    Reviewing,
-    /// Track goal achieved; results accepted. **Terminal.**
-    Done,
-    /// User chose to abandon the track. **Terminal.**
-    Canceled,
-    /// System-level failure that cannot recover. **Terminal.**
-    Failed,
-}
-
-impl TrackLifecycle {
-    /// Is this a terminal state? Terminal states cannot transition except via a user-driven reopen.
-    pub fn is_terminal(self) -> bool {
-        matches!(
-            self,
-            TrackLifecycle::Done | TrackLifecycle::Canceled | TrackLifecycle::Failed
-        )
-    }
-
-    /// The lowercase string persisted in `tracks.lifecycle`.
-    pub fn as_db_str(self) -> &'static str {
-        match self {
-            TrackLifecycle::Draft => "draft",
-            TrackLifecycle::Planning => "planning",
-            TrackLifecycle::Dispatching => "dispatching",
-            TrackLifecycle::Working => "working",
-            TrackLifecycle::Blocked => "blocked",
-            TrackLifecycle::Reviewing => "reviewing",
-            TrackLifecycle::Done => "done",
-            TrackLifecycle::Canceled => "canceled",
-            TrackLifecycle::Failed => "failed",
-        }
-    }
-}
-
-impl TryFrom<String> for TrackLifecycle {
-    type Error = String;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        match value.as_str() {
-            "draft" => Ok(TrackLifecycle::Draft),
-            "planning" => Ok(TrackLifecycle::Planning),
-            "dispatching" => Ok(TrackLifecycle::Dispatching),
-            "working" => Ok(TrackLifecycle::Working),
-            "blocked" => Ok(TrackLifecycle::Blocked),
-            "reviewing" => Ok(TrackLifecycle::Reviewing),
-            "done" => Ok(TrackLifecycle::Done),
-            "canceled" => Ok(TrackLifecycle::Canceled),
-            "failed" => Ok(TrackLifecycle::Failed),
-            other => Err(format!("unknown tracks.lifecycle value `{other}`")),
-        }
-    }
-}
-
 /// Ownership must be explicit because only managed workspaces may be recycled.
 #[derive(
     Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema, TS,
@@ -313,10 +236,9 @@ pub struct Track {
     pub area_id: AreaId,
     pub title: String,
     pub sort: f64,
-    pub archived_at: Option<i64>,
     pub pinned_at: Option<i64>,
-    #[serde(default)]
-    pub lifecycle: TrackLifecycle,
+    /// Unix-ms time the track was closed, or `None` while it is open. Closed tracks do not schedule.
+    pub closed_at: Option<i64>,
     /// Wire-compatibility alias of `workspace.path`, serialized as `cwd`; Rust readers must use `workspace.path`.
     #[serde(rename = "cwd", default)]
     pub cwd_wire_alias: String,
@@ -337,9 +259,6 @@ pub struct Track {
     #[schema(value_type = Option<Object>)]
     #[ts(type = "unknown")]
     pub template_input: Option<serde_json::Value>,
-    /// Unix-ms timestamp the track most recently entered a terminal lifecycle state, or `None` while non-terminal.
-    #[serde(default)]
-    pub terminal_at: Option<i64>,
     /// The user recipe ([`TrackRecipe`]) this track was instantiated from; may name a recipe that no longer exists.
     #[serde(default)]
     pub recipe_id: Option<String>,
@@ -354,6 +273,13 @@ pub struct Track {
     pub claude_permissions_policy: Option<ClaudePermissionsScope>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+impl Track {
+    /// Open tracks schedule; closed ones do not.
+    pub fn is_open(&self) -> bool {
+        self.closed_at.is_none()
+    }
 }
 
 /// Live runtime projection read from `worker_sessions` when a card is fetched or serialized. Not
@@ -606,34 +532,6 @@ mod area_kind_tests {
             assert_eq!(back, kind);
         }
         assert!(AreaKind::try_from("bogus".to_string()).is_err());
-    }
-}
-
-#[cfg(test)]
-mod track_lifecycle_db_str_tests {
-    use super::TrackLifecycle;
-
-    const ALL: [TrackLifecycle; 9] = [
-        TrackLifecycle::Draft,
-        TrackLifecycle::Planning,
-        TrackLifecycle::Dispatching,
-        TrackLifecycle::Working,
-        TrackLifecycle::Blocked,
-        TrackLifecycle::Reviewing,
-        TrackLifecycle::Done,
-        TrackLifecycle::Canceled,
-        TrackLifecycle::Failed,
-    ];
-
-    #[test]
-    fn db_str_matches_serde_wire_shape() {
-        for state in ALL {
-            let wire = serde_json::to_string(&state).expect("serialize");
-            assert_eq!(format!("\"{}\"", state.as_db_str()), wire);
-            let back = TrackLifecycle::try_from(state.as_db_str().to_string()).expect("decode");
-            assert_eq!(back, state);
-        }
-        assert!(TrackLifecycle::try_from("bogus".to_string()).is_err());
     }
 }
 

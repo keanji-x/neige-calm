@@ -11,8 +11,8 @@ use calm_types::claude_permissions::{ClaudePermissionsScope, parse_scope_named};
 pub use calm_types::model::{
     Area, AreaFolder, AreaKind, AreaResolve, Card, CardRole, CardRuntimeView, FolderConflict,
     FolderConflictKind, HarnessInputPresentation, HarnessInputSegment, HarnessItem, NewTrackRecipe,
-    Overlay, Track, TrackConversationSummary, TrackLifecycle, TrackRecipe, TrackWorkspace,
-    TrackWorkspaceKind, default_deletable,
+    Overlay, Track, TrackConversationSummary, TrackRecipe, TrackWorkspace, TrackWorkspaceKind,
+    default_deletable,
 };
 
 /// Wire shape of `NewCodexCardBody.theme` / `NewTrack.theme`; duplicates
@@ -106,17 +106,12 @@ pub struct NewTrack {
 pub struct TrackPatch {
     pub title: Option<String>,
     pub sort: Option<f64>,
-    /// Pass `Some(Some(ts))` to archive, `Some(None)` to unarchive,
-    /// or omit (`None`) to leave alone.
-    #[serde(default, deserialize_with = "deserialize_double_option")]
-    pub archived_at: Option<Option<i64>>,
     /// Pass `Some(Some(ts))` to pin, `Some(None)` to unpin,
     /// or omit (`None`) to leave alone.
     #[serde(default, deserialize_with = "deserialize_double_option")]
     pub pinned_at: Option<Option<i64>>,
-    /// Request a lifecycle transition; validated through `crate::track_lifecycle`
-    /// inside the write transaction.
-    pub lifecycle: Option<TrackLifecycle>,
+    /// `true` closes the track and `false` reopens it; the server stamps the time. Omit to leave alone.
+    pub closed: Option<bool>,
     /// Maximum admitted planner-declared task inventory. A present null resets to
     /// the kernel default.
     #[serde(default, deserialize_with = "deserialize_double_option")]
@@ -398,9 +393,9 @@ impl Task {
 #[derive(Clone, Debug, Serialize, ToSchema)]
 pub struct TrackDetail {
     pub track: Track,
-    /// Lifecycle permission and child-track integrity resolved together so
-    /// clients never advertise an action the write must reject.
-    pub can_resume: bool,
+    /// Closed, not an Area chat, and not a child a task references, resolved together so
+    /// clients never advertise a Reopen the write must reject.
+    pub can_reopen: bool,
     pub cards: Vec<Card>,
     pub overlays: Vec<Overlay>,
 }
@@ -410,7 +405,7 @@ fn empty_object() -> serde_json::Value {
 }
 
 /// Deserializes `null` → `Some(None)`, missing → `None`, value → `Some(Some(v))`.
-/// Used so `TrackPatch.archived_at` can distinguish "leave alone" from "set to null".
+/// Used so `TrackPatch.pinned_at` can distinguish "leave alone" from "set to null".
 fn deserialize_double_option<'de, T, D>(d: D) -> Result<Option<Option<T>>, D::Error>
 where
     T: Deserialize<'de>,

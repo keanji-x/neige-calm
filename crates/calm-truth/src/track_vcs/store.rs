@@ -1,4 +1,4 @@
-use crate::error::{CalmError, Result};
+use crate::error::Result;
 use crate::ids::TrackId;
 use crate::model::now_ms;
 use serde::Serialize;
@@ -11,7 +11,7 @@ use super::types::BlobContent;
 use super::{CommitHash, CommitRecord, ManifestEntry, ObjectHash, TreeManifest, TreeSnapshot};
 
 pub(super) const COMMIT_PREFIX_QUERY: &str = r#"SELECT hash, track_id, parent_hash, tree_hash, manifest_schema_version,
-              lifecycle, event_id, created_at, message, author
+              event_id, created_at, message, author
        FROM track_vcs_commits
        WHERE track_id = ?1
          AND hash >= ?2
@@ -61,7 +61,6 @@ pub(super) struct CommitTreeMeta<'a> {
 pub(super) fn commit_hash_for_tree(
     track_id: &TrackId,
     tree_hash: &str,
-    lifecycle: &str,
     meta: &CommitTreeMeta<'_>,
 ) -> Result<CommitHash> {
     let mut commit = BTreeMap::<String, Value>::new();
@@ -70,7 +69,6 @@ pub(super) fn commit_hash_for_tree(
         "event_id".into(),
         meta.event_id.map(Value::from).unwrap_or(Value::Null),
     );
-    commit.insert("lifecycle".into(), Value::String(lifecycle.to_string()));
     commit.insert(
         "manifest_schema_version".into(),
         Value::from(meta.manifest_schema_version),
@@ -94,15 +92,14 @@ pub(super) async fn commit_tree_at_tx(
     tree: &TreeSnapshot,
     meta: CommitTreeMeta<'_>,
 ) -> Result<CommitHash> {
-    let lifecycle = track_lifecycle_tx(tx, track_id).await?;
-    let hash = commit_hash_for_tree(track_id, &tree.tree_hash, &lifecycle, &meta)?;
+    let hash = commit_hash_for_tree(track_id, &tree.tree_hash, &meta)?;
 
     sqlx::query(
         r#"INSERT OR IGNORE INTO track_vcs_commits (
                hash, track_id, parent_hash, tree_hash, manifest_schema_version,
-               author, message, lifecycle, event_id, created_at
+               author, message, event_id, created_at
            )
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"#,
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"#,
     )
     .bind(&hash)
     .bind(track_id.as_str())
@@ -111,7 +108,6 @@ pub(super) async fn commit_tree_at_tx(
     .bind(meta.manifest_schema_version)
     .bind(meta.author)
     .bind(meta.message)
-    .bind(&lifecycle)
     .bind(meta.event_id)
     .bind(meta.created_at)
     .execute(&mut **tx)
@@ -279,7 +275,7 @@ pub(super) async fn load_commit_record_pool(
 ) -> Result<Option<CommitRecord>> {
     let row = sqlx::query(
         r#"SELECT hash, track_id, parent_hash, tree_hash, manifest_schema_version,
-                  lifecycle, event_id, created_at, message, author
+                  event_id, created_at, message, author
            FROM track_vcs_commits
            WHERE hash = ?1"#,
     )
@@ -311,7 +307,7 @@ pub(super) async fn load_commit_record_for_track_tx(
 ) -> Result<Option<CommitRecord>> {
     let row = sqlx::query(
         r#"SELECT hash, track_id, parent_hash, tree_hash, manifest_schema_version,
-                  lifecycle, event_id, created_at, message, author
+                  event_id, created_at, message, author
            FROM track_vcs_commits
            WHERE hash = ?1
              AND track_id = ?2"#,
@@ -336,7 +332,6 @@ pub(super) async fn commit_records_for_track_pool(
                   commit_row.parent_hash AS parent_hash,
                   commit_row.tree_hash AS tree_hash,
                   commit_row.manifest_schema_version AS manifest_schema_version,
-                  commit_row.lifecycle AS lifecycle,
                   commit_row.event_id AS event_id,
                   commit_row.created_at AS created_at,
                   commit_row.message AS message,
@@ -387,24 +382,11 @@ fn commit_record_from_row(row: SqliteRow) -> Result<CommitRecord> {
         parent_hash: row.try_get("parent_hash")?,
         tree_hash: row.try_get("tree_hash")?,
         manifest_schema_version: row.try_get("manifest_schema_version")?,
-        lifecycle: row.try_get("lifecycle")?,
         event_id: row.try_get("event_id")?,
         created_at: row.try_get("created_at")?,
         message: row.try_get("message")?,
         author: row.try_get("author")?,
     })
-}
-
-async fn track_lifecycle_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    track_id: &TrackId,
-) -> Result<String> {
-    let row: Option<(String,)> = sqlx::query_as("SELECT lifecycle FROM tracks WHERE id = ?1")
-        .bind(track_id.as_str())
-        .fetch_optional(&mut **tx)
-        .await?;
-    row.map(|(lifecycle,)| lifecycle)
-        .ok_or_else(|| CalmError::NotFound(format!("track {}", track_id.as_str())))
 }
 
 pub fn canonical_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {

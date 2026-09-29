@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use sqlx::Row;
 
 use super::{
     SqlxRepo, area_create_tx, area_delete_tx, area_update_tx, begin_immediate_tx, card_create_tx,
@@ -12,9 +11,9 @@ use super::{
 };
 use crate::db::RepoSyncDomainRaw;
 use crate::error::{CalmError, Result};
-use crate::ids::{AreaId, TrackId};
+use crate::ids::TrackId;
 use crate::model::*;
-use crate::session_repo::{CommitExitOutcome, DeadRootCandidate, SessionRepo, Tx as SessionTx};
+use crate::session_repo::{CommitExitOutcome, SessionRepo, Tx as SessionTx};
 use calm_types::worker::{Liveness, WorkerSession, WorkerSessionId, WorkerSessionState};
 
 fn is_session_conflict(err: &CalmError) -> bool {
@@ -168,89 +167,6 @@ impl SessionRepo for SqlxRepo {
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(worker_session_from_row).collect()
-    }
-
-    async fn dead_root_candidates(&self) -> Result<Vec<DeadRootCandidate>> {
-        // Both arms need a POSITIVE dead signal AND no active planner session; never
-        // converges on absence or a just-created track. Failed-start keys on the
-        // LATEST start-op by `rowid` (ids are random, `created_at_ms` can tie), so a
-        // stale failed op next to an in-flight retry is not positive.
-        let active = "('starting', 'running', 'idle', 'turn_pending')";
-        let no_active_planner = format!(
-            "NOT EXISTS (SELECT 1 FROM worker_sessions ws \
-               WHERE ws.track_id = w.id AND ws.contract = 'planner' \
-                 AND ws.state IN {active})"
-        );
-        let sql = format!(
-            r#"SELECT w.id AS track_id, w.area_id AS area_id, w.lifecycle AS lifecycle
-                FROM tracks w
-               WHERE w.lifecycle = 'draft'
-                  -- Keep in sync with calm_server::AREA_CHAT_PURPOSE.
-                  AND (w.purpose IS NULL OR w.purpose <> 'area-chat')
-                  AND EXISTS (
-                      SELECT 1 FROM operations o
-                       WHERE o.kind = 'planner-harness-start'
-                         AND o.phase = 'failed'
-                         -- `$.wave_id` / `$.spec_card_id` are the FROZEN keys of
-                         -- `PlannerHarnessStartOperationPayload`: that payload is
-                         -- hashed into `operations.payload_hash`, so #1316 kept its
-                         -- serialization stable while renaming the Rust fields. A
-                         -- query written against the Rust spelling matches zero
-                         -- rows — silently, at runtime.
-                         AND json_extract(o.payload_json, '$.wave_id') = w.id
-                         -- The inner MAX subquery limits candidates to start ops
-                         -- for this track's real planner card. Equality to that MAX
-                         -- therefore implies o is a planner op; repeating the join
-                         -- here would create an unverifiable third-defense illusion.
-                         AND o.rowid = (
-                             SELECT MAX(o2.rowid) FROM operations o2
-                              WHERE o2.kind = 'planner-harness-start'
-                                AND json_extract(o2.payload_json, '$.wave_id') = w.id
-                                AND json_type(o2.payload_json, '$.spec_card_id') = 'text'
-                                AND EXISTS (
-                                    SELECT 1 FROM cards c2
-                                     WHERE c2.id = json_extract(o2.payload_json, '$.spec_card_id')
-                                       AND c2.track_id = w.id
-                                       AND c2.role = 'planner'
-                                )
-                         )
-                  )
-                  AND {no_active_planner}
-               UNION ALL
-               SELECT w.id AS track_id, w.area_id AS area_id, w.lifecycle AS lifecycle
-                 FROM tracks w
-                WHERE w.lifecycle = 'planning'
-                  -- Keep in sync with calm_server::AREA_CHAT_PURPOSE.
-                  AND (w.purpose IS NULL OR w.purpose <> 'area-chat')
-                  AND (
-                      w.root_session_id IS NULL
-                      OR NOT EXISTS (
-                          SELECT 1 FROM worker_sessions rs
-                           WHERE rs.id = w.root_session_id
-                             AND rs.state IN {active}
-                      )
-                  )
-                  AND {no_active_planner}
-               ORDER BY track_id ASC"#
-        );
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
-        rows.into_iter()
-            .map(|row| {
-                let track_id: String = row.try_get("track_id")?;
-                let area_id: String = row.try_get("area_id")?;
-                let lifecycle_raw: String = row.try_get("lifecycle")?;
-                let lifecycle = TrackLifecycle::try_from(lifecycle_raw.clone()).map_err(|e| {
-                    CalmError::Internal(format!(
-                        "dead_root_candidates: unknown track lifecycle {lifecycle_raw:?}: {e}"
-                    ))
-                })?;
-                Ok(DeadRootCandidate {
-                    track_id: TrackId::from(track_id),
-                    area_id: AreaId::from(area_id),
-                    lifecycle,
-                })
-            })
-            .collect()
     }
 
     async fn codex_threads_ended(&self, thread_ids: &[String]) -> Result<Vec<String>> {
