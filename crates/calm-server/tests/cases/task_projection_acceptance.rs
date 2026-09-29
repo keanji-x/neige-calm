@@ -1077,8 +1077,6 @@ async fn in_flight_reference_target_deletion_warns_on_both_reads_without_declara
         current,
         0,
         None,
-        None,
-        false,
     )
     .await
     .expect("same-write target and referring task");

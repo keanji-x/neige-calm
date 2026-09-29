@@ -11,8 +11,7 @@ use calm_server::event::{EditAuthor, Event, EventBus, EventScope, TrackUpdatedPa
 use calm_server::harness::HarnessSnapshot;
 use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
 use calm_server::model::{
-    Card, CardPatch, CardRole, NewArea, NewCard, NewTerminal, NewTrack, TrackLifecycle, TrackPatch,
-    new_id, now_ms,
+    Card, CardPatch, CardRole, NewArea, NewCard, NewTerminal, NewTrack, TrackPatch, new_id, now_ms,
 };
 use calm_server::routes::theme::RequestTheme;
 use calm_server::session_projection_repo::{
@@ -1050,7 +1049,7 @@ async fn commit_hook_rolls_back_event_when_vcs_commit_fails() {
 }
 
 #[tokio::test]
-async fn actor_event_batch_writes_track_vcs_commit_with_lifecycle_and_verdict() {
+async fn actor_event_batch_writes_track_vcs_commit_with_close_and_verdict() {
     let repo = fresh_repo().await;
     let area = make_area(&repo).await;
     let track = make_track(&repo, area.id.as_str()).await;
@@ -1087,33 +1086,23 @@ async fn actor_event_batch_writes_track_vcs_commit_with_lifecycle_and_verdict() 
                 let track_id = track_id.clone();
                 let planner_actor = planner_actor.clone();
                 Box::pin(async move {
-                    let mut events = Vec::new();
-                    if let Some(auto_events) =
-                        calm_server::track_lifecycle::auto_promote_draft_in_tx(tx, &track_id)
-                            .await?
-                    {
-                        events.extend(
-                            auto_events
-                                .into_iter()
-                                .map(|event| (ActorId::Kernel, scope.clone(), event)),
-                        );
-                    }
-                    if let Some(lifecycle_events) =
-                        calm_server::track_lifecycle::apply_requested_transition_in_tx(
-                            tx,
-                            &track_id,
-                            TrackLifecycle::Dispatching,
-                            &planner_actor,
-                            "dispatch accepted work".into(),
-                        )
-                        .await?
-                    {
-                        events.extend(
-                            lifecycle_events
-                                .into_iter()
-                                .map(|event| (planner_actor.clone(), scope.clone(), event)),
-                        );
-                    }
+                    let closed = calm_server::db::sqlite::track_update_tx(
+                        tx,
+                        track_id.as_str(),
+                        TrackPatch {
+                            closed: Some(true),
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
+                    let mut events = vec![(
+                        planner_actor.clone(),
+                        scope.clone(),
+                        Event::TrackUpdated(calm_server::event::TrackUpdatedPayload::new(
+                            closed,
+                            Some("close accepted work".into()),
+                        )),
+                    )];
                     events.push((
                         planner_actor,
                         scope,
@@ -1133,7 +1122,7 @@ async fn actor_event_batch_writes_track_vcs_commit_with_lifecycle_and_verdict() 
         )
         .await
         .expect("actor event batch");
-    assert_eq!(event_ids.len(), 5);
+    assert_eq!(event_ids.len(), 2);
 
     let after_commits = track_commit_rows(&repo, track.id.as_str()).await;
     assert_eq!(after_commits.len(), before_commits.len() + 1);
@@ -1145,7 +1134,7 @@ async fn actor_event_batch_writes_track_vcs_commit_with_lifecycle_and_verdict() 
     assert_eq!(latest.2, event_ids.last().copied());
 
     let commit = sqlx::query(
-        r#"SELECT event_id, lifecycle, message
+        r#"SELECT event_id, message
            FROM track_vcs_commits
            WHERE hash = ?1"#,
     )
@@ -1156,10 +1145,6 @@ async fn actor_event_batch_writes_track_vcs_commit_with_lifecycle_and_verdict() 
     assert_eq!(
         commit.try_get::<Option<i64>, _>("event_id").unwrap(),
         event_ids.last().copied()
-    );
-    assert_eq!(
-        commit.try_get::<String, _>("lifecycle").unwrap(),
-        "dispatching"
     );
     assert_eq!(
         commit.try_get::<Option<String>, _>("message").unwrap(),
@@ -1189,11 +1174,8 @@ async fn actor_event_batch_writes_track_vcs_commit_with_lifecycle_and_verdict() 
     assert_eq!(
         batch,
         vec![
-            (event_ids[0], "track.lifecycle_changed".into()),
-            (event_ids[1], "track.updated".into()),
-            (event_ids[2], "track.lifecycle_changed".into()),
-            (event_ids[3], "track.updated".into()),
-            (event_ids[4], "task.completed".into()),
+            (event_ids[0], "track.updated".into()),
+            (event_ids[1], "task.completed".into()),
         ]
     );
 
@@ -1201,11 +1183,11 @@ async fn actor_event_batch_writes_track_vcs_commit_with_lifecycle_and_verdict() 
     let track_entry = manifest.entries.get("track.json").expect("track json");
     let track_json: serde_json::Value =
         serde_json::from_str(&blob_text(&repo, &track_entry.blob_hash).await).unwrap();
-    assert_eq!(
+    assert!(
         track_json
-            .get("lifecycle")
-            .and_then(serde_json::Value::as_str),
-        Some("dispatching")
+            .get("closed_at")
+            .is_some_and(serde_json::Value::is_i64),
+        "{track_json}"
     );
 
     let run_entry = manifest
@@ -2756,8 +2738,6 @@ async fn since_last_turn_report_diff_uses_dynamic_fence_for_markdown_code_blocks
         old_payload.clone(),
         0,
         None,
-        None,
-        false,
     )
     .await
     .expect("persist old report");
@@ -2778,8 +2758,6 @@ async fn since_last_turn_report_diff_uses_dynamic_fence_for_markdown_code_blocks
         TrackReportPayload::new("", new_body),
         1,
         None,
-        None,
-        false,
     )
     .await
     .expect("persist new report");

@@ -9,7 +9,7 @@ use calm_server::db::sqlite::{
 use calm_server::db::write_with_event_typed;
 use calm_server::event::{EditAuthor, Event, EventScope, TrackUpdatedPayload};
 use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
-use calm_server::model::{CardRole, Overlay, TrackLifecycle, now_ms};
+use calm_server::model::{CardRole, Overlay, now_ms};
 use calm_server::session_projection_repo::{AgentProvider, WorkerSessionKind, WorkerSessionState};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::track_activity::sql::{
@@ -18,9 +18,6 @@ use calm_server::track_activity::sql::{
 use calm_server::track_activity::{
     ActivityPayload, Attention, CardActivity, CardState, NotificationSource, Recompute,
     TrackActivityProjector, WriteOutcome, fold,
-};
-use calm_server::track_lifecycle::{
-    apply_requested_transition_in_tx, auto_transition_if_current_in_tx,
 };
 use calm_truth::validation::OVERLAY_KIND_REGISTRY;
 use calm_types::harness::HarnessPhaseTag;
@@ -124,7 +121,6 @@ async fn sub_track_parent_running_with_idle_child_is_not_working() {
     let f = fx().await;
     let parent = f.track("parent").await;
     let child = f.track("child").await;
-    f.set_lifecycle(&child, TrackLifecycle::Planning).await;
     let planner = f
         .card(&child, "card-child-planner", "planner", CardRole::Planner)
         .await;
@@ -170,7 +166,7 @@ async fn sub_track_parent_running_with_idle_child_is_not_working() {
 }
 
 #[tokio::test]
-async fn sub_track_child_failed_marks_parent_failed() {
+async fn sub_track_child_deleted_marks_parent_failed() {
     let f = fx().await;
     let parent = f.track("parent").await;
     let child = f.track("child").await;
@@ -188,7 +184,11 @@ async fn sub_track_child_failed_marks_parent_failed() {
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    f.set_lifecycle(&child, TrackLifecycle::Failed).await;
+    sqlx::query("DELETE FROM tracks WHERE id = ?1")
+        .bind(&child)
+        .execute(&f.pool)
+        .await
+        .unwrap();
     let (_runtime, scheduler) = f.scheduler();
     scheduler
         .reconcile_child_track_for_test(&child)
@@ -228,7 +228,7 @@ async fn parent_gate_verifying_is_working() {
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    f.set_lifecycle(&child, TrackLifecycle::Done).await;
+    f.set_closed(&child, true).await;
     let (_runtime, scheduler) = f.scheduler();
     scheduler
         .reconcile_child_track_for_test(&child)
@@ -316,7 +316,6 @@ async fn reminted_isolated_session_is_not_shared_daemon() {
 
 async fn harness_track(f: &Fx, state: WorkerSessionState) -> (String, String, String) {
     let t = f.track("plan").await;
-    f.set_lifecycle(&t, TrackLifecycle::Planning).await;
     let planner = f
         .card(&t, "card-planner", "planner", CardRole::Planner)
         .await;
@@ -611,10 +610,9 @@ async fn failed_attempt(
 
 /// The failed attempt's card verdict goes; the E3 high-water mark stays.
 #[tokio::test]
-async fn done_track_failed_attempt_is_quiet() {
+async fn closed_track_failed_attempt_is_quiet() {
     let f = fx().await;
     let t = f.track("w").await;
-    f.set_lifecycle(&t, TrackLifecycle::Working).await;
     let (worker, ws) = failed_attempt(&f, &t, "card-w", "ws-w", "build", 4_000).await;
     f.exit_session(&ws, WorkerSessionState::Failed, 4_500).await;
     let before = f.recompute(&t).await;
@@ -624,11 +622,11 @@ async fn done_track_failed_attempt_is_quiet() {
         "{before:?}"
     );
 
-    f.set_lifecycle(&t, TrackLifecycle::Done).await;
+    f.set_closed(&t, true).await;
     let p = f.recompute(&t).await;
     assert!(
         p.cards.is_empty(),
-        "done ⇒ the failed card verdict goes: {p:?}"
+        "closed ⇒ the failed card verdict goes: {p:?}"
     );
     assert!(!p.working);
     assert_eq!(
@@ -639,57 +637,23 @@ async fn done_track_failed_attempt_is_quiet() {
     assert!(f.stored(&t).await.unwrap().cards.is_empty());
 }
 
-/// `archived_at IS NOT NULL` filters the same way whatever the lifecycle says; an event-driven recompute still reaches an archived track.
-#[tokio::test]
-async fn archived_track_failed_attempt_is_quiet() {
-    let f = fx().await;
-    let t = f.track("w").await;
-    f.set_lifecycle(&t, TrackLifecycle::Working).await;
-    let (worker, _ws) = failed_attempt(&f, &t, "card-w", "ws-w", "build", 4_000).await;
-    let before = f.recompute(&t).await;
-    assert_eq!(
-        card_state(&before, &worker),
-        Some(CardState::Failed),
-        "{before:?}"
-    );
-
-    f.archive(&t, 5_000).await;
-    let lifecycle: String = sqlx::query_scalar("SELECT lifecycle FROM tracks WHERE id = ?1")
-        .bind(&t)
-        .fetch_one(&f.pool)
-        .await
-        .unwrap();
-    assert_eq!(
-        lifecycle, "working",
-        "archiving does not touch the lifecycle"
-    );
-    let p = f.recompute(&t).await;
-    assert!(
-        p.cards.is_empty(),
-        "archived ⇒ the failed card verdict goes: {p:?}"
-    );
-    assert!(!p.working);
-}
-
-/// `done → planning` through `track_update_tx` brings the failed card verdict back — the filter is a function of the row, not a one-way write.
+/// A reopen through `track_update_tx` brings the failed card verdict back — the filter is a function of the row, not a one-way write.
 #[tokio::test]
 async fn reopened_track_failed_attempt_is_red_again() {
     let f = fx().await;
     let t = f.track("w").await;
-    f.set_lifecycle(&t, TrackLifecycle::Working).await;
     let (worker, _ws) = failed_attempt(&f, &t, "card-w", "ws-w", "build", 4_000).await;
-    f.set_lifecycle(&t, TrackLifecycle::Done).await;
+    f.set_closed(&t, true).await;
     let quiet_now = f.recompute(&t).await;
     assert!(quiet_now.cards.is_empty(), "{quiet_now:?}");
 
-    f.set_lifecycle(&t, TrackLifecycle::Planning).await;
-    let terminal_at: Option<i64> =
-        sqlx::query_scalar("SELECT terminal_at FROM tracks WHERE id = ?1")
-            .bind(&t)
-            .fetch_one(&f.pool)
-            .await
-            .unwrap();
-    assert_eq!(terminal_at, None, "reopening clears terminal_at (K20)");
+    f.set_closed(&t, false).await;
+    let closed_at: Option<i64> = sqlx::query_scalar("SELECT closed_at FROM tracks WHERE id = ?1")
+        .bind(&t)
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+    assert_eq!(closed_at, None, "reopening clears closed_at");
     let p = f.recompute(&t).await;
     assert_eq!(
         card_state(&p, &worker),
@@ -700,10 +664,9 @@ async fn reopened_track_failed_attempt_is_red_again() {
 
 /// The filter removes the failed verdict, not the card: a card whose `failed` verdict out-ranked its `working` one keeps the working verdict.
 #[tokio::test]
-async fn done_track_running_task_is_still_working() {
+async fn closed_track_running_task_is_still_working() {
     let f = fx().await;
     let t = f.track("w").await;
-    f.set_lifecycle(&t, TrackLifecycle::Working).await;
     let failed_worker = f.card(&t, "card-a", "codex", CardRole::Worker).await;
     let running_worker = f.card(&t, "card-b", "codex", CardRole::Worker).await;
     let both_worker = f.card(&t, "card-x", "codex", CardRole::Worker).await;
@@ -757,11 +720,11 @@ async fn done_track_running_task_is_still_working() {
         "failed > working on a live track: {before:?}"
     );
 
-    f.set_lifecycle(&t, TrackLifecycle::Done).await;
+    f.set_closed(&t, true).await;
     let p = f.recompute(&t).await;
     assert!(
         p.working,
-        "a running task on a done track is not hidden: {p:?}"
+        "a running task on a closed track is not hidden: {p:?}"
     );
     assert_eq!(
         p.cards,
@@ -779,13 +742,12 @@ async fn done_track_running_task_is_still_working() {
     );
 }
 
-/// The session-verdict form of the same-card corner: a done track, a task running on X, and X's
+/// The session-verdict form of the same-card corner: a closed track, a task running on X, and X's
 /// session `failed` out-ranked the working verdict; the filter drops it, `cards == [X = working]`.
 #[tokio::test]
-async fn done_track_failed_session_on_a_running_worker_is_still_working() {
+async fn closed_track_failed_session_on_a_running_worker_is_still_working() {
     let f = fx().await;
     let t = f.track("w").await;
-    f.set_lifecycle(&t, TrackLifecycle::Working).await;
     let worker = f.card(&t, "card-x", "codex", CardRole::Worker).await;
     let ws = f
         .session(
@@ -811,7 +773,7 @@ async fn done_track_failed_session_on_a_running_worker_is_still_working() {
         "failed > working on a live track: {before:?}"
     );
 
-    f.set_lifecycle(&t, TrackLifecycle::Done).await;
+    f.set_closed(&t, true).await;
     let p = f.recompute(&t).await;
     assert!(p.working, "{p:?}");
     assert_eq!(
@@ -1014,8 +976,9 @@ async fn e1_e2_query_plans_use_the_transcript_index() {
     }
 }
 
+/// A close is not activity: no evidence reads `track.updated`, so the mark stays where the work left it.
 #[tokio::test]
-async fn user_lifecycle_edge_does_not_advance_activity() {
+async fn closing_does_not_advance_activity() {
     let f = fx().await;
     let t = f.track("w").await;
     let worker = f.card(&t, "card-w", "codex", CardRole::Worker).await;
@@ -1040,16 +1003,19 @@ async fn user_lifecycle_edge_does_not_advance_activity() {
         &f.write,
         move |tx| {
             Box::pin(async move {
-                let events = apply_requested_transition_in_tx(
+                let closed = calm_server::db::sqlite::track_update_tx(
                     tx,
-                    &track_id,
-                    TrackLifecycle::Planning,
-                    &ActorId::User,
-                    "kick off".into(),
+                    track_id.as_str(),
+                    calm_server::model::TrackPatch {
+                        closed: Some(true),
+                        ..Default::default()
+                    },
                 )
-                .await?
-                .expect("draft → planning by the user");
-                Ok(((), events.into_iter().next().unwrap()))
+                .await?;
+                Ok((
+                    (),
+                    Event::TrackUpdated(TrackUpdatedPayload::new(closed, None)),
+                ))
             })
         },
     )
@@ -1057,63 +1023,6 @@ async fn user_lifecycle_edge_does_not_advance_activity() {
     .unwrap();
     let p = f.recompute(&t).await;
     assert_eq!(p.activity_at_ms, Some(4_000), "{p:?}");
-    assert!(!p.working, "planning is a phase, not activity");
-}
-
-/// Positive twin: `working → reviewing` by `KernelDispatcher` advances it to the event's `at`.
-#[tokio::test]
-async fn kernel_lifecycle_edge_advances_activity() {
-    let f = fx().await;
-    let t = f.track("w").await;
-    f.set_lifecycle(&t, TrackLifecycle::Working).await;
-    let worker = f.card(&t, "card-w", "codex", CardRole::Worker).await;
-    f.plan_tasks(&t, &[("build", "codex", TASK_IN_TRACK_ROUTE, None)])
-        .await;
-    f.claim(&t, "build", 2_000).await;
-    f.mark_running(&t, "build", &worker, 3_000).await;
-    f.complete(&t, "build", &worker, 4_000).await;
-    assert_eq!(f.recompute(&t).await.activity_at_ms, Some(4_000));
-
-    let track_id = TrackId::from(t.clone());
-    let area = f.area_id.clone();
-    write_with_event_typed::<(), _>(
-        f.repo_dyn.as_ref(),
-        ActorId::KernelDispatcher,
-        EventScope::Track {
-            track: track_id.clone(),
-            area: area.into(),
-        },
-        None,
-        &f.events,
-        &f.write,
-        move |tx| {
-            Box::pin(async move {
-                let events = auto_transition_if_current_in_tx(
-                    tx,
-                    &track_id,
-                    TrackLifecycle::Working,
-                    TrackLifecycle::Reviewing,
-                    &ActorId::KernelDispatcher,
-                    None,
-                )
-                .await?
-                .expect("working → reviewing by the kernel");
-                Ok(((), events.into_iter().next().unwrap()))
-            })
-        },
-    )
-    .await
-    .unwrap();
-    let at: i64 = sqlx::query_scalar(
-        "SELECT MAX(at) FROM events WHERE kind = 'track.lifecycle_changed' AND scope_track = ?1",
-    )
-    .bind(&t)
-    .fetch_one(&f.pool)
-    .await
-    .unwrap();
-    let p = f.recompute(&t).await;
-    assert_eq!(p.activity_at_ms, Some(at), "E4: {p:?}");
-    assert!(at > 4_000);
 }
 
 #[tokio::test]
@@ -1135,27 +1044,6 @@ async fn quiet_track_short_task_completed_between_ticks_is_unread() {
     let p = f.stored(&t).await.expect("the tick seeds the row");
     assert_eq!(p.activity_at_ms, Some(4_000));
     assert!(!p.working);
-
-    // An archived track leaves the tick set.
-    let archived = f.track("archived").await;
-    let worker2 = f
-        .card(&archived, "card-w2", "codex", CardRole::Worker)
-        .await;
-    f.plan_tasks(&archived, &[("build", "codex", TASK_IN_TRACK_ROUTE, None)])
-        .await;
-    f.claim(&archived, "build", 2_000).await;
-    f.mark_running(&archived, "build", &worker2, 3_000).await;
-    f.complete(&archived, "build", &worker2, 4_000).await;
-    sqlx::query("UPDATE tracks SET archived_at = 5000 WHERE id = ?1")
-        .bind(&archived)
-        .execute(&f.pool)
-        .await
-        .unwrap();
-    f.projector.reconcile_all().await;
-    assert!(
-        f.stored(&archived).await.is_none(),
-        "archived tracks are not ticked"
-    );
 }
 
 #[tokio::test]
@@ -1332,7 +1220,6 @@ async fn deleted_track_is_not_resurrected_by_a_late_write() {
 async fn activity_payload_passes_the_overlay_registry() {
     let f = fx().await;
     let t = f.track("w").await;
-    f.set_lifecycle(&t, TrackLifecycle::Working).await;
     let worker = f.card(&t, "card-w", "codex", CardRole::Worker).await;
     let ws = f
         .session(
@@ -1632,14 +1519,21 @@ async fn wakeup_table_resolves_every_row_of_the_design() {
             Some(t.as_str()),
         ),
         (
-            "track.lifecycle_changed".into(),
+            "ratify.requested".into(),
             EventScope::System,
-            Event::TrackLifecycleChanged {
-                id: tid.clone(),
-                area_id: area.clone(),
-                from: TrackLifecycle::Draft,
-                to: TrackLifecycle::Planning,
-                agent_message: None,
+            Event::RatifyRequested {
+                track_id: tid.clone(),
+                reason: "merge?".into(),
+            },
+            Some(t.as_str()),
+        ),
+        (
+            "ratify.resolved".into(),
+            EventScope::System,
+            Event::RatifyResolved {
+                track_id: tid.clone(),
+                decision: calm_types::event::RatifyDecision::Grant,
+                message: None,
             },
             Some(t.as_str()),
         ),

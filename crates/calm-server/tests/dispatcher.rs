@@ -16,8 +16,7 @@ use calm_server::error::{CalmError, Result as CalmResult};
 use calm_server::event::{Event, EventBus, SubscribeFilter, SubscribeScope};
 use calm_server::ids::{ActorId, AreaId, TrackId};
 use calm_server::model::{
-    NewArea, NewCard, NewTerminal, NewTrack, Task, TaskKind, TaskStatus, TrackLifecycle,
-    TrackPatch, new_id, now_ms,
+    NewArea, NewCard, NewTerminal, NewTrack, Task, TaskKind, TaskStatus, new_id, now_ms,
 };
 use calm_server::operation::{
     AppServerInteractOutcome, CompensationStateVersioned, Operation, OperationCompletionBus,
@@ -393,15 +392,6 @@ async fn subscribe_filtered_skips_lagged_without_panic() {
 async fn lagged_context_sweep_precedes_scheduler_resume() {
     let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
     let (repo, events, cache, wcc, track_id, _area_id) = boot().await;
-    repo.track_update(
-        track_id.as_str(),
-        TrackPatch {
-            lifecycle: Some(TrackLifecycle::Working),
-            ..Default::default()
-        },
-    )
-    .await
-    .expect("set working lifecycle");
 
     let pool = repo.sqlite_pool().expect("dispatcher test uses sqlite");
     let report = TrackReportPayload {

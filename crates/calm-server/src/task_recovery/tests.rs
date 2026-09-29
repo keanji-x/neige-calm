@@ -468,7 +468,7 @@ async fn admit(
 ) -> Result<calm_types::task_recovery::TaskRecoveryConstraint, AdmissionError> {
     let pool = fx.repo.sqlite_pool().unwrap();
     let mut tx = begin_immediate_tx(&pool).await.unwrap();
-    let track = crate::track_lifecycle::track_get_tx(&mut tx, &TrackId::from(fx.track_id.as_str()))
+    let track = crate::db::sqlite::track_get_tx(&mut tx, &TrackId::from(fx.track_id.as_str()))
         .await
         .unwrap();
     let task = crate::db::sqlite::task_get_tx(&mut tx, &fx.fixture.task.id)
@@ -476,7 +476,7 @@ async fn admit(
         .unwrap()
         .unwrap();
     // The transaction is dropped (rolled back): admission is read-only.
-    admission::admit_recovery_tx(&mut tx, &track, &task, generation, &actor, true).await
+    admission::admit_recovery_tx(&mut tx, &track, &task, generation, &actor).await
 }
 
 async fn fail_current(fx: &Fx) {
@@ -511,7 +511,7 @@ async fn check_attempt_for(fx: &Fx, attempt_id: &str) -> Result<(), AdmissionErr
 async fn authorize(fx: &Fx, actor: ActorId) -> Result<(), AdmissionError> {
     let pool = fx.repo.sqlite_pool().unwrap();
     let mut tx = begin_immediate_tx(&pool).await.unwrap();
-    let track = crate::track_lifecycle::track_get_tx(&mut tx, &TrackId::from(fx.track_id.as_str()))
+    let track = crate::db::sqlite::track_get_tx(&mut tx, &TrackId::from(fx.track_id.as_str()))
         .await
         .unwrap();
     let event = Event::PlanUpdated {
@@ -551,6 +551,31 @@ async fn admissible_baselines_pass_so_each_case_trips_exactly_one_site() {
     admit(&fx, ActorId::User, 1)
         .await
         .expect("a failed isolated execution with a consistent, closed stop proof is admissible");
+}
+
+/// Recovery on a closed track refuses with the one reopen sentence; reopening admits it again.
+#[tokio::test]
+async fn recovery_refuses_on_a_closed_track() {
+    let fx = failed_initial(PLANNER).await;
+    sql(
+        &fx,
+        "UPDATE tracks SET closed_at=1 WHERE id=?1",
+        &[&fx.track_id],
+    )
+    .await;
+    let refusal = refused(Site::TrackNotReady, admit(&fx, ActorId::User, 1).await);
+    assert_eq!(refusal.site, Site::TrackNotReady, "{refusal:?}");
+    assert_eq!(refusal.reason, "track is closed; reopen it first");
+
+    sql(
+        &fx,
+        "UPDATE tracks SET closed_at=NULL WHERE id=?1",
+        &[&fx.track_id],
+    )
+    .await;
+    admit(&fx, ActorId::User, 1)
+        .await
+        .expect("a reopened track admits the recovery");
 }
 
 /// What every site names, keyed by the site; a fixture that drifts onto a neighbouring site is red.
@@ -827,7 +852,7 @@ async fn drive(site: Site) -> RecoveryRefusal {
                 let fx = failed_initial(PLANNER).await;
                 sql(
                     &fx,
-                    "UPDATE tracks SET lifecycle='done' WHERE id=?1",
+                    "UPDATE tracks SET closed_at=1 WHERE id=?1",
                     &[&fx.track_id],
                 )
                 .await;
@@ -1007,12 +1032,10 @@ async fn drive(site: Site) -> RecoveryRefusal {
                 let fx = failed_initial(PLANNER).await;
                 let pool = fx.repo.sqlite_pool().unwrap();
                 let mut tx = begin_immediate_tx(&pool).await.unwrap();
-                let track = crate::track_lifecycle::track_get_tx(
-                    &mut tx,
-                    &TrackId::from(fx.track_id.as_str()),
-                )
-                .await
-                .unwrap();
+                let track =
+                    crate::db::sqlite::track_get_tx(&mut tx, &TrackId::from(fx.track_id.as_str()))
+                        .await
+                        .unwrap();
                 let constraint = calm_types::task_recovery::TaskRecoveryConstraint::V1 {
                     refs: Vec::new(),
                     spawn: calm_types::task_recovery::TASK_IN_TRACK_ROUTE.into(),
@@ -1343,7 +1366,7 @@ async fn drive(site: Site) -> RecoveryRefusal {
                 let fx = recovered().await;
                 sql(
                     &fx,
-                    "UPDATE tracks SET lifecycle='blocked' WHERE id=?1",
+                    "UPDATE tracks SET closed_at=1 WHERE id=?1",
                     &[&fx.track_id],
                 )
                 .await;

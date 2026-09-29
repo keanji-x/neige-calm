@@ -19,8 +19,7 @@ use calm_types::worker::{
 use serde_json::json;
 
 use crate::model::{
-    Card, NewArea, NewCard, NewTrack, RequestTheme, Task, TaskKind, TaskStatus, TrackLifecycle,
-    new_id,
+    Card, NewArea, NewCard, NewTrack, RequestTheme, Task, TaskKind, TaskStatus, new_id,
 };
 use crate::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
 use crate::state::WriteContext;
@@ -170,15 +169,6 @@ async fn write_context(repo: &SqlxRepo) -> WriteContext {
         .await
         .expect("seed track area cache");
     WriteContext::new(role_cache, track_area_cache)
-}
-
-async fn set_track_lifecycle(repo: &SqlxRepo, track_id: &TrackId, lifecycle: TrackLifecycle) {
-    sqlx::query("UPDATE tracks SET lifecycle = ?1 WHERE id = ?2")
-        .bind(lifecycle.as_db_str())
-        .bind(track_id.as_str())
-        .execute(repo.pool())
-        .await
-        .expect("set track lifecycle");
 }
 
 async fn insert_task(repo: &SqlxRepo, track_id: &TrackId, key: &str, status: TaskStatus) -> Task {
@@ -351,640 +341,6 @@ async fn task_failed_events(repo: &SqlxRepo, task_id: &str) -> Vec<Event> {
         .collect()
 }
 
-async fn lifecycle_changes(repo: &SqlxRepo, track_id: &TrackId) -> Vec<Event> {
-    RepoEventWrite::events_since(repo, 0, i64::MAX)
-        .await
-        .expect("events")
-        .into_iter()
-        .filter_map(|(_id, _version, scope, event)| {
-            if scope.track_id() != Some(track_id) {
-                return None;
-            }
-            matches!(event, Event::TrackLifecycleChanged { .. }).then_some(event)
-        })
-        .collect()
-}
-
-/// Insert a `planner-harness-start` operation for `track_id` and stamp its terminal `phase`; the payload's top-level `track_id` is the op→track link `dead_root_candidates` queries.
-async fn insert_planner_harness_start_op(repo: &SqlxRepo, track_id: &TrackId, phase: &str) {
-    let planner_card_id: String =
-        sqlx::query_scalar("SELECT id FROM cards WHERE track_id = ?1 AND role = 'planner'")
-            .bind(track_id.as_str())
-            .fetch_one(repo.pool())
-            .await
-            .expect("track has a real planner card");
-    insert_harness_start_op_for_card(repo, track_id, &planner_card_id, phase).await;
-}
-
-async fn insert_harness_start_op_for_card(
-    repo: &SqlxRepo,
-    track_id: &TrackId,
-    card_id: &str,
-    phase: &str,
-) {
-    let op_repo = SqlxOperationRepo::new(repo.pool().clone());
-    let op_id = op_repo
-        .insert_operation(
-            "planner-harness-start",
-            OperationKey {
-                operation_key: new_id(),
-                idempotency_key: None,
-                payload_hash: format!("hash-{}", new_id()),
-            },
-            json!({
-                "actor": ActorId::KernelDispatcher,
-                // The FROZEN persisted spelling (`wave_id` / `spec_card_id`): the payload is hashed into `operations.payload_hash`, and the reaper's `$.wave_id` predicate would silently match nothing otherwise.
-                "wave_id": track_id.as_str(),
-                "spec_card_id": card_id,
-                "cwd": "/tmp",
-            }),
-        )
-        .await
-        .expect("insert planner-harness-start operation");
-    // `insert_operation` always lands `phase='pending'`; advance to the requested terminal phase.
-    sqlx::query("UPDATE operations SET phase = ?1, completed_at_ms = ?2 WHERE id = ?3")
-        .bind(phase)
-        .bind(if matches!(phase, "failed" | "succeeded") {
-            Some(now_ms())
-        } else {
-            None
-        })
-        .bind(&op_id)
-        .execute(repo.pool())
-        .await
-        .expect("stamp operation phase");
-}
-
-async fn insert_harness_start_op_with_payload(
-    repo: &SqlxRepo,
-    payload: serde_json::Value,
-    phase: &str,
-) {
-    let op_repo = SqlxOperationRepo::new(repo.pool().clone());
-    let op_id = op_repo
-        .insert_operation(
-            "planner-harness-start",
-            OperationKey {
-                operation_key: new_id(),
-                idempotency_key: None,
-                payload_hash: format!("hash-{}", new_id()),
-            },
-            payload,
-        )
-        .await
-        .expect("insert malformed planner-harness-start operation");
-    sqlx::query("UPDATE operations SET phase = ?1, completed_at_ms = ?2 WHERE id = ?3")
-        .bind(phase)
-        .bind(if matches!(phase, "failed" | "succeeded") {
-            Some(now_ms())
-        } else {
-            None
-        })
-        .bind(op_id)
-        .execute(repo.pool())
-        .await
-        .expect("stamp malformed operation phase");
-}
-
-async fn set_track_purpose(repo: &SqlxRepo, track_id: &TrackId, purpose: &str) {
-    sqlx::query("UPDATE tracks SET purpose = ?1 WHERE id = ?2")
-        .bind(purpose)
-        .bind(track_id.as_str())
-        .execute(repo.pool())
-        .await
-        .expect("set track purpose");
-}
-
-/// Insert a planner-contract session in `state` and (optionally) mark it the
-/// track's `root_session_id`.
-async fn insert_planner_session(
-    repo: &SqlxRepo,
-    id: &str,
-    track_id: &TrackId,
-    state: WorkerSessionState,
-    mark_root: bool,
-) {
-    let mut sess = session(id, track_id.clone(), 1);
-    sess.provider = WorkerProviderKind::Codex;
-    sess.mode = SessionMode::Resumable;
-    sess.contract = WorkerContract::Planner;
-    sess.state = state;
-    let track_id = track_id.clone();
-    let session_id = WorkerSessionId::from(id);
-    crate::db::write_in_tx_typed(repo, move |tx| {
-        Box::pin(async move {
-            session_insert_tx(tx, sess).await?;
-            if mark_root {
-                calm_truth::db::sqlite::session_mark_track_root_tx(tx, &track_id, &session_id)
-                    .await?;
-            }
-            Ok(())
-        })
-    })
-    .await
-    .expect("insert planner session");
-}
-
-async fn track_lifecycle_now(repo: &SqlxRepo, track_id: &TrackId) -> TrackLifecycle {
-    repo.track_get(track_id.as_str())
-        .await
-        .expect("track get")
-        .expect("track exists")
-        .lifecycle
-}
-
-/// A failed start with NO active planner session converges `Draft → Failed`: exactly one `TrackLifecycleChanged`, and NO `TaskFailed` (a dead root has no task row).
-#[tokio::test]
-async fn sweep_dead_roots_failed_start_draft_converges_to_failed() {
-    let _guard = REAPER_TEST_LOCK.lock().await;
-    reset_reaper_boot_gate_for_test();
-
-    let (repo, track_id) = seeded_repo().await;
-    assert_eq!(
-        track_lifecycle_now(&repo, &track_id).await,
-        TrackLifecycle::Draft
-    );
-    insert_planner_harness_start_op(&repo, &track_id, "failed").await;
-
-    let fake = Arc::new(FakeProvider::new());
-    let repo_dyn: Arc<dyn Repo> = repo.clone();
-    let reaper = Reaper::new(
-        repo_dyn,
-        registry(fake),
-        EventBus::new(),
-        write_context(&repo).await,
-    );
-
-    reaper_on_boot();
-    reaper.sweep_dead_roots().await;
-
-    assert_eq!(
-        track_lifecycle_now(&repo, &track_id).await,
-        TrackLifecycle::Failed,
-        "failed-start Draft track must converge to Failed"
-    );
-    let changes = lifecycle_changes(&repo, &track_id).await;
-    assert_eq!(changes.len(), 1, "exactly one lifecycle change");
-    match &changes[0] {
-        Event::TrackLifecycleChanged { from, to, .. } => {
-            assert_eq!(*from, TrackLifecycle::Draft);
-            assert_eq!(*to, TrackLifecycle::Failed);
-        }
-        other => panic!("expected lifecycle change, got {other:?}"),
-    }
-    let task_failed = RepoEventWrite::events_since(repo.as_ref(), 0, i64::MAX)
-        .await
-        .expect("events")
-        .into_iter()
-        .filter(|(_id, _v, _s, e)| matches!(e, Event::TaskFailed { .. }))
-        .count();
-    assert_eq!(task_failed, 0, "dead-root convergence emits no TaskFailed");
-
-    reset_reaper_boot_gate_for_test();
-}
-
-/// A failed start operation aimed at a Worker card is not a failed true-root
-/// start, even on an otherwise ordinary Draft track.
-#[tokio::test]
-async fn sweep_dead_roots_failed_worker_start_stays_draft() {
-    let _guard = REAPER_TEST_LOCK.lock().await;
-    reset_reaper_boot_gate_for_test();
-
-    let (repo, track_id) = seeded_repo().await;
-    let chat_card = RepoSyncDomainRaw::card_create(
-        repo.as_ref(),
-        NewCard {
-            track_id: track_id.clone(),
-            title: Some("chat".into()),
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({"schemaVersion": 1, "harness_profile": "plain_chat"}),
-        },
-    )
-    .await
-    .expect("seed chat card");
-    insert_harness_start_op_for_card(&repo, &track_id, chat_card.id.as_str(), "failed").await;
-
-    let fake = Arc::new(FakeProvider::new());
-    let repo_dyn: Arc<dyn Repo> = repo.clone();
-    let reaper = Reaper::new(
-        repo_dyn,
-        registry(fake),
-        EventBus::new(),
-        write_context(&repo).await,
-    );
-    reaper_on_boot();
-    reaper.sweep_dead_roots().await;
-
-    assert_eq!(
-        track_lifecycle_now(&repo, &track_id).await,
-        TrackLifecycle::Draft
-    );
-    reset_reaper_boot_gate_for_test();
-}
-
-/// The compatibility fence still protects a retired Area chat track whose failed start points at its own real planner card.
-#[tokio::test]
-async fn sweep_dead_roots_legacy_area_chat_failed_true_planner_stays_draft() {
-    let _guard = REAPER_TEST_LOCK.lock().await;
-    reset_reaper_boot_gate_for_test();
-
-    let (repo, track_id) = seeded_repo().await;
-    set_track_purpose(&repo, &track_id, crate::AREA_CHAT_PURPOSE).await;
-    insert_planner_harness_start_op(&repo, &track_id, "failed").await;
-
-    let fake = Arc::new(FakeProvider::new());
-    let repo_dyn: Arc<dyn Repo> = repo.clone();
-    let reaper = Reaper::new(
-        repo_dyn,
-        registry(fake),
-        EventBus::new(),
-        write_context(&repo).await,
-    );
-    reaper_on_boot();
-    reaper.sweep_dead_roots().await;
-
-    assert_eq!(
-        track_lifecycle_now(&repo, &track_id).await,
-        TrackLifecycle::Draft
-    );
-    reset_reaper_boot_gate_for_test();
-}
-
-/// The lost-root Planning arm independently excludes the legacy chat container so old rows do not get terminalized on boot.
-#[tokio::test]
-async fn sweep_dead_roots_chat_planning_null_root_stays_nonterminal() {
-    let _guard = REAPER_TEST_LOCK.lock().await;
-    reset_reaper_boot_gate_for_test();
-
-    let (repo, track_id) = seeded_repo().await;
-    set_track_purpose(&repo, &track_id, "area-chat").await;
-    set_track_lifecycle(&repo, &track_id, TrackLifecycle::Planning).await;
-    let fake = Arc::new(FakeProvider::new());
-    let repo_dyn: Arc<dyn Repo> = repo.clone();
-    let reaper = Reaper::new(
-        repo_dyn,
-        registry(fake),
-        EventBus::new(),
-        write_context(&repo).await,
-    );
-    reaper_on_boot();
-    reaper.sweep_dead_roots().await;
-
-    assert_eq!(
-        track_lifecycle_now(&repo, &track_id).await,
-        TrackLifecycle::Planning
-    );
-    assert_eq!(
-        repo.track_get(track_id.as_str())
-            .await
-            .unwrap()
-            .unwrap()
-            .purpose
-            .as_deref(),
-        Some("area-chat")
-    );
-    reset_reaper_boot_gate_for_test();
-}
-
-/// The MAX(rowid) subquery considers only start ops for this track's planner card.
-#[tokio::test]
-async fn sweep_dead_roots_newer_worker_start_does_not_hide_failed_true_root() {
-    let _guard = REAPER_TEST_LOCK.lock().await;
-    reset_reaper_boot_gate_for_test();
-
-    let (repo, track_id) = seeded_repo().await;
-    insert_planner_harness_start_op(&repo, &track_id, "failed").await;
-    let worker = RepoSyncDomainRaw::card_create(
-        repo.as_ref(),
-        NewCard {
-            track_id: track_id.clone(),
-            title: Some("worker".into()),
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({"schemaVersion": 1}),
-        },
-    )
-    .await
-    .unwrap();
-    insert_harness_start_op_for_card(&repo, &track_id, worker.id.as_str(), "succeeded").await;
-
-    let fake = Arc::new(FakeProvider::new());
-    let repo_dyn: Arc<dyn Repo> = repo.clone();
-    let reaper = Reaper::new(
-        repo_dyn,
-        registry(fake),
-        EventBus::new(),
-        write_context(&repo).await,
-    );
-    reaper_on_boot();
-    reaper.sweep_dead_roots().await;
-    assert_eq!(
-        track_lifecycle_now(&repo, &track_id).await,
-        TrackLifecycle::Failed
-    );
-    reset_reaper_boot_gate_for_test();
-}
-
-/// Pins the fail-closed type guard in the inner latest-true-root-op filter.
-#[tokio::test]
-async fn sweep_dead_roots_non_text_planner_card_id_fails_closed() {
-    let _guard = REAPER_TEST_LOCK.lock().await;
-    reset_reaper_boot_gate_for_test();
-
-    let (repo, track_id) = seeded_repo().await;
-    sqlx::query("UPDATE cards SET id = '7' WHERE track_id = ?1 AND role = 'planner'")
-        .bind(track_id.as_str())
-        .execute(repo.pool())
-        .await
-        .unwrap();
-    insert_harness_start_op_with_payload(
-        &repo,
-        json!({"track_id": track_id.as_str(), "planner_card_id": 7}),
-        "failed",
-    )
-    .await;
-
-    let fake = Arc::new(FakeProvider::new());
-    let repo_dyn: Arc<dyn Repo> = repo.clone();
-    let reaper = Reaper::new(
-        repo_dyn,
-        registry(fake),
-        EventBus::new(),
-        write_context(&repo).await,
-    );
-    reaper_on_boot();
-    reaper.sweep_dead_roots().await;
-    assert_eq!(
-        track_lifecycle_now(&repo, &track_id).await,
-        TrackLifecycle::Draft
-    );
-    reset_reaper_boot_gate_for_test();
-}
-
-/// A PENDING, SUCCEEDED, or absent start-op is NOT a positive dead signal.
-#[tokio::test]
-async fn sweep_dead_roots_draft_pending_or_succeeded_or_absent_start_op_not_converged() {
-    let _guard = REAPER_TEST_LOCK.lock().await;
-    reset_reaper_boot_gate_for_test();
-
-    let (repo_pending, track_pending) = seeded_repo().await;
-    insert_planner_harness_start_op(&repo_pending, &track_pending, "pending").await;
-    let (repo_succeeded, track_succeeded) = seeded_repo().await;
-    insert_planner_harness_start_op(&repo_succeeded, &track_succeeded, "succeeded").await;
-    // (c) absence is ambiguous (just-created / in-flight), must NOT converge.
-    let (repo_absent, track_absent) = seeded_repo().await;
-
-    for (repo, track_id, label) in [
-        (repo_pending, track_pending, "pending"),
-        (repo_succeeded, track_succeeded, "succeeded"),
-        (repo_absent, track_absent, "absent"),
-    ] {
-        let fake = Arc::new(FakeProvider::new());
-        let repo_dyn: Arc<dyn Repo> = repo.clone();
-        let reaper = Reaper::new(
-            repo_dyn,
-            registry(fake),
-            EventBus::new(),
-            write_context(&repo).await,
-        );
-
-        reaper_on_boot();
-        reaper.sweep_dead_roots().await;
-
-        assert_eq!(
-            track_lifecycle_now(&repo, &track_id).await,
-            TrackLifecycle::Draft,
-            "Draft track with {label} start-op must NOT converge (false-converge guard)"
-        );
-        assert_eq!(
-            lifecycle_changes(&repo, &track_id).await.len(),
-            0,
-            "no lifecycle change for {label} start-op"
-        );
-    }
-
-    reset_reaper_boot_gate_for_test();
-}
-
-/// start/reset re-submit `planner-harness-start` with a FRESH op id, so a Draft track can carry a STALE `failed` start-op AND a NEWER retry while the planner session is not yet created; the LATEST start-op (max `rowid`) decides.
-#[tokio::test]
-async fn sweep_dead_roots_stale_failed_plus_newer_retry_start_op_not_converged() {
-    let _guard = REAPER_TEST_LOCK.lock().await;
-    reset_reaper_boot_gate_for_test();
-
-    let (repo_pending, track_pending) = seeded_repo().await;
-    insert_planner_harness_start_op(&repo_pending, &track_pending, "failed").await;
-    insert_planner_harness_start_op(&repo_pending, &track_pending, "pending").await;
-    let (repo_succeeded, track_succeeded) = seeded_repo().await;
-    insert_planner_harness_start_op(&repo_succeeded, &track_succeeded, "failed").await;
-    insert_planner_harness_start_op(&repo_succeeded, &track_succeeded, "succeeded").await;
-
-    for (repo, track_id, label) in [
-        (repo_pending, track_pending, "newer-pending"),
-        (repo_succeeded, track_succeeded, "newer-succeeded"),
-    ] {
-        assert_eq!(
-            track_lifecycle_now(&repo, &track_id).await,
-            TrackLifecycle::Draft
-        );
-        let fake = Arc::new(FakeProvider::new());
-        let repo_dyn: Arc<dyn Repo> = repo.clone();
-        let reaper = Reaper::new(
-            repo_dyn,
-            registry(fake),
-            EventBus::new(),
-            write_context(&repo).await,
-        );
-
-        reaper_on_boot();
-        reaper.sweep_dead_roots().await;
-
-        assert_eq!(
-            track_lifecycle_now(&repo, &track_id).await,
-            TrackLifecycle::Draft,
-            "stale-failed + {label} retry start-op must NOT converge \
-                 (latest start-op is non-failed)"
-        );
-        assert_eq!(
-            lifecycle_changes(&repo, &track_id).await.len(),
-            0,
-            "no lifecycle change for stale-failed + {label} retry"
-        );
-    }
-
-    reset_reaper_boot_gate_for_test();
-}
-
-/// An ACTIVE planner-contract session means a respawn is in flight: no convergence.
-#[tokio::test]
-async fn sweep_dead_roots_active_planner_session_excludes_convergence() {
-    let _guard = REAPER_TEST_LOCK.lock().await;
-    reset_reaper_boot_gate_for_test();
-
-    let (repo_draft, track_draft) = seeded_repo().await;
-    insert_planner_harness_start_op(&repo_draft, &track_draft, "failed").await;
-    insert_planner_session(
-        &repo_draft,
-        "planner-respawn-draft",
-        &track_draft,
-        WorkerSessionState::Running,
-        false,
-    )
-    .await;
-
-    let (repo_planning, track_planning) = seeded_repo().await;
-    set_track_lifecycle(&repo_planning, &track_planning, TrackLifecycle::Planning).await;
-    insert_planner_session(
-        &repo_planning,
-        "planner-respawn-planning",
-        &track_planning,
-        WorkerSessionState::Starting,
-        false,
-    )
-    .await;
-
-    for (repo, track_id, from) in [
-        (repo_draft, track_draft, TrackLifecycle::Draft),
-        (repo_planning, track_planning, TrackLifecycle::Planning),
-    ] {
-        let fake = Arc::new(FakeProvider::new());
-        let repo_dyn: Arc<dyn Repo> = repo.clone();
-        let reaper = Reaper::new(
-            repo_dyn,
-            registry(fake),
-            EventBus::new(),
-            write_context(&repo).await,
-        );
-
-        reaper_on_boot();
-        reaper.sweep_dead_roots().await;
-
-        assert_eq!(
-            track_lifecycle_now(&repo, &track_id).await,
-            from,
-            "{from:?} track with an ACTIVE planner session must NOT converge (mid-respawn)"
-        );
-        assert_eq!(lifecycle_changes(&repo, &track_id).await.len(), 0);
-    }
-
-    reset_reaper_boot_gate_for_test();
-}
-
-#[tokio::test]
-async fn sweep_dead_roots_lost_root_terminal_session_planning_converges() {
-    let _guard = REAPER_TEST_LOCK.lock().await;
-    reset_reaper_boot_gate_for_test();
-
-    let (repo, track_id) = seeded_repo().await;
-    set_track_lifecycle(&repo, &track_id, TrackLifecycle::Planning).await;
-    // Root session is TERMINAL: the worker reaper already terminalized it.
-    insert_planner_session(
-        &repo,
-        "planner-dead-root",
-        &track_id,
-        WorkerSessionState::Failed,
-        true,
-    )
-    .await;
-
-    let fake = Arc::new(FakeProvider::new());
-    let repo_dyn: Arc<dyn Repo> = repo.clone();
-    let reaper = Reaper::new(
-        repo_dyn,
-        registry(fake),
-        EventBus::new(),
-        write_context(&repo).await,
-    );
-
-    reaper_on_boot();
-    reaper.sweep_dead_roots().await;
-
-    assert_eq!(
-        track_lifecycle_now(&repo, &track_id).await,
-        TrackLifecycle::Failed,
-        "Planning track with a terminal root + no active planner must converge to Failed"
-    );
-    let changes = lifecycle_changes(&repo, &track_id).await;
-    assert_eq!(changes.len(), 1);
-    match &changes[0] {
-        Event::TrackLifecycleChanged { from, to, .. } => {
-            assert_eq!(*from, TrackLifecycle::Planning);
-            assert_eq!(*to, TrackLifecycle::Failed);
-        }
-        other => panic!("expected lifecycle change, got {other:?}"),
-    }
-
-    reset_reaper_boot_gate_for_test();
-}
-
-#[tokio::test]
-async fn sweep_dead_roots_lost_root_null_planning_converges() {
-    let _guard = REAPER_TEST_LOCK.lock().await;
-    reset_reaper_boot_gate_for_test();
-
-    let (repo, track_id) = seeded_repo().await;
-    set_track_lifecycle(&repo, &track_id, TrackLifecycle::Planning).await;
-
-    let fake = Arc::new(FakeProvider::new());
-    let repo_dyn: Arc<dyn Repo> = repo.clone();
-    let reaper = Reaper::new(
-        repo_dyn,
-        registry(fake),
-        EventBus::new(),
-        write_context(&repo).await,
-    );
-
-    reaper_on_boot();
-    reaper.sweep_dead_roots().await;
-
-    assert_eq!(
-        track_lifecycle_now(&repo, &track_id).await,
-        TrackLifecycle::Failed,
-        "Planning track with NULL root + no active planner must converge to Failed"
-    );
-    assert_eq!(lifecycle_changes(&repo, &track_id).await.len(), 1);
-
-    reset_reaper_boot_gate_for_test();
-}
-
-#[tokio::test]
-async fn sweep_dead_roots_noops_until_reaper_on_boot_opens_gate() {
-    let _guard = REAPER_TEST_LOCK.lock().await;
-    reset_reaper_boot_gate_for_test();
-
-    let (repo, track_id) = seeded_repo().await;
-    insert_planner_harness_start_op(&repo, &track_id, "failed").await;
-
-    let fake = Arc::new(FakeProvider::new());
-    let repo_dyn: Arc<dyn Repo> = repo.clone();
-    let reaper = Reaper::new(
-        repo_dyn,
-        registry(fake),
-        EventBus::new(),
-        write_context(&repo).await,
-    );
-
-    reaper.sweep_dead_roots().await;
-    assert_eq!(
-        track_lifecycle_now(&repo, &track_id).await,
-        TrackLifecycle::Draft,
-        "dead-root scan must no-op before boot gate opens"
-    );
-    assert_eq!(lifecycle_changes(&repo, &track_id).await.len(), 0);
-
-    reaper_on_boot();
-    reaper.sweep_dead_roots().await;
-    assert_eq!(
-        track_lifecycle_now(&repo, &track_id).await,
-        TrackLifecycle::Failed,
-        "dead-root scan converges once the boot gate opens"
-    );
-    assert_eq!(lifecycle_changes(&repo, &track_id).await.len(), 1);
-
-    reset_reaper_boot_gate_for_test();
-}
-
 #[tokio::test]
 async fn sweep_records_non_exit_liveness_and_terminals_exited_without_spawn_op() {
     let _guard = REAPER_TEST_LOCK.lock().await;
@@ -1073,12 +429,11 @@ async fn sweep_records_non_exit_liveness_and_terminals_exited_without_spawn_op()
 }
 
 #[tokio::test]
-async fn sweep_exited_failed_converges_dead_worker_task_and_parks_reviewing() {
+async fn sweep_exited_failed_converges_dead_worker_task() {
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
     let (repo, track_id) = seeded_repo().await;
-    set_track_lifecycle(&repo, &track_id, TrackLifecycle::Working).await;
     let task = insert_task(&repo, &track_id, "dead-worker", TaskStatus::Running).await;
     let op_id = insert_spawn_operation(&repo, Some(&task.id), None).await;
     let mut worker = session("ws-dead-worker", track_id.clone(), 1);
@@ -1144,22 +499,6 @@ async fn sweep_exited_failed_converges_dead_worker_task_and_parks_reviewing() {
         other => panic!("expected task.failed, got {other:?}"),
     }
 
-    let changes = lifecycle_changes(&repo, &track_id).await;
-    assert_eq!(changes.len(), 1);
-    match &changes[0] {
-        Event::TrackLifecycleChanged { from, to, .. } => {
-            assert_eq!(*from, TrackLifecycle::Working);
-            assert_eq!(*to, TrackLifecycle::Reviewing);
-        }
-        other => panic!("expected lifecycle change, got {other:?}"),
-    }
-    let track = repo
-        .track_get(track_id.as_str())
-        .await
-        .expect("track get")
-        .expect("track exists");
-    assert_eq!(track.lifecycle, TrackLifecycle::Reviewing);
-
     reset_reaper_boot_gate_for_test();
 }
 
@@ -1170,7 +509,6 @@ async fn sweep_resumable_codex_exited_arbiter_dead_converges() {
     reset_reaper_boot_gate_for_test();
 
     let (repo, track_id) = seeded_repo().await;
-    set_track_lifecycle(&repo, &track_id, TrackLifecycle::Working).await;
     let task = insert_task(&repo, &track_id, "codex-dead", TaskStatus::Running).await;
     let op_id = insert_spawn_operation(&repo, Some(&task.id), None).await;
     // `created_at_ms = 1` (NULL last_activity ⇒ created_at) is far past the deadline, so the pre-gate does not short-circuit.
@@ -1236,22 +574,6 @@ async fn sweep_resumable_codex_exited_arbiter_dead_converges() {
     let failed = task_failed_events(&repo, &task.id).await;
     assert_eq!(failed.len(), 1);
 
-    let changes = lifecycle_changes(&repo, &track_id).await;
-    assert_eq!(changes.len(), 1);
-    match &changes[0] {
-        Event::TrackLifecycleChanged { from, to, .. } => {
-            assert_eq!(*from, TrackLifecycle::Working);
-            assert_eq!(*to, TrackLifecycle::Reviewing);
-        }
-        other => panic!("expected lifecycle change, got {other:?}"),
-    }
-    let track = repo
-        .track_get(track_id.as_str())
-        .await
-        .expect("track get")
-        .expect("track exists");
-    assert_eq!(track.lifecycle, TrackLifecycle::Reviewing);
-
     reset_reaper_boot_gate_for_test();
 }
 
@@ -1261,7 +583,6 @@ async fn sweep_resumable_codex_dead_worker_releases_same_boot_workspace_lease() 
     reset_reaper_boot_gate_for_test();
 
     let (repo, track_id) = seeded_repo().await;
-    set_track_lifecycle(&repo, &track_id, TrackLifecycle::Working).await;
     let task = insert_task(&repo, &track_id, "codex-lease-dead", TaskStatus::Running).await;
     let op_id = insert_spawn_operation(&repo, Some(&task.id), None).await;
     let mut worker = session("ws-codex-lease-dead", track_id.clone(), 1);
@@ -1404,7 +725,6 @@ async fn sweep_resumable_codex_exited_arbiter_alive_records_t2_only() {
     reset_reaper_boot_gate_for_test();
 
     let (repo, track_id) = seeded_repo().await;
-    set_track_lifecycle(&repo, &track_id, TrackLifecycle::Working).await;
     let task = insert_task(&repo, &track_id, "codex-alive", TaskStatus::Running).await;
     let op_id = insert_spawn_operation(&repo, Some(&task.id), None).await;
     let mut worker = session("ws-codex-alive", track_id.clone(), 1);
@@ -1451,7 +771,6 @@ async fn sweep_resumable_codex_exited_arbiter_alive_records_t2_only() {
     assert!(worker.completed_at_ms.is_none());
 
     assert_eq!(task_failed_events(&repo, &task.id).await.len(), 0);
-    assert_eq!(lifecycle_changes(&repo, &track_id).await.len(), 0);
     let task_row = repo
         .task_get(&task.id)
         .await
@@ -1468,7 +787,6 @@ async fn sweep_resumable_codex_exited_arbiter_unknown_records_t2_only() {
     reset_reaper_boot_gate_for_test();
 
     let (repo, track_id) = seeded_repo().await;
-    set_track_lifecycle(&repo, &track_id, TrackLifecycle::Working).await;
     let task = insert_task(&repo, &track_id, "codex-unknown", TaskStatus::Running).await;
     let op_id = insert_spawn_operation(&repo, Some(&task.id), None).await;
     let mut worker = session("ws-codex-unknown", track_id.clone(), 1);
@@ -1515,7 +833,6 @@ async fn sweep_resumable_codex_exited_arbiter_unknown_records_t2_only() {
     assert!(worker.completed_at_ms.is_none());
 
     assert_eq!(task_failed_events(&repo, &task.id).await.len(), 0);
-    assert_eq!(lifecycle_changes(&repo, &track_id).await.len(), 0);
 
     reset_reaper_boot_gate_for_test();
 }
@@ -1527,7 +844,6 @@ async fn sweep_resumable_codex_exited_recent_activity_pregate_skips_arbiter() {
     reset_reaper_boot_gate_for_test();
 
     let (repo, track_id) = seeded_repo().await;
-    set_track_lifecycle(&repo, &track_id, TrackLifecycle::Working).await;
     let task = insert_task(&repo, &track_id, "codex-recent", TaskStatus::Running).await;
     let op_id = insert_spawn_operation(&repo, Some(&task.id), None).await;
     let mut worker = session("ws-codex-recent", track_id.clone(), 1);
@@ -1579,7 +895,6 @@ async fn sweep_resumable_codex_exited_recent_activity_pregate_skips_arbiter() {
     assert_eq!(worker.exit_interpretation, None);
 
     assert_eq!(task_failed_events(&repo, &task.id).await.len(), 0);
-    assert_eq!(lifecycle_changes(&repo, &track_id).await.len(), 0);
 
     reset_reaper_boot_gate_for_test();
 }
@@ -1591,7 +906,6 @@ async fn sweep_exited_starting_session_records_liveness_without_convergence() {
     reset_reaper_boot_gate_for_test();
 
     let (repo, track_id) = seeded_repo().await;
-    set_track_lifecycle(&repo, &track_id, TrackLifecycle::Working).await;
     let task = insert_task(&repo, &track_id, "spawn-window", TaskStatus::Running).await;
     let op_id = insert_spawn_operation(&repo, Some(&task.id), None).await;
     let mut worker = session("ws-starting", track_id.clone(), 1);
@@ -1629,19 +943,12 @@ async fn sweep_exited_starting_session_records_liveness_without_convergence() {
     assert!(worker.completed_at_ms.is_none());
 
     assert_eq!(task_failed_events(&repo, &task.id).await.len(), 0);
-    assert_eq!(lifecycle_changes(&repo, &track_id).await.len(), 0);
     let task_row = repo
         .task_get(&task.id)
         .await
         .expect("task get")
         .expect("task exists");
     assert_eq!(task_row.status, TaskStatus::Running);
-    let track = repo
-        .track_get(track_id.as_str())
-        .await
-        .expect("track get")
-        .expect("track exists");
-    assert_eq!(track.lifecycle, TrackLifecycle::Working);
 
     reset_reaper_boot_gate_for_test();
 }
@@ -1652,7 +959,6 @@ async fn sweep_exited_with_null_spawn_op_task_key_terminalizes_without_task_fail
     reset_reaper_boot_gate_for_test();
 
     let (repo, track_id) = seeded_repo().await;
-    set_track_lifecycle(&repo, &track_id, TrackLifecycle::Working).await;
     let task = insert_task(&repo, &track_id, "null-op-key", TaskStatus::Running).await;
     let op_id = insert_spawn_operation(&repo, None, None).await;
     let mut worker = session("ws-null-op-key", track_id.clone(), 1);
@@ -1678,13 +984,6 @@ async fn sweep_exited_with_null_spawn_op_task_key_terminalizes_without_task_fail
         .expect("session exists");
     assert_eq!(worker.state, WorkerSessionState::Failed);
     assert_eq!(task_failed_events(&repo, &task.id).await.len(), 0);
-    assert_eq!(lifecycle_changes(&repo, &track_id).await.len(), 0);
-    let track = repo
-        .track_get(track_id.as_str())
-        .await
-        .expect("track get")
-        .expect("track exists");
-    assert_eq!(track.lifecycle, TrackLifecycle::Working);
 
     reset_reaper_boot_gate_for_test();
 }
@@ -1695,7 +994,6 @@ async fn sweep_exited_race_lost_after_live_terminal_completion_emits_no_second_e
     reset_reaper_boot_gate_for_test();
 
     let (repo, track_id) = seeded_repo().await;
-    set_track_lifecycle(&repo, &track_id, TrackLifecycle::Working).await;
     let task = insert_task(&repo, &track_id, "race", TaskStatus::Running).await;
     let mut worker = session("ws-race", track_id.clone(), 1);
     let worker_card = insert_session(&repo, worker.clone()).await;
@@ -1748,8 +1046,6 @@ async fn sweep_exited_race_lost_after_live_terminal_completion_emits_no_second_e
         })
         .count();
     assert_eq!(completed, 1);
-    let changes = lifecycle_changes(&repo, &track_id).await;
-    assert_eq!(changes.len(), 1);
     let worker = repo
         .session_get(&WorkerSessionId::from("ws-race"))
         .await
@@ -1766,7 +1062,6 @@ async fn sweep_unknown_liveness_records_t2_without_death_convergence() {
     reset_reaper_boot_gate_for_test();
 
     let (repo, track_id) = seeded_repo().await;
-    set_track_lifecycle(&repo, &track_id, TrackLifecycle::Working).await;
     let task = insert_task(&repo, &track_id, "unknown", TaskStatus::Running).await;
     let op_id = insert_spawn_operation(&repo, Some(&task.id), None).await;
     let mut worker = session("ws-unknown-death", track_id.clone(), 1);
@@ -1801,7 +1096,6 @@ async fn sweep_unknown_liveness_records_t2_without_death_convergence() {
         .expect("task exists");
     assert_eq!(task_row.status, TaskStatus::Running);
     assert_eq!(task_failed_events(&repo, &task.id).await.len(), 0);
-    assert_eq!(lifecycle_changes(&repo, &track_id).await.len(), 0);
 
     reset_reaper_boot_gate_for_test();
 }

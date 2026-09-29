@@ -16,6 +16,7 @@ use serde_json::Value;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::db::sqlite::overlay_upsert_tx;
+use crate::db::sqlite::track_get_tx;
 use crate::db::{Repo, write_with_events_typed};
 use crate::error::CalmError;
 use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope};
@@ -24,7 +25,6 @@ use crate::ids::{ActorId, TrackId};
 use crate::model::NewOverlay;
 use crate::state::WriteContext;
 use crate::terminal_renderer::TerminalRendererRegistry;
-use crate::track_lifecycle::track_get_tx;
 use calm_truth::validation::{KERNEL_OVERLAY_PLUGIN_ID, OVERLAY_ACTIVITY_SCHEMA_VERSION};
 pub use notifications::{ActivityItem, NotificationSource};
 use notifications::{NotificationRows, notifications};
@@ -255,10 +255,10 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
     // The notification items, newest first then by key so the stored payload compares byte-stable.
     let items = notifications(track_id, &rows.notifications);
 
-    // Terminal-phase filter, `cards[]` only: on a `done` or archived track the per-card `input` / `failed`
+    // Closed-track filter, `cards[]` only: on a closed track the per-card `input` / `failed`
     // verdicts go; `working` stays (the sweeper ends it) and `cards` is rebuilt from the working evidence.
     // The items are not filtered: an open ask or planner down is still addressed to the user.
-    if rows.track.lifecycle == "done" || rows.track.archived_at.is_some() {
+    if rows.track.closed_at.is_some() {
         cards = working_cards
             .iter()
             .map(|card_id| (card_id.clone(), CardState::Working))
@@ -526,7 +526,7 @@ impl TrackActivityProjector {
 
     /// The boot sweep and the 30 s tick: every unarchived track, serially.
     pub async fn reconcile_all(&self) {
-        let ids = match sql::unarchived_track_ids(&self.pool).await {
+        let ids = match sql::track_ids(&self.pool).await {
             Ok(ids) => ids,
             Err(e) => {
                 tracing::warn!(error = %e, "track_activity: track enumeration failed");
@@ -570,7 +570,10 @@ impl TrackActivityProjector {
             | Event::TaskFailed { .. }
             | Event::TaskExecutionSettled { .. }
             | Event::TaskGateResult { .. } => env.scope.track_id().map(|t| t.as_str().to_string()),
-            Event::TrackLifecycleChanged { id, .. } => Some(id.as_str().to_string()),
+            // A ratify request opens an ask and its resolution closes it.
+            Event::RatifyRequested { track_id, .. } | Event::RatifyResolved { track_id, .. } => {
+                Some(track_id.as_str().to_string())
+            }
             Event::TrackReportEdited { track_id, .. } => Some(track_id.as_str().to_string()),
             Event::TrackUpdated(payload) => Some(payload.track.id.as_str().to_string()),
             _ => None,

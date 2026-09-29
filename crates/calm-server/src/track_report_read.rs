@@ -273,8 +273,6 @@ mod tests {
             next,
             0,
             None,
-            None,
-            false,
         )
         .await
         .unwrap();
@@ -358,8 +356,6 @@ mod tests {
             next,
             0,
             None,
-            None,
-            false,
         )
         .await
         .expect("the first persist must migrate the legacy task before applying the edit");

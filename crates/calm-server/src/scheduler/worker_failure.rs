@@ -30,38 +30,14 @@ pub(crate) async fn fail_worker_task_tx(
     } else {
         format!("worker execution failed: {reason}")
     };
-    let mut events = vec![(
+    Ok(vec![(
         ActorId::KernelDispatcher,
-        scope.clone(),
+        scope,
         Event::TaskFailed {
             idempotency_key: task.id.clone(),
             reason,
             details: None,
             agent_message: None,
         },
-    )];
-    if let Some(auto_events) = auto_transition_if_current_in_tx(
-        tx,
-        &track.id,
-        TrackLifecycle::Working,
-        TrackLifecycle::Reviewing,
-        &ActorId::KernelDispatcher,
-        Some(
-            if preparation {
-                "[auto] worker spawn failed"
-            } else {
-                "[auto] worker execution failed"
-            }
-            .into(),
-        ),
-    )
-    .await?
-    {
-        events.extend(
-            auto_events
-                .into_iter()
-                .map(|event| (ActorId::KernelDispatcher, scope.clone(), event)),
-        );
-    }
-    Ok(events)
+    )])
 }

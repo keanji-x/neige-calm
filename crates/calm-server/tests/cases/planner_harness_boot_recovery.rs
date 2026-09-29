@@ -1041,7 +1041,7 @@ async fn boot_recovery_skips_terminal_tracks() {
         })
         .await
         .unwrap();
-    sqlx::query("UPDATE tracks SET lifecycle = 'done' WHERE id = ?1")
+    sqlx::query("UPDATE tracks SET closed_at = 1 WHERE id = ?1")
         .bind(track.id.as_str())
         .execute(repo.pool())
         .await

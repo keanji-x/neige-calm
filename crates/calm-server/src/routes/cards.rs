@@ -11,9 +11,7 @@ use crate::event::{Event, EventScope, RatifyDecision};
 use crate::git_candidate::delivery::AttemptOutcome;
 use crate::harness::{HarnessPhaseTag, QueueEntry, TokenUsage, is_harness_snapshot_value};
 use crate::ids::{ActorId, CardId, TrackId};
-use crate::model::{
-    Card, CardPatch, CardRole, HarnessItem, NewCard, Track, TrackLifecycle, new_id,
-};
+use crate::model::{Card, CardPatch, CardRole, HarnessItem, NewCard, Track, new_id};
 use crate::operation::planner_harness_interrupt_adapter::PlannerHarnessInterruptOperationPayload;
 use crate::operation::planner_harness_shutdown_adapter::PlannerHarnessShutdownOperationPayload;
 use crate::operation::planner_harness_start_adapter::{
@@ -31,7 +29,6 @@ use crate::session_projection_lookup::{
 use crate::session_projection_repo::{WorkerSessionProjection, WorkerSessionState};
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
-use crate::track_lifecycle::apply_requested_transition_in_tx;
 use crate::validation::reject_client_supplied_server_owned_keys;
 
 use axum::{
@@ -1005,13 +1002,11 @@ pub(crate) async fn ratify_card(
         .map(str::trim)
         .filter(|message| !message.is_empty())
         .map(str::to_string);
-    let message = body.message.unwrap_or_default();
 
     write_with_actor_events_typed::<(), _>(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
         let actor_id = actor_id.clone();
         let scope = scope.clone();
         let track_id = track_id.clone();
-        let message = message.clone();
         let resolved_message = resolved_message.clone();
         Box::pin(async move {
             if !ratify_request_pending_tx(tx, &track_id).await? {
@@ -1020,33 +1015,18 @@ pub(crate) async fn ratify_card(
                 ));
             }
 
-            let mut events = Vec::new();
-            if decision == RatifyCardDecision::Grant
-                && let Some(lifecycle_events) = apply_requested_transition_in_tx(
-                    tx,
-                    &track_id,
-                    TrackLifecycle::Working,
-                    &actor_id,
-                    message,
-                )
-                .await?
-            {
-                events.extend(
-                    lifecycle_events
-                        .into_iter()
-                        .map(|event| (actor_id.clone(), scope.clone(), event)),
-                );
-            }
-            events.push((
-                actor_id,
-                scope,
-                Event::RatifyResolved {
-                    track_id,
-                    decision: decision.into(),
-                    message: resolved_message,
-                },
-            ));
-            Ok(((), events))
+            Ok((
+                (),
+                vec![(
+                    actor_id,
+                    scope,
+                    Event::RatifyResolved {
+                        track_id,
+                        decision: decision.into(),
+                        message: resolved_message,
+                    },
+                )],
+            ))
         })
     })
     .await?;

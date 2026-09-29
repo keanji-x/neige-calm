@@ -83,7 +83,7 @@ pub(crate) const PLANNER_CATCH_UP_KINDS: &[&str] = &[
 /// disjoint from `PLANNER_CATCH_UP_KINDS`.
 pub(crate) const SCHEDULER_TRIGGER_KINDS: &[&str] = &[
     "plan.updated",
-    "track.lifecycle_changed",
+    "track.updated",
     "track.deleted",
     "area.deleted",
     "workspace.released",
@@ -113,7 +113,8 @@ pub(crate) fn event_warrants_planner_push_with_role(
 ) -> bool {
     match event {
         Event::TaskCompleted { .. } | Event::TaskFailed { .. } => {
-            !crate::track_lifecycle::actor_is_planner_author(actor)
+            // Not a planner author, whether card-keyed or session-keyed.
+            !matches!(actor, ActorId::AiPlanner(_) | ActorId::AiPlannerSession(_))
         }
         // Kernel-only at the role gate (no self-push loop); for a gated task this wake
         // replaces the suppressed worker self-report.
@@ -155,7 +156,6 @@ pub(crate) fn event_warrants_planner_push_with_role(
         | Event::AreaDeleted { .. }
         | Event::TrackUpdated(_)
         | Event::TrackDeleted { .. }
-        | Event::TrackLifecycleChanged { .. }
         | Event::CardAdded(_)
         | Event::CardUpdated(_)
         | Event::CardDeleted { .. }
@@ -913,7 +913,6 @@ impl Dispatcher {
                 loop {
                     interval.tick().await;
                     tick_reaper.sweep_all().await;
-                    tick_reaper.sweep_dead_roots().await;
                 }
             }))
         };
@@ -1032,9 +1031,12 @@ impl Inner {
             Event::PlanUpdated { track_id, .. } => {
                 self.scheduler.poke(track_id.clone());
             }
-            Event::TrackLifecycleChanged { id, .. } => {
-                self.scheduler.reconcile_child_track(id.clone());
-                self.scheduler.poke(id.clone());
+            // A reopen may schedule again; a close may conclude the task that spawned this track.
+            Event::TrackUpdated(track) => {
+                if track.closed_at.is_some() {
+                    self.scheduler.reconcile_child_track(track.id.clone());
+                }
+                self.scheduler.poke(track.id.clone());
             }
             // #1830 S2 D7: a release may have written the attempt's first delivery row; the pass
             // submits it (`resume_git_deliveries`) and, once it settles, claims the next task.
@@ -1120,7 +1122,6 @@ impl Inner {
                 }
             }
             Event::AreaUpdated(_)
-            | Event::TrackUpdated(_)
             | Event::CardAdded(_)
             | Event::CardUpdated(_)
             | Event::CardDeleted { .. }
@@ -1707,7 +1708,6 @@ pub(crate) fn harness_observation_from_event(
         | Event::AreaDeleted { .. }
         | Event::TrackUpdated(_)
         | Event::TrackDeleted { .. }
-        | Event::TrackLifecycleChanged { .. }
         | Event::CardAdded(_)
         | Event::CardUpdated(_)
         | Event::CardDeleted { .. }

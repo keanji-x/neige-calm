@@ -155,7 +155,7 @@ pub(crate) async fn accepted_report_evidence_tx(
     key: &str,
     attempt_id: &str,
 ) -> Result<Option<AcceptedReportEvidence>> {
-    let track = crate::track_lifecycle::track_get_tx(tx, &track_id.into()).await?;
+    let track = crate::db::sqlite::track_get_tx(tx, &track_id.into()).await?;
     task_attempt_get_tx(tx, attempt_id)
         .await?
         .filter(|allocation| allocation.track_id == track_id && allocation.key == key)

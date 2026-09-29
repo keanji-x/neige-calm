@@ -4,7 +4,6 @@ use super::*;
 async fn long_task_gate_uses_released_worker_checkout() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let shared = tempfile::tempdir().unwrap();
     let checkout = tempfile::tempdir().unwrap();
     std::fs::write(checkout.path().join("worker-evidence"), "verified").unwrap();
@@ -36,7 +35,6 @@ async fn long_task_gate_uses_released_worker_checkout() {
 #[tokio::test]
 async fn long_task_late_success_cannot_contradict_spawn_failure() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let mut task = plan_task(&boot.track_id, "late", TaskKind::Codex, &[]);
     task.status = TaskStatus::Failed;
     task.status_detail = Some("spawn-failed".into());
@@ -63,7 +61,6 @@ async fn long_task_late_success_cannot_contradict_spawn_failure() {
         "a losing report must surface the terminal conflict"
     );
     assert!(event_rows(&boot, "task.completed").await.is_empty());
-    assert_eq!(track_lifecycle(&boot).await, TrackLifecycle::Working);
     assert_eq!(
         task_row(&boot, "late").await.status_detail.as_deref(),
         Some("spawn-failed")
@@ -221,7 +218,6 @@ async fn long_task_terminal_report_ownership_and_outcome_matrix() {
         (TaskStatus::Done, None, false, false),
     ] {
         let boot = boot().await;
-        set_lifecycle(&boot, TrackLifecycle::Working).await;
         let mut task = plan_task(&boot.track_id, "matrix", TaskKind::Codex, &[]);
         task.status = status;
         task.status_detail = detail.map(str::to_string);
@@ -250,7 +246,6 @@ async fn long_task_terminal_report_ownership_and_outcome_matrix() {
         );
         assert!(event_rows(&boot, "task.completed").await.is_empty());
         assert!(event_rows(&boot, "task.failed").await.is_empty());
-        assert_eq!(track_lifecycle(&boot).await, TrackLifecycle::Working);
     }
 }
 

@@ -34,7 +34,7 @@ pub(super) async fn snapshot_tx(tx: &mut Tx<'_>, receipt: &Receipt) -> Result<Va
         &diagnostics,
     )
     .await?;
-    let track = crate::track_lifecycle::track_get_tx(tx, &receipt.track_id.clone().into()).await?;
+    let track = crate::db::sqlite::track_get_tx(tx, &receipt.track_id.clone().into()).await?;
     let mut current = Vec::new();
     for derived in [&receipt.repair, &receipt.reviewer] {
         let declaration = declarations
@@ -65,6 +65,6 @@ pub(super) async fn snapshot_tx(tx: &mut Tx<'_>, receipt: &Receipt) -> Result<Va
             "task":task.map(|t|json!({"attempt_id":t.id,"status":t.status,"status_detail":t.status_detail}))}));
     }
     Ok(
-        json!({"receipt":receipt.public(),"stage":crate::file_delivery::repair_view::view_tx(tx, receipt).await?,"current":{"as_of_ms":crate::model::now_ms(),"lifecycle":track.lifecycle,"tasks":current}}),
+        json!({"receipt":receipt.public(),"stage":crate::file_delivery::repair_view::view_tx(tx, receipt).await?,"current":{"as_of_ms":crate::model::now_ms(),"tasks":current}}),
     )
 }

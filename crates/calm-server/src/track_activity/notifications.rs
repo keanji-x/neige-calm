@@ -1,22 +1,22 @@
-//! The two notification sources of a track (#1829): an ask (the Planner moved the track to
-//! `blocked`, or called `calm.user.notify`) and planner down (the Planner's newest finished turn
-//! failed). A pure function of the rows `sql::notification_rows` read; nothing else is an item.
+//! The two notification sources of a track (#1829): an ask (a pending `calm.ratify.request`, or a
+//! `calm.user.notify` call) and planner down (the Planner's newest finished turn failed). A pure
+//! function of the rows `sql::notification_rows` read; nothing else is an item.
 
 use std::collections::BTreeSet;
 
 use calm_truth::readable_error_text::readable_error_text;
 use serde::{Deserialize, Serialize};
 
-/// The three key shapes: a source prefix, then the evidence row's id (`events.id` for a blocked
-/// edge, the transcript row id for a notify call or a failed turn).
-const ASK_LIFECYCLE_KEY: &str = "ask:lifecycle:";
+/// The three key shapes: a source prefix, then the evidence row's id (`events.id` for a ratify
+/// request, the transcript row id for a notify call or a failed turn).
+const ASK_RATIFY_KEY: &str = "ask:ratify:";
 const ASK_NOTIFY_KEY: &str = "ask:notify:";
 const PLANNER_DOWN_KEY: &str = "planner_down:";
 
 /// Whether `key` has one of the three item key shapes (`<prefix><decimal row id>`). The Dismiss
 /// route admits only these; whether the item is still open is not asked.
 pub fn is_item_key(key: &str) -> bool {
-    [ASK_LIFECYCLE_KEY, ASK_NOTIFY_KEY, PLANNER_DOWN_KEY]
+    [ASK_RATIFY_KEY, ASK_NOTIFY_KEY, PLANNER_DOWN_KEY]
         .iter()
         .filter_map(|prefix| key.strip_prefix(prefix))
         .any(|id| id.bytes().all(|b| b.is_ascii_digit()) && id.parse::<i64>().is_ok())
@@ -41,13 +41,13 @@ pub struct ActivityItem {
     pub at_ms: i64,
 }
 
-/// N1 — the track's newest lifecycle edge into `blocked`.
+/// N1 — the track's newest `ratify.requested`, when no `ratify.*` event follows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BlockedEdge {
+pub struct PendingRatify {
     pub event_id: i64,
     pub at_ms: i64,
-    /// `payload.agent_message`; every Planner write carries one.
-    pub message: Option<String>,
+    /// `payload.reason`; the tool refuses a request without one.
+    pub reason: Option<String>,
 }
 
 /// N3, notify arm — one successful `calm.user.notify` call of the Planner card.
@@ -73,9 +73,7 @@ pub struct LastTurn {
 /// turn and no U.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NotificationRows {
-    pub blocked_edge: Option<BlockedEdge>,
-    /// L — the newest edge OUT of `blocked`, by any actor.
-    pub left_blocked_at: Option<i64>,
+    pub pending_ratify: Option<PendingRatify>,
     /// U — the newest user message to the Planner card.
     pub user_sent_at: Option<i64>,
     pub notifies: Vec<NotifyRow>,
@@ -114,24 +112,23 @@ fn item(
     })
 }
 
-/// The open items, newest first then by key. An ask is open while `at_ms > MAX(U, L)`; planner down
-/// is open while the newest non-interrupted turn is `failed`; a dismissed key is never an item. No
-/// lifecycle filter: a done or archived track keeps what is still addressed to the user.
+/// The open items, newest first then by key. An ask is open while `at_ms > U`; planner down is
+/// open while the newest non-interrupted turn is `failed`; a dismissed key is never an item. No
+/// closed filter: a closed track keeps what is still addressed to the user.
 pub fn notifications(track_id: &str, rows: &NotificationRows) -> Vec<ActivityItem> {
-    let answered = rows.user_sent_at.max(rows.left_blocked_at);
-    let open = |at_ms: i64| answered.is_none_or(|closed| at_ms > closed);
+    let open = |at_ms: i64| rows.user_sent_at.is_none_or(|answered| at_ms > answered);
     let mut items = Vec::new();
 
-    if let Some(edge) = &rows.blocked_edge
-        && open(edge.at_ms)
+    if let Some(ratify) = &rows.pending_ratify
+        && open(ratify.at_ms)
     {
         items.extend(item(
             track_id,
             &rows.dismissed,
             NotificationSource::Ask,
-            format!("{ASK_LIFECYCLE_KEY}{}", edge.event_id),
-            edge.message.as_deref(),
-            edge.at_ms,
+            format!("{ASK_RATIFY_KEY}{}", ratify.event_id),
+            ratify.reason.as_deref(),
+            ratify.at_ms,
         ));
     }
     for notify in rows.notifies.iter().filter(|n| open(n.at_ms)) {
@@ -160,4 +157,49 @@ pub fn notifications(track_id: &str, rows: &NotificationRows) -> Vec<ActivityIte
 
     items.sort_by(|a, b| b.at_ms.cmp(&a.at_ms).then_with(|| a.key.cmp(&b.key)));
     items
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pending(at_ms: i64) -> NotificationRows {
+        NotificationRows {
+            pending_ratify: Some(PendingRatify {
+                event_id: 7,
+                at_ms,
+                reason: Some("merge the release branch?".into()),
+            }),
+            ..NotificationRows::default()
+        }
+    }
+
+    #[test]
+    fn pending_ratify_is_an_open_ask_until_answered() {
+        let items = notifications("t", &pending(100));
+        assert_eq!(
+            items,
+            vec![ActivityItem {
+                source: NotificationSource::Ask,
+                key: "ask:ratify:7".into(),
+                text: "merge the release branch?".into(),
+                at_ms: 100,
+            }]
+        );
+        assert!(is_item_key("ask:ratify:7"));
+
+        let answered = NotificationRows {
+            user_sent_at: Some(101),
+            ..pending(100)
+        };
+        assert!(
+            notifications("t", &answered).is_empty(),
+            "a user reply after the request closes the ask"
+        );
+        let earlier_reply = NotificationRows {
+            user_sent_at: Some(99),
+            ..pending(100)
+        };
+        assert_eq!(notifications("t", &earlier_reply).len(), 1);
+    }
 }

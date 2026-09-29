@@ -1231,9 +1231,9 @@ async fn today_launchpad_adopt_branch_survives_the_column_rename() {
 
     let track_id = "legacy-today-track".to_string();
     sqlx::query(
-        "INSERT INTO tracks (id, area_id, title, sort, lifecycle, template_id, template_input, \
+        "INSERT INTO tracks (id, area_id, title, sort, template_id, template_input, \
          created_at, updated_at) \
-         VALUES (?1, ?2, 'Today', 0, 'draft', 'small-change', '{\"issue\":1209}', 1, 1)",
+         VALUES (?1, ?2, 'Today', 0, 'small-change', '{\"issue\":1209}', 1, 1)",
     )
     .bind(&track_id)
     .bind(area.id.as_str())

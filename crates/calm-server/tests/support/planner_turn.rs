@@ -79,10 +79,6 @@ pub async fn plan_updated_rows(repo: &SqlxRepo) -> Vec<(ActorId, Value)> {
     actor_payload_rows(repo, "plan.updated").await
 }
 
-pub async fn lifecycle_changed_rows(repo: &SqlxRepo) -> Vec<(ActorId, Value)> {
-    actor_payload_rows(repo, "track.lifecycle_changed").await
-}
-
 pub async fn actor_payload_rows(repo: &SqlxRepo, kind: &str) -> Vec<(ActorId, Value)> {
     let rows: Vec<(String, String)> =
         sqlx::query_as("SELECT actor, payload FROM events WHERE kind = ?1 ORDER BY id ASC")

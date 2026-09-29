@@ -28,13 +28,13 @@ use crate::db::sqlite::{
     SuccessReportFlip, TaskReporter, begin_immediate_tx, status_detail_with_reason,
     task_claim_pending_tx, task_fail_from_worker_tx, task_get_tx, task_mark_running_tx,
     task_mark_sub_track_running_tx, task_report_success_from_worker_tx,
-    task_stamp_missing_running_deadline_tx, tasks_by_track_tx, track_lifecycle_tx,
+    task_stamp_missing_running_deadline_tx, tasks_by_track_tx, track_find_tx,
 };
 use crate::db::{Repo, write_with_actor_events_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus, EventScope};
 use crate::ids::{ActorId, TrackId};
-use crate::model::{Task, TaskKind, TaskStatus, Track, TrackLifecycle, new_id, now_ms};
+use crate::model::{Task, TaskKind, TaskStatus, Track, new_id, now_ms};
 use crate::operation::child_track_adapter::{CHILD_TRACK_KIND, ChildTrackOperationPayload};
 use crate::operation::claude_adapter::ClaudeWorkerOperationPayload;
 use crate::operation::codex_adapter::CodexWorkerOperationPayload;
@@ -51,7 +51,6 @@ use crate::operation::{OperationKey, OperationOutcome, OperationRuntime, Tx};
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::state::WriteContext;
 use crate::task_context::{ContextMetrics, TaskContextMonitor, context_ref};
-use crate::track_lifecycle::auto_transition_if_current_in_tx;
 
 /// Default reconcile-tick period (liveness backstop).
 pub const DEFAULT_RECONCILE_SECS: u64 = 300;
@@ -128,17 +127,6 @@ pub(crate) async fn mark_running_timeout_cleanup_tx(
         marked: rows,
         released,
     })
-}
-
-/// Schedule only while the track is in an active lifecycle; in-flight tasks are unaffected.
-pub fn lifecycle_allows_scheduling(lifecycle: TrackLifecycle) -> bool {
-    matches!(
-        lifecycle,
-        TrackLifecycle::Planning
-            | TrackLifecycle::Dispatching
-            | TrackLifecycle::Working
-            | TrackLifecycle::Reviewing
-    )
 }
 
 /// Ready-set computation over one track's plan rows (already in scheduler order): pending rows
@@ -295,61 +283,16 @@ struct ChildTaskSnapshot {
     parent_track_id: String,
     parent_area_id: String,
     child_track_id: String,
-    child_lifecycle: Option<String>,
+    child_exists: bool,
+    child_closed_at: Option<i64>,
     gate_json: Option<String>,
     inflight_count: i64,
     pending_count: i64,
 }
 
-#[derive(Clone, Copy)]
-enum ChildTerminalOutcome {
-    Deleted,
-    Failed,
-    Canceled,
-}
-
-impl ChildTerminalOutcome {
-    fn from_lifecycle(lifecycle: Option<TrackLifecycle>) -> Option<Self> {
-        match lifecycle {
-            None => Some(Self::Deleted),
-            Some(TrackLifecycle::Failed) => Some(Self::Failed),
-            Some(TrackLifecycle::Canceled) => Some(Self::Canceled),
-            _ => None,
-        }
-    }
-
-    const fn code(self) -> &'static str {
-        match self {
-            Self::Deleted => "child-track-deleted",
-            Self::Failed => "child-track-failed",
-            Self::Canceled => "child-track-canceled",
-        }
-    }
-
-    const fn detail(self) -> &'static str {
-        match self {
-            Self::Deleted => "child track was deleted",
-            Self::Failed => "child track entered failed",
-            Self::Canceled => "child track was canceled",
-        }
-    }
-
-    const fn sql_guard(self) -> &'static str {
-        match self {
-            Self::Deleted => "NOT EXISTS(SELECT 1 FROM tracks child WHERE child.id=?5)",
-            Self::Failed => {
-                "EXISTS(SELECT 1 FROM tracks child WHERE child.id=?5 AND child.lifecycle='failed')"
-            }
-            Self::Canceled => {
-                "EXISTS(SELECT 1 FROM tracks child WHERE child.id=?5 AND child.lifecycle='canceled')"
-            }
-        }
-    }
-}
-
 /// Final child-success compare-and-set. The snapshot that selected the
-/// success arm is advisory; this statement is the authority and rechecks the
-/// child lifecycle plus quiescence in the writer transaction.
+/// success arm is advisory; this statement is the authority and rechecks that
+/// the child is closed and quiescent in the writer transaction.
 async fn guarded_child_success_flip_tx(
     tx: &mut Tx<'_>,
     task_id: &str,
@@ -364,7 +307,7 @@ async fn guarded_child_success_flip_tx(
            WHERE id=?4 AND child_track_id=?5 \
              AND status IN ('dispatched','running') \
              AND EXISTS(SELECT 1 FROM tracks child \
-                WHERE child.id=?5 AND child.lifecycle='done') \
+                WHERE child.id=?5 AND child.closed_at IS NOT NULL) \
              AND NOT EXISTS(SELECT 1 FROM current_tasks ct WHERE ct.track_id=?5 \
                 AND ct.status IN ('pending','dispatched','running','verifying'))",
     )
@@ -392,7 +335,7 @@ async fn guarded_child_incomplete_flip_tx(
            WHERE id=?2 AND track_id=?3 AND child_track_id=?4 \
              AND status IN ('dispatched','running') \
              AND EXISTS(SELECT 1 FROM tracks child \
-                WHERE child.id=?4 AND child.lifecycle='done') \
+                WHERE child.id=?4 AND child.closed_at IS NOT NULL) \
              AND NOT EXISTS(SELECT 1 FROM current_tasks ct WHERE ct.track_id=?4 \
                 AND ct.status IN ('dispatched','running','verifying')) \
              AND EXISTS(SELECT 1 FROM current_tasks ct WHERE ct.track_id=?4 AND ct.status='pending')",
@@ -406,33 +349,29 @@ async fn guarded_child_incomplete_flip_tx(
     .rows_affected())
 }
 
-/// Final terminal-child compare-and-set shared by the deleted, failed and
-/// canceled conclusions. The selected outcome comes from an advisory
-/// snapshot; the outcome-specific SQL predicate is the authority.
-async fn guarded_child_terminal_flip_tx(
+/// Final deleted-child compare-and-set. The snapshot that selected it is
+/// advisory; this statement rechecks that the child row is gone.
+async fn guarded_child_deleted_flip_tx(
     tx: &mut Tx<'_>,
     task_id: &str,
     parent_track_id: &str,
     child_track_id: &str,
-    outcome: ChildTerminalOutcome,
     now: i64,
 ) -> Result<u64> {
-    let sql = format!(
-        "UPDATE tasks SET status='failed',status_detail=?1,worker_card_id=NULL,\
-                running_deadline_ms=NULL,updated_at_ms=?2,finished_at_ms=?2 \
-           WHERE id=?3 AND track_id=?4 AND child_track_id=?5 \
-             AND status IN ('dispatched','running') AND ({})",
-        outcome.sql_guard()
-    );
-    Ok(sqlx::query(&sql)
-        .bind(outcome.code())
-        .bind(now)
-        .bind(task_id)
-        .bind(parent_track_id)
-        .bind(child_track_id)
-        .execute(&mut **tx)
-        .await?
-        .rows_affected())
+    Ok(sqlx::query(
+        "UPDATE tasks SET status='failed',status_detail='child-track-deleted',worker_card_id=NULL,\
+                running_deadline_ms=NULL,updated_at_ms=?1,finished_at_ms=?1 \
+           WHERE id=?2 AND track_id=?3 AND child_track_id=?4 \
+             AND status IN ('dispatched','running') \
+             AND NOT EXISTS(SELECT 1 FROM tracks child WHERE child.id=?4)",
+    )
+    .bind(now)
+    .bind(task_id)
+    .bind(parent_track_id)
+    .bind(child_track_id)
+    .execute(&mut **tx)
+    .await?
+    .rows_affected())
 }
 
 #[cfg(feature = "fixtures")]
@@ -459,25 +398,13 @@ pub async fn guarded_child_incomplete_flip_for_test(
 
 #[cfg(feature = "fixtures")]
 #[doc(hidden)]
-pub async fn guarded_child_terminal_flip_for_test(
+pub async fn guarded_child_deleted_flip_for_test(
     tx: &mut Tx<'_>,
     task_id: &str,
     parent_track_id: &str,
     child_track_id: &str,
-    lifecycle: Option<TrackLifecycle>,
 ) -> Result<u64> {
-    let outcome = ChildTerminalOutcome::from_lifecycle(lifecycle).ok_or_else(|| {
-        CalmError::Internal("terminal child flip fixture requires deleted/failed/canceled".into())
-    })?;
-    guarded_child_terminal_flip_tx(
-        tx,
-        task_id,
-        parent_track_id,
-        child_track_id,
-        outcome,
-        now_ms(),
-    )
-    .await
+    guarded_child_deleted_flip_tx(tx, task_id, parent_track_id, child_track_id, now_ms()).await
 }
 
 pub struct Scheduler {
@@ -705,7 +632,7 @@ impl Scheduler {
         });
     }
 
-    /// Low-latency child lifecycle/deletion trigger. The event carries only a
+    /// Low-latency child close/deletion trigger. The event carries only a
     /// hint; the guarded IMMEDIATE transaction below rereads current DB state.
     pub fn reconcile_child_track(self: &Arc<Self>, child_track_id: TrackId) {
         let this = Arc::clone(self);
@@ -760,7 +687,8 @@ impl Scheduler {
                         r#"SELECT t.id AS task_id, t.track_id AS parent_track_id,
                                   parent.area_id AS parent_area_id,
                                   t.child_track_id AS child_track_id,
-                                  child.lifecycle AS child_lifecycle,
+                                  child.id IS NOT NULL AS child_exists,
+                                  child.closed_at AS child_closed_at,
                                   t.gate_json AS gate_json,
                                   (SELECT count(*) FROM current_tasks ct
                                     WHERE ct.track_id=t.child_track_id
@@ -782,7 +710,7 @@ impl Scheduler {
                     };
                     #[cfg(feature = "fixtures")]
                     if reopen_child_after_snapshot {
-                        sqlx::query("UPDATE tracks SET lifecycle='planning' WHERE id=?1")
+                        sqlx::query("UPDATE tracks SET closed_at=NULL WHERE id=?1")
                             .bind(&snapshot.child_track_id)
                             .execute(&mut **tx)
                             .await?;
@@ -792,14 +720,9 @@ impl Scheduler {
                         area: snapshot.parent_area_id.clone().into(),
                     };
                     let now = now_ms();
-                    let lifecycle = snapshot
-                        .child_lifecycle
-                        .as_deref()
-                        .map(|value| TrackLifecycle::try_from(value.to_string()))
-                        .transpose()
-                        .map_err(|error| CalmError::Internal(format!("child lifecycle decode: {error}")))?;
+                    let child_closed = snapshot.child_exists && snapshot.child_closed_at.is_some();
 
-                    if lifecycle == Some(TrackLifecycle::Done)
+                    if child_closed
                         && snapshot.inflight_count == 0
                         && snapshot.pending_count == 0
                     {
@@ -832,7 +755,7 @@ impl Scheduler {
                         return Ok(((), vec![(ActorId::KernelDispatcher, scope, event)]));
                     }
 
-                    if lifecycle == Some(TrackLifecycle::Done)
+                    if child_closed
                         && snapshot.inflight_count == 0
                         && snapshot.pending_count > 0
                     {
@@ -859,14 +782,14 @@ impl Scheduler {
                         return Ok(((), vec![(ActorId::KernelDispatcher, scope, event)]));
                     }
 
-                    let outcome = ChildTerminalOutcome::from_lifecycle(lifecycle)
-                        .ok_or_else(race_lost_err)?;
-                    let changed = guarded_child_terminal_flip_tx(
+                    if snapshot.child_exists {
+                        return Err(race_lost_err());
+                    }
+                    let changed = guarded_child_deleted_flip_tx(
                         tx,
                         &snapshot.task_id,
                         &snapshot.parent_track_id,
                         &snapshot.child_track_id,
-                        outcome,
                         now,
                     )
                     .await?;
@@ -875,7 +798,7 @@ impl Scheduler {
                     }
                     let event = Event::TaskFailed {
                         idempotency_key: snapshot.task_id,
-                        reason: format!("{}: {}", outcome.code(), outcome.detail()),
+                        reason: "child-track-deleted: child track was deleted".into(),
                         details: None,
                         agent_message: None,
                     };
@@ -927,7 +850,7 @@ impl Scheduler {
         }
     }
 
-    /// One pass under the track lock: lifecycle gate → ready set → dispatch each ready task
+    /// One pass under the track lock: open gate → ready set → dispatch each ready task
     /// sequentially.
     async fn schedule_pass(self: &Arc<Self>, track_id: &TrackId) -> Result<()> {
         let Some(track) = self.repo.track_get(track_id.as_str()).await? else {
@@ -935,12 +858,12 @@ impl Scheduler {
         };
         let tasks = self.repo.tasks_by_track(track_id.as_str()).await?;
         self.resume_candidate_allocations(track_id.as_str()).await?;
-        // Before the lifecycle gate: a delivery settles (and wakes the planner) on a Done track too.
+        // Before the open gate: a delivery settles (and wakes the planner) on a closed track too.
         self.resume_git_deliveries(track_id.as_str()).await?;
         self.drive_file_producers(&tasks);
         // Drive each `verifying` task's gate, fire-and-forget: a gate can run for hours and
-        // must never block the track lock. Deliberately BEFORE the lifecycle gate: lifecycle
-        // gating scopes NEW claims only.
+        // must never block the track lock. Deliberately BEFORE the open gate: it scopes NEW
+        // claims only.
         for task in tasks
             .iter()
             .filter(|t| t.status == TaskStatus::Verifying)
@@ -951,11 +874,10 @@ impl Scheduler {
                 this.drive_gate(task).await;
             });
         }
-        if !lifecycle_allows_scheduling(track.lifecycle) {
+        if !track.is_open() {
             tracing::debug!(
                 track_id = %track_id,
-                lifecycle = ?track.lifecycle,
-                "scheduler: lifecycle holds scheduling; skipping pass"
+                "scheduler: track is closed; skipping pass"
             );
             return Ok(());
         }
@@ -1046,9 +968,8 @@ impl Scheduler {
         true
     }
 
-    /// The claim tx, one eventized write: in-tx lifecycle re-check, single-winner
-    /// `pending → dispatched` UPDATE, `Event::TaskDispatched`, and the auto-promotion to
-    /// `Working`. Returns the post-claim re-read (the frozen row); `Ok(None)` = race lost,
+    /// The claim tx, one eventized write: in-tx open re-check, single-winner
+    /// `pending → dispatched` UPDATE and `Event::TaskDispatched`. Returns the post-claim re-read (the frozen row); `Ok(None)` = race lost,
     /// no event persisted.
     async fn claim_task(&self, task: Task, track: &Track) -> Result<Option<Task>> {
         let monitor = TaskContextMonitor::new_with_metrics(
@@ -1102,12 +1023,12 @@ impl Scheduler {
                 &self.write,
                 move |tx| {
                     Box::pin(async move {
-                        // Lifecycle gate, re-checked IN the claim tx: the pre-claim read can go stale across
+                        // Open gate, re-checked IN the claim tx: the pre-claim read can go stale across
                         // the semaphore wait. Loss is silent (race-lost, no event).
-                        let lifecycle = track_lifecycle_tx(tx, track_id.as_str())
+                        let current = track_find_tx(tx, track_id.as_str())
                             .await?
                             .ok_or_else(race_lost_err)?;
-                        if !lifecycle_allows_scheduling(lifecycle) {
+                        if !current.is_open() {
                             return Err(race_lost_err());
                         }
                         // Claim fence: missing track/report, a changed root, or any changed report doc_rev is
@@ -1200,7 +1121,7 @@ impl Scheduler {
                         {
                             return Err(race_lost_err());
                         }
-                        let mut events = vec![
+                        let events = vec![
                             (
                                 ActorId::KernelDispatcher,
                                 scope.clone(),
@@ -1227,29 +1148,6 @@ impl Scheduler {
                                 },
                             ),
                         ];
-                        // Promote before the worker exists so a fast report's Working → Reviewing promotion
-                        // can never race ahead of this one. Reviewing stays schedulable, so the Reviewing →
-                        // Working edge rides the same claim tx; a successful claim always leaves the track `Working`.
-                        for (from, to) in [
-                            (TrackLifecycle::Reviewing, TrackLifecycle::Working),
-                            (TrackLifecycle::Planning, TrackLifecycle::Dispatching),
-                            (TrackLifecycle::Dispatching, TrackLifecycle::Working),
-                        ] {
-                            if let Some(auto_events) = auto_transition_if_current_in_tx(
-                                tx,
-                                &track_id,
-                                from,
-                                to,
-                                &ActorId::KernelDispatcher,
-                                Some("[auto] scheduler claimed a task".to_string()),
-                            )
-                            .await?
-                            {
-                                events.extend(auto_events.into_iter().map(|event| {
-                                    (ActorId::KernelDispatcher, scope.clone(), event)
-                                }));
-                            }
-                        }
                         Ok((frozen, events))
                     })
                 },
@@ -1532,14 +1430,13 @@ impl Scheduler {
                     let mut events = Vec::new();
                     if let Some(child_id) = child_id {
                         let child_track_id = TrackId::from(child_id);
-                        let current =
-                            crate::track_lifecycle::track_get_tx(tx, &child_track_id).await?;
-                        if !current.lifecycle.is_terminal() {
+                        let current = crate::db::sqlite::track_get_tx(tx, &child_track_id).await?;
+                        if current.is_open() {
                             let updated = crate::db::sqlite::track_update_tx(
                                 tx,
                                 child_track_id.as_str(),
                                 crate::model::TrackPatch {
-                                    lifecycle: Some(TrackLifecycle::Failed),
+                                    closed: Some(true),
                                     ..Default::default()
                                 },
                             )
@@ -1548,16 +1445,6 @@ impl Scheduler {
                                 track: updated.id.clone(),
                                 area: updated.area_id.clone(),
                             };
-                            events.push((
-                                child_scope.clone(),
-                                Event::TrackLifecycleChanged {
-                                    id: updated.id.clone(),
-                                    area_id: updated.area_id.clone(),
-                                    from: current.lifecycle,
-                                    to: TrackLifecycle::Failed,
-                                    agent_message: Some(reason.clone()),
-                                },
-                            ));
                             events.push((
                                 child_scope,
                                 Event::TrackUpdated(crate::event::TrackUpdatedPayload::new(
@@ -1662,7 +1549,7 @@ impl Scheduler {
     }
 
     /// Spawn failure/stuck: guarded `dispatched/running → failed('spawn-failed: <reason>')` plus
-    /// kernel `task.failed` in one tx, plus the `Working → Reviewing` promotion. 0-row
+    /// kernel `task.failed` in one tx. 0-row
     /// flip → the row already moved on; no event. The `spawn-failed` CLASSIFIER stays the prefix.
     async fn fail_spawn(&self, task: &Task, track: &Track, reason: &str) -> Result<()> {
         let task = task.clone();
@@ -2396,7 +2283,6 @@ pub async fn complete_terminal_task(
     let success = !signal_killed && exit_code == Some(0);
     let task_id = task_id.to_string();
     let track_id_str = track_id.to_string();
-    let track_id_typed = track.id.clone();
     let worker_card_id = worker_card_id.to_string();
     let pty_output = pty_output.to_string();
     let result = write_with_actor_events_typed::<(), _>(repo, None, events, write, move |tx| {
@@ -2411,16 +2297,11 @@ pub async fn complete_terminal_task(
                 card_id: worker_card_id.as_str(),
                 owns_key,
             };
-            // A gated terminal task's clean exit is still a self-report: the row goes to
-            // `verifying` and the `Working → Reviewing` promotion is suppressed.
-            let mut suppress_promotion = false;
+            // A gated terminal task's clean exit is still a self-report: the row goes to `verifying`.
             let (rows, event) = if success {
                 let flip =
                     task_report_success_from_worker_tx(tx, &task_id, &track_id_str, reporter, now)
                         .await?;
-                if flip == SuccessReportFlip::Verifying {
-                    suppress_promotion = true;
-                }
                 (
                     if flip == SuccessReportFlip::None {
                         0
@@ -2483,25 +2364,7 @@ pub async fn complete_terminal_task(
                 // change, no event.
                 return Err(race_lost_err());
             }
-            let mut events = vec![(ActorId::KernelDispatcher, scope.clone(), event)];
-            if !suppress_promotion
-                && let Some(auto_events) = auto_transition_if_current_in_tx(
-                    tx,
-                    &track_id_typed,
-                    TrackLifecycle::Working,
-                    TrackLifecycle::Reviewing,
-                    &ActorId::KernelDispatcher,
-                    Some("[auto] terminal task finished".to_string()),
-                )
-                .await?
-            {
-                events.extend(
-                    auto_events
-                        .into_iter()
-                        .map(|event| (ActorId::KernelDispatcher, scope.clone(), event)),
-                );
-            }
-            Ok(((), events))
+            Ok(((), vec![(ActorId::KernelDispatcher, scope, event)]))
         })
     })
     .await;

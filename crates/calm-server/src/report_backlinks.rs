@@ -370,8 +370,6 @@ mod tests {
             next,
             0,
             None,
-            None,
-            false,
         )
         .await
         .unwrap();

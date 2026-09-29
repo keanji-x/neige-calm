@@ -1,27 +1,25 @@
-//! #1829 — the two notification sources of `kernel/track/activity`: an ask (the Planner moved the
-//! track to `blocked`, or called `calm.user.notify`) and planner down (the Planner's newest finished
-//! turn failed). Every row is written through its production writer; each case asserts the payload
-//! the projector computes. One test per row of the design's producer × state matrix (§7).
+//! #1829 / #1876 — the two notification sources of `kernel/track/activity`: an ask (a pending
+//! `calm.ratify.request`, or a `calm.user.notify` call) and planner down (the Planner's newest
+//! finished turn failed). Every row is written through its production event writer; each case
+//! asserts the payload the projector computes. One test per row of the design's producer × state
+//! matrix (§7).
 //!
-//! Fixture sources are fixed so the mutation red sets hold: only rows 3, 3b, 4a, 4b and 5 ever leave
-//! `blocked`; rows 2, 18 and 19 enter it and never leave; rows 5–8 are notify-only, and only row 5
-//! has an ended blocked stretch. Do not add a leaving edge to 2, 18 or 19. Rows 4b, 18, 20 and 21
-//! (Dismiss) are in `track_notification_dismissals.rs`.
+//! Fixture sources are fixed so the mutation red sets hold: only rows 3, 3b, 4a, 4b and 5 ever
+//! resolve a ratify request; rows 2, 18 and 19 request one and never resolve it; rows 5–8 are
+//! notify-only, and only row 5 has a resolved request. Do not add a resolution to 2, 18 or 19.
+//! Rows 4b, 18, 20 and 21 (Dismiss) are in `track_notification_dismissals.rs`.
 
 use std::time::Duration;
 
 use calm_server::db::write_with_events_typed;
 use calm_server::event::{Event, EventScope};
 use calm_server::ids::{ActorId, CardId, TrackId};
-use calm_server::model::{CardRole, TrackLifecycle, now_ms};
+use calm_server::model::{CardRole, now_ms};
 use calm_server::session_projection_repo::{WorkerSessionKind, WorkerSessionState};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::track_activity::{
     ActivityItem, ActivityPayload, ActivityWake, Attention, CardState, NotificationSource,
     TrackActivityProjector,
-};
-use calm_server::track_lifecycle::{
-    apply_requested_transition_in_tx, auto_transition_if_current_in_tx,
 };
 use calm_types::harness::HarnessPhaseTag;
 use calm_types::task_recovery::TASK_IN_TRACK_ROUTE;
@@ -30,7 +28,7 @@ use serde_json::json;
 
 use super::track_activity_fixture::{Fx, fx};
 
-/// A track in `working` with its one Planner card and that card's harness session.
+/// An open track with its one Planner card and that card's harness session.
 pub(crate) struct Planner {
     pub(crate) track: String,
     pub(crate) card: String,
@@ -45,7 +43,6 @@ impl Planner {
 
 async fn planner(f: &Fx, name: &str, kind: WorkerSessionKind) -> Planner {
     let track = f.track(name).await;
-    f.set_lifecycle(&track, TrackLifecycle::Working).await;
     let card = f
         .card(
             &track,
@@ -78,40 +75,39 @@ async fn settle() {
     tokio::time::sleep(Duration::from_millis(3)).await;
 }
 
-/// One lifecycle edge through the production transition writer, both of its events persisted.
-async fn transition(f: &Fx, track: &str, to: TrackLifecycle, actor: ActorId, message: &str) {
+/// One track-scoped event through the production event writer.
+async fn emit(f: &Fx, track: &str, actor: ActorId, event: Event) {
     settle().await;
-    let track_id = TrackId::from(track.to_string());
     let scope = f.track_scope(track);
-    let message = message.to_string();
-    let writer = actor.clone();
     write_with_events_typed(
         f.repo_dyn.as_ref(),
         actor,
         None,
         &f.events,
         &f.write,
-        move |tx| {
-            Box::pin(async move {
-                let events = apply_requested_transition_in_tx(tx, &track_id, to, &writer, message)
-                    .await?
-                    .expect("a real lifecycle edge");
-                Ok(((), events.into_iter().map(|e| (scope.clone(), e)).collect()))
-            })
-        },
+        move |_tx| Box::pin(async move { Ok(((), vec![(scope, event)])) }),
     )
     .await
     .unwrap();
 }
 
-/// The Planner moves its track to `blocked` with `message` (what `calm.ratify.request` also does).
-pub(crate) async fn block(f: &Fx, p: &Planner, message: &str) {
-    transition(f, &p.track, TrackLifecycle::Blocked, p.actor(), message).await;
+/// The Planner asks for ratification with `reason` (the `ratify.requested` of `calm.ratify.request`).
+pub(crate) async fn request_ratify(f: &Fx, p: &Planner, reason: &str) {
+    let event = Event::RatifyRequested {
+        track_id: TrackId::from(p.track.clone()),
+        reason: reason.to_string(),
+    };
+    emit(f, &p.track, p.actor(), event).await;
 }
 
-/// The Planner moves its track out of `blocked`.
-pub(crate) async fn unblock(f: &Fx, p: &Planner) {
-    transition(f, &p.track, TrackLifecycle::Working, p.actor(), "resuming").await;
+/// The user resolves the pending request (the `ratify.resolved` of `POST /api/cards/{id}/ratify`).
+pub(crate) async fn resolve_ratify(f: &Fx, p: &Planner) {
+    let event = Event::RatifyResolved {
+        track_id: TrackId::from(p.track.clone()),
+        decision: calm_types::event::RatifyDecision::Grant,
+        message: None,
+    };
+    emit(f, &p.track, ActorId::User, event).await;
 }
 
 /// `harness.user_message.enqueued` exactly as `POST /api/cards/{id}/planner/input` audits a send.
@@ -210,11 +206,11 @@ pub(crate) fn planner_down(p: &ActivityPayload) -> Vec<&ActivityItem> {
         .collect()
 }
 
-/// `(id, at)` of the track's newest `to = 'blocked'` lifecycle event.
-async fn newest_block_event(f: &Fx, track: &str) -> (i64, i64) {
+/// `(id, at)` of the track's newest `ratify.requested` event.
+async fn newest_ratify_request(f: &Fx, track: &str) -> (i64, i64) {
     sqlx::query_as(
-        "SELECT id, at FROM events WHERE scope_track = ?1 AND kind = 'track.lifecycle_changed' \
-          AND json_extract(payload, '$.to') = 'blocked' ORDER BY id DESC LIMIT 1",
+        "SELECT id, at FROM events WHERE scope_track = ?1 AND kind = 'ratify.requested' \
+          ORDER BY id DESC LIMIT 1",
     )
     .bind(track)
     .fetch_one(&f.pool)
@@ -246,11 +242,11 @@ pub(crate) async fn running_loop(
 
 // Row 1.
 #[tokio::test]
-async fn blocked_with_message_is_an_ask_with_its_words() {
+async fn pending_ratify_is_an_ask_with_its_reason() {
     let f = fx().await;
     let p = codex_planner(&f).await;
-    block(&f, &p, "Merge PR #1811 now, or hold it for the release?").await;
-    let (_, at) = newest_block_event(&f, &p.track).await;
+    request_ratify(&f, &p, "Merge PR #1811 now, or hold it for the release?").await;
+    let (id, at) = newest_ratify_request(&f, &p.track).await;
     let a = f.recompute(&p.track).await;
     assert_eq!(a.attention, Attention::Input, "{a:?}");
     assert_eq!(a.items.len(), 1, "{a:?}");
@@ -259,35 +255,30 @@ async fn blocked_with_message_is_an_ask_with_its_words() {
         a.items[0].text,
         "Merge PR #1811 now, or hold it for the release?"
     );
+    assert_eq!(a.items[0].key, format!("ask:ratify:{id}"));
     assert_eq!(a.items[0].at_ms, at);
 }
 
 // Row 2.
 #[tokio::test]
-async fn user_send_after_block_closes_the_ask() {
+async fn user_send_after_ratify_request_closes_the_ask() {
     let f = fx().await;
     let p = codex_planner(&f).await;
-    block(&f, &p, "Which region?").await;
+    request_ratify(&f, &p, "Which region?").await;
     assert_eq!(f.recompute(&p.track).await.items.len(), 1);
     send(&f, &p.track, &p.card, ActorId::User).await;
     let a = f.recompute(&p.track).await;
     assert!(a.items.is_empty(), "the reply closes the ask: {a:?}");
     assert_eq!(a.attention, Attention::None);
-    let lifecycle: String = sqlx::query_scalar("SELECT lifecycle FROM tracks WHERE id = ?1")
-        .bind(&p.track)
-        .fetch_one(&f.pool)
-        .await
-        .unwrap();
-    assert_eq!(lifecycle, "blocked", "only U closed it");
 }
 
 // Row 3.
 #[tokio::test]
-async fn leaving_blocked_closes_the_ask() {
+async fn ratify_resolution_closes_the_ask() {
     let f = fx().await;
     let p = codex_planner(&f).await;
-    block(&f, &p, "Which region?").await;
-    unblock(&f, &p).await;
+    request_ratify(&f, &p, "Which region?").await;
+    resolve_ratify(&f, &p).await;
     let a = f.recompute(&p.track).await;
     assert!(a.items.is_empty(), "{a:?}");
     assert_eq!(a.attention, Attention::None);
@@ -295,31 +286,33 @@ async fn leaving_blocked_closes_the_ask() {
 
 // Row 3b.
 #[tokio::test]
-async fn leaving_blocked_closes_an_earlier_notify_ask() {
+async fn ratify_resolution_leaves_an_earlier_notify_ask_open() {
     let f = fx().await;
     let p = codex_planner(&f).await;
-    block(&f, &p, "Which region?").await;
-    notify(&f, &p, "call-during-block").await;
+    request_ratify(&f, &p, "Which region?").await;
+    let call = notify(&f, &p, "call-during-request").await;
     assert_eq!(f.recompute(&p.track).await.items.len(), 2);
-    unblock(&f, &p).await;
+    resolve_ratify(&f, &p).await;
     let a = f.recompute(&p.track).await;
-    assert!(
-        a.items.is_empty(),
-        "L closes the notify sent before it: {a:?}"
+    assert_eq!(
+        a.items.len(),
+        1,
+        "only the user's reply answers a notify: {a:?}"
     );
+    assert_eq!(a.items[0].key, format!("ask:notify:{call}"));
 }
 
 // Row 4a.
 #[tokio::test]
-async fn second_block_edge_gives_a_new_key() {
+async fn second_ratify_request_gives_a_new_key() {
     let f = fx().await;
     let p = codex_planner(&f).await;
-    block(&f, &p, "First question?").await;
+    request_ratify(&f, &p, "First question?").await;
     let first = f.recompute(&p.track).await.items[0].key.clone();
-    unblock(&f, &p).await;
-    block(&f, &p, "Second question?").await;
+    resolve_ratify(&f, &p).await;
+    request_ratify(&f, &p, "Second question?").await;
     let a = f.recompute(&p.track).await;
-    assert_eq!(a.items.len(), 1, "only the newest edge is an ask: {a:?}");
+    assert_eq!(a.items.len(), 1, "only the newest request is an ask: {a:?}");
     assert_eq!(a.items[0].text, "Second question?");
     assert_ne!(
         a.items[0].key, first,
@@ -329,11 +322,11 @@ async fn second_block_edge_gives_a_new_key() {
 
 // Row 5.
 #[tokio::test]
-async fn notify_after_a_closed_block_is_an_ask() {
+async fn notify_after_a_resolved_ratify_is_an_ask() {
     let f = fx().await;
     let p = codex_planner(&f).await;
-    block(&f, &p, "Old question?").await;
-    unblock(&f, &p).await;
+    request_ratify(&f, &p, "Old question?").await;
+    resolve_ratify(&f, &p).await;
     let row = notify(&f, &p, "call-1").await;
     let a = f.recompute(&p.track).await;
     assert_eq!(a.attention, Attention::Input);
@@ -600,84 +593,38 @@ async fn failed_session_is_status_not_notification() {
     );
 }
 
-/// The kernel dispatcher's `working → reviewing`, as `auto_transition_if_current_in_tx` writes it.
-async fn kernel_review(f: &Fx, track: &str) {
-    settle().await;
-    let track_id = TrackId::from(track.to_string());
-    let scope = f.track_scope(track);
-    write_with_events_typed(
-        f.repo_dyn.as_ref(),
-        ActorId::KernelDispatcher,
-        None,
-        &f.events,
-        &f.write,
-        move |tx| {
-            Box::pin(async move {
-                let events = auto_transition_if_current_in_tx(
-                    tx,
-                    &track_id,
-                    TrackLifecycle::Working,
-                    TrackLifecycle::Reviewing,
-                    &ActorId::KernelDispatcher,
-                    None,
-                )
-                .await?
-                .expect("working → reviewing by the kernel");
-                Ok(((), events.into_iter().map(|e| (scope.clone(), e)).collect()))
-            })
-        },
-    )
-    .await
-    .unwrap();
-}
-
-// Row 16.
+// Row 17.
 #[tokio::test]
-async fn reviewing_is_status_only() {
+async fn planner_close_is_outcome_only() {
     let f = fx().await;
     let p = codex_planner(&f).await;
-    transition(
+    let closed = f
+        .repo_dyn
+        .track_update(
+            &p.track,
+            calm_server::model::TrackPatch {
+                closed: Some(true),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    emit(
         &f,
         &p.track,
-        TrackLifecycle::Reviewing,
         p.actor(),
-        "done here",
+        Event::TrackUpdated(calm_server::event::TrackUpdatedPayload::new(
+            closed,
+            Some("goal met".into()),
+        )),
     )
     .await;
     let a = f.recompute(&p.track).await;
-    assert!(a.items.is_empty(), "a Planner's reviewing: {a:?}");
-    assert_eq!(a.attention, Attention::None);
-
-    let k = planner(&f, "k", WorkerSessionKind::SharedPlanner).await;
-    kernel_review(&f, &k.track).await;
-    let a = f.recompute(&k.track).await;
-    assert!(a.items.is_empty(), "the kernel's reviewing: {a:?}");
+    assert!(a.items.is_empty(), "{a:?}");
     assert_eq!(a.attention, Attention::None);
 }
 
-// Row 17.
-#[tokio::test]
-async fn failed_lifecycle_is_outcome_only() {
-    let f = fx().await;
-    for (name, outcome) in [("f", TrackLifecycle::Failed), ("d", TrackLifecycle::Done)] {
-        let p = planner(&f, name, WorkerSessionKind::SharedPlanner).await;
-        transition(&f, &p.track, TrackLifecycle::Reviewing, p.actor(), "review").await;
-        transition(&f, &p.track, outcome, p.actor(), "outcome").await;
-        let at: i64 = sqlx::query_scalar(
-            "SELECT MAX(at) FROM events WHERE kind = 'track.lifecycle_changed' AND scope_track = ?1",
-        )
-        .bind(&p.track)
-        .fetch_one(&f.pool)
-        .await
-        .unwrap();
-        let a = f.recompute(&p.track).await;
-        assert!(a.items.is_empty(), "{outcome:?}: {a:?}");
-        assert_eq!(a.attention, Attention::None);
-        assert_eq!(a.activity_at_ms, Some(at), "{outcome:?} lights unread (E4)");
-    }
-}
-
-/// A notify ask and a failed turn landed on a track that reached `done` without ever blocking.
+/// A notify ask and a failed turn landed on a closed track.
 async fn open_notifications_on(f: &Fx, p: &Planner) {
     notify(f, p, "call-late").await;
     turn(f, p, "turn-late", "failed", Some("boom")).await;
@@ -693,22 +640,12 @@ fn keeps_both(a: &ActivityPayload) {
     );
 }
 
-// Row 17b, done.
+// Row 17b.
 #[tokio::test]
-async fn done_track_keeps_open_notifications() {
+async fn closed_track_keeps_open_notifications() {
     let f = fx().await;
     let p = codex_planner(&f).await;
-    f.set_lifecycle(&p.track, TrackLifecycle::Done).await;
-    open_notifications_on(&f, &p).await;
-    keeps_both(&f.recompute(&p.track).await);
-}
-
-// Row 17b, archived.
-#[tokio::test]
-async fn archived_track_keeps_open_notifications() {
-    let f = fx().await;
-    let p = codex_planner(&f).await;
-    f.archive(&p.track, now_ms()).await;
+    f.set_closed(&p.track, true).await;
     open_notifications_on(&f, &p).await;
     keeps_both(&f.recompute(&p.track).await);
 }
@@ -718,7 +655,7 @@ async fn archived_track_keeps_open_notifications() {
 async fn user_send_wakes_the_projector() {
     let f = fx().await;
     let p = codex_planner(&f).await;
-    block(&f, &p, "Which region?").await;
+    request_ratify(&f, &p, "Which region?").await;
     let (loop_task, _) = running_loop(&f, &p.track, |a| asks(a).len() == 1).await;
     send(&f, &p.track, &p.card, ActorId::User).await;
     let a = f

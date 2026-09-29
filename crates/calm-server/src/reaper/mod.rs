@@ -13,7 +13,6 @@ use crate::error::Result;
 use crate::event::{Event, EventBus, EventScope};
 use crate::git_candidate::delivery::AttemptOutcome;
 use crate::ids::ActorId;
-use crate::model::TrackLifecycle;
 use crate::model::now_ms;
 use crate::operation::workspace_lease::{
     ReleaseDelivery, release_workspace_lease_for_card_repo, release_workspace_lease_for_card_tx,
@@ -21,7 +20,6 @@ use crate::operation::workspace_lease::{
 use crate::provider_registry::WorkerProviderRegistry;
 use crate::scheduler::{is_race_lost, race_lost_err};
 use crate::state::WriteContext;
-use crate::track_lifecycle::auto_transition_if_current_in_tx;
 
 pub const DEFAULT_REAPER_RECONCILE_SECS: u64 = 30;
 
@@ -389,92 +387,6 @@ impl Reaper {
     }
 }
 
-impl Reaper {
-    /// The dead-ROOT convergence scan: same boot gate and reconcile loop as `sweep_all`; drives a positively-dead root's track `Draft|Planning → Failed`.
-    /// The soundness predicate (never converge a live or merely just-created track) is enforced inside `dead_root_candidates`; this loop only emits.
-    pub async fn sweep_dead_roots(&self) {
-        if !reaper_boot_completed() {
-            tracing::debug!(
-                "reaper: dead-root scan skipped - boot backfill/recovery has not completed yet"
-            );
-            return;
-        }
-
-        let candidates = match self.repo.dead_root_candidates().await {
-            Ok(candidates) => candidates,
-            Err(e) => {
-                tracing::warn!(error = %e, "reaper: failed to scan for dead-root candidates");
-                return;
-            }
-        };
-
-        for candidate in candidates {
-            if let Err(e) =
-                converge_dead_root(self.repo.as_ref(), &self.events, &self.write, &candidate).await
-            {
-                tracing::warn!(
-                    track_id = %candidate.track_id,
-                    lifecycle = candidate.lifecycle.as_db_str(),
-                    error = %e,
-                    "reaper: dead-root convergence failed; will retry next sweep"
-                );
-            }
-        }
-    }
-}
-
-/// The task-less dead-root emitter: a dead root has no task row, so there is NO `TaskFailed` — only `TrackLifecycleChanged{from → Failed}`, authored by `ActorId::KernelDispatcher`.
-/// `auto_transition_if_current_in_tx` is a CAS on the current lifecycle; `None` means a live writer raced us and is treated as a race-loss (`Ok(())`).
-pub(crate) async fn converge_dead_root(
-    repo: &dyn Repo,
-    events: &EventBus,
-    write: &WriteContext,
-    candidate: &crate::db::prelude::DeadRootCandidate,
-) -> Result<()> {
-    let track_id = candidate.track_id.clone();
-    let from = candidate.lifecycle;
-    let scope = EventScope::Track {
-        track: candidate.track_id.clone(),
-        area: candidate.area_id.clone(),
-    };
-    let agent_message = match from {
-        TrackLifecycle::Draft => {
-            "[auto] dead root: planner-harness start failed; track never advanced"
-        }
-        _ => "[auto] dead root: planner session lost mid-plan",
-    }
-    .to_string();
-
-    let result = write_with_actor_events_typed::<(), _>(repo, None, events, write, move |tx| {
-        Box::pin(async move {
-            let Some(lifecycle_events) = auto_transition_if_current_in_tx(
-                tx,
-                &track_id,
-                from,
-                TrackLifecycle::Failed,
-                &ActorId::KernelDispatcher,
-                Some(agent_message),
-            )
-            .await?
-            else {
-                // Track already moved ⇒ race-lost; the outer match absorbs it into Ok(()) so no partial event batch lands.
-                return Err(race_lost_err());
-            };
-            let events = lifecycle_events
-                .into_iter()
-                .map(|event| (ActorId::KernelDispatcher, scope.clone(), event))
-                .collect();
-            Ok(((), events))
-        })
-    })
-    .await;
-    match result {
-        Ok(_) => Ok(()),
-        Err(e) if is_race_lost(&e) => Ok(()),
-        Err(e) => Err(e),
-    }
-}
-
 pub(crate) async fn converge_dead_worker(
     repo: &dyn Repo,
     events: &EventBus,
@@ -539,22 +451,6 @@ pub(crate) async fn converge_dead_worker(
                         ReleaseDelivery::Commit(AttemptOutcome::Failed),
                     )
                     .await?,
-                );
-            }
-            if let Some(auto_events) = auto_transition_if_current_in_tx(
-                tx,
-                &track_id,
-                TrackLifecycle::Working,
-                TrackLifecycle::Reviewing,
-                &ActorId::KernelDispatcher,
-                Some("[auto] worker died without reporting".to_string()),
-            )
-            .await?
-            {
-                events.extend(
-                    auto_events
-                        .into_iter()
-                        .map(|event| (ActorId::KernelDispatcher, scope.clone(), event)),
                 );
             }
             Ok(((), events))

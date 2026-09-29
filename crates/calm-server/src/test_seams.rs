@@ -46,11 +46,9 @@ pub async fn attach_track_worktree_for_test(
         .bind(track_id)
         .execute(&mut *tx)
         .await?;
-    let track = crate::track_lifecycle::track_get_tx(
-        &mut tx,
-        &crate::ids::TrackId::from(track_id.to_string()),
-    )
-    .await?;
+    let track =
+        crate::db::sqlite::track_get_tx(&mut tx, &crate::ids::TrackId::from(track_id.to_string()))
+            .await?;
     tx.commit().await?;
     crate::operation::workspace_lease::track_worktree::ensure_track_worktree(&track).await?;
     Ok(path)

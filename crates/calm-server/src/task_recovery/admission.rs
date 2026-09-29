@@ -9,7 +9,7 @@ use crate::db::sqlite::{task_attempt_current_tx, task_attempt_get_tx, task_get_t
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, TrackId};
-use crate::model::{Task, TaskStatus, Track, TrackLifecycle};
+use crate::model::{Task, TaskStatus, Track};
 use crate::track_report::ReportBlock;
 use calm_types::report_blocks::tasks::{PLANNER_DECLARATION_AUTHOR, TaskDeclaration};
 use calm_types::task_recovery::{TASK_IN_TRACK_ROUTE, TaskAttemptOrigin, TaskRecoveryConstraint};
@@ -69,27 +69,13 @@ pub(super) async fn recovery_policy(
     task: &Task,
     generation: i64,
     actor: &ActorId,
-    resume_blocked: bool,
 ) -> Admission<()> {
-    let explicit_resume = track.lifecycle == TrackLifecycle::Blocked
-        && resume_blocked
-        && crate::track_lifecycle::validate_transition(
-            track.lifecycle,
-            TrackLifecycle::Working,
-            actor,
-        )
-        .is_ok();
-    if !crate::scheduler::lifecycle_allows_scheduling(track.lifecycle) && !explicit_resume {
+    if !track.is_open() {
         return Err(refuse(
             RefusalSite::TrackNotReady,
             RecoveryRefusalCode::TrackNotReady,
             SupportedContinuation::None,
-            format!(
-                "track is blocked or terminal (lifecycle {}) and does not schedule work; \
-                 explicitly request working to resolve a blocker, or separately reopen a \
-                 terminal track",
-                track.lifecycle.as_db_str()
-            ),
+            "track is closed; reopen it first",
         ));
     }
     if task.spawn != TASK_IN_TRACK_ROUTE {
@@ -134,9 +120,8 @@ pub(super) async fn admit_recovery_tx(
     previous: &Task,
     generation: i64,
     actor: &ActorId,
-    resume_blocked: bool,
 ) -> Admission<TaskRecoveryConstraint> {
-    recovery_policy(tx, track, previous, generation, actor, resume_blocked).await?;
+    recovery_policy(tx, track, previous, generation, actor).await?;
     admit_contract_and_predecessor_tx(tx, track, previous).await
 }
 
@@ -177,10 +162,10 @@ pub(crate) async fn admit_contract_and_predecessor_tx(
 /// Shared exact claim-source validation; isolated first starts also require it.
 pub(crate) async fn validate_isolated_start_tx(tx: &mut Tx<'_>, task: &Task) -> Result<()> {
     require_attempt_startable_tx(tx, &task.id).await?;
-    let track = crate::track_lifecycle::track_get_tx(tx, &task.track_id.clone().into()).await?;
+    let track = crate::db::sqlite::track_get_tx(tx, &task.track_id.clone().into()).await?;
     if task.status != TaskStatus::Dispatched
         || task.context_stale_at_ms.is_some()
-        || !crate::scheduler::lifecycle_allows_scheduling(track.lifecycle)
+        || !track.is_open()
     {
         return Err(conflict(
             "isolated task is not authorized for a first start",
@@ -190,9 +175,9 @@ pub(crate) async fn validate_isolated_start_tx(tx: &mut Tx<'_>, task: &Task) -> 
 }
 
 /// Read-only contract authority shared by starts and post-execution publication.
-/// Callers keep their own lifecycle/current-attempt/status guards.
+/// Callers keep their own open/current-attempt/status guards.
 pub(crate) async fn validate_frozen_contract_tx(tx: &mut Tx<'_>, task: &Task) -> Result<()> {
-    let track = crate::track_lifecycle::track_get_tx(tx, &task.track_id.clone().into()).await?;
+    let track = crate::db::sqlite::track_get_tx(tx, &task.track_id.clone().into()).await?;
     if task.context_stale_at_ms.is_some() {
         return Err(conflict("frozen task context is stale"));
     }
@@ -360,7 +345,7 @@ pub(super) async fn check_constraint_tx(
         ));
     }
     for frozen in refs {
-        let target = crate::track_lifecycle::track_get_tx(tx, &frozen.track_id)
+        let target = crate::db::sqlite::track_get_tx(tx, &frozen.track_id)
             .await
             .map_err(|error| match error {
                 CalmError::NotFound(_) => changed(
@@ -592,8 +577,7 @@ pub(crate) async fn check_recovery_attempt_tx(tx: &mut Tx<'_>, task_id: &str) ->
         return Ok(());
     };
     let track =
-        crate::track_lifecycle::track_get_tx(tx, &TrackId::from(allocation.track_id.clone()))
-            .await?;
+        crate::db::sqlite::track_get_tx(tx, &TrackId::from(allocation.track_id.clone())).await?;
     let previous = task_get_tx(tx, &previous_attempt_id)
         .await?
         .ok_or_else(|| {
@@ -617,15 +601,12 @@ pub(crate) async fn check_recovery_attempt_tx(tx: &mut Tx<'_>, task_id: &str) ->
             "accepted recovery has unsupported authority provenance; it cannot start",
         ));
     }
-    if !crate::scheduler::lifecycle_allows_scheduling(track.lifecycle) {
+    if !track.is_open() {
         return Err(refuse(
             RefusalSite::TrackNoLongerSchedules,
             RecoveryRefusalCode::TrackNotReady,
             SupportedContinuation::None,
-            format!(
-                "track is paused or terminal (lifecycle {}); resume its work before this recovery can start",
-                track.lifecycle.as_db_str()
-            ),
+            "track is closed; reopen it first",
         ));
     }
     // declare-and-wait may be satisfied by an explicit current release; the initial Planner

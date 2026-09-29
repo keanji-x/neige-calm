@@ -32,7 +32,7 @@ pub(crate) async fn record(
         let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM events WHERE kind='task.file_publication_settled' AND json_extract(payload,'$.operation_id')=?1)")
             .bind(&op_id).fetch_one(&mut **tx).await?;
         if exists { return Err(conflict(ALREADY_RECORDED)); }
-        let track = crate::track_lifecycle::track_get_tx(tx, &payload.track_id.clone().into()).await?;
+        let track = crate::db::sqlite::track_get_tx(tx, &payload.track_id.clone().into()).await?;
         let event = Event::TaskFilePublicationSettled { task_id: payload.task_id, operation_id: op_id };
         Ok(((), vec![(ActorId::KernelDispatcher, EventScope::Track { track: track.id, area: track.area_id }, event)]))
     })).await;

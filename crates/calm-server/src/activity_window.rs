@@ -9,21 +9,15 @@ use crate::error::{CalmError, Result};
 
 /// The event kinds that count as workspace activity. None may ever join `EVENTS_PRUNE_KINDS` (pinned by `events_pruner::activity_window_kinds_are_never_prunable`).
 /// `turns` is deliberately absent: its only fact source, `harness.item.added`, is pruned after 30 days.
-pub const ACTIVITY_KINDS: [&str; 4] = [
-    "track.lifecycle_changed",
-    "track.report_edited",
-    "task.completed",
-    "task.failed",
-];
+pub const ACTIVITY_KINDS: [&str; 3] = ["track.report_edited", "task.completed", "task.failed"];
 
 /// The one statement this projection runs. One query, not two: the per-kind counts and the distinct-track count come from a single snapshot, so they cannot disagree.
-/// `?1`/`?2` the half-open window; `?3` the track to exclude or NULL; `?4`..`?7` [`ACTIVITY_KINDS`], bound twice (restrict and bucket).
+/// `?1`/`?2` the half-open window; `?3` the track to exclude or NULL; `?4`..`?6` [`ACTIVITY_KINDS`], bound twice (restrict and bucket).
 /// The join runs through `tracks`/`areas` rather than trusting the write-time `events.scope_area` snapshot; `areas.kind = 'user'` is the same visibility predicate as `GET /api/areas`.
 const ACTIVITY_QUERY: &str = r#"
-    SELECT COALESCE(SUM(e.kind = ?4), 0) AS lifecycle,
-           COALESCE(SUM(e.kind = ?5), 0) AS report,
-           COALESCE(SUM(e.kind = ?6), 0) AS completed,
-           COALESCE(SUM(e.kind = ?7), 0) AS failed,
+    SELECT COALESCE(SUM(e.kind = ?4), 0) AS report,
+           COALESCE(SUM(e.kind = ?5), 0) AS completed,
+           COALESCE(SUM(e.kind = ?6), 0) AS failed,
            COUNT(DISTINCT w.id)          AS tracks
       FROM events e
       JOIN tracks w ON w.id = e.scope_track
@@ -32,13 +26,12 @@ const ACTIVITY_QUERY: &str = r#"
        AND e.at <  ?2
        AND c.kind = 'user'
        AND (?3 IS NULL OR w.id <> ?3)
-       AND e.kind IN (?4, ?5, ?6, ?7)
+       AND e.kind IN (?4, ?5, ?6)
 "#;
 
 /// One window's worth of activity. Integers only.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct WorkspaceActivityWindow {
-    pub track_lifecycle_changed: i64,
     pub track_report_edited: i64,
     pub task_completed: i64,
     pub task_failed: i64,
@@ -50,8 +43,7 @@ impl WorkspaceActivityWindow {
     /// Total counted events; `tracks_touched` is a dimension of the same rows, not more of them.
     /// Saturating so the widest renderable value (`i64::MIN`, used by the prompt-length bounds) does not panic in debug builds.
     pub fn total_events(&self) -> i64 {
-        self.track_lifecycle_changed
-            .saturating_add(self.track_report_edited)
+        self.track_report_edited
             .saturating_add(self.task_completed)
             .saturating_add(self.task_failed)
     }
@@ -70,14 +62,13 @@ pub async fn workspace_activity_window(
     end_ms: i64,
     exclude_track: Option<&str>,
 ) -> Result<WorkspaceActivityWindow> {
-    let [lifecycle, report, completed, failed] = ACTIVITY_KINDS;
+    let [report, completed, failed] = ACTIVITY_KINDS;
 
-    let (track_lifecycle_changed, track_report_edited, task_completed, task_failed, tracks_touched) =
-        sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(ACTIVITY_QUERY)
+    let (track_report_edited, task_completed, task_failed, tracks_touched) =
+        sqlx::query_as::<_, (i64, i64, i64, i64)>(ACTIVITY_QUERY)
             .bind(start_ms)
             .bind(end_ms)
             .bind(exclude_track)
-            .bind(lifecycle)
             .bind(report)
             .bind(completed)
             .bind(failed)
@@ -85,7 +76,6 @@ pub async fn workspace_activity_window(
             .await?;
 
     Ok(WorkspaceActivityWindow {
-        track_lifecycle_changed,
         track_report_edited,
         task_completed,
         task_failed,
@@ -102,15 +92,13 @@ pub async fn todays_workspace_activity(
     workspace_activity_window(pool, start_ms, end_ms, exclude_track).await
 }
 
-/// The five counts, as five lines — the only place production renders them, and where the length bound lives (fixed template plus five `i64`s).
+/// The four counts, as four lines — the only place production renders them, and where the length bound lives (fixed template plus four `i64`s).
 pub fn activity_counts_block(activity: &WorkspaceActivityWindow) -> String {
     format!(
-        "- tracks whose lifecycle changed: {}\n\
-         - report edits: {}\n\
+        "- report edits: {}\n\
          - tasks completed: {}\n\
          - tasks failed: {}\n\
          - distinct tracks touched: {}\n",
-        activity.track_lifecycle_changed,
         activity.track_report_edited,
         activity.task_completed,
         activity.task_failed,
@@ -123,8 +111,8 @@ pub fn activity_counts_block(activity: &WorkspaceActivityWindow) -> String {
 pub fn opening_activity_briefing(activity: &WorkspaceActivityWindow) -> String {
     if activity.is_empty() {
         return "Context from the server before you start: nothing has been \
-                recorded in this workspace today — no track lifecycle changes, \
-                no report edits, no completed or failed tasks. That is the \
+                recorded in this workspace today — no report edits, no \
+                completed or failed tasks. That is the \
                 whole of the day's activity data, and it is empty. If you are \
                 asked what happened today, say that nothing was recorded \
                 rather than inferring work from the workspace."
@@ -210,15 +198,7 @@ mod tests {
     #[test]
     fn the_allowlist_spells_the_kernel_s_own_event_kinds() {
         use crate::event::Event;
-        use crate::model::TrackLifecycle;
 
-        let lifecycle = Event::TrackLifecycleChanged {
-            id: crate::ids::TrackId::from("w".to_string()),
-            area_id: crate::ids::AreaId::from("c".to_string()),
-            from: TrackLifecycle::Draft,
-            to: TrackLifecycle::Planning,
-            agent_message: None,
-        };
         let completed = Event::TaskCompleted {
             idempotency_key: "k".into(),
             result: serde_json::Value::Null,
@@ -233,7 +213,6 @@ mod tests {
         };
         assert_eq!(
             [
-                lifecycle.kind_tag(),
                 "track.report_edited",
                 completed.kind_tag(),
                 failed.kind_tag(),
@@ -267,8 +246,8 @@ mod tests {
 
         async fn track(&self, id: &str, area_id: &str) {
             sqlx::query(
-                "INSERT INTO tracks(id,area_id,title,sort,lifecycle,created_at,updated_at) \
-                 VALUES(?1,?2,?1,1,'draft',1,1)",
+                "INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) \
+                 VALUES(?1,?2,?1,1,1,1)",
             )
             .bind(id)
             .bind(area_id)
@@ -361,7 +340,6 @@ mod tests {
         assert_eq!(
             window,
             WorkspaceActivityWindow {
-                track_lifecycle_changed: 1,
                 track_report_edited: 2,
                 task_completed: 1,
                 task_failed: 1,
@@ -371,7 +349,7 @@ mod tests {
             }
         );
         assert!(!window.is_empty());
-        assert_eq!(window.total_events(), 5);
+        assert_eq!(window.total_events(), 4);
     }
 
     /// The system area is not activity; if these rows counted, no workspace would ever have an empty day.
@@ -443,11 +421,10 @@ mod tests {
         );
     }
 
-    /// `i64::MIN` five times is the widest rendering of the counts block, so the bound is arithmetic rather than a sample.
+    /// `i64::MIN` four times is the widest rendering of the counts block, so the bound is arithmetic rather than a sample.
     #[test]
     fn the_opening_briefing_is_bounded_far_below_the_planner_input_ceiling() {
         let widest = opening_activity_briefing(&WorkspaceActivityWindow {
-            track_lifecycle_changed: i64::MIN,
             track_report_edited: i64::MIN,
             task_completed: i64::MIN,
             task_failed: i64::MIN,

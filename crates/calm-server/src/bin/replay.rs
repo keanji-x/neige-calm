@@ -8,13 +8,9 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::post;
 use calm_server::auth::{AuthConfig, AuthState, DEFAULT_DISPLAY_NAME};
-use calm_server::db::sqlite::{SqlxRepo, track_update_tx};
-use calm_server::db::write_with_events_typed;
-use calm_server::event::{Event, EventBus, EventScope};
-use calm_server::ids::ActorId;
-use calm_server::model::{TrackLifecycle, TrackPatch};
+use calm_server::db::sqlite::SqlxRepo;
+use calm_server::event::EventBus;
 use calm_server::replay;
-use calm_server::track_lifecycle::validate_transition;
 use clap::Parser;
 use serde::Deserialize;
 
@@ -164,10 +160,6 @@ async fn run_serve(
     };
     let dev_routes = axum::Router::new()
         .route("/dev/reset", post(dev_reset))
-        .route(
-            "/dev/force-track-lifecycle",
-            post(dev_force_track_lifecycle),
-        )
         .route("/dev/force-planner-phase", post(dev_force_planner_phase))
         .with_state(dev_state);
     // Mount `auth::router` with `dev_autologin = true` so the frontend's boot-time whoami probe returns 200 without a session cookie;
@@ -233,7 +225,7 @@ struct DevResetState {
     repo: Arc<SqlxRepo>,
     bus: EventBus,
     fixture: Arc<replay::Fixture>,
-    /// Shared app state so the forced transition writes through the same `write_with_events_typed` path as `routes::tracks::update_track`.
+    /// Shared app state, for the harness drain and the forced planner phase.
     app: calm_server::state::AppState,
 }
 
@@ -263,127 +255,6 @@ async fn dev_reset(State(s): State<DevResetState>) -> (StatusCode, axum::Json<se
                 })),
             )
         }
-    }
-}
-
-// `POST /dev/force-track-lifecycle` — dev-only, `--serve` mode only. The planner daemon does not run here, so planner-only lifecycle edges can never happen organically.
-// Stamps the transition as `ActorId::Kernel` through the same `validate_transition` + `write_with_events_typed` pipeline as the production route: it changes who drives the edge, not whether the edge is legal.
-
-#[derive(Debug, Deserialize)]
-struct ForceLifecycleBody {
-    track_id: String,
-    to: TrackLifecycle,
-}
-
-async fn dev_force_track_lifecycle(
-    State(s): State<DevResetState>,
-    axum::Json(body): axum::Json<ForceLifecycleBody>,
-) -> Result<axum::Json<serde_json::Value>, (StatusCode, axum::Json<serde_json::Value>)> {
-    // Read the existing row outside the tx, as `update_track` does (area_id is immutable, so a cross-tx read is safe).
-    let existing = s
-        .app
-        .repo
-        .track_get(&body.track_id)
-        .await
-        .map_err(|e| internal_err(e.into()))?
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                axum::Json(serde_json::json!({
-                    "ok": false,
-                    "error": format!("track {} not found", body.track_id),
-                })),
-            )
-        })?;
-
-    let from = existing.lifecycle;
-    let to = body.to;
-    let actor = ActorId::Kernel;
-
-    // Same validator as the production route, so this endpoint cannot put the track into an impossible state.
-    if let Err(e) = validate_transition(from, to, &actor) {
-        return Err((
-            StatusCode::FORBIDDEN,
-            axum::Json(serde_json::json!({
-                "ok": false,
-                "error": e.to_string(),
-                "from": from,
-                "to": to,
-            })),
-        ));
-    }
-
-    // Idempotent same-state: short-circuit without emitting events, mirroring `update_track`.
-    if from == to {
-        return Ok(axum::Json(serde_json::json!({
-            "ok": true,
-            "track": existing,
-            "emitted_events": 0i32,
-        })));
-    }
-
-    let scope = EventScope::Track {
-        track: existing.id.clone(),
-        area: existing.area_id.clone(),
-    };
-    let area_id_for_event = existing.area_id.clone();
-    let track_id_for_event = existing.id.clone();
-    let track_id_for_tx = body.track_id.clone();
-
-    let patch = TrackPatch {
-        lifecycle: Some(to),
-        ..TrackPatch::default()
-    };
-
-    let result = write_with_events_typed(
-        s.app.repo.as_ref(),
-        actor,
-        None,
-        &s.app.events,
-        s.app.write(),
-        move |tx| {
-            let scope = scope.clone();
-            let patch = patch.clone();
-            Box::pin(async move {
-                let track = track_update_tx(tx, &track_id_for_tx, patch).await?;
-                let events: Vec<(EventScope, Event)> = vec![
-                    (
-                        scope.clone(),
-                        Event::TrackLifecycleChanged {
-                            id: track_id_for_event.clone(),
-                            area_id: area_id_for_event.clone(),
-                            from,
-                            to,
-                            agent_message: None,
-                        },
-                    ),
-                    (
-                        scope,
-                        Event::TrackUpdated(calm_server::event::TrackUpdatedPayload::new(
-                            track.clone(),
-                            None,
-                        )),
-                    ),
-                ];
-                Ok((track, events))
-            })
-        },
-    )
-    .await;
-
-    match result {
-        Ok((track, ids)) => Ok(axum::Json(serde_json::json!({
-            "ok": true,
-            "track": track,
-            "emitted_events": ids.len(),
-        }))),
-        Err(e) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(serde_json::json!({
-                "ok": false,
-                "error": e.to_string(),
-            })),
-        )),
     }
 }
 
@@ -417,14 +288,4 @@ async fn dev_force_planner_phase(
             })),
         )),
     }
-}
-
-fn internal_err(e: calm_server::error::CalmError) -> (StatusCode, axum::Json<serde_json::Value>) {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        axum::Json(serde_json::json!({
-            "ok": false,
-            "error": e.to_string(),
-        })),
-    )
 }

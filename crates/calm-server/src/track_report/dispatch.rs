@@ -385,7 +385,7 @@ pub(super) async fn snapshot_tx(
         Some(a) => crate::db::sqlite::task_get_tx(tx, &a.attempt_id).await?,
         None => None,
     };
-    let track_state = crate::track_lifecycle::track_get_tx(tx, track).await?;
+    let track_state = crate::db::sqlite::track_get_tx(tx, track).await?;
     let blocking_reason = match &allocation {
         Some(allocation) => {
             crate::task_recovery::current_blocking_reason_tx(
@@ -419,7 +419,6 @@ pub(super) async fn snapshot_tx(
         "receipt": receipt,
         "current": {
             "as_of_ms": now_ms(), "contract_status": contract_status,
-            "track": {"lifecycle": track_state.lifecycle, "archived_at": track_state.archived_at, "lifecycle_allows_scheduling": crate::scheduler::lifecycle_allows_scheduling(track_state.lifecycle)},
             "blocking_reason": blocking_reason, "declaration_present": declaration_present,
             "declaration_unavailable": !declaration_present, "declaration_withdrawn": declaration_withdrawn, "diagnostics": verdicts,
             "allocation": allocation,

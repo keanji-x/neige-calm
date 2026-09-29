@@ -23,7 +23,7 @@ use crate::db::{RepoEventWrite, write_with_actor_events_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus, EventScope};
 use crate::ids::{ActorId, TrackId};
-use crate::model::{Task, TaskKind, TaskStatus, TrackLifecycle};
+use crate::model::{Task, TaskKind, TaskStatus};
 use crate::state::WriteContext;
 use calm_types::task_recovery::{TaskRecoveryReceipt, TaskRecoveryRequest};
 use serde_json::{Value, json};
@@ -160,7 +160,7 @@ async fn recover_with_binding(
                 if let Some(binding) = &binding {
                     crate::semantic_recovery::authenticate_tx(tx, binding).await?;
                 }
-                let track = crate::track_lifecycle::track_get_tx(tx, &track_id).await?;
+                let track = crate::db::sqlite::track_get_tx(tx, &track_id).await?;
                 let scope = EventScope::Track {
                     track: track.id.clone(),
                     area: track.area_id.clone(),
@@ -208,7 +208,6 @@ async fn recover_with_binding(
                     &previous,
                     allocation.generation,
                     &actor,
-                    true,
                 )
                 .await?;
                 let receipt = task_recovery_allocate_tx(
@@ -221,32 +220,9 @@ async fn recover_with_binding(
                     &actor,
                 )
                 .await?;
-                let mut emitted = Vec::new();
-                if crate::track_lifecycle::validate_transition(
-                    track.lifecycle,
-                    TrackLifecycle::Working,
-                    &actor,
-                )
-                .is_ok()
-                    && let Some(transitions) =
-                        crate::track_lifecycle::apply_requested_transition_in_tx(
-                            tx,
-                            &track.id,
-                            TrackLifecycle::Working,
-                            &actor,
-                            request.reason,
-                        )
-                        .await?
-                {
-                    emitted.extend(
-                        transitions
-                            .into_iter()
-                            .map(|event| (actor.clone(), scope.clone(), event)),
-                    );
-                }
                 let projection =
                     crate::track_report::tasks_rebuild_tx(tx, track_id.as_str()).await?;
-                emitted.extend(projection.kernel_events);
+                let mut emitted = projection.kernel_events;
                 emitted.push((actor, scope, event));
                 Ok((receipt, emitted))
             })

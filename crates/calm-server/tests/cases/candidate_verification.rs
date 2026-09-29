@@ -219,7 +219,7 @@ async fn candidate_verification_admits_the_consumer_and_its_replay_is_quiet() {
         let rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as("SELECT a.operation_key,o.id,o.phase FROM task_candidate_verification_allocations a LEFT JOIN operations o ON o.operation_key=a.operation_key WHERE a.publication_operation_id=?1")
             .bind(&publication).fetch_all(&fx.boot.repo.sqlite_pool().unwrap()).await.unwrap();
         let pool = fx.boot.repo.sqlite_pool().unwrap();
-        let lifecycle: String = sqlx::query_scalar("SELECT lifecycle FROM tracks WHERE id=?1")
+        let closed_at: Option<i64> = sqlx::query_scalar("SELECT closed_at FROM tracks WHERE id=?1")
             .bind(&task.track_id)
             .fetch_one(&pool)
             .await
@@ -239,7 +239,7 @@ async fn candidate_verification_admits_the_consumer_and_its_replay_is_quiet() {
                 .unwrap();
         let settlements: i64 = sqlx::query_scalar("SELECT count(*) FROM events WHERE kind='task.file_publication_settled' AND json_extract(payload,'$.operation_id')=?1").bind(&publication).fetch_one(&pool).await.unwrap();
         panic!(
-            "verification was not admitted after scheduler ticks: {error}; allocation/operation state: {rows:?}; track={lifecycle}; source={source:?}; publication={publication_state}; publication settlements={settlements}; source driver inflight={}",
+            "verification was not admitted after scheduler ticks: {error}; allocation/operation state: {rows:?}; track closed_at={closed_at:?}; source={source:?}; publication={publication_state}; publication settlements={settlements}; source driver inflight={}",
             fx.state
                 .dispatcher
                 .scheduler()

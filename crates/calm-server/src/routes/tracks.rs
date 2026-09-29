@@ -3,6 +3,7 @@
 use crate::AREA_CHAT_PURPOSE;
 use crate::actor::Actor;
 use crate::auth::Principal;
+use crate::db::sqlite::track_get_tx;
 use crate::db::sqlite::{
     MAX_TRACK_TREE_DEPTH, MAX_TREE_TASK_BUDGET, TRACK_TREE_MEMBERS_SQL, TrackRecipeOrigin,
     TrackTreeTerm, TrackWorkspacePlan, area_folder_create_tx, area_folders_list_all_tx,
@@ -38,9 +39,6 @@ use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::templates::{Template, TemplateRoster};
 use crate::terminal_sweeper::quiesce_terminal_artifacts_for_deletion;
 use crate::track_fs_view::{TrackFsContent, TrackFsEntry, TrackFsView};
-use crate::track_lifecycle::{
-    track_get_tx, validate_transition, validate_transition_snapshot_in_tx,
-};
 use crate::track_report::{
     self, ReportBlock, TrackReportPayload, report_blocks_snapshot_tx, resolve_report_for_track,
     tasks_rebuild_tree_after_member_removal_tx, tasks_rebuild_tree_tx, tasks_rebuild_tx,
@@ -157,14 +155,6 @@ pub struct TrackDeleteCommitHook {
     pub panic_after_release: bool,
 }
 
-/// Test seam for the lifecycle PATCH pre-read/transaction boundary.
-#[cfg(feature = "fixtures")]
-#[derive(Clone)]
-pub struct TrackLifecyclePatchRaceHook {
-    pub entered: std::sync::Arc<Notify>,
-    pub release: std::sync::Arc<Notify>,
-}
-
 #[cfg(feature = "fixtures")]
 fn track_delete_teardown_hooks() -> &'static StdMutex<HashMap<String, TrackDeleteTeardownHook>> {
     static HOOKS: OnceLock<StdMutex<HashMap<String, TrackDeleteTeardownHook>>> = OnceLock::new();
@@ -174,14 +164,6 @@ fn track_delete_teardown_hooks() -> &'static StdMutex<HashMap<String, TrackDelet
 #[cfg(feature = "fixtures")]
 fn track_delete_commit_hooks() -> &'static StdMutex<HashMap<String, TrackDeleteCommitHook>> {
     static HOOKS: OnceLock<StdMutex<HashMap<String, TrackDeleteCommitHook>>> = OnceLock::new();
-    HOOKS.get_or_init(|| StdMutex::new(HashMap::new()))
-}
-
-#[cfg(feature = "fixtures")]
-fn track_lifecycle_patch_race_hooks()
--> &'static StdMutex<HashMap<String, TrackLifecyclePatchRaceHook>> {
-    static HOOKS: OnceLock<StdMutex<HashMap<String, TrackLifecyclePatchRaceHook>>> =
-        OnceLock::new();
     HOOKS.get_or_init(|| StdMutex::new(HashMap::new()))
 }
 
@@ -200,18 +182,6 @@ pub fn install_track_delete_commit_hook_for_test(track_id: &str, hook: TrackDele
     track_delete_commit_hooks()
         .lock()
         .expect("track delete commit hook mutex")
-        .insert(track_id.to_string(), hook);
-}
-
-#[cfg(feature = "fixtures")]
-#[doc(hidden)]
-pub fn install_track_lifecycle_patch_race_hook_for_test(
-    track_id: &str,
-    hook: TrackLifecyclePatchRaceHook,
-) {
-    track_lifecycle_patch_race_hooks()
-        .lock()
-        .expect("track lifecycle patch hook mutex")
         .insert(track_id.to_string(), hook);
 }
 
@@ -247,22 +217,6 @@ async fn wait_at_track_delete_commit_hook(track_id: &str) -> bool {
     #[cfg(not(feature = "fixtures"))]
     let _ = track_id;
     false
-}
-
-async fn wait_at_track_lifecycle_patch_race_hook(track_id: &str) {
-    #[cfg(feature = "fixtures")]
-    {
-        let hook = track_lifecycle_patch_race_hooks()
-            .lock()
-            .expect("track lifecycle patch hook mutex")
-            .remove(track_id);
-        if let Some(hook) = hook {
-            hook.entered.notify_one();
-            hook.release.notified().await;
-        }
-    }
-    #[cfg(not(feature = "fixtures"))]
-    let _ = track_id;
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -710,7 +664,7 @@ fn prepare_initial_report_payload(
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
 pub struct TracksWindowQuery {
     /// Lower bound (inclusive) in unix milliseconds. Track is included
-    /// when `terminal_at IS NULL OR terminal_at >= since`. Omitting
+    /// when `closed_at IS NULL OR closed_at >= since`. Omitting
     /// disables the lower-bound filter.
     pub since: Option<i64>,
     /// Upper bound (inclusive) in unix milliseconds. Track is included
@@ -2532,9 +2486,8 @@ pub(crate) async fn update_track(
             workspace: _,
             title,
             sort,
-            archived_at,
             pinned_at,
-            lifecycle,
+            closed,
             require_task_gates,
             planner_task_ceiling,
             automation_policy,
@@ -2543,9 +2496,8 @@ pub(crate) async fn update_track(
         } = &p;
         let mixes_other_fields = title.is_some()
             || sort.is_some()
-            || archived_at.is_some()
             || pinned_at.is_some()
-            || lifecycle.is_some()
+            || closed.is_some()
             || require_task_gates.is_some()
             || planner_task_ceiling.is_some()
             || automation_policy.is_some()
@@ -2561,11 +2513,11 @@ pub(crate) async fn update_track(
         return repoint_track_workspace(&s, &w, &actor, &existing, workspace).await;
     }
 
-    // The guard fires on mentioning `lifecycle`, not on changing it: accepting a no-op
+    // The guard fires on mentioning `closed`, not on changing it: accepting a no-op
     // write would advertise an editable field.
-    if existing.purpose.as_deref() == Some(AREA_CHAT_PURPOSE) && p.lifecycle.is_some() {
+    if existing.purpose.as_deref() == Some(AREA_CHAT_PURPOSE) && p.closed.is_some() {
         return Err(CalmError::Forbidden(
-            "area chat track lifecycle cannot be changed".into(),
+            "an area chat track cannot be closed or reopened".into(),
         ));
     }
     let scope = EventScope::Track {
@@ -2589,25 +2541,17 @@ pub(crate) async fn update_track(
         ));
     }
 
-    // Lifecycle preflight: the same snapshot is checked again after BEGIN IMMEDIATE, and only
-    // that in-tx check can authorize the row write. Same-state requests are an idempotent
-    // silent success for authorized actors.
+    // Only a person closes or reopens here; a Planner closes with `calm.track.close`.
+    if p.closed.is_some() && !matches!(actor_id, ActorId::User) {
+        return Err(CalmError::Forbidden(
+            "closed is user-only; a Planner closes with calm.track.close".into(),
+        ));
+    }
+    // Asking for the state the track is already in is an idempotent silent success.
     let mut p = p;
-    let lifecycle_change = if let Some(to) = p.lifecycle {
-        validate_transition(existing.lifecycle, to, &actor_id)
-            .map_err(|e| CalmError::Forbidden(e.to_string()))?;
-        if existing.lifecycle == to {
-            // Idempotent no-op for lifecycle; drop it from the patch
-            // so the row write below is a true no-op when no other
-            // field is set.
-            p.lifecycle = None;
-            None
-        } else {
-            Some((existing.lifecycle, to))
-        }
-    } else {
-        None
-    };
+    if p.closed == Some(existing.closed_at.is_some()) {
+        p.closed = None;
+    }
 
     if let Some(Some(ceiling)) = p.planner_task_ceiling
         && ceiling < 0
@@ -2634,44 +2578,29 @@ pub(crate) async fn update_track(
     validate_policy_patch(&mut p)?;
 
     // An entirely empty patch is the idempotent retry path: nothing to write or emit.
-    let patch_has_other_changes = p.title.is_some()
+    let patch_has_changes = p.title.is_some()
         || p.sort.is_some()
-        || p.archived_at.is_some()
+        || p.closed.is_some()
         || p.pinned_at.is_some()
         || p.require_task_gates.is_some()
         || p.planner_task_ceiling.is_some()
         || p.automation_policy.is_some()
         || p.tree_task_budget.is_some()
         || p.claude_permissions_policy.is_some();
-    if lifecycle_change.is_none() && !patch_has_other_changes {
+    if !patch_has_changes {
         return Ok(Json(existing).into_response());
     }
 
-    // A lifecycle change emits both `TrackLifecycleChanged` and `TrackUpdated` from the
-    // same txn; both land or neither does.
-    let area_id_for_event = existing.area_id.clone();
-    let track_id_for_event = existing.id.clone();
     let projection_policy_changed = p.planner_task_ceiling.is_some()
         || p.automation_policy.is_some()
         || p.require_task_gates.is_some()
         || p.tree_task_budget.is_some();
     let tree_budget_changed = p.tree_task_budget.is_some();
-    wait_at_track_lifecycle_patch_race_hook(id.as_str()).await;
     let p_for_tx = p.clone();
     let (track, _ids) =
         write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
             let scope = scope.clone();
             Box::pin(async move {
-                if let Some((expected_from, to)) = lifecycle_change {
-                    validate_transition_snapshot_in_tx(
-                        tx,
-                        &track_id_for_event,
-                        expected_from,
-                        to,
-                        &actor_id,
-                    )
-                    .await?;
-                }
                 let track = track_update_tx(tx, &id, p_for_tx).await?;
                 let projections = if projection_policy_changed {
                     if tree_budget_changed {
@@ -2683,19 +2612,6 @@ pub(crate) async fn update_track(
                     Vec::new()
                 };
                 let mut events: Vec<(ActorId, EventScope, Event)> = Vec::new();
-                if let Some((from, to)) = lifecycle_change {
-                    events.push((
-                        actor_id.clone(),
-                        scope.clone(),
-                        Event::TrackLifecycleChanged {
-                            id: track_id_for_event.clone(),
-                            area_id: area_id_for_event.clone(),
-                            from,
-                            to,
-                            agent_message: None,
-                        },
-                    ));
-                }
                 events.push((
                     actor_id.clone(),
                     scope.clone(),

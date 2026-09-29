@@ -608,7 +608,6 @@ mod template_context;
 pub mod templates;
 pub(crate) mod track_binding;
 pub mod track_fs_view;
-pub mod track_lifecycle;
 pub mod track_report;
 pub mod track_report_doc;
 mod track_report_edit_guard;

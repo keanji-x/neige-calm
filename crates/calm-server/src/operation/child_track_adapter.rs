@@ -554,15 +554,12 @@ mod tests {
         .await
         .unwrap();
         if non_default_lifecycle_metadata {
-            // Only this acceptance needs negative inheritance sentinels; other tests keep a live Draft parent.
-            sqlx::query(
-                "UPDATE tracks SET archived_at=101,pinned_at=102,lifecycle='done',terminal_at=103 \
-                 WHERE id=?1",
-            )
-            .bind(track.id.as_str())
-            .execute(&mut *tx)
-            .await
-            .unwrap();
+            // Only this acceptance needs negative inheritance sentinels; other tests keep an open parent.
+            sqlx::query("UPDATE tracks SET pinned_at=102,closed_at=103 WHERE id=?1")
+                .bind(track.id.as_str())
+                .execute(&mut *tx)
+                .await
+                .unwrap();
         }
         tx.commit().await.unwrap();
         provider_tests::ensure_planner_card(repo, track.id.as_str()).await;
@@ -1234,13 +1231,11 @@ mod tests {
             Option<String>,
             Option<String>,
             Option<String>,
-            String,
-            Option<i64>,
             Option<i64>,
             Option<i64>,
         );
         let inherited: InheritedChildFields = sqlx::query_as(
-            "SELECT workspace_path,template_id,plugin_scope,template_input,purpose,lifecycle,archived_at,pinned_at,terminal_at \
+            "SELECT workspace_path,template_id,plugin_scope,template_input,purpose,closed_at,pinned_at \
              FROM tracks WHERE id=?1",
         )
         .bind(child_id)
@@ -1259,13 +1254,8 @@ mod tests {
         );
         assert_eq!(inherited.3, None, "template_input must not inherit");
         assert_eq!(inherited.4, None, "purpose must not inherit");
-        assert_eq!(
-            inherited.5, "draft",
-            "child must stay Draft before bootstrap"
-        );
-        assert_eq!(inherited.6, None, "archived_at must not inherit");
-        assert_eq!(inherited.7, None, "pinned_at must not inherit");
-        assert_eq!(inherited.8, None, "terminal_at must not inherit");
+        assert_eq!(inherited.5, None, "closed_at must not inherit");
+        assert_eq!(inherited.6, None, "pinned_at must not inherit");
 
         // Child of Only(X) must not become All; pin the gate reading plugin_scope.
         let _trusted = trust_inherited_plugin().await;

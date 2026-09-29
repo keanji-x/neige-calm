@@ -11,7 +11,7 @@ use calm_server::db::sqlite::{
 };
 use calm_server::event::EventBus;
 use calm_server::ids::ActorId;
-use calm_server::model::{CardPatch, NewCard, TaskStatus, TrackLifecycle, TrackPatch};
+use calm_server::model::{CardPatch, NewCard, TaskStatus};
 use calm_server::state::WriteContext;
 use calm_server::task_context::TaskContextMonitor;
 use calm_server::task_recovery::{RecoveryContext, recover_failed_task, task_recovery_view};
@@ -61,15 +61,6 @@ done
             .await
             .unwrap()
             .unwrap();
-        repo.track_update(
-            card.track_id.as_str(),
-            TrackPatch {
-                lifecycle: Some(TrackLifecycle::Working),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
         let events = EventBus::new();
         let roles = calm_server::card_role_cache::CardRoleCache::new();
         let areas = calm_server::track_area_cache::TrackAreaCache::new();
@@ -111,8 +102,6 @@ done
             next,
             revision,
             None,
-            None,
-            false,
         )
         .await
         .unwrap();

@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use calm_exec::WorkerProvider;
@@ -23,8 +23,7 @@ use calm_server::harness::{
 };
 use calm_server::ids::{ActorId, AreaId, TrackId};
 use calm_server::model::{
-    Card, CardRole, NewArea, NewCard, NewTrack, Task, TaskKind, TaskStatus, TrackLifecycle,
-    TrackPatch, new_id, now_ms,
+    Card, CardRole, NewArea, NewCard, NewTrack, Task, TaskKind, TaskStatus, new_id, now_ms,
 };
 use calm_server::operation::{
     AppServerInteractOutcome, CompensationStateVersioned, Operation, OperationCompletionBus,
@@ -260,7 +259,7 @@ impl LoopFixture {
             .unwrap()
     }
 
-    /// Lifecycle-bearing events persisted for this track plus any task terminal events.
+    /// Track row events persisted for this track plus any task terminal events.
     async fn track_audit_events(&self) -> Vec<Event> {
         self.repo
             .events_since(0, i64::MAX)
@@ -273,10 +272,7 @@ impl LoopFixture {
                 }
                 matches!(
                     event,
-                    Event::TrackLifecycleChanged { .. }
-                        | Event::TrackUpdated(_)
-                        | Event::TaskCompleted { .. }
-                        | Event::TaskFailed { .. }
+                    Event::TrackUpdated(_) | Event::TaskCompleted { .. } | Event::TaskFailed { .. }
                 )
                 .then_some(event)
             })
@@ -396,21 +392,10 @@ async fn catch_up_push_task_events_deliver_observations_and_advance_cursor() {
     fx.harness.shutdown().await.unwrap();
 }
 
-/// The dispatcher's Working→Reviewing fallback fires only on its own spawn failures, so a live
-/// `task.failed` push must leave the lifecycle and the event log untouched.
+/// A live `task.failed` push must leave the event log untouched.
 #[tokio::test]
 async fn live_task_failed_push_is_observation_only_and_planner_self_events_do_not_push_back() {
     let mut fx = loop_fixture("live-task-failed").await;
-    fx.repo
-        .track_update(
-            fx.track_id.as_str(),
-            TrackPatch {
-                lifecycle: Some(TrackLifecycle::Working),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
 
     let failed_id = fx
         .persist_live(
@@ -439,18 +424,6 @@ async fn live_task_failed_push_is_observation_only_and_planner_self_events_do_no
     );
 
     // Observation-only: the event log contains exactly the one task.failed we persisted.
-    let track = fx
-        .repo
-        .track_get(fx.track_id.as_str())
-        .await
-        .unwrap()
-        .expect("track exists");
-    assert_eq!(
-        track.lifecycle,
-        TrackLifecycle::Working,
-        "a worker-reported task.failed must NOT auto-promote the track; \
-         only the dispatcher's own spawn-failure path does"
-    );
     let audit = fx.track_audit_events().await;
     assert_eq!(
         audit.len(),
@@ -567,7 +540,7 @@ impl ProviderAdapter for SilentSpawnAdapter {
 }
 
 #[tokio::test]
-async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
+async fn dead_worker_never_reporting_reaper_converges() {
     let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
         .area_create(NewArea {
@@ -596,16 +569,6 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
     repo.seed_card_role_cache(&role_cache).await.unwrap();
     let track_area_cache = TrackAreaCache::new();
     repo.seed_track_area_cache(&track_area_cache).await.unwrap();
-
-    repo.track_update(
-        track.id.as_str(),
-        TrackPatch {
-            lifecycle: Some(TrackLifecycle::Dispatching),
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
 
     let key = "dead-worker-pin";
     let task_id = format!("{}:{key}", track.id.as_str());
@@ -699,35 +662,15 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
         4,
     );
 
-    let mut rx = events.subscribe();
     dispatcher
         .scheduler()
         .schedule_track(track.id.clone())
         .await;
 
-    // Positive sync points: the worker "spawn" ran, and the dispatcher promoted to Working first.
+    // Positive sync point: the worker "spawn" ran.
     tokio::time::timeout(Duration::from_secs(5), spawned.notified())
         .await
         .expect("silent worker spawn must run within 5s");
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut saw_working = false;
-    while Instant::now() < deadline {
-        match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
-            Ok(Ok(env)) => {
-                if let Event::TrackLifecycleChanged { id, from, to, .. } = &env.event
-                    && id == &track.id
-                    && *from == TrackLifecycle::Dispatching
-                    && *to == TrackLifecycle::Working
-                {
-                    saw_working = true;
-                    break;
-                }
-            }
-            Ok(Err(_)) => break,
-            Err(_) => continue,
-        }
-    }
-    assert!(saw_working, "dispatcher must promote Dispatching → Working");
 
     let baseline_id = repo
         .events_since(0, i64::MAX)
@@ -803,10 +746,9 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
     reaper_on_boot();
     reaper.sweep_all().await;
 
-    // Exactly one kernel task.failed plus exactly one Working → Reviewing promotion.
+    // Exactly one kernel task.failed.
     let rows = repo.events_since(baseline_id, i64::MAX).await.unwrap();
     let mut failed_events = Vec::new();
-    let mut lifecycle_changes = Vec::new();
     for (id, _version, scope, event) in rows {
         if scope.track_id() != Some(&track.id) {
             continue;
@@ -831,9 +773,6 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
             } if idempotency_key == task_id => {
                 panic!("dead-worker reaper must not emit task.completed")
             }
-            Event::TrackLifecycleChanged { from, to, .. } => {
-                lifecycle_changes.push((from, to));
-            }
             _ => {}
         }
     }
@@ -856,11 +795,6 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
         }
         other => panic!("expected task.failed, got {other:?}"),
     }
-    assert_eq!(
-        lifecycle_changes,
-        vec![(TrackLifecycle::Working, TrackLifecycle::Reviewing)],
-        "exactly one reaper lifecycle event: Working → Reviewing"
-    );
 
     let task_row = repo.task_get(&task_id).await.unwrap().expect("task exists");
     assert_eq!(task_row.status, TaskStatus::Failed);
@@ -878,12 +812,6 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
     assert_eq!(session.state, WorkerSessionState::Failed);
     assert_eq!(session.exit_code, Some(-1));
 
-    let parked = repo
-        .track_get(track.id.as_str())
-        .await
-        .unwrap()
-        .expect("track exists");
-    assert_eq!(parked.lifecycle, TrackLifecycle::Reviewing);
     let cards = repo.cards_by_track(track.id.as_str()).await.unwrap();
     assert!(
         cards.iter().any(|c| c.id == worker_card.id),

@@ -18,9 +18,7 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, session_start_runtime_tx};
 use calm_server::event::{Event, EventBus};
 use calm_server::mcp_server::{McpServer, auth, build_default_registry};
-use calm_server::model::{
-    CardRole, NewArea, NewCard, NewTrack, TrackLifecycle, TrackPatch, new_id, now_ms,
-};
+use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, new_id, now_ms};
 use calm_server::planner_model::TurnModelSelection;
 use calm_server::routes::theme::RequestTheme;
 use calm_server::session_projection_repo::{
@@ -94,15 +92,6 @@ async fn seed_worker_card(repo: &SqlxRepo, card_role_cache: &CardRoleCache) -> (
         .await
         .unwrap();
     // Working so the worker's first report is a legal transition (TaskCompleted auto-promotes Working -> Reviewing).
-    repo.track_update(
-        track.id.as_str(),
-        TrackPatch {
-            lifecycle: Some(TrackLifecycle::Working),
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
 
     let card_id = new_id();
     let mut tx = repo.pool().begin().await.unwrap();

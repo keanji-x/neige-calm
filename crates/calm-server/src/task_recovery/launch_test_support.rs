@@ -5,7 +5,7 @@ use crate::db::sqlite::{
 };
 use crate::event::EventBus;
 use crate::ids::ActorId;
-use crate::model::{NewCard, Task, TrackLifecycle, TrackPatch};
+use crate::model::{NewCard, Task};
 use crate::state::WriteContext;
 use crate::track_report::{ReportDocOp, ReportEditTarget, TrackReportPayload};
 use calm_types::task_recovery::TaskRecoveryRequest;
@@ -102,15 +102,6 @@ async fn claimed_task(
     declaration: Value,
     recover: bool,
 ) -> RecoveryFixture {
-    repo.track_update(
-        track_id,
-        TrackPatch {
-            lifecycle: Some(TrackLifecycle::Working),
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
     repo.card_create(NewCard {
         track_id: track_id.into(),
         title: None,

@@ -72,15 +72,12 @@ pub(crate) async fn rest_user_replace(
         }),
         None,
         None,
-        false,
-        None,
     )
     .await?;
     Ok(updated)
 }
 
 /// `POST|PATCH|DELETE /api/tracks/{id}/report/blocks*` — the user's typed block-channel edits.
-/// `auto_promote_draft = false` is fixed: a Draft track with a report is a legal state.
 pub(crate) async fn rest_user_block_op(
     repo: &dyn RouteRepo,
     events: &EventBus,
@@ -98,15 +95,13 @@ pub(crate) async fn rest_user_block_op(
         PersistPurpose::Edit(op),
         None,
         None,
-        false,
-        None,
     )
     .await
     .map(|((card, trace), _)| (card, trace.block))
 }
 
-/// The explicit User start purpose. Attribution, lifecycle intent, and task
-/// shape are fixed here; ordinary REST block edits remain ordinary edits.
+/// The explicit User start purpose. Attribution and task shape are fixed here;
+/// ordinary REST block edits remain ordinary edits.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn rest_user_start(
     repo: &dyn RouteRepo,
@@ -130,8 +125,6 @@ pub(crate) async fn rest_user_start(
             if_doc_rev,
         },
         None,
-        None,
-        false,
         None,
     )
     .await
@@ -157,7 +150,7 @@ enum PersistPurpose {
     },
 }
 
-/// The agent-MCP funnel. Takes its attribution, auto-promote verdict and recorder-shadow probe
+/// The agent-MCP funnel. Takes its attribution and recorder-shadow probe
 /// from the caller and validates none of them: the boundary bounds the set of doors, not what
 /// a caller says when it walks through this one.
 #[allow(clippy::too_many_arguments)]
@@ -170,8 +163,6 @@ pub(crate) async fn agent_report_op(
     target: ReportEditTarget,
     op: ReportDocOp,
     agent_message: Option<String>,
-    lifecycle: Option<TrackLifecycle>,
-    auto_promote_draft: bool,
     recorder_shadow: Arc<dyn RecorderShadowProbe>,
 ) -> Result<(Card, ReportOpTrace), CalmError> {
     persist(
@@ -183,8 +174,6 @@ pub(crate) async fn agent_report_op(
         target,
         PersistPurpose::Edit(op),
         agent_message,
-        lifecycle,
-        auto_promote_draft,
         Some(recorder_shadow),
     )
     .await
@@ -216,8 +205,6 @@ pub(crate) async fn planner_dispatch(
             plugin_tools,
         },
         None,
-        None,
-        false,
         Some(recorder_shadow),
     )
     .await?;
@@ -244,8 +231,6 @@ pub(crate) async fn planner_repair(
         target,
         PersistPurpose::Repair { identity, args },
         None,
-        None,
-        false,
         Some(recorder_shadow),
     )
     .await?;
@@ -302,8 +287,6 @@ pub async fn persist_report(
     next: TrackReportPayload,
     if_doc_rev: u64,
     agent_message: Option<String>,
-    lifecycle: Option<TrackLifecycle>,
-    auto_promote_draft: bool,
 ) -> Result<Card, CalmError> {
     let ((updated, _block), _) = persist(
         repo,
@@ -322,8 +305,6 @@ pub async fn persist_report(
             if_doc_rev,
         }),
         agent_message,
-        lifecycle,
-        auto_promote_draft,
         None,
     )
     .await?;
@@ -344,8 +325,6 @@ async fn persist(
     target: ReportEditTarget,
     purpose: PersistPurpose,
     agent_message: Option<String>,
-    lifecycle: Option<TrackLifecycle>,
-    auto_promote_draft: bool,
     recorder_shadow: Option<Arc<dyn RecorderShadowProbe>>,
 ) -> Result<((Card, ReportOpTrace), Option<serde_json::Value>), CalmError> {
     // Zero-event replay: authorize/read in the same transaction, then roll it back.
@@ -394,36 +373,6 @@ async fn persist(
                 {
                     super::dispatch::authorize_tx(tx, identity, &track_id, &id).await?;
                 }
-                if auto_promote_draft
-                    && let Some(auto_events) = auto_promote_draft_in_tx(tx, &track_id).await?
-                {
-                    events.extend(
-                        auto_events
-                            .into_iter()
-                            .map(|event| (ActorId::Kernel, track_scope.clone(), event)),
-                    );
-                }
-                if let Some(target) = lifecycle
-                    && let Some(lifecycle_events) = apply_requested_transition_in_tx(
-                        tx,
-                        &track_id,
-                        target,
-                        &actor,
-                        agent_message.clone().unwrap_or_default(),
-                    )
-                    .await?
-                {
-                    if let Some(probe) = recorder_shadow.as_ref() {
-                        probe
-                            .record(tx, RecorderShadowDecisionKind::TrackLifecycle)
-                            .await?;
-                    }
-                    events.extend(
-                        lifecycle_events
-                            .into_iter()
-                            .map(|event| (actor.clone(), track_scope.clone(), event)),
-                    );
-                }
                 if let Some(probe) = recorder_shadow.as_ref() {
                     probe
                         .record(tx, RecorderShadowDecisionKind::ReportWrite)
@@ -455,14 +404,6 @@ async fn persist(
                 if let PersistPurpose::Dispatch { args, plugin_tools, .. } = &purpose
                     && let Some(refusal) = plugin_tools.refusal(args.plugin_tools()) {
                     return Err(CalmError::Forbidden(refusal));
-                }
-                // A new Planner declaration preserves the existing Draft promotion.
-                // Receipt replay returned above and cannot promote or resume work.
-                if let PersistPurpose::Dispatch { .. } = &purpose
-                    && let Some(auto_events) = auto_promote_draft_in_tx(tx, &track_id).await?
-                {
-                    events.extend(auto_events.into_iter().map(|event|
-                        (ActorId::Kernel, track_scope.clone(), event)));
                 }
                 // 1. Load (or lazy-init) the CRDT doc. Loaded docs may still carry the old layout (no block
                 //    map) — migrate in place using the payload's block ids as hint; written back in this tx.
@@ -516,20 +457,9 @@ async fn persist(
                         super::dispatch::prepare(&doc, &args, &dispatch_key)?
                     }
                     PersistPurpose::UserStart { key, goal, if_doc_rev } => {
-                        let op = super::user_start::prepare_tx(
+                        super::user_start::prepare_tx(
                             tx, &track_id, &doc, &key, &goal, if_doc_rev,
-                        ).await?;
-                        let current = track_get_tx(tx, &track_id).await?;
-                        if current.lifecycle == TrackLifecycle::Draft
-                            && let Some(transitions) = apply_requested_transition_in_tx(
-                                tx, &track_id, TrackLifecycle::Planning, &ActorId::User,
-                                "Start independent task".to_string(),
-                            ).await?
-                        {
-                            events.extend(transitions.into_iter().map(|event|
-                                (ActorId::User, track_scope.clone(), event)));
-                        }
-                        op
+                        ).await?
                     }
                 };
                 // 3. Apply the op; `if_rev` checks happen in here against the CRDT truth, a conflict aborts the tx.

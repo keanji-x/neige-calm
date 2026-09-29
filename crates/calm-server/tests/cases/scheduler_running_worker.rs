@@ -165,19 +165,17 @@ async fn session_state(boot: &Boot, session_row_id: &str) -> WorkerSessionState 
         .status
 }
 
-/// The `task.failed` and `track.lifecycle_changed` envelopes broadcast so far.
+/// The `task.failed` envelopes broadcast so far.
 fn failure_envelopes(
     rx: &mut tokio::sync::broadcast::Receiver<BroadcastEnvelope>,
-) -> (Vec<BroadcastEnvelope>, Vec<BroadcastEnvelope>) {
-    let (mut failed, mut lifecycle) = (Vec::new(), Vec::new());
+) -> Vec<BroadcastEnvelope> {
+    let mut failed = Vec::new();
     while let Ok(envelope) = rx.try_recv() {
-        match envelope.event {
-            Event::TaskFailed { .. } => failed.push(envelope),
-            Event::TrackLifecycleChanged { .. } => lifecycle.push(envelope),
-            _ => {}
+        if matches!(envelope.event, Event::TaskFailed { .. }) {
+            failed.push(envelope);
         }
     }
-    (failed, lifecycle)
+    failed
 }
 
 /// The worker was left exactly as seeded: nothing failed, reaped or released.
@@ -194,22 +192,19 @@ async fn assert_untouched(boot: &Boot, worker: &IdleWorker) {
     assert!(event_rows(boot, "task.failed").await.is_empty());
 }
 
-/// The `task.failed` reason the Planner reads and the lifecycle auto message.
+/// The `task.failed` reason the Planner reads.
 struct Wording {
     reason: &'static str,
-    auto_message: &'static str,
 }
 
 /// The worker's last turn ended normally (completed or interrupted).
 const ENDED: Wording = Wording {
     reason: "worker turn ended without a task report",
-    auto_message: "[auto] worker turn ended",
 };
 
 /// The worker's last turn failed.
 const ENDED_IN_ERROR: Wording = Wording {
     reason: "worker turn ended in an error without a task report",
-    auto_message: "[auto] worker turn ended in an error",
 };
 
 /// The idle arm failed the task as `worker-turn-ended`, reaped the worker and pushed the wake.
@@ -239,28 +234,12 @@ async fn assert_turn_ended_and_woken_with(
         "released"
     );
     assert!(!timeout_cleanup_marker_exists(boot, &worker.card_id).await);
-    let (failed, lifecycle) = failure_envelopes(rx);
+    let failed = failure_envelopes(rx);
     assert_eq!(failed.len(), 1, "exactly one task.failed");
     assert_eq!(failed[0].actor, ActorId::KernelDispatcher);
     match &failed[0].event {
         Event::TaskFailed { reason, .. } => assert_eq!(reason, wording.reason),
         other => panic!("not task.failed: {other:?}"),
-    }
-    assert_eq!(lifecycle.len(), 1, "exactly one lifecycle transition");
-    match &lifecycle[0].event {
-        Event::TrackLifecycleChanged {
-            from,
-            to,
-            agent_message,
-            ..
-        } => {
-            assert_eq!(
-                (*from, *to),
-                (TrackLifecycle::Working, TrackLifecycle::Reviewing)
-            );
-            assert_eq!(agent_message.as_deref(), Some(wording.auto_message));
-        }
-        other => panic!("not track.lifecycle_changed: {other:?}"),
     }
     assert!(
         task_event_pushes_planner_for_test(
@@ -276,7 +255,6 @@ async fn assert_turn_ended_and_woken_with(
 
 async fn run_r4_past_grace(gated: bool, label: &str) {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let worker = seed_idle_codex_worker(&boot, label, gated).await;
     let probe = ScriptedProbe::new(Answer::Facts(r4_facts()), None);
     // 18:46:25 +08:00: 301 s after the turn ended.
@@ -310,7 +288,6 @@ async fn run_turn_end_wording(
     wording: &Wording,
 ) {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let worker = seed_idle_codex_worker(&boot, label, false).await;
     sqlx::query("UPDATE worker_sessions SET last_thread_status = ?1 WHERE id = ?2")
         .bind(persisted)
@@ -374,7 +351,6 @@ async fn system_error_thread_whose_last_turn_completed_is_worded_as_ended() {
 #[tokio::test]
 async fn r4_idle_worker_within_grace_is_untouched() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let worker = seed_idle_codex_worker(&boot, "r4-within-grace", false).await;
     let probe = ScriptedProbe::new(Answer::Facts(r4_facts()), None);
     // 18:46:23 +08:00: 299 s after the turn ended.
@@ -390,7 +366,6 @@ async fn r4_idle_worker_within_grace_is_untouched() {
 #[tokio::test]
 async fn idle_turn_that_ended_before_the_running_stamp_is_detected() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let worker = seed_idle_codex_worker(&boot, "ended-before-running", false).await;
     let now = now_ms();
     // Turn ended 400 s ago; the running stamp (deadline - 2 h) landed 100 s ago.
@@ -426,7 +401,6 @@ async fn idle_turn_that_ended_before_the_running_stamp_is_detected() {
 #[tokio::test]
 async fn idle_recheck_ignores_a_failed_loaded_list() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let worker = seed_idle_codex_worker(&boot, "not-loaded-listed", false).await;
     let mut facts = r4_facts();
     facts.loaded = false;
@@ -443,7 +417,6 @@ async fn idle_recheck_ignores_a_failed_loaded_list() {
 /// Persisted `idle`, clock past the grace; only the live recheck says no.
 async fn assert_live_recheck_vetoes(label: &str, answer: Answer, active_turn: Option<&str>) {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let worker = seed_idle_codex_worker(&boot, label, false).await;
     let probe = ScriptedProbe::new(answer, active_turn);
     let mut idle = idle_at(probe.clone(), R4_COMPLETED_AT_MS + 301_000);
@@ -514,7 +487,6 @@ async fn idle_candidate_whose_thread_read_times_out_is_untouched() {
 #[tokio::test]
 async fn idle_arm_leaves_claude_and_isolated_workers_alone() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let claude = seed_idle_codex_worker(&boot, "claude-idle", false).await;
     sqlx::query("UPDATE tasks SET kind = 'claude' WHERE key = 'claude-idle'")
         .execute(&boot.repo.sqlite_pool().unwrap())
@@ -560,7 +532,6 @@ async fn seed_running_codex_worker(boot: &Boot, label: &str) -> IdleWorker {
 #[tokio::test]
 async fn cancel_running_task_cancels_and_reaps_worker() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let worker = seed_running_codex_worker(&boot, "cancel-me").await;
     let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
     assert!(
@@ -610,23 +581,11 @@ async fn cancel_running_task_cancels_and_reaps_worker() {
     .expect("cleanup marker clears");
     assert_eq!(event_rows(&boot, "plan.updated").await.len(), 1);
     assert!(event_rows(&boot, "task.failed").await.is_empty());
-    let track = boot
-        .repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        track.lifecycle,
-        TrackLifecycle::Working,
-        "cancel moves no lifecycle by itself"
-    );
 }
 
 #[tokio::test]
 async fn cancel_running_claude_task_cancels_and_reaps_worker() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let card_id = format!("card-claude-cancel-{}", new_id());
     let session_row_id = format!("runtime-claude-cancel-{}", new_id());
     let pool = boot.repo.sqlite_pool().unwrap();
@@ -713,7 +672,6 @@ async fn seed_running_boot_worker_task(boot: &Boot, key: &str, gated: bool) -> S
 #[tokio::test]
 async fn cancel_first_then_late_worker_report_is_rejected_without_delivery() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let task_id = seed_running_boot_worker_task(&boot, "cancel-first", false).await;
 
     call_tool(
@@ -749,7 +707,6 @@ async fn cancel_first_then_late_worker_report_is_rejected_without_delivery() {
 #[tokio::test]
 async fn report_first_then_cancel_is_refused_with_the_current_status() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
     let task_id = seed_running_boot_worker_task(&boot, "report-first", true).await;
 
     call_tool(

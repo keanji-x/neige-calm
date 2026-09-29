@@ -60,9 +60,9 @@ pub async fn seed_linear_commits(pool: &SqlitePool, track_id: &TrackId, count: u
         sqlx::query(
             r#"INSERT INTO track_vcs_commits (
                    hash, track_id, parent_hash, tree_hash, manifest_schema_version,
-                   author, message, lifecycle, event_id, created_at
+                   author, message, event_id, created_at
                )
-               VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, 'active', ?7, ?8)"#,
+               VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8)"#,
         )
         .bind(&commit_hash)
         .bind(track_id.as_str())

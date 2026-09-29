@@ -37,8 +37,7 @@ pub(super) async fn fail(
             if terminal(&task) {
                 return Ok(Vec::new());
             }
-            let track =
-                crate::track_lifecycle::track_get_tx(tx, &task.track_id.clone().into()).await?;
+            let track = crate::db::sqlite::track_get_tx(tx, &task.track_id.clone().into()).await?;
             let events =
                 crate::scheduler::fail_worker_task_tx(tx, &task, &track, "worker-exit", &reason)
                     .await?;
@@ -109,7 +108,7 @@ pub(crate) async fn stop(
                 return Ok(None);
             }
             let track =
-                crate::track_lifecycle::track_get_tx(tx, &record.track_id.clone().into()).await?;
+                crate::db::sqlite::track_get_tx(tx, &record.track_id.clone().into()).await?;
             let status = crate::session_projection_repo::WorkerSessionState::Exited;
             crate::db::sqlite::session_set_status_tx(tx, &session.id, status).await?;
             let actor = crate::ids::ActorId::KernelDispatcher;

@@ -14,12 +14,9 @@ use crate::db::write_with_actor_events_typed;
 use crate::error::CalmError;
 use crate::event::{EditAuthor, Event, EventBus, EventScope};
 use crate::ids::ActorId;
-use crate::model::{Card, CardPatch, Track, TrackLifecycle};
+use crate::model::{Card, CardPatch, Track};
 use crate::recorder_shadow::{RecorderShadowDecisionKind, RecorderShadowProbe};
 use crate::state::WriteContext;
-use crate::track_lifecycle::{
-    apply_requested_transition_in_tx, auto_promote_draft_in_tx, track_get_tx,
-};
 use crate::track_report_doc::ReportDoc;
 use calm_types::report_blocks::tasks::normalize_legacy_terminal_task_blocks;
 
@@ -264,7 +261,9 @@ async fn tasks_rebuild_tree_with_policy_tx(
                 ..
             })
         );
-        let track = track_get_tx(tx, &crate::ids::TrackId::from(member_id.clone())).await?;
+        let track =
+            crate::db::sqlite::track_get_tx(tx, &crate::ids::TrackId::from(member_id.clone()))
+                .await?;
         let projection = tasks_rebuild_with_tree_term_tx(tx, member_id, Some(tree_term)).await?;
         tree_cte_queries = tree_cte_queries.saturating_add(projection.tree_cte_queries);
         projections.push((track, projection));
@@ -1047,7 +1046,7 @@ mod tests {
         fn parts(card_owner: &str) -> (Track, Card) {
             let owner = serde_json::from_value(json!({
                 "id": "w_a", "area_id": "a_1", "title": "A", "sort": 1.0,
-                "archived_at": null, "pinned_at": null, "cwd": "",
+                "pinned_at": null, "cwd": "",
                 "created_at": 0, "updated_at": 0
             }))
             .expect("owner fixture");

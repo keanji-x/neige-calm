@@ -35,7 +35,7 @@ pub(crate) async fn record(
         let Some((candidate,_)) = terminal_tx(tx,&id).await? else { return Err(conflict("candidate verification has not settled")); };
         let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM events WHERE kind='task.candidate_verification_settled' AND json_extract(payload,'$.operation_id')=?1)").bind(&id).fetch_one(&mut **tx).await?;
         if exists { return Err(conflict(ALREADY_RECORDED)); }
-        let track = crate::track_lifecycle::track_get_tx(tx,&candidate.source.track_id.clone().into()).await?;
+        let track = crate::db::sqlite::track_get_tx(tx,&candidate.source.track_id.clone().into()).await?;
         Ok(((),vec![(ActorId::KernelDispatcher,EventScope::Track { track:track.id,area:track.area_id },Event::TaskCandidateVerificationSettled { task_id:candidate.source.task_id,operation_id:id })]))
     })).await;
     match result {

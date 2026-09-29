@@ -20,8 +20,7 @@ use calm_server::harness::{
 };
 use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
 use calm_server::model::{
-    CardRole, NewArea, NewCard, NewOverlay, NewTrack, RequestTheme, TrackLifecycle, TrackPatch,
-    now_ms,
+    CardRole, NewArea, NewCard, NewOverlay, NewTrack, RequestTheme, TrackPatch, now_ms,
 };
 use calm_server::operation::{
     OperationCompletionBus, OperationRuntime, SpawnCtx, SqlxOperationRepo,
@@ -129,27 +128,12 @@ impl Fx {
         track.id.as_str().to_string()
     }
 
-    pub(crate) async fn set_lifecycle(&self, track_id: &str, lifecycle: TrackLifecycle) {
+    pub(crate) async fn set_closed(&self, track_id: &str, closed: bool) {
         self.repo_dyn
             .track_update(
                 track_id,
                 TrackPatch {
-                    lifecycle: Some(lifecycle),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-    }
-
-    /// Archive through the same `track_update_tx` UPDATE the lifecycle rides on
-    /// (`lifecycle, terminal_at, archived_at, updated_at` are one statement).
-    pub(crate) async fn archive(&self, track_id: &str, at_ms: i64) {
-        self.repo_dyn
-            .track_update(
-                track_id,
-                TrackPatch {
-                    archived_at: Some(Some(at_ms)),
+                    closed: Some(closed),
                     ..Default::default()
                 },
             )
@@ -312,8 +296,6 @@ impl Fx {
             TrackReportPayload::new("", body),
             revision,
             None,
-            None,
-            false,
         )
         .await
         .unwrap();

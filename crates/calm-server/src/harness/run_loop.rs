@@ -2740,7 +2740,7 @@ async fn consume_completed_worktree_commits(inner: &Arc<Inner>) -> Result<()> {
         .repo
         .track_get(inner.track_id.as_str())
         .await?
-        .is_some_and(|track| track.lifecycle == crate::model::TrackLifecycle::Done)
+        .is_some_and(|track| !track.is_open())
     {
         return Ok(());
     }
