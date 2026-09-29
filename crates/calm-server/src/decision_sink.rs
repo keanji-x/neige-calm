@@ -443,9 +443,19 @@ fn report_op_attribution(role: CardRole) -> Result<EditAuthor, CalmError> {
     })
 }
 
-struct CardDecisionSinkRecorderShadowProbe {
+pub(crate) struct CardDecisionSinkRecorderShadowProbe {
     principal: Option<Principal>,
     track_id: TrackId,
+}
+
+impl CardDecisionSinkRecorderShadowProbe {
+    /// The recorder gate for a write the MCP caller makes on `track_id` outside the report funnel.
+    pub(crate) fn for_identity(identity: &ToolCallIdentity, track_id: TrackId) -> Self {
+        Self {
+            principal: identity.to_principal(),
+            track_id,
+        }
+    }
 }
 
 #[async_trait]

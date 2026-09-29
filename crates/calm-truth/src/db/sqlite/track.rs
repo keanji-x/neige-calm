@@ -254,7 +254,15 @@ pub async fn track_update_tx(
     }
     // Closing stamps the time once, so closing a closed track keeps it. Reopening clears it,
     // except on a child a task references: that task's outcome already read the close.
+    // An area chat is never closed or reopened, whoever asks.
     if let Some(closed) = p.closed {
+        if closed != w.closed_at.is_some()
+            && w.purpose.as_deref() == Some(calm_types::model::AREA_CHAT_PURPOSE)
+        {
+            return Err(CalmError::Forbidden(
+                "an area chat track cannot be closed or reopened".into(),
+            ));
+        }
         if closed {
             w.closed_at.get_or_insert_with(now_ms);
         } else if w.closed_at.is_some() {
