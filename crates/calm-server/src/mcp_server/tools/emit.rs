@@ -9,7 +9,7 @@ use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     register_deprecated_alias, require_role, role_gated_write_annotations,
 };
-use crate::mcp_server::tools::lifecycle_args::{lifecycle_schema, message_schema};
+use crate::mcp_server::tools::write_args::message_schema;
 use crate::mcp_server::transport::PluginForgePayload;
 use crate::model::CardRole;
 use crate::operation::forge_action_adapter::ProbeSpec;
@@ -62,8 +62,7 @@ fn dispatch_request_descriptor() -> ToolDescriptor {
                 "acceptance_criteria": { "type": ["string", "null"] },
                 "cmd": { "type": "string" },
                 "cwd": { "type": ["string", "null"] },
-                "message": message_schema(),
-                "lifecycle": lifecycle_schema()
+                "message": message_schema()
             }
         }),
         annotations: Some(role_gated_write_annotations()),

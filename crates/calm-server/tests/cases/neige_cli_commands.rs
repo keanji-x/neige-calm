@@ -126,7 +126,7 @@ async fn cli_output_equals_direct_tool_call() {
         "{diff}"
     );
     let (log, _, _) = cli(&boot, &["log"]).await;
-    assert!(log.contains(" event=3 active commit 2\n"), "{log}");
+    assert!(log.contains(" event=3 commit 2\n"), "{log}");
     let (cat, _, _) = cli(&boot, &["cat", "track.json"]).await;
     assert!(
         cat.starts_with("{\n  \""),
@@ -160,11 +160,11 @@ async fn cli_state_text_is_one_fact_per_line() {
     );
     assert_eq!(fact("title"), vec!["title      mcp-test"]);
     assert_eq!(
-        text.lines().filter(|l| l.contains("lifecycle")).count(),
+        text.lines().filter(|l| l.contains("closed_at")).count(),
         1,
         "{text}"
     );
-    assert_eq!(fact("lifecycle"), vec!["lifecycle  draft"]);
+    assert_eq!(fact("closed_at"), vec!["closed_at  -"]);
     assert_eq!(
         fact("you"),
         vec![format!("you        {} planner", boot.card_id)]

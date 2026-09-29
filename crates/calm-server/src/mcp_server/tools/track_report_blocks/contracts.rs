@@ -5,7 +5,7 @@ use super::{
 use crate::mcp_server::registry::{
     ToolDescriptor, read_only_annotations, role_gated_write_annotations,
 };
-use crate::mcp_server::tools::lifecycle_args::{lifecycle_schema, message_schema};
+use crate::mcp_server::tools::write_args::message_schema;
 use crate::model::CardRole;
 use crate::track_report::MAX_BATCH_OPS;
 use calm_types::report_blocks;
@@ -414,8 +414,7 @@ pub(super) fn upsert_descriptor() -> ToolDescriptor {
                 "if_rev": { "type": "integer", "minimum": 0, "description": "Required when `id` is given: the block rev you last read." },
                 "if_doc_rev": { "type": "integer", "minimum": 0, "description": "Required when creating: read docRev from calm.report.read." },
                 "position": { "type": "integer", "minimum": 0, "description": "Insertion index for a NEW block (default: append)." },
-                "message": optional_message_schema(),
-                "lifecycle": planner_only_lifecycle_schema()
+                "message": optional_message_schema()
             }
         }),
         annotations: Some(role_gated_write_annotations()),
@@ -475,8 +474,7 @@ pub(super) fn write_markdown_descriptor() -> ToolDescriptor {
                 "body": { "type": "string", "description": "Full report Markdown, optionally with `<!-- neige:b_xxxx -->` marker lines." },
                 "if_doc_rev": { "type": "integer", "minimum": 0, "description": "The document-wide docRev returned by calm.report.read; not a block rev." },
                 "summary": { "type": "string" },
-                "message": optional_message_schema(),
-                "lifecycle": planner_only_lifecycle_schema()
+                "message": optional_message_schema()
             }
         }),
         annotations: Some(role_gated_write_annotations()),
@@ -501,23 +499,8 @@ fn optional_message_schema() -> Value {
         "type": "string",
         "minLength": 1,
         "description": "Optional human-readable rationale for this write, persisted as \
-            agent_message on the emitted event (and on TrackUpdated.agent_message when a \
-            lifecycle transition is requested)."
+            agent_message on the emitted event."
     })
-}
-
-/// The tools are open to the assistant role, the `lifecycle` field is not.
-fn planner_only_lifecycle_schema() -> Value {
-    let mut schema = lifecycle_schema();
-    if let Some(description) = schema.get_mut("description")
-        && let Some(text) = description.as_str()
-    {
-        *description = Value::String(format!(
-            "{text} Accepted from the Planner role only; an assistant passing it is \
-             refused (-32403) and nothing is written."
-        ));
-    }
-    schema
 }
 
 pub(super) fn commit_descriptor() -> ToolDescriptor {
@@ -533,7 +516,6 @@ pub(super) fn commit_descriptor() -> ToolDescriptor {
                 "if_doc_rev": { "type": "integer", "minimum": 0, "description": "Optional: the docRev to check. Omitted: this session's last read, checked only for summary/create/move." },
                 "message": message_schema(),
                 "summary": { "type": "string", "description": "New sidebar summary (~80 chars). Omit to keep the existing one." },
-                "lifecycle": lifecycle_schema(),
                 "ops": {
                     "type": "array",
                     "maxItems": MAX_BATCH_OPS,

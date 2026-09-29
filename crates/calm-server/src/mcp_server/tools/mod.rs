@@ -6,7 +6,6 @@ use crate::mcp_server::registry::ToolRegistry;
 pub mod admin;
 pub mod area_reports;
 pub mod emit;
-pub(crate) mod lifecycle_args;
 pub mod plan;
 pub mod preview;
 pub mod report_links;
@@ -26,6 +25,7 @@ pub mod track_report_blocks;
 pub(crate) mod track_report_hydrate;
 pub mod track_state;
 pub mod user_notify;
+pub(crate) mod write_args;
 
 /// Register every default tool onto a fresh registry.
 pub fn register_default_tools(registry: &mut ToolRegistry) {

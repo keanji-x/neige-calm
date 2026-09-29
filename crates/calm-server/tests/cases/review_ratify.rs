@@ -17,7 +17,7 @@ use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::review::{TOOL_RATIFY_REQUEST, TOOL_REVIEW_ROUND};
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
-use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, TrackLifecycle, TrackPatch};
+use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, TrackPatch};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::session_projection_repo::AgentProvider;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -121,16 +121,6 @@ async fn boot() -> Boot {
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
-        .await
-        .unwrap();
-    let track = repo
-        .track_update(
-            track.id.as_str(),
-            TrackPatch {
-                lifecycle: Some(TrackLifecycle::Working),
-                ..TrackPatch::default()
-            },
-        )
         .await
         .unwrap();
     let planner_card = repo
@@ -288,17 +278,50 @@ async fn events_for_track(boot: &Boot, kinds: &[&str]) -> Vec<Event> {
         .collect()
 }
 
-async fn set_track_lifecycle(boot: &Boot, lifecycle: TrackLifecycle) {
+async fn set_closed(boot: &Boot, closed: bool) {
     boot.repo
         .track_update(
             boot.track_id.as_str(),
             TrackPatch {
-                lifecycle: Some(lifecycle),
+                closed: Some(closed),
                 ..TrackPatch::default()
             },
         )
         .await
         .unwrap();
+}
+
+async fn track_is_open(boot: &Boot) -> bool {
+    boot.repo
+        .track_get(boot.track_id.as_str())
+        .await
+        .unwrap()
+        .unwrap()
+        .is_open()
+}
+
+/// The activity items the production projector computes for the boot track.
+async fn activity_items(boot: &Boot) -> Vec<calm_server::track_activity::ActivityItem> {
+    let projector = calm_server::track_activity::TrackActivityProjector::new(
+        boot.repo.clone(),
+        boot.events.clone(),
+        calm_server::state::WriteContext::new(
+            boot.card_role_cache.clone(),
+            boot.track_area_cache.clone(),
+        ),
+        calm_server::harness::HarnessRegistry::new(),
+        calm_server::terminal_renderer::TerminalRendererRegistry::new(),
+    )
+    .expect("sqlite-backed repo");
+    match projector
+        .recompute_track(boot.track_id.as_str())
+        .await
+        .unwrap()
+    {
+        calm_server::track_activity::Recompute::NoTrack => panic!("the boot track vanished"),
+        calm_server::track_activity::Recompute::Unchanged(p)
+        | calm_server::track_activity::Recompute::Written(p) => p.items,
+    }
 }
 
 #[tokio::test]
@@ -606,42 +629,41 @@ async fn review_round_gap_is_rejected() {
 }
 
 #[tokio::test]
-async fn ratify_request_emits_event_and_flips_working_to_blocked() {
+async fn ratify_request_raises_an_ask_and_resolve_clears_it() {
     let boot = boot().await;
     request_ratification(&boot, "cap_exhausted")
         .await
         .expect("ratify request");
 
-    let track = boot
-        .repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(track.lifecycle, TrackLifecycle::Blocked);
+    assert!(track_is_open(&boot).await, "a ratify request flips nothing");
     let events = events_for_track(&boot, &["ratify.requested"]).await;
     assert!(
         matches!(events.as_slice(), [Event::RatifyRequested { reason, .. }] if reason == "cap_exhausted")
     );
+    let items = activity_items(&boot).await;
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert!(items[0].key.starts_with("ask:ratify:"), "{items:?}");
+    assert_eq!(items[0].text, "cap_exhausted");
+
+    let (status, body) = post_ratify(&boot, "grant").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let items = activity_items(&boot).await;
+    assert!(items.is_empty(), "the resolution clears the ask: {items:?}");
 }
 
 #[tokio::test]
-async fn ratify_request_rejects_already_blocked_track_without_requested_event() {
+async fn ratify_request_refuses_a_closed_track() {
     let boot = boot().await;
-    set_track_lifecycle(&boot, TrackLifecycle::Blocked).await;
+    set_closed(&boot, true).await;
 
-    let err = request_ratification(&boot, "retry while blocked")
+    let err = request_ratification(&boot, "ask after close")
         .await
-        .expect_err("blocked track without pending request must be rejected");
+        .expect_err("a closed track must refuse a ratify request");
     assert_eq!(
         err.code,
         calm_server::plugin_host::mcp::RpcError::INVALID_PARAMS
     );
-    assert!(
-        err.message.contains("not in `working`")
-            && err.message.contains("ratify request is already pending"),
-        "{err:?}"
-    );
+    assert!(err.message.contains("the track is closed"), "{err:?}");
 
     let events = events_for_track(&boot, &["ratify.requested"]).await;
     assert!(
@@ -656,7 +678,6 @@ async fn ratify_request_rejects_duplicate_pending_request_without_second_event()
     request_ratification(&boot, "cap_exhausted")
         .await
         .expect("first request");
-    set_track_lifecycle(&boot, TrackLifecycle::Working).await;
 
     let err = request_ratification(&boot, "cap_exhausted retry")
         .await
@@ -666,8 +687,7 @@ async fn ratify_request_rejects_duplicate_pending_request_without_second_event()
         calm_server::plugin_host::mcp::RpcError::INVALID_PARAMS
     );
     assert!(
-        err.message.contains("not in `working`")
-            && err.message.contains("ratify request is already pending"),
+        err.message.contains("a ratify request is already pending"),
         "{err:?}"
     );
 
@@ -777,30 +797,6 @@ async fn ratify_route_rejects_non_pending_track_for_all_decisions_without_event(
 }
 
 #[tokio::test]
-async fn ratify_route_rejects_blocked_track_without_pending_request_or_event() {
-    let boot = boot().await;
-    set_track_lifecycle(&boot, TrackLifecycle::Blocked).await;
-
-    for decision in ["grant", "deny"] {
-        let (status, body) = post_ratify(&boot, decision).await;
-        assert_eq!(status, StatusCode::CONFLICT, "{body}");
-        assert_eq!(body["code"], json!("conflict"));
-        assert!(
-            body["error"].as_str().is_some_and(
-                |message| message.contains("ratify: track is not awaiting ratification")
-            ),
-            "{body}",
-        );
-
-        let events = events_for_track(&boot, &["ratify.resolved"]).await;
-        assert!(
-            events.is_empty(),
-            "blocked-without-pending {decision} must not append: {events:?}"
-        );
-    }
-}
-
-#[tokio::test]
 async fn ratify_route_rejects_stale_second_verdict_after_grant_without_second_event() {
     let boot = boot().await;
     request_ratification(&boot, "cap_exhausted")
@@ -843,7 +839,7 @@ async fn ratify_route_rejects_stale_second_verdict_after_grant_without_second_ev
 }
 
 #[tokio::test]
-async fn ratify_route_grant_emits_resolved_and_flips_blocked_to_working() {
+async fn ratify_route_grant_emits_resolved_and_leaves_the_track_open() {
     let boot = boot().await;
     request_ratification(&boot, "cap_exhausted")
         .await
@@ -853,13 +849,7 @@ async fn ratify_route_grant_emits_resolved_and_flips_blocked_to_working() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["decision"], json!("grant"));
 
-    let track = boot
-        .repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(track.lifecycle, TrackLifecycle::Working);
+    assert!(track_is_open(&boot).await);
     let events = events_for_track(&boot, &["ratify.resolved"]).await;
     assert!(
         matches!(
@@ -1030,7 +1020,7 @@ async fn review_round_deny_does_not_authorize_extension() {
         .expect("ratify request");
     let (status, body) = post_ratify(&boot, "deny").await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    // The track stays blocked, but calm.review.round has no lifecycle guard: the reject is the CAP arm's doing.
+    // calm.review.round reads no track state: the reject is the CAP arm's doing.
     expect_round_reject(
         &boot,
         round_args(4, 5, false),
@@ -1244,7 +1234,7 @@ async fn review_round_cap_extension_at_u32_boundary_rejected() {
 }
 
 #[tokio::test]
-async fn ratify_route_deny_emits_resolved_and_stays_blocked() {
+async fn ratify_route_deny_emits_resolved_and_leaves_the_track_open() {
     let boot = boot().await;
     request_ratification(&boot, "cap_exhausted")
         .await
@@ -1254,13 +1244,7 @@ async fn ratify_route_deny_emits_resolved_and_stays_blocked() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["decision"], json!("deny"));
 
-    let track = boot
-        .repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(track.lifecycle, TrackLifecycle::Blocked);
+    assert!(track_is_open(&boot).await);
     let events = events_for_track(&boot, &["ratify.resolved"]).await;
     assert!(
         matches!(

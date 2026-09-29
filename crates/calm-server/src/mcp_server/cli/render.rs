@@ -3,6 +3,7 @@
 
 use std::borrow::Cow;
 
+use chrono::TimeZone as _;
 use serde_json::{Value, json};
 
 use crate::session_projection_repo::WorkerSessionState;
@@ -108,9 +109,9 @@ fn content(tool: &str, value: &Value) -> Result<String, RenderError> {
 }
 
 /// The label column of the `state` text; every fact line starts with one of these.
-const STATE_LABEL_WIDTH: usize = "lifecycle".len();
+const STATE_LABEL_WIDTH: usize = "closed_at".len();
 
-/// One fact per line, each fact once: an agent greps `^lifecycle` and gets exactly this track's.
+/// One fact per line, each fact once: an agent greps `^closed_at` and gets exactly this track's.
 fn state(tool: &str, json: bool, value: &Value) -> Result<String, RenderError> {
     if !value.is_object() {
         return Err(shape(
@@ -126,7 +127,29 @@ fn state(tool: &str, json: bool, value: &Value) -> Result<String, RenderError> {
     let track = required_object(value, "track", tool)?;
     let track_id = required_str(track, "id", tool, "track")?;
     let title = required_str(track, "title", tool, "track")?;
-    let lifecycle = required_str(track, "lifecycle", tool, "track")?;
+    let closed_at = match track.get("closed_at") {
+        Some(Value::Null) => "-".to_string(),
+        Some(Value::Number(ms)) => ms
+            .as_i64()
+            .and_then(|ms| chrono::Local.timestamp_millis_opt(ms).single())
+            .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, false))
+            .ok_or_else(|| {
+                shape(
+                    format!("{tool} track closed_at is not a unix-ms time"),
+                    tool,
+                    "track",
+                    track,
+                )
+            })?,
+        _ => {
+            return Err(shape(
+                format!("{tool} track missing number-or-null closed_at"),
+                tool,
+                "track",
+                track,
+            ));
+        }
+    };
     let caller = required_str(value, "caller_card_id", tool, "value")?;
     let read_required = value
         .get("report_startup_read_required")
@@ -171,7 +194,7 @@ fn state(tool: &str, json: bool, value: &Value) -> Result<String, RenderError> {
     };
     fact("track", track_id);
     fact("title", title);
-    fact("lifecycle", lifecycle);
+    fact("closed_at", &closed_at);
     fact("you", &format!("{} {}", you.id, you.role));
     fact("report", report);
     let live: Vec<&StateCard<'_>> = cards.iter().filter(|card| card.live).collect();
@@ -416,14 +439,13 @@ fn log(tool: &str, value: &Value) -> Result<String, RenderError> {
     let mut out = String::new();
     for commit in commits {
         let hash = required_str(commit, "hash", tool, "commit")?;
-        let lifecycle = required_str(commit, "lifecycle", tool, "commit")?;
         let event = match commit.get("event_id").and_then(Value::as_i64) {
             Some(id) => id.to_string(),
             None => "-".to_string(),
         };
         let message = commit.get("message").and_then(Value::as_str).unwrap_or("");
         let short = hash.get(..8).unwrap_or(hash);
-        out.push_str(&format!("{short} event={event} {lifecycle} {message}\n"));
+        out.push_str(&format!("{short} event={event} {message}\n"));
     }
     Ok(out)
 }
@@ -473,16 +495,16 @@ mod tests {
     }
 
     #[test]
-    fn log_renders_null_message_and_event_id_but_requires_lifecycle() {
+    fn log_renders_null_message_and_event_id_but_requires_a_hash() {
         let value = json!({ "commits": [
-            { "hash": "abcdef123456", "lifecycle": "working", "event_id": 42, "message": "m" },
-            { "hash": "0123", "lifecycle": "draft", "event_id": null, "message": null }
+            { "hash": "abcdef123456", "event_id": 42, "message": "m" },
+            { "hash": "0123", "event_id": null, "message": null }
         ]});
         assert_eq!(
             render(Render::Log, "calm.track.log", false, &value).unwrap(),
-            "abcdef12 event=42 working m\n0123 event=- draft \n"
+            "abcdef12 event=42 m\n0123 event=- \n"
         );
-        let value = json!({ "commits": [{ "hash": "abc", "event_id": 1, "message": "m" }] });
+        let value = json!({ "commits": [{ "event_id": 1, "message": "m" }] });
         assert!(render(Render::Log, "calm.track.log", false, &value).is_err());
     }
 
@@ -530,11 +552,11 @@ mod tests {
         }
     }
 
-    /// A fresh track as `calm.track.state` returns it: draft, empty title, no tasks, planner + report card.
+    /// A fresh track as `calm.track.state` returns it: open, empty title, no tasks, planner + report card.
     fn draft_track_state() -> Value {
         json!({
             "track": {
-                "id": "trk_1", "area_id": "area_1", "title": "", "lifecycle": "draft",
+                "id": "trk_1", "area_id": "area_1", "title": "", "closed_at": null,
                 "cwd": "/tmp/x", "sort": 0.5, "created_at": 1, "updated_at": 2
             },
             "caller_card_id": "crd_planner",
@@ -550,12 +572,12 @@ mod tests {
         })
     }
 
-    /// A working track: a running worker bound to one task, an exited worker bound to another.
+    /// An open track at work: a running worker bound to one task, an exited worker bound to another.
     fn working_track_state() -> Value {
         json!({
             "track": {
                 "id": "trk_2", "area_id": "area_1", "title": "Fix login redirect",
-                "lifecycle": "working", "cwd": "/tmp/y", "sort": 0.5, "created_at": 1, "updated_at": 2
+                "closed_at": null, "cwd": "/tmp/y", "sort": 0.5, "created_at": 1, "updated_at": 2
             },
             "caller_card_id": "crd_planner",
             "cards": [
@@ -599,13 +621,29 @@ mod tests {
             text,
             "track      trk_1\n\
              title      (untitled)\n\
-             lifecycle  draft\n\
+             closed_at  -\n\
              you        crd_planner planner\n\
              report     empty skeleton\n\
              live       crd_planner  planner  codex  (you)\n"
         );
-        assert_eq!(text.lines().filter(|l| l.contains("lifecycle")).count(), 1);
-        assert_eq!(text.lines().filter(|l| l.contains("draft")).count(), 1);
+        assert_eq!(text.lines().filter(|l| l.contains("closed_at")).count(), 1);
+    }
+
+    #[test]
+    fn state_text_prints_the_close_time_of_a_closed_track() {
+        let mut value = draft_track_state();
+        let closed_at = 1_790_000_000_000_i64;
+        value["track"]["closed_at"] = json!(closed_at);
+        let text = render(Render::State, "calm.track.state", false, &value).unwrap();
+        let at = chrono::Local
+            .timestamp_millis_opt(closed_at)
+            .single()
+            .unwrap()
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
+        assert_eq!(
+            lines_starting(&text, "closed_at"),
+            vec![format!("closed_at  {at}")]
+        );
     }
 
     #[test]
@@ -621,13 +659,13 @@ mod tests {
             text,
             "track      trk_2\n\
              title      Fix login redirect\n\
-             lifecycle  working\n\
+             closed_at  -\n\
              you        crd_planner planner\n\
              report     has content\n\
              live       crd_planner  planner  codex   (you)\n\
              \x20          crd_worker   worker   claude  running  task fix-login\n"
         );
-        assert_eq!(text.lines().filter(|l| l.contains("lifecycle")).count(), 1);
+        assert_eq!(text.lines().filter(|l| l.contains("closed_at")).count(), 1);
         assert!(lines_starting(&text, "tasks").is_empty(), "{text}");
         for absent in ["crd_report", "crd_old", "exited", "old"] {
             assert!(!text.contains(absent), "{absent}: {text}");
@@ -672,22 +710,19 @@ mod tests {
     #[test]
     fn state_text_escapes_control_characters_so_a_title_cannot_forge_a_line() {
         let mut value = working_track_state();
-        value["track"]["title"] = json!("Example\nlifecycle  done\r\t\u{7}");
+        value["track"]["title"] = json!("Example\nclosed_at  1\r\t\u{7}");
         value["cards"][2]["kind"] = json!("cl\naude");
         let text = render(Render::State, "calm.track.state", false, &value).unwrap();
         assert_eq!(
             lines_starting(&text, "title"),
-            vec!["title      Example\\nlifecycle  done\\r\\t\\u{7}"]
+            vec!["title      Example\\nclosed_at  1\\r\\t\\u{7}"]
         );
-        assert_eq!(
-            lines_starting(&text, "lifecycle"),
-            vec!["lifecycle  working"]
-        );
+        assert_eq!(lines_starting(&text, "closed_at"), vec!["closed_at  -"]);
         assert_eq!(
             text,
             "track      trk_2\n\
-             title      Example\\nlifecycle  done\\r\\t\\u{7}\n\
-             lifecycle  working\n\
+             title      Example\\nclosed_at  1\\r\\t\\u{7}\n\
+             closed_at  -\n\
              you        crd_planner planner\n\
              report     has content\n\
              live       crd_planner  planner  codex     (you)\n\
@@ -726,9 +761,12 @@ mod tests {
                     v.as_object_mut().unwrap().remove("caller_card_id");
                 },
             ),
-            ("calm.track.state track missing string lifecycle", |v| {
-                v["track"].as_object_mut().unwrap().remove("lifecycle");
-            }),
+            (
+                "calm.track.state track missing number-or-null closed_at",
+                |v| {
+                    v["track"].as_object_mut().unwrap().remove("closed_at");
+                },
+            ),
             ("calm.track.state value missing array tasks", |v| {
                 v.as_object_mut().unwrap().remove("tasks");
             }),

@@ -2320,10 +2320,10 @@ async fn track_history_rejects_ambiguous_commit_prefixes() {
         sqlx::query(
             r#"INSERT INTO track_vcs_commits (
                    hash, track_id, parent_hash, tree_hash, manifest_schema_version,
-                   author, message, lifecycle, event_id, created_at
+                   author, message, event_id, created_at
                )
                SELECT ?1, track_id, parent_hash, tree_hash, manifest_schema_version,
-                      author, message, lifecycle, event_id, created_at
+                      author, message, event_id, created_at
                FROM track_vcs_commits
                WHERE hash = ?2"#,
         )

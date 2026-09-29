@@ -13,14 +13,14 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_insert_tx, session_mark_track_root_tx};
 use calm_server::error::CalmError;
 use calm_server::event::{EditAuthor, Event, EventBus, EventScope};
-use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
+use calm_server::ids::{AreaId, CardId, TrackId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::track_report::TOOL_REPORT_READ;
 use calm_server::mcp_server::tools::track_report_blocks::{
     TOOL_REPORT_COMMIT, TOOL_REPORT_WRITE_MARKDOWN,
 };
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
-use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, TrackLifecycle, TrackPatch};
+use calm_server::model::{CardRole, NewArea, NewCard, NewTrack};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::session_projection_repo::AgentProvider;
 use calm_server::track_report::TrackReportPayload;
@@ -177,16 +177,6 @@ pub(crate) async fn boot_at(db_url: &str) -> Boot {
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
-        .await
-        .unwrap();
-    let track = repo
-        .track_update(
-            track.id.as_str(),
-            TrackPatch {
-                lifecycle: Some(TrackLifecycle::Planning),
-                ..Default::default()
-            },
-        )
         .await
         .unwrap();
     let planner_card = repo
@@ -696,7 +686,7 @@ async fn commit_requires_non_empty_message() {
 }
 
 #[tokio::test]
-async fn write_markdown_without_lifecycle_keeps_track_state_and_records_agent_message() {
+async fn write_markdown_records_agent_message_and_leaves_the_track_open() {
     let boot = boot().await;
     let mut rx = boot.ctx.events.subscribe();
 
@@ -705,8 +695,8 @@ async fn write_markdown_without_lifecycle_keeps_track_state_and_records_agent_me
         TOOL_REPORT_WRITE_MARKDOWN,
         planner_identity(&boot),
         json!({
-            "body": "no lifecycle body\n",
-            "message": "write without lifecycle",
+            "body": "plain body\n",
+            "message": "plain write",
             "if_doc_rev": current_doc_rev(&boot).await
         }),
     )
@@ -718,7 +708,7 @@ async fn write_markdown_without_lifecycle_keeps_track_state_and_records_agent_me
     let report_env = recv_env(&mut rx).await;
     match &report_env.event {
         Event::TrackReportEdited { agent_message, .. } => {
-            assert_eq!(agent_message.as_deref(), Some("write without lifecycle"))
+            assert_eq!(agent_message.as_deref(), Some("plain write"))
         }
         other => panic!("expected TrackReportEdited, got {other:?}"),
     }
@@ -728,186 +718,24 @@ async fn write_markdown_without_lifecycle_keeps_track_state_and_records_agent_me
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(track.lifecycle, TrackLifecycle::Planning);
+    assert!(track.is_open());
     let no_more = tokio::time::timeout(Duration::from_millis(150), rx.recv()).await;
-    assert!(no_more.is_err(), "unexpected lifecycle event: {no_more:?}");
+    assert!(no_more.is_err(), "unexpected event: {no_more:?}");
 }
 
-#[tokio::test]
-async fn write_markdown_from_draft_auto_promotes_with_lifecycle_changed_event() {
-    let boot = boot().await;
-    boot.repo
-        .track_update(
-            boot.track_id.as_str(),
-            TrackPatch {
-                lifecycle: Some(TrackLifecycle::Draft),
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("set draft lifecycle");
-    let mut rx = boot.ctx.events.subscribe();
-
-    call_tool(
-        &boot,
-        TOOL_REPORT_WRITE_MARKDOWN,
-        planner_identity(&boot),
-        json!({
-            "body": "auto-promote body\n",
-            "message": "write from draft",
-            "if_doc_rev": current_doc_rev(&boot).await
-        }),
-    )
-    .await
-    .expect("write succeeds");
-
-    let changed_env = recv_env(&mut rx).await;
-    assert!(matches!(changed_env.actor, ActorId::Kernel));
-    match changed_env.event {
-        Event::TrackLifecycleChanged {
-            id,
-            from,
-            to,
-            agent_message,
-            ..
-        } => {
-            assert_eq!(id, boot.track_id);
-            assert_eq!(from, TrackLifecycle::Draft);
-            assert_eq!(to, TrackLifecycle::Planning);
-            assert_eq!(agent_message.as_deref(), Some("[auto] first planner write"));
-        }
-        other => panic!("expected auto TrackLifecycleChanged first, got {other:?}"),
-    }
-
-    let updated_env = recv_env(&mut rx).await;
-    assert!(matches!(updated_env.actor, ActorId::Kernel));
-    match updated_env.event {
-        Event::TrackUpdated(payload) => {
-            assert_eq!(payload.id, boot.track_id);
-            assert_eq!(payload.lifecycle, TrackLifecycle::Planning);
-            assert_eq!(
-                payload.agent_message.as_deref(),
-                Some("[auto] first planner write")
-            );
-        }
-        other => panic!("expected auto TrackUpdated second, got {other:?}"),
-    }
-    assert!(matches!(
-        recv_env(&mut rx).await.event,
-        Event::CardUpdated(_)
-    ));
-    match recv_env(&mut rx).await.event {
-        Event::TrackReportEdited {
-            agent_message,
-            body_after,
-            ..
-        } => {
-            assert_eq!(agent_message.as_deref(), Some("write from draft"));
-            assert_eq!(body_after, "auto-promote body\n");
-        }
-        other => panic!("expected TrackReportEdited fourth, got {other:?}"),
-    }
-
-    let track = boot
-        .repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(track.lifecycle, TrackLifecycle::Planning);
-    let no_more = tokio::time::timeout(Duration::from_millis(150), rx.recv()).await;
-    assert!(no_more.is_err(), "unexpected extra event: {no_more:?}");
-}
-
-#[tokio::test]
-async fn write_markdown_lifecycle_legal_emits_track_updated_and_report_events() {
-    let boot = boot().await;
-    let mut rx = boot.ctx.events.subscribe();
-
-    call_tool(
-        &boot,
-        TOOL_REPORT_WRITE_MARKDOWN,
-        planner_identity(&boot),
-        json!({
-            "body": "dispatching body\n",
-            "message": "report moves dispatching",
-            "if_doc_rev": current_doc_rev(&boot).await,
-            "lifecycle": "dispatching"
-        }),
-    )
-    .await
-    .expect("write with lifecycle succeeds");
-
-    let changed_env = recv_env(&mut rx).await;
-    match &changed_env.event {
-        Event::TrackLifecycleChanged {
-            id,
-            from,
-            to,
-            agent_message,
-            ..
-        } => {
-            assert_eq!(id, &boot.track_id);
-            assert_eq!(*from, TrackLifecycle::Planning);
-            assert_eq!(*to, TrackLifecycle::Dispatching);
-            assert_eq!(agent_message.as_deref(), Some("report moves dispatching"));
-        }
-        other => panic!("expected TrackLifecycleChanged first, got {other:?}"),
-    }
-    let updated_env = recv_env(&mut rx).await;
-    match &updated_env.event {
-        Event::TrackUpdated(payload) => {
-            assert_eq!(payload.id, boot.track_id);
-            assert_eq!(payload.lifecycle, TrackLifecycle::Dispatching);
-            assert_eq!(
-                payload.agent_message.as_deref(),
-                Some("report moves dispatching")
-            );
-        }
-        other => panic!("expected TrackUpdated second, got {other:?}"),
-    }
-    assert!(matches!(
-        recv_env(&mut rx).await.event,
-        Event::CardUpdated(_)
-    ));
-    match recv_env(&mut rx).await.event {
-        Event::TrackReportEdited {
-            agent_message,
-            body_after,
-            ..
-        } => {
-            assert_eq!(agent_message.as_deref(), Some("report moves dispatching"));
-            assert_eq!(body_after, "dispatching body\n");
-        }
-        other => panic!("expected TrackReportEdited fourth, got {other:?}"),
-    }
-    let track = boot
-        .repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(track.lifecycle, TrackLifecycle::Dispatching);
-}
-
-/// The refusal names the edge and the planner's legal targets in wire names, with one prefix.
-fn assert_planning_to_done_refusal(message: &str) {
+/// The one refusal every write tool gives a `lifecycle` key.
+fn assert_lifecycle_removed(message: &str) {
     assert!(
-        message.ends_with(
-            "forbidden: track lifecycle: planning → done is not allowed; \
-             from planning the planner may write: dispatching, reviewing, failed"
+        message.contains(
+            "`lifecycle` is removed: close with calm.track.close; ask with \
+             calm.user.notify or calm.ratify.request"
         ),
         "{message}"
     );
-    assert!(
-        !message.contains("Planning"),
-        "Debug name leaked: {message}"
-    );
-    assert_eq!(message.matches("track lifecycle:").count(), 1, "{message}");
 }
 
 #[tokio::test]
-async fn write_markdown_lifecycle_illegal_rolls_back_report_and_events() {
+async fn write_markdown_with_a_lifecycle_key_is_refused_and_writes_nothing() {
     let boot = boot().await;
     let before_track = boot
         .repo
@@ -935,9 +763,9 @@ async fn write_markdown_lifecycle_illegal_rolls_back_report_and_events() {
         }),
     )
     .await
-    .expect_err("planning -> done is illegal");
-    assert_eq!(err.code, -32403);
-    assert_planning_to_done_refusal(&err.message);
+    .expect_err("a lifecycle key is refused");
+    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert_lifecycle_removed(&err.message);
 
     let after_track = boot
         .repo
@@ -945,7 +773,7 @@ async fn write_markdown_lifecycle_illegal_rolls_back_report_and_events() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(after_track.lifecycle, before_track.lifecycle);
+    assert_eq!(after_track.closed_at, before_track.closed_at);
     let after_card = boot
         .repo
         .card_get(boot.report_card_id.as_str())
@@ -956,7 +784,7 @@ async fn write_markdown_lifecycle_illegal_rolls_back_report_and_events() {
     let no_event = tokio::time::timeout(Duration::from_millis(150), rx.recv()).await;
     assert!(
         no_event.is_err(),
-        "illegal transition emitted event: {no_event:?}"
+        "a refused write emitted an event: {no_event:?}"
     );
 }
 
@@ -1252,7 +1080,7 @@ async fn write_markdown_rejects_missing_body() {
 }
 
 #[tokio::test]
-async fn commit_without_lifecycle_keeps_track_state_and_records_agent_message() {
+async fn commit_records_agent_message_and_leaves_the_track_open() {
     let boot = boot().await;
     call_tool(
         &boot,
@@ -1295,87 +1123,13 @@ async fn commit_without_lifecycle_keeps_track_state_and_records_agent_message() 
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(track.lifecycle, TrackLifecycle::Planning);
+    assert!(track.is_open());
     let no_more = tokio::time::timeout(Duration::from_millis(150), rx.recv()).await;
-    assert!(no_more.is_err(), "unexpected lifecycle event: {no_more:?}");
+    assert!(no_more.is_err(), "unexpected event: {no_more:?}");
 }
 
 #[tokio::test]
-async fn commit_lifecycle_legal_emits_track_updated_and_report_events() {
-    let boot = boot().await;
-    call_tool(
-        &boot,
-        TOOL_REPORT_WRITE_MARKDOWN,
-        planner_identity(&boot),
-        json!({
-            "body": "before XYZ after\n",
-            "message": "seed edit lifecycle",
-            "if_doc_rev": current_doc_rev(&boot).await
-        }),
-    )
-    .await
-    .expect("seed body");
-    let mut rx = boot.ctx.events.subscribe();
-
-    let mut args =
-        commit_replacing_only_block(&boot, "before ABC after\n", "edit moves dispatching").await;
-    args["lifecycle"] = json!("dispatching");
-    call_tool(&boot, TOOL_REPORT_COMMIT, planner_identity(&boot), args)
-        .await
-        .expect("commit with lifecycle succeeds");
-
-    match recv_env(&mut rx).await.event {
-        Event::TrackLifecycleChanged {
-            id,
-            from,
-            to,
-            agent_message,
-            ..
-        } => {
-            assert_eq!(id, boot.track_id);
-            assert_eq!(from, TrackLifecycle::Planning);
-            assert_eq!(to, TrackLifecycle::Dispatching);
-            assert_eq!(agent_message.as_deref(), Some("edit moves dispatching"));
-        }
-        other => panic!("expected TrackLifecycleChanged first, got {other:?}"),
-    }
-    match recv_env(&mut rx).await.event {
-        Event::TrackUpdated(payload) => {
-            assert_eq!(payload.id, boot.track_id);
-            assert_eq!(payload.lifecycle, TrackLifecycle::Dispatching);
-            assert_eq!(
-                payload.agent_message.as_deref(),
-                Some("edit moves dispatching")
-            );
-        }
-        other => panic!("expected TrackUpdated second, got {other:?}"),
-    }
-    assert!(matches!(
-        recv_env(&mut rx).await.event,
-        Event::CardUpdated(_)
-    ));
-    match recv_env(&mut rx).await.event {
-        Event::TrackReportEdited {
-            agent_message,
-            body_after,
-            ..
-        } => {
-            assert_eq!(agent_message.as_deref(), Some("edit moves dispatching"));
-            assert_eq!(body_after, "before ABC after\n");
-        }
-        other => panic!("expected TrackReportEdited fourth, got {other:?}"),
-    }
-    let track = boot
-        .repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(track.lifecycle, TrackLifecycle::Dispatching);
-}
-
-#[tokio::test]
-async fn commit_lifecycle_illegal_rolls_back_report_and_events() {
+async fn commit_with_a_lifecycle_key_is_refused_and_writes_nothing() {
     let boot = boot().await;
     call_tool(
         &boot,
@@ -1408,9 +1162,9 @@ async fn commit_lifecycle_illegal_rolls_back_report_and_events() {
     args["lifecycle"] = json!("done");
     let err = call_tool(&boot, TOOL_REPORT_COMMIT, planner_identity(&boot), args)
         .await
-        .expect_err("planning -> done is illegal");
-    assert_eq!(err.code, -32403);
-    assert_planning_to_done_refusal(&err.message);
+        .expect_err("a lifecycle key is refused");
+    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert_lifecycle_removed(&err.message);
 
     let after_track = boot
         .repo
@@ -1418,7 +1172,7 @@ async fn commit_lifecycle_illegal_rolls_back_report_and_events() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(after_track.lifecycle, before_track.lifecycle);
+    assert_eq!(after_track.closed_at, before_track.closed_at);
     let after_card = boot
         .repo
         .card_get(boot.report_card_id.as_str())
@@ -1429,79 +1183,8 @@ async fn commit_lifecycle_illegal_rolls_back_report_and_events() {
     let no_event = tokio::time::timeout(Duration::from_millis(150), rx.recv()).await;
     assert!(
         no_event.is_err(),
-        "illegal transition emitted event: {no_event:?}"
+        "a refused write emitted an event: {no_event:?}"
     );
-}
-
-#[tokio::test]
-async fn commit_lifecycle_planning_to_reviewing_then_done_concludes_self_executed_track() {
-    use calm_server::mcp_server::tools::track_state::TOOL_TRACK_STATE;
-
-    let boot = boot().await;
-    call_tool(
-        &boot,
-        TOOL_REPORT_WRITE_MARKDOWN,
-        planner_identity(&boot),
-        json!({
-            "body": "deliverable draft\n",
-            "message": "seed self-executed deliverable",
-            "if_doc_rev": current_doc_rev(&boot).await
-        }),
-    )
-    .await
-    .expect("seed body");
-    let before = boot
-        .repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(before.lifecycle, TrackLifecycle::Planning);
-
-    let mut args = commit_replacing_only_block(
-        &boot,
-        "deliverable final\n",
-        "deliverable produced in-turn; ready to judge",
-    )
-    .await;
-    args["lifecycle"] = json!("reviewing");
-    call_tool(&boot, TOOL_REPORT_COMMIT, planner_identity(&boot), args)
-        .await
-        .expect("planning -> reviewing is a planner edge (self-executed conclusion)");
-    let track = boot
-        .repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(track.lifecycle, TrackLifecycle::Reviewing);
-
-    let state = call_tool(&boot, TOOL_TRACK_STATE, planner_identity(&boot), json!({}))
-        .await
-        .expect("state read");
-    assert_eq!(state["track"]["lifecycle"], json!("reviewing"), "{state}");
-    assert!(
-        state.get("next").is_none(),
-        "legal targets live in the refusal: {state}"
-    );
-
-    let mut args = commit_replacing_only_block(
-        &boot,
-        "deliverable final (accepted)\n",
-        "judged the deliverable; concluding",
-    )
-    .await;
-    args["lifecycle"] = json!("done");
-    call_tool(&boot, TOOL_REPORT_COMMIT, planner_identity(&boot), args)
-        .await
-        .expect("reviewing -> done concludes");
-    let track = boot
-        .repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(track.lifecycle, TrackLifecycle::Done);
 }
 
 #[tokio::test]

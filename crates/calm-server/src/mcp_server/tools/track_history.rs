@@ -290,7 +290,6 @@ fn commit_log_json(commit: CommitLogEntry) -> Value {
     json!({
         "hash": commit.hash,
         "parent_hash": commit.parent_hash,
-        "lifecycle": commit.lifecycle,
         "event_id": commit.event_id,
         "created_at": commit.created_at,
         "message": commit.message,

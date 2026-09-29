@@ -64,8 +64,6 @@ async fn add_track_as(
         TrackReportPayload::new("", body),
         0,
         None,
-        None,
-        false,
     )
     .await
     .unwrap();

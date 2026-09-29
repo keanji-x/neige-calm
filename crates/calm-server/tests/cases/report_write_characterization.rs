@@ -15,7 +15,7 @@ use calm_server::ids::TrackId;
 use calm_server::mcp_server::tools::track_report_blocks::{
     TOOL_REPORT_BLOCKS_UPSERT, TOOL_REPORT_WRITE_MARKDOWN,
 };
-use calm_server::model::{NewArea, NewCard, NewTrack, TrackLifecycle, TrackPatch};
+use calm_server::model::{NewArea, NewCard, NewTrack};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -84,28 +84,6 @@ fn mcp_pool(boot: &Boot) -> SqlitePool {
     boot.repo.sqlite_pool().expect("fixture repo is sqlite")
 }
 
-async fn set_lifecycle(boot: &Boot, to: TrackLifecycle) {
-    boot.repo
-        .track_update(
-            boot.track_id.as_str(),
-            TrackPatch {
-                lifecycle: Some(to),
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("set fixture lifecycle");
-}
-
-async fn lifecycle(boot: &Boot) -> TrackLifecycle {
-    boot.repo
-        .track_get(boot.track_id.as_str())
-        .await
-        .expect("track lookup")
-        .expect("track row")
-        .lifecycle
-}
-
 async fn mcp_doc_rev(boot: &Boot) -> u64 {
     calm_server::track_report_read::load_report_read_snapshot(
         boot.repo.as_ref(),
@@ -117,9 +95,8 @@ async fn mcp_doc_rev(boot: &Boot) -> u64 {
 }
 
 #[tokio::test]
-async fn mcp_planner_document_write_is_planner_attributed_and_promotes_a_draft() {
+async fn mcp_planner_document_write_is_planner_attributed() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Draft).await;
     let pool = mcp_pool(&boot);
 
     call_tool(
@@ -142,28 +119,11 @@ async fn mcp_planner_document_write_is_planner_attributed_and_promotes_a_draft()
         json!({"kind": "AiPlannerSession", "id": "planner-session"})
     );
     assert_attribution(&payload, "planner");
-
-    assert_eq!(lifecycle(&boot).await, TrackLifecycle::Planning);
-    let promotions = persisted_events(&pool, "track.lifecycle_changed").await;
-    assert_eq!(
-        promotions.len(),
-        1,
-        "one auto-promotion expected; got {promotions:#?}"
-    );
-    let (promotion_actor, promotion) = &promotions[0];
-    assert_eq!(promotion_actor, &json!({"kind": "Kernel"}));
-    assert_eq!(promotion.get("from"), Some(&json!("draft")));
-    assert_eq!(promotion.get("to"), Some(&json!("planning")));
-    assert_eq!(
-        promotion.get("agent_message"),
-        Some(&json!("[auto] first planner write"))
-    );
 }
 
 #[tokio::test]
-async fn mcp_assistant_block_write_is_assistant_attributed_and_leaves_a_draft_in_draft() {
+async fn mcp_assistant_block_write_is_assistant_attributed() {
     let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Draft).await;
     let pool = mcp_pool(&boot);
 
     call_tool(
@@ -185,18 +145,6 @@ async fn mcp_assistant_block_write_is_assistant_attributed_and_leaves_a_draft_in
         json!({"kind": "AiCodexSession", "id": "assistant-session"})
     );
     assert_attribution(&payload, "assistant");
-
-    assert_eq!(
-        lifecycle(&boot).await,
-        TrackLifecycle::Draft,
-        "an assistant write must not walk a Draft track out of Draft"
-    );
-    assert!(
-        persisted_events(&pool, "track.lifecycle_changed")
-            .await
-            .is_empty(),
-        "no lifecycle transition may be logged for an assistant write"
-    );
 }
 
 /// A retired session is also refused by the session-authority resolution (`SessionNotActive`);
@@ -392,63 +340,6 @@ async fn mcp_assistant_block_write_from_a_foreign_track_is_refused_without_the_p
     );
 }
 
-/// One write, two probe consultations: the requested transition is gated as `TrackLifecycle` first, then the report edit as `ReportWrite`.
-#[tokio::test]
-async fn mcp_report_write_with_a_lifecycle_is_gated_on_the_track_lifecycle_leg_first() {
-    let boot = boot().await;
-    let pool = mcp_pool(&boot);
-    const FOREIGN_SESSION_ID: &str = "foreign-track-planner-session";
-    seed_foreign_track_planner_session(&boot, FOREIGN_SESSION_ID).await;
-    // The fixture track is already Planning, so `dispatching` is a real transition.
-    assert_eq!(lifecycle(&boot).await, TrackLifecycle::Planning);
-
-    let identity = ToolCallIdentity {
-        session_id: FOREIGN_SESSION_ID.to_string(),
-        thread_id: "foreign-planner-lifecycle-thread".to_string(),
-        ..planner_identity(&boot)
-    };
-
-    let error = call_tool(
-        &boot,
-        TOOL_REPORT_WRITE_MARKDOWN,
-        identity,
-        json!({
-            "body": "# Denied\n",
-            "summary": "denied",
-            "message": "characterization write",
-            "lifecycle": "dispatching",
-            "if_doc_rev": 0
-        }),
-    )
-    .await
-    .expect_err("the recorder gate refuses a session whose card is on another track");
-    assert!(
-        error
-            .message
-            .contains("recorder gate denied track_lifecycle"),
-        "the lifecycle leg must be the one that refused; got {error:?}"
-    );
-
-    assert_eq!(
-        lifecycle(&boot).await,
-        TrackLifecycle::Planning,
-        "the refused transition rolled back with the rest of the transaction"
-    );
-    assert!(
-        persisted_events(&pool, "track.lifecycle_changed")
-            .await
-            .is_empty(),
-        "a denied write persists no lifecycle transition"
-    );
-    assert!(
-        persisted_events(&pool, "track.report_edited")
-            .await
-            .is_empty(),
-        "a denied write persists no edit"
-    );
-    assert_eq!(mcp_doc_rev(&boot).await, 0);
-}
-
 #[tokio::test]
 async fn mcp_report_write_probe_reads_the_written_track_not_the_callers_claimed_track() {
     let boot = boot().await;
@@ -570,15 +461,6 @@ impl RestBoot {
         self.repo.pool()
     }
 
-    async fn lifecycle(&self) -> TrackLifecycle {
-        self.repo
-            .track_get(&self.track_id)
-            .await
-            .expect("track lookup")
-            .expect("track row")
-            .lifecycle
-    }
-
     async fn post(&self, uri: String, body: Value) -> axum::response::Response {
         self.router
             .clone()
@@ -621,11 +503,6 @@ async fn rest_boot() -> RestBoot {
         })
         .await
         .unwrap();
-    assert_eq!(
-        track.lifecycle,
-        TrackLifecycle::Draft,
-        "a freshly minted track is the Draft precondition these tests need"
-    );
     repo.card_create(NewCard {
         track_id: track.id.clone(),
         kind: "track-report".into(),
@@ -714,7 +591,7 @@ async fn rest_boot() -> RestBoot {
 
 /// Decision point 3 — `POST /api/tracks/{id}/report`.
 #[tokio::test]
-async fn rest_document_write_is_user_attributed_and_leaves_a_draft_in_draft() {
+async fn rest_document_write_is_user_attributed() {
     let boot = rest_boot().await;
     let response = boot
         .post(
@@ -727,23 +604,11 @@ async fn rest_document_write_is_user_attributed_and_leaves_a_draft_in_draft() {
     let (actor, payload) = only_report_edit(boot.pool()).await;
     assert_eq!(actor, json!({"kind": "User"}));
     assert_attribution(&payload, "user");
-
-    assert_eq!(
-        boot.lifecycle().await,
-        TrackLifecycle::Draft,
-        "a user's report write must not promote the track"
-    );
-    assert!(
-        persisted_events(boot.pool(), "track.lifecycle_changed")
-            .await
-            .is_empty(),
-        "no lifecycle transition may be logged for a REST document write"
-    );
 }
 
 /// Decision point 2 — `POST /api/tracks/{id}/report/blocks`.
 #[tokio::test]
-async fn rest_block_write_is_user_attributed_and_leaves_a_draft_in_draft() {
+async fn rest_block_write_is_user_attributed() {
     let boot = rest_boot().await;
     let response = boot
         .post(
@@ -756,18 +621,6 @@ async fn rest_block_write_is_user_attributed_and_leaves_a_draft_in_draft() {
     let (actor, payload) = only_report_edit(boot.pool()).await;
     assert_eq!(actor, json!({"kind": "User"}));
     assert_attribution(&payload, "user");
-
-    assert_eq!(
-        boot.lifecycle().await,
-        TrackLifecycle::Draft,
-        "a user's block write must not promote the track"
-    );
-    assert!(
-        persisted_events(boot.pool(), "track.lifecycle_changed")
-            .await
-            .is_empty(),
-        "no lifecycle transition may be logged for a REST block write"
-    );
 }
 
 /// The track these writes land on has no `worker_sessions` row at all, which is precisely the shape

@@ -100,8 +100,6 @@ async fn add_report(boot: &CardBoot, track: &TrackId, body: &str) -> String {
         TrackReportPayload::new("", body),
         0,
         None,
-        None,
-        false,
     )
     .await
     .expect("persist report body");
