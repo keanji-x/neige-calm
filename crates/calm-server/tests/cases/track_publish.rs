@@ -323,6 +323,35 @@ async fn a_second_candidate_is_pushed_and_reuses_the_pr() {
     assert_eq!(shim_pr(fx), json!({"number": 1, "headRefOid": c2}));
 }
 
+/// D6 — the key names one publish: repeated, it replays (same op, nothing pushed again); over a
+/// tip that moved since, it is refused and the remote keeps the first commit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_same_key_replays_and_refuses_a_moved_tip() {
+    let _env = publish_env(None).await;
+    let w = world().await;
+    let fx = &w.fx;
+    let c1 = done_candidate(fx, "a").await;
+    let first = publish(fx, "k").await.unwrap();
+
+    let replay = publish(fx, "k").await.unwrap();
+    assert_eq!(replay["op_id"], first["op_id"]);
+    assert_eq!(replay["head_sha"], json!(c1));
+    assert_eq!(publish_op_count(fx).await, 1);
+
+    done_candidate(fx, "b").await;
+    let message = refused(publish(fx, "k").await);
+    assert!(
+        message.starts_with("refused: publish-key-reused: "),
+        "{message}"
+    );
+    assert!(
+        message.contains(":track.publish:k already used with different payload"),
+        "{message}"
+    );
+    assert_eq!(remote_branch(fx).as_deref(), Some(c1.as_str()));
+    assert_eq!(publish_op_count(fx).await, 1);
+}
+
 /// A remote branch that is not an ancestor of the candidate is never overwritten: the push is
 /// rejected, the publish fails, and no gh runs after it (no PR is opened on the foreign head).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

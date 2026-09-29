@@ -210,7 +210,7 @@ fn lower_git_commit(args: &Value) -> Result<Value, String> {
             "probe_argv": [
                 "sh",
                 "-c",
-                GIT_COMMIT_PROBE_SCRIPT,
+                git_commit_probe_script(),
                 "sh"
             ],
             "output_probe_argv": output_probe_argv
@@ -222,6 +222,11 @@ fn lower_git_commit(args: &Value) -> Result<Value, String> {
 /// The Planner commit's `sh -c` text: the credential split, then the shared script.
 fn git_commit_script() -> String {
     format!("{FORGE_SHELL_PRELUDE}\n{GIT_COMMIT_SCRIPT}")
+}
+
+/// Its probe's: `git status` runs the repository's fsmonitor and filters, so it gets the split too.
+fn git_commit_probe_script() -> String {
+    format!("{FORGE_SHELL_PRELUDE}\n{GIT_COMMIT_PROBE_SCRIPT}")
 }
 
 fn lower_gh_pr_create(args: &Value) -> Result<Value, String> {
@@ -709,7 +714,7 @@ mod tests {
 
     #[test]
     fn lowers_git_commit() {
-        let expected_probe_script = GIT_COMMIT_PROBE_SCRIPT;
+        let expected_probe_script = format!("{FORGE_SHELL_PRELUDE}\n{GIT_COMMIT_PROBE_SCRIPT}");
         let expected_commit_script = format!("{FORGE_SHELL_PRELUDE}\n{GIT_COMMIT_SCRIPT}");
         let expected_output_probe_script = GIT_COMMIT_OUTPUT_PROBE_SCRIPT;
         let payload = lower(
@@ -817,7 +822,10 @@ mod tests {
             payload["argv"][2],
             format!("{FORGE_SHELL_PRELUDE}\n{GIT_COMMIT_SCRIPT}")
         );
-        assert_eq!(payload["probe"]["probe_argv"][2], GIT_COMMIT_PROBE_SCRIPT);
+        assert_eq!(
+            payload["probe"]["probe_argv"][2],
+            format!("{FORGE_SHELL_PRELUDE}\n{GIT_COMMIT_PROBE_SCRIPT}")
+        );
         assert_eq!(
             payload["probe"]["output_probe_argv"][2],
             GIT_COMMIT_OUTPUT_PROBE_SCRIPT

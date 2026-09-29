@@ -8,13 +8,16 @@
 /// git script that runs repository-selected code (hooks, fsmonitor, filters, credential helpers,
 /// `core.sshCommand`) or the network: git runs without a GitHub token (it keeps HOME, the
 /// proxies and the ssh agent a push may need), and gh runs from `/`, outside any repository,
-/// without the ssh keys. Prepended by the argv builders of the action scripts that call them,
-/// never by a probe that only reads.
+/// without the ssh keys. Prepended by the argv builders of the scripts that call them: the
+/// actions, and the probes that run repository code (`git status` runs `core.fsmonitor` and
+/// clean filters). The delivery probes and the provenance function run neither and stay bare.
 pub const FORGE_SHELL_PRELUDE: &str = "neige_git() { env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN git \"$@\"; }\n\
     neige_gh() { (cd / && env -u SSH_AUTH_SOCK -u GIT_SSH_COMMAND gh \"$@\"); }";
 
-pub const GIT_COMMIT_PROBE_SCRIPT: &str = "git rev-parse --verify HEAD >/dev/null 2>&1 || exit 3; \
-     status=$(git status --porcelain) || exit 3; if [ -z \"$status\" ]; then exit 0; else exit 1; fi";
+/// The Planner commit's probe; runs after [`FORGE_SHELL_PRELUDE`] (its `status` runs repository
+/// code).
+pub const GIT_COMMIT_PROBE_SCRIPT: &str = "neige_git rev-parse --verify HEAD >/dev/null 2>&1 || exit 3; \
+     status=$(neige_git status --porcelain) || exit 3; if [ -z \"$status\" ]; then exit 0; else exit 1; fi";
 
 /// `$1 message, $2 branch?`; runs after [`FORGE_SHELL_PRELUDE`].
 pub const GIT_COMMIT_SCRIPT: &str = r#"branch=${2:-$(neige_git rev-parse --abbrev-ref HEAD)} || exit 1; neige_git add -A || exit 1; if neige_git diff --cached --quiet; then :; else neige_git commit -m "$1" || exit 1; fi; json_escape() { awk 'BEGIN { s = ARGV[1]; ARGV[1] = ""; gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s); gsub(/\n/, "\\n", s); gsub(/\t/, "\\t", s); gsub(/\r/, "\\r", s); printf "%s", s }' "$1"; }; commit=$(neige_git log -1 --format=%H) || exit 1; branch_json=$(json_escape "$branch") || exit 1; printf '{"commit":"%s","branch":"%s"}\n' "$commit" "$branch_json""#;
@@ -100,13 +103,19 @@ pub const GIT_DELIVERY_OUTPUT_PROBE_SCRIPT: &str = "set -e\n\
 /// after [`FORGE_SHELL_PRELUDE`] in the track worktree. Pushes exactly `$1` (and its ancestors) to
 /// `refs/heads/$2` at `$3`, never forced; opens the PR unless an open one already has head `$2`;
 /// then prints the open PR's `{number, headRefOid}` — the only stdout — and exits 21 unless its
-/// `headRefOid` is `$1`. `$3` is both the push destination and gh's `--repo`.
+/// `headRefOid` is `$1`, re-reading it up to five times two seconds apart (GitHub moves an open
+/// PR's head asynchronously after a push). `$3` is both the push destination and gh's `--repo`.
 pub const GIT_TRACK_PUBLISH_SCRIPT: &str = r#"neige_git push --porcelain "$3" "$1:refs/heads/$2" >&2 || exit $?
 st=$(neige_gh pr view "$2" --repo "$3" --json state) || st=
 case "$st" in *'"OPEN"'*) ;; *) neige_gh pr create --repo "$3" --head "$2" --base "$4" --title "$5" --body "$6" >&2 || exit $?;; esac
+i=0
+while :; do
 pr=$(neige_gh pr view "$2" --repo "$3" --json number,headRefOid) || exit $?
 flat=$(printf '%s' "$pr" | tr -d ' \t\r\n')
-case "$flat" in *"\"headRefOid\":\"$1\""*) ;; *) printf '%s\n' "$pr" >&2; exit 21;; esac
+case "$flat" in *"\"headRefOid\":\"$1\""*) break;; esac
+[ "$i" -lt 5 ] || { printf '%s\n' "$pr" >&2; exit 21; }
+i=$((i + 1)); sleep 2
+done
 printf '%s\n' "$pr""#;
 
 /// `$1 sha, $2 branch, $3 url`, after [`FORGE_SHELL_PRELUDE`]: exit 0 = landed (`$3` has

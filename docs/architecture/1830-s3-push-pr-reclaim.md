@@ -73,10 +73,12 @@ Verified at c3886d776 by reading the code, or by the query or command shown (414
   in `GIT_COMMIT_SCRIPT` (the Planner commit), in `GIT_DELIVERY_SCRIPT` (the delivery commit), in
   the publish action script, and in the plugin's `git.worktree.add` (now `sh -c "<prelude>;
   neige_git worktree add …"`) becomes `neige_git`; every `gh` in the publish script becomes
-  `neige_gh`. `GIT_LEASE_PROVENANCE_SCRIPT` (only `rev-parse` and `worktree list`, and reused by the
-  sampler, H7) and every existing probe (`GIT_COMMIT_PROBE_SCRIPT`, `…_OUTPUT_PROBE_SCRIPT`,
-  `GIT_DELIVERY_PROBE_SCRIPT`, `GIT_DELIVERY_OUTPUT_PROBE_SCRIPT`, which only read) stay
-  byte-identical. Git keeps HOME, the proxies and SSH_AUTH_SOCK (an
+  `neige_gh`. The plugin's `git.commit` probe gets the prelude too and calls `neige_git`: its
+  `git status` runs the repository's `core.fsmonitor` and clean filters (review round 1; 4140 has
+  no git-forge, so no persisted `git.commit` op carries the old probe, H3).
+  `GIT_LEASE_PROVENANCE_SCRIPT` (only `rev-parse` and `worktree list`, and reused by the sampler,
+  H7), `GIT_COMMIT_OUTPUT_PROBE_SCRIPT`, `GIT_DELIVERY_PROBE_SCRIPT` and
+  `GIT_DELIVERY_OUTPUT_PROBE_SCRIPT` run no repository code and stay byte-identical. Git keeps HOME, the proxies and SSH_AUTH_SOCK (an
   ssh push needs them); a GitHub https push authenticates through the user's global helper and
   gh's `hosts.yml`, as on 4140 (H15). So whatever the repository selects (hooks, fsmonitor,
   filters, credential helpers, `core.sshCommand`) runs without a GitHub token, and gh runs from `/`,
@@ -95,8 +97,9 @@ Verified at c3886d776 by reading the code, or by the query or command shown (414
     must show `headRefOid == $1` (exit 21 otherwise). It feeds `forge.pr.opened{pr_number,
     head_sha}` directly on the live path.
 - **D6 The operation.** `submit_forge_action_with_key(GIT_FORGE_PLUGIN_ID, track, planner card,
-  cwd = the track worktree, …)`. Idem key `track.publish:<sha>:<idempotency_key>` (keys are
-  permanent, H9, so a failed publish retries under a new key); `parked: false`, so the Planner
+  cwd = the track worktree, …)`. Idem key `track.publish:<idempotency_key>` (keys are
+  permanent, H9, so a failed publish retries under a new key; the sha is in the payload, so the
+  same key over a moved tip is refused `publish-key-reused` with `idempotency_payload_conflict`); `parked: false`, so the Planner
   waits (300 s) and gets success or failure inline (H10). Probe: landed iff `neige_git ls-remote
   "$3" refs/heads/$2` prints `$1` and the open PR's `headRefOid` is `$1`; output probe = D5's last line.
 - **D7 Managed tracks, and attached tracks without a worktree, are out of scope** and get
@@ -154,6 +157,7 @@ No real repository and no network. New file `tests/cases/track_publish.rs` in `m
 | P3 `publish_refuses_a_failed_attempts_candidate`: the only attempt writes a file and calls `calm.task.fail`. The refusal is `publish-candidate-not-done` and names the attempt and `failed` | D3 | M3: the status test accepts `failed` |
 | C1 `publish_git_never_sees_a_github_token`: `GH_TOKEN=sentinel` in the kernel env, and a `pre-push` hook writes `${GH_TOKEN-unset}` to a file. After P1's flow the file says `unset`, and the shim log shows gh got the token | D4 | M4: `neige_git` drops `-u GH_TOKEN` |
 | C2 `a_delivery_commit_hook_never_sees_a_github_token`: the same, with a `pre-commit` hook, through a real delivery | D4 | M5: the delivery script's commit line calls `git`, not `neige_git` |
+| C3 `planner_git_commit_and_its_probe_never_show_repository_code_a_github_token` (mcp_git_forge_plugin): a failing `pre-commit` hook makes the Planner's `git.commit` fail, so its probe runs `git status`; a `core.fsmonitor` script appends `${GH_TOKEN-unset}`, and every line says `unset` | D4 | M6: the commit probe's `status` calls `git`, not `neige_git` |
 
 Ordinary tests: managed-track and no-upstream refusals; a second candidate is pushed
 fast-forward and reuses the PR; a non-fast-forward push fails with git's message; a failed publish
@@ -166,8 +170,9 @@ Predicted red sets over `track_publish` and the plugin's unit tests:
 | M1 | P1, C1, fast-forward reuse, non-fast-forward message, retry under a new key, pushurl. Without the push the remote branch never reaches the candidate, so the shim's live `headRefOid` (read from the remote's `refs/heads/<branch>`) is missing or stale, the exit-21 check fails the publish, and each test's pushed-branch or PR-head assertion fails; C1's pre-push hook never runs |
 | M2 | P2 |
 | M3 | P3 |
-| M4 | C1, C2 (they share the prelude) |
+| M4 | C1, C2, C3 (they share the prelude) |
 | M5 | C2 |
+| M6 | C3 |
 
 ## 6. KNOWN GAPS
 
@@ -183,6 +188,8 @@ Predicted red sets over `track_publish` and the plugin's unit tests:
 - A Planner can still push or open a PR by hand (a terminal, or the plugin's `gh.pr.create`,
   whose removal is the follow-up).
 - The plugin's other `gh.*` lowerings still run `gh` in the track worktree with the full forge env.
+- The tip can move between the D3 check and the push; the pushed sha was a done candidate and the
+  tip when checked, and a later commit is published by the next call.
 
 ## 7. Implementation notes (where the code differs from the text above)
 
@@ -199,3 +206,6 @@ Predicted red sets over `track_publish` and the plugin's unit tests:
   view, create and merge agree.
 - §4: `track_write_point_registry` is triggered after all: the D7 refusal test nulls
   `workspace_worktree_path`, as S2's T5 does, so it is listed with a reason.
+- D5's PR-head check re-reads `pr view` up to five times two seconds apart before exit 21
+  (GitHub moves an open PR's head asynchronously after a push). Untested: the shim reads the head
+  live, so it cannot model the lag.

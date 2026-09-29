@@ -1,7 +1,8 @@
 //! #1830 T5: a Planner's `git.commit` forge action runs in its track worktree, so the commit
 //! lands on `neige/track-<id>` and the user's checkout is untouched. The track is minted by the
 //! real create route over the fixture's repository and caches; the call goes through the real MCP
-//! socket to the real git-forge plugin.
+//! socket to the real git-forge plugin. #1830 S3 C3: neither that commit nor its probe shows the
+//! repository's code a GitHub token.
 
 use axum::Extension;
 use axum::body::Body;
@@ -153,6 +154,83 @@ async fn planner_git_commit_lands_on_the_track_branch() {
     assert_eq!(
         git_stdout(&checkout, ["status", "--porcelain"]),
         checkout_status
+    );
+    fx.plugin_host
+        .stop(PLUGIN_ID)
+        .await
+        .expect("stop git-forge plugin");
+}
+
+/// #1830 S3 C3 (D4) — the kernel holds `GH_TOKEN`; a `pre-commit` hook fails the Planner's
+/// `git.commit`, so its probe runs `git status`, which runs the repository's `core.fsmonitor`.
+/// Neither the action nor the probe shows that code the token.
+#[tokio::test]
+async fn planner_git_commit_and_its_probe_never_show_repository_code_a_github_token() {
+    let _env_lock = FORGE_ENV_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let results_dir = short_tempdir("gfc").expect("forge results tempdir");
+    let _trusted = EnvGuard::set("NEIGE_TRUSTED_FORGE_PLUGINS", PLUGIN_ID);
+    let _results = EnvGuard::set("NEIGE_FORGE_RESULTS_DIR", results_dir.path());
+    let _token = EnvGuard::set("GH_TOKEN", "sentinel");
+    let fx = boot_fixture().await;
+
+    let origin = fx._tmp.path().join("origin.git");
+    init_bare_origin(&origin, &fx._tmp.path().join("seed"));
+    let checkout = fx._tmp.path().join("checkout");
+    clone_for_track(&origin, &checkout);
+    let checkout = checkout.canonicalize().expect("canonical checkout");
+    let track_id = create_attached_track(&fx, &checkout).await;
+    let worktree = checkout
+        .join(".claude/worktrees")
+        .join(format!("track-{track_id}"));
+    let branch = format!("neige/track-{track_id}");
+    let seen = fx._tmp.path().join("fsmonitor-token");
+    let hooks = checkout.join(".git/hooks");
+    let fsmonitor = fx._tmp.path().join("fsmonitor.sh");
+    for (path, body) in [
+        (hooks.join("pre-commit"), "#!/bin/sh\nexit 1\n".to_string()),
+        (
+            fsmonitor.clone(),
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"${{GH_TOKEN-unset}}\" >> '{}'\nexit 1\n",
+                seen.display()
+            ),
+        ),
+    ] {
+        std::fs::write(&path, body).expect("write hook");
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+        std::fs::set_permissions(&path, permissions).expect("chmod hook");
+    }
+    git_stdout(
+        &checkout,
+        ["config", "core.fsmonitor", fsmonitor.to_str().unwrap()],
+    );
+    std::fs::write(worktree.join("plan.md"), "the planner's note\n").expect("write note");
+
+    let (raw_token, thread_id) = planner_caller(&fx, &track_id).await;
+    let response = call_tool_as(
+        &fx,
+        &raw_token,
+        &thread_id,
+        21,
+        COMMIT_TOOL,
+        json!({ "message": "planner note", "idem": "c3", "branch": branch }),
+    )
+    .await;
+
+    // The hook refused the commit and the probe, which is what settles it, found the tree dirty.
+    assert_eq!(response["result"]["isError"], true, "{response:#?}");
+    let error = response["result"]["structuredContent"]["last_error"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(error.contains("probe reports not landed"), "{response:#?}");
+    let seen = std::fs::read_to_string(&seen).expect("the fsmonitor ran");
+    assert!(
+        !seen.is_empty() && seen.lines().all(|line| line == "unset"),
+        "{seen}"
     );
     fx.plugin_host
         .stop(PLUGIN_ID)

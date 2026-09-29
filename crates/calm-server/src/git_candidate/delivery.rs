@@ -165,7 +165,8 @@ pub(crate) fn delivery_message(delivery: &DeliveryRow, outcome: AttemptOutcome) 
 
 /// The argv of one delivery: the credential split (#1830 S3 D4), the provenance function and the
 /// delivery script joined into one `sh -c` text, followed by the six positional parameters the
-/// script reads. The probes stay bare: they only read, and they are in the payload hash.
+/// script reads. The probes stay bare: they run no repository code (no `status`, no checkout),
+/// and they are in the payload hash.
 pub(crate) fn delivery_argv(
     message: &str,
     branch: &str,

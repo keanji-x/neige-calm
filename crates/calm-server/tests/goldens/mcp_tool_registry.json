@@ -2265,7 +2265,7 @@
   },
   {
     "name": "calm.track.publish",
-    "description_sha256": "789f6dc8d001726c3d93c03e7ba8e5868ae732795937ad01a4e19af78bc3aa15",
+    "description_sha256": "10f23a86de7118f1e202ce26186044969136602c750eb73f6f02773e4bdf5ad8",
     "input_schema": {
       "properties": {
         "body": {

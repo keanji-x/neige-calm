@@ -1,5 +1,5 @@
 use super::*;
-use calm_types::forge_git::GIT_COMMIT_PROBE_SCRIPT;
+use calm_types::forge_git::{FORGE_SHELL_PRELUDE, GIT_COMMIT_PROBE_SCRIPT};
 use std::process::Command;
 use std::sync::Arc;
 
@@ -309,7 +309,7 @@ async fn forge_action_nonzero_git_commit_clean_worktree_probe_succeeds() {
         event_spec: None,
         context: Map::new(),
         probe: Some(ProbeSpec {
-            probe_argv: shell_probe(GIT_COMMIT_PROBE_SCRIPT),
+            probe_argv: shell_probe(&git_commit_probe_script()),
             output_probe_argv: None,
         }),
         cwd_lease: fx.cwd.path().to_path_buf(),
@@ -356,7 +356,7 @@ async fn forge_action_clean_worktree_probe_extracts_worktree_committed_event() {
         }),
         context: Map::new(),
         probe: Some(ProbeSpec {
-            probe_argv: shell_probe(GIT_COMMIT_PROBE_SCRIPT),
+            probe_argv: shell_probe(&git_commit_probe_script()),
             output_probe_argv: Some(shell_probe(
                 "git log -1 --format='{\"commit\":\"%H\",\"branch\":\"neige/track-1/card-1\"}'",
             )),
@@ -435,7 +435,7 @@ async fn forge_action_git_commit_dirty_index_failure_does_not_emit_worktree_comm
         }),
         context: Map::new(),
         probe: Some(ProbeSpec {
-            probe_argv: shell_probe(GIT_COMMIT_PROBE_SCRIPT),
+            probe_argv: shell_probe(&git_commit_probe_script()),
             output_probe_argv: Some(shell_probe(
                 "git log -1 --format='{\"commit\":\"%H\",\"branch\":\"neige/track-1/card-1\"}'",
             )),
@@ -495,7 +495,7 @@ async fn git_status_probe_infra_failure_does_not_emit_worktree_committed() {
     let probe_script = format!(
         "PATH={}:$PATH; {}",
         shell_quote(&fake_git_dir.path().display().to_string()),
-        GIT_COMMIT_PROBE_SCRIPT
+        git_commit_probe_script()
     );
     let payload = ForgeActionPayload {
         track_id: fx.track_id.clone(),
@@ -583,7 +583,7 @@ async fn git_add_failure_dirty_worktree_clean_index_does_not_emit_worktree_commi
         }),
         context: Map::new(),
         probe: Some(ProbeSpec {
-            probe_argv: shell_probe(GIT_COMMIT_PROBE_SCRIPT),
+            probe_argv: shell_probe(&git_commit_probe_script()),
             output_probe_argv: Some(shell_probe(
                 "git log -1 --format='{\"commit\":\"%H\",\"branch\":\"neige/track-1/card-1\"}'",
             )),
@@ -786,6 +786,11 @@ fn no_event_payload(
         result_path: fx.result_path(result_label),
         deadline_ms: now_ms() + 60_000,
     }
+}
+
+/// The git-forge plugin's `git.commit` probe text: the credential split, then the shared script.
+fn git_commit_probe_script() -> String {
+    format!("{FORGE_SHELL_PRELUDE}\n{GIT_COMMIT_PROBE_SCRIPT}")
 }
 
 fn shell_probe(script: &str) -> Vec<String> {

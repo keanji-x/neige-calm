@@ -238,7 +238,9 @@ fn publish_payload(
     let (sha, branch, url) = (dest.tip.as_str(), dest.branch.as_str(), dest.url.as_str());
     let json_field = |path: &str| FieldSource::JsonField { path: path.into() };
     worker_delivery_payload(
-        format!("track.publish:{sha}:{idempotency_key}"),
+        // The sha is in the payload (argv and probe), not the key: the same key replays its first
+        // publish, and the same key over a moved tip is `idempotency_payload_conflict`.
+        format!("track.publish:{idempotency_key}"),
         shell_argv(
             GIT_TRACK_PUBLISH_SCRIPT,
             &[sha, branch, url, &dest.base, title, body],
@@ -302,7 +304,13 @@ async fn track_publish(
         new_id(),
     )
     .await?
-    .map_err(internal)?;
+    .map_err(|error| {
+        // The one submit refusal a Planner can cause: its key already names another commit.
+        RpcError::custom(
+            -32409,
+            format!("refused: publish-key-reused: {error}; call again with a new idempotency_key"),
+        )
+    })?;
     let result = runtime.wait(&submitted.op_id).await.map_err(internal)?;
     let op_id = result.op_id;
     let event = match result.outcome {
