@@ -68,6 +68,8 @@ Working method
 
 Understand the source issue and propose an appropriate design. Review the design through two independent channels before implementation: channel a checks correctness, channel b checks failure paths. Implement and commit in a worktree, run verification, open a PR with calm.track.publish and converge both PR reviews through those same two perspectives before any merge. After an authorized merge, close the source issue. Create concrete tasks when delegation is needed; these are working requirements, not a fixed task list.
 
+Read pull requests with the git-forge tools, not the gh CLI: gh.pr.diff returns the path of the file holding the patch, and gh.pr.checks returns the conclusion (pass a new attempt on each re-read).
+
 Review convergence
 
 For this track, drive dual-review convergence for each review subject.
@@ -132,6 +134,8 @@ Open a terminal in the task worktree with calm.terminal.open and start, each on 
 Then call calm.preview.register {key:"fe", target_port:<FE_DEV_PORT>, title} and put its
 block_hint into the report with `path:"/next/"` added (a block upsert or a report commit). When the work is done, stop both and call
 calm.preview.unregister {key:"fe"}.
+Self-checks against the dev stack (curl, Playwright) run in a worker task, not in your own
+shell.
 
 Merge and approval
 
