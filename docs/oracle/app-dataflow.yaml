@@ -152,13 +152,12 @@
   kind: capability
   family: app-invalidation-policy
   statement: >
-    `track.updated` / `track.lifecycle_changed` 都必须失效所属 area 的 track 列表、该 track
-    的 detail、该 track 的 track-files 与全局 `['tracks-range']`；只有 `track.updated`
-    额外广播失效 `['track-report']`，因为它承载 admission policy 变化。
+    `track.updated` 必须失效所属 area 的 track 列表、该 track 的 detail、该 track 的
+    track-files 与全局 `['tracks-range']`，并额外广播失效 `['track-report']`，因为它承载
+    admission policy 变化（含关闭与重开）。
   why: >
     track 的四个可见投影分别由这四个 key 驱动（侧栏列表 / 详情页 / 报告文件树 / 日历区间视图），
-    少一个就出现某一处静默陈旧。lifecycle 事件本身不证明 task policy 改变；把 report
-    刷新限定到 `track.updated` 可避免独立 lifecycle 消息触发昂贵的整份报告重算。
+    少一个就出现某一处静默陈旧。
   source: fe/core/events/invalidation-plan.ts:127-143
   authoritative_test: fe/core/events/invalidation-plan.test.ts:28-50
   owner_slice: app/events-glue/invalidation
@@ -198,7 +197,7 @@
   why: >
     `calm.plan.cancel` 将 pending task 改为 canceled 时只发送 `plan.updated`；pending 状态不轮询，
     缺少该失效会让 TASKS 面板永久保留旧状态和旧 pending reason，直到整页重载。
-  source: fe/core/events/invalidation-plan.ts:229-231
+  source: fe/core/events/invalidation-plan.ts:225-227
   authoritative_test: fe/web/src/app/events/event-bridge.contract.test.tsx:238-244
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
@@ -218,7 +217,7 @@
     kernel 用 entity_kind + entity_id 寻址 overlay，光看事件 payload 无从知道该失效哪个 track。
     没有 track 被加载时，用户根本看不到那个 track 的 card overlay 变化，等下次 track detail
     refetch 捡起来即可 —— 这是被明确判定为无害的降级。
-  source: fe/web/src/app/events/track-lookup.ts:7-17; fe/core/events/invalidation-plan.ts:192-211
+  source: fe/web/src/app/events/track-lookup.ts:7-17; fe/core/events/invalidation-plan.ts:188-207
   authoritative_test: fe/web/src/app/events/track-lookup.test.ts:7-17
   owner_slice: app/events-glue/invalidation
   intentional_omission: true
@@ -254,7 +253,7 @@
     所属 track detail、`['overlays','card']` 与该 track 的 track-files。
   why: >
     runtime 状态同时驱动卡片详情、卡片状态角标（overlay 快照）和 runtime.json 投影三处 UI。
-  source: fe/core/events/invalidation-plan.ts:110-116,163-165; fe/web/src/app/events/track-lookup.ts:7-17
+  source: fe/core/events/invalidation-plan.ts:110-116,159-161; fe/web/src/app/events/track-lookup.ts:7-17
   authoritative_test: fe/core/events/invalidation-plan.test.ts:122-125
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
@@ -277,7 +276,7 @@
     `['today-launchpad']` 是空态判据被读出的键；缺任一个，点了「写今日进度」页面就
     不动。`PolicyMap` 只对 event kind 穷举、不对 query key 穷举，所以删掉任一行都不会
     有 golden 变红 —— 只有 authoritative_test 里那份逐字键表拦得住。
-  source: fe/core/events/invalidation-plan.ts:191
+  source: fe/core/events/invalidation-plan.ts:187
   authoritative_test: fe/core/events/invalidation-plan.contract.test.ts:24-36
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
@@ -637,14 +636,14 @@
   family: app-activity-indicators
   statement: >
     指示器状态只从内核的 `kernel/track/activity` overlay 推导（`activityStateOf` /
-    `trackActivityState` / `isWorking` / `needsUserAttention` / `hasFailed`），不得从 lifecycle、
+    `trackActivityState` / `isWorking` / `needsUserAttention` / `hasFailed`），不得从 track 的 open/closed 状态、
     会话状态或任务 token 自行推导 attention / failed / working；
     声明例外：打开抽屉那一行的本地 in-flight spinner 与 `phase==='wedged'` 的本地 `failed`（设计 §5.3）。
     Track 页的 Notifications 侧条每项一行：注释行（只有色点带颜色的平实标签与时间）在上，正文是内核给的原话
     （`items[].text`，以 chat 回复的同一 markdown 渲染器渲染；planner down 截 3 行）；点整行即回复，
     打开 Planner 输入框（ask 与 planner down 同一动作）；行右上角的 × 即 Dismiss，把该项的 `key` 发给
     `POST /api/tracks/{id}/activity/dismissals`，行在 overlay 更新后才消失（不做乐观删除），
-    同一来源再次发生是新 key、重新出现；Today 页头的第二个数是 `isWorking` 的计数，「Open」分组才是 lifecycle 阶段。
+    同一来源再次发生是新 key、重新出现；Today 页头的第二个数是 `isWorking` 的计数，「Open」分组是未关闭且不等人的 track。
     `unread` 只来自按数据库身份（`DATABASE_ID_KEY`）作用域的回执与 `activityAt` / `lastTurnCompletedAt`
     的比较：首次进入作用域以服务端时钟写一次 baseline，`null` 作用域下 `isUnread` 永不为真；
     `.attention` 涂 `--warn`、`.failed` 涂 `--error`，两者色相必须可分。
@@ -663,13 +662,13 @@
   authoritative_test: fe/core/domain/activity.test.ts:10-40; fe/core/domain/track.test.ts:183-219,222-284;
     fe/web/src/app/router/track-conversation.test.tsx:295-389; fe/web/src/features/today/public.test.tsx:46-65;
     fe/web/src/app/router/today-activity.test.tsx:82-88;
-    fe/web/src/features/track/row/public.test.tsx:124-176; fe/web/src/app/providers/ui-preferences.test.tsx:112-157;
+    fe/web/src/features/track/row/public.test.tsx:124-175; fe/web/src/app/providers/ui-preferences.test.tsx:112-157;
     fe/web/src/app/shell/mobile-tracks.test.tsx:95-146; fe/web/src/app/shell/responsive.contract.test.tsx:104-123;
     fe/web/src/ui/activity-indicator/activity-indicator.browser.test.tsx:56-77;
     fe/web/src/features/chat/list/public.test.tsx:32-88; fe/web/src/app/router/track-conversation.test.tsx:1910-1995;
     fe/web/src/app/router/today-conversation.test.tsx:188-211; fe/web/src/features/chat/thread/public.test.tsx:537-602;
     fe/web/src/features/track/page/public.test.tsx:135-225,302-372;
-    fe/web/src/features/track/page/header-lifecycle.browser.test.tsx:82-193; fe/web/src/features/track/page/mobile-projection.test.tsx:255-283;
+    fe/web/src/features/track/page/header-status.browser.test.tsx:82-193; fe/web/src/features/track/page/mobile-projection.test.tsx:255-283;
     fe/core/view/track-page.test.ts:239-266; fe/web/src/app/router/track-cards-panel.test.tsx:391-416;
     fe/web/src/systems/cards/builtins/terminal-lifecycle.test.tsx:95-111;
     fe/web/src/systems/cards/builtins/terminal-head-activity.test.tsx:48-75
@@ -788,7 +787,7 @@
   statement: harness.item.added 必须失效同 card 的 harness-items；harness.transcript.cleared 必须同时失效同 card 的
     harness-items 与 planner-run。applyEventEffects 必须把这些计划键映射为现行查询键，不能丢弃。
   why: 转录新增与清空必须刷新可见投影。旧界面的本地 seq 状态实现已退役；新版由 core 计划和 app 查询适配器共同履行此约束。
-  source: fe/core/events/invalidation-plan.ts:164-178 ; fe/web/src/app/events/query-invalidation-adapter.ts:19-96
+  source: fe/core/events/invalidation-plan.ts:160-174 ; fe/web/src/app/events/query-invalidation-adapter.ts:19-96
   authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:257-287
   owner_slice: app/events-glue/invalidation
   intentional_omission: false

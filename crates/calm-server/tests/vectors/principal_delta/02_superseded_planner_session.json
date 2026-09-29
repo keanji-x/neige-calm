@@ -1,9 +1,9 @@
 [
   {
-    "description": "a superseded session on this track's Planner card is denied track lifecycle recording — the card criterion admits the card, the liveness check is the only thing refusing",
+    "description": "a superseded session on this track's Planner card is denied track close recording — the card criterion admits the card, the liveness check is the only thing refusing",
     "principal": { "session_id": "$PLANNER_SESSION", "track_id": "$HOME_TRACK", "area_id": "$HOME_AREA" },
     "actor": { "kind": "AiPlanner", "id": "$PLANNER_CARD" },
-    "event": { "ev": "track.lifecycle_changed", "data": { "id": "$HOME_TRACK", "area_id": "$HOME_AREA", "from": "planning", "to": "dispatching", "agent_message": "superseded lifecycle" } },
+    "event": { "ev": "track.updated", "data": { "id": "$HOME_TRACK", "area_id": "$HOME_AREA", "title": "frozen-vector track", "sort": 1.0, "pinned_at": null, "closed_at": 1, "cwd": "", "created_at": 0, "updated_at": 0, "agent_message": "superseded close" } },
     "scope": { "kind": "Track", "id": { "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "recorder_gate": true,
     "expected": { "decision": "deny", "recorder": "deny", "role": "allow" }

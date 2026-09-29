@@ -1105,7 +1105,7 @@
       "real theme tokens E2E-CAP-AXE-005 keeps the dark page ground darker than the light page ground",
       "browser theme contracts E2E-CAP-AXE-005 a direct structured dataset write repaints token consumers",
       "the exchange rail, as the engine lays it out paints the resting dot between 3:1 and the text ladder, against the page",
-      "the track lifecycle status in the page header keeps the subdued running colour readable in both themes",
+      "the track closed status in the page header keeps the subdued closed colour readable in both themes",
       "dark theme contrast matrix --accent on --bg clears the non-text floor",
       "dark theme contrast matrix --bg → --surface-card is at least 3.0 L apart",
       "dark theme contrast matrix --error on --bg clears the non-text floor",
@@ -1137,9 +1137,9 @@
       "web/src/app/theme/theme.browser.test.tsx",
       "web/src/styles/contrast-matrix.browser.test.ts",
       "web/src/features/chat/thread/thread.browser.test.tsx",
-      "web/src/features/track/page/header-lifecycle.browser.test.tsx"
+      "web/src/features/track/page/header-status.browser.test.tsx"
     ],
-    "why_more_than_one": "Swapping the two grounds is a cross-theme edit, and every per-theme floor is tuned against its own ground: light's foregrounds land on dark's 24.5% ground and dark's land on light's 96%, so the AA body / non-text floors, both 3.0-L rungs that straddle `--bg`, the ground-vs-card chroma gap and the shared ladder direction all fail by construction — there is no ground inversion that leaves the contrast matrix green. The two entries listed first are the ones this mutation exists for: they are the only assertions that read the two grounds *against each other*, and they are what would stay red if every contrast floor were relaxed. The 27 that follow are the same edit noticed from inside each theme: 25 in the contrast matrix, plus the rail dot and lifecycle status, whose per-theme colours are measured against the rendered page ground and therefore fail on an inverted ground for exactly the reason every matrix rung does. Anything red beyond this set would mean the ground direction leaked somewhere that does not model a ground at all."
+    "why_more_than_one": "Swapping the two grounds is a cross-theme edit, and every per-theme floor is tuned against its own ground: light's foregrounds land on dark's 24.5% ground and dark's land on light's 96%, so the AA body / non-text floors, both 3.0-L rungs that straddle `--bg`, the ground-vs-card chroma gap and the shared ladder direction all fail by construction — there is no ground inversion that leaves the contrast matrix green. The two entries listed first are the ones this mutation exists for: they are the only assertions that read the two grounds *against each other*, and they are what would stay red if every contrast floor were relaxed. The 27 that follow are the same edit noticed from inside each theme: 25 in the contrast matrix, plus the rail dot and the closed status, whose per-theme colours are measured against the rendered page ground and therefore fail on an inverted ground for exactly the reason every matrix rung does. Anything red beyond this set would mean the ground direction leaked somewhere that does not model a ground at all."
   },
   {
     "mutation_id": "events-harness-item-plan-becomes-empty",
@@ -1239,17 +1239,18 @@
     "why_more_than_one": "The originalIndex oracles are the only thing standing between a filtered card list and deleting the wrong card. The fifth entry is the panel's #1149 name/kind row, and it is a genuine witness rather than collateral: the router merges the visible and unknown branches and re-sorts on originalIndex (app/router `panelCards`), so renumbering either branch reorders the rendered list — that test reads the whole list in order, and its fixture has cards in both branches, so it sees the reordering. It is listed rather than loosened because asserting the list unordered would give up the wire order INV-CARD-226 is about."
   },
   {
-    "mutation_id": "s2a-track-activity-state-from-lifecycle",
+    "mutation_id": "s2a-track-activity-state-from-open-state",
     "defends": [
       "oracle:INV-APP-118"
     ],
     "target": "core/domain/track.ts",
-    "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\nindex 2b1118c..1c73d6e 100644\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -519,7 +519,7 @@ export function hasFailed(track: Track): boolean {\n \n /** The one indicator state for a track on every surface; `unread` is the reader's receipt, the rest is the overlay's. */\n export function trackActivityState(track: Track, unread: boolean): ActivityState {\n-  return activityStateOf({ working: isWorking(track), attention: track.attention, unread });\n+  return activityStateOf({ working: isRunning(track.lifecycle), attention: track.attention, unread });\n }\n \n /** Needs a person first, then in a running phase, then everything quiet. */\n",
+    "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -577,7 +577,7 @@\n \n /** The one indicator state for a track on every surface; `unread` is the reader's receipt, the rest is the overlay's. */\n export function trackActivityState(track: Track, unread: boolean): ActivityState {\n-  return activityStateOf({ working: isWorking(track), attention: track.attention, unread });\n+  return activityStateOf({ working: !isClosed(track), attention: track.attention, unread });\n }\n \n /** A closed track schedules no new work; only the user reopens it. */\n",
     "expected_red": [
       "Today rows carry the track read receipt",
-      "navigation activity markers derives the marker and the name from the activity overlay, not the lifecycle",
-      "TrackPage header paints one activity indicator beside the title, from the overlay rather than the lifecycle",
-      "activity predicates read only the kernel activity overlay (INV-APP-118) does not derive working from a running lifecycle phase"
+      "TrackPage header paints one activity indicator beside the title, from the overlay rather than the open/closed state",
+      "activity predicates read only the kernel activity overlay (INV-APP-118) does not derive working from an open track",
+      "activity predicates read only the kernel activity overlay (INV-APP-118) reads attention and failure from the overlay verdict",
+      "navigation activity markers derives the marker and the name from the activity overlay, not the open/closed state"
     ],
     "selection_paths": [
       "core/domain/track.test.ts",
@@ -1257,7 +1258,7 @@
       "web/src/features/track/page/public.test.tsx",
       "web/src/features/track/row/public.test.tsx"
     ],
-    "why_more_than_one": "The predicate is shared: the rail row, the page head, the router-level Today row and the core predicate suite each pin one surface of the same lifecycle-instead-of-overlay drift (a planning track with an idle planner reads quiet; a done track with work in flight reads working)."
+    "why_more_than_one": "The predicate is shared: the rail row, the page head, the router-level Today row and the core predicate suite each pin one surface of the same open-state-instead-of-overlay drift (an open track with an idle planner reads quiet; a closed track with work in flight reads working). The core verdict case reddens too, because its quiet-but-unread fixture is an open track and now folds to working."
   },
   {
     "mutation_id": "s2a-activity-overlay-plugin-gate-dropped",
@@ -1275,41 +1276,42 @@
     "why_more_than_one": "Only the plugin-owned row case should fail when the kernel plugin_id gate is dropped: every other activity-overlay fixture in the file is written under plugin_id kernel and folds the same way with or without the gate."
   },
   {
-    "mutation_id": "s2a-track-row-name-from-lifecycle",
+    "mutation_id": "s2a-track-row-name-from-open-state",
     "defends": [
       "oracle:INV-APP-118"
     ],
     "target": "web/src/features/track/row/public.tsx",
-    "patch": "diff --git a/web/src/features/track/row/public.tsx b/web/src/features/track/row/public.tsx\nindex ef06ed8..9e130b7 100644\n--- a/web/src/features/track/row/public.tsx\n+++ b/web/src/features/track/row/public.tsx\n@@ -4,7 +4,7 @@ import { ListText } from '../../../ui/list-typography/public.tsx';\n import { useId } from 'react';\n import { activityLabelOf, activityNameBit } from '../../../../../core/domain/activity.ts';\n import {\n-  lifecycleLabel, trackActivityState, trackDisplayTitle, type Track,\n+  isRunning, lifecycleLabel, trackActivityState, trackDisplayTitle, type Track,\n } from '../../../../../core/domain/track.ts';\n import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';\n import { Icon } from '../../../ui/icon/public.tsx';\n@@ -71,7 +71,9 @@ export function TrackRow({\n \n   /* One state from the kernel's activity overlay plus the reader's receipt; the name's activity bit derives from the same value as the dot, never from the lifecycle. `unread` is the button's description, and only in the folded state. */\n   const activity = trackActivityState(track, unread);\n-  const activityBit = activityNameBit(activity);\n+  const activityBit = isRunning(track.lifecycle) ? 'running'\n+    : activity === 'attention' ? 'waiting on you'\n+      : activity === 'failed' ? 'needs attention' : '';\n   const label = `Track ${title}${activityBit ? `, ${activityBit}` : ''}, ${lifecycle}`\n     + (areaName === undefined ? '' : `, in area ${areaName}`);\n \n",
+    "patch": "diff --git a/web/src/features/track/row/public.tsx b/web/src/features/track/row/public.tsx\n--- a/web/src/features/track/row/public.tsx\n+++ b/web/src/features/track/row/public.tsx\n@@ -70,7 +70,9 @@\n \n   /* One state from the kernel's activity overlay plus the reader's receipt; the name's activity bit derives from the same value as the dot, never from the open/closed state. `unread` is the button's description, and only in the folded state. */\n   const activity = trackActivityState(track, unread);\n-  const activityBit = activityNameBit(activity);\n+  const activityBit = !isClosed(track) ? 'running'\n+    : activity === 'attention' ? 'waiting on you'\n+      : activity === 'failed' ? 'needs attention' : '';\n   const label = `Track ${title}${activityBit ? `, ${activityBit}` : ''}${isClosed(track) ? ', closed' : ''}`\n     + (areaName === undefined ? '' : `, in area ${areaName}`);\n \n",
     "expected_red": [
       "accessible name names the area only when the surface supplies one",
-      "navigation activity markers derives the marker and the name from the activity overlay, not the lifecycle",
+      "accessible name names the attention state when there is one, and nothing for an open track",
+      "navigation activity markers derives the marker and the name from the activity overlay, not the open/closed state",
       "navigation activity markers describes an unread track only in the folded state, never beside a working name"
     ],
     "selection_paths": [
       "web/src/features/track/row/public.test.tsx"
     ],
-    "why_more_than_one": "The accessible name is derived from the same state as the dot: the fixture that disagrees with the lifecycle in both directions reddens, and so does the plain working-name case that now says \"running\"."
+    "why_more_than_one": "The accessible name is derived from the same state as the dot: every open-track fixture now gains \", running\" in place of its overlay bit (the attention, working and area-name cases), and the fixture that disagrees with the open/closed state in both directions reddens."
   },
   {
-    "mutation_id": "s2a-needs-attention-lifecycle-or",
+    "mutation_id": "s2a-needs-attention-closed-or",
     "defends": [
       "oracle:INV-APP-118"
     ],
     "target": "core/domain/track.ts",
-    "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\nindex 2b1118c..40d9646 100644\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -509,7 +509,7 @@ export function isWorking(track: Track): boolean {\n \n /** The kernel says a person has to give input somewhere on this track. */\n export function needsUserAttention(track: Track): boolean {\n-  return track.attention === 'input';\n+  return isWaitingForUser(track.lifecycle) || track.attention === 'input';\n }\n \n /** The kernel says something on this track is broken and needs repair. */\n",
+    "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -567,7 +567,7 @@\n \n /** The kernel says a person has to give input somewhere on this track. */\n export function needsUserAttention(track: Track): boolean {\n-  return track.attention === 'input';\n+  return isClosed(track) || track.attention === 'input';\n }\n \n /** The kernel says something on this track is broken and needs repair. */\n",
     "expected_red": [
-      "Today clock counts waiting on you and working by the kernel verdict, and groups Open by lifecycle phase",
+      "Today clock counts waiting on you and working by the kernel verdict, and groups Open by the open state",
       "collapse toggle shows the waiting count as the strip's only figure, with no dot beside it",
-      "activity predicates read only the kernel activity overlay (INV-APP-118) does not derive attention from the lifecycle phase",
-      "activity predicates read only the kernel activity overlay (INV-APP-118) ranks a failed track with the waiting ones, and a running phase in the middle"
+      "activity predicates read only the kernel activity overlay (INV-APP-118) does not derive attention or failure from the open/closed state",
+      "activity predicates read only the kernel activity overlay (INV-APP-118) reads attention and failure from the overlay verdict"
     ],
     "selection_paths": [
       "core/domain/track.test.ts",
       "web/src/app/shell/sidebar.test.tsx",
       "web/src/features/today/public.test.tsx"
     ],
-    "why_more_than_one": "A lifecycle OR inside needsUserAttention leaks into every consumer of the predicate: the core cases, the rail strip count and the Today waiting count each pick up a blocked track the kernel said nothing about."
+    "why_more_than_one": "A closed-state OR inside needsUserAttention leaks into every consumer of the predicate: the core cases, the rail strip count and the Today waiting count each pick up a closed track the kernel said nothing about."
   },
   {
     "mutation_id": "s2a-activity-precedence-working-first",
@@ -1418,36 +1420,21 @@
     "why_more_than_one": "The hue-distance test runs once per theme, and the failed dot falling back to the warn family collapses the distance in both."
   },
   {
-    "mutation_id": "s2a-badge-running-tone-restored",
-    "defends": [
-      "oracle:INV-APP-118"
-    ],
-    "target": "web/src/features/track/lifecycle-badge/public.tsx",
-    "patch": "diff --git a/web/src/features/track/lifecycle-badge/public.tsx b/web/src/features/track/lifecycle-badge/public.tsx\nindex 8d00d1b..0a4ab46 100644\n--- a/web/src/features/track/lifecycle-badge/public.tsx\n+++ b/web/src/features/track/lifecycle-badge/public.tsx\n@@ -1,7 +1,7 @@\n // The track lifecycle control: the phrase comes from `lifecycleLabel` and the bucket from `isWaitingForUser` — no second label table or predicate here.\n \n import {\n-  isWaitingForUser, lifecycleLabel, type TrackLifecycle,\n+  isRunning, isWaitingForUser, lifecycleLabel, type TrackLifecycle,\n } from '../../../../../core/domain/track.ts';\n import styles from './lifecycle-badge.module.css';\n \n@@ -15,6 +15,7 @@ type BadgeTone = 'attention' | 'failed' | 'neutral';\n function toneOf(lifecycle: TrackLifecycle): BadgeTone {\n   if (lifecycle === 'failed') return 'failed';\n   if (isWaitingForUser(lifecycle)) return 'attention';\n+  if (isRunning(lifecycle)) return 'running' as BadgeTone;\n   return 'neutral';\n }\n \n",
-    "expected_red": [
-      "TrackLifecycleBadge leaves planning, dispatching and working neutral — the phase word does not read as alive"
-    ],
-    "selection_paths": [
-      "web/src/features/track/lifecycle-badge/public.test.tsx"
-    ],
-    "why_more_than_one": "Only the tone case for the running phases should fail when the retired running tone is restored; the phrase and attention cases are unaffected."
-  },
-  {
     "mutation_id": "s2a-today-groups-by-working",
     "defends": [
       "oracle:INV-APP-118"
     ],
     "target": "web/src/features/today/public.tsx",
-    "patch": "diff --git a/web/src/features/today/public.tsx b/web/src/features/today/public.tsx\nindex be30cc81a..f993559f4 100644\n--- a/web/src/features/today/public.tsx\n+++ b/web/src/features/today/public.tsx\n@@ -135,7 +135,7 @@ function TodayDesktop({\n   const needsPerson = (track: Track) => needsUserAttention(track) || hasFailed(track);\n   const waiting = shownTracks.filter(needsPerson);\n   const working = shownTracks.filter(isWorking);\n-  const open = shownTracks.filter((track) => isRunning(track.lifecycle) && !needsPerson(track));\n+  const open = shownTracks.filter((track) => isWorking(track) && !needsPerson(track));\n   const panel = (\n     <aside className={styles.panelColumn} data-nc-panel=\"\">\n       <PanelCard>\n",
+    "patch": "diff --git a/web/src/features/today/public.tsx b/web/src/features/today/public.tsx\n--- a/web/src/features/today/public.tsx\n+++ b/web/src/features/today/public.tsx\n@@ -134,7 +134,7 @@\n   const needsPerson = (track: Track) => needsUserAttention(track) || hasFailed(track);\n   const waiting = tracks.filter(needsPerson);\n   const working = tracks.filter(isWorking);\n-  const open = tracks.filter((track) => !isClosed(track) && !needsPerson(track));\n+  const open = tracks.filter((track) => isWorking(track) && !needsPerson(track));\n   const panel = (\n     <aside className={styles.panelColumn} data-nc-panel=\"\">\n       <PanelCard>\n",
     "expected_red": [
       "Today rows carry the track read receipt",
-      "Today clock counts waiting on you and working by the kernel verdict, and groups Open by lifecycle phase"
+      "Today clock counts waiting on you and working by the kernel verdict, and groups Open by the open state"
     ],
     "selection_paths": [
       "web/src/app/router/today-activity.test.tsx",
       "web/src/features/today/public.test.tsx"
     ],
-    "why_more_than_one": "Grouping Open by isWorking instead of the lifecycle phase empties the section for the phase-only fixtures: the Today unit case and the router-level Today row case both lose their idle running-phase rows. The header's second number is the working count, not the group's size, so the degraded-read cases no longer move."
+    "why_more_than_one": "Grouping Open by isWorking instead of the open state empties the section for the idle open fixtures: the Today unit case and the router-level Today row case both lose their idle open rows. The header's second number is the working count, not the group's size, so the degraded-read cases no longer move."
   },
   {
     "mutation_id": "s2b-conversation-row-from-session-state",
@@ -1698,13 +1685,13 @@
       "TrackPage header names a row by the first 80 characters of its text",
       "TrackPage header renders an item as markdown under a plain-words label, and nests no control inside another",
       "track conversations both notification kinds show the kernel's words and a row click opens the Planner composer",
-      "the track lifecycle status in the page header floats a Planner ask at the viewport corner; the whole row answers it and its × dismisses it",
-      "the track lifecycle status in the page header clamps a planner-down reason to three lines and never an ask",
-      "the track lifecycle status in the page header keeps three type steps: the title largest, the body at body size, the meta line smallest"
+      "the track closed status in the page header floats a Planner ask at the viewport corner; the whole row answers it and its × dismisses it",
+      "the track closed status in the page header clamps a planner-down reason to three lines and never an ask",
+      "the track closed status in the page header keeps three type steps: the title largest, the body at body size, the meta line smallest"
     ],
     "selection_paths": [
       "web/src/features/track/page/public.test.tsx",
-      "web/src/features/track/page/header-lifecycle.browser.test.tsx",
+      "web/src/features/track/page/header-status.browser.test.tsx",
       "web/src/app/router/track-conversation.test.tsx"
     ],
     "why_more_than_one": "Every case that reads a row's body reddens: the page cases read its text, its markdown and a link in it; the route's two-kinds case reads the kernel's words; the browser cases hit-test a link in the body, measure an ask body longer than three lines, and size the body's heading and code. Cases that only count rows, click the × or read the header stay green."
@@ -1715,7 +1702,7 @@
       "oracle:INV-APP-118"
     ],
     "target": "web/src/app/router/public.tsx",
-    "patch": "diff --git a/web/src/app/router/public.tsx b/web/src/app/router/public.tsx\n--- a/web/src/app/router/public.tsx\n+++ b/web/src/app/router/public.tsx\n@@ -2375,7 +2375,8 @@\n       onReply={plannerCard === undefined ? undefined : () => {\n         registry.requestOpen(plannerCard.id, { focusComposer: true });\n       }}\n-      onDismiss={(key) => trackMutations.dismissActivityItem(track.id, key)}\n+      /* MUT-1829-S3-1: Dismiss resolves without posting the key */\n+      onDismiss={() => Promise.resolve()}\n       onRenameTrack={(title) => trackMutations.patch(track.id, track.areaId, { title }).then(() => undefined)}\n       onResumeTrack={() => trackMutations.patch(track.id, track.areaId, { lifecycle: 'working' }).then(() => undefined)}\n       onDeleteTrack={(signal) => trackMutations.remove(track.id, track.areaId, signal).then(() => {\n",
+    "patch": "diff --git a/web/src/app/router/public.tsx b/web/src/app/router/public.tsx\n--- a/web/src/app/router/public.tsx\n+++ b/web/src/app/router/public.tsx\n@@ -2369,7 +2369,8 @@\n       onReply={plannerCard === undefined ? undefined : () => {\n         registry.requestOpen(plannerCard.id, { focusComposer: true });\n       }}\n-      onDismiss={(key) => trackMutations.dismissActivityItem(track.id, key)}\n+      /* MUT-1829-S3-1: Dismiss resolves without posting the key */\n+      onDismiss={() => Promise.resolve()}\n       onRenameTrack={(title) => trackMutations.patch(track.id, track.areaId, { title }).then(() => undefined)}\n       onReopenTrack={() => trackMutations.patch(track.id, track.areaId, { closed: false }).then(() => undefined)}\n       onDeleteTrack={(signal) => trackMutations.remove(track.id, track.areaId, signal).then(() => {\n",
     "expected_red": [
       "track conversations Dismiss posts the item key"
     ],
@@ -1756,15 +1743,15 @@
     "why_more_than_one": "The same-set comparison runs once per row module, and both modules lose their indicators on the mobile side at once."
   },
   {
-    "mutation_id": "s3-mobile-track-row-from-lifecycle",
+    "mutation_id": "s3-mobile-track-row-from-open-state",
     "defends": [
       "oracle:INV-APP-118"
     ],
     "target": "web/src/app/shell/mobile-tracks.tsx",
-    "patch": "diff --git a/web/src/app/shell/mobile-tracks.tsx b/web/src/app/shell/mobile-tracks.tsx\nindex 80941e9..9142c38 100644\n--- a/web/src/app/shell/mobile-tracks.tsx\n+++ b/web/src/app/shell/mobile-tracks.tsx\n@@ -5,7 +5,7 @@ import { Icon as AstryxIcon } from '@astryxdesign/core/Icon';\n import { List, ListItem } from '@astryxdesign/core/List';\n import { activityLabelOf, activityNameBit } from '../../../../core/domain/activity.ts';\n import { visibleAreas, type Area } from '../../../../core/domain/area.ts';\n-import { lifecycleLabel, trackActivityState, visibleTracks, trackDisplayTitle, type Track } from '../../../../core/domain/track.ts';\n+import { isRunning, lifecycleLabel, trackActivityState, visibleTracks, trackDisplayTitle, type Track } from '../../../../core/domain/track.ts';\n import { ActivityIndicator } from '../../ui/activity-indicator/public.tsx';\n import { ErrorBox } from '../../ui/error-box/public.tsx';\n import { Icon } from '../../ui/icon/public.tsx';\n@@ -73,7 +73,8 @@ function NavigationPage({\n           {tracks.map((track) => {\n             /* The same state the rail row shows: the kernel's activity overlay plus this reader's receipt, never the lifecycle.\n                The indicator is decorative here; `unread` is the button's description, never part of its name. The id is per row: one `MobileTracks` per document. */\n-            const activity = trackActivityState(track, isUnread(track));\n+            // MUT-1722-S3-1: the phone row spins on the lifecycle phase again\n+            const activity = isRunning(track.lifecycle) ? 'working' : 'quiet';\n             const activityBit = activityNameBit(activity);\n             const descriptionId = `mobile-track-${track.id}-unread`;\n             return <li key={track.id}>\n",
+    "patch": "diff --git a/web/src/app/shell/mobile-tracks.tsx b/web/src/app/shell/mobile-tracks.tsx\n--- a/web/src/app/shell/mobile-tracks.tsx\n+++ b/web/src/app/shell/mobile-tracks.tsx\n@@ -73,7 +73,8 @@\n           {tracks.map((track) => {\n             /* The same state the rail row shows: the kernel's activity overlay plus this reader's receipt, never the open/closed state.\n                The indicator is decorative here; `unread` is the button's description, never part of its name. The id is per row: one `MobileTracks` per document. */\n-            const activity = trackActivityState(track, isUnread(track));\n+            // MUT-1722-S3-1: the phone row spins on the open state again\n+            const activity = !isClosed(track) ? 'working' : 'quiet';\n             const activityBit = activityNameBit(activity);\n             const descriptionId = `mobile-track-${track.id}-unread`;\n             return <li key={track.id}>\n",
     "expected_red": [
       "MobileTracks has one Area header, a More edit action, and grouped actions above the selected Track",
-      "MobileTracks track rows carry the activity indicator and name bit from the overlay, never the lifecycle",
+      "MobileTracks track rows carry the activity indicator and name bit from the overlay, never the open/closed state",
       "Unified mobile headers switches complete Area pages directly and gives Tracks matching file icons",
       "Unified mobile headers uses clean Area rows and a separate Tracks page with the same actions",
       "compact navigation interaction contracts hands the Track list the rail’s read receipt, so a newer completion is unread until it is read",
@@ -1776,28 +1763,28 @@
       "web/src/app/shell/responsive.contract.test.tsx",
       "web/src/app/shell/unified-mobile-header.browser.test.tsx"
     ],
-    "why_more_than_one": "The phone row's dot and its name bit come from one value, so a lifecycle-driven state changes both: the row case sees a spinner on an idle `working` phase and no spinner on a `done` track with work in flight, the shell case sees `working` where the receipt says `unread`, and every case that finds a running-phase row by its exact name — the MobileTracks header case, the router's `?from=` case and the two unified-header browser cases, all of which mount a `lifecycle: 'working'` track with no overlay — misses it because the name now ends in `, working`."
+    "why_more_than_one": "The phone row's dot and its name bit come from one value, so an open-state-driven state changes both: the row case sees a spinner on an idle open track and no spinner on a closed track with work in flight, the shell case sees `working` where the receipt says `unread`, and every case that finds an open row by its exact name — the MobileTracks header case, the router's `?from=` case and the two unified-header browser cases, all of which mount an open track with no overlay — misses it because the name now ends in `, working`."
   },
   {
-    "mutation_id": "s4-today-second-count-from-phase",
+    "mutation_id": "s4-today-second-count-from-open",
     "defends": [
       "oracle:INV-APP-118"
     ],
     "target": "web/src/features/today/public.tsx",
-    "patch": "diff --git a/web/src/features/today/public.tsx b/web/src/features/today/public.tsx\nindex be30cc81a..2ade6e528 100644\n--- a/web/src/features/today/public.tsx\n+++ b/web/src/features/today/public.tsx\n@@ -134,7 +134,8 @@ function TodayDesktop({\n   /* The header's two numbers are the kernel's verdicts (`waiting`: input or failed; `working`); the \"Open\" group is the lifecycle phase. A group and a number never share a word. */\n   const needsPerson = (track: Track) => needsUserAttention(track) || hasFailed(track);\n   const waiting = shownTracks.filter(needsPerson);\n-  const working = shownTracks.filter(isWorking);\n+  // MUT-1743-S4-2: the second number counts the running phase again\n+  const working = shownTracks.filter((track) => isRunning(track.lifecycle));\n   const open = shownTracks.filter((track) => isRunning(track.lifecycle) && !needsPerson(track));\n   const panel = (\n     <aside className={styles.panelColumn} data-nc-panel=\"\">\n",
+    "patch": "diff --git a/web/src/features/today/public.tsx b/web/src/features/today/public.tsx\n--- a/web/src/features/today/public.tsx\n+++ b/web/src/features/today/public.tsx\n@@ -133,7 +133,8 @@\n   /* The header's two numbers are the kernel's verdicts (`waiting`: input or failed; `working`); the \"Open\" group is every open track the kernel is not waiting on a person for. A group and a number never share a word. */\n   const needsPerson = (track: Track) => needsUserAttention(track) || hasFailed(track);\n   const waiting = tracks.filter(needsPerson);\n-  const working = tracks.filter(isWorking);\n+  // MUT-1743-S4-2: the second number counts the open tracks again\n+  const working = tracks.filter((track) => !isClosed(track));\n   const open = tracks.filter((track) => !isClosed(track) && !needsPerson(track));\n   const panel = (\n     <aside className={styles.panelColumn} data-nc-panel=\"\">\n",
     "expected_red": [
-      "Today clock counts waiting on you and working by the kernel verdict, and groups Open by lifecycle phase",
-      "Today's second number counts the kernel's working verdict, not the running phase",
+      "Today clock counts waiting on you and working by the kernel verdict, and groups Open by the open state",
+      "Today's second number counts the kernel's working verdict, not the open tracks",
+      "degraded workspace reads stay usable does not claim empty activity while the activity read is unavailable",
       "degraded workspace reads stay usable does not claim empty activity while the areas read is unavailable",
-      "degraded workspace reads stay usable does not claim empty activity while the tracks read is unavailable",
-      "degraded workspace reads stay usable does not claim empty activity while the activity read is unavailable"
+      "degraded workspace reads stay usable does not claim empty activity while the tracks read is unavailable"
     ],
     "selection_paths": [
       "web/src/app/router/read-fallbacks.contract.test.tsx",
       "web/src/app/router/today-activity.test.tsx",
       "web/src/features/today/public.test.tsx"
     ],
-    "why_more_than_one": "Counting the running phase instead of the kernel's working verdict moves every fixture whose phase and verdict disagree: the Today unit case (three running-phase tracks, one working), the router-level count case (three working-phase tracks, one working) and the three degraded-read cases (one working-phase track with no overlay, so 0 becomes 1)."
+    "why_more_than_one": "Counting the open tracks instead of the kernel's working verdict moves every fixture whose open state and verdict disagree: the Today unit case (four open tracks, none working), the router-level count case (three open tracks, one working) and the three degraded-read cases (one open track with no overlay, so 0 becomes 1)."
   },
   {
     "mutation_id": "ownership-squash-skip-source-path-binding",

@@ -8,8 +8,7 @@ use calm_server::event::{
 use calm_server::harness::snapshot::HarnessPhaseTag;
 use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
 use calm_server::model::{
-    Area, AreaKind, Card, CardRuntimeView, Overlay, Track, TrackLifecycle, TrackWorkspace,
-    TrackWorkspaceKind,
+    Area, AreaKind, Card, CardRuntimeView, Overlay, Track, TrackWorkspace, TrackWorkspaceKind,
 };
 use calm_server::session_projection_repo::{AgentProvider, WorkerSessionKind, WorkerSessionState};
 use calm_types::claude_permissions::ClaudePermissionsScope;
@@ -96,15 +95,13 @@ fn track_min() -> Track {
         area_id: AreaId::from("area-01"),
         title: "Golden Track".into(),
         sort: 1.5,
-        archived_at: None,
         pinned_at: None,
-        lifecycle: TrackLifecycle::Draft,
+        closed_at: None,
         cwd_wire_alias: String::new(),
         template_id: None,
         plugin_scope: None,
         purpose: None,
         template_input: None,
-        terminal_at: None,
         recipe_id: None,
         recipe_revision: None,
         claude_permissions_policy: None,
@@ -174,11 +171,9 @@ golden_test!(
     "track_updated.full.json",
     Event::TrackUpdated(TrackUpdatedPayload::new(
         Track {
-            archived_at: Some(111),
             pinned_at: Some(222),
-            lifecycle: TrackLifecycle::Working,
+            closed_at: Some(333),
             cwd_wire_alias: "/tmp/golden-track".into(),
-            terminal_at: Some(333),
             workspace: TrackWorkspace {
                 kind: TrackWorkspaceKind::Managed,
                 path: "/tmp/golden-track".into(),
@@ -239,30 +234,6 @@ golden_test!(
     Event::TrackDeleted {
         id: TrackId::from("track-01"),
         area_id: AreaId::from("area-01"),
-    }
-);
-
-golden_test!(
-    track_lifecycle_changed_full,
-    "track_lifecycle_changed.full.json",
-    Event::TrackLifecycleChanged {
-        id: TrackId::from("track-01"),
-        area_id: AreaId::from("area-01"),
-        from: TrackLifecycle::Reviewing,
-        to: TrackLifecycle::Done,
-        agent_message: Some("review passed".into()),
-    }
-);
-
-golden_test!(
-    track_lifecycle_changed_min,
-    "track_lifecycle_changed.min.json",
-    Event::TrackLifecycleChanged {
-        id: TrackId::from("track-01"),
-        area_id: AreaId::from("area-01"),
-        from: TrackLifecycle::Draft,
-        to: TrackLifecycle::Planning,
-        agent_message: None,
     }
 );
 
@@ -1239,12 +1210,11 @@ fn alias_kinds_survive_from_kind_and_payload() {
 }
 
 /// Every `Event` variant's kind tag, in declaration order.
-const ALL_KIND_TAGS: [&str; 54] = [
+const ALL_KIND_TAGS: [&str; 53] = [
     "area.updated",
     "area.deleted",
     "track.updated",
     "track.deleted",
-    "track.lifecycle_changed",
     "card.added",
     "card.updated",
     "card.deleted",
@@ -1325,7 +1295,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 83,
+        files, 81,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {
@@ -1346,7 +1316,6 @@ fn kind_tag_list_matches_enum() {
             Event::AreaDeleted { .. } => "area.deleted",
             Event::TrackUpdated(_) => "track.updated",
             Event::TrackDeleted { .. } => "track.deleted",
-            Event::TrackLifecycleChanged { .. } => "track.lifecycle_changed",
             Event::CardAdded(_) => "card.added",
             Event::CardUpdated(_) => "card.updated",
             Event::CardDeleted { .. } => "card.deleted",
@@ -1404,7 +1373,7 @@ fn kind_tag_list_matches_enum() {
     assert_eq!(tag_of(&sample), sample.kind_tag());
     assert_eq!(
         ALL_KIND_TAGS.len(),
-        54,
+        53,
         "ALL_KIND_TAGS length drifted from the Event enum"
     );
 }

@@ -59,7 +59,6 @@
         }
       }
     },
-    "message": { "type": "string", "minLength": 1, "description": "Required human-readable rationale for this write. The kernel persists it on the emitted event as agent_message and on TrackUpdated.agent_message when a lifecycle transition is requested." },
-    "lifecycle": { "type": "string", "enum": ["draft", "planning", "dispatching", "working", "blocked", "reviewing", "done", "canceled", "failed"], "description": "Optional track lifecycle transition. Use planning after understanding the goal, dispatching when requesting workers, working when work is underway, blocked when user input is needed, reviewing when validating worker results, done after acceptance, or failed when completion is impossible. Omit to leave lifecycle unchanged." }
+    "message": { "type": "string", "minLength": 1, "description": "Required human-readable rationale for this write. The kernel persists it on the emitted event as agent_message." }
   }
 }

@@ -9,13 +9,13 @@
     "expected": { "decision": "allow", "recorder": "allow", "role": "allow" }
   },
   {
-    "description": "the recorder grant is not a lifecycle grant: the same Assistant session passes the recorder gate and is still refused by the role gate for a Track-scoped lifecycle transition",
+    "description": "the recorder grant is not a close grant: the same Assistant session passes the recorder gate and is still refused by the role gate for a track close",
     "principal": { "session_id": "$ASSISTANT_SESSION", "track_id": "$HOME_TRACK", "area_id": "$HOME_AREA" },
     "actor": { "kind": "AiCodex", "id": "$ASSISTANT_CARD" },
-    "event": { "ev": "track.lifecycle_changed", "data": { "id": "$HOME_TRACK", "area_id": "$HOME_AREA", "from": "planning", "to": "dispatching", "agent_message": "assistant lifecycle" } },
+    "event": { "ev": "track.updated", "data": { "id": "$HOME_TRACK", "area_id": "$HOME_AREA", "title": "frozen-vector track", "sort": 1.0, "pinned_at": null, "closed_at": 1, "cwd": "", "created_at": 0, "updated_at": 0, "agent_message": "assistant close" } },
     "scope": { "kind": "Track", "id": { "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "recorder_gate": true,
-    "expected": { "decision": "deny", "recorder": "allow", "role": "deny", "role_error_contains": "out of scope" }
+    "expected": { "decision": "deny", "recorder": "allow", "role": "deny", "role_error_contains": "may emit track.updated" }
   },
   {
     "description": "the Assistant may not dispatch: a codex worker request is refused by the role gate regardless of the recorder grant",
@@ -48,7 +48,7 @@
     "description": "the away track's own root session is the away Planner card, and marking it root buys it nothing here — proof that root-ness is no longer part of the criterion in either direction",
     "principal": { "session_id": "$AWAY_PLANNER_SESSION", "track_id": "$AWAY_TRACK", "area_id": "$HOME_AREA" },
     "actor": { "kind": "AiPlanner", "id": "$AWAY_PLANNER_CARD" },
-    "event": { "ev": "track.lifecycle_changed", "data": { "id": "$HOME_TRACK", "area_id": "$HOME_AREA", "from": "planning", "to": "dispatching", "agent_message": "cross-track lifecycle" } },
+    "event": { "ev": "track.updated", "data": { "id": "$HOME_TRACK", "area_id": "$HOME_AREA", "title": "frozen-vector track", "sort": 1.0, "pinned_at": null, "closed_at": 1, "cwd": "", "created_at": 0, "updated_at": 0, "agent_message": "cross-track close" } },
     "scope": { "kind": "Track", "id": { "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "recorder_gate": true,
     "expected": { "decision": "deny", "recorder": "deny", "role": "allow" }
