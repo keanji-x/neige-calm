@@ -43,6 +43,7 @@ import {
 } from '../../features/chat/thread/public.tsx';
 import { ModelPill } from '../../features/chat/thread/model-pill.tsx';
 import { ContextRing } from '../../features/chat/thread/context-ring.tsx';
+import { useMentionTrigger } from '../../features/chat/thread/mention-trigger.tsx';
 import { ReportBacklinks } from '../../features/report/backlinks/public.tsx';
 import { ReportDocument } from '../../features/report/document/public.tsx';
 import { useIndependentTaskLaunch } from './independent-task.tsx';
@@ -77,6 +78,7 @@ import {
 } from '../../../../core/domain/conversation.ts';
 import { ConfirmDialog, Dialog } from '../../ui/dialog/public.tsx';
 import { createDirectoryLister, createTrackWorkspaceFilesPort } from '../providers/directory.ts';
+import { useMentionSearch } from '../providers/mentions.ts';
 import { DELETE_CARD_COPY, DELETE_TRACK_COPY, RESET_TODAY_REPORT_COPY } from '../../ui/confirm-dialog/copy.ts';
 import { OperationFeedback, useDeleteConfirm, useOperationFeedback } from '../../ui/operation-feedback/public.tsx';
 import { Drawer } from '../../ui/drawer/public.tsx';
@@ -732,6 +734,8 @@ type ConversationPanelSource = Readonly<{
     derivedCardId: (idempotencyKey: string) => string;
     create: (text: string, idempotencyKey: string, selection: ModelSelection) => Promise<Conversation>;
     refresh: () => Promise<readonly Conversation[]>;
+    /** The one row a Planner reads and the Area whose `area/reports/` it reads, which is what `@` offers; `null` where no row is a Planner's. A track conversation is an Assistant, which `area/reports/` refuses. */
+    planner: Readonly<{ cardId: string; areaId: string }> | null;
   }>;
 
 /** What a caller may change without touching the draft's identity: `key` and
@@ -902,6 +906,9 @@ function useConversationPanel(
 
   const rows = source.rows;
   const store = useConversationStore(transport, unauthorized, scope, routeIntent);
+  /* `@` only in the Planner's own row; the track the drawer is on ranks its blocks first. */
+  const mentionTrigger = useMentionTrigger(useMentionSearch(transport, unauthorized,
+    source.planner !== null && openRowId === source.planner.cardId ? source.planner.areaId : null, source.scopeId));
   /* The composer's pending images, keyed to the open card so moving to another
        conversation does not carry a picked image into it. */
   const attachments = usePlannerAttachments(store.uploadAttachment, scope?.cardId ?? '');
@@ -989,7 +996,7 @@ function useConversationPanel(
       /* The source panel is a second `complementary` on the same track, and its Escape
                must not reach the planner; the region is asked whether it holds the panel's marker. */
       if (region.querySelector('[data-nc-report-source]') !== null) return;
-      /* An open `/` menu owns Escape first; this capture-phase listener would otherwise
+      /* An open `/` or `@` menu owns Escape first; this capture-phase listener would otherwise
                take it. The menu says it is open through `aria-expanded` on the combobox. */
       if (target.closest('[role="combobox"][aria-expanded="true"]') !== null) return;
       event.preventDefault();
@@ -1424,6 +1431,7 @@ function useConversationPanel(
                                already refuses a second one. */
               onStop={store.working || store.stopping ? store.interrupt : undefined}
               onNewConversation={startAnother}
+              mentionTrigger={mentionTrigger}
               /* The kernel reads the selection when it hands a batch to codex, so a change
                                lands on the next turn not yet issued; a REFUSED turn is re-issued and
                                reads it again. */
@@ -1568,6 +1576,8 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
       },
       create: launchpadConversationMutations.create,
       refresh: launchpadConversationMutations.refresh,
+      /* Every launchpad row is an assistant conversation. */
+      planner: null,
     },
     /* Every row is on the launchpad, which is what this page is. */
     { showTrack: false },
@@ -1995,6 +2005,7 @@ function TrackRouteBody({
       },
       create: conversationMutations.create,
       refresh: conversationMutations.refresh,
+      planner: plannerCard === undefined ? null : { cardId: plannerCard.id, areaId: track.areaId },
     },
     { showTrack: false },
   );

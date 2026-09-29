@@ -855,9 +855,11 @@
    * change. What would break this is narrower and nameable: (a) Astryx moving
    * from CSS anchor positioning to JS coordinates — the `!important`s would go
    * dead and the menu would return to the caret, visibly wrong on first open,
-   * not silently; (b) a second `[popover]`-based listbox appearing inside the
-   * composer, which would then also be well-width — there is one trigger and
-   * adding another is already the moment to revisit this file.
+   * not silently; (b) a `[popover]`-based listbox inside the composer that is
+   * not a trigger menu, which would then also be well-width. The `@` menu
+   * (#1881) is the second trigger and takes this placement on purpose: its
+   * rows carry a name and the report it belongs to, and the well's width is
+   * what gives both room.
    *
    * **(c) is the one the earlier revision of this note missed:** Astryx
    * portalling the layer to `document.body`. `useLayer` renders in place today,

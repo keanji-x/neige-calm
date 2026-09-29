@@ -1,0 +1,36 @@
+/* #1881 S2 — one row of the `@` menu: the thing picked, and what it belongs to. */
+
+@layer features {
+  /* The same one-line, two-rank row as the `/` menu's `.commandItem`: the name
+     at body rank on the left, the caption tier on the right, and the caption is
+     the part that gives way when the row is narrow. */
+  .item {
+    display: flex;
+    flex: 1;
+    gap: var(--space-3);
+    align-items: baseline;
+    min-inline-size: 0;
+  }
+
+  .label {
+    min-inline-size: 0;
+    overflow: hidden;
+    font-size: var(--text-base);
+    line-height: var(--leading-snug);
+    color: var(--text);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .detail {
+    flex: none;
+    max-inline-size: 50%;
+    margin-inline-start: auto;
+    overflow: hidden;
+    font-size: var(--text-xs);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}

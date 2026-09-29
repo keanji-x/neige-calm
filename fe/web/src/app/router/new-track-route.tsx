@@ -6,11 +6,13 @@ import { availabilityOf } from '../../../../core/domain/agent-providers.ts';
 import { folderConflictMessage } from '../../../../core/domain/area.ts';
 import { isBlankForKernel, trackCreateKeyAction, type NewTrackBodyWithoutFirstMessage } from '../../../../core/domain/track.ts';
 import { ModelPill } from '../../features/chat/thread/model-pill.tsx';
+import { useMentionTrigger } from '../../features/chat/thread/mention-trigger.tsx';
 import { NewTrackForm, type NewTrackDraft, type NewTrackFormState } from '../../features/area/new-track/public.tsx';
 import { useCompactViewport } from '../../ui/viewport/public.ts';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
 import { agentProvidersQueryOptions } from '../providers/agent-providers.ts';
 import { createDirectoryLister } from '../providers/directory.ts';
+import { useMentionSearch } from '../providers/mentions.ts';
 import { ApiError, OfflineSubmissionError, folderConflictOf, modelCatalogQueryOptions, useTrackMutations, useTrackRecipes, useTrackTemplates, useWorkspace, type Workspace } from '../providers/queries.ts';
 import { readHostThemeRgb } from '../theme/host-rgb.ts';
 import { mintIdempotencyKey } from './idempotency-key.ts';
@@ -53,6 +55,8 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
   const recipes = useTrackRecipes(transport, unauthorized);
   const go = useGo();
   const listDirectory = createDirectoryLister(transport, unauthorized);
+  /* The sentence is the new track's Planner's first message, and that Planner reads this Area's reports; there is no track yet to rank first. */
+  const mentionTrigger = useMentionTrigger(useMentionSearch(transport, unauthorized, areaId, null));
   const available = workspace.areasError === null && !workspace.areasLoading
     && workspace.areas.some((area) => area.id === areaId);
   const liveRef = useRef(true);
@@ -150,6 +154,7 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
   const createdTrackId = session.createdTrackId;
   const configurationLocked = session.creating || session.request !== null || !available || createdTrackId !== null;
   return <NewTrackForm
+    mentionTrigger={mentionTrigger}
     modelControls={
       <ModelPill
         groups={[

@@ -47,7 +47,7 @@ test('retains the original Track request after a lost acknowledgement and naviga
       await route.abort('failed');
     });
     await page.goto(`/next/area/${area.id}/new`);
-    const composer = page.getByRole('textbox', { name: 'What this track should do' });
+    const composer = page.getByRole('combobox', { name: 'What this track should do' });
     await composer.fill('Keep exactly one Track for this intention.');
     await page.getByRole('button', { name: 'Create track', exact: true }).click();
     await expect(page.getByRole('alert').filter({ hasText: 'Transport request failed' })).toBeVisible();
@@ -78,7 +78,7 @@ test('keeps a deleted Area draft selectable and never creates an orphan Track', 
   page.on('request', (entry) => { if (entry.method() === 'POST' && entry.url().endsWith('/api/tracks')) creates.push(entry.url()); });
   try {
     await page.goto(`/next/area/${area.id}/new`);
-    const composer = page.getByRole('textbox', { name: 'What this track should do' });
+    const composer = page.getByRole('combobox', { name: 'What this track should do' });
     await composer.fill('Keep this unfinished draft after its parent is deleted.');
     expect((await request.delete(`/api/areas/${area.id}`)).ok()).toBe(true);
     await expect(page.getByRole('alert').filter({ hasText: 'Your draft is kept here' })).toBeVisible();

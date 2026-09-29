@@ -123,7 +123,8 @@ it.each([1280, 390])('a Claude pick sets provider and model, drops the Codex eff
   expect(send.right).toBeLessThanOrEqual(width);
   expect(document.documentElement.scrollWidth).toBe(width);
 
-  await page.getByRole('textbox', { name: 'What this track should do' }).fill('Plan with Claude');
+  /* `combobox`: the route attaches the `@` menu, and a field with a trigger takes that role. */
+  await page.getByRole('combobox', { name: 'What this track should do' }).fill('Plan with Claude');
   await page.getByRole('button', { name: 'Create track' }).click();
   await expect.poll(() => creates.length).toBe(1);
   expect(creates[0]?.body).toMatchObject({
