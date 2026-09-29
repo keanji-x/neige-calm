@@ -29,8 +29,8 @@ function area(overrides: Partial<Area> = {}): Area {
 
 function track(overrides: Partial<Track> = {}): Track {
   return {
-    id: 'w1', areaId: 'c1', title: 'Open track', sort: 1, lifecycle: 'working', cwd: '/tmp', agentCwd: '/tmp',
-    archivedAt: null, pinnedAt: null, terminalAt: null, createdAt: NOW - 3_600_000, updatedAt: NOW,
+    id: 'w1', areaId: 'c1', title: 'Open track', sort: 1, cwd: '/tmp', agentCwd: '/tmp',
+    pinnedAt: null, closedAt: null, createdAt: NOW - 3_600_000, updatedAt: NOW,
     ...NEUTRAL_ACTIVITY,
     ...overrides,
   };
@@ -44,7 +44,7 @@ describe('INV-TODAY-002 the scheduled-event seam', () => {
   });
 
   it('keeps both sources in the same agenda instead of letting either take over', () => {
-    const scheduled = track({ id: 'w2', title: 'Scheduled track', createdAt: NOW - 10 * 86_400_000, terminalAt: NOW - 9 * 86_400_000 });
+    const scheduled = track({ id: 'w2', title: 'Scheduled track', createdAt: NOW - 10 * 86_400_000, closedAt: NOW - 9 * 86_400_000 });
     const events: ScheduledEvent[] = [{ track: scheduled, date: new Date(NOW), hour: 15 }];
     render(<TodayPage activityAvailable renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} scheduledEvents={events} nowMs={NOW} />);
 
@@ -125,7 +125,7 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
   it('offers no button anywhere in the main column', () => {
     render(<TodayPage
       activityAvailable
-      renderTrackRow={renderTrackRow} tracks={[track({ lifecycle: 'blocked' })]} areas={[area()]} nowMs={NOW}
+      renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW}
       launchpad={null}
     />);
     const panel = screen.getByRole('complementary');
@@ -158,7 +158,7 @@ describe('the main column belongs to the document', () => {
   it('omits the Waiting on you list while retaining its header count', () => {
     render(<TodayPage
       activityAvailable
-      renderTrackRow={renderTrackRow} tracks={[track({ lifecycle: 'blocked', attention: 'input' })]} areas={[area()]} nowMs={NOW}
+      renderTrackRow={renderTrackRow} tracks={[track({ attention: 'input' })]} areas={[area()]} nowMs={NOW}
       launchpad={{ track_id: 'lp', report_has_noninitial_content: true }}
       launchpadDocument={DOCUMENT}
     />);

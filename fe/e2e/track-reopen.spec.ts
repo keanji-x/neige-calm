@@ -17,26 +17,27 @@ test.afterEach(async ({ request }) => {
   createdAreaIds.length = 0;
 });
 
-test('resumes a canceled track to Working from Track actions', async ({ page, request }) => {
+test('reopens a closed track from Track actions', async ({ page, request }) => {
   const errors = captureBrowserErrors(page);
   const area = await createArea(request);
   createdAreaIds.push(area.id);
-  const track = await createTrack(request, area.id, 'Resume lifecycle');
+  const track = await createTrack(request, area.id, 'Reopen me');
 
-  const canceled = await request.patch(`/api/tracks/${track.id}`, {
-    data: { lifecycle: 'canceled' },
+  const closed = await request.patch(`/api/tracks/${track.id}`, {
+    data: { closed: true },
   });
-  expect(canceled.ok()).toBe(true);
+  expect(closed.ok()).toBe(true);
 
   await page.goto(`/next/track/${track.id}`);
+  await expect(page.getByRole('status', { name: 'Track closed' })).toBeVisible();
   await page.getByRole('button', { name: /^Track actions for / }).click();
-  await page.getByRole('menuitem', { name: /Resume work/ }).click();
+  await page.getByRole('menuitem', { name: /Reopen/ }).click();
 
-  await expect(page.getByRole('status', { name: 'Track lifecycle: Working' })).toBeVisible();
+  await expect(page.getByRole('status', { name: 'Track closed' })).toHaveCount(0);
   await expect.poll(async () => {
     const response = await request.get(`/api/tracks/${track.id}`);
-    const detail = await response.json() as { track: { lifecycle: string; terminal_at: number | null } };
+    const detail = await response.json() as { track: { closed_at: number | null } };
     return detail.track;
-  }).toEqual(expect.objectContaining({ lifecycle: 'working', terminal_at: null }));
+  }).toEqual(expect.objectContaining({ closed_at: null }));
   expect(errors).toEqual([]);
 });

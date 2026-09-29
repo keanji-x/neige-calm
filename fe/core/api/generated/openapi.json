@@ -4590,7 +4590,7 @@
           {
             "name": "since",
             "in": "query",
-            "description": "Lower bound (inclusive) in unix milliseconds. Track is included\nwhen `terminal_at IS NULL OR terminal_at >= since`. Omitting\ndisables the lower-bound filter.",
+            "description": "Lower bound (inclusive) in unix milliseconds. Track is included\nwhen `closed_at IS NULL OR closed_at >= since`. Omitting\ndisables the lower-bound filter.",
             "required": false,
             "schema": {
               "type": [
@@ -8249,7 +8249,7 @@
         "properties": {
           "key": {
             "type": "string",
-            "description": "The item's `key` as the activity overlay lists it: `ask:lifecycle:<id>`, `ask:notify:<id>`\nor `planner_down:<id>`. Whether the item is still open is not checked."
+            "description": "The item's `key` as the activity overlay lists it: `ask:ratify:<id>`, `ask:notify:<id>`\nor `planner_down:<id>`. Whether the item is still open is not checked."
           }
         },
         "additionalProperties": false
@@ -11339,13 +11339,6 @@
           "updated_at"
         ],
         "properties": {
-          "archived_at": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64"
-          },
           "area_id": {
             "type": "string"
           },
@@ -11360,6 +11353,14 @@
               }
             ]
           },
+          "closed_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Unix-ms time the track was closed, or `None` while it is open. Closed tracks do not schedule."
+          },
           "created_at": {
             "type": "integer",
             "format": "int64"
@@ -11370,9 +11371,6 @@
           },
           "id": {
             "type": "string"
-          },
-          "lifecycle": {
-            "$ref": "#/components/schemas/TrackLifecycle"
           },
           "pinned_at": {
             "type": [
@@ -11427,14 +11425,6 @@
               "null"
             ],
             "description": "Template input is validated at creation and otherwise remains opaque."
-          },
-          "terminal_at": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "description": "Unix-ms timestamp the track most recently entered a terminal lifecycle state, or `None` while non-terminal."
           },
           "title": {
             "type": "string"
@@ -11570,14 +11560,14 @@
         "type": "object",
         "required": [
           "track",
-          "can_resume",
+          "can_reopen",
           "cards",
           "overlays"
         ],
         "properties": {
-          "can_resume": {
+          "can_reopen": {
             "type": "boolean",
-            "description": "Lifecycle permission and child-track integrity resolved together so\nclients never advertise an action the write must reject."
+            "description": "Closed, not an Area chat, and not a child a task references, resolved together so\nclients never advertise a Reopen the write must reject."
           },
           "cards": {
             "type": "array",
@@ -11964,33 +11954,10 @@
           }
         }
       },
-      "TrackLifecycle": {
-        "type": "string",
-        "description": "Track lifecycle state machine. `archived` is intentionally NOT a lifecycle state: archival lives\non `archived_at`, orthogonal to execution semantics.",
-        "enum": [
-          "draft",
-          "planning",
-          "dispatching",
-          "working",
-          "blocked",
-          "reviewing",
-          "done",
-          "canceled",
-          "failed"
-        ]
-      },
       "TrackPatch": {
         "type": "object",
         "description": "`plugin_scope` is create-time only and is not a field here. Extra JSON keys are ignored.",
         "properties": {
-          "archived_at": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "description": "Pass `Some(Some(ts))` to archive, `Some(None)` to unarchive,\nor omit (`None`) to leave alone."
-          },
           "automation_policy": {
             "type": [
               "string",
@@ -12009,16 +11976,12 @@
               }
             ]
           },
-          "lifecycle": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/TrackLifecycle",
-                "description": "Request a lifecycle transition; validated through `crate::track_lifecycle`\ninside the write transaction."
-              }
-            ]
+          "closed": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`true` closes the track and `false` reopens it; the server stamps the time. Omit to leave alone."
           },
           "pinned_at": {
             "type": [
@@ -12512,7 +12475,7 @@
               "null"
             ],
             "format": "int64",
-            "description": "Lower bound (inclusive) in unix milliseconds. Track is included\nwhen `terminal_at IS NULL OR terminal_at >= since`. Omitting\ndisables the lower-bound filter."
+            "description": "Lower bound (inclusive) in unix milliseconds. Track is included\nwhen `closed_at IS NULL OR closed_at >= since`. Omitting\ndisables the lower-bound filter."
           },
           "until": {
             "type": [

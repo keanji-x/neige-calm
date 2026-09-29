@@ -4,7 +4,7 @@ import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { findIndependentTask, independentTaskFailureUncertain, independentTaskRevision, independentTaskUnavailableReason, startIndependentTaskOperation,
   type IndependentTaskIntent as Intent, type IndependentTaskRequest } from '../../../../core/domain/independent-task.ts';
-import { trackDetailOperation, type CardWire, type TrackLifecycle } from '../../../../core/domain/track.ts';
+import { trackDetailOperation, type CardWire } from '../../../../core/domain/track.ts';
 import { IndependentTaskForm } from '../../features/track/independent-task/form.tsx';
 import { useState } from '../../ui/state/public.ts';
 import { ApiError, queryKeys, runOperation } from '../providers/queries.ts';
@@ -12,8 +12,8 @@ import { beginTaskIntent } from './task-intent-lease.ts';
 import { mintIdempotencyKey } from './idempotency-key.ts';
 
 /** Session cache survives route unmounts. Writes always finish even if the form is closed. */
-export function useIndependentTaskLaunch({ trackId, cards, lifecycle, transport, unauthorized, onCreated }: {
-  lifecycle: TrackLifecycle; trackId: string; cards: readonly CardWire[]; transport: ApiTransportPort;
+export function useIndependentTaskLaunch({ trackId, cards, closedAt, transport, unauthorized, onCreated }: {
+  closedAt: number | null; trackId: string; cards: readonly CardWire[]; transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel; onCreated: (blockId: string) => void;
 }) {
   const client = useQueryClient();
@@ -52,7 +52,7 @@ export function useIndependentTaskLaunch({ trackId, cards, lifecycle, transport,
     if (active === undefined || active.phase === 'sending' || active.phase === 'accepted') return;
     const wasUncertain = active.phase === 'uncertain';
     const goal = active.phase === 'editing' ? active.goal : active.request.goal;
-    if (!wasUncertain && (goal.trim() === '' || revision === null || independentTaskUnavailableReason(lifecycle) !== null)) return;
+    if (!wasUncertain && (goal.trim() === '' || revision === null || independentTaskUnavailableReason(closedAt) !== null)) return;
     const request = wasUncertain ? active.request
       : { key: `independent-${mintIdempotencyKey()}`, goal, ifDocRev: revision! };
     let lease;
@@ -88,7 +88,7 @@ export function useIndependentTaskLaunch({ trackId, cards, lifecycle, transport,
       }
       setOpen(true);
     },
-    form: <IndependentTaskForm open={open} intent={intent} lifecycle={lifecycle} revisionAvailable={revision !== null}
+    form: <IndependentTaskForm open={open} intent={intent} closedAt={closedAt} revisionAvailable={revision !== null}
       onClose={() => setOpen(false)} onGoal={(goal) => {
         const current = client.getQueryData<Intent>(key);
         if (current?.phase === 'editing' || current?.phase === 'rejected') client.setQueryData<Intent>(key, () => ({ phase: 'editing', goal }));

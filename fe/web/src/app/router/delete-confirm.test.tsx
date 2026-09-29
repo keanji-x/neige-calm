@@ -18,8 +18,8 @@ it('requires the shared confirmation before deleting a Today panel track', async
   const requests: ApiRequest[] = [];
   let deleted = false;
   const track = {
-    id: 'w1', area_id: 'c1', title: 'Risky', sort: 1, lifecycle: 'working', cwd: '/tmp',
-    archived_at: null, pinned_at: null, terminal_at: null, created_at: Date.now() - 1000, updated_at: Date.now(),
+    id: 'w1', area_id: 'c1', title: 'Risky', sort: 1, cwd: '/tmp',
+    pinned_at: null, closed_at: null, created_at: Date.now() - 1000, updated_at: Date.now(),
   };
   const transport: ApiTransportPort = { send(request): Promise<ApiTransportResponse> {
     requests.push(request);
@@ -49,8 +49,8 @@ it('requires the shared confirmation before deleting a Today panel track', async
 
 it('does not navigate on a delete success that arrives after cancellation', async () => {
   let resolveDelete!: (response: ApiTransportResponse) => void;
-  const track = { id: 'w1', area_id: 'c1', title: 'Risky', sort: 1, lifecycle: 'working', cwd: '/tmp',
-    archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 1 };
+  const track = { id: 'w1', area_id: 'c1', title: 'Risky', sort: 1, cwd: '/tmp',
+    pinned_at: null, closed_at: null, created_at: 1, updated_at: 1 };
   const transport: ApiTransportPort = { send(request): Promise<ApiTransportResponse> {
     if (request.method === 'DELETE') return new Promise((resolve) => { resolveDelete = resolve; });
     if (request.path === '/api/areas') return Promise.resolve({ status: 200, statusText: 'OK', body: [
@@ -58,7 +58,7 @@ it('does not navigate on a delete success that arrives after cancellation', asyn
     ] });
     if (request.path === '/api/areas/c1/tracks') return Promise.resolve({ status: 200, statusText: 'OK', body: [track] });
     if (request.path === '/api/tracks/w1') return Promise.resolve({
-      status: 200, statusText: 'OK', body: { track, can_resume: false, cards: [], overlays: [] },
+      status: 200, statusText: 'OK', body: { track, can_reopen: false, cards: [], overlays: [] },
     });
     if (request.path === '/api/settings') return Promise.resolve({ status: 200, statusText: 'OK', body: {} });
     return Promise.resolve({ status: 200, statusText: 'OK', body: [] });
@@ -109,8 +109,8 @@ it('does not navigate on an area delete success that arrives after cancellation'
 it('round-trips an encoded track id through useGo, TanStack history, and useRouteParam', async () => {
   const requests: ApiRequest[] = [];
   const trackId = 'a/b %';
-  const track = { id: trackId, area_id: 'c1', title: 'Encoded track', sort: 1, lifecycle: 'working', cwd: '/tmp',
-    archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 1 };
+  const track = { id: trackId, area_id: 'c1', title: 'Encoded track', sort: 1, cwd: '/tmp',
+    pinned_at: null, closed_at: null, created_at: 1, updated_at: 1 };
   const transport: ApiTransportPort = { send(request): Promise<ApiTransportResponse> {
     requests.push(request);
     if (request.path === '/api/areas') return Promise.resolve({ status: 200, statusText: 'OK', body: [
@@ -118,7 +118,7 @@ it('round-trips an encoded track id through useGo, TanStack history, and useRout
     ] });
     if (request.path === '/api/areas/c1/tracks') return Promise.resolve({ status: 200, statusText: 'OK', body: [track] });
     if (request.path.includes('/api/tracks/')) return Promise.resolve({
-      status: 200, statusText: 'OK', body: { track, can_resume: false, cards: [], overlays: [] },
+      status: 200, statusText: 'OK', body: { track, can_reopen: false, cards: [], overlays: [] },
     });
     return Promise.resolve({ status: 200, statusText: 'OK', body: [] });
   } };

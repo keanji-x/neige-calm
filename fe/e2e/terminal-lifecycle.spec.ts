@@ -4,8 +4,8 @@ import { expect, test } from '@playwright/test';
 test('refreshing an exited terminal shows its final state while secondary reads are slow', async ({ page }, testInfo) => {
   const area = { id: 'area-1', name: 'Work', color: '#6a8', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
   const track = {
-    id: 'track-1', area_id: area.id, title: 'Terminal lifecycle', sort: 1, lifecycle: 'working', cwd: '/tmp',
-    archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 1,
+    id: 'track-1', area_id: area.id, title: 'Terminal lifecycle', sort: 1, cwd: '/tmp',
+    pinned_at: null, closed_at: null, created_at: 1, updated_at: 1,
   };
   let status = 'starting';
   let releaseSecondaryReads: () => void = () => {};
@@ -27,7 +27,7 @@ test('refreshing an exited terminal shows its final state while secondary reads 
       case '/api/areas/area-1/tracks': body = [track]; break;
       case '/api/settings': body = {}; break;
       case '/api/tracks/track-1':
-        body = { track, can_resume: false, overlays: [], cards: [{
+        body = { track, can_reopen: false, overlays: [], cards: [{
           id: 'card-1', track_id: track.id, kind: 'terminal', title: 'Terminal', sort: 1,
           payload: {}, deletable: true, created_at: 1, updated_at: 1,
           runtime: { worker_session_id: 'run-1', kind: 'terminal', status },

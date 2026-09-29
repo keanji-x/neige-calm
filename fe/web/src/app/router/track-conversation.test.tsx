@@ -25,7 +25,7 @@ import { APP_BASEPATH, createAppRouter, useConversationStore } from './public.ts
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 
 const AREA = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
-const TRACK = { id: 'w1', area_id: 'c1', title: 'Test track', sort: 1, lifecycle: 'working', cwd: '/tmp', archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2 };
+const TRACK = { id: 'w1', area_id: 'c1', title: 'Test track', sort: 1, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
 /* A track with no planner card. */
 const BARE_TRACK = { ...TRACK, id: 'w2', title: 'Bare track', sort: 2 };
 const PLANNER_CARD = { id: 'card-planner', track_id: 'w1', kind: 'codex', title: 'Planner chat', sort: 1, payload: { planner_harness: true }, deletable: true, created_at: 1, updated_at: 2 };
@@ -48,7 +48,7 @@ const trackActivityOverlay = (payload: Partial<{
 });
 /** The Planner's ask, in its words, as the projector lists it. */
 const askItem = (text: string, atMs: number): ActivityItemWire =>
-  ({ source: 'ask', key: `ask:lifecycle:${atMs}`, text, at_ms: atMs });
+  ({ source: 'ask', key: `ask:ratify:${atMs}`, text, at_ms: atMs });
 /** The Planner stopped: its failure reason, as the projector lists it. */
 const plannerDownItem = (text: string, atMs: number): ActivityItemWire =>
   ({ source: 'planner_down', key: `planner_down:${atMs}`, text, at_ms: atMs });
@@ -160,12 +160,12 @@ function setup(reply?: Reply, storage?: UiPreferenceStorage, recovery?: Recovery
       if (request.path === '/api/overlays?entity_kind=track') return ok([]);
       if (request.path === '/api/tracks/w1') {
         return ok({
-          track: TRACK, can_resume: false,
+          track: TRACK, can_reopen: false,
           cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD], overlays: [],
         });
       }
       if (request.path === '/api/tracks/w2') return ok({
-        track: BARE_TRACK, can_resume: false, cards: [], overlays: [],
+        track: BARE_TRACK, can_reopen: false, cards: [], overlays: [],
       });
       if (request.path === CONVERSATIONS) return ok([assistantRow()]);
       if (request.path === BARE_CONVERSATIONS) return ok([]);
@@ -295,7 +295,7 @@ describe('track conversations', () => {
   it('both notification kinds show the kernel\'s words and a row click opens the Planner composer', async () => {
     const mount = () => setup((request) => request.path === '/api/tracks/w1'
       ? ok({
-          track: TRACK, can_resume: false,
+          track: TRACK, can_reopen: false,
           cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD],
           overlays: [trackActivityOverlay({ attention: 'failed', items: [
             plannerDownItem('400: The gpt-6-astra model requires a newer version of Codex.', 5),
@@ -340,7 +340,7 @@ describe('track conversations', () => {
       }
       return request.path === '/api/tracks/w1'
         ? ok({
-            track: TRACK, can_resume: false,
+            track: TRACK, can_reopen: false,
             cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD],
             overlays: [trackActivityOverlay({ attention: 'failed', items: [
               plannerDownItem('unexpected status 403 Forbidden', 5),
@@ -354,7 +354,7 @@ describe('track conversations', () => {
     fireEvent.click(within(askRow!).getByRole('button', { name: /^Dismiss: Needs your answer: / }));
     await waitFor(() => expect(dismissed).toBe(true));
     expect(requests.filter((request) => request.path === '/api/tracks/w1/activity/dismissals'))
-      .toEqual([expect.objectContaining({ method: 'POST', body: { key: 'ask:lifecycle:4' } })]);
+      .toEqual([expect.objectContaining({ method: 'POST', body: { key: 'ask:ratify:4' } })]);
     /* No optimistic removal: the row stays until the projector's `overlay.set` refreshes the track. */
     const notice = screen.getByRole('region', { name: 'Notifications' });
     expect(within(notice).getAllByRole('listitem')).toHaveLength(2);
@@ -374,7 +374,7 @@ describe('track conversations', () => {
   it('counts an ask and planner down as two notifications', async () => {
     setup((request) => request.path === '/api/tracks/w1'
       ? ok({
-          track: TRACK, can_resume: false,
+          track: TRACK, can_reopen: false,
           cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD],
           overlays: [trackActivityOverlay({ attention: 'failed',
             items: [plannerDownItem('boom', 5), askItem('Which region?', 4)],
@@ -391,7 +391,7 @@ describe('track conversations', () => {
   it('ignores a retired kernel/card/status row and a plugin-authored activity row', async () => {
     setup((request) => request.path === '/api/tracks/w1'
       ? ok({
-          track: TRACK, can_resume: false,
+          track: TRACK, can_reopen: false,
           cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD],
           overlays: [
             cardStatusOverlay(WORKER_CARD.id, 'AwaitingInput', 5),
@@ -1737,7 +1737,7 @@ it('uses a spinner while a closed conversation runs, a blue unread dot on comple
   let cards: ActivityCardWire[] = [];
   const { client } = setup(request => {
     if (request.method === 'GET' && request.path === CONVERSATIONS) return ok(rows);
-    if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_resume: false,
+    if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false,
       cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD], overlays: [trackActivityOverlay({ working: cards.length > 0, cards })] });
     return undefined;
   }, receiptStorage());
@@ -1855,7 +1855,7 @@ it('shows a closed Planner working and preserves unread completion until its his
   /* `CardRuntimeView.last_turn_completed_ms`: absent while the first turn is still running. */
   let lastTurnCompletedMs: number | undefined;
   const { client } = setup(request => {
-    if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_resume: false,
+    if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false,
       cards: [{ ...PLANNER_CARD, runtime: { worker_session_id: 'planner-live', kind: 'shared-spec', status, updated_at_ms: activityAt,
         ...(lastTurnCompletedMs === undefined ? {} : { last_turn_completed_ms: lastTurnCompletedMs }) } }],
       overlays: [trackActivityOverlay({ working: cards.length > 0, activity_at_ms: lastTurnCompletedMs ?? null, cards })] });
@@ -1911,7 +1911,7 @@ it('conversation rows read activity.cards, not session state', async () => {
   let cards: ActivityCardWire[] = [];
   const { client } = setup(request => {
     if (request.method === 'GET' && request.path === CONVERSATIONS) return ok([assistantRow({ state: 'turn_pending' })]);
-    if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_resume: false,
+    if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false,
       cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD], overlays: [trackActivityOverlay({ cards })] });
     return undefined;
   }, receiptStorage());
@@ -1945,7 +1945,7 @@ it('the injected planner row reads activity.cards and last_turn_completed_ms', a
   let updatedAtMs = 50;
   let lastTurnCompletedMs: number | undefined;
   const { client } = setup(request => {
-    if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_resume: false,
+    if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false,
       cards: [{ ...PLANNER_CARD, runtime: { worker_session_id: 'planner-live', kind: 'codex', status: 'turn_pending',
         updated_at_ms: updatedAtMs, ...(lastTurnCompletedMs === undefined ? {} : { last_turn_completed_ms: lastTurnCompletedMs }) } }],
       overlays: [trackActivityOverlay({ cards })] });

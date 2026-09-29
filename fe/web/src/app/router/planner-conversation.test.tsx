@@ -14,7 +14,7 @@ import { APP_BASEPATH, createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 
 const AREA = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
-const TRACK = { id: 'w1', area_id: 'c1', title: 'Test track', sort: 1, lifecycle: 'working', cwd: '/tmp', archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2 };
+const TRACK = { id: 'w1', area_id: 'c1', title: 'Test track', sort: 1, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
 const CARD = { id: 'card-1', track_id: 'w1', kind: 'codex', title: 'Planner chat', sort: 1, payload: { planner_harness: true }, deletable: true, created_at: 1, updated_at: 2 };
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 const TRACK_B = { ...TRACK, id: 'w2', title: 'Second track', sort: 2 };
@@ -71,10 +71,10 @@ function setup(reply?: Reply) {
       if (request.path === '/api/areas/c1/tracks') return ok([TRACK, TRACK_B]);
       if (request.path === '/api/overlays?entity_kind=track') return ok([]);
       if (request.path === '/api/tracks/w1') return ok({
-        track: TRACK, can_resume: false, cards: [CARD], overlays: [],
+        track: TRACK, can_reopen: false, cards: [CARD], overlays: [],
       });
       if (request.path === '/api/tracks/w2') return ok({
-        track: TRACK_B, can_resume: false, cards: [CARD_B], overlays: [],
+        track: TRACK_B, can_reopen: false, cards: [CARD_B], overlays: [],
       });
       if (request.path.includes('/harness/items')) return ok([]);
       if (request.path.endsWith('/planner/run')) return ok(PLANNER_RUN_IDLE);
@@ -293,12 +293,12 @@ describe('planner conversation regressions', () => {
     await screen.findByRole('button', { name: 'Conversation Planner chat, 3 turns' });
 
     client.setQueryData(queryKeys.trackDetail(TRACK.id), {
-      track: TRACK, can_resume: false, cards: [CARD_SAME_TRACK], overlays: [],
+      track: TRACK, can_reopen: false, cards: [CARD_SAME_TRACK], overlays: [],
     });
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Other chat' }));
     await screen.findByRole('button', { name: 'Conversation Other chat, 3 turns' });
     client.setQueryData(queryKeys.trackDetail(TRACK.id), {
-      track: TRACK, can_resume: false, cards: [CARD], overlays: [],
+      track: TRACK, can_reopen: false, cards: [CARD], overlays: [],
     });
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Planner chat' }));
     await screen.findByRole('button', { name: 'Conversation Planner chat, 3 turns' });
@@ -1009,7 +1009,7 @@ describe('planner conversation regressions', () => {
         /* The wedged case also carries the kernel's stale `working` verdict: the drawer's
                    own wedge must outrank it. */
         : policy === 'stalled' && request.path === '/api/tracks/w1'
-          ? ok({ track: TRACK, can_resume: false, cards: [CARD],
+          ? ok({ track: TRACK, can_reopen: false, cards: [CARD],
               overlays: [trackActivityOverlay([{ card_id: CARD.id, state: 'working' }])] })
           : undefined);
       await openConversation();

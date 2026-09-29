@@ -4,7 +4,6 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
-import type { TrackLifecycle } from '../../../../core/domain/track.ts';
 import { wireEventSchema } from '../../../../core/api/schemas.ts';
 import { initialEventState, reduceEventFrame } from '../../../../core/events/reducer.ts';
 import { applyEventEffects } from '../events/query-invalidation-adapter.ts';
@@ -29,10 +28,10 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-function setup(mode: 'success' | 'lost' | 'lost-committed' | 'lost-hidden' | 'conflict' | 'unavailable' = 'success', lifecycle: TrackLifecycle = 'draft') {
+function setup(mode: 'success' | 'lost' | 'lost-committed' | 'lost-hidden' | 'conflict' | 'unavailable' = 'success', closedAt: number | null = null) {
   const requests: ApiRequest[] = [];
-  const track = { id: 'w1', area_id: 'c1', title: 'Independent work', sort: 1, lifecycle, cwd: '/tmp',
-    archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2 };
+  const track = { id: 'w1', area_id: 'c1', title: 'Independent work', sort: 1, cwd: '/tmp',
+    pinned_at: null, closed_at: closedAt, created_at: 1, updated_at: 2 };
   const area = { id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
   const reportCard = { id: 'report', track_id: 'w1', title: null, kind: 'track-report', sort: 1, deletable: false,
     created_at: 1, updated_at: 2, payload: { schemaVersion: 3, docRev: 12, summary: '', body: '', blocks: [
@@ -62,19 +61,18 @@ function setup(mode: 'success' | 'lost' | 'lost-committed' | 'lost-hidden' | 'co
       reportCard.payload.blocks.push({ id: 'created-task', rev: 1, kind: 'task', payload: {
         key: body.key, kind: 'codex', declared_by: 'user', ready: true, goal: body.goal,
       } });
-      track.lifecycle = 'working';
       if (mode === 'lost-committed' || mode === 'lost-hidden') throw new Error('Response lost after commit');
       return ok({ taskKey: body.key, blockId: 'created-task', docRev: 13 });
     }
     if (request.path === '/api/tracks/w2') return ok({ track: { ...track, id: 'w2', title: 'Other Track' },
-      can_resume: false, cards: [{ ...reportCard, id: 'report2', track_id: 'w2', payload: { ...reportCard.payload, blocks: [] } }], overlays: [] });
+      can_reopen: false, cards: [{ ...reportCard, id: 'report2', track_id: 'w2', payload: { ...reportCard.payload, blocks: [] } }], overlays: [] });
     if (request.path === '/api/tracks/w2/report') return ok({ taskDiagnostics: [] });
     if (request.path === '/api/areas') return ok([area]);
     if (request.path === '/api/areas/c1/tracks') return ok([track]);
     if (request.path === '/api/tracks/w1') {
       const hide = mode === 'lost-hidden' && writes > 0 && ++reconciliationReads < 3;
       const visible = hide ? { ...reportCard, payload: { ...reportCard.payload, blocks: reportCard.payload.blocks.slice(0, 1) } } : reportCard;
-      return ok({ track, can_resume: false, cards: [visible], overlays: [] });
+      return ok({ track, can_reopen: false, cards: [visible], overlays: [] });
     }
     if (request.path === '/api/tracks/w1/report') return ok({ taskDiagnostics: submitted === null ? [] : [
       { blockId: 'created-task', key: submitted.key, schedulable: true, status, statusDetail: null, workerCardId: null, diagnostics: [] },
@@ -208,8 +206,8 @@ it('shows completed null, accepted failure and exact-attempt read errors distinc
   await screen.findByText(/Could not load accepted report: Attempt not found/);
 });
 
-it.each(['blocked', 'done', 'canceled', 'failed'] as const)('disables new task entry on a %s Track', async (lifecycle) => {
-  const fixture = setup('success', lifecycle);
+it('disables new task entry on a closed Track', async () => {
+  const fixture = setup('success', 42);
   await userEvent.click(await screen.findByRole('button', { name: 'Track actions for Independent work' }));
   const entry = await screen.findByRole('menuitem', { name: 'Run independent task' });
   expect(entry.getAttribute('aria-disabled')).toBe('true');

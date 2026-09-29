@@ -22,8 +22,8 @@ function area(overrides: Partial<Area> = {}): Area {
 function tracks(count: number, areaId = 'c1', prefix = 'T'): Track[] {
   return Array.from({ length: count }, (_, index) => ({
     id: `${areaId}-${index + 1}`, areaId, title: `${prefix}${index + 1}`, sort: index,
-    lifecycle: 'draft', cwd: '/tmp', agentCwd: '/tmp',
-    archivedAt: null, pinnedAt: null, terminalAt: null, createdAt: 0, updatedAt: 0,
+    cwd: '/tmp', agentCwd: '/tmp',
+    pinnedAt: null, closedAt: null, createdAt: 0, updatedAt: 0,
     ...NEUTRAL_ACTIVITY,
   }));
 }
@@ -133,13 +133,6 @@ describe('Area track limit', () => {
     expect(shownTitles()).toEqual(['T1', 'T2', 'T3', 'T4', 'T5']);
     expect(screen.getByRole('button', { name: /^Track T3/ }).getAttribute('aria-current')).toBe('page');
     expect(toggle()?.textContent).toBe('Show 2 more');
-  });
-
-  it('does not spend the limit on archived Tracks', () => {
-    const rows = tracks(7).map((track, index) => (index < 2 ? { ...track, archivedAt: 1 } : track));
-    renderRail({ byArea: new Map([['c1', rows]]) });
-    expect(shownTitles()).toEqual(['T3', 'T4', 'T5', 'T6', 'T7']);
-    expect(toggle()).toBeNull();
   });
 
   it('keeps Show all across collapsing and re-expanding the Area', async () => {

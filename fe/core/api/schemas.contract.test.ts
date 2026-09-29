@@ -109,7 +109,6 @@ describe('wireEventSchema', () => {
         id: 'track_1',
         title: 'hello',
         sort: 0,
-        archived_at: null,
         created_at: 1,
         updated_at: 2,
       },
@@ -126,12 +125,10 @@ describe('wireEventSchema', () => {
         area_id: 'area_1',
         title: 'hello',
         sort: 0,
-        archived_at: null,
         pinned_at: null,
-        lifecycle: 'dispatching',
         cwd: '/repo',
         template_id: null,
-        terminal_at: null,
+        closed_at: null,
         created_at: 1,
         updated_at: 2,
         agent_message: 'moving to dispatch',
@@ -140,7 +137,7 @@ describe('wireEventSchema', () => {
     expect(parsed.ev).toBe('track.updated');
     if (parsed.ev === 'track.updated') {
       expect(parsed.data.agent_message).toBe('moving to dispatch');
-      expect(parsed.data.lifecycle).toBe('dispatching');
+      expect(parsed.data.closed_at).toBeNull();
       expect(parsed.data.template_input).toBeNull();
       expect(parsed.data.plugin_scope).toBeNull();
     }
@@ -155,14 +152,12 @@ describe('wireEventSchema', () => {
         area_id: 'area_1',
         title: 'hello',
         sort: 0,
-        archived_at: null,
         pinned_at: null,
-        lifecycle: 'dispatching',
         cwd: '/repo',
         template_id: 'issue-development',
         plugin_scope: 'dev.neige.git-forge',
         template_input: templateInput,
-        terminal_at: null,
+        closed_at: null,
         created_at: 1,
         updated_at: 2,
       },
@@ -858,30 +853,16 @@ describe('entity sub-schemas', () => {
     expect(areaSchema.parse(c)).toEqual(c);
   });
 
-  it('trackSchema accepts archived_at: null', () => {
+  it('trackSchema defaults `closed_at` to null when the field is missing', () => {
     const w = {
       id: 'w1',
       area_id: 'c1',
       title: 't',
       sort: 0,
-      archived_at: null,
       created_at: 1,
       updated_at: 2,
     };
-    expect(trackSchema.parse(w).archived_at).toBeNull();
-  });
-
-  it('trackSchema defaults `lifecycle` to "draft" when the field is missing', () => {
-    const w = {
-      id: 'w1',
-      area_id: 'c1',
-      title: 't',
-      sort: 0,
-      archived_at: null,
-      created_at: 1,
-      updated_at: 2,
-    };
-    expect(trackSchema.parse(w).lifecycle).toBe('draft');
+    expect(trackSchema.parse(w).closed_at).toBeNull();
   });
 
   it('trackSchema hydrates + preserves `workspace` (#1147 S1)', () => {
@@ -892,7 +873,6 @@ describe('entity sub-schemas', () => {
       area_id: 'c1',
       title: 't',
       sort: 0,
-      archived_at: null,
       created_at: 1,
       updated_at: 2,
     };
@@ -935,7 +915,6 @@ describe('entity sub-schemas', () => {
       area_id: 'c1',
       title: 't',
       sort: 0,
-      archived_at: null,
       created_at: 1,
       updated_at: 2,
     };
@@ -958,51 +937,17 @@ describe('entity sub-schemas', () => {
     ).toBe(true);
   });
 
-  it('trackSchema round-trips every lifecycle name', () => {
-    const all = [
-      'draft',
-      'planning',
-      'dispatching',
-      'working',
-      'blocked',
-      'reviewing',
-      'done',
-      'canceled',
-      'failed',
-    ] as const;
-    for (const lc of all) {
-      const w = {
-        id: 'w1',
-        area_id: 'c1',
-        title: 't',
-        sort: 0,
-        archived_at: null,
-        lifecycle: lc,
-        created_at: 1,
-        updated_at: 2,
-      };
-      expect(trackSchema.parse(w).lifecycle).toBe(lc);
-    }
-  });
-
-  it('wireEventSchema parses track.lifecycle_changed envelopes', () => {
-    const env = {
-      ev: 'track.lifecycle_changed',
-      data: {
-        id: 'w1',
-        area_id: 'c1',
-        from: 'draft',
-        to: 'planning',
-        agent_message: 'planning rationale',
-      },
+  it('trackSchema keeps the close stamp of a closed track', () => {
+    const w = {
+      id: 'w1',
+      area_id: 'c1',
+      title: 't',
+      sort: 0,
+      closed_at: 42,
+      created_at: 1,
+      updated_at: 2,
     };
-    const parsed = wireEventSchema.parse(env);
-    expect(parsed.ev).toBe('track.lifecycle_changed');
-    if (parsed.ev === 'track.lifecycle_changed') {
-      expect(parsed.data.from).toBe('draft');
-      expect(parsed.data.to).toBe('planning');
-      expect(parsed.data.agent_message).toBe('planning rationale');
-    }
+    expect(trackSchema.parse(w).closed_at).toBe(42);
   });
 });
 
@@ -1105,7 +1050,6 @@ describe('#1209 pre-rename template keys on the track shape', () => {
     area_id: 'c1',
     title: 't',
     sort: 0,
-    archived_at: null,
     workflow_id: 'small-change',
     workflow_input: { issue: 1209 },
     created_at: 1,

@@ -17,8 +17,8 @@ const areas = [
   { id: 'c2', name: 'Two', color: '#654321', sort: 2, kind: 'user', created_at: 1, updated_at: 1 },
 ];
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
-const track = { id: 'w1', area_id: 'c1', title: 'Reliable', sort: 1, lifecycle: 'working', cwd: '/tmp',
-  archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 1 };
+const track = { id: 'w1', area_id: 'c1', title: 'Reliable', sort: 1, cwd: '/tmp',
+  pinned_at: null, closed_at: null, created_at: 1, updated_at: 1 };
 const plannerCard = {
   id: 'planner', track_id: 'w1', kind: 'codex', title: 'Planner', sort: 1,
   payload: { planner_harness: true }, deletable: false, created_at: 1, updated_at: 1,
@@ -200,7 +200,7 @@ describe('degraded workspace reads stay usable', () => {
     const { client } = renderRoute('/track/w1', (request) => {
       if (request.path === '/api/areas') return ok(areas.slice(0, 1));
       if (request.path === '/api/areas/c1/tracks') return ok([track]);
-      if (request.path === '/api/tracks/w1') return ok({ track, can_resume: false, cards: [], overlays: [] });
+      if (request.path === '/api/tracks/w1') return ok({ track, can_reopen: false, cards: [], overlays: [] });
       if (request.method === 'POST') creates.push(request);
       return ok([]);
     });
@@ -231,7 +231,7 @@ describe('degraded workspace reads stay usable', () => {
     const { client } = renderRoute('/track/w1', (request) => {
       if (request.path === '/api/areas') return ok(areas.slice(0, 1));
       if (request.path === '/api/areas/c1/tracks') return ok([track]);
-      if (request.path === '/api/tracks/w1') return ok({ track, can_resume: false, cards: [], overlays: [] });
+      if (request.path === '/api/tracks/w1') return ok({ track, can_reopen: false, cards: [], overlays: [] });
       if (request.method === 'POST') {
         creates.push(request);
         return fail('Acknowledgement lost');
@@ -297,7 +297,7 @@ describe('degraded workspace reads stay usable', () => {
     const { client } = renderRoute('/track/w1', (request) => {
       if (request.path === '/api/areas') return ok(areas.slice(0, 1));
       if (request.path === '/api/areas/c1/tracks') return ok([track]);
-      if (request.path === '/api/tracks/w1') return ok({ track, can_resume: false, cards: [], overlays: [] });
+      if (request.path === '/api/tracks/w1') return ok({ track, can_reopen: false, cards: [], overlays: [] });
       if (request.method === 'POST') creates.push(request);
       return ok([]);
     });
@@ -346,10 +346,10 @@ describe('degraded workspace reads stay usable', () => {
     /* The Notifications aside reads the track's own `kernel/track/activity`
        overlay (#1722 §5.3), which arrives with the detail — the workspace-wide
        overlays read being down changes nothing on this page. */
-    resolveDetail(ok({ track, can_resume: false, cards: [plannerCard], overlays: [{
+    resolveDetail(ok({ track, can_reopen: false, cards: [plannerCard], overlays: [{
       id: 'o1', plugin_id: 'kernel', entity_kind: 'track', entity_id: 'w1', kind: 'activity', updated_at: 2,
       payload: { schemaVersion: 2, working: false, attention: 'input', activity_at_ms: 2,
-        items: [{ source: 'ask', key: 'ask:lifecycle:2', text: 'Which region?', at_ms: 2 }],
+        items: [{ source: 'ask', key: 'ask:ratify:2', text: 'Which region?', at_ms: 2 }],
         cards: [{ card_id: plannerCard.id, state: 'input' }] },
     }] }));
     expect(await screen.findByRole('region', { name: 'Notifications' })).toBeTruthy();
@@ -362,11 +362,11 @@ describe('degraded workspace reads stay usable', () => {
       if (request.path.startsWith('/api/overlays?')) return ok([{
         id: 'workspace-activity', plugin_id: 'kernel', entity_kind: 'track', entity_id: 'w1', kind: 'activity', updated_at: 1,
         payload: { schemaVersion: 2, working: false, attention: 'input', activity_at_ms: 1,
-          items: [{ source: 'ask', key: 'ask:lifecycle:1', text: 'Which region?', at_ms: 1 }],
+          items: [{ source: 'ask', key: 'ask:ratify:1', text: 'Which region?', at_ms: 1 }],
           cards: [{ card_id: plannerCard.id, state: 'input' }] },
       }]);
       if (request.path === '/api/tracks/w1') return ok({
-        track, can_resume: false, cards: [], overlays: [],
+        track, can_reopen: false, cards: [], overlays: [],
       });
       return ok([]);
     });

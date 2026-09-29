@@ -1,10 +1,10 @@
-// The one track row, rendered by the sidebar rail and Today. It stays under `features/track` because it reads lifecycle predicates, which `ui/` may not.
+// The one track row, rendered by the sidebar rail and Today. It stays under `features/track` because it reads track predicates, which `ui/` may not.
 
 import { ListText } from '../../../ui/list-typography/public.tsx';
 import { useId } from 'react';
 import { activityLabelOf, activityNameBit } from '../../../../../core/domain/activity.ts';
 import {
-  lifecycleLabel, trackActivityState, trackDisplayTitle, type Track,
+  isClosed, trackActivityState, trackDisplayTitle, type Track,
 } from '../../../../../core/domain/track.ts';
 import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
 import { Icon } from '../../../ui/icon/public.tsx';
@@ -64,15 +64,14 @@ export function TrackRow({
   const descriptionId = useId();
   const pinned = track.pinnedAt !== null;
   const title = trackDisplayTitle(track.title);
-  const lifecycle = lifecycleLabel(track.lifecycle);
   const hasPin = onSetPinned !== undefined;
   const hasRemove = onDelete !== undefined;
   const now = nowMs ?? Date.now();
 
-  /* One state from the kernel's activity overlay plus the reader's receipt; the name's activity bit derives from the same value as the dot, never from the lifecycle. `unread` is the button's description, and only in the folded state. */
+  /* One state from the kernel's activity overlay plus the reader's receipt; the name's activity bit derives from the same value as the dot, never from the open/closed state. `unread` is the button's description, and only in the folded state. */
   const activity = trackActivityState(track, unread);
   const activityBit = activityNameBit(activity);
-  const label = `Track ${title}${activityBit ? `, ${activityBit}` : ''}, ${lifecycle}`
+  const label = `Track ${title}${activityBit ? `, ${activityBit}` : ''}${isClosed(track) ? ', closed' : ''}`
     + (areaName === undefined ? '' : `, in area ${areaName}`);
 
   /* The rail and panel variants move the status dot to the trailing edge and let the delete take its place on hover; the dot is `aria-hidden` decoration either way. */
@@ -107,9 +106,6 @@ export function TrackRow({
         </span>
         {!trailingStatus && (
           <span className={styles.age}>{relativeTime(track.updatedAt, now)}</span>
-        )}
-        {variant === 'default' && (
-          <span className={styles.lifecycle}>{lifecycle}</span>
         )}
       </button>
 

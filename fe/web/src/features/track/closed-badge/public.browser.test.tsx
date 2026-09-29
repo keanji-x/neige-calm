@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import '../../../styles/entry.css';
 
-import { TrackLifecycleBadge } from './public.tsx';
+import { TrackClosedBadge } from './public.tsx';
 
 afterEach(() => {
   document.body.replaceChildren();
@@ -34,22 +34,19 @@ function tokenRgb(token: string): Rgb {
   return rgb;
 }
 
-function badgeRgb(lifecycle: 'failed' | 'blocked' | 'working'): Rgb {
-  const { container } = render(<TrackLifecycleBadge lifecycle={lifecycle} />);
-  const badge = container.querySelector<HTMLElement>('[data-testid="track-lifecycle"]');
+function closedBadgeRgb(): Rgb {
+  const { container } = render(<TrackClosedBadge closedAt={1} />);
+  const badge = container.querySelector<HTMLElement>('[data-testid="track-closed"]');
   if (badge === null) throw new Error('no badge');
   return paintedRgb(getComputedStyle(badge).color);
 }
 
 // Measured on the painted pixel in both themes, so a rule that quietly fell back to another family reddens here.
-describe.each(['light', 'dark'] as const)('%s: lifecycle badge tones', (theme) => {
-  it('paints failed with the error family, attention with the warn family, and a running phase neutral', () => {
+describe.each(['light', 'dark'] as const)('%s: closed badge tone', (theme) => {
+  it('paints the closed badge neutral, apart from the warn and error families', () => {
     if (theme === 'dark') document.documentElement.dataset.theme = 'dark';
-    expect(badgeRgb('failed')).toEqual(tokenRgb('--error-text'));
-    document.body.replaceChildren();
-    expect(badgeRgb('blocked')).toEqual(tokenRgb('--warn-text'));
-    document.body.replaceChildren();
-    expect(badgeRgb('working')).toEqual(tokenRgb('--text-3'));
-    expect(tokenRgb('--error-text')).not.toEqual(tokenRgb('--warn-text'));
+    expect(closedBadgeRgb()).toEqual(tokenRgb('--text-3'));
+    expect(closedBadgeRgb()).not.toEqual(tokenRgb('--warn-text'));
+    expect(closedBadgeRgb()).not.toEqual(tokenRgb('--error-text'));
   });
 });

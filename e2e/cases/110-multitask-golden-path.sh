@@ -38,9 +38,9 @@ const flags = [
   process.env.GREET,
   process.env.USAGE,
   body.length > 0 && !body.includes("_The spec agent will fill this in._") ? "changed" : "placeholder",
-  track.lifecycle === "done" ? "yes" : "no",
+  typeof track.closed_at === "number" ? "yes" : "no",
 ];
-process.stdout.write([track.lifecycle ?? "unknown", workers.length, workers.map((c) => c.runtime?.status ?? "none").join(",") || "-", ...flags].join("\t") + "\n");
+process.stdout.write([typeof track.closed_at === "number" ? "closed" : "open", workers.length, workers.map((c) => c.runtime?.status ?? "none").join(",") || "-", ...flags].join("\t") + "\n");
 '
 }
 
@@ -48,20 +48,20 @@ multitask_poll_track() {
   local track_id=$1 start=$SECONDS total=1200 stage1=300 stage1_ok=0
   while (( SECONDS - start <= total )); do
     check_server_logs
-    local cards_json detail_json elapsed lifecycle worker_count worker_statuses greet usage report lifecycle_ready
+    local cards_json detail_json elapsed state worker_count worker_statuses greet usage report closed
     expect_2xx GET "/api/tracks/$track_id/cards" -
     cards_json="$API_BODY"
     expect_2xx GET "/api/tracks/$track_id" -
     detail_json="$API_BODY"
     if file_in_container "$WORKSPACE/src/greet.py"; then greet=yes; else greet=no; fi
     if file_in_container "$WORKSPACE/USAGE.md"; then usage=yes; else usage=no; fi
-    IFS=$'\t' read -r lifecycle worker_count worker_statuses greet usage report lifecycle_ready \
+    IFS=$'\t' read -r state worker_count worker_statuses greet usage report closed \
       < <(multitask_summarize_state "$cards_json" "$detail_json" "$greet" "$usage") \
       || fail 'summarize_state produced no parsable state'
 
     elapsed=$((SECONDS - start))
-    printf 'poll +%04ds lifecycle=%s workers=%s statuses=%s files=greet:%s usage:%s report:%s\n' \
-      "$elapsed" "$lifecycle" "$worker_count" "$worker_statuses" "$greet" "$usage" "$report"
+    printf 'poll +%04ds state=%s workers=%s statuses=%s files=greet:%s usage:%s report:%s\n' \
+      "$elapsed" "$state" "$worker_count" "$worker_statuses" "$greet" "$usage" "$report"
 
     if (( worker_count >= 2 )); then
       stage1_ok=1
@@ -71,16 +71,16 @@ multitask_poll_track() {
 
     if (( stage1_ok == 1 )) \
       && [[ "$greet" == "yes" && "$usage" == "yes" ]] \
-      && [[ "$report" == "changed" && "$lifecycle_ready" == "yes" ]]; then
-      printf 'PASS run_id=%s track_id=%s workers=%s lifecycle=%s workspace=%s\n' \
-        "$RUN_ID" "$track_id" "$worker_count" "$lifecycle" "$WORKSPACE"
+      && [[ "$report" == "changed" && "$closed" == "yes" ]]; then
+      printf 'PASS run_id=%s track_id=%s workers=%s state=%s workspace=%s\n' \
+        "$RUN_ID" "$track_id" "$worker_count" "$state" "$WORKSPACE"
       return 0
     fi
 
     (( elapsed < total )) || break
     sleep 10
   done
-  fail "stage 2 timed out after 20 minutes before files, report, and lifecycle were complete"
+  fail "stage 2 timed out after 20 minutes before files, report, and close were complete"
 }
 
 case_run() {

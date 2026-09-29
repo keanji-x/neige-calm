@@ -5,7 +5,7 @@ import { Icon as AstryxIcon } from '@astryxdesign/core/Icon';
 import { List, ListItem } from '@astryxdesign/core/List';
 import { activityLabelOf, activityNameBit } from '../../../../core/domain/activity.ts';
 import { visibleAreas, type Area } from '../../../../core/domain/area.ts';
-import { lifecycleLabel, trackActivityState, visibleTracks, trackDisplayTitle, type Track } from '../../../../core/domain/track.ts';
+import { isClosed, trackActivityState, trackDisplayTitle, type Track } from '../../../../core/domain/track.ts';
 import { ActivityIndicator } from '../../ui/activity-indicator/public.tsx';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
@@ -53,7 +53,7 @@ function NavigationPage({
 }: MobileTracksProps) {
   const shown = visibleAreas(areas);
   const selected = shown.find((candidate) => candidate.id === areaId);
-  const tracks = selected === undefined ? [] : visibleTracks(tracksByArea.get(selected.id) ?? []);
+  const tracks = selected === undefined ? [] : tracksByArea.get(selected.id) ?? [];
   return <div className={styles.page}>
     <MobileNavigationHeader creationScope={view === 'areas' ? 'area' : 'track'} title={view === 'areas' ? 'Areas' : selected?.name ?? 'Tracks'}
       backLabel={view === 'areas' ? 'workspace' : 'Areas'} area={selected}
@@ -71,7 +71,7 @@ function NavigationPage({
           {shown.length === 0 && !readLoading && readError === null && <MobileListEmpty>No areas yet.</MobileListEmpty>}
         </List> : <MobileList>
           {tracks.map((track) => {
-            /* The same state the rail row shows: the kernel's activity overlay plus this reader's receipt, never the lifecycle.
+            /* The same state the rail row shows: the kernel's activity overlay plus this reader's receipt, never the open/closed state.
                The indicator is decorative here; `unread` is the button's description, never part of its name. The id is per row: one `MobileTracks` per document. */
             const activity = trackActivityState(track, isUnread(track));
             const activityBit = activityNameBit(activity);
@@ -81,7 +81,7 @@ function NavigationPage({
                 aria-describedby={activity === 'unread' ? descriptionId : undefined}
                 aria-current={track.id === currentTrackId ? 'page' : undefined} onClick={() => onOpenTrack(track.id)}>
                 <span className={styles.trackIcon}><Icon name="file" /></span>
-                <span className={styles.trackCopy}><span>{trackDisplayTitle(track.title)}</span><span className={styles.trackMeta}>{lifecycleLabel(track.lifecycle)}</span></span>
+                <span className={styles.trackCopy}><span>{trackDisplayTitle(track.title)}</span>{isClosed(track) && <span className={styles.trackMeta}>Closed</span>}</span>
                 {activity !== 'quiet' && <span className={styles.trackActivity} aria-hidden="true"><ActivityIndicator state={activity} /></span>}
               </button>
               {activity === 'unread' && <span hidden id={descriptionId}>{activityLabelOf('unread')}</span>}

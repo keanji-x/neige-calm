@@ -142,7 +142,7 @@ export type EnrollmentRedeemed = { enrollmentId: string, attemptId: string, sess
  * The full set of WS event envelopes the kernel emits on `/api/events`. ts-rs requires every
  * payload type referenced here to also derive `TS`.
  */
-export type Event = { "ev": "area.updated", "data": Area } | { "ev": "area.deleted", "data": { id: AreaId, } } | { "ev": "track.updated", "data": TrackUpdatedPayload } | { "ev": "track.deleted", "data": { id: TrackId, area_id: AreaId, } } | { "ev": "track.lifecycle_changed", "data": { id: TrackId, area_id: AreaId, from: TrackLifecycle, to: TrackLifecycle, agent_message?: string, } } | { "ev": "card.added", "data": Card } | { "ev": "card.updated", "data": Card } | { "ev": "card.deleted", "data": { id: CardId, track_id: TrackId, } } | { "ev": "worker_session.started", "data": { worker_session_id: string, card_id: string, kind: WorkerSessionKind, agent_provider: AgentProvider | null, status: WorkerSessionState, } } | { "ev": "worker_session.status_changed", "data": { worker_session_id: string, card_id: string, old_status: WorkerSessionState, new_status: WorkerSessionState, } } | { "ev": "worker_session.superseded", "data": { old_worker_session_id: string, new_worker_session_id: string, card_id: string, } } | { "ev": "harness.item.added", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, item_db_id: number, item_uuid: string | null, item_type: string | null, turn_id: string | null, method: string, } } | { "ev": "harness.phase.changed", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, old_phase: HarnessPhaseTag, new_phase: HarnessPhaseTag, } } | { "ev": "harness.transcript.cleared", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, 
+export type Event = { "ev": "area.updated", "data": Area } | { "ev": "area.deleted", "data": { id: AreaId, } } | { "ev": "track.updated", "data": TrackUpdatedPayload } | { "ev": "track.deleted", "data": { id: TrackId, area_id: AreaId, } } | { "ev": "card.added", "data": Card } | { "ev": "card.updated", "data": Card } | { "ev": "card.deleted", "data": { id: CardId, track_id: TrackId, } } | { "ev": "worker_session.started", "data": { worker_session_id: string, card_id: string, kind: WorkerSessionKind, agent_provider: AgentProvider | null, status: WorkerSessionState, } } | { "ev": "worker_session.status_changed", "data": { worker_session_id: string, card_id: string, old_status: WorkerSessionState, new_status: WorkerSessionState, } } | { "ev": "worker_session.superseded", "data": { old_worker_session_id: string, new_worker_session_id: string, card_id: string, } } | { "ev": "harness.item.added", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, item_db_id: number, item_uuid: string | null, item_type: string | null, turn_id: string | null, method: string, } } | { "ev": "harness.phase.changed", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, old_phase: HarnessPhaseTag, new_phase: HarnessPhaseTag, } } | { "ev": "harness.transcript.cleared", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, 
 /**
  * Number of `harness_items` rows deleted by this reset; `None` on unmeasured historical rows.
  */
@@ -451,7 +451,11 @@ export type TaskRecoveryRequest = { expected_attempt_id: string, idempotency_key
  */
 export type TaskRecoveryView = { key: string, current: TaskAttemptView | null, attempts: Array<TaskAttemptView>, recovery: TaskRecoveryCapability, };
 
-export type Track = { id: TrackId, area_id: AreaId, title: string, sort: number, archived_at: number | null, pinned_at: number | null, lifecycle: TrackLifecycle, 
+export type Track = { id: TrackId, area_id: AreaId, title: string, sort: number, pinned_at: number | null, 
+/**
+ * Unix-ms time the track was closed, or `None` while it is open. Closed tracks do not schedule.
+ */
+closed_at: number | null, 
 /**
  * Wire-compatibility alias of `workspace.path`, serialized as `cwd`; Rust readers must use `workspace.path`.
  */
@@ -472,10 +476,6 @@ purpose: string | null,
  * Template input is validated at creation and otherwise remains opaque.
  */
 template_input: unknown, 
-/**
- * Unix-ms timestamp the track most recently entered a terminal lifecycle state, or `None` while non-terminal.
- */
-terminal_at: number | null, 
 /**
  * The user recipe ([`TrackRecipe`]) this track was instantiated from; may name a recipe that no longer exists.
  */
@@ -545,12 +545,6 @@ export type TrackFsRunVerdictSummary = { at: number, status: string, };
  * Track identifier.
  */
 export type TrackId = string;
-
-/**
- * Track lifecycle state machine. `archived` is intentionally NOT a lifecycle state: archival lives
- * on `archived_at`, orthogonal to execution semantics.
- */
-export type TrackLifecycle = "draft" | "planning" | "dispatching" | "working" | "blocked" | "reviewing" | "done" | "canceled" | "failed";
 
 /**
  * A user-defined starting point for a new track: a saved report whose `title` doubles as the
@@ -628,7 +622,11 @@ captured_at: string, quotes: Array<SourceQuote>, };
 /**
  * Payload for `Event::TrackUpdated`; `track` is flattened to preserve the historical wire shape.
  */
-export type TrackUpdatedPayload = { agent_message?: string, id: TrackId, area_id: AreaId, title: string, sort: number, archived_at: number | null, pinned_at: number | null, lifecycle: TrackLifecycle, 
+export type TrackUpdatedPayload = { agent_message?: string, id: TrackId, area_id: AreaId, title: string, sort: number, pinned_at: number | null, 
+/**
+ * Unix-ms time the track was closed, or `None` while it is open. Closed tracks do not schedule.
+ */
+closed_at: number | null, 
 /**
  * Wire-compatibility alias of `workspace.path`, serialized as `cwd`; Rust readers must use `workspace.path`.
  */
@@ -649,10 +647,6 @@ purpose: string | null,
  * Template input is validated at creation and otherwise remains opaque.
  */
 template_input: unknown, 
-/**
- * Unix-ms timestamp the track most recently entered a terminal lifecycle state, or `None` while non-terminal.
- */
-terminal_at: number | null, 
 /**
  * The user recipe ([`TrackRecipe`]) this track was instantiated from; may name a recipe that no longer exists.
  */

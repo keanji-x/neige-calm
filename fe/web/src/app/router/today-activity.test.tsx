@@ -17,8 +17,8 @@ const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 
 
 const areas = [{ id: 'c1', name: 'One', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 }];
 const trackWire = (id: string, title: string) => ({
-  id, area_id: 'c1', title, sort: 1, lifecycle: 'working', cwd: '/tmp',
-  archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 1_000,
+  id, area_id: 'c1', title, sort: 1, cwd: '/tmp',
+  pinned_at: null, closed_at: null, created_at: 1, updated_at: 1_000,
 });
 const activityOverlay = (trackId: string, payload: Record<string, unknown>) => ({
   id: `activity-${trackId}`, plugin_id: 'kernel', entity_kind: 'track', entity_id: trackId, kind: 'activity',
@@ -77,9 +77,9 @@ it('Today rows carry the track read receipt', async () => {
   expect(markerOf(rail, 'Still busy')).toBe('working');
 });
 
-/* Three tracks in the `working` phase, one of them with the kernel's `working` verdict: the
- * header's second number is that verdict's count, not the phase's. */
-it('Today\'s second number counts the kernel\'s working verdict, not the running phase', async () => {
+/* Three open tracks, one of them with the kernel's `working` verdict: the header's second
+ * number is that verdict's count, not the open tracks'. */
+it('Today\'s second number counts the kernel\'s working verdict, not the open tracks', async () => {
   renderToday();
   const main = await screen.findByRole('main');
   await within(main).findByRole('heading', { name: 'Open' });

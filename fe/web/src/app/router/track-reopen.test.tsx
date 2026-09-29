@@ -20,13 +20,13 @@ const area = {
   id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1,
 };
 
-it('PATCHes Working and renders the returned lifecycle after Resume work', async () => {
+it('PATCHes closed: false and drops the Closed badge after Reopen', async () => {
   const requests: ApiRequest[] = [];
   let track: TrackWire = {
-    id: 'w1', area_id: 'c1', title: 'Recover me', sort: 1, lifecycle: 'done', cwd: '/tmp',
-    archived_at: null, pinned_at: null, terminal_at: 42, created_at: 1, updated_at: 2,
+    id: 'w1', area_id: 'c1', title: 'Recover me', sort: 1, cwd: '/tmp',
+    pinned_at: null, closed_at: 42, created_at: 1, updated_at: 2,
   };
-  let canResume = true;
+  let canReopen = true;
   let patchCommitted = false;
   const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
   const transport: ApiTransportPort = {
@@ -38,11 +38,10 @@ it('PATCHes Working and renders the returned lifecycle after Resume work', async
       if (request.method === 'PATCH' && request.path === '/api/tracks/w1') {
         track = {
           ...track,
-          ...(request.body as Partial<typeof track>),
-          terminal_at: null,
+          closed_at: null,
           updated_at: track.updated_at + 1,
         };
-        canResume = false;
+        canReopen = false;
         patchCommitted = true;
         return Promise.resolve(ok(track));
       }
@@ -50,7 +49,7 @@ it('PATCHes Working and renders the returned lifecycle after Resume work', async
         if (patchCommitted) {
           return Promise.resolve({ status: 500, statusText: 'Refresh failed', body: {} });
         }
-        return Promise.resolve(ok({ track, can_resume: canResume, cards: [], overlays: [] }));
+        return Promise.resolve(ok({ track, can_reopen: canReopen, cards: [], overlays: [] }));
       }
       if (request.path.endsWith('/conversations')) return Promise.resolve(ok([]));
       if (request.path === '/api/settings') return Promise.resolve(ok({}));
@@ -71,16 +70,16 @@ it('PATCHes Working and renders the returned lifecycle after Resume work', async
     </QueryClientProvider>,
   );
 
+  expect(await screen.findAllByRole('status', { name: 'Track closed' })).toHaveLength(2);
   await userEvent.click(await screen.findByRole('button', { name: 'Track actions for Recover me' }));
-  await userEvent.click(screen.getByRole('menuitem', { name: /Resume work/ }));
+  await userEvent.click(screen.getByRole('menuitem', { name: /Reopen/ }));
 
   await waitFor(() => {
     expect(requests.filter((request) => request.method === 'PATCH' && request.path === '/api/tracks/w1'))
-      .toEqual([expect.objectContaining({ body: { lifecycle: 'working' } })]);
+      .toEqual([expect.objectContaining({ body: { closed: false } })]);
   });
-  expect(await screen.findAllByRole('status', { name: 'Track lifecycle: Working' }))
-    .toHaveLength(2);
+  await waitFor(() => expect(screen.queryAllByRole('status', { name: 'Track closed' })).toHaveLength(0));
   await userEvent.click(screen.getByRole('button', { name: 'Track actions for Recover me' }));
-  expect(screen.queryByRole('menuitem', { name: 'Resume work' })).toBeNull();
+  expect(screen.queryByRole('menuitem', { name: 'Reopen' })).toBeNull();
   expect(screen.getByRole('menuitem', { name: 'Delete track' })).toBeTruthy();
 });

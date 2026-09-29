@@ -60,7 +60,7 @@ value that arrives as inline `style` — it is per-row data, not a variant.
 ## Accessibility contract
 
 - Every navigable row is a `<button>`; the accessible name carries the track
-  title, the attention/running state, the lifecycle phrase, and the area name.
+  title, the attention/running state, ", closed" for a closed track, and the area name.
   Dot flags are `aria-hidden` decoration for fast scanning only.
 - Day cells are buttons with `aria-pressed` and a full-date accessible name.
 - **Intentionally not done:** no `<a href>` anywhere (INV-A11Y-061).

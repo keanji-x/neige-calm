@@ -2,11 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import {
   activeTracksOn, createCardOperation, createCodexCardOperation, createTerminalCardOperation,
-  createTrackOperation, deleteCardOperation, hasFailed, isBlankForKernel, isRunning, isWaitingForUser,
-  isWorking, lifecycleLabel, lifecycleRank, needsUserAttention, toTrack, trackActivityFrom,
+  createTrackOperation, deleteCardOperation, hasFailed, isBlankForKernel, isClosed,
+  isWorking, needsUserAttention, toTrack, trackActivityFrom,
   sortAreaTracksByRecent, trackRecentAt, limitAreaTracks, AREA_TRACK_LIMIT,
   trackActivityState, trackDetailSchema, updateTrackOperation,
-  NEUTRAL_ACTIVITY, UNTITLED_TRACK_LABEL, trackDisplayTitle, trackLifecycleSchema, trackWireSchema, tracksInAreaOperation,
+  NEUTRAL_ACTIVITY, UNTITLED_TRACK_LABEL, trackDisplayTitle, trackWireSchema, tracksInAreaOperation,
   trackCreateKeyAction, userVisibleTracks, liveTableOverlayPayload, plannerProviderOf,
   type Track, type OverlayWire,
 } from './track.js';
@@ -19,8 +19,8 @@ const baseWire = {
 
 function track(overrides: Partial<Track>): Track {
   return {
-    id: 'w', areaId: 'c', title: 't', sort: 1, lifecycle: 'draft', cwd: '/tmp', agentCwd: '/tmp',
-    archivedAt: null, pinnedAt: null, terminalAt: null, createdAt: 0, updatedAt: 0,
+    id: 'w', areaId: 'c', title: 't', sort: 1, cwd: '/tmp', agentCwd: '/tmp',
+    pinnedAt: null, closedAt: null, createdAt: 0, updatedAt: 0,
     ...NEUTRAL_ACTIVITY,
     ...overrides,
   };
@@ -32,19 +32,14 @@ describe('track wire decode', () => {
   it('fills the kernel serde defaults so the decoded track has no optional fields', () => {
     const parsed = trackWireSchema.parse(baseWire);
     expect(parsed).toMatchObject({
-      lifecycle: 'draft', cwd: '', archived_at: null, pinned_at: null, terminal_at: null,
+      cwd: '', pinned_at: null, closed_at: null,
     });
   });
 
   it('keeps explicit wire values over the defaults', () => {
-    const parsed = trackWireSchema.parse({ ...baseWire, lifecycle: 'working', cwd: '/srv', terminal_at: 7 });
-    expect(parsed.lifecycle).toBe('working');
+    const parsed = trackWireSchema.parse({ ...baseWire, cwd: '/srv', closed_at: 7 });
     expect(parsed.cwd).toBe('/srv');
-    expect(parsed.terminal_at).toBe(7);
-  });
-
-  it('rejects a lifecycle outside the kernel vocabulary', () => {
-    expect(trackWireSchema.safeParse({ ...baseWire, lifecycle: 'archived' }).success).toBe(false);
+    expect(parsed.closed_at).toBe(7);
   });
 
   it('drops server fields this slice does not model instead of failing the decode', () => {
@@ -160,32 +155,22 @@ describe('card operations', () => {
   });
 });
 
-describe('lifecycle predicates', () => {
-  it('splits the vocabulary into waiting, running, and quiet', () => {
-    const waiting = trackLifecycleSchema.options.filter(isWaitingForUser);
-    const running = trackLifecycleSchema.options.filter(isRunning);
-    expect(waiting).toEqual(['blocked', 'reviewing', 'failed']);
-    expect(running).toEqual(['planning', 'dispatching', 'working']);
-    expect(trackLifecycleSchema.options.filter((l) => !isWaitingForUser(l) && !isRunning(l)))
-      .toEqual(['draft', 'done', 'canceled']);
+describe('open and closed', () => {
+  it('reads closed from closedAt alone', () => {
+    expect(isClosed(track({ closedAt: null }))).toBe(false);
+    expect(isClosed(track({ closedAt: 5 }))).toBe(true);
   });
 
-  it('labels every lifecycle exactly once', () => {
-    const labels = trackLifecycleSchema.options.map(lifecycleLabel);
-    expect(new Set(labels).size).toBe(labels.length);
-    expect(lifecycleLabel('reviewing')).toBe('In review');
-  });
-
-  it('requires the server-derived Resume work capability on track detail', () => {
+  it('requires the server-derived Reopen capability on track detail', () => {
     const detail = { track: { ...baseWire }, cards: [], overlays: [] };
     expect(trackDetailSchema.safeParse(detail).success).toBe(false);
-    expect(trackDetailSchema.parse({ ...detail, can_resume: true }).can_resume).toBe(true);
+    expect(trackDetailSchema.parse({ ...detail, can_reopen: true }).can_reopen).toBe(true);
   });
 
-  it('builds the lifecycle recovery PATCH without a parallel endpoint', () => {
-    const operation = updateTrackOperation('w/1', { lifecycle: 'working' });
+  it('builds the reopen PATCH without a parallel endpoint', () => {
+    const operation = updateTrackOperation('w/1', { closed: false });
     expect(operation).toMatchObject({
-      method: 'PATCH', path: '/api/tracks/w%2F1', body: { lifecycle: 'working' },
+      method: 'PATCH', path: '/api/tracks/w%2F1', body: { closed: false },
     });
   });
 
@@ -196,40 +181,28 @@ describe('lifecycle predicates', () => {
 });
 
 describe('activity predicates read only the kernel activity overlay (INV-APP-118)', () => {
-  it('does not derive attention from the lifecycle phase', () => {
-    const reviewing = track({ lifecycle: 'reviewing', attention: 'none' });
-    expect(needsUserAttention(reviewing)).toBe(false);
-    expect(hasFailed(reviewing)).toBe(false);
-    expect(trackActivityState(reviewing, false)).toBe('quiet');
-    const blocked = track({ lifecycle: 'blocked', attention: 'none' });
-    expect(needsUserAttention(blocked)).toBe(false);
-    const failedPhase = track({ lifecycle: 'failed', attention: 'none' });
-    expect(hasFailed(failedPhase)).toBe(false);
+  it('does not derive attention or failure from the open/closed state', () => {
+    const closed = track({ closedAt: 5, attention: 'none' });
+    expect(needsUserAttention(closed)).toBe(false);
+    expect(hasFailed(closed)).toBe(false);
+    expect(trackActivityState(closed, false)).toBe('quiet');
   });
 
-  it('does not derive working from a running lifecycle phase', () => {
-    expect(isWorking(track({ lifecycle: 'planning', working: false }))).toBe(false);
-    expect(trackActivityState(track({ lifecycle: 'planning', working: false }), false)).toBe('quiet');
-    expect(isWorking(track({ lifecycle: 'done', working: true }))).toBe(true);
-    expect(trackActivityState(track({ lifecycle: 'done', working: true }), false)).toBe('working');
+  it('does not derive working from an open track', () => {
+    expect(isWorking(track({ closedAt: null, working: false }))).toBe(false);
+    expect(trackActivityState(track({ closedAt: null, working: false }), false)).toBe('quiet');
+    expect(isWorking(track({ closedAt: 5, working: true }))).toBe(true);
+    expect(trackActivityState(track({ closedAt: 5, working: true }), false)).toBe('working');
   });
 
   it('reads attention and failure from the overlay verdict', () => {
-    expect(needsUserAttention(track({ lifecycle: 'draft', attention: 'input' }))).toBe(true);
-    expect(hasFailed(track({ lifecycle: 'draft', attention: 'input' }))).toBe(false);
-    expect(hasFailed(track({ lifecycle: 'done', attention: 'failed' }))).toBe(true);
-    expect(needsUserAttention(track({ lifecycle: 'done', attention: 'failed' }))).toBe(false);
+    expect(needsUserAttention(track({ attention: 'input' }))).toBe(true);
+    expect(hasFailed(track({ attention: 'input' }))).toBe(false);
+    expect(hasFailed(track({ closedAt: 5, attention: 'failed' }))).toBe(true);
+    expect(needsUserAttention(track({ closedAt: 5, attention: 'failed' }))).toBe(false);
     expect(trackActivityState(track({ attention: 'input', working: true }), true)).toBe('attention');
     expect(trackActivityState(track({ attention: 'failed', working: true }), true)).toBe('failed');
     expect(trackActivityState(track({ attention: 'none', working: false }), true)).toBe('unread');
-  });
-
-  it('ranks a failed track with the waiting ones, and a running phase in the middle', () => {
-    expect(lifecycleRank(track({ lifecycle: 'done', attention: 'failed' }))).toBe(0);
-    expect(lifecycleRank(track({ lifecycle: 'done', attention: 'input' }))).toBe(0);
-    expect(lifecycleRank(track({ lifecycle: 'planning', working: false }))).toBe(1);
-    expect(lifecycleRank(track({ lifecycle: 'done', working: true }))).toBe(2);
-    expect(lifecycleRank(track({ lifecycle: 'reviewing', attention: 'none' }))).toBe(2);
   });
 });
 
@@ -243,7 +216,7 @@ describe('trackActivityFrom: the kernel activity overlay', () => {
     items: [
       { source: 'planner_down', key: 'planner_down:22825', text: 'unexpected status 403 Forbidden', at_ms: 20 },
       { source: 'ask', key: 'ask:notify:22801', text: 'Which branch?', at_ms: 10 },
-      { source: 'ask', key: 'ask:lifecycle:28475', text: 'Merge the PR?', at_ms: 5 },
+      { source: 'ask', key: 'ask:ratify:28475', text: 'Merge the PR?', at_ms: 5 },
     ],
     cards: [{ card_id: 'worker-1', state: 'failed' }, { card_id: 'planner', state: 'input' }, { card_id: 'w2', state: 'working' }],
   };
@@ -257,7 +230,7 @@ describe('trackActivityFrom: the kernel activity overlay', () => {
     expect(activity.attentionItems).toEqual([
       { source: 'planner_down', key: 'planner_down:22825', text: 'unexpected status 403 Forbidden', atMs: 20 },
       { source: 'ask', key: 'ask:notify:22801', text: 'Which branch?', atMs: 10 },
-      { source: 'ask', key: 'ask:lifecycle:28475', text: 'Merge the PR?', atMs: 5 },
+      { source: 'ask', key: 'ask:ratify:28475', text: 'Merge the PR?', atMs: 5 },
     ]);
     expect(activity.cards).toEqual({ 'worker-1': 'failed', planner: 'input', w2: 'working' });
     expect(activity.progress).toBe(0);
@@ -272,7 +245,7 @@ describe('trackActivityFrom: the kernel activity overlay', () => {
   it('drops a malformed row and keeps the rest of the payload', () => {
     const activity = trackActivityFrom('t1', [overlay({
       ...payload,
-      items: [{ source: 'ask', key: 'ask:lifecycle:1' }, ...payload.items],
+      items: [{ source: 'ask', key: 'ask:ratify:1' }, ...payload.items],
       cards: [{ card_id: 'w9', state: 'sleeping' }, { card_id: 'w2', state: 'working' }],
     })]);
     expect(activity.attentionItems).toHaveLength(3);
@@ -417,32 +390,24 @@ describe('activeTracksOn', () => {
   const now = day.getTime();
 
   it('includes an open track created before the day and still running', () => {
-    const open = track({ id: 'open', createdAt: dayStart - DAY, terminalAt: null });
+    const open = track({ id: 'open', createdAt: dayStart - DAY, closedAt: null });
     expect(activeTracksOn([open], day, now).map((w) => w.id)).toEqual(['open']);
   });
 
   it('includes a track created in the last millisecond of the day', () => {
-    const late = track({ id: 'late', createdAt: dayEnd, terminalAt: null });
+    const late = track({ id: 'late', createdAt: dayEnd, closedAt: null });
     expect(activeTracksOn([late], day, now).map((w) => w.id)).toEqual(['late']);
   });
 
   it('includes a track that ended exactly at the start of the day', () => {
-    const edge = track({ id: 'edge', createdAt: dayStart - DAY, terminalAt: dayStart });
+    const edge = track({ id: 'edge', createdAt: dayStart - DAY, closedAt: dayStart });
     expect(activeTracksOn([edge], day, now).map((w) => w.id)).toEqual(['edge']);
   });
 
   it('excludes a track that ended before the day and one created after it', () => {
-    const before = track({ id: 'before', createdAt: dayStart - 2 * DAY, terminalAt: dayStart - 1 });
-    const after = track({ id: 'after', createdAt: dayEnd + 1, terminalAt: null });
+    const before = track({ id: 'before', createdAt: dayStart - 2 * DAY, closedAt: dayStart - 1 });
+    const after = track({ id: 'after', createdAt: dayEnd + 1, closedAt: null });
     expect(activeTracksOn([before, after], day, now)).toEqual([]);
-  });
-
-  it('uses updatedAt as the end of a terminal track when terminalAt is absent', () => {
-    const staleDone = track({
-      id: 'done-with-defaulted-terminal', lifecycle: 'done',
-      createdAt: dayStart - 3 * DAY, updatedAt: dayStart - 2 * DAY, terminalAt: null,
-    });
-    expect(activeTracksOn([staleDone], day, now)).toEqual([]);
   });
 
   it('orders oldest first and breaks ties by id', () => {
@@ -470,15 +435,15 @@ describe('userVisibleTracks', () => {
   };
   const mine = track({ id: 'w1', areaId: 'c1' });
   const scaffolding = track({ id: 'w-sys', areaId: 'sys' });
-  const archived = track({ id: 'w2', areaId: 'c1', archivedAt: 1 });
+  const closed = track({ id: 'w2', areaId: 'c1', closedAt: 1 });
 
   it('[E2E-INV-SHELL-003] drops tracks hosted by the system area', () => {
     expect(userVisibleTracks([mine, scaffolding], [userArea, systemArea]).map((w) => w.id))
       .toEqual(['w1']);
   });
 
-  it('drops archived tracks and tracks whose area is absent from the list', () => {
-    expect(userVisibleTracks([mine, archived], [userArea]).map((w) => w.id)).toEqual(['w1']);
+  it('keeps closed tracks and drops tracks whose area is absent from the list', () => {
+    expect(userVisibleTracks([mine, closed], [userArea]).map((w) => w.id)).toEqual(['w1', 'w2']);
     expect(userVisibleTracks([mine], [])).toEqual([]);
   });
 });

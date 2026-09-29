@@ -71,7 +71,7 @@ battle-tested dev-state neutralizer sweep: `CALM_CONTAINER_STATE_DIR=`,
 
 API helpers keep environment-first `.env` lookup, the autologin probe, and the
 compose-resolved `SERVER_CID` for `docker exec`. The multitask case keeps the
-done-only lifecycle gate, trailing-newline-safe JSON summaries, and fail-fast
+closed-track gate, trailing-newline-safe JSON summaries, and fail-fast
 server log signatures. Tier 1 no-Codex cases that intentionally exercise an
 inert shared planner harness should declare `CASE_CHECK_SERVER_LOGS=0`.
 

@@ -19,8 +19,8 @@ const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 const AREA = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 /* `title: ''` is what the kernel stores when the POST omits the key. */
 const TRACK = {
-  id: 'w1', area_id: 'c1', title: '', sort: 1, lifecycle: 'draft', cwd: '/tmp',
-  archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2,
+  id: 'w1', area_id: 'c1', title: '', sort: 1, cwd: '/tmp',
+  pinned_at: null, closed_at: null, created_at: 1, updated_at: 2,
 };
 /* A named track, so the PATCH case has something to clear. */
 const NAMED_TRACK = { ...TRACK, title: 'Test track' };
@@ -82,7 +82,7 @@ function setup(options: Options = {}) {
           return Promise.resolve({ status: 500, statusText: 'Server Error', body: {} });
         }
         return Promise.resolve(ok({
-          track: detail.track, can_resume: false, cards: detail.cards, overlays: [],
+          track: detail.track, can_reopen: false, cards: detail.cards, overlays: [],
         }));
       }
       if (request.path.endsWith('/planner/run')) {

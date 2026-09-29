@@ -85,7 +85,6 @@ Resulting per-kind behavior on the currently-built surfaces:
 | `area.deleted` | invalidate areas + track overlays | |
 | `track.updated` | invalidate that area's track list + track detail + all active task verdicts | a root budget/policy change can alter descendant admission; `track-files`/`tracks-range` parts drop (stubs) |
 | `area.deleted` | invalidate area/track overlays + all task verdicts | block/card references from surviving areas change from cross-area to missing |
-| `track.lifecycle_changed` | invalidate that area's track list + track detail | the route normally pairs it with `track.updated`, but this event alone does not claim a task-policy change; `track-files`/`tracks-range` parts drop (stubs) |
 | `track.deleted` | invalidate area's track list + track overlays + surviving task verdicts; **remove** track detail and that track's verdict query | neither deleted query can resolve again, while deleting a tree member changes the survivors' B/N shares |
 | `card.added` | invalidate track detail + both conversation lists + all task verdicts | card existence may satisfy a cross-track `neige://card/*` reference |
 | `card.updated` | invalidate track detail + both conversation lists | |

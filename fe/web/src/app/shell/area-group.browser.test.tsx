@@ -19,8 +19,8 @@ it('puts Show N more on the Track row rhythm, in the Track title column', async 
   const area: Area = { id: 'work', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user',
     defaultTemplateId: null, defaultCwd: null, createdAt: 1, updatedAt: 1 };
   const tracks: Track[] = Array.from({ length: 7 }, (_, i) => ({
-    id: `track-${i}`, areaId: area.id, title: `Row ${i + 1}`, sort: i, lifecycle: 'draft', cwd: '/tmp', agentCwd: '/tmp',
-    archivedAt: null, pinnedAt: null, terminalAt: null, createdAt: 1, updatedAt: 1, ...NEUTRAL_ACTIVITY,
+    id: `track-${i}`, areaId: area.id, title: `Row ${i + 1}`, sort: i, cwd: '/tmp', agentCwd: '/tmp',
+    pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 1, ...NEUTRAL_ACTIVITY,
   }));
   render(<div style={{ inlineSize: 240 }}><Sidebar areas={[area]} tracksByArea={new Map([[area.id, tracks]])}
     tracks={tracks} currentPath="/" onGo={vi.fn()} onRequestCreateArea={vi.fn()} onRequestEditArea={vi.fn()}

@@ -29,8 +29,8 @@ async function setup(kind: 'independent' | 'recovery') {
     if (request.path.endsWith('/report')) return Promise.resolve(ok({ attemptId: 'old', report: null }));
     if (request.path.endsWith('/attempts')) return Promise.resolve(ok({ key: 'b', current: old, attempts: [old],
       recovery: { allowed: true, code: 'available', reason: 'Retry this task.' } }));
-    return Promise.resolve(ok({ track: { id: 'w1', area_id: 'a', title: 'Track', sort: 1, lifecycle: 'working', cwd: '/tmp',
-      archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 1 }, can_resume: false, cards: [card], overlays: [] }));
+    return Promise.resolve(ok({ track: { id: 'w1', area_id: 'a', title: 'Track', sort: 1, cwd: '/tmp',
+      pinned_at: null, closed_at: null, created_at: 1, updated_at: 1 }, can_reopen: false, cards: [card], overlays: [] }));
   } }, access).business;
   const unauthorized = createUnauthorizedChannel({ enqueue: task => task() });
   const identity = vi.fn(() => Promise.resolve({ userId: 'owner', displayName: 'Owner', role: 'owner' as const, sessionId: 'old-session' }));
@@ -42,7 +42,7 @@ async function setup(kind: 'independent' | 'recovery') {
     logout: async () => {}, clear: () => client.clear(), adoptScope: () => {}, online, visible: () => true });
   session.start(); await waitFor(() => expect(access.read().phase).toBe('syncing')); session.events('connected');
   function Independent() {
-    const launch = useIndependentTaskLaunch({ trackId: 'w1', cards: [card], lifecycle: 'working', transport, unauthorized, onCreated: vi.fn() });
+    const launch = useIndependentTaskLaunch({ trackId: 'w1', cards: [card], closedAt: null, transport, unauthorized, onCreated: vi.fn() });
     return <><button onClick={launch.open}>Open task</button>{launch.form}</>;
   }
   const mount = () => render(<QueryClientProvider client={client}><ThemeProvider>

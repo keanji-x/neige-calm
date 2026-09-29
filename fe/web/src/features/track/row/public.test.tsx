@@ -13,8 +13,8 @@ const NOW = new Date(2026, 7, 10, 15, 0, 0).getTime();
 
 function track(overrides: Partial<Track> = {}): Track {
   return {
-    id: 'w1', areaId: 'c1', title: 'Open track', sort: 1, lifecycle: 'working', cwd: '/tmp', agentCwd: '/tmp',
-    archivedAt: null, pinnedAt: null, terminalAt: null, createdAt: NOW - 3_600_000, updatedAt: NOW,
+    id: 'w1', areaId: 'c1', title: 'Open track', sort: 1, cwd: '/tmp', agentCwd: '/tmp',
+    pinnedAt: null, closedAt: null, createdAt: NOW - 3_600_000, updatedAt: NOW,
     ...NEUTRAL_ACTIVITY,
     ...overrides,
   };
@@ -36,21 +36,21 @@ describe('INV-A11Y-061 navigation shape', () => {
 });
 
 describe('accessible name', () => {
-  it('names the lifecycle, and the attention state when there is one', () => {
-    render(<TrackRow track={track({ lifecycle: 'blocked', attention: 'input' })} areaName="Work" onOpen={vi.fn()} nowMs={NOW} />);
+  it('names the attention state when there is one, and nothing for an open track', () => {
+    render(<TrackRow track={track({ attention: 'input' })} areaName="Work" onOpen={vi.fn()} nowMs={NOW} />);
     expect(screen.getByRole('button', {
-      name: 'Track Open track, waiting on you, Blocked, in area Work',
+      name: 'Track Open track, waiting on you, in area Work',
     })).toBeTruthy();
   });
 
-  it('names a broken track as needing attention', () => {
-    render(<TrackRow track={track({ lifecycle: 'done', attention: 'failed' })} onOpen={vi.fn()} nowMs={NOW} />);
-    expect(screen.getByRole('button', { name: 'Track Open track, needs attention, Done' })).toBeTruthy();
+  it('names a broken closed track as needing attention, and closed', () => {
+    render(<TrackRow track={track({ closedAt: 5, attention: 'failed' })} onOpen={vi.fn()} nowMs={NOW} />);
+    expect(screen.getByRole('button', { name: 'Track Open track, needs attention, closed' })).toBeTruthy();
   });
 
   it('names the area only when the surface supplies one', () => {
     render(<TrackRow track={track({ working: true })} onOpen={vi.fn()} nowMs={NOW} />);
-    expect(screen.getByRole('button', { name: 'Track Open track, working, Working' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Track Open track, working' })).toBeTruthy();
   });
 
   it('uses the untitled label rather than an empty name', () => {
@@ -90,16 +90,15 @@ describe('INV-SIDEBAR-012 the pin is always reachable, and names its action', ()
 });
 
 describe('§6.3 variants differ in what they render, not in what they are', () => {
-  it('drops the lifecycle line and the relative time in the rail', () => {
+  it('drops the relative time in the rail', () => {
     const { container } = render(<TrackRow track={track()} variant="rail" onOpen={vi.fn()} nowMs={NOW} />);
     expect(container.textContent).toBe('Open track');
   });
 
-  it('keeps both on the default variant', () => {
+  it('keeps it on the default variant', () => {
     const { container } = render(
       <TrackRow track={track({ updatedAt: NOW - 3_600_000 })} variant="default" onOpen={vi.fn()} nowMs={NOW} />,
     );
-    expect(container.textContent).toContain('Working');
     expect(container.textContent).toContain('1h');
   });
 
@@ -123,22 +122,22 @@ describe('§2.2 relative time', () => {
 
 describe('navigation activity markers', () => {
   it('shows nothing for an idle read track and a blue unread marker for new activity', () => {
-    const view = render(<TrackRow track={track({ lifecycle: 'done' })} variant="rail" onOpen={vi.fn()} />);
+    const view = render(<TrackRow track={track({ closedAt: 5 })} variant="rail" onOpen={vi.fn()} />);
     expect(view.container.querySelector('[data-nc-activity]')).toBeNull();
-    view.rerender(<TrackRow track={track({ lifecycle: 'done' })} variant="rail" unread onOpen={vi.fn()} />);
+    view.rerender(<TrackRow track={track({ closedAt: 5 })} variant="rail" unread onOpen={vi.fn()} />);
     expect(view.container.querySelector('[data-nc-activity="unread"]')).toBeTruthy();
     const row = screen.getByRole('button', { name: /^Track Open track/ });
     expect(document.getElementById(row.getAttribute('aria-describedby')!)?.textContent).toBe('Unread updates');
   });
 
-  it('derives the marker and the name from the activity overlay, not the lifecycle', () => {
-    const view = render(<TrackRow track={track({ lifecycle: 'planning', working: false })} variant="rail" onOpen={vi.fn()} />);
+  it('derives the marker and the name from the activity overlay, not the open/closed state', () => {
+    const view = render(<TrackRow track={track({ working: false })} variant="rail" onOpen={vi.fn()} />);
     expect(view.container.querySelector('[data-nc-activity]')).toBeNull();
     expect(screen.getByRole('button', { name: /^Track Open track/ }).getAttribute('aria-label')).not.toMatch(/running|working/);
 
-    view.rerender(<TrackRow track={track({ lifecycle: 'done', working: true })} variant="rail" onOpen={vi.fn()} />);
+    view.rerender(<TrackRow track={track({ closedAt: 5, working: true })} variant="rail" onOpen={vi.fn()} />);
     expect(view.container.querySelector('[data-nc-activity="working"]')).toBeTruthy();
-    expect(screen.getByRole('button', { name: /^Track Open track/ }).getAttribute('aria-label')).toBe('Track Open track, working, Done');
+    expect(screen.getByRole('button', { name: /^Track Open track/ }).getAttribute('aria-label')).toBe('Track Open track, working, closed');
   });
 
   it('gives needs-input precedence over working and unread, and failed over all three', () => {
@@ -165,12 +164,12 @@ describe('navigation activity markers', () => {
     const view = render(<TrackRow track={track({ working: true })} variant="rail" unread onOpen={vi.fn()} />);
     expect(view.container.querySelector('[data-nc-activity="working"]')).toBeTruthy();
     expect(view.container.querySelector('[data-nc-activity="unread"]')).toBeNull();
-    expect(screen.getByRole('button', { name: /^Track Open track/ }).getAttribute('aria-label')).toBe('Track Open track, working, Working');
+    expect(screen.getByRole('button', { name: /^Track Open track/ }).getAttribute('aria-label')).toBe('Track Open track, working');
     expect(description()).toBeNull();
 
-    view.rerender(<TrackRow track={track({ lifecycle: 'done' })} variant="rail" unread onOpen={vi.fn()} />);
+    view.rerender(<TrackRow track={track({ closedAt: 5 })} variant="rail" unread onOpen={vi.fn()} />);
     expect(view.container.querySelector('[data-nc-activity="unread"]')).toBeTruthy();
-    expect(screen.getByRole('button', { name: /^Track Open track/ }).getAttribute('aria-label')).toBe('Track Open track, Done');
+    expect(screen.getByRole('button', { name: /^Track Open track/ }).getAttribute('aria-label')).toBe('Track Open track, closed');
     expect(description()).toBe('Unread updates');
   });
 });

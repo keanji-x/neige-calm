@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 
 import { activityNameBit } from '../../../../core/domain/activity.ts';
 import {
-  activeTracksOn, hasFailed, isRunning, isWorking, needsUserAttention, visibleTracks, type Track,
+  activeTracksOn, hasFailed, isClosed, isWorking, needsUserAttention, type Track,
 } from '../../../../core/domain/track.ts';
 import { areaOf, type Area } from '../../../../core/domain/area.ts';
 import type { TodayLaunchpadWire } from '../../../../core/domain/today.ts';
@@ -130,12 +130,11 @@ function TodayDesktop({
 }: TodayPageProps) {
   const { now, today } = useNow(nowMs);
 
-  const shownTracks = visibleTracks(tracks);
-  /* The header's two numbers are the kernel's verdicts (`waiting`: input or failed; `working`); the "Open" group is the lifecycle phase. A group and a number never share a word. */
+  /* The header's two numbers are the kernel's verdicts (`waiting`: input or failed; `working`); the "Open" group is every open track the kernel is not waiting on a person for. A group and a number never share a word. */
   const needsPerson = (track: Track) => needsUserAttention(track) || hasFailed(track);
-  const waiting = shownTracks.filter(needsPerson);
-  const working = shownTracks.filter(isWorking);
-  const open = shownTracks.filter((track) => isRunning(track.lifecycle) && !needsPerson(track));
+  const waiting = tracks.filter(needsPerson);
+  const working = tracks.filter(isWorking);
+  const open = tracks.filter((track) => !isClosed(track) && !needsPerson(track));
   const panel = (
     <aside className={styles.panelColumn} data-nc-panel="">
       <PanelCard>
@@ -143,7 +142,7 @@ function TodayDesktop({
           <Calendar
             activityAvailable={activityAvailable}
             today={today}
-            tracks={shownTracks}
+            tracks={tracks}
             areas={areas}
             scheduledEvents={scheduledEvents}
             renderTrackRow={renderTrackRow}

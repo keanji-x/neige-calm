@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { ApiFailure, ApiOperation } from '../api/types.js';
-import { isTerminal, type CardWire, type TrackLifecycle } from './track.js';
+import type { CardWire } from './track.js';
 import { readTrackReport } from './report.js';
 
 /** One immutable request per user intent, including uncertain retries. */
@@ -60,9 +60,7 @@ export function independentTaskFailureUncertain(failure: ApiFailure): boolean {
     || (failure.kind === 'http' && (failure.status >= 500 || failure.status === 408));
 }
 
-/** Mirrors the existing scheduler fence; Draft is started atomically by this endpoint. */
-export function independentTaskUnavailableReason(lifecycle: TrackLifecycle): string | null {
-  if (isTerminal(lifecycle)) return 'This Track has ended. Resume it before starting another task.';
-  if (lifecycle === 'blocked') return 'This Track is blocked. Resolve the blocker before starting another task.';
-  return null;
+/** Mirrors the scheduler fence: an open track admits a task, a closed one does not. */
+export function independentTaskUnavailableReason(closedAt: number | null): string | null {
+  return closedAt === null ? null : 'This Track is closed. Reopen it before starting another task.';
 }

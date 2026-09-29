@@ -93,22 +93,6 @@
     text-overflow: ellipsis;
   }
 
-  /* Second line. Only the default variant has one — the others *drop* it rather
-     than shrink it, so the lifecycle phrase simply does not exist there. */
-  .lifecycle {
-    grid-column: 2;
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-snug);
-    color: var(--text-3);
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-  }
-
-  /* Same rule for the second line: the lifecycle phrase is a fact, not an
-     alarm. Its colour never changes either. */
-
   /* Right edge means status. A fixed column, never `margin-inline-start: auto`,
      which would open hundreds of pixels of gap on a 720px row. */
   .age {

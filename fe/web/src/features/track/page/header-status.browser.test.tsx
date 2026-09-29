@@ -39,16 +39,16 @@ function contrast(first: Rgb, second: Rgb): number {
 }
 
 const plannerNotification = [{
-  key: 'ask:lifecycle:1', kind: 'ask' as const, text: 'Merge PR #1811 now, or hold it?', atMs: 1,
+  key: 'ask:ratify:1', kind: 'ask' as const, text: 'Merge PR #1811 now, or hold it?', atMs: 1,
 }];
 
-describe('the track lifecycle status in the page header', () => {
+describe('the track closed status in the page header', () => {
   it('sits directly beside the title as quiet text', async () => {
     await browserPage.viewport(1200, 800);
-    renderPage({ track: track({ title: 'Status preview', lifecycle: 'working' }) });
+    renderPage({ track: track({ title: 'Status preview', closedAt: 5 }) });
 
     const title = document.querySelector<HTMLElement>('[aria-label="Rename track"]')!;
-    const status = document.querySelector<HTMLElement>('[aria-label="Track lifecycle: Working"]')!;
+    const status = document.querySelector<HTMLElement>('[aria-label="Track closed"]')!;
     const gap = status.getBoundingClientRect().left - title.getBoundingClientRect().right;
 
     expect(gap).toBeGreaterThanOrEqual(4);
@@ -59,9 +59,9 @@ describe('the track lifecycle status in the page header', () => {
 
   it('uses a transparent text-only treatment', async () => {
     await browserPage.viewport(1200, 800);
-    renderPage({ track: track({ lifecycle: 'done' }), canResumeTrack: true });
+    renderPage({ track: track({ closedAt: 5 }), canReopenTrack: true });
 
-    const status = document.querySelector<HTMLElement>('[aria-label="Track lifecycle: Done"]')!;
+    const status = document.querySelector<HTMLElement>('[aria-label="Track closed"]')!;
     const statusStyle = getComputedStyle(status);
 
     expect(status.getBoundingClientRect().height).toBe(24);
@@ -85,7 +85,7 @@ describe('the track lifecycle status in the page header', () => {
     const onDismiss = vi.fn(() => Promise.resolve());
     renderPage({
       inputNotifications: [{
-        key: 'ask:lifecycle:1', kind: 'ask', atMs: Date.now(),
+        key: 'ask:ratify:1', kind: 'ask', atMs: Date.now(),
         text: 'Merge PR #1811 now? See [the PR](https://example.com/pr/1811).',
       }],
       onReply,
@@ -150,7 +150,7 @@ describe('the track lifecycle status in the page header', () => {
     await userEvent.click(open);
     expect(onReply).toHaveBeenCalledOnce();
     await userEvent.click(dismiss);
-    expect(onDismiss).toHaveBeenCalledWith('ask:lifecycle:1');
+    expect(onDismiss).toHaveBeenCalledWith('ask:ratify:1');
     expect(onReply).toHaveBeenCalledOnce();
   });
 
@@ -212,7 +212,7 @@ describe('the track lifecycle status in the page header', () => {
 
   it('returns focus to the Track actions button when Escape closes its menu', async () => {
     await browserPage.viewport(1200, 800);
-    renderPage({ track: track({ lifecycle: 'done' }), canResumeTrack: true });
+    renderPage({ track: track({ closedAt: 5 }), canReopenTrack: true });
     const actions = document.querySelector<HTMLButtonElement>('[aria-label^="Track actions for "]')!;
 
     actions.click();
@@ -227,26 +227,26 @@ describe('the track lifecycle status in the page header', () => {
     );
   });
 
-  it('keeps keyboard focus on Track actions after Resume removes the action', async () => {
-    function ResumeHarness() {
-      const [resumed, setResumed] = useState(false);
+  it('keeps keyboard focus on Track actions after Reopen removes the action', async () => {
+    function ReopenHarness() {
+      const [reopened, setReopened] = useState(false);
       return (
         <TrackPage
           mobilePanelObscured={false}
-          track={track({ lifecycle: resumed ? 'working' : 'done' })}
+          track={track({ closedAt: reopened ? null : 5 })}
           cards={[]}
           tasks={[]}
           openableCards={new Set()}
-          canResumeTrack={!resumed}
+          canReopenTrack={!reopened}
           onRenameTrack={vi.fn()}
-          onResumeTrack={() => { setResumed(true); }}
+          onReopenTrack={() => { setReopened(true); }}
           onDeleteTrack={vi.fn()}
         />
       );
     }
 
     await browserPage.viewport(1200, 800);
-    render(<ResumeHarness />);
+    render(<ReopenHarness />);
     const actions = document.querySelector<HTMLButtonElement>('[aria-label^="Track actions for "]')!;
     actions.focus();
     await userEvent.keyboard('{Enter}');
@@ -260,12 +260,12 @@ describe('the track lifecycle status in the page header', () => {
     )!;
     expect(document.activeElement).toBe(currentActions);
     expect(currentActions.matches(':focus-visible')).toBe(true);
-    expect(document.querySelector('[aria-label="Track lifecycle: Working"]')).not.toBeNull();
+    expect(document.querySelector('[aria-label="Track closed"]')).toBeNull();
   });
 
   it('light-dismisses Track actions on an outside click', async () => {
     await browserPage.viewport(1200, 800);
-    renderPage({ track: track({ lifecycle: 'done' }), canResumeTrack: true });
+    renderPage({ track: track({ closedAt: 5 }), canReopenTrack: true });
     const actions = document.querySelector<HTMLButtonElement>('[aria-label^="Track actions for "]')!;
     const popover = () => document.querySelector<HTMLElement>('[role="menu"]')?.closest<HTMLElement>('[popover]');
 
@@ -283,13 +283,13 @@ describe('the track lifecycle status in the page header', () => {
     renderPage({
       track: track({
         title: 'A deliberately long track title '.repeat(12),
-        lifecycle: 'working',
+        closedAt: 5,
       }),
       inputNotifications: plannerNotification,
     });
 
     const title = document.querySelector<HTMLElement>('[aria-label="Rename track"]')!;
-    const status = document.querySelector<HTMLElement>('[aria-label="Track lifecycle: Working"]')!;
+    const status = document.querySelector<HTMLElement>('[aria-label="Track closed"]')!;
     const actions = document.querySelector<HTMLElement>('[aria-label^="Track actions for "]')!;
     const notice = document.querySelector<HTMLElement>('[data-nc-needs-input-notice]')!;
     const titleBox = title.getBoundingClientRect();
@@ -302,10 +302,10 @@ describe('the track lifecycle status in the page header', () => {
     expect(notice.getBoundingClientRect().top).toBeGreaterThan(actions.getBoundingClientRect().bottom);
   });
 
-  it('keeps the subdued running colour readable in both themes', async () => {
+  it('keeps the subdued closed colour readable in both themes', async () => {
     await browserPage.viewport(1200, 800);
-    renderPage({ track: track({ lifecycle: 'working' }) });
-    const status = document.querySelector<HTMLElement>('[aria-label="Track lifecycle: Working"]')!;
+    renderPage({ track: track({ closedAt: 5 }) });
+    const status = document.querySelector<HTMLElement>('[aria-label="Track closed"]')!;
 
     for (const theme of ['light', 'dark'] as const) {
       document.documentElement.dataset.theme = theme;

@@ -33,81 +33,71 @@ async function openDesktopTrackActions(): Promise<void> {
 }
 
 describe('TrackPage header', () => {
-  it('shows the track title and the lifecycle badge', () => {
-    renderPage({ track: track({ title: 'Ship the rewrite', lifecycle: 'blocked' }) });
+  it('shows the track title and no badge while the track is open', () => {
+    renderPage({ track: track({ title: 'Ship the rewrite' }) });
     expect(screen.getByRole('button', { name: 'Rename track' }).textContent).toBe('Ship the rewrite');
-    expect(screen.getAllByRole('status', { name: 'Track lifecycle: Blocked' })).toHaveLength(2);
+    expect(screen.queryAllByRole('status', { name: 'Track closed' })).toHaveLength(0);
   });
 
-  it('puts Draft in the header', () => {
-    renderPage({ track: track({ title: 'Ship the rewrite', lifecycle: 'draft' }) });
-    expect(screen.getAllByRole('status', { name: 'Track lifecycle: Draft' })).toHaveLength(2);
-  });
-
-  it('paints one activity indicator beside the title, from the overlay rather than the lifecycle', () => {
-    const view = renderPage({ track: track({ lifecycle: 'working', working: false }) });
+  it('paints one activity indicator beside the title, from the overlay rather than the open/closed state', () => {
+    const view = renderPage({ track: track({ working: false }) });
     expect(view.container.querySelector('[data-nc-activity]')).toBeNull();
     cleanup();
-    const working = renderPage({ track: track({ lifecycle: 'done', working: true }) });
+    const working = renderPage({ track: track({ closedAt: 5, working: true }) });
     expect(working.container.querySelectorAll('[data-nc-activity]')).toHaveLength(1);
     expect(working.container.querySelector('[data-nc-activity="working"]')?.closest('h1, div')?.contains(
       screen.getByRole('button', { name: 'Rename track' }),
     )).toBe(true);
     cleanup();
-    const failed = renderPage({ track: track({ lifecycle: 'working', attention: 'failed' }) });
+    const failed = renderPage({ track: track({ attention: 'failed' }) });
     expect(failed.container.querySelectorAll('[data-nc-activity]')).toHaveLength(1);
     expect(failed.container.querySelector('[data-nc-activity="failed"]')).toBeTruthy();
   });
 
-  it('shows done, canceled and failed', () => {
-    for (const [lifecycle, label] of [
-      ['done', 'Done'], ['canceled', 'Canceled'], ['failed', 'Failed'],
-    ] as const) {
-      cleanup();
-      renderPage({ track: track({ lifecycle }) });
-      expect(screen.getAllByRole('status', { name: `Track lifecycle: ${label}` })).toHaveLength(2);
-    }
+  it('shows the Closed badge on a closed track', () => {
+    renderPage({ track: track({ closedAt: 5 }) });
+    expect(screen.getAllByRole('status', { name: 'Track closed' })).toHaveLength(2);
   });
 
-  it('resumes a recoverable lifecycle from the desktop Track actions menu', async () => {
-    const onResumeTrack = vi.fn();
-    renderPage({ track: track({ lifecycle: 'done' }), canResumeTrack: true, onResumeTrack });
+  it('reopens a closed track from the desktop Track actions menu', async () => {
+    const onReopenTrack = vi.fn();
+    renderPage({ track: track({ closedAt: 5 }), canReopenTrack: true, onReopenTrack });
     await openDesktopTrackActions();
-    await userEvent.click(screen.getByRole('menuitem', { name: /Resume work/ }));
-    expect(onResumeTrack).toHaveBeenCalledOnce();
+    await userEvent.click(screen.getByRole('menuitem', { name: /Reopen/ }));
+    expect(onReopenTrack).toHaveBeenCalledOnce();
   });
 
-  it('deduplicates Resume work while the first request is pending', async () => {
-    let finishResume!: () => void;
-    const pendingResume = new Promise<void>((resolve) => { finishResume = resolve; });
-    const onResumeTrack = vi.fn(() => pendingResume);
-    renderPage({ track: track({ lifecycle: 'done' }), canResumeTrack: true, onResumeTrack });
+  it('deduplicates Reopen while the first request is pending', async () => {
+    let finishReopen!: () => void;
+    const pendingReopen = new Promise<void>((resolve) => { finishReopen = resolve; });
+    const onReopenTrack = vi.fn(() => pendingReopen);
+    renderPage({ track: track({ closedAt: 5 }), canReopenTrack: true, onReopenTrack });
 
     const trigger = screen.getByRole('button', { name: /^Track actions for / });
     await userEvent.click(trigger);
-    await userEvent.click(screen.getByRole('menuitem', { name: /Resume work/ }));
-    expect(onResumeTrack).toHaveBeenCalledOnce();
+    await userEvent.click(screen.getByRole('menuitem', { name: /Reopen/ }));
+    expect(onReopenTrack).toHaveBeenCalledOnce();
 
     const desktopMenu = screen.getByRole('menu', { name: /^Track actions for /, hidden: true });
     const repeatedAction = within(desktopMenu)
-      .getByRole('menuitem', { name: /Resume work/, hidden: true });
+      .getByRole('menuitem', { name: /Reopen/, hidden: true });
     expect(repeatedAction.getAttribute('aria-disabled')).toBe('true');
     repeatedAction.click();
-    expect(onResumeTrack).toHaveBeenCalledOnce();
+    expect(onReopenTrack).toHaveBeenCalledOnce();
 
     await act(async () => {
-      finishResume();
-      await pendingResume;
+      finishReopen();
+      await pendingReopen;
     });
     expect(repeatedAction.getAttribute('aria-disabled')).toBe('true');
   });
 
-  it('keeps Resume work reachable from compact Track actions', async () => {
-    const onResumeTrack = vi.fn();
-    renderPage({ track: track({ lifecycle: 'done' }), canResumeTrack: true, onResumeTrack });
+  it('keeps Reopen reachable from compact Track actions', async () => {
+    const onReopenTrack = vi.fn();
+    renderPage({ track: track({ closedAt: 5 }), canReopenTrack: true, onReopenTrack });
     await userEvent.click(screen.getByRole('button', { name: 'Track actions' }));
-    await userEvent.click(screen.getByRole('menuitem', { name: 'Resume work' }));
-    expect(onResumeTrack).toHaveBeenCalledOnce();
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Reopen' }));
+    expect(onReopenTrack).toHaveBeenCalledOnce();
   });
 
   it('falls back to the untitled label for a blank title', () => {
@@ -137,7 +127,7 @@ describe('TrackPage header', () => {
     const now = 1_790_000_000_000;
     renderPage({
       inputNotifications: [{
-        key: 'ask:lifecycle:7', kind: 'ask', text: 'Merge PR #1811 now, or hold it?', atMs: now - 3 * 60_000,
+        key: 'ask:ratify:7', kind: 'ask', text: 'Merge PR #1811 now, or hold it?', atMs: now - 3 * 60_000,
       }],
       onReply,
       nowMs: now,
@@ -178,7 +168,7 @@ describe('TrackPage header', () => {
     const onDismiss = vi.fn(() => Promise.resolve());
     renderPage({
       inputNotifications: [
-        { key: 'ask:lifecycle:7', kind: 'ask', atMs: 2, text: 'Merge **PR #1811** now?\n\n- hold it for the release\n'
+        { key: 'ask:ratify:7', kind: 'ask', atMs: 2, text: 'Merge **PR #1811** now?\n\n- hold it for the release\n'
           + '- ship it today\n\nRun `deploy.sh` after; see [the PR](https://example.com/pr/1811).' },
         { key: 'planner_down:9', kind: 'planner-down', atMs: 1,
           text: "400: The 'gpt-6-astra' model requires a newer version of Codex." },
@@ -243,9 +233,9 @@ describe('TrackPage header', () => {
             tasks={[]}
             openableCards={new Set()}
             inputNotifications={notifications}
-            canResumeTrack={false}
+            canReopenTrack={false}
             onRenameTrack={vi.fn()}
-            onResumeTrack={vi.fn()}
+            onReopenTrack={vi.fn()}
             onDeleteTrack={vi.fn()}
           />
         </>
@@ -480,7 +470,7 @@ describe('TrackPage task inventory', () => {
 
   it('draws no status carrier for a declaration the kernel has not dispatched', () => {
     renderPage({ tasks: [task('alpha', 'ready'), task('beta', 'not-ready'), task('gone', 'withdrawn')] });
-    /* By name, not by role alone: the header's lifecycle badge is a named graphic too. */
+    /* By name, not by role alone: the header's closed badge is a named status too. */
     expect(screen.queryAllByRole('img', { name: /^Status: / })).toEqual([]);
   });
 
@@ -676,7 +666,7 @@ describe('TrackPage card inventory', () => {
     const props = {
       mobilePanelObscured: false,
       track: track(), cards: [card({ id: 'k1', title: 'Build log' })], tasks: [], openableCards: new Set(['k1']),
-      canResumeTrack: false, onRenameTrack: vi.fn(), onResumeTrack: vi.fn(), onDeleteTrack: vi.fn(),
+      canReopenTrack: false, onRenameTrack: vi.fn(), onReopenTrack: vi.fn(), onDeleteTrack: vi.fn(),
     };
     const { container, rerender } = render(<TrackPage {...props} panel="cards" />);
     expect(container.querySelector('[data-nc-mobile-page]')?.getAttribute('data-nc-mobile-page')).toBe('open');
@@ -727,9 +717,9 @@ describe('TrackPage card inventory', () => {
       cards={[card({ id: 'k1', kind: 'notes', title: null })]}
       tasks={[]}
       openableCards={new Set(['k1'])}
-      canResumeTrack={false}
+      canReopenTrack={false}
       onRenameTrack={vi.fn()}
-      onResumeTrack={vi.fn()}
+      onReopenTrack={vi.fn()}
       onDeleteTrack={vi.fn()}
     />);
     expect(container.textContent).toContain('notes');

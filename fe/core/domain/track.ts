@@ -1,5 +1,5 @@
-// Track: the unit of work the product is organised around — wire decode, the
-// lifecycle vocabulary, and the pure predicates several surfaces must agree on.
+// Track: the unit of work the product is organised around — wire decode, open or closed,
+// and the pure predicates several surfaces must agree on.
 
 import { z } from 'zod';
 
@@ -11,28 +11,20 @@ import {
 } from './activity.js';
 import { visibleAreas, type Area } from './area.js';
 
-export const trackLifecycleSchema = z.enum([
-  'draft', 'planning', 'dispatching', 'working',
-  'blocked', 'reviewing', 'done', 'canceled', 'failed',
-]);
-export type TrackLifecycle = z.infer<typeof trackLifecycleSchema>;
-
 /**
- * `lifecycle` / `cwd` / the `*_at` columns are `#[serde(default)]` on the kernel side and so
- * absent from the OpenAPI `required` set; the decoder supplies the DB defaults.
+ * `cwd` and the `*_at` columns may be absent from the OpenAPI `required` set; the decoder supplies
+ * the DB defaults. `closed_at` is null while the track is open.
  */
 export const trackWireSchema = z.object({
   id: z.string(),
   area_id: z.string(),
   title: z.string(),
   sort: z.number(),
-  lifecycle: trackLifecycleSchema.default('draft'),
   cwd: z.string().default(''),
   /** Only the kernel-made track worktree (#1830) is read; absent for a track without one. */
   workspace: z.object({ worktree: z.string().optional() }).optional(),
-  archived_at: z.number().nullable().default(null),
   pinned_at: z.number().nullable().default(null),
-  terminal_at: z.number().nullable().default(null),
+  closed_at: z.number().nullable().default(null),
   created_at: z.number(),
   updated_at: z.number(),
 });
@@ -70,14 +62,13 @@ export type Track = Readonly<{
   areaId: string;
   title: string;
   sort: number;
-  lifecycle: TrackLifecycle;
   /** The user's checkout (`workspace.path`). */
   cwd: string;
   /** Where the track's agents run and write: the track worktree when there is one, else `cwd`. */
   agentCwd: string;
-  archivedAt: number | null;
   pinnedAt: number | null;
-  terminalAt: number | null;
+  /** Unix-ms time the track was closed; `null` while it is open. */
+  closedAt: number | null;
   createdAt: number;
   updatedAt: number;
 }> & TrackActivity;
@@ -88,12 +79,10 @@ export function toTrack(wire: TrackWire, activity: TrackActivity = NEUTRAL_ACTIV
     areaId: wire.area_id,
     title: wire.title,
     sort: wire.sort,
-    lifecycle: wire.lifecycle,
     cwd: wire.cwd,
     agentCwd: wire.workspace?.worktree ?? wire.cwd,
-    archivedAt: wire.archived_at,
     pinnedAt: wire.pinned_at,
-    terminalAt: wire.terminal_at,
+    closedAt: wire.closed_at,
     createdAt: wire.created_at,
     updatedAt: wire.updated_at,
     ...activity,
@@ -292,7 +281,7 @@ export type CardWire = z.infer<typeof cardWireSchema>;
 
 export const trackDetailSchema = z.object({
   track: trackWireSchema,
-  can_resume: z.boolean(),
+  can_reopen: z.boolean(),
   cards: z.array(cardWireSchema),
   overlays: z.array(overlayWireSchema),
 });
@@ -427,8 +416,8 @@ export type TrackPatchBody = Readonly<{
   title?: string;
   sort?: number;
   pinned_at?: number | null;
-  archived_at?: number | null;
-  lifecycle?: TrackLifecycle;
+  /** `true` closes the track, `false` reopens it; the server stamps the time. */
+  closed?: boolean;
 }>;
 
 export function tracksInAreaOperation(areaId: string): ApiOperation<TrackWire[]> {
@@ -569,12 +558,7 @@ export function overlaysByKindOperation(entityKind: 'track' | 'card'): ApiOperat
   };
 }
 
-/** The track needs a human: blocked, in review, or failed. */
-export function isWaitingForUser(lifecycle: TrackLifecycle): boolean {
-  return lifecycle === 'blocked' || lifecycle === 'reviewing' || lifecycle === 'failed';
-}
-
-/* The three activity predicates read only the kernel's `activity` overlay — no lifecycle OR — so they cannot disagree with it. */
+/* The three activity predicates read only the kernel's `activity` overlay — no track-state OR — so they cannot disagree with it. */
 
 /** The kernel says something dispatched is still running. */
 export function isWorking(track: Track): boolean {
@@ -596,35 +580,15 @@ export function trackActivityState(track: Track, unread: boolean): ActivityState
   return activityStateOf({ working: isWorking(track), attention: track.attention, unread });
 }
 
-/** Needs a person first, then in a running phase, then everything quiet. */
-export function lifecycleRank(track: Track): number {
-  if (needsUserAttention(track) || hasFailed(track)) return 0;
-  if (isRunning(track.lifecycle)) return 1;
-  return 2;
+/** A closed track schedules no new work; only the user reopens it. */
+export function isClosed(track: Pick<Track, 'closedAt'>): boolean {
+  return track.closedAt !== null;
 }
 
-export function sortByLifecycleRank(tracks: readonly Track[]): Track[] {
-  return [...tracks].sort((left, right) => lifecycleRank(left) - lifecycleRank(right));
-}
-
-/** Archived is an orthogonal visibility flag, never a lifecycle bucket. */
-export function visibleTracks(tracks: readonly Track[]): Track[] {
-  return tracks.filter((track) => track.archivedAt === null);
-}
-
-/** Not archived and hosted by an area the person may see — the second layer of defence behind `visibleAreas`. */
+/** Hosted by an area the person may see — the second layer of defence behind `visibleAreas`. */
 export function userVisibleTracks(tracks: readonly Track[], areas: readonly Area[]): Track[] {
   const userAreaIds = new Set(visibleAreas(areas).map((area) => area.id));
-  return visibleTracks(tracks).filter((track) => userAreaIds.has(track.areaId));
-}
-
-/** The track has work in flight. `done` / `draft` / `canceled` are neither. */
-export function isRunning(lifecycle: TrackLifecycle): boolean {
-  return lifecycle === 'planning' || lifecycle === 'dispatching' || lifecycle === 'working';
-}
-
-export function isTerminal(lifecycle: TrackLifecycle): boolean {
-  return lifecycle === 'done' || lifecycle === 'canceled' || lifecycle === 'failed';
+  return tracks.filter((track) => userAreaIds.has(track.areaId));
 }
 
 export const UNTITLED_TRACK_LABEL = 'Untitled track';
@@ -632,22 +596,6 @@ export const UNTITLED_TRACK_LABEL = 'Untitled track';
 /** One display fallback for tracks created without a title. */
 export function trackDisplayTitle(title: string): string {
   return title.trim() || UNTITLED_TRACK_LABEL;
-}
-
-/** The canonical lifecycle phrase. Every surface reads it from here so the
- *  sidebar, the badge, and the agenda cannot drift into parallel tables. */
-export function lifecycleLabel(lifecycle: TrackLifecycle): string {
-  switch (lifecycle) {
-    case 'draft': return 'Draft';
-    case 'planning': return 'Planning';
-    case 'dispatching': return 'Dispatching';
-    case 'working': return 'Working';
-    case 'blocked': return 'Blocked';
-    case 'reviewing': return 'In review';
-    case 'done': return 'Done';
-    case 'canceled': return 'Canceled';
-    case 'failed': return 'Failed';
-  }
 }
 
 function startOfDay(day: Date): number {
@@ -663,14 +611,14 @@ function endOfDay(day: Date): number {
 }
 
 /**
- * Every track whose `[createdAt, terminalAt ?? nowMs]` interval overlaps the local day owning `day`;
+ * Every track whose `[createdAt, closedAt ?? nowMs]` interval overlaps the local day owning `day`;
  * endpoints inclusive, sorted by `createdAt` then id.
  */
 export function activeTracksOn(tracks: readonly Track[], day: Date, nowMs: number): Track[] {
   const dayStart = startOfDay(day);
   const dayEnd = endOfDay(day);
   const matched = tracks.filter((track) => {
-    const end = track.terminalAt ?? (isTerminal(track.lifecycle) ? track.updatedAt : nowMs);
+    const end = track.closedAt ?? nowMs;
     return track.createdAt <= dayEnd && end >= dayStart;
   });
   return matched.sort((left, right) => (left.createdAt !== right.createdAt

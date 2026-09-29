@@ -22,25 +22,6 @@ export const areaSchema = z.object({
 });
 
 /**
- * `model::TrackLifecycle`. `archived` is intentionally NOT a lifecycle state; defaults to `'draft'`
- * for legacy payloads.
- */
-export const trackLifecycleSchema = z
-  .enum([
-    'draft',
-    'planning',
-    'dispatching',
-    'working',
-    'blocked',
-    'reviewing',
-    'done',
-    'canceled',
-    'failed',
-  ])
-  .default('draft');
-export type TrackLifecycle = z.infer<typeof trackLifecycleSchema>;
-
-/**
  * One-way read compatibility for the pre-rename track keys (`workflow_id` / `workflow_input`).
  * Deliberately a preprocess step and NOT an optional field on the schema, and deliberately
  * not shared with the other zod readers.
@@ -74,9 +55,9 @@ const trackObjectSchema = z.object({
   area_id: z.string(),
   title: z.string(),
   sort: z.number(),
-  archived_at: z.number().nullable(),
   pinned_at: z.number().nullable().default(null),
-  lifecycle: trackLifecycleSchema,
+  /** Unix-ms time the track was closed, or `null` while it is open; a pre-#1876 frame has none and reads as open. */
+  closed_at: z.number().nullable().default(null),
   /** Defaulted to `""` for legacy replay payloads; production rows always carry an absolute path. */
   cwd: z.string().default(''),
   template_id: z.string().nullable().default(null),
@@ -84,8 +65,6 @@ const trackObjectSchema = z.object({
   purpose: z.string().nullable().default(null),
   /** Opaque bound-template input JSON; the frontend never interprets it. */
   template_input: z.unknown().default(null),
-  /** Unix-ms stamp the track most recently entered a terminal lifecycle state, or `null` while non-terminal. */
-  terminal_at: z.number().nullable().default(null),
   /** Server-owned provenance; both are `null` together for tracks that came from anywhere else. */
   recipe_id: z.string().nullable().default(null),
   recipe_revision: z.number().nullable().default(null),
@@ -198,18 +177,6 @@ export const trackUpdatedSchema = z.object({
 export const trackDeletedSchema = z.object({
   ev: z.literal('track.deleted'),
   data: z.object({ id: z.string(), area_id: z.string() }),
-});
-
-/** Emitted exactly once per validated `from → to` transition. */
-export const trackLifecycleChangedSchema = z.object({
-  ev: z.literal('track.lifecycle_changed'),
-  data: z.object({
-    id: z.string(),
-    area_id: z.string(),
-    from: trackLifecycleSchema,
-    to: trackLifecycleSchema,
-    agent_message: z.string().optional(),
-  }),
 });
 
 export const cardAddedSchema = z.object({
@@ -949,7 +916,6 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   areaDeletedSchema,
   trackUpdatedSchema,
   trackDeletedSchema,
-  trackLifecycleChangedSchema,
   cardAddedSchema,
   cardUpdatedSchema,
   cardDeletedSchema,
@@ -1010,7 +976,6 @@ export type AreaUpdatedEvent = z.infer<typeof areaUpdatedSchema>;
 export type AreaDeletedEvent = z.infer<typeof areaDeletedSchema>;
 export type TrackUpdatedEvent = z.infer<typeof trackUpdatedSchema>;
 export type TrackDeletedEvent = z.infer<typeof trackDeletedSchema>;
-export type TrackLifecycleChangedEvent = z.infer<typeof trackLifecycleChangedSchema>;
 export type CardAddedEvent = z.infer<typeof cardAddedSchema>;
 export type CardUpdatedEvent = z.infer<typeof cardUpdatedSchema>;
 export type CardDeletedEvent = z.infer<typeof cardDeletedSchema>;

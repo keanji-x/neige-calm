@@ -75,7 +75,7 @@ function trackConversations(trackId: string | null): QueryKey {
 
 /**
  * The list's `state` comes from `worker_sessions.state` and its `updated_at` from every harness
- * snapshot persist; `track.lifecycle_changed` is deliberately NOT a caller (it ends sessions via
+ * snapshot persist; `track.updated` is deliberately NOT a caller (a close ends sessions via
  * `worker_session.superseded`, already here). The caller set is pinned from both sides in the test.
  */
 function conversationLists(trackId: string | null): readonly QueryKey[] {
@@ -142,10 +142,6 @@ function policies(): PolicyMap {
     ],
     [['track', event.data.id], ['track-report', event.data.id]],
   )),
-  'track.lifecycle_changed': plan((event) => result([
-    ['tracks', 'area', event.data.area_id], ['track', event.data.id],
-    ['track-files', event.data.id], ['tracks-range'],
-  ])),
   'card.added': plan((event) => result([
     ['track', event.data.track_id], ['track-files', event.data.track_id],
     ['track-report'], ...conversationLists(event.data.track_id),

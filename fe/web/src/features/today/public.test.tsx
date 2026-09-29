@@ -33,8 +33,8 @@ function area(overrides: Partial<Area> = {}): Area {
 
 function track(overrides: Partial<Track> = {}): Track {
   return {
-    id: 'w1', areaId: 'c1', title: 'Open track', sort: 1, lifecycle: 'working', cwd: '/tmp', agentCwd: '/tmp',
-    archivedAt: null, pinnedAt: null, terminalAt: null, createdAt: NOW - 3_600_000, updatedAt: NOW,
+    id: 'w1', areaId: 'c1', title: 'Open track', sort: 1, cwd: '/tmp', agentCwd: '/tmp',
+    pinnedAt: null, closedAt: null, createdAt: NOW - 3_600_000, updatedAt: NOW,
     ...NEUTRAL_ACTIVITY,
     ...overrides,
   };
@@ -42,24 +42,23 @@ function track(overrides: Partial<Track> = {}): Track {
 
 describe('Today clock', () => {
   /* Both numbers are the kernel's verdicts (`needsUserAttention ∨ hasFailed`, `isWorking`); the
-   * "Open" group is the lifecycle phase. A planning track with an idle planner is open but not working. */
-  it('counts waiting on you and working by the kernel verdict, and groups Open by lifecycle phase', () => {
+   * "Open" group is every open track not waiting on a person. An open track with an idle planner is open but not working. */
+  it('counts waiting on you and working by the kernel verdict, and groups Open by the open state', () => {
     render(<TodayPage activityAvailable renderTrackRow={renderTrackRow} nowMs={NOW} areas={[area()]} tracks={[
-      track({ id: 'a', title: 'Working phase, idle', lifecycle: 'working', working: false }),
-      track({ id: 'b', title: 'Planning phase, idle planner', lifecycle: 'planning', working: false }),
-      track({ id: 'c', title: 'Blocked phase, needs input', lifecycle: 'blocked', attention: 'input' }),
-      track({ id: 'd', title: 'Done phase, still in flight', lifecycle: 'done', working: true }),
-      track({ id: 'e', title: 'Working phase, failed', lifecycle: 'working', attention: 'failed' }),
-      track({ id: 'f', title: 'Blocked phase, nothing from the kernel', lifecycle: 'blocked' }),
+      track({ id: 'a', title: 'Open, idle', working: false }),
+      track({ id: 'b', title: 'Open, idle planner', working: false }),
+      track({ id: 'c', title: 'Open, needs input', attention: 'input' }),
+      track({ id: 'd', title: 'Closed, still in flight', closedAt: NOW - 1, working: true }),
+      track({ id: 'e', title: 'Open, failed', attention: 'failed' }),
     ]} />);
     expect(screen.getByRole('banner').textContent).toContain('2waiting on you');
     expect(screen.getByRole('banner').textContent).toContain('1working');
     expect(screen.getByRole('banner').textContent).not.toContain('in progress');
     const section = screen.getByRole('heading', { name: 'Open' }).closest('section')!;
-    expect(section.textContent).toContain('Planning phase, idle planner');
-    expect(section.textContent).toContain('Working phase, idle');
-    expect(section.textContent).not.toContain('Done phase, still in flight');
-    expect(section.textContent).not.toContain('Working phase, failed');
+    expect(section.textContent).toContain('Open, idle planner');
+    expect(section.textContent).toContain('Open, idle');
+    expect(section.textContent).not.toContain('Closed, still in flight');
+    expect(section.textContent).not.toContain('Open, failed');
     expect(section.textContent).not.toContain('needs input');
     expect(screen.queryByText('Running')).toBeNull();
   });
@@ -107,19 +106,6 @@ describe('Today calendar label', () => {
 });
 
 describe('Today agenda', () => {
-  it('excludes archived tracks from counts, sections, calendar dots, and agenda', () => {
-    render(<TodayPage
-      activityAvailable
-      renderTrackRow={renderTrackRow}
-      tracks={[track({ title: 'Archived attention', lifecycle: 'blocked', archivedAt: NOW - DAY })]}
-      areas={[area()]}
-      nowMs={NOW}
-    />);
-    expect(screen.getByRole('banner').textContent).toContain('0waiting on you');
-    expect(screen.queryByText('Archived attention')).toBeNull();
-    expect(screen.getByRole('button', { name: 'Monday, Aug 10' })).toBeTruthy();
-  });
-
   it('hands each agenda track to the injected renderer in the panel variant', () => {
     const seen: { id: string; variant: string }[] = [];
     render(<TodayPage
@@ -138,7 +124,7 @@ describe('Today agenda', () => {
     render(<TodayPage
       activityAvailable
       renderTrackRow={(candidate, options) => { seen.push(options.areaName); return <span>{candidate.title}</span>; }}
-      tracks={[track({ lifecycle: 'blocked' })]} areas={[area()]} nowMs={NOW}
+      tracks={[track()]} areas={[area()]} nowMs={NOW}
     />);
     expect(seen).toContain('Work');
   });
@@ -158,7 +144,7 @@ describe('Today agenda', () => {
     // overlaps Tuesday; today's open track ends at `nowMs` and cannot reach it.
     const tomorrowOnly = track({
       id: 'y', title: 'Tomorrow only',
-      createdAt: NOW + DAY - 3_600_000, terminalAt: NOW + DAY + 3_600_000,
+      createdAt: NOW + DAY - 3_600_000, closedAt: NOW + DAY + 3_600_000,
     });
     /* The agenda's rows are exactly the ones Today asks for with `variant: 'panel'`, which the stand-in marks. */
     const agenda = () => [...document.querySelectorAll('[data-nc-role="row"][data-nc-state="selected"]')]

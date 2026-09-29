@@ -37,9 +37,9 @@ function memoryStorage() {
 const AREA = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 
 const TRACK_ROW = {
-  id: 'w-new', area_id: 'c1', title: '', sort: 0, archived_at: null, pinned_at: null,
-  lifecycle: 'draft', cwd: '/srv/managed', template_id: null, plugin_scope: null,
-  purpose: null, template_input: null, terminal_at: null, created_at: 1, updated_at: 1,
+  id: 'w-new', area_id: 'c1', title: '', sort: 0, pinned_at: null,
+  cwd: '/srv/managed', template_id: null, plugin_scope: null,
+  purpose: null, template_input: null, closed_at: null, created_at: 1, updated_at: 1,
 };
 
 /* The body as the server holds it: already canonical, because the write
@@ -97,7 +97,7 @@ function harness(options: Options = {}) {
         return Promise.resolve({
           status: 200,
           statusText: 'OK',
-          body: { track: { ...TRACK_ROW }, can_resume: false, cards: [], overlays: [] },
+          body: { track: { ...TRACK_ROW }, can_reopen: false, cards: [], overlays: [] },
         });
       }
       const body = request.path === '/api/areas' ? [AREA] : [];
