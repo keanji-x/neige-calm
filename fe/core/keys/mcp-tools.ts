@@ -1,6 +1,6 @@
 /** The kernel's own MCP tool names, as they appear on the wire. Not exhaustive: an unrecognised tool keeps its wire name. */
 
-/** Everything that changes the report. `commit` is the batched form (blocks + summary + lifecycle). */
+/** Everything that changes the report. `commit` is the batched form (blocks + summary). */
 export const REPORT_WRITE_TOOLS: readonly string[] = Object.freeze([
   'calm.report.write',
   'calm.report.write_markdown',

@@ -103,3 +103,109 @@ async fn track_close_needs_a_message_and_the_planner_role() {
             .is_open()
     );
 }
+
+/// Rows of one event kind the close path persisted, counted in the log rather than on the bus.
+async fn persisted(boot: &Boot, kind: &str) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = ?1")
+        .bind(kind)
+        .fetch_one(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap()
+}
+
+/// Two closes in flight at once: the second transaction re-reads the track, sees it closed and
+/// writes nothing, so exactly one `track.updated` is persisted and both calls report one time.
+#[tokio::test]
+async fn concurrent_closes_persist_one_track_updated() {
+    let boot = boot().await;
+    let before = persisted(&boot, "track.updated").await;
+    let (first, second) = tokio::join!(
+        call_tool(
+            &boot,
+            TOOL_TRACK_CLOSE,
+            planner_identity(&boot),
+            json!({ "message": "first" }),
+        ),
+        call_tool(
+            &boot,
+            TOOL_TRACK_CLOSE,
+            planner_identity(&boot),
+            json!({ "message": "second" }),
+        ),
+    );
+    let (first, second) = (first.expect("first close"), second.expect("second close"));
+    assert_eq!(first["closed_at"], second["closed_at"]);
+    assert_eq!(persisted(&boot, "track.updated").await, before + 1);
+}
+
+/// The recorder gate runs inside the close transaction: a session superseded after the transport
+/// check is refused there, and the track stays open.
+#[tokio::test]
+async fn a_superseded_session_close_is_denied_in_the_transaction() {
+    let boot = boot().await;
+    sqlx::query("UPDATE worker_sessions SET state = 'superseded' WHERE id = ?1")
+        .bind(PLANNER_SESSION_ID)
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .expect("supersede the planner session");
+    let before = persisted(&boot, "track.updated").await;
+
+    let err = call_tool(
+        &boot,
+        TOOL_TRACK_CLOSE,
+        planner_identity(&boot),
+        json!({ "message": "stale session" }),
+    )
+    .await
+    .expect_err("a superseded session cannot close the track");
+    assert_eq!(err.code, -32403);
+    assert!(
+        err.message.contains("recorder gate denied track_close"),
+        "{err:?}"
+    );
+    assert!(
+        boot.repo
+            .track_get(boot.track_id.as_str())
+            .await
+            .unwrap()
+            .unwrap()
+            .is_open()
+    );
+    assert_eq!(persisted(&boot, "track.updated").await, before);
+}
+
+/// An area chat is never closed; the refusal lives in the one track writer, so the Planner's
+/// close meets the same rule as the REST PATCH.
+#[tokio::test]
+async fn planner_close_of_an_area_chat_track_is_refused() {
+    let boot = boot().await;
+    sqlx::query("UPDATE tracks SET purpose = ?1 WHERE id = ?2")
+        .bind(calm_server::AREA_CHAT_PURPOSE)
+        .bind(boot.track_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .expect("mark the track as an area chat");
+
+    let err = call_tool(
+        &boot,
+        TOOL_TRACK_CLOSE,
+        planner_identity(&boot),
+        json!({ "message": "done chatting" }),
+    )
+    .await
+    .expect_err("an area chat cannot be closed");
+    assert_eq!(err.code, -32403);
+    assert!(
+        err.message
+            .contains("an area chat track cannot be closed or reopened"),
+        "{err:?}"
+    );
+    assert!(
+        boot.repo
+            .track_get(boot.track_id.as_str())
+            .await
+            .unwrap()
+            .unwrap()
+            .is_open()
+    );
+}

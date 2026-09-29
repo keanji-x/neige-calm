@@ -2,7 +2,7 @@
 //! `calm.task.verdict` (Planner-only accept/reject, lowered to `TaskCompleted` / `TaskFailed`, scoped to the caller's track)
 //! and `calm.track.close` (Planner-only close of the caller's track).
 
-use crate::decision_sink::CardDecisionSink;
+use crate::decision_sink::{CardDecisionSink, CardDecisionSinkRecorderShadowProbe};
 use crate::error::CalmError;
 use crate::event::{Event, EventScope};
 use crate::mcp_server::framing::RpcError;
@@ -13,6 +13,7 @@ use crate::mcp_server::registry::{
 };
 use crate::mcp_server::tools::write_args::{message_schema, parse_write_args};
 use crate::model::{Card, CardRole, Track, TrackPatch};
+use crate::recorder_shadow::{RecorderShadowDecisionKind, RecorderShadowProbe};
 use crate::track_report::TrackReportPayload;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -244,14 +245,16 @@ async fn track_close(
     require_role(&identity, CardRole::Planner)?;
     let message = parse_write_args(&args, TOOL_TRACK_CLOSE)?;
     let (_, track) = resolve_track_for_identity(&ctx, &identity).await?;
-    if let Some(closed_at) = track.closed_at {
-        return Ok(json!({ "closed_at": closed_at }));
-    }
+    let recorder = CardDecisionSinkRecorderShadowProbe::for_identity(&identity, track.id.clone());
+    // A close that finds the track already closed writes nothing: the batch may not be empty, so
+    // the closure leaves the stamp here and ends the transaction as a lost race.
+    let already_closed = Arc::new(std::sync::OnceLock::<i64>::new());
+    let already_closed_in_tx = Arc::clone(&already_closed);
     let scope = EventScope::Track {
         track: track.id.clone(),
         area: track.area_id.clone(),
     };
-    let (closed, _) = crate::db::write_with_events_typed(
+    let written = crate::db::write_with_events_typed(
         ctx.repo.as_ref(),
         identity.to_actor_id(),
         None,
@@ -259,6 +262,16 @@ async fn track_close(
         &ctx.write,
         move |tx| {
             Box::pin(async move {
+                // In the transaction: a session superseded after the transport check is denied here,
+                // and a close that raced another close sees it and writes nothing.
+                recorder
+                    .record(tx, RecorderShadowDecisionKind::TrackClose)
+                    .await?;
+                let current = crate::db::sqlite::track_get_tx(tx, &track.id).await?;
+                if let Some(closed_at) = current.closed_at {
+                    let _ = already_closed_in_tx.set(closed_at);
+                    return Err(crate::scheduler::race_lost_err());
+                }
                 let closed = crate::db::sqlite::track_update_tx(
                     tx,
                     track.id.as_str(),
@@ -268,22 +281,32 @@ async fn track_close(
                     },
                 )
                 .await?;
+                let closed_at = closed
+                    .closed_at
+                    .ok_or_else(|| CalmError::Internal("a close left closed_at unset".into()))?;
                 let event = Event::TrackUpdated(crate::event::TrackUpdatedPayload::new(
-                    closed.clone(),
+                    closed,
                     Some(message),
                 ));
-                Ok((closed, vec![(scope, event)]))
+                Ok((closed_at, vec![(scope, event)]))
             })
         },
     )
-    .await
-    .map_err(|e| match e {
-        CalmError::Forbidden(msg) => {
-            RpcError::custom(-32403, format!("{TOOL_TRACK_CLOSE}: forbidden: {msg}"))
+    .await;
+    let closed = match written {
+        Ok((closed_at, _)) => closed_at,
+        Err(e) if crate::scheduler::is_race_lost(&e) => *already_closed.get().ok_or_else(|| {
+            RpcError::internal(format!("{TOOL_TRACK_CLOSE}: no-op close lost its stamp"))
+        })?,
+        Err(CalmError::Forbidden(msg)) => {
+            return Err(RpcError::custom(
+                -32403,
+                format!("{TOOL_TRACK_CLOSE}: forbidden: {msg}"),
+            ));
         }
-        e => RpcError::internal(format!("{TOOL_TRACK_CLOSE}: {e}")),
-    })?;
-    Ok(json!({ "closed_at": closed.closed_at }))
+        Err(e) => return Err(RpcError::internal(format!("{TOOL_TRACK_CLOSE}: {e}"))),
+    };
+    Ok(json!({ "closed_at": closed }))
 }
 
 /// A missing thread-mapped card while its daemon is active is a delete-while-active race, surfaced as `InternalError`.

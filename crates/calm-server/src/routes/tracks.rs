@@ -2513,13 +2513,6 @@ pub(crate) async fn update_track(
         return repoint_track_workspace(&s, &w, &actor, &existing, workspace).await;
     }
 
-    // The guard fires on mentioning `closed`, not on changing it: accepting a no-op
-    // write would advertise an editable field.
-    if existing.purpose.as_deref() == Some(AREA_CHAT_PURPOSE) && p.closed.is_some() {
-        return Err(CalmError::Forbidden(
-            "an area chat track cannot be closed or reopened".into(),
-        ));
-    }
     let scope = EventScope::Track {
         track: existing.id.clone(),
         area: existing.area_id.clone(),
