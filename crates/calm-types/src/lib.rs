@@ -29,7 +29,6 @@ pub mod runtime;
 pub mod tailnet;
 pub mod task_recovery;
 pub mod track_fs_dto;
-pub mod track_lifecycle;
 pub mod track_report;
 pub mod verify_target;
 pub mod worker;

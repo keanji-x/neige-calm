@@ -111,17 +111,17 @@ async fn setup() -> Arc<SqlxRepo> {
     .await
     .expect("seed second area");
     sqlx::query(
-        "INSERT INTO tracks(id,area_id,title,sort,lifecycle,created_at,updated_at,\
+        "INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at,\
          planner_task_ceiling,require_task_gates) \
-         VALUES('snapshot-track','snapshot-area','snapshot',0,'draft',0,0,1,0)",
+         VALUES('snapshot-track','snapshot-area','snapshot',0,0,0,1,0)",
     )
     .execute(repo.pool())
     .await
     .expect("seed track");
     sqlx::query(
-        "INSERT INTO tracks(id,area_id,title,sort,lifecycle,created_at,updated_at,\
+        "INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at,\
          planner_task_ceiling,require_task_gates) \
-         VALUES('destination-track','snapshot-area','destination',1,'draft',0,0,1,0)",
+         VALUES('destination-track','snapshot-area','destination',1,0,0,1,0)",
     )
     .execute(repo.pool())
     .await
@@ -308,9 +308,9 @@ async fn snapshot_reference_materialization_preserves_reference_diagnostics() {
     .await
     .expect("seed system area");
     sqlx::query(
-        "INSERT INTO tracks(id,area_id,title,sort,lifecycle,created_at,updated_at) VALUES \
-         ('cross-user-track','snapshot-area-2','cross-user',2,'draft',0,0), \
-         ('system-track','system-area','system',3,'draft',0,0)",
+        "INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) VALUES \
+         ('cross-user-track','snapshot-area-2','cross-user',2,0,0), \
+         ('system-track','system-area','system',3,0,0)",
     )
     .execute(repo.pool())
     .await

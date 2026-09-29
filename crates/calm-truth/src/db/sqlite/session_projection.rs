@@ -782,8 +782,8 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
                  AND ws.handle_state_json IS NOT NULL
                  AND json_extract(ws.handle_state_json, '$.mode') = 'harness'
                  -- Keep harness boot recovery aligned with the legacy
-                 -- takeover filters above: terminal tracks must stay inert.
-                 AND w.lifecycle NOT IN ('done', 'canceled', 'failed')
+                 -- takeover filters above: closed tracks must stay inert.
+                 AND w.closed_at IS NULL
                ORDER BY ws.created_at_ms ASC, c.id ASC"#
         );
         let rows = sqlx::query(&sql)

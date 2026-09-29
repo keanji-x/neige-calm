@@ -121,7 +121,6 @@ pub async fn track_create_tx(
     };
     let now = now_ms();
     let id = new_id();
-    let lifecycle = crate::model::TrackLifecycle::Draft;
     // The workspace is written by `track_workspace_write_tx` below in this same
     // transaction. `tree_task_budget` is stamped NULL by every create path: it is
     // meaningful only on a tree root, and a DB DEFAULT would hand each child a
@@ -129,14 +128,13 @@ pub async fn track_create_tx(
     // can later be edited or deleted.
     sqlx::query(
         r#"INSERT INTO tracks
-           (id, area_id, title, sort, archived_at, pinned_at, lifecycle, template_id, plugin_scope, purpose, template_input, terminal_at, tree_task_budget, recipe_id, recipe_revision, created_at, updated_at)
-           VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, ?7, ?8, ?9, NULL, NULL, ?10, ?11, ?12, ?13)"#,
+           (id, area_id, title, sort, pinned_at, closed_at, template_id, plugin_scope, purpose, template_input, tree_task_budget, recipe_id, recipe_revision, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, ?7, ?8, NULL, ?9, ?10, ?11, ?12)"#,
     )
     .bind(&id)
     .bind(p.area_id.as_str())
     .bind(&p.title)
     .bind(sort)
-    .bind(lifecycle.as_db_str())
     .bind(p.template_id.as_deref())
     .bind(p.plugin_scope.as_deref())
     .bind(purpose)
@@ -200,15 +198,13 @@ pub async fn track_create_tx(
         area_id: p.area_id,
         title: p.title,
         sort,
-        archived_at: None,
         pinned_at: None,
-        lifecycle,
+        closed_at: None,
         cwd_wire_alias: workspace.path.clone(),
         template_id: p.template_id,
         plugin_scope: p.plugin_scope,
         purpose: purpose.map(str::to_owned),
         template_input: p.template_input,
-        terminal_at: None,
         recipe_id: recipe_origin.map(|o| o.recipe_id.clone()),
         recipe_revision: recipe_origin.map(|o| o.revision),
         workspace,
@@ -220,19 +216,32 @@ pub async fn track_create_tx(
     })
 }
 
-pub async fn track_update_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    id: &str,
-    p: TrackPatch,
-) -> Result<Track> {
-    let mut w = sqlx::query_as::<_, crate::db::rows::TrackRow>(&format!(
+/// In-tx track row read; `None` when the row is gone.
+pub async fn track_find_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<Option<Track>> {
+    Ok(sqlx::query_as::<_, crate::db::rows::TrackRow>(&format!(
         "SELECT {TRACK_SELECT_COLUMNS} FROM tracks WHERE id = ?1"
     ))
     .bind(id)
     .fetch_optional(&mut **tx)
     .await?
-    .map(Track::from)
-    .ok_or_else(|| CalmError::NotFound(format!("track {id}")))?;
+    .map(Track::from))
+}
+
+/// In-tx track row read, for handlers that re-check the track inside their own write transaction.
+pub async fn track_get_tx(tx: &mut Transaction<'_, Sqlite>, track_id: &TrackId) -> Result<Track> {
+    track_find_tx(tx, track_id.as_str())
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("track {}", track_id.as_str())))
+}
+
+pub async fn track_update_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    p: TrackPatch,
+) -> Result<Track> {
+    let mut w = track_find_tx(tx, id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("track {id}")))?;
 
     if let Some(v) = p.title {
         w.title = v;
@@ -240,18 +249,15 @@ pub async fn track_update_tx(
     if let Some(v) = p.sort {
         w.sort = v;
     }
-    if let Some(v) = p.archived_at {
-        w.archived_at = v;
-    }
     if let Some(v) = p.pinned_at {
         w.pinned_at = v;
     }
-    // The transition is validated by `validate_transition` at the call site, not
-    // here; production paths that mutate `lifecycle` must call it first.
-    // `terminal_at` rides on the lifecycle column: stamped on entering a terminal
-    // state, cleared on reopen, untouched by patches that don't name `lifecycle`.
-    if let Some(new_lifecycle) = p.lifecycle {
-        if w.lifecycle.is_terminal() && !new_lifecycle.is_terminal() {
+    // Closing stamps the time once, so closing a closed track keeps it. Reopening clears it,
+    // except on a child a task references: that task's outcome already read the close.
+    if let Some(closed) = p.closed {
+        if closed {
+            w.closed_at.get_or_insert_with(now_ms);
+        } else if w.closed_at.is_some() {
             let parent: Option<(String, String)> =
                 sqlx::query_as("SELECT track_id, key FROM tasks WHERE child_track_id = ?1 LIMIT 1")
                     .bind(id)
@@ -262,17 +268,8 @@ pub async fn track_update_tx(
                     "track {id} is child of task {parent_track_id}:{parent_key} and cannot be reopened"
                 )));
             }
+            w.closed_at = None;
         }
-        if new_lifecycle != w.lifecycle {
-            if new_lifecycle.is_terminal() {
-                w.terminal_at = Some(now_ms());
-            } else if w.lifecycle.is_terminal() {
-                // Reopen / resume: clear the stamp so a reopened track doesn't render with a
-                // stale terminal date.
-                w.terminal_at = None;
-            }
-        }
-        w.lifecycle = new_lifecycle;
     }
     // Tree-root-only, enforced in this single shared writer. Written ONLY when the
     // patch names it, never re-serialized from the row read above: the row decode
@@ -304,28 +301,17 @@ pub async fn track_update_tx(
 
     sqlx::query(
         r#"UPDATE tracks
-           SET title = ?1, sort = ?2, archived_at = ?3, pinned_at = ?4,
-               lifecycle = ?5, terminal_at = ?6, updated_at = ?7
-           WHERE id = ?8"#,
+           SET title = ?1, sort = ?2, pinned_at = ?3, closed_at = ?4, updated_at = ?5
+           WHERE id = ?6"#,
     )
     .bind(&w.title)
     .bind(w.sort)
-    .bind(w.archived_at)
     .bind(w.pinned_at)
-    .bind(w.lifecycle.as_db_str())
-    .bind(w.terminal_at)
+    .bind(w.closed_at)
     .bind(w.updated_at)
     .bind(w.id.as_str())
     .execute(&mut **tx)
     .await?;
-
-    // Freeze point: the track leaves Draft, the last moment the workspace is
-    // provably free of durable consumers. The condition is `w.lifecycle != Draft`,
-    // not the transition, so tracks that left Draft earlier freeze too; the
-    // freeze is idempotent.
-    if w.lifecycle != TrackLifecycle::Draft {
-        super::track_workspace::track_workspace_freeze_tx(tx, w.id.as_str(), w.updated_at).await?;
-    }
 
     // These columns deliberately do NOT live on the `Track` struct; targeted
     // single-column writes are the whole PATCH surface.

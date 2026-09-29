@@ -141,23 +141,6 @@ pub async fn task_cancel_running_tx(
     Ok(res.rows_affected())
 }
 
-/// The claim tx re-checks schedulability against this, not the pre-claim
-/// snapshot. `None` = track row gone.
-pub async fn track_lifecycle_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    track_id: &str,
-) -> Result<Option<TrackLifecycle>> {
-    let row: Option<(String,)> = sqlx::query_as("SELECT lifecycle FROM tracks WHERE id = ?1")
-        .bind(track_id)
-        .fetch_optional(&mut **tx)
-        .await?;
-    row.map(|(lifecycle,)| {
-        TrackLifecycle::try_from(lifecycle)
-            .map_err(|e| CalmError::Internal(format!("tracks.lifecycle decode: {e}")))
-    })
-    .transpose()
-}
-
 /// A gone track row reads as `false`; `require_track_exists_tx` already errored that case.
 pub async fn track_require_task_gates_tx(
     tx: &mut Transaction<'_, Sqlite>,

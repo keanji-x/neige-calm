@@ -33,8 +33,8 @@ fn commit_hash_ignores_author_metadata() {
     };
 
     assert_eq!(
-        commit_hash_for_tree(&track_id, "tree-1", "draft", &base).unwrap(),
-        commit_hash_for_tree(&track_id, "tree-1", "draft", &other_author).unwrap()
+        commit_hash_for_tree(&track_id, "tree-1", &base).unwrap(),
+        commit_hash_for_tree(&track_id, "tree-1", &other_author).unwrap()
     );
 }
 
@@ -80,7 +80,6 @@ async fn commit_log_keyset_pages_ignore_newer_concurrent_commits() {
                manifest_schema_version INTEGER NOT NULL,
                author TEXT,
                message TEXT,
-               lifecycle TEXT NOT NULL,
                event_id INTEGER,
                created_at INTEGER NOT NULL
            )"#,
@@ -93,9 +92,9 @@ async fn commit_log_keyset_pages_ignore_newer_concurrent_commits() {
         sqlx::query(
             r#"INSERT INTO track_vcs_commits (
                    hash, track_id, parent_hash, tree_hash, manifest_schema_version,
-                   author, message, lifecycle, event_id, created_at
+                   author, message, event_id, created_at
                )
-               VALUES (?1, ?2, NULL, ?3, ?4, NULL, 'seed', 'active', ?5, ?5)"#,
+               VALUES (?1, ?2, NULL, ?3, ?4, NULL, 'seed', ?5, ?5)"#,
         )
         .bind(format!("{index:064x}"))
         .bind(track_id.as_str())
@@ -121,10 +120,9 @@ async fn commit_log_keyset_pages_ignore_newer_concurrent_commits() {
     sqlx::query(
         r#"INSERT INTO track_vcs_commits (
                hash, track_id, parent_hash, tree_hash, manifest_schema_version,
-               author, message, lifecycle, event_id, created_at
+               author, message, event_id, created_at
            )
-           VALUES (?1, ?2, NULL, 'tree-new', ?3, NULL, 'concurrent',
-                   'active', 10, 10)"#,
+           VALUES (?1, ?2, NULL, 'tree-new', ?3, NULL, 'concurrent', 10, 10)"#,
     )
     .bind(format!("{:064x}", 10))
     .bind(track_id.as_str())

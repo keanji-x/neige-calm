@@ -19,7 +19,7 @@ async fn setup() -> SqlxRepo {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     sqlx::query("INSERT INTO areas(id,name,color,sort,kind,created_at,updated_at) VALUES('area','a','#000',0,'user',0,0)")
         .execute(repo.pool()).await.unwrap();
-    sqlx::query("INSERT INTO tracks(id,area_id,title,sort,lifecycle,created_at,updated_at,require_task_gates) VALUES('w','area','w',0,'working',0,0,0)")
+    sqlx::query("INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at,require_task_gates) VALUES('w','area','w',0,0,0,0)")
         .execute(repo.pool()).await.unwrap();
     repo
 }

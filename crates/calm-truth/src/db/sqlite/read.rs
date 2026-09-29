@@ -207,7 +207,7 @@ impl RepoRead for SqlxRepo {
             where_clauses.push("created_at <= ?");
         }
         if since.is_some() {
-            where_clauses.push("(terminal_at IS NULL OR terminal_at >= ?)");
+            where_clauses.push("(closed_at IS NULL OR closed_at >= ?)");
         }
         if !where_clauses.is_empty() {
             sql.push_str(" WHERE ");
@@ -286,15 +286,13 @@ impl RepoRead for SqlxRepo {
             ))
         });
 
-        // Child ownership constrains only a terminal reopen: Blocked and
-        // Reviewing children may legally return to Working, while a terminal
-        // child has already resolved its parent task and cannot be reopened.
-        let can_resume = calm_types::track_lifecycle::user_can_resume(row.track.lifecycle)
+        // A closed child has already resolved its parent task, so it cannot be reopened.
+        let can_reopen = row.track.closed_at.is_some()
             && row.track.purpose.as_deref() != Some(calm_types::model::AREA_CHAT_PURPOSE)
-            && (!row.track.lifecycle.is_terminal() || !row.referenced_as_child);
+            && !row.referenced_as_child;
         Ok(Some(TrackDetail {
             track: Track::from(row.track),
-            can_resume,
+            can_reopen,
             cards,
             overlays,
         }))
@@ -829,7 +827,7 @@ impl RepoRead for SqlxRepo {
                           AND hws.handle_state_json IS NOT NULL
                           AND json_extract(hws.handle_state_json, '$.mode') = 'harness'
                  )
-                 AND w.lifecycle NOT IN ('done', 'canceled', 'failed')
+                 AND w.closed_at IS NULL
                ORDER BY c.created_at ASC, c.id ASC"#,
         )
         .bind(provider.as_db_str())

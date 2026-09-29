@@ -121,7 +121,7 @@ pub use task::{
     task_gate_attempt_bump_tx, task_get_tx, task_mark_running_tx, task_mark_sub_track_running_tx,
     task_report_success_from_worker_tx, task_stamp_missing_running_deadline_tx,
     task_start_verifying_from_worker_tx, task_update_pending_tx, tasks_by_track_tx,
-    track_lifecycle_tx, track_require_task_gates_tx, worker_op_targets_card_tx,
+    track_require_task_gates_tx, worker_op_targets_card_tx,
 };
 pub use task_attempt::{
     task_attempt_current_by_track_pool, task_attempt_current_by_track_tx,
@@ -141,8 +141,8 @@ pub use track::{
     AttachedInheritedPath, TrackCreateBinding, TrackCreateBindingClaim,
     TrackCreateRequestFingerprint, TrackRecipeOrigin, TrackWorkspacePlan,
     track_create_idempotency_claim_tx, track_create_idempotency_get_pool, track_create_tx,
-    track_delete_tx, track_require_candidate_verification_settled_tx, track_require_leaf_tx,
-    track_update_tx, track_worktree_path_for,
+    track_delete_tx, track_find_tx, track_get_tx, track_require_candidate_verification_settled_tx,
+    track_require_leaf_tx, track_update_tx, track_worktree_path_for,
 };
 pub use track_claude_permissions::track_claude_permissions_ceiling_read;
 pub use track_idle::track_idle;
@@ -430,6 +430,9 @@ mod track_create_request_fingerprint_migration_tests;
 
 #[cfg(test)]
 mod track_template_rename_migration_tests;
+
+#[cfg(test)]
+mod track_closed_at_migration_tests;
 
 #[cfg(test)]
 mod pool_tx_repair_tests;

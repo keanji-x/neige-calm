@@ -180,7 +180,7 @@ async fn task_recovery_historical_gate_log_retains_execution_and_gate_identity()
     ] {
         assert!(view.cat(&track, invalid).await.is_err(), "{invalid}");
     }
-    sqlx::query("INSERT INTO tracks(id,area_id,title,sort,lifecycle,created_at,updated_at) VALUES('foreign','area','other',0,'working',0,0)")
+    sqlx::query("INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) VALUES('foreign','area','other',0,0,0)")
         .execute(repo.pool()).await.unwrap();
     let foreign = repo.track_get("foreign").await.unwrap().unwrap();
     assert!(matches!(

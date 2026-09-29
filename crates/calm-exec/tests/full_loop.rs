@@ -1,14 +1,4 @@
-//! Full-loop and fake contract tests; implementations live in `calm-truth-test-harness`.
-
-#[tokio::test]
-async fn full_loop_dispatch_to_lifecycle_done() {
-    calm_truth_test_harness::full_loop_dispatch_to_lifecycle_done().await;
-}
-
-#[tokio::test]
-async fn full_loop_cross_principal_denied() {
-    calm_truth_test_harness::full_loop_cross_principal_denied().await;
-}
+//! Fake contract tests; implementations live in `calm-truth-test-harness`.
 
 #[tokio::test]
 async fn fake_provider_contract() {
