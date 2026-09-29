@@ -103,8 +103,9 @@ The guards key on `child.closed_at IS NOT NULL` with the same quiescence subquer
 - **Planner.** New tool `calm.track.close {message}` (Planner-only) emits `track.updated` with
   `agent_message`. Closing a closed track is a no-op that returns the current `closed_at`.
   - `lifecycle` leaves the schema of every tool in F17.
-  - The shared parsers (`parse_write_args`, `parse_optional_write_args`) refuse a `lifecycle` key:
-    ``"`lifecycle` is removed: close with calm.track.close; ask with calm.user.notify or calm.ratify.request"``.
+  - The shared parsers (`parse_write_args`, `parse_optional_write_args`, in `mcp_server/tools/write_args.rs`,
+    renamed from `lifecycle_args.rs`) refuse a `lifecycle` key:
+    ``"<tool>: `lifecycle` is removed: close with calm.track.close; ask with calm.user.notify or calm.ratify.request"``.
     The parsers ignore unknown keys (F18), so without this a session started before the deploy
     would lose its close silently. It is one parser, so every write tool behaves the same.
   - The Planner cannot reopen. Only users ever did (F4).
@@ -126,9 +127,11 @@ The guards key on `child.closed_at IS NOT NULL` with the same quiescence subquer
 - **`calm-exec`.** `DecisionIntent::LifecycleTransition` and the harness `set_lifecycle` fakes are
   deleted (F17).
 - **What survives the lifecycle modules.** Only the FSM and the transition functions are deleted.
-  `track_get_tx` (23 caller files) moves to `db::sqlite` next to its row reader. `ActorKind`,
-  `actor_kind` and `actor_is_planner_author` (used by `dispatcher/mod.rs`) move to a `calm_types`
-  actor module.
+  `track_get_tx` (23 caller files) moves to `calm-truth` `db::sqlite` next to its row reader, with
+  `track_find_tx` for the callers that read an `Option`; `calm-server` keeps a one-line
+  `db::sqlite::track_get_tx` that maps the error type. `ActorKind` and `actor_kind` had no caller
+  left and are deleted rather than moved; `actor_is_planner_author` was one `matches!`, now inlined
+  in `dispatcher/mod.rs`. The recorder-shadow `TrackLifecycle` kind goes with the FSM.
 - **Events.**
   - `TrackLifecycleChanged` is deleted. `track.updated` carries `closed_at` and `agent_message`.
   - The dispatcher adds `track.updated` to `SCHEDULER_TRIGGER_KINDS`. It pokes the scheduler and
@@ -186,8 +189,11 @@ not exist. Items stay unfiltered, as today (`notifications.rs:117-119`).
 - **Labels**
   - The rail and Today phrases are aria-label only (`row/public.tsx:67,75`). They say ", closed"
     for a closed track and nothing otherwise.
+    The row's visible second-line phrase (`variant="default"` only, which no production surface
+    mounts) is deleted with it.
   - Mobile tracks meta (`mobile-tracks.tsx:84`) shows "Closed" or nothing.
-  - The track header badge renders only when closed, with a neutral tone.
+  - The track header badge renders only when closed, with a neutral tone. The slice is renamed
+    `features/track/closed-badge` (`TrackClosedBadge`).
   - Today's Open group is `!isClosed`.
 - **Show closed toggle.** It is per Area, stored in ui-preferences as `area-closed:${id}`, default
   false. That matches `area:${id}` expansion, and the menu item already lives in each Area's own
@@ -251,8 +257,8 @@ DELETE FROM events WHERE kind = 'track.lifecycle_changed';
 | `gate-sync-event-version-lockstep.sh` | runs, no bump | D4 |
 | `gate-web-compat-version-lockstep.sh` | yes | 33→34 in both declarations |
 | `gate-1316-terminology-ratchet.sh`, `gate-prose-ratchet.sh` | re-baseline if counts move | deleted Rust literals lower `long_literal` |
-| `fe/tools/mutation/manifest.json` (PR-1) | yes | s2a-track-activity-state-from-lifecycle, s2a-activity-overlay-plugin-gate-dropped, s2a-needs-attention-lifecycle-or, n1829-decoder-accepts-v1 (`track.ts`), s2a-track-row-name-from-lifecycle, s2a-badge-running-tone-restored, s2a-today-groups-by-working, s4-today-second-count-from-phase, s3-mobile-track-row-from-lifecycle, n1829-row-placeholder-text, s2b-mobile-painter-no-indicator |
-| `docs/oracle/app-dataflow.yaml` CAP-APP-032 (155-163), INV-APP-118 (636-679); `owner-aliases.yaml:104-105` (PR-1); `a11y-contract.yaml` INV-A11Y-061 (PR-2) | yes | `fe/tools/oracle/validator.ts` checks cited line ranges |
+| `fe/tools/mutation/manifest.json` (PR-1) | yes | Selected by scanning the JSON for `lifecycle\|Resume`; the "terminal lifecycle" entries (`s2b-terminal-head-*`, `s2b-board-cell-drops-activity`) are unrelated and stay. Re-pointed at the open state and renamed: `s2a-track-activity-state-from-open-state`, `s2a-track-row-name-from-open-state`, `s2a-needs-attention-closed-or`, `s3-mobile-track-row-from-open-state`, `s4-today-second-count-from-open`; re-pointed: `s2a-today-groups-by-working`; patch context: `n1829-dismiss-not-posted` (`onReopenTrack … { closed: false }`); test names and the renamed `header-status.browser.test.tsx`: `app-theme-swap-light-dark-bg`, `n1829-row-placeholder-text`; deleted: `s2a-badge-running-tone-restored` (the badge has one tone). Every entry `fe-mutation-plan` selects (40) was run locally in witness scope with actual = expected |
+| `docs/oracle/app-dataflow.yaml` CAP-APP-032 (155-163), INV-APP-118 (636-679); `owner-aliases.yaml:105` (PR-1, `shared/lifecycle-badge` → `features/track/closed-badge`); `a11y-contract.yaml` INV-A11Y-061 (PR-2) | yes | `fe/tools/oracle/validator.ts` checks cited line ranges. The shorter `invalidation-plan.ts`, `schemas.ts` and `row/public.test.tsx` also move the cited ranges of CAP-APP-036, CAP-APP-037, CAP-APP-103, GATE-WIRE-009 (`gates-types.yaml`, `anchor-unsupported.yaml`) and INV-APP-118 |
 | `docs/oracle/capabilities-e2e.yaml:22` | yes | cites `bin/replay.rs` route lines; the force-lifecycle route goes |
 | `fe/web/src/app/events/README.md:88` | yes | `track.lifecycle_changed` row |
 | `tests/cases/candidate_review_dispatch.rs:27-31` | yes | pins the dispatch `track` object and `blocking_reason` |
@@ -261,7 +267,9 @@ DELETE FROM events WHERE kind = 'track.lifecycle_changed';
 | `tests/cases/track_workspace_repoint.rs:1238` `leaving_draft_freezes_the_workspace_and_the_change_is_refused` | delete | pins the deleted draft-exit freeze (D4) |
 | `mcp_server/cli/render.rs:476` `log_renders_null_message_and_event_id_but_requires_lifecycle` | rewrite | `log` no longer renders `lifecycle` |
 | `fe/core/api/generated/{wire.ts,openapi.json}` | regenerate | `openapi-drift` job |
-| `e2e/cases/110-multitask-golden-path.sh:41-83`, `fe/e2e/track-lifecycle-resume.spec.ts` | yes | tier 2 / Playwright |
+| `e2e/cases/110-multitask-golden-path.sh:41-83`, `fe/e2e/track-lifecycle-resume.spec.ts` | yes | tier 2 / Playwright; the Playwright file and its jsdom twin become `track-reopen.{spec.ts,test.tsx}` |
+| `fe/web/src/features/track/lifecycle-badge/`, `page/header-lifecycle.browser.test.tsx` | renamed | `closed-badge/` (renders only when closed, one neutral tone) and `header-status.browser.test.tsx` |
+| `scripts/gate-1316-terminology-ratchet.baseline.tsv`, `scripts/gate-prose-ratchet.baseline.tsv` | tightened | deleted literals lower the counts |
 
 ## 4. CI gate list (`.github/workflows/ci.yml`)
 
@@ -319,21 +327,39 @@ DELETE FROM events WHERE kind = 'track.lifecycle_changed';
 ## 6. Must-red table
 
 Each row names the test, the single production mutation, and the tests predicted to go red.
-(NEW) marks a test this work adds. PR-1 rows are 1-6; PR-2 rows are 7-8.
+(NEW) marks a test this work adds. PR-1 rows are 1-6 and 9; PR-2 rows are 7-8.
 
 | # | Test | Mutation (production only) | Predicted red |
 |---|---|---|---|
 | 1 | `track_activity::notifications::tests::pending_ratify_is_an_open_ask_until_answered` (NEW) | drop the ratify arm in `notifications()` | that test + `review_ratify::ratify_request_raises_an_ask_and_resolve_clears_it` (NEW) |
-| 2 | `scheduler::tests::closed_track_does_not_claim` (NEW) | `Track::is_open` returns `true` (shared by every F12 gate and the ratify precondition) | that test + (all NEW) `task_recovery` `recovery_refuses_on_a_closed_track`, `isolated_codex` `first_start_refuses_on_a_closed_track`, `track_report` `user_start_refuses_on_a_closed_track`, `review_ratify::ratify_request_refuses_a_closed_track` |
+| 2 | `tests/scheduler.rs` `closed_track_does_not_claim` (NEW, reshaped from `draft_track_is_not_scheduled`) | `Track::is_open` returns `true` (shared by every F12 gate and the ratify precondition) | that test + (NEW) `task_recovery::tests::recovery_refuses_on_a_closed_track`, `rest_isolated_tasks::user_start_refuses_on_a_closed_track`, `review_ratify::ratify_request_refuses_a_closed_track` + (existing, reshaped to closed tracks) `scheduler::tests::only_an_open_track_schedules`, `tests/scheduler.rs` `claim_aborts_when_the_track_closes`, `task_recovery::tests::every_refusal_site_names_its_code_kind_and_continuation` (its `TrackNotReady` site), `task_recovery` (`tests/cases`) `task_recovery_closed_track_and_declared_wait_never_grant_planner_retry` and `task_recovery_guidance_names_the_new_task_behind_a_track_that_does_not_schedule`, and the five `harness::run_loop::completed_commit_tests` that close the track (the commit-only queue is consumed only on a closed track) |
 | 3 | `scheduler.rs` `acceptance_18_success_flip_rechecks_closed_after_its_snapshot` (existing, reshaped; reopen hook) | success guard drops `closed_at IS NOT NULL` | that test + `acceptance_18_production_reconcile_keeps_the_child_guard_wired` (existing) |
 | 4 | `dispatcher::tests::track_updated_with_closed_at_reconciles_the_child` (NEW) | move `Event::TrackUpdated` back into the warn arm | that test + `dispatcher::tests::dispatcher_subscription_is_push_kinds_plus_scheduler_kinds` (existing, `dispatcher/tests.rs:354`) |
-| 5 | `track_close::planner_close_stamps_closed_at_and_refuses_a_lifecycle_key` (NEW) | the shared parser ignores `lifecycle` again | that test |
-| 6 | `migration_nnnn_closed_at::terminal_rows_close_at_terminal_at` (NEW; seeds done, failed, canceled and working rows) | `WHERE lifecycle = 'done'` | that test |
+| 5 | `mcp_track_state::track_close::planner_close_stamps_closed_at_and_refuses_a_lifecycle_key` (NEW) | the shared parser ignores `lifecycle` again | that test |
+| 6 | `db::sqlite::track_closed_at_migration_tests::terminal_rows_close_at_terminal_at` (NEW; seeds done, failed, canceled and working rows; migration 0123) | `WHERE lifecycle = 'done'` | that test |
 | 7 | `track.test.ts` `railAreaTracks keeps open, unread and active tracks` (NEW) | drop the `unread` clause | that test + `area-group.test.tsx` "shows a closed unread track" (NEW) |
 | 8 | `area-group.test.tsx` "Show N more never counts a hidden closed track" (NEW) | apply `railAreaTracks` after `limitAreaTracks` | that test |
+| 9 (PR-1) | `tests/scheduler.rs` `claim_aborts_when_the_track_closes` (existing; now seeds a projected task) | delete the in-transaction `is_open` re-check in `claim_task` | that test |
 
-`acceptance_17_raw_lifecycle_writer_refuses_reopen_of_referenced_child` is kept and renamed. Its
-mutation is deleting the guard in `track_update_tx`, and the predicted red set is that test.
+Measured on PR-1 (full five-package suite per row): rows 3, 4 and 6 went red exactly as predicted.
+Row 1 also reddened the 9 existing `track_notifications` / `track_notification_dismissals` cases, whose
+ask fixture is now a ratify request. Row 5 also reddened the 7 per-tool `lifecycle`-key refusal cases
+(`mcp_plan`, `mcp_track_report`, `mcp_track_report_blocks`, `mcp_track_state`), which share the parser.
+Row 2 also reddened `mcp_task_dispatch::dispatch_pending_snapshot_respects_release_and_closed` (the
+`blocking_reason`), `deterministic_root_location_failures_do_not_freeze_or_index` (it closes the track
+to hold the task), and two tests that assert `!is_open()` directly (`git_delivery::delivery_action_on_done_track_follows_verdict_rule`,
+`closed_track_still_drives_verifying_gate`). Row 2 left `claim_aborts_when_the_track_closes` green:
+the in-transaction open re-check is not pinned by that test alone. Cause: it seeded an unprojected task, so
+the claim's context resolution returned `None` whatever the track state; the test was vacuous. It now seeds a
+projected task. Row 9 measured: red set = that test exactly; control (same test without the close) dispatches.
+
+`acceptance_17_raw_lifecycle_writer_refuses_reopen_of_referenced_child` is kept and renamed
+(`acceptance_17_track_writer_refuses_reopen_of_referenced_child`). Its mutation is deleting the guard
+in `track_update_tx`, and the predicted red set is that test.
+
+The `isolated_codex` first-start refusal is not a separate NEW test: the first-start check
+(`validate_isolated_start_tx`) reads the same `Track::is_open` as the user start, and its fixture
+needs a running isolated executor. `user_start_refuses_on_a_closed_track` pins the shared predicate.
 
 ## 7. Slices
 
