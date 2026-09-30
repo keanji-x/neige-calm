@@ -102,6 +102,7 @@ async function pick(trigger: string, group: 'Codex' | 'Claude', item: string | R
 
 function harness(options: {
   templates?: unknown;
+  templateDetailDelayMs?: number;
   areaDefaults?: Readonly<{ default_template_id: string | null; default_cwd: string | null }>;
   otherAreaDefaults?: Readonly<{ default_template_id: string | null; default_cwd: string | null }>;
   trackCreate?: ApiTransportResponse;
@@ -210,8 +211,11 @@ function harness(options: {
       if (request.method === 'GET' && request.path.startsWith('/api/track-templates/')) {
         const id = decodeURIComponent(request.path.slice('/api/track-templates/'.length));
         if (id !== 'issue-development' && id !== 'small-change') return Promise.resolve({ status: 404, statusText: 'Not Found', body: {} });
-        return Promise.resolve({ status: 200, statusText: 'OK', body: { id, title: id, description: null, instructions: null,
-          body: id === 'issue-development' ? ISSUE_INPUT_BODY : '# Template source' } });
+        const detail = { status: 200, statusText: 'OK', body: { id, title: id, description: null, instructions: null,
+          body: id === 'issue-development' ? ISSUE_INPUT_BODY : '# Template source' } };
+        return options.templateDetailDelayMs
+          ? new Promise((resolve) => setTimeout(() => resolve(detail), options.templateDetailDelayMs))
+          : Promise.resolve(detail);
       }
       /* Served rather than left to fall through to `[]`: a decode failure would look
                identical to "the feature did not run". */
@@ -544,7 +548,7 @@ describe('Track creation drafts survive navigation', () => {
   });
 
   it('restores unsent text and options independently for each Area', async () => {
-    harness({ templates: TEMPLATES });
+    harness({ templates: TEMPLATES, templateDetailDelayMs: 100 });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Unsent intent');
@@ -558,7 +562,7 @@ describe('Track creation drafts survive navigation', () => {
     await userEvent.click(screen.getByRole('button', { name: 'New track in Work' }));
     await findComposer();
     expect(composerText()).toBe('Unsent intent');
-    expect(screen.getByLabelText<HTMLInputElement>('Issue URL').value).toBe('unfinished-url');
+    expect((await screen.findByLabelText<HTMLInputElement>('Issue URL')).value).toBe('unfinished-url');
     await userEvent.click(screen.getByRole('button', { name: 'New track in Reading' }));
     await findComposer();
     expect(composerText()).toBe('Other draft');
