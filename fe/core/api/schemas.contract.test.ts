@@ -419,14 +419,6 @@ describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
     expect(result.success).toBe(false);
   });
 
-  it('parses publication settlement and refuses missing publication identity', () => {
-    const event = { ev: 'task.file_publication_settled', data: { task_id: 'attempt', operation_id: 'publication' } };
-    expect(wireEventSchema.parse(event)).toEqual(event);
-    for (const data of [{ task_id: 'attempt' }, { operation_id: 'publication' }]) {
-      expect(wireEventSchema.safeParse({ ev: event.ev, data }).success).toBe(false);
-    }
-  });
-
   it('parses task.execution_settled with exact execution identities', () => {
     const event = {
       ev: 'task.execution_settled',
@@ -1091,16 +1083,6 @@ describe('#1209 pre-rename template keys on the track shape', () => {
     const parsed = trackSchema.parse(bare);
     expect(parsed.template_id).toBeNull();
     expect(parsed.template_input).toBeNull();
-  });
-});
-
-describe('candidate verification settlement', () => {
-  it('requires exact task and verification operation identities', () => {
-    const event = { ev: 'task.candidate_verification_settled', data: { task_id: 'attempt', operation_id: 'verification' } };
-    expect(wireEventSchema.parse(event)).toEqual(event);
-    for (const data of [{ task_id: 'attempt' }, { operation_id: 'verification' }]) {
-      expect(wireEventSchema.safeParse({ ...event, data }).success).toBe(false);
-    }
   });
 });
 

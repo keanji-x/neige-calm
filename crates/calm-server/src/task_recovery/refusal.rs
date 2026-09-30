@@ -64,8 +64,6 @@ pub(crate) enum RefusalSite {
     PlannerRetryLimit,
     /// The frozen constraint fails `validate` for this Track.
     ConstraintShapeInvalid,
-    /// The frozen file-delivery input contract cannot be honoured.
-    FileDeliveryInputUnhonoured,
     /// The frozen context closure was truncated at claim.
     FrozenContextTruncated,
     /// No frozen context was recorded for the failed execution.
@@ -145,7 +143,6 @@ impl RefusalSite {
         Self::PlannerOutsideAutoDeclare,
         Self::PlannerRetryLimit,
         Self::ConstraintShapeInvalid,
-        Self::FileDeliveryInputUnhonoured,
         Self::FrozenContextTruncated,
         Self::FrozenContextMissing,
         Self::FrozenContextMalformed,

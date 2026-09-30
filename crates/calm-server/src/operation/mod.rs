@@ -74,10 +74,6 @@ pub const TASK_BOUND_ADAPTER_KINDS: [&str; 6] = [
     "child-track",
 ];
 
-/// Kept explicit so the registry coverage test fails when a new production adapter has not been classified on either side of the context fence.
-pub const POST_EXECUTION_TASK_BOUND_ADAPTER_KINDS: [&str; 2] =
-    ["task-file-publication", "candidate-verify"];
-
 pub const NON_TASK_BOUND_ADAPTER_KINDS: [&str; 8] = [
     "terminal-create",
     "codex-create",

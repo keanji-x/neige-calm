@@ -63,8 +63,6 @@ pub(crate) const PLANNER_CATCH_UP_KINDS: &[&str] = &[
     "task.completed",
     "task.failed",
     "task.execution_settled",
-    "task.file_publication_settled",
-    "task.candidate_verification_settled",
     "task.git_delivery_settled",
     "task.gate_result",
     "track.report_edited",
@@ -119,9 +117,7 @@ pub(crate) fn event_warrants_planner_push_with_role(
         // Kernel-only at the role gate (no self-push loop); for a gated task this wake
         // replaces the suppressed worker self-report.
         Event::TaskGateResult { .. } => true,
-        Event::TaskExecutionSettled { .. }
-        | Event::TaskCandidateVerificationSettled { .. }
-        | Event::TaskFilePublicationSettled { .. } => {
+        Event::TaskExecutionSettled { .. } => {
             matches!(actor, ActorId::Kernel | ActorId::KernelDispatcher)
         }
         // #1727 S4: pure on the event — the wake disposition was decided once in the settlement
@@ -435,14 +431,6 @@ fn dispatcher_operation_runtime(
             codex_adapter,
             codex_worker_adapter,
             isolated_codex_adapter,
-            Arc::new(crate::file_delivery::adapter::FilePublicationAdapter::new(
-                route_repo.clone(),
-            )),
-            Arc::new(
-                crate::file_delivery::candidate_verify::CandidateVerifyAdapter::new(
-                    route_repo.clone(),
-                ),
-            ),
             claude_adapter,
             claude_worker_adapter,
             claude_restart_adapter,
@@ -1004,7 +992,7 @@ impl Inner {
             | Event::TaskFailed { .. }
             | Event::TaskGateResult { .. }
             | Event::TaskGitDeliverySettled { .. }
-            | Event::TaskExecutionSettled { .. } | Event::TaskCandidateVerificationSettled { .. } | Event::TaskFilePublicationSettled { .. } => {
+            | Event::TaskExecutionSettled { .. } => {
                 if task_event_pushes_planner(
                     self.repo.as_ref(),
                     &self.write,
@@ -1272,10 +1260,7 @@ impl Inner {
         }
         if matches!(
             event,
-            Event::TaskExecutionSettled { .. }
-                | Event::TaskCandidateVerificationSettled { .. }
-                | Event::TaskGitDeliverySettled { .. }
-                | Event::TaskFilePublicationSettled { .. }
+            Event::TaskExecutionSettled { .. } | Event::TaskGitDeliverySettled { .. }
         ) {
             let preceding = match crate::harness::catch_up::observations_since(
                 self.repo.as_ref(),
@@ -1382,32 +1367,6 @@ pub(crate) async fn resolve_harness_observation(
     track_id: &TrackId,
     event: &Event,
 ) -> crate::error::Result<Option<HarnessObservation>> {
-    if let Event::TaskFilePublicationSettled {
-        task_id,
-        operation_id,
-    } = event
-    {
-        return crate::file_delivery::settlement::observation(
-            repo,
-            track_id,
-            task_id,
-            operation_id,
-        )
-        .await;
-    }
-    if let Event::TaskCandidateVerificationSettled {
-        task_id,
-        operation_id,
-    } = event
-    {
-        return crate::file_delivery::verification_settlement::observation(
-            repo,
-            track_id,
-            task_id,
-            operation_id,
-        )
-        .await;
-    }
     if matches!(event, Event::TaskGitDeliverySettled { .. }) {
         return git_delivery_settled::observation(repo, track_id, event).await;
     }
@@ -1415,20 +1374,9 @@ pub(crate) async fn resolve_harness_observation(
         task_id,
         operation_id,
     } = event
+        && !crate::isolated_codex::settled::relevant(repo, track_id, task_id, operation_id).await?
     {
-        if !crate::isolated_codex::settled::relevant(repo, track_id, task_id, operation_id).await? {
-            return Ok(None);
-        }
-        if let Some(observation) = crate::isolated_codex::settled::review_observation(
-            repo,
-            track_id,
-            task_id,
-            operation_id,
-        )
-        .await?
-        {
-            return Ok(Some(observation));
-        }
+        return Ok(None);
     }
     let task_key = if let Event::TaskGateResult {
         task_id,
@@ -1527,9 +1475,7 @@ pub(crate) fn harness_observation_from_event(
     task_key: Option<&str>,
 ) -> Option<HarnessObservation> {
     match event {
-        Event::TaskCandidateVerificationSettled { .. }
-        | Event::TaskGitDeliverySettled { .. }
-        | Event::TaskFilePublicationSettled { .. } => None, // requires the retained Operation / tasks row read above
+        Event::TaskGitDeliverySettled { .. } => None, // requires the retained tasks row read above
         Event::TaskCompleted {
             idempotency_key,
             result,

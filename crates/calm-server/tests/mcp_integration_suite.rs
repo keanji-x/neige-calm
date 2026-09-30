@@ -84,10 +84,6 @@ mod isolated_activity;
 
 #[path = "cases/candidate_upstream.rs"]
 mod candidate_upstream;
-#[path = "cases/candidate_verification.rs"]
-mod candidate_verification;
-#[path = "cases/file_delivery.rs"]
-mod file_delivery;
 #[path = "cases/gate_binding.rs"]
 mod gate_binding;
 #[path = "cases/git_delivery.rs"]
@@ -106,9 +102,6 @@ mod mcp_task_dispatch;
 
 #[path = "cases/mcp_task_dispatch_regressions.rs"]
 mod mcp_task_dispatch_regressions;
-
-#[path = "cases/mcp_task_candidate_dispatch.rs"]
-mod mcp_task_candidate_dispatch;
 
 #[path = "cases/isolated_plugin_proxy.rs"]
 mod isolated_plugin_proxy;

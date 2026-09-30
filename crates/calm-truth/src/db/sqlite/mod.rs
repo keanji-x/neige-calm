@@ -137,8 +137,8 @@ pub use track::{
     AttachedInheritedPath, TrackCreateBinding, TrackCreateBindingClaim,
     TrackCreateRequestFingerprint, TrackRecipeOrigin, TrackWorkspacePlan,
     track_create_idempotency_claim_tx, track_create_idempotency_get_pool, track_create_tx,
-    track_delete_tx, track_find_tx, track_get_tx, track_require_candidate_verification_settled_tx,
-    track_require_leaf_tx, track_update_tx, track_worktree_path_for,
+    track_delete_tx, track_find_tx, track_get_tx, track_require_leaf_tx, track_update_tx,
+    track_worktree_path_for,
 };
 pub use track_idle::track_idle;
 pub use track_recipe::track_recipe_get_tx;

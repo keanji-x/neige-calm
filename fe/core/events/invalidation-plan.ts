@@ -55,14 +55,14 @@ export type TrackFilesDerivedKind =
   | 'worker_session.started' | 'worker_session.status_changed' | 'worker_session.superseded'
   | 'terminal.deleted' | 'codex.hook' | 'claude.hook'
   | 'codex.worker_requested' | 'terminal.worker_requested'
-  | 'task.completed' | 'task.failed' | 'task.execution_settled' | 'task.file_publication_settled' | 'task.candidate_verification_settled' | 'task.git_delivery_settled' | 'task.dispatched' | 'task.gate_result';
+  | 'task.completed' | 'task.failed' | 'task.execution_settled' | 'task.git_delivery_settled' | 'task.dispatched' | 'task.gate_result';
 
 /** Every kind that can change what a track's workspace looks like. */
 export const TRACK_FILES_DERIVED_KINDS = Object.freeze([
   'worker_session.started', 'worker_session.status_changed', 'worker_session.superseded',
   'terminal.deleted', 'codex.hook', 'claude.hook',
   'codex.worker_requested', 'terminal.worker_requested',
-  'task.completed', 'task.failed', 'task.execution_settled', 'task.file_publication_settled', 'task.candidate_verification_settled', 'task.git_delivery_settled', 'task.dispatched', 'task.gate_result',
+  'task.completed', 'task.failed', 'task.execution_settled', 'task.git_delivery_settled', 'task.dispatched', 'task.gate_result',
 ] as const);
 
 /**
@@ -218,8 +218,6 @@ function policies(): PolicyMap {
   'terminal.worker_requested': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
   'task.completed': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
   'task.failed': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
-  'task.file_publication_settled': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
-  'task.candidate_verification_settled': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
   'task.git_delivery_settled': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
   'task.execution_settled': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
   'plan.updated': plan((event) => result(

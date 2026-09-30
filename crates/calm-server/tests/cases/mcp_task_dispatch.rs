@@ -204,7 +204,7 @@ async fn dispatch_rejects_unsupported_or_incomplete_contracts_without_writes() {
         ("goal", json!(" ")),
         ("acceptance", json!(" ")),
         ("executor", json!("claude")),
-        ("workspace", json!("file-input")),
+        ("workspace", json!("verified-candidate")),
         ("depends_on", json!([])),
         ("gate", json!({})),
         ("context", json!({})),

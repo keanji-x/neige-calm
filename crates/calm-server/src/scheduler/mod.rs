@@ -2,7 +2,6 @@
 //! `pending → dispatched → running`. Policy-free: it never re-runs a `failed` task,
 //! never reorders beyond `(priority DESC, created_at ASC, key ASC)`, never edits the plan.
 
-mod file_delivery;
 mod git_delivery;
 mod running_worker;
 mod worker_failure;
@@ -416,8 +415,6 @@ pub struct Scheduler {
     operation_runtime: Weak<OperationRuntime>,
     /// The dispatcher's global spawn semaphore: caps total cross-track spawn work.
     semaphore: Arc<Semaphore>,
-    /// Existing launch capacity, frozen at scheduler construction for durable reservations.
-    candidate_verification_limit: usize,
     /// Persisted running liveness window, resolved once from
     /// `NEIGE_TASK_RUN_TIMEOUT_SECS`.
     task_run_timeout: Duration,
@@ -530,7 +527,6 @@ impl Scheduler {
             events,
             write,
             operation_runtime,
-            candidate_verification_limit: semaphore.available_permits(),
             semaphore,
             task_run_timeout,
             worker_idle,
@@ -565,6 +561,12 @@ impl Scheduler {
             .post_claim_drive_test_hook
             .lock()
             .expect("post-claim drive hook lock") = Some(hook);
+    }
+
+    #[cfg(feature = "fixtures")]
+    #[doc(hidden)]
+    pub fn poke_count_for_test(&self) -> usize {
+        self.poke_count.load(Ordering::SeqCst)
     }
 
     #[cfg(feature = "fixtures")]
@@ -857,10 +859,8 @@ impl Scheduler {
             return Ok(());
         };
         let tasks = self.repo.tasks_by_track(track_id.as_str()).await?;
-        self.resume_candidate_allocations(track_id.as_str()).await?;
         // Before the open gate: a delivery settles (and wakes the planner) on a closed track too.
         self.resume_git_deliveries(track_id.as_str()).await?;
-        self.drive_file_producers(&tasks);
         // Drive each `verifying` task's gate, fire-and-forget: a gate can run for hours and
         // must never block the track lock. Deliberately BEFORE the open gate: it scopes NEW
         // claims only.
@@ -934,29 +934,6 @@ impl Scheduler {
         if let Some(hook) = post_claim_hook {
             hook.claimed.notify_one();
             hook.resume.notified().await;
-        }
-        if crate::file_delivery::repair::reference(&frozen)
-            .is_ok_and(|reference| reference.is_some())
-            || matches!(
-                crate::file_delivery::selection(&frozen),
-                Ok(Some(
-                    calm_types::task_execution::FileDelivery::Consumer { .. }
-                        | calm_types::task_execution::FileDelivery::CandidateConsumer { .. }
-                        | calm_types::task_execution::FileDelivery::CandidateReviewer { .. }
-                ))
-            )
-        {
-            // The claim remains serialized; file IO and the existing Operation
-            // wait must not hold the Track lock. Keep the same permit/singleflight.
-            let this = self.clone();
-            let track = track.clone();
-            tokio::spawn(async move {
-                let (_inflight, _permit) = (_inflight, _permit);
-                if let Err(error) = this.drive_spawn(&frozen, &track).await {
-                    tracing::warn!(task_id=%frozen.id, %error, "file consumer drive failed; sweep will reconcile");
-                }
-            });
-            return true;
         }
         if let Err(e) = self.drive_spawn(&frozen, track).await {
             tracing::warn!(
@@ -1095,9 +1072,6 @@ impl Scheduler {
                         }
                         // Post-claim re-read = the frozen row. Gone row = concurrent track delete; treat as lost.
                         let frozen = task_get_tx(tx, &task_id).await?.ok_or_else(race_lost_err)?;
-                        if crate::file_delivery::bind_claim_tx(tx, &frozen).await.is_err() {
-                            return Err(race_lost_err());
-                        }
                         // Revalidate the ready predicate against the CURRENT plan in the same tx: a dependency
                         // added mid-window must abort the claim. Priority ORDER is deliberately NOT revalidated.
                         let siblings = tasks_by_track_tx(tx, track_id.as_str()).await?;
@@ -1644,28 +1618,7 @@ impl Scheduler {
             tracing::warn!(error = %e, "scheduler sweep: sweep_parked failed; next tick retries");
         }
         self.sweep_timeout_worker_cleanups().await;
-        if let Err(error) =
-            crate::isolated_codex::settled::backfill_reviews(self.repo.as_ref(), &self.events).await
-        {
-            tracing::warn!(%error, "review settlement sweep failed; next tick retries");
-        }
         let mut pending_tracks: BTreeSet<String> = BTreeSet::new();
-        // A declared output is publication intent even before a consumer exists.
-        // Repair a crash between Operation settlement and durable Planner notification.
-        if let Some(pool) = self.repo.sqlite_pool() {
-            match sqlx::query_scalar::<_, String>("SELECT DISTINCT t.track_id FROM current_tasks t WHERE t.status='done' AND ((json_extract(t.context_json,'$.neige_execution.file_delivery.role')='producer' AND NOT EXISTS(SELECT 1 FROM events e WHERE e.kind='task.file_publication_settled' AND json_extract(e.payload,'$.task_id')=t.id)) OR (json_extract(t.context_json,'$.neige_execution.file_delivery.role')='candidate_producer' AND NOT EXISTS(SELECT 1 FROM events e WHERE e.kind='task.candidate_verification_settled' AND json_extract(e.payload,'$.task_id')=t.id)))")
-                .fetch_all(&pool).await {
-                Ok(tracks) => pending_tracks.extend(tracks),
-                Err(error) => tracing::warn!(%error, "file publication sweep failed"),
-            }
-        }
-        // Missing-operation reservations must replay even with no schedulable task.
-        if let Some(pool) = self.repo.sqlite_pool() {
-            match sqlx::query_scalar::<_, String>("SELECT DISTINCT a.track_id FROM task_candidate_verification_allocations a LEFT JOIN operations o ON o.operation_key=a.operation_key AND o.kind='candidate-verify' WHERE o.id IS NULL").fetch_all(&pool).await {
-                Ok(tracks) => pending_tracks.extend(tracks),
-                Err(error) => tracing::warn!(%error, "candidate reservation sweep failed"),
-            }
-        }
         // Unsettled git deliveries are the authoritative discovery, whatever the task status (F6.4).
         pending_tracks.extend(self.unsettled_git_delivery_tracks().await);
         let tasks = match self.repo.tasks_nonterminal().await {

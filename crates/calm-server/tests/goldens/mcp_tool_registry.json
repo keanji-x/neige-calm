@@ -139,7 +139,7 @@
   },
   {
     "name": "calm.plan.list",
-    "description_sha256": "d1282b78babd9bd2c9ad48c3f9ce2bf73c890238efd82d58b744988f2b4d5792",
+    "description_sha256": "e55bc626d69354d902edc22646c0eedeab11474a1fad81dbdbf4752150d407f6",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -956,33 +956,9 @@
   },
   {
     "name": "calm.task.dispatch",
-    "description_sha256": "d2f87be843c629a71b96bd7fa9a71183f697642edaed958626a911e0ae9aea88",
+    "description_sha256": "99fbb67a5c7a20725255c09fd54298e0e8dc3fa25b7dfc4dc661c91669f663e4",
     "input_schema": {
       "additionalProperties": false,
-      "oneOf": [
-        {
-          "not": {
-            "required": [
-              "input"
-            ]
-          },
-          "properties": {
-            "workspace": {
-              "const": "empty"
-            }
-          }
-        },
-        {
-          "properties": {
-            "workspace": {
-              "const": "verified-candidate"
-            }
-          },
-          "required": [
-            "input"
-          ]
-        }
-      ],
       "properties": {
         "acceptance": {
           "minLength": 1,
@@ -997,31 +973,6 @@
         "goal": {
           "minLength": 1,
           "type": "string"
-        },
-        "input": {
-          "additionalProperties": false,
-          "properties": {
-            "producer": {
-              "description": "Exact same-Track candidate producer key; use repair_key for C2.",
-              "not": {
-                "pattern": "[^a-z0-9._-]"
-              },
-              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
-              "type": "string"
-            },
-            "slot": {
-              "not": {
-                "pattern": "[^A-Za-z0-9_-]"
-              },
-              "pattern": "^[A-Za-z0-9_-]{1,128}$",
-              "type": "string"
-            }
-          },
-          "required": [
-            "producer",
-            "slot"
-          ],
-          "type": "object"
         },
         "name": {
           "description": "Nonempty after trim, at most 200 UTF-8 bytes, no control characters; immutable Track-local Dispatch identity.",
@@ -1041,8 +992,7 @@
         },
         "workspace": {
           "enum": [
-            "empty",
-            "verified-candidate"
+            "empty"
           ],
           "type": "string"
         }
@@ -1094,38 +1044,8 @@
     ]
   },
   {
-    "name": "calm.task.repair",
-    "description_sha256": "655fb3579df6aa7a458f73810f9319c4679ed70c0197668f1b6a986fb6a161fd",
-    "input_schema": {
-      "additionalProperties": false,
-      "properties": {
-        "producer": {
-          "minLength": 1,
-          "type": "string"
-        },
-        "reason": {
-          "minLength": 1,
-          "type": "string"
-        }
-      },
-      "required": [
-        "producer",
-        "reason"
-      ],
-      "type": "object"
-    },
-    "annotations": {
-      "destructiveHint": false,
-      "openWorldHint": false,
-      "readOnlyHint": false
-    },
-    "visible_to_roles": [
-      "planner"
-    ]
-  },
-  {
     "name": "calm.task.verdict",
-    "description_sha256": "15eabedd48b91d094c776d5aa194a160478d70057c07dad38304047766bf29d8",
+    "description_sha256": "46c1236b9f6a32379af6f6ece63cf45b4b2534fb02312ca2af32e00fab0414fa",
     "input_schema": {
       "properties": {
         "idempotency_key": {

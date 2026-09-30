@@ -135,8 +135,8 @@ listening socket, the next daemon start can fail closed (the reap finds no live
 owner it can verify) until that process and the socket are removed by hand.
 
 `cargo test -p calm-server --lib` as a whole is not expected to pass on macOS:
-some Linux-only fixtures are not `cfg`-gated (for example the
-`file_delivery/input.rs` tests). Only filtered subsets were run there.
+some Linux-only fixtures are not `cfg`-gated. Only filtered subsets were run
+there.
 
 ### Containerized development
 

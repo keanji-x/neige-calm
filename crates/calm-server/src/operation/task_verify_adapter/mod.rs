@@ -98,9 +98,8 @@ impl GateSpec {
 
 /// `status_detail` is `None` on green, else `gate-red` / `gate-timeout` / `gate-infra` /
 /// `gate-target-mismatch` (the fourth value is produced only by the task-verify target check,
-/// `target::finalize` and the prepare-time refusal; isolated verification never produces it).
-/// Shared with isolated `candidate_verify`: the task-verify target rides on [`TaskGateResult`],
-/// never here (D10, A32).
+/// `target::finalize` and the prepare-time refusal). The task-verify target rides on
+/// [`TaskGateResult`], never here (D10, A32).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GateVerdict {
     pub passed: bool,

@@ -86,14 +86,6 @@ pub(super) async fn input_segments(
             if task.track_id != track_id.as_str() {
                 return Err(CalmError::Forbidden("recovery briefing execution belongs to another track".into()));
             }
-            if crate::isolated_codex::review_settled::is_review(&task)? {
-                let mut briefing = crate::isolated_codex::review_settled::briefing_tx(tx, &task, &operation_id).await?;
-                briefing["event_id"] = json!(event_id);
-                briefing["settled_at_ms"] = json!(settled_at_ms);
-                let text = crate::isolated_codex::review_settled::render(&briefing)?;
-                briefings.push((index, text.clone(), text, None));
-                continue;
-            }
             let current = crate::db::sqlite::task_attempt_current_tx(tx, track_id.as_str(), &task.key).await?;
             let is_current = current.as_ref().is_some_and(|attempt| attempt.attempt_id == task_id);
             let stopped = crate::isolated_codex::recovery::require_stopped_tx(tx, &task, &operation_id).await;
@@ -152,20 +144,14 @@ pub(super) async fn input_segments(
                 "decision": decision,
                 "executor_environment": executor.environment,
                 "recover_changes": executor.recover_changes,
-                "limitations": if crate::file_delivery::repair::for_task_tx(tx, &task).await?.is_some() || matches!(crate::file_delivery::selection(&task)?, Some(calm_types::task_execution::FileDelivery::CandidateConsumer { .. } | calm_types::task_execution::FileDelivery::CandidateReviewer { .. })) {
-                    "Isolated consumer recovery starts a new workspace with the original immutable candidate file-set input binding, verification identity and original review/decision evidence when required. Previous Worker-created files are not inherited. Failed candidate outputs remain unsupported as recovery inputs. An accepted recovery receipt does not prove the Worker has started."
-                } else if matches!(crate::file_delivery::selection(&task)?, Some(calm_types::task_execution::FileDelivery::Consumer { .. })) {
-                    "Isolated consumer recovery starts a new workspace with the original immutable JSON input binding. Other retained files remain evidence. An accepted recovery receipt does not prove the Worker has started."
-                } else {
-                    "Isolated recovery starts a new execution in a new empty workspace. Retained files remain evidence, not inherited inputs. An accepted recovery receipt does not prove the Worker has started."
-                },
+                "limitations": "Isolated recovery starts a new execution in a new empty workspace. Retained files remain evidence, not inherited inputs. An accepted recovery receipt does not prove the Worker has started.",
             });
             let text = render(&briefing)?;
             // Both renderings come from this same typed kernel snapshot. Never
             // inspect or rewrite a user's text to infer an action or its mode.
             briefing["decision"] = exact_decision.into();
             let exact_text = render(&briefing)?;
-            briefings.push((index, text, exact_text, Some(action)));
+            briefings.push((index, text, exact_text, action));
         }
         Ok(briefings)
         })
@@ -176,7 +162,7 @@ pub(super) async fn input_segments(
         // Only replace the matching system text. Presentation, queue order,
         // user input and bound attachments keep their existing representation.
         segments[index].text = text;
-        if semantic && let Some(action) = action {
+        if semantic {
             // Preserve all candidates; duplicate keys are an explicit exact-
             // interface batch, never an arbitrary choice of an old/new attempt.
             actions.push(action);

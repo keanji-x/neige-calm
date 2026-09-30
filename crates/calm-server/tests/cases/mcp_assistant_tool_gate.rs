@@ -55,9 +55,8 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     "calm.track.diff",
     "calm.track.cat_at",
     "calm.track.log",
-    // Independent dispatch and one linked candidate repair, both Planner-only.
+    // Independent dispatch, Planner-only.
     "calm.task.dispatch",
-    "calm.task.repair",
     // Planning, review, admin.
     "calm.plan.upsert",
     "calm.plan.cancel",
@@ -429,23 +428,4 @@ async fn assert_role_reason_absent(role: CardRole, tools: &[&str], id_base: usiz
     }
 
     let _ = (&boot.server, &boot.repo);
-}
-
-#[tokio::test]
-async fn repair_refuses_every_non_planner_role_when_called_by_name() {
-    for role in [CardRole::Worker, CardRole::Assistant, CardRole::ReportCard] {
-        let boot = boot_with_role(role).await;
-        let (mut rd, mut wr) = connect(&boot.socket_path).await;
-        handshake(&mut rd, &mut wr, &boot.raw_token).await;
-        send_frame(&mut wr, json!({"jsonrpc":"2.0","id":42,"method":"tools/call",
-            "params":{"name":"calm.task.repair","arguments":{"producer":"produce","reason":"Fix findings"}}})).await;
-        let response = recv_frame(&mut rd).await;
-        assert_eq!(response["error"]["code"], -32602, "{role:?}: {response}");
-        assert!(
-            response["error"]["message"]
-                .as_str()
-                .is_some_and(|m| m.contains("tool requires role")),
-            "{role:?}: {response}"
-        );
-    }
 }

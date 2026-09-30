@@ -27,7 +27,6 @@ fn expected_planner_toolset() -> Vec<&'static str> {
         "calm.source.capture",
         "calm.source.list",
         "calm.task.dispatch",
-        "calm.task.repair",
         "calm.task.verdict",
         "calm.terminal.control",
         "calm.terminal.input",

@@ -170,25 +170,7 @@ pub(crate) async fn task_recovery_view_with_refusal_tx(
                 Ok(_) => TaskRecoveryCapability {
                     allowed: true,
                     code: "available".into(),
-                    reason: if crate::file_delivery::repair::for_task_tx(tx, task)
-                        .await?
-                        .is_some()
-                    {
-                        "Retry this linked repair execution with its exact original receipt-bound input; no extra repair round is created and failed output files are not inherited.".into()
-                    } else if matches!(
-                        crate::file_delivery::selection(task)?,
-                        Some(
-                            calm_types::task_execution::FileDelivery::CandidateConsumer { .. }
-                                | calm_types::task_execution::FileDelivery::CandidateReviewer { .. }
-                        )
-                    ) {
-                        "Retry this goal in a new workspace with the original immutable candidate file-set input binding, verification identity and original review/decision evidence when required. Previous Worker-created files are not inherited. Failed candidate outputs remain unsupported as recovery inputs.".into()
-                    } else if matches!(
-                        crate::file_delivery::selection(task)?,
-                        Some(calm_types::task_execution::FileDelivery::Consumer { .. })
-                    ) {
-                        "Retry this goal in a new workspace with the original immutable JSON input binding. Previous Worker-created files are not inherited.".into()
-                    } else if crate::isolated_codex::selected(task)? {
+                    reason: if crate::isolated_codex::selected(task)? {
                         "Retry this goal as a new execution in a new empty workspace. Previous results stay with the old attempt.".into()
                     } else {
                         "Retry the preparation failure as a new execution under its unchanged contract.".into()

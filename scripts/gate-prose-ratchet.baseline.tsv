@@ -2,5 +2,5 @@
 #   ./scripts/gate-prose-ratchet.sh --update-baseline
 # Counts are OCCURRENCES per (term, scope) in tracked *.rs under crates/. Only-down is enforced.
 # term	scope	count
-cjk	crates/**/*.rs	257
-long_literal	crates/**/*.rs	293
+cjk	crates/**/*.rs	216
+long_literal	crates/**/*.rs	216

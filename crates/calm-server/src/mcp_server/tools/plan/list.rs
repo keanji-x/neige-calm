@@ -79,13 +79,7 @@ fn bound_diagnostics(value: &mut Value, prefix: &str, paths: &mut Vec<String>) {
             let path = format!("{prefix}/{key}");
             if matches!(
                 key.as_str(),
-                "reason"
-                    | "failure"
-                    | "blocking_reason"
-                    | "status_detail"
-                    | "preparation_failure"
-                    | "authority_failure"
-                    | "failing_step"
+                "reason" | "failure" | "blocking_reason" | "status_detail" | "failing_step"
             ) && let Some(text) = value.as_str()
                 && text.chars().count() > 256
             {
@@ -161,74 +155,6 @@ pub(super) fn summary(entry: &Value) -> Value {
             "activity/tail_truncated",
         ],
     );
-    if let Some(delivery) = entry.get("file_delivery").filter(|v| !v.is_null()) {
-        result["file_delivery"] = select(
-            delivery,
-            &[
-                "state",
-                "failure",
-                "scope",
-                "qualified",
-                "qualification/qualified",
-                "qualification/reason",
-                "authority_failure",
-                "preparation_failure",
-                "contract/role",
-                "contract/producer",
-                "contract/slot",
-                "contract/purpose",
-                "publication/operation_id",
-                "publication/state",
-                "publication/failure",
-                "publication/reason",
-                "candidate/state",
-                "candidate/publication_operation_id",
-                "candidate/snapshot",
-                "verification/operation_id",
-                "verification/state",
-                "verification/failure",
-                "verification/passed",
-                "verification/failing_step",
-                "verification/exit_code",
-                "verification/status_detail",
-                "review/state",
-                "review/reviewer",
-                "review/review_attempt_id",
-                "review/review_operation_id",
-                "review/report_event_id",
-                "review/passed",
-                "review/reason",
-                "review/operation/state",
-                "review/operation/failure",
-                "decision/state",
-                "decision/event_id",
-                "decision/verdict_transaction",
-                "decision/reason",
-                "input/state",
-                "input/producer_attempt_id",
-                "input/publication_operation_id",
-                "input/verification_operation_id",
-                "input/decision_event_id",
-                "input/purpose",
-                "input/path",
-                "repair/id",
-                "repair/producer",
-                "repair/source_attempt_id",
-                "repair/repair_key",
-                "repair/review_key",
-                "repair/publication_operation_id",
-                "repair/verification_operation_id",
-                "repair/snapshot",
-                "repair/review_attempt_id",
-                "repair/report_event_id",
-                "repair/stage",
-                "repair/state",
-                "repair/reason",
-            ],
-        );
-    } else {
-        result["file_delivery"] = Value::Null;
-    }
     // Unknown activity evidence and absent machine verdicts remain explicit nulls.
     for path in ["gate_result", "activity"] {
         if result.get(path).is_none() {

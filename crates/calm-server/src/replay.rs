@@ -188,8 +188,6 @@ pub async fn reset_from_fixture(
     // Writing transactions always BEGIN IMMEDIATE.
     let mut tx = begin_immediate_tx(pool).await?;
     for stmt in [
-        "DELETE FROM task_candidate_decision_bindings",
-        "DELETE FROM task_candidate_decisions",
         "DELETE FROM events",
         // A stale `events_prune_watermark` above the re-seeded ids would strand every WS client in a `_snapshot_required` loop.
         "DELETE FROM retention_meta",

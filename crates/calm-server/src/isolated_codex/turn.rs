@@ -42,7 +42,6 @@ pub(crate) async fn validate_tx(
     }
     super::journal::require_owner_tx(tx, op).await?;
     super::admission::validate_start_tx(tx, op).await?;
-    crate::file_delivery::verify_input(tx, op, &record.request.workspace).await?;
     Ok(())
 }
 

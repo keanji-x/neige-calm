@@ -99,8 +99,7 @@ impl IsolatedCodexAdapter {
         let selection = calm_types::task_execution::IsolatedCodexSelection::from_context(&context)
             .map_err(CalmError::BadRequest)?
             .ok_or_else(|| CalmError::Conflict("isolated task selection missing".into()))?;
-        selection
-            .validate_delivery()
+        calm_types::task_execution::validate_plugin_tools(&selection.plugin_tools)
             .map_err(CalmError::BadRequest)?;
         let native = NativeMcp {
             socket: self
@@ -178,8 +177,7 @@ impl ProviderAdapter for IsolatedCodexAdapter {
         let workspace = backend.workspace_root.join(&op.id);
         let context: Value = serde_json::from_str(&task.context_json)?;
         let prompt = format!(
-            "{} Files you create remain with this execution. Before ending the turn, report through the native calm.task.complete or calm.task.fail tool using the exact task ID below.\n\n{}",
-            crate::file_delivery::prompt_tx(tx, &task).await?,
+            "This task starts in a new empty workspace. Files you create remain with this execution. Before ending the turn, report through the native calm.task.complete or calm.task.fail tool using the exact task ID below.\n\n{}",
             codex_adapter::render_task_worker_prompt(
                 &task.id,
                 &task.goal,
@@ -279,10 +277,6 @@ impl ProviderAdapter for IsolatedCodexAdapter {
         })
         .await?;
         let record = self.prepare_endpoint(op).await?;
-        // Dormant endpoint preparation is also used to reconcile stop. File input
-        // admission belongs only to first launch, before connecting the provider.
-        crate::file_delivery::prepare_input(self.repo.as_ref(), op, &record.request.workspace)
-            .await?;
         let checkpoint = self.checkpoint(op, ctx)?;
         let backend = self.backend()?;
         let mut session = backend

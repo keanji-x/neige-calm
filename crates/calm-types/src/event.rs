@@ -530,18 +530,6 @@ pub enum Event {
         agent_message: Option<String>,
     },
 
-    /// Exact immutable-file publication settled; does not change task business status.
-    #[serde(rename = "task.file_publication_settled")]
-    TaskFilePublicationSettled {
-        task_id: String,
-        operation_id: String,
-    },
-    /// Exact candidate verification settled; result must be read before qualification.
-    #[serde(rename = "task.candidate_verification_settled")]
-    TaskCandidateVerificationSettled {
-        task_id: String,
-        operation_id: String,
-    },
     /// One Git delivery settled (#1727 S4): the candidate the script pinned or why none was minted,
     /// plus the wake disposition the settlement transaction decided once from the tasks row.
     /// `idempotency_key == task_id`; both are carried so the pairing query has `task.completed`'s shape.
@@ -1009,9 +997,7 @@ impl Event {
             },
             Event::TaskDispatched { .. }
             | Event::TaskExecutionSettled { .. }
-            | Event::TaskCandidateVerificationSettled { .. }
-            | Event::TaskGitDeliverySettled { .. }
-            | Event::TaskFilePublicationSettled { .. } => EventMetadata {
+            | Event::TaskGitDeliverySettled { .. } => EventMetadata {
                 kind_tag,
                 plugin_id: None,
                 entity_kind: None,
@@ -1111,8 +1097,6 @@ impl Event {
             Event::PlanUpdated { .. } => "plan.updated",
             Event::TaskDispatched { .. } => "task.dispatched",
             Event::TaskExecutionSettled { .. } => "task.execution_settled",
-            Event::TaskFilePublicationSettled { .. } => "task.file_publication_settled",
-            Event::TaskCandidateVerificationSettled { .. } => "task.candidate_verification_settled",
             Event::TaskGitDeliverySettled { .. } => "task.git_delivery_settled",
             Event::TaskContextFrozen { .. } => "task.context_frozen",
             Event::TaskContextAdvanced { .. } => "task.context_advanced",
@@ -1260,9 +1244,7 @@ pub fn topics(ev: &Event) -> Vec<String> {
         | Event::TaskFailed { .. }
         | Event::TaskDispatched { .. }
         | Event::TaskExecutionSettled { .. }
-        | Event::TaskCandidateVerificationSettled { .. }
         | Event::TaskGitDeliverySettled { .. }
-        | Event::TaskFilePublicationSettled { .. }
         | Event::TaskContextFrozen { .. }
         | Event::TaskContextAdvanced { .. }
         | Event::TaskGateResult { .. } => vec!["*".into()],

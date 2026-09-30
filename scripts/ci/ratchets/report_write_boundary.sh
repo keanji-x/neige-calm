@@ -22,7 +22,6 @@ pub(crate)|rest_user_block_op
 pub(crate)|rest_user_start
 pub(crate)|agent_report_op
 pub(crate)|planner_dispatch
-pub(crate)|planner_repair
 pub(crate)|structural_init_report_tx
 pub|persist_report"
 

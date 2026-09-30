@@ -1,12 +1,11 @@
 //! Explicit, bounded continuation of a failed execution under the same report contract.
-//! This is an execution foundation; it does not claim to preserve candidate files.
 
 mod admission;
 mod refusal;
 mod view;
 pub(crate) use admission::{
     admit_contract_and_predecessor_tx, check_recovery_attempt_tx, require_attempt_startable_tx,
-    validate_frozen_contract_tx, validate_isolated_start_tx,
+    validate_isolated_start_tx,
 };
 pub use calm_types::task_recovery::{TaskAttemptView, TaskRecoveryCapability, TaskRecoveryView};
 pub(crate) use refusal::{

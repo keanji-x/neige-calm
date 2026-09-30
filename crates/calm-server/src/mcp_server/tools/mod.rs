@@ -13,7 +13,6 @@ pub mod report_tag;
 pub mod review;
 pub mod source;
 pub mod task_dispatch;
-pub mod task_repair;
 pub mod terminal;
 pub mod track_file;
 pub mod track_history;
@@ -32,7 +31,6 @@ pub fn register_default_tools(registry: &mut ToolRegistry) {
     emit::register_into(registry);
     plan::register_into(registry);
     task_dispatch::register_into(registry);
-    task_repair::register_into(registry);
     report_links::register_into(registry);
     report_tag::register_into(registry);
     area_reports::register_into(registry);
@@ -173,7 +171,7 @@ mod tests {
     /// compact input schema. One-sided caps; a change that shrinks the surface lowers them.
     #[test]
     fn planner_tool_surface_fits_its_byte_budget() {
-        const SURFACE_MAX_BYTES: usize = 33_000;
+        const SURFACE_MAX_BYTES: usize = 31_000;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
         let descriptors = build_default_registry().descriptors_for_role(CardRole::Planner);

@@ -499,14 +499,6 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
         codex_adapter,
         codex_worker_adapter,
         isolated_codex_adapter,
-        Arc::new(crate::file_delivery::adapter::FilePublicationAdapter::new(
-            input.route_repo.clone(),
-        )),
-        Arc::new(
-            crate::file_delivery::candidate_verify::CandidateVerifyAdapter::new(
-                input.route_repo.clone(),
-            ),
-        ),
         claude_adapter,
         claude_worker_adapter,
         claude_restart_adapter,

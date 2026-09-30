@@ -143,19 +143,6 @@ pub(crate) async fn admit_contract_and_predecessor_tx(
     let (_, blocks) = crate::track_report::report_blocks_snapshot_tx(tx, track.id.as_str()).await?;
     check_constraint_tx(tx, track, &blocks, &previous.key, &constraint).await?;
     require_recoverable_predecessor_tx(tx, previous).await?;
-    // File-delivery input checks refuse with their own Conflict messages; at
-    // this boundary they all mean the frozen input contract cannot be honoured.
-    crate::file_delivery::require_recovery_input_tx(tx, previous)
-        .await
-        .map_err(|error| match error {
-            CalmError::Conflict(reason) => refuse(
-                RefusalSite::FileDeliveryInputUnhonoured,
-                RecoveryRefusalCode::ContractChanged,
-                SupportedContinuation::None,
-                reason,
-            ),
-            other => AdmissionError::Other(other),
-        })?;
     Ok(constraint)
 }
 
@@ -174,9 +161,9 @@ pub(crate) async fn validate_isolated_start_tx(tx: &mut Tx<'_>, task: &Task) -> 
     validate_frozen_contract_tx(tx, task).await
 }
 
-/// Read-only contract authority shared by starts and post-execution publication.
+/// Read-only contract authority for isolated starts.
 /// Callers keep their own open/current-attempt/status guards.
-pub(crate) async fn validate_frozen_contract_tx(tx: &mut Tx<'_>, task: &Task) -> Result<()> {
+async fn validate_frozen_contract_tx(tx: &mut Tx<'_>, task: &Task) -> Result<()> {
     let track = crate::db::sqlite::track_get_tx(tx, &task.track_id.clone().into()).await?;
     if task.context_stale_at_ms.is_some() {
         return Err(conflict("frozen task context is stale"));
@@ -184,9 +171,6 @@ pub(crate) async fn validate_frozen_contract_tx(tx: &mut Tx<'_>, task: &Task) ->
     let constraint = claim_constraint_tx(tx, task).await?;
     let (_, blocks) = crate::track_report::report_blocks_snapshot_tx(tx, &task.track_id).await?;
     check_constraint_tx(tx, &track, &blocks, &task.key, &constraint).await?;
-    if let Some(receipt) = crate::file_delivery::repair::for_task_tx(tx, task).await? {
-        crate::file_delivery::repair::check_contract(task, &receipt, &blocks)?;
-    }
     Ok(())
 }
 

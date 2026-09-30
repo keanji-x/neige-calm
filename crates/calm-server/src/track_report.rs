@@ -986,7 +986,6 @@ impl ReportEditTarget {
 }
 
 pub(crate) mod dispatch;
-mod repair;
 mod sections;
 mod user_start;
 /// The writer and the complete set of ways to reach it. The mutating function is a private `fn`

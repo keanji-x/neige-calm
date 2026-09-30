@@ -583,7 +583,7 @@ async fn isolated_activity_pairs_only_exact_command_end_ids() {
 }
 
 #[tokio::test]
-async fn file_delivery_legacy_reserved_context_does_not_poison_plan_reads() {
+async fn legacy_reserved_context_does_not_poison_plan_reads() {
     let (boot, task, op) = bound().await;
     sqlx::query("UPDATE operations SET kind='codex-worker' WHERE id=?1")
         .bind(op)
@@ -593,7 +593,6 @@ async fn file_delivery_legacy_reserved_context_does_not_poison_plan_reads() {
     for selection in [
         json!("historically opaque"),
         json!({"version":"historical"}),
-        json!({"file_delivery":{"role":"unsupported"}}),
     ] {
         sqlx::query("UPDATE tasks SET context_json=?1 WHERE id=?2")
             .bind(json!({"neige_execution":selection}).to_string())
@@ -603,6 +602,5 @@ async fn file_delivery_legacy_reserved_context_does_not_poison_plan_reads() {
             .unwrap();
         let read = listed(&boot).await;
         assert_eq!(read["activity"]["coverage"], "unsupported");
-        assert!(read["file_delivery"].is_null());
     }
 }

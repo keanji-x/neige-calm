@@ -1202,7 +1202,7 @@ fn alias_kinds_survive_from_kind_and_payload() {
 }
 
 /// Every `Event` variant's kind tag, in declaration order.
-const ALL_KIND_TAGS: [&str; 53] = [
+const ALL_KIND_TAGS: [&str; 51] = [
     "area.updated",
     "area.deleted",
     "track.updated",
@@ -1235,8 +1235,6 @@ const ALL_KIND_TAGS: [&str; 53] = [
     "task.context_frozen",
     "task.context_advanced",
     "task.execution_settled",
-    "task.file_publication_settled",
-    "task.candidate_verification_settled",
     "task.git_delivery_settled",
     "workspace.leased",
     "workspace.released",
@@ -1287,7 +1285,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 81,
+        files, 79,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {
@@ -1336,8 +1334,6 @@ fn kind_tag_list_matches_enum() {
             Event::TaskContextFrozen { .. } => "task.context_frozen",
             Event::TaskContextAdvanced { .. } => "task.context_advanced",
             Event::TaskExecutionSettled { .. } => "task.execution_settled",
-            Event::TaskFilePublicationSettled { .. } => "task.file_publication_settled",
-            Event::TaskCandidateVerificationSettled { .. } => "task.candidate_verification_settled",
             Event::TaskGitDeliverySettled { .. } => "task.git_delivery_settled",
             Event::WorkspaceLeased { .. } => "workspace.leased",
             Event::WorkspaceReleased { .. } => "workspace.released",
@@ -1365,7 +1361,7 @@ fn kind_tag_list_matches_enum() {
     assert_eq!(tag_of(&sample), sample.kind_tag());
     assert_eq!(
         ALL_KIND_TAGS.len(),
-        53,
+        51,
         "ALL_KIND_TAGS length drifted from the Event enum"
     );
 }
@@ -1382,36 +1378,6 @@ fn task_execution_settled_requires_exact_identities() {
         let mut missing = golden.wire.clone();
         missing["data"].as_object_mut().unwrap().remove(field);
         assert!(serde_json::from_value::<Event>(missing).is_err());
-    }
-}
-
-#[test]
-fn task_file_publication_settled_requires_exact_identities() {
-    let golden = load("task_file_publication_settled.full.json");
-    let event: Event = serde_json::from_value(golden.wire.clone()).unwrap();
-    assert!(
-        matches!(&event, Event::TaskFilePublicationSettled { task_id, operation_id } if task_id == "attempt-1" && operation_id == "publication-1")
-    );
-    assert_eq!(serde_json::to_value(event).unwrap(), golden.wire);
-    for field in ["task_id", "operation_id"] {
-        let mut value = golden.wire.clone();
-        value["data"].as_object_mut().unwrap().remove(field);
-        assert!(serde_json::from_value::<Event>(value).is_err());
-    }
-}
-
-#[test]
-fn task_candidate_verification_settled_requires_exact_identities() {
-    let golden = load("task_candidate_verification_settled.full.json");
-    let event: Event = serde_json::from_value(golden.wire.clone()).unwrap();
-    assert!(
-        matches!(&event, Event::TaskCandidateVerificationSettled { task_id, operation_id } if task_id == "attempt-1" && operation_id == "verification-1")
-    );
-    assert_eq!(serde_json::to_value(event).unwrap(), golden.wire);
-    for field in ["task_id", "operation_id"] {
-        let mut value = golden.wire.clone();
-        value["data"].as_object_mut().unwrap().remove(field);
-        assert!(serde_json::from_value::<Event>(value).is_err());
     }
 }
 

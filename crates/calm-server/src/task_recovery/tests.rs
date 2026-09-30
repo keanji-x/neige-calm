@@ -1,9 +1,7 @@
 //! Every admission refusal site, driven through the real admission function with a
 //! fixture that trips exactly that site.
 use super::admission;
-use super::launch_test_support::{
-    RecoveryFixture, initial_claimed_task, initial_claimed_task_among, recovered_claimed_task,
-};
+use super::launch_test_support::{RecoveryFixture, initial_claimed_task, recovered_claimed_task};
 use super::refusal::{
     AdmissionError, RecoveryRefusal, RecoveryRefusalCode as Code, RefusalKind as Kind,
     RefusalSite as Site, SupportedContinuation as Next,
@@ -31,31 +29,6 @@ fn isolated_declaration() -> Value {
     json!({"key":"b","kind":"codex","goal":"Write result.txt and report.","ready":true,
         "declared_by":"user","no_gate_reason":"Isolated fixture; no machine verification.",
         "context":{"neige_execution":{"version":"isolated-codex-v1","workspace":"empty"}}})
-}
-
-fn file_delivery_declaration(key: &str, delivery: Value) -> Value {
-    let workspace = if delivery["role"] == "consumer" {
-        "file-input"
-    } else {
-        "empty"
-    };
-    json!({"key":key,"kind":"codex","goal":"Process the declared JSON document.","ready":true,
-        "declared_by":"user","no_gate_reason":"JSON syntax policy only; no business gate.",
-        "context":{"neige_execution":{"version":"isolated-codex-v1","workspace":workspace,"file_delivery":delivery}}})
-}
-
-fn producer_declaration() -> Value {
-    file_delivery_declaration(
-        "produce",
-        json!({"role":"producer","slot":"result","path":"result.json","policy":"json-document-v1"}),
-    )
-}
-
-fn consumer_declaration() -> Value {
-    file_delivery_declaration(
-        "b",
-        json!({"role":"consumer","producer":"produce","slot":"result","purpose":"json-input"}),
-    )
 }
 
 struct Fx {
@@ -128,18 +101,9 @@ async fn failed_initial(declared_by: &str) -> Fx {
 /// A user-owned initial attempt under `declaration`, claimed through the
 /// production route and failed before worker preparation.
 async fn failed_initial_with(declaration: Value) -> Fx {
-    failed_initial_among(&[], declaration).await
-}
-
-/// [`failed_initial_with`] after `siblings` were declared in the same report.
-async fn failed_initial_among(siblings: &[Value], declaration: Value) -> Fx {
     let (repo, events, write, track_id) = open().await;
     let repo_dyn: Arc<dyn Repo> = repo.clone();
-    let fixture = if siblings.is_empty() {
-        initial_claimed_task(repo_dyn, events, write, &track_id, declaration).await
-    } else {
-        initial_claimed_task_among(repo_dyn, events, write, &track_id, siblings, declaration).await
-    };
+    let fixture = initial_claimed_task(repo_dyn, events, write, &track_id, declaration).await;
     let pool = repo.sqlite_pool().unwrap();
     let mut tx = begin_immediate_tx(&pool).await.unwrap();
     assert_eq!(
@@ -623,12 +587,6 @@ const ROWS: &[(Site, Code, Kind, Next)] = &[
         Next::None,
     ),
     (
-        Site::FileDeliveryInputUnhonoured,
-        Code::ContractChanged,
-        Kind::Conflict,
-        Next::None,
-    ),
-    (
         Site::FrozenContextTruncated,
         Code::MissingFrozenContract,
         Kind::Conflict,
@@ -917,15 +875,6 @@ async fn drive(site: Site) -> RecoveryRefusal {
             Box::pin(async {
                 let fx = failed_initial(PLANNER).await;
                 set_frozen_refs(&fx, Vec::new()).await;
-                refused(site, admit(&fx, user(), 1).await)
-            })
-            .await
-        }
-        Site::FileDeliveryInputUnhonoured => {
-            Box::pin(async {
-                // A consumer claimed without its frozen input binding row.
-                let fx =
-                    failed_initial_among(&[producer_declaration()], consumer_declaration()).await;
                 refused(site, admit(&fx, user(), 1).await)
             })
             .await
@@ -1462,42 +1411,41 @@ fn refusal_site_all_lists_every_variant_exactly_once() {
             Site::PlannerOutsideAutoDeclare => 4,
             Site::PlannerRetryLimit => 5,
             Site::ConstraintShapeInvalid => 6,
-            Site::FileDeliveryInputUnhonoured => 7,
-            Site::FrozenContextTruncated => 8,
-            Site::FrozenContextMissing => 9,
-            Site::FrozenContextMalformed => 10,
-            Site::DeclarationMissing => 11,
-            Site::DeclarationNotCurrent => 12,
-            Site::DeclarationInvalid => 13,
-            Site::ReleaseWithdrawn => 14,
-            Site::InnerConstraintShapeInvalid => 15,
-            Site::RouteOrAuthorChanged => 16,
-            Site::FrozenTrackMissing => 17,
-            Site::ContextMovedOutsideArea => 18,
-            Site::FrozenReportMissing => 19,
-            Site::FrozenBlockMissing => 20,
-            Site::RootIdentityChanged => 21,
-            Site::RootHashChanged => 22,
-            Site::IsolatedAmbiguousOperations => 23,
-            Site::OrdinaryWorkerPrepared => 24,
-            Site::VerificationEffectsWithoutWorker => 25,
-            Site::NotSpawnFailedWithoutStopProof => 26,
-            Site::OperationUncertainExternalEffects => 27,
-            Site::IsolatedRouteMismatch => 28,
-            Site::IsolatedOperationNotThisExecution => 29,
-            Site::IsolatedCompensationRecorded => 30,
-            Site::IsolatedStopPending => 31,
-            Site::IsolatedOperationTerminalWithoutFailure => 32,
-            Site::IsolatedRecordUnreadable => 33,
-            Site::IsolatedStopUnconfirmed => 34,
-            Site::IsolatedStopIdentityMismatch => 35,
-            Site::AllocationMissing => 36,
-            Site::PredecessorRowMissing => 37,
-            Site::ProvenanceUnsupported => 38,
-            Site::TrackNoLongerSchedules => 39,
+            Site::FrozenContextTruncated => 7,
+            Site::FrozenContextMissing => 8,
+            Site::FrozenContextMalformed => 9,
+            Site::DeclarationMissing => 10,
+            Site::DeclarationNotCurrent => 11,
+            Site::DeclarationInvalid => 12,
+            Site::ReleaseWithdrawn => 13,
+            Site::InnerConstraintShapeInvalid => 14,
+            Site::RouteOrAuthorChanged => 15,
+            Site::FrozenTrackMissing => 16,
+            Site::ContextMovedOutsideArea => 17,
+            Site::FrozenReportMissing => 18,
+            Site::FrozenBlockMissing => 19,
+            Site::RootIdentityChanged => 20,
+            Site::RootHashChanged => 21,
+            Site::IsolatedAmbiguousOperations => 22,
+            Site::OrdinaryWorkerPrepared => 23,
+            Site::VerificationEffectsWithoutWorker => 24,
+            Site::NotSpawnFailedWithoutStopProof => 25,
+            Site::OperationUncertainExternalEffects => 26,
+            Site::IsolatedRouteMismatch => 27,
+            Site::IsolatedOperationNotThisExecution => 28,
+            Site::IsolatedCompensationRecorded => 29,
+            Site::IsolatedStopPending => 30,
+            Site::IsolatedOperationTerminalWithoutFailure => 31,
+            Site::IsolatedRecordUnreadable => 32,
+            Site::IsolatedStopUnconfirmed => 33,
+            Site::IsolatedStopIdentityMismatch => 34,
+            Site::AllocationMissing => 35,
+            Site::PredecessorRowMissing => 36,
+            Site::ProvenanceUnsupported => 37,
+            Site::TrackNoLongerSchedules => 38,
         }
     }
-    const VARIANTS: usize = 40;
+    const VARIANTS: usize = 39;
     assert_eq!(Site::ALL.len(), VARIANTS);
     for (index, site) in Site::ALL.iter().enumerate() {
         assert_eq!(position(*site), index, "{site:?} is misplaced in ALL");

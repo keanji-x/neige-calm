@@ -588,8 +588,8 @@ async fn open_workspace_regular_file_from_fd(
     let requested = workspace_root.join(&relative);
     tokio::task::spawn_blocking(move || {
         let file =
-            open_workspace_regular_file_fd(&root, &relative, symlinks, false).map_err(|error| {
-                match error.raw_os_error() {
+            open_workspace_regular_file_fd(&root, &relative, symlinks).map_err(
+                |error| match error.raw_os_error() {
                     Some(code) => map_workspace_open_err(
                         &requested,
                         &workspace_root,
@@ -599,8 +599,8 @@ async fn open_workspace_regular_file_from_fd(
                         "path {} is not a regular file",
                         requested.display()
                     )),
-                }
-            })?;
+                },
+            )?;
         let size = file.metadata()?.len();
         Ok(OpenWorkspaceFile {
             file: tokio::fs::File::from_std(file),
@@ -612,21 +612,16 @@ async fn open_workspace_regular_file_from_fd(
     .map_err(|error| CalmError::Internal(format!("workspace open task failed: {error}")))?
 }
 
-/// Shared synchronous core for lazy descriptor-only artifact capture and async reads.
-/// `same_mount` is required for sealed outputs, whose source cannot cross mounts.
+/// Synchronous core of the async workspace reads.
 #[cfg(target_os = "linux")]
-pub(crate) fn open_workspace_regular_file_fd(
+fn open_workspace_regular_file_fd(
     root: &std::fs::File,
     relative: &Path,
     symlinks: WorkspaceSymlinks,
-    same_mount: bool,
 ) -> std::io::Result<std::fs::File> {
-    use nix::fcntl::{OFlag, OpenHow, ResolveFlag, openat2};
+    use nix::fcntl::{OFlag, OpenHow, openat2};
     use std::os::fd::{AsRawFd, FromRawFd};
-    let mut resolve = workspace_resolve_flags(symlinks);
-    if same_mount {
-        resolve |= ResolveFlag::RESOLVE_NO_XDEV;
-    }
+    let resolve = workspace_resolve_flags(symlinks);
     let raw_fd = openat2(
         root.as_raw_fd(),
         relative,
@@ -644,32 +639,6 @@ pub(crate) fn open_workspace_regular_file_fd(
         ));
     }
     Ok(file)
-}
-
-/// Non-Linux stub: no `openat2`, so secure workspace reads fail closed as `Unsupported`.
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn open_workspace_regular_file_fd(
-    _root: &std::fs::File,
-    _relative: &Path,
-    _symlinks: WorkspaceSymlinks,
-    _same_mount: bool,
-) -> std::io::Result<std::fs::File> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "secure workspace reads require Linux openat2 support",
-    ))
-}
-
-#[cfg(all(test, not(target_os = "linux")))]
-#[test]
-fn unsupported_workspace_file_read_does_not_fall_back() {
-    let temp = tempfile::tempdir().unwrap();
-    std::fs::write(temp.path().join("file"), "private").unwrap();
-    let root = std::fs::File::open(temp.path()).unwrap();
-    let error =
-        open_workspace_regular_file_fd(&root, Path::new("file"), WorkspaceSymlinks::Refused, true)
-            .unwrap_err();
-    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
 }
 
 #[cfg(target_os = "linux")]

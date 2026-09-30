@@ -16,18 +16,6 @@ function event(value: unknown): WireEvent {
 }
 
 describe('invalidation plan behavior', () => {
-  it('refreshes evidence after file publication without parsing opaque task IDs', () => {
-    const settled = wireEventSchema.parse({ ev: 'task.file_publication_settled', data: { task_id: 'opaque-attempt', operation_id: 'publication' } });
-    expect(invalidationPlanFor(settled)).toEqual({
-      invalidate: [['track-files'], ['track-report']], remove: [], writeThrough: [],
-    });
-  });
-  it('refreshes evidence after candidate verification without parsing opaque task IDs', () => {
-    const settled = wireEventSchema.parse({ ev: 'task.candidate_verification_settled', data: { task_id: 'opaque-attempt', operation_id: 'verification' } });
-    expect(invalidationPlanFor(settled)).toEqual({
-      invalidate: [['track-files'], ['track-report']], remove: [], writeThrough: [],
-    });
-  });
   it('refreshes the settled track\'s files and report after a git delivery settles', () => {
     const settled = wireEventSchema.parse({
       ev: 'task.git_delivery_settled',

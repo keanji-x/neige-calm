@@ -681,9 +681,6 @@ async fn plan_list(
                         )
                         .await?,
                     )?;
-                    if let Some(task) = &task {
-                        entry["file_delivery"] = crate::file_delivery::view_tx(tx, task).await?;
-                    }
                     entry["attempt_id"] = json!(current.attempt_id);
                     entry["generation"] = json!(current.generation);
                     entry["status"] = json!(current.status);

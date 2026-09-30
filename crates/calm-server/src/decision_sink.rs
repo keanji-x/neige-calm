@@ -107,12 +107,6 @@ impl CardDecisionSink {
                 let track_id = track_id.clone();
                 let worker_card_id = worker_card_id_for_tx.clone();
                 Box::pin(async move {
-                    crate::file_delivery::candidate_review::validate_report_tx(
-                        tx,
-                        track_id.as_str(),
-                        &event,
-                    )
-                    .await?;
                     // Admission, task CAS and report event share one transaction; same-outcome repeats roll back as idempotent success.
                     let now = crate::model::now_ms();
                     // The failure branch keeps the worker's own `reason` beside the `worker-reported` classifier.
@@ -257,48 +251,20 @@ impl CardDecisionSink {
             track: track.id.clone(),
             area: track.area_id.clone(),
         };
-        let track_id = track.id.clone();
 
         let committed = crate::db::write_in_tx_typed(self.repo.as_ref(), move |tx| {
             Box::pin(async move {
-                let mut event = event;
-                let candidate = crate::file_delivery::candidate_qualification::prepare_verdict_tx(
-                    tx,
-                    track_id.as_str(),
-                    &mut event,
+                let id = crate::db::sqlite::append_decision_event_in_tx(
+                    tx, &actor, &scope, None, &event,
                 )
                 .await?;
-                let repeated = candidate
-                    && crate::file_delivery::candidate_qualification::is_repeat_tx(
-                        tx,
-                        track_id.as_str(),
-                        &event,
-                    )
-                    .await?;
-                let mut committed = Vec::new();
-                if !repeated {
-                    let id = crate::db::sqlite::append_decision_event_in_tx(
-                        tx, &actor, &scope, None, &event,
-                    )
-                    .await?;
-                    if candidate {
-                        crate::file_delivery::candidate_qualification::record_decision_tx(
-                            tx,
-                            track_id.as_str(),
-                            id,
-                            &event,
-                        )
-                        .await?;
-                    }
-                    committed.push(crate::event::BroadcastEnvelope {
-                        id,
-                        event_version: crate::event::SYNC_EVENT_VERSION,
-                        actor,
-                        scope,
-                        event,
-                    });
-                }
-                Ok(committed)
+                Ok(vec![crate::event::BroadcastEnvelope {
+                    id,
+                    event_version: crate::event::SYNC_EVENT_VERSION,
+                    actor,
+                    scope,
+                    event,
+                }])
             })
         })
         .await?;
@@ -331,32 +297,6 @@ impl CardDecisionSink {
             ReportEditTarget::for_resolved_parts(track, card, payload)?,
             args,
             plugin_tools,
-            recorder_shadow,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn commit_task_repair(
-        &self,
-        identity: &ToolCallIdentity,
-        track: Track,
-        card: Card,
-        payload: TrackReportPayload,
-        args: crate::file_delivery::repair::RepairArgs,
-    ) -> Result<serde_json::Value, CalmError> {
-        let recorder_shadow: Arc<dyn RecorderShadowProbe> =
-            Arc::new(CardDecisionSinkRecorderShadowProbe {
-                principal: identity.to_principal(),
-                track_id: track.id.clone(),
-            });
-        track_report::write::planner_repair(
-            self.repo.as_ref(),
-            &self.events,
-            &self.write,
-            identity.clone(),
-            ReportEditTarget::for_resolved_parts(track, card, payload)?,
-            args,
             recorder_shadow,
         )
         .await
