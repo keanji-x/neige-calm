@@ -199,7 +199,7 @@ fn native_view_rejects_oversized_payload_and_long_text() {
 }
 
 #[test]
-fn native_view_generic_records_do_not_require_a_workflow() {
+fn native_view_generic_records_accept_publisher_badges() {
     for badges in [
         serde_json::json!([]),
         serde_json::json!([{ "label": "State", "value": "Open", "tone": "neutral" }]),
@@ -219,7 +219,7 @@ fn native_view_generic_records_do_not_require_a_workflow() {
             }]
         }] }]);
         validate_payload(KIND_VIEW, &view)
-            .expect("generic records cannot require a business workflow");
+            .expect("generic records must accept publisher-defined badges");
     }
 }
 
