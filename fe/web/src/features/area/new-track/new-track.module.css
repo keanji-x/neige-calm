@@ -232,6 +232,33 @@
     min-block-size: 3lh;
   }
 
+  /*
+   * The `@` menu (#1881), anchored and sized as the drawer composer's trigger
+   * menu is (`features/chat/thread/thread.module.css`, "The `/` command menu",
+   * which explains the three `!important`s: `useLayer` writes the anchor,
+   * area and fallbacks as inline styles). Two differences, both from this
+   * page: the menu opens *below* the composer, because the greeting sits
+   * directly above it and a menu there would cover it; and it may flip above
+   * when there is no room below (a short viewport, a phone keyboard), where
+   * the drawer's composer, docked at the bottom, never has room below.
+   * `[role='listbox']` is the trigger menu's ARIA contract; the chips' menus
+   * are `menu`s and are left alone.
+   */
+  .composer {
+    anchor-name: --nc-new-track-menu;
+  }
+
+  .composer [popover]:has([role='listbox']) {
+    position-anchor: --nc-new-track-menu !important;
+    position-area: none !important;
+    position-try-fallbacks: flip-block !important;
+    inset-block-start: anchor(bottom);
+    inset-block-end: auto;
+    inline-size: auto;
+    inset-inline-start: anchor(left);
+    inset-inline-end: anchor(right);
+  }
+
   .areaDefault {
     display: flex;
     flex-wrap: wrap;

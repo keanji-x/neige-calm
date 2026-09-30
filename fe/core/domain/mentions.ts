@@ -105,13 +105,14 @@ function blockSuggestion(block: BlockMention): MentionSuggestion {
 }
 
 /**
- * Tags, then tracks, then blocks; inside each group the server's order, which is its ranking.
- * Nothing is filtered, re-ranked or re-capped here.
+ * For a typed `query`: tags, then tracks, then blocks. For bare `@` (empty `query`) the order is
+ * reversed: the server puts the current track's blocks first among its recommendations, and
+ * they are the likeliest pick. Inside each group the server's order, which is its ranking;
+ * nothing is filtered, re-ranked or re-capped here.
  */
-export function mentionSuggestionsOf(candidates: MentionCandidates): readonly MentionSuggestion[] {
-  return [
-    ...candidates.tags.map(tagSuggestion),
-    ...candidates.tracks.map(trackSuggestion),
-    ...candidates.blocks.map(blockSuggestion),
-  ];
+export function mentionSuggestionsOf(candidates: MentionCandidates, query: string): readonly MentionSuggestion[] {
+  const tags = candidates.tags.map(tagSuggestion);
+  const tracks = candidates.tracks.map(trackSuggestion);
+  const blocks = candidates.blocks.map(blockSuggestion);
+  return query === '' ? [...blocks, ...tracks, ...tags] : [...tags, ...tracks, ...blocks];
 }

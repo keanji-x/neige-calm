@@ -15,6 +15,7 @@ export function mentionSearchOf(
 ): MentionSearch {
   return async (query, signal) => mentionSuggestionsOf(
     await runOperation(transport, { ...mentionsOperation(areaId, query, trackId), signal }, unauthorized),
+    query,
   );
 }
 

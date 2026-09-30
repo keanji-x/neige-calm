@@ -17,7 +17,7 @@ import { ThemeProvider } from '../theme/public.tsx';
 afterEach(async () => { cleanup(); await page.viewport(1280, 720); });
 
 const AREA = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
-const TRACK = { id: 'w1', area_id: 'c1', title: 'Test track', sort: 1, lifecycle: 'working', cwd: '/tmp', archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2 };
+const TRACK = { id: 'w1', area_id: 'c1', title: 'Test track', sort: 1, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
 const PLANNER_CARD = { id: 'card-planner', track_id: 'w1', kind: 'codex', title: 'Planner chat', sort: 1, payload: { planner_harness: true }, deletable: true, created_at: 1, updated_at: 2 };
 const ASSISTANT_ROW = { id: 'conv-assistant-1', trackId: 'w1', title: 'Side chat', kind: 'track-assistant', state: 'idle', updatedAt: 30, lastTurnCompletedAt: null };
 const BLOCK_INSERT = '@`area/reports/Deploy notes.md#b_1a2b`';
@@ -36,7 +36,7 @@ function mount(path: string) {
     if (request.method === 'POST' && request.path === '/api/tracks') return new Promise<ApiTransportResponse>(() => undefined);
     if (request.path === '/api/areas') return Promise.resolve(ok([AREA]));
     if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([TRACK]));
-    if (request.path === '/api/tracks/w1') return Promise.resolve(ok({ track: TRACK, can_resume: false, cards: [PLANNER_CARD], overlays: [] }));
+    if (request.path === '/api/tracks/w1') return Promise.resolve(ok({ track: TRACK, can_reopen: false, cards: [PLANNER_CARD], overlays: [] }));
     if (request.path === '/api/tracks/w1/conversations') return Promise.resolve(ok([ASSISTANT_ROW]));
     if (request.path.endsWith('/planner/run')) {
       return Promise.resolve(ok({ card_id: PLANNER_CARD.id, worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, blocked_reason: null }));
@@ -70,8 +70,7 @@ it('groups the area\'s tags, reports and blocks under @ in the Planner conversat
 
   await userEvent.keyboard('see @dep');
   await expect.element(menu().getByRole('group', { name: 'Blocks' }).getByRole('option')).toBeVisible();
-  const groups = [...(await menu().findElement()).querySelectorAll('[role="group"]')].map((group) => group.getAttribute('aria-label'));
-  expect(groups).toEqual(['Tags', 'Tracks', 'Blocks']);
+  expect(await groupOrder()).toEqual(['Tags', 'Tracks', 'Blocks']);
   expect(mentionReads().at(-1)).toBe('/api/areas/c1/mentions?q=dep&track=w1');
 
   await userEvent.keyboard('{ArrowDown}{ArrowDown}{Enter}');
@@ -84,12 +83,20 @@ it('groups the area\'s tags, reports and blocks under @ in the Planner conversat
   expect(sent.text).toBe(`see ${BLOCK_INSERT}`);
 });
 
-it('asks for recommendations on a bare @', async () => {
+/** The group headings the open menu shows, top to bottom. */
+async function groupOrder(): Promise<(string | null)[]> {
+  return [...(await menu().findElement()).querySelectorAll('[role="group"]')].map((group) => group.getAttribute('aria-label'));
+}
+
+it('asks for recommendations on a bare @, blocks first', async () => {
   const { mentionReads } = mount('/track/w1');
   await openConversation(/Conversation Planner chat/);
   await userEvent.keyboard('@');
   await expect.element(menu().getByRole('option', { name: /部署/ })).toBeVisible();
   expect(mentionReads()).toEqual(['/api/areas/c1/mentions?q=&track=w1']);
+  expect(await groupOrder()).toEqual(['Blocks', 'Tracks', 'Tags']);
+  /* The first row is the one Enter takes. */
+  expect(menu().getByRole('option', { selected: true }).element().textContent).toBe('RollbackDeploy notes');
 });
 
 it('keeps the / command in the Planner conversation', async () => {
@@ -119,6 +126,16 @@ it('offers @ in the new-track sentence, lets Enter pick, and creates with the in
   await userEvent.keyboard('Continue @roll');
   await expect.element(menu().getByRole('option', { name: /Rollback/ })).toBeVisible();
   expect(mentionReads().at(-1)).toBe('/api/areas/c1/mentions?q=roll');
+
+  /* Attached under the composer at its full width, clear of the greeting above it. */
+  const popover = (await menu().findElement()).closest('[popover]')!.getBoundingClientRect();
+  const composer = document.querySelector('[data-nc-new-track-message]')!.getBoundingClientRect();
+  const greeting = (await page.getByRole('heading', { level: 1 }).findElement()).getBoundingClientRect();
+  expect(Math.round(popover.left)).toBe(Math.round(composer.left));
+  expect(Math.round(popover.right)).toBe(Math.round(composer.right));
+  expect(popover.top).toBeGreaterThanOrEqual(composer.bottom - 1);
+  expect(popover.top).toBeLessThanOrEqual(composer.bottom + 12);
+  expect(popover.top).toBeGreaterThan(greeting.bottom);
 
   await userEvent.keyboard('{ArrowUp}{Enter}');
   await expect.element(menu()).not.toBeInTheDocument();
