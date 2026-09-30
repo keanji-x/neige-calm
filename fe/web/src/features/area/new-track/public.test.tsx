@@ -618,8 +618,9 @@ describe('Start from — issue development expands under the group', () => {
     });
     await fillMessage();
     await chooseTemplate('Future template');
+    // The verdict needs the template body, which the preview reads asynchronously.
+    expect(await screen.findByText(/needs input this version cannot collect/)).toBeTruthy();
     expect(submitButton().disabled).toBe(true);
-    expect(screen.getByText(/needs input this version cannot collect/)).toBeTruthy();
   });
 });
 
