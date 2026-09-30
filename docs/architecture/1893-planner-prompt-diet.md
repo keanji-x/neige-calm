@@ -9,7 +9,7 @@
 5. The main prompt does not inject everything. Situational detail is read on demand.
 
 **Outcome.**
-- `planner.md` goes from 47,039 B to about 8,300 B in S1, capped at 9,000.
+- `planner.md` goes from 47,039 B to about 8,300 B in S1, capped at 7,500.
 - Four on-demand guides of 6 KB or less each are read with `neige cat guide/<topic>.md`.
 - The Planner-visible tool surface (descriptions plus input schemas, which Codex loads up front) goes from 61,179 B to at most 29,000 B after S6.
 - Four mechanisms are deleted, each with its tables: isolated file delivery, candidate repair, Codex semantic recovery, and the whole isolated-codex-v1 path.
@@ -222,8 +222,8 @@ The new §4 says only:
 ## 7. Ratchets (Q6)
 
 All caps are one-sided. A slice that shrinks a surface lowers its cap in the same PR, to the measured size rounded up to 500 B.
-- **`planner_prompt_fits_its_byte_budget`** (`planner_card.rs` tests): `PLANNER_SYSTEM_PROMPT_TEMPLATE.len() <= 9_000`, anti-vacuity floor 3,000.
-- **`every_guide_fits_its_byte_budget`** (same module): each `GUIDES` entry ≤ 6,144 B and ≥ 500 B; the sum ≤ 12,000.
+- **`planner_prompt_fits_its_byte_budget`** (`planner_card.rs` tests): `PLANNER_SYSTEM_PROMPT_TEMPLATE.len() <= 7_500`, anti-vacuity floor 3,000.
+- **`every_guide_fits_its_byte_budget`** (same module): each `GUIDES` entry ≤ 6,144 B and ≥ 500 B; the sum ≤ 7,500.
 - **`every_guide_named_in_planner_md_is_served`** (`tests/cases/`, through the real `calm.track.cat` MCP call as a Planner):
   - scan the rendered prompt for `neige cat guide/<name>.md` (≥ 4 hits, anti-vacuity);
   - each must return exactly its `prompts/guides/<name>.md` bytes;
@@ -231,7 +231,7 @@ All caps are one-sided. A slice that shrinks a surface lowers its cap in the sam
 - **`planner_tool_surface_fits_its_byte_budget`** (`mcp_server/tools/mod.rs` tests, next to the registry golden):
   - sum `description.len()` + compact `input_schema` bytes over `descriptors_for_role(Planner)`;
   - each description ≤ 2,048 B;
-  - caps S1 40,000 / S2 38,500 / S3 37,000 / S4 32,500 / S5 30,500 / S6 29,000.
+  - cap S1 36,000; each later slice sets its measured size plus a small margin, ending at or below 29,000 after S6.
 - The two goldens stay: they pin wording, and the caps pin size.
 
 ## 8. Slices (Q7)
@@ -251,7 +251,7 @@ Each slice is independently mergeable and green. Migration numbers are assigned 
   - `every_guide_fits_its_byte_budget` ← `prompts/guides/terminal.md` ← append main's L30 twice.
   - `planner_tool_surface_fits_its_byte_budget` + `default_registry_matches_full_golden` ← `calm.terminal.input.md` ← restore main's text.
   - `planner_prompt_pins_callable_task_block_protocol` + `planner_prompt_contract_rejects_negative_context` + `shipped_git_forge_give_up_uses_the_track_close_tool` + `shipped_issue_development_rendered_prompt_matches_full_golden` ← `planner.md` §3 ← `ready: true` → `ready: false`.
-- As built: `planner.md` 7,120 B; guides 1,751 + 2,011 + 1,650 + 2,033 = 7,445 B; tool surface 35,888 B. The terminal.input schema keeps its 2,126 B: every byte there is a live action shape or switch, so its cut waits for S5's deletions.
+- As built: `planner.md` 6,747 B; guides 1,751 + 2,011 + 1,650 + 2,033 = 7,445 B; tool surface 35,903 B. The terminal.input schema keeps its 2,126 B: every byte there is a live action shape or switch, so its cut waits for S5's deletions.
 
 **S2**
 - Content:

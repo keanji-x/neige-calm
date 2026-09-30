@@ -139,7 +139,7 @@
   },
   {
     "name": "calm.plan.list",
-    "description_sha256": "5b449063267806595e7a5d061b65fe6c6a2608ed9914bfbd51f472692b927e1f",
+    "description_sha256": "1d01463aa8decc24749ce3cbc1f7a6f152637e492592d7d395c655d33704825e",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1169,7 +1169,7 @@
   },
   {
     "name": "calm.task.verdict",
-    "description_sha256": "137cfa19ecfa92493e64c2e34c552397da3b3e55b58ae65c67a83dfaebea1b0e",
+    "description_sha256": "15eabedd48b91d094c776d5aa194a160478d70057c07dad38304047766bf29d8",
     "input_schema": {
       "properties": {
         "idempotency_key": {

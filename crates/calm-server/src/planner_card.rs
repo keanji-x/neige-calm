@@ -306,7 +306,7 @@ mod tests {
     }
 
     /// One-sided cap (#1893): a change that shrinks `prompts/planner.md` lowers it in the same PR.
-    const PLANNER_PROMPT_MAX_BYTES: usize = 9_000;
+    const PLANNER_PROMPT_MAX_BYTES: usize = 7_500;
 
     #[test]
     fn planner_prompt_fits_its_byte_budget() {
@@ -327,7 +327,7 @@ mod tests {
     fn every_guide_fits_its_byte_budget() {
         use crate::mcp_server::tools::track_file::GUIDES;
         const GUIDE_MAX_BYTES: usize = 6_144;
-        const GUIDES_TOTAL_MAX_BYTES: usize = 12_000;
+        const GUIDES_TOTAL_MAX_BYTES: usize = 7_500;
 
         assert!(GUIDES.len() >= 4, "anti-vacuity: {} guides", GUIDES.len());
         for (name, text) in GUIDES {
