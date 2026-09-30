@@ -78,7 +78,7 @@ pub fn executor_environment_with_plugins(plugin_tools: &[String]) -> Value {
         "recovery": {
             "environment": "identical",
             "workspace": "new",
-            "inputs": "declared immutable inputs re-bound; previous worker output not inherited",
+            "inputs": "previous worker output not inherited",
         },
     })
 }

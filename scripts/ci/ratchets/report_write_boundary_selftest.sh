@@ -104,6 +104,14 @@ run_case "R2: include! of another file" red \
   '/^use super::\*;$/a\
 include!("../elsewhere.rs");'
 
+# The Planner dispatch door remains an exact named entry, not a wildcard.
+run_case "R3: Planner dispatch door removed" red \
+  "R3: the exported write-entry set changed" \
+  's/^pub(crate) async fn planner_dispatch(/async fn planner_dispatch(/'
+run_case "R3: Planner dispatch door replaced by arbitrary writer" red \
+  "R3: the exported write-entry set changed" \
+  's/^pub(crate) async fn planner_dispatch(/pub(crate) async fn arbitrary_writer(/'
+
 run_case "R3: a new pub(crate) entry" red \
   "R3: the exported write-entry set changed" \
   '/^use super::\*;$/a\

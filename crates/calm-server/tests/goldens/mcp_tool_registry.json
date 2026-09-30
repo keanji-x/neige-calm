@@ -167,7 +167,7 @@
   },
   {
     "name": "calm.plan.recover",
-    "description_sha256": "2af09527b5ad55b131677f81d240cf84c50af2b749609e23926e83798bb56c1f",
+    "description_sha256": "7c03730b063ff20605b88e0110012c39632477b2fc5ed3132d83fc296ae14a4d",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

@@ -58,8 +58,7 @@ The approved follow-up queue in #1501 is: remove one class of wake with no new
 decision; make existing long-task activity useful for deciding whether to wait or
 intervene; repair one retained failed candidate and reverify it; bind one verified
 file output to its consumer. Choose and complete one bounded scenario at a time.
-Exact file delivery remains a priority beyond reported-result continuation; do
-not restart the whole S2 implementation to deliver its first useful path. Ordinary
+Ordinary
 handoff should need no temporary cwd from the Planner, extra transport node or
 manual dependency repair. Real merge conflicts remain explicit decisions.
 
@@ -334,8 +333,7 @@ selects the result and its provenance into the downstream task's authored
 context. When that judgment must precede downstream execution, keep the
 downstream declaration unready until the decision is recorded. Existing
 `depends_on` waits for task completion; it does not wait for a Planner verdict.
-This uses the existing report and authoring route. Immutable file delivery still
-requires the binding and preparation protocol described above.
+This uses the existing report and authoring route.
 
 Failure may happen before a Worker reports any candidate. After establishing the
 write boundary, the failure path must preserve recoverable workspace content and
