@@ -111,7 +111,7 @@ cp .env.example .env
 make dev
 ```
 
-`make dev` 会构建并部署新版前端。记下输出端口，然后打开 `http://localhost:<printed-port>/next/`；Docker 开发环境的根路径也会跳转到这里。旧版 `/calm/` 前端已退役。
+`make dev` 会构建并部署新版前端。记下输出端口，然后打开 `http://localhost:<printed-port>/next/`；Docker 开发环境的根路径也会跳转到这里。
 
 如果需要前端 HMR，而不是使用构建后的 bundle，请在另一终端执行以下命令，并替换 `<printed-port>`：
 
@@ -215,7 +215,7 @@ Neige Calm 正在收敛到四个面向用户的核心概念：
 3. **Report**：当前可检查的成果，而不是埋在聊天记录中的摘要。
 4. **Recipe**：某一类工作可以怎样被重复执行和交付。
 
-维护中的前端入口为 `/next/`，旧版 `/calm/` 前端已退役。插件安装与 Recipe 编辑已经可用；结构化检查点，以及携带恢复证据接续失败尝试，仍属于[后续工作](docs/architecture/long-task-reliability.md#delivery-scope)。
+前端入口为 `/next/`。插件安装与 Recipe 编辑已经可用；结构化检查点，以及携带恢复证据接续失败尝试，仍属于[后续工作](docs/architecture/long-task-reliability.md#delivery-scope)。
 
 ## 文档导航
 
