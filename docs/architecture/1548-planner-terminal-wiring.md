@@ -4,11 +4,11 @@ The application entry point is a Planner-only MCP tool set:
 
 | Tool | Behavior |
 |---|---|
-| `calm.terminal.open` | Idempotent visible Terminal-card creation through `terminal-create` OperationRuntime, attributed to the authenticated Planner session. Returns text by default; `format=image` requests a PNG; the observe wait arguments run as the open's final observation, after the claim (#1677). Presentation, claim and wait do not change creation idempotency. |
+| `calm.terminal.open` | Idempotent visible Terminal-card creation through `terminal-create` OperationRuntime, attributed to the authenticated Planner session. Returns text; the observe wait arguments run as the open's final observation, after the claim (#1677). Claim and wait do not change creation idempotency. |
 | `calm.terminal.resolve` | Resolve an exact current task attempt or Terminal ID to its real Worker card, worker session and view availability. |
-| `calm.terminal.observe` | Text/cursor/mode state and observation/connection IDs by default. Explicit `format=image` includes a PNG from that same captured RMUX frame. Reads never create or restart a process. |
+| `calm.terminal.observe` | Text/cursor/mode state and observation/connection IDs. Reads never create or restart a process. |
 | `calm.terminal.control` | Claim/release control, optionally returning fresh text with `observe=true`, or detach the model client while retaining the card/program. |
-| `calm.terminal.input` | One text/key/cell-click/sequence/replace action, bound to a recent live observation and current control; navigation/editing keys support bounded `repeat`, a `sequence` is a bounded edit in one ordered write request (#1666), a `replace` is derived from the live cursor row (#1677). Optional `observe=true` returns fresh text after the action; `claim`/`release` bracket a scenario and `allow_output_below_cursor` tolerates status-line refreshes (#1666). Every receipt carries a flat `summary` (#1677). A matching request ID replays its receipt without another write. A codex task Worker card is observe-only: input and claim are refused before any write, since typing into its remote TUI interrupts the turn without starting a new one (#1782, #1784). |
+| `calm.terminal.input` | One text/key/sequence action, bound to a recent live observation and current control; navigation/editing keys support bounded `repeat`, a `sequence` is a bounded edit in one ordered write request (#1666). Optional `observe=true` returns fresh text after the action; `claim`/`release` bracket a scenario (#1666). Every receipt carries a flat `summary` (#1677). A matching request ID replays its receipt without another write. A codex task Worker card is observe-only: input and claim are refused before any write, since typing into its remote TUI interrupts the turn without starting a new one (#1782, #1784). |
 
 ## Model discovery schema
 
@@ -54,30 +54,12 @@ proven complete, so model observation fails explicitly; human reconnect retains
 its existing behavior. Open a new Terminal for the model instead of silently
 claiming complete recovery. No model read launches a replacement process.
 
-Open and observe accept only `format=text` (the default) or `format=image`.
-Normal observations return one MCP text block and structured metadata, including
-a valid observation ID for input. They never initialize system fonts or rasterize
-an image. Input still requires control, a fresh live observation, and the same
-session, revision and authority checks in either format. Observing after each
-action does not require taking a screenshot.
-
-Use `format=image` for color, reverse-video selection or layout-dependent TUI
-decisions; plain text does not preserve these visual cues. Image replies include
-a native MCP PNG block and `image_source`; text replies omit both. For `observe`,
-an explicit image error is returned as the call's error, never as a text
-observation. `open` is the exception: once the create (and the claim) succeeded,
-an image that cannot be rendered never fails the open; the text observation is
-returned with `image: {status: unavailable, reason}` and no PNG (see the
-composite-actions section). Both formats use one immutable captured frame for
-their metadata and any image.
-
-For explicit image observations, the frame is immutable before rasterization. System-font-only `resvg` renders
-escaped terminal text into a bounded PNG with a fixed cell geometry. No terminal
-text is interpreted as SVG markup, file paths or external image URLs. The image
-uses the model projection's font/viewport, not a screenshot of browser chrome.
-The browser continues using xterm with its existing font settings. Sixel and
-inline image protocols are not rendered. Containers install DejaVu and Noto CJK;
-missing system fonts return an explicit image error.
+Observations return one MCP text block (a one-line summary) and structured
+metadata, including a valid observation ID for input. Input requires control, a
+fresh live observation, and the same session, revision and authority checks.
+Image observations (`format=image`), cell clicks, `replace`,
+`allow_output_below_cursor`, `scroll_to_text` and the `claude_permissions`
+scope were deleted by #1893 S5 (Planner use was zero).
 
 Scope comes from live MCP session/card/Track identity and is checked at tool
 admission and again by the queued write's scope callback. A connection owns a
@@ -98,7 +80,7 @@ address the new connection. Client watchdogs stop idle or no-longer-authorized
 clients, and admission prunes their handles. No timer automatically retries input.
 The global observation registry expires captures after 120 seconds and has a
 fixed limit; it retains only input geometry/modes and identities, not screen
-cells, text or image bytes. Each capture contains the exact control identity it observed; a
+cells or text. Each capture contains the exact control identity it observed; a
 human takeover invalidates it. Output changes also require a new observation.
 
 A successful input reply says `written`, not that the TUI completed an action.
@@ -124,7 +106,7 @@ Control (claim/release) and input accept `observe=true` with optional `wait_ms`
 ```
 
 `state` is the full existing text observation metadata, not just the abbreviated
-example. These responses never include PNG. The default remains receipt-only;
+example. The default remains receipt-only;
 `wait_ms` without `observe=true`, or detach with observation, is rejected before
 any action. Fixed waiting does not certify application completion. A readback
 failure never erases or changes the action receipt, including written/unknown
@@ -216,7 +198,7 @@ modes-only comparison would let a menu that appeared over the shell pass.
 
 Under the same fence the action is validated (encoded against the live
 surface) before stale is decided, so an invalid action — Enter with `repeat`,
-a click without mouse mode — is an RPC error whatever the revision did; only
+an unknown action — is an RPC error whatever the revision did; only
 the exact-revision fence is relaxed by the stale result. Write authority
 (`check_binding(write)`: task running, worker session active) is decided
 under the connection's serial lock, after any readback in progress, so an
@@ -225,13 +207,12 @@ turn comes; a task that finished during the queue refuses the input rather
 than answering `stale_observation`.
 
 `observation_id` is optional on input. When omitted the server uses the latest
-observation captured on this client connection (any format, including action
+observation captured on this client connection (including action
 readbacks and the fresh observation of a stale result); the receipt reports
 `observation_id_used`. All fences still apply. A connection with no
 observation is refused ("observe first"). The fingerprint hashes
 `observation_id` as given (null when omitted), so a replayed `request_id`
-returns the same receipt. The prompt's input example omits `observation_id`
-and says to pass it only after an image observation or to act deliberately on
+returns the same receipt. Pass `observation_id` only to act deliberately on
 an older observation.
 
 ### Structured stale refusal (rounds 07/08)
@@ -283,7 +264,7 @@ keeping long change budgets for program output after Enter, and that
 `allow_output_since_observation=true` is for Escape/Ctrl+C while a program
 streams and for typing or submitting in an input field whose surrounding
 status text keeps changing (after inspecting the fresh state), never for menu
-selection or clicks.
+selection.
 
 Receipts: input drops `application_completed` and reports
 `application_result:"unverified"` on every outcome — written, refused and
@@ -318,7 +299,7 @@ sound (the pending reservation is cleared by the acknowledgement and the
 revision fence still applies) but would let the second write end the first
 wait with output that is not the first action's reply, so the readback stays
 inside the serialized section. Connections of other Planners or humans are not
-serialized by it. Image results keep their metadata text block and native PNG block. A probe
+serialized by it. A probe
 of Codex 0.153.4 showed the model receives both `content` and
 `structuredContent` verbatim, so the duplicate state was real.
 
@@ -372,8 +353,8 @@ input. Release and detach remain available for cleanup.
 
 Some isolated Codex workers have a terminal record but no live PTY viewer.
 `resolve` returns `available: false` and `controllable: false` in that case;
-observing never starts a substitute session. Images cover only the selected
-Terminal's RMUX viewport, with independent per-terminal control and scroll offset.
+observing never starts a substitute session. Each Terminal has independent
+per-terminal control and scroll offset.
 
 ## Child environment
 
@@ -414,93 +395,19 @@ the Planner starts Claude with `claude --settings "$NEIGE_CLAUDE_SETTINGS"`.
 Human-created terminals (`POST /api/tracks/:id/terminal-cards`) keep
 `planner_hooks: false` and get exactly the env they asked for.
 
-Declared scope (#1704 S1): the open's optional `claude_permissions` argument
-(`edit` globs relative to the terminal cwd, `bash` command prefixes, `deny`
-prefixes; validated by `terminal_permissions::validate_scope`, refused as
-`invalid_params` naming the entry) is rendered by the adapter against the
-resolved cwd in `prepare_tx` (`terminal_permissions::render_claude_permissions`)
-into exactly Claude Code's `permissions` block: `Edit(//<cwd>/<glob>)` and
-`Bash(<prefix> *)` under `allow`, `Bash(<prefix> *)` under `deny`, and — always,
-when a scope is declared — the floor under `ask`: `git push`, `git reset
---hard`, `rm -rf`, `curl`, `wget`, `pip install`, `npm install` and
-`Edit(//<cwd>/.git/**)`. The floor is `ask`, never `deny`: Claude Code
-evaluates deny, then ask, then allow over the merged rule set, so an `ask`
-rule prompts even when an `allow` also matches, and the dialog reaches the
-Planner as a `permission_request` signal; a Planner `deny` on the same rule
-still wins. Every rule matches its usual spelling only (`git -C . push`,
-`rm -fr` and `pip3 install` are not caught by the floor), and an action no
-rule matches keeps Claude Code's usual permission behaviour — the kernel
-emits rules, not outcomes. One spelling is added (#1729): a `git <rest>`
-prefix in `bash`, in the floor or in `deny` is rendered twice, as
-`Bash(git <rest> *)` and as `Bash(git -C /<cwd> <rest> *)` for the terminal's
-own absolute cwd (the form Claude Code runs; a bare `git`, any other command
-and a `-C` to any other directory get no variant), and only for a cwd without
-whitespace or quote characters — a space in the path shifts the token
-boundaries, so such a cwd keeps exactly main's rules (bare spellings only); a
-bare `git` allow admits `-C` spellings there as it does anywhere (S1 known
-gap); within one cwd the variant is in exactly the lists its bare rule is
-in. The rendered block is the one value written into the settings
-file next to `hooks` (nothing else: no `defaultMode`, `bypassPermissions`,
-`additionalDirectories` or `Read` rule), stamped on the card as
-`Card.payload.claude_permissions` in the same transaction, persisted in the
-operation's `tx_output.data` (the input `spawn_side_effect` rewrites the file
-from on recovery, never the card or the request) and echoed by the open as
-`claude_permissions` (beside `claude_permissions_source` since S2, both from
-the card) with `permissions allow N ask M deny K source <source>` in its
-summary line. No scope declared: the file, the card payload, the result and the hash
-are exactly what they were before S1, unless the tree carries a policy.
+The settings file carries only `hooks` and attribution: the `claude_permissions`
+scope on open and the Track policy that bounded it (#1704) were deleted by
+#1893 S5, and migration 0124 drops `tracks.claude_permissions_policy`. Claude
+Code's own permission behaviour applies, and a dialog still reaches the Planner
+as a `permission_request` signal.
 
-Track policy (#1704 S2): a user may set `tracks.claude_permissions_policy`
-(`PATCH /api/tracks/:id` `claude_permissions_policy: {edit?, bash?, deny?} |
-null`, user-only, validated by `terminal_permissions::validate_scope_named`
-under its own field name, so a policy never admits what a declaration could
-not) on a track-tree ROOT only: a child row is always `null`, a child PATCH is
-409 (`track_update_tx`, the writer every entry shares), and every CEILING read
-resolves the root (`track_claude_permissions_ceiling_read` walks
-`TRACK_ROOT_DEPTH_SQL`, fails closed on an unresolved root or an undecodable
-value) — `GET /api/tracks/:id`, the lists and `track.updated` return the raw
-column, so a child shows `null` there. `terminal_permissions::policy::
-apply_policy` produces the ONE scope rendered, per row: no policy and no
-declaration renders nothing (S1 byte-identical); no policy and a declaration
-renders the declaration (`claude_permissions_source: declared`); a policy and
-no declaration renders the policy (`track_policy`); a policy and a declaration
-within it renders the merge — a list the declaration omits is inherited from
-the policy, a list it gives must stay within the policy's (every `edit` glob
-contained in a policy glob: equal, or under a `dir/**`, or the policy says
-`**`; every `bash` prefix covered by a policy prefix at a token boundary and by
-no policy `deny`), and `deny` is the policy's followed by the declaration's,
-deduplicated (`declared_within_policy`); a declaration not within the policy is
-refused by name (`claude_permissions.bash[3] 'pip download' exceeds the Track
-policy (bash: git, python3 -m unittest)`, the ceiling list cut after six
-entries). Inherited lists are the policy's own and given lists are within it,
-so the merge never widens; the floor stays `ask`. The `calm.terminal.open`
-handler probes the idempotency key first and pre-checks only a FRESH
-`request_id` against the root-resolved ceiling (`invalid_params`, no
-operation row); `prepare_tx` re-reads the ceiling inside its write transaction
-(the verdict: a policy narrowed between the two reads fails the operation
-from Pending as `bad_request`, surfaced to the Planner as `outcome:
-unavailable`, no card, no file), renders the merge against the OPENING
-track's cwd (a managed child re-anchors relative `edit` globs to its own
-directory) and stamps the block with its source. The policy never enters the
-hash; the ceiling is checked on a request_id's first arrival only, so a replay
-with the same arguments replays the existing operation — the terminal, or the
-Failed row's `unavailable` result — whatever the policy is now (a different
-declared scope is S1's payload conflict). Only Planner opens read the policy:
-REST terminal cards and task terminals never do. On the wire a client must OMIT
-a list rather than send `null`: the OpenAPI document renders the three lists
-nullable (utoipa's `Option` rule), but `parse_scope_named` refuses a `null`
-list on both the tool argument and the PATCH body.
-
-Server-owned payload keys, one table: `calm.terminal.open` is the only writer
-that mints `Card.payload.terminal_signals: true`
-(`card_with_terminal_create_tx(planner_hooks = true)`),
-`Card.payload.claude_permissions` and, since S2, the third key
-`Card.payload.claude_permissions_source` (`card_stamp_claude_permissions_tx`;
-`declared`, `track_policy` or `declared_within_policy`; a card carrying the
-block and no source predates S2 and reads as `declared`); the
+Server-owned payload keys: `calm.terminal.open` is the only writer that mints
+`Card.payload.terminal_signals: true`
+(`card_with_terminal_create_tx(planner_hooks = true)`); the
 hook ingest route keys on the marker, never on the terminal row or the
-patchable `kind`. The three keys (`validation::SERVER_OWNED_TERMINAL_PAYLOAD_KEYS`)
-are therefore server-owned at every public write boundary: `POST
+patchable `kind`. The marker (with the Planner card's `template_context` and
+`planner_provider`, `validation::SERVER_OWNED_CARD_PAYLOAD_KEYS`) is therefore
+server-owned at every public write boundary: `POST
 /api/tracks/:id/cards` (direct and `via_tool_call` `structuredContent`), `PATCH
 /api/cards/:id`, and the plugin callbacks `neige.card.create` /
 `neige.card.update` refuse a payload that contains any of them — any value, any
@@ -514,18 +421,14 @@ carries it (a non-object replacement is refused with 400); a card without a
 key never gains it through a public update (REST PATCH, plugin update); the
 kernel's own stamp at creation goes through `card_update_tx` inside the create
 transaction. Sticky means the kernel-minted shape only
-(`validation::server_owned_value_is_sticky`): `terminal_signals` when `true`,
-`claude_permissions` when it is an object, `claude_permissions_source` when it
-is one of the three source spellings.
+(`validation::server_owned_value_is_sticky`): `terminal_signals` when `true`.
 
 Idempotency: the open's `stable_payload_hash` covers the request as sent plus
-`planner_hooks`, plus the trimmed `claude_permissions` scope when declared; the
-generated keys never enter it (they are derived after hashing, from the
-allocated card id) and neither does the Track policy (S2), so a replayed
-`request_id` with the same arguments returns the existing terminal,
-and a different scope (or none) on a replayed `request_id` is the runtime's
-payload conflict (`-32403`, `already used with different payload`: no card,
-no terminal, the old terminal is not returned). The settings file is deleted by the shared terminal reap
+`planner_hooks`; the generated keys never enter it (they are derived after
+hashing, from the allocated card id), so a replayed `request_id` with the same
+arguments returns the existing terminal, and different arguments on a replayed
+`request_id` are the runtime's payload conflict (`-32403`, `already used with
+different payload`: no card, no terminal, the old terminal is not returned). The settings file is deleted by the shared terminal reap
 (`reap_terminal_artifacts_with_renderer`: card delete, sweeper, create
 compensation) and, for track and area deletion (which quiesce terminals
 through `quiesce_terminal_artifacts_for_deletion` and never reach the reap
@@ -667,10 +570,7 @@ for `settle_ms` at the signal returns at once even if a later repaint follows.
   replayed open after a human takeover reports `unavailable` instead of
   reclaiming; control already held on this connection returns the current
   observation without a second claim. An ordinary `control claim` keeps its
-  deliberate-takeover semantics. With `format: image`, an image that cannot be
-  rendered after the create (and the claim) succeeded never fails the open:
-  the text observation is returned with `image: {status: unavailable, reason}`
-  and no PNG.
+  deliberate-takeover semantics.
 
 ### Trust statement
 
@@ -726,38 +626,32 @@ costs; each has one explicit opt-in shape, specified in
 * `input claim:true` / `release:true`: control per scenario —
   claim-if-unowned before the write, `control_unavailable` result, release status `requested|released|not_held|unconfirmed`; helpers in `input_control.rs`.
   See [`claim` / `release` on input — control per scenario](1666-planner-terminal-round-trips.md#claim--release-on-input--control-per-scenario).
-* `allow_output_below_cursor`: a status-line refresh below an unmoved cursor is not stale —
-  row hashes over glyphs and presentation (`screen_diff.rs`), draft edits only, `screen_diff` on stale results.
-  See [`allow_output_below_cursor` — status-line refreshes are not stale](1666-planner-terminal-round-trips.md#allow_output_below_cursor--status-line-refreshes-are-not-stale).
+* `screen_diff` on stale results: row hashes over glyphs and presentation (`screen_diff.rs`).
 * Measured one-write edits with Claude Code 2.1.259 —
   one write carries `7200 + 19` + Left×5 + Backspace + `9` and leaves `7209 + 19`.
   See [Measured one-write edits with Claude Code 2.1.259 (2026-09-13)](1666-planner-terminal-round-trips.md#measured-one-write-edits-with-claude-code-21259-2026-09-13).
 * #1677: `open` takes the wait arguments (run after the claim, as the open's
-  final observation), `replace` derives Left/Right + Backspace + text from the
-  live cursor row (`replace_plan.rs`), and input/claim/release receipts carry
-  a flat `summary` (`receipt_summary.rs`).
-  See [Open with a wait, replace in the draft, receipt summary (#1677)](1666-planner-terminal-round-trips.md#open-with-a-wait-replace-in-the-draft-receipt-summary-1677).
+  final observation), and input/claim/release receipts carry a flat `summary`
+  (`receipt_summary.rs`).
+  See [Open with a wait and receipt summary (#1677)](1666-planner-terminal-round-trips.md#open-with-a-wait-and-receipt-summary-1677).
 
 ## Acceptance evidence and limits
 
 The focused suite uses the actual authenticated MCP UDS server, real operation
 runtime and renderer, and a real shell. It verifies visible card identity, native
-default text-only envelopes, explicit native PNG delivery, format-independent open
-idempotency, exact application output, physical Enter counts for duplicate
+text-only envelopes, open idempotency, exact application output, physical Enter counts for duplicate
 requests, same-database foreign-Track refusal, human takeover and reconnect IDs.
 The writer tests hold real protocol work and physical acknowledgement separately.
 Projection tests traverse actual RenderPlane output and resize paths.
 
 A developer driver reuses only this test setup and calls the actual tools; it is
 not a Planner implementation. It accepts private NDJSON stdin and starts a
-disposable loopback browser preview. It forwards observation formats unchanged:
+disposable loopback browser preview. It forwards tool calls unchanged:
 
 ```json
 {"name":"calm.terminal.observe","arguments":{"terminal_id":"<returned-terminal-id>"}}
-{"name":"calm.terminal.observe","arguments":{"terminal_id":"<returned-terminal-id>","format":"image"}}
 ```
 
-The first reads text without a screenshot; the second explicitly asks for one.
 Build with:
 
 ```sh

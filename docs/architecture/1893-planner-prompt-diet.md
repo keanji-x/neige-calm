@@ -291,6 +291,27 @@ Each slice is independently mergeable and green. Migration numbers are assigned 
 - Must-red:
   - new `input_schema_lists_only_live_actions` (`tools/terminal/schema_tests.rs`) ← `tools/terminal.rs` action enum ← re-add `replace`.
   - new `input_keeps_claim_and_release_in_one_request` ← `terminal_interaction/operations.rs:43` ← skip the release step.
+- As built:
+  - Deleted with each switch, everything that existed only for it:
+    - `replace`: `replace_plan.rs`;
+    - `click`: `calm_terminal_view::click_bytes`;
+    - `allow_output_below_cursor`: `ScreenDiff::only_below_cursor` and `Tolerance`. The stale `screen_diff` and the `allow_output_since_observation` drift stay;
+    - `scroll_to_*`: `scroll_to.rs`, `TerminalView::find_text` and `Occurrence`;
+    - `format=image`: the resvg `Rasterizer` (and the `resvg` dependency) and `ToolResult::png`;
+    - `claude_permissions` and the Track policy: `terminal_permissions/`, `calm_types::claude_permissions`, the card stamp, the ceiling read and the PATCH field.
+  - Migration 0124 drops the column.
+  - `claude_permissions` and `claude_permissions_source` are no longer server-owned card keys. 4140 has 0 cards carrying them.
+  - A PATCH that still sends `claude_permissions_policy` is ignored, like any extra `TrackPatch` key.
+  - `track_updated.full.json` keeps the populated policy in `wire`, and `canonical` drops it: stored `track.updated` rows still replay.
+  - The e2e UX collector drops its counters for the deleted switches.
+  - Bytes: tool surface 35,903 → 33,980 B, cap 36,000 → 34,000.
+    - terminal.input 1,494/1,647 (description/schema), observe 1,391/779, open 787/874.
+    - The input and open schemas miss the §6 targets (1,300 and 700): every remaining property is live (claim/release stay).
+  - `planner.md` is unchanged at 6,747 B. `guide/terminal.md` goes 2,033 → 1,989 B: step 8 fixes a draft with one `sequence`.
+  - Must-red placement: `input_schema_lists_only_live_actions` takes over the action-arm checks of the flat-schema sweep. `input_keeps_claim_and_release_in_one_request` is in `tests/cases/terminal_input_control.rs`; it replaces the tail of the release test.
+  - Mutation evidence, with `-p calm-server --profile ci --no-fail-fast` each time:
+    - re-add the `replace` arm reds exactly `input_schema_lists_only_live_actions`, `default_registry_matches_full_golden` and `planner_tool_surface_fits_its_byte_budget` (34,197 B);
+    - skip the release step reds exactly `input_keeps_claim_and_release_in_one_request`, `input_release_releases_after_the_write_and_reads_back_as_observer`, `input_release_after_a_takeover_reports_not_held` and `summary_on_written_receipts_follows_the_readback_not_the_lease`.
 
 **S6**
 - Content: delete (f); drop `task_git_delivery_abandonments`.

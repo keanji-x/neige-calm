@@ -18,7 +18,7 @@ Root common properties remain present for MCP clients that require an object
 surface. The accepted request set is unchanged.
 
 Input action variants use `anyOf`; their distinct required `type` literals keep
-text/submit, key, click and sequence mutually exclusive. Existing `const`
+text/submit, key and sequence mutually exclusive. Existing `const`
 discriminators are preserved: the inspected local Codex sanitizer converts them
 to singleton enums. That parser does not retain `oneOf`, and its TypeScript
 renderer handles union arms before sibling properties. Complete arms prevent
@@ -83,7 +83,7 @@ in every mode. The argument contract moved from `wait.rs` to
 with the same validation and `repeat` rules as the standalone actions. Keys
 allowed inside a sequence: Left, Right, Up, Down, Home, End, Backspace, Delete,
 Ctrl+U; everything else is rejected — Enter, Ctrl+J (LF), Escape, Tab,
-Ctrl+C/D/L, PageUp/PageDown, click, submit, nested sequences. What the tool
+Ctrl+C/D/L, PageUp/PageDown, submit, nested sequences. What the tool
 guarantees: a sequence carries no CR and no LF. What it does not guarantee:
 whether Up/Down/Ctrl+U/Home/End edit, recall history or do something else is
 application-defined (the description says so). Total encoded size ≤ 16384
@@ -154,8 +154,8 @@ read `role`; text always carried: the release `text_omitted` economy is not
 extended). A call cancelled between the write and the release update leaves
 `"requested"` in the cached receipt: a replay returns it unchanged with a fresh
 readback whose `role` says whether control is still held, and never releases.
-`claim`, `release`, `allow_output_below_cursor` and
-`allow_output_since_observation` enter the request fingerprint; a replayed
+`claim`, `release` and `allow_output_since_observation` enter the request
+fingerprint; a replayed
 `request_id` never claims, releases or writes again. `control(action=claim)`
 is unchanged; `control(action=release)` runs the same release step since
 #1697. Helpers live in `terminal_interaction/input_control.rs`.
@@ -213,48 +213,22 @@ unchanged. The refusal for a row that is gone (or an id that never existed)
 reads `terminal not found: unknown id, deleted with its card, or reaped as
 residue`.
 
-### `allow_output_below_cursor` — status-line refreshes are not stale
+### `screen_diff` on stale results
 
 Each registered observation additionally stores the cursor `{row, column,
 visible}` and one 64-bit hash per rendered row computed from the row's
 `Frame.cells` (glyphs AND presentation — width, attributes, colours — so a
 highlight change counts), computed from the capture already taken, outside the
-registry lock (`terminal_interaction/screen_diff.rs`). `input
-allow_output_below_cursor: true` (default false): when only the revision fence
-fails, the live frame is compared with the observation and the write proceeds
-iff the cursor is within `0..rows` and identical (position and visibility;
-#1677: it may be hidden in both captures — a visibility CHANGE flips an input
-mode and is refused by the surface fence first, which is already required),
-`scroll_offset == 0`, the row count is unchanged and every row with index ≤
-cursor.row hashes identically — only rows strictly below the cursor differ
-(possibly none: a revision can move without a textual or presentational
-change). Anything else stays `stale_observation`.
-`allow_output_since_observation: true` remains the wider opt-in and wins when
-both are set. The tolerance is accepted only for draft edits — `text`,
-`sequence` and a `key` from the sequence vocabulary — and refused (invalid
-params at the MCP layer, the same refusal in `TerminalInteraction::input`)
-for `submit`, `click`, Enter, Tab, Escape, other control keys and PageUp/PageDown:
-Claude Code's slash-command menu renders below the input row and re-sorts
-while it loads, so an Enter admitted by the tolerance could pick a different
-item than the one observed; a submission in a field whose status text moves
-keeps using `allow_output_since_observation` after inspecting the fresh
-state.
-
-Receipt: when the tolerance admitted the write, `observation_drift` gains
-`tolerance: "below_cursor"`, `rows_changed_below_cursor: [indices]` (first 16),
-`rows_changed_total` and `truncated`. Every stale result gains `screen_diff:
-{compared: {observed_revision, current_revision}, cursor: {moved, visible},
-rows_changed_total, rows_changed_at_or_above_cursor,
+registry lock (`terminal_interaction/screen_diff.rs`). Every stale result
+carries `screen_diff: {compared: {observed_revision, current_revision},
+cursor: {moved, visible}, rows_changed_total, rows_changed_at_or_above_cursor,
 rows_changed_below_cursor}` (counts; `rows_changed_total: 0` means the revision
-moved without a textual/presentational change) and `next` names both flags and
-says neither bypasses the control, surface, viewport or pending fences. This is
-an opt-in text-and-presentation drift heuristic, not target equality: a
-completion menu opening below a shell prompt or an editor popup below the
-cursor leaves rows ≤ cursor intact and is not benign, invisible application
-state is not seen, and hash collisions are theoretically possible. The Planner
-opts in per request for input fields whose hint/status line refreshes (Claude
-Code's draft box), never for menus or clicks. The check runs at admission like
-the other fences (documented residual window unchanged).
+moved without a textual/presentational change) and `next` names
+`allow_output_since_observation`, which bypasses none of the control, surface,
+viewport or pending fences. This is a text-and-presentation drift heuristic,
+not target equality. The narrower `allow_output_below_cursor` opt-in (a hint
+line below an unmoved cursor, draft edits only) was deleted by #1893 S5: the
+Planner never used it.
 
 #1684 (Planner ask, round 17): a write that `allow_output_since_observation`
 admitted after the revision moved runs the same comparison on the frame the
@@ -264,9 +238,7 @@ through without observing again. `observation_drift` then carries
 `rows_changed_total`, `rows_changed_at_or_above_cursor` and
 `rows_changed_below_cursor` (both counts, as on a stale result),
 `rows_changed: [indices]` (the first 16 across both classes, at-or-above
-first) and `truncated` (judged on the total). The below-cursor shape above is
-unchanged (its `rows_changed_below_cursor` stays the index list); when both
-flags are set the wide one admits and its shape is reported. No fence moved:
+first) and `truncated` (judged on the total). No fence moved:
 the wide flag admits whatever the comparison says, and an input on the exact
 revision still carries no `observation_drift` at all. Every write receipt of
 the request, the cached unknown one included, carries the same rows, so a
@@ -290,7 +262,7 @@ PTY with `stty raw -echo; exec cat -v` (the bytes arrive concatenated, in
 order, as `7200 + 19^[[D^[[D^[[D^[[D^[[D^?9`) and against bash's readline
 (the draft reads `echo 7209 + 19`).
 
-## Open with a wait, replace in the draft, receipt summary (#1677)
+## Open with a wait and receipt summary (#1677)
 
 Round 14 (#1666) ran the Claude TUI scenarios in 16 terminal tool calls
 with zero errors; the interview left three asks, all round trips or reading
@@ -309,7 +281,7 @@ submitted: an invalid wait creates no card). Order inside the handler:
 create (or the idempotent replay, `SucceededViaCollision` included) →
 immediate text observation (establishes the client, as before) → when
 `claim:true`, `claim_after_open` with an immediate readback → the final
-observation with the wait plan and the requested format, which is what the
+observation with the wait plan, which is what the
 open returns with `claim {status}` and the ids attached. The wait therefore
 runs after the claim, never inside `claim_after_open`'s serial guard, and a
 failed claim still returns the waited state with `claim {status:
@@ -318,15 +290,10 @@ unavailable, reason}`. Its baseline is the connection's previous observation
 change wait waits for a change after the open/claim, a text wait ignores the
 baseline and matches a screen that is already present (`already: true`).
 Without wait arguments an open returns as before (the immediate read, or the
-claim readback). `format=image` with a wait is one capture (wait → frame →
-render); when the render fails the open keeps its #1620 F6 behaviour and
-falls back to an immediate text observation plus `image {status:
-unavailable, reason}`: the screen shown is the post-wait one, but that
-fallback's `wait` block is the immediate read's (a known limitation; no round
-has used an image). The operation runtime's deadline covers only the create;
+claim readback). The operation runtime's deadline covers only the create;
 the wait (≤ 20 s) and the claim (≤ 7 s) run after it inside the MCP call, as
 observe's 20 s already does. The wait arguments never enter
-`open_payload_hash` (like `format` and `claim`): a replayed request_id
+`open_payload_hash` (like `claim`): a replayed request_id
 returns the same terminal and runs the wait as asked.
 
 `program` is a `/bin/sh -c` command line run with the terminal's env
@@ -337,89 +304,11 @@ one call: `{"request_id":"…","program":"claude --settings
 \"$NEIGE_CLAUDE_SETTINGS\"","claim":true,"wait_for":"text","wait_text":["trust
 this folder","❯"]}` → the trust dialog (or the prompt) with control held.
 
-### `replace` — the server derives the edit from the screen
+### `replace` (deleted)
 
-`{"type":"replace","from":"11","to":"19"}`: `from` nonempty printable text
-(≤ 200 bytes), `to` printable (may be empty = delete), neither with control
-characters (so no CR/LF), no other fields. The shape is checked where every
-action's shape is checked (`actions.rs`, before the claim; `encode` returns
-`Encoded::Replace` instead of bytes). The plan is derived from the live frame
-captured at the pre-write fences, only after the revision/tolerance admission
-(a stale observation is reported as `stale_observation` before any lookup),
-in `terminal_interaction/replace_plan.rs`:
-
-* the cursor row is `cells[row*cols..(row+1)*cols]`; a continuation cell of
-  a wide glyph (`width == 0`, text `" "`, measured against rmux-core 0.10.0)
-  is skipped; blank cells are kept (one character each: the plan assumes the
-  row is the application's line buffer with one character per non-padding
-  cell); the cursor column is a zero-based cell column and a cursor inside a
-  wide cell (`start < column < start+width`) or off the row is refused; the
-  cursor may be hidden — round 15 on Claude Code 2.1.259 observed `cursor
-  {column: 29, row: 12, visible: false}` on the draft `❯ 请只回答 7200 + 11
-  的结果。`: Claude Code keeps DECTCEM off in its draft box while positioning
-  the cursor at the edit point, so the plan uses the position whether or not
-  the cursor is shown and the receipt reports `cursor_visible` for audit;
-* the character index at a boundary is Σ `cell.text.chars().count()` over
-  the non-padding cells before it; `from` is searched in the row string built
-  from those cells in the same scalar convention, counting overlapping
-  occurrences (`aaa` holds two `aa`); exactly one occurrence is required;
-  review r1 A: the application moves and erases per CELL while the plan
-  counts scalars, so a cell holding several scalars (a combining sequence,
-  an emoji) inside the match or between the match and the cursor is refused
-  (`> 11 café` with `é` = e+U+0301 gave `Left×6/Backspace×2` → `191 café`
-  on readline; this also covers a match cutting through such a cell);
-  review r1 B: a cursor in the last column over a non-blank cell is refused
-  — after a write into the last column the terminal parks the cursor there
-  with a pending wrap, one cell left of the application's position, and
-  `Cursor` does not expose the flag; the refusal is conservative: a cursor
-  genuinely placed before the final character of a row-filling draft (no
-  pending wrap) is refused too, and a `sequence` still edits it; review r1
-  D: a `from` whose end lies
-  past both the cursor and the last non-blank cell (it reaches into the
-  trailing blank run) is refused, since the moves would run past the
-  buffer's end;
-* moves = `end_index(from) − cursor_index` (negative → `Left`, positive →
-  `Right`, zero → none), bounded by the row width and `ACTION_BYTES_MAX`, not
-  by the public `repeat ≤ 32`; the bytes are `Left×n` or `Right×n`, then
-  `Backspace×chars(from)`, then `to`, with the `sequence` key encoding, in one
-  ordered write (one barrier, one ack, one receipt).
-
-Refusals (cursor row outside the viewport, cursor inside a wide cell, off
-the row or parked in the last column, absent, N occurrences, another row,
-past the draft, a multi-scalar cell in the span, control characters, size)
-follow the invalid-action convention: an RPC error through
-`failure` (−32403), nothing written, nothing cached; after a granted
-`claim:true` the error carries the `note_claim` disclosure. The Planner then
-falls back to a `sequence`. The plan is stamped on all three `WriteReceipts`
-(unknown/written/refused) before the unknown receipt is cached, as `replace:
-{row, cursor_index, cursor_visible, moves: {key, repeat} | null, erased,
-inserted}`; a replay returns the cached plan and never recomputes it. `allow_output_below_cursor`
-admits `replace` (an editing action: it joins the edits-only allowlist and
-its reason string, not `SEQUENCE_KEYS`); the fingerprint covers the action
-as given. `application_result` stays `unverified`; the recommended shape is
-`replace` + `observe: true, wait_for: "change"` (the readback IS the
-preview), then `submit`. What the tool guarantees: the bytes correspond to
-that plan against the row as captured. What it does not: that the
-application moves one character per arrow key and erases one per Backspace
-(true for Claude Code — measured with CJK in rounds 13/14 — readline and most
-line editors), that the text belongs to an unsubmitted draft (the screen
-cannot prove it), or wrapped drafts (a `from` on another row is refused).
-The focused suite drives Python's `input()` with GNU readline under
-`LANG=C.UTF-8`: `11 松果` → `19 松果` moves Left 3 (characters, not the 5
-columns), Home then `松果` → `苹果` moves Right 5, a separate Enter prints
-the edited line, and the same edit under `printf '\033[?25l'` (cursor hidden,
-as in Claude Code) is written with `cursor_visible: false`. The same fact
-reaches `allow_output_below_cursor`: `ScreenDiff::only_below_cursor` compares
-the cursor's position (a cursor hidden in both captures is admitted; the
-suite's hint box under `\033[?25l` reports `screen_diff.cursor {moved: false,
-visible: false}` and writes with `tolerance: below_cursor`), while a
-visibility change between the observation and the live frame stays refused
-by the surface fence through the mode bit, as before. Known gap (review r1
-L): with visibility no longer required, an application that hides its cursor
-and parks it on row 0 leaves only row 0 in the at-or-above set, so
-`allow_output_below_cursor` would admit an edit onto a largely repainted
-screen; the edits-only allowlist still excludes Enter, submit and clicks, and
-the Planner opts in only for a draft box whose cursor sits on the draft.
+The `replace {from, to}` action, which derived Left/Right + Backspace + text
+from the live cursor row, was deleted by #1893 S5 (Planner use was zero); a
+draft is fixed with one bounded `sequence`.
 
 ### `summary` on receipts
 
@@ -464,10 +353,10 @@ only when quiet for the full `settle_ms` — an idle screen returns at the
 deadline settled, a spinner within a few tens of ms unsettled, a streaming
 log at the grace end unsettled. Constants: `wait::FRAME_GAP` 30 ms; the
 grace is `settle_ms` (default 150).
-The summary adds no input-schema bytes; the open wait properties and the
-`replace` arm do (after r16's `wait_text_absent`: open 942 bytes, input
-2126, observe 847, control 833 per `schema.to_string().len()` on the golden
-registration, against the strict `< 4000` per-tool schema test).
+The summary adds no input-schema bytes; the open wait properties do (after
+#1893 S5: open 874 bytes, input 1647, observe 779, control 833 per
+`schema.to_string().len()` on the golden registration, against the strict
+`< 4000` per-tool schema test).
 
 ### Text conditions on waits (#1677 r16)
 
@@ -536,70 +425,27 @@ already rendered.
 The second repeated friction is guidance only (input.md, planner.md, no
 fence change): the Planner pressed Enter right after an edit readback and
 Claude Code's status line below the input refreshed in between (`● high ·
-/effort` appended) → `stale_observation` → resend. `allow_output_below_cursor`
-stays edits-only by design (the slash-menu hazard), so the guidance is: when
+/effort` appended) → `stale_observation` → resend. The guidance is: when
 submitting a draft that the previous action's readback already showed
-(text/replace/sequence), pass `allow_output_since_observation=true` on that
+(text/sequence), pass `allow_output_since_observation=true` on that
 Enter/submit; keep the plain fence when a command menu may be open below
 the draft (a draft starting with `/`) or after a long pause; `screen_diff` on
-a stale result still says which flag applies.
+a stale result still says what changed.
 
-### `scroll_to_text` — a history row by its text (#1710)
+### `scroll_to_text` (deleted)
 
-Round 22: to quote a diff Claude Code had shown, the Planner paged the
-scrollback by `scroll_offset` (55 → 205 → 416 → 441) and asked for a text
-search that returns the offset. `observe` gains `scroll_to_text` (1..200
-bytes, plain case-sensitive substring, no control characters) and
-`scroll_to_occurrence` (`latest` default | `earliest`);
-`terminal_interaction/scroll_to.rs` holds the request type and the
-arithmetic, `calm_terminal_view::TerminalView::find_text` the scan.
-
-* The scan reads the projection's absolute rows one at a time (the same
-  `absolute_line_view` index `frame` uses, `0..history_rows + rows`; the
-  live viewport only in the alternate screen, which shows no scrollback),
-  each row's plain text built by the same `row_text` `frame` builds
-  `text` with, and returns the bottom-most (`latest`) or top-most
-  (`earliest`) row containing the pattern.
-* Offset arithmetic (`scroll_to::offset_for`): a found history row
-  `row_absolute < history_rows` is captured at `scroll_offset =
-  history_rows - row_absolute`, so it is the first screen row (`row: 0`);
-  a live-screen row (`row_absolute >= history_rows`) and `not_found`
-  capture the live viewport (`scroll_offset 0`; `row` is then
-  `row_absolute - history_rows`, or null). The block is `scroll_to:
-  {pattern, occurrence, status: found | not_found, row_absolute, row}`
-  with `row = row_absolute - (history_rows - scroll_offset)`; the key is
-  absent when no search was asked; the summary line gains `scroll_to found
-  row N` / `scroll_to not_found`.
-* One lock: the search, `history_rows` and the frame capture run under
-  one `model_view` lock acquisition in `capture`, so the found row and the
-  returned screen are one revision. A wait (change/signal/elapsed) runs
-  first as before; the search reads the post-wait screen.
-* Coupling: `scroll_offset` must be 0 (the search derives its own) and a
-  wait that tests text (`wait_for=text`, or signal mode with conditions)
-  is exclusive with it — both are invalid params at the MCP layer
-  (`scroll_to_request` in `mcp_server/tools/terminal.rs`) and refused
-  again by `TerminalInteraction::observe`; `scroll_to_occurrence` without
-  the text is invalid params.
-* The input fence is unchanged: a found history row makes the
-  observation a history view (`scroll_offset > 0`), which
-  `terminal_interaction/operations.rs:147-150` refuses as an input baseline
-  (`return to live viewport before input`), so the Planner still observes
-  at offset 0 before typing.
+The #1710 history search (`scroll_to_text`, `scroll_to_occurrence`) was
+deleted by #1893 S5 (Planner use was zero); `scroll_offset` pages the
+scrollback.
 
 ### Collector (#1677)
 
 `open_with_wait` (open calls with any wait argument), `open_wait_outcomes`
-(tally of those opens' returned `wait.outcome`), `replace_actions`
-(requested, failed ones included), `replace_written` (non-failed replace
-receipts with outcome `written`), `summary_present` (non-failed input/control
+(tally of those opens' returned `wait.outcome`), `summary_present` (non-failed input/control
 receipts carrying `summary`); the wait accounting no longer excludes open
 results, so an open with `wait_for=change` or `text` counts as a change or
-text wait request with its outcome; the edit scenario's `corrects` rule
-accepts a `replace`. r16: `text_condition_requests` (observation-requesting
+text wait request with its outcome. r16: `text_condition_requests` (observation-requesting
 calls in signal mode whose arguments carry `wait_text` or
 `wait_text_absent`) and `signal_condition_outcomes` (tally of those calls'
 returned `wait.repaint.outcome` joined with whether every asked condition
-held, e.g. `settled/held`, `unsettled/not_held`). #1710:
-`history_search_requests` (observe calls whose arguments carry
-`scroll_to_text`, failed ones included) and `history_search_found` (the
-non-failed ones whose result `scroll_to.status` is `found`).
+held, e.g. `settled/held`, `unsettled/not_held`).
