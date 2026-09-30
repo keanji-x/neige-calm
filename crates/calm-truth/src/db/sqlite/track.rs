@@ -208,9 +208,6 @@ pub async fn track_create_tx(
         recipe_id: recipe_origin.map(|o| o.recipe_id.clone()),
         recipe_revision: recipe_origin.map(|o| o.revision),
         workspace,
-        // Every track-create path stamps NULL: the policy is a user PATCH on a tree
-        // root, never inherited by a child row.
-        claude_permissions_policy: None,
         created_at: now,
         updated_at: now,
     })
@@ -278,32 +275,6 @@ pub async fn track_update_tx(
             }
             w.closed_at = None;
         }
-    }
-    // Tree-root-only, enforced in this single shared writer. Written ONLY when the
-    // patch names it, never re-serialized from the row read above: the row decode
-    // is lenient about unknown keys, so a title patch by an older binary would
-    // otherwise strip what a newer one stored.
-    if let Some(policy) = p.claude_permissions_policy {
-        let parent: Option<(String,)> = sqlx::query_as(
-            "SELECT parent_track_id FROM tracks WHERE id = ?1 AND parent_track_id IS NOT NULL",
-        )
-        .bind(w.id.as_str())
-        .fetch_optional(&mut **tx)
-        .await?;
-        if let Some((parent_track_id,)) = parent {
-            return Err(CalmError::Conflict(format!(
-                "claude_permissions_policy is tree-root-only; track {} is a child of \
-                 {parent_track_id} — set the policy on its root track instead",
-                w.id.as_str()
-            )));
-        }
-        let stored = policy.as_ref().map(serde_json::to_string).transpose()?;
-        sqlx::query("UPDATE tracks SET claude_permissions_policy = ?1 WHERE id = ?2")
-            .bind(stored)
-            .bind(w.id.as_str())
-            .execute(&mut **tx)
-            .await?;
-        w.claude_permissions_policy = policy;
     }
     w.updated_at = now_ms();
 

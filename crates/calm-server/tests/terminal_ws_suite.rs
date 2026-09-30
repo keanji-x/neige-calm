@@ -2,8 +2,6 @@
 mod planner_terminal;
 #[path = "cases/terminal_action_observation.rs"]
 mod terminal_action_observation;
-#[path = "cases/terminal_below_cursor.rs"]
-mod terminal_below_cursor;
 #[path = "cases/terminal_card_endpoint.rs"]
 mod terminal_card_endpoint;
 #[path = "cases/terminal_input_control.rs"]
@@ -12,12 +10,8 @@ mod terminal_input_control;
 mod terminal_lifecycle;
 #[path = "cases/terminal_open_wait.rs"]
 mod terminal_open_wait;
-#[path = "cases/terminal_permissions_policy.rs"]
-mod terminal_permissions_policy;
 #[path = "cases/terminal_receipt_summary.rs"]
 mod terminal_receipt_summary;
-#[path = "cases/terminal_replace.rs"]
-mod terminal_replace;
 #[path = "cases/terminal_sequence.rs"]
 mod terminal_sequence;
 #[path = "cases/terminal_signals.rs"]

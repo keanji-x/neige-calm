@@ -4,11 +4,9 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, card_with_codex_create_tx};
 use calm_server::event::EventBus;
-use calm_server::mcp_server::registry::ToolCallIdentity;
 use calm_server::mcp_server::{McpServer, build_default_registry};
 use calm_server::model::{CardRole, NewArea, NewTrack, new_id};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
-use calm_server::session_projection_repo::AgentProvider;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_interaction::TerminalInteraction;
@@ -41,8 +39,6 @@ pub struct Harness {
     socket: PathBuf,
     pub token: String,
     pub track: String,
-    /// The Planner card behind `token`, for direct service calls that bypass the MCP layer (`identity()`).
-    pub card_id: String,
     pub session_id: String,
     pub area_id: String,
     /// The production REST router over the same state, for hook POSTs and card deletes.
@@ -212,25 +208,12 @@ impl Harness {
             socket,
             token: token.expect("planner MCP token"),
             track: track.id.to_string(),
-            card_id,
             session_id,
             area_id: area.id.to_string(),
             app,
             base_url,
             bridge,
             http,
-        }
-    }
-    /// The identity the MCP transport builds for `token` (card-bound), for calling `TerminalInteraction` directly.
-    pub fn identity(&self) -> ToolCallIdentity {
-        ToolCallIdentity {
-            card_id: self.card_id.clone(),
-            role: CardRole::Planner,
-            provider: AgentProvider::Codex,
-            session_id: self.session_id.clone(),
-            track_id: Some(self.track.clone()),
-            area_id: self.area_id.clone(),
-            thread_id: "card-bound".to_string(),
         }
     }
     /// POST a hook body for `card_id` through the production ingest route.
@@ -268,7 +251,6 @@ impl Harness {
     pub async fn call(&self, name: &str, args: Value) -> Value {
         self.call_with_token(&self.token, name, args).await
     }
-    /// `call` as another Planner (a child track's Planner card minted by `planner_token`).
     pub async fn call_with_token(&self, token: &str, name: &str, args: Value) -> Value {
         let stream = UnixStream::connect(&self.socket).await.unwrap();
         let (read, mut write) = stream.into_split();
@@ -293,33 +275,6 @@ impl Harness {
             .unwrap()
             .unwrap();
         serde_json::from_str(&line).unwrap()
-    }
-    /// Mint a Planner card (and its MCP token) on `track_id`, the way `start` does for the harness track.
-    pub async fn planner_token(&self, track_id: &str, cwd: &str) -> (String, String) {
-        let mut tx = self.sql.pool().begin().await.unwrap();
-        let (card_id, session_id) = (new_id(), new_id());
-        let (_, _, token) = card_with_codex_create_tx(
-            &mut tx,
-            card_id.clone(),
-            &session_id,
-            None,
-            track_id.to_string().into(),
-            None,
-            None,
-            cwd.to_string(),
-            json!({}),
-            None,
-            None,
-            None,
-            CardRole::Planner,
-            false,
-            &self.state.card_role_cache,
-            calm_server::routes::theme::RequestTheme::default_dark(),
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        (token.expect("planner MCP token"), session_id)
     }
     pub async fn ok(&self, name: &str, args: Value) -> Value {
         let response = self.call(name, args).await;
@@ -366,7 +321,7 @@ impl Harness {
 pub fn assert_text_observation(response: &Value) -> &Value {
     assert!(response.get("error").is_none(), "{response}");
     let content = response["result"]["content"].as_array().unwrap();
-    assert_eq!(content.len(), 1, "text observation must not include images");
+    assert_eq!(content.len(), 1, "an observation is one text block");
     assert_eq!(content[0]["type"], "text");
     let metadata = &response["result"]["structuredContent"];
     // The text block is a one-line summary, never a second copy of the state and never the screen text.
@@ -385,10 +340,6 @@ pub fn assert_text_observation(response: &Value) -> &Value {
         "{summary}"
     );
     assert!(serde_json::from_str::<Value>(summary).is_err());
-    assert!(
-        metadata.get("image_source").is_none(),
-        "text observation must not claim an image source"
-    );
     uuid::Uuid::parse_str(metadata["observation_id"].as_str().unwrap()).unwrap();
     uuid::Uuid::parse_str(metadata["connection_id"].as_str().unwrap()).unwrap();
     assert!(metadata["text"].is_array());

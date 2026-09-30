@@ -70,8 +70,6 @@ mod today_summary;
 mod track_activity_fixture;
 #[path = "cases/track_activity_projection.rs"]
 mod track_activity_projection;
-#[path = "cases/track_claude_permissions_policy.rs"]
-mod track_claude_permissions_policy;
 #[path = "cases/track_conversations.rs"]
 mod track_conversations;
 #[path = "cases/track_delete_thread_cache.rs"]

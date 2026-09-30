@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use utoipa::ToSchema;
 
-use crate::claude_permissions::ClaudePermissionsScope;
 pub use crate::ids::{ActorId, AreaId, CardId, TrackId};
 use crate::planner_attachment::PlannerAttachment;
 use crate::runtime::{AgentProvider, WorkerSessionKind};
@@ -267,10 +266,6 @@ pub struct Track {
     pub recipe_revision: Option<i64>,
     #[serde(default)]
     pub workspace: TrackWorkspace,
-    /// The user-set Claude Code permission policy of this track's TREE, stored on the tree root only;
-    /// a child row is always `null` here even when its root carries a policy.
-    #[serde(default)]
-    pub claude_permissions_policy: Option<ClaudePermissionsScope>,
     pub created_at: i64,
     pub updated_at: i64,
 }

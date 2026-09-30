@@ -42,14 +42,6 @@ function normalizeLegacyTemplateKeys(raw: unknown): unknown {
   };
 }
 
-/** A Claude Code permission scope: `edit` globs relative to the terminal cwd, `bash` prefixes, `deny` prefixes. */
-export const claudePermissionsScopeSchema = z.object({
-  edit: z.array(z.string()).optional(),
-  bash: z.array(z.string()).optional(),
-  deny: z.array(z.string()).optional(),
-});
-export type ClaudePermissionsScope = z.infer<typeof claudePermissionsScopeSchema>;
-
 const trackObjectSchema = z.object({
   id: z.string(),
   area_id: z.string(),
@@ -80,8 +72,6 @@ const trackObjectSchema = z.object({
       worktree: z.string().optional(),
     })
     .default({ kind: 'attached', path: '', frozen_at: null }),
-  /** Stored on the tree root only: a child track shows `null` here even when its root carries one. */
-  claude_permissions_policy: claudePermissionsScopeSchema.nullable().default(null),
   created_at: z.number(),
   updated_at: z.number(),
 });

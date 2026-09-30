@@ -7,9 +7,8 @@ use serde_json::{Value, json};
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
-    append_decision_event_in_tx, card_stamp_claude_permissions_tx, card_update_tx,
-    card_with_terminal_create_tx, session_projection_active_for_card_tx, session_set_status_tx,
-    track_claude_permissions_ceiling_read,
+    append_decision_event_in_tx, card_update_tx, card_with_terminal_create_tx,
+    session_projection_active_for_card_tx, session_set_status_tx,
 };
 use crate::db::write_with_events_typed;
 use crate::error::{CalmError, Result};
@@ -23,13 +22,8 @@ use crate::routes::theme::RequestTheme;
 use crate::session_projection_repo::{WorkerSessionKind, WorkerSessionState};
 use crate::state::WriteContext;
 use crate::terminal_hooks::TerminalHookSettings;
-use crate::terminal_permissions::{
-    ClaudePermissionsScope, ClaudePermissionsSource, EffectiveClaudePermissions, apply_policy,
-    render_claude_permissions,
-};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::track_area_cache::TrackAreaCache;
-use crate::validation::TERMINAL_CLAUDE_PERMISSIONS_SOURCE_PAYLOAD_KEY;
 
 use super::{
     AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, Operation, PhaseTag,
@@ -169,9 +163,6 @@ pub struct TerminalCreateOperationPayload {
     /// Set only by `calm.terminal.open`; REST-created terminals leave it false and get exactly the env they asked for.
     #[serde(default)]
     pub planner_hooks: bool,
-    /// Set only by `calm.terminal.open` when the Planner declared a scope. Wire key frozen as `claude_permissions`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub claude_permissions: Option<ClaudePermissionsScope>,
     #[serde(flatten)]
     pub request: TerminalCreateRequestPayload,
 }
@@ -295,20 +286,6 @@ impl ProviderAdapter for TerminalAdapter {
             explicit_terminal_cwd(Some(payload.request.cwd.clone())),
         )
         .await?;
-        // The Track policy is re-read on this write transaction and merged with the declaration; a policy narrowed since the handler's pre-check is refused here. Only a Planner open reads the policy.
-        let ceiling = if payload.planner_hooks {
-            track_claude_permissions_ceiling_read(tx, &track_id).await?
-        } else {
-            None
-        };
-        let effective = apply_policy(ceiling.as_ref(), payload.claude_permissions.as_ref())
-            .map_err(CalmError::BadRequest)?;
-        let claude_permissions: Option<(EffectiveClaudePermissions, ClaudePermissionsSource)> =
-            effective
-                .map(|(scope, source)| {
-                    render_claude_permissions(&cwd, &scope).map(|block| (block, source))
-                })
-                .transpose()?;
         let scope = card_scope(
             self.repo.as_ref(),
             CardId::from(card_id.clone()),
@@ -333,13 +310,6 @@ impl ProviderAdapter for TerminalAdapter {
             payload.planner_hooks,
         )
         .await?;
-        let card = match &claude_permissions {
-            Some((block, source)) => {
-                card_stamp_claude_permissions_tx(tx, &card, serde_json::to_value(block)?, *source)
-                    .await?
-            }
-            None => card,
-        };
         let event = Event::CardAdded(card.clone());
         let runtime_event = Event::WorkerSessionStarted {
             worker_session_id: runtime_id.clone(),
@@ -369,11 +339,6 @@ impl ProviderAdapter for TerminalAdapter {
             "env": env,
             "planner_hooks": payload.planner_hooks,
         });
-        if let Some((block, source)) = &claude_permissions {
-            // Recovery input of `spawn_side_effect`: a restart rewrites the settings file from this persisted block, never from the card or the request.
-            output.data["claude_permissions"] = serde_json::to_value(block)?;
-            output.data[TERMINAL_CLAUDE_PERMISSIONS_SOURCE_PAYLOAD_KEY] = json!(source.as_str());
-        }
         output.post_commit_events.push(BroadcastEnvelope {
             id: event_id,
             event_version: SYNC_EVENT_VERSION,
@@ -419,17 +384,7 @@ impl ProviderAdapter for TerminalAdapter {
                         .into(),
                 )
             })?;
-            let permissions: Option<EffectiveClaudePermissions> = output
-                .data
-                .get("claude_permissions")
-                .map(|block| serde_json::from_value(block.clone()))
-                .transpose()
-                .map_err(|e| {
-                    CalmError::Internal(format!(
-                        "terminal tx_output claude_permissions is malformed: {e}"
-                    ))
-                })?;
-            settings.write_settings(&card_id, permissions.as_ref())?;
+            settings.write_settings(&card_id)?;
         }
 
         match self

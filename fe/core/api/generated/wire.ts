@@ -106,19 +106,6 @@ export type ChannelVerdict = { role: string, verdict: ChannelVerdictKind, };
 export type ChannelVerdictKind = "approved" | "changes_requested";
 
 /**
- * A declared Claude Code permission scope: the `claude_permissions` argument of `calm.terminal.open`
- * and the value of `tracks.claude_permissions_policy`. The derive is lenient on unknown keys on
- * purpose (stored rows from a newer binary); strictness lives in [`parse_scope_named`].
- */
-export type ClaudePermissionsScope = { edit?: Array<string>, bash?: Array<string>, deny?: Array<string>, };
-
-/**
- * Which scope a terminal's rendered `permissions` block came from; stamped on the card beside the
- * block as `Card.payload.claude_permissions_source`. A card with no source reads as [`Declared`](Self::Declared).
- */
-export type ClaudePermissionsSource = "declared" | "track_policy" | "declared_within_policy";
-
-/**
  * Why a Git delivery produced no candidate. Every value has exactly one producer (D2 code table).
  */
 export type DeliveryFailureCode = "workspace_missing" | "provenance_mismatch" | "commit_failed" | "unresolved";
@@ -514,12 +501,7 @@ recipe_id: string | null,
 /**
  * The recipe's `revision` at the moment this track was created.
  */
-recipe_revision: number | null, workspace: TrackWorkspace, 
-/**
- * The user-set Claude Code permission policy of this track's TREE, stored on the tree root only;
- * a child row is always `null` here even when its root carries a policy.
- */
-claude_permissions_policy: ClaudePermissionsScope | null, created_at: number, updated_at: number, };
+recipe_revision: number | null, workspace: TrackWorkspace, created_at: number, updated_at: number, };
 
 /**
  * One row of `GET /api/tracks/{track_id}/conversations`.
@@ -694,12 +676,7 @@ recipe_id: string | null,
 /**
  * The recipe's `revision` at the moment this track was created.
  */
-recipe_revision: number | null, workspace: TrackWorkspace, 
-/**
- * The user-set Claude Code permission policy of this track's TREE, stored on the tree root only;
- * a child row is always `null` here even when its root carries a policy.
- */
-claude_permissions_policy: ClaudePermissionsScope | null, created_at: number, updated_at: number, };
+recipe_revision: number | null, workspace: TrackWorkspace, created_at: number, updated_at: number, };
 
 /**
  * A track's typed workspace. `path` is its single stored path.

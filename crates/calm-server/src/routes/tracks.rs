@@ -68,7 +68,6 @@ use std::sync::{Mutex as StdMutex, OnceLock};
 #[cfg(feature = "fixtures")]
 use tokio::sync::Notify;
 
-mod claude_permissions;
 mod create;
 mod fork_guard;
 
@@ -109,7 +108,6 @@ impl Default for TrackCreateMintGate {
     }
 }
 
-use claude_permissions::validate_policy_patch;
 use fork_guard::guard_forked_blocks;
 
 #[derive(Clone)]
@@ -2492,7 +2490,6 @@ pub(crate) async fn update_track(
             planner_task_ceiling,
             automation_policy,
             tree_task_budget,
-            claude_permissions_policy,
         } = &p;
         let mixes_other_fields = title.is_some()
             || sort.is_some()
@@ -2501,8 +2498,7 @@ pub(crate) async fn update_track(
             || require_task_gates.is_some()
             || planner_task_ceiling.is_some()
             || automation_policy.is_some()
-            || tree_task_budget.is_some()
-            || claude_permissions_policy.is_some();
+            || tree_task_budget.is_some();
         if mixes_other_fields {
             return Err(CalmError::BadRequest(
                 "track workspace changes must be sent on their own; a workspace re-point moves \
@@ -2523,14 +2519,11 @@ pub(crate) async fn update_track(
     // raise its own ceiling.
     if (p.planner_task_ceiling.is_some()
         || p.automation_policy.is_some()
-        || p.tree_task_budget.is_some()
-        || p.claude_permissions_policy.is_some())
+        || p.tree_task_budget.is_some())
         && !matches!(actor_id, ActorId::User)
     {
         return Err(CalmError::Forbidden(
-            "automation_policy, planner_task_ceiling, tree_task_budget and \
-             claude_permissions_policy are user-only"
-                .into(),
+            "automation_policy, planner_task_ceiling and tree_task_budget are user-only".into(),
         ));
     }
 
@@ -2568,7 +2561,6 @@ pub(crate) async fn update_track(
             "automation_policy must be auto-declare or declare-and-wait (got {policy}); pass null to reset to the kernel default"
         )));
     }
-    validate_policy_patch(&mut p)?;
 
     // An entirely empty patch is the idempotent retry path: nothing to write or emit.
     let patch_has_changes = p.title.is_some()
@@ -2578,8 +2570,7 @@ pub(crate) async fn update_track(
         || p.require_task_gates.is_some()
         || p.planner_task_ceiling.is_some()
         || p.automation_policy.is_some()
-        || p.tree_task_budget.is_some()
-        || p.claude_permissions_policy.is_some();
+        || p.tree_task_budget.is_some();
     if !patch_has_changes {
         return Ok(Json(existing).into_response());
     }

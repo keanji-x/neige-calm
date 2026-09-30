@@ -7,32 +7,27 @@ use crate::terminal_renderer::{
 };
 use anyhow::{Result, ensure};
 use calm_session::ClientMsg;
-use calm_terminal_view::{InputSurface, Rasterizer};
+use calm_terminal_view::InputSurface;
 use screen_diff::{CursorSnapshot, row_hashes};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
-use tokio::sync::{Mutex, OnceCell};
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 mod action_observation;
 mod actions;
-pub use actions::{BELOW_CURSOR_EDITS_ONLY, edits_the_draft};
 mod client;
 mod input_control;
 mod observation;
 mod operations;
-pub use observation::ObservationFormat;
 pub use operations::InputOptions;
 mod receipt_summary;
 pub use receipt_summary::{receipt_summary, summary_line};
 mod receipts;
 mod repaint;
-mod replace_plan;
 mod screen_diff;
-mod scroll_to;
-pub use scroll_to::{Occurrence, SCROLL_TO_TEXT_MAX_BYTES, ScrollTo};
 mod target;
 mod text_conditions;
 mod text_wait;
@@ -72,7 +67,6 @@ pub struct TerminalInteraction {
     repo: Arc<dyn RouteRepo>,
     renderer: Arc<TerminalRendererRegistry>,
     clients: Mutex<HashMap<String, Arc<Client>>>,
-    raster: OnceCell<Arc<Rasterizer>>,
     observations: StdMutex<HashMap<Uuid, Observation>>,
     #[cfg(feature = "fixtures")]
     claim_window_seam: StdMutex<Option<ClaimWindowSeam>>,
@@ -83,7 +77,7 @@ struct Observation {
     revision: u64,
     control: Option<Uuid>,
     surface: InputSurface,
-    /// What `allow_output_below_cursor` compares: the cursor and one hash per rendered row.
+    /// What a stale-observation `screen_diff` compares: the cursor and one hash per rendered row.
     cursor: CursorSnapshot,
     row_hashes: Vec<u64>,
     created: Instant,
@@ -94,7 +88,6 @@ impl TerminalInteraction {
             repo,
             renderer,
             clients: Mutex::new(HashMap::new()),
-            raster: OnceCell::new(),
             observations: StdMutex::new(HashMap::new()),
             #[cfg(feature = "fixtures")]
             claim_window_seam: StdMutex::new(None),
@@ -214,43 +207,27 @@ impl TerminalInteraction {
             .map(|client| client.serial_waiters())
             .sum()
     }
-    /// `scroll_to` captures the screen scrolled to the matching history row instead of `offset`,
-    /// which must then be 0; the wait runs first and the search reads the post-wait screen.
     pub async fn observe(
         &self,
         identity: &ToolCallIdentity,
         target: &Target,
         offset: usize,
         wait: WaitPlan,
-        format: ObservationFormat,
-        scroll_to: Option<ScrollTo>,
-    ) -> Result<(Value, Option<Vec<u8>>)> {
+    ) -> Result<Value> {
         wait.validate()?;
         // A text wait is tested on the live viewport and returns that same viewport.
         ensure!(
             !wait.tests_text() || offset == 0,
             "wait_for=text or text conditions observe the live viewport; scroll_offset must be 0"
         );
-        // A history search derives its own offset and a text wait returns the live viewport: exclusive.
-        ensure!(
-            scroll_to.is_none() || offset == 0,
-            "scroll_to_text needs scroll_offset 0"
-        );
-        ensure!(
-            scroll_to.is_none() || !wait.tests_text(),
-            "scroll_to_text and text conditions are exclusive"
-        );
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
         let client = self.client(identity, &resolved.binding).await?;
-        self.capture(
-            identity, resolved, &client, offset, wait, None, format, scroll_to,
-        )
-        .await
+        self.capture(identity, resolved, &client, offset, wait, None)
+            .await
     }
     /// `baseline` is the revision (and signal seq) a change or signal wait
     /// compares against; `None` means this connection's previous observation
     /// (or the state at call start when there is none).
-    #[allow(clippy::too_many_arguments)]
     async fn capture(
         &self,
         identity: &ToolCallIdentity,
@@ -259,9 +236,7 @@ impl TerminalInteraction {
         offset: usize,
         wait: WaitPlan,
         baseline: Option<ReadbackBaseline>,
-        format: ObservationFormat,
-        scroll_to: Option<ScrollTo>,
-    ) -> Result<(Value, Option<Vec<u8>>)> {
+    ) -> Result<Value> {
         let terminal = resolved.binding.terminal_id.clone();
         let previous = *client
             .latest_observation
@@ -307,7 +282,7 @@ impl TerminalInteraction {
                 .map(|info| info.exited_at),
             false => None,
         };
-        let (frame, revision, found, observed_at) = {
+        let (frame, revision, observed_at) = {
             let view = client
                 .entry
                 .handle
@@ -317,18 +292,9 @@ impl TerminalInteraction {
             // The capture instant is taken under the projection lock so no output can advance the
             // frame between the timestamp and the capture. Presentation only; no fence reads it.
             let observed_at = std::time::SystemTime::now();
-            // The search and the frame come from one lock acquisition, so they are one revision.
-            let (offset, found) = match &scroll_to {
-                Some(request) => {
-                    let row = view.find_text(request.pattern(), request.occurrence())?;
-                    (scroll_to::offset_for(view.history_rows()?, row), row)
-                }
-                None => (offset, None),
-            };
             let (frame, revision) = view.capture(offset)?;
-            (frame, revision, found, observed_at)
+            (frame, revision, observed_at)
         };
-        let png = format.render_image(&self.raster, &frame).await?;
         let resolved =
             Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, false).await?;
         let observation_id = Uuid::new_v4();
@@ -341,7 +307,7 @@ impl TerminalInteraction {
                 .unwrap_or(signal_baseline),
             SIGNALS_PER_OBSERVATION,
         );
-        let mut metadata = json!({"terminal_id":terminal,"observation_id":observation_id,"connection_id":client.connection,
+        let metadata = json!({"terminal_id":terminal,"observation_id":observation_id,"connection_id":client.connection,
             "terminal_session_id":client.entry.handle.session_id,"control_id":control,"role":if control.is_some(){"owner"}else{"observer"},
             "task_status":resolved.task_status,"controllable":resolved.controllable,"task":resolved.binding.task,"worker_session_id":resolved.binding.worker_session_id,"card_id":resolved.binding.card_id,
             "observation_revision":revision.to_string(),"cols":frame.cols,"rows":frame.rows,"cursor":frame.cursor,
@@ -352,13 +318,6 @@ impl TerminalInteraction {
             "signals":{"hooks_seen":signals.last_seq > 0,"last_seq":signals.last_seq,
                 "since_previous_observation":signals.signals.iter().map(|signal| signal.to_json()).collect::<Vec<_>>(),
                 "dropped_since_previous_observation":signals.dropped}});
-        if png.is_some() {
-            metadata["image_source"] = json!("rmux_client_projection");
-        }
-        if let Some(request) = &scroll_to {
-            metadata["scroll_to"] =
-                scroll_to::report(request, found, frame.history_rows, frame.scroll_offset);
-        }
         let row_hashes = row_hashes(&frame);
         let mut observations = self
             .observations
@@ -391,7 +350,7 @@ impl TerminalInteraction {
             scroll_offset: frame.scroll_offset,
             last_seq: signals.last_seq,
         });
-        Ok((metadata, png))
+        Ok(metadata)
     }
     /// `open claim:true`: claim control right after creation. Unlike `control claim`, an open
     /// never revokes a holder; both "unowned" and "held by this connection" are decided against

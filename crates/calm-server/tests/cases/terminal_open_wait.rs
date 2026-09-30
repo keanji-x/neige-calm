@@ -339,39 +339,6 @@ async fn replayed_open_with_a_different_wait_reuses_the_terminal_and_waits() {
     assert_eq!(replayed["wait"]["outcome"], "matched", "{replayed}");
     assert_eq!(replayed["wait"]["text"]["already"], true, "{replayed}");
     assert_eq!(terminal_cards(&h).await, cards, "no second create");
-    let image = call_then_release(
-        &h,
-        &terminal,
-        "go",
-        h.call(
-            "calm.terminal.open",
-            open_args(
-                READY_THEN_LATER,
-                "replay-wait",
-                json!({"format":"image","wait_for":"text","wait_text":["LATER"],"wait_ms":5000}),
-            ),
-        ),
-    )
-    .await;
-    assert!(image.get("error").is_none(), "{image}");
-    let state = &image["result"]["structuredContent"];
-    assert_eq!(state["terminal_id"], terminal);
-    assert_eq!(state["wait"]["outcome"], "matched", "{state}");
-    assert_eq!(state["wait"]["text"]["pattern"], "LATER");
-    assert_eq!(state["image_source"], "rmux_client_projection", "{state}");
-    assert!(
-        state.get("image").is_none(),
-        "the render succeeded: {state}"
-    );
-    assert!(
-        image["result"]["content"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|part| part["type"] == "image" && part["mimeType"] == "image/png"),
-        "{image}"
-    );
-    assert!(rows(state).iter().any(|row| row == "LATER"), "{state}");
     assert_eq!(terminal_cards(&h).await, cards);
     h.stop(&terminal).await;
 }

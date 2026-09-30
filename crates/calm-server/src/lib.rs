@@ -586,7 +586,6 @@ pub(crate) mod task_privilege;
 pub mod task_recovery;
 pub mod terminal_hooks;
 pub mod terminal_interaction;
-pub mod terminal_permissions;
 pub mod terminal_renderer;
 pub mod terminal_sweeper;
 pub mod test_seams;

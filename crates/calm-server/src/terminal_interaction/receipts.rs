@@ -1,7 +1,6 @@
 //! The receipts an input can end with, built before the reservation so the cached unknown
 //! receipt already carries every fact of the request. Pure JSON constructors.
 use super::input_control::ClaimStep;
-use super::replace_plan::ReplacePlan;
 use super::screen_diff::ScreenDiff;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -13,16 +12,14 @@ pub(super) struct WriteReceipts {
     pub(super) refused: Value,
 }
 impl WriteReceipts {
-    /// `release` and a `replace` plan are stamped on every receipt up front, so a replay returns
-    /// the facts the write was derived from and never recomputes them.
-    #[allow(clippy::too_many_arguments)]
+    /// `release` is stamped on every receipt up front, so a replay returns the facts the write
+    /// was derived from and never recomputes them.
     pub(super) fn new(
         terminal: &str,
         request_key: &str,
         observation: Uuid,
         drift: Option<&Value>,
         steps: Option<usize>,
-        replace: Option<&ReplacePlan>,
         release: bool,
     ) -> Self {
         let mut receipts = Self {
@@ -32,9 +29,6 @@ impl WriteReceipts {
         };
         if let Some(steps) = steps {
             receipts.each(|receipt| receipt["steps"] = json!(steps));
-        }
-        if let Some(plan) = replace {
-            receipts.each(|receipt| receipt["replace"] = plan.to_json());
         }
         if release {
             receipts.each(|receipt| receipt["release"] = json!({"status":"requested"}));
@@ -81,7 +75,7 @@ pub(super) fn stale_receipt(
         "application_result":"unverified","observation_id_used":observation,
         "observed_revision":observed_revision,"current_revision":current_revision,
         "screen_diff":diff.to_json(observed_revision, current_revision),
-        "next":"inspect observation.state and screen_diff (that fresh observation is now the latest on this connection); if only rows below the cursor changed (cursor unmoved, rows_changed_at_or_above_cursor 0) and the action edits the draft, resend the same request_id with observation_id omitted and allow_output_below_cursor=true; if only status text changed elsewhere, resend the same request_id with observation_id omitted and allow_output_since_observation=true; else act on the new state. Neither flag bypasses the control, surface, viewport or pending fences"})
+        "next":"inspect observation.state and screen_diff (that fresh observation is now the latest on this connection); if only status text changed, resend the same request_id with observation_id omitted and allow_output_since_observation=true; else act on the new state. The flag bypasses none of the control, surface, viewport or pending fences"})
 }
 /// The control-unavailable result: nothing was written or cached.
 pub(super) fn control_unavailable_receipt(
@@ -129,7 +123,7 @@ fn acknowledged_receipt(
 
 #[cfg(test)]
 mod tests {
-    use super::super::screen_diff::{CursorSnapshot, Tolerance};
+    use super::super::screen_diff::CursorSnapshot;
     use super::*;
 
     fn diff() -> ScreenDiff {
@@ -183,11 +177,8 @@ mod tests {
             "resend the same request_id with observation_id omitted and allow_output_since_observation=true"
         ));
         assert!(next.contains(
-            "resend the same request_id with observation_id omitted and allow_output_below_cursor=true"
+            "The flag bypasses none of the control, surface, viewport or pending fences"
         ));
-        assert!(
-            next.contains("Neither flag bypasses the control, surface, viewport or pending fences")
-        );
         assert_eq!(
             stale["screen_diff"],
             json!({"compared":{"observed_revision":3,"current_revision":5},"cursor":{"moved":false,"visible":true},
@@ -216,7 +207,7 @@ mod tests {
     fn write_receipts_carry_steps_claim_and_release_uniformly() {
         let observation = Uuid::new_v4();
         let control = Uuid::new_v4();
-        let mut receipts = WriteReceipts::new("t1", "r1", observation, None, Some(4), None, true);
+        let mut receipts = WriteReceipts::new("t1", "r1", observation, None, Some(4), true);
         receipts.attach(Some(&ClaimStep::Claimed(control)));
         for receipt in [&receipts.unknown, &receipts.written, &receipts.refused] {
             assert_eq!(receipt["steps"], 4, "{receipt}");
@@ -231,55 +222,23 @@ mod tests {
                 "{receipt}"
             );
         }
-        let mut plain = WriteReceipts::new("t1", "r1", observation, None, None, None, false);
+        let mut plain = WriteReceipts::new("t1", "r1", observation, None, None, false);
         plain.attach(Some(&ClaimStep::Held));
         assert!(plain.written.get("steps").is_none());
-        assert!(plain.written.get("replace").is_none());
         assert!(plain.written.get("release").is_none());
         assert!(plain.unknown.get("release").is_none());
         assert_eq!(plain.written["claim"], json!({"status":"held"}));
         assert!(plain.written.get("control_id").is_none());
-        let mut none = WriteReceipts::new("t1", "r1", observation, None, None, None, false);
+        let mut none = WriteReceipts::new("t1", "r1", observation, None, None, false);
         none.attach(None);
         assert!(none.written.get("claim").is_none());
-        // The derived plan is on the unknown receipt too, so the cached receipt carries it before the write is sent.
-        let plan = ReplacePlan {
-            row: 3,
-            cursor_index: 12,
-            cursor_visible: false,
-            moves: Some(super::super::replace_plan::Moves {
-                key: "Left",
-                repeat: 5,
-            }),
-            erased: 2,
-            inserted: "19".into(),
-        };
-        let replaced = WriteReceipts::new("t1", "r1", observation, None, None, Some(&plan), false);
-        for receipt in [&replaced.unknown, &replaced.written, &replaced.refused] {
-            assert_eq!(
-                receipt["replace"],
-                json!({"row":3,"cursor_index":12,"cursor_visible":false,"moves":{"key":"Left","repeat":5},"erased":2,"inserted":"19"}),
-                "{receipt}"
-            );
-            assert!(receipt.get("steps").is_none());
-        }
         let mut stale = stale_receipt("t1", "r1", observation, 3, 5, &diff());
         attach_claim(&mut stale, Some(&ClaimStep::Claimed(control)));
         assert_eq!(stale["claim"]["status"], "claimed");
         assert_eq!(stale["control_id"], json!(control));
-        let mut drift = json!({"observed_revision":3,"input_revision":5});
-        merge(&mut drift, diff().tolerance_json(Tolerance::BelowCursor));
-        assert_eq!(
-            drift,
-            json!({"observed_revision":3,"input_revision":5,"tolerance":"below_cursor",
-                "rows_changed_below_cursor":[2],"rows_changed_total":1,"truncated":false})
-        );
-        // The wide opt-in merges its own shape onto the same revisions.
+        // The opt-in merges its shape onto the revisions.
         let mut wide = json!({"observed_revision":3,"input_revision":5});
-        merge(
-            &mut wide,
-            diff().tolerance_json(Tolerance::OutputSinceObservation),
-        );
+        merge(&mut wide, diff().drift_json());
         assert_eq!(
             wide,
             json!({"observed_revision":3,"input_revision":5,"tolerance":"output_since_observation",

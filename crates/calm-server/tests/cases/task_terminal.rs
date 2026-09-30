@@ -188,24 +188,14 @@ async fn each_task_kind_resolves_and_observes_and_writable_kinds_input_their_own
         let viewed = h
             .call(
                 "calm.terminal.observe",
-                json!({"task_id":w.task,"wait_ms":50,"format":"image"}),
+                json!({"task_id":w.task,"wait_ms":50}),
             )
             .await;
         assert!(viewed.get("error").is_none(), "{viewed}");
-        assert!(
-            viewed["result"]["content"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|item| item["type"] == "image")
-        );
         let meta = &viewed["result"]["structuredContent"];
         assert_eq!(meta["task"]["task_id"], w.task);
         assert_eq!(meta["card_id"], w.card);
-        for target in [
-            json!({"task_id":w.task}),
-            json!({"terminal_id":w.terminal,"format":"text"}),
-        ] {
+        for target in [json!({"task_id":w.task}), json!({"terminal_id":w.terminal})] {
             let text = h.call("calm.terminal.observe", target).await;
             let text_meta = assert_text_observation(&text);
             assert_eq!(text_meta["task"]["task_id"], w.task);

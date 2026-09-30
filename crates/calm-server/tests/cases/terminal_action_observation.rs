@@ -14,7 +14,6 @@ fn observation(response: &Value) -> &Value {
     let result = receipt(response);
     assert_eq!(result["observation"]["status"], "available", "{result}");
     let state = &result["observation"]["state"];
-    assert!(state.get("image_source").is_none());
     uuid::Uuid::parse_str(state["observation_id"].as_str().unwrap()).unwrap();
     state
 }

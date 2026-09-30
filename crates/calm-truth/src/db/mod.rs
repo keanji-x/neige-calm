@@ -13,7 +13,6 @@ use crate::session_repo::SessionRepo;
 use crate::state::WriteContext;
 use crate::track_area_cache::TrackAreaCache;
 use async_trait::async_trait;
-use calm_types::claude_permissions::ClaudePermissionsScope;
 use calm_types::worker::{WorkerSession, WorkerSessionId};
 use futures::future::BoxFuture;
 use sqlx::{Sqlite, SqlitePool, Transaction};
@@ -138,12 +137,6 @@ pub trait RepoRead: Send + Sync + 'static {
     /// The Today launchpad track (`purpose = 'launchpad'`, single-valued by a partial unique index), or `None` before it has been minted.
     async fn track_get_launchpad(&self) -> Result<Option<Track>>;
     async fn track_detail(&self, id: &str) -> Result<Option<TrackDetail>>;
-    /// The Claude Code permission policy that applies to `id`: its tree ROOT's `claude_permissions_policy` (a child row
-    /// is always NULL). Fails closed on an unresolvable root (`Conflict`) or an undecodable stored value.
-    async fn track_claude_permissions_ceiling(
-        &self,
-        id: &str,
-    ) -> Result<Option<ClaudePermissionsScope>>;
     /// Calendar window query: every track whose lifespan overlaps `[since, until]` (inclusive):
     /// `created_at <= until AND (closed_at IS NULL OR closed_at >= since)`; all filters optional. Sorted by `created_at ASC, id ASC`.
     async fn tracks_window(

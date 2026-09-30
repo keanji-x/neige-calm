@@ -5,7 +5,6 @@ use crate::routes::claude_cards::{
     CLAUDE_WORKER_HOOKS, ClaudeWorkerHook, build_claude_settings_json_for, claude_hook_command,
 };
 use crate::routes::codex::to_snake_case;
-use crate::terminal_permissions::EffectiveClaudePermissions;
 use crate::terminal_renderer::{IncomingSignal, SIGNAL_MESSAGE_MAX_CHARS};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
@@ -107,29 +106,13 @@ impl TerminalHookSettings {
         Value::Object(merged)
     }
 
-    /// The settings file for `card_id`: the shared hooks-and-attribution base, plus Claude Code's
-    /// `permissions` block when the open declared a scope (`None` keeps the base byte-identical).
-    pub fn settings_json(
-        &self,
-        card_id: &str,
-        permissions: Option<&EffectiveClaudePermissions>,
-    ) -> String {
-        let base = build_claude_settings_json_for(&self.hook_command(card_id), terminal_hooks());
-        let Some(permissions) = permissions else {
-            return base;
-        };
-        let mut settings: Value = serde_json::from_str(&base).expect("claude settings parse back");
-        settings["permissions"] =
-            serde_json::to_value(permissions).expect("claude permissions serialize");
-        serde_json::to_string_pretty(&settings).expect("claude settings serializes")
+    /// The settings file for `card_id`: the shared hooks-and-attribution base.
+    pub fn settings_json(&self, card_id: &str) -> String {
+        build_claude_settings_json_for(&self.hook_command(card_id), terminal_hooks())
     }
 
     /// mkdir + write the settings file; called before the child spawns.
-    pub fn write_settings(
-        &self,
-        card_id: &str,
-        permissions: Option<&EffectiveClaudePermissions>,
-    ) -> crate::error::Result<PathBuf> {
+    pub fn write_settings(&self, card_id: &str) -> crate::error::Result<PathBuf> {
         std::fs::create_dir_all(&self.settings_dir).map_err(|e| {
             crate::error::CalmError::Internal(format!(
                 "mkdir terminal hook settings dir {}: {e}",
@@ -137,7 +120,7 @@ impl TerminalHookSettings {
             ))
         })?;
         let path = self.settings_path(card_id);
-        std::fs::write(&path, self.settings_json(card_id, permissions)).map_err(|e| {
+        std::fs::write(&path, self.settings_json(card_id)).map_err(|e| {
             crate::error::CalmError::Internal(format!(
                 "write terminal hook settings {}: {e}",
                 path.display()
@@ -267,7 +250,7 @@ mod tests {
 
     #[test]
     fn terminal_settings_register_exactly_the_seven_events_with_table_matchers() {
-        let json: Value = serde_json::from_str(&settings().settings_json("card-1", None)).unwrap();
+        let json: Value = serde_json::from_str(&settings().settings_json("card-1")).unwrap();
         let registered: BTreeSet<String> =
             json["hooks"].as_object().unwrap().keys().cloned().collect();
         assert_eq!(
@@ -299,63 +282,6 @@ mod tests {
         for event in DEFAULT_SIGNAL_EVENTS {
             assert!(TERMINAL_SIGNAL_EVENTS.contains(&event));
         }
-    }
-
-    /// No scope: no `permissions` key, not even a null one, and no reordering.
-    #[test]
-    fn settings_json_without_a_scope_is_the_base_file() {
-        let settings = settings();
-        let text = settings.settings_json("card-1", None);
-        assert_eq!(
-            text,
-            build_claude_settings_json_for(&settings.hook_command("card-1"), terminal_hooks())
-        );
-        let json: Value = serde_json::from_str(&text).unwrap();
-        assert!(json.get("permissions").is_none(), "{text}");
-        assert_eq!(
-            json.as_object().unwrap().keys().collect::<Vec<_>>(),
-            vec!["attribution", "hooks"]
-        );
-    }
-
-    #[test]
-    fn settings_json_with_a_scope_writes_the_block_verbatim_under_permissions() {
-        let block = EffectiveClaudePermissions {
-            allow: vec!["Edit(//w/**)".into(), "Bash(git status *)".into()],
-            ask: vec!["Bash(git push *)".into(), "Edit(//w/.git/**)".into()],
-            deny: vec!["Bash(git push *)".into()],
-        };
-        let settings = settings();
-        let text = settings.settings_json("card-1", Some(&block));
-        let json: Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(json["permissions"], serde_json::to_value(&block).unwrap());
-        assert_eq!(
-            json.as_object().unwrap().keys().collect::<Vec<_>>(),
-            vec!["attribution", "hooks", "permissions"]
-        );
-        let base: Value = serde_json::from_str(&settings.settings_json("card-1", None)).unwrap();
-        assert_eq!(json["hooks"], base["hooks"]);
-        assert_eq!(
-            json["hooks"].as_object().unwrap().len(),
-            TERMINAL_HOOK_EVENTS.len()
-        );
-        for key in ["defaultMode", "additionalDirectories"] {
-            assert!(json["permissions"].get(key).is_none(), "{key}");
-        }
-        assert!(text.contains("\"permissions\""));
-        let dir = tempfile::tempdir().unwrap();
-        let on_disk = TerminalHookSettings {
-            settings_dir: dir.path().join("hooks"),
-            ..settings
-        };
-        let path = on_disk.write_settings("card-1", Some(&block)).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
-        let path = on_disk.write_settings("card-1", None).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            on_disk.settings_json("card-1", None),
-            "a rewrite without a scope drops the block"
-        );
     }
 
     #[test]

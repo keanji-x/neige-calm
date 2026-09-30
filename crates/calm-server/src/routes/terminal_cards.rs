@@ -93,9 +93,8 @@ pub(crate) async fn create_terminal_card(
     let payload = serde_json::to_value(TerminalCreateOperationPayload {
         actor,
         worker_session_id: Some(runtime_id),
-        // Human-created terminals get exactly the env they asked for and no permissions block.
+        // Human-created terminals get exactly the env they asked for.
         planner_hooks: false,
-        claude_permissions: None,
         request,
     })?;
     let op_id = s

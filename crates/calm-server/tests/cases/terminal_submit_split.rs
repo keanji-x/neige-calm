@@ -77,7 +77,6 @@ async fn submit_and_read(h: &Harness, terminal: &str, request: &str, text: &str)
     let written = receipt(&sent);
     assert_eq!(written["outcome"], "written", "{sent}");
     assert!(written.get("steps").is_none(), "{written}");
-    assert!(written.get("replace").is_none(), "{written}");
     assert_eq!(
         h.interaction().input_ack_sequence(terminal).await,
         Some(before + 1),

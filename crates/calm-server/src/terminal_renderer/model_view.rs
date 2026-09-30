@@ -1,7 +1,7 @@
 //! A read-only RMUX projection of the actual renderer input stream. It never
 //! reconstructs from the legacy renderer's lossy ANSI serialization.
 use calm_session::terminal_session::RenderObserver;
-use calm_terminal_view::{Frame, Occurrence, TerminalView};
+use calm_terminal_view::{Frame, TerminalView};
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 
@@ -38,16 +38,6 @@ impl ModelView {
     }
     pub fn capture(&self, offset: usize) -> anyhow::Result<(Frame, u64)> {
         Ok((self.view()?.frame(offset)?, self.revision))
-    }
-    pub fn history_rows(&self) -> anyhow::Result<usize> {
-        Ok(self.view()?.history_rows())
-    }
-    pub fn find_text(
-        &self,
-        pattern: &str,
-        occurrence: Occurrence,
-    ) -> anyhow::Result<Option<usize>> {
-        Ok(self.view()?.find_text(pattern, occurrence))
     }
     pub fn invalidate(&mut self, reason: &str) {
         self.view = Err(anyhow::anyhow!("{reason}"));

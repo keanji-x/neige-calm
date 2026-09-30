@@ -1320,7 +1320,7 @@
   },
   {
     "name": "calm.terminal.input",
-    "description_sha256": "49b8e0d0479ef387f1ded844309b0757a0084f321195a303a4d45f530e7280d0",
+    "description_sha256": "ad817ca3c00bb5a8a42d4c43f832d68254317fb5d70df1d92506cf08d91d48b6",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1372,28 +1372,6 @@
             {
               "additionalProperties": false,
               "properties": {
-                "column": {
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "row": {
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "type": {
-                  "const": "click"
-                }
-              },
-              "required": [
-                "type",
-                "column",
-                "row"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
                 "steps": {
                   "items": {
                     "type": "object"
@@ -1411,35 +1389,8 @@
                 "steps"
               ],
               "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
-                "from": {
-                  "maxLength": 200,
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "to": {
-                  "maxLength": 16384,
-                  "type": "string"
-                },
-                "type": {
-                  "const": "replace"
-                }
-              },
-              "required": [
-                "type",
-                "from",
-                "to"
-              ],
-              "type": "object"
             }
           ]
-        },
-        "allow_output_below_cursor": {
-          "default": false,
-          "type": "boolean"
         },
         "allow_output_since_observation": {
           "default": false,
@@ -1543,18 +1494,10 @@
   },
   {
     "name": "calm.terminal.observe",
-    "description_sha256": "c44149e4d105cf84e31fb9a6811494cc656998fd019ad7df78fceb4cccb44c82",
+    "description_sha256": "c2bc482de404c74858d34e583cabbd36f99ce36d651f9c89991158c2d58394e9",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
-        "format": {
-          "default": "text",
-          "enum": [
-            "text",
-            "image"
-          ],
-          "type": "string"
-        },
         "repaint_ms": {
           "maximum": 5000,
           "minimum": 0,
@@ -1564,19 +1507,6 @@
           "maximum": 2000,
           "minimum": 0,
           "type": "integer"
-        },
-        "scroll_to_occurrence": {
-          "default": "latest",
-          "enum": [
-            "latest",
-            "earliest"
-          ],
-          "type": "string"
-        },
-        "scroll_to_text": {
-          "maxLength": 200,
-          "minLength": 1,
-          "type": "string"
         },
         "settle_ms": {
           "default": 150,
@@ -1647,56 +1577,13 @@
   },
   {
     "name": "calm.terminal.open",
-    "description_sha256": "a54d7540cd174e8f14786f9576a268567f1fa2c72f30bf4ba3845d8b83b8f14e",
+    "description_sha256": "7498b24967b40bbd7216d9aba730793f2aa4c0141a1914b271abfcefe09fa363",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
         "claim": {
           "default": false,
           "type": "boolean"
-        },
-        "claude_permissions": {
-          "additionalProperties": false,
-          "properties": {
-            "bash": {
-              "items": {
-                "maxLength": 200,
-                "minLength": 1,
-                "type": "string"
-              },
-              "maxItems": 32,
-              "minItems": 1,
-              "type": "array"
-            },
-            "deny": {
-              "items": {
-                "maxLength": 200,
-                "minLength": 1,
-                "type": "string"
-              },
-              "maxItems": 32,
-              "type": "array"
-            },
-            "edit": {
-              "items": {
-                "maxLength": 200,
-                "minLength": 1,
-                "type": "string"
-              },
-              "maxItems": 16,
-              "minItems": 1,
-              "type": "array"
-            }
-          },
-          "type": "object"
-        },
-        "format": {
-          "default": "text",
-          "enum": [
-            "text",
-            "image"
-          ],
-          "type": "string"
         },
         "program": {
           "maxLength": 4096,

@@ -1,9 +1,5 @@
 use crate::mcp_server::build_default_registry;
 use crate::model::CardRole;
-use crate::terminal_permissions::{
-    CLAUDE_PERMISSIONS_BASH_MAX, CLAUDE_PERMISSIONS_DENY_MAX, CLAUDE_PERMISSIONS_EDIT_MAX,
-    CLAUDE_PERMISSIONS_ENTRY_MAX_CHARS,
-};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
@@ -61,12 +57,11 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
         "wait_text",
         "wait_text_absent",
     ];
-    const SCROLL_TO: [&str; 2] = ["scroll_to_text", "scroll_to_occurrence"];
     for (name, common, mandatory) in [
         ("resolve", vec![], vec![]),
         (
             "observe",
-            [&["scroll_offset", "format"][..], &SCROLL_TO[..], &WAIT[..]].concat(),
+            [&["scroll_offset"][..], &WAIT[..]].concat(),
             vec![],
         ),
         (
@@ -83,7 +78,6 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
                     "action",
                     "observe",
                     "allow_output_since_observation",
-                    "allow_output_below_cursor",
                     "claim",
                     "release",
                 ][..],
@@ -195,47 +189,9 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
     );
     assert_eq!(
         properties(open_schema),
-        fields(
-            &[
-                &[
-                    "request_id",
-                    "title",
-                    "program",
-                    "format",
-                    "claim",
-                    "claude_permissions"
-                ][..],
-                &WAIT[..]
-            ]
-            .concat()
-        )
+        fields(&[&["request_id", "title", "program", "claim"][..], &WAIT[..]].concat())
     );
     assert_eq!(required(open_schema), fields(&["request_id"]));
-    let permissions = &open_schema["properties"]["claude_permissions"];
-    assert_eq!(permissions["type"], "object");
-    assert_eq!(permissions["additionalProperties"], false);
-    assert_eq!(properties(permissions), fields(&["edit", "bash", "deny"]));
-    assert!(permissions.get("required").is_none());
-    let entry = json!({"type":"string","minLength":1,"maxLength":200});
-    for (list, min_items, max_items) in [
-        ("edit", Some(1), CLAUDE_PERMISSIONS_EDIT_MAX),
-        ("bash", Some(1), CLAUDE_PERMISSIONS_BASH_MAX),
-        ("deny", None, CLAUDE_PERMISSIONS_DENY_MAX),
-    ] {
-        let schema = &permissions["properties"][list];
-        assert_eq!(schema["type"], "array", "{list}");
-        assert_eq!(schema["items"], entry, "{list}");
-        assert_eq!(schema["maxItems"], json!(max_items), "{list}");
-        assert_eq!(
-            schema.get("minItems").cloned(),
-            min_items.map(|n| json!(n)),
-            "{list}"
-        );
-    }
-    assert_eq!(
-        entry["maxLength"],
-        json!(CLAUDE_PERMISSIONS_ENTRY_MAX_CHARS)
-    );
     let observe_schema = &descriptors
         .iter()
         .find(|descriptor| descriptor.name == "calm.terminal.observe")
@@ -252,38 +208,12 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
         bytes < 4000,
         "open: {bytes} bytes; avoid model schema compaction"
     );
-    assert_eq!(
-        observe_schema["properties"]["scroll_to_text"],
-        json!({"type":"string","minLength":1,"maxLength":200})
-    );
-    assert_eq!(
-        observe_schema["properties"]["scroll_to_occurrence"],
-        json!({"type":"string","enum":["latest","earliest"],"default":"latest"})
-    );
-    for name in ["open", "control", "input", "resolve"] {
-        let schema = &descriptors
-            .iter()
-            .find(|descriptor| descriptor.name == format!("calm.terminal.{name}"))
-            .unwrap()
-            .input_schema;
-        for property in SCROLL_TO {
-            assert!(
-                schema["properties"].get(property).is_none(),
-                "{name}/{property}: the history search is observe's alone"
-            );
-        }
-    }
     let input = &descriptors
         .iter()
         .find(|descriptor| descriptor.name == "calm.terminal.input")
         .unwrap()
         .input_schema;
-    for flag in [
-        "allow_output_since_observation",
-        "allow_output_below_cursor",
-        "claim",
-        "release",
-    ] {
+    for flag in ["allow_output_since_observation", "claim", "release"] {
         assert_eq!(
             input["properties"][flag],
             json!({"type":"boolean","default":false}),
@@ -295,8 +225,31 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
         json!({"type":"string","format":"uuid"}),
         "observation_id stays typed while optional"
     );
+}
+
+/// The input action union carries exactly the live actions, each a closed arm.
+#[test]
+fn input_schema_lists_only_live_actions() {
+    let descriptors = build_default_registry().descriptors_for_role(CardRole::Planner);
+    let input = &descriptors
+        .iter()
+        .find(|descriptor| descriptor.name == "calm.terminal.input")
+        .unwrap()
+        .input_schema;
     let actions = input["properties"]["action"]["anyOf"].as_array().unwrap();
-    assert_eq!(actions.len(), 5);
+    let live: Vec<Value> = actions
+        .iter()
+        .map(|action| action["properties"]["type"].clone())
+        .collect();
+    assert_eq!(
+        live,
+        [
+            json!({"enum":["text","submit"]}),
+            json!({"const":"key"}),
+            json!({"const":"sequence"}),
+        ],
+        "exactly the live actions; replace and click are deleted"
+    );
     for (action, kind, properties, mandatory) in [
         (
             &actions[0],
@@ -312,21 +265,9 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
         ),
         (
             &actions[2],
-            json!("click"),
-            vec!["type", "column", "row"],
-            vec!["type", "column", "row"],
-        ),
-        (
-            &actions[3],
             json!("sequence"),
             vec!["type", "steps"],
             vec!["type", "steps"],
-        ),
-        (
-            &actions[4],
-            json!("replace"),
-            vec!["type", "from", "to"],
-            vec!["type", "from", "to"],
         ),
     ] {
         assert_eq!(action["type"], "object");
@@ -349,7 +290,7 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
         assert_eq!(required(action), fields(&mandatory));
         for field in properties.into_iter().filter(|field| *field != "type") {
             let expected = match field {
-                "column" | "row" | "repeat" => "integer",
+                "repeat" => "integer",
                 "steps" => "array",
                 _ => "string",
             };
@@ -360,15 +301,7 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
         }
     }
     assert_eq!(
-        actions[3]["properties"]["steps"],
+        actions[2]["properties"]["steps"],
         json!({"type":"array","minItems":2,"maxItems":8,"items":{"type":"object"}})
-    );
-    assert_eq!(
-        actions[4]["properties"]["from"],
-        json!({"type":"string","minLength":1,"maxLength":200})
-    );
-    assert_eq!(
-        actions[4]["properties"]["to"],
-        json!({"type":"string","maxLength":16384})
     );
 }

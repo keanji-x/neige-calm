@@ -33,10 +33,6 @@ impl CardKindHandler for TerminalCardHandler {
             terminal_id: Option<String>,
             #[serde(default)]
             terminal_signals: Option<bool>,
-            #[serde(default)]
-            claude_permissions: Option<Value>,
-            #[serde(default)]
-            claude_permissions_source: Option<Value>,
         }
 
         if payload.is_null() {

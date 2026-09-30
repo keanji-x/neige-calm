@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 pub use crate::ids::{ActorId, AreaId, CardId, TrackId};
-use calm_types::claude_permissions::{ClaudePermissionsScope, parse_scope_named};
 // Source definitions live in calm-types; do NOT re-declare them here.
 pub use calm_types::model::{
     Area, AreaFolder, AreaKind, AreaResolve, Card, CardRole, CardRuntimeView, FolderConflict,
@@ -123,12 +122,6 @@ pub struct TrackPatch {
     /// Root-only; a present null resets to the kernel default (32).
     #[serde(default, deserialize_with = "deserialize_double_option")]
     pub tree_task_budget: Option<Option<i64>>,
-    /// Claude Code permission policy of the WHOLE track tree; tree-root-only.
-    /// `Some(None)` clears. Read through `parse_scope_named`, so a bad shape is an
-    /// error naming the field, never a lenient decode.
-    #[serde(default, deserialize_with = "deserialize_double_option_policy")]
-    #[schema(value_type = Option<ClaudePermissionsScope>)]
-    pub claude_permissions_policy: Option<Option<ClaudePermissionsScope>>,
     /// Track-level gate policy; `Some(v)` sets the flag.
     pub require_task_gates: Option<bool>,
     /// Request a workspace change. Handled by the route, never by
@@ -175,8 +168,7 @@ pub struct CardPatch {
     pub kind: Option<String>,
     pub sort: Option<f64>,
     /// Replaces the stored payload. A payload carrying a server-owned key is refused with 400:
-    /// `terminal_signals`, `claude_permissions`, `claude_permissions_source`, `template_context`,
-    /// `planner_provider`. Every kernel-minted server-owned value the card already carries is kept.
+    /// `terminal_signals`, `template_context`, `planner_provider`. Every kernel-minted server-owned value the card already carries is kept.
     #[schema(value_type = Option<Object>)]
     pub payload: Option<serde_json::Value>,
     /// Not patchable via API: surfaced only so a client sending it gets a clear
@@ -414,23 +406,6 @@ where
     D: serde::Deserializer<'de>,
 {
     Deserialize::deserialize(d).map(Some)
-}
-
-/// `null` → `Some(None)`, missing → `None`, otherwise the strict
-/// [`parse_scope_named`] shape, whose reason becomes the deserialization error.
-fn deserialize_double_option_policy<'de, D>(
-    d: D,
-) -> Result<Option<Option<ClaudePermissionsScope>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value: Option<serde_json::Value> = Deserialize::deserialize(d)?;
-    match value {
-        None => Ok(Some(None)),
-        Some(value) => parse_scope_named("claude_permissions_policy", &value)
-            .map(|scope| Some(Some(scope)))
-            .map_err(serde::de::Error::custom),
-    }
 }
 
 /// Current unix time in milliseconds — the canonical timestamp the kernel

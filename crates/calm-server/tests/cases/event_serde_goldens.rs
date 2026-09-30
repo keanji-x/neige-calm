@@ -11,7 +11,6 @@ use calm_server::model::{
     Area, AreaKind, Card, CardRuntimeView, Overlay, Track, TrackWorkspace, TrackWorkspaceKind,
 };
 use calm_server::session_projection_repo::{AgentProvider, WorkerSessionKind, WorkerSessionState};
-use calm_types::claude_permissions::ClaudePermissionsScope;
 use calm_types::event::{
     ChannelVerdict, ChannelVerdictKind, RatifyDecision, ReviewSubject, TaskContextRef,
 };
@@ -104,7 +103,6 @@ fn track_min() -> Track {
         template_input: None,
         recipe_id: None,
         recipe_revision: None,
-        claude_permissions_policy: None,
         workspace: TrackWorkspace::default(),
         created_at: 1000,
         updated_at: 2000,
@@ -183,12 +181,6 @@ golden_test!(
             // Populated only here; the other three `track.updated` goldens pin these as `null`.
             recipe_id: Some("recipe-01".into()),
             recipe_revision: Some(7),
-            // The populated policy, only here.
-            claude_permissions_policy: Some(ClaudePermissionsScope {
-                edit: Some(vec!["src/**".into(), "tests/**".into()]),
-                bash: Some(vec!["git".into(), "python3 -m unittest".into()]),
-                deny: Some(vec!["git rebase".into()]),
-            }),
             ..track_min()
         },
         Some("planner says hi".into()),

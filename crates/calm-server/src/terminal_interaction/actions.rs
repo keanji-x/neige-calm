@@ -1,8 +1,7 @@
 //! Input action validation and encoding against the live input surface. Every action is one
 //! ordered write request: one barrier, one acknowledgement, one receipt.
-use super::replace_plan::REPLACE_FROM_BYTES_MAX;
 use anyhow::{Result, ensure};
-use calm_terminal_view::{InputSurface, click_bytes, key_bytes};
+use calm_terminal_view::{InputSurface, key_bytes};
 use serde_json::Value;
 
 /// Bound on the bytes one action may write (text and sequences alike).
@@ -24,13 +23,12 @@ pub const SEQUENCE_KEYS: [&str; 9] = [
     "Ctrl+U",
 ];
 
-/// What one action writes: its bytes, a `submit` (text plus one CR, handed to the PTY as two
-/// physical writes), or a `replace` whose bytes are derived from the live cursor row later.
+/// What one action writes: its bytes, or a `submit` (text plus one CR, handed to the PTY as two
+/// physical writes).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Encoded {
     Bytes(Vec<u8>),
     Submit(Vec<u8>),
-    Replace { from: String, to: String },
 }
 impl Encoded {
     /// The bytes of an action that carries them (tests).
@@ -38,37 +36,8 @@ impl Encoded {
     fn bytes(self) -> Vec<u8> {
         match self {
             Self::Bytes(bytes) | Self::Submit(bytes) => bytes,
-            Self::Replace { .. } => panic!("replace carries no bytes before the plan"),
         }
     }
-}
-/// A `replace` action: the shape check that runs before any claim; the plan is derived from
-/// the live frame later.
-fn replace_arguments(action: &Value, object: &serde_json::Map<String, Value>) -> Result<Encoded> {
-    ensure!(
-        object.len() == 3 && object.contains_key("from") && object.contains_key("to"),
-        "replace action accepts only type/from/to"
-    );
-    let field = |name: &str| {
-        action[name]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("replace {name} must be a string"))
-    };
-    let (from, to) = (field("from")?, field("to")?);
-    ensure!(
-        !from.is_empty()
-            && from.len() <= REPLACE_FROM_BYTES_MAX
-            && !from.chars().any(char::is_control),
-        "replace from must be 1..{REPLACE_FROM_BYTES_MAX} bytes of printable text"
-    );
-    ensure!(
-        to.len() <= ACTION_BYTES_MAX && !to.chars().any(char::is_control),
-        "replace to must be printable text (empty deletes); send Enter as its own action"
-    );
-    Ok(Encoded::Replace {
-        from: from.to_owned(),
-        to: to.to_owned(),
-    })
 }
 /// The `text` field of a text-like action: nonempty, at most 16384 bytes, no
 /// control characters, and no other fields on the action.
@@ -151,26 +120,11 @@ pub fn sequence_steps(action: &Value) -> Option<usize> {
         .then(|| action["steps"].as_array().map(Vec::len))
         .flatten()
 }
-/// The actions `allow_output_below_cursor` may admit: draft edits only. Claude Code's
-/// slash-command menu renders below the input row and re-sorts while it loads, so an Enter
-/// admitted by the tolerance could pick a different item than the one observed.
-pub fn edits_the_draft(action: &Value) -> bool {
-    match action["type"].as_str() {
-        Some("text" | "sequence" | "replace") => true,
-        Some("key") => action["key"]
-            .as_str()
-            .is_some_and(|key| SEQUENCE_KEYS.contains(&key)),
-        _ => false,
-    }
-}
-/// Reason `allow_output_below_cursor` is refused for other actions.
-pub const BELOW_CURSOR_EDITS_ONLY: &str = "allow_output_below_cursor admits only text, sequence, replace and editing keys; no submit/click/Enter/Tab/Escape/Ctrl";
 pub fn encode(action: &Value, surface: &InputSurface) -> Result<Encoded> {
     let object = action
         .as_object()
         .ok_or_else(|| anyhow::anyhow!("terminal action must be an object"))?;
     let bytes = match action["type"].as_str() {
-        Some("replace") => return replace_arguments(action, object),
         Some("text") => Ok(printable_text(action, object, "text")?.as_bytes().to_vec()),
         Some("submit") => {
             // The writer hands the CR to the PTY as a second write after the text. Explicit opt-in;
@@ -182,16 +136,6 @@ pub fn encode(action: &Value, surface: &InputSurface) -> Result<Encoded> {
             return Ok(Encoded::Submit(bytes));
         }
         Some("key") => encode_key(action, object, surface, None),
-        Some("click") => {
-            ensure!(object.len() == 3, "click accepts only type/column/row");
-            let coordinate = |field: &str| {
-                action[field]
-                    .as_u64()
-                    .and_then(|value| u16::try_from(value).ok())
-                    .ok_or_else(|| anyhow::anyhow!("invalid cell coordinate"))
-            };
-            click_bytes(coordinate("column")?, coordinate("row")?, surface)
-        }
         Some("sequence") => {
             // The step encodings concatenated in one ordered write request; no CR and no LF possible
             // (the key vocabulary has neither).
@@ -286,10 +230,12 @@ mod tests {
                 "{action}: {encoded:?}"
             );
         }
-        assert!(matches!(
-            encode(&json!({"type":"replace","from":"a","to":"b"}), &surface).unwrap(),
-            Encoded::Replace { .. }
-        ));
+        for retired in [
+            json!({"type":"replace","from":"a","to":"b"}),
+            json!({"type":"click","column":0,"row":0}),
+        ] {
+            assert!(encode(&retired, &surface).is_err(), "{retired}");
+        }
     }
 
     #[test]
@@ -416,94 +362,5 @@ mod tests {
             json!([{"type":"text","text":"x".repeat(8192)},{"type":"text","text":"y".repeat(8192)}]),
         );
         assert_eq!(encode(&full, &surface).unwrap().bytes().len(), 16384);
-    }
-
-    #[test]
-    fn replace_validates_its_shape_and_carries_no_bytes() {
-        let surface = surface();
-        assert_eq!(
-            encode(&json!({"type":"replace","from":"11","to":"19"}), &surface).unwrap(),
-            Encoded::Replace {
-                from: "11".into(),
-                to: "19".into()
-            }
-        );
-        assert_eq!(
-            encode(&json!({"type":"replace","from":"松果","to":""}), &surface).unwrap(),
-            Encoded::Replace {
-                from: "松果".into(),
-                to: String::new()
-            },
-            "an empty to deletes"
-        );
-        let long = "y".repeat(200);
-        assert!(encode(&json!({"type":"replace","from":long,"to":"x"}), &surface).is_ok());
-        for (invalid, why) in [
-            (json!({"type":"replace","from":"","to":"x"}), "empty from"),
-            (
-                json!({"type":"replace","from":"y".repeat(201),"to":"x"}),
-                "201-byte from",
-            ),
-            (
-                json!({"type":"replace","from":"a\rb","to":"x"}),
-                "CR in from",
-            ),
-            (json!({"type":"replace","from":"a","to":"x\n"}), "LF in to"),
-            (json!({"type":"replace","from":"a","to":"\t"}), "tab in to"),
-            (json!({"type":"replace","from":"a"}), "missing to"),
-            (json!({"type":"replace","to":"a"}), "missing from"),
-            (json!({"type":"replace","from":1,"to":"a"}), "numeric from"),
-            (json!({"type":"replace","from":"a","to":null}), "null to"),
-            (
-                json!({"type":"replace","from":"a","to":"b","repeat":2}),
-                "extra field",
-            ),
-            (
-                json!({"type":"replace","from":"a","to":"x".repeat(16385)}),
-                "to past the action bound",
-            ),
-            (
-                json!({"type":"sequence","steps":[{"type":"replace","from":"a","to":"b"},{"type":"text","text":"x"}]}),
-                "replace inside a sequence",
-            ),
-        ] {
-            assert!(encode(&invalid, &surface).is_err(), "{why}: {invalid}");
-        }
-        assert_eq!(
-            sequence_steps(&json!({"type":"replace","from":"a","to":"b"})),
-            None
-        );
-    }
-
-    #[test]
-    fn edits_the_draft_admits_text_sequence_and_editing_keys_only() {
-        for action in [
-            json!({"type":"text","text":"abc"}),
-            json!({"type":"sequence","steps":[{"type":"text","text":"a"},{"type":"key","key":"Left"}]}),
-            json!({"type":"replace","from":"11","to":"19"}),
-            json!({"type":"key","key":"Backspace"}),
-            json!({"type":"key","key":"Ctrl+U","repeat":1}),
-        ] {
-            assert!(edits_the_draft(&action), "{action}");
-        }
-        for key in SEQUENCE_KEYS {
-            assert!(edits_the_draft(&json!({"type":"key","key":key})), "{key}");
-        }
-        for action in [
-            json!({"type":"submit","text":"abc"}),
-            json!({"type":"click","column":0,"row":0}),
-            json!({"type":"key","key":"Enter"}),
-            json!({"type":"key","key":"Tab"}),
-            json!({"type":"key","key":"Escape"}),
-            json!({"type":"key","key":"Ctrl+C"}),
-            json!({"type":"key","key":"Ctrl+J"}),
-            json!({"type":"key","key":"PageUp"}),
-            json!({"type":"key"}),
-            json!({"type":"unknown"}),
-            json!("text"),
-        ] {
-            assert!(!edits_the_draft(&action), "{action}");
-        }
-        assert!(BELOW_CURSOR_EDITS_ONLY.contains("text, sequence, replace and editing keys"));
     }
 }

@@ -8,8 +8,6 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use calm_types::claude_permissions::ClaudePermissionsSource;
-
 use crate::db::RepoRead;
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventScope};
@@ -20,12 +18,6 @@ pub const TERMINAL_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 /// `Card.payload` key stamped `true` at creation only on terminals the Planner opened with hook
 /// signals; a hook for such a card is advisory telemetry, never worker state.
 pub const TERMINAL_SIGNALS_PAYLOAD_KEY: &str = "terminal_signals";
-/// `Card.payload` key stamped at creation only on terminals the Planner opened with a
-/// `claude_permissions` scope: the effective permissions block written to the terminal's settings file.
-pub const TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY: &str = "claude_permissions";
-/// `Card.payload` key stamped beside [`TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY`] with a
-/// [`ClaudePermissionsSource`]; absent reads as `declared`.
-pub const TERMINAL_CLAUDE_PERMISSIONS_SOURCE_PAYLOAD_KEY: &str = "claude_permissions_source";
 /// Creation-time template instructions, retained across Planner resets and
 /// report edits. Only the track-create transaction may mint this snapshot.
 pub const PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY: &str = "template_context";
@@ -35,10 +27,8 @@ pub const PLANNER_PROVIDER_PAYLOAD_KEY: &str = "planner_provider";
 
 /// Kernel-owned card fields, refused at client boundaries and preserved by
 /// `card_update_tx` even when a replacement payload omits them.
-pub const SERVER_OWNED_CARD_PAYLOAD_KEYS: [&str; 5] = [
+pub const SERVER_OWNED_CARD_PAYLOAD_KEYS: [&str; 3] = [
     TERMINAL_SIGNALS_PAYLOAD_KEY,
-    TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY,
-    TERMINAL_CLAUDE_PERMISSIONS_SOURCE_PAYLOAD_KEY,
     PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY,
     PLANNER_PROVIDER_PAYLOAD_KEY,
 ];
@@ -53,11 +43,6 @@ pub fn server_owned_value_is_sticky(key: &str, value: &Value) -> bool {
         // A Planner never changes backend; a corrupt value must survive so the card stays not-a-harness.
         PLANNER_PROVIDER_PAYLOAD_KEY => true,
         TERMINAL_SIGNALS_PAYLOAD_KEY => value.as_bool() == Some(true),
-        TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY => value.is_object(),
-        TERMINAL_CLAUDE_PERMISSIONS_SOURCE_PAYLOAD_KEY => {
-            value.is_string()
-                && serde_json::from_value::<ClaudePermissionsSource>(value.clone()).is_ok()
-        }
         _ => false,
     }
 }
@@ -638,21 +623,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(scope, EventScope::System);
-    }
-
-    #[test]
-    fn server_owned_source_is_sticky_only_as_a_string() {
-        let sticky = |value: Value| {
-            server_owned_value_is_sticky(TERMINAL_CLAUDE_PERMISSIONS_SOURCE_PAYLOAD_KEY, &value)
-        };
-        assert!(sticky(json!("declared")));
-        assert!(sticky(json!("declared_within_policy")));
-        assert!(
-            !sticky(json!({"declared": null})),
-            "the map form of a unit variant is not minted"
-        );
-        assert!(!sticky(json!("policy")));
-        assert!(!sticky(Value::Null));
     }
 
     #[test]

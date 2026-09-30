@@ -1,27 +1,13 @@
 //! Typed results for kernel MCP tools. A handler's JSON is always data;
-//! only these constructors create the MCP envelope and native image blocks.
+//! only these constructors create the MCP envelope.
 
-use base64::Engine;
 use serde::Serialize;
 use serde_json::Value;
-
-use super::framing::RpcError;
-
-/// Bound image payloads before base64 expansion. Screenshot producers must
-/// independently bound image dimensions and validate their captured PNG.
-pub const MAX_TOOL_PNG_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 enum Content {
-    Text {
-        text: String,
-    },
-    Image {
-        data: String,
-        #[serde(rename = "mimeType")]
-        mime_type: &'static str,
-    },
+    Text { text: String },
 }
 
 /// One successful tools/call result. RPC failures remain `RpcError` and are
@@ -57,23 +43,8 @@ impl ToolResult {
         }
     }
 
-    /// Return captured PNG bytes as an image, with a separate textual and
-    /// structured description. This checks the payload bound and signature;
-    /// it is not a PNG decoder or a validator for untrusted uploaded images.
-    pub fn png(metadata: Value, png: &[u8]) -> Result<Self, RpcError> {
-        if png.len() > MAX_TOOL_PNG_BYTES || !png.starts_with(b"\x89PNG\r\n\x1a\n") {
-            return Err(RpcError::invalid_params("invalid or oversized tool PNG"));
-        }
-        let mut result = Self::structured(metadata);
-        result.content.push(Content::Image {
-            data: base64::engine::general_purpose::STANDARD.encode(png),
-            mime_type: "image/png",
-        });
-        Ok(result)
-    }
-
     /// Explicit projection for in-process consumers of a structured tool.
-    /// Transport must serialize the whole result, including native images.
+    /// Transport must serialize the whole result.
     pub fn into_structured(self) -> Value {
         self.structured_content
     }
@@ -99,13 +70,5 @@ mod tests {
             "{\"n\":1}",
             "other tools keep the JSON text projection"
         );
-    }
-
-    #[test]
-    fn tool_png_rejects_wrong_signature_and_oversized_payload() {
-        assert!(ToolResult::png(json!({}), b"not a png").is_err());
-        let mut oversized = vec![0; MAX_TOOL_PNG_BYTES + 1];
-        oversized[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
-        assert!(ToolResult::png(json!({}), &oversized).is_err());
     }
 }

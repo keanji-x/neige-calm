@@ -14,7 +14,6 @@ use crate::ids::ActorId;
 use crate::model::*;
 use crate::state::WriteContext;
 use crate::{card_role_cache::CardRoleCache, track_area_cache::TrackAreaCache};
-use calm_types::claude_permissions::ClaudePermissionsScope;
 use calm_types::worker::{WorkerSession, WorkerSessionId};
 
 pub mod prelude {
@@ -40,11 +39,6 @@ pub trait ServerRepoReadExt {
     /// The Today launchpad track, or `None` before it exists.
     async fn track_get_launchpad(&self) -> Result<Option<Track>>;
     async fn track_detail(&self, id: &str) -> Result<Option<TrackDetail>>;
-    /// The tree ROOT's Claude Code permission policy for `id`.
-    async fn track_claude_permissions_ceiling(
-        &self,
-        id: &str,
-    ) -> Result<Option<ClaudePermissionsScope>>;
     async fn tracks_window(
         &self,
         area_id: Option<&str>,
@@ -182,14 +176,6 @@ where
     }
     async fn track_detail(&self, id: &str) -> Result<Option<TrackDetail>> {
         calm_truth::db::RepoRead::track_detail(self, id)
-            .await
-            .map_err(Into::into)
-    }
-    async fn track_claude_permissions_ceiling(
-        &self,
-        id: &str,
-    ) -> Result<Option<ClaudePermissionsScope>> {
-        calm_truth::db::RepoRead::track_claude_permissions_ceiling(self, id)
             .await
             .map_err(Into::into)
     }

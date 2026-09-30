@@ -53,9 +53,6 @@ mod task_attempt_tests;
 mod task_projection;
 mod task_recovery_projection;
 mod track;
-mod track_claude_permissions;
-#[cfg(test)]
-mod track_claude_permissions_tests;
 mod track_idle;
 mod track_recipe;
 mod track_tree;
@@ -71,9 +68,8 @@ pub use card::{
     terminal_create_tx, terminal_delete_tx, terminal_get_by_card_tx,
 };
 pub use card_composite::{
-    card_mcp_token_set_tx, card_stamp_claude_permissions_tx, card_with_claude_create_tx,
-    card_with_claude_worker_create_tx, card_with_codex_create_tx, card_with_terminal_create_tx,
-    card_with_terminal_rollback_tx,
+    card_mcp_token_set_tx, card_with_claude_create_tx, card_with_claude_worker_create_tx,
+    card_with_codex_create_tx, card_with_terminal_create_tx, card_with_terminal_rollback_tx,
 };
 #[cfg(any(test, feature = "test-helpers"))]
 pub use events::append_probe;
@@ -144,7 +140,6 @@ pub use track::{
     track_delete_tx, track_find_tx, track_get_tx, track_require_candidate_verification_settled_tx,
     track_require_leaf_tx, track_update_tx, track_worktree_path_for,
 };
-pub use track_claude_permissions::track_claude_permissions_ceiling_read;
 pub use track_idle::track_idle;
 pub use track_recipe::track_recipe_get_tx;
 pub use track_tree::{

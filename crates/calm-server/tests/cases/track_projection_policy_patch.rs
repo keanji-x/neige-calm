@@ -177,7 +177,6 @@ const TRACK_PERSISTENT_COLUMNS: &[&str] = &[
     "workspace_frozen_at",
     "recipe_id",
     "recipe_revision",
-    "claude_permissions_policy",
     "workspace_worktree_path",
     "closed_at",
 ];

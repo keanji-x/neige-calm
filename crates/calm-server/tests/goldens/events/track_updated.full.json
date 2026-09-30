@@ -1,5 +1,5 @@
 {
-  "description": "track.updated: TrackUpdatedPayload flattens the Track row to top level; agent_message rides adjacent (#597). #1292 S3: the populated recipe provenance pair (the other track.updated goldens pin it as null). #1704 S2: the populated claude_permissions_policy (a tree-root policy; the other three pin it as null).",
+  "description": "track.updated: TrackUpdatedPayload flattens the Track row to top level; agent_message rides adjacent (#597). #1292 S3: the populated recipe provenance pair (the other track.updated goldens pin it as null). #1893 S5: the Track policy is deleted; a row stored with a populated claude_permissions_policy still replays and re-serializes without it (canonical).",
   "wire": {
     "ev": "track.updated",
     "data": {
@@ -29,6 +29,32 @@
         "bash": ["git", "python3 -m unittest"],
         "deny": ["git rebase"]
       }
+    }
+  },
+  "canonical": {
+    "ev": "track.updated",
+    "data": {
+      "id": "track-01",
+      "area_id": "area-01",
+      "title": "Golden Track",
+      "sort": 1.5,
+      "pinned_at": 222,
+      "closed_at": 333,
+      "cwd": "/tmp/golden-track",
+      "template_id": null,
+      "plugin_scope": null,
+      "purpose": null,
+      "template_input": null,
+      "workspace": {
+        "kind": "managed",
+        "path": "/tmp/golden-track",
+        "frozen_at": 444
+      },
+      "created_at": 1000,
+      "updated_at": 2000,
+      "agent_message": "planner says hi",
+      "recipe_id": "recipe-01",
+      "recipe_revision": 7
     }
   }
 }

@@ -7729,7 +7729,7 @@
               "object",
               "null"
             ],
-            "description": "Replaces the stored payload. A payload carrying a server-owned key is refused with 400:\n`terminal_signals`, `claude_permissions`, `claude_permissions_source`, `template_context`,\n`planner_provider`. Every kernel-minted server-owned value the card already carries is kept."
+            "description": "Replaces the stored payload. A payload carrying a server-owned key is refused with 400:\n`terminal_signals`, `template_context`, `planner_provider`. Every kernel-minted server-owned value the card already carries is kept."
           },
           "sort": {
             "type": [
@@ -7883,42 +7883,6 @@
               "$ref": "#/components/schemas/ReasoningEffortOption"
             },
             "description": "The efforts a selection of this model may carry: Codex's options, or the Claude CLI's\n`supportedEffortLevels` (empty when it declares none, and then only `null` is accepted)."
-          }
-        }
-      },
-      "ClaudePermissionsScope": {
-        "type": "object",
-        "description": "A declared Claude Code permission scope: the `claude_permissions` argument of `calm.terminal.open`\nand the value of `tracks.claude_permissions_policy`. The derive is lenient on unknown keys on\npurpose (stored rows from a newer binary); strictness lives in [`parse_scope_named`].",
-        "properties": {
-          "bash": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "string"
-            },
-            "default": null
-          },
-          "deny": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "string"
-            },
-            "default": null
-          },
-          "edit": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "string"
-            },
-            "default": null
           }
         }
       },
@@ -11500,17 +11464,6 @@
           "area_id": {
             "type": "string"
           },
-          "claude_permissions_policy": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/ClaudePermissionsScope",
-                "description": "The user-set Claude Code permission policy of this track's TREE, stored on the tree root only;\na child row is always `null` here even when its root carries a policy."
-              }
-            ]
-          },
           "closed_at": {
             "type": [
               "integer",
@@ -12152,17 +12105,6 @@
               "null"
             ],
             "description": "Per-track declaration policy. A present null resets to the kernel default."
-          },
-          "claude_permissions_policy": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/ClaudePermissionsScope",
-                "description": "Claude Code permission policy of the WHOLE track tree; tree-root-only.\n`Some(None)` clears. Read through `parse_scope_named`, so a bad shape is an\nerror naming the field, never a lenient decode."
-              }
-            ]
           },
           "closed": {
             "type": [

@@ -660,18 +660,11 @@ async fn stale_observation_is_a_structured_result_with_a_fresh_observation() {
     // The action is validated before stale is decided: against the same
     // stale observation an invalid action is an RPC error, never a
     // successful stale result, and nothing is reserved.
-    for (request, action, expected) in [
-        (
-            "enter-x2",
-            json!({"type":"key","key":"Enter","repeat":2}),
-            "only navigation and editing keys may repeat",
-        ),
-        (
-            "click-no-mouse",
-            json!({"type":"click","column":0,"row":0}),
-            "application has not enabled terminal mouse input",
-        ),
-    ] {
+    for (request, action, expected) in [(
+        "enter-x2",
+        json!({"type":"key","key":"Enter","repeat":2}),
+        "only navigation and editing keys may repeat",
+    )] {
         let invalid = h.call("calm.terminal.input", json!({"terminal_id":terminal,"observation_id":latest["observation_id"],"request_id":request,"action":action})).await;
         assert!(
             error_text(&invalid).contains(expected),
@@ -898,190 +891,6 @@ async fn history_view_of_coloured_output_pads_short_lines() {
             format!("line {}", history_rows - offset),
             "offset {offset}: {history}"
         );
-    }
-    let image = h
-        .call(
-            "calm.terminal.observe",
-            json!({"terminal_id":terminal,"scroll_offset":4,"format":"image"}),
-        )
-        .await;
-    assert!(image.get("error").is_none(), "{image}");
-    assert_eq!(image["result"]["structuredContent"]["scroll_offset"], 4);
-    assert!(
-        image["result"]["content"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|item| item["type"] == "image"),
-        "{image}"
-    );
-    h.stop(&terminal).await;
-}
-
-/// Sixty numbered lines, `MARK` on lines 10, 30 and 50, then twenty more so
-/// every marker is in the history, then a live marker.
-const MARKED_SCROLLBACK: &str = concat!(
-    "i=0; while [ $i -lt 80 ]; do if [ $i -lt 60 ] && [ $((i % 20)) -eq 10 ]; ",
-    "then printf \"line $i MARK\\n\"; else printf \"line $i\\n\"; fi; i=$((i+1)); done; ",
-    "printf 'READY\\n'; cat >/dev/null"
-);
-
-#[tokio::test]
-async fn scroll_to_text_positions_the_matching_history_row_first() {
-    let h = Harness::start().await;
-    let terminal = open(&h, MARKED_SCROLLBACK, "scroll-to").await;
-    let live = h.observe_text(&terminal, "READY").await;
-    let history_rows = live["history_rows"].as_u64().unwrap();
-    assert!(history_rows > 50, "{live}");
-    let search = |pattern: &str, occurrence: Option<&str>| {
-        let mut args = json!({"terminal_id":terminal,"scroll_to_text":pattern});
-        if let Some(occurrence) = occurrence {
-            args["scroll_to_occurrence"] = json!(occurrence);
-        }
-        h.call("calm.terminal.observe", args)
-    };
-    let row_of = |state: &Value| state["scroll_to"]["row"].as_u64().unwrap() as usize;
-    let line = |state: &Value, row: usize| state["text"][row].as_str().unwrap().to_owned();
-
-    let latest = search("MARK", None).await;
-    let state = receipt(&latest).clone();
-    println!("SCROLL_TO_LATEST={}", state["scroll_to"]);
-    assert_eq!(state["scroll_to"]["status"], "found", "{state}");
-    assert_eq!(state["scroll_to"]["occurrence"], "latest", "{state}");
-    assert_eq!(state["scroll_to"]["pattern"], "MARK", "{state}");
-    // Line k sits at absolute row k; the latest marker is the first screen row.
-    assert_eq!(state["scroll_to"]["row_absolute"], 50, "{state}");
-    assert_eq!(row_of(&state), 0, "{state}");
-    assert_eq!(line(&state, 0), "line 50 MARK", "{state}");
-    assert_eq!(state["scroll_offset"], history_rows - 50, "{state}");
-    assert_eq!(state["history_rows"], history_rows, "{state}");
-    assert!(
-        summary(&latest).contains(" scroll_to found row 0; full state"),
-        "{}",
-        summary(&latest)
-    );
-
-    let earliest = h.ok("calm.terminal.observe", json!({"terminal_id":terminal,"scroll_to_text":"MARK","scroll_to_occurrence":"earliest"})).await;
-    println!("SCROLL_TO_EARLIEST={}", earliest["scroll_to"]);
-    assert_eq!(earliest["scroll_to"]["status"], "found", "{earliest}");
-    assert_eq!(
-        earliest["scroll_to"]["occurrence"], "earliest",
-        "{earliest}"
-    );
-    assert_eq!(earliest["scroll_to"]["row_absolute"], 10, "{earliest}");
-    assert_eq!(row_of(&earliest), 0, "{earliest}");
-    assert_eq!(line(&earliest, 0), "line 10 MARK", "{earliest}");
-    assert_eq!(earliest["scroll_offset"], history_rows - 10, "{earliest}");
-    assert!(
-        earliest["scroll_to"]["row_absolute"].as_u64()
-            < state["scroll_to"]["row_absolute"].as_u64()
-            && earliest["scroll_offset"].as_u64() > state["scroll_offset"].as_u64(),
-        "{earliest}"
-    );
-
-    // A pattern only on the live screen: the live viewport, the row inside it.
-    let live_match = receipt(&search("READY", Some("latest")).await).clone();
-    assert_eq!(live_match["scroll_to"]["status"], "found", "{live_match}");
-    assert_eq!(live_match["scroll_offset"], 0, "{live_match}");
-    let absolute = live_match["scroll_to"]["row_absolute"].as_u64().unwrap();
-    assert!(absolute >= history_rows, "{live_match}");
-    assert_eq!(
-        row_of(&live_match) as u64,
-        absolute - history_rows,
-        "{live_match}"
-    );
-    assert_eq!(
-        line(&live_match, row_of(&live_match)),
-        "READY",
-        "{live_match}"
-    );
-    assert_eq!(live_match["text"], live["text"], "{live_match}");
-
-    let missing = search("no such marker", None).await;
-    let not_found = receipt(&missing).clone();
-    println!("SCROLL_TO_NOT_FOUND={}", not_found["scroll_to"]);
-    assert_eq!(
-        not_found["scroll_to"],
-        json!({"pattern":"no such marker","occurrence":"latest","status":"not_found","row_absolute":null,"row":null}),
-        "{not_found}"
-    );
-    assert_eq!(not_found["scroll_offset"], 0, "{not_found}");
-    assert_eq!(not_found["text"], live["text"], "{not_found}");
-    assert!(
-        summary(&missing).contains(" scroll_to not_found; full state"),
-        "{}",
-        summary(&missing)
-    );
-    // No search asked: no block at all.
-    assert!(live.get("scroll_to").is_none(), "{live}");
-
-    // A found history row is a history view: not an input baseline.
-    claim(&h, &terminal).await;
-    let refused = h.call("calm.terminal.input", json!({"terminal_id":terminal,"observation_id":state["observation_id"],"request_id":"after-scroll-to","action":{"type":"key","key":"Escape"}})).await;
-    assert!(
-        error_text(&refused).contains("return to live viewport before input"),
-        "{refused}"
-    );
-    // The default observation is this connection's latest: the scrolled one.
-    let scrolled_again = h
-        .ok(
-            "calm.terminal.observe",
-            json!({"terminal_id":terminal,"scroll_to_text":"MARK"}),
-        )
-        .await;
-    assert!(scrolled_again["scroll_offset"].as_u64().unwrap() > 0);
-    let refused = h.call("calm.terminal.input", json!({"terminal_id":terminal,"request_id":"after-scroll-to-implicit","action":{"type":"key","key":"Escape"}})).await;
-    assert!(
-        error_text(&refused).contains("return to live viewport before input"),
-        "{refused}"
-    );
-    // The positive half: a `not_found` search returned the live viewport
-    // (scroll_offset 0), so that observation IS an input baseline — named
-    // explicitly, and as the connection's latest.
-    let not_found = h
-        .ok(
-            "calm.terminal.observe",
-            json!({"terminal_id":terminal,"scroll_to_text":"no such marker"}),
-        )
-        .await;
-    assert_eq!(not_found["scroll_to"]["status"], "not_found", "{not_found}");
-    assert_eq!(not_found["scroll_offset"], 0, "{not_found}");
-    let written = h.call("calm.terminal.input", json!({"terminal_id":terminal,"observation_id":not_found["observation_id"],"request_id":"after-not-found","action":{"type":"key","key":"Escape"}})).await;
-    assert_eq!(receipt(&written)["outcome"], "written", "{written}");
-    let written = h.call("calm.terminal.input", json!({"terminal_id":terminal,"request_id":"after-not-found-implicit","action":{"type":"key","key":"Escape"},"allow_output_since_observation":true})).await;
-    assert_eq!(receipt(&written)["outcome"], "written", "{written}");
-
-    // Invalid params through the transport, before any service call.
-    for (name, args, expected) in [
-        (
-            "scrolled",
-            json!({"terminal_id":terminal,"scroll_to_text":"MARK","scroll_offset":4}),
-            "scroll_to_text needs scroll_offset 0",
-        ),
-        (
-            "text-wait",
-            json!({"terminal_id":terminal,"scroll_to_text":"MARK","wait_for":"text","wait_text":["READY"]}),
-            "scroll_to_text and wait_for=text / text conditions are exclusive",
-        ),
-        (
-            "signal-conditions",
-            json!({"terminal_id":terminal,"scroll_to_text":"MARK","wait_for":"signal","wait_text_absent":["busy"]}),
-            "scroll_to_text and wait_for=text / text conditions are exclusive",
-        ),
-        (
-            "occurrence-alone",
-            json!({"terminal_id":terminal,"scroll_to_occurrence":"earliest"}),
-            "scroll_to_occurrence needs scroll_to_text",
-        ),
-        (
-            "too-long",
-            json!({"terminal_id":terminal,"scroll_to_text":"x".repeat(201)}),
-            "scroll_to_text: 1..200 bytes of printable text",
-        ),
-    ] {
-        let response = h.call("calm.terminal.observe", args).await;
-        assert_eq!(response["error"]["code"], -32602, "{name}: {response}");
-        assert_eq!(error_text(&response), expected, "{name}");
     }
     h.stop(&terminal).await;
 }
@@ -1434,18 +1243,5 @@ async fn text_results_carry_screen_text_only_in_structured_content() {
             "signal":null,"repaint":null,"matched":null,"role":null,"control_id":null,
             "exited":null,"claim":null,"release":"released"})
     );
-    let image = h
-        .call(
-            "calm.terminal.observe",
-            json!({"terminal_id":terminal,"format":"image"}),
-        )
-        .await;
-    let content = image["result"]["content"].as_array().unwrap();
-    assert_eq!(
-        content.len(),
-        2,
-        "image results keep their native PNG block"
-    );
-    assert_eq!(content[1]["type"], "image");
     h.stop(&terminal).await;
 }

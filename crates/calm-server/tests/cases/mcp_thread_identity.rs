@@ -39,8 +39,8 @@ use tracing_subscriber::{Layer, registry as tracing_registry};
 
 const TEST_BUDGET: Duration = Duration::from_secs(5);
 
-#[path = "mcp_native_image.rs"]
-mod native_image_tests;
+#[path = "mcp_structured_result.rs"]
+mod structured_result_tests;
 
 struct Boot {
     server: Arc<McpServer>,

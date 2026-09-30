@@ -284,7 +284,6 @@ async fn planner_card_can_emit_track_updated_via_enforce_role() {
             template_input: None,
             recipe_id: None,
             recipe_revision: None,
-            claude_permissions_policy: None,
             workspace: Default::default(),
             created_at: 0,
             updated_at: 0,

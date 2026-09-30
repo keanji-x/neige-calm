@@ -61,6 +61,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0121_activity_dismissals.sql",
     "0122_task_git_delivery_outcome.sql",
     "0123_track_closed_at.sql",
+    "0124_drop_track_claude_permissions_policy.sql",
 ];
 
 #[test]

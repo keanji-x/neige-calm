@@ -8,24 +8,17 @@ use serde_json::json;
 use std::time::Duration;
 
 #[tokio::test]
-async fn planner_opens_visible_terminal_and_receives_png_and_confirmed_input() {
+async fn planner_opens_visible_terminal_and_receives_confirmed_input() {
     let h = Harness::start().await;
     let opened = h
         .call(
             "calm.terminal.open",
-            json!({"program":"exec /bin/sh","request_id":"open-1","title":"Planner terminal","format":"image"}),
+            json!({"program":"exec /bin/sh","request_id":"open-1","title":"Planner terminal"}),
         )
         .await;
     assert!(opened.get("error").is_none(), "{opened}");
     let meta = &opened["result"]["structuredContent"];
     let terminal = meta["terminal_id"].as_str().unwrap().to_owned();
-    assert!(
-        opened["result"]["content"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|part| part["type"] == "image" && part["mimeType"] == "image/png")
-    );
     let card = h
         .state
         .repo
@@ -38,7 +31,7 @@ async fn planner_opens_visible_terminal_and_receives_png_and_confirmed_input() {
     let repeated = h
         .ok(
             "calm.terminal.open",
-            json!({"program":"exec /bin/sh","request_id":"open-1","title":"Planner terminal","format":"image"}),
+            json!({"program":"exec /bin/sh","request_id":"open-1","title":"Planner terminal"}),
         )
         .await;
     assert_eq!(repeated["terminal_id"], terminal);
@@ -511,75 +504,6 @@ async fn default_terminal_observations_authorize_shell_input_without_images() {
     h.stop(&terminal).await;
 }
 
-#[tokio::test]
-async fn terminal_formats_are_explicit_and_do_not_change_open_identity() {
-    let h = Harness::start().await;
-    for invalid in [json!("png"), json!("TEXT"), json!(null), json!(1)] {
-        for tool in ["calm.terminal.open", "calm.terminal.observe"] {
-            let args = if tool.ends_with("open") {
-                json!({"request_id":"invalid-format","format":invalid})
-            } else {
-                json!({"terminal_id":"not-created","format":invalid})
-            };
-            let rejected = h.call(tool, args).await;
-            assert_eq!(rejected["error"]["code"], -32602, "{rejected}");
-        }
-    }
-    assert_eq!(
-        h.sql.cards_by_track(&h.track).await.unwrap().len(),
-        1,
-        "invalid formats must not create a card"
-    );
-    let opened = h
-        .call(
-            "calm.terminal.open",
-            json!({"program":"exec /bin/sh","request_id":"same-open","format":"text"}),
-        )
-        .await;
-    let first = assert_text_observation(&opened);
-    let terminal = first["terminal_id"].as_str().unwrap().to_owned();
-    let image = h
-        .call(
-            "calm.terminal.open",
-            json!({"program":"exec /bin/sh","request_id":"same-open","format":"image"}),
-        )
-        .await;
-    assert!(image.get("error").is_none(), "{image}");
-    let image_meta = &image["result"]["structuredContent"];
-    assert_eq!(image_meta["terminal_id"], terminal);
-    assert_eq!(image_meta["operation_id"], first["operation_id"]);
-    assert_eq!(
-        image_meta["terminal_session_id"],
-        first["terminal_session_id"]
-    );
-    assert_eq!(image_meta["image_source"], "rmux_client_projection");
-    assert!(
-        image["result"]["content"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|part| part["type"] == "image" && part["mimeType"] == "image/png")
-    );
-    let text = h
-        .call(
-            "calm.terminal.observe",
-            json!({"terminal_id":terminal,"format":"text"}),
-        )
-        .await;
-    assert_eq!(
-        assert_text_observation(&text)["terminal_session_id"],
-        first["terminal_session_id"]
-    );
-    assert_eq!(
-        h.sql.cards_by_track(&h.track).await.unwrap().len(),
-        2,
-        "changing presentation must not create another terminal"
-    );
-    h.stop(&terminal).await;
-}
-
-/// #1784: a Planner-opened Terminal, the PTY spawn Claude Workers share, finds `neige` beside the
-/// running kernel first. The kernel here is this test binary; its file name stands in for `neige`.
 #[tokio::test]
 async fn opened_terminal_path_leads_with_the_kernel_bin_dir() {
     let h = Harness::start().await;

@@ -1,21 +1,17 @@
-use super::actions::{BELOW_CURSOR_EDITS_ONLY, Encoded, edits_the_draft, encode, sequence_steps};
+use super::actions::{Encoded, encode, sequence_steps};
 use super::input_control::ClaimStep;
 use super::receipts::{
     WriteReceipts, attach_claim, control_unavailable_receipt, merge, stale_receipt,
 };
-use super::replace_plan::ReplacePlan;
-use super::screen_diff::{CursorSnapshot, ScreenDiff, Tolerance, row_hashes};
+use super::screen_diff::{CursorSnapshot, ScreenDiff, row_hashes};
 use super::*;
 use crate::terminal_renderer::WriteShape;
 
-/// Per-request switches of an input. All four enter the request fingerprint.
+/// Per-request switches of an input. All three enter the request fingerprint.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct InputOptions {
     /// Replace the exact-revision fence with a same-surface fence.
     pub allow_output_since_observation: bool,
-    /// Admit a moved revision when only rows strictly below an unmoved,
-    /// visible cursor changed (never for clicks).
-    pub allow_output_below_cursor: bool,
     /// Claim control (if unowned) before the write when the observation was
     /// taken as observer and this connection holds no control.
     pub claim: bool,
@@ -61,10 +57,6 @@ impl TerminalInteraction {
             !request_key.is_empty() && request_key.len() <= 128,
             "invalid input request key"
         );
-        ensure!(
-            !options.allow_output_below_cursor || edits_the_draft(&action),
-            "{BELOW_CURSOR_EDITS_ONLY}"
-        );
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
         resolved.ensure_accepts_input()?;
         let terminal = resolved.binding.terminal_id.as_str();
@@ -83,7 +75,6 @@ impl TerminalInteraction {
         let fingerprint = crate::routes::terminal_cards::stable_payload_hash(&json!({
             "observation_id":observation,"action":action,
             "allow_output_since_observation":options.allow_output_since_observation,
-            "allow_output_below_cursor":options.allow_output_below_cursor,
             "claim":options.claim,"release":options.release
         }))?;
         let cached = {
@@ -154,7 +145,6 @@ impl TerminalInteraction {
             input_revision,
             signal_seq,
             tolerated,
-            replace,
         } = match fence {
             Fence::Ready(ready) => ready,
             Fence::ControlLost => {
@@ -189,8 +179,8 @@ impl TerminalInteraction {
         let drift = (input_revision != saved.revision).then(|| {
             let mut drift =
                 json!({"observed_revision":saved.revision,"input_revision":input_revision});
-            if let Some((tolerance, diff)) = &tolerated {
-                merge(&mut drift, diff.tolerance_json(*tolerance));
+            if let Some(diff) = &tolerated {
+                merge(&mut drift, diff.drift_json());
             }
             drift
         });
@@ -200,7 +190,6 @@ impl TerminalInteraction {
             observation,
             drift.as_ref(),
             sequence_steps(&action),
-            replace.as_ref(),
             options.release,
         );
         receipts.attach(claim.as_ref());
@@ -289,7 +278,7 @@ impl TerminalInteraction {
         Ok(())
     }
     /// The fences that read the live screen: availability and age again (the claim may have
-    /// taken seconds), control, surface, action, revision; then a `replace` plan.
+    /// taken seconds), control, surface, action, revision.
     fn pre_write_fences(
         &self,
         client: &Client,
@@ -340,23 +329,14 @@ impl TerminalInteraction {
                 CursorSnapshot::from(&frame.cursor),
                 &row_hashes(&frame),
             );
-            if options.allow_output_since_observation {
-                Some((Tolerance::OutputSinceObservation, diff))
-            } else if options.allow_output_below_cursor && diff.only_below_cursor() {
-                Some((Tolerance::BelowCursor, diff))
-            } else {
+            if !options.allow_output_since_observation {
                 return Ok(Fence::Stale { current, diff });
             }
+            Some(diff)
         };
-        // A replace looks the draft up on the live frame only once the revision (or a tolerance)
-        // admitted the write; its refusals are RPC errors like an invalid action's.
-        let (bytes, shape, replace) = match encoded {
-            Encoded::Bytes(bytes) => (bytes, WriteShape::Verbatim, None),
-            Encoded::Submit(bytes) => (bytes, WriteShape::SplitTrailingCr, None),
-            Encoded::Replace { from, to } => {
-                let plan = ReplacePlan::derive(&frame, &from, &to)?;
-                (plan.bytes(&now)?, WriteShape::Verbatim, Some(plan))
-            }
+        let (bytes, shape) = match encoded {
+            Encoded::Bytes(bytes) => (bytes, WriteShape::Verbatim),
+            Encoded::Submit(bytes) => (bytes, WriteShape::SplitTrailingCr),
         };
         Ok(Fence::Ready(Ready {
             bytes,
@@ -364,7 +344,6 @@ impl TerminalInteraction {
             input_revision: current,
             signal_seq,
             tolerated,
-            replace,
         }))
     }
 }
@@ -414,9 +393,8 @@ struct Ready {
     shape: WriteShape,
     input_revision: u64,
     signal_seq: u64,
-    /// A moved revision: the opt-in that admitted it and the row comparison.
-    tolerated: Option<(Tolerance, ScreenDiff)>,
-    replace: Option<ReplacePlan>,
+    /// A moved revision admitted by `allow_output_since_observation`: the row comparison.
+    tolerated: Option<ScreenDiff>,
 }
 /// Reserve the next input sequence, cache the unknown receipt, send one ordered write and await
 /// its ack. Cancellation preserves Unknown and blocks all subsequent writes until the matching ack/refusal is observed.

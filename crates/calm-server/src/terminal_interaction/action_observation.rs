@@ -31,21 +31,12 @@ impl TerminalInteraction {
                     .is_some_and(|entry| Arc::ptr_eq(&entry, &client.entry)),
                 "action terminal generation changed before observation"
             );
-            self.capture(
-                identity,
-                resolved,
-                client,
-                0,
-                wait,
-                baseline,
-                ObservationFormat::Text,
-                None,
-            )
-            .await
+            self.capture(identity, resolved, client, 0, wait, baseline)
+                .await
         }
         .await;
         receipt["observation"] = match captured {
-            Ok((state, _)) => json!({"status":"available","state":state}),
+            Ok(state) => json!({"status":"available","state":state}),
             Err(error) => json!({"status":"unavailable","reason":error.to_string()}),
         };
         receipt

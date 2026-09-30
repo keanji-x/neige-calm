@@ -271,20 +271,14 @@ fn server_owned_probe_values() -> [Value; 5] {
     ]
 }
 
-/// `terminal_signals`, `claude_permissions` and `claude_permissions_source` are stamped by the kernel on Planner-opened
-/// terminals; no client may write any of them, for any kind (the hook route reads the marker from the payload, not the kind).
+/// `terminal_signals` is stamped by the kernel on Planner-opened terminals, `template_context` and `planner_provider` on
+/// Planner cards; no client may write any of them, for any kind (the hook route reads the marker from the payload, not the kind).
 #[tokio::test]
 async fn post_card_with_a_server_owned_key_is_rejected_for_every_kind() {
     let (state, track_id, repo) = boot_with_repo().await;
     assert_eq!(
         SERVER_OWNED_CARD_PAYLOAD_KEYS,
-        [
-            "terminal_signals",
-            "claude_permissions",
-            "claude_permissions_source",
-            "template_context",
-            "planner_provider"
-        ]
+        ["terminal_signals", "template_context", "planner_provider"]
     );
     for key in SERVER_OWNED_CARD_PAYLOAD_KEYS {
         for (kind, value) in [

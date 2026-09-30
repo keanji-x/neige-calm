@@ -694,16 +694,17 @@ async fn input_release_releases_after_the_write_and_reads_back_as_observer() {
         )
         .await;
     assert!(error_text(&toggled).contains("reused with different arguments"));
-    // One-input scenario: claim, write, release in one call.
-    h.ok(
-        "calm.terminal.control",
-        json!({"terminal_id":terminal,"action":"release"}),
-    )
-    .await;
-    let fresh = h
-        .ok("calm.terminal.observe", json!({"terminal_id":terminal}))
-        .await;
-    assert_eq!(fresh["role"], "observer");
+    h.stop(&terminal).await;
+}
+
+/// One request claims, writes and releases (#1893 keeps the atomic scenario): the receipt carries both
+/// steps, the readback is taken after the release, and nothing holds control afterwards.
+#[tokio::test]
+async fn input_keeps_claim_and_release_in_one_request() {
+    let h = Harness::start().await;
+    let (terminal, ready) = open_observed(&h, "claim-release").await;
+    assert_eq!(registry_owner(&h, &terminal), None);
+    let before = h.interaction().input_ack_sequence(&terminal).await.unwrap();
     let both = h
         .call(
             "calm.terminal.input",
@@ -711,16 +712,28 @@ async fn input_release_releases_after_the_write_and_reads_back_as_observer() {
                 &terminal,
                 "solo",
                 "solo",
-                json!({"claim":true,"release":true}),
+                json!({"observation_id":ready["observation_id"],"claim":true,"release":true}),
             ),
         )
         .await;
-    assert_eq!(receipt(&both)["outcome"], "written", "{both}");
-    assert_eq!(receipt(&both)["claim"]["status"], "claimed");
-    assert_eq!(receipt(&both)["release"], json!({"status":"released"}));
-    assert_eq!(observation(&both)["role"], "observer");
-    assert!(has_line(observation(&both), "COUNT:2:solo"));
+    let written = receipt(&both);
+    assert_eq!(written["outcome"], "written", "{both}");
+    assert_eq!(written["claim"]["status"], "claimed", "{written}");
+    assert_eq!(
+        written["release"],
+        json!({"status":"released"}),
+        "{written}"
+    );
+    let state = observation(&both);
+    assert_eq!(state["role"], "observer", "{state}");
+    assert_eq!(state["control_id"], Value::Null, "{state}");
+    assert!(has_line(state, "COUNT:1:solo"), "{state}");
     assert_eq!(registry_owner(&h, &terminal), None);
+    assert_eq!(
+        h.interaction().input_ack_sequence(&terminal).await,
+        Some(before + 1),
+        "one write"
+    );
     h.stop(&terminal).await;
 }
 

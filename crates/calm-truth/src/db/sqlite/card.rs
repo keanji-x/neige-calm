@@ -157,7 +157,7 @@ async fn card_update_inner_tx(
     if let Some(mut v) = p.payload {
         // The server-owned keys are sticky: the payload column is replaced wholesale, so each kernel-minted value in
         // `SERVER_OWNED_CARD_PAYLOAD_KEYS` is re-inserted into the replacement and no writer can drop the hook routing
-        // or the permissions audit trail by omission. A non-object replacement is refused; only creation mints them.
+        // or the Planner's template by omission. A non-object replacement is refused; only creation mints them.
         let stored: Vec<(&str, serde_json::Value)> = SERVER_OWNED_CARD_PAYLOAD_KEYS
             .iter()
             .filter_map(|key| {

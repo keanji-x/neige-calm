@@ -175,7 +175,7 @@ mod tests {
     /// compact input schema. One-sided caps; a change that shrinks the surface lowers them.
     #[test]
     fn planner_tool_surface_fits_its_byte_budget() {
-        const SURFACE_MAX_BYTES: usize = 36_000;
+        const SURFACE_MAX_BYTES: usize = 34_000;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
         let descriptors = build_default_registry().descriptors_for_role(CardRole::Planner);

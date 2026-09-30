@@ -6,9 +6,6 @@ use rmux_core::{COLOUR_DEFAULT, ScreenLineView, TerminalScreen, input::mode};
 use rmux_proto::TerminalSize;
 use serde::Serialize;
 
-mod raster;
-pub use raster::Rasterizer;
-
 pub const MAX_COLS: u16 = 512;
 pub const MAX_ROWS: u16 = 256;
 const MAX_FRAME_TEXT: usize = 512 * 1024;
@@ -68,16 +65,6 @@ pub struct InputSurface {
     pub alternate: bool,
     pub scroll_offset: usize,
 }
-/// Which matching row `TerminalView::find_text` returns; serialised as `latest` / `earliest` (the wire vocabulary).
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum Occurrence {
-    /// The bottom-most matching row (the most recent output).
-    Latest,
-    /// The top-most matching row.
-    Earliest,
-}
-
 /// The plain text of one row exactly as `Frame::text` carries it: padding cells skipped, unstored cells blank, trailing blanks trimmed.
 fn row_text(line: &ScreenLineView, cols: u16) -> String {
     let mut plain = String::new();
@@ -148,30 +135,6 @@ impl TerminalView {
         // A second observing client must never inject duplicate replies.
         self.terminal.take_replies();
         self.terminal.take_terminal_passthrough();
-    }
-
-    /// The scrollback depth in rows: the absolute index of the live viewport's first row.
-    pub fn history_rows(&self) -> usize {
-        self.terminal.screen().history_size()
-    }
-
-    /// The absolute row index (`0..history + rows`) of the latest or earliest row whose plain text contains `pattern`
-    /// (case-sensitive substring, no wrapping reassembly). In the alternate screen only the live rows are searched, mirroring `frame`.
-    pub fn find_text(&self, pattern: &str, occurrence: Occurrence) -> Option<usize> {
-        let screen = self.terminal.screen();
-        let size = screen.size();
-        let history = screen.history_size();
-        let first = if screen.is_alternate() { history } else { 0 };
-        let matches = |row: usize| {
-            screen
-                .absolute_line_view(row)
-                .is_some_and(|line| row_text(&line, size.cols).contains(pattern))
-        };
-        let rows = first..history + usize::from(size.rows);
-        match occurrence {
-            Occurrence::Latest => rows.rev().find(|row| matches(*row)),
-            Occurrence::Earliest => rows.into_iter().find(|row| matches(*row)),
-        }
     }
 
     pub fn frame(&self, requested_offset: usize) -> Result<Frame> {
@@ -262,28 +225,4 @@ pub fn key_bytes(key: &str, modes: u32) -> Result<Vec<u8>> {
         _ => anyhow::bail!("unsupported terminal key"),
     };
     Ok(bytes)
-}
-
-pub fn click_bytes(column: u16, row: u16, frame: &InputSurface) -> Result<Vec<u8>> {
-    ensure!(
-        frame.scroll_offset == 0 && column < frame.cols && row < frame.rows,
-        "click outside live viewport"
-    );
-    let mouse = mode::MODE_MOUSE_STANDARD | mode::MODE_MOUSE_BUTTON | mode::MODE_MOUSE_ALL;
-    ensure!(
-        frame.modes & mouse != 0,
-        "application has not enabled terminal mouse input"
-    );
-    ensure!(
-        frame.modes & mode::MODE_MOUSE_SGR != 0,
-        "application does not support SGR mouse input"
-    );
-    Ok(format!(
-        "\x1b[<0;{};{}M\x1b[<0;{};{}m",
-        column + 1,
-        row + 1,
-        column + 1,
-        row + 1
-    )
-    .into_bytes())
 }

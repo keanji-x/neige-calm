@@ -1168,13 +1168,7 @@ mod tests {
         let h = Harness::new("p1", manifest_with_full_perms("p1")).await;
         assert_eq!(
             SERVER_OWNED_CARD_PAYLOAD_KEYS,
-            [
-                "terminal_signals",
-                "claude_permissions",
-                "claude_permissions_source",
-                "template_context",
-                "planner_provider"
-            ]
+            ["terminal_signals", "template_context", "planner_provider"]
         );
         let probes = [json!(true), json!({}), json!("declared"), Value::Null];
         for key in SERVER_OWNED_CARD_PAYLOAD_KEYS {
