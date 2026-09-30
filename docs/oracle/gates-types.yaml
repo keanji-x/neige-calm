@@ -53,7 +53,7 @@
     事件日志是不可变历史，拒绝它等于弄坏 replay（#1209 §3.5）。
   source: crates/calm-types/src/model.rs:246-259 ; fe/core/api/schemas.ts:28-46
   authoritative_test: crates/calm-server/tests/cases/event_serde_goldens.rs:184-207 ;
-    fe/core/api/schemas.contract.test.ts:874-922
+    fe/core/api/schemas.contract.test.ts:866-914
   owner_slice: core/schemas/wire-types
   intentional_omission: false
   runtime_layer: core
