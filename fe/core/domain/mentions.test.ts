@@ -34,8 +34,8 @@ describe('mentionsOperation', () => {
 });
 
 describe('mentionSuggestionsOf', () => {
-  it('lists tags, then tracks, then blocks, in the server order, each carrying its insert verbatim', () => {
-    expect(mentionSuggestionsOf(CANDIDATES)).toEqual([
+  it('lists tags, then tracks, then blocks for a typed query, in the server order, each carrying its insert verbatim', () => {
+    expect(mentionSuggestionsOf(CANDIDATES, 'dep')).toEqual([
       { id: 'tag:@`tag:部署`', kind: 'tag', label: '#部署', detail: '3 tracks', chip: '#部署', insert: '@`tag:部署`' },
       { id: 'tag:@`tag:infra`', kind: 'tag', label: '#infra', detail: '1 track', chip: '#infra', insert: '@`tag:infra`' },
       {
@@ -49,8 +49,15 @@ describe('mentionSuggestionsOf', () => {
     ]);
   });
 
+  it('puts blocks first, then tracks, then tags, for bare @', () => {
+    expect(mentionSuggestionsOf(CANDIDATES, '').map((suggestion) => suggestion.kind))
+      .toEqual(['block', 'track', 'tag', 'tag']);
+    expect(mentionSuggestionsOf(CANDIDATES, '').map((suggestion) => suggestion.label))
+      .toEqual(['Rollback', 'Deploy notes', '#部署', '#infra']);
+  });
+
   it('is empty for an area with nothing to mention', () => {
-    expect(mentionSuggestionsOf({ tags: [], tracks: [], blocks: [] })).toEqual([]);
+    expect(mentionSuggestionsOf({ tags: [], tracks: [], blocks: [] }, '')).toEqual([]);
   });
 
   it('keeps ids unique when a tag and a report would otherwise collide', () => {
@@ -58,7 +65,7 @@ describe('mentionSuggestionsOf', () => {
       tags: [{ label: 'x', track_count: 1, insert: '@`x`' }],
       tracks: [{ label: 'x', track_id: 't', insert: '@`x`' }],
       blocks: [],
-    }).map((suggestion) => suggestion.id);
+    }, 'x').map((suggestion) => suggestion.id);
     expect(new Set(ids).size).toBe(2);
   });
 });
