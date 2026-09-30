@@ -113,11 +113,12 @@ function blockSuggestion(block: BlockMention): MentionSuggestion {
  */
 export type MentionQuery = Readonly<{ kind: MentionKind | null; text: string }>;
 
+/** Each prefix also as a Chinese IME's punctuation mode types it: `＃` (full-width), `、` and `》`. */
 function prefixKind(char: string): MentionKind | null {
   switch (char) {
-    case '#': return 'tag';
-    case '/': return 'track';
-    case '>': return 'block';
+    case '#': case '＃': return 'tag';
+    case '/': case '、': return 'track';
+    case '>': case '》': return 'block';
     default: return null;
   }
 }

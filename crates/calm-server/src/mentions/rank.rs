@@ -10,7 +10,9 @@
 //!   path, document order.
 //!
 //! An empty query recommends: the most-used tags, the most recently updated reports, and the
-//! `track` parameter's blocks in document order (none without it). Each group keeps [`MAX_PER_GROUP`].
+//! `track` parameter's blocks in document order. Without a `track`, or when it names no report in the
+//! area, the blocks of the most recently updated reports instead: newest report first, document order
+//! within a report. Each group keeps [`MAX_PER_GROUP`].
 
 use std::collections::BTreeMap;
 
@@ -143,10 +145,13 @@ fn blocks(
     scorer: &mut Scorer,
     track: Option<&str>,
 ) -> Vec<BlockMention> {
+    // An empty query recommends the `track` parameter's blocks alone when it names a report here.
+    let track_only = scorer.is_empty()
+        && track.is_some_and(|track| reports.iter().any(|report| report.track_id == track));
     let mut ranked = Vec::new();
     for report in reports {
         let in_track = track == Some(report.track_id.as_str());
-        if scorer.is_empty() && !in_track {
+        if track_only && !in_track {
             continue;
         }
         for (index, block) in report.blocks.iter().enumerate() {

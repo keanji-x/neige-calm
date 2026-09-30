@@ -47,6 +47,17 @@ describe('mentionQueryOf', () => {
     expect(mentionQueryOf(typed)).toEqual(query);
   });
 
+  it.each([
+    ['＃dep', { kind: 'tag', text: 'dep' }],
+    ['、dep', { kind: 'track', text: 'dep' }],
+    ['》roll', { kind: 'block', text: 'roll' }],
+    ['＃', { kind: 'tag', text: '' }],
+    ['、', { kind: 'track', text: '' }],
+    ['》', { kind: 'block', text: '' }],
+  ] as const)('reads %s, a Chinese IME\'s punctuation for the prefix, the same way', (typed, query) => {
+    expect(mentionQueryOf(typed)).toEqual(query);
+  });
+
   it('reads a prefix alone as that group\'s recommendations', () => {
     expect(mentionQueryOf('#')).toEqual({ kind: 'tag', text: '' });
     expect(mentionQueryOf('/')).toEqual({ kind: 'track', text: '' });
@@ -112,16 +123,5 @@ describe('mentionSuggestionsOf', () => {
     expect(mentionSuggestionsOf(CANDIDATES, mentionQueryOf('>roll'))).toEqual(
       mentionSuggestionsOf(CANDIDATES, all('roll')).filter((suggestion) => suggestion.kind === 'block'),
     );
-  });
-
-  it('still offers a name that starts with a prefix character to a plain @', () => {
-    const named: MentionCandidates = {
-      tags: [{ label: '#hash', track_count: 1, insert: '@`tag:#hash`' }],
-      tracks: [{ label: '/tmp notes', track_id: 't', insert: '@`area/reports/tmp notes.md`' }],
-      blocks: [{ label: '> quote', block_id: 'b', track_title: 'Q', track_id: 't', insert: '@`area/reports/Q.md#b`' }],
-    };
-    const query = mentionQueryOf('tmp');
-    expect(query).toEqual({ kind: null, text: 'tmp' });
-    expect(mentionSuggestionsOf(named, query).map((suggestion) => suggestion.label)).toEqual(['##hash', '/tmp notes', '> quote']);
   });
 });

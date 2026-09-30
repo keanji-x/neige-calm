@@ -369,9 +369,9 @@ async fn every_insert_resolves_through_the_area_reports_resolver() {
     let body = mentions(&fx, &a, "goal", None).await;
     assert_eq!(body["blocks"].as_array().unwrap().len(), MAX_PER_GROUP);
     checked += assert_inserts_resolve(&fx, &a, &body).await;
-    // q="": 8 tags + 8 tracks; each of the 8 tracks' recommendations: those again + its 2 blocks;
-    // q="goal": 8 blocks and nothing else.
-    assert_eq!(checked, 16 + 8 * (16 + 2) + 8);
+    // q="": 8 tags + 8 tracks + the newest reports' 8 blocks; each of the 8 tracks'
+    // recommendations: the tags and tracks again + its 2 blocks; q="goal": 8 blocks and nothing else.
+    assert_eq!(checked, 24 + 8 * (16 + 2) + 8);
 }
 
 #[tokio::test]
@@ -404,8 +404,8 @@ async fn another_areas_tracks_tags_and_blocks_never_appear() {
     assert_eq!(labels(&everything, "tags"), ["public"]);
     assert_eq!(
         labels(&everything, "blocks"),
-        Vec::<String>::new(),
-        "another area's track lifts nothing"
+        ["Public heading"],
+        "another area's track names no report here: this area's newest blocks, never its own"
     );
     for q in ["secret", "plan", "heading"] {
         let body = mentions(&fx, &a, q, Some(&secret)).await;
@@ -555,12 +555,55 @@ async fn an_empty_query_recommends_in_the_documented_order() {
     assert_eq!(body["blocks"][0]["track_title"], "current");
 
     let body = mentions(&fx, &a, "  ", None).await;
-    assert!(
-        labels(&body, "blocks").is_empty(),
-        "no track, no block recommendations: {body}"
+    assert_eq!(
+        labels(&body, "blocks"),
+        ["m", "n", "First", "Second", "Third", "o"],
+        "no track: the newest reports' blocks, each report in document order"
     );
     assert_eq!(labels(&body, "tracks"), ["newest", "new", "current", "old"]);
     assert_eq!(body, mentions(&fx, &a, "  ", None).await, "deterministic");
+}
+
+#[tokio::test]
+async fn an_empty_query_without_a_report_for_the_track_recommends_the_newest_reports_blocks() {
+    let fx = boot().await;
+    let [a, b] = fx.areas.clone();
+    report(
+        &fx,
+        &a,
+        "old",
+        "# O1\n\nx\n\n# O2\n\nx\n\n# O3\n\nx\n\n# O4\n\nx\n",
+        true,
+        &[],
+        10,
+    )
+    .await;
+    report(
+        &fx,
+        &a,
+        "mid",
+        "# M1\n\nx\n\n# M2\n\nx\n\n# M3\n\nx\n",
+        true,
+        &[],
+        20,
+    )
+    .await;
+    let new = report(&fx, &a, "new", "# N1\n\nx\n\n# N2\n\nx\n", true, &[], 30).await;
+    let elsewhere = report(&fx, &b, "elsewhere", "# E1\n\nx\n", true, &[], 99).await;
+
+    // Newest report first, document order within one, cut at the cap (O4 is the ninth).
+    let newest = ["N1", "N2", "M1", "M2", "M3", "O1", "O2", "O3"];
+    assert_eq!(newest.len(), MAX_PER_GROUP);
+    for track in [None, Some(elsewhere.as_str()), Some("no-such-track")] {
+        let body = mentions(&fx, &a, "", track).await;
+        assert_eq!(labels(&body, "blocks"), newest, "track={track:?}: {body}");
+        assert_eq!(assert_inserts_resolve(&fx, &a, &body).await, 3 + 8);
+    }
+    assert_eq!(
+        labels(&mentions(&fx, &a, "", Some(&new)).await, "blocks"),
+        ["N1", "N2"],
+        "a track with a report here still recommends its blocks alone"
+    );
 }
 
 #[tokio::test]
