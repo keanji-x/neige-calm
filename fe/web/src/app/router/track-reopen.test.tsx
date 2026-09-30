@@ -2,7 +2,7 @@
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 
@@ -20,16 +20,16 @@ const area = {
   id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1,
 };
 
-type Harness = Readonly<{ requests: ApiRequest[] }>;
+type Harness = Readonly<{ requests: ApiRequest[]; client: QueryClient; healRefetch: () => void }>;
 
-/** The whole router over a fake kernel whose PATCH flips `closed_at` and whose detail refetch then fails. */
-function renderTrack(closedAt: number | null): Harness {
+/** The whole router over a fake kernel whose PATCH flips `closed_at`; with `failRefetch` the detail reads after it fail until healed. */
+function renderTrack(closedAt: number | null, { failRefetch = false } = {}): Harness {
   const requests: ApiRequest[] = [];
   let track: TrackWire = {
     id: 'w1', area_id: 'c1', title: 'Recover me', sort: 1, cwd: '/tmp',
     pinned_at: null, closed_at: closedAt, created_at: 1, updated_at: 2,
   };
-  let patchCommitted = false;
+  let refetchFails = false;
   const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
   const transport: ApiTransportPort = {
     send(request) {
@@ -40,11 +40,11 @@ function renderTrack(closedAt: number | null): Harness {
       if (request.method === 'PATCH' && request.path === '/api/tracks/w1') {
         const { closed } = request.body as { closed: boolean };
         track = { ...track, closed_at: closed ? 42 : null, updated_at: track.updated_at + 1 };
-        patchCommitted = true;
+        refetchFails = failRefetch;
         return Promise.resolve(ok(track));
       }
       if (request.path === '/api/tracks/w1') {
-        if (patchCommitted) {
+        if (refetchFails) {
           return Promise.resolve({ status: 500, statusText: 'Refresh failed', body: {} });
         }
         const closed = track.closed_at !== null;
@@ -68,7 +68,7 @@ function renderTrack(closedAt: number | null): Harness {
       </ThemeProvider>
     </QueryClientProvider>,
   );
-  return { requests };
+  return { requests, client, healRefetch: () => { refetchFails = false; } };
 }
 
 function patches(requests: readonly ApiRequest[]): ApiRequest[] {
@@ -107,4 +107,29 @@ it('PATCHes closed: true and shows the Closed badge after Close', async () => {
   await userEvent.click(screen.getByRole('button', { name: 'Track actions for Recover me' }));
   expect(screen.queryByRole('menuitem', { name: 'Close' })).toBeNull();
   expect(screen.getByRole('menuitem', { name: 'Delete track' })).toBeTruthy();
+});
+
+it('after Close, a failed detail refetch leaves the last detail and its action, and the next read shows Reopen', async () => {
+  const { requests, client, healRefetch } = renderTrack(null, { failRefetch: true });
+
+  await userEvent.click(await screen.findByRole('button', { name: 'Track actions for Recover me' }));
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Close' }));
+  await waitFor(() => {
+    expect(patches(requests)).toEqual([expect.objectContaining({ body: { closed: true } })]);
+  });
+  await waitFor(() => {
+    expect(requests.filter((request) => request.method === 'GET' && request.path === '/api/tracks/w1').length)
+      .toBeGreaterThan(1);
+  });
+  /* No half-written detail: the page keeps the server's last one, where Close waits for the answer. */
+  await userEvent.click(screen.getByRole('button', { name: 'Track actions for Recover me' }));
+  expect(screen.getByRole('menuitem', { name: 'Close' }).getAttribute('aria-disabled')).toBe('true');
+  await userEvent.keyboard('{Escape}');
+
+  /* The next read of the detail, as the `track.updated` event triggers it, brings the closed state. */
+  healRefetch();
+  await act(() => client.invalidateQueries({ queryKey: ['track', 'w1'] }));
+  expect(await screen.findAllByRole('status', { name: 'Track closed' })).toHaveLength(2);
+  await userEvent.click(screen.getByRole('button', { name: 'Track actions for Recover me' }));
+  expect(screen.getByRole('menuitem', { name: /Reopen/ })).toBeTruthy();
 });

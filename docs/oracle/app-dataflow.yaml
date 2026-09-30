@@ -653,7 +653,7 @@
     （`track_activity.rs`），FE 只解码 overlay。第二套推导必然再度分叉。
   source: fe/core/domain/activity.ts:19-89; fe/core/domain/track.ts:145-190,522-542;
     fe/web/src/app/router/public.tsx:1867-1879,2376-2382; fe/web/src/features/track/page/public.tsx:7,46-69,91-94,566-616,647;
-    fe/web/src/app/providers/queries.ts:905-910,944-951;
+    fe/web/src/app/providers/queries.ts:896-901,935-942;
     fe/web/src/features/today/public.tsx:137-138,256-257;
     fe/web/src/app/providers/ui-preferences.tsx:69-105; fe/web/src/ui/activity-indicator/activity-indicator.module.css:7-8;
     fe/web/src/features/chat/list/public.tsx:32-88; fe/core/view/track-page.ts:14-18,59-61,69-70,90,107,119;

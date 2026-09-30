@@ -375,7 +375,7 @@ The rows stay hand-run evidence: no fe gate requires a manifest entry for them, 
 | PR | Content | Size (hand-edited, estimate) | Preview |
 |---|---|---|---|
 | PR-1 | Migration, calm-types/truth/exec/server kernel and `calm-truth-test-harness` fakes (D1-D5), event deletion, `calm.track.close` + `neige track-close`, parser refusal, CLI render, prompts and template, goldens and vectors, and generated wire. FE compile fixes: decoders, labels, badge, Reopen, `activeTracksOn`, invalidation, Today Open, mobile meta, deleting `visibleTracks` and its callers, independent-task admission, and fixtures (about 51 test files). The existing mutation-manifest entries and oracle INV-APP-118 / CAP-APP-032. The e2e case 110 and the Playwright resume test | ~2k lines touched, plus about 1.25k deleted in whole blocks (the FSM and transition functions of both `track_lifecycle.rs`, ~770 of 838 lines; the FSM golden and its test, 501) | no |
-| PR-2 | The whole rail rule (`railAreaTracks`: hidden unless unread or active), `area-closed:${id}` preference, Show closed / Hide closed item, Close track action, a11y oracle INV-A11Y-061, new mutation entries, jsdom + browser tests | ~400 | owner preview |
+| PR-2 | The whole rail rule (`railAreaTracks`: hidden unless unread or active), `area-closed:${id}` preference, Show closed / Hide closed item, Close track action, a11y oracle INV-A11Y-061, jsdom + browser tests | ~400 | owner preview |
 
 - **Why PR-1 is not split to ~1k.** Deleting `TrackLifecycle` is one compile unit across 3 crates.
   The wire change forces the FE decoders into the same PR (`openapi-drift` + `fe-unit-lint`).
