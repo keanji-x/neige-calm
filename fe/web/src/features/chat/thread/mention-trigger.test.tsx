@@ -225,6 +225,40 @@ describe('the @ menu in the real composer', () => {
     expect(onSend).toHaveBeenLastCalledWith('ask @bob');
   });
 
+  it('after a send over an empty @ menu, the next @ pick inserts its chip', async () => {
+    const onSend = vi.fn();
+    const search = vi.fn<MentionSearch>((query) => Promise.resolve(query === 'zz' ? [TAG] : []));
+    render(<MentionComposer search={search} onSend={onSend} />);
+    await userEvent.type(field(), 'ask @bob');
+    await screen.findByText('Nothing in this area matches');
+    await userEvent.keyboard('{Enter}');
+    expect(onSend).toHaveBeenLastCalledWith('ask @bob');
+    await waitFor(() => { expect(field().getAttribute('aria-expanded')).toBe('false'); });
+
+    await userEvent.type(field(), '@zz');
+    await screen.findByRole('option', { name: /部署/ });
+    await userEvent.keyboard('{Enter}');
+    expect(field().querySelector('[data-astryx-token]')?.textContent).toBe('#部署');
+    await userEvent.keyboard('{Enter}');
+    expect(onSend).toHaveBeenLastCalledWith(TAG.insert);
+  });
+
+  it('after a send over an empty / menu, /new still runs', async () => {
+    const onSend = vi.fn();
+    const onNewConversation = vi.fn();
+    render(<MentionComposer search={() => Promise.resolve([])} onSend={onSend} onNewConversation={onNewConversation} />);
+    await userEvent.type(field(), 'check /tmp/x');
+    await screen.findByText('No command by that name');
+    await userEvent.keyboard('{Enter}');
+    expect(onSend).toHaveBeenLastCalledWith('check /tmp/x');
+
+    await userEvent.type(field(), '/');
+    await screen.findByRole('option', { name: /^new/ });
+    await userEvent.keyboard('{Enter}');
+    expect(onNewConversation).toHaveBeenCalledOnce();
+    expect(field().textContent).toBe('');
+  });
+
   it('shows the empty text when the search fails', async () => {
     render(<MentionComposer search={() => Promise.reject(new Error('offline'))} onSend={vi.fn()} />);
     await userEvent.type(field(), '@x');

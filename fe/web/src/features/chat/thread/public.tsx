@@ -650,6 +650,12 @@ export function ChatComposer({
           return;
         }
         if (route === 'menu' || event.key !== 'Enter' || event.shiftKey) return;
+        /* A send over an open menu with nothing to pick: Astryx's submit empties the field but leaves the
+           menu armed at the old offset, so the next pick throws. Its own Escape resets it first; the
+           router's Escape listener leaves an expanded combobox alone. */
+        if (field.getAttribute('aria-expanded') === 'true') {
+          field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        }
         if (disabled) {
           event.preventDefault();
           event.stopPropagation();
