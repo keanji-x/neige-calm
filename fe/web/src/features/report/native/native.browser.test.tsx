@@ -49,11 +49,13 @@ it.each([1440, 390, 320])('keeps Close visible for an accepted unbroken title at
   expect(document.querySelector('[role="dialog"]')!.scrollWidth).toBeLessThanOrEqual(width);
 });
 
-it('keeps a native composition backlink beside its block without consuming another row', async () => {
+it.each(['view', 'view.live'] as const)('keeps a %s backlink beside its composition without consuming another row', async kind => {
   await page.viewport(1440, 1000);
   render(<div style={{ inlineSize: 1100, ['--document-start' as string]: '100px', ['--document-measure' as string]: '600px' }}>
-    <ReportDocument report={{ summary: '', body: '', blocks: [{ id: 'native-cited', kind: 'view', payload }] }}
-      backlinkCounts={new Map([['native-cited', 3]])} empty={<p>Empty</p>} />
+    <ReportDocument report={{ summary: '', body: '', blocks: [kind === 'view'
+      ? { id: 'native-cited', kind, payload }
+      : { id: 'native-cited', kind, payload: { source: 'neige://plugin/museum/collection', version: 1 } }] }}
+      resolveOverlay={() => payload} backlinkCounts={new Map([['native-cited', 3]])} empty={<p>Empty</p>} />
   </div>);
   const block = document.querySelector('#native-cited')!.getBoundingClientRect();
   const note = document.querySelector('[title="3 reports cite this block"]')!.getBoundingClientRect();
