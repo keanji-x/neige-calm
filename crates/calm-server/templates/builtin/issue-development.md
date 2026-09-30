@@ -9,51 +9,6 @@ Open a PR and resolve both review channels. Merge only under your selected autho
 """
 +++
 <!-- neige:contract {"version":1,"sections":[{"h1":"概要"},{"h1":"待你定","omit_if_empty":true},{"h1":"已完成"},{"h1":"决策"}]} -->
-<!-- neige:input-form {
-  "version": 1,
-  "groups": [
-    {
-      "title": "Source issue",
-      "description": "",
-      "fields": [
-        {
-          "kind": "text",
-          "key": "issue_url",
-          "label": "Issue URL",
-          "default": "",
-          "required": true,
-          "placeholder": "",
-          "help": "The GitHub issue this track should resolve.",
-          "format": {
-            "kind": "github-issue-url",
-            "outputs": {
-              "issue_url": "issue_url",
-              "repo": "repo",
-              "issue_number": "issue_number"
-            }
-          }
-        }
-      ]
-    },
-    {
-      "title": "Merge approval",
-      "description": "",
-      "fields": [
-        {
-          "kind": "toggle",
-          "key": "merge_policy",
-          "label": "Merge automatically",
-          "default": "hold-for-ratify",
-          "on_value": "auto-merge",
-          "off_value": "hold-for-ratify",
-          "on_description": "Allows the agent to merge after reviews and checks pass, without asking again.",
-          "off_description": "The agent prepares the PR and waits for your approval to merge."
-        }
-      ]
-    }
-  ]
-} -->
-
 <!-- 报告维护契约
 
 这段注释在渲染时会被丢弃，用户在页面上看不到它；但它留在 body 源码里，
@@ -202,6 +157,51 @@ Merge policy
   fresh review round is required for the hold itself; call gh.pr.merge per fence F4
   (expected_head_sha = the converged round's head_sha).
 -->
+
+<!-- neige:input-form {
+  "version": 1,
+  "groups": [
+    {
+      "title": "Source issue",
+      "description": "",
+      "fields": [
+        {
+          "kind": "text",
+          "key": "issue_url",
+          "label": "Issue URL",
+          "default": "",
+          "required": true,
+          "placeholder": "",
+          "help": "The GitHub issue this track should resolve.",
+          "format": {
+            "kind": "github-issue-url",
+            "outputs": {
+              "issue_url": "issue_url",
+              "repo": "repo",
+              "issue_number": "issue_number"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "title": "Merge approval",
+      "description": "",
+      "fields": [
+        {
+          "kind": "toggle",
+          "key": "merge_policy",
+          "label": "Merge automatically",
+          "default": "hold-for-ratify",
+          "on_value": "auto-merge",
+          "off_value": "hold-for-ratify",
+          "on_description": "Allows the agent to merge after reviews and checks pass, without asking again.",
+          "off_description": "The agent prepares the PR and waits for your approval to merge."
+        }
+      ]
+    }
+  ]
+} -->
 
 # 概要
 
