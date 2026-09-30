@@ -347,7 +347,7 @@ older kernels cannot authorize SPY tools. Local plugins share the service OS
 identity; this is not an OS sandbox against another trusted local process.
 
 Configure the scalar fields below. Replace every placeholder; the order cap is
-an operator-selected limit, not an inferred default or a recommendation:
+a configurable fraction of current cash plus SPY market value:
 
 ```json
 {
@@ -357,7 +357,7 @@ an operator-selected limit, not an inferred default or a recommendation:
   "owner_track_id": "YOUR_SPY_TRACK_ID",
   "oauth_client_id": "YOUR_REGISTERED_OAUTH_CLIENT",
   "sdk_python_path": "/private/path/spy-venv/bin/python",
-  "max_order_usd": "YOUR_POSITIVE_DECIMAL_CAP",
+  "max_order_bps": 1000,
   "poll_seconds": 60,
   "cash_buffer_bps": 200,
   "drift_bps": 100,
@@ -365,14 +365,17 @@ an operator-selected limit, not an inferred default or a recommendation:
 }
 ```
 
-`cash_buffer_bps`, `drift_bps`, and `quote_max_age_seconds` have the shown values
+`max_order_bps`, `cash_buffer_bps`, `drift_bps`, and `quote_max_age_seconds` have the shown values
 when omitted. The App uses the whole dedicated account's USD cash plus SPY
 market value as the allocation base. It caps target exposure at the configured
 cash reserve, rounds whole shares down, and sizes buys with an additional 1%
-price reserve. It checks the estimated order cap including that price reserve;
-market orders have no guaranteed execution price. It does not use margin buying
-power, spend positive unsettled proceeds or sell unavailable shares. An order
-above the cap is refused, rather than silently split into several orders. The
+price reserve. Each decision executes at most one step: by default 10% of current account
+value, including the price reserve. A distant target is approached in that
+step, and the actual remaining drift is reported for the next message. Market
+orders have no guaranteed execution price. It does not use margin buying
+power, spend positive unsettled proceeds or sell unavailable shares. The
+Plugin computes a smaller step when the target requires more than the cap; a
+step too small for one whole share produces a no-op. The
 snapshot shows the achieved ratio, which can differ from the target because of
 rounding, cash availability, price movement and the no-trade band.
 
@@ -397,7 +400,10 @@ SDK HOME and installed files from unintended writers. Child environments use the
 existing explicit PATH/LANG/proxy allowlist, with HOME pinned and no inherited
 Longbridge endpoint overrides, model keys or arbitrary Python import paths.
 
-Save `spy-recipe.md` as a user Recipe and create its owner Track. The Planner
+Save `spy-recipe.md` as a user Recipe and bind its owner Track. An existing Demo
+Track can be reused: preserve its fictional report separately, update the working
+Recipe/report bindings to these SPY sources, and keep fictional rows out of the
+broker ledger. A new Track is not required. The Planner
 uses `spy.plan` with a stable decision ID, a 0-10000 `target_spy_bps`, a rationale,
 1-20 captured `neige://source/...` references and a timezone-aware validity of
 at most 24 hours. Only one unresolved decision is permitted. The Planner then
@@ -421,8 +427,10 @@ that can be bound in the Track Report.
 Intent and exact quantity are committed before submission under the operation
 lock. The broker request has a stable remark and client request ID; its 10-minute
 server idempotency cache is an extra guard, not the recovery source of truth.
-After a timeout or restart, retries of the same decision reconcile only and never
-resubmit. Recovery requires one exact remark/payload match. Unknown active orders,
+A completed SDK preflight refusal returns an exact `not_submitted` outcome and
+resolves the decision as rejected, allowing a fresh target. After the broker
+write may have started, timeout or restart results stay unknown; retries of the
+same decision reconcile only and never resubmit. Recovery requires one exact remark/payload match. Unknown active orders,
 external positions, conflicting execution IDs and incomplete fill totals block
 execution and roll back the observation. Reconciliation can be retried; deleting
 or editing SQLite is not recovery. Disabling this plugin does not cancel orders

@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import AccountConfig, exact, identifier, money
+from .config import AccountConfig, exact, identifier
 
 
 @dataclass(frozen=True)
@@ -12,7 +12,7 @@ class AllocationConfig:
     owner_track_id: str
     oauth_client_id: str
     sdk_python_path: str
-    max_order_usd: str
+    max_order_bps: int = 1000
     cli_path: str = "/usr/local/bin/longbridge"
     poll_seconds: int = 60
     cash_buffer_bps: int = 200
@@ -22,8 +22,8 @@ class AllocationConfig:
     @classmethod
     def parse(cls, values):
         required = {'profile', 'account_no', 'broker_home', 'owner_track_id',
-                    'oauth_client_id', 'sdk_python_path', 'max_order_usd'}
-        optional = {'cli_path', 'poll_seconds', 'cash_buffer_bps', 'drift_bps', 'quote_max_age_seconds'}
+                    'oauth_client_id', 'sdk_python_path'}
+        optional = {'cli_path', 'poll_seconds', 'cash_buffer_bps', 'drift_bps', 'quote_max_age_seconds', 'max_order_bps'}
         exact(values, required, optional)
         if values['profile'] != 'spy_cash':
             raise ValueError('SPY allocation requires explicit spy_cash profile')
@@ -35,8 +35,7 @@ class AllocationConfig:
         identifier(obj.oauth_client_id)
         if not isinstance(obj.sdk_python_path, str) or '\0' in obj.sdk_python_path or not Path(obj.sdk_python_path).is_absolute():
             raise ValueError('sdk_python_path must be absolute')
-        money(obj.max_order_usd)
-        for field, low, high in (('cash_buffer_bps', 1, 2000), ('drift_bps', 0, 1000),
+        for field, low, high in (('max_order_bps', 1, 10000), ('cash_buffer_bps', 1, 2000), ('drift_bps', 0, 1000),
                                  ('quote_max_age_seconds', 1, 120)):
             value = getattr(obj, field)
             if type(value) is not int or not low <= value <= high:

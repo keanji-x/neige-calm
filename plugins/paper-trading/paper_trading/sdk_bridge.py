@@ -18,6 +18,10 @@ ENDPOINT = 'https://openapi.longbridge.com'
 NY = ZoneInfo('America/New_York')
 
 
+class OrderNotSubmitted(ValueError):
+    """A completed local preflight; no broker write was invoked."""
+
+
 def enum(value):
     return str(value).rsplit('.', 1)[-1]
 
@@ -100,17 +104,22 @@ def cash(trade):
     return str(total), str(max(Decimal(0), available))
 
 
-def market(quote, now):
+def market(quote, now=None):
     from longbridge.openapi import Market
     rows = quote.quote(['SPY.US'])
     if len(rows) != 1 or rows[0].symbol != 'SPY.US':
         raise ValueError('exactly one SPY quote required')
     row = rows[0]
-    local = now.astimezone(NY)
-    days = quote.trading_days(Market.US, local.date(), local.date())
+    local = (now or datetime.now(timezone.utc)).astimezone(NY)
+    queried_date = local.date()
+    days = quote.trading_days(Market.US, queried_date, queried_date)
+    local = (now or datetime.now(timezone.utc)).astimezone(NY)
     closing = time(13) if local.date() in days.half_trading_days else time(16)
-    is_open = local.date() in days.trading_days and time(9, 30) <= local.time().replace(tzinfo=None) < closing
-    return {'price': str(row.last_done), 'at': utc(row.timestamp), 'status': enum(row.trade_status)}, is_open
+    trading_dates = set(days.trading_days) | set(days.half_trading_days)
+    is_open = local.date() == queried_date and local.date() in trading_dates and time(9, 30) <= local.time().replace(tzinfo=None) < closing
+    return {'price': str(row.last_done), 'at': utc(row.timestamp), 'status': enum(row.trade_status),
+            'regular_open_at': datetime.combine(queried_date, time(9, 30), tzinfo=NY).astimezone(timezone.utc).isoformat(),
+            'regular_close_at': datetime.combine(queried_date, closing, tzinfo=NY).astimezone(timezone.utc).isoformat()}, is_open
 
 
 def order(row):
@@ -143,13 +152,13 @@ def snapshot(asset, trade, quote, expected, request):
               'quantity': str(f.quantity), 'price': str(f.price), 'time': utc(f.trade_done_at)} for f in executions]
     shares, available = position(trade)
     cash_usd, cash_available = cash(trade)
-    current, opened = market(quote, now)
+    current, opened = market(quote)
     return {'identity': proof, 'cash_usd': cash_usd, 'available_cash_usd': cash_available,
             'shares': shares, 'available_shares': available, 'quote': current,
             'market_open': opened, 'orders': orders, 'fills': fills}
 
 
-def submit(asset, trade, quote, expected, request, policy):
+def prepare_submission(asset, trade, quote, expected, request, policy):
     from longbridge.openapi import OrderSide, OrderType, OutsideRTH, TimeInForceType
     exact(request, {'symbol', 'side', 'quantity', 'order_type', 'time_in_force', 'outside_rth',
                     'client_request_id', 'remark', 'basis_shares'})
@@ -162,12 +171,9 @@ def submit(asset, trade, quote, expected, request, policy):
     if not request['remark'].startswith('nc-spy-') or len(request['remark']) != 39:
         raise ValueError('immutable allocation remark required')
     identity(asset, trade, expected)
-    now = datetime.now(timezone.utc)
-    current, opened = market(quote, now)
+    current, opened = market(quote)
     if not opened:
         raise ValueError('SPY regular trading session closed before submission')
-    if not 0 <= (now - timestamp(current['at'])).total_seconds() <= policy['quote_max_age_seconds']:
-        raise ValueError('SPY quote expired before submission')
     shares, available_shares = position(trade)
     if shares != integer(request['basis_shares'], zero=True):
         raise ValueError('SPY holdings changed before submission')
@@ -176,20 +182,36 @@ def submit(asset, trade, quote, expected, request, policy):
         raise ValueError('active order appeared before submission')
     price = money(current['price'])
     estimated = request['quantity'] * price * Decimal('1.01')
-    if estimated > money(policy['max_order_usd']):
-        raise ValueError('market price exceeds configured order budget')
+    total, available = cash(trade)
+    equity = money(total, zero=True) + shares * price
+    if type(policy['max_order_bps']) is not int or not 1 <= policy['max_order_bps'] <= 10000:
+        raise ValueError('typed allocation step limit required')
+    if estimated > equity * policy['max_order_bps'] / 10000:
+        raise ValueError('market price exceeds configured allocation step')
     if request['side'] == 'Buy':
-        total, available = cash(trade)
-        equity = money(total, zero=True) + shares * price
         reserve = equity * policy['cash_buffer_bps'] / 10000
         if estimated > money(available, zero=True) - reserve:
             raise ValueError('settled cash changed before submission')
     elif request['quantity'] > available_shares:
         raise ValueError('sell shares changed before submission')
-    result = trade.submit_order(symbol='SPY.US', order_type=OrderType.MO,
+    now = datetime.now(timezone.utc)
+    if not timestamp(current['regular_open_at']) <= now < timestamp(current['regular_close_at']):
+        raise ValueError('SPY regular trading session closed before submission')
+    if not 0 <= (now - timestamp(current['at'])).total_seconds() <= policy['quote_max_age_seconds']:
+        raise ValueError('SPY quote expired before submission')
+    return dict(symbol='SPY.US', order_type=OrderType.MO,
         side=OrderSide.Buy if request['side'] == 'Buy' else OrderSide.Sell,
         submitted_quantity=Decimal(request['quantity']), time_in_force=TimeInForceType.Day,
         outside_rth=OutsideRTH.RTHOnly, remark=request['remark'], client_request_id=request['client_request_id'])
+
+
+def submit(asset, trade, quote, expected, request, policy):
+    try:
+        options = prepare_submission(asset, trade, quote, expected, request, policy)
+    except Exception:
+        raise OrderNotSubmitted('SDK preflight refused before sending an order') from None
+    # Any exception from this point may mean the broker accepted the order.
+    result = trade.submit_order(**options)
     return {'order_id': result.order_id}
 
 
@@ -198,30 +220,39 @@ def main():
     parser.add_argument('--client-id', required=True)
     parser.add_argument('--account', required=True)
     parser.add_argument('--cash-buffer-bps', type=int, default=200)
-    parser.add_argument('--max-order-usd')
+    parser.add_argument('--max-order-bps', type=int, default=1000)
     parser.add_argument('--quote-max-age-seconds', type=int, default=60)
     parser.add_argument('method', choices=('login', 'snapshot', 'submit'))
     parser.add_argument('--request', default='{}')
     args = parser.parse_args()
     identifier(args.client_id); identifier(args.account)
-    asset, trade, quote = contexts(args.client_id, args.method == 'login')
+    try:
+        asset, trade, quote = contexts(args.client_id, args.method == 'login')
+    except Exception:
+        if args.method == 'submit':
+            raise OrderNotSubmitted('SDK preflight refused before sending an order') from None
+        raise
     if args.method == 'login':
         identity(asset, trade, args.account)
         print('Official PAPER account verified; automatic SPY execution can be configured.')
         return
-    if args.method == 'submit' and args.max_order_usd is None:
-        raise ValueError('explicit maximum order value required')
     request = json.loads(args.request)
     result = snapshot(asset, trade, quote, args.account, request) if args.method == 'snapshot' else submit(asset, trade, quote, args.account, request, {
-        'cash_buffer_bps': args.cash_buffer_bps, 'max_order_usd': args.max_order_usd,
+        'cash_buffer_bps': args.cash_buffer_bps, 'max_order_bps': args.max_order_bps,
         'quote_max_age_seconds': args.quote_max_age_seconds})
     print(json.dumps(result, allow_nan=False))
 
 
-if __name__ == '__main__':
+def run():
     try:
         main()
+    except OrderNotSubmitted:
+        print(json.dumps({'status': 'not_submitted'}))
     except Exception:
         # No broker exception, signed statement URL, account details or token in tools/logs.
         print('Official SDK operation failed; check authorization and reconcile before retrying.', file=sys.stderr)
         raise SystemExit(1)
+
+
+if __name__ == '__main__':
+    run()

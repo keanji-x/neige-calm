@@ -23,7 +23,7 @@ def allocation_rig(tmp_path):
     values = {'profile': 'spy_cash', 'account_no': 'PAPER123', 'broker_home': str(home),
               'owner_track_id': 'owner', 'oauth_client_id': 'sdk-client',
               'sdk_python_path': str(ROOT / 'tests/allocation_fixture.py'),
-              'max_order_usd': '100000', 'poll_seconds': 5, 'drift_bps': 0}
+              'max_order_bps': 10000, 'poll_seconds': 5, 'drift_bps': 0}
     snapshot = {'identity': {'account_no': 'PAPER123', 'account_channel': 'lb_papertrading'},
                 'cash_usd': '10000', 'available_cash_usd': '10000', 'shares': 0, 'available_shares': 0,
                 'quote': {'price': '100', 'at': NOW.isoformat(), 'status': 'Normal'},
@@ -211,10 +211,11 @@ def test_spy_insufficient_cash_and_maximum_order(allocation_rig):
     with pytest.raises(ValueError, match='settled cash'):
         r.execute()
     state['snapshot']['available_cash_usd'] = '10000'; r.write(state)
-    r.config = AllocationConfig.parse(r.values | {'max_order_usd': '500'})
+    r.config = AllocationConfig.parse(r.values | {'max_order_bps': 500})
     r.app = Allocation(r.root, r.config, r.broker, clock=lambda: NOW)
-    with pytest.raises(ValueError, match='maximum order'):
-        r.execute()
+    r.execute()
+    assert r.request()['quantity'] == 4
+    assert r.request()['quantity'] * 100 * 1.01 <= 500
 
 
 def test_spy_transport_environment_allowlist(allocation_rig, monkeypatch):
@@ -280,3 +281,25 @@ def test_spy_terminal_retry_preserves_decision(allocation_rig):
     before=r.status()['decisions']
     assert r.execute()['decisions']==before
     assert len([c for c in r.calls() if c['method']=='submit'])==1
+
+
+
+def test_spy_default_step_is_ten_percent_of_portfolio(allocation_rig):
+    r=allocation_rig
+    values={k:v for k,v in r.values.items() if k!='max_order_bps'}
+    r.config=AllocationConfig.parse(values)
+    r.app=Allocation(r.root,r.config,r.broker,clock=lambda:NOW)
+    r.plan();r.execute()
+    assert r.config.max_order_bps==1000
+    assert r.request()['quantity']==9
+    assert r.request()['quantity']*100*1.01<=1000
+
+
+def test_spy_proved_not_submitted_resolves_without_unknown(allocation_rig):
+    r=allocation_rig;r.plan()
+    state=r.read();state['response']={'status':'not_submitted'};r.write(state)
+    assert r.execute()['decisions'][0]['state']=='rejected'
+    r.execute()
+    assert len([c for c in r.calls() if c['method']=='submit'])==1
+    r.plan(decision_id='fresh-target')
+    assert r.status()['decisions'][-1]['state']=='queued'

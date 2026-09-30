@@ -17,7 +17,7 @@
       "owner_track_id": {"type": "string", "description": "Required for spy_cash: the sole owning Track."},
       "oauth_client_id": {"type": "string", "description": "Required for spy_cash: separately authorized official SDK OAuth client; never decrypt CLI credentials."},
       "sdk_python_path": {"type": "string", "description": "Required for spy_cash: absolute Python interpreter with official Longbridge SDK 5.2.0."},
-      "max_order_usd": {"type": "string", "description": "Required for spy_cash: maximum estimated order value including 1% sizing reserve; not a market-price guarantee."},
+      "max_order_bps": {"type": "integer", "description": "SPY order step as basis points of current cash plus SPY market value, 1-10000; omitted value 1000 (10%). Includes 1% sizing reserve; not a market-price guarantee."},
       "cash_buffer_bps": {"type": "integer", "description": "SPY profile cash reserve, 1-2000 basis points; omitted value 200."},
       "drift_bps": {"type": "integer", "description": "SPY allocation no-trade band, 0-1000 basis points; omitted value 100."},
       "quote_max_age_seconds": {"type": "integer", "description": "SPY execution quote freshness, 1-120 seconds; omitted value 60."}
@@ -111,7 +111,7 @@
     },
     {
       "name": "spy.plan",
-      "description": "SPY/cash profile only. Planner-only: persist an immutable target allocation with captured research/market sources and validity. Does not submit. Dispatch a Worker granting spy.execute, spy.status and spy.refresh. One unresolved target per account. Whole shares, cash reserve and a drift band affect achieved ratio.",
+      "description": "SPY/cash profile only. Planner-only: persist an immutable target allocation with captured research/market sources and validity. Does not submit. Dispatch a Worker granting spy.execute, spy.status and spy.refresh. One unresolved target per account. Each decision executes at most one configured allocation step (default 10% of account value); whole shares, cash reserve and a drift band affect achieved ratio.",
       "input_schema": {
         "type": "object",
         "properties": {

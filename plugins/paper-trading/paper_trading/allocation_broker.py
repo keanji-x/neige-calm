@@ -4,6 +4,10 @@ from pathlib import Path
 from .broker import Broker, BrokerError, _object
 
 
+class OrderNotSubmitted(BrokerError):
+    """The trusted SDK bridge proved the broker write was never invoked."""
+
+
 class AllocationBroker(Broker):
     def __init__(self, config, workdir):
         super().__init__(config.sdk_python_path, config.broker_home, workdir, timeout_seconds=30)
@@ -15,7 +19,7 @@ class AllocationBroker(Broker):
         args = ['-I', str(Path(__file__).with_name('sdk_bridge.py')),
                 '--client-id', self.config.oauth_client_id, '--account', self.config.account_no,
                 '--cash-buffer-bps', str(self.config.cash_buffer_bps),
-                '--max-order-usd', self.config.max_order_usd,
+                '--max-order-bps', str(self.config.max_order_bps),
                 '--quote-max-age-seconds', str(self.config.quote_max_age_seconds),
                 method, '--request', json.dumps(body, allow_nan=False)]
         return _object(self._json(args))
@@ -25,6 +29,8 @@ class AllocationBroker(Broker):
 
     def submit(self, request):
         result = self.request('submit', request)
+        if result == {'status': 'not_submitted'}:
+            raise OrderNotSubmitted('SDK preflight refused before sending an order')
         if not isinstance(result.get('order_id'), str) or not result['order_id']:
             raise BrokerError('SDK returned no broker order identity; outcome may be unknown')
         return result['order_id']

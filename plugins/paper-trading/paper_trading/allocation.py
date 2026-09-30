@@ -7,6 +7,7 @@ import json
 from .config import broker_money, exact, identifier, integer, money, timestamp
 from .ledger import Ledger, digest, encoded
 from .allocation_reconcile import reconcile, validate_snapshot
+from .allocation_broker import OrderNotSubmitted
 
 
 TOOLS = frozenset(('spy.plan', 'spy.execute', 'spy.status', 'spy.refresh'))
@@ -111,7 +112,10 @@ class Allocation:
         if not delta:
             return None
         side = 'Buy' if delta > 0 else 'Sell'
-        quantity = abs(delta)
+        step_budget = equity * self.account.max_order_bps / 10000
+        quantity = min(abs(delta), int((step_budget / (price * Decimal('1.01'))).to_integral_value(rounding=ROUND_FLOOR)))
+        if not quantity:
+            return None
         if side == 'Buy':
             available = min(money(snapshot['available_cash_usd'], zero=True), money(snapshot['cash_usd'], zero=True))
             budget = max(Decimal(0), available - equity * self.account.cash_buffer_bps / 10000)
@@ -121,8 +125,6 @@ class Allocation:
             raise ValueError('SPY shares are not available for sale')
         if not quantity:
             raise ValueError('insufficient settled cash for one SPY share')
-        if quantity * price * Decimal('1.01') > money(self.account.max_order_usd):
-            raise ValueError('allocation exceeds configured maximum order value')
         return {'symbol': 'SPY.US', 'side': side, 'quantity': quantity, 'order_type': 'MO',
                 'time_in_force': 'Day', 'outside_rth': 'RTH_ONLY', 'basis_shares': shares,
                 'client_request_id': digest({'account': self.account.account_no, 'plan': plan}),
@@ -164,6 +166,9 @@ class Allocation:
                 order_id = self.broker.submit(request)
                 self.ledger.change(db, key, 'working', broker_id=order_id)
                 self.ledger.event(db, 'allocation_submitted', {'decision_id': key, 'order_id': order_id})
+            except OrderNotSubmitted:
+                self.ledger.change(db, key, 'rejected', error='SDK preflight refused before sending an order')
+                self.ledger.event(db, 'allocation_not_submitted', {'decision_id': key})
             except Exception:
                 self.ledger.change(db, key, 'unknown', error='Submission outcome unknown; reconcile, never resubmit')
                 self.ledger.event(db, 'allocation_unknown', {'decision_id': key})
@@ -175,6 +180,8 @@ class Allocation:
         for d in decisions:
             d['order_request'] = requests.get(d['id'])
         return {'profile': 'spy_cash', 'symbol': 'SPY.US', 'snapshot': snapshot,
+                'policy': {'max_order_bps': self.account.max_order_bps,
+                           'cash_buffer_bps': self.account.cash_buffer_bps},
                 'error': self.ledger.get_meta(db, 'error'), 'decisions': decisions[-200:],
                 'fills': self.ledger.fills(db)[-200:], 'journal': [dict(r) | {'body': json.loads(r['body'])}
                     for r in db.execute('SELECT * FROM journal ORDER BY seq DESC LIMIT 200')]}

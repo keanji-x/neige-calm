@@ -25,6 +25,8 @@ def tables(state):
     return {
         'spy.portfolio': table([('metric', '项目'), ('value', '当前状态')], [
             {'metric': '账户模式', 'value': '长桥官方模拟账户 · SPY／现金'},
+            {'metric': '单次调仓上限', 'value': percent(state['policy']['max_order_bps'])},
+            {'metric': '现金保留', 'value': percent(state['policy']['cash_buffer_bps'])},
             {'metric': '现金 / 美元', 'value': snapshot.get('cash_usd', '尚未对账')},
             {'metric': '可用现金 / 美元', 'value': snapshot.get('available_cash_usd', '尚未对账')},
             {'metric': 'SPY 股数', 'value': snapshot.get('shares', '尚未对账')},
