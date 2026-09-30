@@ -955,6 +955,9 @@
       ],
       "type": "object"
     },
+    "TableNull": {
+      "type": "null"
+    },
     "TableScalar": {
       "oneOf": [
         {
@@ -965,7 +968,7 @@
           "type": "number"
         },
         {
-          "default": null
+          "$ref": "#/$defs/TableNull"
         }
       ]
     },

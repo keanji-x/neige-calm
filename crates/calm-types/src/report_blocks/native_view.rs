@@ -371,6 +371,7 @@ pub fn typescript() -> String {
         TableAlign::decl(&config),
         TableScalar::decl(&config),
         TableText::decl(&config),
+        TableNull::decl(&config),
     ];
     declarations
         .into_iter()

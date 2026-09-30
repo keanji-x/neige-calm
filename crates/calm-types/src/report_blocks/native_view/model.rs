@@ -173,7 +173,7 @@ pub struct RecordSet {
     #[schema(max_length = 120)]
     pub label: String,
     #[schema(max_length = 500)]
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub description: Option<String>,
     #[schema(min_items = 0, max_items = 100)]
     pub items: Vec<ViewRecord>,
@@ -353,10 +353,10 @@ pub struct InlineTable {
     #[schema(max_items = 500)]
     pub rows: Vec<BTreeMap<String, TableScalar>>,
     #[schema(max_length = 2048)]
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub caption: Option<String>,
     #[schema(max_length = 2048)]
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub highlight: Option<String>,
 }
 #[derive(Deserialize, ToSchema, TS)]
@@ -366,7 +366,7 @@ pub struct TableColumn {
     pub key: String,
     #[schema(max_length = 2048)]
     pub label: String,
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub align: Option<TableAlign>,
 }
 #[derive(Deserialize, ToSchema, TS)]
@@ -380,7 +380,7 @@ pub enum TableAlign {
 pub enum TableScalar {
     Text(TableText),
     Number(f64),
-    Null(()),
+    Null(TableNull),
 }
 fn required_nullable<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
@@ -400,3 +400,16 @@ impl utoipa::PartialSchema for TableText {
     }
 }
 impl utoipa::ToSchema for TableText {}
+
+/// Explicit null primitive: utoipa's unit schema only supplies a default value.
+#[derive(Deserialize, TS)]
+#[serde(transparent)]
+pub struct TableNull(pub ());
+impl utoipa::PartialSchema for TableNull {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        utoipa::openapi::schema::ObjectBuilder::new()
+            .schema_type(utoipa::openapi::schema::Type::Null)
+            .into()
+    }
+}
+impl utoipa::ToSchema for TableNull {}

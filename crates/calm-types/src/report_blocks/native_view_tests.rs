@@ -357,3 +357,35 @@ fn native_view_fixture_components_match_generated_wire_properties() {
         }
     }
 }
+
+#[test]
+fn native_view_generated_table_null_is_a_type_constraint() {
+    let schema = super::native_view::generated_schema();
+    let null = schema["$defs"]["TableScalar"]["oneOf"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap();
+    let null = if let Some(reference) = null["$ref"].as_str() {
+        &schema["$defs"][reference.strip_prefix("#/$defs/").unwrap()]
+    } else {
+        null
+    };
+    assert_eq!(null["type"], "null");
+}
+
+#[test]
+fn native_view_generated_optional_types_preserve_explicit_null() {
+    let types = super::native_view::typescript();
+    for field in [
+        "description?: string | null",
+        "caption?: string | null",
+        "highlight?: string | null",
+        "align?: TableAlign | null",
+    ] {
+        assert!(
+            types.contains(field),
+            "generated types do not preserve {field}"
+        );
+    }
+}
