@@ -42,7 +42,7 @@ pub struct TrackMention {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct BlockMention {
-    /// The block's heading as `calm.area.outline` lists it, or the block id when that is empty.
+    /// The block's heading as `calm.area.outline` lists it; a block with no heading is not offered.
     pub label: String,
     pub block_id: String,
     /// The title of the track whose report holds the block.

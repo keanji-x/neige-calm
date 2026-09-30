@@ -638,14 +638,24 @@ export function ChatComposer({
         /* Astryx clears its input after Enter even when its parent refuses
            submission. Keep unsent words while disabled, and
            let IME Enter accept its candidate without submitting. */
-        if (event.key !== 'Enter' || event.shiftKey) return;
+        if (event.key !== 'Enter' && event.key !== 'Tab') return;
         /* Only Enter pressed in the field is a send: this handler captures on the root, and the `drawer` slot puts buttons under it. */
-        if (!(event.target instanceof Element)
-          || event.target.closest('[contenteditable], textarea, input') === null) return;
+        const field = event.target instanceof Element ? event.target.closest('[contenteditable], textarea, input') : null;
+        if (field === null) return;
         if (event.nativeEvent.isComposing) {
           event.stopPropagation();
           return;
         }
+        /* An open trigger menu takes Enter and Tab only for a row it has rendered as highlighted: while it
+           searches it still holds the last query's rows, and a pick from those is not what was typed. */
+        if (field.getAttribute('aria-expanded') === 'true') {
+          const active = field.getAttribute('aria-activedescendant');
+          if (active !== null && document.getElementById(active) !== null) return;
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+        if (event.key !== 'Enter' || event.shiftKey) return;
         if (disabled) {
           event.preventDefault();
           event.stopPropagation();

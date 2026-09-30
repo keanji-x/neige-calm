@@ -54,7 +54,7 @@ export type AttachmentId = string;
  */
 export type BlockMention = { 
 /**
- * The block's heading as `calm.area.outline` lists it, or the block id when that is empty.
+ * The block's heading as `calm.area.outline` lists it; a block with no heading is not offered.
  */
 label: string, block_id: string, 
 /**
