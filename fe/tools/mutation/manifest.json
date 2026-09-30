@@ -1409,7 +1409,7 @@
       "oracle:INV-APP-118"
     ],
     "target": "web/src/ui/activity-indicator/activity-indicator.module.css",
-    "patch": "diff --git a/web/src/ui/activity-indicator/activity-indicator.module.css b/web/src/ui/activity-indicator/activity-indicator.module.css\nindex ae2a88d32..53ec72ea9 100644\n--- a/web/src/ui/activity-indicator/activity-indicator.module.css\n+++ b/web/src/ui/activity-indicator/activity-indicator.module.css\n@@ -5,7 +5,7 @@\n      tell two 6px dots apart (#1722 decision (b)); the browser test pins the\n      hue distance. */\n   .attention { background: var(--warn); }\n-  .failed { background: var(--error); }\n+  .failed { background: var(--warn); }\n   .working {\n     inline-size: 10px;\n     block-size: 10px;\n",
+    "patch": "diff --git a/web/src/ui/activity-indicator/activity-indicator.module.css b/web/src/ui/activity-indicator/activity-indicator.module.css\nindex 8f3054c9a..711cbde36 100644\n--- a/web/src/ui/activity-indicator/activity-indicator.module.css\n+++ b/web/src/ui/activity-indicator/activity-indicator.module.css\n@@ -5,7 +5,7 @@\n      tell two 6px dots apart (#1722 decision (b)); the browser test pins the\n      hue distance. */\n   .attention { background: var(--warn); }\n-  .failed { background: var(--error); }\n+  .failed { background: var(--warn); }\n   .working {\n     inline-size: var(--glyph);\n     block-size: var(--glyph);\n",
     "expected_red": [
       "activity indicator colours light: attention and failed sit more than 30° apart in OKLCH hue",
       "activity indicator colours dark: attention and failed sit more than 30° apart in OKLCH hue"
