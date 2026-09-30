@@ -138,10 +138,6 @@ fn dispatcher_filter_matches_push_kinds() {
         details: None,
         agent_message: None,
     })));
-    assert!(filter.matches(&env(Event::TaskExecutionSettled {
-        task_id: "w:k".into(),
-        operation_id: "op-exec".into(),
-    })));
     assert!(filter.matches(&env(git_delivery_settled_event(
         "w:k",
         DeliveryWakeReason::DeferredToGate
@@ -2656,24 +2652,6 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
             ActorId::KernelDispatcher,
             false,
             false,
-        ),
-        row(
-            Event::TaskExecutionSettled {
-                task_id: "w:retry".into(),
-                operation_id: "op".into(),
-            },
-            ActorId::KernelDispatcher,
-            true,
-            true,
-        ),
-        row(
-            Event::TaskExecutionSettled {
-                task_id: "w:retry".into(),
-                operation_id: "op".into(),
-            },
-            ActorId::User,
-            false,
-            true,
         ),
     ];
 

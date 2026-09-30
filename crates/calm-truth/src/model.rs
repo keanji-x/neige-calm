@@ -367,18 +367,13 @@ impl Task {
     }
 
     /// #1830 S2 D5: [`calm_types::task_execution::runs_in_track_checkout`] on this row.
-    pub fn runs_in_track_checkout(&self) -> serde_json::Result<bool> {
+    pub fn runs_in_track_checkout(&self) -> bool {
         let kind = match self.kind {
             TaskKind::Codex => "codex",
             TaskKind::Claude => "claude",
             TaskKind::Terminal => "terminal",
         };
-        let context: serde_json::Value = serde_json::from_str(&self.context_json)?;
-        Ok(calm_types::task_execution::runs_in_track_checkout(
-            kind,
-            &self.spawn,
-            &context,
-        ))
+        calm_types::task_execution::runs_in_track_checkout(kind, &self.spawn)
     }
 }
 

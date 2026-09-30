@@ -6,7 +6,6 @@ use sqlx::{Row, SqlitePool};
 
 use super::notifications::{LastTurn, NotificationRows, NotifyRow, PendingRatify};
 use crate::error::Result;
-use crate::isolated_codex::lookup::isolated_card_exists_sql;
 
 /// E1 — harness turn end: the newest non-interrupted `turn/completed` transcript row per card,
 /// inlined from its exported macro so the two spellings cannot drift; a `const` so the plan test runs THIS text.
@@ -68,8 +67,6 @@ pub struct SessionRow {
     pub created_at_ms: i64,
     /// `json_extract(handle_state_json, '$.mode')` — `Some("harness")` for the planner / assistant harness rows.
     pub mode: Option<String>,
-    /// The card-keyed isolated predicate (`isolated_codex::lookup`).
-    pub isolated: bool,
     /// `EXISTS (tasks.worker_card_id = card)` over EVERY attempt — the "never bound to a task" arm negated.
     pub task_bound: bool,
     /// The PTY the session observes through — the renderer registry's key. `NULL` for a harness
@@ -161,7 +158,6 @@ pub async fn eligible_sessions(pool: &SqlitePool, track_id: &str) -> Result<Vec<
         "SELECT ws.id, c.id AS card_id, ws.provider, ws.state, \
                 ws.updated_at_ms, ws.created_at_ms, \
                 json_extract(ws.handle_state_json, '$.mode') AS mode, \
-                {isolated} AS isolated, \
                 {task_bound} AS task_bound, \
                 ws.terminal_run_id, \
                 COALESCE(te.exit_code IS NULL AND te.signal_killed = 0, 0) AS pty_open \
@@ -173,7 +169,6 @@ pub async fn eligible_sessions(pool: &SqlitePool, track_id: &str) -> Result<Vec<
                            WHERE ct.track_id = ?1 AND ct.worker_card_id = c.id) \
                OR NOT {task_bound} ) \
           ORDER BY ws.id",
-        isolated = isolated_card_exists_sql("c.id"),
         task_bound = task_bound_exists_sql("c.id"),
     );
     let rows = sqlx::query(&sql).bind(track_id).fetch_all(pool).await?;
@@ -187,7 +182,6 @@ pub async fn eligible_sessions(pool: &SqlitePool, track_id: &str) -> Result<Vec<
             updated_at_ms: r.get("updated_at_ms"),
             created_at_ms: r.get("created_at_ms"),
             mode: r.get("mode"),
-            isolated: r.get::<bool, _>("isolated"),
             task_bound: r.get::<bool, _>("task_bound"),
             terminal_run_id: r.get("terminal_run_id"),
             pty_open: r.get::<bool, _>("pty_open"),

@@ -568,7 +568,7 @@ async fn worker_session_replacement_invalidates_previous_task_observations() {
 #[tokio::test]
 async fn recovered_task_cannot_be_followed_through_an_old_task_or_terminal_id() {
     use calm_types::task_recovery::{
-        TASK_IN_TRACK_ROUTE, TaskRecoveryConstraint, TaskRecoveryRequest,
+        TASK_IN_TRACK_ROUTE, TaskAttemptOrigin, TaskRecoveryConstraint,
     };
     let h = Harness::start().await;
     let w = worker(&h, "terminal", &h.track, true).await;
@@ -585,17 +585,14 @@ async fn recovered_task_cannot_be_followed_through_an_old_task_or_terminal_id() 
         .execute(&mut *tx)
         .await
         .unwrap();
-    let recovery = calm_server::db::sqlite::task_recovery_allocate_tx(
-        &mut tx,
-        &h.track,
-        &task.key,
-        &TaskRecoveryRequest {
-            expected_attempt_id: w.task.clone(),
-            idempotency_key: "next-generation".into(),
-            reason: "test explicit new attempt".into(),
-        },
-        "fingerprint",
-        &TaskRecoveryConstraint::V1 {
+    // A released recovery allocation, as 4140 stores one: no code writes one any more.
+    let origin = TaskAttemptOrigin::Recovery {
+        previous_attempt_id: w.task.clone(),
+        idempotency_key: "next-generation".into(),
+        request_fingerprint: "fingerprint".into(),
+        reason: "test explicit new attempt".into(),
+        actor: calm_server::ids::ActorId::User,
+        constraint: TaskRecoveryConstraint::V1 {
             refs: vec![calm_types::event::TaskContextRef {
                 track_id: h.track.clone().into(),
                 block_id: "b_1000".into(),
@@ -606,12 +603,21 @@ async fn recovered_task_cannot_be_followed_through_an_old_task_or_terminal_id() 
             spawn: TASK_IN_TRACK_ROUTE.into(),
             declared_by: "user".into(),
         },
-        &calm_server::ids::ActorId::User,
+    };
+    let recovered = format!("{}:2", w.task);
+    sqlx::query(
+        "INSERT INTO task_attempt_allocations \
+         (attempt_id,track_id,key,generation,origin_json,created_at_ms) VALUES (?1,?2,?3,2,?4,0)",
     )
+    .bind(&recovered)
+    .bind(&h.track)
+    .bind(&task.key)
+    .bind(serde_json::to_string(&origin).unwrap())
+    .execute(&mut *tx)
     .await
     .unwrap();
     tx.commit().await.unwrap();
-    assert_ne!(recovery.attempt_id, w.task);
+    assert_ne!(recovered, w.task);
     for target in [json!({"task_id":w.task}), json!({"terminal_id":w.terminal})] {
         assert!(
             h.call("calm.terminal.observe", target)

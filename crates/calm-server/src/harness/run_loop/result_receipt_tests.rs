@@ -646,8 +646,7 @@ async fn receipt_optional_track_absence_and_read_error_preserve_segments() {
             &entries,
             &mut segments,
         )
-        .await
-        .unwrap();
+        .await;
         for index in [0, 1] {
             assert!(segments[index].text.starts_with(&original[index].text));
             assert!(segments[index].text.contains(UNAVAILABLE));

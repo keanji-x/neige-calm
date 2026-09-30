@@ -274,34 +274,6 @@ impl CardDecisionSink {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn commit_task_dispatch(
-        &self,
-        identity: &ToolCallIdentity,
-        track: Track,
-        card: Card,
-        payload: TrackReportPayload,
-        args: crate::track_report::dispatch::DispatchArgs,
-        plugin_tools: crate::track_report::dispatch::PluginToolAdmission,
-    ) -> Result<serde_json::Value, CalmError> {
-        let recorder_shadow: Arc<dyn RecorderShadowProbe> =
-            Arc::new(CardDecisionSinkRecorderShadowProbe {
-                principal: identity.to_principal(),
-                track_id: track.id.clone(),
-            });
-        track_report::write::planner_dispatch(
-            self.repo.as_ref(),
-            &self.events,
-            &self.write,
-            identity.clone(),
-            ReportEditTarget::for_resolved_parts(track, card, payload)?,
-            args,
-            plugin_tools,
-            recorder_shadow,
-        )
-        .await
-    }
-
     /// The agent-MCP report write: the recorder shadow gate and the persist boundary, with an arbitrary [`ReportDocOp`] executed inside the transaction.
     /// The single funnel every block-channel write passes through, so attribution is decided here, once, from `identity.role`: hard-coding `Planner` would attribute an assistant's edits to the planner.
     #[allow(clippy::too_many_arguments)]

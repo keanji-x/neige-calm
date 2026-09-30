@@ -103,9 +103,6 @@ pub(super) fn summary(entry: &Value) -> Value {
             "kind",
             "status_detail",
             "task_projection",
-            "recovery/allowed",
-            "recovery/code",
-            "recovery/reason",
             "worktree/path",
             "worktree/branch",
             "worktree/last_commit",
@@ -128,34 +125,11 @@ pub(super) fn summary(entry: &Value) -> Value {
             "gate_result/failing_step",
             "gate_result/exit_code",
             "gate_result/status_detail",
-            "activity/as_of_ms",
-            "activity/attempt_id",
-            "activity/coverage",
-            "activity/collector_health",
-            "activity/interpretation",
-            "activity/binding/operation_id",
-            "activity/binding/conversation/path",
-            "activity/binding/conversation/scope",
-            "activity/binding/run/path",
-            "activity/binding/run/scope",
-            "activity/latest_recorded/row_id",
-            "activity/latest_recorded/source_at_ms",
-            "activity/latest_recorded/captured_at_ms",
-            "activity/latest_recorded/detail/kind",
-            "activity/latest_command_end/row_id",
-            "activity/latest_command_end/source_at_ms",
-            "activity/latest_command_end/captured_at_ms",
-            "activity/latest_command_end/detail/kind",
-            "activity/latest_command_end/detail/status",
-            "activity/latest_command_end/detail/exit_code",
-            "activity/tail_truncated",
         ],
     );
-    // Unknown activity evidence and absent machine verdicts remain explicit nulls.
-    for path in ["gate_result", "activity"] {
-        if result.get(path).is_none() {
-            result[path] = Value::Null;
-        }
+    // An absent machine verdict remains an explicit null.
+    if result.get("gate_result").is_none() {
+        result["gate_result"] = Value::Null;
     }
     let mut omitted_fields = Vec::new();
     omitted(entry, &result, "", &mut omitted_fields);

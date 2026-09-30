@@ -44,8 +44,6 @@ const TRUSTED_TOOL_NAME: &str = "wf.tool";
 const DAEMON_TOKEN: &str = "mcp-plugin-tools-daemon-token";
 
 struct Fixture {
-    repo: Arc<SqlxRepo>,
-    card_role_cache: CardRoleCache,
     _server: Arc<McpServer>,
     plugin_host: Arc<PluginHost>,
     socket_path: PathBuf,
@@ -772,7 +770,7 @@ async fn boot_fixture() -> Fixture {
     let server = McpServer::spawn(
         repo,
         events,
-        calm_server::state::WriteContext::new(card_role_cache.clone(), track_area_cache),
+        calm_server::state::WriteContext::new(card_role_cache, track_area_cache),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         build_default_registry(),
@@ -785,8 +783,6 @@ async fn boot_fixture() -> Fixture {
     .expect("spawn McpServer");
 
     Fixture {
-        repo: sqlx_repo,
-        card_role_cache,
         _server: server,
         plugin_host,
         socket_path,
@@ -954,8 +950,7 @@ async fn boot_plugin_host(
             }
         },
         "exposes_tools": [
-            { "name": TRUSTED_TOOL_NAME, "description": "template-scoped tool" },
-            { "name": "execute", "description": "execution-backed fixture", "kind": "forge-action" }
+            { "name": TRUSTED_TOOL_NAME, "description": "template-scoped tool" }
         ],
         "templates": [
             { "id": TEMPLATE_ID }
@@ -1071,6 +1066,3 @@ async fn wait_for_running(host: &Arc<PluginHost>, id: &str) {
         sleep(Duration::from_millis(25)).await;
     }
 }
-
-#[path = "mcp_plugin_tools/isolated_grants.rs"]
-mod isolated_grants;

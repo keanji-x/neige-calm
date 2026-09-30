@@ -1078,14 +1078,6 @@ async fn tools_call_report_card_role_rejected_by_documented_role_gates() {
 
     let cases = [
         (
-            "calm.task.dispatch",
-            json!({
-                "kind": "codex",
-                "idempotency_key": "report-dispatch",
-                "goal": "should not run"
-            }),
-        ),
-        (
             "calm.task.complete",
             json!({ "idempotency_key": "report-completed" }),
         ),

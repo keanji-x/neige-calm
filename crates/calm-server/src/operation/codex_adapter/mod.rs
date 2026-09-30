@@ -1216,24 +1216,13 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
                 .clone()
                 .run_observed(ctx.spawn_ctx.repo.as_ref(), async move {
                     shared
-                        .turn_start(
-                            &launch_thread,
-                            items,
-                            &TurnModelSelection::inherit(),
-                            None,
-                        )
+                        .turn_start(&launch_thread, items, &TurnModelSelection::inherit(), None)
                         .await
                 })
                 .await;
             let turn_id = match started {
                 Ok(turn_id) => turn_id,
-                Err(failure) => {
-                    if let Some(turn_id) = failure.observed
-                        && let Err(error) = persist_shared_worker_runtime_fields(ctx.spawn_ctx, ctx.card, ctx.worker_session_id, &thread_id, &remote_uri, Some(&turn_id)).await {
-                        tracing::warn!(card_id, thread_id=%thread_id, turn_id=%turn_id, %error, "launch commit failed; prepared operation retains business ownership");
-                    }
-                    return Err(failure.error);
-                }
+                Err(failure) => return Err(failure.error),
             };
             persist_shared_worker_runtime_fields(
                 ctx.spawn_ctx,

@@ -112,12 +112,9 @@ This is a limited local-development path, not Linux feature parity. The Tailnet
 helper and the `make prod` build path remain Linux-only. Configure a local
 `neige-app` installation with Tailnet disabled and `child.fe_dist` pointing to
 the absolute `fe/web/dist` path; the frontend is served at `/next/`.
-Linux namespace-isolated workers (and with them every dedicated Codex home:
-the isolated-task path connects through `/proc/self/fd/<fd>/app-server.sock`,
-which does not exist on macOS), artifact delivery, secure workspace file
-access requiring `openat2`, and `/proc`-based process recovery are not ported.
-Unsupported isolation and file operations fail closed; they never fall back to
-less restrictive filesystem access. This build does not change Codex sandbox
+Secure workspace file access requiring `openat2` and `/proc`-based process
+recovery are not ported. Unsupported file operations fail closed; they never
+fall back to less restrictive filesystem access. This build does not change Codex sandbox
 permissions or grant access to the user's home directory.
 
 Shared Codex daemon supervision on macOS is socket-driven only. A persisted

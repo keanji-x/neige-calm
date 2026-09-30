@@ -48,26 +48,6 @@ pub fn task_root_hash_preimage(payload: &serde_json::Value) -> String {
     crate::report_blocks::canonical_json(&serde_json::Value::Object(projected))
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
-#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
-#[serde(deny_unknown_fields)]
-pub struct TaskRecoveryRequest {
-    pub expected_attempt_id: String,
-    pub idempotency_key: String,
-    pub reason: String,
-}
-
-/// Stable acknowledgement, including when the response to the first call was lost.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
-#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
-#[serde(deny_unknown_fields)]
-pub struct TaskRecoveryReceipt {
-    pub key: String,
-    pub previous_attempt_id: String,
-    pub attempt_id: String,
-    pub generation: i64,
-}
-
 /// Execution summary. Status includes awaiting_projection when admission capacity removed a pending row.
 /// Blocking reason applies only to the selected current attempt; historical attempts carry null.
 #[derive(Debug, Clone, Serialize, ToSchema, TS)]
@@ -87,14 +67,6 @@ pub struct TaskAttemptView {
     pub blocking_reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, TS)]
-#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
-pub struct TaskRecoveryCapability {
-    pub allowed: bool,
-    pub code: String,
-    pub reason: String,
-}
-
 /// Execution history. `current` is null only when the live declaration has never
 /// received an allocation.
 #[derive(Debug, Clone, Serialize, ToSchema, TS)]
@@ -104,7 +76,6 @@ pub struct TaskRecoveryView {
     #[schema(required = true)]
     pub current: Option<TaskAttemptView>,
     pub attempts: Vec<TaskAttemptView>,
-    pub recovery: TaskRecoveryCapability,
 }
 
 /// Evidence carried into a recovery. Never synthesize this from today's report when the failed
@@ -186,24 +157,6 @@ pub struct TaskAttemptAllocation {
     pub generation: i64,
     pub origin: TaskAttemptOrigin,
     pub created_at_ms: i64,
-}
-
-impl TaskAttemptAllocation {
-    pub fn recovery_receipt(&self) -> Option<TaskRecoveryReceipt> {
-        let TaskAttemptOrigin::Recovery {
-            previous_attempt_id,
-            ..
-        } = &self.origin
-        else {
-            return None;
-        };
-        Some(TaskRecoveryReceipt {
-            key: self.key.clone(),
-            previous_attempt_id: previous_attempt_id.clone(),
-            attempt_id: self.attempt_id.clone(),
-            generation: self.generation,
-        })
-    }
 }
 
 #[cfg(test)]

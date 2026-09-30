@@ -2,9 +2,8 @@
 //! One socket under `<data_dir>/mcp/kernel.sock` (mode 0600); a connection must `initialize` before any `tools/*` request.
 
 mod call;
-pub(crate) mod worker_grants;
+pub(crate) mod plugin_tool_names;
 pub(crate) use call::call_registered_tool;
-pub(crate) use worker_grants::resolve_dispatch_plugin_tools;
 
 use crate::db::{Repo, SessionCardIdentity};
 use crate::forge_trust::trusted_forge_plugin;
@@ -369,10 +368,10 @@ async fn dispatch_request(
                             extend_plugin_tool_descriptors_for_role(
                                 ctx,
                                 &mut descriptors,
-                                &identity,
+                                identity.role,
                                 &scope,
                             )
-                            .await?;
+                            .await;
                             descriptors
                         }
                         None => {
@@ -405,10 +404,10 @@ async fn dispatch_request(
                             extend_plugin_tool_descriptors_for_role(
                                 ctx,
                                 &mut descriptors,
-                                &identity,
+                                identity.role,
                                 &scope,
                             )
-                            .await?;
+                            .await;
                             descriptors
                         }
                         Some(identity) => {
@@ -422,14 +421,13 @@ async fn dispatch_request(
                             ensure_card_bound_session_active(ctx, bound, "tools/list").await?;
                         let scope = plugin_scope_for_track(ctx, Some(card.track_id.as_str())).await;
                         let mut descriptors = registry.descriptors_for_role(bound.role);
-                        let identity = card_bound_tool_identity(ctx, bound).await?;
                         extend_plugin_tool_descriptors_for_role(
                             ctx,
                             &mut descriptors,
-                            &identity,
+                            card.role,
                             &scope,
                         )
-                        .await?;
+                        .await;
                         descriptors
                     }
                 },
@@ -465,13 +463,12 @@ async fn dispatch_request(
 async fn extend_plugin_tool_descriptors_for_role(
     ctx: &Arc<AppContext>,
     descriptors: &mut Vec<ToolDescriptor>,
-    identity: &ToolCallIdentity,
+    role: CardRole,
     scope: &TrackPluginScope,
-) -> Result<(), RpcError> {
-    if PLUGIN_TOOL_ROLES.contains(&identity.role) {
+) {
+    if PLUGIN_TOOL_ROLES.contains(&role) {
         descriptors.extend(plugin_tool_descriptors(ctx, scope).await);
     }
-    worker_grants::filter(ctx, identity, descriptors).await
 }
 
 /// Plugin tool descriptors visible under `scope`; kernel `calm.*` descriptors never route through here.
@@ -609,7 +606,6 @@ async fn dispatch_plugin_tools_call(
         return Err(unknown_tool());
     }
     require_role_any(&identity, PLUGIN_TOOL_ROLES)?;
-    worker_grants::require(ctx, &identity, name).await?;
     match kind {
         None => {
             // Connector tools materialize with `kind: None`, so without this arm they would fall through to the stdio-only accessor and get a spurious `-32002 not running`.

@@ -51,7 +51,6 @@ mod task_attempt_migration_tests;
 #[cfg(test)]
 mod task_attempt_tests;
 mod task_projection;
-mod task_recovery_projection;
 mod track;
 mod track_idle;
 mod track_recipe;
@@ -122,8 +121,7 @@ pub use task::{
 pub use task_attempt::{
     task_attempt_current_by_track_pool, task_attempt_current_by_track_tx,
     task_attempt_current_pool, task_attempt_current_tx, task_attempt_get_tx, task_current_get_pool,
-    task_current_get_tx, task_history_by_key_pool, task_recovery_allocate_tx,
-    task_recovery_constraint_tx, task_recovery_lookup_tx,
+    task_current_get_tx, task_history_by_key_pool,
 };
 pub use task_projection::{
     BlockVerdict, PROJECTION_DRIFT_TASK_FIELDS, TaskPendingReason, TaskProjectionOutcome,

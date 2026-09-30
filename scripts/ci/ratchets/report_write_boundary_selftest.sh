@@ -72,10 +72,6 @@ run_case() {
 # The production file, unmodified, must pass — or every red case could be red because the gate is broken in general.
 run_case "green: production boundary as-is" green "" ""
 
-# The explicit User start entry is admitted by exact name, never by pattern.
-run_case "red: User start entry replaced by another writer" red "R3:" \
-  's/pub(crate) async fn rest_user_start(/pub(crate) async fn unreviewed_start(/'
-
 # R1 — the writer goes `pub(crate)`.
 run_case "R1: writer becomes pub(crate)" red \
   "R1: the writer is declared \`pub\`" \
@@ -103,14 +99,6 @@ run_case "R2: include! of another file" red \
   "R2:" \
   '/^use super::\*;$/a\
 include!("../elsewhere.rs");'
-
-# The Planner dispatch door remains an exact named entry, not a wildcard.
-run_case "R3: Planner dispatch door removed" red \
-  "R3: the exported write-entry set changed" \
-  's/^pub(crate) async fn planner_dispatch(/async fn planner_dispatch(/'
-run_case "R3: Planner dispatch door replaced by arbitrary writer" red \
-  "R3: the exported write-entry set changed" \
-  's/^pub(crate) async fn planner_dispatch(/pub(crate) async fn arbitrary_writer(/'
 
 run_case "R3: a new pub(crate) entry" red \
   "R3: the exported write-entry set changed" \

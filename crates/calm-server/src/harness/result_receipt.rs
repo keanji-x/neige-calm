@@ -2,7 +2,6 @@
 //! No new queue fields, task-key aliases, workspace paths, or authority claims.
 use super::{Observation, QueueEntry};
 use crate::db::Repo;
-use crate::error::Result;
 use crate::ids::TrackId;
 use crate::model::HarnessInputSegment;
 use crate::prompts::render_named;
@@ -37,10 +36,10 @@ enum Detail<'a> {
     Unavailable,
 }
 
-/// Render one receipt's detail text; a fragment/value mismatch is our bug and surfaces as
-/// `CalmError::Internal`.
-fn render_detail(detail: &Detail<'_>) -> Result<String> {
-    Ok(match detail {
+/// Render one receipt's detail text. The fragments are static and every variant is rendered by the
+/// run-loop receipt tests, so a fragment/value mismatch cannot reach a running kernel.
+fn render_detail(detail: &Detail<'_>) -> String {
+    match detail {
         Detail::RecordedWithEvent {
             path,
             kind,
@@ -52,7 +51,7 @@ fn render_detail(detail: &Detail<'_>) -> Result<String> {
                 ("kind", kind),
                 ("event_id", &event_id.to_string()),
             ],
-        )?,
+        ),
         Detail::RecordedLegacy {
             path,
             kind,
@@ -64,9 +63,10 @@ fn render_detail(detail: &Detail<'_>) -> Result<String> {
                 ("kind", kind),
                 ("event_id", &event_id.to_string()),
             ],
-        )?,
-        Detail::Unavailable => render_named(UNAVAILABLE, &[])?,
-    })
+        ),
+        Detail::Unavailable => render_named(UNAVAILABLE, &[]),
+    }
+    .expect("a result receipt fragment binds exactly its placeholders")
 }
 
 pub(super) async fn enrich(
@@ -75,7 +75,7 @@ pub(super) async fn enrich(
     track_id: &TrackId,
     entries: &[QueueEntry],
     segments: &mut [HarnessInputSegment],
-) -> Result<()> {
+) {
     let receipts: Vec<_> = entries
         .iter()
         .enumerate()
@@ -106,7 +106,7 @@ pub(super) async fn enrich(
         })
         .collect();
     if receipts.is_empty() {
-        return Ok(());
+        return;
     }
     let track = match repo.track_get(track_id.as_str()).await {
         Ok(track) => track,
@@ -164,9 +164,8 @@ pub(super) async fn enrich(
             },
             None => Detail::Unavailable,
         };
-        segments[index].text.push_str(&render_detail(&detail)?);
+        segments[index].text.push_str(&render_detail(&detail));
     }
-    Ok(())
 }
 
 // An existing virtual run record, not a filesystem path or a task-key alias; also exclude

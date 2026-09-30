@@ -27,7 +27,7 @@ pub async fn track_idle(
         .fetch_all(&mut *conn)
         .await?;
     for task in in_flight {
-        if task.runs_in_track_checkout()? {
+        if task.runs_in_track_checkout() {
             return Ok(false);
         }
     }

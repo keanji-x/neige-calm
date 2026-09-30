@@ -5,5 +5,4 @@ verifying	its gate is running; wait for task.gate_result, then decide on the res
 ended	its execution already ended; only pending and running tasks can be canceled.
 changed	it changed state concurrently; re-check with calm.plan.list and retry.
 route	only a codex or claude worker running inside this Track can be canceled while running; this task finishes on its own.
-isolated	an isolated worker is stopped by its own controller, not by calm.plan.cancel; wait for its settlement notice.
 unbound	no worker card is bound to it yet; cancel it once calm.plan.list shows its worker.

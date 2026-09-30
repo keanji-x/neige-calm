@@ -101,12 +101,13 @@ async fn legacy_4140_rows_load() {
     let retired = [
         "task.file_publication_settled",
         "task.candidate_verification_settled",
+        "task.execution_settled",
     ];
     assert_eq!(
         all.iter()
             .filter(|(_, kind)| retired.contains(&kind.as_str()))
             .count(),
-        2,
+        8,
         "anti-vacuity: the fixture holds the retired rows"
     );
     let live: Vec<i64> = all
@@ -158,6 +159,14 @@ async fn legacy_4140_rows_load() {
     .await
     .unwrap();
     assert_eq!(bindings, 0);
+    // So is the Planner dispatch receipt table (S4).
+    let receipts: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM sqlite_master WHERE name = 'planner_dispatch_receipts'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(receipts, 0);
 
     // Worker sessions and their cards.
     for (session, card) in [
@@ -188,17 +197,14 @@ async fn legacy_4140_rows_load() {
             .filter_map(|entry| entry["key"].as_str())
             .collect();
         assert_eq!(keys, [key], "{track}: {full}");
-        // A refused recovery carries only its capability; the Planner-only guidance is gone (S3).
-        let recovery = &full["tasks"][0]["recovery"];
-        assert_eq!(recovery["allowed"], false, "{track}: {full}");
-        let mut fields: Vec<&str> = recovery
-            .as_object()
-            .unwrap_or_else(|| panic!("{track}: {full}"))
-            .keys()
-            .map(String::as_str)
-            .collect();
-        fields.sort_unstable();
-        assert_eq!(fields, ["allowed", "code", "reason"], "{track}: {full}");
+        // The failure shows as the failure only: nothing can be recovered, and no isolated
+        // activity is read (S4).
+        let entry = &full["tasks"][0];
+        assert_eq!(entry["status"], "failed", "{track}: {full}");
+        assert!(entry["status_detail"].is_string(), "{track}: {full}");
+        for gone in ["recovery", "activity"] {
+            assert!(entry.get(gone).is_none(), "{track}: {gone}: {full}");
+        }
         let summary = call_tool(
             &boot,
             "calm.plan.list",
@@ -209,8 +215,16 @@ async fn legacy_4140_rows_load() {
         .unwrap_or_else(|error| panic!("{track}: plan.list summary: {error:?}"));
         assert_eq!(summary["tasks"][0]["key"], key, "{track}: {summary}");
 
-        // The attempt history keeps the recovery allocation.
+        // The attempt history keeps the recovery allocation, and says nothing about recovering.
         let history = attempts(&boot, track, key).await;
+        let mut fields: Vec<&str> = history
+            .as_object()
+            .unwrap_or_else(|| panic!("{track}: {history}"))
+            .keys()
+            .map(String::as_str)
+            .collect();
+        fields.sort_unstable();
+        assert_eq!(fields, ["attempts", "current", "key"], "{track}: {history}");
         let generations = history["attempts"].as_array().unwrap().len();
         assert_eq!(generations, if track == "legacy-a" { 2 } else { 1 });
 
@@ -219,6 +233,16 @@ async fn legacy_4140_rows_load() {
             .await
             .unwrap_or_else(|error| panic!("{track}: report.read: {error:?}"));
         assert!(report.to_string().contains(key), "{track}: {report}");
+        // Its isolated block is kept as history and never scheduled (S4).
+        let retired: Vec<&Value> = report["taskDiagnostics"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{track}: {report}"))
+            .iter()
+            .filter(|verdict| verdict["key"] == key)
+            .flat_map(|verdict| verdict["diagnostics"].as_array().unwrap())
+            .filter(|diagnostic| diagnostic["code"] == "neige_execution_retired")
+            .collect();
+        assert_eq!(retired.len(), 1, "{track}: {report}");
 
         // Track activity recomputes.
         let projector = calm_server::track_activity::TrackActivityProjector::new(

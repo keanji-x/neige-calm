@@ -2,8 +2,6 @@
 mod bounded_track_tree_sql;
 #[path = "events_since_bound.rs"]
 mod events_since_bound;
-#[path = "isolated_operation_migration.rs"]
-mod isolated_operation_migration;
 #[path = "track_vcs_prune.rs"]
 mod track_vcs_prune;
 #[path = "track_write_point_registry.rs"]
@@ -41,6 +39,9 @@ fn assert_suite_complete(source: &str) {
 
 #[path = "planner_recovery_binding_migration.rs"]
 mod planner_recovery_binding_migration;
+
+#[path = "planner_dispatch_receipts_migration.rs"]
+mod planner_dispatch_receipts_migration;
 
 #[path = "file_delivery_migration.rs"]
 mod file_delivery_migration;

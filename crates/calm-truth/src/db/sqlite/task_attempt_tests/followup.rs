@@ -7,7 +7,7 @@ async fn task_recovery_allocation_inventory_includes_missing_rows_and_pages_by_k
     let blocks = [block("a", &[]), block("b", &[]), block("c", &[])];
     project(&repo, &blocks).await;
     fail(&repo, &blocks[1]).await;
-    let receipt = recover(&repo, &blocks[1]).await;
+    let attempt_id = recover(&repo, &blocks[1]).await;
     // A recovery allocation exists before projection, and initial pending C may
     // be withdrawn. Neither can disappear from the logical task inventory.
     let mut withdrawn = blocks.clone();
@@ -24,7 +24,7 @@ async fn task_recovery_allocation_inventory_includes_missing_rows_and_pages_by_k
             .collect::<Vec<_>>(),
         ["a", "b"]
     );
-    assert_eq!(first[1].attempt_id, receipt.attempt_id);
+    assert_eq!(first[1].attempt_id, attempt_id);
     assert_eq!(first[1].generation, 2);
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
     let second = task_attempt_current_by_track_tx(&mut tx, "w", Some(&first[1].key), 2)
@@ -118,22 +118,16 @@ async fn task_recovery_historical_gate_log_retains_execution_and_gate_identity()
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    let receipt = recover(&repo, &b).await;
+    let attempt_id = recover(&repo, &b).await;
     project(&repo, std::slice::from_ref(&b)).await;
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
-    task_claim_pending_tx(
-        &mut tx,
-        &receipt.attempt_id,
-        6,
-        constraint(&b).refs(),
-        false,
-    )
-    .await
-    .unwrap();
-    task_start_verifying_from_worker_tx(&mut tx, &receipt.attempt_id, "w", TaskReporter::Kernel, 7)
+    task_claim_pending_tx(&mut tx, &attempt_id, 6, constraint(&b).refs(), false)
         .await
         .unwrap();
-    task_gate_attempt_bump_tx(&mut tx, &receipt.attempt_id, 1, 8)
+    task_start_verifying_from_worker_tx(&mut tx, &attempt_id, "w", TaskReporter::Kernel, 7)
+        .await
+        .unwrap();
+    task_gate_attempt_bump_tx(&mut tx, &attempt_id, 1, 8)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -141,7 +135,7 @@ async fn task_recovery_historical_gate_log_retains_execution_and_gate_identity()
     for (file, text) in [
         ("w:b-g1.log".into(), "old first gate"),
         ("w:b-g2.log".into(), "old second gate"),
-        (format!("{}-g1.log", receipt.attempt_id), "current gate"),
+        (format!("{}-g1.log", attempt_id), "current gate"),
     ] {
         std::fs::write(logs.path().join(file), text).unwrap();
     }

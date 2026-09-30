@@ -1,53 +1,7 @@
-//! Final recovery admission is serialized with withdrawal at controlled launch.
+//! The last check before a task execution's first provider or process effect.
 use crate::db::{RepoEventWrite, write_in_tx_typed};
 use crate::error::{CalmError, Result};
-use calm_types::task_recovery::TaskAttemptOrigin;
-use std::{
-    future::Future,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
-};
-
-// Bounds lock acquisition inside provider transports too; must stay below the renewed 60-second operation lease.
-const CONTROL_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(45);
-
-#[cfg(test)]
-pub(crate) mod test_timeout {
-    use super::*;
-    use std::{
-        collections::HashMap,
-        sync::{LazyLock, Mutex},
-    };
-    static VALUES: LazyLock<Mutex<HashMap<String, Duration>>> =
-        LazyLock::new(|| Mutex::new(HashMap::new()));
-    pub(crate) struct Override(String);
-    pub(crate) fn install(task_id: &str, duration: Duration) -> Override {
-        assert!(
-            VALUES
-                .lock()
-                .unwrap()
-                .insert(task_id.into(), duration)
-                .is_none()
-        );
-        Override(task_id.into())
-    }
-    pub(super) fn read(task_id: &str) -> Duration {
-        VALUES
-            .lock()
-            .unwrap()
-            .get(task_id)
-            .copied()
-            .unwrap_or(CONTROL_EXCHANGE_TIMEOUT)
-    }
-    impl Drop for Override {
-        fn drop(&mut self) {
-            VALUES.lock().unwrap().remove(&self.0);
-        }
-    }
-}
+use std::future::Future;
 
 #[derive(Clone)]
 pub(crate) struct TaskLaunch {
@@ -56,16 +10,14 @@ pub(crate) struct TaskLaunch {
 }
 
 #[derive(Debug)]
-pub(crate) struct LaunchFailure<T> {
+pub(crate) struct LaunchFailure {
     pub error: CalmError,
-    pub observed: Option<T>,
     pub effect_started: bool,
 }
-impl<T> From<CalmError> for LaunchFailure<T> {
+impl From<CalmError> for LaunchFailure {
     fn from(error: CalmError) -> Self {
         Self {
             error,
-            observed: None,
             effect_started: false,
         }
     }
@@ -97,130 +49,26 @@ impl TaskLaunch {
         &self.task_id
     }
 
-    /// `effect` must contain only the bounded provider-control exchange, never repository writes: the write transaction is held
-    /// through that send, so a withdrawal committed before this launch is seen by the final read.
+    /// Refuse the effect when the execution is no longer the current, live attempt; otherwise run it.
     pub(crate) async fn run_observed<T, F>(
         self,
         repo: &dyn RepoEventWrite,
         effect: F,
-    ) -> std::result::Result<T, LaunchFailure<T>>
+    ) -> std::result::Result<T, LaunchFailure>
     where
         T: Send + 'static,
         F: Future<Output = Result<T>> + Send + 'static,
     {
-        self.run_guarded(repo, None, effect).await
-    }
-
-    pub(crate) async fn run_isolated_observed<T, F>(
-        self,
-        repo: &dyn RepoEventWrite,
-        intent: crate::isolated_codex::turn::TurnIntent,
-        effect: F,
-    ) -> std::result::Result<T, LaunchFailure<T>>
-    where
-        T: Send + 'static,
-        F: Future<Output = Result<T>> + Send + 'static,
-    {
-        self.run_guarded(repo, Some(intent), effect).await
-    }
-
-    async fn run_guarded<T, F>(
-        self,
-        repo: &dyn RepoEventWrite,
-        intent: Option<crate::isolated_codex::turn::TurnIntent>,
-        effect: F,
-    ) -> std::result::Result<T, LaunchFailure<T>>
-    where
-        T: Send + 'static,
-        F: Future<Output = Result<T>> + Send + 'static,
-    {
-        let isolated = self.operation.kind == crate::isolated_codex::OPERATION_KIND;
-        if isolated != intent.is_some() {
-            return Err(CalmError::Conflict(
-                "isolated launch requires its exact turn intent".into(),
-            )
-            .into());
-        }
         let task_id = self.task_id.clone();
-        let recovered = write_in_tx_typed(repo, move |tx| {
+        write_in_tx_typed(repo, move |tx| {
             Box::pin(async move {
-                crate::task_recovery::require_attempt_startable_tx(tx, &task_id).await?;
-                let allocation = crate::db::sqlite::task_attempt_get_tx(tx, &task_id)
-                    .await?
-                    .ok_or_else(|| CalmError::Conflict("launch allocation is missing".into()))?;
-                Ok(matches!(
-                    allocation.origin,
-                    TaskAttemptOrigin::Recovery { .. }
-                ))
+                crate::task_recovery::require_attempt_startable_tx(tx, &task_id).await
             })
         })
         .await?;
-        if !recovered && !isolated {
-            return effect.await.map_err(|error| LaunchFailure {
-                error,
-                observed: None,
-                effect_started: true,
-            });
-        }
-        let observed = Arc::new(Mutex::new(None));
-        let captured = observed.clone();
-        let started = Arc::new(AtomicBool::new(false));
-        let started_in_tx = started.clone();
-        let committed = write_in_tx_typed(repo, move |tx| Box::pin(async move {
-            crate::task_recovery::require_attempt_startable_tx(tx, &self.task_id).await?;
-            if let Some(intent) = &intent {
-                crate::isolated_codex::turn::validate_tx(tx, &self.operation, intent).await?;
-            }
-            let owner = self.operation.lease_owner.as_deref()
-                .ok_or_else(|| CalmError::Conflict("recovery launch requires an owned operation lease".into()))?;
-            let now = crate::model::now_ms();
-            let admission = serde_json::json!({"version":1,"task_id":self.task_id,"admitted_at_ms":now});
-            // Same phase/artifact CAS contract as elsewhere: the same owner may renew here, a claimed replacement cannot.
-            let changed = sqlx::query(r#"
-                UPDATE operations SET
-                    tx_output_json=json_set(tx_output_json,'$.data.launch_admission',json(?1)),
-                    updated_at_ms=?2, lease_until_ms=?6
-                WHERE id=?3 AND lease_owner=?4 AND phase='spawn_started'
-                  AND json_type(tx_output_json,'$.data')='object'
-                  AND (
-                    (kind IN ('codex-worker','claude-worker','terminal-worker','codex-isolated-worker')
-                     AND idempotency_key=?5 AND json_extract(payload_json,'$.idempotency_key')=?5
-                     AND target_type='card'
-                     AND EXISTS(SELECT 1 FROM cards c WHERE c.id=operations.target_id AND c.role='worker'
-                                AND c.track_id=(SELECT track_id FROM tasks WHERE id=?5)))
-                    OR (kind='task-verify' AND json_extract(payload_json,'$.task_id')=?5
-                        AND json_extract(payload_json,'$.attempt')=(SELECT gate_attempt FROM tasks WHERE id=?5)
-                        AND target_type='task' AND target_id=?5)
-                  )
-            "#).bind(admission.to_string()).bind(now).bind(&self.operation.id).bind(owner).bind(&self.task_id)
-                .bind(now.saturating_add(super::OPERATION_LEASE_MS))
-                .execute(&mut **tx).await?.rows_affected();
-            if changed != 1 { return Err(CalmError::Conflict("recovery launch operation binding or lease changed".into())); }
-            #[cfg(test)]
-            let control_timeout = test_timeout::read(&self.task_id);
-            #[cfg(not(test))]
-            let control_timeout = CONTROL_EXCHANGE_TIMEOUT;
-            started_in_tx.store(true, Ordering::SeqCst);
-            let output = tokio::time::timeout(control_timeout, effect).await.map_err(|_| {
-                CalmError::Internal("recovery launch control exchange timed out; reconcile the prepared operation before another recovery".into())
-            })??;
-            *captured.lock().map_err(|_| CalmError::Internal("launch observation poisoned".into()))? = Some(output);
-            Ok(())
-        })).await;
-        let observed = observed
-            .lock()
-            .map_err(|_| CalmError::Internal("launch observation poisoned".into()))?
-            .take();
-        match (committed, observed) {
-            (Ok(()), Some(output)) => Ok(output),
-            (Err(error), observed) => Err(LaunchFailure {
-                error,
-                observed,
-                effect_started: started.load(Ordering::SeqCst),
-            }),
-            (Ok(()), None) => {
-                Err(CalmError::Internal("launch completed without an observation".into()).into())
-            }
-        }
+        effect.await.map_err(|error| LaunchFailure {
+            error,
+            effect_started: true,
+        })
     }
 }

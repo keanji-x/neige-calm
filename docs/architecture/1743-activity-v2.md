@@ -1,5 +1,7 @@
 # 活动指示器 v2：任务为单位、track 阶段为框架；done 收尾；退役 Card FSM（#1743）— 设计 v5（评审收敛）（2026-09-20）
 
+> **#1893 S4（2026-10-01）**：isolated executor 已删除，activity 折叠不再有 isolated 分支（S0 的 `isolated` 列与 (iii) 判据随之删除）。下文涉及 isolated 的段落是历史记录。
+
 基线：`origin/main` = `9a9bcd0c2`（工作树 `1743-design`，含 #1722 五个 PR）。所有 `path:line` 都在该基线上读取核实；4140 的数字都由 `sqlite3 -readonly ~/.local/share/neige-next/data/calm.db "<sql>"` 只读取得，命令随数字给出（§2.3）。前作：`docs/architecture/1722-track-activity-indicators.md`（v8；本文引用其 F/G 编号时原样沿用）。v1 → v2、v2 → v3、v3 → v4 的逐项处置在 §10。
 
 **owner 的两条规则（每一节都受其约束）**：

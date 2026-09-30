@@ -12,15 +12,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 #[tokio::test]
-async fn recovery_codex_viewer_completion_preserves_business() {
+async fn codex_viewer_completion_preserves_business() {
     exercise_viewer_report(crate::model::TaskStatus::Done).await;
 }
 #[tokio::test]
-async fn recovery_codex_viewer_failure_preserves_business() {
+async fn codex_viewer_failure_preserves_business() {
     exercise_viewer_report(crate::model::TaskStatus::Failed).await;
 }
 #[tokio::test]
-async fn recovery_codex_viewer_verifying_preserves_business() {
+async fn codex_viewer_verifying_preserves_business() {
     exercise_viewer_report(crate::model::TaskStatus::Verifying).await;
 }
 
@@ -41,7 +41,7 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus) {
     } else {
         declaration["no_gate_reason"] = json!("viewer race fixture");
     }
-    let fixture = crate::task_recovery::launch_test_support::recovered_claimed_task(
+    let task = crate::operation::launch_cleanup_test_support::claimed_task(
         harness.repo.clone(),
         harness.events.clone(),
         write.clone(),
@@ -133,10 +133,10 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus) {
         .await
         .unwrap(),
     );
-    let (kind, payload) = crate::scheduler::build_worker_payload(&fixture.task).unwrap();
+    let (kind, payload) = crate::scheduler::build_worker_payload(&task).unwrap();
     let key = OperationKey {
         operation_key: new_id(),
-        idempotency_key: Some(fixture.task.id.clone()),
+        idempotency_key: Some(task.id.clone()),
         payload_hash: crate::routes::terminal_cards::stable_payload_hash(&payload).unwrap(),
     };
     let submitted_key = key.clone();
@@ -204,14 +204,14 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus) {
     });
     let event = if expected == crate::model::TaskStatus::Failed {
         Event::TaskFailed {
-            idempotency_key: fixture.task.id.clone(),
+            idempotency_key: task.id.clone(),
             reason: "useful failed notes retained".into(),
             details: None,
             agent_message: None,
         }
     } else {
         Event::TaskCompleted {
-            idempotency_key: fixture.task.id.clone(),
+            idempotency_key: task.id.clone(),
             result: json!({"notes":"completed-notes.txt"}),
             artifacts: vec![],
             agent_message: None,
@@ -224,7 +224,7 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus) {
     assert_eq!(
         harness
             .repo
-            .task_get(&fixture.task.id)
+            .task_get(&task.id)
             .await
             .unwrap()
             .unwrap()
@@ -252,7 +252,7 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus) {
     assert_eq!(
         harness
             .repo
-            .task_get(&fixture.task.id)
+            .task_get(&task.id)
             .await
             .unwrap()
             .unwrap()
@@ -264,96 +264,4 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus) {
         usize::from(expected == crate::model::TaskStatus::Verifying)
     );
     assert_eq!(op.phase, Phase::Succeeded);
-}
-
-#[tokio::test]
-async fn recovery_codex_business_commit_failure_retains_known_turn() {
-    let harness = worker_lease_harness().await;
-    let write = WriteContext::new(
-        harness.adapter.card_role_cache.clone(),
-        harness.adapter.track_area_cache.clone(),
-    );
-    let fixture = crate::task_recovery::launch_test_support::recovered_claimed_task(harness.repo.clone(), harness.events.clone(), write, &harness.track_id,
-        json!({"key":"launch","kind":"codex","goal":"retain owned turn","ready":true,"declared_by":"user","no_gate_reason":"commit fault fixture"})).await;
-    let shared = SharedCodexAppServer::new_fake_running_with_pending(harness.repo.clone(), None);
-    let dir = calm_test_sockets::socket_dir("turn");
-    let server = McpServer::new_for_test(crate::mcp_server::McpShimConfig {
-        shim_bin: dir.path().join("shim"),
-        socket_path: dir.path().join("mcp.sock"),
-    });
-    let adapter = CodexWorkerAdapter::new(
-        harness.repo.clone(),
-        Arc::new(CodexClient::new_stub()),
-        shared.clone(),
-        Some(server),
-        harness.adapter.card_role_cache.clone(),
-        harness.adapter.track_area_cache.clone(),
-        harness.repo_root.path().into(),
-    );
-    crate::operation::launch_cleanup_test_support::install_commit_fault(harness.repo.pool()).await;
-    let op_repo = Arc::new(SqlxOperationRepo::new(harness.repo.pool().clone()));
-    let mut daemon = DaemonClient::new_stub();
-    daemon.proc_supervisor_sock = Some(dir.path().join("never-start-a-real-viewer.sock"));
-    let completion = OperationCompletionBus::new();
-    let runtime = OperationRuntime::new(
-        op_repo.clone(),
-        vec![Arc::new(adapter)],
-        harness.events.clone(),
-        completion.clone(),
-        SpawnCtx::new(
-            harness.repo.clone(),
-            op_repo.clone(),
-            Arc::new(daemon),
-            TerminalRendererRegistry::new_with_repo(harness.repo.clone()),
-            harness.events.clone(),
-            completion,
-        ),
-    )
-    .await
-    .unwrap();
-    let (kind, payload) = crate::scheduler::build_worker_payload(&fixture.task).unwrap();
-    let id = tokio::time::timeout(
-        Duration::from_secs(10),
-        runtime.submit(
-            kind,
-            OperationKey {
-                operation_key: new_id(),
-                idempotency_key: Some(fixture.task.id),
-                payload_hash: crate::routes::terminal_cards::stable_payload_hash(&payload).unwrap(),
-            },
-            payload,
-        ),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    let op = op_repo.get_operation(&id).await.unwrap().unwrap();
-    assert!(
-        op.compensation_state.as_ref().unwrap()["reason"]
-            .as_str()
-            .unwrap()
-            .contains("FOREIGN KEY")
-    );
-    let output = op.tx_output.as_ref().unwrap();
-    let session = harness
-        .repo
-        .session_projection_by_id(&output.output_string("runtime_id", "test").unwrap())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        session.active_turn_id.is_some(),
-        "acknowledged business turn survives enclosing commit failure"
-    );
-    assert_eq!(shared.started_turns_for_test().len(), 1);
-    assert!(
-        harness
-            .repo
-            .card_get(&output.output_string("card_id", "test").unwrap())
-            .await
-            .unwrap()
-            .is_some()
-    );
-    assert!(std::path::Path::new(&output.output_string("cwd", "test").unwrap()).is_dir());
-    assert!(matches!(op.phase, Phase::Stuck { .. }));
 }

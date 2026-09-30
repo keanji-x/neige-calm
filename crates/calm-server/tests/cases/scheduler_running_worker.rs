@@ -485,21 +485,13 @@ async fn idle_candidate_whose_thread_read_times_out_is_untouched() {
 }
 
 #[tokio::test]
-async fn idle_arm_leaves_claude_and_isolated_workers_alone() {
+async fn idle_arm_leaves_claude_workers_alone() {
     let boot = boot().await;
     let claude = seed_idle_codex_worker(&boot, "claude-idle", false).await;
     sqlx::query("UPDATE tasks SET kind = 'claude' WHERE key = 'claude-idle'")
         .execute(&boot.repo.sqlite_pool().unwrap())
         .await
         .unwrap();
-    let isolated = seed_idle_codex_worker(&boot, "isolated-idle", false).await;
-    seed_worker_op_target(
-        &boot,
-        "codex-isolated-worker",
-        &format!("{}:isolated-idle", boot.track_id.as_str()),
-        &isolated.card_id,
-    )
-    .await;
     let probe = ScriptedProbe::new(Answer::Facts(r4_facts()), None);
     let (_runtime, scheduler) =
         build_scheduler_with_idle(&boot, idle_at(probe.clone(), R4_COMPLETED_AT_MS + 301_000));
@@ -507,13 +499,11 @@ async fn idle_arm_leaves_claude_and_isolated_workers_alone() {
     sweep_and_settle_idle_checks(&scheduler).await;
 
     assert!(probe.reads().is_empty(), "no recheck: {:?}", probe.reads());
-    for worker in [&claude, &isolated] {
-        assert_eq!(
-            task_row(&boot, &worker.task_key).await.status,
-            TaskStatus::Running
-        );
-        assert_eq!(workspace_lease_state(&boot, &worker.lease_id).await, "held");
-    }
+    assert_eq!(
+        task_row(&boot, &claude.task_key).await.status,
+        TaskStatus::Running
+    );
+    assert_eq!(workspace_lease_state(&boot, &claude.lease_id).await, "held");
     assert!(event_rows(&boot, "task.failed").await.is_empty());
 }
 

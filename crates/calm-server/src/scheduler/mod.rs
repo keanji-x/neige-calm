@@ -132,7 +132,7 @@ pub(crate) async fn mark_running_timeout_cleanup_tx(
 /// whose deps are all `done`. A codex or claude task that runs in the track's checkout is ready
 /// only while the track is idle ([`crate::db::sqlite::track_idle`], #1830 S2 D5); the claim tx
 /// rechecks it, so one claim wins per pass and a claim that fails does not hold the others.
-/// Isolated, terminal and child-track tasks are not held.
+/// Terminal and child-track tasks are not held.
 pub fn compute_ready(tasks: &[Task], track_idle: bool) -> Result<Vec<Task>> {
     let done_keys: BTreeSet<&str> = tasks
         .iter()
@@ -148,7 +148,7 @@ pub fn compute_ready(tasks: &[Task], track_idle: bool) -> Result<Vec<Task>> {
         {
             continue;
         }
-        if !track_idle && task.runs_in_track_checkout()? {
+        if !track_idle && task.runs_in_track_checkout() {
             continue;
         }
         ready.push(task.clone());
@@ -159,16 +159,6 @@ pub fn compute_ready(tasks: &[Task], track_idle: bool) -> Result<Vec<Task>> {
 /// Build the worker-operation payload as a pure function of the frozen task row, so a
 /// post-crash resubmit idempotency-matches the original instead of conflicting on payload hash.
 pub fn build_worker_payload(task: &Task) -> Result<(&'static str, Value)> {
-    if crate::isolated_codex::selected(task)? {
-        return Ok((
-            crate::isolated_codex::OPERATION_KIND,
-            serde_json::to_value(crate::isolated_codex::worker_payload(task))?,
-        ));
-    }
-    build_legacy_worker_payload(task)
-}
-
-fn build_legacy_worker_payload(task: &Task) -> Result<(&'static str, Value)> {
     match task.kind {
         TaskKind::Codex => {
             let payload = serde_json::to_value(CodexWorkerOperationPayload {
@@ -1059,10 +1049,6 @@ impl Scheduler {
                                 return Err(race_lost_err());
                             }
                         }
-                        if let Err(error) = crate::task_recovery::check_recovery_attempt_tx(tx, &task_id).await {
-                            tracing::debug!(%task_id, %error, "recovery claim refused; frozen contract or authority changed");
-                            return Err(race_lost_err());
-                        }
                         let now = now_ms();
                         let rows =
                             task_claim_pending_tx(tx, &task_id, now, &claim_refs, claim_truncated)
@@ -1089,7 +1075,7 @@ impl Scheduler {
                         }
                         // #1830 S2 D5: a codex/claude worker runs in the track's checkout, so it
                         // needs the track idle apart from itself.
-                        if frozen.runs_in_track_checkout()?
+                        if frozen.runs_in_track_checkout()
                             && !crate::db::sqlite::track_idle(tx, track_id.as_str(), &task_id)
                                 .await?
                         {
@@ -1139,7 +1125,6 @@ impl Scheduler {
     /// writes. Shared between the live dispatch path and the sweep's `dispatched` arm.
     async fn drive_spawn(&self, task: &Task, track: &Track) -> Result<()> {
         if task.spawn == calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE {
-            crate::isolated_codex::selected(task)?;
             return self.drive_child_track(task, track).await;
         }
         let Some(runtime) = self.operation_runtime.upgrade() else {
@@ -1149,44 +1134,7 @@ impl Scheduler {
             );
             return Ok(());
         };
-        let task_id = task.id.clone();
-        let recorded = crate::db::write_in_tx_typed(self.repo.as_ref(), move |tx| {
-            Box::pin(async move {
-                crate::isolated_codex::lookup::recorded_worker_kind_tx(tx, &task_id).await
-            })
-        })
-        .await?;
-        let (op_kind, payload) = match recorded.as_deref() {
-            Some(crate::isolated_codex::OPERATION_KIND) => {
-                let selected = build_worker_payload(task)?;
-                if selected.0 != crate::isolated_codex::OPERATION_KIND {
-                    return self
-                        .fail_spawn(
-                            task,
-                            track,
-                            "recorded isolated backend no longer matches task contract",
-                        )
-                        .await;
-                }
-                selected
-            }
-            Some(recorded) => {
-                // Already-created legacy operations retain their original backend/serialization.
-                let legacy = build_legacy_worker_payload(task)?;
-                if legacy.0 != recorded {
-                    return self
-                        .fail_spawn(
-                            task,
-                            track,
-                            "recorded worker backend differs from task kind",
-                        )
-                        .await;
-                }
-                legacy
-            }
-            None => build_worker_payload(task)?,
-        };
-        let isolated = op_kind == crate::isolated_codex::OPERATION_KIND;
+        let (op_kind, payload) = build_worker_payload(task)?;
         let payload_hash = stable_payload_hash(&payload)?;
         let op_id = match runtime
             .submit(
@@ -1215,15 +1163,6 @@ impl Scheduler {
             // retry counting) — log-and-leave for the next trigger/sweep.
             Err(e) => return Err(e),
         };
-        if isolated {
-            // The one lifetime Operation remains parked after its canonical
-            // acknowledged-running stamp. Do not hold the track scheduler for a model turn.
-            if let Some(result) = runtime.operation_result(&op_id).await? {
-                self.reconcile_spawn_result(task, track, result.outcome)
-                    .await?;
-            }
-            return Ok(());
-        }
         let result = runtime.wait(&op_id).await?;
         self.reconcile_spawn_result(task, track, result.outcome)
             .await
@@ -1629,23 +1568,6 @@ impl Scheduler {
             }
         };
         for mut task in tasks {
-            if task.status == TaskStatus::Running {
-                let task_id = task.id.clone();
-                match crate::db::write_in_tx_typed(self.repo.as_ref(), move |tx| {
-                    Box::pin(async move {
-                        crate::isolated_codex::lookup::is_isolated_task_tx(tx, &task_id).await
-                    })
-                })
-                .await
-                {
-                    Ok(true) => continue, // Existing owned parked sweep above owns this resource's timeout/stop.
-                    Err(error) => {
-                        tracing::warn!(task_id=%task.id,%error,"task backend lookup failed; skipping generic liveness");
-                        continue;
-                    }
-                    Ok(false) => {}
-                }
-            }
             match task.status {
                 TaskStatus::Pending => {
                     pending_tracks.insert(task.track_id.clone());
@@ -1848,18 +1770,10 @@ impl Scheduler {
         if let Some(card_id) = task.worker_card_id.as_ref() {
             return Some(card_id.clone());
         }
-        let id = task.id.clone();
-        let operation_kind = crate::db::write_in_tx_typed(self.repo.as_ref(), move |tx| {
-            Box::pin(async move {
-                crate::isolated_codex::lookup::recorded_worker_kind_tx(tx, &id).await
-            })
-        })
-        .await
-        .ok()
-        .flatten()?;
+        let (operation_kind, _) = build_worker_payload(task).ok()?;
         self.operation_runtime
             .upgrade()?
-            .find_by_kind_and_idempotency(&operation_kind, &task.id)
+            .find_by_kind_and_idempotency(operation_kind, &task.id)
             .await
             .ok()
             .flatten()

@@ -796,15 +796,6 @@ async fn non_planner_roles_are_refused_with_invalid_params() {
         assert_invalid_params(&err, "tool requires role=Planner");
     }
     assert!(list(&boot).await.is_empty());
-    // The worker allowlist does not open these tools.
-    let environment = calm_server::dedicated_codex::executor_environment();
-    let allowed = environment["mcp_tools"].as_array().expect("mcp_tools");
-    assert!(
-        !allowed
-            .iter()
-            .any(|name| name.as_str().is_some_and(|n| n.starts_with("calm.source."))),
-        "{allowed:?}"
-    );
 }
 
 #[tokio::test]

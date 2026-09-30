@@ -1,5 +1,8 @@
 # Claude Planner backend (#1791) — evidence companion
 
+> **#1893 S4 (2026-10-01)**: the isolated Codex backend (`isolated_codex/`, `--isolated-codex-config`)
+> and `worker_grants.rs` are deleted; `model_tool_key` now lives in `transport/plugin_tool_names.rs`.
+>
 > **#1893 S3 (2026-09-30)**: the Codex `Recover` dynamic tool, the recovery briefing and
 > `calm.plan.recover` are deleted (migration 0127 drops the binding tables). Passages below that
 > name them are history.

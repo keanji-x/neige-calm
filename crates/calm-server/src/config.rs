@@ -30,11 +30,6 @@ pub struct Config {
     #[arg(long, env = "CALM_WORKSPACE_ROOT")]
     pub workspace_root: Option<PathBuf>,
 
-    /// Explicit configuration for opted-in single-task isolated Codex execution.
-    /// Missing keeps this backend unavailable; existing tasks keep their route.
-    #[arg(long)]
-    pub isolated_codex_config: Option<PathBuf>,
-
     /// Typed configuration of the Claude Planner backend (a JSON `ClaudePlannerConfig`).
     /// Missing keeps it unavailable: a Claude Planner create is refused and an existing Claude
     /// Planner keeps its queue without issuing turns.

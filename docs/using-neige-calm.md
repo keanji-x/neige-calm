@@ -88,8 +88,8 @@ handling it; dismissal clears its attention marker, not the underlying task
 or request.
 
 Codex and Claude tasks of a Track run one at a time in the Track's checkout; a
-task waiting for it shows *Waiting for the track's checkout*. Isolated and
-terminal tasks are not held.
+task waiting for it shows *Waiting for the track's checkout*. Terminal and
+child-track tasks are not held.
 
 Worker cards and verification terminals display their directories separately.
 A gate uses its explicit directory override when supplied, otherwise the bound
@@ -98,37 +98,11 @@ bound workspace fails verification instead of silently checking another tree.
 Codex and Claude workers run in the Track's own checkout; recovery of older
 frozen operations keeps their recorded directory.
 
-## Recover a failed task
+## Read a task's execution history
 
 Expand the task in the Report to see its current attempt and **Attempt history**.
 Each historical attempt keeps its outcome and a link to its worker conversation.
-Select **Recover task** when the current failed attempt is eligible. Recovery
-starts a new execution under the same task key and unchanged requirements;
-completed sibling tasks and downstream dependency declarations stay in place.
-
-The initial recovery entry supports preparation failures where no Worker or
-verifier was prepared or started. An exited terminal or completed provider session
-does not prove its background processes stopped. Attempts that reached execution
-remain unavailable through this entry until a supported stop boundary is available;
-the task explains this prerequisite.
-
-The accepted request first waits for preparation and scheduling. A prepared or
-queued attempt has not necessarily begun business execution. If the request's
-response is lost, retry the request through the displayed recovery control; it
-keeps the original request identity so that one action cannot create two attempts.
-
-When recovery is unavailable, the task explains the prerequisite: for example,
-its requirements changed, execution permission was withdrawn, the previous execution
-has no supported write-stop proof, or its historical contract is missing.
-A closed Track must first use **Reopen**.
-
-Planner can recover its own automatically admitted task once. User-owned tasks,
-tasks awaiting user release, and further failed attempts need an explicit user
-recovery action. Successful and canceled attempts are not eligible for this action.
-
-This recovery starts a fresh execution. Restoring a failed workspace, exact
-artifact handoff and partial-result acceptance have separate delivery requirements
-in [Task continuity](architecture/1501-task-continuity.md#reliable-delivery).
+A failed task stays failed: to try again, declare a new task under a new key.
 
 ## Work in a Track checkout and publish a PR
 

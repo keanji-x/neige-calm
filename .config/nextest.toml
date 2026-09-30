@@ -81,7 +81,7 @@ threads-required = 4
 
 [profile.ci.archive]
 # The PR shards run from CI's one `cargo nextest archive`. calm-worker-runtime has no
-# test target without `test-support`, so its boundary binary, which calm-server tests
+# test target without `test-support`, so its boundary binary, which its boundary tests
 # find next to their own executable, is built separately and shipped here.
 include = [
     { path = "debug/calm-worker-boundary", relative-to = "target", on-missing = "error" },

@@ -58,18 +58,18 @@ pub(crate) async fn rest_user_replace(
     next: TrackReportPayload,
     if_doc_rev: u64,
 ) -> Result<Card, CalmError> {
-    let ((updated, _block), _) = persist(
+    let (updated, _trace) = persist(
         repo,
         events,
         write,
         ActorId::User,
         EditAuthor::User,
         target,
-        PersistPurpose::Edit(ReportDocOp::Replace {
+        ReportDocOp::Replace {
             summary: next.summary,
             body: next.body,
             if_doc_rev,
-        }),
+        },
         None,
         None,
     )
@@ -92,58 +92,12 @@ pub(crate) async fn rest_user_block_op(
         ActorId::User,
         EditAuthor::User,
         target,
-        PersistPurpose::Edit(op),
+        op,
         None,
         None,
     )
     .await
-    .map(|((card, trace), _)| (card, trace.block))
-}
-
-/// The explicit User start purpose. Attribution and task shape are fixed here;
-/// ordinary REST block edits remain ordinary edits.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn rest_user_start(
-    repo: &dyn RouteRepo,
-    events: &EventBus,
-    write: &WriteContext,
-    target: ReportEditTarget,
-    key: String,
-    goal: String,
-    if_doc_rev: u64,
-) -> Result<(Card, Option<BlockOpOutcome>), CalmError> {
-    persist(
-        repo,
-        events,
-        write,
-        ActorId::User,
-        EditAuthor::User,
-        target,
-        PersistPurpose::UserStart {
-            key,
-            goal,
-            if_doc_rev,
-        },
-        None,
-        None,
-    )
-    .await
-    .map(|((card, trace), _)| (card, trace.block))
-}
-
-#[derive(Clone)]
-enum PersistPurpose {
-    Edit(ReportDocOp),
-    Dispatch {
-        identity: crate::mcp_server::registry::ToolCallIdentity,
-        args: super::dispatch::DispatchArgs,
-        plugin_tools: super::dispatch::PluginToolAdmission,
-    },
-    UserStart {
-        key: String,
-        goal: String,
-        if_doc_rev: u64,
-    },
+    .map(|(card, trace)| (card, trace.block))
 }
 
 /// The agent-MCP funnel. Takes its attribution and recorder-shadow probe
@@ -168,43 +122,11 @@ pub(crate) async fn agent_report_op(
         actor,
         author,
         target,
-        PersistPurpose::Edit(op),
+        op,
         agent_message,
         Some(recorder_shadow),
     )
     .await
-    .map(|(edit, _)| edit)
-}
-
-/// Planner-only semantic dispatch; authorization and replay stay inside persist.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn planner_dispatch(
-    repo: &dyn RouteRepo,
-    events: &EventBus,
-    write: &WriteContext,
-    identity: crate::mcp_server::registry::ToolCallIdentity,
-    target: ReportEditTarget,
-    args: super::dispatch::DispatchArgs,
-    plugin_tools: super::dispatch::PluginToolAdmission,
-    recorder_shadow: Arc<dyn RecorderShadowProbe>,
-) -> Result<serde_json::Value, CalmError> {
-    let (_, response) = persist(
-        repo,
-        events,
-        write,
-        identity.to_actor_id(),
-        EditAuthor::Planner,
-        target,
-        PersistPurpose::Dispatch {
-            identity,
-            args: args.normalize()?,
-            plugin_tools,
-        },
-        None,
-        Some(recorder_shadow),
-    )
-    .await?;
-    response.ok_or_else(|| CalmError::Internal("dispatch snapshot missing".into()))
 }
 
 /// The structural door: track creation laying a forked or templated report onto the report card
@@ -258,7 +180,7 @@ pub async fn persist_report(
     if_doc_rev: u64,
     agent_message: Option<String>,
 ) -> Result<Card, CalmError> {
-    let ((updated, _block), _) = persist(
+    let (updated, _trace) = persist(
         repo,
         events,
         write,
@@ -269,11 +191,11 @@ pub async fn persist_report(
             report_card,
             current_payload,
         },
-        PersistPurpose::Edit(ReportDocOp::Replace {
+        ReportDocOp::Replace {
             summary: next.summary,
             body: next.body,
             if_doc_rev,
-        }),
+        },
         agent_message,
         None,
     )
@@ -293,14 +215,10 @@ async fn persist(
     actor: ActorId,
     author: EditAuthor,
     target: ReportEditTarget,
-    purpose: PersistPurpose,
+    op: ReportDocOp,
     agent_message: Option<String>,
     recorder_shadow: Option<Arc<dyn RecorderShadowProbe>>,
-) -> Result<((Card, ReportOpTrace), Option<serde_json::Value>), CalmError> {
-    // Zero-event replay: authorize/read in the same transaction, then roll it back.
-    const DISPATCH_REPLAY: &str = "planner dispatch receipt replay";
-    let replay = Arc::new(std::sync::Mutex::new(None));
-    let replay_out = replay.clone();
+) -> Result<(Card, ReportOpTrace), CalmError> {
     let ReportEditTarget {
         track,
         report_card,
@@ -320,184 +238,125 @@ async fn persist(
     };
     let report_card_id_inner = report_card_id.clone();
     let track_id_for_event = track_id.clone();
-    let result = write_with_actor_events_typed::<_, _>(
-        repo,
-        None,
-        events,
-        write,
-        move |tx| {
-            let id = report_card_id_inner.as_str().to_string();
-            let report_card_id = report_card_id_inner.clone();
-            let track_id = track_id_for_event.clone();
-            let scope = scope.clone();
-            let track_scope = track_scope.clone();
-            let current_payload = current_payload.clone();
-            let purpose = purpose.clone();
-            let actor = actor.clone();
-            let agent_message = agent_message.clone();
-            let recorder_shadow = recorder_shadow.clone();
-            Box::pin(async move {
-                let mut events: Vec<(ActorId, EventScope, Event)> = Vec::new();
-                if let PersistPurpose::Dispatch { identity, .. } = &purpose {
-                    super::dispatch::authorize_tx(tx, identity, &track_id, &id).await?;
-                }
-                if let Some(probe) = recorder_shadow.as_ref() {
-                    probe
-                        .record(tx, RecorderShadowDecisionKind::ReportWrite)
-                        .await?;
-                }
-                if let PersistPurpose::Dispatch { args, .. } = &purpose
-                    && let Some(receipt) = super::dispatch::lookup_tx(tx, &track_id, args).await?
-                {
-                    let response = super::dispatch::snapshot_tx(tx, &track_id, &receipt, args).await?;
-                    let card = sqlx::query_as::<_, crate::db::rows::CardRow>(
-                        "SELECT id,track_id,kind,sort,payload,title,deletable,created_at,updated_at FROM cards WHERE id=?1"
-                    ).bind(&id).fetch_one(&mut **tx).await?;
-                    *replay_out.lock().map_err(|_| CalmError::Internal("dispatch replay lock poisoned".into()))? = Some((Card::from(card), response));
-                    return Err(CalmError::Conflict(DISPATCH_REPLAY.into()));
-                }
-                if let PersistPurpose::Dispatch { args, plugin_tools, .. } = &purpose
-                    && let Some(refusal) = plugin_tools.refusal(args.plugin_tools()) {
-                    return Err(CalmError::Forbidden(refusal));
-                }
-                // 1. Load (or lazy-init) the CRDT doc. Loaded docs may still carry the old layout (no block
-                //    map) — migrate in place using the payload's block ids as hint; written back in this tx.
-                let existing = card_body_crdt_get_tx(tx, &id).await?;
-                let mut doc = match existing {
-                    Some(bytes) => {
-                        let mut doc = ReportDoc::from_bytes(&bytes).map_err(|e| {
+    write_with_actor_events_typed::<_, _>(repo, None, events, write, move |tx| {
+        let id = report_card_id_inner.as_str().to_string();
+        let report_card_id = report_card_id_inner.clone();
+        let track_id = track_id_for_event.clone();
+        let scope = scope.clone();
+        let track_scope = track_scope.clone();
+        let current_payload = current_payload.clone();
+        let op = op.clone();
+        let actor = actor.clone();
+        let agent_message = agent_message.clone();
+        let recorder_shadow = recorder_shadow.clone();
+        Box::pin(async move {
+            let mut events: Vec<(ActorId, EventScope, Event)> = Vec::new();
+            if let Some(probe) = recorder_shadow.as_ref() {
+                probe
+                    .record(tx, RecorderShadowDecisionKind::ReportWrite)
+                    .await?;
+            }
+            // 1. Load (or lazy-init) the CRDT doc. Loaded docs may still carry the old layout (no block
+            //    map) — migrate in place using the payload's block ids as hint; written back in this tx.
+            let existing = card_body_crdt_get_tx(tx, &id).await?;
+            let mut doc = match existing {
+                Some(bytes) => {
+                    let mut doc = ReportDoc::from_bytes(&bytes).map_err(|e| {
+                        CalmError::Internal(format!("track_report: load CRDT for card {id}: {e}"))
+                    })?;
+                    doc.ensure_blocks_layout(current_payload.blocks.as_deref())
+                        .map_err(|e| {
                             CalmError::Internal(format!(
-                                "track_report: load CRDT for card {id}: {e}"
+                                "track_report: migrate CRDT block layout for card {id}: {e}"
                             ))
                         })?;
-                        doc.ensure_blocks_layout(current_payload.blocks.as_deref())
-                            .map_err(|e| {
-                                CalmError::Internal(format!(
-                                    "track_report: migrate CRDT block layout for card {id}: {e}"
-                                ))
-                            })?;
-                        doc
-                    }
-                    // Safe: current_payload was read outside the tx, but is only consulted while body_crdt is
-                    // still NULL in-tx; SQLite's single writer means nothing populated the blob in between.
-                    None => {
-                        let mut doc = ReportDoc::from_payload(&current_payload);
-                        doc.ensure_blocks_layout(current_payload.blocks.as_deref())
-                            .map_err(|e| {
-                                CalmError::Internal(format!(
-                                    "track_report: migrate seeded CRDT block layout for card {id}: {e}"
-                                ))
-                            })?;
-                        doc
-                    }
-                };
-                // 2. Capture the pre-write projection for the edit-log entry.
-                let (summary_before, body_before) = doc.project().map_err(|e| {
-                    CalmError::Internal(format!("track_report: project CRDT for card {id}: {e}"))
-                })?;
-                let dispatch_key = format!("dispatch-{}", uuid::Uuid::new_v4().simple());
-                let op = match purpose.clone() {
-                    PersistPurpose::Edit(op) => op,
-                    PersistPurpose::Dispatch { args, .. } => {
-                        super::dispatch::prepare(&doc, &args, &dispatch_key)?
-                    }
-                    PersistPurpose::UserStart { key, goal, if_doc_rev } => {
-                        super::user_start::prepare_tx(
-                            tx, &track_id, &doc, &key, &goal, if_doc_rev,
-                        ).await?
-                    }
-                };
-                // 3. Apply the op; `if_rev` checks happen in here against the CRDT truth, a conflict aborts the tx.
-                let (trace, doc_rev) = apply_persisted_report_op(&mut doc, &op, author)?;
-                let outcome = &trace.block;
-                // 4. Project back — the CRDT block map is the source of truth; nothing is re-derived at the JSON layer.
-                let (summary_after, body_after) = doc.project().map_err(|e| {
-                    CalmError::Internal(format!(
-                        "track_report: project CRDT post-op for card {id}: {e}"
-                    ))
-                })?;
-                let mut projected_payload =
-                    TrackReportPayload::new(summary_after.clone(), body_after.clone());
-                projected_payload.doc_rev = doc_rev;
-                projected_payload.blocks = Some(doc.blocks_snapshot().map_err(|e| {
-                    CalmError::Internal(format!(
-                        "track_report: snapshot CRDT blocks for card {id}: {e}"
-                    ))
-                })?);
-                let blocks = projected_payload.blocks.as_deref().unwrap_or_default();
-                let (declarations, block_diagnostics) =
-                    calm_types::report_blocks::tasks::project_task_declarations(blocks);
-                // 5. The row write and the task projection, in the one order both writers use.
-                let (updated, task_projection) = write_report_row_and_project_tx(
-                    tx,
-                    &id,
-                    track_id.as_str(),
-                    &projected_payload,
-                    &mut doc,
-                    &declarations,
-                    &block_diagnostics,
-                )
-                .await?;
-                let dispatch_response = if let PersistPurpose::Dispatch { args, .. } = &purpose {
-                    let block = outcome.as_ref().ok_or_else(|| CalmError::Internal("dispatch block outcome missing".into()))?;
-                    let receipt = super::dispatch::DispatchReceipt {
-                        name: args.name().to_owned(), task_key: dispatch_key,
-                        report_card_id: id.clone(), block_id: block.id.clone(),
-                        created_at_ms: crate::model::now_ms(),
-                    };
-                    super::dispatch::insert_tx(tx, &track_id, args, &receipt).await?;
-                    Some(super::dispatch::snapshot_tx(tx, &track_id, &receipt, args).await?)
-                } else { None };
-                //    Then two events on the same card scope: `CardUpdated` first, so a subscriber sees the
-                //    generic "row changed" signal before the structured edit-log entry.
-                let report_edited = Event::TrackReportEdited {
-                    track_id: track_id.clone(),
-                    card_id: report_card_id,
-                    author,
-                    // Kept on the event wire for compatibility; nothing writes it.
-                    author_plugin_id: None,
-                    edit_id: uuid::Uuid::new_v4().to_string(),
-                    summary_before,
-                    summary_after,
-                    body_before,
-                    body_after,
-                    agent_message,
-                };
+                    doc
+                }
+                // Safe: current_payload was read outside the tx, but is only consulted while body_crdt is
+                // still NULL in-tx; SQLite's single writer means nothing populated the blob in between.
+                None => {
+                    let mut doc = ReportDoc::from_payload(&current_payload);
+                    doc.ensure_blocks_layout(current_payload.blocks.as_deref())
+                        .map_err(|e| {
+                            CalmError::Internal(format!(
+                                "track_report: migrate seeded CRDT block layout for card {id}: {e}"
+                            ))
+                        })?;
+                    doc
+                }
+            };
+            // 2. Capture the pre-write projection for the edit-log entry.
+            let (summary_before, body_before) = doc.project().map_err(|e| {
+                CalmError::Internal(format!("track_report: project CRDT for card {id}: {e}"))
+            })?;
+            // 3. Apply the op; `if_rev` checks happen in here against the CRDT truth, a conflict aborts the tx.
+            let (trace, doc_rev) = apply_persisted_report_op(&mut doc, &op, author)?;
+            // 4. Project back — the CRDT block map is the source of truth; nothing is re-derived at the JSON layer.
+            let (summary_after, body_after) = doc.project().map_err(|e| {
+                CalmError::Internal(format!(
+                    "track_report: project CRDT post-op for card {id}: {e}"
+                ))
+            })?;
+            let mut projected_payload =
+                TrackReportPayload::new(summary_after.clone(), body_after.clone());
+            projected_payload.doc_rev = doc_rev;
+            projected_payload.blocks = Some(doc.blocks_snapshot().map_err(|e| {
+                CalmError::Internal(format!(
+                    "track_report: snapshot CRDT blocks for card {id}: {e}"
+                ))
+            })?);
+            let blocks = projected_payload.blocks.as_deref().unwrap_or_default();
+            let (declarations, block_diagnostics) =
+                calm_types::report_blocks::tasks::project_task_declarations(blocks);
+            // 5. The row write and the task projection, in the one order both writers use.
+            let (updated, task_projection) = write_report_row_and_project_tx(
+                tx,
+                &id,
+                track_id.as_str(),
+                &projected_payload,
+                &mut doc,
+                &declarations,
+                &block_diagnostics,
+            )
+            .await?;
+            //    Then two events on the same card scope: `CardUpdated` first, so a subscriber sees the
+            //    generic "row changed" signal before the structured edit-log entry.
+            let report_edited = Event::TrackReportEdited {
+                track_id: track_id.clone(),
+                card_id: report_card_id,
+                author,
+                // Kept on the event wire for compatibility; nothing writes it.
+                author_plugin_id: None,
+                edit_id: uuid::Uuid::new_v4().to_string(),
+                summary_before,
+                summary_after,
+                body_before,
+                body_after,
+                agent_message,
+            };
+            events.push((
+                actor.clone(),
+                scope.clone(),
+                Event::CardUpdated(updated.clone()),
+            ));
+            events.push((actor.clone(), scope, report_edited));
+            if !task_projection.changed_keys.is_empty() {
                 events.push((
                     actor.clone(),
-                    scope.clone(),
-                    Event::CardUpdated(updated.clone()),
+                    track_scope,
+                    Event::PlanUpdated {
+                        track_id,
+                        changed_keys: task_projection.changed_keys,
+                        agent_message: None,
+                    },
                 ));
-                events.push((actor.clone(), scope, report_edited));
-                if !task_projection.changed_keys.is_empty() {
-                    events.push((
-                        actor.clone(),
-                        track_scope,
-                        Event::PlanUpdated {
-                            track_id,
-                            changed_keys: task_projection.changed_keys,
-                            agent_message: None,
-                        },
-                    ));
-                }
-                events.extend(task_projection.kernel_events);
-                Ok((((updated, trace), dispatch_response), events))
-            })
-        },
-    )
-    .await;
-    match result {
-        Ok((updated, _ids)) => Ok(updated),
-        Err(CalmError::Conflict(message)) if message == DISPATCH_REPLAY => {
-            let (card, response) = replay
-                .lock()
-                .map_err(|_| CalmError::Internal("dispatch replay lock poisoned".into()))?
-                .take()
-                .ok_or_else(|| CalmError::Internal("dispatch replay lost its receipt".into()))?;
-            Ok(((card, ReportOpTrace::default()), Some(response)))
-        }
-        Err(error) => Err(error),
-    }
+            }
+            events.extend(task_projection.kernel_events);
+            Ok(((updated, trace), events))
+        })
+    })
+    .await
+    .map(|(updated, _ids)| updated)
 }
 
 /// Write the report card's row (JSON cache + CRDT bytes) and then reproject the track's tasks.

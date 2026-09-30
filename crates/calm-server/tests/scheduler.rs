@@ -855,31 +855,6 @@ fn worker_identity(boot: &Boot) -> ToolCallIdentity {
     }
 }
 
-/// The production recovery the REST route runs, as the User.
-async fn user_recovery(
-    boot: &Boot,
-    key: &str,
-    expected_attempt_id: &str,
-    request_key: &str,
-) -> calm_server::error::Result<calm_types::task_recovery::TaskRecoveryReceipt> {
-    calm_server::task_recovery::recover_failed_task(
-        calm_server::task_recovery::RecoveryContext {
-            repo: boot.repo.as_ref(),
-            events: &boot.events,
-            write: &boot.write,
-        },
-        boot.track_id.as_str(),
-        key,
-        calm_types::task_recovery::TaskRecoveryRequest {
-            expected_attempt_id: expected_attempt_id.into(),
-            idempotency_key: request_key.into(),
-            reason: "Recover task".into(),
-        },
-        calm_server::ids::ActorId::User,
-    )
-    .await
-}
-
 fn planner_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.planner_card_id.as_str().to_string(),
@@ -2602,14 +2577,6 @@ async fn stale_dispatched_worker_without_operation_fails_without_spawn_or_track_
 async fn every_registered_task_adapter_refuses_material_context() {
     let boot = boot().await;
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
-    let isolated: Arc<dyn ProviderAdapter> = Arc::new(
-        calm_server::isolated_codex::adapter::IsolatedCodexAdapter::new(
-            None,
-            route_repo.clone(),
-            None,
-            WriteContext::new(boot.card_role_cache.clone(), boot.track_area_cache.clone()),
-        ),
-    );
     let codex: Arc<dyn ProviderAdapter> = Arc::new(CodexWorkerAdapter::new(
         route_repo.clone(),
         Arc::new(CodexClient::new_stub()),
@@ -2636,18 +2603,11 @@ async fn every_registered_task_adapter_refuses_material_context() {
     let mut cases = Vec::new();
     for (key, task_kind, adapter) in [
         ("meta-codex", TaskKind::Codex, codex),
-        ("meta-isolated", TaskKind::Codex, isolated),
         ("meta-claude", TaskKind::Claude, claude),
         ("meta-terminal", TaskKind::Terminal, terminal),
     ] {
         let mut task = plan_task(&boot.track_id, key, task_kind, &[]);
         task.status = TaskStatus::Dispatched;
-        if adapter.kind() == "codex-isolated-worker" {
-            task.context_json = json!({"neige_execution":{
-                "version":"isolated-codex-v1","workspace":"empty"
-            }})
-            .to_string();
-        }
         let task_id = task.id.clone();
         let (kind, payload) = build_worker_payload(&task).unwrap();
         seed_task(&boot, task).await;
@@ -7049,7 +7009,7 @@ async fn legacy_actor_op_does_not_prove_unstamped_ownership() {
     task.status = TaskStatus::Dispatched;
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
-    // A legacy `calm.task.dispatch` op under the same key: kind + key + card target match, but the persisted payload actor is the planner card.
+    // A legacy Planner-dispatched op under the same key: kind + key + card target match, but the persisted payload actor is the planner card.
     bind_worker_card_payload(&boot, &task_id).await;
     seed_worker_op_target_with_payload(
         &boot,
@@ -9614,209 +9574,4 @@ async fn aborted_observer_leaves_gate_group_alive_and_reattach_lands_verdict() {
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0].1["passed"], true);
     std::fs::remove_dir_all(&dir).ok();
-}
-
-#[tokio::test]
-async fn task_recovery_retries_real_operation_prepare_refusal_without_prior_spawn() {
-    let boot = boot().await;
-    let task = plan_task(&boot.track_id, "prepare-refusal", TaskKind::Terminal, &[]);
-    let previous_id = task.id.clone();
-    seed_projected_task(&boot, task).await;
-    let monitor =
-        TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
-    let closure = monitor
-        .resolve_task_closure(boot.track_id.as_str(), "prepare-refusal")
-        .await
-        .unwrap();
-    let pool = boot.repo.sqlite_pool().unwrap();
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
-        .await
-        .unwrap();
-    calm_server::db::sqlite::task_claim_pending_tx(
-        &mut tx,
-        &previous_id,
-        now_ms(),
-        &closure.refs,
-        false,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    // Inject an admission veto while keeping the report unchanged: the driver must fail before preparation commits.
-    mark_context_stale(&boot, &previous_id).await;
-    let spawned = Arc::new(AtomicUsize::new(0));
-    let (runtime, scheduler) = build_scheduler(
-        &boot,
-        vec![context_checked_terminal_adapter(&boot, spawned.clone())],
-    );
-    let previous = boot.repo.task_get(&previous_id).await.unwrap().unwrap();
-    let (kind, payload) = build_worker_payload(&previous).unwrap();
-    runtime
-        .submit(
-            kind,
-            OperationKey {
-                operation_key: new_id(),
-                idempotency_key: Some(previous_id.clone()),
-                payload_hash: stable_payload_hash(&payload).unwrap(),
-            },
-            payload,
-        )
-        .await
-        .unwrap();
-    let plan = runtime.recover_on_boot().await.unwrap();
-    runtime.apply_recovery(plan).await.unwrap();
-    scheduler.sweep_all().await;
-    let operation = runtime
-        .find_by_kind_and_idempotency("terminal-worker", &previous_id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(operation.phase.tag(), PhaseTag::Failed);
-    assert_eq!(
-        operation.phase_detail.as_ref().unwrap()["from_phase"],
-        "pending"
-    );
-    assert_eq!(operation.target_type, "track");
-    assert_eq!(operation.target_id.as_deref(), Some(boot.track_id.as_str()));
-    assert!(operation.tx_output.is_none() && operation.spawn_artifacts.is_none());
-    assert_eq!(spawned.load(Ordering::SeqCst), 0);
-    assert_eq!(
-        boot.repo
-            .task_get(&previous_id)
-            .await
-            .unwrap()
-            .unwrap()
-            .status,
-        TaskStatus::Failed
-    );
-    let receipt = user_recovery(
-        &boot,
-        "prepare-refusal",
-        &previous_id,
-        "prepare-refusal-retry",
-    )
-    .await
-    .unwrap();
-    scheduler.schedule_track(boot.track_id.clone()).await;
-    let replacement = boot
-        .repo
-        .task_get(&receipt.attempt_id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(replacement.status, TaskStatus::Running);
-    assert_eq!(spawned.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        boot.repo
-            .task_get(&previous_id)
-            .await
-            .unwrap()
-            .unwrap()
-            .status,
-        TaskStatus::Failed
-    );
-}
-
-#[tokio::test]
-async fn task_recovery_refuses_live_verifier_descendant_after_gate_exit() {
-    let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
-    let temp = tempfile::tempdir().unwrap();
-    struct StopWriter(PathBuf);
-    impl Drop for StopWriter {
-        fn drop(&mut self) {
-            let _ = std::fs::write(self.0.join("stop"), "stop");
-        }
-    }
-    let _stop = StopWriter(temp.path().to_path_buf());
-    std::fs::write(
-        temp.path().join("writer.sh"),
-        r#"
-i=0
-printf ready > "$1/ready"
-while [ -d "$1" ] && [ ! -e "$1/stop" ] && [ "$i" -lt 1500 ]; do
-    if [ -e "$1/probe" ]; then printf after-gate > "$1/written"; fi
-    i=$((i+1)); sleep 0.02
-done
-printf stopped > "$1/stopped"
-"#,
-    )
-    .unwrap();
-    let boot = boot().await;
-    let mut task = plan_task(&boot.track_id, "gate-descendant", TaskKind::Terminal, &[]);
-    task.gate_json = Some(json!({"cwd":temp.path(), "steps":[{"name":"detached-writer", "cmd":"task_root=$(pwd -P); setsid /bin/sh ./writer.sh \"$task_root\" & while [ ! -s ./ready ]; do sleep 0.02; done; exit 7"}]}).to_string());
-    let task_id = task.id.clone();
-    seed_projected_task(&boot, task).await;
-    let monitor =
-        TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
-    let closure = monitor
-        .resolve_task_closure(boot.track_id.as_str(), "gate-descendant")
-        .await
-        .unwrap();
-    let pool = boot.repo.sqlite_pool().unwrap();
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
-        .await
-        .unwrap();
-    calm_server::db::sqlite::task_claim_pending_tx(
-        &mut tx,
-        &task_id,
-        now_ms(),
-        &closure.refs,
-        false,
-    )
-    .await
-    .unwrap();
-    calm_server::db::sqlite::task_report_success_from_worker_tx(
-        &mut tx,
-        &task_id,
-        boot.track_id.as_str(),
-        calm_server::db::sqlite::TaskReporter::Kernel,
-        now_ms(),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let (_runtime, scheduler) = build_scheduler(
-        &boot,
-        vec![Arc::new(TaskVerifyAdapter::new(temp.path().join("logs")))],
-    );
-    scheduler.schedule_track(boot.track_id.clone()).await;
-    let row = wait_for_terminal_row(&boot, "gate-descendant", 10).await;
-    assert_eq!(row.status, TaskStatus::Failed);
-    assert_eq!(row.status_detail.as_deref(), Some("gate-red"));
-    assert!(
-        row.worker_card_id.is_none(),
-        "this witness isolates verifier effects from worker-card evidence"
-    );
-    assert_eq!(row.gate_attempt, 1);
-    std::fs::write(temp.path().join("probe"), "write after gate exit").unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !temp.path().join("written").exists() {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("detached verifier child writes after persisted gate verdict");
-    let result = user_recovery(
-        &boot,
-        "gate-descendant",
-        &task_id,
-        "gate-descendant-recovery",
-    )
-    .await;
-    std::fs::write(temp.path().join("stop"), "stop").unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !temp.path().join("stopped").exists() {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("owned verifier writer stops before assertion");
-    let error =
-        result.expect_err("normal gate exit cannot authorize recovery without a descendant fence");
-    // Verification effects with no worker card: the reason says so instead of claiming a worker was prepared.
-    assert!(
-        matches!(&error, calm_server::error::CalmError::Conflict(message)
-            if message.contains("verification effects were recorded for this key with no worker stop proof")),
-        "{error:?}"
-    );
 }

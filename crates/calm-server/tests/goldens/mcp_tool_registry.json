@@ -109,7 +109,7 @@
   },
   {
     "name": "calm.plan.cancel",
-    "description_sha256": "5ded012f817ef02107a672ee3ced83b30906f7fb61df0de094c5f72b98cbf560",
+    "description_sha256": "8eb8c2c11056c05ed1bbd83d624716d198dfd57d22ad93257fea56d5dc28bfa9",
     "input_schema": {
       "properties": {
         "key": {
@@ -139,7 +139,7 @@
   },
   {
     "name": "calm.plan.list",
-    "description_sha256": "9a0842d6275c4bdaec30655d353a24556a23699960c42a17876f8bbb5d7ba532",
+    "description_sha256": "0c01573fa030f8cab53a14e2b67ddfa5786fa8f1e76551551c8bd5c9057cb824",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -910,67 +910,6 @@
     },
     "visible_to_roles": [
       "worker"
-    ]
-  },
-  {
-    "name": "calm.task.dispatch",
-    "description_sha256": "36ba657896de59ce450d2523e9df6ce33b5b7137094a932cd444398c82ac3f79",
-    "input_schema": {
-      "additionalProperties": false,
-      "properties": {
-        "acceptance": {
-          "minLength": 1,
-          "type": "string"
-        },
-        "executor": {
-          "enum": [
-            "codex"
-          ],
-          "type": "string"
-        },
-        "goal": {
-          "minLength": 1,
-          "type": "string"
-        },
-        "name": {
-          "description": "Nonempty after trim, at most 200 UTF-8 bytes, no control characters; immutable Track-local Dispatch identity.",
-          "minLength": 1,
-          "type": "string"
-        },
-        "plugin_tools": {
-          "description": "plugin.<id>_<tool> names delegated to the Worker through platform MCP; the Codex-sanitized spelling from your tool list ([^A-Za-z0-9_] shown as _) is accepted and resolved to the registry name. Omitted means no plugin grants. Frozen for replay and recovery; current Track scope and plugin availability still apply. Ordinary tools only, no ForgeAction tools or wildcards.",
-          "items": {
-            "maxLength": 256,
-            "minLength": 1,
-            "type": "string"
-          },
-          "maxItems": 32,
-          "type": "array",
-          "uniqueItems": true
-        },
-        "workspace": {
-          "enum": [
-            "empty"
-          ],
-          "type": "string"
-        }
-      },
-      "required": [
-        "name",
-        "goal",
-        "acceptance",
-        "executor",
-        "workspace"
-      ],
-      "type": "object"
-    },
-    "annotations": {
-      "destructiveHint": false,
-      "openWorldHint": false,
-      "readOnlyHint": false
-    },
-    "visible_to_roles": [
-      "planner"
     ]
   },
   {

@@ -25,7 +25,6 @@ fn expected_planner_toolset() -> Vec<&'static str> {
         "calm.review.round",
         "calm.source.capture",
         "calm.source.list",
-        "calm.task.dispatch",
         "calm.task.verdict",
         "calm.terminal.control",
         "calm.terminal.input",
@@ -210,8 +209,8 @@ async fn tools_list_for_shared_daemon_without_thread_returns_role_union() {
 
     let names = tool_names_from_response(&resp);
     assert!(
-        names.contains(&"calm.task.dispatch".to_string()),
-        "daemon-trust tools/list without threadId must advertise Planner task.dispatch, got: {names:?}"
+        names.contains(&"calm.task.verdict".to_string()),
+        "daemon-trust tools/list without threadId must advertise Planner task.verdict, got: {names:?}"
     );
     assert!(
         !names.contains(&"calm.plan.upsert".to_string()),

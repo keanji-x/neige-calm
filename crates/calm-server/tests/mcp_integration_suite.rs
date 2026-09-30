@@ -62,25 +62,11 @@ mod task_projection_acceptance;
 #[path = "cases/task_recovery.rs"]
 mod task_recovery;
 
-#[path = "cases/task_recovery_preparation.rs"]
-mod task_recovery_preparation;
-
 #[path = "cases/task_recovery_reads.rs"]
 mod task_recovery_reads;
 
 #[path = "cases/planner_result_loop.rs"]
 mod planner_result_loop;
-
-#[path = "cases/isolated_codex_selection.rs"]
-mod isolated_codex_selection;
-
-#[path = "cases/isolated_codex_retry.rs"]
-mod isolated_codex_retry;
-#[path = "cases/isolated_codex_smoke.rs"]
-mod isolated_codex_smoke;
-
-#[path = "cases/isolated_activity.rs"]
-mod isolated_activity;
 
 #[path = "cases/legacy_4140_rows.rs"]
 mod legacy_4140_rows;
@@ -99,12 +85,3 @@ mod track_publish;
 mod track_worker_cwd;
 #[path = "cases/track_worker_cwd_ends.rs"]
 mod track_worker_cwd_ends;
-
-#[path = "cases/mcp_task_dispatch.rs"]
-mod mcp_task_dispatch;
-
-#[path = "cases/mcp_task_dispatch_regressions.rs"]
-mod mcp_task_dispatch_regressions;
-
-#[path = "cases/isolated_plugin_proxy.rs"]
-mod isolated_plugin_proxy;

@@ -9,7 +9,7 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
     SqlxRepo, begin_immediate_tx, card_create_with_id_tx, overlay_upsert_tx,
     session_start_runtime_tx, task_claim_pending_tx, task_complete_from_worker_tx,
-    task_fail_from_worker_tx, task_mark_running_tx, task_recovery_allocate_tx,
+    task_fail_from_worker_tx, task_mark_running_tx,
 };
 use calm_server::db::write_with_event_typed;
 use calm_server::event::{
@@ -37,7 +37,7 @@ use calm_server::track_activity::{ActivityPayload, Recompute, TrackActivityProje
 use calm_server::track_area_cache::TrackAreaCache;
 use calm_server::track_report::{persist_report, resolve_report_for_track, tasks_rebuild_tx};
 use calm_types::report_blocks::render_fence;
-use calm_types::task_recovery::{TASK_IN_TRACK_ROUTE, TaskRecoveryConstraint, TaskRecoveryRequest};
+use calm_types::task_recovery::{TASK_IN_TRACK_ROUTE, TaskAttemptOrigin, TaskRecoveryConstraint};
 use calm_types::track_report::TrackReportPayload;
 use calm_types::worker::WorkerSessionId;
 use serde_json::{Value, json};
@@ -407,38 +407,42 @@ impl Fx {
         assert_eq!(n, 1, "fail {key}");
     }
 
-    /// A new attempt for a failed key: recovery allocation + projection rebuild. Returns the new attempt id.
+    /// A second attempt for a failed key, as a released recovery allocation (4140 keeps one; no code
+    /// writes one any more) + projection rebuild. Returns the new attempt id.
     pub(crate) async fn recover(
         &self,
         track_id: &str,
         key: &str,
         previous_attempt_id: &str,
     ) -> String {
-        let request = TaskRecoveryRequest {
-            expected_attempt_id: previous_attempt_id.to_string(),
+        let attempt_id = format!("{previous_attempt_id}:2");
+        let origin = TaskAttemptOrigin::Recovery {
+            previous_attempt_id: previous_attempt_id.to_string(),
             idempotency_key: format!("recover-{key}"),
+            request_fingerprint: "fixture-fingerprint".into(),
             reason: "fixture recovery".into(),
-        };
-        let constraint = TaskRecoveryConstraint::V1 {
-            refs: self.closure(track_id, key).await,
-            spawn: TASK_IN_TRACK_ROUTE.into(),
-            declared_by: "user".into(),
+            actor: ActorId::User,
+            constraint: TaskRecoveryConstraint::V1 {
+                refs: self.closure(track_id, key).await,
+                spawn: TASK_IN_TRACK_ROUTE.into(),
+                declared_by: "user".into(),
+            },
         };
         let mut tx = begin_immediate_tx(&self.pool).await.unwrap();
-        let receipt = task_recovery_allocate_tx(
-            &mut tx,
-            track_id,
-            key,
-            &request,
-            "fixture-fingerprint",
-            &constraint,
-            &ActorId::User,
+        sqlx::query(
+            "INSERT INTO task_attempt_allocations \
+             (attempt_id,track_id,key,generation,origin_json,created_at_ms) VALUES (?1,?2,?3,2,?4,0)",
         )
+        .bind(&attempt_id)
+        .bind(track_id)
+        .bind(key)
+        .bind(serde_json::to_string(&origin).unwrap())
+        .execute(&mut *tx)
         .await
         .unwrap();
         tasks_rebuild_tx(&mut tx, track_id).await.unwrap();
         tx.commit().await.unwrap();
-        receipt.attempt_id
+        attempt_id
     }
 
     pub(crate) async fn task_status(

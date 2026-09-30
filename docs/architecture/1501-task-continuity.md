@@ -4,6 +4,13 @@ Status: design in progress for #1501. This document does not claim that the
 behavior below is implemented. Implementation and validation status are recorded
 in the delivery ledger at the end. Baseline: `4360896b`.
 
+> **#1893 S4 (2026-10-01)**: the isolated-codex-v1 path is deleted with every recovery: the
+> isolated executor, `calm.task.dispatch`, the User independent-task start, User task recovery
+> (REST `recover`, FE "Recover task"), isolated plugin grants, the task report and artifact routes,
+> and `task.execution_settled`. A failed task stays failed; another round is a new task key.
+> `GET /attempts` still reads the history, including released recovery allocations. Passages below
+> that describe isolated execution or any recovery are history.
+>
 > **#1893 S3 (2026-09-30)**: Planner recovery is deleted: `calm.plan.recover`, the Codex `Recover`
 > tool, the recovery briefing and `calm.plan.list` recovery guidance. Only the User recovers a
 > task. Passages below that grant the Planner a recovery are history.

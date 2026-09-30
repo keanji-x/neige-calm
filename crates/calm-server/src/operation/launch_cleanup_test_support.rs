@@ -112,13 +112,55 @@ impl Drop for AckProxy {
     }
 }
 
-pub(crate) async fn install_commit_fault(pool: &sqlx::SqlitePool) {
-    sqlx::raw_sql(r#"
-        CREATE TABLE launch_commit_fault (operation_id TEXT REFERENCES operations(id) DEFERRABLE INITIALLY DEFERRED);
-        CREATE TRIGGER fail_launch_commit AFTER UPDATE OF tx_output_json ON operations
-        WHEN json_extract(NEW.tx_output_json, '$.data.launch_admission') IS NOT NULL
-        BEGIN INSERT INTO launch_commit_fault VALUES('missing-launch-operation'); END;
-    "#).execute(pool).await.unwrap();
+/// A declared, claimed initial execution, written through the production REST block door.
+pub(crate) async fn claimed_task(
+    repo: std::sync::Arc<dyn crate::db::prelude::Repo>,
+    events: crate::event::EventBus,
+    write: crate::state::WriteContext,
+    track_id: &str,
+    declaration: serde_json::Value,
+) -> crate::model::Task {
+    use crate::db::sqlite::{begin_immediate_tx, task_claim_pending_tx};
+    use crate::track_report::{ReportDocOp, ReportEditTarget, TrackReportPayload};
+    repo.card_create(crate::model::NewCard {
+        track_id: track_id.into(),
+        title: None,
+        kind: "track-report".into(),
+        sort: None,
+        payload: serde_json::to_value(TrackReportPayload::initial()).unwrap(),
+    })
+    .await
+    .unwrap();
+    let target = ReportEditTarget::resolve(repo.as_ref(), track_id)
+        .await
+        .unwrap();
+    crate::track_report::write::rest_user_block_op(
+        repo.as_ref(),
+        &events,
+        &write,
+        target,
+        ReportDocOp::UpsertBlock {
+            id: None,
+            kind: "task".into(),
+            content: calm_types::report_blocks::render_fence("task", &declaration),
+            if_rev: None,
+            if_doc_rev: Some(0),
+            position: None,
+        },
+    )
+    .await
+    .unwrap();
+    let key = declaration["key"].as_str().unwrap();
+    let pending = repo.task_current_get(track_id, key).await.unwrap().unwrap();
+    let monitor = crate::task_context::TaskContextMonitor::new(repo.clone(), events, write);
+    let closure = monitor.resolve_task_closure(track_id, key).await.unwrap();
+    let pool = repo.sqlite_pool().unwrap();
+    let mut tx = begin_immediate_tx(&pool).await.unwrap();
+    task_claim_pending_tx(&mut tx, &pending.id, 1, &closure.refs, false)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    repo.task_get(&pending.id).await.unwrap().unwrap()
 }
 
 pub(crate) async fn spawn_sibling(sock: &Path, cwd: &Path) -> String {

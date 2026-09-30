@@ -245,32 +245,6 @@ async fn assert_same_refusal(boot: &CardBoot, argv: &[&str], tool: &str, args: V
     );
 }
 
-/// Bind the boot Worker to a running isolated attempt with no plugin grants, as the spawn journal would.
-async fn bind_isolated_attempt(boot: &CardBoot) {
-    let pool = boot.repo.sqlite_pool().unwrap();
-    let (track, card, session) = (boot.track_id.as_str(), &boot.card_id, &boot.session_id);
-    let context = json!({"neige_execution":{"version":"isolated-codex-v1","workspace":"empty","plugin_tools":[]}});
-    sqlx::query(concat!(
-        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,",
-        "created_at_ms,updated_at_ms) VALUES('iso-cli',?1,'iso-cli','codex','read',?2,'running',?3,1,1)"
-    ))
-        .bind(track).bind(context.to_string()).bind(card).execute(&pool).await.unwrap();
-    let request = json!({"version":"isolated-worker-v1","actor":calm_server::ids::ActorId::KernelDispatcher,"track_id":track,"task_id":"iso-cli","idempotency_key":"iso-cli"});
-    let output = json!({"result":{},"data":{"isolated_execution":{"version":"isolated-run-v1","track_id":track,"native_token":"fixture-private-token","admission":"open","provider":{"state":"unprepared"},
-        "request":{"identity":{"run_id":"iso-cli-op","attempt_id":"iso-cli","card_id":card,"session_id":session},"workspace":"/workspace","developer_instructions":"fixture"}}},"target_type":"card","target_id":card});
-    sqlx::query(concat!(
-        "INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,target_type,target_id,",
-        "target_json,payload_json,phase,tx_output_json,created_at_ms,updated_at_ms) VALUES('iso-cli-op',",
-        "'iso-cli-op','codex-isolated-worker','iso-cli','fixture','card',?1,'{}',?2,'spawn_started',?3,1,1)"
-    ))
-        .bind(card).bind(request.to_string()).bind(output.to_string()).execute(&pool).await.unwrap();
-    sqlx::query("UPDATE worker_sessions SET spawn_op_id='iso-cli-op' WHERE id=?1")
-        .bind(session)
-        .execute(&pool)
-        .await
-        .unwrap();
-}
-
 #[tokio::test]
 async fn cli_authorization_equals_direct_call() {
     let worker = boot_with_role(CardRole::Worker).await;
@@ -288,19 +262,6 @@ async fn cli_authorization_equals_direct_call() {
         &["task-completed", "--idempotency-key", "k"],
         "calm.task.complete",
         json!({ "idempotency_key": "k" }),
-    )
-    .await;
-
-    // An isolated Worker's native allowlist has no track views: `neige cat` is refused like the direct call.
-    let isolated = boot_with_role(CardRole::Worker).await;
-    let (_, _, exit) = cli(&isolated, &["cat", "track.json"]).await;
-    assert_eq!(exit, 0, "the unbound Worker reads the view");
-    bind_isolated_attempt(&isolated).await;
-    assert_same_refusal(
-        &isolated,
-        &["cat", "track.json"],
-        "calm.track.cat",
-        json!({ "path": "track.json" }),
     )
     .await;
 }

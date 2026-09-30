@@ -1,5 +1,7 @@
 # 工作状态与通知的统一表达：track 级 activity 投影（#1722）— 设计 v8 · 评审收敛（2026-09-18）
 
+> **#1893 S4（2026-10-01）**：isolated executor 已删除，activity 折叠不再有 isolated 分支（S0 的 `isolated` 列与 (iii) 判据随之删除）。下文涉及 isolated 的段落是历史记录。
+
 基线：`origin/main` = `b2341b871`（工作树 `1722-activity-design`）。所有 `file:line` 都在该基线上读取核实（[实测]）；未核实的写「未核实」。v0 是 issue #1722 正文；owner 已定的三条决定不再讨论：(a) `Stop` ≠ attention；(b) 琥珀 attention / 红 failed / 蓝 unread / 灰 spinner，rail §7.5 改写；(c) 新设备基线 = 全部已读。v0 与代码不一致处在 §2 逐条登记为 **M-n**，设计按代码走，不改写 v0。v2 折入第一轮双通道评审（存档 `docs/_1722-design-review-subagent-v1.md`、`docs/_1722-design-review-codex-v1.md`）；v3 折入第二轮（存档 `docs/_1722-design-review-subagent-v2.md`、`docs/_1722-design-review-codex-v2.md`）与编排方在 4140 生产库上的一次只读测量（SPIKE-1，F2.29）；v4 折入第三轮（存档 `docs/_1722-design-review-subagent-v3.md`、`docs/_1722-design-review-codex-v3.md`）；v5 折入第四轮（存档 `docs/_1722-design-review-subagent-v4.md`、`docs/_1722-design-review-codex-v4.md`）；v6 折入第五轮（存档 `docs/_1722-design-review-subagent-v5.md`、`docs/_1722-design-review-codex-v5.md`）；v7 折入第六轮（存档 `docs/_1722-design-review-subagent-v6.md`、`docs/_1722-design-review-codex-v6.md`；通道 B 对 v6 APPROVE、零发现）；**v8 折入第七轮**（存档 `docs/_1722-design-review-subagent-v7.md`、`docs/_1722-design-review-codex-v7.md`）：**两通道对 v7 都 APPROVE**（A：0 BLOCKER / 0 MAJOR / 5 MINOR；B 的 delta 评审零发现），五条 MINOR 按设计循环规则「APPROVE 级的非阻塞 nit 由小 agent 折入、不再开一轮」折入本版，评审到此**收敛**。每条发现的处置在 §11（七轮，自包含），被驳回或订正的附证据行，文档不为其改动。
 
 ## 1. 问题与证据

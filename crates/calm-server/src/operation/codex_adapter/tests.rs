@@ -622,9 +622,6 @@ async fn codex_worker_prompt_includes_completion_task_id() {
 }
 
 #[cfg(test)]
-mod recovery_tests;
-
-#[cfg(test)]
 mod viewer_cleanup_tests;
 
 /// #1727 S4 slice 2 — the lease the codex worker's `prepare_tx` takes is a kernel-delivery

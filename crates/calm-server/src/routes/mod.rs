@@ -20,14 +20,12 @@ pub mod codex;
 pub mod codex_cards;
 pub mod conversations_shared;
 pub mod fs;
-pub mod isolated_tasks;
 pub mod models;
 pub mod overlays;
 pub mod planner_input;
 pub mod planner_model;
 pub mod plugins;
 pub mod settings;
-pub mod task_artifacts;
 pub mod task_recovery;
 pub mod terminal;
 pub mod terminal_cards;
@@ -68,8 +66,6 @@ pub fn protected_router() -> Router<AppState> {
         .merge(track_report_series::router())
         .merge(track_sources::router())
         .merge(task_recovery::router())
-        .merge(task_artifacts::router())
-        .merge(isolated_tasks::router())
         .merge(track_recipes::router())
         .merge(track_templates::router())
         .merge(cards::router())

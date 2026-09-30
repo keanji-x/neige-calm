@@ -666,24 +666,6 @@ async fn cancel_running_terminal_or_child_track_task_refused() {
 }
 
 #[tokio::test]
-async fn cancel_running_isolated_task_refused() {
-    let boot = boot().await;
-    declare_bound_task(&boot, "running").await;
-    exec_sql(
-        &boot,
-        &format!(
-            "INSERT INTO operations (id, operation_key, kind, idempotency_key, payload_hash, \
-             target_type, target_json, payload_json, phase, created_at_ms, updated_at_ms) \
-             VALUES ('op-iso', 'op-iso', 'codex-isolated-worker', '{}:a', 'h', 'card', '{{}}', \
-             '{{}}', 'pending', 1, 1)",
-            boot.track_id
-        ),
-    )
-    .await;
-    assert_cancel_refused(&boot, "running", "its own controller").await;
-}
-
-#[tokio::test]
 async fn cancel_running_task_without_worker_card_refused() {
     let boot = boot().await;
     declare_bound_task(&boot, "running").await;
@@ -856,9 +838,8 @@ async fn list_returns_plan_shape_without_gate_commands() {
     assert_eq!(b["worker_card_id"], Value::Null);
 }
 
-/// The exact field set of an ordinary (non-isolated) entry: a field only a deleted or isolated
-/// mechanism fills must not reach it (#1893 §3.2). The entry is a failed task whose recovery is
-/// refused, the one state that used to carry `recovery.guidance`.
+/// The exact field set of an entry: a field only a deleted mechanism filled must not reach it
+/// (#1893 §3.2). The entry is a failed task, the one state that used to carry `recovery`.
 #[tokio::test]
 async fn plan_list_ordinary_entry_has_exactly_the_kept_fields() {
     use calm_server::db::sqlite::{
@@ -899,18 +880,6 @@ async fn plan_list_ordinary_entry_has_exactly_the_kept_fields() {
         .expect("list ok");
     let entry = &out["tasks"][0];
     assert_eq!(entry["status"], "failed", "{out}");
-    assert_eq!(entry["recovery"]["allowed"], false, "{out}");
-    let recovery_fields: std::collections::BTreeSet<&str> = entry["recovery"]
-        .as_object()
-        .expect("recovery object")
-        .keys()
-        .map(String::as_str)
-        .collect();
-    assert_eq!(
-        recovery_fields,
-        std::collections::BTreeSet::from(["allowed", "code", "reason"]),
-        "{out}"
-    );
     let fields: std::collections::BTreeSet<&str> = entry
         .as_object()
         .expect("one entry")
@@ -920,7 +889,6 @@ async fn plan_list_ordinary_entry_has_exactly_the_kept_fields() {
     assert_eq!(
         fields,
         std::collections::BTreeSet::from([
-            "activity",
             "attempt_id",
             "blocking_reason",
             "candidate",
@@ -935,7 +903,6 @@ async fn plan_list_ordinary_entry_has_exactly_the_kept_fields() {
             "key",
             "kind",
             "priority",
-            "recovery",
             "status",
             "status_detail",
             "worker_card_id",

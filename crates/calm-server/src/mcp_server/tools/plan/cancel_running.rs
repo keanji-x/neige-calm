@@ -23,19 +23,17 @@ enum Refusal {
     Ended,
     Changed,
     Route,
-    Isolated,
     Unbound,
 }
 
 impl Refusal {
     #[cfg(test)]
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 6] = [
         Self::Dispatched,
         Self::Verifying,
         Self::Ended,
         Self::Changed,
         Self::Route,
-        Self::Isolated,
         Self::Unbound,
     ];
 
@@ -46,7 +44,6 @@ impl Refusal {
             Self::Ended => "ended",
             Self::Changed => "changed",
             Self::Route => "route",
-            Self::Isolated => "isolated",
             Self::Unbound => "unbound",
         }
     }
@@ -109,9 +106,6 @@ pub(super) async fn cancel_running_in_tx(
 ) -> Result<(u64, Vec<(ActorId, EventScope, Event)>), CalmError> {
     if !task_has_running_liveness_deadline(current) {
         return Err(refused_for(key, current, Refusal::Route));
-    }
-    if crate::isolated_codex::lookup::is_isolated_task_tx(tx, &current.id).await? {
-        return Err(refused_for(key, current, Refusal::Isolated));
     }
     let Some(card_id) = current.worker_card_id.as_deref() else {
         return Err(refused_for(key, current, Refusal::Unbound));

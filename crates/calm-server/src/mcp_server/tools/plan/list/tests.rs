@@ -21,9 +21,9 @@ fn summary_bounds_long_diagnostics_and_omits_private_evidence() {
 #[test]
 fn summary_history_growth_is_omitted_and_bounded() {
     let mut source = json!({"key":"a","kind":"codex","attempt_id":"a-1","generation":1,"status":"done","blocking_reason":null,
-        "activity":{"coverage":"partial","collector_health":"unknown","recent":[{"detail":{"kind":"agent_message_recorded","summary":"bulky"},"row_id":1}]}});
+        "candidate":{"binding":"bound","workspace":{"path":"bulky"}}});
     let small = summary(&source);
-    source["activity"]["recent"][0]["detail"]["summary"] = json!("private".repeat(90));
+    source["candidate"]["workspace"]["path"] = json!("private".repeat(90));
     let large = summary(&source);
     assert_eq!(small, large);
     assert!(large.to_string().len() <= 12 * 1024);

@@ -1,7 +1,7 @@
-//! Public recovery reads retain logical identity and current blockers.
+//! Public task-history reads retain logical identity and current blockers.
 use crate::mcp_track_report::{boot, call_tool, planner_identity, upsert_block};
 use crate::task_recovery::{
-    current, declaration, declare, finish, ordinary_codex_declaration, recover,
+    current, declaration, declare, finish, ordinary_codex_declaration,
     time_out_claimed_worker_holding_lease,
 };
 use calm_server::ids::ActorId;
@@ -68,8 +68,6 @@ async fn task_recovery_history_is_empty_before_initial_allocation() {
     assert!(view.as_object().unwrap().contains_key("current"));
     assert_eq!(view["current"], Value::Null);
     assert_eq!(view["attempts"], json!([]));
-    assert_eq!(view["recovery"]["allowed"], false);
-    assert_eq!(view["recovery"]["code"], "not_started");
     rest_attempts(&boot, "unknown", axum::http::StatusCode::NOT_FOUND).await;
     rest_attempts_for_track(
         &boot,
@@ -97,8 +95,6 @@ async fn task_recovery_list_keeps_absent_projection_with_ready_blocker() {
     let boot = boot().await;
     let (block, _) = declare(&boot, declaration("b", &[])).await;
     let b = current(&boot, "b").await;
-    finish(&boot, &b, false).await;
-    let receipt = recover(&boot, &b, "read-b").await;
     let mut withdrawn = declaration("b", &[]);
     withdrawn["ready"] = json!(false);
     upsert_block(
@@ -117,7 +113,7 @@ async fn task_recovery_list_keeps_absent_projection_with_ready_blocker() {
         .iter()
         .find(|entry| entry["key"] == "b")
         .expect("current allocation must remain visible without a pending row");
-    assert_eq!(entry["attempt_id"], receipt["attempt_id"]);
+    assert_eq!(entry["attempt_id"], b.id);
     assert_eq!(entry["status"], "awaiting_projection");
     assert!(entry["blocking_reason"].as_str().unwrap().contains("ready"));
     let summary = call_tool(
@@ -129,13 +125,7 @@ async fn task_recovery_list_keeps_absent_projection_with_ready_blocker() {
     .await
     .unwrap();
     let compact = &summary["tasks"][0];
-    for field in [
-        "attempt_id",
-        "generation",
-        "status",
-        "blocking_reason",
-        "recovery",
-    ] {
+    for field in ["attempt_id", "generation", "status", "blocking_reason"] {
         assert_eq!(compact[field], entry[field]);
     }
     assert_eq!(compact["task_projection"], "unavailable");
@@ -156,18 +146,13 @@ async fn task_recovery_list_keeps_absent_projection_with_ready_blocker() {
     }
 
     let view = serde_json::to_value(
-        task_recovery_view(
-            boot.repo.as_ref(),
-            boot.track_id.as_str(),
-            "b",
-            ActorId::User,
-        )
-        .await
-        .unwrap(),
+        task_recovery_view(boot.repo.as_ref(), boot.track_id.as_str(), "b")
+            .await
+            .unwrap(),
     )
     .unwrap();
     assert_eq!(view["current"]["blocking_reason"], entry["blocking_reason"]);
-    assert!(view["attempts"][0]["blocking_reason"].is_null());
+    assert_eq!(view["attempts"].as_array().unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -194,14 +179,9 @@ async fn task_recovery_history_retains_current_dependency_blocker() {
         .clone();
     assert!(reason.as_str().unwrap().contains("`b`"));
     let view = serde_json::to_value(
-        task_recovery_view(
-            boot.repo.as_ref(),
-            boot.track_id.as_str(),
-            "c",
-            ActorId::User,
-        )
-        .await
-        .unwrap(),
+        task_recovery_view(boot.repo.as_ref(), boot.track_id.as_str(), "c")
+            .await
+            .unwrap(),
     )
     .unwrap();
     assert_eq!(view["current"]["blocking_reason"], reason);
@@ -210,7 +190,7 @@ async fn task_recovery_history_retains_current_dependency_blocker() {
 }
 
 #[tokio::test]
-async fn task_recovery_deleted_frozen_reference_denies_only_affected_capability() {
+async fn task_recovery_history_survives_a_deleted_frozen_reference() {
     let boot = boot().await;
     let target = boot
         .repo
@@ -267,33 +247,20 @@ async fn task_recovery_deleted_frozen_reference_denies_only_affected_capability(
     let b = current(&boot, "b").await;
     finish(&boot, &b, false).await;
     boot.repo.track_delete(target.id.as_str()).await.unwrap();
-    let view = task_recovery_view(
-        boot.repo.as_ref(),
-        boot.track_id.as_str(),
-        "b",
-        ActorId::User,
-    )
-    .await
-    .expect("missing frozen input is a task capability, not a missing requested task");
-    assert!(!view.recovery.allowed);
-    assert!(view.recovery.reason.contains("missing"));
+    let view = task_recovery_view(boot.repo.as_ref(), boot.track_id.as_str(), "b")
+        .await
+        .expect("a missing frozen input does not hide the requested task");
     assert_eq!(view.attempts.len(), 1);
     let rest = rest_attempts(&boot, "b", axum::http::StatusCode::OK).await;
     assert_eq!(rest["current"]["attempt_id"], b.id);
-    assert_eq!(rest["recovery"]["allowed"], false);
     rest_attempts(&boot, "absent", axum::http::StatusCode::NOT_FOUND).await;
     let list = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
         .await
         .unwrap();
     assert_eq!(list["tasks"].as_array().unwrap().len(), 2);
-    let missing = task_recovery_view(
-        boot.repo.as_ref(),
-        boot.track_id.as_str(),
-        "absent",
-        ActorId::User,
-    )
-    .await
-    .unwrap_err();
+    let missing = task_recovery_view(boot.repo.as_ref(), boot.track_id.as_str(), "absent")
+        .await
+        .unwrap_err();
     assert!(matches!(
         missing,
         calm_server::error::CalmError::NotFound(_)
@@ -376,14 +343,9 @@ async fn task_recovery_blocker_names_a_busy_track_like_report_read() {
         .execute(&pool)
         .await
         .unwrap();
-    let view = task_recovery_view(
-        boot.repo.as_ref(),
-        boot.track_id.as_str(),
-        "b",
-        ActorId::User,
-    )
-    .await
-    .unwrap();
+    let view = task_recovery_view(boot.repo.as_ref(), boot.track_id.as_str(), "b")
+        .await
+        .unwrap();
     let report = call_tool(
         &boot,
         "calm.report.read",
@@ -588,7 +550,7 @@ async fn task_recovery_list_names_the_worktree_base_sha_from_the_lease_row() {
     time_out_claimed_worker_holding_lease(&boot, "b", &lease_id).await;
     for args in [json!({}), json!({"detail":"summary","key":"b"})] {
         let entry = list_entry(&boot, args.clone()).await;
-        assert_eq!(entry["recovery"]["allowed"], false, "{args}: {entry}");
+        assert!(entry.get("recovery").is_none(), "{args}: {entry}");
         assert_eq!(
             entry["worktree"]["base_sha"], base_sha,
             "{args}: the released lease still names its base: {entry}"

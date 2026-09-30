@@ -38,6 +38,7 @@ fn document_contains_every_annotated_path() {
         "/api/plugins/{id}/rotate-token",
         "/api/plugins/{id}/resources/{view_id}",
         "/api/plugins/{id}/tool-call",
+        "/api/tracks/{id}/tasks/{key}/attempts",
     ];
     for path in expected_paths {
         assert!(
@@ -77,6 +78,23 @@ fn document_does_not_advertise_retired_area_conversation_routes() {
     for path in [
         "/api/areas/{area_id}/conversations",
         "/api/areas/{area_id}/chat-track/ensure",
+    ] {
+        assert!(
+            !doc.paths.paths.contains_key(path),
+            "retired path `{path}` is still advertised"
+        );
+    }
+}
+
+/// #1893 S4: the isolated-codex-v1 routes are deleted; `/attempts` stays for the task history.
+#[test]
+fn document_does_not_advertise_retired_isolated_routes() {
+    let doc = ApiDoc::openapi();
+    for path in [
+        "/api/tracks/{id}/isolated-tasks",
+        "/api/tracks/{id}/tasks/{key}/attempts/{attempt_id}/report",
+        "/api/tracks/{id}/tasks/{key}/attempts/{attempt_id}/artifacts/{index}",
+        "/api/tracks/{id}/tasks/{key}/recover",
     ] {
         assert!(
             !doc.paths.paths.contains_key(path),

@@ -537,7 +537,6 @@ pub(crate) mod claude_code_env;
 pub mod claude_planner;
 pub mod codex_appserver;
 pub mod config;
-pub mod dedicated_codex;
 /// Area folder claim rules, re-exported at the old crate path.
 pub use calm_truth::area_folder_claim;
 pub mod conversation_keys;
@@ -949,8 +948,6 @@ mod boot_reconcile_retry_tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }
-
-pub mod isolated_codex;
 
 /// Git candidate binding (#1727 S4): delivery rows, candidate rows and the read-surface derivations.
 pub(crate) mod git_candidate;

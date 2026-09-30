@@ -62,7 +62,6 @@ fn supervisor_sock_for_provider_registry(daemon: &DaemonClient) -> PathBuf {
 pub(crate) const PLANNER_CATCH_UP_KINDS: &[&str] = &[
     "task.completed",
     "task.failed",
-    "task.execution_settled",
     "task.git_delivery_settled",
     "task.gate_result",
     "track.report_edited",
@@ -117,9 +116,6 @@ pub(crate) fn event_warrants_planner_push_with_role(
         // Kernel-only at the role gate (no self-push loop); for a gated task this wake
         // replaces the suppressed worker self-report.
         Event::TaskGateResult { .. } => true,
-        Event::TaskExecutionSettled { .. } => {
-            matches!(actor, ActorId::Kernel | ActorId::KernelDispatcher)
-        }
         // #1727 S4: pure on the event — the wake disposition was decided once in the settlement
         // tx; reading the tasks row here would let live push and boot replay disagree.
         Event::TaskGitDeliverySettled { wake_reason, .. } => {
@@ -351,13 +347,6 @@ fn dispatcher_operation_runtime(
     let mcp_socket_path = mcp_server
         .as_ref()
         .map(|s| s.shim_config.socket_path.clone());
-    let isolated_codex_adapter =
-        Arc::new(crate::isolated_codex::adapter::IsolatedCodexAdapter::new(
-            None,
-            route_repo.clone(),
-            mcp_socket_path.clone(),
-            write.clone(),
-        ));
     let codex_worker_adapter = Arc::new(CodexWorkerAdapter::new(
         route_repo.clone(),
         codex.clone(),
@@ -430,7 +419,6 @@ fn dispatcher_operation_runtime(
             terminal_worker_adapter,
             codex_adapter,
             codex_worker_adapter,
-            isolated_codex_adapter,
             claude_adapter,
             claude_worker_adapter,
             claude_restart_adapter,
@@ -547,19 +535,6 @@ impl Dispatcher {
     #[cfg(any(test, feature = "fixtures"))]
     pub fn abort_event_listener_for_test(&self) {
         self.handle.abort();
-    }
-
-    /// Called only while assembling a fixture, before work is submitted.
-    #[cfg(feature = "fixtures")]
-    pub(crate) fn stop_background_for_fixture_rebuild(&self) {
-        self.handle.abort();
-        self.reconcile_handle.abort();
-        if let Some(handle) = &self.reaper_handle {
-            handle.abort();
-        }
-        if let Some(handle) = &self.liveness_feeder_handle {
-            handle.abort();
-        }
     }
 
     #[cfg(any(test, feature = "fixtures"))]
@@ -991,8 +966,7 @@ impl Inner {
             Event::TaskCompleted { .. }
             | Event::TaskFailed { .. }
             | Event::TaskGateResult { .. }
-            | Event::TaskGitDeliverySettled { .. }
-            | Event::TaskExecutionSettled { .. } => {
+            | Event::TaskGitDeliverySettled { .. } => {
                 if task_event_pushes_planner(
                     self.repo.as_ref(),
                     &self.write,
@@ -1258,10 +1232,7 @@ impl Inner {
         if envelope_id <= cursor {
             return;
         }
-        if matches!(
-            event,
-            Event::TaskExecutionSettled { .. } | Event::TaskGitDeliverySettled { .. }
-        ) {
+        if matches!(event, Event::TaskGitDeliverySettled { .. }) {
             let preceding = match crate::harness::catch_up::observations_since(
                 self.repo.as_ref(),
                 &track_id,
@@ -1369,14 +1340,6 @@ pub(crate) async fn resolve_harness_observation(
 ) -> crate::error::Result<Option<HarnessObservation>> {
     if matches!(event, Event::TaskGitDeliverySettled { .. }) {
         return git_delivery_settled::observation(repo, track_id, event).await;
-    }
-    if let Event::TaskExecutionSettled {
-        task_id,
-        operation_id,
-    } = event
-        && !crate::isolated_codex::settled::relevant(repo, track_id, task_id, operation_id).await?
-    {
-        return Ok(None);
     }
     let task_key = if let Event::TaskGateResult {
         task_id,
@@ -1491,11 +1454,6 @@ pub(crate) fn harness_observation_from_event(
         } => Some(HarnessObservation::TaskFailed {
             idempotency_key: idempotency_key.clone(),
             error: reason.clone(),
-        }),
-        Event::TaskExecutionSettled { task_id, .. } => Some(HarnessObservation::SystemContext {
-            text: format!(
-                "Failed task execution {task_id} has stopped and its Operation has settled. Re-read calm.plan.list for the current attempt; retained files remain evidence."
-            ),
         }),
         // Gate log paths use the author key resolved from the execution row.
         Event::TaskGateResult {
@@ -1694,6 +1652,3 @@ mod git_delivery_settled;
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod recovery_tests;

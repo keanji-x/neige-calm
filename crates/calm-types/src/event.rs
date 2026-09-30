@@ -544,13 +544,6 @@ pub enum Event {
         result: DeliverySettlement,
         wake_reason: DeliveryWakeReason,
     },
-    /// Persisted after confirmed stop with a failed execution or a terminal Done Reviewer Operation.
-    #[serde(rename = "task.execution_settled")]
-    TaskExecutionSettled {
-        task_id: String,
-        operation_id: String,
-    },
-
     /// The task plan changed via an explicit plan tool or report-block projection; `changed_keys` is
     /// the sorted, deduplicated union of inserted, updated, and deleted rows.
     #[serde(rename = "plan.updated")]
@@ -995,9 +988,7 @@ impl Event {
                 entity_kind: Some("track".into()),
                 entity_id: Some(track_id.to_string()),
             },
-            Event::TaskDispatched { .. }
-            | Event::TaskExecutionSettled { .. }
-            | Event::TaskGitDeliverySettled { .. } => EventMetadata {
+            Event::TaskDispatched { .. } | Event::TaskGitDeliverySettled { .. } => EventMetadata {
                 kind_tag,
                 plugin_id: None,
                 entity_kind: None,
@@ -1096,7 +1087,6 @@ impl Event {
             Event::TaskFailed { .. } => "task.failed",
             Event::PlanUpdated { .. } => "plan.updated",
             Event::TaskDispatched { .. } => "task.dispatched",
-            Event::TaskExecutionSettled { .. } => "task.execution_settled",
             Event::TaskGitDeliverySettled { .. } => "task.git_delivery_settled",
             Event::TaskContextFrozen { .. } => "task.context_frozen",
             Event::TaskContextAdvanced { .. } => "task.context_advanced",
@@ -1243,7 +1233,6 @@ pub fn topics(ev: &Event) -> Vec<String> {
         | Event::TaskCompleted { .. }
         | Event::TaskFailed { .. }
         | Event::TaskDispatched { .. }
-        | Event::TaskExecutionSettled { .. }
         | Event::TaskGitDeliverySettled { .. }
         | Event::TaskContextFrozen { .. }
         | Event::TaskContextAdvanced { .. }

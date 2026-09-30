@@ -2691,15 +2691,6 @@ async fn candidate_view_is_total_over_task_status() {
         .unwrap();
     assert_eq!(current(&fx.boot, "done").await.status, TaskStatus::Done);
 
-    // An isolated declaration (no dependencies allowed; nothing schedules it: no listener, no poke).
-    declare(
-        &fx.boot,
-        json!({"key": "isolated", "kind": "codex", "goal": "isolated",
-            "declared_by": PLANNER_DECLARATION_AUTHOR, "ready": true, "no_gate_reason": "fixture",
-            "context": {"neige_execution": {"version": "isolated-codex-v1", "workspace": "empty"}}}),
-    )
-    .await;
-
     let list = call_tool(
         &fx.boot,
         "calm.plan.list",
@@ -2766,21 +2757,7 @@ async fn candidate_view_is_total_over_task_status() {
         "{done_entry}"
     );
 
-    let isolated = entry("isolated");
-    assert_eq!(
-        isolated["candidate"],
-        json!({"binding": "none", "reason": "isolated"}),
-        "{isolated}"
-    );
-
-    for key in [
-        "pending",
-        "running",
-        "spawn-failed",
-        "timed-out",
-        "done",
-        "isolated",
-    ] {
+    for key in ["pending", "running", "spawn-failed", "timed-out", "done"] {
         let candidate = &entry(key)["candidate"];
         assert_ne!(candidate["binding"], "unbound", "{key}: {candidate}");
         assert_ne!(

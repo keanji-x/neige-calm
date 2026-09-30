@@ -3,7 +3,6 @@
 //! task's current attempt (D8 first-match table). Inputs are rows; no Operation is consulted.
 
 use calm_types::git_candidate::DeliveryFailureCode;
-use calm_types::task_execution::IsolatedCodexSelection;
 use calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE;
 use serde::Serialize;
 
@@ -160,7 +159,6 @@ pub(crate) fn delivery_state(
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum NoBindingReason {
-    Isolated,
     Terminal,
     ChildTrack,
     NoLease,
@@ -234,16 +232,6 @@ pub(crate) struct BoundFacts {
     pub verification: VerificationView,
 }
 
-/// A task that declares isolated execution (`context.neige_execution` present, whatever it says:
-/// a present invalid selection is never legacy).
-fn declares_isolated(task: &Task) -> bool {
-    let context: serde_json::Value = serde_json::from_str(&task.context_json).unwrap_or_default();
-    match IsolatedCodexSelection::from_context(&context) {
-        Ok(selection) => selection.is_some(),
-        Err(_) => true,
-    }
-}
-
 /// D8 first-match table. `facts` and `bound` accompany `lease`: a lease row implies a facts row
 /// (same table) and a kernel lease implies the caller derived the delivery and verification
 /// states; a caller that breaks either contract gets an `Err`, never a guessed binding.
@@ -253,11 +241,6 @@ pub(crate) fn candidate_binding(
     facts: Option<&WorkerWorktreeFacts>,
     bound: Option<BoundFacts>,
 ) -> Result<CandidateBinding> {
-    if declares_isolated(task) {
-        return Ok(CandidateBinding::None {
-            reason: NoBindingReason::Isolated,
-        });
-    }
     if task.kind == TaskKind::Terminal {
         return Ok(CandidateBinding::None {
             reason: NoBindingReason::Terminal,

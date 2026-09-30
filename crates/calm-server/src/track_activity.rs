@@ -133,12 +133,11 @@ impl Fold {
     }
 }
 
-/// A `claude` / `codex` / `terminal` session that is not a harness row, not the isolated executor,
-/// and was never bound to a task. Its `working` comes from PTY output alone; a task-bound card's
+/// A `claude` / `codex` / `terminal` session that is not a harness row and was never bound to a
+/// task. Its `working` comes from PTY output alone; a task-bound card's
 /// comes from the task clause alone.
 pub fn interactive_pty_card(ws: &SessionRow) -> bool {
     ws.mode.as_deref() != Some(calm_types::harness::HARNESS_MODE)
-        && !ws.isolated
         && !ws.task_bound
         && matches!(ws.provider.as_str(), "claude" | "codex" | "terminal")
 }
@@ -228,8 +227,6 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
                 working = true;
                 raise_working(&mut cards, &mut working_cards, &ws.card_id);
             }
-        } else if ws.provider == "codex" && ws.isolated {
-            // (iii) isolated executor — `working` only through W.
         } else if pty_backed && interactive_pty_card(ws) {
             // (ii) any PTY-backed card: working iff its PTY is open (the registry keeps the last
             // stamp after the reader's `Exited` arm, so the exit gate is the row) and it printed
@@ -242,7 +239,7 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
             }
         }
         // `failed` ⇔ `ws.state = 'failed'` (the exit writer's verdict on an ephemeral session, the
-        // reaper's on a harness / isolated one): a card verdict, not a notification. A signal-killed
+        // reaper's on a harness one): a card verdict, not a notification. A signal-killed
         // codex TUI leaves its resumable row `running` and is NOT failed. Unknown providers: nothing.
         if (harness || pty_backed)
             && ws.state == "failed"
@@ -568,7 +565,6 @@ impl TrackActivityProjector {
             Event::TaskDispatched { .. }
             | Event::TaskCompleted { .. }
             | Event::TaskFailed { .. }
-            | Event::TaskExecutionSettled { .. }
             | Event::TaskGateResult { .. } => env.scope.track_id().map(|t| t.as_str().to_string()),
             // A ratify request opens an ask and its resolution closes it.
             Event::RatifyRequested { track_id, .. } | Event::RatifyResolved { track_id, .. } => {

@@ -585,13 +585,13 @@ mod tests {
     /// The codex prompt must name **every** tool the Worker can see: advertising only one of `calm.task.complete` / `calm.task.fail` would leave a codex worker with no way to report the other outcome. The CLI prompt completes through `neige task-completed` and is exempt.
     #[test]
     fn worker_prompts_name_only_tools_the_worker_role_can_see() {
-        // `min_named` guards against an empty scanner only: the CLI prompt names exactly the two forbidden tools; the codex prompt adds the two visible completion tools.
+        // `min_named` guards against an empty scanner only: the CLI prompt names exactly the one forbidden tool; the codex prompt adds the two visible completion tools.
         for (label, template, must_name_all_visible, min_named) in [
             (
                 "CLI worker prompt",
                 WORKER_SYSTEM_PROMPT_PLACEHOLDER,
                 false,
-                2,
+                1,
             ),
             ("codex worker prompt", WORKER_CODEX_SYSTEM_PROMPT, true, 3),
         ] {
@@ -600,7 +600,7 @@ mod tests {
                 &render_system_prompt(template, "track-registry"),
                 calm_types::model::CardRole::Worker,
                 &[],
-                &["calm.task.dispatch", "calm.task.verdict"],
+                &["calm.task.verdict"],
                 must_name_all_visible,
                 min_named,
             );

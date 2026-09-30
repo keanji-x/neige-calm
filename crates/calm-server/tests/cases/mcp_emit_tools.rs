@@ -40,43 +40,6 @@ fn tools_call_frame_no_thread(id: i64, name: &str, args: serde_json::Value) -> s
 }
 
 #[tokio::test]
-async fn canonical_dispatch_rejects_legacy_arguments_without_emitting() {
-    let b = boot_with_role(CardRole::Planner).await;
-    let mut rx = b.events.subscribe();
-    let (mut rd, mut wr) = connect(&b.socket_path).await;
-    handshake(&mut rd, &mut wr, &b.raw_token).await;
-
-    send_frame(
-        &mut wr,
-        tools_call_frame(
-            10,
-            "calm.task.dispatch",
-            &b.thread_id,
-            json!({
-                "kind": "codex",
-                "idempotency_key": "dr-codex-1",
-                "goal": "build a thing",
-                "message": "dispatch codex worker"
-            }),
-        ),
-    )
-    .await;
-    let resp = recv_frame(&mut rd).await;
-    assert_eq!(resp["error"]["code"], -32602, "{resp:#?}");
-    let receipts: i64 = sqlx::query_scalar("SELECT count(*) FROM planner_dispatch_receipts")
-        .fetch_one(&b.repo.sqlite_pool().unwrap())
-        .await
-        .unwrap();
-    assert_eq!(receipts, 0);
-    let no_more = timeout(std::time::Duration::from_millis(150), rx.recv()).await;
-    assert!(
-        no_more.is_err(),
-        "rejected canonical arguments must emit no event: {no_more:?}"
-    );
-    let _ = (&b.server, &b.repo);
-}
-
-#[tokio::test]
 async fn legacy_dispatch_alias_inherits_retired_refusal() {
     let b = boot_with_role(CardRole::Planner).await;
     let mut rx = b.events.subscribe();
@@ -104,60 +67,10 @@ async fn legacy_dispatch_alias_inherits_retired_refusal() {
         resp["result"]["structuredContent"],
         retired_dispatch_payload()
     );
-    // Even the new supported shape must not turn the retired alias into a writer.
-    send_frame(&mut wr, tools_call_frame(12, "calm.dispatch_request", &b.thread_id,
-        json!({"name":"Do not create", "goal":"Do not run", "acceptance":"No writes", "executor":"codex", "workspace":"empty"}))).await;
-    let resp = recv_frame(&mut rd).await;
-    assert_eq!(
-        resp["result"]["structuredContent"],
-        retired_dispatch_payload()
-    );
-    let receipts: i64 = sqlx::query_scalar("SELECT count(*) FROM planner_dispatch_receipts")
-        .fetch_one(&b.repo.sqlite_pool().unwrap())
-        .await
-        .unwrap();
-    assert_eq!(receipts, 0);
     let no_event = timeout(std::time::Duration::from_millis(150), rx.recv()).await;
     assert!(
         no_event.is_err(),
         "dispatch alias shim emitted event: {no_event:?}"
-    );
-    let _ = (&b.server, &b.repo);
-}
-
-#[tokio::test]
-async fn dispatch_request_rejects_worker_identity() {
-    let b = boot_with_role(CardRole::Worker).await;
-    let (mut rd, mut wr) = connect(&b.socket_path).await;
-    handshake(&mut rd, &mut wr, &b.raw_token).await;
-
-    send_frame(
-        &mut wr,
-        tools_call_frame(
-            50,
-            "calm.task.dispatch",
-            &b.thread_id,
-            json!({
-                "kind": "codex",
-                "idempotency_key": "dr-w-1",
-                "goal": "x",
-                "message": "worker dispatch attempt"
-            }),
-        ),
-    )
-    .await;
-    let resp = recv_frame(&mut rd).await;
-    let err = resp
-        .get("error")
-        .expect("worker dispatch_request must be rejected");
-    let code = err
-        .get("code")
-        .and_then(|v| v.as_i64())
-        .expect("error has code");
-    // require_role surfaces as InvalidParams (-32602), the soft role gate convention.
-    assert_eq!(
-        code, -32602,
-        "expected planner-only soft gate; got {err:#?}"
     );
     let _ = (&b.server, &b.repo);
 }

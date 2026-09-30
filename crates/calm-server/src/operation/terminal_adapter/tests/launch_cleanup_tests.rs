@@ -1,6 +1,6 @@
 use super::*;
 use crate::operation::launch_cleanup_test_support::{
-    AckProxy, install_commit_fault, probe_running, spawn_sibling,
+    AckProxy, claimed_task, probe_running, spawn_sibling,
 };
 use crate::operation::{OperationCompletionBus, OperationRuntime, Phase};
 use crate::state::{DaemonClient, WriteContext};
@@ -13,33 +13,23 @@ use std::time::Duration;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Fault {
-    Commit,
-    Deadline,
     AbortAndOpen,
     HealthyInitial,
     LegacyPrestart,
 }
 
 #[tokio::test]
-async fn recovery_launch_commit_failure_retains_supervisor_ownership_before_compensation() {
-    exercise(Fault::Commit).await;
-}
-#[tokio::test]
-async fn recovery_launch_deadline_retains_supervisor_ownership_before_compensation() {
-    exercise(Fault::Deadline).await;
-}
-#[tokio::test]
-async fn recovery_launch_abort_ui_and_boot_never_resend_ensure() {
+async fn launch_abort_ui_and_boot_never_resend_ensure() {
     exercise(Fault::AbortAndOpen).await;
 }
 
 #[tokio::test]
-async fn recovery_launch_healthy_initial_and_legacy_attach_do_not_resend() {
+async fn launch_healthy_initial_and_legacy_attach_do_not_resend() {
     exercise(Fault::HealthyInitial).await;
 }
 
 #[tokio::test]
-async fn recovery_launch_legacy_prestart_remains_runnable() {
+async fn launch_legacy_prestart_remains_runnable() {
     exercise(Fault::LegacyPrestart).await;
 }
 
@@ -52,48 +42,26 @@ async fn exercise(fault: Fault) {
         harness.adapter.track_area_cache.clone(),
     );
     let declaration = json!({"key":"launch", "kind":"terminal", "command":"printf running > launched; sleep 30", "ready":true, "declared_by":"user"});
-    let fixture = if matches!(fault, Fault::HealthyInitial | Fault::LegacyPrestart) {
-        crate::task_recovery::launch_test_support::initial_claimed_task(
-            harness.repo.clone(),
-            events.clone(),
-            write,
-            &harness.track_id,
-            declaration,
-        )
-        .await
-    } else {
-        crate::task_recovery::launch_test_support::recovered_claimed_task(
-            harness.repo.clone(),
-            events.clone(),
-            write,
-            &harness.track_id,
-            declaration,
-        )
-        .await
-    };
+    let task = claimed_task(
+        harness.repo.clone(),
+        events.clone(),
+        write,
+        &harness.track_id,
+        declaration,
+    )
+    .await;
     let supervisor = calm_proc_supervisor::test_support::InProcessProcSupervisor::start()
         .await
         .unwrap();
     let sibling = spawn_sibling(supervisor.sock(), workspace.path()).await;
-    if fault == Fault::Commit {
-        install_commit_fault(harness.repo.pool()).await;
-    }
     let proxy = Some(
         AckProxy::start(
             supervisor.sock(),
             workspace.path().join("launched"),
-            matches!(fault, Fault::Deadline | Fault::AbortAndOpen),
+            fault == Fault::AbortAndOpen,
         )
         .await,
     );
-    let _short_deadline = if fault == Fault::Deadline {
-        Some(crate::operation::task_launch::test_timeout::install(
-            &fixture.task.id,
-            Duration::from_millis(250),
-        ))
-    } else {
-        None
-    };
     let op_repo = Arc::new(SqlxOperationRepo::new(harness.repo.pool().clone()));
     let renderer = TerminalRendererRegistry::new_with_repo(harness.repo.clone());
     let mut daemon = DaemonClient::new_stub();
@@ -123,10 +91,10 @@ async fn exercise(fault: Fault) {
         .await
         .unwrap(),
     );
-    let (kind, payload) = crate::scheduler::build_worker_payload(&fixture.task).unwrap();
+    let (kind, payload) = crate::scheduler::build_worker_payload(&task).unwrap();
     let key = OperationKey {
         operation_key: new_id(),
-        idempotency_key: Some(fixture.task.id.clone()),
+        idempotency_key: Some(task.id.clone()),
         payload_hash: crate::routes::terminal_cards::stable_payload_hash(&payload).unwrap(),
     };
     let legacy_id = if fault == Fault::LegacyPrestart {
@@ -234,28 +202,14 @@ async fn exercise(fault: Fault) {
     }
     let output = op.tx_output.as_ref().unwrap();
     let terminal_id = output.output_string("terminal_id", "test").unwrap();
-    if matches!(fault, Fault::Commit | Fault::Deadline | Fault::AbortAndOpen) {
+    if fault == Fault::AbortAndOpen {
         assert_eq!(
             output.data["terminal_launch"]["state"], "requested",
-            "failed commit, timeout and read-only attachment never publish handoff"
+            "a read-only attachment never publishes handoff"
         );
     }
 
     let card_id = output.output_string("card_id", "test").unwrap();
-    if matches!(fault, Fault::Commit | Fault::Deadline) {
-        let original = op.compensation_state.as_ref().unwrap()["reason"]
-            .as_str()
-            .unwrap();
-        let expected = if fault == Fault::Commit {
-            "FOREIGN KEY"
-        } else {
-            "control exchange timed out"
-        };
-        assert!(
-            original.contains(expected),
-            "fault must reach its intended boundary: {original}"
-        );
-    }
     tokio::time::timeout(Duration::from_secs(3), async {
         while !workspace.path().join("launched").exists() {
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -337,19 +291,6 @@ async fn exercise(fault: Fault) {
         renderer.get(&terminal_id).is_some(),
         op.phase
     );
-    if fault == Fault::Commit {
-        assert!(
-            harness
-                .repo
-                .terminal_get(&terminal_id)
-                .await
-                .unwrap()
-                .unwrap()
-                .pid
-                .is_some(),
-            "acknowledged PID survives an enclosing COMMIT failure"
-        );
-    }
     assert!(
         matches!(op.phase, Phase::Stuck { .. }),
         "unproven cleanup remains actionable, not disposable"

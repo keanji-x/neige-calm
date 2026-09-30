@@ -1,5 +1,8 @@
 # Claude Code as a second Planner backend (#1791) — design v3
 
+> **#1893 S4 (2026-10-01)**: the isolated Codex backend and its `--isolated-codex-config` are
+> deleted; the precedent cited below is history.
+>
 > **#1893 S3 (2026-09-30)**: the Codex `Recover` dynamic tool, the recovery briefing and
 > `calm.plan.recover` are deleted (migration 0127 drops the binding tables). Passages below that
 > name them are history.

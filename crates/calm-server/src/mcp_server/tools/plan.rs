@@ -623,13 +623,11 @@ async fn plan_list(
     require_role(&identity, CardRole::Planner)?;
     let args = list::Args::parse(&args)?;
     let (_card, track) = resolve_track_for_identity(&ctx, &identity).await?;
-    let actor = identity.to_actor_id();
     let summary = args.summary;
     let tx_track = track.clone();
     let entries = crate::db::write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
         let track = tx_track;
         Box::pin(async move {
-            let as_of_ms = now_ms();
             let mut tasks_json = Vec::new();
             let mut after_key = None;
             loop {
@@ -649,7 +647,6 @@ async fn plan_list(
                         tx,
                         &track.id,
                         &allocation.key,
-                        &actor,
                     )
                     .await?;
                     let mut entry = if args.summary {
@@ -669,21 +666,10 @@ async fn plan_list(
                             "allocated task has no current execution history".into(),
                         )
                     })?;
-                    entry["activity"] = serde_json::to_value(
-                        crate::isolated_codex::activity::read_tx(
-                            tx,
-                            task.as_ref(),
-                            &current.attempt_id,
-                            track.id.as_str(),
-                            as_of_ms,
-                        )
-                        .await?,
-                    )?;
                     entry["attempt_id"] = json!(current.attempt_id);
                     entry["generation"] = json!(current.generation);
                     entry["status"] = json!(current.status);
                     entry["blocking_reason"] = json!(current.blocking_reason);
-                    entry["recovery"] = serde_json::to_value(view.recovery)?;
                     // Absent (no key) when the attempt never held a lease.
                     let worktree_facts = match task
                         .as_ref()

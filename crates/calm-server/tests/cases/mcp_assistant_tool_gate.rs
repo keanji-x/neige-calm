@@ -55,8 +55,6 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     "calm.track.diff",
     "calm.track.cat_at",
     "calm.track.log",
-    // Independent dispatch, Planner-only.
-    "calm.task.dispatch",
     // Planning, review, admin.
     "calm.plan.upsert",
     "calm.plan.cancel",

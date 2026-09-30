@@ -97,15 +97,11 @@ fn canceled_and_failed_deps_never_satisfy() {
 }
 
 /// #1830 S2 D5: a codex/claude task in the track's checkout is ready only while the track is
-/// idle (the claim tx then lets one of them win); terminal, isolated and child-track tasks are
-/// not held.
+/// idle (the claim tx then lets one of them win); terminal and child-track tasks are not held.
 #[test]
 fn in_tree_tasks_are_ready_only_while_the_track_is_idle() {
     let mut terminal = task("c-terminal", TaskStatus::Pending, &[], 0);
     terminal.kind = TaskKind::Terminal;
-    let mut isolated = task("d-isolated", TaskStatus::Pending, &[], 0);
-    isolated.context_json =
-        r#"{"neige_execution":{"version":"isolated-codex-v1","workspace":"empty"}}"#.into();
     let mut child = task("e-child", TaskStatus::Pending, &[], 0);
     child.spawn = "sub-wave".into();
     let mut claude = task("b-claude", TaskStatus::Pending, &[], 0);
@@ -114,17 +110,16 @@ fn in_tree_tasks_are_ready_only_while_the_track_is_idle() {
         task("a-codex", TaskStatus::Pending, &[], 0),
         claude,
         terminal,
-        isolated,
         child,
     ];
     assert_eq!(
         keys(&compute_ready(&tasks, true).unwrap()),
-        vec!["a-codex", "b-claude", "c-terminal", "d-isolated", "e-child"],
+        vec!["a-codex", "b-claude", "c-terminal", "e-child"],
         "an idle track offers every in-tree task, in scheduler order"
     );
     assert_eq!(
         keys(&compute_ready(&tasks, false).unwrap()),
-        vec!["c-terminal", "d-isolated", "e-child"],
+        vec!["c-terminal", "e-child"],
         "a busy track admits no in-tree task"
     );
 }
@@ -266,40 +261,6 @@ fn worker_payload_is_pure_function_of_the_row() {
     assert_eq!(kind, "terminal-worker");
     assert_eq!(p["cmd"], json!("make test"));
     assert_eq!(p["cwd"], json!("/repo"));
-}
-
-/// The stated executor environment and the worker payload branch on the same row predicate.
-#[test]
-fn executor_environment_follows_the_worker_payload_route() {
-    let legacy = [
-        (TaskKind::Codex, "codex-worker", "shared-codex"),
-        (TaskKind::Claude, "claude-worker", "claude"),
-        (TaskKind::Terminal, "terminal-worker", "terminal"),
-    ];
-    for (kind, operation_kind, executor) in legacy {
-        let mut task = task("a", TaskStatus::Pending, &[], 0);
-        task.kind = kind;
-        assert_eq!(build_worker_payload(&task).unwrap().0, operation_kind);
-        assert_eq!(
-            crate::task_recovery::executor_environment(&task).unwrap(),
-            json!({
-                "executor": executor,
-                "note": "recovery re-runs on the same executor as the failed attempt; its environment is unchanged",
-            })
-        );
-    }
-    let mut isolated = task("i", TaskStatus::Pending, &[], 0);
-    isolated.context_json =
-        json!({"neige_execution": {"version": "isolated-codex-v1", "workspace": "empty"}})
-            .to_string();
-    assert_eq!(
-        build_worker_payload(&isolated).unwrap().0,
-        crate::isolated_codex::OPERATION_KIND
-    );
-    assert_eq!(
-        crate::task_recovery::executor_environment(&isolated).unwrap(),
-        crate::dedicated_codex::executor_environment()
-    );
 }
 
 #[test]

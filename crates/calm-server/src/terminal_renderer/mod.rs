@@ -710,12 +710,6 @@ async fn ensure_entry(
                         {
                             tracing::warn!(terminal_id=%cfg.terminal_id, %error, "could not record unissued terminal request; retaining ownership");
                         }
-                        if let Some((ControlReply::Spawned { pid }, _connection)) = failure.observed
-                            && let Err(error) =
-                                repo.terminal_set_pid(&cfg.terminal_id, Some(pid)).await
-                        {
-                            tracing::warn!(terminal_id=%cfg.terminal_id, pid, %error, "post-ack commit failure: prepared operation retains process ownership");
-                        }
                         if failure.effect_started {
                             request_terminal_stop(&cfg.supervisor_sock, &cfg.terminal_id).await;
                         }

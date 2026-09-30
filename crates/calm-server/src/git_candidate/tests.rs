@@ -2441,51 +2441,15 @@ fn not_reported() -> BoundFacts {
     }
 }
 
-/// D8's first-match table: isolated, terminal, child-track, no lease, legacy lease, bound —
+/// D8's first-match table: terminal, child-track, no lease, legacy lease, bound —
 /// and a kernel lease with no delivery row yet is bound with `not_reported`, never legacy.
 #[test]
 fn candidate_binding_covers_every_row() {
-    let isolated =
-        json!({"neige_execution": {"version": "isolated-codex-v1", "workspace": "empty"}});
     let workspace = CandidateWorkspace {
         path: "/repo/.claude/worktrees/trk/crd".into(),
         branch: Some("neige/trk/crd".into()),
         lease_state: "held".into(),
     };
-    let bound = candidate_binding(
-        &task(TaskKind::Codex, TASK_IN_TRACK_ROUTE, isolated),
-        Some(&lease(Some(DeliveryPolicy::Kernel))),
-        Some(&facts()),
-        Some(not_reported()),
-    )
-    .unwrap();
-    assert_eq!(
-        bound,
-        CandidateBinding::None {
-            reason: NoBindingReason::Isolated
-        }
-    );
-    assert_eq!(
-        serde_json::to_value(&bound).unwrap(),
-        json!({"binding": "none", "reason": "isolated"})
-    );
-    assert_eq!(
-        candidate_binding(
-            &task(
-                TaskKind::Codex,
-                TASK_IN_TRACK_ROUTE,
-                json!({"neige_execution": "garbage"})
-            ),
-            None,
-            None,
-            None,
-        )
-        .unwrap(),
-        CandidateBinding::None {
-            reason: NoBindingReason::Isolated
-        },
-        "a present invalid selection is never legacy"
-    );
     assert_eq!(
         candidate_binding(
             &task(TaskKind::Terminal, TASK_IN_TRACK_ROUTE, json!({})),

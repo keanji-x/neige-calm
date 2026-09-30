@@ -73,8 +73,8 @@ pub enum RoleViolation {
     )]
     NotKernelForTaskContextAdvanced { actor: String },
 
-    #[error("task.execution_settled requires a kernel actor (actor={actor})")]
-    NotKernelForTaskExecutionSettled { actor: String },
+    #[error("task.git_delivery_settled requires a kernel actor (actor={actor})")]
+    NotKernelForTaskGitDeliverySettled { actor: String },
 
     #[error(
         "task.gate_result is a kernel-only gate-runner record; no card-derived actor may emit it (actor={actor})"
@@ -279,12 +279,10 @@ pub fn enforce_role(
         }
     }
 
-    if matches!(
-        event,
-        Event::TaskExecutionSettled { .. } | Event::TaskGitDeliverySettled { .. }
-    ) && !matches!(actor, ActorId::Kernel | ActorId::KernelDispatcher)
+    if matches!(event, Event::TaskGitDeliverySettled { .. })
+        && !matches!(actor, ActorId::Kernel | ActorId::KernelDispatcher)
     {
-        return Err(RoleViolation::NotKernelForTaskExecutionSettled {
+        return Err(RoleViolation::NotKernelForTaskGitDeliverySettled {
             actor: format!("{actor:?}"),
         });
     }
@@ -1539,34 +1537,6 @@ mod tests {
             err,
             RoleViolation::NotKernelForTaskContextFrozen { .. }
         ));
-    }
-
-    #[test]
-    fn task_execution_settled_is_kernel_only() {
-        let cache = CardRoleCache::new();
-        let wcc = seeded_wcc();
-        let event = Event::TaskExecutionSettled {
-            task_id: "w:attempt".into(),
-            operation_id: "op".into(),
-        };
-        for actor in [ActorId::Kernel, ActorId::KernelDispatcher] {
-            enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc).unwrap();
-        }
-        for actor in [
-            ActorId::User,
-            ActorId::Plugin("p".into()),
-            ActorId::AiPlanner("planner".into()),
-            ActorId::AiCodex("worker".into()),
-            ActorId::AiClaude("worker".into()),
-            ActorId::AiPlannerSession("planner-session".into()),
-            ActorId::AiCodexSession("worker-session".into()),
-            ActorId::AiClaudeSession("worker-session".into()),
-        ] {
-            assert!(
-                enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc).is_err(),
-                "{actor:?}"
-            );
-        }
     }
 
     #[test]

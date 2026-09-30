@@ -1,16 +1,12 @@
-//! Gate-free execution summaries and current recovery capability.
+//! Gate-free execution summaries. Callers authorize before reading.
 
-use super::admission;
-use super::refusal::AdmissionError;
 use crate::db::sqlite::{task_attempt_current_tx, task_attempt_get_tx, task_get_tx};
 use crate::db::{RepoEventWrite, write_in_tx_typed};
 use crate::error::{CalmError, Result};
-use crate::event::{Event, EventScope};
-use crate::ids::{ActorId, TrackId};
+use crate::ids::TrackId;
 use crate::model::{Task, TaskStatus};
 use calm_types::task_recovery::{
-    TaskAttemptAllocation, TaskAttemptOrigin, TaskAttemptView, TaskRecoveryCapability,
-    TaskRecoveryView,
+    TaskAttemptAllocation, TaskAttemptOrigin, TaskAttemptView, TaskRecoveryView,
 };
 
 fn task_attempt_view(
@@ -40,12 +36,11 @@ pub async fn task_recovery_view(
     repo: &dyn RepoEventWrite,
     track_id: &str,
     key: &str,
-    actor: ActorId,
 ) -> Result<TaskRecoveryView> {
     let track_id = TrackId::from(track_id);
     let key = key.to_string();
     write_in_tx_typed(repo, move |tx| {
-        Box::pin(async move { task_recovery_view_tx(tx, &track_id, &key, &actor).await })
+        Box::pin(async move { task_recovery_view_tx(tx, &track_id, &key).await })
     })
     .await
 }
@@ -54,19 +49,8 @@ pub(crate) async fn task_recovery_view_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     track_id: &TrackId,
     key: &str,
-    actor: &ActorId,
 ) -> Result<TaskRecoveryView> {
     let track = crate::db::sqlite::track_get_tx(tx, track_id).await?;
-    let event = Event::PlanUpdated {
-        track_id: track.id.clone(),
-        changed_keys: vec![key.to_string()],
-        agent_message: None,
-    };
-    let scope = EventScope::Track {
-        track: track.id.clone(),
-        area: track.area_id.clone(),
-    };
-    admission::authorize_tx(tx, actor, &scope, &event).await?;
     let Some(mut allocation) = task_attempt_current_tx(tx, track_id.as_str(), key).await? else {
         // A valid authored task can await release/admission before its first row.
         let (declarations, diagnostics) =
@@ -97,11 +81,6 @@ pub(crate) async fn task_recovery_view_tx(
             key: key.to_string(),
             current: None,
             attempts: Vec::new(),
-            recovery: TaskRecoveryCapability {
-                allowed: false,
-                code: "not_started".into(),
-                reason: "No execution has been allocated for this task.".into(),
-            },
         });
     };
     let mut allocations = Vec::new();
@@ -139,32 +118,6 @@ pub(crate) async fn task_recovery_view_tx(
         .last()
         .ok_or_else(|| CalmError::NotFound(format!("task {key}")))?;
     let current_task = task_get_tx(tx, &current.attempt_id).await?;
-    let recovery = match &current_task {
-        Some(task) if task.status == TaskStatus::Failed => {
-            match admission::admit_recovery_tx(tx, &track, task, current.generation, actor).await {
-                Ok(_) => TaskRecoveryCapability {
-                    allowed: true,
-                    code: "available".into(),
-                    reason: if crate::isolated_codex::selected(task)? {
-                        "Retry this goal as a new execution in a new empty workspace. Previous results stay with the old attempt.".into()
-                    } else {
-                        "Retry the preparation failure as a new execution under its unchanged contract.".into()
-                    },
-                },
-                Err(AdmissionError::Refused(refused)) => TaskRecoveryCapability {
-                    allowed: false,
-                    code: refused.code.as_str().into(),
-                    reason: refused.reason,
-                },
-                Err(AdmissionError::Other(error)) => return Err(error),
-            }
-        }
-        _ => TaskRecoveryCapability {
-            allowed: false,
-            code: "not_failed".into(),
-            reason: "Only a failed current execution can be recovered.".into(),
-        },
-    };
     let blocking_reason =
         current_blocking_reason_tx(tx, &track, current, current_task.as_ref()).await?;
     let mut current = task_attempt_view(current, current_task.as_ref())?;
@@ -187,7 +140,6 @@ pub(crate) async fn task_recovery_view_tx(
         key: key.to_string(),
         current: Some(current),
         attempts,
-        recovery,
     })
 }
 
@@ -252,13 +204,6 @@ pub(crate) async fn current_blocking_reason_tx(
         }
         if let Some(diagnostic) = verdict.diagnostics.first() {
             return Ok(Some(diagnostic.message.clone()));
-        }
-    }
-    if matches!(allocation.origin, TaskAttemptOrigin::Recovery { .. }) {
-        match admission::check_recovery_attempt_tx(tx, &allocation.attempt_id).await {
-            Ok(()) => {}
-            Err(AdmissionError::Refused(refusal)) => return Ok(Some(refusal.reason)),
-            Err(AdmissionError::Other(error)) => return Err(error),
         }
     }
     Ok(task

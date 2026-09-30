@@ -44,8 +44,7 @@ async fn planner_recovery_tables_are_dropped() {
     {
         db.apply(migration).await.unwrap();
     }
-    // One row per table, linked the way production linked them, so a parent dropped before its
-    // child fails on the foreign key.
+    // One row per table, linked the way production linked them.
     sqlx::raw_sql("INSERT INTO areas(id,name,color,sort,created_at,updated_at) VALUES('area','A','red',0,1,2);
         INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) VALUES('track','area','T',0,1,2);
         INSERT INTO planner_recovery_threads VALUES('thread','track','card',3);

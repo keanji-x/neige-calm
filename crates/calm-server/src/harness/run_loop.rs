@@ -3132,7 +3132,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     *inner.debounce.lock().await = DebounceState::default();
     // Segments are built from the ENTRIES, not observations: an `Observation` cannot carry an attachment.
     let mut segments = input_segments_for_entries(&inner.card_id, &drained);
-    if let Err(error) = super::result_receipt::enrich(
+    super::result_receipt::enrich(
         inner.repo.as_ref(),
         &crate::state::WriteContext::new(
             inner.card_role_cache.clone(),
@@ -3142,23 +3142,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         &drained,
         &mut segments,
     )
-    .await
-    {
-        // Receipt reads must not lose the drained notifications or leave the harness stuck
-        // Issuing. Rebuffering arms hard_fire, so use the existing pacing guard before another
-        // tick repeats reads and writes.
-        rebuffer_head(inner, drained).await;
-        *inner.state.lock().await = prior_turn
-            .map(|last_turn_id| HarnessState::TurnCompleted { last_turn_id })
-            .unwrap_or(HarnessState::Idle);
-        *inner.issuance_retry_after.lock().await = Some(Instant::now() + TRANSIENT_RETRY_DELAY);
-        *inner.issuance_block.lock().await = Some(
-            "Could not prepare the task result receipts. Your messages remain queued; the system will retry."
-                .into(),
-        );
-        persist_snapshot(inner).await?;
-        return Err(error);
-    }
+    .await;
 
     // The channel statement is the batch's, appended once here; same flag as `report_patch`.
     append_report_edit_batch_channel_line(&mut segments, report_edits_carry_diffs);

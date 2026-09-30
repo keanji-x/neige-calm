@@ -278,42 +278,6 @@ async fn interactive_card_failed_session_is_failed() {
     assert_eq!(card_state(&p, &card), Some(CardState::Failed));
 }
 
-/// The isolated marker is on the CARD (`operations.target_id`), not on `ws.spawn_op_id`: a
-/// re-minted isolated session (`spawn_op_id NULL`) is judged by W alone, whatever the feeder stamps.
-#[tokio::test]
-async fn reminted_isolated_session_is_not_shared_daemon() {
-    let f = fx().await;
-    let t = f.track("iso").await;
-    let card = f.card(&t, "card-iso", "codex", CardRole::Worker).await;
-    sqlx::query(
-        "INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,target_type,\
-         target_id,target_json,payload_json,phase,created_at_ms,updated_at_ms) \
-         VALUES('op-iso','op-iso',?1,'iso-task','h','card',?2,'{}','{}','succeeded',1,1)",
-    )
-    .bind(calm_server::isolated_codex::OPERATION_KIND)
-    .bind(&card)
-    .execute(&f.pool)
-    .await
-    .unwrap();
-    f.session(
-        &card,
-        "ws-iso",
-        WorkerSessionKind::CodexCard,
-        WorkerSessionState::Running,
-        Some("th-iso"),
-        None,
-        1_000,
-    )
-    .await;
-    f.stamp("th-iso", 2_000, "waitingOnApproval", None).await;
-    let p = f.recompute(&t).await;
-    assert_eq!(p.attention, Attention::None, "{p:?}");
-    assert!(p.items.is_empty());
-    // …and `active` is not `working` for it either (W only).
-    f.stamp("th-iso", 3_000, "active", None).await;
-    assert!(!f.recompute(&t).await.working);
-}
-
 async fn harness_track(f: &Fx, state: WorkerSessionState) -> (String, String, String) {
     let t = f.track("plan").await;
     let planner = f
@@ -563,7 +527,6 @@ async fn superseded_failed_attempt_session_is_not_actionable() {
         updated_at_ms: 4_500,
         created_at_ms: 1_000,
         mode: None,
-        isolated: false,
         task_bound: true,
         terminal_run_id: None,
         pty_open: false,
@@ -1387,13 +1350,6 @@ async fn wakeup_table_resolves_every_row_of_the_design() {
                 reason: "fixture".into(),
                 details: None,
                 agent_message: None,
-            },
-        ),
-        (
-            "task.execution_settled",
-            Event::TaskExecutionSettled {
-                task_id: format!("{t}:build"),
-                operation_id: "op".into(),
             },
         ),
         (

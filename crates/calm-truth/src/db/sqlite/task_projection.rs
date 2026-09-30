@@ -418,7 +418,9 @@ fn attach_task_pending_reasons(
                             many => format!("Waiting for {} dependencies", many.len()),
                         },
                         [(dependency, "failed")] => {
-                            format!("Blocked by `{dependency}` (failed); inspect recovery options")
+                            format!(
+                                "Blocked by `{dependency}` (failed); declare a new task in its place"
+                            )
                         }
                         [(dependency, status)] => {
                             format!(
@@ -436,11 +438,7 @@ fn attach_task_pending_reasons(
                     });
                 } else if !track_idle
                     && declarations.get(index).is_some_and(|declaration| {
-                        runs_in_track_checkout(
-                            &declaration.kind,
-                            &declaration.spawn,
-                            &declaration.context,
-                        )
+                        runs_in_track_checkout(&declaration.kind, &declaration.spawn)
                     })
                 {
                     verdict.pending_reason = Some(TaskPendingReason::TrackBusy {
@@ -675,7 +673,6 @@ struct TrackProjectionState {
     task_read_state: Vec<TaskReadState>,
     frozen: Vec<FrozenDeclarationRow>,
     reference_targets: BTreeMap<String, ReferenceTargetRow>,
-    recovery_constraints: Vec<super::task_recovery_projection::RecoveryProjection>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -688,7 +685,6 @@ struct TrackProjectionStateRow {
     task_read_state_json: String,
     frozen_json: String,
     reference_targets_json: String,
-    recovery_constraints_json: String,
 }
 
 /// Materializes every database fact used by the local verdict in a SINGLE
@@ -713,9 +709,6 @@ async fn track_projection_state(
                  FROM json_each(?2)
            )
            SELECT w.automation_policy, w.planner_task_ceiling, w.require_task_gates, w.area_id,
-                  (SELECT json_group_array(json_object('key',a.key,'origin',json(a.origin_json)))
-                     FROM current_task_attempt_allocations a WHERE a.track_id=w.id
-                       AND json_extract(a.origin_json,'$.kind')='recovery') AS recovery_constraints_json,
                   (SELECT json_group_array(json_object(
                        'key', t.key, 'status', t.status,
                        'declared_by', t.declared_by))
@@ -804,7 +797,6 @@ async fn track_projection_state(
         task_read_state: serde_json::from_str(&row.task_read_state_json)?,
         frozen: serde_json::from_str(&row.frozen_json)?,
         reference_targets,
-        recovery_constraints: serde_json::from_str(&row.recovery_constraints_json)?,
     })
 }
 
@@ -1182,8 +1174,6 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
                 Some(
                     if changed {
                         "open_worker_output"
-                    } else if status == "failed" {
-                        "inspect_recovery_options"
                     } else {
                         "inspect_task_attempts"
                     }
@@ -1205,13 +1195,6 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
                 .push(withdrawal_diagnostic(&declaration.key, status));
         }
     }
-
-    super::task_recovery_projection::constrain_recovery_declarations(
-        track_id,
-        declarations,
-        &mut verdicts,
-        &state.recovery_constraints,
-    )?;
 
     // A deleted block has no declaration to drive the loop above; surface its
     // still-live row as a synthetic verdict.
@@ -1930,7 +1913,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn terminal_stale_row_points_to_recovery_without_live_context_warning() {
+    async fn terminal_stale_row_points_to_its_attempts_without_live_context_warning() {
         let (repo, track) = setup().await;
         insert_block_task(&repo, &track, "terminal-stale", "failed").await;
         sqlx::query(
@@ -1962,7 +1945,7 @@ mod tests {
         assert!(!codes.contains(&"context_stale_reference"));
         assert!(verdicts[0].diagnostics.iter().any(|diagnostic| {
             diagnostic.code == "task_key_completed"
-                && diagnostic.action.as_deref() == Some("inspect_recovery_options")
+                && diagnostic.action.as_deref() == Some("inspect_task_attempts")
         }));
     }
 

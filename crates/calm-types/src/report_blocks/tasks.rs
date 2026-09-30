@@ -26,6 +26,7 @@ pub const TASK_DIAGNOSTIC_CODES: &[&str] = &[
     "unknown_dependency",
     "gate_required",
     "gate_cwd_on_agent_task",
+    "neige_execution_retired",
     "reference_needs_block",
     "reference_missing",
     "reference_cross_area",
@@ -49,6 +50,7 @@ pub const TASK_DIAGNOSTIC_CODE_PATHS: &[(&str, &str)] = &[
     ("unknown_dependency", "depends_on"),
     ("gate_required", "gate"),
     ("gate_cwd_on_agent_task", "gate"),
+    ("neige_execution_retired", "payload"),
     ("reference_needs_block", "refs"),
     ("reference_missing", "refs"),
     ("reference_cross_area", "refs"),
@@ -283,6 +285,9 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
              write a sub-directory gate as `cd <subdir> && …` inside the step"
                 .into()
         }
+        "neige_execution_retired" => {
+            "isolated execution (context.neige_execution) is retired; this task is history and never runs".into()
+        }
         "reference_needs_block" => format!(
             "reference `{}` must identify a block",
             arg(args, "reference")
@@ -300,7 +305,7 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
             "the declaration differs from the recorded execution; its frozen requirements were not changed".into()
         }
         "task_key_completed" => match arg(args, "status") {
-            "failed" => "the current attempt failed; inspect its recovery options".into(),
+            "failed" => "the current attempt failed; another round is a new task key".into(),
             "done" => "this task is complete; its execution history remains available".into(),
             "canceled" => "the current attempt was canceled; review its execution history".into(),
             _ => "this execution has ended; inspect its outcome".into(),
@@ -746,6 +751,22 @@ pub fn project_task_declarations(
         let tombstone = payload
             .get("tombstone")
             .is_some_and(|value| !value.is_null());
+        // #1893 S4: the isolated-codex-v1 path is deleted. A block that still selects it is kept as
+        // history on the blocking `payload` path, so it is never scheduled.
+        if !tombstone
+            && payload
+                .get("context")
+                .is_some_and(|context| context.get("neige_execution").is_some())
+        {
+            diagnostics[index].push(Diagnostic::coded(
+                "neige_execution_retired",
+                "payload",
+                BTreeMap::new(),
+                vec![],
+                None,
+                None,
+            ));
+        }
         let declaration = TaskDeclaration {
             source: TaskDeclarationSource::Report {
                 root_hash_preimage: crate::task_recovery::task_root_hash_preimage(&block.payload),
@@ -1212,6 +1233,7 @@ mod tests {
             ("unknown_dependency", "depends_on"),
             ("gate_required", "gate"),
             ("gate_cwd_on_agent_task", "gate"),
+            ("neige_execution_retired", "payload"),
             ("reference_needs_block", "refs"),
             ("reference_missing", "refs"),
             ("reference_cross_area", "refs"),

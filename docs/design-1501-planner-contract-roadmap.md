@@ -8,6 +8,8 @@ attempt 模型，替代旧提案的墓碑/隐藏别名恢复方案。真源、�
 [任务连续性框架](architecture/1501-task-continuity.md)为准；本文定义 Planner
 能获得的体验、实施顺序和每项完成条件。
 
+> **#1893 S4（2026-10-01）**：isolated-codex-v1 路径已整体删除：`calm.task.dispatch`、用户独立任务入口与任务恢复、isolated 插件授权、`calm.plan.list` 的 `activity`、任务报告与附件路由、`task.execution_settled`（迁移 0128 删除 `planner_dispatch_receipts`）。下文描述它们的段落是历史记录。
+
 ## 1. 需要实现的体验
 
 Planner 收到足够判断的简报，表达更新后的计划和业务决定。系统承担版本定位、
@@ -226,7 +228,7 @@ Provider 内部推理来实现工作笔记。该项单独设计存储/访问契�
   没有再遍历 conversation/events/runtime 或误用 Terminal；随后任务完成、
   停止证明与结果文件核对通过。90 秒为受控测试等待，不是业务性能基准。
   默认 turn 简报、主动监督、更多 Provider 和采集尾部排空仍为后续；
-  [首版范围及验收限制](design-1501-current-activity.md)继续适用。
+  #1893 S4 已随 isolated 路径删除该活动证据（`activity` 字段）及其设计稿。
 - [x] F4 单文件准确交接首版：[#1581](https://github.com/keanji-x/neige-calm/pull/1581)
   （本条随实现 PR 合入生效）。一个隔离 producer 的普通 JSON 文件，在确认停止后
   封存并检查 JSON 格式，consumer claim 绑定同一版本，准备及启动前重新核验。
