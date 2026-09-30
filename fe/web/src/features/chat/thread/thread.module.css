@@ -475,8 +475,8 @@
     color: var(--text-3);
   }
 
-  /* The first row, and on all but a failed line the only one: verb, noun,
-     `Failed`, duration, live dot. `nowrap` is the load-bearing declaration —
+  /* The first row, and on all but a failed line the only one: status, verb, noun,
+     `Failed`, duration. `nowrap` is the load-bearing declaration —
      see `.activity` above. `min-inline-size: 0` keeps the row itself from
      refusing to be narrower than the command it holds, so the shrinking has
      somewhere to happen. */
@@ -486,6 +486,26 @@
     align-items: baseline;
     gap: var(--space-2);
     min-inline-size: 0;
+  }
+
+  .activityStatus {
+    display: grid;
+    place-items: center;
+    flex: none;
+    align-self: center;
+    inline-size: var(--glyph);
+    block-size: var(--glyph);
+  }
+
+  .toolCheck {
+    inline-size: 100%;
+    block-size: 100%;
+    fill: none;
+    stroke: currentcolor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    color: var(--text-3);
   }
 
   /* The noun is the machine's own string — a command, a tool name. Mono says

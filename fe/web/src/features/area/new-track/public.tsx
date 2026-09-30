@@ -23,6 +23,7 @@ import { compileTemplateInputs } from '../../../../../core/domain/template-input
 import { TemplateInputs } from './template-inputs.tsx';
 import type { LoadTemplate, TemplateDetail } from '../../../../../core/domain/template.ts';
 import { TemplatePreview } from './template-preview.tsx';
+import { NeigeMotion } from '../../../ui/brand/motion.tsx';
 import styles from './new-track.module.css';
 import { ComposerPreferences } from './composer-preferences.tsx';
 
@@ -244,9 +245,7 @@ export function NewTrackForm({
 
 
         <div className={styles.masthead}>
-          {/* Decorative: the prompt names the page. The asset carries its own `<title>`,
-                        which is why it is a CSS mask rather than an inlined `<svg>`. */}
-          <span className={styles.mark} role="presentation" />
+          <span className={styles.mark} aria-hidden="true"><NeigeMotion kind="creation" /></span>
           <h1 className={styles.greeting}>What would you like to work on?</h1>
         </div>
 

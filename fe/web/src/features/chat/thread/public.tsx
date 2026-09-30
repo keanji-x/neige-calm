@@ -475,12 +475,15 @@ function ActivityLine({ activity, entry, live }: {
       data-nc-entry={entry}
     >
       <span className={styles.activityRow}>
-        <span>{activity.verb}</span>
+        <span className={styles.activityStatus} aria-hidden="true">
+          {running && live && <ActivityIndicator state="working" motion="execution" />}
+          {activity.state === 'done' && <svg className={styles.toolCheck} viewBox="0 0 16 16" focusable="false"><path d="m3 8 3 3 7-7" /></svg>}
+        </span>
+        <span data-nc-activity-verb="">{activity.verb}</span>
         {activity.target !== null
-          && <span className={styles.activityTarget}>{activity.target}</span>}
+          && <span className={styles.activityTarget} data-nc-activity-target="">{activity.target}</span>}
         {activity.state === 'failed' && <span className={styles.activityFailure}>Failed</span>}
         {duration !== null && <span className={styles.activityDuration}>{duration}</span>}
-        {running && live && <ActivityIndicator state="working" />}
       </span>
       {activity.detail !== null && (
         <span className={styles.activityDetail}>{activity.detail}</span>

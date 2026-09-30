@@ -1,0 +1,8 @@
+@layer ui {
+  .motion { display: block; inline-size: 100%; block-size: 100%; overflow: visible; pointer-events: none; }
+  .still { display: none; }
+  @media (prefers-reduced-motion: reduce) {
+    .animated { display: none; }
+    .still { display: inline; }
+  }
+}

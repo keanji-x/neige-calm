@@ -37,6 +37,13 @@
     display: none;
   }
 
+  /* Preserve the vendor's status role and dimensions; its canvas is replaced by our vector ink. */
+  .group [role='status'] > canvas { display: none; }
+
+  /* Remove only completed calls' tinted disks; failure glyphs keep their error treatment. */
+  .group div:has(> span > [data-nc-tool-complete]) > span:first-child > span:first-child,
+  .group[data-nc-last-complete] > [aria-expanded='false'] > span:first-child > span:first-child { display: none; }
+
   /* The word `Failed` a failed call's row carries for its name, and the
      header is described by (`activity-groups.tsx`). The canonical clip block
      (`ui/mobile-list`): `display: none` would take it out of the one tree it

@@ -7,15 +7,8 @@
   .attention { background: var(--warn); }
   .failed { background: var(--error); }
   .working {
-    inline-size: 10px;
-    block-size: 10px;
-    border: 1.5px solid var(--text-4);
-    border-block-start-color: var(--text-2);
-    border-inline-end-color: var(--text-2);
-    animation: activity-turn 900ms linear infinite;
-  }
-  @keyframes activity-turn { to { rotate: 360deg; } }
-  @media (prefers-reduced-motion: reduce) {
-    .working { animation: none; }
+    inline-size: var(--glyph);
+    block-size: var(--glyph);
+    color: var(--text-3);
   }
 }

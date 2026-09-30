@@ -3,6 +3,10 @@
 
 import { useId, useLayoutEffect, useRef, type FocusEvent, type KeyboardEvent, type RefObject, type SyntheticEvent } from 'react';
 import { ChatToolCalls, type ChatToolCallItem } from '@astryxdesign/core/Chat';
+import { createPortal } from 'react-dom';
+
+import { useState } from '../../../ui/state/public.ts';
+import { NeigeMotion } from '../../../ui/brand/motion.tsx';
 
 import styles from './activity-groups.module.css';
 import type { ConversationActivity } from '../../../../../core/domain/conversation.ts';
@@ -51,6 +55,15 @@ export type ToolCallGroupProps = Readonly<{
 export function ToolCallGroup({ calls, entry, ui, onExpandedChange, onDetailOpenChange, live }: ToolCallGroupProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const id = useId();
+  const [motionHosts, setMotionHosts] = useState<readonly HTMLElement[]>([]);
+  // Astryx owns row/detail focus. Replace only its status ink, using its semantic status slot.
+  useLayoutEffect(() => {
+    const hosts = live && rootRef.current !== null
+      ? [...rootRef.current.querySelectorAll<HTMLElement>('[role="status"]')]
+        .filter(host => ui.expanded || host.closest('[aria-expanded="false"]') !== null) : [];
+    setMotionHosts(previous => previous.length === hosts.length && previous.every((host, index) => host === hosts[index])
+      ? previous : hosts);
+  }, [calls, live, ui.expanded]);
   /** The element that says `Failed` for the call at `index`: in its row, and by reference for the header. */
   const failedId = (index: number) => `${id}failed-${index}`;
   /* True while this component is pressing rows itself, so the watcher below
@@ -100,22 +113,28 @@ export function ToolCallGroup({ calls, entry, ui, onExpandedChange, onDetailOpen
   };
 
   return (
-    <ChatToolCalls
-      ref={rootRef}
-      className={styles.group}
-      role="group"
-      aria-label={`${calls.length} tool calls`}
-      isExpanded={expanded}
-      onExpandedChange={onExpandedChange}
-      onClick={noteToggle}
-      onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
-        if (event.key === 'Enter' || event.key === ' ') noteToggle(event);
-      }}
-      data-nc-entry={entry}
-      {...(live ? { 'data-nc-live': '' } : {})}
-      calls={calls.map((call, index) => (call.status !== 'error' ? call
-        : { ...call, stats: <span className={styles.srOnly} id={failedId(index)}>Failed</span> }))}
-    />
+    <>
+      <ChatToolCalls
+        ref={rootRef}
+        className={styles.group}
+        role="group"
+        aria-label={`${calls.length} tool calls`}
+        isExpanded={expanded}
+        onExpandedChange={onExpandedChange}
+        onClick={noteToggle}
+        onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
+          if (event.key === 'Enter' || event.key === ' ') noteToggle(event);
+        }}
+        data-nc-entry={entry}
+        {...(calls[calls.length - 1]?.status === 'complete' ? { 'data-nc-last-complete': '' } : {})}
+        {...(live ? { 'data-nc-live': '' } : {})}
+        calls={calls.map((call, index) => (call.status === 'complete'
+          ? { ...call, stats: <><span className={styles.srOnly} data-nc-tool-complete="" aria-hidden="true" />{call.stats}</> }
+          : call.status !== 'error' ? call
+            : { ...call, stats: <span className={styles.srOnly} id={failedId(index)}>Failed</span> }))}
+      />
+      {live && motionHosts.map((host, index) => createPortal(<NeigeMotion kind="execution" />, host, String(index)))}
+    </>
   );
 }
 

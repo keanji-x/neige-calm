@@ -72,21 +72,11 @@
     margin-block-end: var(--space-8);
   }
 
-  /*
-   * Same technique as the rail's `.brandMark` (`app/shell/shell.module.css`):
-   * the SVG is a mask and the ink is `currentcolor`, so one asset serves both
-   * themes instead of a second dark-mode file being baked into the bundle.
-   * That is also why the file now lives in `ui/brand/` — two layers reference
-   * it, and `features/**` may not reach into `app/**`.
-   */
   .mark {
     flex: 0 0 auto;
     inline-size: 24px;
     block-size: 24px;
     color: var(--text-3);
-    background: currentcolor;
-    -webkit-mask: url('../../../ui/brand/neige-mark.svg') center / contain no-repeat;
-    mask: url('../../../ui/brand/neige-mark.svg') center / contain no-repeat;
   }
 
   /* The prompt is the main editorial heading; template context stays in interface type. */

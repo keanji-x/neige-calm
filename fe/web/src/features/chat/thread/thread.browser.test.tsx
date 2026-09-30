@@ -1831,12 +1831,12 @@ describe('the activity line’s row count, as the engine lays it out', () => {
     };
   }
 
-  /** The activity paragraphs, in order; the spans inside carry only hashed module classes, so they are reached positionally. */
+  /** Text selectors stay independent of the decorative status slot. */
   const lines = () => [...document.querySelectorAll<HTMLElement>('p[data-nc-state]')];
 
   const rowOf = (line: HTMLElement) => line.children[0] as HTMLElement;
-  const verbOf = (line: HTMLElement) => rowOf(line).children[0] as HTMLElement;
-  const nounOf = (line: HTMLElement) => rowOf(line).children[1] as HTMLElement;
+  const verbOf = (line: HTMLElement) => line.querySelector<HTMLElement>('[data-nc-activity-verb]')!;
+  const nounOf = (line: HTMLElement) => line.querySelector<HTMLElement>('[data-nc-activity-target]')!;
 
   /** Same row when vertical extents overlap, not when tops are equal: the spans are set in different families and aligned on their baselines. */
   const sameRow = (a: HTMLElement, b: HTMLElement) => {
@@ -1873,7 +1873,7 @@ describe('the activity line’s row count, as the engine lays it out', () => {
 
     const [failed, done] = lines();
     const row = rowOf(failed);
-    const items = [...row.children] as HTMLElement[];
+    const items = [...row.children].filter(item => item.getAttribute('aria-hidden') !== 'true') as HTMLElement[];
     expect(items.map((item) => item.textContent))
       .toEqual(['Ran', LONG_TARGET, 'Failed', '8.4s']);
 
