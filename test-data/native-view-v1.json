@@ -81,6 +81,9 @@
     {"name": "unknown distribution component field", "path": ["rows", 1, "cells", 0, "extra"], "value": true},
     {"name": "unknown table component field", "path": ["rows", 1, "cells", 1, "extra"], "value": true},
     {"name": "unknown records component field", "path": ["rows", 2, "cells", 0, "extra"], "value": true},
-    {"name": "obsolete workflow record field", "path": ["rows", 2, "cells", 0, "datasets", 0, "items", 0, "status"], "value": {"label": "unknown", "tone": "neutral"}}
+    {"name": "obsolete workflow record field", "path": ["rows", 2, "cells", 0, "datasets", 0, "items", 0, "status"], "value": {"label": "unknown", "tone": "neutral"}},
+    {"name": "positive observation beyond bound", "path": ["rows", 0, "cells", 1, "datasets", 0, "points", 0, "values"], "value": [1000000000000001.0]},
+    {"name": "negative observation beyond bound", "path": ["rows", 0, "cells", 1, "datasets", 0, "points", 0, "values"], "value": [-1000000000000001.0]},
+    {"name": "huge finite observation", "path": ["rows", 0, "cells", 1, "datasets", 0, "points", 0, "values"], "value": [1e+308]}
   ]
 }

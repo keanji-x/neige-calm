@@ -131,14 +131,14 @@ impl Component {
                         }
                         for value in &point.values {
                             if matches!(data.style, PlotStyle::Stacked)
-                                && value.is_none_or(|v| v < 0.0)
+                                && value.is_none_or(|v| v.0 < 0.0)
                             {
                                 return Err(
                                     "stacked values must be complete and nonnegative".into()
                                 );
                             }
                             if let Some(value) = value {
-                                number(*value)?;
+                                number(value.0)?;
                             }
                         }
                     }
@@ -361,6 +361,7 @@ pub fn typescript() -> String {
         RecordSet::decl(&config),
         Series::decl(&config),
         Point::decl(&config),
+        ObservationValue::decl(&config),
         PlotStyle::decl(&config),
         Dataset::decl(&config),
         Slice::decl(&config),

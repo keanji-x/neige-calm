@@ -188,6 +188,30 @@ pub struct Series {
     #[schema(value_type = i64, minimum = 1, maximum = 7)]
     pub palette: f64,
 }
+const OBSERVATION_ABS_LIMIT: f64 = 1e15;
+#[derive(Clone, Copy, Deserialize, TS)]
+#[serde(transparent)]
+pub struct ObservationValue(#[serde(deserialize_with = "bounded_observation")] pub f64);
+fn bounded_observation<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
+    let value = f64::deserialize(deserializer)?;
+    if value.is_finite() && value.abs() <= OBSERVATION_ABS_LIMIT {
+        Ok(value)
+    } else {
+        Err(serde::de::Error::custom(
+            "observation exceeds presentation range",
+        ))
+    }
+}
+impl utoipa::PartialSchema for ObservationValue {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        utoipa::openapi::schema::ObjectBuilder::new()
+            .schema_type(utoipa::openapi::schema::Type::Number)
+            .minimum(Some(-OBSERVATION_ABS_LIMIT))
+            .maximum(Some(OBSERVATION_ABS_LIMIT))
+            .into()
+    }
+}
+impl utoipa::ToSchema for ObservationValue {}
 #[derive(Deserialize, ToSchema, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Point {
@@ -199,7 +223,7 @@ pub struct Point {
     #[schema(format = Date)]
     pub date: String,
     #[schema(min_items = 1, max_items = 6)]
-    pub values: Vec<Option<f64>>,
+    pub values: Vec<Option<ObservationValue>>,
 }
 #[derive(Deserialize, ToSchema, TS)]
 #[serde(rename_all = "lowercase")]

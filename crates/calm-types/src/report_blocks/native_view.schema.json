@@ -694,6 +694,11 @@
       ],
       "type": "object"
     },
+    "ObservationValue": {
+      "maximum": 1000000000000000,
+      "minimum": -1000000000000000,
+      "type": "number"
+    },
     "Placement": {
       "enum": [
         "prefix",
@@ -720,10 +725,13 @@
         },
         "values": {
           "items": {
-            "format": "double",
-            "type": [
-              "number",
-              "null"
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/ObservationValue"
+              }
             ]
           },
           "maxItems": 6,

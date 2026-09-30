@@ -389,3 +389,16 @@ fn native_view_generated_optional_types_preserve_explicit_null() {
         );
     }
 }
+
+#[test]
+fn native_view_observation_boundaries_are_inclusive_and_nullable() {
+    for value in [
+        serde_json::json!(-1e15),
+        serde_json::json!(1e15),
+        serde_json::Value::Null,
+    ] {
+        let mut view = fixture()["valid"].clone();
+        view["rows"][0]["cells"][1]["datasets"][0]["points"][0]["values"][0] = value;
+        validate_payload(KIND_VIEW, &view).unwrap();
+    }
+}

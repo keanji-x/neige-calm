@@ -71,6 +71,11 @@ describe('native view conformance shared with the kernel', () => {
     else Object.defineProperty(parent, key, { value: change.value, writable: true, enumerable: true, configurable: true });
     expect(nativeViewPayloadSchema.safeParse(value).success).toBe(false);
   });
+  it.each([-1e15, 1e15])('accepts inclusive signed observation boundary %s', boundary => {
+    const value = structuredClone(fixture.valid) as { rows: { cells: { datasets: { points: { values: (number | null)[] }[] }[] }[] }[] };
+    value.rows[0].cells[1].datasets[0].points[0].values[0] = boundary;
+    expect(nativeViewPayloadSchema.safeParse(value).success).toBe(true);
+  });
   it('reads through the real report decoder without an app or table wrapper', () => {
     const report = readTrackReport([{ id: 'report', track_id: 't', kind: 'track-report', title: null, sort: 0,
       created_at: 0, updated_at: 0, deletable: false,
