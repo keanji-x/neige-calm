@@ -37,7 +37,7 @@ function mount(path: string) {
     if (request.method === 'POST' && request.path === '/api/tracks') return new Promise<ApiTransportResponse>(() => undefined);
     if (request.path === '/api/areas') return Promise.resolve(ok([AREA]));
     if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([TRACK]));
-    if (request.path === '/api/tracks/w1') return Promise.resolve(ok({ track: TRACK, can_reopen: false, cards: [PLANNER_CARD], overlays: [] }));
+    if (request.path === '/api/tracks/w1') return Promise.resolve(ok({ track: TRACK, can_reopen: false, can_close: true, cards: [PLANNER_CARD], overlays: [] }));
     if (request.path === '/api/tracks/w1/conversations') return Promise.resolve(ok([ASSISTANT_ROW]));
     if (request.path.endsWith('/planner/run')) {
       return Promise.resolve(ok({ card_id: PLANNER_CARD.id, worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, blocked_reason: null }));
