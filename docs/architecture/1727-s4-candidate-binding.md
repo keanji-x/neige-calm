@@ -737,7 +737,7 @@
 ## 10. 参考
 
 - 基线 `231845fd5`；issue #1727 正文与 2026-09-19 访谈；facts 表 `s4-facts-subagent.md`、`s4-facts-codex.md`（分歧见 §2.10）；第 1 轮评审 `s4-sub-review1.md`、`s4-codex-review1.md`，第 2 轮 `s4-sub-review2.md`、`s4-codex-review2.md`，第 3 轮 `s4-sub-review3.md`、`s4-codex-review3.md`，第 4 轮 `s4-sub-review4.md`、`s4-codex-review4.md`，第 5 轮 `s4-sub-review5.md`、`s4-codex-review5.md`，第 6 轮 `s4-sub-review6.md`、`s4-codex-review6.md`，第 7 轮 `s4-sub-review7.md`、`s4-codex-review7.md`，第 8 轮 `s4-sub-review8.md`、`s4-codex-review8.md`（封顶轮；处置见 §11）；第 3 轮的 sqlite/git 构造在 scratchpad `check_matrix.sh`、`n1/`、`n1b/`，第 4 轮在 `r4/`（PATH 包装构造、子模块 porcelain、`delivery_policy` CHECK），第 5 轮在 `r5/`（`v5fn.sh`/`v6fn.sh` provenance 函数 + 伪 git `bin/`、`v6deliver.sh`/`v6outprobe.sh` 整段交付与 stdout 逐字节比对），第 6 轮在 `r6/`（`u1/` dash + 伪 git 的 U1 退回写法、`symlinkwt/` 软链 `.claude/worktrees` 下 canonical path 的三种形式、`settle6.py` 六列结算组 CHECK 432 元组），第 7 轮在 `r7/`（`cascade.py` 四张新表的 Track/Area 删除级联、`branch/` 伪 git `symbolic-ref` exit 128 下 v7 与 v8 分支观察、`merge/` 进行中 merge 的 v7 合并提交 + v8 guard 五种状态 + 搬走 linked-worktree Track cwd 后的 `--git-dir` 结算/清理）。
-- `docs/architecture/1628-report-chart-series.md`（结构模板）；`docs/design-1501-versioned-delivery.md`、`docs/design-1501-candidate-{verification,review,repair,consumer-dispatch}.md`；`docs/architecture/1501-task-continuity.md`；`docs/architecture/long-task-reliability.md`；`gh issue view 1615`。
+- `docs/architecture/1628-report-chart-series.md`（结构模板）；`docs/design-1501-versioned-delivery.md`、`docs/design-1501-candidate-{verification,review,repair,consumer-dispatch}.md`（#1893 S2 随机制删除）；`docs/architecture/1501-task-continuity.md`；`docs/architecture/long-task-reliability.md`；`gh issue view 1615`。
 - 术语：本文避免全部 #1316 退役词；迁移 0039/0081 的文件名含退役词，只以编号引用。
 
 ## 11. 处置历史

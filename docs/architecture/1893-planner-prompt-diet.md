@@ -263,6 +263,11 @@ Each slice is independently mergeable and green. Migration numbers are assigned 
   - `legacy_4140_rows_load` ← `calm-truth/src/db/sqlite/events.rs:719-723` ← make the `Err(e)` arm `return Err(e.into())`.
   - new `file_delivery_tables_are_dropped` (calm-truth migration test) ← the migration ← delete its `DROP TABLE task_candidate_repairs`.
   - new `plan_list_ordinary_entry_has_exactly_the_kept_fields` ← `plan.rs` entry build ← re-add `entry["file_delivery"]=Value::Null`.
+- As built:
+  - Migration `0125_drop_file_delivery.sql` drops the 8 tables, children first. `file_delivery_tables_are_dropped` replaces the 0102 upgrade test in `calm-truth/tests/file_delivery_migration.rs`; it fills one linked row per table under enforced foreign keys, then drops.
+  - Deleted with the mechanism: `file_delivery/`, `scheduler/file_delivery.rs`, `isolated_codex/{review_settled,repair_acceptance}.rs`, `track_report/repair.rs`, `calm.task.repair`, crate `calm-task-artifacts`, both settled event kinds, `IsolatedWorkspace::FileInput`, `DispatchArgs::VerifiedCandidate`, `RefusalSite::FileDeliveryInputUnhonoured`, `POST_EXECUTION_TASK_BOUND_ADAPTER_KINDS`, the track/area delete preflight, the replay reset rows, the non-Linux workspace-read stub, and the seven `docs/design-1501-*` documents of the mechanism.
+  - `planner.md` stays 6,747 B: S1 had already removed the delivery text. The tool surface goes 35,903 → 33,996 B (27 tools), cap 34,000. Text removed: `calm.task.repair.md`; the verified-candidate workspace and `candidate_input` in `calm.task.dispatch.md` and its schema; the review-required acceptance sentence in `calm.task.verdict.md`; `file_delivery` in `calm.plan.list.md`.
+  - Deviations. `calm.task.dispatch` keeps `workspace` required with the single value `empty`, so the 3 released receipts still deserialize. The fixture's isolated operations carry a minimal `tx_output_json` and its reports have no CRDT bytes (the payload-only legacy shape); the test seeds today's Planner sessions, which are not 4140 rows. Their recovery reads refuse with `track_not_ready`, because the tracks are closed, as on 4140.
 
 **S3**
 - Content: delete (c); migration drops the 4 recovery tables.
