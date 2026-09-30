@@ -1,13 +1,13 @@
 import { expect, expectTypeOf, it } from 'vitest';
-import type { TaskAttemptView as WireTaskAttempt, TaskRecoveryCapability as WireTaskRecoveryCapability, TaskRecoveryView as WireTaskRecoveryView, TaskRecoveryReceipt as WireTaskRecoveryReceipt, TaskRecoveryRequest as WireTaskRecoveryRequest } from '../api/generated/wire.js';
-import type { TaskAttempt, TaskRecoveryView, TaskRecoveryReceipt, TaskRecoveryRequest } from './task-recovery.js';
+import type { TaskAttemptView as WireTaskAttempt, TaskRecoveryView as WireTaskRecoveryView } from '../api/generated/wire.js';
+import type { TaskAttempt, TaskRecoveryView } from './task-recovery.js';
 import { performApiRequest } from '../api/client.js';
-import { attemptStatusLabel, recoverTaskOperation, taskAttemptsOperation, taskRecoveryViewSchema } from './task-recovery.js';
+import { attemptStatusLabel, taskAttemptsOperation, taskRecoveryViewSchema } from './task-recovery.js';
 
 function view() {
   const current = { attempt_id: 'server-id', generation: 2, status: 'awaiting_projection', blocking_reason: null, status_detail: null,
     worker_card_id: null, created_at_ms: 1000, finished_at_ms: null };
-  return { key: 'b', current, attempts: [current], recovery: { allowed: false, code: 'not_failed', reason: 'Waiting to start.' } };
+  return { key: 'b', current, attempts: [current] };
 }
 
 it('requires nullable execution evidence keys and keeps an allocation without a projection', () => {
@@ -29,16 +29,6 @@ it('rejects history for another business task through the API boundary', async (
   expect(result).toMatchObject({ status: 'failed', error: { kind: 'decode' } });
 });
 
-it('requires recovery receipts to acknowledge the exact expected attempt', async () => {
-  const request = { expected_attempt_id: 'server-id', idempotency_key: 'stable-intent', reason: 'Recover task' };
-  const operation = recoverTaskOperation('w1', 'b', request);
-  expect(operation.path).toBe('/api/tracks/w1/tasks/b/recover');
-  const result = await performApiRequest({ send: () => Promise.resolve({ status: 200, statusText: 'OK', body: {
-    key: 'b', previous_attempt_id: 'different-execution', attempt_id: 'new', generation: 2,
-  } }) }, operation);
-  expect(result).toMatchObject({ status: 'failed', error: { kind: 'decode' } });
-});
-
 it('keeps preparation labels distinct from running and drops undeclared private gate fields', () => {
   expect(attemptStatusLabel('pending')).toBe('Queued');
   expect(attemptStatusLabel('dispatched')).toBe('Preparing');
@@ -48,31 +38,27 @@ it('keeps preparation labels distinct from running and drops undeclared private 
   expect(result.current).not.toHaveProperty('gate');
 });
 
-
 it('escapes invalid route segments without claiming that the server admits them', () => {
   // This only exercises transport encoding. The server rejects this task key.
-  const operation = recoverTaskOperation('track/1', 'b + c', {
-    expected_attempt_id: 'server-id', idempotency_key: 'encoding-only', reason: 'Encoding probe',
-  });
-  expect(operation.path).toBe('/api/tracks/track%2F1/tasks/b%20%2B%20c/recover');
+  expect(taskAttemptsOperation('track/1', 'b + c').path).toBe('/api/tracks/track%2F1/tasks/b%20%2B%20c/attempts');
 });
 
-it('matches all generated recovery contracts, including required nullable evidence', () => {
+it('matches the generated history contracts, including required nullable evidence', () => {
   expectTypeOf<TaskAttempt>().toEqualTypeOf<WireTaskAttempt>();
   expectTypeOf<TaskRecoveryView>().toEqualTypeOf<WireTaskRecoveryView>();
-  expectTypeOf<TaskRecoveryView['recovery']>().toEqualTypeOf<WireTaskRecoveryCapability>();
-  expectTypeOf<TaskRecoveryReceipt>().toEqualTypeOf<WireTaskRecoveryReceipt>();
-  expectTypeOf<TaskRecoveryRequest>().toEqualTypeOf<Readonly<WireTaskRecoveryRequest>>();
 });
 
 it('accepts explicit empty history and rejects inconsistent allocation evidence', () => {
-  const empty = { key: 'b', current: null, attempts: [],
-    recovery: { allowed: false, code: 'not_started', reason: 'No attempts yet.' } };
+  const empty = { key: 'b', current: null, attempts: [] };
   expect(taskRecoveryViewSchema.safeParse(empty).success).toBe(true);
   const missing = { ...empty };
   Reflect.deleteProperty(missing, 'current');
   expect(taskRecoveryViewSchema.safeParse(missing).success).toBe(false);
-  expect(taskRecoveryViewSchema.safeParse({ ...empty, recovery: { ...empty.recovery, allowed: true } }).success).toBe(false);
   expect(taskRecoveryViewSchema.safeParse({ ...empty, attempts: view().attempts }).success).toBe(false);
   expect(taskRecoveryViewSchema.safeParse({ ...view(), attempts: [] }).success).toBe(false);
+});
+
+it('history without recovery decodes, and a recovery field is not part of the contract', () => {
+  const decoded = taskRecoveryViewSchema.parse({ ...view(), recovery: { allowed: true, code: 'available', reason: 'Recover.' } });
+  expect(Object.keys(decoded).sort()).toEqual(['attempts', 'current', 'key']);
 });

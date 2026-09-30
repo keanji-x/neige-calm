@@ -480,15 +480,6 @@ export const taskGitDeliverySettledSchema = z.object({
   }),
 });
 
-/** Failed execution cleanup settled; this does not grant recovery authority. */
-export const taskExecutionSettledSchema = z.object({
-  ev: z.literal('task.execution_settled'),
-  data: z.object({
-    task_id: z.string(),
-    operation_id: z.string(),
-  }),
-});
-
 /** The planner revised the track's task plan; `changed_keys` omits `unchanged` upserts. */
 export const planUpdatedSchema = z.object({
   ev: z.literal('plan.updated'),
@@ -918,7 +909,6 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   terminalWorkerRequestedSchema,
   taskCompletedSchema,
   taskFailedSchema,
-  taskExecutionSettledSchema,
   taskGitDeliverySettledSchema,
   planUpdatedSchema,
   taskDispatchedSchema,

@@ -15,12 +15,12 @@ import { bootTestCardRuntime } from './test-card-runtime.ts';
 
 afterEach(cleanup);
 
-function setup(mode: 'success' | 'lost' | 'conflict' | 'blocked' | 'awaiting' | 'dispatched' | 'refresh-fails' | 'stale-report' | 'lost-ahead' | 'event-advance' | 'dependency' | 'withdrawn' | 'contract-blocked' | 'capacity' | 'empty' = 'success') {
+function setup(mode: 'awaiting' | 'dispatched' | 'event-advance' | 'dependency' | 'withdrawn' | 'contract-blocked' | 'capacity' | 'empty') {
   const requests: ApiRequest[] = [];
   const taskKey = mode === 'dependency' ? 'c' : 'b';
-  const blocker = mode === 'dependency' ? 'Blocked by b (failed). Recover b before c can continue.'
+  const blocker = mode === 'dependency' ? 'Blocked by b (failed). Declare a new task in place of b before c can continue.'
     : mode === 'withdrawn' ? 'Execution release was withdrawn. Release this task to continue.'
-    : mode === 'contract-blocked' ? 'Task requirements changed after recovery was requested. Review the declaration.'
+    : mode === 'contract-blocked' ? 'Task requirements changed. Review the declaration.'
     : mode === 'capacity' ? 'All execution slots are occupied. Waiting for capacity.' : null;
   const old: TaskAttempt = { attempt_id: 'opaque-old-id', generation: 1, status: 'failed', blocking_reason: null, status_detail: 'gate-red',
     worker_card_id: 'old-worker', created_at_ms: 1000, finished_at_ms: 2000 };
@@ -33,7 +33,6 @@ function setup(mode: 'success' | 'lost' | 'conflict' | 'blocked' | 'awaiting' | 
     blocking_reason: blocker,
   };
   let initiallyEmpty = mode === 'empty';
-  let writes = 0;
   const area = { id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
   const track = { id: 'w1', area_id: 'c1', title: 'Continuing work', sort: 1, cwd: '/tmp',
     pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
@@ -64,24 +63,9 @@ function setup(mode: 'success' | 'lost' | 'conflict' | 'blocked' | 'awaiting' | 
         status: blocker !== null ? (mode === 'dependency' ? 'pending' : current.status === 'awaiting_projection' ? null : current.status) : mode === 'event-advance' ? current.status : mode === 'awaiting' ? null : 'failed', statusDetail: blocker !== null || mode === 'event-advance' ? current.status_detail : 'gate-red', workerCardId: blocker !== null ? null : mode === 'event-advance' ? current.worker_card_id : 'old-worker', diagnostics: [] },
       ...(mode === 'dependency' ? [{ blockId: 'b-dependency', key: 'b', schedulable: true, status: 'failed', statusDetail: 'gate-red', diagnostics: [] }] : []),
     ] });
-    if (request.path.endsWith('/attempts') && mode === 'refresh-fails' && writes > 0) return { status: 503, statusText: 'Unavailable', body: { error: 'History temporarily unavailable.', code: 'service_unavailable' } };
-    if (request.path.endsWith('/attempts') && initiallyEmpty) return ok({ key: taskKey, current: null, attempts: [],
-      recovery: { allowed: false, code: 'not_started', reason: 'No attempts yet.' } });
+    if (request.path.endsWith('/attempts') && initiallyEmpty) return ok({ key: taskKey, current: null, attempts: [] });
     if (request.path.endsWith('/attempts')) return ok({ key: taskKey, current,
-      attempts: mode === 'empty' ? [current] : current === old ? [old] : mode === 'lost-ahead' ? [old, next, current] : [old, current],
-      recovery: { allowed: current === old && mode !== 'blocked', code: mode === 'blocked' ? 'predecessor_not_quiescent' : 'available',
-        reason: mode === 'blocked' ? 'The previous worker is still stopping. Wait for cleanup.' : 'Recover under the unchanged contract.' },
-    });
-    if (request.path.endsWith('/recover')) {
-      writes += 1;
-      current = mode === 'stale-report' ? { ...next, status: 'dispatched' }
-        : mode === 'lost-ahead' ? { ...next, attempt_id: 'attempt-three', generation: 3, status: 'running', worker_card_id: 'new-worker' } : next;
-      if (mode === 'conflict') return { status: 409, statusText: 'Conflict', body: { code: 'conflict', error: 'A newer attempt already exists.' } };
-      if ((mode === 'lost' || mode === 'lost-ahead') && writes === 1) throw new Error('response lost after commit');
-      return ok({ key: taskKey, previous_attempt_id: old.attempt_id, attempt_id: next.attempt_id, generation: 2 });
-    }
-    if (/\/attempts\/[^/]+\/report$/.test(request.path)) return ok({
-      attemptId: decodeURIComponent(request.path.split('/').at(-2)!), report: null,
+      attempts: mode === 'empty' ? [current] : current === old ? [old] : [old, current],
     });
     if (request.path === '/api/settings') return ok({});
     return ok([]);
@@ -112,66 +96,17 @@ function setup(mode: 'success' | 'lost' | 'conflict' | 'blocked' | 'awaiting' | 
   } };
 }
 
-it('recovers one business task using the server attempt and shows queued execution with navigable history', async () => {
-  const { requests, open } = setup();
-  await open();
-  await userEvent.click(await screen.findByRole('button', { name: 'Recover task' }));
-  expect(await screen.findByText('Recovery requested. A new attempt is queued for preparation.')).toBeTruthy();
-  await waitFor(() => expect(screen.getByText('Current attempt 2 · Queued')).toBeTruthy());
-  expect(screen.getByText('1 task')).toBeTruthy();
-  await userEvent.click(screen.getByText('Attempt history (2)'));
-  await userEvent.click(screen.getByText('Attempt 1 · Failed'));
-  expect(screen.getByText('gate-red')).toBeTruthy();
-  const write = requests.find((r) => r.method === 'POST')!;
-  expect(write.path).toBe('/api/tracks/w1/tasks/b/recover');
-  expect(write.body).toMatchObject({ expected_attempt_id: 'opaque-old-id',
-    reason: 'User requested a new attempt under the unchanged task requirements.' });
-  expect((write.body as { idempotency_key: string }).idempotency_key.length).toBeGreaterThan(0);
-});
-
-it('retries an uncertain response with the exact original intent even if the server already advanced', async () => {
-  const { requests, open, mount } = setup('lost');
-  await open();
-  await userEvent.click(await screen.findByRole('button', { name: 'Recover task' }));
-  await screen.findByRole('button', { name: 'Retry recovery request' });
-  expect(document.querySelector('[data-nc-task-state] > summary')!.textContent).toContain('Awaiting recovery confirmation');
-  expect(screen.queryByTitle('Open the worker card for b')).toBeNull();
-  cleanup();
-  mount();
-  await open();
-  await userEvent.click(await screen.findByRole('button', { name: 'Retry recovery request' }));
-  expect(await screen.findByText('Current attempt 2 · Queued')).toBeTruthy();
-  const writes = requests.filter((r) => r.method === 'POST');
-  expect(writes).toHaveLength(2);
-  expect(writes[1].body).toEqual(writes[0].body);
-});
-
-it('refetches a stale conflict and does not automatically create another recovery', async () => {
-  const { requests, open } = setup('conflict');
-  await open();
-  await userEvent.click(await screen.findByRole('button', { name: 'Recover task' }));
-  expect(await screen.findByText('A newer attempt already exists.')).toBeTruthy();
-  expect(await screen.findByText('Current attempt 2 · Queued')).toBeTruthy();
-  expect(requests.filter((r) => r.method === 'POST')).toHaveLength(1);
-  expect(screen.queryByRole('button', { name: 'Recover task' })).toBeNull();
-});
-
-it('shows the server blocker without offering recovery or exposing a technical form', async () => {
-  await setup('blocked').open();
-  expect(await screen.findByText('The previous worker is still stopping. Wait for cleanup.')).toBeTruthy();
-  expect(screen.queryByRole('button', { name: 'Recover task' })).toBeNull();
-  expect(screen.queryByRole('textbox')).toBeNull();
-});
-
-
 it('retains the current allocation when there is no projected execution row', async () => {
   await setup('awaiting').open();
   expect(await screen.findByText('Current attempt 2 · Waiting to start')).toBeTruthy();
   expect(document.querySelector('[data-nc-task-state] > summary')!.textContent).toContain('Waiting to start');
   expect(screen.queryByTitle('Open the worker card for b')).toBeNull();
   expect(screen.queryByRole('button', { name: /b.*failed/i })).toBeNull();
-  expect(screen.queryByRole('button', { name: 'Recover task' })).toBeNull();
   expect(screen.getByText('1 task')).toBeTruthy();
+  await userEvent.click(screen.getByText('Attempt history (2)'));
+  await userEvent.click(screen.getByText('Attempt 1 · Failed'));
+  expect(screen.getByText('gate-red')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Open attempt 1' })).toBeTruthy();
 });
 
 it('describes dispatch as preparation before the worker starts', async () => {
@@ -179,56 +114,6 @@ it('describes dispatch as preparation before the worker starts', async () => {
   expect(await screen.findByText('Current attempt 2 · Preparing')).toBeTruthy();
   expect(screen.queryByText('Current attempt 2 · Running')).toBeNull();
 });
-
-it('keeps an accepted receipt when history refresh fails and cannot resubmit against stale failed state', async () => {
-  await setup('refresh-fails').open();
-  await userEvent.click(await screen.findByRole('button', { name: 'Recover task' }));
-  expect(await screen.findByText('Recovery requested. A new attempt is queued for preparation.')).toBeTruthy();
-  expect(await screen.findByText(/Could not refresh execution history: History temporarily unavailable/)).toBeTruthy();
-  expect(screen.queryByRole('button', { name: 'Recover task' })).toBeNull();
-});
-
-
-it('uses the replacement in header and task navigation while the report stays failed', async () => {
-  const { open } = setup('stale-report');
-  await open();
-  expect(screen.getByTitle('Open the worker card for b')).toBeTruthy();
-  await userEvent.click(await screen.findByRole('button', { name: 'Recover task' }));
-  await screen.findByText('Current attempt 2 · Preparing');
-  const summary = document.querySelector('[data-nc-task-state] > summary')!;
-  expect(summary.textContent).toContain('Preparing');
-  expect(summary.textContent).not.toContain('failed');
-  expect(screen.queryByTitle('Open the worker card for b')).toBeNull();
-  expect(screen.queryByRole('button', { name: /b.*failed/i })).toBeNull();
-  await userEvent.click(screen.getByText('Attempt history (2)'));
-  await userEvent.click(screen.getByText('Attempt 1 · Failed'));
-  expect(screen.getByRole('button', { name: 'Open attempt 1' })).toBeTruthy();
-});
-
-it('hides stale failure and current worker when an accepted receipt outruns the attempts view', async () => {
-  await setup('refresh-fails').open();
-  await userEvent.click(await screen.findByRole('button', { name: 'Recover task' }));
-  await screen.findByText(/Could not refresh execution history/);
-  expect(document.querySelector('[data-nc-task-state] > summary')!.textContent).toContain('Awaiting execution refresh');
-  expect(screen.queryByText('Current attempt 1 · Failed')).toBeNull();
-  expect(screen.getByText('Current attempt 2 · Awaiting execution refresh')).toBeTruthy();
-  expect(screen.queryByTitle('Open the worker card for b')).toBeNull();
-  expect(screen.queryByRole('button', { name: /b.*failed/i })).toBeNull();
-});
-
-it('keeps the newer view when replay returns an older recovery receipt', async () => {
-  const { open, router } = setup('lost-ahead');
-  await open();
-  await userEvent.click(await screen.findByRole('button', { name: 'Recover task' }));
-  await userEvent.click(await screen.findByRole('button', { name: 'Retry recovery request' }));
-  await screen.findByText('Current attempt 3 · Running');
-  expect(document.querySelector('[data-nc-task-state] > summary')!.textContent).toContain('Running');
-  expect(screen.queryByText('Current attempt 2 · Queued')).toBeNull();
-  expect(screen.queryByText('Recovery requested. A new attempt is queued for preparation.')).toBeNull();
-  await userEvent.click(screen.getByTitle('Open the worker card for b'));
-  await waitFor(() => expect(router.state.location.href).toContain('card=new-worker'));
-});
-
 
 it('refreshes collapsed current execution through task events without reopening history', async () => {
   const { open, advance, router } = setup('event-advance');
@@ -249,10 +134,9 @@ it('refreshes collapsed current execution through task events without reopening 
   expect(disclosure.open).toBe(false);
 });
 
-
 it('keeps the current failed dependency explanation after loading pending task history', async () => {
   const { open, advance } = setup('dependency');
-  const cause = 'Blocked by b (failed). Recover b before c can continue.';
+  const cause = 'Blocked by b (failed). Declare a new task in place of b before c can continue.';
   expect(await screen.findByTitle(cause)).toBeTruthy();
   await open();
   await screen.findByText('Current attempt 2 · Queued');
@@ -267,7 +151,7 @@ it('keeps the current failed dependency explanation after loading pending task h
 
 it.each([
   ['withdrawn', 'Execution release was withdrawn. Release this task to continue.'],
-  ['contract-blocked', 'Task requirements changed after recovery was requested. Review the declaration.'],
+  ['contract-blocked', 'Task requirements changed. Review the declaration.'],
   ['capacity', 'All execution slots are occupied. Waiting for capacity.'],
 ] as const)('explains current admission blocker %s without requiring a projected row', async (mode, cause) => {
   await setup(mode).open();
@@ -282,7 +166,6 @@ it('opens never-allocated task history without an alert and refreshes its first 
   await open();
   expect(await screen.findByText('No attempts yet')).toBeTruthy();
   expect(screen.queryByRole('alert')).toBeNull();
-  expect(screen.queryByRole('button', { name: 'Recover task' })).toBeNull();
   allocate();
   await userEvent.click(screen.getByRole('button', { name: 'Refresh execution history' }));
   expect(await screen.findByText('Current attempt 1 · Queued')).toBeTruthy();

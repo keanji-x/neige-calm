@@ -18,7 +18,7 @@ export function panelRowGroup(row: PanelRow, kind: RowModuleView['key']): Invent
   switch (row.status?.token ?? null) {
     case 'running': case 'working': case 'starting': case 'turn_pending': case 'dispatched': case 'verifying': return 'working';
     case 'needs_input': case 'awaiting_input': case 'blocked': return 'attention';
-    case 'pending': case 'queued': case 'waiting': case 'ready': case 'not-ready': case 'awaiting_refresh': case 'awaiting_projection': return 'waiting';
+    case 'pending': case 'queued': case 'waiting': case 'ready': case 'not-ready': case 'awaiting_projection': return 'waiting';
     case 'done': case 'completed': case 'succeeded': case 'exited': return 'done';
     case 'failed': case 'errored': return 'failed';
     case 'canceled': case 'cancelled': case 'superseded': case 'withdrawn': return 'canceled';

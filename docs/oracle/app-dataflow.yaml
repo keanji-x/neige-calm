@@ -159,7 +159,7 @@
     track 的四个可见投影分别由这四个 key 驱动（侧栏列表 / 详情页 / 报告文件树 / 日历区间视图），
     少一个就出现某一处静默陈旧。
   source: fe/core/events/invalidation-plan.ts:127-143
-  authoritative_test: fe/core/events/invalidation-plan.test.ts:19-38
+  authoritative_test: fe/core/events/invalidation-plan.test.ts:19-30
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
   runtime_layer: app
@@ -197,7 +197,7 @@
   why: >
     `calm.plan.cancel` 将 pending task 改为 canceled 时只发送 `plan.updated`；pending 状态不轮询，
     缺少该失效会让 TASKS 面板永久保留旧状态和旧 pending reason，直到整页重载。
-  source: fe/core/events/invalidation-plan.ts:223-225
+  source: fe/core/events/invalidation-plan.ts:222-224
   authoritative_test: fe/web/src/app/events/event-bridge.contract.test.tsx:238-244
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
@@ -254,7 +254,7 @@
   why: >
     runtime 状态同时驱动卡片详情、卡片状态角标（overlay 快照）和 runtime.json 投影三处 UI。
   source: fe/core/events/invalidation-plan.ts:110-116,159-161; fe/web/src/app/events/track-lookup.ts:7-17
-  authoritative_test: fe/core/events/invalidation-plan.test.ts:110-113
+  authoritative_test: fe/core/events/invalidation-plan.test.ts:100-103
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
   runtime_layer: app
@@ -652,7 +652,7 @@
     当「在动」、用 lifecycle ∨ `anyCardNeedsInput` 当「等你」，与内核从持久行算出的结论不一致；判定收敛到内核一处
     （`track_activity.rs`），FE 只解码 overlay。第二套推导必然再度分叉。
   source: fe/core/domain/activity.ts:19-89; fe/core/domain/track.ts:145-190,522-542;
-    fe/web/src/app/router/public.tsx:1867-1879,2376-2382; fe/web/src/features/track/page/public.tsx:7,46-69,91-94,566-616,647;
+    fe/web/src/app/router/public.tsx:1865-1877,2368-2374; fe/web/src/features/track/page/public.tsx:7,45-68,90-93,561-611,642;
     fe/web/src/app/providers/queries.ts:896-901,935-942;
     fe/web/src/features/today/public.tsx:137-138,256-257;
     fe/web/src/app/providers/ui-preferences.tsx:69-105; fe/web/src/ui/activity-indicator/activity-indicator.module.css:7-8;

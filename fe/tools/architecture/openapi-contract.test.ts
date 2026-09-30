@@ -19,8 +19,6 @@ const RESPONSE_WIRE_EXCEPTIONS = new Set([
   'ThreadCardResolution', 'TodayLaunchpad', 'TodayLaunchpadReportReset', 'TodayLaunchpadResolved',
   'TodaySummaryStarted',
   'VersionInfo',
-  'StartIsolatedTaskResponse', 'TaskAttemptReportResponse',
-  'TaskArtifactFileResponse',
   'ViewCatalogEntry', 'TrackBacklinksResponse', 'TrackDetail', 'TrackFsContent', 'TrackFsEntry',
   'TrackReportReadResponse', 'TrackTemplate',
   // Read-only server DTO, decoded by core/domain/template.ts; its shape is pinned below.
@@ -183,23 +181,6 @@ describe('generated OpenAPI integrity', () => {
     expect(() => validateDocument({ paths: { '/a': { get: {} } } }, ''))
       .toThrow('operation has no responses');
   });
-
-  it.each(['StartIsolatedTaskResponse', 'TaskAttemptReportResponse', 'TaskArtifactFileResponse'])(
-    'accepts only the exact server-local %s response exception', (name) => {
-      const responseDocument = (schemaName: string) => ({
-        paths: {
-          '/task': { get: { responses: { 200: { content: { 'application/json': {
-            schema: { $ref: `#/components/schemas/${schemaName}` },
-          } } } } } },
-        },
-        components: { schemas: { [schemaName]: { type: 'object' } } },
-      });
-      expect(() => validateDocument(responseDocument(name), '')).not.toThrow();
-      const unknown = `${name}Unexpected`;
-      expect(() => validateDocument(responseDocument(unknown), ''))
-        .toThrow(`response schema wire types missing: ${unknown}`);
-    },
-  );
 
   it('rejects a top-level response schema without a wire type', () => {
     const document = {

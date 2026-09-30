@@ -12,7 +12,6 @@ import { createPortal } from 'react-dom';
 import { useCompactViewport } from '../../../ui/viewport/public.ts';
 
 import { notificationPlainText } from '../../../../../core/domain/activity.ts';
-import { independentTaskUnavailableReason } from '../../../../../core/domain/independent-task.ts';
 import type { ReportOutlineItem, ReportTaskRow } from '../../../../../core/domain/report.ts';
 import {
   UNTITLED_TRACK_LABEL, trackActivityState, trackDisplayTitle, type CardWire, type Track,
@@ -103,8 +102,6 @@ export type TrackPageProps = Readonly<{
   onStartConversation?: () => void;
   /** The Cards module head's `+`, composed by `app/router`. */
   cardsAction?: ReactNode;
-  /** The app owns the goal dialog and immutable start request. */
-  onCreateTask?: () => void;
   /** Browser-local file history, composed by the report feature through app. */
   recentFiles?: ReactNode;
   onOpenCard?: (cardId: string) => void;
@@ -150,7 +147,7 @@ function taskInventorySummary(tasks: readonly ReportTaskRow[]): string | null {
 export function TrackPage({
   track, cards, tasks, openableCards, outlineItems = [], report, backlinks, conversationList, conversationAction,
   onStartConversation, conversationOpen = false, mobilePanelObscured, inputNotifications = [], onReply, onDismiss, nowMs,
-  cardsAction, onCreateTask, recentFiles, onOpenCard, onDeleteCard, onOpenTask, onOpenOutline, board, onCloseBoard,
+  cardsAction, recentFiles, onOpenCard, onDeleteCard, onOpenTask, onOpenOutline, board, onCloseBoard,
   panel = null, onOpenPanel, onClosePanel,
   mobileBackLabel = 'Pages', onMobileBack, mobileHeaderActionsHost = null, mobileHeaderTitleHost = null, mobileTitleReadView,
   canReopenTrack, canCloseTrack, onRenameTrack, onReopenTrack, onCloseTrack, onDeleteTrack,
@@ -246,9 +243,7 @@ export function TrackPage({
     }
     return done;
   };
-  const taskUnavailable = independentTaskUnavailableReason(track.closedAt);
   const trackWorkActions = [
-    ...(onCreateTask === undefined ? [] : [{ label: 'Run independent task', isDisabled: taskUnavailable !== null, onClick: onCreateTask }]),
     ...(offeredClosedAction === 'reopen' ? [
       { label: 'Reopen', isDisabled: closedPending, onClick: () => setTrackClosed('reopen') },
     ] : []),

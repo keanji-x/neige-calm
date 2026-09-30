@@ -56,7 +56,7 @@ export type ReportDocumentProps = Readonly<{
   taskVerdicts?: readonly TaskVerdict[];
   /** App-composed rows shared with the task inventory when execution evidence is loaded. */
   taskRows?: readonly ReportTaskRow[];
-  /** App-owned current/history query and recovery action, scoped to a task. */
+  /** App-owned current/history query, scoped to a task. */
   renderTaskExecution?: (task: ReportTaskRow, expanded: boolean) => ReactNode;
   /** Resolves a Track overlay for `table` or `view.live`; each renderer validates its declared contract. */
   resolveOverlay?: (source: string) => unknown;

@@ -5,7 +5,7 @@ import '../../styles/entry.css';
 import { logoutMarkerKey } from '../../../../core/domain/recovery/context.ts';
 import { mountProductionApp } from './production-app.tsx';
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
-import { createIsolatedRetryFixture } from '../router/isolated-task-retry-fixture.tsx';
+import { createTrackTaskFixture } from '../router/track-task-fixture.ts';
 import type { ApiRequest } from '../../../../core/api/types.ts';
 import type { SessionIdentity } from '../../../../core/api/auth.ts';
 
@@ -83,7 +83,7 @@ it.each([
 it.each([false, true])('production event owners retire before compatible protocol changes (new database=%s)', async newDatabase => {
   vi.stubGlobal('__NC_BUNDLED__', true);
   window.history.replaceState({}, '', '/next/track/w1');
-  const fixture = createIsolatedRetryFixture();
+  const fixture = createTrackTaskFixture();
   const values = new Map<string, string>();
   const storage: Storage = { get length() { return values.size; }, getItem: key => values.get(key) ?? null,
     setItem: (key, value) => { values.set(key, value); }, removeItem: key => { values.delete(key); },

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { ApiOperation } from '../api/types.js';
 
-/** Gate-free summaries from the task recovery service. Nullable fields are required. */
+/** Gate-free summaries of a task's execution history. Nullable fields are required. */
 export const taskAttemptSchema = z.object({
   attempt_id: z.string().min(1),
   generation: z.number().int().positive(),
@@ -16,39 +16,18 @@ export const taskRecoveryViewSchema = z.object({
   key: z.string().min(1),
   current: taskAttemptSchema.nullable(),
   attempts: z.array(taskAttemptSchema),
-  recovery: z.object({ allowed: z.boolean(), code: z.string(), reason: z.string() }),
 }).refine((view) => {
-  if (view.current === null) return view.attempts.length === 0 && !view.recovery.allowed;
+  if (view.current === null) return view.attempts.length === 0;
   const latest = view.attempts.at(-1);
   return latest?.attempt_id === view.current.attempt_id && latest.generation === view.current.generation;
 }, { message: 'Task history has inconsistent current allocation evidence' });
-export const taskRecoveryReceiptSchema = z.object({
-  key: z.string(), previous_attempt_id: z.string().min(1),
-  attempt_id: z.string().min(1), generation: z.number().int().positive(),
-});
 export type TaskAttempt = z.infer<typeof taskAttemptSchema>;
 export type TaskRecoveryView = z.infer<typeof taskRecoveryViewSchema>;
-export type TaskRecoveryReceipt = z.infer<typeof taskRecoveryReceiptSchema>;
-export type TaskRecoveryRequest = Readonly<{
-  expected_attempt_id: string;
-  idempotency_key: string;
-  reason: string;
-}>;
 
 export function taskAttemptsOperation(trackId: string, key: string): ApiOperation<TaskRecoveryView> {
   return { method: 'GET', path: `/api/tracks/${encodeURIComponent(trackId)}/tasks/${encodeURIComponent(key)}/attempts`,
     responseSchema: taskRecoveryViewSchema.refine((view) => view.key === key,
       { message: 'Task history belongs to a different task' }),
-  };
-}
-
-/** The caller freezes this body once per user intent, including transport retries. */
-export function recoverTaskOperation(trackId: string, key: string, request: TaskRecoveryRequest): ApiOperation<TaskRecoveryReceipt> {
-  return { method: 'POST', path: `/api/tracks/${encodeURIComponent(trackId)}/tasks/${encodeURIComponent(key)}/recover`,
-    body: request,
-    responseSchema: taskRecoveryReceiptSchema.refine((receipt) => receipt.key === key
-      && receipt.previous_attempt_id === request.expected_attempt_id,
-    { message: 'Recovery receipt does not match the request' }),
   };
 }
 

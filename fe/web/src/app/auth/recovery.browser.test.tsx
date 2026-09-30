@@ -10,7 +10,7 @@ import { RecoveryAccess } from '../../../../core/domain/recovery/access.ts';
 import { RecoverySession } from '../../systems/recovery/session.ts';
 import { createRecoveryTransports } from '../../systems/recovery/transport.ts';
 import { createRecoveryUnauthorizedChannel } from '../../systems/recovery/unauthorized.ts';
-import { createIsolatedRetryFixture } from '../router/isolated-task-retry-fixture.tsx';
+import { createTrackTaskFixture } from '../router/track-task-fixture.ts';
 import { createAppRouter } from '../router/public.tsx';
 import { bootTestCardRuntime } from '../router/test-card-runtime.ts';
 import { ProductionApp } from './production-app.tsx';
@@ -24,7 +24,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 it.each(['before', 'after'] as const)('cold saved Track and hot reconnect retain the production page with Query online listener %s lifecycle', async (listenerOrder) => {
   vi.stubGlobal('__NC_BUNDLED__', true); await page.viewport(390, 844);
   window.history.replaceState({}, '', '/next/track/w1');
-  const fixture = createIsolatedRetryFixture(); const access = new RecoveryAccess();
+  const fixture = createTrackTaskFixture(); const access = new RecoveryAccess();
   const transport = createRecoveryTransports(fixture.transport, access).business;
   const unauthorized = createRecoveryUnauthorizedChannel(access, { enqueue: task => queueMicrotask(task) });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });

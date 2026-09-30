@@ -46,8 +46,6 @@ import { ContextRing } from '../../features/chat/thread/context-ring.tsx';
 import { useMentionTrigger } from '../../features/chat/thread/mention-trigger.tsx';
 import { ReportBacklinks } from '../../features/report/backlinks/public.tsx';
 import { ReportDocument } from '../../features/report/document/public.tsx';
-import { useIndependentTaskLaunch } from './independent-task.tsx';
-import { useTaskArtifactFiles } from './task-artifact-files.tsx';
 import { TaskRecovery, useCurrentTaskRows } from './task-recovery.tsx';
 import { useReportPreviewResolver, useReportPreviewViewports } from './report-preview.ts';
 import { useReportSeriesResolver } from './report-series.ts';
@@ -2256,13 +2254,8 @@ function TrackRouteBody({
     go({ name: 'track', trackId: track.id, blockId, from: routeFrom });
   };
 
-  const taskFiles = useTaskArtifactFiles({ trackId: track.id, transport, unauthorized });
-  const independentTask = useIndependentTaskLaunch({ trackId: track.id, cards, closedAt: track.closedAt, transport, unauthorized, onCreated: openReportAnchor });
-
   return (
     <>
-    {independentTask.form}
-    {taskFiles.dialog}
     <TrackStage>
     <TrackPage
       mobilePanelObscured={chat.isOpen || sourceOpen}
@@ -2284,7 +2277,6 @@ function TrackRouteBody({
          it too, so the reader can hand the destination to somebody else. */
       onOpenTask={openReportAnchor}
       onOpenOutline={openReportAnchor}
-      onCreateTask={independentTask.open}
       cardsAction={<AddCardMenu entries={addMenuEntries} onSelect={pickCardKind} />}
       recentFiles={<RecentFiles
         paths={recentFilePaths}
@@ -2341,7 +2333,7 @@ function TrackRouteBody({
         taskRows={tasks}
         renderTaskExecution={(task, expanded) => <TaskRecovery
           key={`${track.id}:${task.key}`} trackId={track.id} taskKey={task.key} expanded={expanded}
-          transport={transport} unauthorized={unauthorized} onViewArtifact={taskFiles.open}
+          transport={transport} unauthorized={unauthorized}
           openableWorkerIds={openableCards}
           openWorker={(cardId) => { go({ name: 'track', trackId: track.id, cardId, from: routeFrom }); }}
         />}

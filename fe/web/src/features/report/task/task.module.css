@@ -154,20 +154,6 @@
     font-size: var(--text-base);
   }
 
-  .result { white-space: pre-wrap; overflow-wrap: anywhere; }
-
-  .fileAction { margin-inline-start: var(--space-4); }
-
-  .filePreview {
-    max-block-size: 50dvh;
-    overflow: auto;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    padding: var(--space-4);
-    background: var(--surface-code);
-    font-family: var(--font-mono);
-  }
-
   .current { color: var(--text); }
 
   .detail { overflow-wrap: anywhere; }
