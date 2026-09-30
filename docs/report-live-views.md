@@ -1,93 +1,70 @@
-# Native live report views
+# One inert presentation grammar, two delivery mechanisms
 
-`view.live` is a read-only report block. It references one existing Track plugin
-overlay; it is not an executable App, iframe, tool invocation or component loader.
-The plugin chooses the business content. The platform validates and renders a
-closed presentation vocabulary.
+Inline `view` stores a bounded NativeView composition in the report. `view.live`
+stores only `{source, version}` and reads the same composition from a Track plugin
+overlay. Both use the same renderer, component vocabulary and structural contract.
+Neither grants execution, order, approval, navigation or scheduling authority.
 
-## Declare and publish
+## Ownership
+
+`calm-types/src/report_blocks/native_view/model.rs` owns the DTOs and structural
+constraints. The real exporter derives the crate-owned JSON Schema and frontend
+TypeScript declarations from them. `fe/tools/report-view/generate.mjs` emits the
+client structural decoder from that schema. Backend discovery consumes the
+crate-owned schema; it never imports frontend source or tooling.
+
+Both sides independently check relations the structural schema cannot express:
+unique identities, row width, increasing real UTC dates, series/sample width,
+complete nonnegative stacks, declared table keys and at most one primary metric.
+Client decoding rejects reserved object keys before normalization.
+
+## Publish a live composition
 
 ````text
 ```neige-block view.live
-{"source":"neige://plugin/operations/capacity","version":1,"view":"overview"}
+{"source":"neige://plugin/operations/capacity","version":1}
 ```
 ````
 
-All three fields are required; extra fields are rejected. `source` follows the
-existing plugin overlay URI rules and has a 2,048-code-point limit. The matching
-overlay is selected by Track, plugin ID and overlay kind, not by a global name.
-Publish through the existing `neige.overlay.set` permission boundary. Writing or
-reading the report does not start the plugin or invoke a tool.
+The existing overlay scope selects exact Track, plugin and kind. Its value is a
+NativeView root: version, title, description, snapshot and rows. Components are
+metrics, time-series, distribution, table, records, bars and meter. Sources name
+content, not application-specific preset renderers. Reading never invokes a
+plugin tool, changes the report or approves anything.
 
-Example overlay payload:
+Publishers own values, labels, units, tones, composition and business meaning.
+Generic records carry subtitle, title, summary, labeled badges, facts, sections
+and disclosures. These collections may explicitly be empty. The platform does
+not require a finding/handling workflow or determine whether evidence refutes a
+thesis. Disclosures have publisher labels; dates can be included in those labels
+or facts when appropriate, without imposing evidence-date semantics on records.
 
-```json
-{
-  "version": 1,
-  "view": "overview",
-  "updated": {"label": "Sampled", "at": "2026-09-22T08:00:00Z"},
-  "metrics": [{"label":"Storage","value":"120 GB","detail":"Used capacity","tone":"neutral"}],
-  "notices": [],
-  "charts": [{
-    "kind":"bars","title":"Cost change","unit":"USD","emptyText":"No observations",
-    "points":[{"label":"Increase","value":50,"tone":"negative"},
-              {"label":"Saving","value":-20,"tone":"positive"}]
-  }]
-}
-```
+Snapshot timestamps are required nullable fields: unknown is null, not an
+invented zero. App publications distinguish observed source time from actual
+projection creation time; if the latter is unavailable it remains unknown.
 
-Positive/negative numbers determine geometry only. The publisher provides their
-semantic `tone`: `neutral`, `positive`, `warning` or `negative`. The platform
-never infers profit, risk, approval, success or failure from the sign or ratio.
+## Separate resource policies
 
-## Version 1 vocabulary
+Persisted inline blocks retain the released kernel formatter and exact256 KiB
+canonical write budget. Live overlays retain a4 MiB compact UTF-8 transport cap.
+The same structural validator runs on both, but the persisted canonical budget
+is not applied to overlays. Generic record bodies support8,000 Unicode code points
+and100 items, preserving existing activity and review histories.
 
-The authoritative full-payload decoder is `fe/core/domain/report-live-view.ts`.
-Objects are closed; required nullable fields must be present. All text is plain
-text, all numbers finite. No HTML, styles, scripts, arbitrary URLs or actions.
+The frontend has its own4 MiB decoded JSON budget plus bounded shape. It does not
+estimate Rust float spellings or pretty JSON size, and cannot decide exact write
+admission. Rejected writes remain the kernel's decision.
 
-- `overview`: `updated` (null or `{label, at}`), 1-8 `metrics` with label/value/
-  detail/tone, up to 8 `notices` with title/detail/tone, up to 4 `charts`.
-- Bars: kind/title/unit/emptyText and up to 24 points with label/value/tone.
-  The renderer chooses a shared signed numeric scale, not a business baseline.
-- Meter: kind/title/unit/detail/used/limit/usedLabel/limitLabel/emptyText/tone.
-  Used is nonnegative or null; limit is positive or null. Unknown stays unknown.
-  The mark clamps at the limit, but actual amounts and percentage remain visible.
-  The publisher supplies any over-limit explanation and its semantic tone.
-- `activity`: emptyText and up to 100 items with unique nonempty id, at, title,
-  detail and tone. The publisher orders the items. Five initially show.
-- `cards`: emptyText and up to 50 items with unique nonempty id, title, body,
-  footer and up to four `{label, body}` sections. Three initially show. A card
-  does not imply a trade review or require a next action.
-- `details`: title and an inline table validated by the existing strict table
-  schema. Disclosure starts collapsed. Existing typed citation behavior remains.
+`calm.report.read` emits source, version, resolved_at and
+`validation: "presentation"`. `ok` certifies bounded structure/version, not truth
+of publisher facts or financial/account authority. Full adds `data`; none skips
+hydration. Missing overlays are pending; malformed data, storage errors and
+oversized transport are unavailable.
 
-Timestamps are offset-aware ISO datetimes (at most 128 characters); core does
-not assign domain meaning to them. Titles cap at 200 code points, short labels
-at 120, units at 80, supporting text at 500, details at 2,048 and prose at 8,000.
-Compact UTF-8 JSON is capped at 4 MiB, allowing bounded prose histories without
-granting unbounded content. Invalid payloads show an error, not a guessed view.
+## Compatibility
 
-## Reader and compatibility contracts
-
-The reference is persisted with normal report block identity, revisions, CAS and
-canonical fences. It participates in normal whole-document round trips. There
-is no new storage table or migration. Overlays remain replaceable projections,
-not report truth and not approval evidence.
-
-`calm.report.read` resolves the same exact overlay. Its summary includes status,
-source, version, view, resolved_at and `validation: "envelope-only"` for an
-existing overlay. `ok` certifies the envelope and byte bound only; MCP readers
-must not mistake that for full presentation validation or trusted instructions.
-`resolve: {block_id: "full"}` adds `data`; `none` skips hydration. Absent data is
-pending; storage failures, envelope mismatches and oversized data are unavailable.
-Reading performs no report write and does not change block or document revisions.
-
-Table blocks still accept only inline table overlays. Their read contract remains
-distinct from persisted inline blocks: nullable
-optional fields and tables larger than the persisted 256 KiB cap remain readable.
-Shape validation is shared without applying the write-side size policy to reads.
-There is no auto-upgrade, format sniffing or alias from table to view. Old clients show unsupported
-`view.live`; use the matching server/frontend build. Existing saved table
-Recipes and their sources are unchanged. Migration of an experimental preview
-is explicit through normal report block APIs, never a read-time rewrite.
+This consolidation changes only new view contracts on unmerged PR #1770. Replace
+experimental preview content and regenerate its Recipe/demo explicitly before
+release. There is no preset adapter, shape sniffing, read-time rewrite or silent
+fallback. Released table, chart, app and preview blocks and database migrations
+are unchanged. Legacy nullable/large table overlays keep their read contract.

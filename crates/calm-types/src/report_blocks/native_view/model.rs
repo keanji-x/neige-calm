@@ -196,6 +196,7 @@ pub struct Point {
         max_length = 10,
         pattern = "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
     )]
+    #[schema(format = Date)]
     pub date: String,
     #[schema(min_items = 1, max_items = 6)]
     pub values: Vec<Option<f64>>,

@@ -55,15 +55,12 @@ fn inline_table_overlay_preserves_read_contract_without_relaxing_writes() {
 
 #[test]
 fn live_view_reference_is_explicit_bounded_and_round_trips() {
-    for view in ["overview", "activity", "cards", "details"] {
-        let payload =
-            json!({"source": "neige://plugin/operations/health", "version": 1, "view": view});
-        validate_payload(KIND_LIVE_VIEW, &payload).unwrap();
-        let fence = crate::report_blocks::render_fence(KIND_LIVE_VIEW, &payload);
-        let parsed = crate::report_blocks::parse_fence(&fence).unwrap();
-        assert_eq!(parsed.kind, KIND_LIVE_VIEW);
-        assert_eq!(parsed.payload, payload);
-    }
+    let payload = json!({"source": "neige://plugin/operations/health", "version": 1});
+    validate_payload(KIND_LIVE_VIEW, &payload).unwrap();
+    let fence = crate::report_blocks::render_fence(KIND_LIVE_VIEW, &payload);
+    let parsed = crate::report_blocks::parse_fence(&fence).unwrap();
+    assert_eq!(parsed.kind, KIND_LIVE_VIEW);
+    assert_eq!(parsed.payload, payload);
     for payload in [
         json!({"source": "neige://plugin/operations/health", "view": "overview"}),
         json!({"source": "neige://plugin/operations/health", "version": 2, "view": "overview"}),

@@ -55,7 +55,6 @@ export const liveTableBlockPayloadSchema = z.strictObject({
 export const liveViewBlockPayloadSchema = z.strictObject({
   source: max2048CodePoints(z.string().regex(LIVE_TABLE_SOURCE_PATTERN)),
   version: z.literal(1),
-  view: z.enum(['overview', 'activity', 'cards', 'details']),
 });
 export type LiveViewBlockPayload = z.infer<typeof liveViewBlockPayloadSchema>;
 

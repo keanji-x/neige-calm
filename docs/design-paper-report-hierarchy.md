@@ -14,7 +14,7 @@ curve, historical balance backfill or unattributed account-return percentage.
 ## Contract and ownership
 
 Introduce the first-class `view.live` report block, declared as
-`{source, version: 1, view: "overview" | "activity" | "cards" | "details"}`.
+`{source, version: 1}`.
 The kernel validates and persists this reference through the existing block
 write paths; tool discovery publishes the same contract. Its overlay must
 match both the declared version and view. Tables accept table data only.
@@ -28,7 +28,7 @@ Responsibility boundaries:
   Hydration reports source availability and matching envelope; frontend schema
   validation still checks the complete untrusted presentation payload.
   Summary returns status, source, version, view, resolved_at and
-  `validation: "envelope-only"`; full adds `data` (untrusted presentation).
+  `validation: "presentation"`; full adds `data` (untrusted presentation).
   Both reject payloads larger than 4 MiB of compact UTF-8 JSON. None performs
   no overlay query when all overlay blocks opt out. Storage failure is
   unavailable, not pending; pending means a successful lookup had no match.
@@ -90,3 +90,10 @@ and the real isolated preview at desktop/mobile widths in both relevant states.
 Use a non-financial operations fixture (positive cost is unfavorable, negative
 cost favorable) to pin the platform/App boundary. Update the same PR, obtain
 two fresh independent reviews, and update only the isolated preview.
+
+## Contract consolidation before release
+
+The initial preset experiment is replaced by one composition grammar under
+issue #1898. Live and inline data use the same renderer. This App owns its
+overview/activity/review grouping and all trading meanings; the kernel admits
+only neutral presentation shape. Existing table sources remain unchanged.

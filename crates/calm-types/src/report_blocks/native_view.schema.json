@@ -712,6 +712,7 @@
       "additionalProperties": false,
       "properties": {
         "date": {
+          "format": "date",
           "maxLength": 10,
           "minLength": 10,
           "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",

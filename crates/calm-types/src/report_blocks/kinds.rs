@@ -521,7 +521,7 @@ fn validate_live_table(map: &Map<String, Value>, errors: &mut Vec<String>) {
 }
 
 fn validate_live_view(map: &Map<String, Value>, errors: &mut Vec<String>) {
-    reject_unknown(map, &["source", "version", "view"], errors);
+    reject_unknown(map, &["source", "version"], errors);
     match map.get("source").and_then(Value::as_str) {
         Some(source) => {
             check_string_cap("source", source, errors);
@@ -534,12 +534,6 @@ fn validate_live_view(map: &Map<String, Value>, errors: &mut Vec<String>) {
     if map.get("version").and_then(Value::as_f64) != Some(1.0) {
         errors.push("version: required integer 1".into());
     }
-    required_enum(
-        map,
-        "view",
-        &["overview", "activity", "cards", "details"],
-        errors,
-    );
 }
 
 fn validate_table(map: &Map<String, Value>, errors: &mut Vec<String>) {

@@ -16,7 +16,7 @@ metrics, time series (line/stacked), distribution, inline table, record browser.
 One composition is one persisted report block and one CAS revision: UI and
 Planner read the identical canonical payload atomically. There is no second
 machine-facing snapshot and no inference from plugin ids. Existing `table`,
-`app`, `chart.series`, and `view.live` contracts remain unchanged.
+`app`, `chart.series`, remain unchanged. `view.live` shares this same presentation grammar; only its delivery is an overlay reference.
 
 Numeric metrics preserve raw values, units, precision, and explicit unknown
 states. Chart nulls are gaps, never zero. Samples are ordered UTC calendar dates;
@@ -26,10 +26,10 @@ nor thresholds imply investment judgments in the renderer.
 
 - `calm-types`: strict write validation and kind vocabulary; 256 KiB canonical
   report-block limit still applies. No migration or execution permission.
-- `fe/core/domain`: matching closed read schemas and typed composition values.
+- `fe/core/domain`: generated structural decoder/types from the calm-types contract and independent relational/read-resource checks.
 - `ui/data-visualization`: domain-independent chart/metric drawing and controls.
   No import from `core/domain`, no fetching, no finance calculations.
-- `features/report/native`: Neige layout, table reuse, record/evidence disclosure,
+- `features/report/native`: Neige layout, table reuse, generic record/disclosure reading,
   and existing wide Dialog for dense compositions. No trading labels or rules.
 - App/Recipe author: business calculations, semantic labels, evidence, snapshot
   identity, and explicit composition in a `neige-block view` fence.

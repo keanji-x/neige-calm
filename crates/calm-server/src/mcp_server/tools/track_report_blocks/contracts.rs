@@ -439,13 +439,12 @@ fn live_view_kind() -> Value {
     json!({
         "kind": "view.live",
         "schema": {
-            "type": "object", "required": ["source", "version", "view"],
+            "type": "object", "required": ["source", "version"],
             "additionalProperties": false,
             "properties": {
                 "source": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS,
                     "pattern": "^neige://plugin/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$" },
-                "version": { "type": "integer", "const": 1 },
-                "view": { "enum": ["overview", "activity", "cards", "details"] }
+                "version": { "type": "integer", "const": 1 }
             }
         },
         "usage": include_str!("../../../../prompts/report-kinds/view.live.md").trim_end()
@@ -453,11 +452,7 @@ fn live_view_kind() -> Value {
 }
 
 fn native_view_kind() -> Value {
-    let schema: Value = serde_json::from_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../fe/core/domain/report-view.schema.json"
-    )))
-    .expect("generated native-view JSON Schema");
+    let schema = report_blocks::native_view::schema();
     json!({"kind":"view", "schema":schema,
         "usage": include_str!("../../../../prompts/report-kinds/view.md").trim_end()})
 }

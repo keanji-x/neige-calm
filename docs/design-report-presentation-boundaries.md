@@ -17,7 +17,7 @@ Refactor PR #1770 so platform/kernel code owns a single inert presentation contr
 - Actual plugin projections and static demo both validate against the same contract and use the same renderer.
 - No backend reference to fe/core/domain/report-view.schema.json; real generator + check mode, schema/TS type drift checks and registry golden are current.
 - Static/live persisted round trips, exact canonical write-size limits, read-only overlay scope/version/resource fences, table compatibility and malformed presentation rejection are covered at production entry points.
-- Focused Rust/Python/frontend tests first; critical fence mutation; text ratchets, quickRust gates, frontend lint/build/tests/browser, complete two-channel fresh review, CI.
+- Focused Rust/Python/frontend tests first; critical fence mutation; text ratchets, quick Rust gates, frontend lint/build/tests/browser, complete two-channel fresh review, CI.
 - Update existing PR and isolated preview after verification. Do not merge or touch4140.
 
 Related: #1769, #1595; PR #1770.

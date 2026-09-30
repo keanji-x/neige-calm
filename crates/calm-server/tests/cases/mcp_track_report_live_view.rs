@@ -18,7 +18,64 @@ async fn read(boot: &Boot, args: Value) -> Value {
 }
 
 fn reference() -> Value {
-    json!({"source": "neige://plugin/operations/health", "version": 1, "view": "overview"})
+    json!({"source": "neige://plugin/operations/health", "version": 1})
+}
+
+fn presentation() -> Value {
+    serde_json::from_str::<Value>(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../test-data/native-view-v1.json"
+    )))
+    .unwrap()["valid"]
+        .clone()
+}
+
+fn records_presentation(count: usize, body: String, sections: usize) -> Value {
+    let mut data = presentation();
+    let records = &mut data["rows"][2]["cells"][0]["datasets"][0]["items"];
+    let item = records[0].clone();
+    *records = Value::Array(
+        (0..count)
+            .map(|index| {
+                let mut item = item.clone();
+                item["id"] = json!(format!("record-{index}"));
+                item["summary"] = json!(body);
+                item["sections"] = Value::Array(
+                    (0..sections)
+                        .map(|_| json!({"label":"Full text", "body":body}))
+                        .collect(),
+                );
+                item
+            })
+            .collect(),
+    );
+    data
+}
+
+#[tokio::test]
+async fn live_view_preserves_full_records_above_the_persisted_write_budget() {
+    let boot = boot().await;
+    let created = create(&boot, "view.live", reference()).await;
+    let data = records_presentation(50, "x".repeat(6000), 0);
+    assert!(calm_types::report_blocks::native_view::validate(&data).is_ok());
+    assert!(calm_types::report_blocks::validate_payload("view", &data).is_err());
+    assert!(serde_json::to_vec(&data).unwrap().len() < 4 * 1024 * 1024);
+    publish(
+        &boot,
+        "operations",
+        "track",
+        boot.track_id.as_str(),
+        "health",
+        data.clone(),
+    )
+    .await;
+    let report = read(
+        &boot,
+        json!({"resolve": {created["id"].as_str().unwrap(): "full"}}),
+    )
+    .await;
+    assert_eq!(resolved(&report, &created["id"])["status"], "ok");
+    assert_eq!(resolved(&report, &created["id"])["data"], data);
 }
 
 async fn create(boot: &Boot, kind: &str, payload: Value) -> Value {
@@ -94,10 +151,7 @@ async fn live_view_discovery_write_read_and_stale_cas() {
         .iter()
         .find(|k| k["kind"] == "view.live")
         .unwrap();
-    assert_eq!(
-        kind["schema"]["required"],
-        json!(["source", "version", "view"])
-    );
+    assert_eq!(kind["schema"]["required"], json!(["source", "version"]));
     let created = create(&boot, "view.live", reference()).await;
     let before = read(&boot, json!({})).await;
     assert!(
@@ -108,7 +162,7 @@ async fn live_view_discovery_write_read_and_stale_cas() {
     );
     assert_eq!(resolved(&before, &created["id"])["status"], "pending");
     let mut changed = reference();
-    changed["view"] = json!("details");
+    changed["source"] = json!("neige://plugin/operations/updated-health");
     let updated = upsert_block(
         &boot,
         assistant_identity(&boot),
@@ -153,7 +207,7 @@ async fn live_view_hydration_is_scoped_bounded_and_read_only() {
     let created = create(&boot, "view.live", reference()).await;
     let id = &created["id"];
     let track = boot.track_id.as_str();
-    let data = json!({"version": 1, "view": "overview", "metrics": [], "notices": [], "charts": [], "updated": null});
+    let data = presentation();
     for (plugin, entity_kind, entity_id, kind) in [
         ("other", "track", track, "health"),
         ("operations", "area", track, "health"),
@@ -170,10 +224,9 @@ async fn live_view_hydration_is_scoped_bounded_and_read_only() {
     let before = read(&boot, json!({})).await;
     let summary = resolved(&before, id);
     assert_eq!(summary["status"], "ok");
-    assert_eq!(summary["validation"], "envelope-only");
+    assert_eq!(summary["validation"], "presentation");
     assert_eq!(summary["source"], reference()["source"]);
     assert_eq!(summary["version"], 1);
-    assert_eq!(summary["view"], "overview");
     assert!(summary["resolved_at"].is_string());
     assert!(summary.get("data").is_none());
     let full = read(&boot, json!({"resolve": {id.as_str().unwrap(): "full"}})).await;
@@ -181,11 +234,14 @@ async fn live_view_hydration_is_scoped_bounded_and_read_only() {
     assert_eq!(full["docRev"], before["docRev"]);
     let none = read(&boot, json!({"resolve": {id.as_str().unwrap(): "none"}})).await;
     assert!(resolved(&none, id).is_null());
-    for data in [
-        json!({"version": 2, "view": "overview"}),
-        json!({"version": 1, "view": "cards"}),
-        json!({"version": 1, "view": "overview", "text": "x".repeat(4 * 1024 * 1024)}),
-    ] {
+    let mut wrong_version = data.clone();
+    wrong_version["version"] = json!(2);
+    let mut wrong_shape = data.clone();
+    wrong_shape["rows"][0]["cells"][0]["action"] = json!("run");
+    let oversized = records_presentation(50, "😀".repeat(8000), 2);
+    assert!(calm_types::report_blocks::native_view::validate(&oversized).is_ok());
+    assert!(serde_json::to_vec(&oversized).unwrap().len() > 4 * 1024 * 1024);
+    for data in [wrong_version, wrong_shape, oversized] {
         publish(&boot, "operations", "track", track, "health", data).await;
         let out = read(&boot, json!({"resolve": {id.as_str().unwrap(): "full"}})).await;
         assert_eq!(resolved(&out, id)["status"], "unavailable");
@@ -307,7 +363,7 @@ async fn live_view_invalid_reference_cannot_mutate_report() {
     let boot = boot().await;
     let before = read(&boot, json!({})).await;
     for bad in [
-        json!({"source": "https://example.com", "version": 1, "view": "overview"}),
+        json!({"source": "https://example.com", "version": 1}),
         json!({"source": "neige://plugin/operations/health", "version": 1, "view": "html"}),
     ] {
         for (tool, args) in [

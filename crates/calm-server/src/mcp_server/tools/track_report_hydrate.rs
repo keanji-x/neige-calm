@@ -179,7 +179,7 @@ fn hydrate_overlay(
     out
 }
 
-/// Availability/envelope validation only; not a second presentation-schema implementation.
+/// Live and persisted reports share the same inert presentation grammar.
 fn hydrate_live_view(
     block: &ReportBlock,
     overlay: &crate::model::Overlay,
@@ -187,17 +187,17 @@ fn hydrate_live_view(
 ) -> Value {
     let mut out = json!({
         "source": block.payload["source"], "version": block.payload["version"],
-        "view": block.payload["view"], "resolved_at": resolved_at_text(overlay.updated_at),
-        "validation": "envelope-only",
+        "resolved_at": resolved_at_text(overlay.updated_at),
+        "validation": "presentation",
     });
     let valid = validate_payload(KIND_LIVE_VIEW, &block.payload).is_ok()
         && overlay.payload.get("version").and_then(Value::as_f64) == Some(1.0)
-        && overlay.payload.get("view") == block.payload.get("view")
         && serde_json::to_vec(&overlay.payload)
-            .is_ok_and(|bytes| bytes.len() <= MAX_LIVE_VIEW_BYTES);
+            .is_ok_and(|bytes| bytes.len() <= MAX_LIVE_VIEW_BYTES)
+        && calm_types::report_blocks::native_view::validate(&overlay.payload).is_ok();
     if !valid {
         out["status"] = json!("unavailable");
-        out["reason"] = json!("view envelope mismatch or payload exceeds 4 MiB");
+        out["reason"] = json!("invalid presentation or payload exceeds 4 MiB");
         return out;
     }
     out["status"] = json!("ok");
