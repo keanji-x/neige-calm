@@ -1,6 +1,6 @@
 // The new-track sentence with the `@` menu the route attaches (#1881): Enter and Tab reach the menu
-// only for a row it has rendered as highlighted; otherwise the form keeps its own Enter, and an IME
-// Enter is always the candidate's.
+// only for a row it has rendered as highlighted, are dropped while it searches, and otherwise take
+// the form's own path; an IME Enter is always the candidate's.
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -78,6 +78,16 @@ describe('Enter in the new-track sentence while the @ menu is open', () => {
     imeEnter();
     await waitFor(() => { expect(field().textContent).toBe('fix @zz'); });
     expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('during the search, drops Enter: the track is not created with the raw query', async () => {
+    const onSubmit = vi.fn();
+    render(<Form search={() => new Promise(() => undefined)} onSubmit={onSubmit} />);
+    await userEvent.type(field(), 'fix @roll');
+    await screen.findByText('Searching…');
+    await userEvent.keyboard('{Enter}');
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(field().textContent).toBe('fix @roll');
   });
 
   it('with a shown row, picks it', async () => {

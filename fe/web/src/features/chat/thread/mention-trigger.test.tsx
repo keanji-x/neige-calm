@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -207,6 +207,22 @@ describe('the @ menu in the real composer', () => {
     expect(field().querySelector('[data-astryx-token]')).toBeNull();
     expect(field().textContent).toBe('@azzz');
     expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('sends on Enter, and lets Tab go, while an open menu has nothing to pick', async () => {
+    const onSend = vi.fn();
+    render(<MentionComposer search={() => Promise.resolve([])} onSend={onSend} onNewConversation={vi.fn()} />);
+    await userEvent.type(field(), 'check /tmp/x');
+    await screen.findByText('No command by that name');
+    expect(fireEvent.keyDown(field(), { key: 'Tab' })).toBe(true);
+    await userEvent.keyboard('{Enter}');
+    expect(onSend).toHaveBeenLastCalledWith('check /tmp/x');
+
+    await userEvent.type(field(), 'ask @bob');
+    await screen.findByText('Nothing in this area matches');
+    expect(fireEvent.keyDown(field(), { key: 'Tab' })).toBe(true);
+    await userEvent.keyboard('{Enter}');
+    expect(onSend).toHaveBeenLastCalledWith('ask @bob');
   });
 
   it('shows the empty text when the search fails', async () => {

@@ -21,6 +21,7 @@ import { EdgeNavigator } from '../../../ui/edge-navigation/public.tsx';
 import { observeResize } from '../../../ui/edge-navigation/resize.ts';
 import { drawerSeamAround } from '../../../ui/drawer/public.tsx';
 import { Icon } from '../../../ui/icon/public.tsx';
+import { triggerMenuKeyRoute } from '../../../ui/trigger-menu-keys/public.ts';
 import { useState } from '../../../ui/state/public.ts';
 
 import { activityLabelOf, cardActivityOf, type CardActivity } from '../../../../../core/domain/activity.ts';
@@ -642,20 +643,13 @@ export function ChatComposer({
         /* Only Enter pressed in the field is a send: this handler captures on the root, and the `drawer` slot puts buttons under it. */
         const field = event.target instanceof Element ? event.target.closest('[contenteditable], textarea, input') : null;
         if (field === null) return;
-        if (event.nativeEvent.isComposing) {
+        const route = triggerMenuKeyRoute(event.nativeEvent, field);
+        if (route === 'composing' || route === 'swallow') {
+          if (route === 'swallow') event.preventDefault();
           event.stopPropagation();
           return;
         }
-        /* An open trigger menu takes Enter and Tab only for a row it has rendered as highlighted: while it
-           searches it still holds the last query's rows, and a pick from those is not what was typed. */
-        if (field.getAttribute('aria-expanded') === 'true') {
-          const active = field.getAttribute('aria-activedescendant');
-          if (active !== null && document.getElementById(active) !== null) return;
-          event.preventDefault();
-          event.stopPropagation();
-          return;
-        }
-        if (event.key !== 'Enter' || event.shiftKey) return;
+        if (route === 'menu' || event.key !== 'Enter' || event.shiftKey) return;
         if (disabled) {
           event.preventDefault();
           event.stopPropagation();
