@@ -3,6 +3,7 @@ import pytest
 
 from paper_trading.report import tables
 from paper_trading.report_views import overview, activity
+from .conftest import NOW
 from .test_strategy import account, policy, portfolio, approve  # noqa: F401 - pytest fixtures
 
 
@@ -56,6 +57,8 @@ def test_error_notice_keeps_last_snapshot_visible_without_claiming_freshness(por
     assert view['rows'][1]['cells'][0]['datasets'][0]['items'][0]['badges'][0]['tone'] == 'negative'
     assert '最近一次' in view['rows'][1]['cells'][0]['datasets'][0]['items'][0]['summary']
     assert view['rows'][-1]['cells'][0]['datasets'][0]['items'][0]['facts'] == [{'label': '时间', 'value': state['snapshot']['at']}]
+    assert view['snapshot']['observedAt'] == int(NOW.timestamp() * 1000)
+    assert view['snapshot']['producedAt'] is None
 
 
 def test_budget_does_not_double_count_partial_entry_fills(portfolio, policy, rig):
@@ -111,6 +114,7 @@ def test_native_projection_identity_and_timestamps_are_sourced(portfolio, policy
         view = projections[name]
         assert set(view) == {'version', 'title', 'description', 'snapshot', 'rows'}
         assert view['snapshot']['observedAt'] is None
+        assert view['snapshot']['producedAt'] is None
         assert view == tables(state)[name]
     assert state == before
 

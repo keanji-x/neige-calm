@@ -318,6 +318,8 @@ trading owns all semantic badges, risk/approval labels and budget calculations.
 The host only validates and renders these inert fields. Live references have no
 preset selector; existing saved recipes on this development branch must be
 updated from `recipe.md` before release. Snapshot identity hashes the projection
-and its persisted observation/event timestamps. A missing observation remains
-explicitly null; rendering never fabricates a refresh time. Legacy table source
-IDs and their payloads are unchanged.
+and its persisted reconciliation timestamp. `observedAt` records that actual
+reconciliation time, or explicitly null when unavailable. The pure projection
+has no publication clock, so live `producedAt` is explicitly null even when
+reconciliation or journal times are known. Rendering never fabricates a refresh
+or generation time. Legacy table source IDs and their payloads are unchanged.

@@ -12,21 +12,16 @@ from .report_text import event_text, money_text, state_text
 def native_view(state, title, rows):
     """Publish inert composition data with an identity derived from this projection.
 
-    Event and reconciliation times describe our persisted knowledge. Rendering
-    does not invent a new observation or claim a broker refresh has occurred.
+    Reconciliation supplies the observation time. This pure projection has no
+    publication clock, so producedAt stays explicitly unknown. Event times
+    never stand in for when the projection was generated.
     """
     observed = state['snapshot']['at'] if state['snapshot'] else None
-    times = [event['at'] for event in state['journal']]
-    if observed is not None:
-        times.append(observed)
-    def milliseconds(value):
-        return int(datetime.fromisoformat(value.replace('Z', '+00:00')).timestamp() * 1000) if value is not None else None
-    produced = max((milliseconds(value) for value in times), default=None)
-    observed = milliseconds(observed)
-    identity = hashlib.sha256(json.dumps([title, rows, observed, produced], ensure_ascii=False,
+    observed = int(datetime.fromisoformat(observed.replace('Z', '+00:00')).timestamp() * 1000) if observed is not None else None
+    identity = hashlib.sha256(json.dumps([title, rows, observed], ensure_ascii=False,
                                          sort_keys=True, allow_nan=False).encode()).hexdigest()
     return {'version': 1, 'title': title, 'description': '',
-            'snapshot': {'id': identity, 'observedAt': observed, 'producedAt': produced}, 'rows': rows}
+            'snapshot': {'id': identity, 'observedAt': observed, 'producedAt': None}, 'rows': rows}
 
 
 def row(identity, cells, title=''):
