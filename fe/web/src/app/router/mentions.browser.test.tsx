@@ -32,6 +32,7 @@ function mount(path: string) {
   const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
   const transport: ApiTransportPort = { send(request) {
     requests.push(request);
+    if (request.path.startsWith('/api/areas/c1/mentions?q=bob')) return Promise.resolve(ok({ tags: [], tracks: [], blocks: [] }));
     if (request.path.startsWith('/api/areas/c1/mentions?')) return Promise.resolve(ok(CANDIDATES));
     if (request.method === 'POST' && request.path === '/api/tracks') return new Promise<ApiTransportResponse>(() => undefined);
     if (request.path === '/api/areas') return Promise.resolve(ok([AREA]));
@@ -104,6 +105,26 @@ it('keeps the / command in the Planner conversation', async () => {
   await openConversation(/Conversation Planner chat/);
   await userEvent.keyboard('/');
   await expect.element(page.getByRole('listbox', { name: 'Commands' }).getByRole('option', { name: /^new/ })).toBeVisible();
+});
+
+it.each([
+  ['@', 'ask @bob', 'Nothing in this area matches'],
+  ['/', 'check /tmp/x', 'No command by that name'],
+])('sends over an empty %s menu once and keeps the Planner drawer open', async (_, text, empty) => {
+  await page.viewport(1440, 900);
+  const { requests } = mount('/track/w1');
+  await openConversation(/Conversation Planner chat/);
+  await userEvent.keyboard(text);
+  await expect.element(page.getByText(empty)).toBeVisible();
+  await userEvent.keyboard('{Enter}');
+  const sends = () => requests.filter((request) => request.path.endsWith('/planner/input'))
+    .map((request) => (request.body as { text: string }).text);
+  await expect.poll(sends).toEqual([text]);
+  /* A frame for a close the send might have set off. */
+  await new Promise((resolve) => { requestAnimationFrame(resolve); });
+  expect(document.querySelector('[data-nc-escape-layer]')).not.toBeNull();
+  await expect.element(page.getByRole('combobox', { name: 'Message' })).toBeInTheDocument();
+  expect(sends()).toEqual([text]);
 });
 
 it('offers no @ menu in a track\'s assistant conversation', async () => {
