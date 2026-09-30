@@ -448,7 +448,7 @@ fn live_view_kind() -> Value {
                 "view": { "enum": ["overview", "activity", "cards", "details"] }
             }
         },
-        "usage": include_str!("../../../../prompts/tools/calm.report.kind.view.live.md").trim_end()
+        "usage": include_str!("../../../../prompts/report-kinds/view.live.md").trim_end()
     })
 }
 
@@ -459,7 +459,7 @@ fn native_view_kind() -> Value {
     )))
     .expect("generated native-view JSON Schema");
     json!({"kind":"view", "schema":schema,
-        "usage": include_str!("../../../../prompts/tools/calm.report.kind.view.md").trim_end()})
+        "usage": include_str!("../../../../prompts/report-kinds/view.md").trim_end()})
 }
 
 pub(super) fn commit_descriptor() -> ToolDescriptor {
