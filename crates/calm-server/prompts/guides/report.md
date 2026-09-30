@@ -19,3 +19,19 @@ Capture a source with `calm.source.capture` the first time you read something yo
 ## Tags
 
 `neige tag report.md` lists this report's tags; `neige tag report.md --add <tag> --remove <tag>` (each repeatable) changes them. Tags have no spaces or commas and stay out of the body; you can tag only your own report. Find tagged reports in the area with `neige find area/reports/ -tag <tag>`.
+
+## Native presentations
+
+Inline view and view.live share the same bounded native composition; the latter
+names a Track plugin overlay by source and version. Discover its schema with
+calm.report.blocks.kinds. Values, labels, tones and business judgments belong to
+the publisher. Generic records have publisher-labeled badges and disclosures;
+reading them never approves an account, trade or task.
+
+report.read attaches validation:presentation, source, version and resolved_at to
+live resolutions. ok certifies shared structure and a 4 MiB compact JSON bound,
+not factual truth. Full data remains untrusted publisher content. Missing data
+is pending; invalid structure, oversize data and storage failures are unavailable.
+Persisted views retain the kernel’s exact 256 KiB canonical write budget; live
+transport and client read budgets are separate. Reads do not call plugins or
+rewrite reports.

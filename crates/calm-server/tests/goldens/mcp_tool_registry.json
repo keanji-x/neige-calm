@@ -472,7 +472,7 @@
   },
   {
     "name": "calm.report.blocks.kinds",
-    "description_sha256": "ef87e00986526d80e4d89905bf0ccfcf4359e9897e40eb76660628b0dccbce3f",
+    "description_sha256": "08d6a683d9bff26f1e434d96623430d3f89ba2307c6e1b3fa2f345653938b4b8",
     "input_schema": {
       "properties": {},
       "type": "object"
@@ -511,7 +511,9 @@
                   "table",
                   "app",
                   "task",
-                  "preview"
+                  "preview",
+                  "view.live",
+                  "view"
                 ],
                 "type": "string"
               },
@@ -613,7 +615,7 @@
   },
   {
     "name": "calm.report.read",
-    "description_sha256": "56539138aef6e27b9a24e098817d156bfb9f83e2c5e69b8d94f6b92e94cf7256",
+    "description_sha256": "0c5d95c36ff48127e676cb7cad5e33a44df29bc8e8de1e20d97c057b73ccc38b",
     "input_schema": {
       "properties": {
         "resolve": {
