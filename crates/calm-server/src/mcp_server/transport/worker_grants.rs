@@ -280,21 +280,24 @@ pub(super) async fn filter(
     Ok(())
 }
 
+/// Return true only for an isolated Worker with the exact live plugin grant.
+/// Legacy permission is preserved, but does not prove Planner delegation.
 pub(super) async fn require(
     ctx: &Arc<AppContext>,
     identity: &ToolCallIdentity,
     name: &str,
-) -> Result<(), RpcError> {
+) -> Result<bool, RpcError> {
     if let Some(grants) = isolated_grants(ctx, identity).await? {
         if native_tool(name) {
-            return Ok(());
+            return Ok(false);
         }
         let eligible = eligible_plugin_tools(ctx, identity.track_id.as_deref()).await?;
         if !grants.iter().any(|g| g == name) || !eligible.contains(name) {
             return Err(RpcError::method_not_found(&format!("tools/call: {name}")));
         }
+        return Ok(true);
     }
-    Ok(())
+    Ok(false)
 }
 
 /// Fixture shape of `tests/cases/mcp_plugin_tools.rs`: `dev.echo_do.thing` and `dev_echo.do.thing` collide once Codex sanitizes them.

@@ -416,7 +416,8 @@ exact tools through `plugin_tools`:
 
 The Worker receives only the decision ID and those grants. It cannot change the
 target through the execution call; the App requires the kernel-resolved Worker
-role. Planner execution, Worker planning, missing identity, wrong Track and
+role and literal `delegated_tool: true`, proved by the current isolated attempt
+with this exact granted tool. Legacy/shared Workers do not acquire that proof. Planner execution, Worker planning, missing identity, wrong Track and
 caller identity supplied through arguments are refused. A Worker refreshes to
 observe `working`, `settled`, `unknown`, `rejected`, `expired`, `canceled`, `noop`,
 or `queued` outside the regular session. An unresolved/unknown result is reported

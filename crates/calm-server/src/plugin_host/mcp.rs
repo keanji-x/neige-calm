@@ -193,6 +193,8 @@ pub struct AgentCaller<'a> {
     pub role: crate::model::CardRole,
     pub card_id: &'a str,
     pub session_id: &'a str,
+    /// Exact plugin-tool delegation validated against the current isolated attempt.
+    pub delegated_tool: bool,
 }
 
 /// Version of the `dev.neige/kernel-callbacks` capability; only an exact match in the plugin's

@@ -13,7 +13,7 @@ from paper_trading.allocation_config import AllocationConfig
 NOW = datetime(2026, 9, 30, 15, tzinfo=timezone.utc)
 ROOT = Path(__file__).parents[1]
 PLANNER = {'role': 'planner', 'card_id': 'planner-card', 'session_id': 'planner-session'}
-WORKER = {'role': 'worker', 'card_id': 'worker-card', 'session_id': 'worker-session'}
+WORKER = {'role': 'worker', 'card_id': 'worker-card', 'session_id': 'worker-session', 'delegated_tool': True}
 
 
 @pytest.fixture
@@ -303,3 +303,20 @@ def test_spy_proved_not_submitted_resolves_without_unknown(allocation_rig):
     assert len([c for c in r.calls() if c['method']=='submit'])==1
     r.plan(decision_id='fresh-target')
     assert r.status()['decisions'][-1]['state']=='queued'
+
+
+@pytest.mark.parametrize('proof',[False,None,'true',1])
+def test_spy_legacy_or_unproved_worker_cannot_execute(allocation_rig,proof):
+    r=allocation_rig;r.plan()
+    caller=WORKER | {'delegated_tool':proof}
+    with pytest.raises(ValueError,match='delegated'):
+        r.app.call('owner','spy.execute',{'decision_id':'allocation-1'},caller)
+    assert not [c for c in r.calls() if c['method']=='submit']
+
+
+def test_spy_planner_cannot_execute_with_claimed_delegation(allocation_rig):
+    r=allocation_rig;r.plan()
+    caller=PLANNER | {'delegated_tool':True}
+    with pytest.raises(ValueError,match='delegated'):
+        r.app.call('owner','spy.execute',{'decision_id':'allocation-1'},caller)
+    assert not [c for c in r.calls() if c['method']=='submit']

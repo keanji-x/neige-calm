@@ -549,8 +549,7 @@ async fn a_plugin_tool_call_carries_the_callers_track_injected_by_the_kernel() {
         json!({ "track_id": fx.bound_track_id, "payload": "from-worker",
                 "_meta": { "dev.neige/caller": { "role": "planner", "card_id": "forged" } } }),
     );
-    frame["params"]["_meta"]["dev.neige/caller"] =
-        json!({ "role": "planner", "card_id": "forged", "session_id": "forged" });
+    frame["params"]["_meta"]["dev.neige/caller"] = json!({ "role": "planner", "card_id": "forged", "session_id": "forged", "delegated_tool": true });
     send_frame(&mut wr, frame).await;
     let routed = recv_frame(&mut rd).await;
     assert!(
@@ -570,6 +569,10 @@ async fn a_plugin_tool_call_carries_the_callers_track_injected_by_the_kernel() {
     assert_eq!(seen["arguments"]["track_id"], fx.bound_track_id);
     let caller = &seen["meta"]["dev.neige/caller"];
     assert_eq!(caller["role"], "worker");
+    assert_eq!(
+        caller["delegated_tool"], false,
+        "legacy identity cannot claim delegation"
+    );
     assert_eq!(
         caller["card_id"],
         fx.thread_id.strip_prefix("thread-").unwrap()
@@ -1113,3 +1116,6 @@ async fn wait_for_running(host: &Arc<PluginHost>, id: &str) {
 
 #[path = "mcp_plugin_tools/isolated_grants.rs"]
 mod isolated_grants;
+
+#[path = "mcp_plugin_tools/spy_delegation.rs"]
+mod spy_delegation;

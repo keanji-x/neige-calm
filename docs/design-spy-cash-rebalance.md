@@ -75,3 +75,15 @@ working Planner runtime. Keep a snapshot before replacing the preview process;
 the in-memory state cannot survive a restart. Report/Track/Recipe/Area snapshots
 were saved privately for subsequent setup. The 4140 production service was
 only inspected; no production service restart or configuration write was done.
+
+A later fresh review reproduced a legacy/shared Worker admission gap: those
+Workers retain ordinary plugin access but have no frozen delegation. Host admission
+now returns whether the exact tool was authorized by the current isolated attempt
+and supplies required `delegated_tool` metadata to local plugins. `spy.execute`
+requires literal true. A real SPY App route test rejects a forged legacy call
+and admits the same Worker only after exact isolated binding. Ordinary plugin
+contracts retain legacy behavior.
+
+Delegation mutation: expected and actual red sets were exactly `test_spy_legacy_or_unproved_worker_cannot_execute[1]`, `test_spy_legacy_or_unproved_worker_cannot_execute[False]`, `test_spy_legacy_or_unproved_worker_cannot_execute[None]`, `test_spy_legacy_or_unproved_worker_cannot_execute[true]`. The production guard was restored byte-for-byte and all 51 SPY/SDK checks passed.
+
+Role-only mutation: expected and actual red set was `test_spy_planner_cannot_execute_with_claimed_delegation`; the delegation predicate remained intact. This result was rerun in an exclusive period after all other Python readers ended. Production source was restored byte-for-byte and all 52 SPY/SDK checks passed.

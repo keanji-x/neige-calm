@@ -609,7 +609,7 @@ async fn dispatch_plugin_tools_call(
         return Err(unknown_tool());
     }
     require_role_any(&identity, PLUGIN_TOOL_ROLES)?;
-    worker_grants::require(ctx, &identity, name).await?;
+    let delegated_tool = worker_grants::require(ctx, &identity, name).await?;
     match kind {
         None => {
             // Connector tools materialize with `kind: None`, so without this arm they would fall through to the stdio-only accessor and get a spurious `-32002 not running`.
@@ -637,6 +637,7 @@ async fn dispatch_plugin_tools_call(
                             role: identity.role,
                             card_id: &identity.card_id,
                             session_id: &identity.session_id,
+                            delegated_tool,
                         }),
                     )
                     .await
@@ -671,7 +672,13 @@ async fn dispatch_plugin_tools_call(
                 RpcError::custom(-32002, format!("plugin `{plugin_id}` not running"))
             })?;
             dispatch_forge_action_plugin_tool(
-                ctx, client, &plugin_id, &tool_name, arguments, identity,
+                ctx,
+                client,
+                &plugin_id,
+                &tool_name,
+                arguments,
+                identity,
+                delegated_tool,
             )
             .await
         }
@@ -891,6 +898,7 @@ async fn dispatch_forge_action_plugin_tool(
     tool_name: &str,
     arguments: Value,
     identity: ToolCallIdentity,
+    delegated_tool: bool,
 ) -> Result<Value, RpcError> {
     let result = client
         .tools_call_with_caller(
@@ -901,6 +909,7 @@ async fn dispatch_forge_action_plugin_tool(
                 role: identity.role,
                 card_id: &identity.card_id,
                 session_id: &identity.session_id,
+                delegated_tool,
             }),
         )
         .await?;

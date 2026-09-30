@@ -174,6 +174,8 @@ def prepare_submission(asset, trade, quote, expected, request, policy):
     current, opened = market(quote)
     if not opened:
         raise ValueError('SPY regular trading session closed before submission')
+    if current['status'] != 'Normal':
+        raise ValueError('SPY trading status changed before submission')
     shares, available_shares = position(trade)
     if shares != integer(request['basis_shares'], zero=True):
         raise ValueError('SPY holdings changed before submission')

@@ -1,6 +1,6 @@
 use super::*;
 
-async fn bind_isolated(fx: &Fixture, grants: &[&str]) {
+pub(super) async fn bind_isolated(fx: &Fixture, grants: &[&str]) {
     let pool = fx.repo.sqlite_pool().unwrap();
     let context = json!({"neige_execution":{"version":"isolated-codex-v1","workspace":"empty","plugin_tools":grants}});
     sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,created_at_ms,updated_at_ms) VALUES('isolated-test',?1,'isolated-test','codex','query delegated plugin',?2,'running',1,1)")

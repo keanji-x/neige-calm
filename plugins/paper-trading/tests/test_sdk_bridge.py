@@ -17,7 +17,7 @@ def sdk(monkeypatch):
     calls = []
     position = NS(account_channel='lb_papertrading', positions=[])
     state = NS(shares=0, available=0, total='10000', cash='10000', price='100',
-               quote_at=NOW, channel='lb_papertrading', account='PAPER123', orders=[], half=False)
+               quote_at=NOW, quote_status='Normal', channel='lb_papertrading', account='PAPER123', orders=[], half=False)
 
     class Trade:
         def stock_positions(self):
@@ -44,7 +44,7 @@ def sdk(monkeypatch):
         def quote(self, symbols):
             assert symbols == ['SPY.US']
             return [NS(symbol='SPY.US', last_done=Decimal(state.price), timestamp=state.quote_at,
-                       trade_status='TradeStatus.Normal')]
+                       trade_status='TradeStatus.'+state.quote_status)]
 
         def trading_days(self, market, begin, end):
             assert begin == end
@@ -223,3 +223,11 @@ def test_sdk_run_does_not_claim_proof_after_ambiguous_failure(monkeypatch,capsys
     result=capsys.readouterr()
     assert error.value.code==1 and result.out==''
     assert 'private diagnostic' not in result.err
+
+
+
+def test_sdk_non_normal_quote_is_not_submitted(sdk):
+    sdk.state.quote_status='Suspended'
+    with pytest.raises(bridge.OrderNotSubmitted):
+        bridge.submit(sdk.asset,sdk.trade,sdk.quote,'PAPER123',sdk.request,sdk.policy)
+    assert not sdk.calls

@@ -42,7 +42,7 @@ class Allocation:
             raise ValueError('host-provided agent identity required')
         if name == 'spy.plan' and role != 'planner':
             raise ValueError('SPY target requires Planner identity')
-        if name == 'spy.execute' and role != 'worker':
+        if name == 'spy.execute' and (role != 'worker' or caller.get('delegated_tool') is not True):
             raise ValueError('SPY execution requires delegated Worker identity')
         if name == 'spy.plan':
             with self.ledger.session() as db:
