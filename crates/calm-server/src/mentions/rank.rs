@@ -150,12 +150,12 @@ fn blocks(
             continue;
         }
         for (index, block) in report.blocks.iter().enumerate() {
-            let heading = block_heading(block);
-            let label = if heading.is_empty() {
-                block.id.clone()
-            } else {
-                heading
-            };
+            // A block with no heading (a templated report's hidden contract is HTML comments only)
+            // has nothing to show a reader, so it is not offered.
+            let label = block_heading(block);
+            if label.is_empty() {
+                continue;
+            }
             if let Some(score) = scorer.score(&label) {
                 ranked.push(RankedBlock {
                     score,

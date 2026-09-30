@@ -269,12 +269,23 @@ export function NewTrackForm({
           /* Enter is ours: astryx's `ChatComposer.handleSubmit` clears the controlled value unconditionally after calling us, so a refused
              submit would lose the sentence. Only when the field itself is the target; Enter while composing is accepting an IME candidate, not sending. */
           onKeyDownCapture={(event) => {
-            if (event.key !== 'Enter' || event.shiftKey) return;
+            if (event.key !== 'Enter' && event.key !== 'Tab') return;
             const target = event.target as HTMLElement | null;
             const field = target?.closest?.('[contenteditable="true"]') ?? null;
             if (field === null) return;
-            /* An open `@` menu owns Enter: Astryx picks the highlighted row. The combobox says so through `aria-expanded`. */
-            if (field.getAttribute('aria-expanded') === 'true') return;
+            if (event.nativeEvent.isComposing) {
+              event.stopPropagation();
+              return;
+            }
+            /* The `@` menu takes the key only for a row it has rendered as highlighted: while it searches it
+               still holds the last query's rows, and with none it would pass Enter on to astryx's submit. */
+            const active = field.getAttribute('aria-activedescendant');
+            if (active !== null && document.getElementById(active) !== null) return;
+            /* Tab and Shift+Enter keep their default, focus and a new line; only astryx's menu is kept off them. */
+            if (event.key === 'Tab' || event.shiftKey) {
+              event.stopPropagation();
+              return;
+            }
             if (target !== field) {
               /* A control inside the editable: Enter belongs to it, so this neither submits
                                nor `preventDefault`s, but it must stop propagation or the editable
@@ -283,7 +294,6 @@ export function NewTrackForm({
               return;
             }
             event.stopPropagation();
-            if (event.nativeEvent.isComposing) return;
             event.preventDefault();
             submit(message);
           }}

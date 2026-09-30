@@ -191,6 +191,24 @@ describe('the @ menu in the real composer', () => {
     expect(options.map((option) => option.textContent)).toEqual(['RollbackDeploy notes']);
   });
 
+  it('does not pick the last query\'s row with Enter or Tab while the next query is searching', async () => {
+    const { calls, search } = controlledSearch();
+    const onSend = vi.fn();
+    render(<MentionComposer search={search} onSend={onSend} />);
+    await userEvent.type(field(), '@a');
+    await waitFor(() => { expect(calls.map((call) => call.query)).toContain('a'); });
+    act(() => { calls.find((call) => call.query === 'a')!.resolve([TAG]); });
+    await screen.findByRole('option', { name: /部署/ });
+
+    await userEvent.type(field(), 'zzz');
+    await screen.findByText('Searching…');
+    await userEvent.keyboard('{Enter}');
+    await userEvent.keyboard('{Tab}');
+    expect(field().querySelector('[data-astryx-token]')).toBeNull();
+    expect(field().textContent).toBe('@azzz');
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
   it('shows the empty text when the search fails', async () => {
     render(<MentionComposer search={() => Promise.reject(new Error('offline'))} onSend={vi.fn()} />);
     await userEvent.type(field(), '@x');

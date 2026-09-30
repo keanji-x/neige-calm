@@ -564,6 +564,31 @@ async fn an_empty_query_recommends_in_the_documented_order() {
 }
 
 #[tokio::test]
+async fn a_block_with_no_heading_is_never_offered() {
+    let fx = boot().await;
+    let [a, _] = fx.areas.clone();
+    // A templated report opens with the hidden maintenance contract: a block of HTML comments only.
+    let track = report(
+        &fx,
+        &a,
+        "templated",
+        "<!-- neige: keep this report current -->\n\n# First\n\nx\n",
+        true,
+        &[],
+        10,
+    )
+    .await;
+    let ids = read_block_ids(&fx, &a, "templated.md").await;
+    assert_eq!(ids.len(), 2, "the contract is a block of its own: {ids:?}");
+
+    let body = mentions(&fx, &a, "", Some(&track)).await;
+    assert_eq!(labels(&body, "blocks"), ["First"], "{body}");
+    assert_eq!(block_ids(&body), [ids[1].clone()]);
+    let body = mentions(&fx, &a, &ids[0], Some(&track)).await;
+    assert!(block_ids(&body).is_empty(), "not even by its id: {body}");
+}
+
+#[tokio::test]
 async fn the_track_parameter_lifts_that_tracks_blocks() {
     let fx = boot().await;
     let [a, _] = fx.areas.clone();

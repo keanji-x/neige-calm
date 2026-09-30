@@ -844,8 +844,8 @@
    * place the edges by hand. `position-area: none` is what makes those insets
    * mean what they say; `position-try-fallbacks: none` stops the flip that
    * would otherwise fire the moment a menu as wide as the well meets a
-   * viewport edge — the menu is one row tall and sits above a well that is
-   * itself inset from the drawer's bottom, so there is nothing to flip from.
+   * viewport edge — the well is docked at the drawer's bottom, so below it is
+   * no room to flip into; a tall menu scrolls inside Astryx's 240px cap instead.
    *
    * **Fragility, honestly.** The two selectors below name no Astryx class and
    * no Astryx DOM shape: `[popover]` is the platform attribute `useLayer` sets
