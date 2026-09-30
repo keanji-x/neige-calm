@@ -257,6 +257,7 @@ pub enum Component {
         #[schema(max_length = 500)]
         caption: String,
         #[schema(max_length = 500)]
+        #[serde(rename = "emptyText")]
         empty_text: String,
         #[schema(min_items = 1, max_items = 4)]
         datasets: Vec<Dataset>,
@@ -269,6 +270,7 @@ pub enum Component {
         #[schema(max_length = 32)]
         unit: String,
         #[schema(max_length = 500)]
+        #[serde(rename = "emptyText")]
         empty_text: String,
         #[schema(min_items = 0, max_items = 12)]
         slices: Vec<Slice>,
@@ -290,6 +292,7 @@ pub enum Component {
         #[schema(max_length = 32)]
         unit: String,
         #[schema(max_length = 500)]
+        #[serde(rename = "emptyText")]
         empty_text: String,
         #[schema(min_items = 0, max_items = 24)]
         points: Vec<BarPoint>,
@@ -310,10 +313,13 @@ pub enum Component {
         #[schema(required = true, exclusive_minimum = 0, maximum = 1000000000000000.0)]
         limit: Option<f64>,
         #[schema(max_length = 120)]
+        #[serde(rename = "usedLabel")]
         used_label: String,
         #[schema(max_length = 120)]
+        #[serde(rename = "limitLabel")]
         limit_label: String,
         #[schema(max_length = 500)]
+        #[serde(rename = "emptyText")]
         empty_text: String,
         tone: Tone,
     },
@@ -323,6 +329,7 @@ pub enum Component {
         #[schema(max_length = 200)]
         title: String,
         #[schema(max_length = 500)]
+        #[serde(rename = "emptyText")]
         empty_text: String,
         #[schema(min_items = 1, max_items = 4)]
         datasets: Vec<RecordSet>,

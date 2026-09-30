@@ -259,6 +259,11 @@ fn native_view_generic_primitives_validate_without_business_semantics() {
         { "kind": "meter", "id": "meter", "title": "", "unit": "", "detail": "", "used": null, "limit": null, "usedLabel": "", "limitLabel": "", "emptyText": "", "tone": "neutral" }
     ] }]);
     validate_payload(KIND_VIEW, &view).unwrap();
+    for index in [0, 1] {
+        let mut bad = view.clone();
+        bad["rows"][0]["cells"][index]["unexpected"] = serde_json::json!(true);
+        assert!(validate_payload(KIND_VIEW, &bad).is_err());
+    }
     for (field, invalid) in [
         ("used", serde_json::json!(-1)),
         ("limit", serde_json::json!(0)),
@@ -304,4 +309,51 @@ fn native_view_read_contract_preserves_full_disclosures_and_history() {
     view["rows"][2]["cells"][0]["datasets"][0]["items"][0]["disclosures"][0]["body"] =
         serde_json::json!("界".repeat(8001));
     assert!(super::native_view::validate(&view).is_err());
+}
+
+#[test]
+fn native_view_generated_component_fields_match_wire_names() {
+    let schema = super::native_view::generated_schema();
+    for variant in schema["$defs"]["Component"]["oneOf"].as_array().unwrap() {
+        let properties = variant["properties"].as_object().unwrap();
+        assert!(!properties.contains_key("empty_text"));
+        assert!(!properties.contains_key("used_label"));
+        assert!(!properties.contains_key("limit_label"));
+        match properties["kind"]["enum"][0].as_str().unwrap() {
+            "time-series" | "distribution" | "bars" | "records" => {
+                assert!(properties.contains_key("emptyText"))
+            }
+            "meter" => {
+                for key in ["emptyText", "usedLabel", "limitLabel"] {
+                    assert!(properties.contains_key(key));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn native_view_fixture_components_match_generated_wire_properties() {
+    let schema = super::native_view::generated_schema();
+    for row in fixture()["valid"]["rows"].as_array().unwrap() {
+        for cell in row["cells"].as_array().unwrap() {
+            let variant = schema["$defs"]["Component"]["oneOf"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|variant| variant["properties"]["kind"]["enum"][0] == cell["kind"])
+                .unwrap();
+            let properties = variant["properties"].as_object().unwrap();
+            for key in cell.as_object().unwrap().keys() {
+                assert!(
+                    properties.contains_key(key),
+                    "wire field {key} absent from generated contract"
+                );
+            }
+            for key in variant["required"].as_array().unwrap() {
+                assert!(cell.get(key.as_str().unwrap()).is_some());
+            }
+        }
+    }
 }

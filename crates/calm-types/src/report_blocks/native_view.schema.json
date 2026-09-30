@@ -99,7 +99,7 @@
               "minItems": 1,
               "type": "array"
             },
-            "empty_text": {
+            "emptyText": {
               "maxLength": 500,
               "type": "string"
             },
@@ -124,7 +124,7 @@
             "id",
             "title",
             "caption",
-            "empty_text",
+            "emptyText",
             "datasets",
             "kind"
           ],
@@ -133,7 +133,7 @@
         {
           "additionalProperties": false,
           "properties": {
-            "empty_text": {
+            "emptyText": {
               "maxLength": 500,
               "type": "string"
             },
@@ -170,7 +170,7 @@
             "id",
             "title",
             "unit",
-            "empty_text",
+            "emptyText",
             "slices",
             "kind"
           ],
@@ -210,7 +210,7 @@
         {
           "additionalProperties": false,
           "properties": {
-            "empty_text": {
+            "emptyText": {
               "maxLength": 500,
               "type": "string"
             },
@@ -247,7 +247,7 @@
             "id",
             "title",
             "unit",
-            "empty_text",
+            "emptyText",
             "points",
             "kind"
           ],
@@ -260,7 +260,7 @@
               "maxLength": 500,
               "type": "string"
             },
-            "empty_text": {
+            "emptyText": {
               "maxLength": 500,
               "type": "string"
             },
@@ -285,7 +285,7 @@
                 "null"
               ]
             },
-            "limit_label": {
+            "limitLabel": {
               "maxLength": 120,
               "type": "string"
             },
@@ -309,7 +309,7 @@
                 "null"
               ]
             },
-            "used_label": {
+            "usedLabel": {
               "maxLength": 120,
               "type": "string"
             }
@@ -321,9 +321,9 @@
             "detail",
             "used",
             "limit",
-            "used_label",
-            "limit_label",
-            "empty_text",
+            "usedLabel",
+            "limitLabel",
+            "emptyText",
             "tone",
             "kind"
           ],
@@ -340,7 +340,7 @@
               "minItems": 1,
               "type": "array"
             },
-            "empty_text": {
+            "emptyText": {
               "maxLength": 500,
               "type": "string"
             },
@@ -364,7 +364,7 @@
           "required": [
             "id",
             "title",
-            "empty_text",
+            "emptyText",
             "datasets",
             "kind"
           ],
