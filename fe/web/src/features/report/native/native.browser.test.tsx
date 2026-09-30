@@ -113,7 +113,7 @@ it('keeps summary and curve beside each other in an ordinary report slot', async
   expect(cells[1].getBoundingClientRect().width).toBeGreaterThan(cells[0].getBoundingClientRect().width);
 });
 
-it('reaches evidence and snapshot controls using the unchanged shared dialog', async () => {
+it('reaches disclosures and snapshot controls using the unchanged shared dialog', async () => {
   await page.viewport(1440, 1000);
   render(<NativeReportView payload={payload} />);
   await page.getByRole('button', { name: '查看详情', exact: true }).click();
@@ -121,7 +121,9 @@ it('reaches evidence and snapshot controls using the unchanged shared dialog', a
   const detailClose = page.getByRole('button', { name: '收起详情', exact: true }).element() as HTMLElement;
   detailClose.focus();
   await userEvent.keyboard('{Tab}');
-  expect(document.activeElement?.textContent).toContain('e1');
+  const records = payload.rows[2].cells[0];
+  if (records.kind !== 'records') throw new Error('Expected records fixture');
+  expect(document.activeElement?.textContent).toContain(records.datasets[0].items[0].disclosures[0].label);
   await userEvent.keyboard('{Enter}');
   await expect.element(page.getByRole('dialog').getByText('<script>alert(1)</script>', { exact: true })).toBeVisible();
   await userEvent.keyboard('{Tab}');

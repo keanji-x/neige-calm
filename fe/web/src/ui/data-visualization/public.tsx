@@ -4,7 +4,8 @@ import styles from './visualization.module.css';
 
 export type ValueDisplay =
   | { state: 'known'; amount: number; unit: string; placement: 'prefix' | 'suffix'; decimals: number; signed: boolean }
-  | { state: 'unknown'; reason: string };
+  | { state: 'unknown'; reason: string }
+  | { state: 'text'; text: string };
 export type MetricDatum = { id: string; label: string; value: ValueDisplay; detail: string;
   tone: 'neutral' | 'positive' | 'negative' | 'warning'; emphasis: 'primary' | 'normal' };
 export type PlotDataset = { id: string; label: string; unit: string; style: 'line' | 'stacked';
@@ -25,6 +26,7 @@ function observationNumber(value: number) {
 }
 function scalar(value: ValueDisplay) {
   if (value.state === 'unknown') return '—';
+  if (value.state === 'text') return value.text;
   const sign = value.amount < 0 ? '-' : value.signed && value.amount > 0 ? '+' : '';
   const amount = number(Math.abs(value.amount), value.decimals);
   return sign + (value.placement === 'prefix' ? value.unit + amount : amount + value.unit);
@@ -200,4 +202,55 @@ export function TimeSeriesChart({ label, datasets, emptyText, selection, onSelec
       </button>)}</div>}
     </>}
   </div>;
+}
+
+/** Signed geometry only: the sign does not imply a favorable or unfavorable result. */
+export function signedBarLayout(values: readonly number[]) {
+  const signed = values.some(value => value < 0);
+  const extent = Math.max(0, ...values.map(Math.abs));
+  const zero = signed ? 50 : 0;
+  return values.map(value => {
+    const width = extent === 0 ? 0 : Math.abs(value) / extent * (signed ? 50 : 100);
+    return { start: value < 0 ? zero - width : zero, width, zero };
+  });
+}
+
+type Tone = 'neutral' | 'positive' | 'negative' | 'warning';
+export function BarChart({ label, unit, points, emptyText }: {
+  label: string; unit: string; points: readonly { label: string; value: number; tone: Tone }[]; emptyText: string;
+}) {
+  const layout = signedBarLayout(points.map(point => point.value));
+  return <figure className={styles.chart}>
+    <figcaption className={styles.chartTitle}>{label}</figcaption>
+    {points.length === 0 ? <p className={styles.empty}>{emptyText}</p> : <div className={styles.bars} role="img"
+      aria-label={`${label}：${points.map(point => `${point.label} ${observationNumber(point.value)}`).join('；')} ${unit}`}>
+      {points.map((point, index) => <div key={index} className={styles.barRow}>
+        <div className={styles.barLabels}><span>{point.label}</span><strong className={styles[point.tone]}>
+          {point.value > 0 ? '+' : ''}{observationNumber(point.value)}
+        </strong></div>
+        <div className={styles.barTrack} title={`${point.label}: ${observationNumber(point.value)} ${unit}`}>
+          <span className={styles.zeroLine} style={{ insetInlineStart: `${layout[index].zero}%` }} />
+          <span className={`${styles.barMark} ${styles[point.tone]}`}
+            style={{ insetInlineStart: `${layout[index].start}%`, inlineSize: `${layout[index].width}%` }} />
+        </div>
+      </div>)}
+    </div>}
+    <p className={styles.detail}>{unit}</p>
+  </figure>;
+}
+
+export function MeterChart({ label, unit, used, limit, usedLabel, limitLabel, detail, emptyText, tone }: {
+  label: string; unit: string; used: number | null; limit: number | null; usedLabel: string; limitLabel: string;
+  detail: string; emptyText: string; tone: Tone;
+}) {
+  return <figure className={styles.chart}>
+    <figcaption className={styles.chartTitle}>{label}</figcaption>
+    {used !== null && limit !== null && limit > 0 ? <>
+      <div className={`${styles.meterPercent} ${styles[tone]}`}>{number(used / limit * 100)}<span>%</span></div>
+      <meter className={styles.meter} aria-label={label} min={0} max={limit} value={Math.max(0, Math.min(used, limit))}
+        aria-valuetext={`${observationNumber(used)} / ${observationNumber(limit)} ${unit}`} />
+      <div className={styles.meterLabels}><span>{usedLabel} {observationNumber(used)}</span><span>{limitLabel} {observationNumber(limit)} {unit}</span></div>
+    </> : <p className={styles.empty}>{emptyText}</p>}
+    <p className={styles.detail}>{detail}</p>
+  </figure>;
 }

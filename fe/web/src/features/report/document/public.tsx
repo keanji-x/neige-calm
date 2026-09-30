@@ -24,7 +24,7 @@ import { ReportPreviewBlock, type PreviewViewportStore } from '../preview/public
 import { ReportSeriesBlock } from '../series/public.tsx';
 import { ReportSourceCitation } from '../source/public.tsx';
 import { ReportTableBlock } from '../table/public.tsx';
-import { ReportLiveViewBlock } from '../rich/public.tsx';
+import { ReportLiveViewBlock } from '../native/live.tsx';
 import { NativeReportView } from '../native/public.tsx';
 import { ReportTaskBlock } from '../task/public.tsx';
 import styles from './document.module.css';
@@ -197,8 +197,8 @@ function BlockSlot({
   previewViewports?: PreviewViewportStore;
 }) {
   return (
-    <div className={block.kind === 'view' ? `${styles.row} ${styles.nativeRow}` : styles.row}>
-      <div className={block.kind === 'view' ? `${styles.block} ${styles.nativeBlock}` : styles.block} id={block.id}>
+    <div className={(block.kind === 'view' || block.kind === 'view.live') ? `${styles.row} ${styles.nativeRow}` : styles.row}>
+      <div className={(block.kind === 'view' || block.kind === 'view.live') ? `${styles.block} ${styles.nativeBlock}` : styles.block} id={block.id}>
         {block.kind === 'prose'
           ? <ProseBlock
               markdown={block.payload.markdown}
@@ -214,7 +214,7 @@ function BlockSlot({
               previewViewports={previewViewports} />}
       </div>
       {backlinks > 0 && (
-        <span className={block.kind === 'view' ? `${styles.sidenote} ${styles.nativeSidenote}` : styles.sidenote} title={`${backlinks} report${backlinks === 1 ? '' : 's'} cite this block`}>
+        <span className={(block.kind === 'view' || block.kind === 'view.live') ? `${styles.sidenote} ${styles.nativeSidenote}` : styles.sidenote} title={`${backlinks} report${backlinks === 1 ? '' : 's'} cite this block`}>
           ◂ {backlinks}
         </span>
       )}

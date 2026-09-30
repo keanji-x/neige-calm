@@ -57,6 +57,19 @@
   .tabs button { border: 0; border-radius: 2px; padding: var(--space-1) var(--space-3); background: transparent; color: var(--text-2); font-size: var(--text-xs); min-inline-size: 0; overflow-wrap: anywhere; }
   .tabs button[aria-pressed="true"] { background: var(--text); color: var(--bg); }
   .empty { color: var(--text-3); font-size: var(--text-base); padding-block: var(--space-5); }
+  .chart { font-family: var(--font-sans); min-inline-size: 0; margin: 0; overflow-wrap: anywhere; }
+  .chartTitle { margin-block-end: var(--space-4); font-size: 13px; font-weight: var(--weight-medium); color: var(--text-2); }
+  .bars { min-block-size: 4rem; max-block-size: 18rem; overflow-y: auto; }
+  .barRow { margin-block-end: var(--space-4); }
+  .barLabels, .meterLabels { display: flex; justify-content: space-between; gap: var(--space-3); font-size: var(--text-xs); color: var(--text-2); }
+  .barLabels strong { flex: none; max-inline-size: 45%; font-variant-numeric: tabular-nums; }
+  .barTrack { position: relative; block-size: 1rem; margin-block-start: var(--space-2); background: var(--surface-chip); border-radius: var(--radius-sm); overflow: hidden; }
+  .zeroLine { position: absolute; block-size: 100%; inline-size: 1px; background: var(--hairline-strong); z-index: 1; }
+  .barMark { position: absolute; inset-block: 0; min-inline-size: 0; border-radius: var(--radius-sm); background: currentcolor; }
+  .meterPercent { margin-block: var(--space-2) var(--space-4); font-size: var(--text-xl); font-weight: var(--weight-semibold); font-variant-numeric: tabular-nums; }
+  .meterPercent span { margin-inline-start: var(--space-1); font-size: var(--text-lg); color: var(--text-3); }
+  .meter { display: block; inline-size: 100%; block-size: 1.25rem; accent-color: var(--accent); }
+  .meterLabels { margin-block-start: var(--space-2); flex-wrap: wrap; }
   @container (inline-size > 30rem) { .plotSvg { block-size: 200px; } }
   @media (pointer: coarse) {
     .tabs button, .toolbar select, .legend button, .readoutToggle, .readout button { min-block-size: 44px; }

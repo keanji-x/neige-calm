@@ -37,7 +37,6 @@
   .facts { display: flex; flex-wrap: wrap; gap: var(--space-4); margin-block: var(--space-4); font-size: 12px; }
   .facts dt { color: var(--text-3); } .facts dd { margin: var(--space-1) 0 0; color: var(--text); font-size: 14px; font-weight: var(--weight-medium); }
   .recordBottom { border-top: 1px solid var(--hairline); padding-block-start: var(--space-3); margin-block-start: auto; }
-  .status::before { content: ''; display: inline-block; inline-size: 5px; block-size: 5px; background: currentcolor; border-radius: 50%; margin-inline-end: var(--space-2); vertical-align: middle; }
   .list { display: grid; gap: var(--space-3); margin-block-start: var(--space-4); }
   .list .record { border: 0; border-bottom: 1px solid var(--hairline); border-radius: 0; padding-inline: 0; background: none; }
   .activeRecord { border-color: var(--accent); }
@@ -51,14 +50,17 @@
   .detailHeader > div > span { color: var(--text-3); font-size: var(--text-xs); }
   .detailHeader button { flex: none; }
   .detailSummary { color: var(--text-2); font-size: 13px; margin-block: var(--space-4); }
-  .recordStates { display: flex; flex-wrap: wrap; gap: var(--space-4); font-size: 12px; margin-block: var(--space-3); }
+  .badges { display: flex; flex-wrap: wrap; gap: var(--space-4); font-size: 12px; margin-block: var(--space-3); padding: 0; }
+  .badges > div { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+  .badges dt, .badges dd { margin: 0; }
+  .badges dt { color: var(--text-3); }
   .sections { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 var(--space-7); }
   .section { border-bottom: 1px solid var(--hairline); padding-block: var(--space-3); font-size: var(--text-base); }
   .section dt { font-size: var(--text-xs); color: var(--text-3); margin-block-end: var(--space-2); }
   .section dd { margin: 0; white-space: pre-wrap; }
-  .evidence { padding-block: var(--space-3); border-bottom: 1px solid var(--hairline); font-size: var(--text-base); }
-  .evidence blockquote { margin-inline: 0; padding-inline-start: var(--space-3); border-inline-start: 2px solid var(--hairline-strong); }
-  .evidence p { font-size: var(--text-xs); color: var(--text-3); }
+  .disclosures { padding-block: var(--space-3); border-bottom: 1px solid var(--hairline); font-size: var(--text-base); }
+  .disclosures blockquote { margin-inline: 0; padding-inline-start: var(--space-3); border-inline-start: 2px solid var(--hairline-strong); }
+  .disclosures p { font-size: var(--text-xs); color: var(--text-3); }
   .reviewWorkspace .record > p, .reviewWorkspace .record > .facts { display: none; }
   .positive { color: var(--success-text); } .negative { color: var(--error-text); } .warning { color: var(--warn-text); } .neutral { color: var(--text-2); }
   @container (inline-size < 40rem) {

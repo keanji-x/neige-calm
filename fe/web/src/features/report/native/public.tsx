@@ -1,7 +1,7 @@
 import type { NativeComponent, NativeViewPayload } from '../../../../../core/domain/report-view.ts';
 import { useId } from 'react';
 import type { ReportSourceLinkTarget } from '../../../../../core/domain/report-source.ts';
-import { MetricGroup, DistributionChart, TimeSeriesChart, type PlotSelection } from '../../../ui/data-visualization/public.tsx';
+import { BarChart, MeterChart, MetricGroup, DistributionChart, TimeSeriesChart, type PlotSelection } from '../../../ui/data-visualization/public.tsx';
 import { Dialog } from '../../../ui/dialog/public.tsx';
 import { Icon } from '../../../ui/icon/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
@@ -13,6 +13,8 @@ type Inspection = { plots: ReadonlyMap<string, PlotSelection>; distributions: Re
 type ReadingProps = { inspection: Inspection; onInspection: (next: Inspection) => void; onOpenSourceLink?: (target: ReportSourceLinkTarget) => void };
 function Cell({ component, inspection, onInspection, onOpenSourceLink }: ReadingProps & { component: NativeComponent }) {
   switch (component.kind) {
+    case 'bars': return <BarChart label={component.title} unit={component.unit} points={component.points} emptyText={component.emptyText} />;
+    case 'meter': return <MeterChart label={component.title} unit={component.unit} used={component.used} limit={component.limit} usedLabel={component.usedLabel} limitLabel={component.limitLabel} detail={component.detail} emptyText={component.emptyText} tone={component.tone} />;
     case 'metrics': return <MetricGroup items={component.items} />;
     case 'time-series': return <><TimeSeriesChart label={component.title} datasets={component.datasets} emptyText={component.emptyText}
       selection={inspection.plots.get(component.id) ?? { datasetId: component.datasets[0].id, selected: null, sample: null, readoutOpen: false }}
@@ -21,7 +23,7 @@ function Cell({ component, inspection, onInspection, onOpenSourceLink }: Reading
       selected={inspection.distributions.get(component.id) ?? null} onSelect={next => onInspection({ ...inspection, distributions: new Map(inspection.distributions).set(component.id, next) })} />;
     case 'table': return <InlineTable payload={component.table} onOpenSourceLink={onOpenSourceLink} />;
     case 'records': return <RecordBrowser component={component}
-      selection={inspection.records.get(component.id) ?? { datasetId: component.datasets[0].id, mode: 'cards', selectedId: null, evidence: [] }}
+      selection={inspection.records.get(component.id) ?? { datasetId: component.datasets[0].id, mode: 'cards', selectedId: null, disclosures: [] }}
       onSelection={next => onInspection({ ...inspection, records: new Map(inspection.records).set(component.id, next) })} />;
   }
 }
@@ -32,13 +34,13 @@ function Composition({ payload, ...reading }: ReadingProps & { payload: NativeVi
     {payload.rows.map(row => <section key={row.id} className={styles.row} aria-label={row.title}>
       <h3>{row.title}</h3>
       <div className={styles[row.layout]}>{row.cells.map(component => <div key={component.id} className={styles.cell}>
-        {component.title && component.kind !== 'time-series' && <h4>{component.title}</h4>}<Cell component={component} {...reading} />
+        {component.title && !['time-series', 'bars', 'meter'].includes(component.kind) && <h4>{component.title}</h4>}<Cell component={component} {...reading} />
       </div>)}</div>
     </section>)}
     <div className={styles.snapshot}><button type="button" className={styles.disclosureToggle} aria-expanded={reading.inspection.snapshotOpen}
       aria-controls={snapshotId} onClick={() => reading.onInspection({ ...reading.inspection, snapshotOpen: !reading.inspection.snapshotOpen })}>
       <Icon name="chevron-right" size="sm" />快照信息</button>
-      <p id={snapshotId} hidden={!reading.inspection.snapshotOpen}>{payload.snapshot.id} · 资料截止 {new Date(payload.snapshot.observedAt).toISOString()} · 生成 {new Date(payload.snapshot.producedAt).toISOString()}</p></div>
+      <p id={snapshotId} hidden={!reading.inspection.snapshotOpen}>{payload.snapshot.id} · 资料截止 {(payload.snapshot.observedAt === null ? '未知' : new Date(payload.snapshot.observedAt).toISOString())} · 生成 {(payload.snapshot.producedAt === null ? '未知' : new Date(payload.snapshot.producedAt).toISOString())}</p></div>
   </div>;
 }
 export function NativeReportView({ payload, onOpenSourceLink }: { payload: NativeViewPayload; onOpenSourceLink?: (target: ReportSourceLinkTarget) => void }) {

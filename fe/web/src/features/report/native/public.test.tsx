@@ -12,6 +12,12 @@ afterEach(cleanup);
 const fixture = JSON.parse(readFileSync(resolve(process.cwd(), '../test-data/native-view-v1.json'), 'utf8')) as { valid: unknown };
 const payload = nativeViewPayloadSchema.parse(fixture.valid);
 
+function disclosureLabel(view: typeof payload) {
+  const records = view.rows[2].cells[0];
+  if (records.kind !== 'records') throw new Error('Expected records fixture');
+  return records.datasets[0].items[0].disclosures[0].label;
+}
+
 it('renders native components with no iframe or application script', () => {
   const { container } = render(<NativeReportView payload={payload} />);
   expect(container.querySelector('iframe')).toBeNull();
@@ -22,11 +28,12 @@ it('renders native components with no iframe or application script', () => {
   expect(container.textContent).not.toMatch(/对账|复盘|交易/);
 });
 
-it('opens evidence as text and keeps handling distinct from the finding', async () => {
+it('opens publisher-supplied badges and disclosure text without interpreting them', async () => {
   const { container } = render(<NativeReportView payload={payload} />);
   await userEvent.click(screen.getByRole('button', { name: '查看详情' }));
-  expect(screen.getByText('待补证')).toBeTruthy();
-  expect(screen.getByText('未知')).toBeTruthy();
+  const detail = within(screen.getByRole('region', { name: '备份是否按时完成？ 详情' }));
+  expect(detail.getByText('待补证')).toBeTruthy();
+  expect(detail.getByText('未知')).toBeTruthy();
   expect(screen.getByText('<script>alert(1)</script>')).toBeTruthy();
   expect(container.querySelector('script')).toBeNull();
 });
@@ -79,19 +86,19 @@ it('preserves inspection state in both directions across wide reading', async ()
   await userEvent.click(screen.getByRole('button', { name: '历史用量 观察值' }));
   await userEvent.click(screen.getByRole('button', { name: '队列' }));
   await userEvent.click(screen.getByRole('button', { name: '查看详情' }));
-  await userEvent.click(screen.getByRole('button', { name: /e1 ·/ }));
+  await userEvent.click(screen.getByRole('button', { name: disclosureLabel(payload) }));
   await userEvent.click(screen.getByRole('button', { name: '展开 运营概览' }));
   const dialog = within(screen.getByRole('dialog'));
   expect(dialog.getByRole('button', { name: '合计' }).getAttribute('aria-pressed')).toBe('true');
   expect(dialog.getByRole<HTMLInputElement>('slider').value).toBe('0');
   expect(dialog.getByRole('button', { name: '历史用量 观察值' }).getAttribute('aria-expanded')).toBe('true');
   expect(dialog.getByRole('button', { name: '队列' }).getAttribute('aria-pressed')).toBe('true');
-  expect(dialog.getByRole('button', { name: /e1 ·/ }).getAttribute('aria-expanded')).toBe('true');
+  expect(dialog.getByRole('button', { name: disclosureLabel(payload) }).getAttribute('aria-expanded')).toBe('true');
   await userEvent.click(dialog.getByRole('button', { name: '独立序列' }));
   await userEvent.keyboard('{Escape}');
   expect(screen.getByRole('button', { name: '独立序列' }).getAttribute('aria-pressed')).toBe('true');
   expect(screen.getByRole('button', { name: '历史用量 观察值' }).getAttribute('aria-expanded')).toBe('true');
-  expect(screen.getByRole('button', { name: /e1 ·/ }).getAttribute('aria-expanded')).toBe('true');
+  expect(screen.getByRole('button', { name: disclosureLabel(payload) }).getAttribute('aria-expanded')).toBe('true');
 });
 
 it('keeps complete analytical fields in details without filling the preview card', async () => {
@@ -109,15 +116,15 @@ it('keeps complete analytical fields in details without filling the preview card
   expect(records.datasets[0].items[0].facts).toHaveLength(3);
 });
 
-it('keeps evidence control and panel IDs distinct for author-chosen suffixes', async () => {
+it('keeps disclosures control and panel IDs distinct for author-chosen suffixes', async () => {
   const view = structuredClone(payload);
   const records = view.rows[2].cells[0];
   if (records.kind !== 'records') throw new Error('Expected record fixture');
   const record = records.datasets[0].items[0];
-  record.evidence.push({ ...record.evidence[0], id: 'e1-label', body: 'Second observation' });
+  record.disclosures.push({ ...record.disclosures[0], id: 'e1-label', label: 'Second observation', body: 'Second observation' });
   const { container } = render(<NativeReportView payload={view} />);
   await userEvent.click(screen.getByRole('button', { name: '查看详情' }));
-  const button = screen.getByRole('button', { name: /e1-label ·/ });
+  const button = screen.getByRole('button', { name: 'Second observation' });
   const panel = document.getElementById(button.getAttribute('aria-controls')!);
   expect(panel?.getAttribute('role')).toBe('region');
   expect(panel?.getAttribute('aria-labelledby')).toBe(button.id);
@@ -127,20 +134,23 @@ it('keeps evidence control and panel IDs distinct for author-chosen suffixes', a
   expect(panel?.hidden).toBe(false);
 });
 
-it('preserves the selected research scenario and evidence rather than reverting to r1', async () => {
+it('preserves the selected research scenario and disclosures rather than reverting to r1', async () => {
   const example = nativeViewPayloadSchema.parse(JSON.parse(readFileSync(resolve(process.cwd(), '../plugins/paper-trading/examples/native-demo.json'), 'utf8')));
+  const records = example.rows[2].cells[0];
+  if (records.kind !== 'records') throw new Error('Expected records fixture');
+  const label = records.datasets.find(dataset => dataset.id === 'r2')!.items.flatMap(item => item.disclosures).find(disclosure => disclosure.id === 'E04')!.label;
   render(<NativeReportView payload={example} />);
   await userEvent.click(screen.getByRole('button', { name: 'r2 · 预设反证' }));
   const article = screen.getByText('支持减弱').closest('article')!;
   await userEvent.click(within(article).getByRole('button', { name: '查看详情' }));
-  await userEvent.click(screen.getByRole('button', { name: /E04 ·/ }));
+  await userEvent.click(screen.getByRole('button', { name: label }));
   await userEvent.click(screen.getByRole('button', { name: '展开 低频投资组合' }));
   const dialog = within(screen.getByRole('dialog'));
   expect(dialog.getByRole('button', { name: 'r2 · 预设反证' }).getAttribute('aria-pressed')).toBe('true');
-  expect(dialog.getByText('支持减弱')).toBeTruthy();
-  expect(dialog.getByRole('button', { name: /E04 ·/ }).getAttribute('aria-expanded')).toBe('true');
+  expect(dialog.getAllByText('支持减弱')).toHaveLength(2);
+  expect(dialog.getByRole('button', { name: label }).getAttribute('aria-expanded')).toBe('true');
   await userEvent.keyboard('{Escape}');
-  expect(screen.getByRole('button', { name: /E04 ·/ }).getAttribute('aria-expanded')).toBe('true');
+  expect(screen.getByRole('button', { name: label }).getAttribute('aria-expanded')).toBe('true');
 });
 
 it('shows measured zero categories without inventing percentages or missing data', () => {
@@ -149,4 +159,28 @@ it('shows measured zero categories without inventing percentages or missing data
   expect(screen.getByRole('button', { name: /已完成/ }).textContent).toContain('—');
   expect(screen.getByText('计数 · 0 个')).toBeTruthy();
   expect(document.body.textContent).not.toMatch(/NaN|100%/);
+});
+
+it.each([0, 1, 3])('renders %i publisher badges without fabricated workflow fields', async count => {
+  const view = structuredClone(payload);
+  const records = view.rows[2].cells[0];
+  if (records.kind !== 'records') throw new Error('Expected record fixture');
+  const item = records.datasets[0].items[0];
+  item.subtitle = 'Museum collection';
+  item.badges = Array.from({ length: count }, (_, index) => ({ label: `Attribute ${index}`, value: `Value ${index}`, tone: 'neutral' as const }));
+  item.facts = []; item.sections = []; item.disclosures = [];
+  const { container } = render(<NativeReportView payload={view} />);
+  expect(container.textContent).not.toMatch(/状态：|处理：|待补证|未知/);
+  for (let index = 0; index < count; index++) expect(screen.getByText(`Value ${index}`)).toBeTruthy();
+  await userEvent.click(screen.getByRole('button', { name: '查看详情' }));
+  const detail = within(screen.getByRole('region', { name: `${item.title} 详情` }));
+  for (let index = 0; index < count; index++) expect(detail.getByText(`Attribute ${index}`)).toBeTruthy();
+  expect(container.querySelector('script')).toBeNull();
+});
+
+it('shows unknown snapshot timestamps explicitly without inventing epoch dates', async () => {
+  render(<NativeReportView payload={{ ...payload, snapshot: { id: 'pending', observedAt: null, producedAt: null } }} />);
+  await userEvent.click(screen.getByRole('button', { name: '快照信息' }));
+  expect(screen.getByText('pending · 资料截止 未知 · 生成 未知')).toBeTruthy();
+  expect(document.body.textContent).not.toContain('1970-01-01');
 });
