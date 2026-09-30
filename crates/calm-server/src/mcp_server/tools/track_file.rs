@@ -1,5 +1,6 @@
 //! Read-only MCP file views (`calm.track.ls`, `calm.track.cat`) rooted at the track bound to the caller's MCP connection.
-//! A path under `area/` is the Planner's `area/reports/` view instead (#1838, [`super::area_reports`]).
+//! A path under `area/` is the Planner's `area/reports/` view instead (#1838, [`super::area_reports`]);
+//! `guide/` serves the Planner's on-demand guides, [`GUIDES`] (#1893).
 
 use crate::area_reports;
 use crate::mcp_server::framing::RpcError;
@@ -11,7 +12,9 @@ use crate::mcp_server::tools::report_links::{unknown_block, unknown_section};
 use crate::mcp_server::tools::track_report::load_report_for_track;
 use crate::model::{Card, CardRole, Track};
 use crate::report_sections::section_block_ids;
-use crate::track_fs_view::{TrackFsContent, TrackFsError, TrackFsView, normalize_path};
+use crate::track_fs_view::{
+    TrackFsContent, TrackFsEntry, TrackFsError, TrackFsView, normalize_path,
+};
 use crate::track_report::ReportBlock;
 use crate::track_report_read::{load_report_doc_snapshot, selected_blocks_text};
 use serde_json::{Value, json};
@@ -98,6 +101,9 @@ async fn track_ls(
     if let Some(area_path) = area_reports::classify(&path) {
         return super::area_reports::ls(&ctx, &identity, area_path).await;
     }
+    if path == GUIDE_DIR {
+        return guide_ls();
+    }
     let (_, track) = resolve_track_for_identity(&ctx, &identity).await?;
     let view = TrackFsView::new(ctx.repo.as_ref(), &ctx.write);
     let entries = view
@@ -122,6 +128,15 @@ async fn track_cat(
     }
     if path == OWN_REPORT {
         return own_report(&ctx, &identity, selection.as_ref()).await;
+    }
+    if let Some(name) = path
+        .strip_prefix(GUIDE_DIR)
+        .and_then(|rest| rest.strip_prefix('/'))
+    {
+        if let Some(selection) = selection {
+            return Err(not_a_report(&path, &selection));
+        }
+        return guide_cat(name);
     }
     if let Some(selection) = selection {
         return Err(not_a_report(&path, &selection));
@@ -158,6 +173,53 @@ fn parse_path_arg(args: &Value, required: bool) -> Result<String, RpcError> {
 
 /// The caller's own report in the track view.
 const OWN_REPORT: &str = "report.md";
+
+/// Where the guides are served: `guide/` lists them, `guide/<name>` prints one.
+const GUIDE_DIR: &str = "guide";
+
+/// The Planner's on-demand guides (#1893): situational detail `prompts/planner.md` names by path
+/// instead of carrying. Static text, the same for every track and role.
+pub(crate) const GUIDES: &[(&str, &str)] = &[
+    (
+        "terminal.md",
+        include_str!("../../../prompts/guides/terminal.md"),
+    ),
+    ("gates.md", include_str!("../../../prompts/guides/gates.md")),
+    ("report.md", include_str!("../../../prompts/guides/report.md")),
+    (
+        "outputs.md",
+        include_str!("../../../prompts/guides/outputs.md"),
+    ),
+];
+
+fn guide_ls() -> Result<Value, RpcError> {
+    let entries: Vec<TrackFsEntry> = GUIDES
+        .iter()
+        .map(|(name, text)| TrackFsEntry {
+            name: (*name).to_string(),
+            kind: "file".into(),
+            size: Some(text.len()),
+            updated_at: None,
+            extra: serde_json::Map::new(),
+        })
+        .collect();
+    serde_json::to_value(entries)
+        .map_err(|e| RpcError::internal(format!("track_file: json serialization: {e}")))
+}
+
+fn guide_cat(name: &str) -> Result<Value, RpcError> {
+    let (_, text) = GUIDES
+        .iter()
+        .find(|(guide, _)| *guide == name)
+        .ok_or_else(|| {
+            let names: Vec<&str> = GUIDES.iter().map(|(guide, _)| *guide).collect();
+            RpcError::invalid_params(format!(
+                "calm.track: no guide `{GUIDE_DIR}/{name}`; guides: {}",
+                names.join(", ")
+            ))
+        })?;
+    markdown_content((*text).to_string())
+}
 
 /// A partial report read, the same on every report path and in `calm.report.read`'s `select`:
 /// chosen blocks (#1874) or chosen H1 sections (#1877).

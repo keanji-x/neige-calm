@@ -1821,13 +1821,10 @@ async fn inv_1110_002_forked_track_requires_report_startup_read() {
         "fork and source renderers must preserve the same complete instructions apart from Track identity"
     );
     assert!(
-        prompt.contains(concat!(
-            "Before you directly edit the report in a session, call `calm.report.read` once: ",
-            "the report carries its own structure and its own maintenance contract, and ",
-            "you may not directly edit a document you have not read. ",
-            "The bounded `calm.task.dispatch` creation below does not require this report read."
-        )),
-        "forked planner must require the report read before direct edits and explicitly exempt bounded Dispatch"
+        prompt.contains(
+            "Before you first edit the report in a session, read it in full with `calm.report.read`."
+        ),
+        "forked planner must require the report read before direct edits"
     );
     assert!(prompt.contains("Existing report tasks belong to this track's current work"));
     assert!(prompt.contains("preserve their identities and approvals"));

@@ -2471,13 +2471,10 @@ mod tests {
 
         assert_eq!(out, expected);
         assert!(
-            expected.contains(concat!(
-                "Before you directly edit the report in a session, call `calm.report.read` once: ",
-                "the report carries its own structure and its own maintenance contract, and ",
-                "you may not directly edit a document you have not read. ",
-                "The bounded `calm.task.dispatch` creation below does not require this report read."
-            )),
-            "base prompt must require the report read before direct edits and explicitly exempt bounded Dispatch"
+            expected.contains(
+                "Before you first edit the report in a session, read it in full with `calm.report.read`."
+            ),
+            "base prompt must require the report read before direct edits"
         );
         assert!(expected.contains("Selected Template snapshot"));
         assert!(expected.contains("not to reproduce a template checklist"));

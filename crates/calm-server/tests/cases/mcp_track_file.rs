@@ -2503,3 +2503,6 @@ async fn gate_log_view_is_planner_only_and_file_backed() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[path = "mcp_track_file_guides.rs"]
+mod guides;

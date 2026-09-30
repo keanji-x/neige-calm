@@ -178,52 +178,6 @@ mod tests {
         assert_ne!(WORKER_SYSTEM_PROMPT_PLACEHOLDER, WORKER_CODEX_SYSTEM_PROMPT);
     }
 
-    #[test]
-    fn planner_candidate_examples_use_the_native_execution_contract() {
-        use calm_types::task_execution::{FileDelivery, IsolatedCodexSelection};
-        let prompt =
-            crate::operation::planner_harness_start_adapter::render_planner_developer_instructions(
-                "track-delivery",
-                None,
-                None,
-            );
-        for (prefix, producer) in [
-            ("Candidate producer context: `", true),
-            ("Candidate consumer context: `", false),
-        ] {
-            let raw = prompt
-                .split_once(prefix)
-                .unwrap()
-                .1
-                .split('`')
-                .next()
-                .unwrap();
-            let context: serde_json::Value = serde_json::from_str(raw).unwrap();
-            let selection = IsolatedCodexSelection::from_context(&context)
-                .unwrap()
-                .unwrap();
-            selection
-                .validate_route(
-                    "codex",
-                    calm_types::task_recovery::TASK_IN_TRACK_ROUTE,
-                    false,
-                    false,
-                )
-                .unwrap();
-            assert!(matches!(
-                (producer, selection.file_delivery),
-                (true, Some(FileDelivery::CandidateProducer { .. }))
-                    | (
-                        false,
-                        Some(
-                            FileDelivery::CandidateConsumer { .. }
-                                | FileDelivery::CandidateReviewer { .. }
-                        )
-                    )
-            ));
-        }
-    }
-
     /// The expected wire spellings are pinned here on purpose: they are the independent statement that catches a silent shrink of the const.
     #[test]
     fn planner_prompt_renders_the_dispatcher_report_edit_wake_set() {
@@ -242,8 +196,8 @@ mod tests {
         );
         assert_eq!(
             p.matches(expected_list).count(),
-            2,
-            "both wake-set sites must carry the rendered list; got: {p}"
+            1,
+            "the wake-set sentence must carry the rendered list; got: {p}"
         );
 
         let rendered_list = planner_wake_authors_prose();
@@ -255,12 +209,8 @@ mod tests {
             );
         }
         assert!(
-            p.contains("你不会被自己（`author = \"planner\"`）的编辑唤醒。"),
+            p.contains("You are never woken by your own (`author = \"planner\"`) edits."),
             "prompt must still state the self-edit exclusion; got: {p}"
-        );
-        assert!(
-            !p.contains("只有用户的会"),
-            "prompt must not claim only user edits wake the planner; got: {p}"
         );
     }
 
@@ -352,6 +302,45 @@ mod tests {
             mismatched.is_empty(),
             "worker prompt goldens differ from the rendered prompts: {mismatched:?}; \
              regenerate with REGEN_PROMPT_GOLDENS=1 and hand-verify the diff"
+        );
+    }
+
+    /// One-sided cap (#1893): a change that shrinks `prompts/planner.md` lowers it in the same PR.
+    const PLANNER_PROMPT_MAX_BYTES: usize = 9_000;
+
+    #[test]
+    fn planner_prompt_fits_its_byte_budget() {
+        let bytes = PLANNER_SYSTEM_PROMPT_TEMPLATE.len();
+        assert!(
+            bytes >= 3_000,
+            "anti-vacuity: planner.md is only {bytes} bytes"
+        );
+        assert!(
+            bytes <= PLANNER_PROMPT_MAX_BYTES,
+            "planner.md is {bytes} bytes, over its {PLANNER_PROMPT_MAX_BYTES} byte budget; \
+             move situational detail to a guide or a tool description"
+        );
+    }
+
+    /// Per-guide and total caps for the guides `guide/<name>.md` serves (#1893).
+    #[test]
+    fn every_guide_fits_its_byte_budget() {
+        use crate::mcp_server::tools::track_file::GUIDES;
+        const GUIDE_MAX_BYTES: usize = 6_144;
+        const GUIDES_TOTAL_MAX_BYTES: usize = 12_000;
+
+        assert!(GUIDES.len() >= 4, "anti-vacuity: {} guides", GUIDES.len());
+        for (name, text) in GUIDES {
+            assert!(
+                (500..=GUIDE_MAX_BYTES).contains(&text.len()),
+                "guide {name} is {} bytes; each guide holds 500..={GUIDE_MAX_BYTES}",
+                text.len()
+            );
+        }
+        let total: usize = GUIDES.iter().map(|(_, text)| text.len()).sum();
+        assert!(
+            total <= GUIDES_TOTAL_MAX_BYTES,
+            "the guides total {total} bytes, over their {GUIDES_TOTAL_MAX_BYTES} byte budget"
         );
     }
 
