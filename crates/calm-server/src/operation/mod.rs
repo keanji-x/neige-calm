@@ -102,7 +102,7 @@ pub async fn refuse_if_context_stale(tx: &mut Tx<'_>, task_id: Option<&str>) -> 
     crate::task_recovery::require_attempt_startable_tx(tx, task_id).await
 }
 
-/// Call immediately before new provider/process effects; recovered attempts additionally recheck their admitted frozen contract.
+/// Call immediately before new provider/process effects.
 pub(crate) async fn admit_task_side_effect(
     repo: &dyn crate::db::RepoEventWrite,
     task_id: &str,

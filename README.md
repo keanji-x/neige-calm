@@ -265,7 +265,7 @@ Neige Calm is converging on four user-facing ideas:
 3. **Report** — the current, inspectable outcome rather than a summary buried in chat.
 4. **Recipe** — a reusable way to perform and deliver a kind of work.
 
-The frontend is served at `/next/`. Plugin installation and Recipe editing are available today. Structured checkpoints and resuming a failed attempt with preserved recovery evidence remain [follow-up work](docs/architecture/long-task-reliability.md#delivery-scope).
+The frontend is served at `/next/`. Plugin installation and Recipe editing are available today. Structured checkpoints remain [follow-up work](docs/architecture/long-task-reliability.md#delivery-scope).
 
 ## Documentation
 

@@ -4,6 +4,7 @@ use crate::mcp_track_report::{Boot, boot, call_tool, seed_track_root_session};
 use calm_server::mcp_server::ToolCallIdentity;
 use calm_server::model::CardRole;
 use calm_server::session_projection_repo::AgentProvider;
+use calm_server::session_projection_repo::WorkerSessionKind;
 use calm_types::worker::WorkerSessionId;
 use serde_json::{Value, json};
 
@@ -183,6 +184,32 @@ async fn legacy_4140_rows_load() {
             .unwrap_or_else(|| panic!("session {session}"));
         assert_eq!(loaded.card_id.as_ref().map(|id| id.as_str()), Some(card));
         assert!(boot.repo.card_get(card).await.unwrap().is_some(), "{card}");
+    }
+    // They carry a thread, a turn and a token like the 4140 rows, yet they are exited: boot thread
+    // attribution and worker-flow boot selection pass over them.
+    let legacy_thread = |thread: &str| thread.starts_with("legacy-thread-");
+    let attributed =
+        calm_server::session_projection_lookup::merge_active_shared_thread_attribution(
+            boot.repo.as_ref(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !attributed.values().any(|thread| legacy_thread(thread)),
+        "{attributed:?}"
+    );
+    for kind in [WorkerSessionKind::CodexCard, WorkerSessionKind::ClaudeCard] {
+        let selected = boot
+            .repo
+            .session_projection_active_for_kind(kind)
+            .await
+            .unwrap();
+        assert!(
+            !selected
+                .iter()
+                .any(|runtime| runtime.id.starts_with("ws-op-")),
+            "{selected:?}"
+        );
     }
 
     for (track, key) in TRACKS {

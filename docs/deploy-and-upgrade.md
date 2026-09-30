@@ -31,9 +31,12 @@ sweep concerns eligible older per-attempt worktrees, not the new Track checkout.
 It preserves slice branches and refuses dirty or otherwise unsafe trees;
 released directories should not be treated as permanent artifact storage.
 
-Tracks now use open/closed state. A closed Track must be reopened before task
-recovery or further scheduling. See [Using Neige Calm](using-neige-calm.md) for
-current controls, publication, and report references.
+Tracks now use open/closed state. A closed Track must be reopened before further
+scheduling. See [Using Neige Calm](using-neige-calm.md) for current controls,
+publication, and report references.
+
+#1893 S4 removed `--isolated-codex-config`; calm-server now rejects it at boot.
+Drop it from the start script before upgrading.
 
 ## 1. Layout
 
