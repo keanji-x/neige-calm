@@ -36,9 +36,10 @@ export const mentionCandidatesSchema: z.ZodType<MentionCandidates> = z.object({
 });
 
 /**
- * `q` is the text typed after `@`, sent even when empty: empty is the server's "recommend"
- * request, and the parameter is required. `trackId` is the track the message is written in,
- * whose blocks the server ranks first; `null` where there is no such track yet.
+ * `query` is `MentionQuery.text` (what was typed after `@`, less any type prefix), sent even
+ * when empty: empty is the server's "recommend" request, and the parameter is required.
+ * `trackId` is the track the message is written in, whose blocks the server ranks first; `null`
+ * where there is no such track yet.
  */
 export function mentionsOperation(
   areaId: string, query: string, trackId: string | null,
@@ -68,7 +69,7 @@ export type MentionSuggestion = Readonly<{
   insert: string;
 }>;
 
-/** The `@` source's port: the ranked suggestions for one query, abandoned when `signal` aborts. */
+/** The `@` source's port: the ranked suggestions for the text typed after `@`, type prefix included, abandoned when `signal` aborts. */
 export type MentionSearch = (query: string, signal: ApiAbortSignal) => Promise<readonly MentionSuggestion[]>;
 
 function tagSuggestion(tag: TagMention): MentionSuggestion {
@@ -105,14 +106,38 @@ function blockSuggestion(block: BlockMention): MentionSuggestion {
 }
 
 /**
- * For a typed `query`: tags, then tracks, then blocks. For bare `@` (empty `query`) the order is
+ * What the text typed after `@` asks for. A leading `#`, `/` or `>` narrows the menu to tags,
+ * tracks or blocks (`kind`) and is not part of the search: `text` is the rest, the server's `q`.
+ * Without one of them `kind` is `null` and `text` is everything typed, so a name that starts
+ * with one of these characters is still found by typing it without that character.
+ */
+export type MentionQuery = Readonly<{ kind: MentionKind | null; text: string }>;
+
+function prefixKind(char: string): MentionKind | null {
+  switch (char) {
+    case '#': return 'tag';
+    case '/': return 'track';
+    case '>': return 'block';
+    default: return null;
+  }
+}
+
+export function mentionQueryOf(typed: string): MentionQuery {
+  const kind = prefixKind(typed.charAt(0));
+  return kind === null ? { kind, text: typed } : { kind, text: typed.slice(1) };
+}
+
+/**
+ * For typed text: tags, then tracks, then blocks. For an empty `query.text` the order is
  * reversed: the server puts the current track's blocks first among its recommendations, and
  * they are the likeliest pick. Inside each group the server's order, which is its ranking;
- * nothing is filtered, re-ranked or re-capped here.
+ * nothing is re-ranked or re-capped here. A `query.kind` keeps only that group: the server caps
+ * each group on its own, so this is the list a server-side filter would give.
  */
-export function mentionSuggestionsOf(candidates: MentionCandidates, query: string): readonly MentionSuggestion[] {
+export function mentionSuggestionsOf(candidates: MentionCandidates, query: MentionQuery): readonly MentionSuggestion[] {
   const tags = candidates.tags.map(tagSuggestion);
   const tracks = candidates.tracks.map(trackSuggestion);
   const blocks = candidates.blocks.map(blockSuggestion);
-  return query === '' ? [...blocks, ...tracks, ...tags] : [...tags, ...tracks, ...blocks];
+  const all = query.text === '' ? [...blocks, ...tracks, ...tags] : [...tags, ...tracks, ...blocks];
+  return query.kind === null ? all : all.filter((suggestion) => suggestion.kind === query.kind);
 }

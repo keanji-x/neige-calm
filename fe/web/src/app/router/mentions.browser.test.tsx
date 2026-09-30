@@ -100,6 +100,36 @@ it('asks for recommendations on a bare @, blocks first', async () => {
   expect(menu().getByRole('option', { selected: true }).element().textContent).toBe('RollbackDeploy notes');
 });
 
+it.each([
+  ['#', 'Tags', '#部署', CANDIDATES.tags[0].insert],
+  ['/', 'Tracks', 'Deploy notes', CANDIDATES.tracks[0].insert],
+  ['>', 'Blocks', 'Deploy notes › Rollback', BLOCK_INSERT],
+])('narrows @%s to %s, searches without the prefix, and sends the pick\'s insert', async (prefix, group, chip, insert) => {
+  await page.viewport(1440, 900);
+  const { requests, mentionReads } = mount('/track/w1');
+  await openConversation(/Conversation Planner chat/);
+
+  await userEvent.keyboard(`see @${prefix}`);
+  await expect.element(menu().getByRole('group', { name: group }).getByRole('option').first()).toBeVisible();
+  expect(await groupOrder()).toEqual([group]);
+  expect(mentionReads()).toEqual(['/api/areas/c1/mentions?q=&track=w1']);
+  await expect.element(page.getByRole('listbox', { name: 'Commands' })).not.toBeInTheDocument();
+
+  await userEvent.keyboard('dep');
+  await expect.poll(() => mentionReads().at(-1)).toBe('/api/areas/c1/mentions?q=dep&track=w1');
+  await expect.element(menu().getByRole('group', { name: group }).getByRole('option').first()).toBeVisible();
+  expect(await groupOrder()).toEqual([group]);
+  await expect.element(page.getByRole('listbox', { name: 'Commands' })).not.toBeInTheDocument();
+
+  await userEvent.keyboard('{Enter}');
+  await expect.element(menu()).not.toBeInTheDocument();
+  await expect.element(page.getByText(chip, { exact: true })).toBeVisible();
+  await userEvent.keyboard('{Enter}');
+  await expect.poll(() => requests.filter((request) => request.path.endsWith('/planner/input')).length).toBe(1);
+  const sent = requests.find((request) => request.path.endsWith('/planner/input'))!.body as { text: string };
+  expect(sent.text).toBe(`see ${insert}`);
+});
+
 it('keeps the / command in the Planner conversation', async () => {
   mount('/track/w1');
   await openConversation(/Conversation Planner chat/);

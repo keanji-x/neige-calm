@@ -259,6 +259,36 @@ describe('the @ menu in the real composer', () => {
     expect(field().textContent).toBe('');
   });
 
+  it('keeps @/ in the @ menu with the raw text for the search, and never opens the / commands', async () => {
+    const onSend = vi.fn();
+    const onNewConversation = vi.fn();
+    const search = vi.fn<MentionSearch>(() => Promise.resolve([TRACK]));
+    render(<MentionComposer search={search} onSend={onSend} onNewConversation={onNewConversation} />);
+    const commandsClosed = () => {
+      expect(screen.queryByRole('listbox', { name: 'Commands' })).toBeNull();
+      expect(screen.queryByRole('option', { name: /^new/ })).toBeNull();
+    };
+
+    await userEvent.type(field(), 'see @/');
+    await within(await screen.findByRole('listbox', { name: 'Mention' })).findByRole('option', { name: /Deploy notes/ });
+    expect(search).toHaveBeenLastCalledWith('/', expect.anything());
+    commandsClosed();
+
+    await userEvent.type(field(), 'dep');
+    await waitFor(() => { expect(search).toHaveBeenLastCalledWith('/dep', expect.anything()); });
+    await within(screen.getByRole('listbox', { name: 'Mention' })).findByRole('option', { name: /Deploy notes/ });
+    commandsClosed();
+    await userEvent.keyboard('{Enter}');
+    expect(field().querySelector('[data-astryx-token]')?.textContent).toBe('Deploy notes');
+    await userEvent.keyboard('{Enter}');
+    expect(onSend).toHaveBeenLastCalledWith(`see ${TRACK.insert}`);
+    expect(onNewConversation).not.toHaveBeenCalled();
+
+    await userEvent.type(field(), '/new');
+    await userEvent.keyboard('{Enter}');
+    expect(onNewConversation).toHaveBeenCalledOnce();
+  });
+
   it('shows the empty text when the search fails', async () => {
     render(<MentionComposer search={() => Promise.reject(new Error('offline'))} onSend={vi.fn()} />);
     await userEvent.type(field(), '@x');

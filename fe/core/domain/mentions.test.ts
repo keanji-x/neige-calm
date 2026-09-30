@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import type { MentionCandidates } from '../api/generated/wire.js';
-import { mentionCandidatesSchema, mentionSuggestionsOf, mentionsOperation } from './mentions.js';
+import {
+  mentionCandidatesSchema, mentionQueryOf, mentionSuggestionsOf, mentionsOperation, type MentionQuery,
+} from './mentions.js';
 
 const CANDIDATES: MentionCandidates = {
   tags: [
@@ -33,9 +35,35 @@ describe('mentionsOperation', () => {
   });
 });
 
+/** Plain `@` text: no type prefix. */
+const all = (text: string): MentionQuery => ({ kind: null, text });
+
+describe('mentionQueryOf', () => {
+  it.each([
+    ['#dep', { kind: 'tag', text: 'dep' }],
+    ['/dep', { kind: 'track', text: 'dep' }],
+    ['>roll', { kind: 'block', text: 'roll' }],
+  ] as const)('reads %s as one group and strips the prefix from the search', (typed, query) => {
+    expect(mentionQueryOf(typed)).toEqual(query);
+  });
+
+  it('reads a prefix alone as that group\'s recommendations', () => {
+    expect(mentionQueryOf('#')).toEqual({ kind: 'tag', text: '' });
+    expect(mentionQueryOf('/')).toEqual({ kind: 'track', text: '' });
+    expect(mentionQueryOf('>')).toEqual({ kind: 'block', text: '' });
+  });
+
+  it('keeps everything typed, in all three groups, without a prefix; only the first character is one', () => {
+    expect(mentionQueryOf('')).toEqual({ kind: null, text: '' });
+    expect(mentionQueryOf('dep')).toEqual({ kind: null, text: 'dep' });
+    expect(mentionQueryOf('a/b#c>d')).toEqual({ kind: null, text: 'a/b#c>d' });
+    expect(mentionQueryOf('//x')).toEqual({ kind: 'track', text: '/x' });
+  });
+});
+
 describe('mentionSuggestionsOf', () => {
   it('lists tags, then tracks, then blocks for a typed query, in the server order, each carrying its insert verbatim', () => {
-    expect(mentionSuggestionsOf(CANDIDATES, 'dep')).toEqual([
+    expect(mentionSuggestionsOf(CANDIDATES, all('dep'))).toEqual([
       { id: 'tag:@`tag:部署`', kind: 'tag', label: '#部署', detail: '3 tracks', chip: '#部署', insert: '@`tag:部署`' },
       { id: 'tag:@`tag:infra`', kind: 'tag', label: '#infra', detail: '1 track', chip: '#infra', insert: '@`tag:infra`' },
       {
@@ -50,14 +78,14 @@ describe('mentionSuggestionsOf', () => {
   });
 
   it('puts blocks first, then tracks, then tags, for bare @', () => {
-    expect(mentionSuggestionsOf(CANDIDATES, '').map((suggestion) => suggestion.kind))
+    expect(mentionSuggestionsOf(CANDIDATES, all('')).map((suggestion) => suggestion.kind))
       .toEqual(['block', 'track', 'tag', 'tag']);
-    expect(mentionSuggestionsOf(CANDIDATES, '').map((suggestion) => suggestion.label))
+    expect(mentionSuggestionsOf(CANDIDATES, all('')).map((suggestion) => suggestion.label))
       .toEqual(['Rollback', 'Deploy notes', '#部署', '#infra']);
   });
 
   it('is empty for an area with nothing to mention', () => {
-    expect(mentionSuggestionsOf({ tags: [], tracks: [], blocks: [] }, '')).toEqual([]);
+    expect(mentionSuggestionsOf({ tags: [], tracks: [], blocks: [] }, all(''))).toEqual([]);
   });
 
   it('keeps ids unique when a tag and a report would otherwise collide', () => {
@@ -65,7 +93,35 @@ describe('mentionSuggestionsOf', () => {
       tags: [{ label: 'x', track_count: 1, insert: '@`x`' }],
       tracks: [{ label: 'x', track_id: 't', insert: '@`x`' }],
       blocks: [],
-    }, 'x').map((suggestion) => suggestion.id);
+    }, all('x')).map((suggestion) => suggestion.id);
     expect(new Set(ids).size).toBe(2);
+  });
+
+  it.each([
+    ['#dep', ['tag', 'tag']],
+    ['/dep', ['track']],
+    ['>roll', ['block']],
+    ['#', ['tag', 'tag']],
+    ['/', ['track']],
+    ['>', ['block']],
+  ] as const)('keeps only the prefix\'s group for %s', (typed, kinds) => {
+    expect(mentionSuggestionsOf(CANDIDATES, mentionQueryOf(typed)).map((suggestion) => suggestion.kind)).toEqual(kinds);
+  });
+
+  it('keeps the chip and the insert of a row found through a prefix', () => {
+    expect(mentionSuggestionsOf(CANDIDATES, mentionQueryOf('>roll'))).toEqual(
+      mentionSuggestionsOf(CANDIDATES, all('roll')).filter((suggestion) => suggestion.kind === 'block'),
+    );
+  });
+
+  it('still offers a name that starts with a prefix character to a plain @', () => {
+    const named: MentionCandidates = {
+      tags: [{ label: '#hash', track_count: 1, insert: '@`tag:#hash`' }],
+      tracks: [{ label: '/tmp notes', track_id: 't', insert: '@`area/reports/tmp notes.md`' }],
+      blocks: [{ label: '> quote', block_id: 'b', track_title: 'Q', track_id: 't', insert: '@`area/reports/Q.md#b`' }],
+    };
+    const query = mentionQueryOf('tmp');
+    expect(query).toEqual({ kind: null, text: 'tmp' });
+    expect(mentionSuggestionsOf(named, query).map((suggestion) => suggestion.label)).toEqual(['##hash', '/tmp notes', '> quote']);
   });
 });
