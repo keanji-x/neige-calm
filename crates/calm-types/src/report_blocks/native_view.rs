@@ -1,212 +1,8 @@
 //! Closed, inert native presentation data. Validation grants no execution capability.
-use serde::Deserialize;
+mod model;
+pub use model::*;
 use serde_json::Value;
 use std::collections::HashSet;
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NativeView {
-    pub version: f64,
-    pub title: String,
-    pub description: String,
-    pub snapshot: Snapshot,
-    pub rows: Vec<Row>,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct Snapshot {
-    pub id: String,
-    pub observed_at: f64,
-    pub produced_at: f64,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Row {
-    pub id: String,
-    pub title: String,
-    pub layout: Layout,
-    pub cells: Vec<Component>,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Layout {
-    One,
-    Two,
-    Three,
-    #[serde(rename = "two-wide-start")]
-    TwoWideStart,
-    #[serde(rename = "two-wide-end")]
-    TwoWideEnd,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Tone {
-    Neutral,
-    Positive,
-    Warning,
-    Negative,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Emphasis {
-    Primary,
-    Normal,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Placement {
-    Prefix,
-    Suffix,
-}
-#[derive(Deserialize)]
-#[serde(tag = "state", rename_all = "lowercase", deny_unknown_fields)]
-pub enum MetricValue {
-    Known {
-        amount: f64,
-        unit: String,
-        placement: Placement,
-        decimals: f64,
-        signed: bool,
-    },
-    Unknown {
-        reason: String,
-    },
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Metric {
-    pub id: String,
-    pub label: String,
-    pub value: MetricValue,
-    pub detail: String,
-    pub tone: Tone,
-    pub emphasis: Emphasis,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Field {
-    pub label: String,
-    pub value: String,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Status {
-    pub label: String,
-    pub tone: Tone,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Section {
-    pub label: String,
-    pub body: String,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Evidence {
-    pub id: String,
-    pub label: String,
-    pub date: String,
-    pub body: String,
-    pub note: String,
-    pub tone: Tone,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Record {
-    pub id: String,
-    pub category: String,
-    pub title: String,
-    pub summary: String,
-    pub status: Status,
-    pub handling: Status,
-    pub facts: Vec<Field>,
-    pub sections: Vec<Section>,
-    pub evidence: Vec<Evidence>,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RecordSet {
-    pub id: String,
-    pub label: String,
-    pub description: Option<String>,
-    pub items: Vec<Record>,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Series {
-    pub id: String,
-    pub label: String,
-    pub palette: f64,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Point {
-    pub date: String,
-    pub values: Vec<Option<f64>>,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PlotStyle {
-    Line,
-    Stacked,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Dataset {
-    pub id: String,
-    pub label: String,
-    pub unit: String,
-    pub style: PlotStyle,
-    pub series: Vec<Series>,
-    pub points: Vec<Point>,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Slice {
-    pub id: String,
-    pub label: String,
-    pub value: f64,
-    pub palette: f64,
-}
-#[derive(Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "kebab-case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum Component {
-    Metrics {
-        id: String,
-        title: String,
-        items: Vec<Metric>,
-    },
-    TimeSeries {
-        id: String,
-        title: String,
-        caption: String,
-        empty_text: String,
-        datasets: Vec<Dataset>,
-    },
-    Distribution {
-        id: String,
-        title: String,
-        unit: String,
-        empty_text: String,
-        slices: Vec<Slice>,
-    },
-    Table {
-        id: String,
-        title: String,
-        table: Value,
-    },
-    Records {
-        id: String,
-        title: String,
-        empty_text: String,
-        datasets: Vec<RecordSet>,
-    },
-}
 
 fn text(value: &str, limit: usize) -> Result<(), String> {
     if value.chars().count() > limit {
@@ -265,6 +61,8 @@ impl Component {
             | Self::TimeSeries { id, title, .. }
             | Self::Distribution { id, title, .. }
             | Self::Table { id, title, .. }
+            | Self::Bars { id, title, .. }
+            | Self::Meter { id, title, .. }
             | Self::Records { id, title, .. } => (id, title),
         }
     }
@@ -297,6 +95,7 @@ impl Component {
                             integer(*decimals, 0.0, 4.0)?;
                         }
                         MetricValue::Unknown { reason } => text(reason, 500)?,
+                        MetricValue::Text { text: value } => text(value, 2048)?,
                     }
                 }
             }
@@ -364,6 +163,48 @@ impl Component {
                     integer(slice.palette, 1.0, 7.0)?;
                 }
             }
+            Self::Bars {
+                unit,
+                empty_text,
+                points,
+                ..
+            } => {
+                text(unit, 32)?;
+                text(empty_text, 500)?;
+                count(points.len(), 0, 24)?;
+                for point in points {
+                    text(&point.label, 120)?;
+                    number(point.value)?;
+                }
+            }
+            Self::Meter {
+                unit,
+                detail,
+                used,
+                limit,
+                used_label,
+                limit_label,
+                empty_text,
+                ..
+            } => {
+                text(unit, 32)?;
+                text(detail, 500)?;
+                text(used_label, 120)?;
+                text(limit_label, 120)?;
+                text(empty_text, 500)?;
+                if let Some(used) = used {
+                    number(*used)?;
+                    if *used < 0.0 {
+                        return Err("negative meter used".into());
+                    }
+                }
+                if let Some(limit) = limit {
+                    number(*limit)?;
+                    if *limit <= 0.0 {
+                        return Err("meter limit must be positive".into());
+                    }
+                }
+            }
             Self::Table { table, .. } => super::kinds::validate_inline_table_overlay(table)?,
             Self::Records {
                 empty_text,
@@ -378,30 +219,32 @@ impl Component {
                     if let Some(description) = &data.description {
                         text(description, 500)?;
                     }
-                    count(data.items.len(), 0, 50)?;
+                    count(data.items.len(), 0, 100)?;
                     ids(data.items.iter().map(|i| i.id.as_str()))?;
                     for item in &data.items {
-                        text(&item.category, 120)?;
+                        text(&item.subtitle, 120)?;
                         text(&item.title, 200)?;
-                        text(&item.summary, 2048)?;
-                        text(&item.status.label, 120)?;
-                        text(&item.handling.label, 120)?;
+                        text(&item.summary, 8000)?;
+                        count(item.badges.len(), 0, 12)?;
+                        for badge in &item.badges {
+                            text(&badge.label, 120)?;
+                            text(&badge.value, 2048)?;
+                        }
                         count(item.facts.len(), 0, 12)?;
                         count(item.sections.len(), 0, 8)?;
-                        count(item.evidence.len(), 0, 20)?;
-                        ids(item.evidence.iter().map(|e| e.id.as_str()))?;
+                        count(item.disclosures.len(), 0, 20)?;
+                        ids(item.disclosures.iter().map(|e| e.id.as_str()))?;
                         for field in &item.facts {
                             text(&field.label, 120)?;
                             text(&field.value, 2048)?;
                         }
                         for section in &item.sections {
                             text(&section.label, 120)?;
-                            text(&section.body, 2048)?;
+                            text(&section.body, 8000)?;
                         }
-                        for e in &item.evidence {
+                        for e in &item.disclosures {
                             text(&e.label, 200)?;
-                            date(&e.date)?;
-                            text(&e.body, 2048)?;
+                            text(&e.body, 8000)?;
                             text(&e.note, 500)?;
                         }
                     }
@@ -420,8 +263,12 @@ pub fn validate(payload: &Value) -> Result<(), String> {
     text(&view.title, 200)?;
     text(&view.description, 500)?;
     ids(std::iter::once(view.snapshot.id.as_str()))?;
-    integer(view.snapshot.observed_at, 0.0, 253402300799999.0)?;
-    integer(view.snapshot.produced_at, 0.0, 253402300799999.0)?;
+    if let Some(time) = view.snapshot.observed_at {
+        integer(time, 0.0, 253402300799999.0)?;
+    }
+    if let Some(time) = view.snapshot.produced_at {
+        integer(time, 0.0, 253402300799999.0)?;
+    }
     count(view.rows.len(), 1, 6)?;
     ids(view.rows.iter().map(|r| r.id.as_str()))?;
     ids(view
@@ -442,4 +289,91 @@ pub fn validate(payload: &Value) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Checked-in contract used by backend discovery; regenerate from the DTOs.
+pub fn schema() -> Value {
+    serde_json::from_str(include_str!("native_view.schema.json"))
+        .expect("generated native view schema")
+}
+
+/// Structural JSON Schema derived from the authoritative Rust presentation DTOs.
+pub fn generated_schema() -> Value {
+    use utoipa::{PartialSchema, ToSchema};
+    let mut definitions = Vec::new();
+    NativeView::schemas(&mut definitions);
+    definitions.push((NativeView::name().into(), NativeView::schema()));
+    let mut schema = serde_json::to_value(NativeView::schema()).unwrap();
+    let definitions: serde_json::Map<String, Value> = definitions
+        .into_iter()
+        .map(|(name, schema)| (name, serde_json::to_value(schema).unwrap()))
+        .collect();
+    schema["$defs"] = Value::Object(definitions);
+    fn references(value: &mut Value) {
+        match value {
+            Value::Object(map) => {
+                if let Some(Value::String(reference)) = map.get_mut("$ref") {
+                    *reference = reference.replace("#/components/schemas/", "#/$defs/");
+                }
+                // utoipa closes structs but does not propagate serde's deny_unknown_fields
+                // onto internally tagged enum branches. These object variants are closed too.
+                if map.get("type").and_then(Value::as_str) == Some("object")
+                    && map.contains_key("properties")
+                {
+                    map.insert("additionalProperties".into(), Value::Bool(false));
+                }
+                for value in map.values_mut() {
+                    references(value);
+                }
+            }
+            Value::Array(values) => {
+                for value in values {
+                    references(value);
+                }
+            }
+            _ => {}
+        }
+    }
+    references(&mut schema);
+    schema["$schema"] = Value::String("https://json-schema.org/draft/2020-12/schema".into());
+    schema
+}
+
+/// Import-free TypeScript declarations for every structural DTO.
+pub fn typescript() -> String {
+    use ts_rs::TS;
+    let config = ts_rs::Config::default();
+    let declarations = [
+        NativeView::decl(&config),
+        Snapshot::decl(&config),
+        Row::decl(&config),
+        Layout::decl(&config),
+        Tone::decl(&config),
+        Emphasis::decl(&config),
+        Placement::decl(&config),
+        MetricValue::decl(&config),
+        Metric::decl(&config),
+        Field::decl(&config),
+        Badge::decl(&config),
+        Section::decl(&config),
+        Disclosure::decl(&config),
+        ViewRecord::decl(&config),
+        RecordSet::decl(&config),
+        Series::decl(&config),
+        Point::decl(&config),
+        PlotStyle::decl(&config),
+        Dataset::decl(&config),
+        Slice::decl(&config),
+        Component::decl(&config),
+        BarPoint::decl(&config),
+        InlineTable::decl(&config),
+        TableColumn::decl(&config),
+        TableAlign::decl(&config),
+        TableScalar::decl(&config),
+        TableText::decl(&config),
+    ];
+    declarations
+        .into_iter()
+        .map(|declaration| format!("export {declaration}\n"))
+        .collect()
 }

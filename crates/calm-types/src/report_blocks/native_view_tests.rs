@@ -197,3 +197,111 @@ fn native_view_rejects_oversized_payload_and_long_text() {
             .contains("payload too large")
     );
 }
+
+#[test]
+fn native_view_generic_records_do_not_require_a_workflow() {
+    for badges in [
+        serde_json::json!([]),
+        serde_json::json!([{ "label": "State", "value": "Open", "tone": "neutral" }]),
+        serde_json::json!([
+            { "label": "State", "value": "Open", "tone": "neutral" },
+            { "label": "Owner", "value": "Operations", "tone": "positive" },
+            { "label": "Priority", "value": "Low", "tone": "warning" }
+        ]),
+    ] {
+        let mut view = fixture()["valid"].clone();
+        view["rows"] = serde_json::json!([{ "id": "items", "title": "Inventory", "layout": "one", "cells": [{
+            "kind": "records", "id": "inventory", "title": "Devices", "emptyText": "None", "datasets": [{
+                "id": "sample", "label": "Observed", "description": null, "items": [{
+                    "id": "device", "subtitle": "Storage", "title": "Disk", "summary": "Available",
+                    "badges": badges, "facts": [], "sections": [], "disclosures": []
+                }]
+            }]
+        }] }]);
+        validate_payload(KIND_VIEW, &view)
+            .expect("generic records cannot require a business workflow");
+    }
+}
+
+#[test]
+fn native_view_generated_contract_matches_dtos() {
+    let schema = super::native_view::schema();
+    assert_eq!(schema, super::native_view::generated_schema());
+    assert_eq!(
+        schema["$defs"]["Snapshot"]["required"],
+        serde_json::json!(["id", "observedAt", "producedAt"])
+    );
+    for variant in schema["$defs"]["Component"]["oneOf"].as_array().unwrap() {
+        assert_eq!(variant["additionalProperties"], false);
+    }
+    assert!(super::native_view::typescript().contains("export type ViewRecord ="));
+}
+
+#[test]
+fn native_view_snapshot_requires_explicit_nullable_times() {
+    let mut view = fixture()["valid"].clone();
+    for key in ["observedAt", "producedAt"] {
+        view["snapshot"][key] = Value::Null;
+    }
+    validate_payload(KIND_VIEW, &view).unwrap();
+    for key in ["observedAt", "producedAt"] {
+        let mut missing = view.clone();
+        missing["snapshot"].as_object_mut().unwrap().remove(key);
+        assert!(validate_payload(KIND_VIEW, &missing).is_err());
+    }
+}
+
+#[test]
+fn native_view_generic_primitives_validate_without_business_semantics() {
+    let mut view = fixture()["valid"].clone();
+    view["rows"] = serde_json::json!([{ "id": "summary", "title": "", "layout": "two", "cells": [
+        { "kind": "bars", "id": "bars", "title": "", "unit": "", "emptyText": "", "points": [{ "label": "A", "value": -1, "tone": "neutral" }] },
+        { "kind": "meter", "id": "meter", "title": "", "unit": "", "detail": "", "used": null, "limit": null, "usedLabel": "", "limitLabel": "", "emptyText": "", "tone": "neutral" }
+    ] }]);
+    validate_payload(KIND_VIEW, &view).unwrap();
+    for (field, invalid) in [
+        ("used", serde_json::json!(-1)),
+        ("limit", serde_json::json!(0)),
+    ] {
+        let mut bad = view.clone();
+        bad["rows"][0]["cells"][1][field] = invalid;
+        assert!(validate_payload(KIND_VIEW, &bad).is_err());
+        bad["rows"][0]["cells"][1]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert!(validate_payload(KIND_VIEW, &bad).is_err());
+    }
+    view["rows"][0]["cells"][0]["points"] = serde_json::json!([]);
+    view["rows"][0]["cells"][1]["used"] = serde_json::json!(3);
+    view["rows"][0]["cells"][1]["limit"] = serde_json::json!(2);
+    validate_payload(KIND_VIEW, &view).unwrap(); // A meter may exceed its publisher-defined limit.
+}
+
+#[test]
+fn native_view_read_contract_preserves_full_disclosures_and_history() {
+    let mut view = fixture()["valid"].clone();
+    let records = &mut view["rows"][2]["cells"][0]["datasets"][0]["items"];
+    let mut record = records[0].clone();
+    record["summary"] = serde_json::json!("界".repeat(8000));
+    record["sections"][0]["body"] = serde_json::json!("界".repeat(8000));
+    record["disclosures"][0]["body"] = serde_json::json!("界".repeat(8000));
+    *records = Value::Array(
+        (0..100)
+            .map(|i| {
+                let mut r = record.clone();
+                r["id"] = serde_json::json!(format!("r{i}"));
+                r
+            })
+            .collect(),
+    );
+    super::native_view::validate(&view).unwrap();
+    assert!(
+        validate_payload(KIND_VIEW, &view)
+            .unwrap_err()
+            .contains("payload too large")
+    );
+    view["rows"][2]["cells"][0]["datasets"][0]["items"][0]["disclosures"][0]["body"] =
+        serde_json::json!("界".repeat(8001));
+    assert!(super::native_view::validate(&view).is_err());
+}

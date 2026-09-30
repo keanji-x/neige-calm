@@ -1,0 +1,1089 @@
+{
+  "$defs": {
+    "Badge": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "maxLength": 120,
+          "type": "string"
+        },
+        "tone": {
+          "$ref": "#/$defs/Tone"
+        },
+        "value": {
+          "maxLength": 2048,
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "value",
+        "tone"
+      ],
+      "type": "object"
+    },
+    "BarPoint": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "maxLength": 120,
+          "type": "string"
+        },
+        "tone": {
+          "$ref": "#/$defs/Tone"
+        },
+        "value": {
+          "format": "double",
+          "maximum": 1000000000000000,
+          "minimum": -1000000000000000,
+          "type": "number"
+        }
+      },
+      "required": [
+        "label",
+        "value",
+        "tone"
+      ],
+      "type": "object"
+    },
+    "Component": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "maxLength": 100,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._-]+$",
+              "type": "string"
+            },
+            "items": {
+              "items": {
+                "$ref": "#/$defs/Metric"
+              },
+              "maxItems": 8,
+              "minItems": 1,
+              "type": "array"
+            },
+            "kind": {
+              "enum": [
+                "metrics"
+              ],
+              "type": "string"
+            },
+            "title": {
+              "maxLength": 200,
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "title",
+            "items",
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "caption": {
+              "maxLength": 500,
+              "type": "string"
+            },
+            "datasets": {
+              "items": {
+                "$ref": "#/$defs/Dataset"
+              },
+              "maxItems": 4,
+              "minItems": 1,
+              "type": "array"
+            },
+            "empty_text": {
+              "maxLength": 500,
+              "type": "string"
+            },
+            "id": {
+              "maxLength": 100,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._-]+$",
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "time-series"
+              ],
+              "type": "string"
+            },
+            "title": {
+              "maxLength": 200,
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "title",
+            "caption",
+            "empty_text",
+            "datasets",
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "empty_text": {
+              "maxLength": 500,
+              "type": "string"
+            },
+            "id": {
+              "maxLength": 100,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._-]+$",
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "distribution"
+              ],
+              "type": "string"
+            },
+            "slices": {
+              "items": {
+                "$ref": "#/$defs/Slice"
+              },
+              "maxItems": 12,
+              "minItems": 0,
+              "type": "array"
+            },
+            "title": {
+              "maxLength": 200,
+              "type": "string"
+            },
+            "unit": {
+              "maxLength": 32,
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "title",
+            "unit",
+            "empty_text",
+            "slices",
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "maxLength": 100,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._-]+$",
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "table"
+              ],
+              "type": "string"
+            },
+            "table": {
+              "$ref": "#/$defs/InlineTable"
+            },
+            "title": {
+              "maxLength": 200,
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "title",
+            "table",
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "empty_text": {
+              "maxLength": 500,
+              "type": "string"
+            },
+            "id": {
+              "maxLength": 100,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._-]+$",
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "bars"
+              ],
+              "type": "string"
+            },
+            "points": {
+              "items": {
+                "$ref": "#/$defs/BarPoint"
+              },
+              "maxItems": 24,
+              "minItems": 0,
+              "type": "array"
+            },
+            "title": {
+              "maxLength": 200,
+              "type": "string"
+            },
+            "unit": {
+              "maxLength": 32,
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "title",
+            "unit",
+            "empty_text",
+            "points",
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "detail": {
+              "maxLength": 500,
+              "type": "string"
+            },
+            "empty_text": {
+              "maxLength": 500,
+              "type": "string"
+            },
+            "id": {
+              "maxLength": 100,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._-]+$",
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "meter"
+              ],
+              "type": "string"
+            },
+            "limit": {
+              "exclusiveMinimum": 0,
+              "format": "double",
+              "maximum": 1000000000000000,
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "limit_label": {
+              "maxLength": 120,
+              "type": "string"
+            },
+            "title": {
+              "maxLength": 200,
+              "type": "string"
+            },
+            "tone": {
+              "$ref": "#/$defs/Tone"
+            },
+            "unit": {
+              "maxLength": 32,
+              "type": "string"
+            },
+            "used": {
+              "format": "double",
+              "maximum": 1000000000000000,
+              "minimum": 0,
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "used_label": {
+              "maxLength": 120,
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "title",
+            "unit",
+            "detail",
+            "used",
+            "limit",
+            "used_label",
+            "limit_label",
+            "empty_text",
+            "tone",
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "datasets": {
+              "items": {
+                "$ref": "#/$defs/RecordSet"
+              },
+              "maxItems": 4,
+              "minItems": 1,
+              "type": "array"
+            },
+            "empty_text": {
+              "maxLength": 500,
+              "type": "string"
+            },
+            "id": {
+              "maxLength": 100,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._-]+$",
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "records"
+              ],
+              "type": "string"
+            },
+            "title": {
+              "maxLength": 200,
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "title",
+            "empty_text",
+            "datasets",
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Dataset": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._-]+$",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 120,
+          "type": "string"
+        },
+        "points": {
+          "items": {
+            "$ref": "#/$defs/Point"
+          },
+          "maxItems": 500,
+          "minItems": 0,
+          "type": "array"
+        },
+        "series": {
+          "items": {
+            "$ref": "#/$defs/Series"
+          },
+          "maxItems": 6,
+          "minItems": 1,
+          "type": "array"
+        },
+        "style": {
+          "$ref": "#/$defs/PlotStyle"
+        },
+        "unit": {
+          "maxLength": 32,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "unit",
+        "style",
+        "series",
+        "points"
+      ],
+      "type": "object"
+    },
+    "Disclosure": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "maxLength": 8000,
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._-]+$",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 200,
+          "type": "string"
+        },
+        "note": {
+          "maxLength": 500,
+          "type": "string"
+        },
+        "tone": {
+          "$ref": "#/$defs/Tone"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "body",
+        "note",
+        "tone"
+      ],
+      "type": "object"
+    },
+    "Emphasis": {
+      "enum": [
+        "primary",
+        "normal"
+      ],
+      "type": "string"
+    },
+    "Field": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "maxLength": 120,
+          "type": "string"
+        },
+        "value": {
+          "maxLength": 2048,
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "value"
+      ],
+      "type": "object"
+    },
+    "InlineTable": {
+      "additionalProperties": false,
+      "properties": {
+        "caption": {
+          "maxLength": 2048,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/TableColumn"
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "type": "array"
+        },
+        "highlight": {
+          "maxLength": 2048,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rows": {
+          "items": {
+            "additionalProperties": {
+              "$ref": "#/$defs/TableScalar"
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "maxItems": 500,
+          "type": "array"
+        }
+      },
+      "required": [
+        "columns",
+        "rows"
+      ],
+      "type": "object"
+    },
+    "Layout": {
+      "enum": [
+        "one",
+        "two",
+        "three",
+        "two-wide-start",
+        "two-wide-end"
+      ],
+      "type": "string"
+    },
+    "Metric": {
+      "additionalProperties": false,
+      "properties": {
+        "detail": {
+          "maxLength": 500,
+          "type": "string"
+        },
+        "emphasis": {
+          "$ref": "#/$defs/Emphasis"
+        },
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._-]+$",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 120,
+          "type": "string"
+        },
+        "tone": {
+          "$ref": "#/$defs/Tone"
+        },
+        "value": {
+          "$ref": "#/$defs/MetricValue"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "value",
+        "detail",
+        "tone",
+        "emphasis"
+      ],
+      "type": "object"
+    },
+    "MetricValue": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "amount": {
+              "format": "double",
+              "maximum": 1000000000000000,
+              "minimum": -1000000000000000,
+              "type": "number"
+            },
+            "decimals": {
+              "format": "int64",
+              "maximum": 4,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "placement": {
+              "$ref": "#/$defs/Placement"
+            },
+            "signed": {
+              "type": "boolean"
+            },
+            "state": {
+              "enum": [
+                "known"
+              ],
+              "type": "string"
+            },
+            "unit": {
+              "maxLength": 32,
+              "type": "string"
+            }
+          },
+          "required": [
+            "amount",
+            "unit",
+            "placement",
+            "decimals",
+            "signed",
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "state": {
+              "enum": [
+                "text"
+              ],
+              "type": "string"
+            },
+            "text": {
+              "maxLength": 2048,
+              "type": "string"
+            }
+          },
+          "required": [
+            "text",
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "reason": {
+              "maxLength": 500,
+              "type": "string"
+            },
+            "state": {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason",
+            "state"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "NativeView": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "maxLength": 500,
+          "type": "string"
+        },
+        "rows": {
+          "items": {
+            "$ref": "#/$defs/Row"
+          },
+          "maxItems": 6,
+          "minItems": 1,
+          "type": "array"
+        },
+        "snapshot": {
+          "$ref": "#/$defs/Snapshot"
+        },
+        "title": {
+          "maxLength": 200,
+          "type": "string"
+        },
+        "version": {
+          "format": "int64",
+          "maximum": 1,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "title",
+        "description",
+        "snapshot",
+        "rows"
+      ],
+      "type": "object"
+    },
+    "Placement": {
+      "enum": [
+        "prefix",
+        "suffix"
+      ],
+      "type": "string"
+    },
+    "PlotStyle": {
+      "enum": [
+        "line",
+        "stacked"
+      ],
+      "type": "string"
+    },
+    "Point": {
+      "additionalProperties": false,
+      "properties": {
+        "date": {
+          "maxLength": 10,
+          "minLength": 10,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+          "type": "string"
+        },
+        "values": {
+          "items": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "maxItems": 6,
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "date",
+        "values"
+      ],
+      "type": "object"
+    },
+    "RecordSet": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "maxLength": 500,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._-]+$",
+          "type": "string"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/ViewRecord"
+          },
+          "maxItems": 100,
+          "minItems": 0,
+          "type": "array"
+        },
+        "label": {
+          "maxLength": 120,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "items"
+      ],
+      "type": "object"
+    },
+    "Row": {
+      "additionalProperties": false,
+      "properties": {
+        "cells": {
+          "items": {
+            "$ref": "#/$defs/Component"
+          },
+          "maxItems": 3,
+          "minItems": 1,
+          "type": "array"
+        },
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._-]+$",
+          "type": "string"
+        },
+        "layout": {
+          "$ref": "#/$defs/Layout"
+        },
+        "title": {
+          "maxLength": 200,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "layout",
+        "cells"
+      ],
+      "type": "object"
+    },
+    "Section": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "maxLength": 8000,
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 120,
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "body"
+      ],
+      "type": "object"
+    },
+    "Series": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._-]+$",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 120,
+          "type": "string"
+        },
+        "palette": {
+          "format": "int64",
+          "maximum": 7,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "palette"
+      ],
+      "type": "object"
+    },
+    "Slice": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._-]+$",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 120,
+          "type": "string"
+        },
+        "palette": {
+          "format": "int64",
+          "maximum": 7,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "value": {
+          "format": "double",
+          "maximum": 1000000000000000,
+          "minimum": 0,
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "value",
+        "palette"
+      ],
+      "type": "object"
+    },
+    "Snapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._-]+$",
+          "type": "string"
+        },
+        "observedAt": {
+          "format": "int64",
+          "maximum": 253402300799999,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "producedAt": {
+          "format": "int64",
+          "maximum": 253402300799999,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "observedAt",
+        "producedAt"
+      ],
+      "type": "object"
+    },
+    "TableAlign": {
+      "enum": [
+        "left",
+        "right"
+      ],
+      "type": "string"
+    },
+    "TableColumn": {
+      "additionalProperties": false,
+      "properties": {
+        "align": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/TableAlign"
+            }
+          ]
+        },
+        "key": {
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 2048,
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "label"
+      ],
+      "type": "object"
+    },
+    "TableScalar": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/TableText"
+        },
+        {
+          "format": "double",
+          "type": "number"
+        },
+        {
+          "default": null
+        }
+      ]
+    },
+    "TableText": {
+      "maxLength": 2048,
+      "type": "string"
+    },
+    "Tone": {
+      "enum": [
+        "neutral",
+        "positive",
+        "warning",
+        "negative"
+      ],
+      "type": "string"
+    },
+    "ViewRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "badges": {
+          "items": {
+            "$ref": "#/$defs/Badge"
+          },
+          "maxItems": 12,
+          "minItems": 0,
+          "type": "array"
+        },
+        "disclosures": {
+          "items": {
+            "$ref": "#/$defs/Disclosure"
+          },
+          "maxItems": 20,
+          "minItems": 0,
+          "type": "array"
+        },
+        "facts": {
+          "items": {
+            "$ref": "#/$defs/Field"
+          },
+          "maxItems": 12,
+          "minItems": 0,
+          "type": "array"
+        },
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._-]+$",
+          "type": "string"
+        },
+        "sections": {
+          "items": {
+            "$ref": "#/$defs/Section"
+          },
+          "maxItems": 8,
+          "minItems": 0,
+          "type": "array"
+        },
+        "subtitle": {
+          "maxLength": 120,
+          "type": "string"
+        },
+        "summary": {
+          "maxLength": 8000,
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "subtitle",
+        "title",
+        "summary",
+        "badges",
+        "facts",
+        "sections",
+        "disclosures"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "description": {
+      "maxLength": 500,
+      "type": "string"
+    },
+    "rows": {
+      "items": {
+        "$ref": "#/$defs/Row"
+      },
+      "maxItems": 6,
+      "minItems": 1,
+      "type": "array"
+    },
+    "snapshot": {
+      "$ref": "#/$defs/Snapshot"
+    },
+    "title": {
+      "maxLength": 200,
+      "type": "string"
+    },
+    "version": {
+      "format": "int64",
+      "maximum": 1,
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "version",
+    "title",
+    "description",
+    "snapshot",
+    "rows"
+  ],
+  "type": "object"
+}
