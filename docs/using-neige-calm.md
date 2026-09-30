@@ -1,11 +1,26 @@
 # Using Neige Calm
 
-This guide describes the new desktop frontend at `/next/` on `main`, including
-the Settings plugin installation and worker verification fixes merged on
-2026-09-05. An older installation may not have these controls. Use
+This guide describes the maintained desktop frontend at `/next/` on `main`.
+An older installation may not have these controls. Use
 `/api/version` to identify its build and the [upgrade guide](deploy-and-upgrade.md)
 to update it. For a fresh installation, start with the
 [Linux Alpha runbook](alpha-release.md).
+
+## Choose a Planner
+
+In **New Track**, use the grouped model picker to choose a Codex or Claude
+model. That choice also selects the Planner provider. Claude appears when the
+server has configured its backend; installing the CLI alone does not enable it.
+An existing Track keeps its Planner provider; its picker changes models within
+that provider.
+
+**Settings → Planners** shows **Ready**, **Unavailable**, or **Not configured**
+with the server's reason when a provider is not ready. Choose **Recheck** after
+fixing installation, version, or login problems. This pane reports readiness;
+it does not install a CLI or sign in for you. Claude Track creation is refused
+until Claude is ready. Codex creation can still succeed while unavailable,
+but its Planner cannot run until the provider is ready.
+See [Claude Planner setup](neige-app-config.md#enable-a-claude-planner).
 
 ## Create a Track from a Recipe
 
@@ -14,28 +29,63 @@ one of **My recipes**, or **No template**. The **Manage recipes…** entry opens
 the Recipe list even when you have not saved a Recipe yet.
 
 Choose **New recipe**, enter a title and Markdown body, then **Save**. An existing
-Recipe offers **Edit** and **Delete**. The body uses ordinary Markdown plus
-`neige-block task` fences; use the examples in the
-[Recipe body format](recipe-body-format.md). Agent tasks use `goal`; terminal
-tasks use `command`. A malformed fence can be saved as ordinary prose, so a
-successful save alone does not prove that the Recipe contains runnable tasks.
+Recipe offers **Edit** and **Delete**. Write the working method, constraints,
+and expected Report format in ordinary Markdown; see
+[Recipe body format](recipe-body-format.md). Working instructions can go in a
+closed HTML comment so the Planner receives them without showing them in the
+Report. Do not preallocate generic task steps: the Planner creates concrete
+tasks when the actual request calls for execution.
 
 After saving, the editor shows the server's normalized body. If another window
 saved first, the revision conflict preserves your draft; copy anything you need,
 then close and reopen the Recipe to work from the current version.
 
-Return to New Track and select the saved Recipe. Its title and body seed the new
-Track's Report and tasks. The first message in the composer goes with the create
-request; send it once. Built-in templates remain read-only, and the picker does
-not offer to duplicate a built-in template into a Recipe.
+Return to New Track and select the saved Recipe. Its working instructions are
+snapshotted for the Planner at creation; prose and non-task blocks seed the
+Report. Old task fences remain reference material and do not create queued
+tasks. Editing the source Recipe later does not change an existing Track's
+snapshot. The first message in the composer goes with the create request;
+send it once. Built-in templates remain read-only, and the picker does not
+offer to duplicate a built-in template into a Recipe.
+
+## Reference tags, reports, and blocks in chat
+
+In the Planner composer, type `@` to open suggestions from the current Area.
+Add a prefix to show only one kind of reference, then type a search term:
+
+| Input | Candidates | Example |
+| --- | --- | --- |
+| `@` | Tags, Track reports, and report blocks | `@release` |
+| `@#` | Report tags | `@#release` |
+| `@/` | Track reports | `@/release` |
+| `@>` | Individual report blocks | `@>Findings` |
+
+Each prefix also works without a search term to show recommendations. Select
+an entry to insert a reference chip; the message carries the corresponding
+report reference for the Planner to read. These are references within the
+Area, not user mentions or host filesystem paths. Chinese input punctuation
+is supported too: `@＃`, `@、`, and `@》` select the same three kinds respectively.
+
+## Close and find Tracks
+
+Tracks are **open** or **closed**. Use **Close** on the Track page when you are
+finished and **Reopen** before scheduling more work. Sending a message to a
+closed Track does not reopen it; its Planner cannot schedule until you reopen.
+
+The desktop rail shows an Area's five most recent visible Tracks, followed by
+**Show N more**. Closed Tracks are hidden unless unread or currently open.
+Use the Area's menu **Show closed** / **Hide closed** to change this preference.
+The mobile Area page and Today do not apply this desktop hiding rule.
 
 ## Supervise tasks and respond to requests
 
 The desktop task list shows aggregate counts and a short status on each row.
 Hover a status for its full reason. Select a task row to reveal its declaration
 in the Report; use its task-kind button to reveal the worker card when one exists.
-The Notification Center identifies which Planner,
-Assistant, or Worker needs attention and opens its conversation or card.
+The Notification Center shows requests addressed to you and Planner failures,
+and opens the relevant conversation or card. Dismiss a notification after
+handling it; dismissal clears its attention marker, not the underlying task
+or request.
 
 Codex and Claude tasks of a Track run one at a time in the Track's checkout; a
 task waiting for it shows *Waiting for the track's checkout*. Isolated and
@@ -69,9 +119,8 @@ keeps the original request identity so that one action cannot create two attempt
 
 When recovery is unavailable, the task explains the prerequisite: for example,
 its requirements changed, execution permission was withdrawn, the previous execution
-has no supported write-stop proof, or its historical contract is missing. A terminal Track
-must first use the existing **Resume work** action. An ordinary Blocked Track can
-return to Working as part of an admitted recovery.
+has no supported write-stop proof, or its historical contract is missing.
+A closed Track must first use **Reopen**.
 
 Planner can recover its own automatically admitted task once. User-owned tasks,
 tasks awaiting user release, and further failed attempts need an explicit user
@@ -80,6 +129,21 @@ recovery action. Successful and canceled attempts are not eligible for this acti
 This recovery starts a fresh execution. Restoring a failed workspace, exact
 artifact handoff and partial-result acceptance have separate delivery requirements
 in [Task continuity](architecture/1501-task-continuity.md#reliable-delivery).
+
+## Work in a Track checkout and publish a PR
+
+A newly created Track attached to a Git repository gets its own worktree under
+`.claude/worktrees/track-<track_id>` on branch `neige/track-<track_id>`. The
+Planner and ordinary Codex/Claude workers use that checkout. Commit or undo
+uncommitted changes before starting a worker; a dirty checkout is refused.
+Older attached Tracks without a Track worktree need a new Track to run these
+workers. Managed Tracks use their provisioned workspace.
+
+For an attached Track with its own worktree and an upstream, the Planner can
+publish through `calm.track.publish`: the kernel pushes the branch without
+forcing and opens or reuses its PR. The branch tip must be the candidate of a
+**done** task attempt. A later unverified commit cannot be published through
+this tool. Publication returns the PR link; merging remains a separate action.
 
 ## Open files from a Report
 
@@ -95,6 +159,39 @@ files in the service's workspace, not a browser upload or an unrestricted host
 file browser. Missing files produce a read error. Line/column suffixes and URL
 fragments are stripped when resolving a file; they do not select a line in the
 viewer.
+
+## View a live development preview
+
+A Planner can register a development server listening on `127.0.0.1` and add a
+`preview` block to the Report. Ask it to start the server, register it with
+`calm.preview.register`, and embed the returned preview key. The preview offers
+**Desktop** and **Mobile** viewports and fullscreen. An offline notice means
+the target server is not responding; a missing-registration notice means the
+Planner needs to register it again.
+
+The operator must first configure a preview port pool; see
+[Preview gateway configuration](neige-app-config.md#enable-report-previews).
+The browser connects to a separate port on the same host using the owner's
+session. Previews currently require direct HTTP access; HTTPS pages show
+“预览仅 LAN 可用” instead of loading the frame. Registrations are held in
+memory and must be recreated after a kernel restart. The development server
+must also remain running; registration does not supervise its process.
+
+## Agent CLI and Report editing
+
+`neige` forwards commands to the running kernel from an authenticated agent
+terminal. Even `neige --help` needs `NEIGE_MCP_SOCKET` and `NEIGE_MCP_TOKEN`;
+only `neige --version` works without a connection. Use the `neige` binary
+shipped beside the running kernel; old clients are refused with the correct
+path in the error.
+
+A Planner can read other reports through the read-only `area/reports/` view,
+inspect selected blocks with `neige cat report.md --blocks <id>`, and query
+report tags with `neige tag report.md`. Report writes use `calm.report.commit`
+for targeted edits or `calm.report.write_markdown` for whole-document changes.
+Both anchor to this session's prior `calm.report.read`; CLI reads do not establish
+that write anchor. The retired `calm.report.write` and `calm.report.edit` tools
+are no longer available.
 
 ## Add and configure plugins
 

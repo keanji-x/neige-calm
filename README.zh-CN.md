@@ -39,19 +39,20 @@ Track 可以只完成一次，例如修复一个 issue；也可以经历多轮�
 ## 当前已经具备的能力
 
 - **Area 与 Track**：把长期上下文和具体工作主线分开。
-- **规划与执行**：根 Agent 规划任务、调度 Worker、响应执行结果，并推动从 draft 到 review 的类型化生命周期。
+- **规划与执行**：可选择 Codex 或已配置的 Claude Planner 规划任务、调度 Worker 并响应执行结果。Track 只有打开与关闭两种状态；任务保留各自的执行与验证状态。
 - **持久 Report**：使用稳定 block ID 与 revision 的文档，支持正文、任务、表格、K 线图、沙箱 App 视图，以及在 Track 内打开 Workspace 文件的链接。
-- **隔离 Workspace**：可附加已有目录，也可由内核为 Track 创建并管理工作空间。
+- **Track Workspace**：附加 Git 仓库时创建专属 Track worktree，也可由内核创建托管工作空间。Codex 与 Claude 任务在 Track 工作目录中串行运行。
 - **受治理的执行**：由内核强制实施 Agent 写入和副作用的角色、作用域、生命周期、评审与 Gate 边界。
-- **桌面任务监督**：查看任务计数和状态详情，从通知中心进入需要处理的对话或 Worker，并在卡片上分别查看 Worker 与验证命令的工作目录。Settings 支持调整每个 Track 的默认任务并发数。
+- **桌面任务监督**：查看任务计数和状态详情，从通知中心进入需要处理的对话或 Worker，并在卡片上分别查看 Worker 与验证命令的工作目录。已处理的通知可以忽略；关闭 Track 后，桌面侧栏默认隐藏它，未读或当前打开的 Track 除外。
 - **Today**：跨 Track 展示等待/运行状态，通过独立对话维护每日进展 Report。
 - **可扩展工具**：在 Settings 添加远程 MCP 服务器或服务器本地目录中的插件，并启停、配置、重启或删除。插件可提供工具、Template、Connector、Overlay 和沙箱 UI 资源。
-- **Track Recipe**：创建、编辑和删除可复用的 Markdown 计划，在新建 Track 时选择使用；内置 Template 仍为只读。
+- **Track Recipe**：为 Planner 保存工作方法和 Report 格式，任务根据实际请求创建；内置 Template 仍为只读。
+- **Report 引用与预览**：在 Planner 聊天中输入 `@`、`@#`、`@/` 或 `@>`，引用当前 Area 的标签、Track 报告或报告块。配置 HTTP 预览后，可在 Report 内查看开发服务并切换桌面与手机视口。
 - **可恢复执行**：持久化 Event、Session、Operation 与 Supervisor 状态，面向重试和进程替换设计。
 
 本地可执行插件以服务进程的操作系统身份运行，属于可信代码；浏览器 UI 沙箱不会隔离原生插件代码。安装前请阅读[插件宿主安全说明](docs/plugin-security.md)。
 
-具体界面入口与限制见英文版[使用指南](docs/using-neige-calm.md)，任务块的编写方式见 [Recipe 正文格式](docs/recipe-body-format.md)。
+具体界面入口与限制见英文版[使用指南](docs/using-neige-calm.md)，Planner 工作方法与 Report 格式的编写方式见 [Recipe 正文格式](docs/recipe-body-format.md)。
 
 ## 快速开始
 
@@ -62,6 +63,7 @@ Track 可以只完成一次，例如修复一个 issue；也可以经历多轮�
 - [rustup](https://rustup.rs/)（仓库通过 `rust-toolchain.toml` 固定 Rust 版本）
 - Node.js 22.12 或更高版本与 npm
 - 已安装并完成认证的 OpenAI Codex CLI
+- 可选：已配置并登录的 Claude Planner，详见 [Planner 配置](docs/neige-app-config.md#enable-a-claude-planner)
 
 克隆并准备环境：
 
@@ -213,7 +215,7 @@ Neige Calm 正在收敛到四个面向用户的核心概念：
 3. **Report**：当前可检查的成果，而不是埋在聊天记录中的摘要。
 4. **Recipe**：某一类工作可以怎样被重复执行和交付。
 
-新前端已是默认入口，切换期间仍保留旧前端。插件安装与 Recipe 编辑已经可用；结构化检查点，以及携带恢复证据接续失败尝试，仍属于[后续工作](docs/architecture/long-task-reliability.md#delivery-scope)。
+维护中的前端入口为 `/next/`，旧版 `/calm/` 前端已退役。插件安装与 Recipe 编辑已经可用；结构化检查点，以及携带恢复证据接续失败尝试，仍属于[后续工作](docs/architecture/long-task-reliability.md#delivery-scope)。
 
 ## 文档导航
 

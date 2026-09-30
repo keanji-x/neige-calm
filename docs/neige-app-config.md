@@ -118,6 +118,60 @@ shell's proxy variables. On hosts requiring a proxy, configure Settings → Netw
 before the first agent task; those persisted settings apply to new agent cards.
 See the [Alpha network setup](alpha-release.md#network-setup-before-the-first-agent-task).
 
+## Enable a Claude Planner
+
+Claude workers and Claude Planners have different setup requirements. To enable
+the Planner, write a JSON file with these three required fields (unknown fields
+are refused). Use absolute paths; replace the example paths and version with
+your installed versioned binary and a dedicated configuration directory:
+
+```json
+{
+  "claude_binary": "/home/owner/.local/share/claude/versions/2.1.280",
+  "claude_version": "2.1.280",
+  "config_dir": "/home/owner/.config/neige-claude-planner"
+}
+```
+
+Use the versioned executable rather than the auto-updated `~/.local/bin/claude`
+symlink. `claude_version` must match the first token printed by that binary's
+`--version`. As the service's OS user, launch that binary with
+`CLAUDE_CONFIG_DIR` set to the configured directory and run `/login` there.
+A login in a different configuration directory does not satisfy this setup.
+
+Pass the JSON file through the existing child arguments:
+
+```toml
+[child]
+extra_args = ["--claude-planner-config", "/home/owner/.config/neige-app/claude-planner.json"]
+```
+
+Preserve any other child arguments. Restart the `neige-app` service after
+editing its configuration, then open **Settings → Planners → Recheck**.
+The server checks configuration, binary version, and `auth status --json`;
+Claude creation is refused unless these checks pass. Without the flag, Claude
+is **Not configured**. Kernel-launched Claude Planners and workers have automatic
+memory disabled; their durable work context belongs in the Track and Report.
+
+## Enable Report previews
+
+The preview gateway is disabled by default. Add a free inclusive port range
+with `--preview-ports`; at most 16 ports are allowed, all at least 1024:
+
+```toml
+[child]
+extra_args = ["--preview-ports", "4100-4107"]
+```
+
+Combine these arguments with any existing ones, including Claude configuration.
+Restart the service after editing the file. Every pool port binds on the same
+host address as `child.calm_listen`; all ports must be free at startup and
+reachable from the browser. The gateway proxies registered loopback servers
+and requires the owner's session. It currently serves HTTP only; HTTPS pages
+cannot embed these previews. Do not register a target that serves or proxies
+the Neige kernel itself. See [Using previews](using-neige-calm.md#view-a-live-development-preview)
+for registration and restart behavior.
+
 ## Install
 
 ```bash

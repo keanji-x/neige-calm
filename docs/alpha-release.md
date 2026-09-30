@@ -62,7 +62,10 @@ without a missing loader/library error. Rust and Node are not runtime prerequisi
 
 Runtime prerequisites: compatible Linux/architecture, a desktop browser, Git,
 Codex CLI with its companion binaries installed, and Codex authentication for the
-same OS user who will run the service. Claude is optional. Systemd user services
+same OS user who will run the service. Claude is optional. To use it as a
+Planner, configure its versioned executable and dedicated login directory as
+described in [Claude Planner setup](neige-app-config.md#enable-a-claude-planner);
+verify **Settings → Planners** after startup. Systemd user services
 are optional if using foreground mode below.
 
 After downloading the archive and checksum to the same directory:

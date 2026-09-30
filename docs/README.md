@@ -9,8 +9,8 @@ diagnoses, proposed changes, or explicitly deferred work.
 
 | Need | Guide |
 | --- | --- |
-| Create reusable plans, supervise work, open files, add plugins | [Using Neige Calm](using-neige-calm.md) |
-| Write task blocks in a Recipe | [Recipe body format](recipe-body-format.md) |
+| Choose Planners, use Recipes and @ references, supervise work, publish PRs, view previews, add plugins | [Using Neige Calm](using-neige-calm.md) |
+| Write Planner instructions and Report formats in a Recipe | [Recipe body format](recipe-body-format.md) |
 | Build or install a Linux Alpha archive | [Alpha release runbook](alpha-release.md) |
 | Deploy, back up, upgrade, or recover an installation | [Deploy & Upgrade Guide](deploy-and-upgrade.md) |
 | Configure the supervisor and child server | [neige-app configuration](neige-app-config.md) |
@@ -27,6 +27,10 @@ diagnoses, proposed changes, or explicitly deferred work.
 | Stack E2E tiers | [E2E README](../e2e/README.md) |
 | Executable UI contracts | [Oracle schema and conventions](oracle/SCHEMA.md) |
 | Kernel and app responsibilities | [Kernel/app boundary](architecture/955-kernel-app-boundary.md) |
+| Claude Planner backend and configuration decisions | [Claude Planner](architecture/1791-claude-planner-backend.md) |
+| Track checkout, serial workers, and PR publication | [Track worktree](architecture/1830-track-worktree.md), [worker checkout](architecture/1830-s2-worker-in-track-worktree.md), [publication](architecture/1830-s3-push-pr-reclaim.md) |
+| Track open/closed state | [Track state](architecture/1876-track-open-closed.md) |
+| Kernel-served agent CLI | [CLI architecture](architecture/1801-kernel-served-cli.md) |
 | Reports as executable plans | [Doc-as-plan design](architecture/985-doc-as-plan.md) |
 | Worker evidence, verification directories, and deferred recovery work | [Long task reliability](architecture/long-task-reliability.md) |
 | Continuing task identity, recovery, and reliable delivery proposal | [Task continuity design](architecture/1501-task-continuity.md) |

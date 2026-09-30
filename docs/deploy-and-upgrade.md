@@ -12,6 +12,29 @@ Their native code executes as the service OS identity. Protect both the plugin
 root and every symlink target/source tree from unintended writers; production
 plugin sources should not be linked to shared or lower-trust agent worktrees.
 
+## Planner, CLI, and workspace changes on current main
+
+Update the server and frontend together when adopting current Planner and Track
+controls. Claude Planner support requires explicit configuration and login;
+see [Claude setup](neige-app-config.md#enable-a-claude-planner). Report previews
+also need an explicit [port pool](neige-app-config.md#enable-report-previews).
+
+Keep the packaged `neige` binary alongside its kernel. Command parsing and help
+now live in the kernel: `--help` requires the agent socket and token, while
+`--version` remains local. Old clients are refused rather than interpreting
+commands with stale semantics.
+
+New attached Tracks use a dedicated Track worktree, and ordinary Codex/Claude
+workers share that checkout one at a time. Older attached Tracks without one
+cannot run these workers; create a new Track. The released-worktree cleanup
+sweep concerns eligible older per-attempt worktrees, not the new Track checkout.
+It preserves slice branches and refuses dirty or otherwise unsafe trees;
+released directories should not be treated as permanent artifact storage.
+
+Tracks now use open/closed state. A closed Track must be reopened before task
+recovery or further scheduling. See [Using Neige Calm](using-neige-calm.md) for
+current controls, publication, and report references.
+
 ## 1. Layout
 
 ```

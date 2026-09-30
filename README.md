@@ -39,21 +39,22 @@ A Track can finish once, like fixing an issue, or remain useful across repeated 
 ## What is here today
 
 - **Areas and Tracks** — separate long-lived context from individual streams of work.
-- **Planning and execution** — a root agent plans tasks, dispatches workers, reacts to results, and drives a typed lifecycle from draft through review.
+- **Planning and execution** — choose Codex or a configured Claude Planner to plan tasks, dispatch workers, and react to results. Tracks are open or closed; tasks retain their own execution and verification states.
 - **Durable Reports** — block documents with stable IDs and revisions, supporting prose, tasks, tables, candlestick charts, sandboxed app views, and links that open workspace files in the Track.
-- **Isolated workspaces** — attach an existing directory or let the kernel provision a managed workspace for a Track.
+- **Track workspaces** — attach a Git repository to create a dedicated Track worktree, or let the kernel provision a managed workspace. Codex and Claude tasks run one at a time in the Track checkout.
 - **Governed execution** — kernel-enforced role, scope, lifecycle, review, and gate boundaries around agent writes and side effects.
-- **Desktop supervision** — task counts and status details, a Notification Center that opens the conversation or worker needing attention, and separate worker and verification directories on cards.
+- **Desktop supervision** — task counts and status details, a Notification Center that opens the conversation or worker needing attention, and separate worker and verification directories on cards. Dismiss notifications you have handled; closing a Track hides it from the desktop rail unless it is unread or currently open.
 - **Today** — a cross-Track view with waiting/running state and a daily progress report maintained through its own conversation.
 - **Extensible tools** — add remote MCP servers or server-local plugin directories from Settings, then enable, configure, restart, or remove them. Plugins can contribute tools, templates, connectors, overlays, and sandboxed UI resources.
-- **Track Recipes** — create, edit, and delete reusable Markdown plans, then select one when creating a Track. Built-in templates remain read-only.
+- **Track Recipes** — save working instructions and a Report format for the Planner; tasks are created for the actual request. Built-in templates remain read-only.
+- **Report references and previews** — use `@`, `@#`, `@/`, and `@>` in Planner chat to reference the Area’s tags, Track reports, or report blocks. Configured HTTP previews embed live development servers with desktop and mobile viewports.
 - **Recoverable execution** — persisted events, sessions, operations, and supervisor state are designed to survive retries and process replacement.
 
 Local executable plugins run as trusted code with the service's OS identity;
 browser UI sandboxing does not isolate native plugin code. See
 [Plugin host security](docs/plugin-security.md) before installing plugins.
 
-See [Using Neige Calm](docs/using-neige-calm.md) for the current UI paths and their limits, and the [recipe body format](docs/recipe-body-format.md) for authoring task blocks.
+See [Using Neige Calm](docs/using-neige-calm.md) for the current UI paths and their limits, and the [recipe body format](docs/recipe-body-format.md) for authoring Planner working instructions and Report formats.
 
 ## Quick start
 
@@ -64,6 +65,7 @@ The simplest source-based preview runs directly on the host. It currently assume
 - [rustup](https://rustup.rs/) (the repository pins Rust in `rust-toolchain.toml`)
 - Node.js 22.12 or newer and npm
 - An installed and authenticated OpenAI Codex CLI
+- Optional: a configured and authenticated Claude Planner; see [Planner configuration](docs/neige-app-config.md#enable-a-claude-planner)
 
 Clone and prepare the environment:
 
@@ -266,7 +268,7 @@ Neige Calm is converging on four user-facing ideas:
 3. **Report** — the current, inspectable outcome rather than a summary buried in chat.
 4. **Recipe** — a reusable way to perform and deliver a kind of work.
 
-The new frontend is the default entry point; the legacy frontend remains available during the cutover. Plugin installation and Recipe editing are available today. Structured checkpoints and resuming a failed attempt with preserved recovery evidence remain [follow-up work](docs/architecture/long-task-reliability.md#delivery-scope).
+The maintained frontend is served at `/next/`; the legacy `/calm/` frontend is retired. Plugin installation and Recipe editing are available today. Structured checkpoints and resuming a failed attempt with preserved recovery evidence remain [follow-up work](docs/architecture/long-task-reliability.md#delivery-scope).
 
 ## Documentation
 
