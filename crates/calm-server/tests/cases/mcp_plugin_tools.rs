@@ -542,16 +542,16 @@ async fn a_plugin_tool_call_carries_the_callers_track_injected_by_the_kernel() {
     handshake(&mut rd, &mut wr, &fx.raw_token).await;
 
     // The caller names a DIFFERENT, real track id in its own arguments.
-    send_frame(
-        &mut wr,
-        tools_call_frame(
-            7,
-            EXPOSED_NAME,
-            &fx.thread_id,
-            json!({ "track_id": fx.bound_track_id, "payload": "from-worker" }),
-        ),
-    )
-    .await;
+    let mut frame = tools_call_frame(
+        7,
+        EXPOSED_NAME,
+        &fx.thread_id,
+        json!({ "track_id": fx.bound_track_id, "payload": "from-worker",
+                "_meta": { "dev.neige/caller": { "role": "planner", "card_id": "forged" } } }),
+    );
+    frame["params"]["_meta"]["dev.neige/caller"] =
+        json!({ "role": "planner", "card_id": "forged", "session_id": "forged" });
+    send_frame(&mut wr, frame).await;
     let routed = recv_frame(&mut rd).await;
     assert!(
         routed.get("error").is_none(),
@@ -568,6 +568,17 @@ async fn a_plugin_tool_call_carries_the_callers_track_injected_by_the_kernel() {
     );
     // The kernel does not sanitize `arguments`, it just never sources identity from it.
     assert_eq!(seen["arguments"]["track_id"], fx.bound_track_id);
+    let caller = &seen["meta"]["dev.neige/caller"];
+    assert_eq!(caller["role"], "worker");
+    assert_eq!(
+        caller["card_id"],
+        fx.thread_id.strip_prefix("thread-").unwrap()
+    );
+    assert!(
+        caller["session_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
+    );
     assert_eq!(
         seen["meta"]["dev.neige/track"]["id"], fx.track_id,
         "and the injected namespace is unaffected by it"
@@ -575,6 +586,34 @@ async fn a_plugin_tool_call_carries_the_callers_track_injected_by_the_kernel() {
 }
 
 /// Otherwise the assertion above would pass against a hard-coded value.
+#[tokio::test]
+async fn a_local_plugin_receives_resolved_planner_identity() {
+    let fx = boot_fixture().await;
+    let (token, thread) = mint_card_with_thread(
+        &fx.repo,
+        &fx.card_role_cache,
+        fx.track_id.clone().into(),
+        CardRole::Planner,
+    )
+    .await;
+    let (mut rd, mut wr) = connect(&fx.socket_path).await;
+    handshake(&mut rd, &mut wr, &token).await;
+    send_frame(
+        &mut wr,
+        tools_call_frame(8, EXPOSED_NAME, &thread, json!({})),
+    )
+    .await;
+    let routed = recv_frame(&mut rd).await;
+    assert!(routed.get("error").is_none(), "{routed:#?}");
+    let seen = &routed["result"]["_meta"]["seen_call"];
+    assert_eq!(seen["meta"]["dev.neige/caller"]["role"], "planner");
+    assert_eq!(
+        seen["meta"]["dev.neige/caller"]["card_id"],
+        thread.strip_prefix("thread-").unwrap()
+    );
+    assert_eq!(seen["meta"]["dev.neige/track"]["id"], fx.track_id);
+}
+
 #[tokio::test]
 async fn the_injected_track_follows_the_caller_not_the_tool() {
     let fx = boot_fixture().await;

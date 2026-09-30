@@ -629,8 +629,17 @@ async fn dispatch_plugin_tools_call(
             let called = match &client {
                 // The Track rides along only to LOCAL plugins; a remote connector is a third party that must not learn which Track a reader is looking at.
                 ConnectorClient::Stdio(c) => {
-                    c.tools_call(&tool_name, arguments, identity.track_id.as_deref())
-                        .await
+                    c.tools_call_with_caller(
+                        &tool_name,
+                        arguments,
+                        identity.track_id.as_deref(),
+                        Some(crate::plugin_host::mcp::AgentCaller {
+                            role: identity.role,
+                            card_id: &identity.card_id,
+                            session_id: &identity.session_id,
+                        }),
+                    )
+                    .await
                 }
                 ConnectorClient::Http(c) => c.tools_call(&tool_name, arguments).await,
                 // An `Ok` result carries the child's own `isError` verdict, an `Err` is a kernel-side refusal.
@@ -884,7 +893,16 @@ async fn dispatch_forge_action_plugin_tool(
     identity: ToolCallIdentity,
 ) -> Result<Value, RpcError> {
     let result = client
-        .tools_call(tool_name, arguments, identity.track_id.as_deref())
+        .tools_call_with_caller(
+            tool_name,
+            arguments,
+            identity.track_id.as_deref(),
+            Some(crate::plugin_host::mcp::AgentCaller {
+                role: identity.role,
+                card_id: &identity.card_id,
+                session_id: &identity.session_id,
+            }),
+        )
         .await?;
     if result.is_error == Some(true) {
         return serde_json::to_value(result)

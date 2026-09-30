@@ -20,7 +20,7 @@ def account_values(rig):
 
 
 class Host:
-    def __init__(self, rig, data_dir=None):
+    def __init__(self, rig, data_dir=None, config=None):
         data_dir = data_dir or rig.data
         data_dir.mkdir(exist_ok=True)
         env = {"PATH": os.defpath, "HOME": str(rig.home), "LANG": "C.UTF-8",
@@ -34,7 +34,7 @@ class Host:
         self.thread.start()
         init = self.request("initialize", {"protocolVersion": "2025-11-25", "_meta": {
             "dev.neige/auth": {"expected_echo": "fixture-token"},
-            "dev.neige/config": {"values": account_values(rig)}}})
+            "dev.neige/config": {"values": account_values(rig) if config is None else config}}})
         assert init["_meta"]["dev.neige/auth"]["echoed_token"] == "fixture-token"
 
     def read(self):
@@ -62,10 +62,12 @@ class Host:
                 assert "error" not in frame, frame
                 return frame["result"]
 
-    def tool(self, name, args, track="track-owner"):
+    def tool(self, name, args, track="track-owner", caller=None):
         params = {"name": name, "arguments": args}
         if track is not None:
             params["_meta"] = {"dev.neige/track": {"id": track}}
+            if caller is not None:
+                params["_meta"]["dev.neige/caller"] = caller
         return self.request("tools/call", params)
 
     def close(self):

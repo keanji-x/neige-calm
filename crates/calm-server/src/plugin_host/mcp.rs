@@ -186,6 +186,15 @@ pub const KERNEL_CALLBACKS_CAPABILITY: &str = "dev.neige/kernel-callbacks";
 /// `tools/call` carries it, so a plugin must refuse rather than default when it is absent.
 pub const TRACK_META_KEY: &str = "dev.neige/track";
 
+/// Resolved agent identity, supplied only to local plugin calls by the kernel.
+/// This namespace is independent of the plugin-authored tool arguments.
+#[derive(Clone, Copy, serde::Serialize)]
+pub struct AgentCaller<'a> {
+    pub role: crate::model::CardRole,
+    pub card_id: &'a str,
+    pub session_id: &'a str,
+}
+
 /// Version of the `dev.neige/kernel-callbacks` capability; only an exact match in the plugin's
 /// `initialize` response counts as "capability declared".
 pub const KERNEL_CALLBACKS_CAPABILITY_VERSION: u32 = 1;
@@ -407,12 +416,26 @@ impl McpClient {
         arguments: Value,
         track_id: Option<&str>,
     ) -> Result<CallToolResult, RpcError> {
-        let mut params = json!({
-            "name": name,
-            "arguments": arguments,
-        });
+        self.tools_call_with_caller(name, arguments, track_id, None)
+            .await
+    }
+
+    /// Agent callers are resolved by the host; request `_meta` is never forwarded.
+    /// Background resolvers and user routes omit this namespace and confer no agent role.
+    pub async fn tools_call_with_caller(
+        &self,
+        name: &str,
+        arguments: Value,
+        track_id: Option<&str>,
+        caller: Option<AgentCaller<'_>>,
+    ) -> Result<CallToolResult, RpcError> {
+        let mut params = json!({ "name": name, "arguments": arguments });
         if let Some(track_id) = track_id {
             params["_meta"] = json!({ TRACK_META_KEY: { "id": track_id } });
+            if let Some(caller) = caller {
+                params["_meta"]["dev.neige/caller"] = serde_json::to_value(caller)
+                    .map_err(|e| RpcError::internal(format!("local caller serialization: {e}")))?;
+            }
         }
         let raw = self.call("tools/call", params).await?;
         serde_json::from_value::<CallToolResult>(raw).map_err(|e| {

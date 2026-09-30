@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "id": "dev-neige-paper-trading",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "min_kernel_version": "0.0.1",
   "display_name": "Longbridge paper portfolio",
   "entrypoint": {"command": "run"},
@@ -12,7 +12,15 @@
       "account_no": {"type": "string", "description": "Exact operator-verified lb_papertrading account number. Cannot change on an existing ledger."},
       "broker_home": {"type": "string", "description": "Absolute HOME containing the dedicated Longbridge paper-account login."},
       "cli_path": {"type": "string", "default": "/usr/local/bin/longbridge"},
-      "poll_seconds": {"type": "integer", "description": "Reconciliation interval, 5-3600 seconds.", "default": 60}
+      "poll_seconds": {"type": "integer", "description": "Reconciliation interval, 5-3600 seconds.", "default": 60},
+      "profile": {"type": "string", "enum": ["supervised", "spy_cash"], "default": "supervised", "description": "spy_cash explicitly enables automatic official-paper SPY market execution through a delegated Worker. Immutable per data directory."},
+      "owner_track_id": {"type": "string", "description": "Required for spy_cash: the sole owning Track."},
+      "oauth_client_id": {"type": "string", "description": "Required for spy_cash: separately authorized official SDK OAuth client; never decrypt CLI credentials."},
+      "sdk_python_path": {"type": "string", "description": "Required for spy_cash: absolute Python interpreter with official Longbridge SDK 5.2.0."},
+      "max_order_usd": {"type": "string", "description": "Required for spy_cash: maximum estimated order value including 1% sizing reserve; not a market-price guarantee."},
+      "cash_buffer_bps": {"type": "integer", "description": "SPY profile cash reserve, 1-2000 basis points; omitted value 200."},
+      "drift_bps": {"type": "integer", "description": "SPY allocation no-trade band, 0-1000 basis points; omitted value 100."},
+      "quote_max_age_seconds": {"type": "integer", "description": "SPY execution quote freshness, 1-120 seconds; omitted value 60."}
     },
     "required": ["account_no", "broker_home"],
     "additionalProperties": false
@@ -100,6 +108,108 @@
         "next_action": {"type": "string", "minLength": 10, "maxLength": 6000}},
         "required": ["review_id", "trade_id", "evidence_revision", "analysis", "next_action"], "additionalProperties": false},
       "annotations": {"title": "Review closed trade", "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false}
+    },
+    {
+      "name": "spy.plan",
+      "description": "SPY/cash profile only. Planner-only: persist an immutable target allocation with captured research/market sources and validity. Does not submit. Dispatch a Worker granting spy.execute, spy.status and spy.refresh. One unresolved target per account. Whole shares, cash reserve and a drift band affect achieved ratio.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "decision_id": {
+            "type": "string"
+          },
+          "target_spy_bps": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000
+          },
+          "rationale": {
+            "type": "string",
+            "minLength": 10,
+            "maxLength": 6000
+          },
+          "source_refs": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "items": {
+              "type": "string"
+            }
+          },
+          "valid_until": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "decision_id",
+          "target_spy_bps",
+          "rationale",
+          "source_refs",
+          "valid_until"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "spy.plan",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "spy.execute",
+      "description": "SPY/cash profile only. Worker-only, delegated by Planner: execute the exact persisted decision. Submits a regular-session DAY SPY.US market order to the pinned official PAPER account with no per-order confirmation. Plugin computes integer shares and enforces cash-only sizing. Retry the SAME ID to reconcile; uncertain submissions NEVER resubmit. Return status distinguishes working, settled, unknown, queued/market closed and noop.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "decision_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision_id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "spy.execute",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "spy.status",
+      "description": "Read persisted SPY/cash snapshot, targets, order identities, actual fills and errors. Check snapshot time. Requires host-provided owning Track and Planner/Worker identity.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "spy.status",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "spy.refresh",
+      "description": "Read the broker and atomically reconcile SPY allocation orders/fills. Never submits. Unknown broker outcomes remain blocked until exact order identity is recovered.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "spy.refresh",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      }
     }
   ]
 }

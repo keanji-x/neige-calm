@@ -6,12 +6,15 @@ The plugin records decisions, reconciles broker orders and executions, maintains
 a durable trading journal and renders native Report views. AI research and
 review run in the existing Neige agent, not inside another model client.
 
-**This is supervised paper execution, not unattended trading or a shadow
-portfolio.** The installed Longbridge CLI has a two-step native preview and user
-confirmation contract. No MCP tool submits/cancels orders or reveals confirmation
+**The default profile is supervised paper execution.** The installed Longbridge CLI has a two-step native preview and user
+confirmation contract. In the supervised profile, no MCP tool submits/cancels orders or reveals confirmation
 codes. The separate interactive operator command preserves that contract.
 
-## Initial scope
+The explicit `spy_cash` profile supports Planner targets and delegated Worker
+market execution without per-order confirmation. Its setup and boundaries are
+documented below.
+
+## Initial scope (supervised profile)
 
 - A verified AP-region `lb_papertrading` account; the configured account number
   must match on every reconciliation and immediately before operator actions.
@@ -323,3 +326,105 @@ reconciliation time, or explicitly null when unavailable. The pure projection
 has no publication clock, so live `producedAt` is explicitly null even when
 reconciliation or journal times are known. Rendering never fabricates a refresh
 or generation time. Legacy table source IDs and their payloads are unchanged.
+
+## Automatic SPY/cash profile
+
+This profile implements message-triggered target allocation with the official
+Longbridge paper account. Planner research comes through existing Longbridge
+and Wisburg connectors. The Planner captures source references and persists a
+basis-point target; a delegated Worker executes that immutable decision. The
+App calculates integer shares, submits one DAY market order and reconciles actual
+broker fills. It does not periodically create new targets or automatically submit
+an additional order to eliminate residual drift. Sources are durable citation
+references supplied by the Planner; the App does not verify their content.
+
+Use a fresh data directory and a dedicated paper account with no existing
+positions or active orders. This profile and the supervised profile cannot share
+a data directory or switch on an existing portfolio. Preserve any previous
+ledger and resolve its orders and holdings before changing account use. Install
+on a kernel containing the `dev.neige/caller` local-plugin identity contract;
+older kernels cannot authorize SPY tools. Local plugins share the service OS
+identity; this is not an OS sandbox against another trusted local process.
+
+Configure the scalar fields below. Replace every placeholder; the order cap is
+an operator-selected limit, not an inferred default or a recommendation:
+
+```json
+{
+  "profile": "spy_cash",
+  "account_no": "YOUR_VERIFIED_PAPER_ACCOUNT",
+  "broker_home": "/private/path/sdk-home",
+  "owner_track_id": "YOUR_SPY_TRACK_ID",
+  "oauth_client_id": "YOUR_REGISTERED_OAUTH_CLIENT",
+  "sdk_python_path": "/private/path/spy-venv/bin/python",
+  "max_order_usd": "YOUR_POSITIVE_DECIMAL_CAP",
+  "poll_seconds": 60,
+  "cash_buffer_bps": 200,
+  "drift_bps": 100,
+  "quote_max_age_seconds": 60
+}
+```
+
+`cash_buffer_bps`, `drift_bps`, and `quote_max_age_seconds` have the shown values
+when omitted. The App uses the whole dedicated account's USD cash plus SPY
+market value as the allocation base. It caps target exposure at the configured
+cash reserve, rounds whole shares down, and sizes buys with an additional 1%
+price reserve. It checks the estimated order cap including that price reserve;
+market orders have no guaranteed execution price. It does not use margin buying
+power, spend positive unsettled proceeds or sell unavailable shares. An order
+above the cap is refused, rather than silently split into several orders. The
+snapshot shows the achieved ratio, which can differ from the target because of
+rounding, cash availability, price movement and the no-trade band.
+
+The official SDK is separate from the CLI's encrypted login cache. Build the
+pinned SDK in a private virtual environment using `requirements-spy.txt`. The
+published legacy 0.2.x Python package lacks the required OAuth and paper-enforcement
+APIs. Register an OAuth client at Longbridge with the local callback URI
+`http://localhost:60355/callback`, then perform its one-time account authorization
+with the SDK interpreter, in the same configured broker HOME:
+
+```sh
+/private/path/spy-venv/bin/python -I paper_trading/sdk_bridge.py   --client-id YOUR_REGISTERED_OAUTH_CLIENT --account YOUR_VERIFIED_PAPER_ACCOUNT login
+```
+
+The login command displays the official authorization URL. A service/background
+call never initiates interactive authorization or exports/decrypts CLI tokens.
+No per-order confirmation is needed after configuring this explicit execution
+profile. Every SDK operation uses `enable_papertrading=True`, which the broker
+rejects for real-money credentials. Account proof uses a daily broker statement
+from that same SDK login; absent or mismatched proof blocks execution. Protect
+SDK HOME and installed files from unintended writers. Child environments use the
+existing explicit PATH/LANG/proxy allowlist, with HOME pinned and no inherited
+Longbridge endpoint overrides, model keys or arbitrary Python import paths.
+
+Save `spy-recipe.md` as a user Recipe and create its owner Track. The Planner
+uses `spy.plan` with a stable decision ID, a 0-10000 `target_spy_bps`, a rationale,
+1-20 captured `neige://source/...` references and a timezone-aware validity of
+at most 24 hours. Only one unresolved decision is permitted. The Planner then
+uses `calm.task.dispatch`, `executor: codex`, `workspace: empty`, and grants these
+exact tools through `plugin_tools`:
+
+- `plugin.dev-neige-paper-trading_spy.execute`
+- `plugin.dev-neige-paper-trading_spy.status`
+- `plugin.dev-neige-paper-trading_spy.refresh`
+
+The Worker receives only the decision ID and those grants. It cannot change the
+target through the execution call; the App requires the kernel-resolved Worker
+role. Planner execution, Worker planning, missing identity, wrong Track and
+caller identity supplied through arguments are refused. A Worker refreshes to
+observe `working`, `settled`, `unknown`, `rejected`, `expired`, `canceled`, `noop`,
+or `queued` outside the regular session. An unresolved/unknown result is reported
+as such. Market holidays and half trading days are checked against the broker
+calendar. `spy.portfolio`, `spy.decisions` and `spy.fills` are native live tables
+that can be bound in the Track Report.
+
+Intent and exact quantity are committed before submission under the operation
+lock. The broker request has a stable remark and client request ID; its 10-minute
+server idempotency cache is an extra guard, not the recovery source of truth.
+After a timeout or restart, retries of the same decision reconcile only and never
+resubmit. Recovery requires one exact remark/payload match. Unknown active orders,
+external positions, conflicting execution IDs and incomplete fill totals block
+execution and roll back the observation. Reconciliation can be retried; deleting
+or editing SQLite is not recovery. Disabling this plugin does not cancel orders
+or liquidate positions. Fees, financing, dividends, tax and net returns are not
+calculated in this first allocation slice.
